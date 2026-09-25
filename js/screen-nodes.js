@@ -28,7 +28,7 @@ import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.j
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
          RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, lossColor, histTime, ChartHover, IfaceThroughput,
          RANGE_CAP, axisCap, lossColorMesh } from "./charts.js";
-import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, LossPop, onlineUserRows, onlinePeerRows,
+import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, dropsEnough, LossPop, onlineUserRows, onlinePeerRows,
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES, reachSkipText, reachStaleText,
          promotedAt, promotedBy } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
@@ -956,7 +956,8 @@ export function NodeDetail({ node: rawName }) {
                     // a row the eye learns to skip — and then skips the one that matters. The detail page
                     // is opened about ONE interface, where "we measure this, and it is clean" is the answer.
                     const _d = m.drops;
-                    if (!_d || !(_d.pct >= 0.05)) return null;
+                    // …and not on too little traffic to carry a rate (dropsEnough): the interface page still shows the count.
+                    if (!_d || !dropsEnough(_d) || !(_d.pct >= 0.05)) return null;
                     // The figure carries a bubble: one percentage cannot say whether this is the node's own
                     // send queue, a failed send, or traffic refused on arrival — three faults, three fixes.
                     return html`<div class="ifrow"><span class="l">${T("col|Drops")}</span><span class="r addr"><${DropsPop} d=${_d} iface=${ifn} node=${name}

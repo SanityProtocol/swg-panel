@@ -1017,16 +1017,35 @@ export function MeshStat({ nodeId, mode }) {
 //
 // Everything here is free: the node reads sysfs counters it was already reading. Fields are all optional,
 // because a node on an older build reports only pct/window_* and this must degrade to that quietly.
+//
+// ⚠️ THE HEADLINE COUNTS ONLY THE NODE'S `fault_kinds`. On a client-facing kernel wg/awg interface that is rx_drop alone:
+// the kernel's tx_dropped there is packets held for a client that had no session (asleep, out of coverage, just removed),
+// tx_errors is traffic to an address no client owns, rx_errors is one client sending from outside its range — none of it
+// something a connected client lost, and together they read 40-50% on quiet interfaces. The node says which kinds count
+// (see _FAULT_ALL in swg-noded); the rest are summed into one "Not counted" row, with a line saying what they are.
+// The old labels had rx_drop as "refused" — that is rx_errors.
 const DROP_KINDS = [
   { k: "tx_drop", dir: "out", lbl: () => T("queue full"),
-    hint: () => T("This node couldn't send fast enough and dropped from its own queue — local pressure, not the path.") },
+    hint: d => d.dp === "wg" ? T("Packets held for the other server were discarded because the link had no working session — it was down.")
+      : d.dp === "tun" ? T("The program serving this interface didn't read its queue in time — local load, or it was restarting.")
+      : T("Packets waiting to go out were discarded before they could be sent.") },
   { k: "tx_err",  dir: "out", lbl: () => T("failed"),
     hint: () => T("Sends failed outright — no route out, or a peer whose endpoint this node doesn't know yet.") },
-  { k: "rx_drop", dir: "in",  lbl: () => T("refused"),
-    hint: () => T("Traffic arrived and wasn't accepted — typically a stale key, or a source outside the peer's allowed range.") },
-  { k: "rx_err",  dir: "in",  lbl: () => T("errors"),
-    hint: () => T("Malformed or truncated frames arrived on this interface.") },
+  { k: "rx_drop", dir: "in",  lbl: () => T("overflow"),
+    hint: () => T("Packets arrived faster than this node could take them in — local load, not the path.") },
+  { k: "rx_err",  dir: "in",  lbl: () => T("refused"),
+    hint: () => T("Packets came from a source outside the sender's allowed range, or were malformed — usually one misconfigured sender.") },
 ];
+
+// The floor the node already puts under its worst-sample rate (IFACE_PEAK_MIN in swg-noded), applied to the headline: below
+// it a percentage is arithmetic, not a measurement — 3 drops among 4 packets is 43%. The count is still a fact, so it shows.
+const DROP_PCT_MIN = 200;
+export const dropsEnough = d => (d.window_pkts || 0) + (d.window_bad || 0) >= DROP_PCT_MIN;
+export function DropsFigure({ d }) {
+  return d.window_bad > 0 && !dropsEnough(d)
+    ? html`<span class="dp-num">${fmtCount(d.window_bad)} ${T("dropped")}</span>`
+    : html`<span class="dp-num" style=${"color:" + lossColor(d.pct)}>${d.pct}%</span>`;
+}
 
 // ───── mesh loss: the same treatment, for the number that comes off the probe ─────
 // ⚠️ THE HEADLINE PERCENTAGE OVERSTATES ITS OWN PRECISION. 20 packets a minute over a 30-probe window is
@@ -1164,11 +1183,14 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
     else { setReset(""); toast(srvText(r) || T("Couldn't reset the counters."), "err"); }
   };
   const has = k => typeof d[k] === "number";
-  const split = DROP_KINDS.filter(x => has(x.k));
+  // A node older than fault_kinds counts every kind — which is exactly what it put in its pct.
+  const counts = k => !Array.isArray(d.fault_kinds) || d.fault_kinds.includes(k);
+  const split = DROP_KINDS.filter(x => has(x.k) && counts(x.k));
+  const offN = DROP_KINDS.filter(x => has(x.k) && !counts(x.k)).reduce((a, x) => a + d[x.k], 0);
   // The dominant kind names the fault. Only when it is genuinely dominant (over half) — a 50/50 mix has no
   // single explanation and inventing one would send the operator down the wrong path.
   const top = split.slice().sort((a, b) => d[b.k] - d[a.k])[0];
-  const hint = top && d[top.k] > 0 && d[top.k] * 2 > d.window_bad ? top.hint() : null;
+  const hint = top && d[top.k] > 0 && d[top.k] * 2 > d.window_bad ? top.hint(d) : null;
   const rowsFor = dir => split.filter(x => x.dir === dir);
   const pair = (dir, label) => {
     const rs = rowsFor(dir);
@@ -1185,10 +1207,11 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
           instead of on the left among the labels. */""}
     <div class="dp-head">
       <span class="dp-sub">${T("{v1} of {v2} packets", { v1: fmtCount(d.window_bad), v2: fmtCount(d.window_pkts) })}</span>
-      <b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>
+      ${dropsEnough(d) || !(d.window_bad > 0) ? html`<b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>` : null}
     </div>
     ${pair("out", T("Sending"))}
     ${pair("in", T("Receiving"))}
+    ${offN ? html`<div class="dp-row"><span class="dp-l">${T("Not counted")}</span><span class="dp-v">${fmtCount(offN)}</span></div>` : null}
     ${(() => {
       // ⚠️ THE RATE AND THE COUNT ANSWER DIFFERENT QUESTIONS, AND THE RATE CAN LIE. A 5s sample that pushed
       // 2 packets while dropping 70 is 97.22%, which the panel duly showed an operator as "Worst sample
@@ -1212,6 +1235,7 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
         ? html`<span class="dp-life" style=${"color:" + lossColor(100 * d.life_bad / d.life_pkts)}>${
             (100 * d.life_bad / d.life_pkts).toFixed(4)}%</span>` : null}</span></div>` : null}
     ${hint ? html`<div class="dp-hint">${hint}</div>` : null}
+    ${offN ? html`<div class="dp-hint">${T("Not counted: packets for clients that weren't connected, traffic to addresses no client owns, and traffic one client sent from outside its range. None of it is something a connected client lost.")}</div>` : null}
     <div class="dp-foot">${d.span_s ? T("measured over the last {v1}", { v1: seen(d.span_s) }) : T("this node's own queues and datapath, not the path to the client")}</div>
   </${Popover}>`;
 }

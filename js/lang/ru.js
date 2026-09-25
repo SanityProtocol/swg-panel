@@ -2355,7 +2355,8 @@ export const STR = {
   "Receiving": "Приём",
   "queue full": "очередь",
   "refused": "отклонено",
-  "errors": "ошибки",
+  "overflow": "переполнение",
+  "Not counted": "Не учтено",
   // budget-ok: bubble footer, wraps
   "Loss over the last {v1} ({v2} probes of {v3} packets, {v4}-byte). Latency and jitter are from the newest probe.": "Потери за последние {v1} ({v2} проб по {v3} пакетов, {v4} байт). Задержка и джиттер — из последней пробы.",
   "Worst sample": "Худший замер",
@@ -2383,10 +2384,19 @@ export const STR = {
   "Couldn't reset the probe window.": "Не удалось очистить окно замеров.",
   "measured over the last {v1}": "замер за последние {v1}",
   "this node's own queues and datapath, not the path to the client": "собственные очереди и тракт узла, а не путь до клиента",
-  "This node couldn't send fast enough and dropped from its own queue — local pressure, not the path.": "Узел не успевал отправлять и сбрасывал пакеты из своей очереди — это локальная нагрузка, а не путь.",
+  // budget-ok: bubble hint, wraps
+  "Packets held for the other server were discarded because the link had no working session — it was down.": "Пакеты, ждавшие отправки другому серверу, отброшены: у канала не было рабочей сессии — он лежал.",
+  // budget-ok: bubble hint, wraps
+  "The program serving this interface didn't read its queue in time — local load, or it was restarting.": "Программа, обслуживающая интерфейс, не успевала читать свою очередь — локальная нагрузка или перезапуск.",
+  // budget-ok: bubble hint, wraps
+  "Packets waiting to go out were discarded before they could be sent.": "Пакеты, ждавшие отправки, отброшены, не успев уйти.",
+  // budget-ok: bubble hint, wraps
+  "Not counted: packets for clients that weren't connected, traffic to addresses no client owns, and traffic one client sent from outside its range. None of it is something a connected client lost.": "Не учтено: пакеты для клиентов, которые не были подключены, трафик на адреса, не принадлежащие ни одному клиенту, и трафик, который клиент отправил не со своего адреса. Подключённые клиенты ничего из этого не потеряли.",
   "Sends failed outright — no route out, or a peer whose endpoint this node doesn't know yet.": "Отправка не удалась совсем: нет маршрута наружу или пир, чей адрес узлу ещё неизвестен.",
-  "Traffic arrived and wasn't accepted — typically a stale key, or a source outside the peer's allowed range.": "Трафик пришёл, но не был принят — обычно устаревший ключ или источник вне разрешённого диапазона пира.",
-  "Malformed or truncated frames arrived on this interface.": "На интерфейс приходили повреждённые или обрезанные кадры.",
+  // budget-ok: bubble hint, wraps
+  "Packets arrived faster than this node could take them in — local load, not the path.": "Пакеты приходили быстрее, чем узел успевал их принять, — локальная нагрузка, а не путь.",
+  // budget-ok: bubble hint, wraps
+  "Packets came from a source outside the sender's allowed range, or were malformed — usually one misconfigured sender.": "Пакеты пришли с адреса вне разрешённого диапазона отправителя или были повреждены — обычно это один неверно настроенный отправитель.",
   "This node hasn't reported drop counters for this interface yet.": "Узел ещё не прислал счётчики потерь по этому интерфейсу.",
   "unit|ms": "мс",
   "(set at creation — delete & recreate to change)": "(задаётся при создании — меняется пересозданием)",

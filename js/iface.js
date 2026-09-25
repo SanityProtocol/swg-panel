@@ -22,12 +22,12 @@ import {
 } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkOpts, forkLabel } from "./turn-catalog.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag } from "./ui.js";
-import { RangedHistory, IfaceThroughput, lossColor, lossColorMesh } from "./charts.js";
+import { RangedHistory, IfaceThroughput, lossColorMesh } from "./charts.js";
 import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCached, subFeatureOn } from "./crypto.js";
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog, reportDropped, rulesSummary, targetLabel } from "./routing.js";
 import { rulesToRows } from "./rulerows.js";
-import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, LossPop, meshHealth, ReachField } from "./views.js";
+import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, DropsFigure, LossPop, meshHealth, ReachField } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
@@ -719,7 +719,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
             const d = meta.drops;
             return html`<div class="ig-item"><span class="ig-l">${T("col|Drops")}</span><span class="ig-v">${d
               ? html`<${DropsPop} d=${d} iface=${iface} node=${node} alignRight=${false}
-                  trigger=${html`<span class="dp-num" style=${"color:" + lossColor(d.pct)}>${d.pct}%</span>`}/>`
+                  trigger=${html`<${DropsFigure} d=${d}/>`}/>`
               : html`<span class="faint" title=${T("This node hasn't reported drop counters for this interface yet.")}>—</span>`}</span></div>`;
           })()}
         </div>

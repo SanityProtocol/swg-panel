@@ -12274,7 +12274,31 @@ def note_drops_resets(desired_ifaces):
     for ifn, want in (desired_ifaces or {}).items():
         if want.get("drops_reset"):
             _DROPS_RESET[ifn] = want["drops_reset"]
-_IFDROP = {}                    # iface -> {"prev": (pkts, rxd, rxe, txd, txe), "hist": [(t, dpkts, drxd, drxe, dtxd, dtxe), ...]}
+_IFDROP = {}                    # iface -> {"prev": (pkts, rxd, rxe, txd, txe), "hist": [(t, dpkts, drxd, drxe, dtxd, dtxe), ...], "dp": ...}
+# ⚠️ ON A KERNEL wg/awg INTERFACE, THREE OF THE FOUR COUNTERS ARE NOT LOSS. Read in the kernel source (drivers/net/wireguard,
+# and the AmneziaWG module counts the same lines): the device has no send queue (IFF_NO_QUEUE), and an overloaded encryption
+# queue frees packets WITHOUT counting them. So `tx_dropped` is only ever packets held for a peer that had no session — a phone
+# asleep or out of coverage, a peer the panel just removed (peer removal purges them) — and `tx_errors` only traffic to an
+# address no peer owns, or to a peer this node has never heard from. `rx_errors` is a peer sending from outside its own allowed
+# range, or a malformed packet: that one sender's problem. Nothing a connected client lost, yet all of it went into one
+# percentage — which on a quiet interface at night read 40-50% while nobody felt a thing.
+# So a CLIENT-facing kernel interface counts only `rx_dropped` (the node's own receive backlog overflowing) toward its headline.
+# A MESH LINK counts all four: its peer is another server, so a packet held for it with no session means the link was down.
+# A TUN (csqtt, WDTT, the docker node's userspace amneziawg-go) counts all four too: there `tx_dropped` is the kernel's queue
+# to the daemon filling — real local load — and those daemons hold packets for an absent peer themselves, uncounted.
+# Anything the node cannot identify counts all four, as before: an unknown datapath shows more, never less.
+_FAULT_ALL = ("rx_drop", "rx_err", "tx_drop", "tx_err")     # the order of the per-kind columns in a hist row, from index 2
+
+
+def _if_datapath(ifn):
+    """'wg' for a kernel wireguard/amneziawg device, 'tun' for a TUN, None for anything else. Two sysfs reads, once per device."""
+    try:
+        with open("/sys/class/net/%s/uevent" % ifn) as f:
+            if re.search(r"^DEVTYPE=(wireguard|amneziawg)$", f.read(), re.M):
+                return "wg"
+    except OSError:
+        pass
+    return "tun" if os.path.exists("/sys/class/net/%s/tun_flags" % ifn) else None
 
 
 def _if_stat(ifn, key):
@@ -12282,17 +12306,21 @@ def _if_stat(ifn, key):
         return int(f.read().strip())
 
 
-def iface_drops(ifaces):
-    """{iface: {pct, window_*, per-kind deltas, peak, life_*}} — errored+dropped as a share of packets.
+def iface_drops(ifaces, links=()):
+    """{iface: {pct, window_*, per-kind deltas, peak, life_*, dp, fault_kinds}} — dropped as a share of packets.
+
+    `pct`, `window_bad`, `peak`, `peak_bad`, `last_bad_s` and `life_bad` count only the kinds in `fault_kinds` (see _FAULT_ALL
+    above); the four per-kind fields stay raw, so the panel can still show what was left out and why. `links` = this node's
+    mesh links, which count every kind.
 
     The window ratio is the headline; everything beside it exists because one percentage cannot tell an
     operator what to DO. Direction and kind are different faults, not shades of one:
 
-      tx_drop  this node's own queue overflowed — it is being asked to send faster than the link accepts.
-      tx_err   a send failed outright: no route, or a peer whose endpoint is not known yet.
-      rx_drop  traffic arrived and could not be attributed — a stale key, or a source outside AllowedIPs.
-               On a wg/awg interface this is the security-shaped one: it counts packets we refused.
-      rx_err   malformed or truncated frames.
+      tx_drop  kernel wg/awg: packets held for a peer with no session, discarded (never a queue — see _FAULT_ALL).
+               TUN: the kernel's queue to the daemon filled — it is not reading fast enough, or restarting.
+      tx_err   a send failed outright: no peer owns the address, or a peer whose endpoint is not known yet.
+      rx_drop  the node's own receive backlog overflowed — local load.
+      rx_err   kernel wg/awg: a peer sending from outside its allowed range, or a malformed packet.
 
     `peak` because a five-minute mean hides the bursts users actually feel — 0.02% average can be one 5%
     sample. `last_bad_s` to separate "happening now" from "happened once". `life_*` because an operator who
@@ -12310,12 +12338,16 @@ def iface_drops(ifaces):
             continue                                    # interface gone mid-sample, or a datapath with no sysfs
         cur = (pkts,) + kinds
         st = _IFDROP.setdefault(ifn, {"prev": None, "hist": []})
+        if "dp" not in st:
+            st["dp"] = _if_datapath(ifn)
+        fk = ("rx_drop",) if (st["dp"] == "wg" and ifn not in links) else _FAULT_ALL
+        fi = [2 + _FAULT_ALL.index(k) for k in fk]                # columns of a hist row that count
         # A reset re-zeroes BOTH halves: the rolling window (so nobody reads the five minutes that led up to
         # their fix) and the lifetime baseline. Acted on once per nonce.
         _base = _drops_base()
         _want = _DROPS_RESET.get(ifn)
         if _want and (_base.get(ifn) or {}).get("nonce") != _want:
-            _base[ifn] = {"nonce": _want, "bad": sum(kinds), "pkts": pkts, "at": int(now)}
+            _base[ifn] = {"nonce": _want, "bad": sum(kinds), "pkts": pkts, "at": int(now), "kinds": list(kinds)}
             _drops_base_save()
             st["prev"] = None; st["hist"] = []
         if st["prev"] is not None:
@@ -12323,20 +12355,32 @@ def iface_drops(ifaces):
             if min(d) >= 0 and any(d):                  # negative => counters reset (iface recreated): skip, don't invent a spike
                 st["hist"].append((now,) + d)
                 del st["hist"][:-IFACE_DROP_WINDOW]
+            elif min(d) < 0:
+                st.pop("dp", None)                      # a recreated device may be another kind: look again next pass
         st["prev"] = cur
         h = st["hist"]
         if not h:
             continue
         tp = sum(r[1] for r in h)
         part = [sum(r[i] for r in h) for i in (2, 3, 4, 5)]
-        tb = sum(part)
-        if not (tp + tb):
+        if not (tp + sum(part)):
             continue
+        tb = sum(part[i - 2] for i in fi)
         _bb = _drops_base().get(ifn) or {}
-        bad_at = [r[0] for r in h if sum(r[2:])]
-        _rate = [sum(r[2:]) * 100.0 / (r[1] + sum(r[2:])) for r in h if (r[1] + sum(r[2:])) >= IFACE_PEAK_MIN]
+        _fb = lambda r: sum(r[i] for i in fi)
+        bad_at = [r[0] for r in h if _fb(r)]
+        _rate = [_fb(r) * 100.0 / (r[1] + _fb(r)) for r in h if (r[1] + _fb(r)) >= IFACE_PEAK_MIN]
         peak = max(_rate) if _rate else None          # None = no sample was big enough to express a rate
-        peak_bad = max([sum(r[2:]) for r in h] or [0])   # …but the COUNT is always a fact
+        peak_bad = max([_fb(r) for r in h] or [0])   # …but the COUNT is always a fact
+        # Since the reset, counted the same way. A baseline written before per-kind baselines existed has only the total, so
+        # it subtracts that from the total — the old reading — until the next reset stores the kinds.
+        _bk = _bb.get("kinds")
+        if isinstance(_bk, list) and len(_bk) == 4:
+            life_bad = sum(kinds[i - 2] - _bk[i - 2] for i in fi)
+        elif _bb:
+            life_bad = sum(kinds) - _bb.get("bad", 0)
+        else:
+            life_bad = sum(kinds[i - 2] for i in fi)
         out[ifn] = {
             "pct": round(tb * 100.0 / (tp + tb), 3), "window_pkts": tp, "window_bad": tb,
             "rx_drop": part[0], "rx_err": part[1], "tx_drop": part[2], "tx_err": part[3],
@@ -12345,8 +12389,9 @@ def iface_drops(ifaces):
             "last_bad_s": int(now - bad_at[-1]) if bad_at else None,
             # …counted from the last reset when there was one. Clamped at 0: an interface recreated after a
             # reset restarts its kernel counters below the baseline, and a negative "since" reads as corruption.
-            "life_pkts": max(0, cur[0] - _bb.get("pkts", 0)), "life_bad": max(0, sum(kinds) - _bb.get("bad", 0)),
+            "life_pkts": max(0, cur[0] - _bb.get("pkts", 0)), "life_bad": max(0, life_bad),
             "life_since": _bb.get("at") or None,
+            "dp": st.get("dp"), "fault_kinds": list(fk),
         }
     for gone in [k for k in _IFDROP if k not in ifaces]:
         _IFDROP.pop(gone, None)
@@ -12592,7 +12637,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # ⚠️ WDTT and csqtt OWN INTERFACES TOO. This list was node_cfg["interfaces"] alone — the wg/awg
             # set — so csqtt1 and every WDTT tunnel sat in no drop measurement at all, exactly the way they
             # sat outside reconcile_egress until that was fixed. A self-contained kind is still a datapath.
-            "iface_drops": iface_drops(_measured_ifaces(node_cfg)),
+            "iface_drops": iface_drops(_measured_ifaces(node_cfg), set(_mesh_probe_ifaces(node_cfg))),
             "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
             "ifaces_awaiting_key": sorted(_AWAIT_KEY),   # held for the vault, NOT missing — see _AWAIT_KEY
             # ⚠️ CAN this node put a vault-relayed key back? A build older than T-22 ignores `sealed_key`
