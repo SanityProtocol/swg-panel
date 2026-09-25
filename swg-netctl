@@ -66,15 +66,17 @@ UNIT_DIR = os.environ.get("SWG_UNIT_DIR", "/etc/systemd/system")
 CONF = os.path.join(ETC_DIR, "install.conf")
 QUEUE_DIR = os.path.join(STATE_DIR, "netctl", "queue")
 STATUS_DIR = os.path.join(STATE_DIR, "netctl", "status")
-# A request is moved HERE the moment it is taken (see process_queue) — out of QUEUE_DIR, which swg-netctl.path watches
-# with DirectoryNotEmpty and no start limit: a claim left inside it by a helper killed mid-request would restart the
-# helper in a tight loop until it was cleared.
-# ⚠️ ROOT'S OWN DIRECTORY, never one under STATE_DIR/netctl: that is the PANEL user's (it writes the queue), so the
-# panel could plant `taking` as a symlink — to /etc, say — before root created it, and root's sweep of old claims
-# would then unlink real files through it, and its rename would drop requests there. /var/lib is root's: nothing
-# the panel controls sits on this path. Same filesystem as the queue in any normal layout, so the claim is still
-# one atomic rename; a layout where it is not falls back to running the request in place (see process_queue).
-TAKING_DIR = os.environ.get("SWG_NETCTL_TAKING") or "/var/lib/swg-netctl/taking"
+# ⚠️ STATE_DIR/netctl IS THE PANEL USER'S DIRECTORY (it writes the queue), and so is STATE_DIR itself: the panel can
+# rename any entry in it — status/ included, whoever owns that — and put a symlink in its place. Everything this helper
+# (root) creates, writes, renames or deletes under it therefore goes through DIRECTORY FILE DESCRIPTORS opened with
+# O_NOFOLLOW, and root's own children (status/, claims/) are verified with fstat as root's, not group/other-writable,
+# before use — a path the panel can change is never resolved twice. Before this, `status` swapped for a symlink to
+# /etc/docker plus a request with id "daemon" had root overwrite /etc/docker/daemon.json (see _netctl_dirs).
+# claims/ sits BESIDE the queue (same filesystem, so taking a request is one atomic rename) and is root's alone.
+NETCTL_DIR = os.path.join(STATE_DIR, "netctl")
+# Root's own state, out of the panel's reach (its parent, /var/lib, is root's): the fingerprint of the certificate
+# nginx/caddy last loaded (see _front_sync).
+HELPER_STATE = os.environ.get("SWG_NETCTL_STATE") or "/var/lib/swg-netctl"
 DRYRUN = os.environ.get("SWG_NETCTL_DRYRUN") == "1"
 
 # The ONLY things the helper is allowed to touch, keyed by the service names callers may pass.
@@ -307,7 +309,7 @@ def _acme_foreign_target(domain):
     return path if owner == "other" else ""
 
 
-_FRONT_MARK = os.path.join(STATE_DIR, "netctl", "front-cert.sha256")
+_FRONT_MARK = os.path.join(HELPER_STATE, "front-cert.sha256")   # root's own dir — never the panel's (see NETCTL_DIR)
 
 
 def _front():
@@ -337,7 +339,7 @@ def _front_sync(force=False):
     rc, _out = run(["systemctl", "reload", front])
     if rc == 0 and not DRYRUN:
         with contextlib.suppress(OSError):
-            os.makedirs(os.path.dirname(_FRONT_MARK), exist_ok=True)
+            os.makedirs(os.path.dirname(_FRONT_MARK), mode=0o700, exist_ok=True)
             with open(_FRONT_MARK + ".tmp", "w") as f:
                 f.write(cur + "\n")
             os.replace(_FRONT_MARK + ".tmp", _FRONT_MARK)
@@ -365,7 +367,9 @@ def reload_cmd_for(service):
     # both the panel and swg-sub reload their cert on SIGHUP with zero downtime. nginx/caddy in front of the panel are
     # reloaded by sync-acme when the file they serve CHANGES (_front_sync) — never baked into acme.sh's stored command,
     # which goes stale the moment the serve mode is flipped and misses entries issued before.
-    return "systemctl kill -s HUP %s" % SERVICES[service]["unit"]
+    # `|| true`: a unit that is stopped (swg-sub disabled) must not turn a renewal that DID install into acme.sh's
+    # "Reload error" — which it would report on every later renewal too.
+    return "systemctl kill -s HUP %s 2>/dev/null || true" % SERVICES[service]["unit"]
 
 
 # ── verbs ─────────────────────────────────────────────────────────────────────────
@@ -912,7 +916,10 @@ def do_drop_cert(service, domain):
         mine = {os.path.realpath(SERVICES[other][k]) for k in ("cert", "key")}
         targets = {os.path.realpath(p) for p in (_acme_conf_value(d, domain, k) for k in
                    ("Le_RealFullChainPath", "Le_RealCertPath", "Le_RealKeyPath")) if p} if d else set()
-        if _service_host(other) == domain.lower() or (targets & mine):
+        # "serves that name" counts only when acme.sh issues for this box: under `skip` swg-sub serves the operator's
+        # own certificate, and moving this entry onto it would fight _adopt_resync for its files on every renewal.
+        serves = _service_host(other) == domain.lower() and _load_access_tls()["mode"] in _ACME_FOLLOW_MODES
+        if serves or (targets & mine):
             # …and if it still installs into THIS service's paths, point it at the other's: left as it was, its next
             # renewal would write the OLD name's certificate over the one this service now serves for its new name.
             here = {os.path.realpath(SERVICES[service][k]) for k in ("cert", "key")}
@@ -1224,21 +1231,85 @@ def _panel_uid():
         return None
 
 
-def _write_status(rid, status, message, nonce):
+def _open_dir(name, dir_fd=None):
+    """fd of directory `name` (relative to dir_fd), opened WITHOUT following a symlink, or None."""
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except OSError:
+        return None
+
+
+def _root_child(nfd, name, mode):
+    """fd of root's own child directory `name` of the netctl dir, created if missing and PROVEN root's (fstat on the
+    fd: owned by us, not group/other-writable). Anything else sitting at that name — a symlink, a file, a directory
+    the panel made — is moved aside and a fresh one made. None when that fails too (the caller degrades)."""
+    for attempt in (1, 2):
+        with contextlib.suppress(FileExistsError, OSError):
+            os.mkdir(name, mode, dir_fd=nfd)
+        fd = _open_dir(name, nfd)
+        if fd is not None:
+            st = os.fstat(fd)
+            if st.st_uid == os.geteuid() and not (st.st_mode & 0o022):
+                return fd
+            os.close(fd)
+        if attempt == 1:
+            with contextlib.suppress(OSError):
+                # a unique name: two in the same second (a panel re-planting) must not collide and leave it in place
+                os.rename(name, "%s.untrusted.%d.%d" % (name, time.time_ns(), os.getpid()), src_dir_fd=nfd, dst_dir_fd=nfd)
+                log("moved aside a %s/ this helper did not make — it is recreated as root's own" % name)
+    return None
+
+
+def _netctl_dirs():
+    """(netctl, queue, status, claims) directory fds — None for any that cannot be had safely. Close with _close."""
+    nfd = _open_dir(NETCTL_DIR)
+    if nfd is None:
+        return None, None, None, None
+    qfd = _open_dir("queue", nfd)
+    sfd = _root_child(nfd, "status", 0o750)
+    cfd = _root_child(nfd, "claims", 0o700)
+    if sfd is not None:
+        with contextlib.suppress(KeyError, OSError):
+            os.fchown(sfd, -1, grp.getgrnam(PANEL_GROUP).gr_gid)   # the panel (group swg) reads its answers here
+    return nfd, qfd, sfd, cfd
+
+
+def _close(*fds):
+    for fd in fds:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def _write_status(rid, status, message, nonce, sfd=None):
+    """Write request `rid`'s answer into status/ — through the verified status dir fd, never a path: the tmp file is
+    created O_EXCL|O_NOFOLLOW (nothing already there is written through), chowned by fd, then renamed in place."""
     # writing a status file is not a privileged/system mutation, so it happens even in DRYRUN.
-    os.makedirs(STATUS_DIR, exist_ok=True)
-    doc = {"id": rid, "status": status, "message": message,
-           "nonce": nonce, "at": int(time.time())}
-    tmp = os.path.join(STATUS_DIR, rid + ".json.tmp")
-    final = os.path.join(STATUS_DIR, rid + ".json")
-    with open(tmp, "w") as f:
-        json.dump(doc, f)
-    os.chmod(tmp, 0o640)
-    try:                                             # group-readable by the panel (group swg)
-        os.chown(tmp, 0, grp.getgrnam(PANEL_GROUP).gr_gid)
-    except (KeyError, PermissionError, OSError):
-        pass
-    os.replace(tmp, final)
+    own = sfd is None
+    if own:
+        nfd = _open_dir(NETCTL_DIR)
+        sfd = _root_child(nfd, "status", 0o750) if nfd is not None else None
+        _close(nfd)
+    if sfd is None:
+        log("answer for [%s] not written: no safe status dir" % rid)
+        return
+    try:
+        doc = {"id": rid, "status": status, "message": message,
+               "nonce": nonce, "at": int(time.time())}
+        tmp, final = rid + ".json.tmp", rid + ".json"
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp, dir_fd=sfd)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=sfd)
+        with os.fdopen(fd, "w") as f:
+            json.dump(doc, f)
+            try:                                     # group-readable by the panel (group swg)
+                os.fchown(f.fileno(), 0, grp.getgrnam(PANEL_GROUP).gr_gid)
+            except (KeyError, PermissionError, OSError):
+                pass
+        os.replace(tmp, final, src_dir_fd=sfd, dst_dir_fd=sfd)
+    finally:
+        if own:
+            _close(sfd)
 
 
 def _safe_rid(name):
@@ -1249,85 +1320,99 @@ def _safe_rid(name):
     return re.sub(r"[^A-Za-z0-9_.-]", "_", rid) or "req"
 
 
-def _taking_dir():
-    """TAKING_DIR, created if missing and PROVEN root's own real directory (never a symlink or another user's), or
-    "" when it cannot be — then requests run in place, as before claims existed. Belt and braces: its parent is
-    root's, so nobody else can plant anything there to begin with."""
+def _read_request(name, dir_fd):
+    """The request `name` in dir_fd, read WITHOUT following a symlink and without blocking on a FIFO (O_NONBLOCK);
+    the checks are made on the descriptor that is read, so nothing can be swapped in between."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    with os.fdopen(fd) as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise Reject("not a regular file")
+        puid = _panel_uid()
+        if puid is not None and st.st_uid != puid:
+            raise Reject("request not owned by %s (uid %d) — ignored" % (PANEL_USER, st.st_uid))
+        return json.load(f)
+
+
+def _sweep(dir_fd, older_than, keep=lambda n: False):
+    """Remove entries of dir_fd older than `older_than` seconds (0 = all) that `keep` does not keep. unlink() never
+    follows a symlink; a directory goes by the fd-based rmtree (symlink-safe), where Python has it."""
     with contextlib.suppress(OSError):
-        os.makedirs(os.path.dirname(TAKING_DIR), mode=0o700, exist_ok=True)
-        with contextlib.suppress(FileExistsError):
-            os.mkdir(TAKING_DIR, 0o700)
-        st = os.lstat(TAKING_DIR)
-        if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and not (st.st_mode & 0o022):
-            return TAKING_DIR
-    log("claims disabled: %s is not root's own directory — running requests in place" % TAKING_DIR)
-    return ""
+        for name in os.listdir(dir_fd):
+            if keep(name):
+                continue
+            with contextlib.suppress(OSError):
+                st = os.lstat(name, dir_fd=dir_fd)
+                if older_than and time.time() - st.st_mtime <= older_than:
+                    continue
+                if stat.S_ISDIR(st.st_mode):
+                    if sys.version_info >= (3, 11):
+                        shutil.rmtree(name, dir_fd=dir_fd)
+                else:
+                    os.unlink(name, dir_fd=dir_fd)
 
 
 def process_queue():
-    if not os.path.isdir(QUEUE_DIR):
-        return
-    puid = _panel_uid()
-    taking = _taking_dir()
-    if taking:
-        with contextlib.suppress(OSError):           # a claim a crashed helper left behind: never run twice, just cleared
-            for name in os.listdir(taking):
-                with contextlib.suppress(OSError):
-                    if time.time() - os.lstat(os.path.join(taking, name)).st_mtime > 3600:
-                        os.unlink(os.path.join(taking, name))
-    # Anything in the WATCHED queue dir that is not a request keeps DirectoryNotEmpty true, and swg-netctl.path then
-    # restarts this helper in a tight loop: a `.json.tmp` the panel was killed while writing (a write takes
-    # milliseconds, so one a minute old is abandoned), or a `.json.taking` claim from a build that kept claims here.
-    # unlink() never follows a symlink, so clearing the panel's own directory is safe.
-    for name in os.listdir(QUEUE_DIR):
-        if name.endswith(".json"):
-            continue
-        with contextlib.suppress(OSError):
-            fp = os.path.join(QUEUE_DIR, name)
-            if name.endswith(".json.taking") or time.time() - os.lstat(fp).st_mtime > 60:
-                os.unlink(fp)
-    for name in sorted(os.listdir(QUEUE_DIR)):
-        if not name.endswith(".json"):
-            continue
-        pending = os.path.join(QUEUE_DIR, name)
-        rid = _safe_rid(name)
-        # ⚠️ TAKEN IS A STATE THE PANEL CAN SEE. The request is renamed out of the pending set BEFORE it runs, so a
-        # waiter that sees `<rid>.json` still there knows the helper has not started it — and one that sees it gone
-        # knows it has. Deleting it only after dispatch() returned made a long request (a DNS-01 renewal waiting on
-        # its TXT record) look untaken, and the panel withdrew — and reported — a renewal that was still running.
-        # The rename is also the claim: a waiter that withdraws a request (unlinks it) and this helper cannot both win.
-        # It moves the request OUT of the watched queue dir (see TAKING_DIR) — same filesystem, so still one rename.
-        path = os.path.join(taking, name) if taking else pending
-        if taking:
-            try:
-                os.rename(pending, path)
-            except OSError as e:
-                if e.errno != errno.EXDEV:
+    nfd, qfd, sfd, cfd = _netctl_dirs()
+    try:
+        if qfd is None:
+            return
+        names = os.listdir(qfd)
+        if not names:
+            return                                   # an idle timer tick: nothing to do, nothing to log
+        # Anything in the WATCHED queue dir that is not a request keeps DirectoryNotEmpty true, and swg-netctl.path then
+        # restarts this helper in a tight loop: a `.json.tmp` the panel was killed while writing (a write takes
+        # milliseconds, so one a minute old is abandoned), a `.json.taking` claim an earlier build left there, a stray
+        # directory. Cleared through the queue fd.
+        _sweep(qfd, 0, keep=lambda n: n.endswith(".json") or (n.endswith(".json.tmp") and not _older(qfd, n, 60)))
+        if sfd is not None:
+            _sweep(sfd, 3600)    # answers: read within seconds by their waiter, who cannot delete them (status/ is root's)
+        if cfd is not None:
+            _sweep(cfd, 3600)    # a claim a helper killed mid-request left: never run twice, just cleared
+        else:
+            log("claims unavailable — running requests in place")
+        for name in sorted(os.listdir(qfd)):
+            if not name.endswith(".json"):
+                continue
+            rid = _safe_rid(name)
+            # ⚠️ TAKEN IS A STATE THE PANEL CAN SEE. The request is renamed out of the queue BEFORE it runs, so a waiter
+            # that sees `<rid>.json` still there knows the helper has not started it, and one that sees it gone knows
+            # it has. Deleting it only after dispatch() returned made a long request (a DNS-01 renewal waiting on its
+            # TXT record) look untaken, and the panel withdrew — and reported — a renewal still running. The rename is
+            # also the claim: a waiter withdrawing a request (unlinking it) and this helper cannot both win.
+            where = qfd
+            if cfd is not None:
+                try:
+                    os.rename(name, name, src_dir_fd=qfd, dst_dir_fd=cfd)
+                    where = cfd
+                except FileNotFoundError:
                     continue                         # withdrawn by its waiter a moment ago — nothing to run
-                path = pending                       # another filesystem: run it in place, as before claims existed
-        try:
-            st = os.lstat(path)
-            if not stat.S_ISREG(st.st_mode):
-                raise Reject("not a regular file")
-            if puid is not None and st.st_uid != puid:
-                raise Reject("request not owned by %s (uid %d) — ignored" % (PANEL_USER, st.st_uid))
-            with open(path) as f:
-                req = json.load(f)
-            rid = _safe_rid(str(req.get("id") or rid))
-            msg = dispatch(req.get("verb"), req.get("args") or [])
-            log("ok [%s]: %s" % (rid, msg))
-            _write_status(rid, "ok", msg, req.get("nonce"))
-        except Reject as e:
-            log("reject [%s]: %s" % (rid, e))
-            _write_status(rid, "error", str(e), None)
-        except Exception as e:                      # never let one bad request wedge the queue
-            log("error [%s]: %s" % (rid, e))
-            _write_status(rid, "error", "internal error: %s" % (e,), None)
-        finally:
+                except OSError as e:
+                    log("could not claim [%s] (%s) — running it in place" % (rid, e))
             try:
-                os.unlink(path)
-            except OSError:
-                pass
+                req = _read_request(name, where)
+                rid = _safe_rid(str(req.get("id") or rid))
+                msg = dispatch(req.get("verb"), req.get("args") or [])
+                log("ok [%s]: %s" % (rid, msg))
+                _write_status(rid, "ok", msg, req.get("nonce"), sfd)
+            except Reject as e:
+                log("reject [%s]: %s" % (rid, e))
+                _write_status(rid, "error", str(e), None, sfd)
+            except Exception as e:                  # never let one bad request wedge the queue
+                log("error [%s]: %s" % (rid, e))
+                _write_status(rid, "error", "internal error: %s" % (e,), None, sfd)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(name, dir_fd=where)
+    finally:
+        _close(cfd, sfd, qfd, nfd)
+
+
+def _older(dir_fd, name, secs):
+    try:
+        return time.time() - os.lstat(name, dir_fd=dir_fd).st_mtime > secs
+    except OSError:
+        return True
 
 
 def main(argv):

@@ -492,6 +492,8 @@ def _follow_kick_loop():
     while True:
         _FOLLOW_KICK.wait()
         time.sleep(2)                     # let the change that sent the SIGHUP settle (both files written)
+        with contextlib.suppress(Exception):
+            _refresh_tls_status(quiet=True)   # the new certificate on screen NOW — not after a follow that may wait
         with _FOLLOW_RUN:
             _FOLLOW_KICK.clear()
             with contextlib.suppress(Exception):
@@ -31522,16 +31524,6 @@ def main():
     # The SIGHUP → cert-reload handler is installed early (above). The watch runs on EVERY panel: it reports expiry
     # only for a certificate this panel serves (no TLS_CERT → nothing to report), but the acme follow also keeps the
     # certificate an nginx/caddy in front serves current.
-    # Answers nobody will read: a request whose waiter died with this process — a Renew now whose acme.sh reload
-    # restarted the panel before swg-netctl could answer is the usual one. No waiter outlives ~9 min, so an answer
-    # an hour old is an orphan.
-    with contextlib.suppress(Exception):
-        _sdir = os.path.join(os.path.dirname(Handler.deps["nodes_path"]) or ".", "netctl", "status")
-        for _fn in os.listdir(_sdir):
-            _fp = os.path.join(_sdir, _fn)
-            if _fn.endswith(".json") and time.time() - os.path.getmtime(_fp) > 3600:
-                with contextlib.suppress(OSError):
-                    os.unlink(_fp)
     threading.Thread(target=_tls_watch_loop, daemon=True).start()   # watch cert expiry; warn before a stalled renewal goes dark
     threading.Thread(target=_follow_kick_loop, name="acme-follow", daemon=True).start()   # answers _acme_follow_soon (a SIGHUP's)
     threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases
