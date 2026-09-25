@@ -323,25 +323,32 @@ _RENEW_LOCK = threading.Lock()
 
 
 def _renew_worker(deps):
-    rid = _netctl_enqueue(deps, "renew-acme", ["panel"])
-    ok, msg = _netctl_wait(deps, rid, 300) if rid else (False, "the root helper is not available on this panel")
+    # ⚠️ The job ENDS whatever happens in here: a raise that skipped the update left it "running" for good, and the
+    # button disabled until the panel restarted.
+    state, message = "failed", "the renewal stopped unexpectedly — see the panel log"
     try:
-        r = json.loads(msg) if ok else {}
-    except ValueError:
-        r = {}                                       # an older helper: it answered with an error string, not JSON
-    if not isinstance(r, dict):
-        r = {}
-    state = r.get("state") or "failed"
-    if isinstance(r.get("sync"), dict) and r["sync"].get("state"):
-        _ACME_FOLLOW.clear()
-        _ACME_FOLLOW.update(r["sync"])                # who renews it, as the renewal just saw it
-    _refresh_tls_status()                            # the certificate it installed, read now rather than in 6 h
-    with _RENEW_LOCK:
-        _RENEW_JOB.update({"state": "done", "result": state, "at": int(time.time()),
-                           "message": str(r.get("message") or ("" if ok else msg) or "")[:900]})
-    print("access: Renew now → %s%s" % (state, (" — " + _RENEW_JOB["message"].splitlines()[-1])
-                                          if _RENEW_JOB["message"] and state == "failed" else ""), flush=True)
-    _invalidate_state_cache()
+        rid = _netctl_enqueue(deps, "renew-acme", ["panel"])
+        ok, msg = _netctl_wait(deps, rid, 300) if rid else (False, "the root helper is not available on this panel")
+        try:
+            r = json.loads(msg) if ok else {}
+        except ValueError:
+            r = {}                                   # an older helper: it answered with an error string, not JSON
+        if not isinstance(r, dict):
+            r = {}
+        state = r.get("state") or "failed"
+        message = str(r.get("message") or ("" if ok else msg) or "")[:900]
+        if isinstance(r.get("sync"), dict) and r["sync"].get("state"):
+            _ACME_FOLLOW.clear()
+            _ACME_FOLLOW.update(r["sync"])            # who renews it, as the renewal just saw it
+        _refresh_tls_status()                        # the certificate it installed, read now rather than in 6 h
+    except Exception as e:
+        print("access: Renew now failed: %s" % e, flush=True)
+    finally:
+        with _RENEW_LOCK:
+            _RENEW_JOB.update({"state": "done", "result": state, "at": int(time.time()), "message": message})
+        _invalidate_state_cache()
+    print("access: Renew now → %s%s" % (state, (" — " + message.splitlines()[-1]) if message and state == "failed"
+                                         else ""), flush=True)
 
 
 def _renew_start(deps):
@@ -351,6 +358,10 @@ def _renew_start(deps):
     if IN_DOCKER:
         return 409, {"ok": False, "code": "docker", "error": "This panel runs in a container, which renews its "
                      "certificate itself every 12 hours — restart the container to renew now."}
+    if _access_cooldown()[1] in ("verifying", "console"):
+        # an address change is waiting to be confirmed: its apply/confirm/revert owns the served certificate
+        return 409, {"ok": False, "code": "busy", "error": "an address change is waiting to be confirmed — "
+                     "confirm or cancel it first, then renew"}
     with _RENEW_LOCK:
         if _RENEW_JOB["state"] == "running":
             return 409, {"ok": False, "code": "busy", "error": "a renewal is already running"}

@@ -43,6 +43,7 @@ import json
 import os
 import pwd
 import shutil
+import signal
 import ssl
 import urllib.error
 import urllib.parse
@@ -130,17 +131,30 @@ def v_domain(s):
 
 
 # ── low-level helpers ─────────────────────────────────────────────────────────────
-def run(argv, env=None):
-    """Run an argv list (never a shell string). Returns (rc, combined_output)."""
+def run(argv, env=None, timeout=None):
+    """Run an argv list (never a shell string). Returns (rc, combined_output).
+
+    `timeout` (seconds) bounds it: this helper drains ONE queue, one request at a time, so a command that hangs
+    stalls every Access operation behind it (binds, certificates, restarts). On expiry the command's whole
+    process group is killed — acme.sh's standalone mode runs its own listener child on :80, which a kill of
+    acme.sh alone would leave holding the port — and rc 124 is returned, as timeout(1) does."""
     log("exec: " + " ".join(argv))
     if DRYRUN:
         return 0, "(dry-run)"
-    p = subprocess.run(argv, env=env, stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT, text=True)
-    if p.stdout:
-        for line in p.stdout.rstrip().splitlines():
+    p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         start_new_session=timeout is not None)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(Exception):
+            os.killpg(p.pid, signal.SIGKILL)
+        out, _ = p.communicate()
+        rc, out = 124, (out or "") + "\n(stopped: still running after %d s)" % timeout
+    if out:
+        for line in out.rstrip().splitlines():
             log("  | " + line)
-    return p.returncode, p.stdout or ""
+    return rc, out or ""
 
 
 def load_conf():
@@ -939,6 +953,9 @@ def do_sync_acme(service):
 # whoever owns the entry (sync-acme installs the result either way) and for letsencrypt-ip, which issue-cert
 # cannot do — renewing an existing entry needs nothing but the entry.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# A standalone HTTP-01 renewal is 10-60 s; well past that it is hung, and the queue behind it is stuck. Kept under the
+# panel's own wait for the answer (300 s) so the panel always hears how it ended.
+_RENEW_TIMEOUT_S = 240
 
 
 def do_renew_acme(service):
@@ -965,12 +982,15 @@ def do_renew_acme(service):
         env["CF_Token"] = creds["cf_token"]
         if creds["cf_account"]:
             env["CF_Account_ID"] = creds["cf_account"]
-    rc, out = run(acme_argv(find_acme(), "--renew", "-d", host, "--ecc"), env=env)
+    rc, out = run(acme_argv(find_acme(), "--renew", "-d", host, "--ecc"), env=env, timeout=_RENEW_TIMEOUT_S)
     if rc == 0 or DRYRUN:
         res["state"] = "renewed"
     elif rc == 2:                                                  # RENEW_SKIP: not due yet
         res["state"] = "not-due"
         res["message"] = _acme_conf_value(d, host, "Le_NextRenewTimeStr")
+    elif rc == 124:
+        res["state"], res["message"] = "failed", ("acme.sh did not finish within %d s and was stopped — the CA or "
+                                                  "its validation of this server did not answer" % _RENEW_TIMEOUT_S)
     else:
         # the lines that say why, not the whole trace: acme.sh prints its errors in RED (_err), which is the one
         # signal that does not depend on guessing its wording; keyword matches next, the last lines otherwise
@@ -981,6 +1001,13 @@ def do_renew_acme(service):
         res["state"], res["message"] = "failed", "\n".join((why or [l for l in lines if l])[-6:])[-900:]
     with contextlib.suppress(Exception):
         res["sync"] = json.loads(do_sync_acme(service))            # install what acme.sh now holds, whoever owns it
+    # …and for swg-sub when it serves the same name (the common case — one hostname, two ports): otherwise the
+    # subscription page kept the old certificate until the panel's next 6-hourly follow. Only where swg-sub has
+    # a certificate already — never creating its directory on a box that does not run it.
+    for other in SERVICES:
+        if other != service and os.path.exists(SERVICES[other]["cert"]) and _service_host(other) == host:
+            with contextlib.suppress(Exception):
+                do_sync_acme(other)
     return json.dumps(res)
 
 
