@@ -5130,6 +5130,7 @@ export const STR = {
   "Client DNS must be IPv4 addresses — {v1} is not one a phone can use.": "DNS для клиентов — только IPv4-адреса: {v1} телефон использовать не сможет.",
   "This fork's build can't set client DNS yet — its clients get {v1}.": "Сборка этого форка пока не умеет задавать DNS — клиенты получают {v1}.",
   "Saved now, applied once this node updates.": "Сохранится сейчас, применится после обновления ноды.",
+  "Saved — not on the server yet. The node applies it on its next sync.": "Сохранено, но на сервере пока нет — нода применит при следующей синхронизации.",
   "This node runs Force-DNS: if this server's routing matches by domain, the node's own resolver answers its clients' plain DNS instead.": "На этой ноде Force-DNS: если маршрутизация этого сервера сопоставляет по доменам, обычные DNS-запросы его клиентов вместо этого обслуживает резолвер самой ноды.",
   "Extra flags set their own DNS, and that one wins over this field.": "В дополнительных флагах задан свой DNS — он важнее этого поля.",
   "Given to every client when it connects. Empty = not set by the panel; this fork's default is {v1}. Saving restarts the server.": "Передаётся каждому клиенту при подключении. Пусто = панель не задаёт; по умолчанию у этого форка {v1}. Сохранение перезапускает сервер.",

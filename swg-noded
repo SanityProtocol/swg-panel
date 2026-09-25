@@ -10602,6 +10602,9 @@ def _wdtt_flags_from_argv(parts):
     while i < len(parts):
         if parts[i].startswith("-"):
             key = parts[i].lstrip("-")
+            if "=" in key:                     # Go's flag package takes `-flag=value` too
+                key, val = key.split("=", 1)
+                out[key] = val; i += 1; continue
             if i + 1 < len(parts) and not parts[i + 1].startswith("-"):
                 out[key] = parts[i + 1]; i += 2; continue
             out[key] = "true"
@@ -15721,10 +15724,27 @@ def _turn_dns_usable(p):
     return (a.version == 4 and str(a) == p and not a.is_unspecified and not a.is_loopback
             and not a.is_link_local and not a.is_multicast and not a.is_reserved and not p.startswith("0."))
 
-def _wdtt_dns_unsupported(inst):
-    """True when this instance's fork build cannot take `-dns`. ildarmaga reads DNS only from its own panel DB
-    (docs/DNS-SETTINGS-PLAN.md §3.5), and an unknown flag makes it exit, so it is never passed one."""
-    return _wdtt_fork(inst) == "ildarmaga"
+_WDTT_TAKES_DNS = {}                               # (fork, installed version) -> the binary lists -dns in its -h
+
+def _wdtt_takes_dns(fork):
+    """Does the INSTALLED build of this fork take `-dns`? Asked of the binary itself (`-h`, once per fork+version),
+    not assumed per fork: ildarmaga has no such flag, a rollback target may predate it, and Go's flag package EXITS
+    on an unknown flag — so a wrong guess turns a working server into a crash loop. No binary to ask (not fetched
+    yet) → False and not cached: the flag is left out, which is the fork's default, and the next pass asks again."""
+    key = (fork, _wdtt_installed_ver(fork))
+    if key in _WDTT_TAKES_DNS:
+        return _WDTT_TAKES_DNS[key]
+    binp = _wdtt_bin_shared(fork)
+    if not os.path.exists(binp):
+        return False
+    h = ""
+    with contextlib.suppress(Exception):
+        r = run([binp, "-h"], timeout=6)      # Go flag prints usage + exits 2; static binary, direct exec both models
+        h = (r.stderr or "") + (r.stdout or "")
+    if not h.strip():
+        return False                          # the probe itself failed — ask again next pass rather than cache a guess
+    _WDTT_TAKES_DNS[key] = any(f["name"] == "dns" for f in _turn_help_flags(h))
+    return _WDTT_TAKES_DNS[key]
 
 def _wdtt_params_eff(inst):
     """The SWG_PARAMS / argv tail as the server gets it: `-dns` FIRST, then the operator's own params. Go's flag
@@ -15732,9 +15752,28 @@ def _wdtt_params_eff(inst):
     new ExecStart var, keeps the unit byte-identical — a new var would read as drift and restart every instance."""
     params = (inst.get("params") or "").strip()
     dns = _turn_dns(inst)
-    if not dns or _wdtt_dns_unsupported(inst):
+    if not dns or not _wdtt_takes_dns(_wdtt_fork(inst)):
         return params
     return ("-dns " + dns + " " + params).strip()
+
+def _env_line(path, key):
+    """The value of `key=` in an env file we wrote, or None when the file can't be read (nothing to compare)."""
+    try:
+        with open(path) as f:
+            for ln in f:
+                if ln.startswith(key + "="):
+                    return ln[len(key) + 1:].rstrip("\n")
+        return ""
+    except OSError:
+        return None
+
+def _wdtt_env_drifted(iface, inst):
+    """True when the SWG_PARAMS the server was started with is not what this record renders. Two ways that happens
+    with nothing in `_wdtt_params_changed` seeing it: a `dns` a node too old to render it stored (the value is equal
+    before and after the update), and a binary swap to a build that now takes `-dns`. Narrow on purpose — only the
+    one line, so an instance whose env differs in some unrelated, harmless way is not restarted on upgrade."""
+    have = _env_line(_wdtt_dir(iface) + "/wdtt.env", "SWG_PARAMS")
+    return have is not None and have != _wdtt_params_eff(inst)
 
 def _wdtt_valid(inst):
     """Defence-in-depth: refuse control chars (interpolated into a root heredoc) + basic shape. The panel
@@ -16481,8 +16520,9 @@ def _wdtt_params_changed(prev, inst):
             or str(prev.get("wg_port") or 56001) != str(inst.get("wg_port") or 56001)
             or (str(prev.get("max_passwords") or _wdtt_maxpw_for(prev.get("wg_addr") or ""))
                 != str(inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or "")))
-            or (prev.get("params") or "").strip() != (inst.get("params") or "").strip()   # extra ExecStart flags → rewrite unit + restart
-            or _turn_dns(prev) != _turn_dns(inst)   # client DNS rides SWG_PARAMS → same treatment
+            # extra ExecStart flags + client DNS, as the server GETS them: a dns the build can't take renders the
+            # same tail before and after, so it must not restart a live server for nothing
+            or _wdtt_params_eff(prev) != _wdtt_params_eff(inst)
             or _wdtt_raw(prev) != _wdtt_raw(inst))   # RAW listener turned on/off or moved → same treatment
 
 def _wdtt_unit_drifted(iface, inst, prev):
@@ -16988,7 +17028,8 @@ def reconcile_wdtt(want, remove=None):
                         res["errors"].append(iface + ": " + _e)
                     else:
                         res["changed"] += 1
-                elif _drifted or _wdtt_params_changed(prev, inst):   # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
+                elif (_drifted or _wdtt_params_changed(prev, inst)   # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
+                      or (not inst.get("stopped") and _wdtt_env_drifted(iface, inst))):   # a stopped one takes it at its next start
                     # subnet MOVED → drop stale device-IP bindings first. Requires a previous subnet to have moved
                     # FROM: with no prior record (the first sync after an adopt, or a lost node record) every param
                     # reads as "changed", and resetting there threw away the device bindings — client IPs and the
@@ -17264,9 +17305,9 @@ def wdtt_snapshot():
                     "params": inst.get("params") or "",
                     # Client DNS ("" = not set, the fork's own default) — _wdtt_params_changed compares it too, so a
                     # mirror needs it for the same T-18 reason. Its presence also tells the panel this node takes it;
-                    # dns_unsupported = this fork build cannot (ildarmaga), so the panel says so instead of storing
-                    # a value that never reaches a client.
-                    "dns": _turn_dns(inst), "dns_unsupported": _wdtt_dns_unsupported(inst),
+                    # dns_unsupported = the installed build has no -dns (ildarmaga, an old rollback target), so the
+                    # panel says so instead of showing a value that never reaches a client.
+                    "dns": _turn_dns(inst), "dns_unsupported": not _wdtt_takes_dns(inst.get("fork", "amurcanov")),
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a foreign server at take-over, for the panel to adopt into the roster.
                     # Reported until it has them (reconcile_wdtt drops the record once they appear in `desired`),
@@ -17372,11 +17413,18 @@ def _csqtt_env_text(inst):
             + _csqtt_dns_env(inst))
 
 def _csqtt_dns_env(inst):
-    """csqtt takes its client DNS as CSQTT_DNS, which the unit's EnvironmentFile already loads. ⚠️ Not `--dns` on
-    the command line: clap refuses a repeated argument, so a `--dns` the operator typed into params would crash-loop
-    the server. Through the env an explicit `--dns` simply wins. Unset → no line at all (the file as before)."""
+    """csqtt takes its client DNS as CSQTT_DNS — the unit's EnvironmentFile line, and the docker Popen env (both read
+    this). ⚠️ Not `--dns` on the command line: clap refuses a repeated argument, so a `--dns` the operator typed into
+    params would crash-loop the server. Through the env an explicit `--dns` simply wins, and a build too old to know
+    CSQTT_DNS just ignores it. Unset → no line at all (the file as before)."""
     dns = _turn_dns(inst)
     return ("CSQTT_DNS=%s\n" % dns) if dns else ""
+
+def _csqtt_env_drifted(iface, inst):
+    """Twin of _wdtt_env_drifted: CSQTT_DNS in csqtt.env is not what the record renders (a dns stored by a node too
+    old to render it — equal before and after the update, so _csqtt_params_changed cannot see it)."""
+    have = _env_line(_csqtt_dir(iface) + "/csqtt.env", "CSQTT_DNS")
+    return have is not None and have != _turn_dns(inst)
 
 def _csqtt_unit_text(iface, binp, cfgdir):
     # csqtt = raw-IP TUN: needs CAP_NET_ADMIN + /dev/net/tun. The io_uring syscall set is NOT in @system-service by
@@ -17605,8 +17653,7 @@ def _csqtt_docker_start(inst):
     try:
         lf = open(cfgdir + "/server.log", "ab", buffering=0)
         _env = {k: v for k, v in os.environ.items() if k != "CSQTT_DNS"}
-        if _turn_dns(inst):
-            _env["CSQTT_DNS"] = _turn_dns(inst)   # the env, not --dns: see _csqtt_dns_env
+        _env.update(ln.split("=", 1) for ln in _csqtt_dns_env(inst).splitlines())   # the env, not --dns: see _csqtt_dns_env
         p = subprocess.Popen(_csqtt_argv(inst, binp), stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, close_fds=True, env=_env)
     except Exception as e:
         return ("spawn failed: " + str(e))[:160]
@@ -18390,7 +18437,8 @@ def reconcile_csqtt(want, remove=None):
                 # would never reach an instance that already exists — the operator would update the node and stay
                 # broken. Compare the rendered text and rewrite only on a real difference: this restarts the server,
                 # so it must not fire on every sync.
-                if _csqtt_unit_drifted(iface, inst) or _csqtt_params_changed(prev, inst):
+                if (_csqtt_unit_drifted(iface, inst) or _csqtt_params_changed(prev, inst)
+                        or (not inst.get("stopped") and _csqtt_env_drifted(iface, inst))):
                     err = _csqtt_reconfigure(inst)
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue

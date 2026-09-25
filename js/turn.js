@@ -1878,11 +1878,13 @@ function turnDnsErr(v) {
   const bad = p.find(x => !_dnsUsable(x));
   return bad ? T("Client DNS must be IPv4 addresses — {v1} is not one a phone can use.", { v1: bad }) : "";
 }
+// The value as the server compares it: split, de-duplicated, joined — so retyping the same address twice is no change.
+const _dnsNorm = v => [...new Set(_dnsParts(Array.isArray(v) ? v.join(",") : v))].join(",");
 function useTurnDns(cfg) {
   const cur = (cfg.dns || []).join(", ");
   const [val, set] = useState(cur);
-  const dirty = _dnsParts(val).join(",") !== _dnsParts(cur).join(",");
-  return { val, set, dirty, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: [...new Set(_dnsParts(val))] } : {} };
+  const dirty = _dnsNorm(val) !== _dnsNorm(cur);
+  return { val, set, dirty, cur, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: [...new Set(_dnsParts(val))] } : {} };
 }
 function TurnDnsField({ node, fork, rep, dns, params }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
@@ -1893,9 +1895,13 @@ function TurnDnsField({ node, fork, rep, dns, params }) {
   // The operator's own `-dns` / `--dns` in Extra flags comes LAST on the command line (csqtt: an argument beats
   // CSQTT_DNS), so it wins — say so rather than show a field that does nothing.
   const inParams = /(^|\s)--?dns(\s|=|$)/.test(params || "");
+  // The node echoes the value it holds. Until it matches the record, the saved value is not on the server yet
+  // (next sync, or a value the node could not use) — say so rather than show it as live.
+  const pending = !oldNode && !!rep && ("dns" in rep) && _dnsNorm(rep.dns) !== _dnsNorm(dns.cur);
   const hint = unsupported ? T("This fork's build can't set client DNS yet — its clients get {v1}.", { v1: dflt || "1.1.1.1" })
     : inParams ? T("Extra flags set their own DNS, and that one wins over this field.")
     : oldNode ? T("Saved now, applied once this node updates.")
+    : pending ? T("Saved — not on the server yet. The node applies it on its next sync.")
     // Only a hint, not a verdict: the redirect covers the subnets whose routing matches by domain, which the node
     // does not report per interface — so this says when it applies instead of claiming that it does.
     : nrec.routing_mode === "forcedns" ? T("This node runs Force-DNS: if this server's routing matches by domain, the node's own resolver answers its clients' plain DNS instead.")
@@ -1995,6 +2001,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   };
   const save = () => {
     if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: T("Listen port must be a number.") });
+    if (dns.err) return setMsg({ k: "err", t: dns.err });   // before the endpoint confirm, which saves straight through
     if (endpointDirty) {   // endpoint / DTLS port is baked into every user's link → confirm the re-issue
       pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
@@ -2002,7 +2009,6 @@ export function WdttManageSheet({ node, w: w0 }) {
     }
     if (rawErr) return setMsg({ k: "err", t: rawErr });
     if (wgErr) return setMsg({ k: "err", t: wgErr });
-    if (dns.err) return setMsg({ k: "err", t: dns.err });
     if (rawWant && rawHolder) {   // one RAW listener per ADDRESS — turning it on here takes it from that one
       pushModal(html`<${ConfirmSheet} title=${T("Move RAW-IP to this server?")} confirmLabel=${T("Move RAW here")} warn=${true}
         body=${Trich("*{holder}* offers RAW-IP on this address today. The app dials one fixed port for every server, so an address can only run one raw listener — turning it on here turns it off on *{holder}*. Its users keep their links and fall back to WireGuard mode. Servers on this node's other IPs are untouched.", { holder: rawHolder })} onConfirm=${doSave}/>`);
@@ -2345,12 +2351,12 @@ export function CsqttManageSheet({ node, c: c0 }) {
   };
   const save = () => {
     if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: T("Listen port must be a number.") });
+    if (dns.err) return setMsg({ k: "err", t: dns.err });   // before the endpoint confirm, which saves straight through
     if (endpointDirty) {
       pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
       return;
     }
-    if (dns.err) return setMsg({ k: "err", t: dns.err });
     if (paramsDirty || dns.dirty) { doSave(); return; }
     closeModal(); pushOptTitle("c|" + node + "|" + iface, title.trim());
     api.csqttSet({ node, iface, listen: oldListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })

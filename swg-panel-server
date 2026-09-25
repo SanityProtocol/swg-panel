@@ -25027,9 +25027,11 @@ def api(method, path, qs, body, deps):
             if not inst.get("max_passwords"): inst.pop("max_passwords", None)
         # …and its client DNS. wdtt / qWDTT / xxcipherx hold it ONLY in the `-dns` flag, so a take-over that drops it
         # silently moves every client to the fork's default. (wdttplus keeps it in its DB, which adoption keeps.)
-        _dv, _de = turn_client_dns(_cw.get("dns"), fork, False)
-        if _dv and not _de:
-            inst["dns"] = _dv
+        # A foreign server may carry more than we store (wdttplus's flag takes 4) or an address we refuse: keep the
+        # first two usable ones — the resolvers a phone asks first — rather than fall all the way back to the default.
+        _fd = [a for a in re.split(r"[\s,]+", str(_cw.get("dns") or "")) if turn_dns_usable(a)]
+        if _fd:
+            inst["dns"] = list(dict.fromkeys(_fd))[:2]
         # `listen` is what CLIENTS dial, so it must be a reachable host:port. Normalise whatever we ended up with
         # (caller-supplied or probed): a wildcard bind (0.0.0.0 / ::) is what the server listens ON, but tells a
         # client nothing — advertise the node's endpoint instead. Done for EVERY source, not just the probe
