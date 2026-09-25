@@ -115,7 +115,7 @@ control, defect red / fix green):
   **~5 cores** (4994 ticks/10 s, still there 30 s later); with `io.EOF`/`net.ErrClosed` treated as terminal, **0–1
   ticks**. Upstream's own admin/bot deletes reach the same close; the WG (DTLS) path never spun.
 
-### One config on several devices (build `1.4.3-3`, 2026-09-24)
+### One config on several devices (build `1.4.3-3`, published 2026-09-25)
 
 Under `-fixed-config` a generated password is one device, `pw:<password>`, whatever device ID the client sends. The
 config worker's `GETCONF` and both RAW paths already honoured that. Two places did not:
@@ -173,6 +173,22 @@ a RAW listener, real unpatched qWDTT client, 4 workers). The control is `1.4.3-2
 
 WG two-device use already worked on `1.4.3-2`: the WireGuard peer simply roams to the newer device. The host firewall
 and links were unchanged by either run.
+
+### A downlink packet can no longer crash the server (build `1.4.3-4`, 2026-09-25)
+
+⚠️ **A RAW downlink packet could crash the whole server.** This race was inherited from upstream and was present in
+every earlier build; `1.4.3-3`'s takeover made it easy to hit.
+- **The race:** `downlinkLoop` picked a worker under the router lock, released the lock, then queued the packet. A
+  worker removed and stopped in between had its send channel closed. A worker is removed by `unregister`, after its
+  connection closes: a takeover, a revoke or an idle timeout.
+- **The failure:** the send panicked with `send on closed channel` in an unrecovered goroutine, and that ends the
+  process: every client of the server drops.
+- **Measured:** a stress test with downlink flowing through repeated takeovers panics `1.4.3-3` within 18 ms.
+- **The fix:** `deliverDownlink` picks the worker and queues a pooled copy under the same lock. `unregister` removes a
+  worker under that lock before stopping it, so a stopped worker can never be picked. The queueing never blocks, so
+  the lock is held for one pick and one non-blocking send.
+- **Result:** no panic in repeated runs.
+- **Test:** `TestRawDownlinkSurvivesTakeoversUnderTraffic`.
 
 ### `desired.json` schema (panel writes; the server reads)
 

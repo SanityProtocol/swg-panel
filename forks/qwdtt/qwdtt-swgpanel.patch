@@ -382,7 +382,7 @@ index 8d4024d..bef48ca 100644
  	out, _ := runCmd("bash", "-c", "sysctl net.ipv4.tcp_congestion_control")
  	if strings.Contains(out, "bbr") {
 diff --git a/raw.go b/raw.go
-index d9e0554..d5dd5fa 100644
+index d9e0554..0537ce3 100644
 --- a/raw.go
 +++ b/raw.go
 @@ -68,14 +68,16 @@ const downlinkWorkerBuf = 256
@@ -411,7 +411,66 @@ index d9e0554..d5dd5fa 100644
  	rrIndex      int
  	rrCount      int
  	chunkStartTs int64 // unix millis начала текущего chunk'а — для downlinkMaxDwellMS
-@@ -264,16 +267,63 @@ func (r *rawRouter) pickDownlinkConn(dst string, pktSize int) *downlinkWorker {
+@@ -211,7 +214,7 @@ func (r *rawRouter) downlinkLoop() {
+ 			continue // короткий пакет или не IPv4 — raw-режим IPv6 не поддерживает, как и WG-путь
+ 		}
+ 		dst := net.IP(pkt[16:20]).String()
+-		w := r.pickDownlinkConn(dst, len(pkt))
++		w := r.deliverDownlink(dst, pkt)
+ 		if w == nil {
+ 			if atomic.CompareAndSwapUint32(&r.noSessionLogged, 0, 1) {
+ 				log.Printf("[RAW] downlink: нет сессии для %s (пакет от интернета, но клиент не зарегистрирован)", dst)
+@@ -221,15 +224,31 @@ func (r *rawRouter) downlinkLoop() {
+ 		if atomic.CompareAndSwapUint32(&r.firstDownlink, 0, 1) {
+ 			log.Printf("[RAW] Первый downlink-пакет доставлен клиенту %s (%d байт)", dst, len(pkt))
+ 		}
+-		// Копируем в pooled-буфер: pkt живёт в общем buf, который readLoop
+-		// тут же перезапишет следующим Read — writer-горутина воркера должна
+-		// получить свою независимую копию, раз запись теперь асинхронная.
+-		out := getBuf2048()[:len(pkt)]
+-		copy(out, pkt)
+-		w.enqueue(out)
+ 	}
+ }
+ 
++// swg-panel: deliverDownlink picks the worker for a downlink packet AND queues a pooled copy to it under r.mu.
++// Picking under the lock and queueing after it (as upstream did) raced with unregister: a worker removed and
++// stop()ped in between — its connection closed by a takeover in register, a revoke or an idle timeout — had its
++// sendCh closed, and the send panicked ("send on closed channel"), killing the whole server. unregister removes a
++// worker under r.mu before stop(), so a worker picked under the lock is never a stopped one. enqueue never blocks,
++// so the lock is held only for the pick and one non-blocking send. Returns the worker, or nil if none.
++func (r *rawRouter) deliverDownlink(dst string, pkt []byte) *downlinkWorker {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	w := r.pickDownlinkConnLocked(dst, len(pkt))
++	if w == nil {
++		return nil
++	}
++	// Копируем в pooled-буфер: pkt живёт в общем buf, который readLoop
++	// тут же перезапишет следующим Read — writer-горутина воркера должна
++	// получить свою независимую копию, раз запись теперь асинхронная.
++	out := getBuf2048()[:len(pkt)]
++	copy(out, pkt)
++	w.enqueue(out)
++	return w
++}
++
+ // pickDownlinkConn выбирает воркера для очередного downlink-пакета клиента
+ // dst, размазывая нагрузку по всем его зарегистрированным воркерам
+ // адаптивными чанками (см. downlinkChunkSizeFor) с предохранителем
+@@ -237,6 +256,11 @@ func (r *rawRouter) downlinkLoop() {
+ func (r *rawRouter) pickDownlinkConn(dst string, pktSize int) *downlinkWorker {
+ 	r.mu.Lock()
+ 	defer r.mu.Unlock()
++	return r.pickDownlinkConnLocked(dst, pktSize)
++}
++
++// pickDownlinkConnLocked is pickDownlinkConn for a caller that holds r.mu (swg-panel: deliverDownlink).
++func (r *rawRouter) pickDownlinkConnLocked(dst string, pktSize int) *downlinkWorker {
+ 	cs := r.sessions[dst]
+ 	if cs == nil || len(cs.workers) == 0 {
+ 		return nil
+@@ -264,16 +288,63 @@ func (r *rawRouter) pickDownlinkConn(dst string, pktSize int) *downlinkWorker {
  	return w
  }
  
@@ -477,7 +536,7 @@ index d9e0554..d5dd5fa 100644
  	return w
  }
  
-@@ -354,6 +404,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -354,6 +425,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  	}
  
  	var assignedIP string
@@ -485,7 +544,7 @@ index d9e0554..d5dd5fa 100644
  
  	if isGetConf {
  		// Только этот воркер проверяет пароль и (при необходимости) создаёт
-@@ -374,7 +425,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -374,7 +446,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
  		}
@@ -494,7 +553,7 @@ index d9e0554..d5dd5fa 100644
  			dbMutex.Unlock()
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
-@@ -392,11 +443,16 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -392,11 +464,16 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			saveDB()
  		}
  
@@ -514,7 +573,7 @@ index d9e0554..d5dd5fa 100644
  			saveDB()
  		} else {
  			changed := false
-@@ -431,8 +487,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -431,8 +508,14 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  		isMainPass := password != "" && password == db.MainPassword
  		entry, isGenPass := db.Passwords[password]
  		valid := isMainPass || (isGenPass && !isPasswordExpired(entry) && !entry.IsDeactivated)
@@ -531,7 +590,7 @@ index d9e0554..d5dd5fa 100644
  			bound = entry.DeviceID == deviceID
  			if !bound {
  				for _, id := range entry.DeviceIDs {
-@@ -448,7 +510,11 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -448,7 +531,11 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			clientConn.Write([]byte("DENIED:device_mismatch"))
  			return
  		}
@@ -544,7 +603,7 @@ index d9e0554..d5dd5fa 100644
  		if exists && dev.OwnerID == "" {
  			setDeviceOwner(dev, password)
  		}
-@@ -469,19 +535,25 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -469,19 +556,25 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  	untrackCredential := trackCredentialConnection(password, deviceID, clientConn)
  	defer untrackCredential()
  
@@ -575,7 +634,7 @@ index d9e0554..d5dd5fa 100644
  		}
  		activeDevicesMu.Unlock()
  	}()
-@@ -536,7 +608,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
+@@ -536,7 +629,7 @@ func handleConnRaw(ctx context.Context, clientConn net.Conn, router *rawRouter)
  			continue
  		}
  		atomic.AddInt64(&totalBytesFromClient, int64(nn))
@@ -1026,15 +1085,17 @@ index 0000000..7034055
 +}
 diff --git a/swgpanel_raw_test.go b/swgpanel_raw_test.go
 new file mode 100644
-index 0000000..661b1e3
+index 0000000..b514ab9
 --- /dev/null
 +++ b/swgpanel_raw_test.go
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,135 @@
 +package main
 +
 +import (
 +	"net"
++	"sync/atomic"
 +	"testing"
++	"time"
 +)
 +
 +// swg-panel: under -fixed-config two devices share one RAW address. A device starting a session takes it over; a
@@ -1112,6 +1173,54 @@ index 0000000..661b1e3
 +		t.Fatal("once the address emptied, nobody is displaced any more")
 +	}
 +	for _, w := range live[len(live)-1:] {
++		r.unregister(ip, w)
++	}
++}
++
++// swg-panel: downlink keeps flowing to an address while takeovers close and stop the previous device's workers. Picking
++// a worker under the router lock and queueing to it after the lock (upstream) panicked here within milliseconds —
++// "send on closed channel", which kills the whole server; deliverDownlink queues under the lock.
++func TestRawDownlinkSurvivesTakeoversUnderTraffic(t *testing.T) {
++	old := fixedConfig
++	fixedConfig = true
++	defer func() { fixedConfig = old }()
++	r := &rawRouter{sessions: make(map[string]*rawClientSessions)}
++	const ip, key = "10.70.0.2", "pw:x"
++	var stop atomic.Bool
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		for !stop.Load() {
++			r.deliverDownlink(ip, make([]byte, 100))
++		}
++	}()
++	var prev []*downlinkWorker
++	for i, end := 0, time.Now().Add(time.Second); time.Now().Before(end); i++ {
++		client := []string{"A", "B"}[i%2]
++		var cur []*downlinkWorker
++		for k := 0; k < 4; k++ {
++			a, b := net.Pipe()
++			go func() {
++				buf := make([]byte, 4096)
++				for {
++					if _, err := b.Read(buf); err != nil {
++						return
++					}
++				}
++			}()
++			t.Cleanup(func() { _ = b.Close() })
++			if w := r.register(ip, a, key, client, k == 0); w != nil {
++				cur = append(cur, w)
++			}
++		}
++		for _, w := range prev { // what each evicted worker's read loop does when its connection closes
++			r.unregister(ip, w)
++		}
++		prev = cur
++	}
++	stop.Store(true)
++	<-done
++	for _, w := range prev {
 +		r.unregister(ip, w)
 +	}
 +}
