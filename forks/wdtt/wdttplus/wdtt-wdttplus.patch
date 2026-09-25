@@ -1,5 +1,5 @@
 diff --git a/server.go b/server.go
-index 5276584..fbf5930 100644
+index 5276584..c2c1b53 100644
 --- a/server.go
 +++ b/server.go
 @@ -47,14 +47,25 @@ import (
@@ -159,7 +159,7 @@ index 5276584..fbf5930 100644
  			if requestID, ok := parseUpdateMetadataRequest((*b)[:nn]); ok {
  				if err := writeClientPacket([]byte(updateMetadataResponsePrefix + requestID + "|ACK|")); err != nil {
  					return
-@@ -4330,3 +4394,177 @@ func fileExists(path string) bool {
+@@ -4330,3 +4394,236 @@ func fileExists(path string) bool {
  	_, err := os.Stat(path)
  	return err == nil
  }
@@ -251,6 +251,17 @@ index 5276584..fbf5930 100644
 +			log.Printf("[DESIRED] - пароль %s", maskPassword(pw))
 +		}
 +	}
++	// swg-panel: under -fixed-config GETCONF binds a generated password to "pw:<password>". A password bound to a
++	// client's own device ID — a store written before -fixed-config, or adopted from a stock server — is refused on
++	// EVERY device, that one included, since GETCONF presents "pw:<password>" and the binding check compares. Such a
++	// binding is moved onto the fixed-config key here: the device row goes with it (address and keys kept, so the
++	// user's config and every rule on their address stay valid) unless the owner or another password still names it,
++	// or a key row already exists. Otherwise the binding is cleared, the next GETCONF binds the key with a fresh
++	// address, and the old row goes in the reap below. The binding history records the old device as unbound, as
++	// every other unbind path here does.
++	if fixedConfig && migrateFixedBindingsLocked(db, time.Now().Unix()) {
++		changed = true
++	}
 +	ownerDevices := adminDeviceIDSet(db)
 +	for dkey, dev := range db.Devices {
 +		pw := dkey
@@ -276,6 +287,54 @@ index 5276584..fbf5930 100644
 +	}
 +	dbMutex.Unlock()
 +	syncPersistedPeersToWG(wgDev)
++}
++
++// migrateFixedBindingsLocked moves every generated password still bound to a client's own device ID onto its
++// -fixed-config key "pw:<password>" (see reconcileDesired). Caller holds dbMutex. Reports whether anything changed.
++func migrateFixedBindingsLocked(db *Database, now int64) bool {
++	changed := false
++	owners := adminDeviceIDSet(db)
++	// How many passwords name each device, counted BEFORE any binding moves: counting inside the loop would let
++	// whichever of two sharing passwords Go's map order visits last see the row as its own and take it.
++	holders := make(map[string]int)
++	for _, o := range db.Passwords {
++		if o != nil && o.DeviceID != "" {
++			holders[o.DeviceID]++
++		}
++	}
++	for pw, e := range db.Passwords {
++		if pw == db.MainPassword || e == nil || e.DeviceID == "" || e.DeviceID == "pw:"+pw {
++			continue
++		}
++		old, key := e.DeviceID, "pw:"+pw
++		_, shared := owners[old]
++		// A "pw:" row is another password's fixed-config device (an adopted or hand-edited store bound to it): never
++		// ours to take, whether or not that password is bound to it right now.
++		shared = shared || holders[old] > 1 || strings.HasPrefix(old, "pw:")
++		markActiveBindUnbound(e, old, now)
++		if dev := db.Devices[old]; dev != nil && !shared && db.Devices[key] == nil {
++			delete(db.Devices, old)
++			dev.DeviceID = key
++			db.Devices[key] = dev
++			e.DeviceID = key
++			appendBindHistory(e, BindHistoryEntry{
++				DeviceID:   key,
++				DeviceName: deviceDisplayName(dev),
++				DeviceIP:   dev.IP,
++				RemoteIP:   dev.RemoteIP,
++				Country:    dev.Country,
++				BoundAt:    now,
++				EventAt:    now,
++				Status:     "active",
++			})
++			log.Printf("[DESIRED] пароль %s: устройство %s перенесено на -fixed-config ключ (адрес сохранён)", maskPassword(pw), deviceLogRef(old))
++		} else {
++			e.DeviceID = ""
++			log.Printf("[DESIRED] пароль %s: привязка к устройству %s снята (-fixed-config)", maskPassword(pw), deviceLogRef(old))
++		}
++		changed = true
++	}
++	return changed
 +}
 +
 +// desiredWatcher reconciles when the desired file's mtime changes (belt-and-suspenders alongside SIGHUP).
@@ -336,4 +395,73 @@ index 5276584..fbf5930 100644
 +		return refuse(updateMetadataResponsePrefix, request.requestID, encodeUpdateAPKChunkResponse(request.requestID, nil, errNoPanelService))
 +	}
 +	return nil, false
++}
+diff --git a/swgpanel_fixed_test.go b/swgpanel_fixed_test.go
+new file mode 100644
+index 0000000..f9a3106
+--- /dev/null
++++ b/swgpanel_fixed_test.go
+@@ -0,0 +1,63 @@
++package main
++
++import "testing"
++
++// swg-panel: migrateFixedBindingsLocked (reconcileDesired, -fixed-config). A password bound to a client's own device
++// ID moves onto "pw:<password>" with its row — address and keys kept — unless the owner or another password still
++// names that row; then the binding is cleared, whatever order the map is visited in.
++func TestMigrateFixedBindingsKeepsTheAddressAndNeverTakesASharedRow(t *testing.T) {
++	for round := 0; round < 50; round++ { // map order is random: a result that depended on it would flip
++		db := &Database{
++			MainPassword: "owner",
++			AdminProfile: AdminProfileEntry{DeviceIDs: []string{"owner-phone"}},
++			Passwords: map[string]*PasswordEntry{
++				"pw-a":   {DeviceID: "phone-a", BindHistory: []BindHistoryEntry{{DeviceID: "phone-a", Status: "active"}}},
++				"pw-b":   {DeviceID: "shared"},
++				"pw-c":   {DeviceID: "shared"},
++				"pw-d":   {DeviceID: "owner-phone"},
++				"pw-e":   {DeviceID: "pw:pw-e"},
++				"pw-f":   {DeviceID: "pw:pw-g"},
++				"pw-g":   {},
++				"pw-new": {},
++			},
++			Devices: map[string]*ClientDevice{
++				"phone-a":     {DeviceID: "phone-a", IP: "10.66.66.3", PubKey: "KA"},
++				"shared":      {DeviceID: "shared", IP: "10.66.66.4"},
++				"owner-phone": {DeviceID: "owner-phone", IP: "10.66.66.2"},
++				"pw:pw-e":     {DeviceID: "pw:pw-e", IP: "10.66.66.5"},
++				"pw:pw-g":     {DeviceID: "pw:pw-g", IP: "10.66.66.6"},
++			},
++		}
++		if !migrateFixedBindingsLocked(db, 1000) {
++			t.Fatal("expected changes")
++		}
++		a := db.Devices["pw:pw-a"]
++		if db.Passwords["pw-a"].DeviceID != "pw:pw-a" || a == nil || a.IP != "10.66.66.3" || a.PubKey != "KA" || a.DeviceID != "pw:pw-a" {
++			t.Fatalf("sole holder must move with its row: %+v %+v", db.Passwords["pw-a"], a)
++		}
++		if _, left := db.Devices["phone-a"]; left {
++			t.Fatal("the old key must be gone")
++		}
++		h := db.Passwords["pw-a"].BindHistory
++		if len(h) != 2 || h[0].Status != "unbound" || h[1].DeviceID != "pw:pw-a" || h[1].Status != "active" {
++			t.Fatalf("history must show the old device unbound and the key active: %+v", h)
++		}
++		for _, pw := range []string{"pw-b", "pw-c", "pw-d"} {
++			if db.Passwords[pw].DeviceID != "" {
++				t.Fatalf("round %d: %s shares its row and must be cleared, got %q", round, pw, db.Passwords[pw].DeviceID)
++			}
++		}
++		if db.Devices["shared"] == nil || db.Devices["owner-phone"] == nil || db.Devices["pw:pw-b"] != nil || db.Devices["pw:pw-c"] != nil {
++			t.Fatalf("round %d: a shared or owner row must never move: %v", round, db.Devices)
++		}
++		if db.Passwords["pw-f"].DeviceID != "" || db.Devices["pw:pw-g"] == nil || db.Devices["pw:pw-f"] != nil {
++			t.Fatalf("a binding to another password's key is cleared, and that row is never taken: %v", db.Devices)
++		}
++		if db.Passwords["pw-e"].DeviceID != "pw:pw-e" || db.Passwords["pw-new"].DeviceID != "" {
++			t.Fatal("already-keyed and unbound passwords are left alone")
++		}
++		if migrateFixedBindingsLocked(db, 2000) {
++			t.Fatal("a second pass must change nothing")
++		}
++	}
 +}

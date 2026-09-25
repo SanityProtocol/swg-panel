@@ -10,7 +10,7 @@ tunnel are off under our flags.
 | | |
 |---|---|
 | upstream commit | `b3935b947acd81d95107869c8f33507f3f5c1309` (tag `v18`) |
-| our build label | **18** |
+| our build label | **18** published; the patch here is **18-2** (18 + the stale-binding fix below), rig-proven on a local build and **not yet published** |
 | note | upstream's `wdttServerVersion` const at this tag still reads `"17"`, so `--version` prints `17` |
 
 Tags move; the commit is the pin. The previous pin was v15 `3038b8dd`. The patch was regenerated against v18 with
@@ -36,6 +36,7 @@ the same binary from a fresh clone as from a local tree.
 | `-desired <file>` | the panel owns the password set. It is reconciled on boot, on SIGHUP and when the file's mtime changes. A password that is gone or deactivated loses its WireGuard peer and device, and its WRAP key, which cuts the live session. Expiry belongs to the panel, so the expiry janitor is off. |
 | reconcile skips owner devices | devices of the node-owned `-password` (listed in the admin profile) are never reaped. Before this, every unrelated roster change cut the owner's session. |
 | reconcile logs `saveDB()` failures | persistence is strict since v17. A failed save now logs `[DESIRED] … база не сохранена` instead of being ignored. |
+| reconcile clears a stale device binding | under `-fixed-config`, GETCONF presents `pw:<password>` and binds it. A password already bound to a client's own device ID (a store from before `-fixed-config`, or adopted from a stock server) was refused with `device_mismatch` on **every** device, that one included. Reconcile now moves such a binding onto `pw:<password>` (18-2), and the old device row goes with it, keeping its address and keys. The only exception is a row the owner or another password still names: then the binding is cleared, the next GETCONF gets a fresh address, and the old row is reaped. Either way the old device is marked unbound in the binding history, as every other unbind path does, and a moved binding is recorded as active on its key. A binding to a `pw:` row is only cleared: that row is another password's fixed-config device. Who holds a row is counted before anything moves, so two passwords sharing one never depend on map order (`migrateFixedBindingsLocked`, test `TestMigrateFixedBindingsKeepsTheAddressAndNeverTakesASharedRow`). |
 | `-no-panel` | no admin socket, no Telegram bot. In-tunnel requests that make the **node** act for a client are answered with an error frame and never run: `WDTT_UPDATE1` (GitHub release metadata), `WDTT_UPDATE_APK1` (APK download of up to 200 MB), `WDTT_HTTPS_POST1` (a POST to any public HTTPS host) and `WDTT_DEPLOY1` / `WDTT_DEPLOY_CHUNK1` (the admin relay). Without the flag, upstream behaviour is unchanged. |
 
 The v17+ backup scheduler is left in place. It does nothing unless a backup policy is enabled, and only the admin socket
@@ -72,3 +73,15 @@ build with the refusal switched off.
 |---|---|---|
 | `WDTT_UPDATE1`, `WDTT_HTTPS_POST1`, `WDTT_UPDATE_APK1` | the node resolves and fetches (20 DNS queries from the node in 15 s) | `ERR отключено на этом сервере (-no-panel)`, 0 DNS, 0 HTTPS |
 | `WDTT_DEPLOY1` `list` (owner password in the payload) | **OK**: the admin listing is returned | `ERR отключено на этом сервере (-no-panel)` |
+
+## Validation: one config on several devices (rig, 2026-09-24)
+
+`.campaign/rigs/two-device-wdttplus.sh`: two device namespaces ↔ local pion TURN ↔ server with the node's argv, real
+unpatched qWDTT client in WG mode. The control is 18.
+
+| test | 18 | 18-2 |
+|---|---|---|
+| P1 device A, then (A vanished) device B, then A again, same password | same address, 30/30 each | same address, 30/30 each |
+| P2 the server's own store, with the password and its row moved to `phone-old` at .7: device A / device B | **refused on both** (`пароль привязан к другому устройству`) | both connect at .7 (the old row, keys kept), 30/30; binding moved to `pw:<password>` |
+
+The host firewall and links were unchanged by either run.
