@@ -150,6 +150,28 @@ export const STR = {
   "Nobody — no shared group, and no interface here is open to everyone.": "Никого: общих групп нет, и ни один интерфейс здесь не открыт всем.",
   "Nothing beyond the internet.": "Ничего, кроме интернета.",
   "Users or groups": "Пользователи или группы",
+  "All groups": "Все группы",
+  "Of which {v1} was already on the counters.": "Из них {v1} уже было на счётчиках.",
+  "Show only users with a device online": "Показать только пользователей с устройством в сети",
+  "Traffic — graph and members": "Трафик — график и участники",
+  "Members · {n}": "Участники · {n}",
+  "No members yet": "Участников пока нет",
+  "Add people to this group and their traffic appears here.": "Добавьте людей в группу — их трафик появится здесь.",
+  "This group was deleted": "Эта группа удалена",
+  "{name} users": "{name}: пользователи",
+  "Total users": "Всего пользователей",
+  "All time": "За всё время",
+  "Today": "Сегодня",
+  "Last 7 days": "Последние 7 дней",
+  "Traffic window": "Период трафика",
+  "The window the traffic figures count — in the panel's days (Settings → Display)": "Период, за который считается трафик, — в днях панели (Настройки → Отображение)",
+  "col|Group": "Группа",
+  "col|Members": "Участники",
+  "col|Networks": "Сети",
+  "Add members": "Добавить участников",
+  "Double-click to edit the group": "Двойной щелчок — изменить группу",
+  "Show this group on the users list": "Показать эту группу в списке пользователей",
+  "Every member's devices added together — someone in two groups counts in both.": "Сумма по устройствам всех участников — человек из двух групп учтён в обеих.",
   "Search groups or members…": "Поиск по группам и участникам…",
   "New group": "Новая группа",
   "No groups yet": "Групп пока нет",
@@ -157,7 +179,6 @@ export const STR = {
     "Объедините людей в группу, чтобы открывать сеть сразу всем — в окне «Сети» устройства.",
   "Members": "Участники",
   "No members yet.": "Участников пока нет.",
-  "{name}: {members}": "{name}: {members}",
   "Devices whose networks are shared with {name}: {n}": "Устройства, чьи сети открыты группе {name}: {n}",
   "Networks shared with this group": "Сети, открытые этой группе",
   "None yet — share a network from a device's Networks window.": "Пока нет — сеть открывают в окне «Сети» устройства.",
@@ -224,7 +245,6 @@ export const STR = {
   "reach|user + groups": "только своим",
   "Devices now reach only their own user's devices and their groups' — {n} packets to other devices have been stopped. Put users who should reach each other in a group, or set an interface to Everyone.": "Теперь устройства видят только устройства своего пользователя и его групп — остановлено пакетов к чужим устройствам: {n}. Объедините в группу тех, кто должен видеть друг друга, или выберите для интерфейса «Все на этой ноде».",
   "Other devices reach this one at its tunnel address only as its interface allows — “Who can open connections to devices here”, in the interface's settings.": "Другие устройства достучатся до этого по туннельному адресу, только если это разрешает его интерфейс — «Кто может открывать соединения к устройствам здесь» в настройках интерфейса.",
-  "Members of a group reach each other's devices on interfaces set to “Same user and their groups”, and a network can be shared with the whole group.": "Участники группы видят устройства друг друга на интерфейсах с уровнем «Тот же пользователь и его группы», и сетью можно поделиться со всей группой.",
   "Who can open connections to devices on new interfaces": "Кто может открывать соединения к устройствам на новых интерфейсах",
   "Applies to interfaces created from now on.": "Действует для интерфейсов, созданных с этого момента.",
   "Existing interfaces set to “Everyone on this node”: {n}": "Существующих интерфейсов с уровнем «Все на этой ноде»: {n}",
@@ -1668,19 +1688,13 @@ export const STR = {
   "range|Custom": "Свой период",
   "From": "С",
   "To": "По",
-  "The window the Total column counts — in the panel's days (Settings → Display)": "Период, за который считается столбец трафика, — в сутках панели (Настройки → Отображение)",
   "The start is after the end.": "Начало позже конца.",
   "The start is after today.": "Начало позже сегодняшнего дня.",
   "Traffic — graph and devices": "Трафик — график и устройства",
   "Traffic totals are off — Settings → Display says why.": "Учёт трафика выключен — причина указана в Настройки → Отображение.",
   "Lifetime": "За всё время",
-  "Of which {v1} was already on the counters when history began, {v2}": "Из них {v1} уже было на счётчиках, когда началась история, {v2}",
-  "Counted since {v1}": "Считается с {v1}",
   "Nothing counted yet.": "Пока ничего не посчитано.",
   "Includes devices no longer theirs (deleted or handed on): {n}": "Включает устройства, которые им больше не принадлежат (удалены или переданы): {n}",
-  "Traffic between this user's own devices — for example to a home network shared through the VPN — counts on both devices.":
-    "Трафик между собственными устройствами пользователя — например, в домашнюю сеть, открытую через VPN, — считается на обоих устройствах.",
-  "What this device carried while it belonged to this user.": "Сколько устройство передало, пока принадлежало этому пользователю.",
   "The whole device — including what it carried for an earlier owner.": "Всё устройство — включая то, что оно передало для прежнего владельца.",
   "This peer's total across all its deployments — every row of it repeats it.": "Итог пира по всем его размещениям — он повторяется в каждой его строке.",
   "The whole peer, not only the deployments this filter shows.": "Весь пир, а не только размещения, которые показывает этот фильтр.",
@@ -1690,7 +1704,6 @@ export const STR = {
   "A server this traffic crosses was not reporting for part of the window: what it carried meanwhile lands in the column where it reported again.":
     "Сервер, через который идёт этот трафик, часть периода не отвечал: переданное за это время попадает в столбец, когда он снова вышел на связь.",
   "The graph could not be loaded.": "Не удалось загрузить график.",
-  "History begins on {v1}; the graph starts there.": "История начинается {v1}; с этого дня и начинается график.",
   "Open this user's traffic — graph and devices": "Открыть трафик пользователя — график и устройства",
   "deleted": "удалено",
   "Its traffic from before the handover is still this user's": "Трафик до передачи по-прежнему считается за этим пользователем",
@@ -1732,7 +1745,8 @@ export const STR = {
   "The panel will keep the traffic detail — each day's figures at the history resolution — for the last 33 days only. None is older than that yet, so nothing is deleted when you save; from then on, each day's detail is deleted once it is 33 days old. Totals for any period are kept.":
     "Панель будет хранить детализацию трафика — цифры каждого дня с заданной детализацией истории — только за последние 33 дня. Более старой пока нет, поэтому при сохранении ничего не удаляется; дальше детализация каждого дня удаляется, когда ему исполняется 33 дня. Итоги за любой период сохраняются.",
   "History resolution → {v1}, from the next day": "Детализация истории → {v1}, со следующих суток",
-  "id is required, by must be peer or user": "нужен id, а by должен быть peer или user",
+  "id is required, by must be peer, user or group": "нужен id, а by должен быть peer, user или group",
+  "No such group": "Такой группы нет",
   "Nodes — what the node downloads / uploads": "Ноды — что нода принимает / отдаёт",
   "Peers — what the client downloads / uploads": "Пиры — что принимает / отдаёт клиент",
   "Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.": "Как по всей панели подписаны ↓ и ↑. Числа те же, стрелки меняются местами.",
@@ -3758,8 +3772,8 @@ export const STR = {
   "add one": "добавьте",
   // budget-ok: empty-state block, wraps
   "No users yet": "Пользователей пока нет",
-  "Create a user, then mint peers for them — or create a peer and assign it later.":
-    "Создайте пользователя и выпустите ему пиров — или создайте пира и назначьте его позже.",
+  "Create a user, then add devices for them — or create a peer on the Peers screen and assign it later.":
+    "Создайте пользователя и добавьте ему устройства — или создайте пир на экране «Пиры» и назначьте его позже.",
   "Nothing matches": "Ничего не подходит",
   "Clear the search.": "Очистите поиск.",
   "Clear the filters.": "Сбросьте фильтры.",
@@ -6641,7 +6655,8 @@ export const PLURALS = {
   issue: ["проблему", "проблемы", "проблем"],
   "nom|issue": ["проблема", "проблемы", "проблем"],   // SUBJECT ("1 проблема на этой ноде"); bare `issue` stays accusative for "исправить / можно починить"
   group: ["группа", "группы", "групп"],   // nominative: «Доступ: 2 группы» (user groups) and the attention list's own groups
-  member: ["участник", "участника", "участников"],   // a group's members — after a colon or a name, never a verb's subject
+  member: ["участник", "участника", "участников"],
+  "cap|Member": ["участник", "участника", "участников"],   // the groups grid's count column: capitalised in English, ordinary in Russian   // a group's members — after a colon or a name, never a verb's subject
   person: ["человек", "человека", "человек"],        // how many PEOPLE a user's devices reach — «Доступны устройства: 2 человека»
   minute: ["минуты", "минут", "минут"],          // reads after "больше" (genitive): больше 1 минуты / 5 минут
   address: ["адрес", "адреса", "адресов"],

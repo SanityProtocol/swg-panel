@@ -19508,11 +19508,15 @@ class TrafficLedger:
         f, t, rk = self._window(qs, now)
         by = (qs.get("by") or ["peer"])[0]
         ident = (qs.get("id") or [""])[0]
-        if by not in ("peer", "user") or not ident:
-            raise ValueError(perr("id is required, by must be peer or user"))
+        if by not in ("peer", "user", "group") or not ident:
+            raise ValueError(perr("id is required, by must be peer, user or group"))
+        # A group is its members' slots added together — every slot each of them held, as their own graphs count. The route
+        # resolves the members from the roster (`members`); the ledger knows owners, not groups.
+        members = {u for u in ((qs.get("members") or [""])[0]).split(",") if u} if by == "group" else None
+        owned = (lambda o: (o or "") in members) if by == "group" else (lambda o: (o or "") == ident)
         with self.lock:
             want = sorted(n for n, s in enumerate(self.slots)
-                          if (s["pid"] if by == "peer" else (s.get("owner") or "")) == ident)
+                          if (s["pid"] == ident if by == "peer" else owned(s.get("owner"))))
             first = min((s.get("since") or 0 for s in self.slots), default=0)
             nslots = len(self.slots)
             live = (self.day, self.C_rx[:], self.C_tx[:])
@@ -19520,7 +19524,7 @@ class TrafficLedger:
             # the queue in the SAME section as the open bucket: a sync closing the bucket between two sections moved it
             # from one to the other, and the graph drew it twice
             qf_all = [(q[0], q[1], q[2], q[4], {s: q[5][s] for s in want if s in q[5]}) for q in self.q_fine if f <= q[0] <= t]
-            nodes = {k[0] for k in self.recs if (k[2] == ident if by == "peer" else self.owners.get(k[2]) == ident)}
+            nodes = {k[0] for k in self.recs if (k[2] == ident if by == "peer" else owned(self.owners.get(k[2])))}
         if first:                                              # nothing exists before the ledger's first slot: never walk from 1970
             f = min(max(f, _ld_day(first)[0]), t)
         elif not nslots:                                       # an empty ledger walks no day before today
@@ -22806,6 +22810,14 @@ def api(method, path, qs, body, deps):
     # The traffic ledger (TrafficLedger): totals per peer or user over local days, one peer's or user's series, and the
     # debug dump. Totals and series are sent gzipped (do_GET, _LEDGER_GZ) — a row per peer is ~150 B at any fleet size.
     if method == "GET" and path in ("/api/traffic-totals", "/api/traffic-series", "/api/traffic-ledger"):
+        if path == "/api/traffic-series" and (qs.get("by") or [""])[0] == "group":
+            # the group's members as the roster holds them now — the same set the Groups grid adds up
+            r = roster_load(roster_path)
+            g = (r.get("groups") or {}).get((qs.get("id") or [""])[0])
+            if not isinstance(g, dict):
+                return 404, {"ok": False, "code": "not_found", **perr("No such group")}
+            us = r.get("users") or {}
+            qs = {**qs, "members": [",".join(u for u in (g.get("users") or []) if u in us)]}
         return LEDGER.api(path, qs)
     if method == "GET" and path == "/api/stats-usage":
         # Settings → Display → Data: what the traffic history uses on disk — measured (one walk, cached a minute) — what

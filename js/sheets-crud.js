@@ -29,11 +29,11 @@ import {
   confirmReassign, confirmCorrectDeployment, confirmRestoreDeployment, openRecreateRekey, rotatePeerKeys, PubTag,
   pubState, pubCls,
 } from "./peer-actions.js";
-import { searchMatch, usersView, revealUser, privateUnenforced, namedFew, privateOffOpens } from "./views.js";
+import { searchMatch, usersView, revealUser, privateUnenforced, namedFew, privateOffOpens, clearUserFilters } from "./views.js";
 import { turnEnabled, WDTT_COLOR, shownTitle } from "./turn.js";
-import { openPeerConfigs, ReachedByBody, openUserEdit } from "./peer-ui.js";
+import { openPeerConfigs, ReachedByBody, openUserEdit, openGroup } from "./peer-ui.js";
 import { TrafficBlock, goneDevices } from "./traffic-ui.js";
-import { trafficTotals } from "./traffic.js";
+import { trafficTotals, trafficModalView } from "./traffic.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -53,7 +53,7 @@ export function CreateUserSheet() {
     Store.recentlyCreated[r.data.id] = Date.now(); subAutoGenIfEnabled(r.data.id); await Store.poll();
     return r.data;
   };
-  const stayExpanded = uid => { usersView.mode = "users"; usersView.expanded[uid] = true; usersView.q = ""; usersView.page = 1; closeModal(); go("#/users"); };
+  const stayExpanded = uid => { usersView.mode = "users"; clearUserFilters(); usersView.expanded[uid] = true; usersView.q = ""; usersView.page = 1; closeModal(); go("#/users"); };
   const createOnly = async () => { const u = await createUser(); if (u) stayExpanded(u.id); };
   const createAndAdd = async () => { const u = await createUser(); if (u) openModal(html`<${AddPeersSheet} userId=${u.id} userName=${u.name}/>`); };
   return html`<${Sheet} title=${T("New user")}
@@ -628,9 +628,10 @@ export function PeerViewSheet({ pid, node, iface }) {
   // peer's own status on a line under it; not in a subscription → the peer's own status takes the header slot.
   const headExtra = u ? html`<${SubStatusLine} user=${u} pos="hr"/>` : html`<${PeerStatusLine} peer=${p} pos="hr"/>`;
   // ⚠️ MEASURED in Russian, the tight case: Close · QR · Targets · Edit · Block/Unblock · Unassign/Delete need 658–669px of
-  // footer (Unblock the widest), so at 640 the last button fell to a second row. 700 holds one row; a narrower window still wraps (the sheet caps
-  // itself at calc(100vw - 32px)).
-  return html`<${Sheet} title=${p.title || (u ? u.name : T("Unassigned peer"))} width=${700} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}
+  // footer (Unblock the widest), so at 640 the last button fell to a second row. 700 holds one row; 760 also keeps the traffic block's
+  // tabs and a custom window's two dates on the Traffic line (the peer, user and group windows share that width). A narrower window
+  // still wraps (the sheet caps itself at calc(100vw - 32px)).
+  return html`<${Sheet} title=${p.title || (u ? u.name : T("Unassigned peer"))} width=${760} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/>QR</button>
@@ -695,7 +696,7 @@ export function UserViewSheet({ uid }) {
   useStore();
   const [page, setPage] = useState(1);
   const u = Store.user(uid);
-  const e = trafficTotals();
+  const e = trafficTotals(trafficModalView);
   const d = e && e.data;
   const rows = ((d && d.rows.get(uid)) || []).slice().sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx) || String(a.name).localeCompare(String(b.name)));
   // devices the user holds now but that carried nothing in the window still belong on the list
@@ -713,7 +714,7 @@ export function UserViewSheet({ uid }) {
     return null;
   };
   const title = u ? u.name : (rows[0] && rows[0].owner_name) || T("Deleted user");
-  return html`<${Sheet} title=${title} width=${700}
+  return html`<${Sheet} title=${title} width=${760}
     foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
       ${u ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); openUserEdit(u); }}><${Ic} i="pencil"/> ${T("Edit user")}</button>` : null}<//>`}>
     <${TrafficBlock} by="user" id=${uid}/>
@@ -727,6 +728,35 @@ export function UserViewSheet({ uid }) {
           <span class="u-total">${xferCell(...dlul(r.rx || 0, r.tx || 0))}</span>
         </div>`; })}</div>
         <${ListPager} page=${pg} setPage=${setPage} total=${all.length}/>`}
+  <//>`;
+}
+
+// Read-only group view: the group's graph (its members' slots added together) over the windows' own window, and each member
+// with what they carried in it — the list adds up to the figure above. A member opens their own view. Paged like the devices.
+export function openGroupView(gid) { openModal(html`<${GroupViewSheet} gid=${gid}/>`); }
+export function GroupViewSheet({ gid }) {
+  useStore();
+  const [page, setPage] = useState(1);
+  const g = Store.group(gid);
+  const e = trafficTotals(trafficModalView);
+  const d = e && e.data;
+  const rows = (g ? g.users : []).map(uid => { const a = d && d.user.get(uid); return { uid, name: (Store.user(uid) || {}).name || "", rx: a ? a.rx : 0, tx: a ? a.tx : 0 }; })
+    .sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx) || a.name.localeCompare(b.name));
+  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE));
+  const pg = Math.min(page, pages);
+  return html`<${Sheet} title=${g ? g.name : T("Deleted group")} width=${760}
+    foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${closeModal}>${T("Close")}</button><span class="grow"></span>
+      ${g ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); openGroup(gid); }}><${Ic} i="pencil"/> ${T("Edit group")}</button>` : null}<//>`}>
+    ${g ? html`<${Fragment}>
+      <${TrafficBlock} by="group" id=${gid}/>
+      <div class="lbl" style="margin:18px 2px 6px">${T("Members · {n}", { n: rows.length })}</div>
+      ${!rows.length ? html`<div class="empty"><b>${T("No members yet")}</b>${T("Add people to this group and their traffic appears here.")}</div>`
+        : html`<div class="uv-list">${pageSlice(rows, pg).map(r => html`<div class="uv-row clk" key=${r.uid} onClick=${() => openUserView(r.uid, true)}>
+            <span class="uv-nm">${r.name || html`<span class="faint">${T("Untitled")}</span>`}</span>
+            <span class="u-total">${xferCell(...dlul(r.rx, r.tx))}</span>
+          </div>`)}</div>
+          <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>`}
+    <//>` : html`<div class="empty"><b>${T("This group was deleted")}</b></div>`}
   <//>`;
 }
 

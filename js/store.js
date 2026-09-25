@@ -549,6 +549,22 @@ export const Store = {
     return this._gByUser.get(id) || [];
   },
   peersOfUser(id) { return this.recon.peers.filter(p => p.user_id === id); },
+  // The devices whose networks are shared with a group, keyed by GROUP and built once per recon (the peers' private flag and
+  // share live there): the Groups grid reads it per row on every poll, and a walk over every peer per group was
+  // O(groups · peers) each time. ⚠️ A PRIVATE device grants a group nothing, whatever its stored share still says — see
+  // groupShares() in views.js.
+  sharesByGroup(gid) {
+    if (this._sByGroupOf !== this.recon) {
+      const m = new Map();
+      for (const p of this.recon.peers) {
+        if (p.private || !(p.routes || []).length || !p.share || !p.share.groups || typeof p.share.groups !== "object") continue;
+        for (const g of Object.keys(p.share.groups)) (m.get(g) || m.set(g, []).get(g)).push(p);
+      }
+      this._sByGroup = m;
+      this._sByGroupOf = this.recon;
+    }
+    return this._sByGroup.get(gid) || [];
+  },
   // The same, by OWNER, built once per RECON (not per roster: these are the reconciled peers, rebuilt on every poll, and a stale
   // map would hand back devices with last poll's online state). peersOfUser() walks every peer per call — fine for one sheet,
   // O(users · peers) for a list that asks per row.

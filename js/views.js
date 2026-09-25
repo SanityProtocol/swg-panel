@@ -181,15 +181,18 @@ export function userTraffic(uid) { const d = trafficData(); return d ? d.user.ge
 // its all-zero order for good. The freeze key carries the window and whether its totals are in — and nothing that moves
 // every minute, or the rows would reshuffle each time "until now" refreshes.
 const rtotalTag = sort => sort === "rtotal" ? "|" + trafficFreezeTag() : "";
-// The column's name is the window's: "This month", "Last 30 days", or the custom dates (month names through Intl).
+// The column's name is the window's: "All time", "Today", "Last 7 days", "Last 30 days", or the custom dates (month names through Intl).
 export function trafficRangeLabel(v) {
   v = v || trafficView;
+  if (v.range === "all") return T("All time");
+  if (v.range === "today") return T("Today");
+  if (v.range === "7d") return T("Last 7 days");
   if (v.range === "30d") return T("Last 30 days");
   if (v.range === "custom" && v.from && v.to) {
     const f = d => { try { return new Intl.DateTimeFormat(locale(), { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(d + "T00:00:00Z")); } catch (_) { return d; } };
     return v.from === v.to ? f(v.from) : f(v.from) + " – " + f(v.to);
   }
-  return T("This month");
+  return v.range === "month" ? T("This month") : T("All time");   // a custom window missing a date is asked as All time
 }
 // ── order freeze ─────────────────────────────────────────────────────────────────────────────────
 // Keep rows where they are WHILE you look at them: editing a record (rename, status flip) must not make its
@@ -248,7 +251,12 @@ export const connView = { mode: "peers", node: "", iface: "", q: "", online: tru
 
 // Independent view-state per grid so search / server / interface / page never bleed across them.
 export const usersView = { q: "", node: "", iface: "", page: 1, pageSize: 20, sort: "status", dir: -1, expanded: {},   // node/iface filter the LIST (expand shows all peers)
-  mode: "users", gq: "", gpage: 1, gpageSize: 20 };   // the Users | Groups switch, and the groups list's own search and page
+  mode: "users", group: "", online: false,   // Users or Groups; `group` narrows the users list to one group ("" = all); Online
+  gq: "", gpage: 1, gpageSize: 20, gsort: "name", gdir: 1, gexpanded: {} };   // the groups grid's own search, page, sort, open rows
+// Landing on a user (a reveal, a user just created) clears what could hide them: the group, node, interface and Online filters
+// all narrow the list, and userPageOf() counts the page over the whole of it.
+export function clearUserFilters() { usersView.group = ""; usersView.node = ""; usersView.iface = ""; usersView.online = false; }
+export const groupMemberViews = {};   // gid -> { page, pageSize, sort, dir } for that group's expanded members list
 export const unassignedView = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 };
 export const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize, sort, dir } for the expanded grid
 
@@ -263,7 +271,7 @@ export function userStatTag(user, live) {
 // Combined live stats across ALL of a user's peers/targets — for the user row's rate/total/last columns.
 export function userStats(uid) {
   let rx = 0, tx = 0, rxb = 0, txb = 0, last = null;
-  for (const p of Store.peersOfUser(uid)) for (const t of p.targets) {
+  for (const p of Store.peersByUser(uid)) for (const t of p.targets) {
     const o = tgtXfer(t); if (!o) continue;
     rx += o.rx_speed || 0; tx += o.tx_speed || 0; rxb += o.rx_bytes || 0; txb += o.tx_bytes || 0;
     if (o.handshake_age != null) last = (last == null) ? o.handshake_age : Math.min(last, o.handshake_age);
@@ -292,14 +300,14 @@ export function userIdentityMatchesQ(u, q) { return searchMatch((u.name || "") +
 export function userMatchesQ(u, q) {
   if (!q) return true;
   if (userIdentityMatchesQ(u, q)) return true;
-  return Store.peersOfUser(u.id).some(p => peerMatchesQ(p, q));
+  return Store.peersByUser(u.id).some(p => peerMatchesQ(p, q));
 }
 // does the user have a peer deployed on this node (and interface, if given)? — for the Users node/iface filter.
 // The user LIST is filtered by this; the expanded grid still shows ALL of the user's peers.
 export function userOnNodeIface(u, node, iface) {
   const anyIface = !iface || iface === "*";   // *awg / *wg still filter (by type) — only ""/"*" mean "all interfaces"
   if (!node && anyIface) return true;
-  return Store.peersOfUser(u.id).some(p => p.targets.some(t => (!node || node === "*" || t.node === node) && ifaceMatch(t.iface, iface, t)));
+  return Store.peersByUser(u.id).some(p => p.targets.some(t => (!node || node === "*" || t.node === node) && ifaceMatch(t.iface, iface, t)));
 }
 // User-list sorting (clickable header). Callers hold sort/dir in their view-state under caller-chosen keys.
 export const USER_SORT = {
@@ -310,7 +318,7 @@ export const USER_SORT = {
   total: u => { const s = userStats(u.id); return s.rxb + s.txb; },
   rtotal: u => { const a = userTraffic(u.id); return a ? a.rx + a.tx : 0; },   // every slot the user held, in the window
   // by node count first, then the total distinct interfaces across those nodes (encoded: nodes×10000 + ifaces)
-  nodes: u => { const nm = {}; let ifs = 0; for (const p of Store.peersOfUser(u.id)) for (const t of p.targets) { const s = nm[t.node] = nm[t.node] || new Set(); if (!s.has(t.iface)) { s.add(t.iface); ifs++; } } return Object.keys(nm).length * 10000 + ifs; },
+  nodes: u => { const nm = {}; let ifs = 0; for (const p of Store.peersByUser(u.id)) for (const t of p.targets) { const s = nm[t.node] = nm[t.node] || new Set(); if (!s.has(t.iface)) { s.add(t.iface); ifs++; } } return Object.keys(nm).length * 10000 + ifs; },
 };
 export const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, total: -1, rtotal: -1, name: 1, nodes: -1 };
 export function sortUsers(users, sort, dir, freeze) {
@@ -323,7 +331,7 @@ export function sortColToggle(view, sk, dk, col, defdir) { if (view[sk] === col)
 
 // which Users page a user lands on (mirrors UsersScreen's sort; search is cleared before we navigate)
 export function userPageOf(uid) {
-  const users = sortUsers(Store.recon.users, usersView.sort, usersView.dir);
+  const users = sortUsers(Store.recon.users, usersView.sort, usersView.dir, "users");   // the list's own frozen order, or the page is off
   const idx = users.findIndex(u => u.id === uid);
   return idx < 0 ? 1 : Math.floor(idx / (usersView.pageSize || 20)) + 1;
 }
@@ -333,9 +341,54 @@ export function userPageOf(uid) {
 // the share (and should not — turning the flag off has to give it back), so the grant sits in the roster while share_grants
 // hands the group nobody. Without this test the Groups screen counted it, its bubble named the device and its prefixes, and
 // two DESTRUCTIVE confirms — removing a member, deleting the group — warned about losing networks nobody ever reached.
-export function groupShares(gid) {
-  return Store.recon.peers.filter(p => !p.private && (p.routes || []).length && p.share && p.share.groups && typeof p.share.groups === "object"
-    && Object.prototype.hasOwnProperty.call(p.share.groups, gid));
+export function groupShares(gid) { return Store.sharesByGroup(gid); }
+// A group's figures in a window's totals (`td`, a trafficTotals() reply): its current members' added together — each member's
+// every slot, as their own row counts. null while nothing is counted. ONE fold for the grid's cell and the group window.
+export function groupTraffic(td, gid) {
+  const g = td && Store.group(gid);
+  let out = null;
+  for (const uid of (g ? g.users : [])) {
+    const a = td.user.get(uid); if (!a) continue;
+    out = out || { rx: 0, tx: 0, lifetime_rx: 0, lifetime_tx: 0, opening_rx: 0, opening_tx: 0, since: 0 };
+    out.rx += a.rx || 0; out.tx += a.tx || 0; out.lifetime_rx += a.lifetime_rx || 0; out.lifetime_tx += a.lifetime_tx || 0;
+    out.opening_rx += a.opening_rx || 0; out.opening_tx += a.opening_tx || 0;
+    if (a.since && (!out.since || a.since < out.since)) out.since = a.since;
+  }
+  return out;
+}
+// A group's row: its members' figures added together — who is online (a member with a device online, the users list's own
+// rule), their devices, the nodes those are on, the networks shared with the group, the live rate, and the ranged totals.
+export function groupStats(g) {
+  let online = 0, peers = 0, peersOn = 0, rx = 0, tx = 0;
+  const nodes = new Set();
+  for (const uid of g.users) {
+    const mine = Store.peersByUser(uid);
+    let on = 0;
+    for (const p of mine) { if (p.online) on++; for (const t of p.targets) nodes.add(t.node); }
+    peers += mine.length; peersOn += on; if (on) online++;
+    const s = userStats(uid);
+    rx += s.rx; tx += s.tx;
+  }
+  return { members: g.users.length, online, peers, peersOn, nodes: nodes.size, nets: groupShares(g.id).length, rx, tx,
+    traffic: groupTraffic(trafficData(), g.id) };
+}
+// Groups-grid sorting, over the stats computed once per render (`st` = gid -> groupStats).
+export const GROUP_SORT = {
+  name: g => g.name.toLowerCase(), members: (g, s) => s.members, peers: (g, s) => s.peers, nodes: (g, s) => s.nodes,
+  nets: (g, s) => s.nets, rate: (g, s) => s.rx + s.tx,
+  rtotal: (g, s) => s.traffic ? s.traffic.rx + s.traffic.tx : 0,
+};
+export const GROUP_DEFDIR = { name: 1, members: -1, peers: -1, nodes: -1, nets: -1, rate: -1, rtotal: -1 };
+// A sort by a figure is frozen like the users list (stableOrder): rate re-reads every 5 s, and rows must not jump under the
+// pointer. Freeze over ALL groups and let the caller filter after — frozen over a filtered list, clearing a search sent every
+// other group to the end. A name sort is not frozen: names do not move on a poll, and a new group belongs where its name puts
+// it. `st(g)` gives a group's stats — asked only by a sort that reads them.
+export function sortGroups(groups, st, sort, dir) {
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  if (!GROUP_SORT[sort] || sort === "name") return groups.slice().sort((a, b) => byName(a, b) * (dir || 1));
+  const key = GROUP_SORT[sort];
+  const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a, st(a)), key(b, st(b))) * (dir || 1) || byName(a, b);
+  return stableOrder("groups|" + sort + "|" + dir + rtotalTag(sort), groups, g => g.id, cmp);
 }
 // A device as a sentence names it: its title, else its owner's name.
 export const shareDeviceName = p => p.title || (p.user_id && Store.user(p.user_id) ? Store.user(p.user_id).name : T("Untitled"));
@@ -780,7 +833,7 @@ export function namedFew(names) {
 // flow (when it started on the Users screen). It opens the USERS list even if the operator last left the screen on Groups.
 export function revealUser(userId, peerId) {
   if (!userId) return;
-  usersView.mode = "users"; usersView.q = ""; usersView.expanded[userId] = true;
+  usersView.mode = "users"; usersView.q = ""; clearUserFilters(); usersView.expanded[userId] = true;
   go("#/users");
   setTimeout(() => {                          // after the poll + re-render settles
     usersView.page = userPageOf(userId);      // the page this user actually lands on (not always page 1)
@@ -794,7 +847,9 @@ export function revealUser(userId, peerId) {
 export function revealPeer(peer) {
   if (!peer) { usersView.mode = "users"; return go("#/users"); }
   if (peer.user_id != null) { revealUser(peer.user_id, peer.id); return; }
-  usersView.mode = "users"; Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
+  usersView.mode = "users"; clearUserFilters();
+  Object.assign(unassignedView, { node: "", iface: "", q: "", page: 1 });   // the peer glows in the unassigned grid: nothing there may hide it
+  Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
 }
 // Land on the PEERS screen with a specific peer visible + its row flashing (activity-feed clicks). Filters
 // the grid to that peer (unique IP) so it's guaranteed on-page, then scrolls to + glows it for ~2.5s.
@@ -1394,7 +1449,7 @@ export function evClick(e) {
   const item = evItem(e), v = e.verb || "", gone = /\bdeleted\b/i.test(v);
   if (item === "Peer") return gone ? { href: "#/peers" } : { href: "#/peers", on: () => revealPeerInPeersById(e.id) };   // i18n-keys: canonical EV_ITEMS value
   // a group's id is not a user's: it opens Users → Groups, never revealUser
-  if (e.kind === "group") return { href: "#/users", on: () => { usersView.mode = "groups"; usersView.gq = ""; go("#/users"); Store.apply(); } };
+  if (e.kind === "group") return { href: "#/users", on: () => { usersView.mode = "groups"; usersView.gq = ""; usersView.gpage = 1; clearUserFilters(); go("#/users"); Store.apply(); } };
   if (item === "User") return gone ? { href: "#/users" } : { href: "#/users", on: () => revealUser(e.id) };
   if (item === "Settings") return { href: "#/panel/settings", on: () => { setPendingSection((e.id && e.id !== "settings") ? e.id : null); go("#/panel/settings"); } };
   if (item === "Update") return null;                 // panel version bump / update lifecycle — nothing to open

@@ -327,9 +327,10 @@ Its limits:
   Moscow. Pick your zone under **Settings → Display → Days are counted in**: traffic totals, the charts and the
   turn-proxy update hour follow it. The charts draw what they recorded before the change shifted by the
   difference until it scrolls out of them (up to 33 days).
-- **See how much each person used — for any stretch of days.** The **Peers** and **Users** pages count every device’s
-  traffic through counter restarts and reinstalls, for **This month**, the **Last 30 days** or any dates you pick; click
-  a user’s total to see their graph and every device they had, including ones deleted or handed to someone else.
+- **See how much each person used — for any stretch of days.** The **Peers** and **Users** pages (users and groups) count
+  every device’s traffic through counter restarts and reinstalls, for **All time**, a **Day**, **Week** or **Month**, or any
+  dates you pick from the menu on the right edge; a user’s or a group’s graph icon opens their graph with every device
+  (or member) behind it, including devices deleted or handed to someone else.
   A person’s total adds up their devices, so traffic between two of their own devices (for example to a home network
   shared through the VPN) counts on both. History is kept for ever by default — **Settings → Display → Data** shows how
   much disk it uses, and can keep the hour-by-hour detail for the last 33 days only; totals for any period are always kept.

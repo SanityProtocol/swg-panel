@@ -17,8 +17,13 @@ import { api, bus, Store } from "./store.js";
 import { panelNow } from "./util.js";
 
 // The window, held for the page's life so it survives re-render and navigation — shared by Peers, Users and both views.
-export const trafficView = { range: "month", from: "", to: "" };
-export const TRAFFIC_RANGES = ["month", "30d", "custom"];
+// "all" = everything since history began; "today" / "7d" / "30d" = whole days of the panel's up to its today (the rail's Day,
+// Week, Month); "month" is the calendar month, kept for a caller that still asks for it.
+export const trafficView = { range: "all", from: "", to: "" };
+const DAY_RANGES = ["all", "today", "7d", "30d", "month"];
+// The peer, user and group windows keep a window of their own: a graph over all time can hold years of columns, so they
+// open on Week and offer Day · Week · Month · Custom. Held for the page's life, like the grids' window.
+export const trafficModalView = { range: "7d", from: "", to: "" };
 
 // The panel's own today (YYYY-MM-DD) — days are counted in ITS zone (Settings → Display), not the browser's. A custom
 // window is capped here: a browser ahead of the panel's zone would otherwise ask for a day the panel has not reached.
@@ -31,14 +36,14 @@ export function panelToday(nowMs) {
   return new Date((nowMs == null ? panelNow() : nowMs) + off * 1000).toISOString().slice(0, 10);
 }
 
-// The query (and the cache key) for a window. A custom window with a date missing reads as This month. `window` (the
+// The query (and the cache key) for a window. A custom window with a date missing reads as All time. `window` (the
 // Overview's named ranges, P3): a rolling window of that many seconds up to the PANEL's now — its start is the panel's to
 // decide (the ledger's bucket, or where history begins), never this browser's clock.
 export function trafficQuery(v) {
   v = v || trafficView;
   if (v.window) return "window=" + v.window;
   if (v.range === "custom" && v.from && v.to) return "range=custom&from=" + v.from + "&to=" + v.to;
-  return "range=" + (v.range === "30d" ? "30d" : "month");
+  return "range=" + (DAY_RANGES.includes(v.range) ? v.range : "all");
 }
 // A custom window from two typed dates, or why not. `to` is capped at the panel's today BEFORE the order is judged — a
 // start after today would otherwise pass, then reach the panel as a start after the end. `min`: the first day the window
@@ -163,8 +168,8 @@ export function trafficFreezeTag(v) {
 
 // ── series (the peer and user graphs) ───────────────────────────────────────────────────────────────────────────
 const _ser = new Map();   // by|id|query → { at, busy, data, err }
-export function trafficSeries(by, id, v) {
-  const q = trafficQuery(v), k = by + "|" + id + "|" + q;
+export function trafficSeries(by, id, v, keyExtra) {   // keyExtra: what else the answer depends on (a group's members)
+  const q = trafficQuery(v), k = by + "|" + id + "|" + q + (keyExtra ? "|" + keyExtra : "");
   let e = _ser.get(k);
   if (e && (e.busy || Date.now() - e.at <= TTL_MS || (e.data && trafficImmutable(v)))) return e;
   if (!e) _ser.set(k, e = { at: 0, busy: false, data: null, err: null });

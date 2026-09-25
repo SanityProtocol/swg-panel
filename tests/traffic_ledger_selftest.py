@@ -1264,6 +1264,16 @@ def section_13():
     check("every row says since when it is counted", all(r.get("since") for r in by_slot)
           and sl[("p1", "u2")]["since"] == T0 + 120, [(r["id"], r["owner"], r["since"]) for r in by_slot])
 
+    # a group's graph is its members' graphs added together (the route resolves `members` from the roster)
+    ssum = lambda sr_: (sum(x[2] for x in sr_["points"]), sum(x[3] for x in sr_["points"]))
+    su1 = ssum(L.series({**q, "by": ["user"], "id": ["u1"]}, T0 + 240))
+    su2 = ssum(L.series({**q, "by": ["user"], "id": ["u2"]}, T0 + 240))
+    sg = ssum(L.series({**q, "by": ["group"], "id": ["g1"], "members": ["u1,u2"]}, T0 + 240))
+    s0g = L.series({**q, "by": ["group"], "id": ["g0"], "members": [""]}, T0 + 240)
+    su1m = ssum(L.series({**q, "by": ["user"], "id": ["u1"], "members": ["u2"]}, T0 + 240))
+    check("a group's graph is its members' added together; an empty group draws nothing; `members` means nothing to by=user",
+          sg == (su1[0] + su2[0], su1[1] + su2[1]) and sg[0] > 0 and not s0g["points"] and su1m == su1, (su1, su2, sg, s0g["points"], su1m))
+
     # the newest slot of a (peer, owner) pair names it: unassign and back
     R2 = roster(peer("p1", "u1", "K1", [("n1", "awg0", "awg")]))
     L, rp = fresh("reowned", R2)

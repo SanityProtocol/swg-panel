@@ -487,7 +487,8 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
-    const onEdit = () => { dirty.current = true; };
+    // [data-nodirty]: a control that only chooses what the sheet SHOWS (a traffic window's dates) — nothing to save, nothing to lose
+    const onEdit = e => { if (!(e.target && e.target.closest && e.target.closest("[data-nodirty]"))) dirty.current = true; };
     root.addEventListener("input", onEdit, true);
     root.addEventListener("change", onEdit, true);
     // fields can opt out of autofocus with [data-noautofocus] (e.g. the VK box); and a view modal (noGuard)

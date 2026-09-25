@@ -118,7 +118,13 @@ try {
   TR.trafficTotals(past, Date.now() + 24 * 3600000); await flush();
   check("a window that ended before the panel's today is fetched once, ever", calls.length === 1, calls);
   check("a custom window's query names its dates", TR.trafficQuery(past) === "range=custom&from=2026-08-01&to=2026-08-31"
-    && TR.trafficQuery({ range: "custom", from: "", to: "" }) === "range=month", TR.trafficQuery(past));
+    && TR.trafficQuery({ range: "custom", from: "", to: "" }) === "range=all", TR.trafficQuery(past));
+  check("the grids' named windows ask the ledger for whole days: All time, Day, Week, Month",
+    TR.trafficQuery({ range: "all" }) === "range=all" && TR.trafficQuery({ range: "today" }) === "range=today"
+    && TR.trafficQuery({ range: "7d" }) === "range=7d" && TR.trafficQuery({ range: "30d" }) === "range=30d"
+    && TR.trafficQuery({ range: "bogus" }) === "range=all", "");
+  check("the grids open on All time, the peer, user and group windows on Week — their own window, never the grids'",
+    TR.trafficView.range === "all" && TR.trafficModalView.range === "7d" && TR.trafficModalView !== TR.trafficView, [TR.trafficView, TR.trafficModalView]);
 
   console.log("[3] the panel's day, not the browser's");
   check("22:30 UTC is already tomorrow for a panel counting days in Moscow",
@@ -212,9 +218,10 @@ try {
   check("a zone change drops the cached totals — a past window counted in the old zone must not stay for the session",
     ss.includes("if (dataDirty() || tzDirty()) trafficInvalidate();"), "");
   const sr = src("screen-roster.js");
-  check("(source) a double-click on a user's figure stays there, and an expanded row opens the user view on any width",
+  // the row's own traffic button sits among its actions, which stay on screen at every width (the Total cell does not)
+  check("(source) a double-click on a user's figure stays there, and a user row opens the user view on any width",
     sr.includes("onClick=${e => { e.stopPropagation(); openUserView(user.id); }} onDblClick=${e => e.stopPropagation()}")
-    && sr.includes('<div class="urow-traffic"><button type="button" class="btn btn-ghost btn-mini" onClick=${() => openUserView(user.id)}>'), "");
+    && sr.includes('onClick=${() => openUserView(user.id)}><${Ic} i="bars"/></button>'), "");
 } finally {
   for (const f of written) try { fs.unlinkSync(f); } catch (_) { /* gone */ }
 }

@@ -122,7 +122,7 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
             })()}</td>`;
             const addrCell = html`<td data-label=${T("col|Address")}><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
             const epCell = html`<td data-label=${T("col|Endpoint")}>${endpointCell(t)}</td>`;
-            const nodeCell = html`<td data-label=${T("col|Node")}><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
+            const nodeCell = html`<td data-label=${T("col|Node")} class="c-node"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
             // The row's tooltip advertises "Double-click for QR / configs", but this cell is a SINGLE-click link to
             // the user — so it carries its own title, overriding the row's. A cell whose tooltip describes a
             // different action than the one it performs is worse than no tooltip.
@@ -133,7 +133,7 @@ export function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hide
                   : (live ? html`<span class="faint">${T("status|Unassigned")}</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/></div>`)}</td>`;
             // embedded / live-peers: Status · [User] · Title · [Endpoint (live)] · Address · Node — iface badge sits by the status
             if (loc) return html`${userCell}${titleCell}${live ? epCell : null}${addrCell}${nodeCell}`;
-            const srvAgg = agg ? html`<td data-label=${node === "*" ? T("col|Node") : T("col|IF")}><div class="srvcell">
+            const srvAgg = agg ? html`<td data-label=${node === "*" ? T("col|Node") : T("col|IF")} class="c-node"><div class="srvcell">
               ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
               ${gw ? html`<span class="srvtags">${ifaceIsAll(iface) ? (grouped ? gridIfacesTag(t, matchedOf(p)) : gridIfaceTag(t)) : null}${gw}</span>`
                 : (ifaceIsAll(iface) ? (grouped ? gridIfacesTag(t, matchedOf(p)) : gridIfaceTag(t)) : null)}
@@ -172,7 +172,7 @@ export function UsersHeader({ sort, dir, onSort, live }) {
   const th = (c, label, cls) => html`<span class=${"clk" + (cls ? " " + cls : "")} onClick=${() => onSort(c)}>${arrow(c)}${label}</span>`;
   return html`<div class="uhead">
     <span></span>${th("status", T("col|Status"))}${th("name", T("col|User"))}
-    <span class=${"u-right" + (live ? " live" : "")}>${th("peers", T("col|Peers"), "uh-pc")}${th("nodes", T("col|Nodes"), "uh-srv")}${th("last", T("col|Online"))}${th("rate", T("col|Rate") + " ↓↑", "uh-r")}${live ? th("total", T("col|Total") + " ↓↑", "uh-r") : th("rtotal", trafficRangeLabel() + " ↓↑", "uh-r")}${live ? null : html`<span></span>`}</span>
+    <span class=${"u-right" + (live ? " live" : "")}>${th("peers", T("col|Peers"), "uh-pc")}${th("nodes", T("col|Nodes"), "uh-srv")}${th("last", T("col|Online"))}${th("rate", T("col|Rate") + " ↓↑", "uh-r uh-rate")}${live ? th("total", T("col|Total") + " ↓↑", "uh-r") : th("rtotal", trafficRangeLabel() + " ↓↑", "uh-r")}${live ? null : html`<span></span>`}</span>
   </div>`;
 }
 
