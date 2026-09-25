@@ -12350,6 +12350,11 @@ def iface_drops(ifaces, links=()):
             _base[ifn] = {"nonce": _want, "bad": sum(kinds), "pkts": pkts, "at": int(now), "kinds": list(kinds)}
             _drops_base_save()
             st["prev"] = None; st["hist"] = []
+        elif fk != _FAULT_ALL and ifn in _base and "kinds" not in _base[ifn]:
+            # A reset from before per-kind baselines kept only the total, which on an interface that leaves kinds out would
+            # put them back into "since reset". Re-baseline it here, once, and say so honestly: `at` becomes now.
+            _base[ifn] = dict(_base[ifn], bad=sum(kinds), pkts=pkts, at=int(now), kinds=list(kinds))
+            _drops_base_save()
         if st["prev"] is not None:
             d = tuple(cur[i] - st["prev"][i] for i in range(5))
             if min(d) >= 0 and any(d):                  # negative => counters reset (iface recreated): skip, don't invent a spike
@@ -12372,15 +12377,11 @@ def iface_drops(ifaces, links=()):
         _rate = [_fb(r) * 100.0 / (r[1] + _fb(r)) for r in h if (r[1] + _fb(r)) >= IFACE_PEAK_MIN]
         peak = max(_rate) if _rate else None          # None = no sample was big enough to express a rate
         peak_bad = max([_fb(r) for r in h] or [0])   # …but the COUNT is always a fact
-        # Since the reset, counted the same way. A baseline written before per-kind baselines existed has only the total, so
-        # it subtracts that from the total — the old reading — until the next reset stores the kinds.
+        # Since the reset, counted the same way. A baseline with only the total is left only where every kind counts (see
+        # the re-baseline above), and there the total is the same subtraction.
         _bk = _bb.get("kinds")
-        if isinstance(_bk, list) and len(_bk) == 4:
-            life_bad = sum(kinds[i - 2] - _bk[i - 2] for i in fi)
-        elif _bb:
-            life_bad = sum(kinds) - _bb.get("bad", 0)
-        else:
-            life_bad = sum(kinds[i - 2] for i in fi)
+        life_bad = sum(kinds[i - 2] for i in fi) - (sum(_bk[i - 2] for i in fi) if isinstance(_bk, list) and len(_bk) == 4
+                                                    else _bb.get("bad", 0))
         out[ifn] = {
             "pct": round(tb * 100.0 / (tp + tb), 3), "window_pkts": tp, "window_bad": tb,
             "rx_drop": part[0], "rx_err": part[1], "tx_drop": part[2], "tx_err": part[3],

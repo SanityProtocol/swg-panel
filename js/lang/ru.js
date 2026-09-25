@@ -2354,6 +2354,7 @@ export const STR = {
   "Sending": "Отправка",
   "Receiving": "Приём",
   "queue full": "очередь",
+  "no session": "нет сессии",
   "refused": "отклонено",
   "overflow": "переполнение",
   "Not counted": "Не учтено",

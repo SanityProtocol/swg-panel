@@ -958,8 +958,8 @@ export function NodeDetail({ node: rawName }) {
                     const _d = m.drops;
                     // …and not on too little traffic to carry a rate (dropsEnough): the interface page still shows the count.
                     if (!_d || !dropsEnough(_d) || !(_d.pct >= 0.05)) return null;
-                    // The figure carries a bubble: one percentage cannot say whether this is the node's own
-                    // send queue, a failed send, or traffic refused on arrival — three faults, three fixes.
+                    // The figure carries a bubble: one percentage cannot say whether this is the node's receive
+                    // backlog, a link with no session, or a failed send — different faults, different fixes.
                     return html`<div class="ifrow"><span class="l">${T("col|Drops")}</span><span class="r addr"><${DropsPop} d=${_d} iface=${ifn} node=${name}
                       trigger=${html`<span class="dp-num" style=${"color:" + lossColor(_d.pct)}>${_d.pct}%</span>`}/></span></div>`;
                   })()}

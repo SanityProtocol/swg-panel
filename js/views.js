@@ -1009,8 +1009,8 @@ export function MeshStat({ nodeId, mode }) {
 }
 
 // ───── interface drops: what the kernel counters can actually tell an operator ─────
-// The card shows one percentage. One percentage cannot be acted on: a node that cannot send fast enough,
-// a send that failed outright, and traffic refused on arrival are three different faults wearing the same
+// The card shows one percentage. One percentage cannot be acted on: a receive backlog overflowing, a link
+// whose far end had no session, and a send that failed outright are different faults wearing the same
 // number. This bubble splits it the way the kernel already counts it, and adds the two things a rolling
 // mean hides — the worst single sample (bursts are what users feel; a 0.02% mean can be one 5% sample)
 // and whether it is happening NOW or is a scar from hours ago.
@@ -1025,7 +1025,9 @@ export function MeshStat({ nodeId, mode }) {
 // (see _FAULT_ALL in swg-noded); the rest are summed into one "Not counted" row, with a line saying what they are.
 // The old labels had rx_drop as "refused" — that is rx_errors.
 const DROP_KINDS = [
-  { k: "tx_drop", dir: "out", lbl: () => T("queue full"),
+  // On a kernel device a counted tx_drop can only be a mesh link (a client interface leaves it out), and there it is
+  // no queue at all: packets held for a far end with no session. "queue full" is true of a TUN only.
+  { k: "tx_drop", dir: "out", lbl: d => d.dp === "wg" ? T("no session") : T("queue full"),
     hint: d => d.dp === "wg" ? T("Packets held for the other server were discarded because the link had no working session — it was down.")
       : d.dp === "tun" ? T("The program serving this interface didn't read its queue in time — local load, or it was restarting.")
       : T("Packets waiting to go out were discarded before they could be sent.") },
@@ -1196,7 +1198,7 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
     const rs = rowsFor(dir);
     if (!rs.length) return null;
     return html`<div class="dp-row"><span class="dp-l">${label}</span><span class="dp-v">${rs.map(x => html`
-      <span class=${"dp-kind" + (d[x.k] ? "" : " zero")}>${x.lbl()} <b>${fmtCount(d[x.k])}</b></span>`)}</span></div>`;
+      <span class=${"dp-kind" + (d[x.k] ? "" : " zero")}>${x.lbl(d)} <b>${fmtCount(d[x.k])}</b></span>`)}</span></div>`;
   };
   return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
     <div class="onpop-h dp-h">${T("Drops · {v1}", { v1: iface })}
