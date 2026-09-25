@@ -4998,9 +4998,10 @@ def migrate_enabled_turn_forks(nodes_path, panel_settings_path, stats_dir):
     """One-time: keep a fork the fleet ALREADY runs from vanishing out of the install-a-fork picker.
 
     enabled_turn_forks filters that picker AND the Overview traffic-by-fork chart. The built-in default is every
-    VISIBLE fork (the catalog minus TURN_HIDDEN_FORKS), so what this can still add is a HIDDEN fork — cacggghp or
-    kiper292 — that a node actually runs: without the seed those proxies would go on serving traffic while
-    disappearing from both the picker and the chart. Seed enabled_turn_forks with the forks a node
+    VISIBLE fork (the catalog minus TURN_HIDDEN_FORKS), so what this can still add is a HIDDEN fork — cacggghp —
+    that a node actually runs: without the seed those proxies would go on serving traffic while
+    disappearing from both the picker and the chart. (A fork a node runs that is no longer in the catalog at all is
+    seeded too, but only the chart can show it — the picker lists catalog forks only.) Seed enabled_turn_forks with the forks a node
     ALREADY runs (from the persisted snapshot mirrors), unioned with the defaults, so nothing already deployed goes
     stale. This is purely a panel-UI setting — it NEVER touches deployed proxies, node desired sets, or any config a
     client has already imported. Idempotent + conservative: runs only when the key is genuinely unset in the SAVED
@@ -11756,7 +11757,6 @@ TURN_CLIENTS = {
                                                                                                    "windows": {"name": "WINGS DeX", "github": "https://github.com/WINGS-N/WINGSV_DeX/releases"},
                                                                                                    "linux":   {"name": "WINGS DeX", "github": "https://github.com/WINGS-N/WINGSV_DeX/releases"}}},
     "vkturnproxy": {"name": "VK TURN Proxy",  "encoder": "anton48",  "scheme": "vkturnproxy://", "qr": False, "platforms": {"ios": {"github": "https://github.com/anton48/vk-turn-proxy-ios/releases", "appstore": "https://testflight.apple.com/join/ANm6cmDv", "autostart": True}}},   # iOS has no App Store listing; the app installs via TestFlight (the .ipa in Releases needs self-signing → advanced only)
-    "wgturn":      {"name": "WireGuard-TURN", "encoder": "kiper292", "scheme": None,             "platforms": {"android": {"github": "https://github.com/kiper292/wireguard-turn-android/releases"}}},
     "freeturn":    {"name": "FreeTurn",       "encoder": "freeturn", "scheme": "freeturn://",    "platforms": {"android": {"github": "https://github.com/samosvalishe/turn-proxy-android/releases", "autostart": True}}},
     "mysorez":     {"name": "VK TURN Proxy",  "encoder": "vktgz",    "scheme": None,             "platforms": {"android": {"github": "https://github.com/MYSOREZ/vk-turn-proxy-android/releases"}}},
     "sidecar":     {"name": "Sidecar",         "encoder": "sidecar",  "scheme": None,             "platforms": {   # the Go CLI ("sidecar" = a helper binary run beside WireGuard): samosvalishe/free-turn-proxy ships client-<os>-<arch>; flags match the shared vk-turn-proxy family, so it drives cacggghp/Moroka8 relays too (per-author builds offered)
@@ -11884,7 +11884,7 @@ TURN_SERVERS = {
                      "settings": [{"key": "wrap", "flag": "-wrap", "type": "bool", "default": True, "label": "Obfuscation (WRAP)", "help": "MYSOREZ mzrtp obfuscation (-wrap) — needs a password. Off = plain (VK throttles unobfuscated traffic)."},
                                   {"key": "password", "flag": "-password", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Password", "help": "Shared secret the core HKDFs to the AEAD key — must match the client. Required when WRAP is on. Auto-generated."}],
                      "client_settings": _MYSOREZ_CORE_CS},   # the VK TURN Proxy app loads the MYSOREZ CORE here → captcha/vk-auth/device knobs (the vktgz encoder emits -password + these)
-    "WINGS-N":      {"label": "WINGS-N",      "owner": "WINGS-N/vk-turn-proxy",          "wrap": "-wrap-mode on",        "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#C98BE0", "light": "#9B4FC7"}, "clients": ["wingsv", "vkturnproxy", "sidecar", "freeturn", "wgturn"],     "reload": "restart",
+    "WINGS-N":      {"label": "WINGS-N",      "owner": "WINGS-N/vk-turn-proxy",          "wrap": "-wrap-mode on",        "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#C98BE0", "light": "#9B4FC7"}, "clients": ["wingsv", "vkturnproxy", "sidecar", "freeturn"],     "reload": "restart",
                      # ⚠️ NEVER IN FRONT OF AN AmneziaWG 3.1 INTERFACE (D-apps, docs/AWG3-PLAN.md §7.5). The server relays UDP and
                      # does not care; its app does. WINGS V (Android, v6.0.0) pins amneziawg-android 2.0.1, which throws
                      # UNKNOWN_ATTRIBUTE on any 3.x key, and WINGS DeX (desktop) parses Jc–H4 only and drops the rest, so
@@ -11928,11 +11928,6 @@ TURN_SERVERS = {
                                          {"key": "serverName", "type": "text", "default": "", "label": "Server name", "help": "Name this connection takes in the FreeTurn app's list (the link's `name`). This setting covers every proxy of this fork, so use {fork}, {host} or {port} to vary it per server — «Frankfurt {port}» becomes «Frankfurt 56009». Blank = the app names it itself."}]},
     "Moroka8":      {"label": "Moroka8",      "owner": "Moroka8/vk-turn-proxy",          "wrap": "-wrap",                "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#E07A9A", "light": "#C24468"}, "clients": ["sidecar", "mysorez", "vkturnproxy", "freeturn"],    "reload": "restart",
                      "settings": [{"key": "wrap", "flag": "-wrap", "type": "bool", "default": True, "label": "WRAP"}, _TS_WRAPKEY]},
-    "kiper292":     {"label": "kiper292",     "owner": "kiper292/vk-turn-proxy",         "wrap": "",                     "keyflag": "-wrap-key", "protocols": ["wg"],        "color": {"dark": "#6FD9A8", "light": "#12A46B"}, "clients": ["wgturn", "vkturnproxy", "sidecar"],     "reload": "restart",
-                     "settings": [],
-                     "client_settings": [{"key": "streamNum", "type": "int", "default": 4, "label": "Streams", "help": "Parallel TURN streams (#@wgt:StreamNum, app range 1–16)."},
-                                         {"key": "streamsPerCred", "type": "int", "default": 4, "label": "Streams per credential", "help": "Streams sharing one VK credential (#@wgt:StreamsPerCred)."},
-                                         {"key": "watchdogTimeout", "type": "int", "default": "", "label": "Watchdog timeout", "help": "Reconnect after N seconds idle (#@wgt:WatchdogTimeout). Blank = off."}]},
     "anton48":      {"label": "anton48",      "owner": "anton48/vk-turn-proxy",          "wrap": "-wrap-srtp",           "keyflag": "-wrap-key", "protocols": ["wg"],        "color": {"dark": "#D9CF5F", "light": "#8E8420"}, "clients": ["vkturnproxy", "sidecar", "freeturn"], "reload": "restart",
                      "settings": [{"key": "srtp_mode", "type": "flagenum", "default": "wrap", "label": "SRTP mode",
                                    "help": "WRAP = keyed (the key must match the app's WRAP KEY field); SRTP = keyless.",
@@ -11996,19 +11991,19 @@ TURN_SERVERS = {
 # `settings` above; the client encoder (turn-artifacts.js) reads these + reuses the server/coupled values.
 # Display order: cacggghp + WINGS-N pinned first; the rest by combined (server + client-app) GitHub stars,
 # descending — snapshot fetched 2026-07-16 (static, intentionally not live): MYSOREZ 17+443, samosvalishe
-# 141+314, kiper292 123+267, anton48 29+165, Moroka8 75+0.
+# 141+314, anton48 29+165, Moroka8 75+0.
 TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "anton48", "ildarmaga", "wdttplus", "Moroka8", "MYSOREZ",
-                     "samosvalishe", "cacggghp", "kiper292", "xxcipherx", "qwdtt"]   # operator order (csqtt sits under amurcanov — same author).
-# The tail is pinned by hand: xxcipherx, then qwdtt LAST. Hidden forks (cacggghp/kiper292) sit before them so the
-# pinned pair stays at the bottom of every operator list even if either is ever un-hidden.
+                     "samosvalishe", "cacggghp", "xxcipherx", "qwdtt"]   # operator order (csqtt sits under amurcanov — same author).
+# The tail is pinned by hand: xxcipherx, then qwdtt LAST. The hidden fork (cacggghp) sits before them so the
+# pinned pair stays at the bottom of every operator list even if it is ever un-hidden.
 # Forks kept in the catalog (so a deployed instance still resolves its label/colour) but HIDDEN from the operator
 # UI — the settings toggle list, the install/enable picker, the interface Setup-proxy dropdown, and the fork
 # colour pickers all skip these. Purely cosmetic gating; nothing about a running proxy changes.
-TURN_HIDDEN_FORKS = {"cacggghp", "kiper292"}
+TURN_HIDDEN_FORKS = {"cacggghp"}
 
 # A client APP's knob schema is defined once (on its NATIVE server's client_settings) and shared wherever that app
 # is offered — so the Clients tab edits it in ONE place. Maps each client id → the server that natively runs it.
-_CLIENT_NATIVE_FORK = {"wingsv": "WINGS-N", "vkturnproxy": "anton48", "wgturn": "kiper292",
+_CLIENT_NATIVE_FORK = {"wingsv": "WINGS-N", "vkturnproxy": "anton48",
                        "freeturn": "samosvalishe", "mysorez": "MYSOREZ", "sidecar": None,
                        # WDTT-family clients resolve to their own fork; only qwdtt declares a knob (_QWDTT_CLIENT_CS)
                        "wdttapp": "amurcanov", "qwdtt": "qwdtt", "qwdttleg": "qwdtt", "pwdtt": "ildarmaga", "pwdttilg": "ildarmaga", "csqttapp": "csqtt",
@@ -12021,12 +12016,11 @@ _CLIENT_NATIVE_FORK = {"wingsv": "WINGS-N", "vkturnproxy": "anton48", "wgturn": 
 # A client id absent from a fork's map = no usable connection → hidden from the picker (never offer a dead pairing).
 _TURN_CLIENT_COMPAT = {
     "cacggghp":     {"mysorez": "native",  "sidecar": "native", "vkturnproxy": "plain"},
-    "kiper292":     {"wgturn": "native",   "sidecar": "native", "vkturnproxy": "plain"},   # NO mysorez: the VK TURN app is a core-launcher with no kiper292 (proxy_v2) core → not a real pairing
     "MYSOREZ":      {"mysorez": "native",  "sidecar": "native"},   # NO vkturnproxy: MYSOREZ hard-requires its mzrtp wrap — with -wrap on (the default) the server replaces the plain listener with a wrapped one and drops every unwrapped packet (verified in MYSOREZ/vk-turn-proxy server/main.go + wrap.go), and the VK TURN Proxy app can't speak mzrtp → it never connects. (WINGS-N differs: it dual-listens plain, so its vkturnproxy pairing works, just throttled.)
     "Moroka8":      {"sidecar": "native",  "vkturnproxy": "friendly", "freeturn": "friendly", "mysorez": "friendly_core"},
     "samosvalishe": {"freeturn": "native", "sidecar": "native", "vkturnproxy": "friendly", "mysorez": "friendly_core"},
     "anton48":      {"vkturnproxy": "native", "sidecar": "friendly", "freeturn": "friendly"},
-    "WINGS-N":      {"wingsv": "native",   "sidecar": "plain", "vkturnproxy": "plain", "wgturn": "plain", "freeturn": "plain"},   # NO mysorez: core-launcher with no WINGS core to load
+    "WINGS-N":      {"wingsv": "native",   "sidecar": "plain", "vkturnproxy": "plain", "freeturn": "plain"},   # NO mysorez: core-launcher with no WINGS core to load
     # WDTT family — servers are wire-identical (WRAP-A), so EVERY WDTT client connects fully OBFUSCATED (never plain).
     # `native` = the fork's OWN author's app; every other WDTT app (incl. anton48's iOS vkturnproxy — a different
     # author) is `friendly` (crossplatform, still WRAP-A). Each fork offers the whole family so an operator can hand
@@ -12116,7 +12110,6 @@ _TURN_CLI_AUTHORS = {
     "anton48":      ["samosvalishe", "Moroka8"],   # anton's own CLI is plain-only → the rtpopus authors reach its relay
     "MYSOREZ":      ["MYSOREZ"],
     "cacggghp":     ["samosvalishe"],              # plain forks + WINGS: the universal free-turn CLI (plain)
-    "kiper292":     ["samosvalishe"],
     "WINGS-N":      ["samosvalishe"],
 }
 # The upstream GitHub file(s) each client's config/link schema is CURATED from (see the turn-client-config-sources
@@ -12125,7 +12118,6 @@ _TURN_CLI_AUTHORS = {
 _CLIENT_SOURCES = {
     "wingsv":      [{"owner": "WINGS-N", "repo": "WINGSV_DeX", "branch": "main", "path": "external/wingsv-proto/wingsv.proto", "message": "Turn"}],
     "vkturnproxy": [{"owner": "anton48", "repo": "vk-turn-proxy-ios", "branch": "main", "path": "quick_link.py"}],
-    "wgturn":      [{"owner": "kiper292", "repo": "wireguard-turn-android", "branch": "main", "path": "ui/src/main/java/com/wireguard/android/turn/TurnSettings.kt"}],
     "freeturn":    [{"owner": "samosvalishe", "repo": "free-turn-proxy", "branch": "master", "path": "docs/uri.md"},
                     {"owner": "samosvalishe", "repo": "free-turn-proxy", "branch": "master", "path": "docs/flags.md"}],
     "mysorez":     [{"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/models/Configs.kt"},
@@ -12169,7 +12161,7 @@ def _client_sources(client_id):
 # set** — the fields the encoder (turn-artifacts.js) already serialises — which splits a newly-seen field into green
 # `+n` (adoptable) vs orange `+x` (needs wiring). Hand-declared next to the encoder; a mismatch only mis-colours a
 # counter, never breaks a config (the encoder stays the real gate). NB the encoder's own wire vocabulary (e.g.
-# kiper292 `#@wgt:StreamNum`) is a THIRD namespace — the upstream name here is the *parsed source* identifier.
+# wingsv's protobuf tags) is a THIRD namespace — the upstream name here is the *parsed source* identifier.
 _CLIENT_FIELD_MAP = {
     "wingsv": {  # wingsv.proto field names (see turn-artifacts.js wingsvConfigBytes)
         "threads": "threads", "sessionMode": "session_mode", "browserFingerprint": "browser_fingerprint",
@@ -12180,9 +12172,6 @@ _CLIENT_FIELD_MAP = {
     "vkturnproxy": {  # anton quick_link.py CONFIG keys (turnServerOverride/vkAuth are panel-side, not in CONFIG)
         "numConnections": "numConnections", "useUDP": "useUDP", "dnsServers": "dnsServers", "obfProfile": "obfProfile",
         "serverName": "serverName",
-    },
-    "wgturn": {  # kiper292 TurnSettings.kt property names (NOT the encoder's #@wgt keys)
-        "streamNum": "streams", "streamsPerCred": "streamsPerCred", "watchdogTimeout": "watchdogTimeout",
     },
     # mysorez — its Kotlin data classes are the raw-command/SSH model, not clean turn settings → raw-flags client, not
     # field-diffed here. freeturn — Markdown (value-diff only). sidecar — no client_settings.
@@ -12228,7 +12217,6 @@ _CLIENT_IGNORE_FIELDS = {
                "profiles", "merge_only", "tunnel_mode"},   # tunnel_mode is auto-derived from the interface type (WG/AWG), not a knob
     "vkturnproxy": {"privateKey", "peerPublicKey", "tunnelAddress", "vkLink", "peerAddress", "presharedKey",
                     "wrapKeyHex", "clientID", "useDTLS", "useSrtp", "useWrap", "useWrapA", "useWrapS"},   # mode booleans the encoder computes from server type — not operator knobs
-    "wgturn": {"enabled", "peer", "vkLink", "mode", "useUdp", "localPort", "turnIp", "turnPort", "peerType"},
 }
 def _filter_inventory(client_id, fields):
     ig = _CLIENT_IGNORE_FIELDS.get(client_id) or set()
@@ -12856,17 +12844,8 @@ def _extract_values_gochain(text, field):
     vals = {m.group(1) for m in re.finditer(re.escape(field) + r'\s*(?:==|!=)\s*"([^"]+)"', text or "")}
     return sorted(vals) if vals else None
 
-def _extract_values_kotlinlist(text, field):
-    """Kotlin `<field> in listOf("a","b",…)` (kiper292 TurnSettings.kt peerType)."""
-    m = re.search(re.escape(field) + r'\b[^\n]*?\bin\s+listOf\s*\(([^)]*)\)', text or "")
-    if not m:
-        return None
-    vals = re.findall(r'"([^"]+)"', m.group(1))
-    return sorted(set(vals)) if vals else None
-
 _VALUE_EXTRACTORS = {"jsarray": _extract_values_jsarray, "mdpipe": _extract_values_mdpipe,
-                     "pytuple": _extract_values_pytuple, "gochain": _extract_values_gochain,
-                     "kotlinlist": _extract_values_kotlinlist}
+                     "pytuple": _extract_values_pytuple, "gochain": _extract_values_gochain}
 def _extract_values(kind, text, marker):
     fn = _VALUE_EXTRACTORS.get(kind)
     return fn(text, marker) if fn else None

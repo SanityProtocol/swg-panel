@@ -6038,8 +6038,6 @@ export const STR = {
     "Выкл = управление по TCP (обходит ограничение VK на скорость выдачи по учётке — рекомендуется). Вкл только если ваша сеть режет TCP до релея.",
   "Parallel TURN connections (1–50). The VK TURN Proxy app default is 30.":
     "Параллельные TURN-соединения (1–50). В приложении VK TURN Proxy по умолчанию 30.",
-  "Parallel TURN streams (#@wgt:StreamNum, app range 1–16).":
-    "Параллельные TURN-потоки (#@wgt:StreamNum, в приложении 1–16).",
   "Parallel TURN streams (-n). Blank = the app's default (10).":
     "Параллельные TURN-потоки (-n). Пусто = умолчание приложения (10).",
   "Name this connection takes in the FreeTurn app's list (the link's `name`). This setting covers every proxy of this fork, so use {fork}, {host} or {port} to vary it per server — «Frankfurt {port}» becomes «Frankfurt 56009». Blank = the app names it itself.":
@@ -6052,8 +6050,6 @@ export const STR = {
     "Ходить к TURN-релею по UDP (-udp). В приложении включено по умолчанию.",
   "Reach the TURN relay over UDP (Turn.use_udp). On by default.":
     "Ходить к TURN-релею по UDP (Turn.use_udp). По умолчанию включено.",
-  "Reconnect after N seconds idle (#@wgt:WatchdogTimeout). Blank = off.":
-    "Переподключаться после N секунд простоя (#@wgt:WatchdogTimeout). Пусто = выключено.",
   "Reconnect when the device network changes (Turn.restart_on_network_change). Off = the app's default.":
     "Переподключаться при смене сети на устройстве (Turn.restart_on_network_change). Выкл = умолчание приложения.",
   "Relay transport": "Транспорт до релея",
@@ -6076,8 +6072,6 @@ export const STR = {
     "Количество потоков/воркеров (-n). Пусто = умолчание приложения (8).",
   "Streams": "Потоки",
   "Streams per credential": "Потоков на учётку",
-  "Streams sharing one VK credential (#@wgt:StreamsPerCred).":
-    "Сколько потоков делят одну учётку VK (#@wgt:StreamsPerCred).",
   "Streams sharing one VK credential (-streams-per-cred). Blank = default (10).":
     "Сколько потоков делят одну учётку VK (-streams-per-cred). Пусто = по умолчанию 10.",
   "TLS/HTTP imitation family the relay presents (Turn.browser_fingerprint). auto = random per session.":
@@ -6104,7 +6098,6 @@ export const STR = {
   "WRAP = keyed (the key must match the app's WRAP KEY field); SRTP = keyless.":
     "WRAP = с ключом (ключ должен совпадать с полем WRAP KEY в приложении); SRTP = без ключа.",
   "WRAP cipher": "Шифр WRAP",
-  "Watchdog timeout": "Таймаут сторожа",
   "Which call-link source the app uses: -vk-link = VK Calls · -yandex-link = Yandex.":
     "Какой источник ссылок на звонки использует приложение: -vk-link = Звонки VK · -yandex-link = Яндекс.",
   "Worker threads": "Рабочие потоки",
@@ -6136,8 +6129,6 @@ export const STR = {
     "Откройте ссылку на iPhone (или Настройки приложения → Импорт из ссылки подключения), чтобы импортировать в VK TURN Proxy.",
   "Paste the wdtt:// link into PWDTT — «Добавление VK профиля».":
     "Вставьте ссылку wdtt:// в PWDTT — «Добавление VK профиля».",
-  "Scan the QR or import .conf into the kiper292 WireGuard-TURN app. The TURN settings ride along as #@wgt: comments (the Endpoint stays the real server).":
-    "Отсканируйте QR или импортируйте .conf в приложение WireGuard-TURN от kiper292. Настройки TURN едут в комментариях #@wgt: (Endpoint остаётся настоящим сервером).",
   "Scan the QR or open the qwdtt:// link in the qWDTT app (Android) or PWDTT (desktop).":
     "Отсканируйте QR или откройте ссылку qwdtt:// в приложении qWDTT (Android) или PWDTT (десктоп).",
   "Scan the QR or open the wdtt:// link in WDTT-Plus.":

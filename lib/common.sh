@@ -847,12 +847,7 @@ stop_bare_csqtt(){
   [ "$n" -gt 0 ] && { systemctl daemon-reload >/dev/null 2>&1 || true; echo "    stopped $n bare-metal csqtt server(s) — the container owns them now"; }
   return 0; }
 
-# ── turn-proxy: the curated forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──
-turn_repo_owner(){ case "$1" in
-  WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/free-turn-proxy";;
-  kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
-  Moroka8) echo "Moroka8/vk-turn-proxy";; MYSOREZ) echo "MYSOREZ/vk-turn-proxy";;
-  cacggghp) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
+# ── turn-proxy: the binary download (GitHub direct, then opt-in mirrors) ──
 
 # Axis-2 P3: systemd sandbox for turn-proxy units — shared by install-host/node + convert (mirrors swg-noded's
 # TURN_UNIT_HARDENING). A forwarder only shuffles bytes between two sockets, so confine it hard: a compromised

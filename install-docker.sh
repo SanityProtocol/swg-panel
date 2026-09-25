@@ -393,7 +393,7 @@ case "$ROLE" in ""|master|host) ;; *) die "role must be master|host";; esac
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
 $DRYRUN && { info "DRY RUN — .env renders under ./dryrun, no Docker commands run."; rm -rf "$PREFIX"; }
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
+. "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, dl_turn_bin
 # Refuse on a declaratively managed host BEFORE anything is written — the docker path laid down here would
 # be invisible to the host's own tooling. Defined in lib/common.sh, above; a `--dry-run` still runs.
 refuse_on_declarative_host 'services.swg-node = { enable = true; delivery = "container"; ... };   # or services.swg-panel'

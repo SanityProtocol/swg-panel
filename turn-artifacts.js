@@ -17,7 +17,6 @@
  *   • anton48   vkturnproxy:// JSON  "version": 1
  *   • samosvalishe freeturn:// JSON "v": 1 — the free-turn-proxy server (vk-turn-proxy is archived); the
  *                 link embeds the WG config + rtpopus obf key. Imported by turn-proxy-android + the CLI.
- *   • kiper292  #@wgt: comments, PeerType SERVER-COUPLED → proxy_v2 (what a "kiper292" proxy IS)
  *   • WINGS-N   wingsv:// = 0x12 ‖ zlib(protobuf Config); hand-encoded. Config.ver = 1.
  */
 (function (root) {
@@ -401,13 +400,13 @@
   // A server's NATIVE client encoder (the app built for that fork).
   // Returns an ENCODER id (matches swg-panel-server TURN_CLIENTS[*].encoder, which the SPA passes as `asClient`).
   function nativeEncoder(fork) {
-    return ({ "WINGS-N": "wingsv", "kiper292": "kiper292", "anton48": "anton48",
+    return ({ "WINGS-N": "wingsv", "anton48": "anton48",
       "samosvalishe": "freeturn", "MYSOREZ": "vktgz", "cacggghp": "vktgz" })[fork] || "sidecar";
   }
   // The fork (turn-proxy server) a client encoder is NATIVE to — the canonical publisher, reverse of nativeEncoder.
   // Lets the UI colour a cross-fork pairing: the SERVER used vs the fork the chosen app belongs to.
   function encoderFork(enc) {
-    return ({ wingsv: "WINGS-N", anton48: "anton48", kiper292: "kiper292", freeturn: "samosvalishe", vktgz: "MYSOREZ" })[enc] || "";
+    return ({ wingsv: "WINGS-N", anton48: "anton48", freeturn: "samosvalishe", vktgz: "MYSOREZ" })[enc] || "";
   }
   // A stable per-peer id (attribution / allowlist-ready), derived from the peer's tunnel IP so it survives regen.
   function stableCid(cf, tp) { return "swg-" + String(String(cf.address || "").split("/")[0] || (tp.listen || "")).replace(/[^0-9A-Za-z]+/g, "-"); }
@@ -416,7 +415,6 @@
   var CLIENT_META = {
     wingsv:   { app: "WINGS V",        platform: "Android", author: "WINGS-N" },
     anton48:  { app: "VK TURN Proxy",  platform: "iOS",     author: "anton48" },
-    kiper292: { app: "WireGuard-TURN", platform: "Android", author: "kiper292" },
     freeturn: { app: "FreeTurn",       platform: "Android", author: "samosvalishe" },
     vktgz:    { app: "VK TURN Proxy",  platform: "Android", author: "MYSOREZ" }
   };
@@ -487,8 +485,8 @@
     var listen = tp.listen || "";
     // The user's VK call links — an ordered list (primary first). vkLink is the legacy single (= primary). Each fork
     // uses what its app supports: WINGS embeds all (Turn.links[]), anton48 all (multiline vkLink), freeturn all
-    // (comma-joined `vk`), VKTGZ + CLI all where the core takes a list (free-turn, MYSOREZ); kiper292, cacggghp and
-    // Moroka8 cores take exactly one link, so they get the primary.
+    // (comma-joined `vk`), VKTGZ + CLI all where the core takes a list (free-turn, MYSOREZ); the cacggghp and Moroka8
+    // cores take exactly one link, so they get the primary.
     var vkList = (Array.isArray(vkLinks) && vkLinks.length ? vkLinks : (vkLink ? [vkLink] : [])).map(function (s) { return (s || "").trim(); }).filter(Boolean);
     var vkRaw = vkList[0] || "";                          // the PRIMARY VK call link — empty when unset
     var vkText = vkRaw || "<PASTE VK CALL LINK>";          // placeholder ONLY in plain-text configs (a visible fill-in line the user edits)
@@ -501,17 +499,6 @@
       return { fork: fork, app: "WINGS V", label: clientLabel(fork, "wingsv"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
         hint: "Scan the QR with the WINGS V app, or paste the wingsv:// link (Settings → import from link).",
         buildAsync: function () { return wingsvLink(baseConf, tp, vkList, cs); } };   // pass ALL VK links → Turn.links[]; empty omitted
-    }
-    if (enc === "kiper292") {
-      var wdt = csNum(cs, "watchdogTimeout", 0);                       // inactivity watchdog (s); 0 = off → emit only when > 0
-      var block = ["", "#@wgt:EnableTURN = true", "#@wgt:UseUDP = false", "#@wgt:IPPort = " + listen,
-        "#@wgt:VKLink = " + vkText, "#@wgt:Mode = vk_link", "#@wgt:PeerType = proxy_v2",
-        "#@wgt:StreamNum = " + csNum(cs, "streamNum", 4), "#@wgt:LocalPort = 9000",
-        "#@wgt:StreamsPerCred = " + csNum(cs, "streamsPerCred", 4)]
-        .concat(wdt > 0 ? ["#@wgt:WatchdogTimeout = " + wdt] : []).join("\n");
-      return { fork: fork, app: "WireGuard-TURN", label: clientLabel(fork, "kiper292"), ext: "conf", qr: true, vkMissing: vkMissing, enc: enc,
-        hint: "Scan the QR or import .conf into the kiper292 WireGuard-TURN app. The TURN settings ride along as #@wgt: comments (the Endpoint stays the real server).",
-        text: baseConf.replace(/\s*$/, "") + "\n" + block + "\n" };
     }
     if (enc === "anton48") {
       // C path — a faithful port of the app's own generator (anton48/vk-turn-proxy-ios/quick_link.py, build_link):
@@ -529,7 +516,7 @@
       // → WRAP-S mode: useWrapS=true, obfProfile=rtpopus, the obf key in wrapKeyHex, and an allowlist-ready clientID.
       var isWrapS = (fork === "samosvalishe") || csBool(cs, "useWrapS", false);
       // vkturnproxy obfuscates ONLY on its native/friendly pairings: anton48 (native — bare -srtp = SRTP, -wrap-srtp = SRTP+WRAP),
-      // Moroka8 (-wrap = SRTP+WRAP), samosvalishe (rtpopus = WRAP-S). Every PLAIN pairing — cacggghp/kiper292 (no obf) AND
+      // Moroka8 (-wrap = SRTP+WRAP), samosvalishe (rtpopus = WRAP-S). Every PLAIN pairing — cacggghp (no obf) AND
       // MYSOREZ/WINGS-N (whose native wrap the vkturnproxy app can't ride) — connects bare DTLS+WG → Legacy: all obf modes off,
       // no wrap key (never carry the server's own -password/-wrap key here — it isn't an anton48 SRTP-WRAP key). See compat matrix.
       var vkObf = (fork === "anton48" || fork === "Moroka8" || fork === "samosvalishe");

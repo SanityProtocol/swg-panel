@@ -34,7 +34,7 @@ NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 DRYRUN=false; [ "${1:-}" = "--dry-run" ] && DRYRUN=true
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
+. "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, dl_turn_bin
 # Refuse on a declaratively managed host BEFORE anything is written — a node laid down here would
 # be invisible to the host's own tooling. Defined in lib/common.sh, above; a `--dry-run` still runs.
 refuse_on_declarative_host 'services.swg-node = { enable = true; ... };'
@@ -504,7 +504,7 @@ declare -A TP_LISTEN TP_CONNECT TP_WRAP
 gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }   # 32-byte key as 64 hex chars
   openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 # Per-fork obfuscation flags (verified from each binary's -h). Echoes the flags WITH a freshly generated
-# 64-hex key baked in (kiper292 has no obfuscation → empty). samosvalishe is now the free-turn-proxy server
+# 64-hex key baked in. samosvalishe is now the free-turn-proxy server
 # (the standalone vk-turn-proxy is archived): it uses -obf-profile rtpopus + -obf-key, and its clients
 # (turn-proxy-android / free-turn-proxy CLI) import a freeturn:// link carrying the same rtpopus key.
 turn_wrap_flags(){ local k; case "$1" in

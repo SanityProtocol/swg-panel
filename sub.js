@@ -51,9 +51,7 @@
                   macos:   ["1. Download the client", "2. Make it executable (chmod +x)", "3. If blocked, right-click → *Open*", "4. Open *Terminal* in that directory", "5. Paste and run the command", "6. Wait for success and start *WG*"],
                   windows: ["1. Download the client", "2. Open *PowerShell* in that directory", "3. Paste and run the command", "4. Wait for success and start *WG*"],
                   android: ["1. Install *Termux* from *F-Droid*", "2. Run termux-setup-storage", "3. Download the client", "4. Make it executable (chmod +x)", "5. Paste and run the command", "6. Wait for success and start *WG*"] },
-      linkCopied: "Connection link copied", copyLink: "Copy the link again", copyCfg: "Copy the config", cfgCopied: "Config copied",
-      wtDownloaded: "Config file downloaded", wtStep1: "1. Open the WG Turn app", wtStep2a: "2. Click on the ", wtStep2b: " button",
-      wtStep3: "3. Select “Import from file or archive”", wtStep4: "4. Locate the downloaded .conf file", wtStep5: "5. Flip the connection toggle",
+      linkCopied: "Connection link copied", copyLink: "Copy the link again", copyCfg: "Copy the config",
       liWings1: "1. Open *WINGS V DeX*", liWings2: "2. Click *Paste from Clipboard*", liWings3: "3. Connect",
       liGen1: "1. Open *{app}*", liGen2: "2. Open the *Add profile* / import screen",
       liGen3: "3. *Paste* the copied link (or use the app's from-clipboard button)", liGen4: "4. Confirm, then connect",
@@ -115,9 +113,7 @@
                   macos:   ["1. Скачайте клиент", "2. Сделайте его исполняемым (chmod +x)", "3. Если заблокировано — ПКМ → *«Открыть»*", "4. Откройте *Терминал* в этой папке", "5. Вставьте и запустите команду", "6. Дождитесь подключения и запустите *WG*"],
                   windows: ["1. Скачайте клиент", "2. Откройте *PowerShell* в этой папке", "3. Вставьте и запустите команду", "4. Дождитесь подключения и запустите *WG*"],
                   android: ["1. Установите *Termux* из *F-Droid*", "2. Выполните termux-setup-storage", "3. Скачайте клиент", "4. Сделайте его исполняемым (chmod +x)", "5. Вставьте и запустите команду", "6. Дождитесь подключения и запустите *WG*"] },
-      linkCopied: "Ссылка для подключения скопирована", copyLink: "Скопировать ссылку ещё раз", copyCfg: "Скопировать конфиг", cfgCopied: "Конфиг скопирован",
-      wtDownloaded: "Файл конфигурации загружен", wtStep1: "1. Откройте приложение WG Turn", wtStep2a: "2. Нажмите кнопку ", wtStep2b: "",
-      wtStep3: "3. Выберите «Импорт из файла или архива»", wtStep4: "4. Найдите загруженный файл .conf", wtStep5: "5. Включите переключатель подключения",
+      linkCopied: "Ссылка для подключения скопирована", copyLink: "Скопировать ссылку ещё раз", copyCfg: "Скопировать конфиг",
       liWings1: "1. Откройте *WINGS V DeX*", liWings2: "2. Нажмите *Добавить из буфера*", liWings3: "3. Подключайтесь",
       liGen1: "1. Откройте *{app}*", liGen2: "2. Откройте экран *добавления профиля* / импорта",
       liGen3: "3. *Вставьте* скопированную ссылку (или кнопкой из буфера)", liGen4: "4. Подтвердите и подключитесь",
@@ -167,13 +163,13 @@
   // truth — the keystone). The hardcoded *_FALLBACK values are the last-known set for an OLDER panel that doesn't
   // serve the catalog in the sub bundle yet; catalog-driven is also more CURRENT (the fallback lacks MYSOREZ, which
   // the catalog carries). Mirrors app.js's TURN_FORKS_FALLBACK + turnForkList().
-  var FORK_ORDER_FALLBACK = ["cacggghp", "WINGS-N", "samosvalishe", "Moroka8", "kiper292", "anton48"];
+  var FORK_ORDER_FALLBACK = ["cacggghp", "WINGS-N", "samosvalishe", "Moroka8", "anton48"];
   function turnServers() { return (_lastData && _lastData.turn_catalog && _lastData.turn_catalog.servers) || null; }
   function turnServer(f) { var s = turnServers() || []; for (var i = 0; i < s.length; i++) if (s[i].id === f) return s[i]; return null; }
   function forkRank(f) { var s = turnServers(); if (s && s.length) { for (var i = 0; i < s.length; i++) if (s[i].id === f) return i; return s.length; } var j = FORK_ORDER_FALLBACK.indexOf(f); return j < 0 ? FORK_ORDER_FALLBACK.length : j; }
   // WireGuard-only forks (the client can't front AmneziaWG) — from the catalog server's `protocols` (no "awg"); so
   // such a fork isn't offered for an AWG peer. The fallback mirrors the panel's old TURN_WG_ONLY.
-  var TURN_WG_ONLY_FALLBACK = { kiper292: 1, anton48: 1, samosvalishe: 1 };
+  var TURN_WG_ONLY_FALLBACK = { anton48: 1, samosvalishe: 1 };
   function turnWgOnly(f) { var s = turnServer(f); if (s && s.protocols) return s.protocols.indexOf("awg") < 0; return !!TURN_WG_ONLY_FALLBACK[f]; }
 
   // AXIS-3: the client-app install link for a server fork, from the panel's turn_catalog (server → clients[0] →
@@ -208,7 +204,7 @@
   var _TURN_GUI_OBF = { Moroka8: 1, samosvalishe: 1, anton48: 1, MYSOREZ: 1, "WINGS-N": 1 };
   var _TURN_CLI_OBF = { Moroka8: 1, samosvalishe: 1, anton48: 1, MYSOREZ: 1 };
   // Does the client we resolve for THIS visitor connect WITHOUT obfuscation? Plain = the fork's normal transport,
-  // which VK throttles → slower. A plain fork (cacggghp/kiper292) is always plain; an obfuscated fork is plain only
+  // which VK throttles → slower. A plain fork (cacggghp) is always plain; an obfuscated fork is plain only
   // for a cross-fork "plain"-class client. Same rule as the panel picker, so the turtle matches the admin view.
   function turnCellPlain(forkId) {
     var ga = turnGetApp(forkId); if (!ga || !ga.cid) return false;
@@ -526,7 +522,7 @@
   // OTHER means (×/Esc/backdrop/outside) pops that entry itself (disarmOverlayBack) so history stays balanced. Only one
   // hint is open at a time, and a transition (choice → walkthrough) REUSES the one entry (arm is idempotent) — no churn.
   var _ovArmed = false;
-  function closeAllHints() { clearFit(); closePasteHint(); closeWgTurnHint(); closeLinkImportHint(); closeVktgzChoice(); closeVktgzHint(); closeCliHint(); closeConfigPicker(); }
+  function closeAllHints() { clearFit(); closePasteHint(); closeLinkImportHint(); closeVktgzChoice(); closeVktgzHint(); closeCliHint(); closeConfigPicker(); }
   function _ovOnPop() { _ovArmed = false; window.removeEventListener("popstate", _ovOnPop); closeAllHints(); }
   // This page owns its scroll position (the pager in portrait, the document in landscape) and the only history
   // entries it ever pushes are the overlay ones. Leaving restoration on `auto` meant closing an overlay ran a
@@ -958,20 +954,6 @@
     armOverlayBack();
   }
 
-  // WG Turn (kiper292) has no scheme — its app imports a downloaded .conf FILE. Start downloads the config, then this
-  // overlay (same full-screen card as the paste hint) walks the file-import steps. Backdrop / Esc / × closes it.
-  var _wgTurnHint = null;
-  function closeWgTurnHint() {
-    if (!_wgTurnHint) return;
-    _wgTurnHint.remove(); _wgTurnHint = null;
-    document.removeEventListener("keydown", _wtKey, true);
-  }
-  function _wtKey(e) { if (e.key === "Escape") dismissHints(); }
-  function wgTurnPlus() {   // the app's blue rounded-square "+" button, rendered inline in step 2
-    var span = el("span", "wt-plus");
-    span.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6.5v11M6.5 12h11" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>';
-    return span;
-  }
   function appDlPanelFor(name, fileUrl, pageUrl) {   // static in-overlay downloads bubble (styled like .dl-bubble)
     var b = el("div", "dl-bubble ph-dlpanel");
     var head = el("a", "dl-bubble-head"); head.href = pageUrl || fileUrl || "#"; head.target = "_blank"; head.rel = "noopener";
@@ -982,40 +964,6 @@
     it.appendChild(el("span", "dl-item-file", String(url).replace(/^https?:\/\//, "").split(/[?#]/)[0]));
     list.appendChild(it); b.appendChild(list);
     return b;
-  }
-  function showWgTurnHint(c) {
-    closeWgTurnHint(); closePasteHint();
-    var ov = el("div", "ih-overlay ph-overlay");
-    var inner = el("div", "ih-inner ph-inner");
-    var done = el("div", "ph-copied"); done.appendChild(iconEl("checks")); done.appendChild(el("span", null, t("wtDownloaded")));
-    inner.appendChild(done);   // green "Config file downloaded" ✓✓
-    var head = el("div", "ph-head"); head.appendChild(el("span", "ph-title", "WG Turn")); inner.appendChild(head);
-    var steps = el("div", "ph-steps");
-    steps.appendChild(el("div", "ph-step", t("wtStep1")));
-    var s2 = el("div", "ph-step wt-step2"); s2.appendChild(document.createTextNode(t("wtStep2a"))); s2.appendChild(wgTurnPlus()); s2.appendChild(document.createTextNode(t("wtStep2b"))); steps.appendChild(s2);
-    steps.appendChild(el("div", "ph-step", t("wtStep3")));
-    steps.appendChild(el("div", "ph-step", t("wtStep4")));
-    steps.appendChild(el("div", "ph-step", t("wtStep5")));
-    inner.appendChild(steps);
-    var dl = el("a", "ph-dl"); dl.href = "#"; dl.textContent = t("pasteDownload");
-    var panel = null;
-    dl.onclick = function (e) {
-      e.preventDefault();
-      if (panel) { panel.remove(); panel = null; dl.classList.remove("open"); return; }
-      panel = appDlPanelFor((c && c.dlAppName) || "WG Turn", c && c.dlAppUrl, c && c.dlAppPage);
-      openDlPanel(dl, panel, function () { panel.remove(); panel = null; dl.classList.remove("open"); });
-    };
-    inner.appendChild(dl);
-    if (c && c.payload) inner.appendChild(copyRow("copyCfg", function () { return c.payload; }, "cfgCopied"));
-    ov.appendChild(inner);
-    var x = el("button", "ih-close"); x.type = "button"; x.setAttribute("aria-label", "Close"); x.textContent = "×";
-    x.onclick = dismissHints; ov.appendChild(x);
-    ov.onclick = function (e) { if (e.target === ov) dismissHints(); };
-    document.body.appendChild(ov);
-    _wgTurnHint = ov; openFit(inner);
-    attachSwipeClose(ov, dismissHints);
-    setTimeout(function () { document.addEventListener("keydown", _wtKey, true); }, 0);
-    armOverlayBack();
   }
 
   // DESKTOP deep-link forks (WINGS V DeX `wingsv://`, and any future desktop GUI scheme): a browser can't hand a
@@ -1031,7 +979,7 @@
   }
   function _liKey(e) { if (e.key === "Escape") dismissHints(); }
   function showLinkImportHint(c) {
-    closeLinkImportHint(); closeWgTurnHint(); closePasteHint();
+    closeLinkImportHint(); closePasteHint();
     var app = (c && c.app) || (c && c.dlAppName) || t("theApp");
     var ov = el("div", "ih-overlay ph-overlay");
     var inner = el("div", "ih-inner ph-inner");
@@ -1463,7 +1411,7 @@
   var FORK_COLORS_FALLBACK = {
     "cacggghp": { dark: "#5FB0E0", light: "#2C7EC0" }, "WINGS-N": { dark: "#C98BE0", light: "#9B4FC7" },
     "samosvalishe": { dark: "#E0A85F", light: "#C07A1E" }, "Moroka8": { dark: "#E07A9A", light: "#C24468" },
-    "kiper292": { dark: "#6FD9A8", light: "#12A46B" }, "anton48": { dark: "#D9CF5F", light: "#8E8420" },
+    "anton48": { dark: "#D9CF5F", light: "#8E8420" },
     "WDTT": { dark: "#A78BFA", light: "#7C3AED" } };   // WDTT (amurcanov) — a turn-family server; violet, kin to the Turn group accent
   var IFACE_COLORS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" }, wdtt: { dark: "#81B512", light: "#5EAF0E" }, csqtt: { dark: "#F97316", light: "#E5620C" } };
   var THEME = { color: "", light: "", forkOv: {}, ifaceOv: {}, nodeOv: {} };   // set from the served subscription data
@@ -1885,7 +1833,7 @@
           cell.appendChild(cvkw);
         }
         if (cga) { ctrl.dlAppUrl = cga.file; ctrl.dlAppFile = cga.fileName; ctrl.dlAppName = cga.app; ctrl.dlAppPage = cga.page; node.appendChild(getAppRow(cga)); }
-        ctrl.cliApp = false; ctrl.vktgz = false; ctrl.wgTurn = false;         // csqtt client is an app, never a CLI/VKTGZ/wgTurn flow
+        ctrl.cliApp = false; ctrl.vktgz = false;         // csqtt client is an app, never a CLI/VKTGZ flow
         ctrl.payload = cart.text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
         ctrl.isLink = true; ctrl.hasQR = false; ctrl.cmd = null; ctrl.wrapCfg = true;   // no scanner in the CSQTT app yet → hand out the csqtt:// link itself
         ctrl.openUri = cart.text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
@@ -1949,7 +1897,7 @@
           wraw.appendChild(el("div", "scell-raw-d", t("rawD").replace("{port}", wd.raw_port)));
           cell.appendChild(wraw);
         }
-        ctrl.cliApp = false; ctrl.vktgz = false; ctrl.wgTurn = false;   // WDTT clients are apps, never a CLI/VKTGZ/wgTurn flow
+        ctrl.cliApp = false; ctrl.vktgz = false;   // WDTT clients are apps, never a CLI/VKTGZ flow
         // The VK link is embedded IN the WDTT link (wrapAPassword+vkLink / wdtt://…:vkHash), so no separate "add this
         // link" prompt is needed. Wire the payload straight into the shared config/QR + Start-button machinery.
         ctrl.payload = wart.text; ctrl.ready = true; ctrl.ext = wart.ext || "txt";
@@ -1980,7 +1928,7 @@
       var appInfo = appName ? { badge: appName, kind: "app", app: appName }
                   : { badge: t("forkApp").replace("{fork}", forkId), kind: "fork", fork: forkId };
       // badge = just the fork when it echoes its own id (a generic fork like Moroka8 with no app name); "fork · App"
-      // when there's a real app name (WINGS V/DeX, FreeTurn, WireGuard-TURN, VK TURN Proxy, CLI client)
+      // when there's a real app name (WINGS V/DeX, FreeTurn, VK TURN Proxy, CLI client)
       var hasAppName = appName && appName !== forkId;
       ctrl.app = appName;   // Axis-3: the client app name for the "Open in {app}" deep-link button
       // Colour the app name by the fork its client is NATIVE to (server used vs app's home fork). Same fork for a
@@ -2017,14 +1965,14 @@
       // AXIS-3: "Get the app" install link under the badge — for a first-time user who doesn't have the client app
       // yet. Shown only when the fork's client has a published app link (CLI sidecar forks have none). Complements
       // the bar's "Open in app": open if you have it, get it if you don't (never branch on install-state — can't detect).
-      if (ga) { ctrl.dlAppUrl = ga.file; ctrl.dlAppFile = ga.fileName; ctrl.dlAppName = ga.app; ctrl.dlAppPage = ga.page; ctrl.wgTurn = (ga.cid === "wgturn"); node.appendChild(getAppRow(ga)); }   // Start button → the DIRECT installer file; the text link (getAppRow) → the releases page
+      if (ga) { ctrl.dlAppUrl = ga.file; ctrl.dlAppFile = ga.fileName; ctrl.dlAppName = ga.app; ctrl.dlAppPage = ga.page; node.appendChild(getAppRow(ga)); }   // Start button → the DIRECT installer file; the text link (getAppRow) → the releases page
       ctrl.vktgz = !!(ga && ga.cid === "mysorez" && art && art.enc === "vktgz");   // MYSOREZ VK TURN Proxy app importing a VKTGZ: profile → the 3-button assemble flow
       ctrl.cliApp = !!(ga && ga.cid === "sidecar");   // the CLI (sidecar) client → copy the OS command + file-run steps
       ctrl.forkId = forkId;
       // The WG/AWG .conf the MYSOREZ user imports into a SEPARATE WireGuard client must dial the LOCAL turn core
       // (127.0.0.1:9000 — the VKTGZ profile's -listen), NOT the real server, exactly like the sidecar config. The
       // other clients don't need this: sidecar already rewrites it (artifact.text), WINGS/freeturn embed the local
-      // endpoint inside their own import link, and kiper292/anton48 are integrated apps that keep the real Endpoint.
+      // endpoint inside their own import link, and anton48 is an integrated app that keeps the real Endpoint.
       ctrl.wgConf = (ctrl.vktgz && conf) ? conf.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 127.0.0.1:9000") : conf;
       if (!conf) { draw(); return { el: cell, ctrl: ctrl }; }
       // VK-link notice (freeturn/samosvalishe forks): lives in the cell, positioned by syncVHints BETWEEN the
@@ -2059,7 +2007,7 @@
           if (pick.length) { ctrl.cliAuthors = [pick[0]]; ctrl.cmd = pick[0].cmd; }
         }
         // wrap a long single-line payload (a scheme URI OR a paste-token like VKTGZ:) so config view reads across
-        // lines instead of shrinking to one tiny line; a multi-line .conf (kiper292/sidecar) stays unwrapped.
+        // lines instead of shrinking to one tiny line; a multi-line .conf (sidecar) stays unwrapped.
         ctrl.wrapCfg = !!(art.uri || art.wrap);
         // Axis-3: a scheme fork's config IS the tappable open-in-app URI (ctrl.app already = art.app). Start fires it
         // ONLY when this app+OS declares `autostart`; otherwise noAutoFire → copy the link + show the import steps.
@@ -2508,7 +2456,6 @@
       var c = cur(); if (!c.ready) return;
       startB.classList.add("go"); setTimeout(function () { startB.classList.remove("go"); }, 600);   // tap pulse
       if (!c.openUri) {
-        if (c.wgTurn) { download(c.payload, c.base, c.ext || "conf"); showWgTurnHint(c); return; }   // WG Turn: no scheme → download the .conf + show the file-import steps
         if (c.vktgz) { showVktgzChoice(c, startB); return; }   // MYSOREZ: 3-button popover (get app · get core · assemble+connect)
         if (c.cliApp && c.cmd) { var cmd = cliCommand(c); if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(function () {}); showCliHint(c); return; }   // CLI/sidecar → copy the per-OS command (matching the downloaded binary) + show the run steps
         if (c.cmd) { if (navigator.clipboard) navigator.clipboard.writeText(c.cmd).catch(function () {}); showToast(t("cmdCopied")); return; }

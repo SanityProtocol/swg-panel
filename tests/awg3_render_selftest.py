@@ -17,8 +17,8 @@ subscription bundle comes from swg-sub's own read_data over a fixture state.
       always was (existing lines only)
   [4] Edit peer / a deployment's settings Save (js/sheets-crud.js) re-parses the config getConfig returned and rebuilds
       it: that round trip keeps the generation the interface has, in both directions
-  [5] the formats that embed a conf: free-turn's `wg` carries the set with `1` and a single keepalive `k`; sidecar and
-      kiper292 carry it with `k-(k+10)`; Amnezia's vpn:// decodes to the config byte-for-byte; from a 2.0 config none
+  [5] the formats that embed a conf: free-turn's `wg` carries the set with `1` and a single keepalive `k`; sidecar
+      carries it with `k-(k+10)`; Amnezia's vpn:// decodes to the config byte-for-byte; from a 2.0 config none
       carries a 3.x key
   [6] the swg-sub bundle: a 3.1 interface's deployment renders the set; one switched back to 2.0 while its node still
       reports the 3.x keys (offline, or not yet applied) renders none — the record decides, as in the panel
@@ -110,7 +110,6 @@ META20 = {"endpoint": O["endpoint"], "awg_params": BASE20}
 TP_FT = {"service": "vk-turn-proxy-samosvalishe-56100", "listen": "203.0.113.7:56100", "connect": "127.0.0.1:51820",
          "wrap_key": "ab" * 32, "params": "-obf-profile rtpopus -obf-key " + "ab" * 32}
 TP_SC = {"service": "vk-turn-proxy-Moroka8-56200", "listen": "203.0.113.7:56200", "connect": "127.0.0.1:51820", "wrap_key": "cd" * 32}
-TP_KP = {"service": "vk-turn-proxy-kiper292-56300", "listen": "203.0.113.7:56300", "connect": "127.0.0.1:51820"}
 
 # ── [6]'s input: swg-sub's own bundle over a fixture state ────────────────────────────────────────────────────────────
 def load(path, name):
@@ -223,7 +222,6 @@ op("rt-20", op="roundtrip", conf=C20, meta=META20)
 for tag, conf in (("31", C31), ("20", C20)):
     op("ft/" + tag, op="art", conf=conf, tp=TP_FT, **{"as": "freeturn"})
     op("sc/" + tag, op="art", conf=conf, tp=TP_SC)
-    op("kp/" + tag, op="art", conf=conf, tp=TP_KP, **{"as": "kiper292"})
     op("vpn/" + tag, op="vpn", conf=conf)
 SECRET = {"k": O["privkey"], "p": O["psk"]}
 for ifn in ("awg31", "awgback", "awgonb"):
@@ -308,9 +306,8 @@ try:
     rules31("free-turn wg", R2["ft/31"], "25")
     check("free-turn wg: MTU still rides in its own field, not the conf", not any(l.startswith("MTU") for l in lines(R2["ft/31"])))
     rules31("sidecar", R2["sc/31"], "25-35")
-    rules31("kiper292", R2["kp/31"], "25-35")
     check("Amnezia vpn:// decodes to the 3.1 config byte-for-byte", R2["vpn/31"] == C31)
-    for f in ("ft", "sc", "kp"):
+    for f in ("ft", "sc"):
         rules20(f + " from a 2.0 config", R2[f + "/20"], "25")
     check("Amnezia vpn:// of a 2.0 config is that config", R2["vpn/20"] == C20)
 
