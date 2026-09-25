@@ -519,7 +519,7 @@ index 5b8653e..d7029a3 100644
      address: SocketAddr,
      storage: &mut libc::sockaddr_storage,
 diff --git a/rust-server/protocol.rs b/rust-server/protocol.rs
-index 625699b..91bc17c 100644
+index 625699b..8b8dd35 100644
 --- a/rust-server/protocol.rs
 +++ b/rust-server/protocol.rs
 @@ -939,6 +939,8 @@ enum CredentialAccess {
@@ -758,7 +758,19 @@ index 625699b..91bc17c 100644
  fn getconf_credential_access(
      db: &Database,
      password: &str,
-@@ -4313,9 +4448,28 @@ fn getconf_credential_access(
+@@ -4301,6 +4436,11 @@ fn getconf_credential_access(
+         if !db.main_device_id.is_empty() && db.main_device_id != device_id {
+             return Err("DENIED:device_mismatch");
+         }
++        // swg-panel 2.1.9-4: the main password's first bind obeys the same "nobody holds it" rule as every other
++        // claim — otherwise it could take a generated password's device, row and address included.
++        if db.main_device_id.is_empty() && !device_is_unclaimed(db, device_id) {
++            return Err("DENIED:device_mismatch");
++        }
+         return Ok(CredentialAccess::Main);
+     }
+     let Some(entry) = db.passwords.get(password) else {
+@@ -4313,9 +4453,29 @@ fn getconf_credential_access(
          return Err("DENIED:deactivated");
      }
      if !entry.device_id.is_empty() && entry.device_id != device_id {
@@ -767,6 +779,7 @@ index 625699b..91bc17c 100644
 +        // same rule as an unbound claim below, so it can never take another credential's device (rebind_plan).
 +        if crate::swgpanel::password_follows_device() {
 +            match rebind_plan(db, password, device_id) {
++                RebindPlan::Move { .. } if crate::swgpanel::password_left_recently(password, device_id) => {}
 +                RebindPlan::Move { .. } => return Ok(CredentialAccess::Rebind),
 +                RebindPlan::Blocked => return Err("NOCONF"),
 +                RebindPlan::No => {}
@@ -787,7 +800,7 @@ index 625699b..91bc17c 100644
          Ok(CredentialAccess::Unbound)
      } else {
          Ok(CredentialAccess::Bound)
-@@ -4763,6 +4917,24 @@ async fn handle_getconf(
+@@ -4763,6 +4923,25 @@ async fn handle_getconf(
                          entry.device_id = device_id.to_owned();
                          changed = true;
                      }
@@ -807,12 +820,13 @@ index 625699b..91bc17c 100644
 +                        // takes this lock after us, so it can neither be dropped by this move nor race it.
 +                        let moved_off = sessions_of_password_on_device(app, password, &old, session.id);
 +                        drop_sessions(app, moved_off, &old);
++                        crate::swgpanel::note_password_left(password, &old);
 +                        changed = true;
 +                    }
                      if access == CredentialAccess::Main && db.main_device_id.is_empty() {
                          db.main_device_id = device_id.to_owned();
                          changed = true;
-@@ -5224,7 +5396,7 @@ mod tests {
+@@ -5224,7 +5403,7 @@ mod tests {
      }
  
      #[test]
@@ -821,7 +835,7 @@ index 625699b..91bc17c 100644
          let mut db = Database::default();
          db.devices.insert(
              "device-a".to_owned(),
-@@ -5243,9 +5415,11 @@ mod tests {
+@@ -5243,9 +5422,11 @@ mod tests {
          db.passwords
              .insert("password-b".to_owned(), PasswordEntry::default());
  
@@ -834,7 +848,7 @@ index 625699b..91bc17c 100644
          );
          assert_eq!(
              getconf_credential_access(&db, "password-a", "device-b"),
-@@ -5269,6 +5443,142 @@ mod tests {
+@@ -5269,6 +5450,181 @@ mod tests {
          assert!(device_control_authorized(&db, "password-b", "device-a"));
      }
  
@@ -974,15 +988,54 @@ index 625699b..91bc17c 100644
 +        assert_eq!(db.devices["phone-z"].ip, "10.66.67.3");
 +    }
 +
++    #[test]
++    fn the_main_password_never_takes_a_device_a_password_holds() {
++        let mut db = rebind_fixture();
++        db.main_device_id.clear();
++        assert_eq!(
++            getconf_credential_access(&db, "owner", "phone-a"),
++            Err("DENIED:device_mismatch")
++        );
++        assert_eq!(getconf_credential_access(&db, "owner", "owner-new"), Ok(CredentialAccess::Main));
++    }
++
++    #[test]
++    fn a_password_does_not_move_straight_back_to_the_device_it_just_left() {
++        let _panel_mode = crate::swgpanel::FollowsDeviceForTest::on();
++        let mut db = rebind_fixture();
++        // a name no other test uses: the record is process-wide
++        db.passwords.insert(
++            "pw-move-back".to_owned(),
++            PasswordEntry {
++                device_id: "phone-q".to_owned(),
++                ..PasswordEntry::default()
++            },
++        );
++        assert_eq!(
++            getconf_credential_access(&db, "pw-move-back", "phone-r"),
++            Ok(CredentialAccess::Rebind)
++        );
++        crate::swgpanel::note_password_left("pw-move-back", "phone-r");
++        assert_eq!(
++            getconf_credential_access(&db, "pw-move-back", "phone-r"),
++            Err("DENIED:device_mismatch")
++        );
++        // another device is not held back
++        assert_eq!(
++            getconf_credential_access(&db, "pw-move-back", "phone-s"),
++            Ok(CredentialAccess::Rebind)
++        );
++    }
++
      fn fixture_engine_with_worker(
          password: &str,
          shard_index: usize,
 diff --git a/rust-server/swgpanel.rs b/rust-server/swgpanel.rs
 new file mode 100644
-index 0000000..9c16fb6
+index 0000000..585f547
 --- /dev/null
 +++ b/rust-server/swgpanel.rs
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,192 @@
 +// SPDX-FileCopyrightText: 2026 SanityProtocol
 +// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 +//
@@ -1072,6 +1125,36 @@ index 0000000..9c16fb6
 +        return true;
 +    }
 +    desired_path().is_some()
++}
++
++// A password that just left a device does not move straight back to it. Two devices starting one config at the same
++// moment send their workers' GETCONFs interleaved, and each GETCONF from the device that does not hold the password
++// would move it and drop the other device's workers set up so far: the device left holding it keeps only the workers
++// that came after the last move, and the client does not redial the rest. With this, the first move wins the burst —
++// the other device's GETCONFs are refused (the client says the password is bound to another device) — while a
++// device coming back later, after sleep or a network change, still takes the password as before.
++const MOVE_BACK_HOLD: std::time::Duration = std::time::Duration::from_secs(5);
++
++fn recent_moves() -> &'static std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>> {
++    static MOVES: OnceLock<std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>> =
++        OnceLock::new();
++    MOVES.get_or_init(Default::default)
++}
++
++// Record that `password` just left `device_id`.
++pub fn note_password_left(password: &str, device_id: &str) {
++    let now = std::time::Instant::now();
++    let mut moves = recent_moves().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
++    moves.retain(|_, (_, at)| now.duration_since(*at) < MOVE_BACK_HOLD);
++    moves.insert(password.to_owned(), (device_id.to_owned(), now));
++}
++
++// Did `password` leave `device_id` within MOVE_BACK_HOLD?
++pub fn password_left_recently(password: &str, device_id: &str) -> bool {
++    let moves = recent_moves().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
++    moves
++        .get(password)
++        .is_some_and(|(left, at)| left == device_id && at.elapsed() < MOVE_BACK_HOLD)
 +}
 +
 +#[cfg(test)]

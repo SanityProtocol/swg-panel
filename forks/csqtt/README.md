@@ -114,6 +114,31 @@ workers). The control is 2.1.9-2.
 keyless-csqtt T1–T6 (source check, revoke, borrow) pass unchanged. The host firewall and links were unchanged by every
 run.
 
+## Two devices starting at once, and the main password's first bind (build 2.1.9-4, 2026-09-25)
+
+- **Two devices starting one config at the same instant used to ping-pong the password.**
+  - Their workers' `GETCONF`s interleave. Each one from the device that didn't hold the password moved it back and
+    dropped the other device's workers set up so far.
+  - The device left holding it kept only the workers that came after the last move, and the client doesn't redial
+    the rest.
+  - Rig D10: **18 moves** in one burst on 2.1.9-3.
+  - Now a password that has just left a device doesn't move back to that device for 5 s (`MOVE_BACK_HOLD`, recorded
+    when the move happens).
+  - The first move wins the burst. The other device's workers are refused `device_mismatch`, so its client says the
+    password is bound to another device, and the winner keeps all 9 workers. On 2.1.9-4: **1 move**, 8 of 8 of the
+    other device's `GETCONF`s refused, 9 of 9 kept by the winner.
+  - A device coming back later (after sleep, or a network change) still takes the password, as the D3 switch-back
+    shows.
+- **The main password's first bind now follows the same "nobody holds it" rule as every other claim.** Stock gave the
+  main password any device while it had none bound, including a device a generated password holds, with that row's
+  address.
+
+Two review findings are deliberately not taken:
+- **Sharing one removal loop with upstream's purge.** That would mean editing upstream functions, which costs every
+  re-port.
+- **Carrying the move plan through instead of recomputing it.** It only runs on the rare move path and each run is
+  bounded.
+
 ## What the patch adds (every flag defaults to STOCK when absent; the source-integrity fixes above apply with or without flags)
 
 | flag | effect |
