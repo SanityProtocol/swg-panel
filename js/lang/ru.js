@@ -5185,6 +5185,7 @@ export const STR = {
   "Turn configs · {v1}": "Конфиги turn · {v1}",
   "val|peer": "пир",
   "WDTT client apps · {v1}": "Клиенты WDTT · {v1}",
+  "CSQTT client apps · {v1}": "Клиенты CSQTT · {v1}",
   "Geolocation: {v1}": "Геолокация: {v1}",
   "TLD .{v1}": "Домен .{v1}",
   "Reset routing · {v1}": "Сброс маршрутов · {v1}",
@@ -6086,6 +6087,8 @@ export const STR = {
     "Откройте ссылку csqtt:// в своём csqtt-приложении или вставьте её туда.",
   "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in WRAP-A mode.":
     "Откройте ссылку на iPhone (или VK TURN Proxy → Настройки → Импорт из ссылки подключения), чтобы импортировать в режиме WRAP-A.",
+  "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in csqtt mode.":
+    "Откройте ссылку на iPhone (или VK TURN Proxy → Настройки → Импорт из ссылки подключения), чтобы импортировать в режиме csqtt.",
   "Open the link on the iPhone (or the app's Settings → Import from connection link) to import into the VK TURN Proxy app.":
     "Откройте ссылку на iPhone (или Настройки приложения → Импорт из ссылки подключения), чтобы импортировать в VK TURN Proxy.",
   "Paste the wdtt:// link into PWDTT — «Добавление VK профиля».":
@@ -6107,6 +6110,7 @@ export const STR = {
   "WDTT via PWDTT (desktop · wdtt:// base64) by ildarmaga":
     "WDTT через PWDTT (десктоп · wdtt:// base64) от ildarmaga",
   "WDTT via VK TURN Proxy (iOS · WRAP-A) by anton48": "WDTT через VK TURN Proxy (iOS · WRAP-A) от anton48",
+  "CSQTT via VK TURN Proxy (iOS) by anton48": "CSQTT через VK TURN Proxy (iOS) от anton48",
   "WDTT via WDTT app (Android · WRAP)": "WDTT через приложение WDTT (Android · WRAP)",
   "WDTT via WDTT-Plus (Android · wdtt://connect)": "WDTT через WDTT-Plus (Android · wdtt://connect)",
   "WDTT via qWDTT (Android · qwdtt://)": "WDTT через qWDTT (Android · qwdtt://)",

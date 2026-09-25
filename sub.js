@@ -1853,9 +1853,11 @@
         // links) are the TURN credential. One app (CSQTT), which scans the QR.
         var cd = it.csqtt, cfc = ifaceColor("csqtt");
         // raw VK inputs → csqttArtifact combines/strips/dedupes them (same one place the operator app uses)
-        var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
-          vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] });
         var cga = turnGetApp("csqtt");   // the operator's per-OS default csqtt client (CSQTT) → download / Start
+        // …and its encoder: on iOS that is anton48's VK TURN Proxy, which is handed its own vkturnproxy:// link —
+        // it reads a csqtt:// one too, but keeps only the first VK call link of it.
+        var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
+          vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, cga && cga.enc);
         // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
         // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
         // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.

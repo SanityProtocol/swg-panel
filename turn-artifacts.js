@@ -707,7 +707,7 @@
   // Format is authoritative from the app's own CsqttLinkTest.kt: host = server IP (IPv6 gets bracketed by the app on
   // read, so we just URL-encode it), peer = the DTLS listen port, password URL-encoded, hashes = VK call hashes joined
   // by '+' (a literal '+' inside a hash is %2B-escaped), max 6, omitted when there are none. `c` = {host,port,password,hashes[]}.
-  function csqttArtifact(c) {
+  function csqttArtifact(c, asClient) {
     c = c || {};
     // TURN-credential hashes: the peer's own vk_hash + every VK call link on the user (each stripped to its bare
     // hash), deduped, max 6. One place — both the operator app and the sub page pass raw {vk_hash, vk_links} and
@@ -719,16 +719,33 @@
       (Array.isArray(c.vk_links) ? c.vk_links : (c.vk_links ? [c.vk_links] : [])).forEach(function (l) { var h = stripVkUrl(l); if (h) hs.push(h); });
     }
     hs = hs.map(function (s) { return String(s || "").trim(); }).filter(Boolean);
-    var seen = {}; hs = hs.filter(function (h) { if (seen[h]) return false; seen[h] = 1; return true; }).slice(0, VK_LINK_CAPS.csqtt);
+    var seen = {}; hs = hs.filter(function (h) { if (seen[h]) return false; seen[h] = 1; return true; });
+    if (asClient === "anton48" || asClient === "vkturnproxy") {
+      // anton48's iOS VK TURN Proxy reads a csqtt:// link too, but its parser (BackupManager.parseCsqttLink) keeps
+      // only the FIRST hash, and the import then OVERWRITES the app's global call-link list with that one link.
+      // Its own vkturnproxy:// link carries vkLink whole: the app stores it verbatim as a multiline string, one
+      // call per line (TunnelManager splits on newlines; line one is the anonymous-mode call, VKAuth mode spreads
+      // across them all). useCsqtt + csqttPassword + peerAddress is quick_link.py's REQUIRED_CSQTT set. No cap:
+      // the 6 is the CSQTT app's, not this one's. No device id: quick_link.py leaves it out of a link, and the
+      // app mints one on import.
+      var s = { useCsqtt: true, csqttPassword: String(c.password || ""),
+        peerAddress: String(c.host || "") + ":" + (parseInt(c.port, 10) || ""),
+        vkLink: hs.map(function (h) { return "https://vk.ru/call/join/" + h; }).join("\n") };
+      var uriA = "vkturnproxy://import?data=" + b64urlUtf8(jsonSortedCompact({ version: 1, type: "connection", settings: s }));
+      return { fork: "csqtt", app: "VK TURN Proxy", label: "CSQTT via VK TURN Proxy (iOS) by anton48", ext: "txt", uri: true, qr: false,
+        vkMissing: hs.length === 0, enc: asClient, hint: "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in csqtt mode.", text: uriA };
+    }
+    hs = hs.slice(0, VK_LINK_CAPS.csqtt);
     var vkMissing = hs.length === 0;   // VK hashes are the TURN credential; a link without them only works for a self-test
     var qp = ["v=2", "host=" + encodeURIComponent(String(c.host || "")),
               "peer=" + (parseInt(c.port, 10) || ""), "password=" + encodeURIComponent(String(c.password || ""))];
     if (hs.length) qp.push("hashes=" + hs.map(function (h) { return h.replace(/\+/g, "%2B"); }).join("+"));
     var uri = "csqtt://connect?" + qp.join("&");
     // qr:false — the CSQTT app has no scanner yet, so a QR is a dead end for the user. Link only until it does.
-    // ⚠️ THE LABEL NAMED A PLATFORM, AND THERE ARE TWO NOW. anton48's iOS VK TURN Proxy speaks csqtt from
-    // build 364, and its parser takes this exact link (BackupManager.parseCsqttLink) — so the same string
-    // serves both apps and the label must stop saying "Android". The platform comes out; the app family and
+    // ⚠️ THE LABEL NAMED A PLATFORM, AND THERE ARE SEVERAL. This link serves the CSQTT app (Android) and FOCSQ /
+    // La Lune (Android + desktop), and anton48's iOS VK TURN Proxy still reads it when pasted (build 364+,
+    // BackupManager.parseCsqttLink) — though the panel hands that app its own vkturnproxy:// link (the branch
+    // above), since it keeps only the first hash of this one. So the label must not say "Android". The platform comes out; the app family and
     // the scheme stay, which is the shape every other artifact label here has. (A bare "csqtt://connect"
     // was tried and reverted: `artLabel` runs this through T(), and a URL scheme is not a sentence anyone
     // can translate — it would be catalogue noise for a string that is a literal in every language.)
