@@ -316,6 +316,49 @@ def _acme_follow():
             print("access: %s acme.sh follow check failed — %s" % (svc, msg), flush=True)
 
 
+# The operator's "Renew now" (Settings → Panel access → Certificate). Runs in the background — a standalone HTTP-01
+# renewal takes 10-60 s and must never hold _api_lock — and the SPA follows it through /api/state (tls.renew_job).
+_RENEW_JOB = {"state": "idle", "message": "", "at": 0, "result": ""}
+_RENEW_LOCK = threading.Lock()
+
+
+def _renew_worker(deps):
+    rid = _netctl_enqueue(deps, "renew-acme", ["panel"])
+    ok, msg = _netctl_wait(deps, rid, 300) if rid else (False, "the root helper is not available on this panel")
+    try:
+        r = json.loads(msg) if ok else {}
+    except ValueError:
+        r = {}                                       # an older helper: it answered with an error string, not JSON
+    if not isinstance(r, dict):
+        r = {}
+    state = r.get("state") or "failed"
+    if isinstance(r.get("sync"), dict) and r["sync"].get("state"):
+        _ACME_FOLLOW.clear()
+        _ACME_FOLLOW.update(r["sync"])                # who renews it, as the renewal just saw it
+    _refresh_tls_status()                            # the certificate it installed, read now rather than in 6 h
+    with _RENEW_LOCK:
+        _RENEW_JOB.update({"state": "done", "result": state, "at": int(time.time()),
+                           "message": str(r.get("message") or ("" if ok else msg) or "")[:900]})
+    print("access: Renew now → %s%s" % (state, (" — " + _RENEW_JOB["message"].splitlines()[-1])
+                                          if _RENEW_JOB["message"] and state == "failed" else ""), flush=True)
+    _invalidate_state_cache()
+
+
+def _renew_start(deps):
+    """(code, obj) for POST /api/access/renew-cert."""
+    if PANEL_DECLARATIVE:
+        return _declarative_access_refusal(deps)
+    if IN_DOCKER:
+        return 409, {"ok": False, "code": "docker", "error": "This panel runs in a container, which renews its "
+                     "certificate itself every 12 hours — restart the container to renew now."}
+    with _RENEW_LOCK:
+        if _RENEW_JOB["state"] == "running":
+            return 409, {"ok": False, "code": "busy", "error": "a renewal is already running"}
+        _RENEW_JOB.update({"state": "running", "message": "", "result": "", "at": int(time.time())})
+    threading.Thread(target=_renew_worker, args=(deps,), name="renew-cert", daemon=True).start()
+    return 202, {"ok": True, "state": "running"}
+
+
 def _tls_watch_loop():
     while True:
         with contextlib.suppress(Exception):
@@ -19956,7 +19999,7 @@ def api(method, path, qs, body, deps):
                     # every other panel, so an ordinary /api/state carries exactly what it carried before.
                     **({"declarative": True, "nix_access": _nix_access_snippet(deps),
                         "update_cmd": UPDATE_CMD, "update_auto": bool(UPDATE_TRIGGER)} if PANEL_DECLARATIVE else {})},   # for UI hints (e.g. enable store_configs)
-            "tls": dict(TLS_STATUS),                                  # cert expiry watch — surface a stalled renewal before it goes dark
+            "tls": {**TLS_STATUS, **({"renew_job": dict(_RENEW_JOB)} if _RENEW_JOB["state"] != "idle" else {})},   # cert expiry watch — surface a stalled renewal before it goes dark; + the Renew-now job
             **({"state_future": dict(STATE_FUTURE)} if STATE_FUTURE else {}),   # state written by a NEWER build — see ROSTER_VERSION
             "panel_services": panel_service_health(),                # THIS host's own swg units (active/enabled/present) → SPA "needs attention" (bare-metal only)
             # Non-empty when this process could not persist its session-signing secret: sessions then last
@@ -20870,6 +20913,8 @@ def api(method, path, qs, body, deps):
                 _netctl_enqueue(deps, "drop-cert", ["panel", od])
         return 200, {"ok": True, "saved": True}
 
+    if method == "POST" and path == "/api/access/renew-cert":
+        return _renew_start(deps)
     if method == "POST" and path == "/api/access/cancel":
         # Reverse a JUST-CONFIRMED address change during its migration grace — instant for the operator (the
         # countdown stops, we're back on the previous address) while the address we're LEAVING still graces out

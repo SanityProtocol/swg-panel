@@ -10,7 +10,7 @@
  * lives here rather than being split between screen and store.
  */
 
-import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
+import { T, Trich, Tsplit, plural, srvText, locale } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
 import {
   BASE, ago, ipChoices, seen, url, fmtBytes, panelNow,
@@ -1420,7 +1420,26 @@ export function AccessTLSCard({ onChange }) {
       // to someone reading the server log, while this screen showed a healthy certificate the whole time.
       const ts = Store.tls || {};
       const d = Number(ts.days_left);
-      const warn = (body, title) => html`<div class="notice warn" style="margin:0 0 12px" title=${title || ""}><${Ic} i="warn"/><div style="min-width:0">${body}</div></div>`;
+      // "Renew now": acme.sh's cron fails silently (its output goes to /dev/null), so the button runs the same
+      // renewal on demand and shows acme.sh's own words. Offered only where an acme.sh entry exists to renew —
+      // `renewer` comes from the panel's follow of that entry; "missing" means there is nothing to renew.
+      const job = ts.renew_job || null;
+      const running = !!job && job.state === "running";
+      const canRenew = ts.renewer === "ours" || ts.renewer === "other";
+      const startRenew = async () => {
+        try {
+          const r = await api.post("/api/access/renew-cert", {});
+          if (!r || r.ok === false) toast(srvText(r) || T("Couldn't start the renewal."), "err");
+          else await Store.poll();
+        } catch (_) { toast(T("Couldn't start the renewal."), "err"); }
+      };
+      const onRenew = () => ts.renewer === "other"
+        ? openConfirm({ title: T("Renew the certificate now?"), confirmLabel: T("Renew now"), warn: true,
+            body: T("acme.sh renews this certificate for another program on this server as well ({v1}) and runs that program's reload command, which may restart it — exactly as its own scheduled renewals do.", { v1: ts.renewer_path || "?" }),
+            onConfirm: () => { startRenew(); return true; } })
+        : startRenew();
+      const renewBtn = canRenew ? html`<div style="margin-top:8px"><button type="button" class="btn btn-mini" disabled=${running} onClick=${onRenew}><${Ic} i="refresh"/> ${running ? T("Renewing…") : T("Renew now")}</button></div>` : null;
+      const warn = (body, title) => html`<div class="notice warn" style="margin:0 0 12px" title=${title || ""}><${Ic} i="warn"/><div style="min-width:0">${body}${renewBtn}</div></div>`;
       let w = null;
       // Expired comes first and has one wording for every certificate: the day count goes negative ("valid for -3
       // more day(s)") and an hour count reads "0 hour(s) ago" in the first hour, so neither is shown past expiry.
@@ -1439,7 +1458,19 @@ export function AccessTLSCard({ onChange }) {
       const other = ts.renewer === "other" ? html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">
         ${Trich("*Another program on this server renews this certificate* — acme.sh installs each renewal to `{v1}`. The panel takes the renewed certificate from acme.sh within 6 hours, so both keep working.", { v1: ts.renewer_path || "?" })}
       </div></div>` : null;
-      return (w || other) ? html`${w}${other}` : null;
+      // The last Renew-now's outcome, for a quarter of an hour: a success usually clears the warning it was pressed
+      // in, so the answer has to live beside it rather than inside it.
+      let done = null;
+      if (job && job.state === "done" && panelNow() - Number(job.at) * 1000 < 15 * 60000) {
+        const until = Number(ts.expires_at) > 0 ? new Date(Number(ts.expires_at) * 1000).toLocaleString(locale()) : "?";
+        if (job.result === "renewed") done = html`<div class="notice ok" style="margin:0 0 12px"><${Ic} i="check"/><div style="min-width:0">${Trich("*Renewed.* The panel now serves a certificate valid until {v1}.", { v1: until })}</div></div>`;
+        else if (job.result === "not-due") done = html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">${Trich("*Not renewed — acme.sh says it is not due yet* (next renewal: {v1}). The certificate is valid until {v2}.", { v1: job.message || "?", v2: until })}</div></div>`;
+        else done = html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
+          <b>${T("The renewal failed.")}</b> ${job.result === "no-entry" ? T("acme.sh holds no certificate for this address, so there is nothing to renew.") : T("acme.sh said:")}
+          ${job.message && job.result !== "no-entry" ? html`<pre style="white-space:pre-wrap;margin:6px 0 0;font-size:11.5px">${job.message}</pre>` : null}
+        </div></div>`;
+      }
+      return (w || other || done) ? html`${done}${w}${other}` : null;
     })()}
     <div class="field"><label>${T("Type")}</label><${Dropdown} value=${mode} onChange=${setModeLinked} options=${TLS_MODE_OPTS()}/></div>
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>${T("Account email")}</label><input type="text" placeholder=${T("admin@example.com")} value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}

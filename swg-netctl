@@ -22,6 +22,7 @@ caller can't escape (callers pass only "panel"/"sub", never a unit name or file 
     adopt-cert  <panel|sub> <cert> <key>  install an operator-supplied cert pair (TLS mode `skip`)
     sync-acme   <panel|sub>               install acme.sh's renewed cert for that service's name when it is
                                           newer than the served one — whoever the entry installs for
+    renew-acme  <panel|sub>               renew that name's acme.sh entry now (never --force), then sync-acme
     restart     <panel|sub>               restart one service unit
 
 Security model:
@@ -929,6 +930,60 @@ def do_sync_acme(service):
     return json.dumps(res)
 
 
+# ── renew now (the operator's button) ─────────────────────────────────────────────
+# acme.sh's own cron renews on schedule and sends its output to /dev/null, so a renewal that fails — port 80 taken,
+# a firewall, a CA error — fails silently for days while the certificate runs out (seen live 2026-09-25). This
+# runs the same renewal on demand and hands its real error back to the screen that is warning about it.
+# NO --force: an expired, overdue or near-expiry certificate is due anyway, and forcing one that is not would
+# spend Let's Encrypt's duplicate-certificate limit; acme.sh answers "not due" instead, which we report. Works
+# whoever owns the entry (sync-acme installs the result either way) and for letsencrypt-ip, which issue-cert
+# cannot do — renewing an existing entry needs nothing but the entry.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def do_renew_acme(service):
+    """Renew `service`'s acme.sh entry now, then install the result. Returns JSON: state ∈ renewed | not-due |
+    failed | no-entry | skipped, message (acme.sh's own words on failure), owner/install_path, and sync."""
+    SERVICES[v_service(service)]
+    res = {"service": service, "state": "skipped", "message": ""}
+    creds = _load_access_tls()
+    mode = creds["mode"]
+    host = _service_host(service)
+    if mode not in _ACME_FOLLOW_MODES:
+        res["message"] = "TLS mode %r is not issued by acme.sh" % (mode,)
+        return json.dumps(res)
+    if not host or len(host) > 253 or not _HOST_RE.match(host):
+        res["message"] = "no usable %s address configured" % service
+        return json.dumps(res)
+    d = _acme_ecc_dir(host)
+    if d is None or not _acme_entry_usable(d, host):
+        res["state"], res["message"] = "no-entry", "acme.sh holds no certificate for %s" % host
+        return json.dumps(res)
+    res["owner"], res["install_path"] = _acme_owner(d, host)
+    env = dict(os.environ)
+    if mode == "cloudflare" and creds["cf_token"]:                 # DNS-01 renews through the API it issued with
+        env["CF_Token"] = creds["cf_token"]
+        if creds["cf_account"]:
+            env["CF_Account_ID"] = creds["cf_account"]
+    rc, out = run(acme_argv(find_acme(), "--renew", "-d", host, "--ecc"), env=env)
+    if rc == 0 or DRYRUN:
+        res["state"] = "renewed"
+    elif rc == 2:                                                  # RENEW_SKIP: not due yet
+        res["state"] = "not-due"
+        res["message"] = _acme_conf_value(d, host, "Le_NextRenewTimeStr")
+    else:
+        # the lines that say why, not the whole trace: acme.sh prints its errors in RED (_err), which is the one
+        # signal that does not depend on guessing its wording; keyword matches next, the last lines otherwise
+        raw = (out or "").splitlines()
+        red = [_ANSI_RE.sub("", l).strip() for l in raw if "\x1b[31m" in l or "\x1b[1;31m" in l]
+        lines = [_ANSI_RE.sub("", l).strip() for l in raw]
+        why = red or [l for l in lines if re.search(r"error|fail|refus|invalid|timeout|unauthori[sz]ed|not found|in use|already used", l, re.I)]
+        res["state"], res["message"] = "failed", "\n".join((why or [l for l in lines if l])[-6:])[-900:]
+    with contextlib.suppress(Exception):
+        res["sync"] = json.loads(do_sync_acme(service))            # install what acme.sh now holds, whoever owns it
+    return json.dumps(res)
+
+
 _HOST_RE = re.compile(r"^[A-Za-z0-9.:_-]+$")
 
 
@@ -1008,6 +1063,7 @@ VERBS = {
     "drop-cert": (do_drop_cert, 2),
     "adopt-cert": (do_adopt_cert, (3, 4)),
     "sync-acme": (do_sync_acme, 1),              # install acme.sh's renewed cert, whoever owns the entry's target
+    "renew-acme": (do_renew_acme, 1),            # the operator's "Renew now": acme --renew (never --force), then sync-acme
     "backup-cert": (do_backup_cert, 1),
     "restore-cert": (do_restore_cert, 1),
     "clear-backup": (do_clear_backup, 1),

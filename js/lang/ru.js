@@ -3956,6 +3956,20 @@ export const STR = {
     "*Этот сертификат на сервере никто не обновляет.* У acme.sh нет сертификата для этого адреса, поэтому он истечёт через *{v1}* дн., если его не выпустить заново.",
   "*This certificate has expired.* Browsers refuse the panel and nodes that verify it stop syncing until it is renewed.":
     "*Срок действия этого сертификата истёк.* Браузеры не открывают панель, а ноды, которые его проверяют, не синхронизируются, пока его не обновят.",
+  "Couldn't start the renewal.": "Не удалось запустить обновление.",
+  "Renew the certificate now?": "Обновить сертификат сейчас?",
+  "Renew now": "Обновить сейчас",
+  "Renewing…": "Обновляется…",
+  "acme.sh renews this certificate for another program on this server as well ({v1}) and runs that program's reload command, which may restart it — exactly as its own scheduled renewals do.":
+    "acme.sh обновляет этот сертификат и для другой программы на этом сервере ({v1}) и выполняет её команду перезагрузки, которая может её перезапустить, — точно так же, как при обычных плановых обновлениях.",
+  "*Renewed.* The panel now serves a certificate valid until {v1}.":
+    "*Обновлено.* Панель теперь отдаёт сертификат, действующий до {v1}.",
+  "*Not renewed — acme.sh says it is not due yet* (next renewal: {v1}). The certificate is valid until {v2}.":
+    "*Не обновлено — acme.sh считает, что ещё рано* (следующее обновление: {v1}). Сертификат действует до {v2}.",
+  "The renewal failed.": "Обновить не удалось.",
+  "acme.sh holds no certificate for this address, so there is nothing to renew.":
+    "У acme.sh нет сертификата для этого адреса, обновлять нечего.",
+  "acme.sh said:": "acme.sh ответил:",
   "*This certificate should already have been renewed.* It has *{v1}* hour(s) left.":
     "*Этот сертификат уже должен был обновиться.* До его истечения осталось *{v1}* ч.",
   "*Another program on this server renews this certificate* — acme.sh installs each renewal to `{v1}`. The panel takes the renewed certificate from acme.sh within 6 hours, so both keep working.":
