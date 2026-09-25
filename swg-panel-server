@@ -170,8 +170,9 @@ def _refresh_tls_status():
         TLS_STATUS.clear()
         TLS_STATUS.update({"expires_at": int(exp), "days_left": days, "self_signed": bool(selfsigned)})
         if short:
-            TLS_STATUS.update({"short_lived": True, "renew_overdue": bool(overdue),
-                               "hours_left": int((exp - time.time()) // 3600)})
+            # the lifetime, not a verdict: the SPA judges "overdue" on the panel's clock at every render, where a
+            # flag computed here would be up to one 6-hour check stale
+            TLS_STATUS.update({"short_lived": True, "lifetime_s": int(life)})
         TLS_STATUS.update(_renew_status())
         TLS_STATUS.update(_acme_follow_status())
         if overdue:

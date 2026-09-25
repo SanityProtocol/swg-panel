@@ -14106,13 +14106,20 @@ def _heal_stale_pin(panel, node_cfg, err):
         base = (panel.get("url") or "").rstrip("/")
         if not base.startswith("https://") or not _verify_panel(base, panel.get("token") or "", {"verify": True}):
             return None
-        old = (panel.get("fingerprint") or "")[:16]
+        old = (panel.get("fingerprint") or "").replace(":", "").lower().strip()
         panel["verify"] = True
         panel.pop("fingerprint", None)
         _persist_config(node_cfg)
         _persist_panel_auth(panel)                     # docker / NixOS: the entrypoint rebuilds config from these
+        # …and WHICH pin was retired. The entrypoint drops a configured pin only when it is this exact one, so a
+        # re-install that configures a NEW pin (a different, self-signed panel) is never overridden by this heal.
+        with contextlib.suppress(Exception):
+            tmp = os.path.join(STATE_DIR, "panel-fp-retired.tmp")
+            with open(tmp, "w") as f:
+                f.write(old + "\n")
+            os.replace(tmp, os.path.join(STATE_DIR, "panel-fp-retired"))
         print("panel TLS: the pinned certificate (%s…) is gone and the panel now presents one a public CA vouches "
-              "for — verifying it as a CA certificate from now on, pin dropped" % old, flush=True)
+              "for — verifying it as a CA certificate from now on, pin dropped" % old[:16], flush=True)
         return base + "/api/node/sync"
     except Exception as e:
         print("_heal_stale_pin:", e, flush=True)

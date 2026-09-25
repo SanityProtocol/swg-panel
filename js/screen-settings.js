@@ -13,7 +13,7 @@
 import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
 import {
-  BASE, ago, ipChoices, seen, url, fmtBytes,
+  BASE, ago, ipChoices, seen, url, fmtBytes, panelNow,
 } from "./util.js";
 import {
   LEAVE_MSG, clearUnsavedGuard, setUnsavedGuard,
@@ -1425,8 +1425,11 @@ export function AccessTLSCard({ onChange }) {
       if (ts.renew_ok === false) w = warn(Trich("*Automatic renewal is failing.* The certificate is still valid for *{v1}* more day(s), but nothing is renewing it — check that this host is reachable by the validation method above.", { v1: isFinite(d) ? d : "?" }), ts.renew_last);
       else if (ts.renewer === "missing" && !ts.self_signed) w = warn(Trich("*Nothing on this server renews this certificate.* acme.sh holds no certificate for this address, so it will expire in *{v1}* day(s) unless it is issued again.", { v1: isFinite(d) ? d : "?" }));
       // A ~6-day certificate always has fewer than 21 days left — judged by days it warned from the day it was
-      // issued, so a real failure looked like every other day. The server marks it overdue past 2/3 of its life.
-      else if (ts.short_lived) { if (ts.renew_overdue) w = warn(Trich("*This certificate should already have been renewed.* It has *{v1}* hour(s) left.", { v1: Math.max(0, Number(ts.hours_left) || 0) })); }
+      // issued, so a real failure looked like every other day. Overdue = past 2/3 of its life, on the panel's clock.
+      else if (ts.short_lived) {
+        const left = Number(ts.expires_at) * 1000 - panelNow();
+        if (left < Number(ts.lifetime_s) * 1000 / 3) w = warn(Trich("*This certificate should already have been renewed.* It has *{v1}* hour(s) left.", { v1: Math.max(0, Math.floor(left / 3600000)) }));
+      }
       else if (!ts.self_signed && isFinite(d) && d <= 21) w = warn(Trich("*This certificate expires in {v1} day(s).*", { v1: d }));
       // Not a fault — the panel follows it — but the one fact that explains why its renewals live somewhere else.
       const other = ts.renewer === "other" ? html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">
