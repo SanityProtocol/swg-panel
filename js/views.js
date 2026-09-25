@@ -1039,8 +1039,10 @@ const DROP_KINDS = [
     hint: () => T("Packets came from a source outside the sender's allowed range, or were malformed — usually one misconfigured sender.") },
 ];
 
-// The floor the node already puts under its worst-sample rate (IFACE_PEAK_MIN in swg-noded), applied to the headline: below
-// it a percentage is arithmetic, not a measurement — 3 drops among 4 packets is 43%. The count is still a fact, so it shows.
+// Below this many packets in the window a percentage is arithmetic, not a measurement — 3 drops among 4 packets is 43% —
+// so the count shows instead, and the node card stays quiet. The same number as the node's per-sample floor
+// (IFACE_PEAK_MIN in swg-noded) but NOT the same floor: that one is per 5 s sample, this one is the whole window. Kept in
+// the browser on purpose: `pct` stays a number, so a panel older than this still renders what a newer node sends.
 const DROP_PCT_MIN = 200;
 export const dropsEnough = d => (d.window_pkts || 0) + (d.window_bad || 0) >= DROP_PCT_MIN;
 export function DropsFigure({ d }) {

@@ -12288,6 +12288,7 @@ _IFDROP = {}                    # iface -> {"prev": (pkts, rxd, rxe, txd, txe), 
 # to the daemon filling — real local load — and those daemons hold packets for an absent peer themselves, uncounted.
 # Anything the node cannot identify counts all four, as before: an unknown datapath shows more, never less.
 _FAULT_ALL = ("rx_drop", "rx_err", "tx_drop", "tx_err")     # the order of the per-kind columns in a hist row, from index 2
+_IFDROP_ERR = set()             # interfaces whose drop figure failed once — logged once, see iface_drops
 
 
 def _if_datapath(ifn):
@@ -12304,6 +12305,78 @@ def _if_datapath(ifn):
 def _if_stat(ifn, key):
     with open("/sys/class/net/%s/statistics/%s" % (ifn, key)) as f:
         return int(f.read().strip())
+
+
+def _iface_drops_one(ifn, links, now):
+    """One interface's record for iface_drops, or None when there is nothing to report."""
+    try:
+        pkts = _if_stat(ifn, "rx_packets") + _if_stat(ifn, "tx_packets")
+        kinds = (_if_stat(ifn, "rx_dropped"), _if_stat(ifn, "rx_errors"),
+                 _if_stat(ifn, "tx_dropped"), _if_stat(ifn, "tx_errors"))
+    except (OSError, ValueError):
+        return None                                    # interface gone mid-sample, or a datapath with no sysfs
+    cur = (pkts,) + kinds
+    st = _IFDROP.setdefault(ifn, {"prev": None, "hist": []})
+    if st.get("dp") is None:                            # cached only once known: a read that failed is tried again next pass
+        st["dp"] = _if_datapath(ifn)
+    fk = ("rx_drop",) if (st["dp"] == "wg" and ifn not in links) else _FAULT_ALL
+    fi = [2 + _FAULT_ALL.index(k) for k in fk]                # columns of a hist row that count
+    # A reset re-zeroes BOTH halves: the rolling window (so nobody reads the five minutes that led up to
+    # their fix) and the lifetime baseline. Acted on once per nonce.
+    _base = _drops_base()
+    _prev = _base.get(ifn) if isinstance(_base.get(ifn), dict) else {}     # a hand-edited or torn file: treat as no baseline
+    _want = _DROPS_RESET.get(ifn)
+    if _want and _prev.get("nonce") != _want:
+        _base[ifn] = {"nonce": _want, "bad": sum(kinds), "pkts": pkts, "at": int(now), "kinds": list(kinds)}
+        _drops_base_save()
+        st["prev"] = None; st["hist"] = []
+    elif fk != _FAULT_ALL and _prev and "kinds" not in _prev:
+        # A reset from before per-kind baselines kept only the total, which on an interface that leaves kinds out would
+        # put them back into "since reset". Re-baseline it here, once, and say so honestly: `at` becomes now.
+        _base[ifn] = dict(_prev, bad=sum(kinds), pkts=pkts, at=int(now), kinds=list(kinds))
+        _drops_base_save()
+    if st["prev"] is not None:
+        d = tuple(cur[i] - st["prev"][i] for i in range(5))
+        if min(d) >= 0 and any(d):                  # negative => counters reset (iface recreated): skip, don't invent a spike
+            st["hist"].append((now,) + d)
+            del st["hist"][:-IFACE_DROP_WINDOW]
+        elif min(d) < 0:
+            st.pop("dp", None)                      # a recreated device may be another kind: look again next pass
+    st["prev"] = cur
+    h = st["hist"]
+    if not h:
+        return None
+    tp = sum(r[1] for r in h)
+    part = [sum(r[i] for r in h) for i in (2, 3, 4, 5)]
+    if not (tp + sum(part)):
+        return None
+    tb = sum(part[i - 2] for i in fi)
+    _bb = _drops_base().get(ifn)
+    _bb = _bb if isinstance(_bb, dict) else {}
+    _fb = lambda r: sum(r[i] for i in fi)
+    bad_at = [r[0] for r in h if _fb(r)]
+    _rate = [_fb(r) * 100.0 / (r[1] + _fb(r)) for r in h if (r[1] + _fb(r)) >= IFACE_PEAK_MIN]
+    peak = max(_rate) if _rate else None          # None = no sample was big enough to express a rate
+    peak_bad = max([_fb(r) for r in h] or [0])   # …but the COUNT is always a fact
+    # Since the reset, counted the same way. A baseline with only the total is left only where every kind counts (see
+    # the re-baseline above), and there the total is the same subtraction.
+    _bk = _bb.get("kinds")
+    life_bad = sum(kinds[i - 2] for i in fi) - (sum(_bk[i - 2] for i in fi) if isinstance(_bk, list) and len(_bk) == 4
+                                                else _bb.get("bad", 0))
+    return {
+        # ⚠️ tp + tb CAN BE 0: the guard above counts every kind, tb only the counted ones — an idle client interface whose
+        # only movement was a send to an address no client owns reaches here with nothing to divide by.
+        "pct": round(tb * 100.0 / (tp + tb), 3) if (tp + tb) else 0.0, "window_pkts": tp, "window_bad": tb,
+        "rx_drop": part[0], "rx_err": part[1], "tx_drop": part[2], "tx_err": part[3],
+        "peak": (round(peak, 3) if peak is not None else None), "peak_bad": peak_bad,
+        "span_s": int(now - h[0][0]),               # what "the window" actually covers right now
+        "last_bad_s": int(now - bad_at[-1]) if bad_at else None,
+        # …counted from the last reset when there was one. Clamped at 0: an interface recreated after a
+        # reset restarts its kernel counters below the baseline, and a negative "since" reads as corruption.
+        "life_pkts": max(0, cur[0] - _bb.get("pkts", 0)), "life_bad": max(0, life_bad),
+        "life_since": _bb.get("at") or None,
+        "dp": st.get("dp"), "fault_kinds": list(fk),
+    }
 
 
 def iface_drops(ifaces, links=()):
@@ -12330,70 +12403,18 @@ def iface_drops(ifaces, links=()):
     out = {}
     now = time.time()
     for ifn in ifaces:
+        # ⚠️ A DISPLAY FIGURE MUST NEVER STOP A SYNC. This runs inside build_snapshot: an exception here used to abort the
+        # whole pass, so the node stopped reporting AND stopped pulling its peers. One interface that cannot be read is
+        # left out of the report; the error is said once per interface, not every 5 seconds.
         try:
-            pkts = _if_stat(ifn, "rx_packets") + _if_stat(ifn, "tx_packets")
-            kinds = (_if_stat(ifn, "rx_dropped"), _if_stat(ifn, "rx_errors"),
-                     _if_stat(ifn, "tx_dropped"), _if_stat(ifn, "tx_errors"))
-        except (OSError, ValueError):
-            continue                                    # interface gone mid-sample, or a datapath with no sysfs
-        cur = (pkts,) + kinds
-        st = _IFDROP.setdefault(ifn, {"prev": None, "hist": []})
-        if "dp" not in st:
-            st["dp"] = _if_datapath(ifn)
-        fk = ("rx_drop",) if (st["dp"] == "wg" and ifn not in links) else _FAULT_ALL
-        fi = [2 + _FAULT_ALL.index(k) for k in fk]                # columns of a hist row that count
-        # A reset re-zeroes BOTH halves: the rolling window (so nobody reads the five minutes that led up to
-        # their fix) and the lifetime baseline. Acted on once per nonce.
-        _base = _drops_base()
-        _want = _DROPS_RESET.get(ifn)
-        if _want and (_base.get(ifn) or {}).get("nonce") != _want:
-            _base[ifn] = {"nonce": _want, "bad": sum(kinds), "pkts": pkts, "at": int(now), "kinds": list(kinds)}
-            _drops_base_save()
-            st["prev"] = None; st["hist"] = []
-        elif fk != _FAULT_ALL and ifn in _base and "kinds" not in _base[ifn]:
-            # A reset from before per-kind baselines kept only the total, which on an interface that leaves kinds out would
-            # put them back into "since reset". Re-baseline it here, once, and say so honestly: `at` becomes now.
-            _base[ifn] = dict(_base[ifn], bad=sum(kinds), pkts=pkts, at=int(now), kinds=list(kinds))
-            _drops_base_save()
-        if st["prev"] is not None:
-            d = tuple(cur[i] - st["prev"][i] for i in range(5))
-            if min(d) >= 0 and any(d):                  # negative => counters reset (iface recreated): skip, don't invent a spike
-                st["hist"].append((now,) + d)
-                del st["hist"][:-IFACE_DROP_WINDOW]
-            elif min(d) < 0:
-                st.pop("dp", None)                      # a recreated device may be another kind: look again next pass
-        st["prev"] = cur
-        h = st["hist"]
-        if not h:
+            rec = _iface_drops_one(ifn, links, now)
+        except Exception as e:
+            if ifn not in _IFDROP_ERR:
+                _IFDROP_ERR.add(ifn)
+                print("iface_drops: %s skipped: %r" % (ifn, e), file=sys.stderr, flush=True)
             continue
-        tp = sum(r[1] for r in h)
-        part = [sum(r[i] for r in h) for i in (2, 3, 4, 5)]
-        if not (tp + sum(part)):
-            continue
-        tb = sum(part[i - 2] for i in fi)
-        _bb = _drops_base().get(ifn) or {}
-        _fb = lambda r: sum(r[i] for i in fi)
-        bad_at = [r[0] for r in h if _fb(r)]
-        _rate = [_fb(r) * 100.0 / (r[1] + _fb(r)) for r in h if (r[1] + _fb(r)) >= IFACE_PEAK_MIN]
-        peak = max(_rate) if _rate else None          # None = no sample was big enough to express a rate
-        peak_bad = max([_fb(r) for r in h] or [0])   # …but the COUNT is always a fact
-        # Since the reset, counted the same way. A baseline with only the total is left only where every kind counts (see
-        # the re-baseline above), and there the total is the same subtraction.
-        _bk = _bb.get("kinds")
-        life_bad = sum(kinds[i - 2] for i in fi) - (sum(_bk[i - 2] for i in fi) if isinstance(_bk, list) and len(_bk) == 4
-                                                    else _bb.get("bad", 0))
-        out[ifn] = {
-            "pct": round(tb * 100.0 / (tp + tb), 3), "window_pkts": tp, "window_bad": tb,
-            "rx_drop": part[0], "rx_err": part[1], "tx_drop": part[2], "tx_err": part[3],
-            "peak": (round(peak, 3) if peak is not None else None), "peak_bad": peak_bad,
-            "span_s": int(now - h[0][0]),               # what "the window" actually covers right now
-            "last_bad_s": int(now - bad_at[-1]) if bad_at else None,
-            # …counted from the last reset when there was one. Clamped at 0: an interface recreated after a
-            # reset restarts its kernel counters below the baseline, and a negative "since" reads as corruption.
-            "life_pkts": max(0, cur[0] - _bb.get("pkts", 0)), "life_bad": max(0, life_bad),
-            "life_since": _bb.get("at") or None,
-            "dp": st.get("dp"), "fault_kinds": list(fk),
-        }
+        if rec is not None:
+            out[ifn] = rec
     for gone in [k for k in _IFDROP if k not in ifaces]:
         _IFDROP.pop(gone, None)
     return out

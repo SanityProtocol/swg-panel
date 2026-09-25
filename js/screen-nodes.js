@@ -26,9 +26,9 @@ import {
 } from "./ui.js";
 import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.js";
 import { Sparkline, MiniArea, MultiRing, RingLegend, TrendArea, TrendSpark, RankBars, RangeTabs,
-         RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, lossColor, histTime, ChartHover, IfaceThroughput,
+         RangedHistory, ThroughputChart, OnlineBlocks, cpuColor, histTime, ChartHover, IfaceThroughput,
          RANGE_CAP, axisCap, lossColorMesh } from "./charts.js";
-import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, dropsEnough, LossPop, onlineUserRows, onlinePeerRows,
+import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsPop, DropsFigure, dropsEnough, LossPop, onlineUserRows, onlinePeerRows,
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES, reachSkipText, reachStaleText,
          promotedAt, promotedBy } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
@@ -961,7 +961,7 @@ export function NodeDetail({ node: rawName }) {
                     // The figure carries a bubble: one percentage cannot say whether this is the node's receive
                     // backlog, a link with no session, or a failed send — different faults, different fixes.
                     return html`<div class="ifrow"><span class="l">${T("col|Drops")}</span><span class="r addr"><${DropsPop} d=${_d} iface=${ifn} node=${name}
-                      trigger=${html`<span class="dp-num" style=${"color:" + lossColor(_d.pct)}>${_d.pct}%</span>`}/></span></div>`;
+                      trigger=${html`<${DropsFigure} d=${_d}/>`}/></span></div>`;
                   })()}
                   <div class="ifrow"><span class="l">${T("Throughput")}</span><span class="r">${m.egress_mode === "forward" && m.egress_node
                     ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(m.egress_node)} title=${T("Exits via {v1}", { v1: Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "") })}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>`
