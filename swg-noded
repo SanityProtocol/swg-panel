@@ -11211,6 +11211,9 @@ def wdtt_foreign_probe(iface):
             # Whether the foreign server is ALSO serving raw-IP. Without this the panel adopts it with RAW off
             # and every raw client of that server silently stops connecting, with nothing on screen to say why.
             "raw_listen": f.get("listen-raw") or "",
+            # …and the same for its client DNS: three forks hold it only in `-dns`, so adopting without it moves
+            # every client to the fork's default resolver.
+            "dns": f.get("dns") or "",
             "max_passwords": f.get("max-passwords") or "", "has_identity": probe["id"], "adoptable": bool(probe["id"]),
             # Non-secret rows from its own store, so the adoption UI can list EVERY issued user — the interface
             # only knows the ones that have connected, which undercounts what the operator is taking on.
@@ -15702,10 +15705,21 @@ def _turn_dns(inst):
     third. It is written into an env file, so anything malformed reads as NOT SET rather than being rendered."""
     v = (inst or {}).get("dns")
     parts = [str(p).strip() for p in (v if isinstance(v, list) else str(v or "").split(","))]
-    parts = [p for p in parts if p]
-    if not 1 <= len(parts) <= 2 or not all(_IPV4_RE.match(p) and all(int(o) <= 255 for o in p.split(".")) for p in parts):
+    parts = list(dict.fromkeys(p for p in parts if p))
+    if not 1 <= len(parts) <= 2 or not all(_turn_dns_usable(p) for p in parts):
         return ""
     return ",".join(parts)
+
+def _turn_dns_usable(p):
+    """Twin of swg-panel-server `turn_dns_usable`: canonical IPv4, not unspecified / loopback / link-local /
+    multicast / reserved. csqtt and xxcipherx refuse to START on an address they can't parse."""
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(p)
+    except ValueError:
+        return False
+    return (a.version == 4 and str(a) == p and not a.is_unspecified and not a.is_loopback
+            and not a.is_link_local and not a.is_multicast and not a.is_reserved and not p.startswith("0."))
 
 def _wdtt_dns_unsupported(inst):
     """True when this instance's fork build cannot take `-dns`. ildarmaga reads DNS only from its own panel DB

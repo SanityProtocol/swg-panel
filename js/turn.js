@@ -1869,27 +1869,36 @@ export function WdttCard({ node, w, reorder }) {
 // connects; it never resolves with it. 1–2 IPv4 — Android's VPN API takes addresses only, and csqtt / wdttplus refuse
 // a third. Empty = the fork's own default, read from the catalog (`client_dns`), so the operator sees what clients get.
 const _dnsParts = v => String(v || "").split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+// Twin of swg-panel-server `turn_dns_usable`: canonical IPv4, not 0/8, loopback, link-local, multicast or reserved.
+const _dnsUsable = x => /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(x)
+  && !/^(0|127)\./.test(x) && !/^169\.254\./.test(x) && +x.split(".")[0] < 224;
 function turnDnsErr(v) {
-  const p = _dnsParts(v);
+  const p = [...new Set(_dnsParts(v))];
   if (p.length > 2) return T("Client DNS takes at most two addresses.");
-  const bad = p.find(x => !/^\d{1,3}(\.\d{1,3}){3}$/.test(x) || x.split(".").some(o => +o > 255) || /^(0|127)\./.test(x));
+  const bad = p.find(x => !_dnsUsable(x));
   return bad ? T("Client DNS must be IPv4 addresses — {v1} is not one a phone can use.", { v1: bad }) : "";
 }
 function useTurnDns(cfg) {
   const cur = (cfg.dns || []).join(", ");
   const [val, set] = useState(cur);
   const dirty = _dnsParts(val).join(",") !== _dnsParts(cur).join(",");
-  return { val, set, dirty, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: _dnsParts(val) } : {} };
+  return { val, set, dirty, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: [...new Set(_dnsParts(val))] } : {} };
 }
-function TurnDnsField({ node, fork, rep, dns }) {
+function TurnDnsField({ node, fork, rep, dns, params }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const dflt = ((turnForkList().find(x => x.id === fork) || {}).client_dns || "").split(",").join(", ");
   // A node too old to know the field doesn't echo `dns` in its report; a fork build that can't take it says so.
   const oldNode = !!rep && ("params" in rep) && !("dns" in rep);
   const unsupported = !!(rep && rep.dns_unsupported);
+  // The operator's own `-dns` / `--dns` in Extra flags comes LAST on the command line (csqtt: an argument beats
+  // CSQTT_DNS), so it wins — say so rather than show a field that does nothing.
+  const inParams = /(^|\s)--?dns(\s|=|$)/.test(params || "");
   const hint = unsupported ? T("This fork's build can't set client DNS yet — its clients get {v1}.", { v1: dflt || "1.1.1.1" })
+    : inParams ? T("Extra flags set their own DNS, and that one wins over this field.")
     : oldNode ? T("Saved now, applied once this node updates.")
-    : nrec.routing_mode === "forcedns" ? T("This node runs Force-DNS: clients' plain DNS is answered by the node's own resolver, whatever is set here.")
+    // Only a hint, not a verdict: the redirect covers the subnets whose routing matches by domain, which the node
+    // does not report per interface — so this says when it applies instead of claiming that it does.
+    : nrec.routing_mode === "forcedns" ? T("This node runs Force-DNS: if this server's routing matches by domain, the node's own resolver answers its clients' plain DNS instead.")
     : dflt ? T("Given to every client when it connects. Empty = not set by the panel; this fork's default is {v1}. Saving restarts the server.", { v1: dflt })
     : T("Given to every client when it connects. Saving restarts the server.");
   return html`<div class="field"><label>${T("Client DNS")}</label>
@@ -2031,7 +2040,7 @@ export function WdttManageSheet({ node, w: w0 }) {
       </div>
       ${hostOnNode === "bad" ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The server *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.")}</span></div>` : null}
       <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint ro-note" title=${T("— self-contained (its own userspace-WireGuard)")}>${T("— self-contained (its own userspace-WireGuard)")}</span><button class="btn btn-mini" disabled=${blocked || awaiting} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
-      <${TurnDnsField} node=${node} fork=${fork} rep=${w} dns=${dns}/>
+      <${TurnDnsField} node=${node} fork=${fork} rep=${w} dns=${dns} params=${params}/>
       ${/* RAW-IP lives INSIDE Server parameters — it is an advanced server capability, not a first-class control.
             When it's on the accordion says so in its header, because the setting is otherwise invisible until opened. */ null}
       <${Disclosure} title=${T("Server parameters")}
@@ -2366,7 +2375,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     </div>
     ${hostOnNode === "bad" ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The server *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.")}</span></div>` : null}
     <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
-    <${TurnDnsField} node=${node} fork=${c.fork || cfg.fork || "csqtt"} rep=${c} dns=${dns}/>
+    <${TurnDnsField} node=${node} fork=${c.fork || cfg.fork || "csqtt"} rep=${c} dns=${dns} params=${params}/>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
       <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this csqtt server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.")}</p>
       <${TurnServerFields} schema=${[]} vals=${{}} setV=${() => {}} extra=${params} setExtra=${setParams} template=${false} wdtt=${true} noHint=${true}/>

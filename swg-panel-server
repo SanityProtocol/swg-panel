@@ -3103,16 +3103,25 @@ def turn_client_dns(raw, fork, had):
             return None, None
         dflt = (TURN_SERVERS.get(fork) or {}).get("client_dns") or ""
         return ([p for p in dflt.split(",") if p] or None), None
+    parts = list(dict.fromkeys(parts))              # a repeat is one resolver, not two
     if len(parts) > 2:
         return None, "Client DNS takes at most two addresses."
     for p in parts:
-        try:
-            ok = ipaddress.ip_address(p).version == 4 and p.count(".") == 3
-        except ValueError:
-            ok = False
-        if not ok or p.startswith(("0.", "127.")):
+        if not turn_dns_usable(p):
             return None, perr("Client DNS must be IPv4 addresses — {v1} is not one a phone can use.", v1=p)
     return parts, None
+
+
+def turn_dns_usable(p):
+    """One address a phone can use as its resolver: canonical IPv4, not unspecified / loopback / link-local /
+    multicast / reserved (which includes 255.255.255.255). A fork that parses it stricter than we do would refuse
+    to START (csqtt, xxcipherx), so the doubtful ones are refused here. Twin: swg-noded `_turn_dns`, js `turnDnsErr`."""
+    try:
+        a = ipaddress.ip_address(p)
+    except ValueError:
+        return False
+    return (a.version == 4 and str(a) == p and not a.is_unspecified and not a.is_loopback
+            and not a.is_link_local and not a.is_multicast and not a.is_reserved and not p.startswith("0."))
 
 def turn_iface_name_error(deps, nodes, snaps, nid, iface, kind):
     """Why this name can't be a NEW self-contained instance on this node, or None.
@@ -25016,6 +25025,11 @@ def api(method, path, qs, body, deps):
         if not inst.get("max_passwords"):
             with contextlib.suppress(TypeError, ValueError): inst["max_passwords"] = int(_cw.get("max_passwords") or 0) or None
             if not inst.get("max_passwords"): inst.pop("max_passwords", None)
+        # …and its client DNS. wdtt / qWDTT / xxcipherx hold it ONLY in the `-dns` flag, so a take-over that drops it
+        # silently moves every client to the fork's default. (wdttplus keeps it in its DB, which adoption keeps.)
+        _dv, _de = turn_client_dns(_cw.get("dns"), fork, False)
+        if _dv and not _de:
+            inst["dns"] = _dv
         # `listen` is what CLIENTS dial, so it must be a reachable host:port. Normalise whatever we ended up with
         # (caller-supplied or probed): a wildcard bind (0.0.0.0 / ::) is what the server listens ON, but tells a
         # client nothing — advertise the node's endpoint instead. Done for EVERY source, not just the probe
