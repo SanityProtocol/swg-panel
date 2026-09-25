@@ -5124,6 +5124,15 @@ export const STR = {
   "Turn-proxy": "Turn-прокси",
   "RAW mode on": "RAW включён",
   "Extra flags": "Дополнительные флаги",
+  // client DNS of a WDTT / csqtt server (docs/DNS-SETTINGS-PLAN.md §3)
+  "Client DNS": "DNS для клиентов",
+  "Client DNS takes at most two addresses.": "DNS для клиентов — не больше двух адресов.",
+  "Client DNS must be IPv4 addresses — {v1} is not one a phone can use.": "DNS для клиентов — только IPv4-адреса: {v1} телефон использовать не сможет.",
+  "This fork's build can't set client DNS yet — its clients get {v1}.": "Сборка этого форка пока не умеет задавать DNS — клиенты получают {v1}.",
+  "Saved now, applied once this node updates.": "Сохранится сейчас, применится после обновления ноды.",
+  "This node runs Force-DNS: clients' plain DNS is answered by the node's own resolver, whatever is set here.": "На этой ноде Force-DNS: обычные DNS-запросы клиентов отвечает резолвер самой ноды, что бы здесь ни было указано.",
+  "Given to every client when it connects. Empty = not set by the panel; this fork's default is {v1}. Saving restarts the server.": "Передаётся каждому клиенту при подключении. Пусто = панель не задаёт; по умолчанию у этого форка {v1}. Сохранение перезапускает сервер.",
+  "Given to every client when it connects. Saving restarts the server.": "Передаётся каждому клиенту при подключении. Сохранение перезапускает сервер.",
   "val|none": "нет",
   "tag|advanced": "подробно",
   // ── RAW-IP mode (qWDTT): a second listener that trades WireGuard for throughput ──────────────

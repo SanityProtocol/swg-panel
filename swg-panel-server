@@ -3088,6 +3088,32 @@ def is_keyless_kind(kind):
     return kind in ("wdtt", "csqtt")
 
 
+def turn_client_dns(raw, fork, had):
+    """A WDTT / csqtt instance's client DNS from a save body → (value to store, or None = leave it unset; error).
+
+    The server hands it to each client (WG `DNS =`, RAWCONF, TUNCONF); it never resolves with it. 1–2 IPv4 and
+    nothing else: Android's VPN API takes addresses only, and csqtt / wdttplus refuse a third
+    (docs/DNS-SETTINGS-PLAN.md §3.2). CLEARING a value that was set stores the fork's own default rather than
+    nothing — wdttplus and csqtt keep their last saved value when no flag comes, so an empty field would leave
+    the old address live on the server while the form said "default"."""
+    parts = raw if isinstance(raw, list) else str(raw or "").replace(" ", ",").split(",")
+    parts = [str(p).strip() for p in parts if str(p).strip()]
+    if not parts:
+        if not had:
+            return None, None
+        dflt = (TURN_SERVERS.get(fork) or {}).get("client_dns") or ""
+        return ([p for p in dflt.split(",") if p] or None), None
+    if len(parts) > 2:
+        return None, "Client DNS takes at most two addresses."
+    for p in parts:
+        try:
+            ok = ipaddress.ip_address(p).version == 4 and p.count(".") == 3
+        except ValueError:
+            ok = False
+        if not ok or p.startswith(("0.", "127.")):
+            return None, perr("Client DNS must be IPv4 addresses — {v1} is not one a phone can use.", v1=p)
+    return parts, None
+
 def turn_iface_name_error(deps, nodes, snaps, nid, iface, kind):
     """Why this name can't be a NEW self-contained instance on this node, or None.
 
@@ -11828,23 +11854,23 @@ TURN_SERVERS = {
     # binary mirror (WDTT_BUILDS → our patched linux-server release). ALL FOUR forks patched + built + published
     # (wdtt-<fork> releases on WDTT_BUILD_REPO): amurcanov, ildarmaga, wdttplus (Ivan4537, server.go @ b3aad32),
     # xxcipherx (XXcipherX, assets/linux-server @ bc1ba26). Build tooling in wdtt/<fork>/build.sh.
-    "amurcanov":    {"label": "amurcanov",  "product": "WDTT",      "owner": "amurcanov/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#A78BFA", "light": "#7C3AED"}, "clients": ["wdttapp", "qwdtt", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
+    "amurcanov":    {"label": "amurcanov",  "product": "WDTT",      "owner": "amurcanov/proxy-turn-vk-android", "kind": "wdtt", "client_dns": "1.1.1.1", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#A78BFA", "light": "#7C3AED"}, "clients": ["wdttapp", "qwdtt", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      "settings": [], "client_settings": []},
     # ⚠️ ildarmaga is RAW-CAPABLE IN SOURCE but the flag stays OFF until wdtt-ildarmaga-1.5.40-2 is published.
     # Our build teaches it -listen-raw/-raw-iface/-raw-addr; the RELEASED 1.5.40 predates them and exits
     # 2/INVALIDARGUMENT on an unknown flag. Turning this on against that binary does not degrade — it kills the
     # service outright, which is exactly what happened on the test node. Add `"raw": True,` back in the SAME
     # change that publishes 1.5.40-2, never before. (Same rule as CSQTT_BUILDS; see the note there.)
-    "ildarmaga":    {"raw": True, "default_client": "pwdttilg", "label": "ildarmaga",  "product": "WDTT",      "owner": "ildarmaga/wdtt",                  "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#5B8DEF", "light": "#2563EB"}, "clients": ["pwdttilg", "pwdtt", "wdttapp", "qwdtt", "wdttplus", "xxcipher", "vkturnproxy", "qwdttleg"], "reload": "sighup",
+    "ildarmaga":    {"raw": True, "default_client": "pwdttilg", "label": "ildarmaga",  "product": "WDTT",      "owner": "ildarmaga/wdtt",                  "kind": "wdtt", "client_dns": "1.1.1.1", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#5B8DEF", "light": "#2563EB"}, "clients": ["pwdttilg", "pwdtt", "wdttapp", "qwdtt", "wdttplus", "xxcipher", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      # richer server: multi-user panel + subscription + Xray + Telegram bot; its native desktop client is the ildarmaga PWDTT build (sub-URL / base64)
                      "settings": [], "client_settings": []},
-    "wdttplus":     {"label": "Ivan4537",   "product": "WDTT-Plus", "owner": "Ivan4537/WDTT-Plus",              "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#F0705E", "light": "#D9432E"}, "clients": ["wdttplus", "wdttapp", "qwdtt", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
+    "wdttplus":     {"label": "Ivan4537",   "product": "WDTT-Plus", "owner": "Ivan4537/WDTT-Plus",              "kind": "wdtt", "client_dns": "1.1.1.1", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#F0705E", "light": "#D9432E"}, "clients": ["wdttplus", "wdttapp", "qwdtt", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      # Ivan4537 fork: in-app admin + WARP alternate-exit IP; wire-compatible with amurcanov
                      "settings": [], "client_settings": []},
-    "xxcipherx":    {"label": "XXcipherX",  "product": "WDTT",      "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
+    "xxcipherx":    {"label": "XXcipherX",  "product": "WDTT",      "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "client_dns": "1.1.1.1", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      # XXcipherX fork: video-masquerade obfuscation + no-captcha; audio mode is amurcanov-compatible
                      "settings": [], "client_settings": []},
-    "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "raw": True, "default_client": "qwdtt", "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+    "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "raw": True, "default_client": "qwdtt", "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "client_dns": "8.8.8.8", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # qWDTT: the actively-developed WDTT fork (amurcanov's own is frozen). Same DTLS+WRAP-A wire and
                      # the same passwords.json store, so every WDTT client and all our WDTT machinery apply unchanged;
                      # what differs is server FEATURES (multi-device passwords, downlink pacing, an experimental raw-IP
@@ -11855,7 +11881,7 @@ TURN_SERVERS = {
     # io_uring, Rust. kind:"csqtt" makes the SPA branch (A6); HIDDEN until that lands so it stays out of the fork
     # picker meanwhile (the reply channel + endpoints work regardless of catalog visibility). We build+host the
     # binary ourselves (CSQTT_BUILDS). PolyForm-Noncommercial-1.0.0 — non-commercial use only.
-    "csqtt":        {"label": "amurcanov",      "product": "CSQTT", "owner": "amurcanov/csqtt",                 "kind": "csqtt", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp", "focsq", "lalune", "vkturnproxy"], "reload": "sighup",
+    "csqtt":        {"label": "amurcanov",      "product": "CSQTT", "owner": "amurcanov/csqtt",                 "kind": "csqtt", "client_dns": "77.88.8.8,77.88.8.1", "wrap": "", "keyflag": "--password", "protocols": ["raw"], "color": {"dark": "#38BDF8", "light": "#0284C7"}, "clients": ["csqttapp", "focsq", "lalune", "vkturnproxy"], "reload": "sighup",
                      # NO client settings. This carried the shared WDTT-family placeholder (workers/dns), which the panel saved and
                      # NOTHING ever delivered: csqttArtifact builds `csqtt://connect?v=2&host=&peer=&password=&hashes=`
                      # and takes no client values at all. Verified against the app itself (amurcanov/csqtt,
@@ -19961,7 +19987,7 @@ def api(method, path, qs, body, deps):
                         "wdtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("wg_addr", "listen", "fork", "wg_port", "max_passwords",
                                                                    "stopped", "block", "egress_mode", "egress_node",
                                                                    "egress_ip", "wan_iface", "routing", "routing_exit_ips", "title", "params",
-                                                                   "raw_port", "raw_iface", "raw_addr", "exit_id", "reach") if k in ov}
+                                                                   "raw_port", "raw_iface", "raw_addr", "exit_id", "reach", "dns") if k in ov}
                                      for ifn, ov in _w.items()},
                         # …and the CIPHERTEXT of a WDTT escrow this panel cannot vouch for, so the browser —
                         # the only holder of the vault private key — can settle what the panel never can.
@@ -19978,7 +20004,7 @@ def api(method, path, qs, body, deps):
                         # routing / filters. Config fields only — never the owner password / minted access passwords.
                         "csqtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
-                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach") if k in ov}
+                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns") if k in ov}
                                       for ifn, ov in _c.items()},
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
@@ -24785,6 +24811,12 @@ def api(method, path, qs, body, deps):
         if "max_passwords" in body:
             try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 200
             except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
+        if "dns" in body:
+            _dv, _de = turn_client_dns(body.get("dns"), inst.get("fork") or "amurcanov", bool(inst.get("dns")))
+            if _de:
+                return 400, {"ok": False, **(_de if isinstance(_de, dict) else {"error": _de}), "code": "bad_request"}
+            if _dv: inst["dns"] = _dv
+            else:   inst.pop("dns", None)
         # WDTT binds TWO ports (DTLS listen + internal WG) — neither may collide with any other interface / proxy /
         # WDTT / mesh link on the node, and the two must differ from each other.
         _cur = (nodes[nid].get("wdtt") or {}).get(iface) or {}
@@ -25107,6 +25139,12 @@ def api(method, path, qs, body, deps):
         if "max_passwords" in body:
             try: inst["max_passwords"] = int(body.get("max_passwords") or 0) or 500
             except (TypeError, ValueError): return 400, {"ok": False, "error": "max_passwords must be an integer", "code": "bad_request"}
+        if "dns" in body:
+            _dv, _de = turn_client_dns(body.get("dns"), inst.get("fork") or "csqtt", bool(inst.get("dns")))
+            if _de:
+                return 400, {"ok": False, **(_de if isinstance(_de, dict) else {"error": _de}), "code": "bad_request"}
+            if _dv: inst["dns"] = _dv
+            else:   inst.pop("dns", None)
         # the DTLS listen port must not collide with any other interface / proxy / WDTT / csqtt / mesh on the node
         _cur = (nodes[nid].get("csqtt") or {}).get(iface) or {}
         _own = []
@@ -25422,6 +25460,9 @@ def api(method, path, qs, body, deps):
             if isinstance(v, str) and not no_ctrl(v):
                 return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
             inst[k] = v
+        _dv, _de = turn_client_dns(_rep.get("dns"), inst.get("fork") or fam, False)   # the node's own, carried across
+        if _dv and not _de:
+            inst["dns"] = _dv
         if fam == "wdtt":
             inst.setdefault("wg_port", 56001)
             inst.setdefault("max_passwords", 200)
@@ -28386,6 +28427,11 @@ class Handler(BaseHTTPRequestHandler):
                            "raw_port", "raw_iface", "raw_addr"):
                     if _rep.get(_k):
                         _inst[_k] = _rep[_k]
+                # client DNS: compared by the node's _*_params_changed like params, so a mirror without it would
+                # read as a change and restart the server with the fork's default
+                _dv, _de = turn_client_dns(_rep.get("dns"), _rep.get("fork") or "", False)
+                if _dv and not _de:
+                    _inst["dns"] = _dv
                 if _rep.get("stopped"):
                     _inst["stopped"] = True
                 # ⚠️⚠️ ITS USERS COME ACROSS IN THE SAME PASS, BEFORE THE RECORD EXISTS. This was learned by

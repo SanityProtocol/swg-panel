@@ -1865,6 +1865,37 @@ export function WdttCard({ node, w, reorder }) {
 // full interface detail instead). TODO Phase 2 (fork dimension): reshape this into the real turn modal —
 // fork switch + client-apps picker + server params — and let the interface detail own lifecycle/peers, so
 // the two views stop overlapping (see docs/WDTT-FORK-FAMILY-PLAN.md §"UI corrections").
+// CLIENT DNS for a WDTT / csqtt server (docs/DNS-SETTINGS-PLAN.md §3). The server hands it to every client when it
+// connects; it never resolves with it. 1–2 IPv4 — Android's VPN API takes addresses only, and csqtt / wdttplus refuse
+// a third. Empty = the fork's own default, read from the catalog (`client_dns`), so the operator sees what clients get.
+const _dnsParts = v => String(v || "").split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+function turnDnsErr(v) {
+  const p = _dnsParts(v);
+  if (p.length > 2) return T("Client DNS takes at most two addresses.");
+  const bad = p.find(x => !/^\d{1,3}(\.\d{1,3}){3}$/.test(x) || x.split(".").some(o => +o > 255) || /^(0|127)\./.test(x));
+  return bad ? T("Client DNS must be IPv4 addresses — {v1} is not one a phone can use.", { v1: bad }) : "";
+}
+function useTurnDns(cfg) {
+  const cur = (cfg.dns || []).join(", ");
+  const [val, set] = useState(cur);
+  const dirty = _dnsParts(val).join(",") !== _dnsParts(cur).join(",");
+  return { val, set, dirty, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: _dnsParts(val) } : {} };
+}
+function TurnDnsField({ node, fork, rep, dns }) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const dflt = ((turnForkList().find(x => x.id === fork) || {}).client_dns || "").split(",").join(", ");
+  // A node too old to know the field doesn't echo `dns` in its report; a fork build that can't take it says so.
+  const oldNode = !!rep && ("params" in rep) && !("dns" in rep);
+  const unsupported = !!(rep && rep.dns_unsupported);
+  const hint = unsupported ? T("This fork's build can't set client DNS yet — its clients get {v1}.", { v1: dflt || "1.1.1.1" })
+    : oldNode ? T("Saved now, applied once this node updates.")
+    : nrec.routing_mode === "forcedns" ? T("This node runs Force-DNS: clients' plain DNS is answered by the node's own resolver, whatever is set here.")
+    : dflt ? T("Given to every client when it connects. Empty = not set by the panel; this fork's default is {v1}. Saving restarts the server.", { v1: dflt })
+    : T("Given to every client when it connects. Saving restarts the server.");
+  return html`<div class="field"><label>${T("Client DNS")}</label>
+    <input class=${dns.err ? "bad" : ""} value=${dns.val} disabled=${unsupported} onInput=${e => dns.set(e.target.value)} placeholder=${dflt || "1.1.1.1"} autocomplete="off"/>
+    <div class=${"hint" + (dns.err ? " err" : "")}>${dns.err || hint}</div></div>`;
+}
 export function WdttManageSheet({ node, w: w0 }) {
   useStore();   // live status / config while open
   const iface = w0.iface;
@@ -1880,6 +1911,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   const forkLabel = (turnForkList().find(x => x.id === fork) || {}).label || fork;
   const [title, setTitle] = useState(shownTitle("w|" + node + "|" + iface, (cfg.title || "").trim()));   // optional cosmetic label; honour a just-saved optimistic title
   const [params, setParams] = useState((cfg.params || "").trim());   // extra ExecStart flags (advanced)
+  const dns = useTurnDns(cfg);
   const [srvOpen, setSrvOpen] = useState(false);
   const awaiting = !!w.await_restore;
   const restoring = (nrec.wdtt_restoring || []).includes(iface);
@@ -1930,7 +1962,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
   const rawWant = !!(rawOn && rawCapable);
   const rawDirty = rawWant !== !!rawCur;
-  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty;
+  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty || dns.dirty;
   // live DTLS-port check: must differ from this instance's own internal WG port, and not collide with any other
   // port on the node (its own DTLS/WG ports don't count). Blocks Save so a clash never becomes a node "FAILED TO APPLY".
   const wperr = (port.trim() && Number(port) === Number(wgPort)) ? T("The DTLS port and the internal WG port must differ.")
@@ -1944,7 +1976,7 @@ export function WdttManageSheet({ node, w: w0 }) {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, ...dns.body, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed"));
         reportDropped(r);   // §5.4
         const mv = ((r.data || {}).raw_moved || "");
@@ -1961,12 +1993,13 @@ export function WdttManageSheet({ node, w: w0 }) {
     }
     if (rawErr) return setMsg({ k: "err", t: rawErr });
     if (wgErr) return setMsg({ k: "err", t: wgErr });
+    if (dns.err) return setMsg({ k: "err", t: dns.err });
     if (rawWant && rawHolder) {   // one RAW listener per ADDRESS — turning it on here takes it from that one
       pushModal(html`<${ConfirmSheet} title=${T("Move RAW-IP to this server?")} confirmLabel=${T("Move RAW here")} warn=${true}
         body=${Trich("*{holder}* offers RAW-IP on this address today. The app dials one fixed port for every server, so an address can only run one raw listener — turning it on here turns it off on *{holder}*. Its users keep their links and fall back to WireGuard mode. Servers on this node's other IPs are untouched.", { holder: rawHolder })} onConfirm=${doSave}/>`);
       return;
     }
-    if (paramsDirty || rawDirty || wgDirty) { doSave(); return; }   // extra ExecStart flags / RAW listener → the node rewrites the unit + restarts
+    if (paramsDirty || rawDirty || wgDirty || dns.dirty) { doSave(); return; }   // extra ExecStart flags / RAW listener → the node rewrites the unit + restarts
     // title-only → a cosmetic panel-side label (no node restart, like a turn-proxy title): store + close immediately
     closeModal();
     pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
@@ -1998,6 +2031,7 @@ export function WdttManageSheet({ node, w: w0 }) {
       </div>
       ${hostOnNode === "bad" ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The server *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.")}</span></div>` : null}
       <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint ro-note" title=${T("— self-contained (its own userspace-WireGuard)")}>${T("— self-contained (its own userspace-WireGuard)")}</span><button class="btn btn-mini" disabled=${blocked || awaiting} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
+      <${TurnDnsField} node=${node} fork=${fork} rep=${w} dns=${dns}/>
       ${/* RAW-IP lives INSIDE Server parameters — it is an advanced server capability, not a first-class control.
             When it's on the accordion says so in its header, because the setting is otherwise invisible until opened. */ null}
       <${Disclosure} title=${T("Server parameters")}
@@ -2266,6 +2300,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const cfg = (nrec.csqtt_cfg || {})[iface] || {};
   const [title, setTitle] = useState(shownTitle("c|" + node + "|" + iface, (cfg.title || "").trim()));
   const [params, setParams] = useState((cfg.params || "").trim());
+  const dns = useTurnDns(cfg);
   const [srvOpen, setSrvOpen] = useState(false);
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   const notup = c.active !== "active";
@@ -2289,13 +2324,13 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const endpointDirty = !!oldListen && newListen !== oldListen;
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
-  const anyDirty = endpointDirty || titleDirty || paramsDirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
+  const anyDirty = endpointDirty || titleDirty || paramsDirty || dns.dirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
   const wperr = portErrMsg(node, port, [lport]);
   const doSave = () => {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), ...dns.body, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
@@ -2306,7 +2341,8 @@ export function CsqttManageSheet({ node, c: c0 }) {
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
       return;
     }
-    if (paramsDirty) { doSave(); return; }
+    if (dns.err) return setMsg({ k: "err", t: dns.err });
+    if (paramsDirty || dns.dirty) { doSave(); return; }
     closeModal(); pushOptTitle("c|" + node + "|" + iface, title.trim());
     api.csqttSet({ node, iface, listen: oldListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (r && r.ok) { Store.poll(); reportDropped(r); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });   // §5.4: a title-only save re-posts the routing block, so it can drop too
@@ -2330,6 +2366,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     </div>
     ${hostOnNode === "bad" ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The server *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.")}</span></div>` : null}
     <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
+    <${TurnDnsField} node=${node} fork=${c.fork || cfg.fork || "csqtt"} rep=${c} dns=${dns}/>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
       <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this csqtt server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.")}</p>
       <${TurnServerFields} schema=${[]} vals=${{}} setV=${() => {}} extra=${params} setExtra=${setParams} template=${false} wdtt=${true} noHint=${true}/>

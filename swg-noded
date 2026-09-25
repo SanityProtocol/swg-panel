@@ -15695,6 +15695,33 @@ def _wdtt_raw(inst):
         lip = "0.0.0.0"
     return (lip + ":" + port, ifn, addr)
 
+def _turn_dns(inst):
+    """The client DNS a WDTT / csqtt instance hands its clients ("a" or "a,b"), or "" = not set, and the fork keeps
+    its own default. The server does not use it itself: it goes into each client's config (WG `DNS =`, RAWCONF,
+    TUNCONF). 1–2 IPv4 and nothing else — Android's VPN API takes addresses only, and csqtt / wdttplus refuse a
+    third. It is written into an env file, so anything malformed reads as NOT SET rather than being rendered."""
+    v = (inst or {}).get("dns")
+    parts = [str(p).strip() for p in (v if isinstance(v, list) else str(v or "").split(","))]
+    parts = [p for p in parts if p]
+    if not 1 <= len(parts) <= 2 or not all(_IPV4_RE.match(p) and all(int(o) <= 255 for o in p.split(".")) for p in parts):
+        return ""
+    return ",".join(parts)
+
+def _wdtt_dns_unsupported(inst):
+    """True when this instance's fork build cannot take `-dns`. ildarmaga reads DNS only from its own panel DB
+    (docs/DNS-SETTINGS-PLAN.md §3.5), and an unknown flag makes it exit, so it is never passed one."""
+    return _wdtt_fork(inst) == "ildarmaga"
+
+def _wdtt_params_eff(inst):
+    """The SWG_PARAMS / argv tail as the server gets it: `-dns` FIRST, then the operator's own params. Go's flag
+    package keeps the last value, so a `-dns` the operator typed into params still wins. Riding this value, not a
+    new ExecStart var, keeps the unit byte-identical — a new var would read as drift and restart every instance."""
+    params = (inst.get("params") or "").strip()
+    dns = _turn_dns(inst)
+    if not dns or _wdtt_dns_unsupported(inst):
+        return params
+    return ("-dns " + dns + " " + params).strip()
+
 def _wdtt_valid(inst):
     """Defence-in-depth: refuse control chars (interpolated into a root heredoc) + basic shape. The panel
     validates too — this is the belt on the node against a compromised/MITM panel."""
@@ -15756,7 +15783,7 @@ def _wdtt_env_text(inst):
                 inst["iface"], inst["wg_addr"], inst["listen"], inst.get("wg_port") or 56001, cfgdir,
                 cfgdir + "/desired.json", inst.get("password") or "",
                 inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or ""), _rawflags,
-                (inst.get("params") or "").strip()))   # operator extra ExecStart flags (systemd splits on whitespace → argv, never a shell)
+                _wdtt_params_eff(inst)))   # `-dns` + operator extra ExecStart flags (systemd splits on whitespace → argv, never a shell)
 
 def _wdtt_unit_text(iface, binp, cfgdir, fork):
     # Right-sized for a WireGuard server (validated live): NET_ADMIN + /dev/net/tun, config-dir the only
@@ -15828,7 +15855,7 @@ def _wdtt_argv(inst, binp):
     _raw = _wdtt_raw(inst)          # opt-in RAW-IP listener (qWDTT); absent = not passed at all
     if _raw:
         a += ["-listen-raw", _raw[0], "-raw-iface", _raw[1], "-raw-addr", _raw[2]]
-    params = (inst.get("params") or "").strip()
+    params = _wdtt_params_eff(inst)
     if params:
         with contextlib.suppress(Exception):
             a += shlex.split(params)
@@ -16441,6 +16468,7 @@ def _wdtt_params_changed(prev, inst):
             or (str(prev.get("max_passwords") or _wdtt_maxpw_for(prev.get("wg_addr") or ""))
                 != str(inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or "")))
             or (prev.get("params") or "").strip() != (inst.get("params") or "").strip()   # extra ExecStart flags → rewrite unit + restart
+            or _turn_dns(prev) != _turn_dns(inst)   # client DNS rides SWG_PARAMS → same treatment
             or _wdtt_raw(prev) != _wdtt_raw(inst))   # RAW listener turned on/off or moved → same treatment
 
 def _wdtt_unit_drifted(iface, inst, prev):
@@ -17220,6 +17248,11 @@ def wdtt_snapshot():
                     # a complete report from an old node's partial one and decline to mirror the partial.
                     "max_passwords": inst.get("max_passwords") or "",
                     "params": inst.get("params") or "",
+                    # Client DNS ("" = not set, the fork's own default) — _wdtt_params_changed compares it too, so a
+                    # mirror needs it for the same T-18 reason. Its presence also tells the panel this node takes it;
+                    # dns_unsupported = this fork build cannot (ildarmaga), so the panel says so instead of storing
+                    # a value that never reaches a client.
+                    "dns": _turn_dns(inst), "dns_unsupported": _wdtt_dns_unsupported(inst),
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a foreign server at take-over, for the panel to adopt into the roster.
                     # Reported until it has them (reconcile_wdtt drops the record once they appear in `desired`),
@@ -17321,7 +17354,15 @@ def _csqtt_env_text(inst):
                 inst["listen"], inst.get("web_port") or _csqtt_webport(inst["listen"]), cfgdir,
                 cfgdir + "/desired.json", inst["iface"], inst["tun_addr"],
                 inst.get("password") or "", inst.get("web_pass") or "",
-                inst.get("max_passwords") or 500, (inst.get("params") or "").strip()))
+                inst.get("max_passwords") or 500, (inst.get("params") or "").strip())
+            + _csqtt_dns_env(inst))
+
+def _csqtt_dns_env(inst):
+    """csqtt takes its client DNS as CSQTT_DNS, which the unit's EnvironmentFile already loads. ⚠️ Not `--dns` on
+    the command line: clap refuses a repeated argument, so a `--dns` the operator typed into params would crash-loop
+    the server. Through the env an explicit `--dns` simply wins. Unset → no line at all (the file as before)."""
+    dns = _turn_dns(inst)
+    return ("CSQTT_DNS=%s\n" % dns) if dns else ""
 
 def _csqtt_unit_text(iface, binp, cfgdir):
     # csqtt = raw-IP TUN: needs CAP_NET_ADMIN + /dev/net/tun. The io_uring syscall set is NOT in @system-service by
@@ -17549,7 +17590,10 @@ def _csqtt_docker_start(inst):
         _from = os.path.getsize(cfgdir + "/server.log")
     try:
         lf = open(cfgdir + "/server.log", "ab", buffering=0)
-        p = subprocess.Popen(_csqtt_argv(inst, binp), stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, close_fds=True)
+        _env = {k: v for k, v in os.environ.items() if k != "CSQTT_DNS"}
+        if _turn_dns(inst):
+            _env["CSQTT_DNS"] = _turn_dns(inst)   # the env, not --dns: see _csqtt_dns_env
+        p = subprocess.Popen(_csqtt_argv(inst, binp), stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, close_fds=True, env=_env)
     except Exception as e:
         return ("spawn failed: " + str(e))[:160]
     _CSQTT_PROCS[iface] = p
@@ -17738,7 +17782,8 @@ def _csqtt_params_changed(prev, inst):
     return ((prev.get("listen") or "") != (inst.get("listen") or "")
             or (prev.get("tun_addr") or "") != (inst.get("tun_addr") or "")
             or str(prev.get("max_passwords") or 500) != str(inst.get("max_passwords") or 500)
-            or (prev.get("params") or "").strip() != (inst.get("params") or "").strip())
+            or (prev.get("params") or "").strip() != (inst.get("params") or "").strip()
+            or _turn_dns(prev) != _turn_dns(inst))   # CSQTT_DNS lives in csqtt.env → rewrite + restart
 
 def _csqtt_unit_drifted(iface, inst):
     """True when the on-disk unit differs from what this build would write (docker has no unit → never)."""
@@ -18431,6 +18476,7 @@ def csqtt_snapshot():
                     # reported. See the WDTT report for why a mirror without them restarts a live server.
                     "max_passwords": inst.get("max_passwords") or "",
                     "params": inst.get("params") or "",
+                    "dns": _turn_dns(inst),   # client DNS, as in the WDTT report
                     "rx_bytes": _rxb, "tx_bytes": _txb, "rx_speed": _rxs, "tx_speed": _txs,
                     # Users recovered from a taken-over server, offered UP so the panel can recreate each as a
                     # roster peer. Present only while the hand-off is open; the panel clears it by importing.
