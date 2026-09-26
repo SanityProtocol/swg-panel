@@ -165,7 +165,7 @@ detect_public_ip(){ # best public IPv4: default-route source, then first hostnam
 
 # ── idempotent re-install: read the current install's panel URL/token + per-interface endpoints, to
 #    offer as defaults (so re-running keeps everything). Fresh install = run the uninstaller first.
-EXIST_URL=""; EXIST_TOKEN=""; EXIST_EP=""; EXIST_REF=""; EXISTING=no
+EXIST_URL=""; EXIST_TOKEN=""; EXIST_EP=""; EXIST_REF=""; EXIST_FP=""; EXISTING=no
 read_existing(){
   { [ -f /etc/swg-agent/config.json ] && have python3; } || return 0
   EXISTING=yes
@@ -173,6 +173,7 @@ read_existing(){
   EXIST_REF="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("node") or {}).get("update_ref") or "")' 2>/dev/null || true)"
   EXIST_URL="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("url",""))' 2>/dev/null || true)"
   EXIST_TOKEN="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("token",""))' 2>/dev/null || true)"
+  EXIST_FP="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("fingerprint","") or "")' 2>/dev/null || true)"
   while IFS='|' read -r n ep; do [ -n "$n" ] && [ -z "${IF_ENDPOINT[$n]:-}" ] && IF_ENDPOINT[$n]="$ep"; done < <(python3 -c '
 import json
 for n,ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).items():
@@ -804,6 +805,20 @@ if der: print(hashlib.sha256(der).hexdigest())
 PY
 }
 
+# ⚠️ A RE-INSTALL KEEPS THE PIN IT HAS. This node re-decided from scratch on every run, so a panel presenting a
+# DIFFERENT certificate was simply re-pinned — "pinning it (sha256 …)", one info line (1.8.8 qualification, round 4),
+# which is exactly what trust-on-first-use must not do on a second use. The Docker node's node_panel_trust already kept
+# its pin; this is that decision, and a changed certificate goes to panel_pin_changed (lib/common.sh) on both.
+if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ] && [ -n "$EXIST_FP" ] && [ "${PANEL_URL%/}" = "${EXIST_URL%/}" ]; then
+  _fp_now=""; $DRYRUN || _fp_now="$(_panel_fp "$PANEL_URL")"
+  if [ -z "$_fp_now" ] || [ "$_fp_now" = "$(printf '%s' "$EXIST_FP" | tr -d ':' | tr 'A-F' 'a-f')" ]; then
+    TLS_FINGERPRINT="$EXIST_FP"; TLS_VERIFY=no
+    if [ -n "$_fp_now" ]; then ok "keeping the panel cert pin (sha256 ${EXIST_FP:0:16}…) — the panel still presents that certificate"
+    elif $DRYRUN;        then sub "keeping the panel cert pin (sha256 ${EXIST_FP:0:16}…) — dry run, not re-checked against the panel"
+    else warn "couldn't reach the panel to re-check its certificate — keeping the existing pin (sha256 ${EXIST_FP:0:16}…)"; fi
+  elif panel_pin_changed "$EXIST_FP" "$_fp_now"; then TLS_FINGERPRINT="$_fp_now"; TLS_VERIFY=no
+  else TLS_FINGERPRINT="$EXIST_FP"; TLS_VERIFY=no; fi
+fi
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   # Verify the panel's TLS certificate by DEFAULT (secure). To avoid a fresh install failing its first sync
   # against a self-signed panel, auto-detect the cert: probe once with strict TLS; only if that fails while

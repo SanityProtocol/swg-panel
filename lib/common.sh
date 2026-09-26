@@ -2012,6 +2012,24 @@ manage_ifaces_resolve(){
   fi
 }
 
+# panel_pin_changed <old_fp> <new_fp> — a node re-install found the panel presenting a DIFFERENT certificate from the
+# one this node pinned. 0 = trust the new one, 1 = keep the old pin. NEVER TAKEN SILENTLY: the bare installer re-pinned
+# it with one info line and the Docker one with a warning (1.8.8 qualification, round 4). Anyone able to intercept this
+# node's traffic presents a different certificate, and the node would hand them its panel token and take its peer set
+# from them. With a terminal the operator decides (default: no); without one it is refused, with the way to accept it.
+# Priority 1 (fail safe): a node that keeps its old pin stops syncing and keeps serving the peers it has, which is
+# undone by accepting later; a node that trusted an impostor cannot be undone from the node.
+panel_pin_changed(){ local old="$1" new="$2" v=""
+  warn "the panel's certificate CHANGED since this node pinned it (was sha256 ${old:0:16}…, now ${new:0:16}…)"
+  echo "  Trust the new one only if the panel's certificate was re-issued on purpose — a machine intercepting this"
+  echo "  node's traffic presents a different certificate too, and would receive this node's panel token."
+  if { : </dev/tty; } 2>/dev/null; then
+    read -rp "  Trust the new certificate? (y/N): " v </dev/tty 2>/dev/null || v=""
+    case "$v" in [Yy]*) ok "re-pinned the panel certificate (sha256 ${new:0:16}…)"; return 0;; esac
+  else echo "  Trust the new certificate? (y/N): $(b n)  (no terminal — a changed certificate is never accepted unattended)"; fi
+  warn "kept the old pin — this node will not sync until the panel presents that certificate again. If the new one is the panel's, check it on the panel's host (openssl x509 -noout -fingerprint -sha256 -in <its tls/fullchain.pem>) and re-run this installer with TLS_FINGERPRINT=$new"
+  return 1; }
+
 # Shared by install-node.sh and install-docker.sh (one probe, not two copies to drift apart).
 # 0 when the panel's certificate fails verification ONLY because it is outside its validity window — expired
 # (or not yet valid) — which is a real CA certificate the panel has failed to renew, NOT a self-signed one.

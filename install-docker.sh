@@ -712,7 +712,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
 # The decision a fresh install makes, shared with a re-install. $1 = the pin an earlier install recorded for THIS
 # SAME panel URL, if any: it is kept while the panel still presents that certificate — and also while the panel
 # can't be reached to say otherwise, because a panel outage during a node re-install must not cost the node its pin.
-# A certificate that CHANGED is decided afresh, out loud. Sets TLS_VERIFY / TLS_FINGERPRINT.
+# A certificate that CHANGED is never taken silently (panel_pin_changed, lib/common.sh). Sets TLS_VERIFY / TLS_FINGERPRINT.
 node_panel_trust(){ local _old="${1:-}" _tls_def=y _rc _fp=""
   if [ -n "$_old" ]; then
     $DRYRUN || _fp="$(_docker_panel_fp "$PANEL_URL")"
@@ -725,7 +725,10 @@ node_panel_trust(){ local _old="${1:-}" _tls_def=y _rc _fp=""
       else warn "couldn't reach the panel to re-check its certificate — keeping the existing pin (sha256 ${_old:0:16}…)"; fi
       return 0
     fi
-    warn "the panel's certificate CHANGED since this node pinned it (was sha256 ${_old:0:16}…, now ${_fp:0:16}…) — deciding afresh, as a new install would. If nobody re-issued the panel's certificate, find out why before trusting it."
+    # CHANGED: never taken silently — asked with a terminal (default no), refused without one (lib/common.sh). This
+    # decided afresh with only a warning, i.e. re-pinned whatever answered (1.8.8 qualification, round 4).
+    if panel_pin_changed "$_old" "$_fp"; then TLS_FINGERPRINT="$_fp"; else TLS_FINGERPRINT="$_old"; fi
+    TLS_VERIFY=no; return 0
   fi
   # Verify by DEFAULT (secure); auto-detect a self-signed panel so a fresh node never fails its first sync.
   if [ -n "$PANEL_URL" ]; then

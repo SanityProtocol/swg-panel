@@ -13,7 +13,9 @@ A fresh install of the same node pins ("Panel cert is self-signed — pinning it
   [2] re-install to a DIFFERENT panel URL: the old pin is not carried — and the result is never "no + no pin"
   [3] node_panel_trust itself, against a live self-signed TLS listener (the real probe, DRYRUN=false):
       a. stored pin == the certificate served      → kept, and it says so
-      b. stored pin != the certificate served      → re-pinned to the served one, with a CHANGED warning
+      b. stored pin != the certificate served      → NEVER taken silently (1.8.8 round 4): with no terminal the old pin
+         is kept, with a CHANGED warning and the way to accept it (TLS_FINGERPRINT=<served>); at a terminal the
+         operator is asked — y re-pins to the served one, Enter (the default) keeps the old pin
       c. stored pin, panel unreachable             → kept (a panel outage must not cost the node its pin)
       d. no stored pin, self-signed panel          → pinned (the fresh-install behaviour, unchanged)
       e. the stored pin written `AB:CD:…`          → the same certificate: kept (swg-noded compares it that way)
@@ -140,13 +142,19 @@ FUNCS = "\n".join(extract(inst, n) for n in ("info", "_docker_panel_fp", "sub", 
                                              "ask_tty", "ask_yn_tty", "node_panel_trust"))
 
 
-def trust(url, old):
+def trust(url, old, answer=None):
+    """answer=None: no terminal (a new session, stdin closed). A string: run on a pty and type it."""
     script = ('set -euo pipefail\nDRYRUN=false; HAVE_TTY=no; _SWG_NL=""; BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_BL=""; C_BROWN=""\n'
               '_nlguard(){ _SWG_NL=""; }\n'
               '. "%s/lib/common.sh"\n%s\nPANEL_URL="%s"; TLS_VERIFY=""; TLS_FINGERPRINT=""\n'
               'node_panel_trust "%s"\necho "RESULT verify=$TLS_VERIFY fp=$TLS_FINGERPRINT"\n') % (SRC, FUNCS, url, old)
-    r = subprocess.run(["bash", "-c", script], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
-                       start_new_session=True)
+    if answer is None:
+        r = subprocess.run(["bash", "-c", script], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+                           start_new_session=True)
+    else:
+        f = os.path.join(T, "trust.sh"); open(f, "w").write(script)
+        r = subprocess.run(["script", "-qec", "bash " + f, "/dev/null"], input=answer, capture_output=True, text=True,
+                           timeout=120, start_new_session=True)
     out = r.stdout + r.stderr
     m = re.search(r"RESULT verify=(\S*) fp=(\S*)", out)
     return (m.group(1), m.group(2)) if m else (None, None), out
@@ -157,8 +165,13 @@ print("\n[3] node_panel_trust against a live self-signed listener")
 check("a. stored pin == served → kept", (vf, fp) == ("no", SERVED), (vf, fp, out[-300:]))
 check("a. …and it says the panel still presents it", "still presents" in out, out[-300:])
 (vf, fp), out = trust(LIVE, PIN)
-check("b. stored pin != served → re-pinned to the served certificate", (vf, fp) == ("no", SERVED), (vf, fp, out[-300:]))
-check("b. …with a CHANGED warning", "CHANGED" in out, out[-300:])
+check("b. stored pin != served, no terminal → the OLD pin is kept (a changed certificate is never accepted unattended)",
+      (vf, fp) == ("no", PIN), (vf, fp, out[-300:]))
+check("b. …with a CHANGED warning, and the way to accept the new one", "CHANGED" in out and ("TLS_FINGERPRINT=" + SERVED) in out, out[-400:])
+(vf, fp), out = trust(LIVE, PIN, "y\n")
+check("b. …at a terminal, y → re-pinned to the served certificate", (vf, fp) == ("no", SERVED), (vf, fp, out[-300:]))
+(vf, fp), out = trust(LIVE, PIN, "\n")
+check("b. …at a terminal, Enter (the default) → the old pin is kept", (vf, fp) == ("no", PIN), (vf, fp, out[-300:]))
 (vf, fp), out = trust(DEAD, PIN)
 check("c. ⚠️ panel unreachable → the stored pin is kept", (vf, fp) == ("no", PIN), (vf, fp, out[-300:]))
 (vf, fp), out = trust(LIVE, "")
