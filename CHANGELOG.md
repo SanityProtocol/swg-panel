@@ -353,7 +353,10 @@ earlier releases predate the changelog — see the git history. · Русски�
   something, and a re-install of the same build says "reinstalled", not "reinstalled and updated". Unattended
   bare-metal installs now say which default they took; a node's failed sign-off gives its reason in one line instead
   of Python's raw error; a convert names the node as the panel does and no longer calls its own staging an existing
-  install; and a re-install lists the interfaces the panel still manages as the panel's, not as ones to adopt.
+  install; and a re-install lists the interfaces the panel still manages as the panel's, not as ones to adopt. An
+  answer given in advance, by a flag or the environment, is now said under its step too, where the step was left
+  empty; a convert's list of interfaces keeps its columns with a link between servers in it; and a Docker uninstall
+  that keeps the data says what the kept `.env` holds — on a panel-only server it named a node token.
 - **Confirming a Docker panel's new address could say "Couldn't run the dry-run" while it was still running** — on
   Cloudflare the dry-run issues a real certificate, which can take longer than the page waited, and a second click ran
   it again. The page now waits as long as the panel does.
@@ -365,6 +368,17 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Security
 
+- **A blocked or expired device kept its tunnel on an adopted interface — and, after a Docker → bare-metal convert or
+  a re-install, on the panel's own interfaces too.** An adopted interface keeps the peers it came with, so a server
+  removed only the devices the panel deleted or re-keyed there: a device you blocked, whose owner you blocked, or whose
+  date ran out kept connecting. A Docker → bare-metal convert marked every interface it carried that way, the panel's
+  own and the links between servers included, and so did a server taking back its interfaces after a re-install that
+  had kept them. The panel now has every server drop the blocked and expired devices it still carries, on any
+  interface — servers need no update for this — and unblocking or extending brings a device back. Updated installers
+  and servers no longer mark: a convert or a re-install leaves each interface as it was, and a link between servers
+  keeps no key the panel did not send. An interface marked earlier stays marked, since nothing on a server tells one
+  the panel made from one it adopted; now that only means a key the panel has never seen stays on it, listed there as
+  an orphan.
 - **Traffic another server routed into a server by rule leaked out by that server's own address, even with the
   exit's kill-switch on.** It ignored the server's default exit, which whole-interface forwarding took, so the sites
   it reached saw the server's own address instead of the exit's — a privacy leak, and the one the kill-switch exists
