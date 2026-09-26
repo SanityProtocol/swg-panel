@@ -11,7 +11,7 @@ had no dial host at all — the mesh and the address the panel hands out had not
   [2] an existing entry with a BLANK endpoint_host is filled
   [3] an existing entry with an endpoint the operator set in the panel is left alone
   [4] no endpoint given (auto-detected) → blank, as before: the panel's own auto-fill stays in charge
-  [5] the shell call passes the GIVEN endpoint (not the auto-detected NODE_ENDPOINT) to the writer
+  [5] the shell call passes the seed: the GIVEN endpoint (not the auto-detected NODE_ENDPOINT) on a fresh install
 
 The writer is the python heredoc lifted verbatim out of install-docker.sh's auto-enroll block.
 
@@ -76,8 +76,10 @@ print("\n[4] nothing given → blank, as before")
 rc, d = run(None, "")
 check("endpoint_host ''", rc == 0 and entry(d).get("endpoint_host") == "", entry(d))
 
-print("\n[5] the shell call passes the GIVEN endpoint")
-check('the 5th argument is "${_GIVEN_NODE_ENDPOINT:-}"', call_args.strip().endswith('"${_GIVEN_NODE_ENDPOINT:-}"'), call_args)
+print("\n[5] the shell call passes the seed — the GIVEN endpoint on a fresh install (a re-install's own is")
+print("    tests/docker_master_ep_seed_selftest.py)")
+check('the 5th argument is "$_EP_SEED"', call_args.strip().endswith('"$_EP_SEED"'), call_args)
+check("…which starts as the GIVEN endpoint, never an auto-detected one", '_EP_SEED="${_GIVEN_NODE_ENDPOINT:-}"' in src)
 
 print("\n%s — %d failed" % ("RED" if FAILS else "GREEN", len(FAILS)))
 if PERTURB:

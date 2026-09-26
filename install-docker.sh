@@ -1391,7 +1391,18 @@ if [ "${AUTOENROLL:-}" = yes ] && ! $DRYRUN; then
   # node reports, so a master whose clients dial a private/LAN or NAT'd address came up with no dial host at all
   # (measured: NODE_ENDPOINT=192.168.77.6 → endpoint_host ''). Fills a BLANK one only — an address set in the panel
   # is the operator's and stays; an auto-detected endpoint is left to the panel, as before.
-  if python3 - "$ndir/nodes.json" "$NODE_NAME" "$NODE_TOKEN" "$NODE_COLOR" "${_GIVEN_NODE_ENDPOINT:-}" <<'PY'
+  # ⚠️ …AND A RE-INSTALL FILLS IT WITH THE ENDPOINT THIS NODE ALREADY HAS — update.sh's seed_local_node_ep, for Docker.
+  # Given only, a master installed without -endpoint (1.8.7 had no seed at all) kept '' through every re-install: the
+  # kept .env's NODE_ENDPOINT never counts as given (1.8.8 qualification, q3: uninstall → re-install, still ''). Taken
+  # under the same rules as that seed, so no client config changes: an address of THIS box (the record is also the
+  # listen address pre-filled for turn-proxies), and every interface reports it (a NODE_IFACES endpoint of its own
+  # would be overridden by the record). A FRESH install still takes only a given endpoint — it has nothing reported yet.
+  _EP_SEED="${_GIVEN_NODE_ENDPOINT:-}"
+  if [ -z "$_EP_SEED" ] && [ "$EXISTING_DOCKER" = yes ] && [ -n "${NODE_ENDPOINT:-}" ] && host_is_local "$NODE_ENDPOINT" \
+     && [ -z "$(printf '%s' "${NODE_IFACES:-}" | tr ',' '\n' | cut -s -d: -f5 | grep -vxF -e '' -e "$NODE_ENDPOINT" || true)" ]; then
+    _EP_SEED="$NODE_ENDPOINT"
+  fi
+  if python3 - "$ndir/nodes.json" "$NODE_NAME" "$NODE_TOKEN" "$NODE_COLOR" "$_EP_SEED" <<'PY'
 import sys, os, json, hashlib, base64
 path, name, token, color, given_ep = sys.argv[1:6]
 try:

@@ -637,8 +637,10 @@ repark_bare_panel(){
 #   · that endpoint is an address of this box — the record is also the listen address the panel pre-fills for
 #     turn-proxies, and a NAT'd public IP there cannot be bound (install-host.sh's seed asks the same).
 # `write` re-checks all of it on a fresh read and keeps the file's owner + mode (the panel runs as its own user).
+# $2 / $3 name the panel's store and the agent config for the DOCKER twin (seed_docker_node_ep, below); a docker
+# master's node dials its panel as `swg-panel` when it is not on host networking, which is this box's panel too.
 seed_local_node_ep(){
-  local nodes="${STATE_DIR:-/var/lib/swg-panel}/nodes.json" cfg=/etc/swg-agent/config.json
+  local nodes="${2:-${STATE_DIR:-/var/lib/swg-panel}/nodes.json}" cfg="${3:-/etc/swg-agent/config.json}"
   [ -f "$nodes" ] && [ -f "$cfg" ] && have python3 || return 0
   SWG_LOCAL_ADDRS="$(local_addrs)" python3 - "$1" "$nodes" "$cfg" <<'PYSEED' 2>/dev/null || true
 import base64, hashlib, hmac, json, os, socket, sys
@@ -649,7 +651,7 @@ try:
 except Exception:
     sys.exit(0)
 pan = cfg.get("panel") or {}
-if (urlparse(pan.get("url") or "").hostname or "") not in ("127.0.0.1", "localhost", "::1"):
+if (urlparse(pan.get("url") or "").hostname or "") not in ("127.0.0.1", "localhost", "::1", "swg-panel"):
     sys.exit(0)                                   # this node syncs to ANOTHER panel — its record is not here
 tok = str(pan.get("token") or "")
 if not tok or not isinstance(nodes, dict):
@@ -705,6 +707,18 @@ restart_panel_seeding_node_ep(){
   [ -n "$ep" ] && { ok "the panel's record of its own node now carries its endpoint $(col_v "$ep") (it was blank)"
                     note "bare-metal swg-panel: its own node's endpoint set to $ep (was blank)"; }
   systemctl start swg-panel-server; }
+# seed_docker_node_ep <agent-config copy> — the DOCKER twin of the seed above. A docker master's own node record kept
+# endpoint_host '' through every update and re-install (1.8.8 qualification, q3: install-docker.sh writes it only when an
+# endpoint is GIVEN on that run, and the seed above is bare-metal only) — the same "no mesh dial host" D7 fixed on bare
+# metal. Same rules and the same writer, with the docker inputs: the panel's store in ./data/lib, and the agent config
+# the RUNNING node container reports with, copied out before the recreate removes it. Called only in the window where
+# both containers are gone and not yet re-created — the panel's store is written while no panel runs, as above.
+seed_docker_node_ep(){
+  local ep; [ -s "${1:-}" ] || return 0
+  ep="$(seed_local_node_ep write "$DOCKER_DIR/data/lib/nodes.json" "$1")"
+  [ -n "$ep" ] && { ok "the panel's record of its own node now carries its endpoint $(col_v "$ep") (it was blank)"
+                    note "docker: the panel's own node endpoint set to $ep (was blank)"; }
+  return 0; }
 
 ensure_sub_server(){   # HEAL (install-if-missing) the swg-sub subscription surface on a bare-metal panel.
   # swg-sub is the public, read-only per-user QR/config page. The panel drives it over swg-netctl
@@ -2076,10 +2090,14 @@ PYDRIFT
       else
         DID_UPDATE=yes
         rescue_container_confs "$prof"
+        # a master's node reports with the agent config inside its container — copied out now, for the seed below
+        _seedcfg=""; case "$prof" in master|host-node)
+          _seedcfg="$(mktemp)" && { docker exec swg-node cat /etc/swg-agent/config.json > "$_seedcfg" 2>/dev/null || : > "$_seedcfg"; };; esac
         # ⚠️ EVERYTHING BELOW THIS LINE IS DESTRUCTIVE — the containers are removed before `up` runs, so a
         # failure here has nothing to fall back to. That is why the port check is a PRE-flight and sits in
         # the `elif` above, not inside this branch — and why the pull happens up there too.
         for _c in $(case "$prof" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
+        [ -n "$_seedcfg" ] && { seed_docker_node_ep "$_seedcfg"; rm -f "$_seedcfg"; }   # the panel is down now — see seed_docker_node_ep
         ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose up failed — check $DOCKER_DIR"; note "docker ($prof): up FAILED"; }; fi
     else warn "docker ($prof): skipped"; note "docker ($prof): skipped"; fi
   fi
