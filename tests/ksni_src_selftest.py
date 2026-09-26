@@ -70,6 +70,11 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
+    # the no-payload guard taken away (every SYN / ACK / FIN in the window ran every string rule of its source)
+    "nopay": ('''        if k is not None:
+            rs = rs[:k] + [["-m", "length", "--length", "0:%d" % _XTS_NOPAYLOAD, "-j", "RETURN"]] + rs[k:]''',
+              '''        if False:
+            pass'''),
     # the scan window's way out taken away (1.8.8 qualification: every HTTPS data packet walked the whole chain)
     "win": ('''    rules = [["-A", CHAIN, "-m", "connbytes", "--connbytes", "%d:" % (_XTS_CONNBYTES + 1),
               "--connbytes-mode", "packets", "--connbytes-dir", "original", "-j", "RETURN"]]''',
@@ -379,6 +384,9 @@ class Box:
                     ok = int(lo or 0) <= pkt["n"] <= (int(hi) if hi else 1 << 62); i += 8
                 elif t == "-m" and r[i + 1] == "string":
                     ok = r[i + 5] in pkt["payload"]; i += 6
+                elif t == "-m" and r[i + 1] == "length":          # the IP total length (a SYN 60, a ClientHello 517)
+                    lo, hi = r[i + 3].split(":")
+                    ok = int(lo or 0) <= pkt["len"] <= (int(hi) if hi else 1 << 62); i += 4
                 elif t == "-m" and r[i + 1] == "set":
                     ok = self._in(r[i + 3], r[i + 4], pkt); i += 5
                 elif t == "-m" and r[i + 1] == "mark":
@@ -410,7 +418,8 @@ class Box:
         at the same priority, before SWGK). A packet leaving with the reset mark is rejected (the nft FORWARD reset)."""
         ct, out = {"mark": 0}, {}
         for k, n, payload in (("syn", 1, ""), ("ch", 3, "\x16\x03\x01..." + sni + "...")):
-            pkt = {"src": src, "iif": iif, "dst": dst, "n": n, "payload": payload, "mark": ct["mark"]}
+            pkt = {"src": src, "iif": iif, "dst": dst, "n": n, "payload": payload, "mark": ct["mark"],
+                   "len": 60 if k == "syn" else 517}
             self.walk(pkt, ct)
             out[k] = pkt["mark"]
         out["ct"] = ct["mark"]
@@ -531,7 +540,7 @@ check("…and replaces the set whole: Bob in, Alice out", B.members(SN1) == {(BO
 check("Bob now leaves by the row", B.conn(BOB, "wg0", YT1, "yt.example")["ch"] == 7001)
 check("Alice no longer does, and is not reset", (lambda c: c["ch"] != 7001 and not c["reset"])(B.conn(ALICE, "wg0", YT1, "yt.example")))
 _ct = {"mark": live["ct"]}                                      # a later packet of her connection opened before the swap
-_pk = {"src": ALICE, "iif": "wg0", "dst": YT1, "n": 40, "payload": "", "mark": _ct["mark"]}
+_pk = {"src": ALICE, "iif": "wg0", "dst": YT1, "n": 40, "payload": "", "mark": _ct["mark"], "len": 517}
 B.walk(_pk, _ct)
 check("her established connection keeps its exit across the swap (the connection mark it already carries)",
       live["ct"] == 7001 and (_pk["mark"], _ct["mark"]) == (7001, 7001), (live, _pk, _ct))
@@ -698,8 +707,14 @@ if p1src.returncode == 0:
     # Kernel SNI node rebuilds SWGK once on the upgrade that brings it; everything after that rule is P1's, rule for rule.
     WIN = ["-m", "connbytes", "--connbytes", "17:", "--connbytes-mode", "packets", "--connbytes-dir", "original", "-j", "RETURN"]
     this_rules = got["this"][0] or []
+    NOPAY = ["-m", "length", "--length", "0:80", "-j", "RETURN"]
     check("the chain opens with the scan window's way out", bool(this_rules) and this_rules[0] == WIN, this_rules[:1])
-    check("…and after it, the same rules as P1, in the same order", got["P1"][0] == this_rules[1:],
+    # …and, per source, the no-payload guard right before that source's first string search (a pure cost rule)
+    guards = [i for i, r in enumerate(this_rules) if r == NOPAY]
+    check("each source's scan is preceded by the no-payload guard, once",
+          guards and all("--string" in this_rules[i + 1] for i in guards) and len(guards) == len({
+              r[r.index("-s") + 1] for r in this_rules if "--string" in r and "-s" in r}), guards)
+    check("…and after them, the same rules as P1, in the same order", got["P1"][0] == [r for r in this_rules[1:] if r != NOPAY],
           (len(got["P1"][0] or []), len(this_rules[1:])))
     check("the signature moves (one rebuild on the upgrade: the window rule, and the chain per source)", got["P1"][1] != got["this"][1], got)
 

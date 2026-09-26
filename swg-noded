@@ -8055,6 +8055,8 @@ _XTS_CONNBYTES = 16  # Scan only the first N packets of a connection (original d
                    # retransmits of headroom and still excludes 99.998% of a 1 GB transfer — the difference
                    # between 10 and 16 is a rounding error in what is scanned and a doubling of the margin.
                    # TLS 1.3 has no renegotiation, so no later handshake can be missed.
+_XTS_NOPAYLOAD = 80  # IP total length up to which a packet cannot carry a ClientHello: 20 (IP) + 60 (the largest TCP header)
+                   # — a SYN, a pure ACK, a FIN. Skips the string scan only; the group's Phase 1 has already run.
 _XTS_PAT_MAX = 100 # Tier-2 patterns one CATEGORY may put into the shared budget (plan §12.1's number). Patterns
                    # are taken first, so without a ceiling a bulk paste of 300 substrings would take the whole
                    # 256 and a category's entire domain list would silently never reach the chain. The panel is
@@ -8186,7 +8188,15 @@ def _xts_split(rules, chain):
         sel = ["-s", key[1]] if key[0] == "-s" else ["-m", "set", "--match-set", _XTS_ARR, "src,src"]
         out.append(["-A", chain, *sel, "-j", subs[-1]])
     for name, key in zip(subs, order):
-        out += [["-A", name, *a] for a in groups[key]]
+        rs = groups[key]
+        # …AND A PACKET TOO SMALL TO CARRY A ClientHello SKIPS THE SCAN — after the group's Phase 1 (a SYN must still be
+        # marked for a known destination), before its first string search. A SYN, a pure ACK or a FIN carries no payload
+        # (≤ 80 bytes with every TCP option), a ClientHello is hundreds; each of them used to run every string rule of the
+        # group, a Boyer-Moore pass each. Measured on msk-main for a subnet with 1 017 rules: see the commit.
+        k = next((i for i, a in enumerate(rs) if "--string" in a), None)
+        if k is not None:
+            rs = rs[:k] + [["-m", "length", "--length", "0:%d" % _XTS_NOPAYLOAD, "-j", "RETURN"]] + rs[k:]
+        out += [["-A", name, *a] for a in rs]
     return out, subs
 
 
