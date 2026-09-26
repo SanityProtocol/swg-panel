@@ -52,7 +52,8 @@ earlier releases predate the changelog — see the git history. · Русски�
   Amnezia's 3.1 timings. Pick it under **AmneziaWG version** when you create the interface, or switch either way from
   its Edit sheet, where flipping to 3.1 shows the 3.1 values at once, so one Save switches with the values you want.
   Before a switch the panel shows every device it cuts off until they re-import, network gateways first, and refuses
-  while a WINGS-N turn proxy points at the interface; subscription pages serve the new config at once. Only apps that
+  while a WINGS-N turn proxy points at the interface, naming it — WINGS V carries AmneziaWG 2.0 only, so a WINGS-N
+  proxy cannot be pointed at a 3.1 interface either; subscription pages serve the new config at once. Only apps that
   carry 3.1 can connect: Amnezia VPN 5.0.1.5 or newer (an older one imports the config without complaint and never
   connects), AmneziaWG from the App Store or GitHub (not the Google Play build), WG Tunnel 5.6 or newer and
   FreeTurn 4.3 — not WINGS V, Keenetic or MikroTik. A server offers 3.1 only when its AmneziaWG module (or
@@ -83,7 +84,8 @@ earlier releases predate the changelog — see the git history. · Русски�
   (only the pairs a forward or a smart rule routes over; a link nothing uses is removed after an hour) or **Auto**
   (the default: a full mesh up to 30 nodes, on demand above). **Fleets of up to 30 nodes see no change.** Above that
   the panel no longer keeps a link for every pair — a 200-node fleet's sync costs the panel about 29 ms instead of
-  490, and nodes.json shrinks from 68 MB to under 3 MB — and each node carries only the links it uses. On demand, a
+  490 on a laptop (a one-core server takes roughly twice as long), and nodes.json shrinks from 68 MB to under 3 MB —
+  and each node carries only the links it uses. On demand, a
   newly chosen forward target takes 10–15 s to come up; its traffic waits for the link rather than leaving directly.
 - **A notice when two different panels answer at one address.** A panel installed beside another — bare metal and
   Docker, or a leftover from a reinstall — keeps its own servers, settings and lists, and the page showed whichever
@@ -286,10 +288,14 @@ earlier releases predate the changelog — see the git history. · Русски�
   next restart. It is now removed at once, and the interface's count is kept if it comes back.
 - **Enter in a user search pressed the window's main button.** In **New peer**, **Edit peer**, a group's sheet and a
   network's **People with access**, Enter on a typed name now picks it — **New peer** used to try to create the peer
-  before its user was set — and Escape closes the list before the window.
+  before its user was set — ↓ and ↑ walk the list with Enter picking the lit row, and Escape closes the list before
+  the window.
 - **Escape in a list search closed the window behind it.** In a routing rule's target list, once a row had been
   clicked, Escape did nothing or closed the whole window, and a block category's **Add list** ignored it. Both now
   close on Escape or on a ✕ of their own, and the next Escape closes the window.
+- **Escape closed a pinned bubble under an open list or window.** With a dropdown or a window open on top of a bubble
+  you had pinned open, Escape closed the bubble underneath and the top one needed a second press. The top one closes
+  first now.
 - **Switching a node from a container back to native left its relays running in containers.** They kept their ports,
   the node's own relays could not start, and relayed links fell back to plain forwarding. The switch now removes the
   container relays (and, the other way, stops the host's), and the node's own relays take over at once.
@@ -369,7 +375,8 @@ earlier releases predate the changelog — see the git history. · Русски�
   directory, which that user can rearrange — a folder there swapped for a link sent root's write wherever the link
   pointed — and the Docker helper took a request id holding `../` as a path. The helper now works there only through
   directories it has checked are root's own, follows no link the panel's user controls, and takes a request id as a
-  plain file name.
+  plain file name. Its answers no longer pile up there either: the panel could never delete them (26 had gathered on
+  one server), and the helper now sweeps those older than an hour.
 
 ### Upgrading
 
@@ -383,9 +390,9 @@ earlier releases predate the changelog — see the git history. · Русски�
   says so when that changes where traffic cascaded in goes; and **Upstream DNS**, **Client DNS**, the new **Drops**
   figure and the server-side fixes above wait for it. On a NixOS native node a rebuild does not restart the daemon:
   run `sudo systemctl restart swg-noded` once it is done.
-- **Each server rebuilds its routing chains once when it updates.** Its first sync after the update records its
-  routing mode and resets nothing: a server switched between modes before the update keeps what the old mode learned
-  until you press **Reset learned IPs** or it reboots.
+- **A server's first sync after the update records its routing mode and resets nothing.** A server switched between
+  modes before the update keeps what the old mode learned until you press **Reset learned IPs** or it reboots.
+  Servers on Hybrid SNI or Kernel SNI also rebuild their routing chains once.
 - **csqtt, qWDTT, WDTT-Plus and ildarmaga servers move to the new builds on their next sync** and restart once, so
   their clients reconnect. A server you rolled back to a chosen build stays on it; taking qWDTT back to 1.4.3-3 or
   earlier brings back the crash fixed in 1.4.3-4.
