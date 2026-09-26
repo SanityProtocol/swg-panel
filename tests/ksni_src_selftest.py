@@ -69,6 +69,10 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
+    # the scan window's way out taken away (1.8.8 qualification: every HTTPS data packet walked the whole chain)
+    "win": ('''    rules = [["-A", CHAIN, "-m", "connbytes", "--connbytes", "%d:" % (_XTS_CONNBYTES + 1),
+              "--connbytes-mode", "packets", "--connbytes-dir", "original", "-j", "RETURN"]]''',
+            '''    rules = []'''),
     "a": ('''    learn = list(dict.fromkeys([(e["subnet"], e["category"]) for e in entries]''',
           '''    learn = (([(e["subnet"], e["category"]) for e in entries]'''),
     "b": ('''            rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
@@ -353,8 +357,8 @@ class Box:
                 elif t == "--dport":
                     ok = r[i + 1] == "443"; i += 2
                 elif t == "-m" and r[i + 1] == "connbytes":
-                    lo, hi = r[i + 3].split(":")
-                    ok = int(lo) <= pkt["n"] <= int(hi); i += 8
+                    lo, hi = r[i + 3].split(":")          # "17:" is open-ended (the chain's way out, past the window)
+                    ok = int(lo or 0) <= pkt["n"] <= (int(hi) if hi else 1 << 62); i += 8
                 elif t == "-m" and r[i + 1] == "string":
                     ok = r[i + 5] in pkt["payload"]; i += 6
                 elif t == "-m" and r[i + 1] == "set":
@@ -663,8 +667,15 @@ if p1src.returncode == 0:
         mod.run = B
         mod._ensure_smart_xtstring([dict(EV_YT), dict(EV_TG)], DOMS, RESET, {"changed": 0, "errors": []}, ttl=3600)
         got[label] = (B.chains.get("SWGK"), open(os.path.join(mod.GEO_DIR, ".xtstring-sig")).read())
-    check("the same rules, in the same order", got["P1"][0] == got["this"][0], (len(got["P1"][0] or []), len(got["this"][0] or [])))
-    check("the same signature — an upgrading node naming nobody rebuilds nothing", got["P1"][1] == got["this"][1], got)
+    # ⚠️ ONE RULE MORE, BY DECISION: the chain now OPENS with its way out for packets past the scan window (1.8.8
+    # qualification — 10 040 rules walked by every HTTPS data packet held a Kernel SNI node to 21–32 Mbit/s). So every
+    # Kernel SNI node rebuilds SWGK once on the upgrade that brings it; everything after that rule is P1's, rule for rule.
+    WIN = ["-m", "connbytes", "--connbytes", "17:", "--connbytes-mode", "packets", "--connbytes-dir", "original", "-j", "RETURN"]
+    this_rules = got["this"][0] or []
+    check("the chain opens with the scan window's way out", bool(this_rules) and this_rules[0] == WIN, this_rules[:1])
+    check("…and after it, the same rules as P1, in the same order", got["P1"][0] == this_rules[1:],
+          (len(got["P1"][0] or []), len(this_rules[1:])))
+    check("the signature moves (one rebuild on the upgrade, for that rule alone)", got["P1"][1] != got["this"][1], got)
 
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s" % ("ALL PASS" if not FAILS else "FAILED (%d): %s" % (len(FAILS), ", ".join(FAILS))))

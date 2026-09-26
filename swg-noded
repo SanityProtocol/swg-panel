@@ -8259,7 +8259,16 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
     # (`ttl` is the one thing no rule carries — it lives on the ipset — so it is appended by hand. It is kept although the
     # lifetime is applied by a swap now, which needs no rebuild: dropping it would change every Kernel-SNI node's signature
     # and rebuild each once on upgrade, against one rebuild per operator toggle.)
-    rules = []
+    # ⚠️ THE FIRST RULE LETS EVERY PACKET PAST THE SCAN WINDOW OUT AT ONCE. PREROUTING jumps here for every tcp/443 packet
+    # of every flow, and nothing below acts on a packet past the first `_XTS_CONNBYTES` of its connection: Phase 2 is
+    # bounded by the same window, and Phase 1's marks are put on the connection by its early packets (CONNMARK) and
+    # restored onto every later one by the nft ct-restore — while a destination learned MID-flow is better left on the
+    # path the flow started on than moved off it half way. Without this, a data packet walked the whole chain: on msk-main
+    # (1 vCPU; its default list's categories replicated per arrival subnet, 10 040 rules) an HTTPS download through a
+    # client of a Kernel SNI node ran at 21–32 Mbit/s with softirq at 51–66 %, and at 167 Mbit/s with this one rule
+    # (1.8.8 qualification, same file, same client, A/B/A). Signed with the rest, so a node rebuilds once on upgrade.
+    rules = [["-A", CHAIN, "-m", "connbytes", "--connbytes", "%d:" % (_XTS_CONNBYTES + 1),
+              "--connbytes-mode", "packets", "--connbytes-dir", "original", "-j", "RETURN"]]
     for e in entries:                                          # Phase 1: route KNOWN learned IPs to their exit, then RETURN
         setn = _xts_setname(e["category"]); T = str(e.get("table"))   # (so a known flow never re-learns / re-resets)
         # ⚠️ BOTH MARKS, AND THE PACKET ONE IS WHAT ACTUALLY ROUTES. `CONNMARK` writes the CONNECTION's mark;
