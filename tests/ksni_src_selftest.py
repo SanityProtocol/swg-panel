@@ -57,6 +57,7 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 P1_REV = os.environ.get("SWG_NODED_P1_REV", "fa8f8bf")          # the P1 build a plan without `src` must render exactly as
 sys.path.insert(0, HERE)
 from nft_guarded_model import SmartKernel  # noqa: E402
+from _iptrestore import restore_to_calls  # noqa: E402
 
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 FAILS = []
@@ -333,6 +334,12 @@ class Box:
             return self.ipset(a, exist=exist)
         if args[0] == "iptables":
             return self.ipt(list(args[1:]))
+        if args[0] == "iptables-restore":                      # the one-transaction rebuild, as the calls it stands for
+            for c in restore_to_calls(input_text):
+                r = self.ipt(list(c[1:]))
+                if r.returncode != 0 and c[3] != "-N":         # -N on a chain that exists is the declaration's no-op
+                    return r
+            return R(0)
         return R(0)
 
     # a packet through SWGK

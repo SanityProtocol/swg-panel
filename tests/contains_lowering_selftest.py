@@ -29,6 +29,8 @@ Run:  python3 tests/contains_lowering_selftest.py          (exit 0 = all pass)
 import importlib.machinery, importlib.util, json, os, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _iptrestore import restore_to_calls  # noqa: E402
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(HERE, "..", "swg-panel-server")
 NODED = os.environ.get("SWG_NODED") or os.path.join(HERE, "..", "swg-noded")
 FAILS = []
@@ -84,6 +86,9 @@ def main():
     added = []
 
     def fake_run(args, *a, **kw):
+        if args[:1] == ["iptables-restore"]:          # the one-transaction rebuild, as the calls it stands for
+            added.extend(c for c in restore_to_calls(kw.get("input_text")) if "-A" in c)
+            return _R(0)
         if (args[:1] == ["iptables"] and "-A" in args) or args[:2] == ["ipset", "create"]:
             added.append(args)
         if args[:1] == ["iptables"] and "-C" in args:

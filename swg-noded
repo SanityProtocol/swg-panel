@@ -8143,6 +8143,17 @@ def _xts_scan(subnet, arr=False):
             "-m", "string", "--algo", "bm"]
 
 
+_IPT_SAFE_ARG = re.compile(r"[A-Za-z0-9_.:/,!*+@%=-]+")
+
+
+def _ipt_restore_arg(a):
+    """One argument of an `iptables-restore` rule line. A plain token goes as it is; anything else — a `contains`
+    operand can hold a space, a quote or a `#` — goes double-quoted, backslash and quote escaped, which is how the
+    restore parser reads it back into one argv element."""
+    a = str(a)
+    return a if _IPT_SAFE_ARG.fullmatch(a) else '"' + a.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _xts_reap(want_cats, want_srcs=()):
     """Destroy every `swgk_*` learned-IP set no category claims any more — and every `swgs_<wid>` selection set no row
     names, plus any scratch `swgs_<wid>t` an interrupted swap left behind (_xts_src_sets). Called only where SWGK no
@@ -8421,6 +8432,27 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
         return want_cats
     if (entries or arr_ents) and not _kernel_sni_ok():
         res["errors"].append("kernel-sni: ipset/xt_string unavailable"); return []   # no sets made → nothing to count
+    if entries or arr_ents:
+        # ⚠️ ONE TRANSACTION, THE HOOK LEFT IN PLACE. This used to unhook the chain, then add its rules with one `iptables`
+        # process each, and hook it again last — on msk-main (10 240 rules) that took 211 s, and for all of it the chain was
+        # UNHOOKED: a destination Kernel SNI had learned for an exit left DIRECTLY, and the box's one vCPU spawned ten
+        # thousand processes (1.8.8 qualification). `iptables-restore --noflush` declaring the chain replaces its contents
+        # atomically, referenced or not — measured on the same iptables-nft 1.8.10 — so the old rules route until the new
+        # ones do. Anything it refuses falls back to the rule-by-rule path below, which says what it could not add.
+        for c in want_cats:                                    # the sets exist before the rules that name them
+            run(["ipset", "create", _xts_setname(c), "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])
+        lines = ["*mangle", ":%s - [0:0]" % CHAIN] + [" ".join(_ipt_restore_arg(x) for x in a) for a in rules]
+        if not hooked:
+            lines.append("-A PREROUTING -p tcp --dport 443 -j %s" % CHAIN)
+        r = run(["iptables-restore", "--noflush", "-w", "5"], input_text="\n".join(lines + ["COMMIT"]) + "\n", timeout=120)
+        if r.returncode == 0:
+            _xts_reap(want_cats, want_srcs)                    # the old rules no longer name what they named
+            res["changed"] += 1
+            with contextlib.suppress(OSError):
+                os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
+            return want_cats
+        res["errors"].append("kernel-sni: one-transaction rebuild refused (%s) — rebuilding rule by rule"
+                             % ((r.stderr or "").strip().splitlines() or ["?"])[-1][:100])
     run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", CHAIN])   # unhook, rebuild fresh
     run(["iptables", "-t", "mangle", "-F", CHAIN]); run(["iptables", "-t", "mangle", "-X", CHAIN])
     if not entries and not arr_ents:                           # teardown: drop the chain + our learned ipsets

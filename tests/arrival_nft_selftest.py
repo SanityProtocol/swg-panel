@@ -38,6 +38,8 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/arrival_nft_selftest.py   (
 import importlib.machinery, importlib.util, json, os, re, shutil, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _iptrestore import restore_to_calls  # noqa: E402
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 sys.path.insert(0, HERE)
@@ -282,7 +284,9 @@ N._KSNI["ok"] = True
 N._ensure_smart_xtstring([], {"custom_q": ["example.com"], "custom_x": ["example.net"]}, 0x9999, {"changed": 0, "errors": []},
                          arrivals={"entries": [e for e in ARR_E if e["action"] == "exit" and e["category"] != "all"],
                                    "pairs": [("10.8.0.0/24", "swg_n"), ("10.8.0.0/24", "swg_q")]})
-ipt = [" ".join(a) for a, _ in calls if a[:3] == ["iptables", "-t", "mangle"] and "-A" in a]
+# the chain is rebuilt in ONE iptables-restore transaction now — read it as the calls it stands for
+ipt = [" ".join(a) for a, _ in calls if a[:3] == ["iptables", "-t", "mangle"] and "-A" in a] + \
+      [" ".join(c) for a, i in calls if a[:1] == ["iptables-restore"] for c in restore_to_calls(i) if "-A" in c]
 rst = [x for (a, i) in calls if a[:2] == ["ipset", "-exist"] for x in (i or "").splitlines()]
 check("the (origin subnet, leg) pairs are loaded into `swga`, bound to their leg",
       "add swgat 10.8.0.0/24,swg_n" in rst and "add swgat 10.8.0.0/24,swg_q" in rst, rst)

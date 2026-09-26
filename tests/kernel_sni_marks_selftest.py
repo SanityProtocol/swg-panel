@@ -41,6 +41,8 @@ Run: python3 tests/kernel_sni_marks_selftest.py      (0 = pass)
 import importlib.machinery, importlib.util, os, re, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _iptrestore import restore_to_calls  # noqa: E402
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
@@ -100,6 +102,8 @@ class R:
 CALLS = []
 def fake_run(cmd, **kw):
     CALLS.append(list(cmd))
+    if cmd[:1] == ["iptables-restore"]:                   # the one-transaction rebuild, as the calls it stands for
+        CALLS.extend(restore_to_calls(kw.get("input_text")))
     if cmd[:1] == ["ipset"] and "list" in cmd:
         return R(0, "")
     # the "-C PREROUTING … -j SWGK" probe: say NOT hooked, so the builder rebuilds rather than short-circuits
