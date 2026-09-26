@@ -5826,15 +5826,6 @@ def net_share_for_node(roster, nid, carry, snap=None):
 REACH_LEVELS = ("everyone", "user", "none")
 
 
-def awg_params_differ(want, rep):
-    """Do two AmneziaWG parameter sets differ AS VALUES? The same test the sync uses before it pushes (`str` on both sides):
-    the panel stores what the Edit sheet typed — strings, `"94"` — and a node reports integers, `94`, so comparing the dicts
-    raw said every interface ever saved from the sheet was still waiting for its node (`awg_pending` true for good on
-    msk-main's awg2 — 1.8.8 qualification, O3). Two readers of one fact, one grammar."""
-    want, rep = want or {}, rep or {}
-    return set(want) != set(rep) or any(str(want[k]) != str(rep[k]) for k in want)
-
-
 def reach_level(v):
     """A stored level as the node enforces it: absent is "user" (A3), and a value this panel does not know — a hand edit, a
     transfer from a newer panel — is "none" (§16 A4). Every place the panel plans or publishes a level reads it through here, so
@@ -10390,7 +10381,9 @@ def apply_iface_meta(node_cfg, interfaces, ivk_pub="", vault_restore_ok=False):
             if ivk_pub and vault_restore_ok and _iface_key_source(ov, None, ivk_pub) == "vault":
                 ifc["drift_key_blob"] = ov.get("key_blob")
         # AmneziaWG obfuscation params: the override wins for what the panel renders into configs;
-        # the node converges its interface to it. awg_pending flags desired != reported in the UI.
+        # the node converges its interface to it. (`awg_pending` used to sit below: computed on every poll, read by
+        # nothing — and wrong, comparing the sheet's strings with the node's integers. Removed, 1.8.8 qualification O3;
+        # the generation in flight is `awg_reported` against the record, js/model.js.)
         ovawg = ov.get("awg_params")
         if isinstance(ovawg, dict) and ovawg:
             rep_awg = dict(ifc.get("awg_params") or {})
@@ -10399,7 +10392,6 @@ def apply_iface_meta(node_cfg, interfaces, ivk_pub="", vault_restore_ok=False):
             # back to 2.0 is not rendered into a single config.
             ifc["awg_params"] = {**{k: v for k, v in rep_awg.items() if k not in AWG3_FIELDS},
                                  **{k: ovawg[k] for k in ovawg if ovawg[k] not in (None, "")}}
-            ifc["awg_pending"] = awg_params_differ(ifc["awg_params"], rep_awg)
     return interfaces
 
 
