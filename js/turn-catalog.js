@@ -89,6 +89,15 @@ export function forkProduct(fork) {
   const f = turnForkList().find(x => x.id === fork) || {};
   return f.product || (f.kind === "wdtt" ? "WDTT" : f.label) || fork || "";
 }
+// ONE NAME PER FORK FOR A LIST OF THEM SIDE BY SIDE — a legend, a ring: the author, as everywhere, except where two listed
+// forks share an author, and then "author · product". amurcanov ships both a WDTT and a CSQTT server, and the Overview's
+// turn-proxy rings drew them as two rows both reading "amurcanov" (1.8.8 qualification, O1). Only the colliding rows grow.
+export function forkNames(forks) {
+  const n = {}, out = {};
+  (forks || []).forEach(fk => { const l = forkLabel(fk); n[l] = (n[l] || 0) + 1; });
+  (forks || []).forEach(fk => { out[fk] = n[forkLabel(fk)] > 1 ? forkPickLabel(fk) : forkLabel(fk); });
+  return out;
+}
 export function forkPickLabel(fork) {   // fork dropdowns: "author · product" (author alone where there is no product)
   const f = turnForkList().find(x => x.id === fork) || {};
   const lbl = f.label || fork || "";
