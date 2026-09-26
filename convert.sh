@@ -105,6 +105,10 @@ turn_unit_lc(){ local u="$1" svc inst envf exe lis="" con=""
 detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1 || true; }   # || true: no default route → pipeline nonzero; caller falls back to eth0
 # import a (docker) conf as a BARE-METAL conf: drop any PostUp/PostDown, then add host NAT (the bare
 # datapath has no container to masquerade for it). Keys + Address + Amnezia params carry over.
+# conf_privkey <conf> — its interface's private key (the one thing two copies of one interface's conf always share)
+conf_privkey(){ sed -n 's/^[[:space:]]*PrivateKey[[:space:]]*=[[:space:]]*//p' "$1" 2>/dev/null | head -1 | tr -d '[:space:]'; }
+# same_iface_conf <a> <b> — 0 iff both confs hold the same private key: the same interface, however else they differ
+same_iface_conf(){ local k; k="$(conf_privkey "$1")"; [ -n "$k" ] && [ "$k" = "$(conf_privkey "$2")" ]; }
 import_bare_conf(){ # <src> <dest>
   local src="$1" dest="$2" addr subnet wan up down
   addr="$(sed -n 's/^[[:space:]]*[Aa]ddress[[:space:]]*=//p' "$src" | head -1 | sed 's/,.*//; s/[[:space:]]//g')"
@@ -723,6 +727,11 @@ EOF
   # A MASTER has a co-located node coming in the LATER install-node step, but there's no agent config for install-host
   # to detect yet — flag it so the panel binds the dedicated loopback port (SWG_PANEL_LOCAL_PORT) that the node dials.
   _LNENV=""; [ "$ROLE" = master ] && _LNENV="SWG_HAS_LOCAL_NODE=1 LOCAL_PORT=$PLOCALPORT"
+  # …and what install.conf must record about that node. install-host runs as ROLE=host here, so it wrote back
+  # ROLE_SEL=host with an empty HOST_NODE_NAME / HOST_ENDPOINT_IP over the master line staged above, and the next
+  # re-install or update read a panel-only box (1.8.8 qualification, round 4). The node's name is the panel's record
+  # for this node's token; its endpoint is the one the Docker node served.
+  _MNAME=""; [ "$ROLE" = master ] && _MNAME="$(panel_node_name_tok "$STATE/nodes.json" "$NTOK")"
   # Pass NEITHER TLS_MODE nor SERVE_MODE: ask_choice/ask_valid treat an already-set value as the answer, so both
   # menus printed in full with no question under them and the installer picked for the operator — and the pick was
   # "letsencrypt", which then tried to re-issue a certificate we had just staged and aborted on :80 (held by the
@@ -730,8 +739,10 @@ EOF
   # dropping them here gives real prompts with "reuse" preselected: Enter keeps the cert and the web-server mode.
   env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" SUB_PORT="$PSUBPORT" $_LNENV \
       CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SWG_CONVERT_DIR=convert-bare SWG_LC_PARENT=1 SWG_DEFER_START=1 \
+      ${_MNAME:+HOST_NODE_NAME="$_MNAME"} ${NEP:+HOST_ENDPOINT_IP="$NEP"} \
       bash "$SRC/install-host.sh" \
     || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
+  [ "$ROLE" = master ] && sed -i 's/^ROLE_SEL=.*/ROLE_SEL=master/' "$ETC/install.conf" 2>/dev/null   # the role, not install-host's ROLE=host
 
   # 2c) RESTORE the known-good staged settings, right before the switch. install-host's acme --install-cert reloadcmd
   #     restarts swg-panel-server DURING the install (while docker still holds the port), so the panel partial-boots
@@ -826,7 +837,13 @@ print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") 
     for f in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue
       nm="$(basename "$f" .conf)"
       if grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I1)[[:space:]]*=' "$f"; then dest="/etc/amnezia/amneziawg/$nm.conf"; else dest="/etc/wireguard/$nm.conf"; fi
-      mkdir -p "$(dirname "$dest")"; import_bare_conf "$f" "$dest"
+      mkdir -p "$(dirname "$dest")"
+      # an interface this node adopted from the host still has its original here (the node-only convert's same-key
+      # case, see below) — never overwritten: kept beside the import
+      if [ -f "$dest" ]; then _imp="$(mktemp)"; import_bare_conf "$f" "$_imp"
+        cmp -s "$_imp" "$dest" || { mv -f "$dest" "$dest.pre-convert"; sub "$(b "$nm"): the conf already on this host is kept as $(b "$dest.pre-convert")"; }
+        rm -f "$_imp"; fi
+      import_bare_conf "$f" "$dest"
       sub "imported local-node interface $(b "$nm") → $dest (host NAT added)"; mnames="${mnames:+$mnames }$nm"
     done
     migrate_node_state to-baremetal "$DOCKER_DIR"
@@ -951,10 +968,18 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   # node still holds the ports, but those free up the moment we stop its container below).
   # On a RESUME these confs are OURS — the interrupted run already imported them — so they're not a clash;
   # the import step below keeps them as-is ("resume: don't re-import").
+  # ⚠️ …BUT NOT THE INTERFACE ITSELF. A Docker node that ADOPTED one of this host's interfaces rebuilt its conf inside the
+  # container; the host's own original is still in /etc/wireguard (or the AmneziaWG dir), holding the SAME private key.
+  # That read as a clash and refused the convert, with only a manual remedy (1.8.8 qualification, round 4; since 1.6.0).
+  # Same key = same interface: it is carried like the rest, and its original is kept beside it (see the import below).
   conflicts=""
   if [ "$RESUMING" != yes ]; then
     for s in $specs; do nm="${s%:*}"
-      { [ -e "/etc/amnezia/amneziawg/$nm.conf" ] || [ -e "/etc/wireguard/$nm.conf" ]; } && conflicts="${conflicts:+$conflicts }$nm"
+      for _bc in "/etc/amnezia/amneziawg/$nm.conf" "/etc/wireguard/$nm.conf"; do
+        [ -e "$_bc" ] || continue
+        same_iface_conf "$_bc" "$confd/$nm.conf" && continue
+        conflicts="${conflicts:+$conflicts }$nm"; break
+      done
     done
   fi
   if [ "$CHECK" = yes ]; then
@@ -982,6 +1007,14 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   for s in $specs; do nm="${s%:*}"; pr="${s#*:}"
     src="$confd/$nm.conf"
     if [ "$pr" = wg ]; then dest="/etc/wireguard/$nm.conf"; else dest="/etc/amnezia/amneziawg/$nm.conf"; fi
+    # the host's own original of an interface this node adopted (same key) — keep it beside the import, never overwrite
+    for _bc in "/etc/amnezia/amneziawg/$nm.conf" "/etc/wireguard/$nm.conf"; do
+      [ -f "$_bc" ] && [ -f "$src" ] && same_iface_conf "$_bc" "$src" || continue
+      _imp="$(mktemp)"; import_bare_conf "$src" "$_imp"
+      if cmp -s "$_imp" "$_bc"; then rm -f "$_imp"; continue; fi                     # already our import (a resume)
+      rm -f "$_imp"; mv -f "$_bc" "$_bc.pre-convert"
+      sub "$(b "$nm") is the host interface this node adopted — its original conf is kept as $(b "$_bc.pre-convert")"
+    done
     if [ -f "$dest" ]; then sub "kept $(b "$nm") → $dest (already imported)"; names="${names:+$names }$nm"; continue; fi   # resume: don't re-import
     [ -f "$src" ] || { warn "missing $src — skipping interface '$nm'"; continue; }
     mkdir -p "$(dirname "$dest")"; import_bare_conf "$src" "$dest"   # adds host NAT (docker confs have none)
