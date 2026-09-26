@@ -19,10 +19,12 @@ const SRC = path.join(ROOT, "js", "rulerows.js");
 let mod = SRC;
 if (PERTURB) {
   let s = fs.readFileSync(SRC, "utf8");
-  const a = "export const rowCovers = (a, b) => !(a && a.who) || (!!(b && b.who) && JSON.stringify(canonWho(a.who)) === JSON.stringify(canonWho(b.who)));";
-  if (!s.includes(a)) { console.log("ANCHOR MISSING: rowCovers"); process.exit(1); }
+  // Anchored on the declaration, not its body: the body grew an audience term (D9) and stranded a whole-text anchor.
+  // `true || …` short-circuits whatever the body says — every row reaches every device, as before.
+  const a = "export const rowCovers = (a, b) => ";
+  if (s.split(a).length !== 2) { console.log("ANCHOR MISSING: rowCovers"); process.exit(1); }
   mod = path.join(ROOT, "js", "__perturb_rowlints.js");
-  fs.writeFileSync(mod, s.replace(a, "export const rowCovers = () => true;"));
+  fs.writeFileSync(mod, s.replace(a, "export const rowCovers = (a, b) => true || "));
 }
 const { rulesToRows, rowLints } = await import(pathToFileURL(mod).href);
 if (PERTURB) fs.unlinkSync(mod);

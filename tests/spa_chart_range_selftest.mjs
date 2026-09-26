@@ -184,8 +184,11 @@ try {
   check("the grids ask a busy ledger again within seconds, not after a minute", nGrid === 2, nGrid);
 
   const tu = src("traffic-ui.js");
+  // Since a041b78 the Overview's Custom row IS the grids' RailCustom, which hands `pending=${!on}` to the dates itself.
   check("(source) the rail's proposed window can be applied as it stands — Apply is offered before any date is touched",
-    so.includes("onApply=${dashSetCustom} pending=${!on}/>") && tu.includes("const changed = !!pending || (!!draft && (dr.from !== from || dr.to !== to));"), "");
+    so.includes("<${RailCustom} key=${k} on=${on} ") && so.includes(" onApply=${dashSetCustom}/>")
+      && tu.includes("pending=${!on} onApply=${onApply}/>")
+      && tu.includes("const changed = !!pending || (!!draft && (dr.from !== from || dr.to !== to));"), "");
 
   check("(source) Top talkers that could not be loaded say why — never an endless ellipsis",
     so.includes("(!talkD || talkE.off || talkE.err)") && so.includes(": talkE.err ? html`<div class=\"hint\">"), "");

@@ -643,8 +643,14 @@ N._KSNI_SRC["ok"] = None
 
 # ── 7. a plan without `src` renders and signs exactly as P1 did ────────────────────────────────────────────────────────
 print("\n[byte-identical where nobody is chosen]")
-p1src = subprocess.run(["git", "-C", ROOT, "show", P1_REV + ":swg-noded"], capture_output=True, text=True)
-check("the P1 build (%s) is readable" % P1_REV, p1src.returncode == 0, p1src.stderr[:120])
+if not (shutil.which("git") and subprocess.run(["git", "-C", ROOT, "rev-parse", "--git-dir"], capture_output=True).returncode == 0):
+    # An exported tree (`git archive`) has no history to read P1 from. Said on its own line, never a silent pass — and a
+    # git tree that cannot find the build (a shallow clone) still FAILS below, because there the answer was expected.
+    print("  SKIPPED (needs git) the P1 build (%s) cannot be read outside a git work tree — this section did not run" % P1_REV)
+    p1src = subprocess.CompletedProcess([], 128, "", "")
+else:
+    p1src = subprocess.run(["git", "-C", ROOT, "show", P1_REV + ":swg-noded"], capture_output=True, text=True)
+    check("the P1 build (%s) is readable" % P1_REV, p1src.returncode == 0, p1src.stderr[:120])
 if p1src.returncode == 0:
     p1path = os.path.join(STATE, "p1-noded.py")
     open(p1path, "w").write(p1src.stdout)

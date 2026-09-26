@@ -52,8 +52,8 @@ def _load(path, name):
 # ⚠️ PERTURBED AT THE SOURCE, and both anchors asserted. The first draft of this file set a module flag
 # nothing read — a perturbation that changes nothing, which is the shape that reports a clean pass over an
 # untested fix ([[perturbation-harness-cannot-report-green]]).
-_A1 = 'sorted(d for d in {_detect_wan()} | {e["via_iface"] for e in (fwd + smart_exit + exit_)}'
-_A2 = 'for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + smart_exit + exit_)}):'
+_A1 = 'sorted(d for d in {_detect_wan()} | {e["via_iface"] for e in (fwd + smart_exit + arr_exit + exit_)}'
+_A2 = 'for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + smart_exit + arr_exit + exit_)}):'
 if PERTURB:
     _src = open(NODED, encoding="utf-8").read()
     for _old, _new in ((_A1, 'sorted(d for d in {_detect_wan()}'), (_A2, 'for dev in sorted({"all", wan}):')):

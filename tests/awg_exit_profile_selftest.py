@@ -96,7 +96,7 @@ rec_a = {"priv": "k", "address": "10.77.0.2", "mtu": 1280, "peer_key": "p", "end
 txt = N._exit_conf_text(rec_a)
 for k in ("Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", "H3", "H4"):
     check("conf carries %s" % k, ("\n%s = " % k) in txt, txt)
-check("they sit in [Interface], before [Peer]", txt.index("Jc = ") < txt.index("[Peer]"), txt)
+check("they sit in [Interface], before [Peer]", "Jc = " in txt and txt.index("Jc = ") < txt.index("[Peer]"), txt)
 check("`Table = off` is still there — the route hazard is untouched", "\nTable = off\n" in txt)
 import random
 shuffled = dict(sorted(rec_a["awg"].items(), key=lambda kv: random.random()))

@@ -83,7 +83,7 @@ PERTURBATIONS = {
     "pillwidth": ("app.css", "min-width:0;width:auto;height:28px;padding:0 10px;border-radius:999px;", "min-width:0;width:170px;height:28px;padding:0 10px;border-radius:999px;"),
     "chipsend": ("app.css", ".u-name>.ucounts{margin-left:auto;margin-right:10px}", ".u-name>.ucounts{}"),
     "footsize": ("app.css", ".sheet-foot :is(.btn-danger,.btn-warn,.btn-exp),.editfoot :is(.btn-danger,.btn-warn,.btn-exp){padding:8px 13px;font-size:13px;border-radius:var(--r-sm);gap:7px}", ""),
-    "footwidth": ("js/sheets-crud.js", 'width=${700} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}', 'width=${640} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}'),
+    "footwidth": ("js/sheets-crud.js", 'width=${760} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}', 'width=${640} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}'),
 }
 WEB = ROOT
 if PERTURB:

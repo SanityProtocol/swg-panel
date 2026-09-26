@@ -214,10 +214,10 @@ _cfg6 = {"interfaces": {"wg7": {"conf": conf("wg7", "[Interface]\nAddress = fd42
 r_, c_ = N.net_probe_check(_cfg6, rq("192.168.80.5", "E", "wg7"),
                            {"wg7": [{"public_key": K("E"), "allowed_ips": "10.9.0.2/32,192.168.80.0/24"}]})
 check("not_carried: an interface with no IPv4 address at all — refused, not a crash", c_ is None and (r_ or {}).get("verdict") == "not_carried", (r_, c_))
-check("not_carried: an empty reply carries nothing", N.net_probe_check(CFG, rq("192.168.50.5"), {})[0]["verdict"] == "not_carried")
-check("network_address", N.net_probe_check(CFG, rq("192.168.50.255"), DES)[0]["verdict"] == "network_address")
+check("not_carried: an empty reply carries nothing", (N.net_probe_check(CFG, rq("192.168.50.5"), {})[0] or {}).get("verdict") == "not_carried")
+check("network_address", (N.net_probe_check(CFG, rq("192.168.50.255"), DES)[0] or {}).get("verdict") == "network_address")
 for bad in (rq("fd00::5"), rq("x"), rq("192.168.50.5", port=0), rq("192.168.50.5", port="22"), rq("192.168.50.5", port=True)):
-    check("bad_request: %r" % ({k: bad[k] for k in bad if k in ("addr", "port")},), N.net_probe_check(CFG, bad, DES)[0]["verdict"] == "bad_request")
+    check("bad_request: %r" % ({k: bad[k] for k in bad if k in ("addr", "port")},), (N.net_probe_check(CFG, bad, DES)[0] or {}).get("verdict") == "bad_request")
 N._NET["refused"]["192.168.50.0/24"] = {"why": "node_lan", "addr": "192.168.1.50", "iface": "wg0"}
 ref, _ = N.net_probe_check(CFG, rq("192.168.50.5"), DES)
 check("no_route: a network this node refused, with ITS reason and address",
@@ -226,7 +226,7 @@ check("no_route: a network this node refused, with ITS reason and address",
 N._NET["refused"].clear()
 CFG_NA = {"interfaces": {"wg0": {"conf": conf("wg0na", "[Interface]\nAddress = 10.8.0.0/24\n")}}}
 check("no_source is not reached for a readable Address; an unreadable conf reads as nothing carried",
-      N.net_probe_check({"interfaces": {"wg0": {"conf": "/nonexistent"}}}, rq("192.168.50.5"), DES)[0]["verdict"] == "not_carried")
+      (N.net_probe_check({"interfaces": {"wg0": {"conf": "/nonexistent"}}}, rq("192.168.50.5"), DES)[0] or {}).get("verdict") == "not_carried")
 check("none of it forked", FORKS == [], FORKS)
 
 # ── [4] ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -339,7 +339,7 @@ N.net_probe_take(CFG, rq("192.168.50.6", rid="cccccccc33333333"), DES)
 check("an answer the panel keeps asking about but never collects stops being repeated", N.net_probe_status() is None)
 n0 = len(RUNS)
 N.net_probe_take(CFG, rq("192.168.1.1", rid="dddddddd44444444"), DES)
-check("a request the node refuses answers straight away, with no thread", N.net_probe_status()["verdict"] == "not_carried"
+check("a request the node refuses answers straight away, with no thread", (N.net_probe_status() or {}).get("verdict") == "not_carried"
       and not THREADS and len(RUNS) == n0)
 for bad in ("../../etc", "short", "x" * 40, 12345678):
     N._PROBE.update(id="", result=None, at=0.0)

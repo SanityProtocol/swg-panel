@@ -34,7 +34,7 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 PLANTS = [
     ("auto-line", '    return "full" if len(nodes) <= MESH_AUTO_FULL_MAX else "demand"', '    return "demand"',
      "auto: 30 nodes are a full mesh"),
-    ("need-smart", '                    if isinstance(r, dict) and r.get("enabled", True) is not False and r.get("action") == "exit":',
+    ("need-smart", '                    if rule_on(r) and r.get("action") == "exit":',
      '                    if False:', "every pair the plan routes over is in the need set"),
     ("need-instances", '        recs += [v for k in ("wdtt", "csqtt") for v in (n.get(k) or {}).values() if isinstance(v, dict)]',
      '        recs += []', "…WDTT and csqtt instances included"),

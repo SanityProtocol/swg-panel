@@ -72,7 +72,8 @@ console.log("\n[2b] ⚠️ what the switch COVERS, now that it is not a whole in
 check("a smart leg is told apart from a whole-interface one by its MARK",
       /const smartLegs = elig\.filter\(\(\[, e\]\) => !e\.why && e\.mark\)/.test(src),
       "mark 0 is the whole interface; anything else is one leg of a smart cascade");
-check("…and the scope sentence appears only for a smart leg", /\$\{smartLegs\.length \? html`/.test(src));
+// …and only under Relay (a041b78): under Forward nothing is relayed, and the note read as if something were.
+check("…and the scope sentence appears only for a smart leg, and only under Relay", /\$\{relayOn && smartLegs\.length \? html`/.test(src));
 check("…naming the interfaces, not the relay instance ids", /legIfaces\.join\(", "\)/.test(src)
       && /map\(\(\[k, e\]\) => e\.iface \|\| k\)/.test(src));
 // ⚠️ AND NAMING ONLY THE SMART ONES. The sentence says only SELECTED destinations are relayed — true of a

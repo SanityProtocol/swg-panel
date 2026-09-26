@@ -156,7 +156,8 @@ check("…and gated on THIS chain's own flag, not on every packet",
       all("-m mark --mark " + hex(RESET) in l for l in save), save)
 # The ordering is the whole reason it is emitted per entry rather than hoisted to one per subnet.
 check("…and it comes AFTER the packet marks it copies",
-      LINES.index(save[0]) > max(LINES.index(l) for l in scan if "-j MARK --set-mark " + hex(RESET) in l), LINES)
+      bool(save) and LINES.index(save[0]) > max((LINES.index(l) for l in scan if "-j MARK --set-mark " + hex(RESET) in l),
+                                                default=len(LINES)), LINES)
 check("⚠️ no per-operand CONNMARK survives — that is the cost this removes",
       not any("-j CONNMARK --set-mark " + hex(RESET) in l for l in scan), scan)
 

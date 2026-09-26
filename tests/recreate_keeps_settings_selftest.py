@@ -190,7 +190,13 @@ check("…and so is a create aimed at one the node reports as LIVE", st3 == 400,
 
 print("\n[3] nothing the panel held is replaced by a fleet default")
 st, resp, after, req = create(sheet_body(mi), ov=OV)
-assert st == 200, (st, resp)
+if st != 200:
+    # ⚠️ A REFUSED CREATE LEAVES THE SEED RECORD IN PLACE, and [3]/[3b] would read it back as "survived the recreate" — a
+    # pass for nothing. So a refusal (what `--perturb-port` plants) still ends the run here, as the bare assert did — but
+    # RED with the refusal named and what did not run said, not a traceback.
+    check("the recreate that [3] reads back is accepted", False, "%s %s" % (st, (resp or {}).get("error")))
+    print("\n  STOPPED — [3] to [6] did not run: [3] and [3b] would read the untouched seed record as a kept setting")
+    print("\nFAILED: " + "; ".join(FAILS)); sys.exit(1)
 for k, want in (("endpoint_host", "hel.sanitygate.net"), ("mtu", 1420), ("keepalive", 15),
                 ("dns", ["9.9.9.9", "149.112.112.112"]), ("listen_port", 443), ("reach", "everyone")):
     check("`%s` survives the recreate" % k, after.get(k) == want, "%r (was %r)" % (after.get(k), want))
