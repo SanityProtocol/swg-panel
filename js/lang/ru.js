@@ -6151,8 +6151,8 @@ export const STR = {
     "Откройте ссылку csqtt:// в своём csqtt-приложении или вставьте её туда.",
   "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in WRAP-A mode.":
     "Откройте ссылку на iPhone (или VK TURN Proxy → Настройки → Импорт из ссылки подключения), чтобы импортировать в режиме WRAP-A.",
-  "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in csqtt mode.":
-    "Откройте ссылку на iPhone (или VK TURN Proxy → Настройки → Импорт из ссылки подключения), чтобы импортировать в режиме csqtt.",
+  "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in csqtt mode. It needs VK TURN Proxy build 364 or newer — an older build imports it as a WireGuard server without keys.":
+    "Откройте ссылку на iPhone (или VK TURN Proxy → Настройки → Импорт из ссылки подключения), чтобы импортировать в режиме csqtt. Нужна сборка VK TURN Proxy 364 или новее — более старая импортирует ссылку как сервер WireGuard без ключей.",
   "Open the link on the iPhone (or the app's Settings → Import from connection link) to import into the VK TURN Proxy app.":
     "Откройте ссылку на iPhone (или Настройки приложения → Импорт из ссылки подключения), чтобы импортировать в VK TURN Proxy.",
   "Paste the wdtt:// link into PWDTT — «Добавление VK профиля».":

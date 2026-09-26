@@ -733,7 +733,7 @@
         vkLink: hs.map(function (h) { return "https://vk.ru/call/join/" + h; }).join("\n") };
       var uriA = "vkturnproxy://import?data=" + b64urlUtf8(jsonSortedCompact({ version: 1, type: "connection", settings: s }));
       return { fork: "csqtt", app: "VK TURN Proxy", label: "CSQTT via VK TURN Proxy (iOS) by anton48", ext: "txt", uri: true, qr: false,
-        vkMissing: hs.length === 0, enc: asClient, hint: "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in csqtt mode.", text: uriA };
+        vkMissing: hs.length === 0, enc: asClient, hint: "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in csqtt mode. It needs VK TURN Proxy build 364 or newer — an older build imports it as a WireGuard server without keys.", text: uriA };
     }
     hs = hs.slice(0, VK_LINK_CAPS.csqtt);
     var vkMissing = hs.length === 0;   // VK hashes are the TURN credential; a link without them only works for a self-test

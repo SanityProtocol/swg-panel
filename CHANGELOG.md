@@ -278,7 +278,8 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **An iPhone that imported a csqtt server's link kept one VK call link and lost the rest.** anton48's VK TURN Proxy
   reads only the first call link of a `csqtt://` link, and its import replaced the call links already saved on the
   phone with that one. The iPhone now gets its own `vkturnproxy://` link, on the subscription page and in the panel,
-  carrying every call link; the CSQTT, FOCSQ and La Lune apps keep the `csqtt://` link. A csqtt server's card in a
+  carrying every call link (VK TURN Proxy build 364 or newer — an older build imports it as a WireGuard server without
+  keys, so update the app first); the CSQTT, FOCSQ and La Lune apps keep the `csqtt://` link. A csqtt server's card in a
   peer's config view also gains **Alternatives**: pick the device and the app, and get that app's link.
 - **A fork updated from Settings → Turn proxies kept showing its old version until the page was reloaded.** The row
   now holds **updating…** until every server the update reached reports the new version, then says **updated**, and
