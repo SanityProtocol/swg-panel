@@ -164,8 +164,9 @@ ask_secret(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v rc
     # 2>/dev/null BEFORE >/dev/tty (and on the read): redirections apply left to right, so the other order printed a
     # raw "/dev/tty: No such device or address" whenever there was no terminal to open.
     printf '  %s%s: ' "$p" "${d:+ [$(col "${C_BLUE:-}" 'keep current')]}" 2>/dev/null >/dev/tty || printf '  %s: ' "$p"
-    if read -rs v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
-    printf '\n' 2>/dev/null >/dev/tty || echo               # read -s swallows the newline the operator pressed
+    if read -rs v 2>/dev/null </dev/tty; then rc=0; printf '\n' 2>/dev/null >/dev/tty || echo   # read -s swallows the newline the operator pressed
+    else rc=1; v=""   # …and with no terminal the prompt line ended blank (1.8.8 qualification): say what happens instead
+      if [ -n "$d" ]; then echo "(no terminal — the saved one is kept)"; else echo "(no terminal — nothing given)"; fi; fi
     v="${v:-$d}"
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
     [ "$rc" -ne 0 ] && die "no value for ‘$p’ and no interactive input to re-prompt"
@@ -182,7 +183,9 @@ summary_end(){ echo; }
 # node summary footer: "reconfigure in the panel, or directly on the server", with the method's real paths +
 # commands. <baremetal|docker> [docker_install_dir]. b()/COMPOSE come from the sourcing script (installers/convert).
 node_reconfig_block(){
-  local method="$1" dir="${2:-/opt/swg-panel-docker}" prof="${3:-node}" C="${COMPOSE:-docker compose}"
+  local method="$1" dir="${2:-/opt/swg-panel-docker}" prof="${3:-}" C="${COMPOSE:-docker compose}"
+  # the stack this box runs: `--profile node` on a master recreated the node only and left the panel on its old .env
+  [ -n "$prof" ] || { docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel && prof=master || prof=node; }
   echo "  Interfaces, turn-proxies, WDTT and csqtt servers can be re-configured in the web panel, or directly on the server:"; echo
   if [ "$method" = docker ]; then
     printf '    %-13s %s\n' "Interfaces"   "$(b "ls $dir/data/node-confs/*.conf")"
@@ -1201,6 +1204,8 @@ guard_second_panel(){
   echo "      [s]top the other     stop it and its subscription server (swg-sub), and keep both from starting again (its data stays on disk; nothing is deleted)"
   echo "      [k]eep both          continue anyway"
   ans="${SWG_OTHER_PANEL:-}"
+  # a preset answer is said, not taken in silence under a menu whose "(default)" it overrides (1.8.8 qualification)
+  [ -n "$ans" ] && echo "  Abort, stop the other, or keep both [a/s/k]: $(b "$ans")  (given by SWG_OTHER_PANEL — not asked)"
   if [ -z "$ans" ]; then
     printf '  Abort, stop the other, or keep both [a/s/k]: ' 2>/dev/null >/dev/tty || printf '  Abort, stop the other, or keep both [a/s/k]: '
     read -r ans 2>/dev/null </dev/tty || { echo; echo "  ✗ no interactive input — run from a terminal (ssh -t), or set SWG_OTHER_PANEL=stop|keep|abort"; exit 1; }

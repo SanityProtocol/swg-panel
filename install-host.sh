@@ -809,7 +809,7 @@ echo
 # flag sets it), then the saved re-install URL (host[:port][/subpath]), then the detected public IP, then localhost.
 # Without the first item a convert/re-install wrongly defaulted to the box's IP — or localhost — instead of its
 # real domain, which also broke Let's Encrypt cert reuse (a domain cert doesn't cover localhost).
-DEF_URL="${PANEL_DOMAIN:-}"
+DEF_URL="${PANEL_DOMAIN:-}"; _URL_GIVEN="${PANEL_DOMAIN:-}"   # (a -domain / PANEL_DOMAIN the caller gave — said below, not asked)
 # A convert passes PANEL_DOMAIN as the BARE host and the port/subpath separately, so using it as-is offered
 # "swgt.example.net" for a panel actually served on :2053 — Enter silently moved the panel to 443 and every node
 # lost it. Rebuild the full host[:port][/subpath] here too, exactly like the saved-URL branch below.
@@ -822,7 +822,10 @@ if [ -z "$DEF_URL" ] && [ -n "$DOM_SAVED" ]; then DEF_URL="$DOM_SAVED"          
   [ -n "$BASE_SAVED" ] && DEF_URL="$DEF_URL$BASE_SAVED"
 fi
 [ -z "$DEF_URL" ] && { DEF_URL="$(detect_public_ip)"; [ -z "$DEF_URL" ] && DEF_URL=localhost; }
-PANEL_DOMAIN=""; ask_valid "Enter panel URL (https://…)" "$DEF_URL" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
+# a GIVEN domain (with its port/subpath, composed above) is the answer: said "(given — not asked)". It was asked
+# anyway, and with no terminal read "(no terminal — default taken)" about a value that was given (1.8.8 qualification).
+if [ -n "$_URL_GIVEN" ]; then PANEL_DOMAIN="$DEF_URL"; else PANEL_DOMAIN=""; fi
+ask_valid "Enter panel URL (https://…)" "$DEF_URL" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
 while :; do
   parse_panel_url "$PANEL_DOMAIN"
   # is the port the panel will use free on this host? (catches nginx/apache or a prior panel)
@@ -1834,7 +1837,7 @@ acme_copy_foreign(){
 mk_selfsigned(){ CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; mkdir -p "$PREFIX$TLS_DIR"
   if $DRYRUN; then echo "    [skip] openssl self-signed -> $TLS_DIR (CN=$PANEL_DOMAIN)"; : > "$PREFIX$CERT_FULLCHAIN"; : > "$PREFIX$CERT_KEY"
   else run openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$CERT_KEY" -out "$CERT_FULLCHAIN" -subj "/CN=${PANEL_DOMAIN}" -addext "subjectAltName=$(san_for "$PANEL_DOMAIN")"; fi
-  cert_perms; ok "self-signed certificate for ${PANEL_DOMAIN} (10y)"; }
+  cert_perms; if $DRYRUN; then ok "dry run — would create a self-signed certificate for ${PANEL_DOMAIN} (10y)"; else ok "self-signed certificate for ${PANEL_DOMAIN} (10y)"; fi; }
 reuse_cert(){   # re-install with REUSE_TLS=yes: keep the cert already in $TLS_DIR, no re-issue
   if [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ]; then
     CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; cert_perms; ok "keeping the existing certificate in $TLS_DIR"
@@ -1875,7 +1878,7 @@ PY
 )" || die "Cloudflare Origin CA request failed — check the API token (Zone:SSL and Certificates:Edit) and that $PANEL_DOMAIN is on this Cloudflare account"
   printf '%s\n' "$cert" > "$PREFIX$CERT_FULLCHAIN"
   printf '%s\n' "$key"  > "$PREFIX$CERT_KEY"
-  cert_perms; ok "issued Cloudflare Origin certificate (15y) for ${PANEL_DOMAIN} — valid only behind Cloudflare's proxy"; }
+  cert_perms; ok "issued Cloudflare Origin certificate (15y) for ${PANEL_DOMAIN} — valid only behind Cloudflare's proxy"; }   # (a dry run returned above)
 
 # ---- internal: the panel serves its own TLS; cert lands in $TLS_DIR ----
 obtain_cert_internal(){
@@ -1949,7 +1952,7 @@ obtain_cert_internal(){
         warn "acme.sh could not install the certificate for $PANEL_DOMAIN — falling back to a self-signed cert."
         mk_selfsigned; return
       fi
-      cert_perms; ok "issued + installed certificate via $TLS_MODE (auto-renews)";;
+      cert_perms; if $DRYRUN; then ok "dry run — would issue + install a certificate via $TLS_MODE (auto-renews)"; else ok "issued + installed certificate via $TLS_MODE (auto-renews)"; fi;;
     *) die "TLS must be cloudflare|letsencrypt|letsencrypt-ip|selfsigned|skip";;
   esac
 }
@@ -2027,7 +2030,7 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
         warn "acme.sh could not install the certificate for $PANEL_DOMAIN — proxy will serve plain HTTP."
         CERT_FULLCHAIN=""; CERT_KEY=""; return 0
       fi
-      cert_perms; ok "issued + installed certificate via $TLS_MODE";;
+      cert_perms; if $DRYRUN; then ok "dry run — would issue + install a certificate via $TLS_MODE"; else ok "issued + installed certificate via $TLS_MODE"; fi;;
     *) die "TLS must be cloudflare|letsencrypt|letsencrypt-ip|selfsigned|skip";;
   esac
 }

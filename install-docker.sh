@@ -161,6 +161,12 @@ ask(){ local v p="$1" d="${2:-}"; echo
   printf -v "$3" '%s' "${v:-$d}"; }
 # no terminal: say which answer was taken for the prompt that could not be shown, so an unattended log still reads
 _notty(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(no terminal — default taken)"; }
+# …and an answer already in hand: the prompt helpers returned on it silently, so an unattended install printed "Step 3.
+# Node name for THIS box" with nothing under it (1.8.8 qualification, round 4 — the bare installers say it since
+# 4c809a4). <prompt> <value> <var>: a value this re-install read back from .env is named as that, not as given.
+_given(){ local g="_GIVEN_$3" src="given — not asked"
+  { declare -p "$g" >/dev/null 2>&1 && [ -z "${!g:-}" ]; } && src="kept from $INSTALL_DIR/.env — not asked"
+  printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "($src)"; }
 v_ip(){ printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1; local o; for o in ${1//./ }; do [ "$o" -le 255 ] 2>/dev/null || return 1; done; }
 v_host(){ v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) return 1;; *) return 0;; esac; }
 v_port(){ case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
@@ -227,7 +233,7 @@ parse_panel_url(){ local u="$1" hostport rest
     *)   PANEL_HOST_NOPORT="$hostport"; URL_PORT="";;
   esac; }
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
-  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
+  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}" "$var"; _pnl; return; }; done; fi
   while :; do
     if [ "$HAVE_TTY" = yes ] && read -rp "  $p [$(bb "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
@@ -238,7 +244,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
     warn "‘$v’ isn't one of: $opts"; echo "  re-enter, or append ' --force' to use it anyway"
   done; }
 ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
-  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return; fi
+  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && { [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!var}" "$var"; _pnl; return; }; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
     if [ "$HAVE_TTY" = yes ] && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
@@ -532,6 +538,28 @@ if [ "$KEEP_AUTH" != yes ] && [ "$PROFILE" != node ] && [ "$EXISTING_DOCKER" = y
   PANEL_PASSWORD="(preserved)"
   info "Keeping the existing panel login ($(b "$PANEL_USER")) — this re-install has no password for it (an uninstall removes it from .env). Pass $(b -pass) to set a new one."
 fi
+# ⚠️ …AND ONE THAT KNOWS IT KEEPS IT TOO. A re-install whose .env still holds the real password re-applied it: deleted the
+# login, wrote the same one back, and the summary called it a "new login — save the password now" and printed it (1.8.8
+# qualification, round 4). The same user with a password the kept hash already verifies — from .env or given again —
+# is the login in force: keep it, print nothing. A different password (-pass) is still applied, as asked.
+if [ "$KEEP_AUTH" != yes ] && [ "$PROFILE" != node ] && [ "$EXISTING_DOCKER" = yes ] && [ "$_pw_unknown" = no ] \
+   && [ -s "$INSTALL_DIR/data/etc/auth" ] \
+   && [ "$(cut -d: -f1 "$INSTALL_DIR/data/etc/auth" 2>/dev/null | head -1)" = "$PANEL_USER" ] \
+   && SWG_PW="$PANEL_PASSWORD" python3 - "$INSTALL_DIR/data/etc/auth" <<'PYPW' 2>/dev/null
+import base64, hashlib, hmac, os, sys
+try:
+    _u, h = open(sys.argv[1]).readline().strip().split(":", 1)
+    scheme, it, salt, dig = h.split("$")
+    ok = scheme == "pbkdf2_sha256" and hmac.compare_digest(
+        hashlib.pbkdf2_hmac("sha256", os.environ["SWG_PW"].encode(), base64.b64decode(salt), int(it)), base64.b64decode(dig))
+except Exception:
+    ok = False
+sys.exit(0 if ok else 1)
+PYPW
+then
+  KEEP_AUTH=yes; KEPT_LOGIN=yes; PANEL_PASSWORD="(preserved)"
+  info "Keeping the existing panel login ($(b "$PANEL_USER")) — its password is the one it already has. Pass a different one with $(b -pass) to change it."
+fi
 
 # ───────────────────────── per-profile requirements ─────────────────────────
 # Compose interpolates the whole file (both services), so every referenced var must be
@@ -550,7 +578,10 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
     { [ -n "${PANEL_PORT:-}" ] && [ "$PANEL_PORT" != 443 ]; } && def="$def:$PANEL_PORT"
     [ -n "${PANEL_BASE:-}" ] && def="$def$PANEL_BASE";; esac
   fi
-  PANEL_DOMAIN=""   # ask_valid skips if non-empty; force the prompt and parse the result
+  # a domain the caller GAVE (-domain / PANEL_DOMAIN) is the answer — said, not asked; else (a re-install's .env value
+  # or nothing) it is the prompt's default. It used to be asked either way, and with no terminal read "(no terminal —
+  # default taken)" about a value that was given (1.8.8 qualification, round 4).
+  if [ -n "${_GIVEN_PANEL_DOMAIN:-}" ]; then PANEL_DOMAIN="$def"; else PANEL_DOMAIN=""; fi
   ask_valid "Enter panel URL (https://…)" "$def" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
   while :; do
     parse_panel_url "$PANEL_DOMAIN"
@@ -625,7 +656,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
     # menu used to print anyway, with "[r]euse (default) … it already covers <host>" over a run that then issued a
     # NEW certificate: a menu describing a choice nobody was offered. Say what was given instead.
     if [ -n "${TLS:-}" ] && _in "$TLS" "$_opts"; then
-      ok "TLS certificate: $(b "$TLS") (given — not asked)"
+      :   # given: no menu — ask_choice below says which (and asks nothing)
     else
     [ "$_reuse_avail" = yes ] && { _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"    "Keep the existing $(b "${EXIST_TLS:-cert}") certificate — it already covers $(b "$PANEL_DOMAIN"), no re-issue (recommended for a re-install)"; }
     if [ "$_url_is_domain" = yes ]; then

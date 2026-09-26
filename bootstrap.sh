@@ -364,6 +364,10 @@ elif has_comp "$OTHER" panel; then OTHER_ROLE=host
 else OTHER_ROLE=node; fi
 if [ -n "$CONFLICT" ]; then
   while :; do
+    # A preset answer is taken ONCE: `convert` whose pre-flight refused (or was declined) comes back round this loop,
+    # and answering it again from the flag would spin for ever — so the second time round it must be a person. Checked
+    # BEFORE the menu: printed again under the refusal, it read as a second question nobody was asked (1.8.8 qualification).
+    [ -n "${_conflict_used:-}" ] && [ -n "$ON_CONFLICT" ] && die "the conversion did not go ahead (see above) — nothing was changed. Fix the conflicts, or pass keep / abort instead of $ON_CONFLICT."
     echo
     echo "$(b "! A $(mlabel "$OTHER") $OTHER_ROLE is already installed on this box.")"
     echo "  Convert it to a $(mlabel "$METHOD") $OTHER_ROLE, or re-install it as it is?"
@@ -371,9 +375,6 @@ if [ -n "$CONFLICT" ]; then
     menu "$(b "$(col "$C_BLUE" '[1] [c]onvert')")"      "Migrate it to $(mlabel "$METHOD") — all settings / users / peers are preserved. A port/interface pre-flight runs first."
     menu "$(col "$C_BLUE" '[2] [k]eep and re-install')" "Leave it on $(mlabel "$OTHER") and just re-install it (you didn't mean to switch methods)."
     menu "$(col "$C_BLUE" '[3] [a]bort')"               "Exit without changing anything."
-    # A preset answer is taken ONCE: `convert` whose pre-flight refused (or was declined) comes back round this loop,
-    # and answering it again from the flag would spin for ever — so the second time round it must be a person.
-    [ -n "${_conflict_used:-}" ] && [ -n "$ON_CONFLICT" ] && die "the conversion did not go ahead (see above) — nothing was changed. Fix the conflicts, or pass keep / abort instead of $ON_CONFLICT."
     CHOICE="$ON_CONFLICT"; _conflict_used=1
     ask_choice "Convert, keep, or abort (number, letter or name)" "convert" CHOICE "convert keep abort" \
       "pass the answer as a word or -on-conflict (convert | keep | abort; env SWG_ON_CONFLICT)"

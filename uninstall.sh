@@ -1430,7 +1430,7 @@ if [ -n "$(_archives)" ]; then
   ask_yn "  Delete them too? A future install can no longer offer them for recovery." n ARCHIVES_DEL
   if [ "${ARCHIVES_DEL:-}" = yes ]; then _archives | while IFS= read -r _a; do [ -n "$_a" ] && rmrf "$_a"; done
     ok "removed $_na recovery archive(s)$([ "$_nr" -gt 0 ] && printf ' — including the copy saved above: this node can no longer be recovered from this box')"
-  else info "  Kept — delete by hand once you no longer need them."; fi
+  else info "  Kept — delete by hand once you no longer need them:"; _archives | sed 's/^/      /'; fi   # …naming them
 fi
 
 # group cleanup (shared by panel + agent) — only if we removed a bare-metal piece, or swept the bare-metal

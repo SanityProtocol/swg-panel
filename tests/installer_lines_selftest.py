@@ -28,6 +28,14 @@ choose_ifaces (install-host.sh), the prompt helpers of both bare installers, the
 install-node.sh and its final-name line, and both installers' existing-install blocks are lifted out AS SHIPPED;
 detection, `ip` and the terminal are stubbed.
 
+  [g]–[n] round 4's misleading lines: the Docker installer's helpers took a given answer in silence (M1) — and name a
+      value read back from .env as that, not as given; its footer told a master to `--profile node up -d` (M2); a given
+      domain was asked anyway and read "(no terminal — default taken)" (M3, both installers); the two-panel answer
+      given by SWG_OTHER_PANEL was taken under a menu saying "(default)" abort (M4); a dry run said it "issued" a
+      certificate (M8); a secret prompt with no terminal ended in a blank line (M9); a refused convert pre-flight
+      printed the convert menu again before stopping (M10); a Docker re-install with the password the login already has
+      deleted it, wrote it back and called it a new login (M6).
+
 Run: python3 tests/installer_lines_selftest.py      (0 = pass)
      --perturb   the shipped lines planted back → RED
 """
@@ -40,6 +48,7 @@ H = open(os.path.join(ROOT, "install-host.sh"), encoding="utf-8").read()
 N = open(os.path.join(ROOT, "install-node.sh"), encoding="utf-8").read()
 C = open(os.path.join(ROOT, "lib/common.sh"), encoding="utf-8").read()
 D = open(os.path.join(ROOT, "install-docker.sh"), encoding="utf-8").read()
+B = open(os.path.join(ROOT, "bootstrap.sh"), encoding="utf-8").read()
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -72,6 +81,30 @@ if PERTURB:
         _t, _n = re.subn(r'(ask\(\)\{ local v p="\$1" d="\$\{2:-\}"; if \[ -n "\$\{!3:-\}" \]; then )[^\n]*?_given "\$p" "\$\{!3\}";[^\n]*?return; fi', r'\1return; fi', _t, count=1)
         assert _n == 1, "perturbation anchor missing in " + _src + " — would FALSE-PASS: ask()"
         globals()[_src] = _t
+    # [g] the Docker installer's helpers took a given answer in silence
+    D = plant(D, 'for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}" "$var"; _pnl; return; }; done; fi', 'for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi')
+    D = plant(D, '"$fn" "${!var}" && { [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!var}" "$var"; _pnl; return; }; fi', '"$fn" "${!var}" && return; fi')
+    # [h] the footer's profile defaulted to node
+    C = plant(C, "  [ -n \"$prof\" ] || { docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel && prof=master || prof=node; }\n", "  [ -n \"$prof\" ] || prof=node\n")
+    # [i] a given domain asked anyway (and "default taken")
+    H = plant(H, 'if [ -n "$_URL_GIVEN" ]; then PANEL_DOMAIN="$DEF_URL"; else PANEL_DOMAIN=""; fi\n', 'PANEL_DOMAIN=""\n')
+    D = plant(D, '  if [ -n "${_GIVEN_PANEL_DOMAIN:-}" ]; then PANEL_DOMAIN="$def"; else PANEL_DOMAIN=""; fi\n', '  PANEL_DOMAIN=""\n')
+    # [j] the two-panel answer taken in silence
+    C = plant(C, '  [ -n "$ans" ] && echo "  Abort, stop the other, or keep both [a/s/k]: $(b "$ans")  (given by SWG_OTHER_PANEL — not asked)"\n', '')
+    # [k] a dry run's certificate lines
+    H = plant(H, 'if $DRYRUN; then ok "dry run — would create a self-signed certificate for ${PANEL_DOMAIN} (10y)"; else ok "self-signed certificate for ${PANEL_DOMAIN} (10y)"; fi; }',
+              'ok "self-signed certificate for ${PANEL_DOMAIN} (10y)"; }')
+    H = plant(H, 'if $DRYRUN; then ok "dry run — would issue + install a certificate via $TLS_MODE (auto-renews)"; else ok "issued + installed certificate via $TLS_MODE (auto-renews)"; fi;;',
+              'ok "issued + installed certificate via $TLS_MODE (auto-renews)";;')
+    # [l] a secret prompt with no terminal ended blank
+    C = plant(C, '      if [ -n "$d" ]; then echo "(no terminal — the saved one is kept)"; else echo "(no terminal — nothing given)"; fi; fi\n', '      echo; fi\n')
+    # [m] the convert menu printed again under a refused pre-flight
+    _a = '    [ -n "${_conflict_used:-}" ] && [ -n "$ON_CONFLICT" ] && die "the conversion did not go ahead (see above) — nothing was changed. Fix the conflicts, or pass keep / abort instead of $ON_CONFLICT."\n'
+    B = plant(B, _a, "")
+    B = plant(B, '    CHOICE="$ON_CONFLICT"; _conflict_used=1\n', _a + '    CHOICE="$ON_CONFLICT"; _conflict_used=1\n')
+    # [n] a Docker re-install with the password the login already has called it new
+    D = plant(D, 'if [ "$KEEP_AUTH" != yes ] && [ "$PROFILE" != node ] && [ "$EXISTING_DOCKER" = yes ] && [ "$_pw_unknown" = no ] \\\n',
+              'if false && [ "$PROFILE" != node ] && [ "$EXISTING_DOCKER" = yes ] && [ "$_pw_unknown" = no ] \\\n')
 
 def fn(src, name):
     m = re.search(r"^%s\(\)\{" % re.escape(name), src, re.M)
@@ -235,6 +268,110 @@ for src, fname, pre, label in ((N, "migrate_docker_ifaces", "SWG_CONVERT=1; ENDP
     check("%s: a list without a long name prints exactly as before" % label,
           rows == ["    awg0       AmneziaWG  192.168.77.4:51821  10.64.2.1/24", "    wg0        WireGuard  192.168.77.4:51820  10.64.1.1/24"],
           "\n" + "\n".join(rows))
+
+print("\n[g] the Docker installer says a given answer — and names one read back from .env as that")
+DH = fn(D, "_notty") + fn(D, "_given") + fn(D, "ask_valid") + fn(D, "ask_choice")
+out = run('HAVE_TTY=no; INSTALL_DIR=/opt/swg-panel-docker\nv_name(){ [ -n "$1" ]; }\nv_email(){ case "$1" in *@*) return 0;; esac; return 1; }\n' + DH +
+          'step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "Step $1"; }\nstep "3. Node name for THIS box"\n'
+          'NODE_NAME=q3m; ask_valid "Node name for THIS box" x NODE_NAME v_name "1-40"\nstep "4. TLS certificate"\n'
+          '_GIVEN_ACME_EMAIL=""; ACME_EMAIL=ops@example.com; ask_valid "ACME account email" "" ACME_EMAIL v_email "an email"\n'
+          '_GIVEN_TLS_VERIFY=yes; TLS_VERIFY=yes; ask_choice "Verify" y TLS_VERIFY "yes no"\nROLE=master; ask_choice "Select role" m ROLE "master host m h"\n',
+          setsid=True)
+check("[g] a given node name is said under its step (the step is not left empty)",
+      "Node name for THIS box: q3m  (given — not asked)" in out.split("Step 3.", 1)[-1].split("Step 4.", 1)[0], out)
+check("[g] …a value this re-install read back from .env is named as that, not as given",
+      "ACME account email: ops@example.com  (kept from /opt/swg-panel-docker/.env — not asked)" in out, out)
+check("[g] …and a given menu answer is said, tracked or not",
+      "Verify: yes  (given — not asked)" in out and "Select role: master  (given — not asked)" in out, out)
+
+print("\n[h] the Docker footer names the stack this box runs")
+def footer(names):
+    st = tempfile.mkdtemp(prefix="instl-dk-"); open(os.path.join(st, "docker"), "w").write("#!/bin/bash\nprintf '%s'\n" % names); os.chmod(os.path.join(st, "docker"), 0o755)
+    return run(fn(C, "node_reconfig_block") + "node_reconfig_block docker /opt/swg-panel-docker\n", st)
+check("[h] a master (panel + node containers): `--profile master up -d`", "--profile master up -d" in footer("swg-panel\\nswg-node\\nswg-sub\\n"), footer("swg-panel\\nswg-node\\n"))
+check("[h] a node: `--profile node up -d`", "--profile node up -d" in footer("swg-node\\n"), footer("swg-node\\n"))
+
+print("\n[i] a given panel domain is said, not asked (both installers)")
+a = H.index('DEF_URL="${PANEL_DOMAIN:-}"; _URL_GIVEN=')
+b = H.index("\n", H.index('ask_valid "Enter panel URL (https://…)" "$DEF_URL" PANEL_DOMAIN', a)) + 1
+HURL = H[a:b]
+def bare_url(given):
+    return run('_tty(){ { : </dev/tty; } 2>/dev/null; }\nv_url(){ [ -n "$1" ]; }\ndetect_public_ip(){ echo 10.0.2.15; }\n' + fn(H, "_notty") + fn(H, "_given") + fn(H, "ask_valid") +
+               'PANEL_DOMAIN="%s"; PORT=2087; PANEL_BASE=""; DOM_SAVED=""; PORT_SAVED=""; BASE_SAVED=""\n%s\necho "URL=$PANEL_DOMAIN"\n' % (given, HURL), setsid=True)
+out = bare_url("192.168.77.1")
+check("[i] bare: a given -domain (with its port) is said as given, and used",
+      "Enter panel URL (https://…): 192.168.77.1:2087  (given — not asked)" in out and "URL=192.168.77.1:2087" in out and "default taken" not in out, out)
+out = bare_url("")
+check("[i] bare: none given → the default, said as the default", "(no terminal — default taken)" in out and "URL=10.0.2.15\n" in out, out)
+a = D.index('  local def="${PANEL_DOMAIN:-$(detect_public_ip)}"')
+b = D.index("\n", D.index('ask_valid "Enter panel URL (https://…)" "$def" PANEL_DOMAIN', a)) + 1
+DURL = D[a:b]
+def docker_url(given, envd):
+    return run('HAVE_TTY=no; INSTALL_DIR=/opt/swg-panel-docker\nv_url(){ [ -n "$1" ]; }\ndetect_public_ip(){ echo 10.0.2.15; }\n' + fn(D, "_notty") + fn(D, "_given") + fn(D, "ask_valid") +
+               '_GIVEN_PANEL_DOMAIN="%s"; PANEL_DOMAIN="%s"; PANEL_PORT=2087; PANEL_BASE=""\nf(){\n%s}\nf\necho "URL=$PANEL_DOMAIN"\n' % (given, given or envd, DURL), setsid=True)
+out = docker_url("192.168.77.3", "")
+check("[i] docker: a given -domain is said as given", "Enter panel URL (https://…): 192.168.77.3:2087  (given — not asked)" in out and "URL=192.168.77.3:2087" in out, out)
+out = docker_url("", "192.168.77.3")
+check("[i] docker: a re-install's .env domain is the prompt's default (asked, not given)", "(no terminal — default taken)" in out and "given" not in out, out)
+
+print("\n[j] the two-panel answer SWG_OTHER_PANEL gave is said")
+st = tempfile.mkdtemp(prefix="instl-2p-")
+open(os.path.join(st, "docker"), "w").write('#!/bin/bash\ncase "$1" in ps) echo swg-panel;; esac\nexit 0\n'); os.chmod(os.path.join(st, "docker"), 0o755)
+out = run("SWG_OTHER_PANEL=stop\n" + fn(C, "guard_second_panel") + "guard_second_panel baremetal\n", st, setsid=True)
+check("[j] the menu's question is answered on screen: stop, given by SWG_OTHER_PANEL",
+      "Abort, stop the other, or keep both [a/s/k]: stop  (given by SWG_OTHER_PANEL — not asked)" in out and "stopped a Docker panel" in out, out)
+
+print("\n[k] a dry run says what it WOULD do with the certificate")
+t = tempfile.mkdtemp(prefix="instl-dry-")
+out = run('DRYRUN=true; PREFIX=%s; TLS_DIR=/etc/swg-panel/tls; PANEL_DOMAIN=example.com\nrun(){ echo "[skip] $*"; }\n' % t
+          + fn(H, "san_for") + fn(H, "cert_perms") + fn(H, "mk_selfsigned") + "mk_selfsigned\n")
+check("[k] self-signed: \"dry run — would create…\", not a certificate it never made",
+      "OK dry run — would create a self-signed certificate for example.com (10y)" in out, out)
+out = run('DRYRUN=true; PREFIX=%s; TLS_DIR=/etc/swg-panel/tls; PANEL_DOMAIN=example.com; TLS_MODE=cloudflare; REUSE_TLS=no\n'
+          'CF_TOKEN=x; CF_ACCOUNT_ID=""; ACME_EMAIL=a@example.com; ACME_HOME=/root/.acme.sh\nrun(){ echo "[skip] $*"; }\nacme(){ echo "[skip] acme $*"; }\n'
+          'ensure_acme(){ :; }; acme_has_cert(){ return 1; }; prune_stale_acme_installs(){ :; }; acme_foreign_target(){ :; }; cert_perms(){ :; }\n'
+          'acme_clear_unusable(){ :; }; heal_acme_reloadcmd(){ :; }; acme_copy_foreign(){ :; }; mk_selfsigned(){ echo SELFSIGNED-FALLBACK; }\n' % t
+          + fn(H, "obtain_cert_internal") + "obtain_cert_internal\n")
+check("[k] cloudflare: \"dry run — would issue + install…\", not \"issued + installed\"",
+      "OK dry run — would issue + install a certificate via cloudflare" in out and "OK issued" not in out, out)
+
+print("\n[l] a secret prompt with no terminal says what happened, instead of a blank line")
+v = 'v_tok(){ [ -n "$1" ]; }\n' + fn(C, "ask_secret")
+out = run(v + 'ask_secret "Cloudflare API token" "saved-token-xyz" CF_TOKEN v_tok "a token"\necho "GOT=${#CF_TOKEN}"\n', setsid=True)
+check("[l] a saved one: \"(no terminal — the saved one is kept)\" on the prompt line, and never printed",
+      "Cloudflare API token: (no terminal — the saved one is kept)" in out and "saved-token-xyz" not in out and "GOT=15" in out, out)
+out = run(v + 'ask_secret "Cloudflare API token" "" CF_TOKEN v_tok "a token"\n', setsid=True)
+check("[l] none: \"(no terminal — nothing given)\", then the refusal", "Cloudflare API token: (no terminal — nothing given)" in out and "DIE" in out, out)
+
+print("\n[m] a refused convert pre-flight does not print the convert menu again")
+a = B.index("if [ -n \"$CONFLICT\" ]; then\n  while :; do\n"); b = B.index("\n  done\nfi\n", a) + len("\n  done\nfi\n")
+LOOP = B[a:b]
+bd = tempfile.mkdtemp(prefix="instl-bs-")
+open(os.path.join(bd, "convert.sh"), "w").write('#!/bin/bash\necho "PREFLIGHT: an interface name clash"; exit 1\n')
+r = subprocess.run(["bash", "-c", PRE + 'mlabel(){ echo "$1"; }\nmenu(){ printf "  %s\\n      %s\\n\\n" "$1" "$2"; }\nkey(){ printf %s "$*"; }\n'
+                    'col(){ shift; printf %s "$*"; }\nrun_script(){ echo "RUN $*"; }\nask_yn(){ :; }\n' + fn(B, "ask_choice") +
+                    'CONFLICT=yes; OTHER=docker; METHOD=baremetal; OTHER_ROLE=node; ROLE=node; ON_CONFLICT=convert\n' + LOOP],
+                   cwd=bd, capture_output=True, text=True, stdin=subprocess.DEVNULL, start_new_session=True)
+out = r.stdout + r.stderr
+check("[m] with `convert` preset and the pre-flight refusing: the menu once, then the stop",
+      out.count("is already installed on this box") == 1 and "PREFLIGHT" in out and "the conversion did not go ahead" in out, out)
+
+print("\n[n] a Docker re-install keeps a login whose password it already has")
+import base64 as _b64, hashlib as _hl
+a = D.index("# ⚠️ …AND ONE THAT KNOWS IT KEEPS IT TOO."); b = D.index("\nfi\n", a) + 4
+M6 = D[a:b]
+def relogin(pw):
+    d = tempfile.mkdtemp(prefix="instl-m6-"); os.makedirs(os.path.join(d, "data", "etc"))
+    salt = b"0123456789abcdef"
+    open(os.path.join(d, "data", "etc", "auth"), "w").write("admin613:pbkdf2_sha256$1000$%s$%s\n" % (
+        _b64.b64encode(salt).decode(), _b64.b64encode(_hl.pbkdf2_hmac("sha256", b"the-real-pw", salt, 1000)).decode()))
+    return run('INSTALL_DIR=%s; KEEP_AUTH=no; KEPT_LOGIN=no; PROFILE=master; EXISTING_DOCKER=yes; _pw_unknown=no\n'
+               'PANEL_USER=admin613; PANEL_PASSWORD="%s"\n%s\necho "KEEP=$KEEP_AUTH KEPT=$KEPT_LOGIN PW=$PANEL_PASSWORD"\n' % (d, pw, M6))
+out = relogin("the-real-pw")
+check("[n] .env holds the password the login already has → the login is kept, nothing to print",
+      "KEEP=yes KEPT=yes PW=(preserved)" in out and "its password is the one it already has" in out, out)
+out = relogin("a-new-pw")
+check("[n] a different password → applied, as asked", "KEEP=no KEPT=no PW=a-new-pw" in out, out)
 
 print()
 if FAILS:
