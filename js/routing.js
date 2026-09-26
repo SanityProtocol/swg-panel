@@ -435,7 +435,10 @@ function buildModeMeta() {
     adds: T("Scans the TLS SNI in-kernel — client DNS stays private"),
     bene: [T("Daemonless & parallel per-CPU · lightest at high connection rates"), T("Wins stability and high-connection-rate CPU over Hybrid")],
     cost: T("Substring match only · needs xt_string + ipset on the node"),
-    block: { s: "−", t: T("Domain content filters inert — steer them to Force-DNS / Hybrid") },
+    // The second line is F19's fact where the operator CHOOSES the mode, not only on the rule row that already went
+    // inert: this engine lowers a site name only for a rule that leaves by an exit (1.8.8 qualification, D-KSNI).
+    block: [{ s: "−", t: T("Domain content filters inert — steer them to Force-DNS / Hybrid") },
+            { s: "−", t: T("A site name picks an exit only — Direct and Block by name need Force-DNS / Hybrid") }],
     exp: T("Scans the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Needs the node's kernel to provide xt_string + ipset. It matches a run of characters, not a name: a rule for example.com also matches notexample.com.evil.net, which is why whole-ending rules like *.ru cannot be matched here at all — this node counts them and says so, so you can move them to Force-DNS or Hybrid SNI. Learns each destination on its first connection, which still leaves by the route it would have taken without the rule (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing."),
     routes: T("IP ranges, networks, sites (as text), text patterns"),
     ...arb("order"),

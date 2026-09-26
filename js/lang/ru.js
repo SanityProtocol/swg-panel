@@ -2596,6 +2596,9 @@ export const STR = {
     "Совпадение только по подстроке · нужны xt_string и ipset на ноде",
   "Domain content filters inert — steer them to Force-DNS / Hybrid":
     "Доменные контент-фильтры не работают — переводите их на Force-DNS / Hybrid",
+  // budget-ok: mode-card bullet, wraps
+  "A site name picks an exit only — Direct and Block by name need Force-DNS / Hybrid":
+    "Имя сайта выбирает только выход — «Напрямую» и «Заблокировать» по имени работают на Force-DNS / Hybrid",
   "Hybrid SNI": "Hybrid SNI",
   "host layer · SNI in userspace": "слой хостов · SNI в userspace",
   "Parses the TLS SNI in a small helper — client DNS stays private":
