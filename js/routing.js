@@ -1727,11 +1727,19 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     // Escape in the FIELD reaches `onKey` itself. Anywhere else — a row just clicked, the pager — it is handed to the same
     // `onKey` from here (so a badge edit is abandoned exactly as it is from the field), on `window` in the capture phase,
     // before a Sheet's Escape can close the sheet instead.
-    const onEsc = e => { if (e.key !== "Escape" || document.activeElement === inRef.current) return;
+    // ⚠️ ONLY AN ESCAPE MEANT FOR THIS FIELD: focus in it, in its list, or on the page itself (a clicked row is not focusable,
+    // so focus falls to the body). A control the operator TABBED to keeps its own Escape — this used to take every Escape
+    // while the list stayed open behind (it closes on a click outside, not on blur), so the next control's Escape was
+    // swallowed. And focus leaving for good closes the list, as a click outside does.
+    const mine = t => !!t && ((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)));
+    const onEsc = e => { const a = document.activeElement;
+      if (e.key !== "Escape" || a === inRef.current || (a && a !== document.body && !mine(a))) return;
       e.stopPropagation(); e.preventDefault(); onKeyRef.current(e); };
+    const onFocus = e => { if (!mine(e.target)) setOpen(false); };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
     document.addEventListener("mousedown", onDoc, true); window.addEventListener("keydown", onEsc, true);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); window.removeEventListener("keydown", onEsc, true); };
+    document.addEventListener("focusin", onFocus, true);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); window.removeEventListener("keydown", onEsc, true); document.removeEventListener("focusin", onFocus, true); };
   }, [open]);
 
   // What the dropdown offers, as ONE flat list — because the keyboard walks it as one list and "the top row"

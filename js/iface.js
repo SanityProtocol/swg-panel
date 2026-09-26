@@ -976,7 +976,8 @@ export function Awg3Grid({ value, onKey, hpk, rt, hpkTip, rtTip, hint, placehold
 // Is an S1–S4 in this AWG dict one the panel re-draws on a switch to 3.1 — set and under 12, or not a number (awg3_full)?
 // One test for the switch window and the Edit sheet's 3.1 cells, so the two never say different things about the same values.
 const awgLowS = d => ["S1", "S2", "S3", "S4"].some(k => { const v = String((d || {})[k] ?? "").trim(); return v !== "" && (!/^\d+$/.test(v) || +v < 12); });
-// The one sentence that says which apps carry 3.1 (docs/AWG3-PLAN.md §3) — in the switch window, where the switch is confirmed.
+// The one sentence that says which apps carry 3.1 (docs/AWG3-PLAN.md §3) — in the switch window, where the switch is confirmed,
+// and under the switch in the create form, which has no switch window.
 const awg3Apps = () => T("Only apps that carry AmneziaWG 3.1 can connect: Amnezia VPN 5.0.1.5 or newer, AmneziaWG from the App Store or from GitHub (not the Google Play build), WG Tunnel 5.6 or newer. WINGS V, Keenetic and MikroTik cannot.");
 // The AmneziaWG version switch — the create form, the Edit sheet, and Settings' preset for new interfaces (`label`, `hint`).
 // `no3` / `no2` are the panel's own reason a switch that way would be refused here (its sentence, never the rule re-derived),
@@ -985,7 +986,11 @@ const awg3Apps = () => T("Only apps that carry AmneziaWG 3.1 can connect: Amnezi
 export function AwgGenField({ value, onChange, no3, no2, label, hint, was }) {
   label = label || T("AmneziaWG version");
   const why = value === "3.1" ? no2 : no3;
-  const say = why || hint || ((was == null || value !== was) ? (value === "3.1" ? "" : T("Every AmneziaWG app can connect.")) : "");
+  // ⚠️ THE CREATE FORM NAMES THE APPS (`was == null`: nothing saved yet). The Edit sheet stays quiet on 3.1 because the switch
+  // window it opens names them (the operator's request, GUI review round 1); the create form has no such window, so a new 3.1
+  // interface would otherwise be made with no word that WINGS V, Keenetic, MikroTik and the Google Play build cannot connect.
+  const say = why || hint || ((was == null || value !== was)
+    ? (value === "3.1" ? (was == null ? awg3Apps() : "") : T("Every AmneziaWG app can connect.")) : "");
   return html`<div class="field awggen"><label>${label}</label>
     <div class="dpsw awgsw" role="radiogroup" aria-label=${label}>${[["2.0", no2], ["3.1", no3]].map(([g, no]) => html`<button type="button" role="radio" key=${g}
       aria-checked=${value === g} class=${(value === g ? "on" : "") + (g === "3.1" ? " sw-awg3" : "")} disabled=${value !== g && !!no}

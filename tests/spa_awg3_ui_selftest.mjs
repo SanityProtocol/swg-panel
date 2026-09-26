@@ -22,7 +22,9 @@
  *     with no `placeholders` (the Edit sheet) an input carries NO placeholder prop — Preact writes a null one as
  *     placeholder="", the title trap again — and with them (Settings) each typed cell shows its built-in value.
  *
- * Run: node tests/spa_awg3_ui_selftest.mjs     --perturb tip|samekey|gen|tag|catalog|pending|fork3|us|colour|var|ph   plants one and expects RED.
+ * [9] AwgGenField — the create form (nothing saved yet) names the apps that carry 3.1 under the switch; the Edit sheet does not.
+ *
+ * Run: node tests/spa_awg3_ui_selftest.mjs     --perturb tip|samekey|gen|tag|catalog|pending|fork3|us|colour|var|ph|apps   plants one and expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -47,6 +49,8 @@ const PLANTS = {
   colour: ["ui.js", 'const k = t === "awg" ? "awg" : t === "awg3" ? "awg3" : t === "wdtt"', 'const k = t === "awg" ? "awg" : t === "wdtt"'],
   var: ["ui.js", '  de.style.setProperty("--awg3", awg3);', ""],
   ph: ["iface.js", '...${placeholders ? { placeholder: placeholders[k] || "" } : {}}', 'placeholder=${placeholders ? placeholders[k] || "" : null}'],
+  apps: ["iface.js", '(value === "3.1" ? (was == null ? awg3Apps() : "") : T("Every AmneziaWG app can connect."))',
+         '(value === "3.1" ? "" : T("Every AmneziaWG app can connect."))'],
 };
 const made = [];
 const load = async name => {
@@ -161,5 +165,15 @@ check("the Edit sheet (no placeholders): no input carries a placeholder prop", i
 check("Settings: each typed cell shows its built-in value, blank where none is given — the read-only two none",
       JSON.stringify(typed(setg).map(p => p.placeholder)) === JSON.stringify(["10-100", "15-20", "", "", "", ""])
       && ro(setg).every(p => !("placeholder" in p)), inputs(setg).map(p => p.placeholder));
+
+// [9] the create form (nothing saved: `was` absent) names the apps that carry 3.1 under the switch — it has no switch window;
+//     the Edit sheet (`was` given) stays quiet on 3.1, because its switch window names them (loose ends §I, decided 2026-09-26).
+const texts = n => { const out = []; const walk = x => { if (Array.isArray(x)) x.forEach(walk); else if (typeof x === "string") out.push(x);
+  else if (x && typeof x === "object" && x.props) walk(x.props.children); }; walk(n); return out.join(" "); };
+const create31 = texts(IF.AwgGenField({ value: "3.1", onChange: () => {} }));
+const edit31 = texts(IF.AwgGenField({ value: "3.1", onChange: () => {}, was: "2.0" }));
+check("the create form on 3.1 names the apps that can connect — and the ones that cannot", /WINGS V/.test(create31) && /Google Play/.test(create31), create31);
+check("…the Edit sheet on 3.1 does not (its switch window does)", !/WINGS V/.test(edit31), edit31);
+check("…and 2.0 still says every AmneziaWG app can connect", /Every AmneziaWG app can connect/.test(texts(IF.AwgGenField({ value: "2.0", onChange: () => {} }))));
 
 done(!!MODE, MODE);
