@@ -47,9 +47,9 @@ export const REQ_TIMEOUT = 90000;
    are fetched from OUTSIDE it (the changelog lives in the repo, in one file per language), and the server
    is the one holding the outbound connection. One header here beats a query parameter on each endpoint:
    it applies to calls that already exist, and it cannot be forgotten by the next endpoint someone adds. */
-async function _fetch(u, opts) {
+async function _fetch(u, opts, ms) {
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), REQ_TIMEOUT);
+  const t = setTimeout(() => ac.abort(), ms || REQ_TIMEOUT);   // `ms`: the one call that legitimately outlasts it (docker-confirm)
   const o = { ...(opts || {}), signal: ac.signal, headers: { ...((opts || {}).headers || {}), "X-SWG-Lang": lang() } };
   try { return await fetch(u, o); }
   catch (e) { if (e && e.name === "AbortError") throw new Error(T("the panel didn't respond in time")); throw e; }
@@ -68,7 +68,7 @@ export function rangeQ(k) {
 }
 export const api = {
   async get(p) { const r = await _fetch(url(p)); if (r.status === 401) return _on401(); return r.json(); },
-  async post(p, b) { const r = await _fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }); if (r.status === 401 && !/\/api\/login$/.test(p)) return _on401(); return r.json(); },
+  async post(p, b, ms) { const r = await _fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }, ms); if (r.status === 401 && !/\/api\/login$/.test(p)) return _on401(); return r.json(); },
   login(b) { return this.post("/api/login", b); },
   logout() { return this.post("/api/logout", {}); },
   state() { return this.get("/api/state"); },

@@ -1250,7 +1250,10 @@ export function AccessTLSCard({ onChange }) {
     if (!dockerRestart) return;
     setBusy(true); setMsg({ ok: true, t: T("Checking the new address (dry-run)…") });
     try {
-      const r = await api.post("/api/access/docker-confirm", { nonce: dockerRestart.nonce });
+      // ⚠️ LONGER THAN THE SERVER'S OWN WAIT. The panel waits up to 220 s for this dry-run — on Cloudflare it issues a real
+      // DNS-01 certificate in a throwaway container — and every other call gives up at REQ_TIMEOUT (90 s): the operator
+      // read "Couldn't run the dry-run" while it carried on, and a second click ran a second one (loose ends D2).
+      const r = await api.post("/api/access/docker-confirm", { nonce: dockerRestart.nonce }, 240000);
       if (r && r.docker_recreate) {   // dry-run passed → the container is recreating onto the new address; show the reconnect hold
         setDockerRestart(null); setDockerFlip(r.new_url || dockerRestart.new_url || ""); setDockerFlipPort(r.port_move ? (r.port || dockerRestart.port || 0) : 0); setDockerArm(20); setBusy(false);
         return setMsg({ ok: true, t: r.message || T("Restarting the panel container. Reconnect at {v1} once it's back.", { v1: r.new_url || dockerRestart.new_url }) });
