@@ -311,6 +311,29 @@ earlier releases predate the changelog — see the git history. · Русски�
   both read "amurcanov". They read "amurcanov · WDTT" and "amurcanov · CSQTT" now.
 - **The Blocking legend broke into columns** ("needs Force-DNS orHybrid-SNI mode"); an interface's route read
   "Throughput: smart cascade" — it reads "Traffic" now, and "Throughput" stays for rates.
+- **Re-running an installer undid what it was told or what the box had.** A Docker re-install ignored `-domain`,
+  `-port`, `-user`, `-base` and `-endpoint` in favour of the old values, dropped the image version pinned in `.env`
+  (and every setting it does not write itself, `SWG_LATEST_URL` among them), and issued a new self-signed certificate
+  that every node pinned to the old one refused. Given values now win, the rest of `.env` is kept, and a self-signed
+  certificate that already covers the address is kept — on bare metal too.
+- **A bare-metal install deleted the Docker data an uninstall had just kept**, calling it a leftover of a cancelled
+  conversion. It keeps it now and says so.
+- **Converting a server between Docker and bare metal lost things along the way:** from Docker to bare metal it
+  deleted the one-click updater it had just installed and handed clients a different endpoint for every interface; a
+  node's pinned panel certificate, and the panel address and token it had learned after a move, were not carried over.
+  All of them are now.
+- **Installing a panel on its own reported that it had not started** although it was serving. A fresh Docker panel
+  now wires its one-click address changes at once (they used to wait for the first update), and a master's endpoint
+  reaches its own node record.
+- **Uninstalling left things behind:** ip rules, `swg-passwd`, the firewall rule the installer opened, the Docker
+  network, and files of the other method after a conversion. A master's uninstall no longer tries to sign off from
+  the panel it has just removed, and `--dry-run` no longer really signs off.
+- **Rolling a server back to an older version switched its updates to `main`** on a server without a panel; the
+  Update button kept following it afterwards. It keeps the branch it followed, and a change of branch restarts the
+  node so it takes effect.
+- **Unattended runs printed raw terminal errors** and a question that named a flag which did not exist; `convert`,
+  `keep` and `abort` (or `-on-conflict`) answer it now. An update that only repaired something now says it changed
+  something, and a re-install of the same build says "reinstalled", not "reinstalled and updated".
 - **Block, Delete and Rotate all keys were a size smaller than the buttons beside them,** and the device view's last
   button wrapped onto a second row in Russian.
 - **Dates in chart tooltips were English in the Russian panel.**
@@ -333,6 +356,8 @@ earlier releases predate the changelog — see the git history. · Русски�
   revoked password or an idle timeout that closed a connection while data was on its way to it ended the server — by
   chance, or on purpose by a client switching its config between two devices. The fault was in every earlier build;
   fixed in qWDTT 1.4.3-4.
+- **Re-installing a Docker node turned off its check of the panel's certificate.** A node that had pinned a
+  self-signed panel came back verifying nothing. It keeps its pin now, and says so when the panel's certificate changed.
 - **A node's config file, which holds its panel token, became readable by every user on the box** after the first
   interface the node changed. It keeps its mode and owner now, and a file an older version left open is closed again on
   the next change.
