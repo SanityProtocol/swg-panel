@@ -6527,6 +6527,14 @@ def _apply_learned_reset(learned_val, res):
         cur = open(stamp).read().strip()
     if rv == cur or rv == "0":                                  # unchanged (or never reset) → nothing to do
         return False
+    _learned_reset_now(res, "#%s" % rv)
+    with contextlib.suppress(OSError):
+        open(stamp, "w").write(rv)
+    return True
+
+
+def _learned_reset_now(res, why):
+    """The body of 'Reset learned IPs' — also what an ENGINE CHANGE runs once (_engine_change_reset)."""
     with contextlib.suppress(OSError):
         os.makedirs(GEO_DIR, exist_ok=True)
     # kernel-SNI: flush each learned ipset (keep the set + chain — only the learned IPs go)
@@ -6547,10 +6555,37 @@ def _apply_learned_reset(learned_val, res):
     if p and p.poll() is None:
         with contextlib.suppress(Exception): p.terminate()
     _SNI_PROC["p"] = None
-    with contextlib.suppress(OSError):
-        open(stamp, "w").write(rv)
     res["changed"] += 1
-    print("routing: LEARNED RESET #%s — flushed learned ipsets/nft sets (lists kept); re-learning" % rv, flush=True)
+    print("routing: LEARNED RESET %s — flushed learned ipsets/nft sets (lists kept); re-learning" % why, flush=True)
+    return True
+
+
+# The engine the node last ran, kept on disk: a restart is not a change, and the first pass after an update only
+# records it.
+_ENGINE_STAMP = os.path.join(GEO_DIR, ".host-engine")
+
+
+def _engine_change_reset(host_engine, res, already=False):
+    """A NEW ENGINE STARTS FROM ITS OWN LEARNING. The sets a previous engine filled — the addresses Force-DNS resolved,
+    what swg-sni or the in-kernel scanner learned — carry no expiry the new engine reads, and after a mode switch they
+    went on giving their old verdicts: measured on msk-main (1.8.8 qualification), a node switched from Force-DNS to
+    Kernel SNI kept blocking a site by the address its resolver had seen, which Kernel SNI cannot do by name — so a
+    rule the list calls inert there looked as if it worked, and would stop the day the site moved. The first pass on a
+    different engine runs the same reset 'Reset learned IPs' runs, once. Returns True if it ran."""
+    prev = ""
+    with contextlib.suppress(OSError):
+        prev = open(_ENGINE_STAMP).read().strip()
+    if prev == host_engine:
+        return False
+    with contextlib.suppress(OSError):
+        os.makedirs(GEO_DIR, exist_ok=True)
+        with open(_ENGINE_STAMP + ".tmp", "w") as f:
+            f.write(host_engine)
+        os.replace(_ENGINE_STAMP + ".tmp", _ENGINE_STAMP)
+    if not prev or already:
+        return False                          # first pass after an update (nothing to compare with), or an operator reset
+                                              # in this same pass already cleared it — record only
+    _learned_reset_now(res, "(engine %s → %s)" % (prev, host_engine))
     return True
 
 
@@ -7582,7 +7617,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     else:                      host_engine = "none"
     is_sni = host_engine in ("sni_user", "sni_kernel")         # both SNI engines share the nft ct-restore/QUIC-drop/reset setup
     _SMART_MODE["engine"] = host_engine                        # the ACTUAL running engine → smart_status reports its liveness
-    _apply_routing_reset((smart or {}).get("routing_reset"), res, (smart or {}).get("routing_reset_learned"))   # operator resets: full wipe+re-pull, or learned-IPs-only
+    _reset_ran = _apply_routing_reset((smart or {}).get("routing_reset"), res, (smart or {}).get("routing_reset_learned"))   # operator resets: full wipe+re-pull, or learned-IPs-only
+    _engine_change_reset(host_engine, res, already=_reset_ran)  # a mode switch starts the new engine from its own learning
     ip_learning = (smart or {}).get("ip_learning", True)       # False → keep the node "fresh": learned SNI IPs expire fast (short TTL)
     learn_ttl = 3600 if ip_learning else 120                   # learned-IP lifetime (s) — kernel-SNI ipset AND Hybrid-SNI catl_ set
     # Panel-shipped caps → host-tier seeding + kernel greying. ABSENT ≠ EMPTY: the panel omits this key when it
