@@ -13183,6 +13183,20 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                     res["removed"] += 1; current.discard(pk)
                 else:
                     res["errors"].append(f"retire {pk[:8]}: {r.get('error')}")
+        # …and on an interface the panel manages, every STRAY goes before the adds too, for the same reason. A peer the
+        # panel no longer sends can hold the address its replacement needs: a mesh link re-created with new keys (its far
+        # end re-installed) kept the old key on 10.255.0.0/32, the new key's add failed "already assigned" and went into
+        # backoff, and the link stayed down until the retry — 15 s to a minute of "retrying later" (1.8.8 qualification,
+        # rounds 4–5). Removed after the adds, as they were, the replacement could not come up in the same pass. An
+        # ADD-ONLY interface keeps what it is merely not sent (it removes only `remove`, above) — see _add_only.
+        if not _add_only(iface, ic):
+            for pk in current - set(desired):
+                r = run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
+                if r.get("ok"):
+                    res["removed"] += 1; current.discard(pk)
+                    applied_ep.pop(iface + "|" + pk, None); ep_dirty = True
+                else:
+                    res["errors"].append(f"remove {pk[:8]}: {r.get('error')}")
         for pk, p in desired.items():
             if pk in current:
                 if live_hs.get(pk) and (time.time() - live_hs[pk]) <= MESH_STALE_S:
@@ -13310,19 +13324,10 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                     applied_ep[iface + "|" + pk] = p.get("endpoint"); ep_dirty = True
             else:
                 _op_fail(akey); res["errors"].append(f"add {pk[:8]}: {r.get('error')}")
-        # An onboarded interface is ADD-ONLY: the panel never removes peers it didn't create, so an
-        # interface adopted from another tool (e.g. wg-easy) keeps its existing peers. They surface
-        # as adoptable orphans instead of being wiped. (What the panel cuts off still goes — it is named
-        # in `remove`, above.) Never a mesh link: see _add_only.
-        if _add_only(iface, ic):
-            continue
-        for pk in current - set(desired):
-            r = run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
-            if r.get("ok"):
-                res["removed"] += 1
-                applied_ep.pop(iface + "|" + pk, None); ep_dirty = True
-            else:
-                res["errors"].append(f"remove {pk[:8]}: {r.get('error')}")
+        # (An onboarded interface is ADD-ONLY: the panel never removes peers it didn't create, so an interface adopted
+        # from another tool (e.g. wg-easy) keeps its existing peers — they surface as adoptable orphans instead of being
+        # wiped. What the panel cuts off still goes — it is named in `remove`. The strays of every other interface went
+        # before the adds, above. Never a mesh link: see _add_only.)
     # Forget what the panel no longer wants. An entry used to leave this map only when its peer was removed from an
     # interface that is still here, so every deleted interface's entries — each rebuilt, transferred or (on an
     # on-demand mesh) retired link's — stayed for ever: 6 of msk-main's 10 on swgt, 2026-09-19. Harmless to routing (a
