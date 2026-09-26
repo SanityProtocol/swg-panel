@@ -3496,6 +3496,13 @@ def is_expired(rec, nowv):
     return bool(exp) and nowv >= int(exp)
 
 
+def access_cut(p, u, nowv):
+    """True if peer `p` (owned by user `u`) may not connect: it is blocked, its owner is, or either one has expired.
+    One predicate for BOTH halves of enforcement — desired_for_node leaves such a peer out, cut_off_for_node asks the
+    node to drop it — so the two can never disagree about who is cut off."""
+    return bool(p.get("disabled") or u.get("disabled") or is_expired(p, nowv) or is_expired(u, nowv))
+
+
 def fmt_day(epoch):
     """An expiry epoch as a plain YYYY-MM-DD (server-local) — only for human-readable API error messages."""
     try:
@@ -6731,7 +6738,9 @@ def desired_for_node(roster, node_id, snap=None):
         # so the node removes it on its next sync and tears down any live session. Unblock re-adds it.
         # EXPIRED access is the same drop, but triggered by a date passing (peer or its owning subscription) —
         # enforced live here so no scheduler is needed; the peer reappears automatically if the date is extended.
-        if p.get("disabled") or u.get("disabled") or is_expired(p, nowv) or is_expired(u, nowv):
+        # An ADD-ONLY interface removes nothing it is merely not sent, so the node is also told to drop it — see
+        # cut_off_for_node, which shares this test.
+        if access_cut(p, u, nowv):
             continue
         uname = u.get("name", "")
         # node-side label (a .conf comment): "user · title" so the operator can tell devices apart
@@ -6755,6 +6764,33 @@ def desired_for_node(roster, node_id, snap=None):
                 "preshared_key": p.get("psk") or "none",
                 "name": name,
             })
+    return out
+
+
+def cut_off_for_node(roster, node_id, snap):
+    """{iface: [pubkey]} — this node's peers that are cut off (blocked or expired, `access_cut`) and that its snapshot
+    still reports on that interface. They go out in the sync's `remove`, beside the operator's retirements.
+
+    `desired_for_node` leaves a cut-off peer out, and a normal interface removes whatever it is not sent. An ADD-ONLY one
+    (`#swg:onboarded`: adopted with peers the panel never made) removes nothing it is merely not sent — only what `remove`
+    names, which every node honours there. Without this a blocked or expired device kept its tunnel on such an interface:
+    measured on the 1.8.8 qualification (q4, converted Docker→bare), a blocked peer, a blocked user's device and an expired
+    peer all still passed traffic, while a deleted one — retired, so named in `remove` — was cut at once.
+    Only keys the node reports: once they are gone the list is empty again, so a quiet fleet's reply is unchanged."""
+    live = {ifn: {(pp or {}).get("public_key") for pp in ((rep or {}).get("peers") or [])}
+            for ifn, rep in ((snap or {}).get("interfaces") or {}).items() if isinstance(rep, dict)}
+    if not any(live.values()):
+        return {}
+    users, nowv, out = roster.get("users") or {}, int(time.time()), {}
+    for p in (roster.get("peers") or {}).values():
+        if not isinstance(p, dict) or not p.get("pubkey") or not access_cut(p, users.get(p.get("user_id")) or {}, nowv):
+            continue
+        for t in p.get("targets") or []:
+            if not isinstance(t, dict) or t.get("node") != node_id or _is_self_contained_target(t):
+                continue
+            ifn = t.get("iface") or ""
+            if p["pubkey"] in live.get(ifn, ()) and p["pubkey"] not in out.get(ifn, ()):
+                out.setdefault(ifn, []).append(p["pubkey"])
     return out
 
 
@@ -29419,6 +29455,12 @@ class Handler(BaseHTTPRequestHandler):
         # ignore it and behave as before.
         owned_ifaces = sorted((node.get("ifaces") or {}).keys())
         _nprobe = net_probe_reply(nid)
+        # What the node drops even on an add-only interface: the keys the operator retired (rotated, deleted, moved off)
+        # and every cut-off peer still on the wire here (cut_off_for_node). Just the retirements when nobody is cut off.
+        _remove = {_ifn: list(_pks) for _ifn, _pks in (node.get("retire") or {}).items()}
+        for _ifn, _pks in cut_off_for_node(roster, nid, snap).items():
+            _rl = _remove.setdefault(_ifn, [])
+            _rl.extend(_pk for _pk in _pks if _pk not in _rl)
         return (200, {"desired": desired, "desired_ifaces": desired_ifaces,
                                 "owned_ifaces": owned_ifaces,
                                 **({"adopt_container": _adc} if _adc else {}),
@@ -29450,7 +29492,7 @@ class Handler(BaseHTTPRequestHandler):
                                                  if k in ("url", "token", "fp", "verify")}}
                                    if (node.get("transfer") or {}).get("state") == "pending" else {}),
                                 "panel_base": PANEL_BASE,   # the panel's LIVE mount base → a co-located (loopback) node that dials the internal port directly follows a PATH change (bypasses the proxy, so it can't learn it any other way)
-                                "remove": node.get("retire") or {},   # pubkeys to drop even on add-only ifaces (rotated/deleted)
+                                "remove": _remove,   # pubkeys to drop even on add-only ifaces (retired, or cut off and still live)
                                 "delete": list((node.get("delete") or {}).keys()),
                                 "restart": list((node.get("restart") or {}).keys()),   # interfaces to bounce
                                 "iface_stop": list((node.get("iface_stop") or {}).keys()),    # interfaces to stop (down + disable)
