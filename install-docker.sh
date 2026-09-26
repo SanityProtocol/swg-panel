@@ -471,9 +471,17 @@ fi
 # SWG_CONVERT_DIR). The box-name rename is pushed later, once ask_node_conn has it.
 if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ] || ls "$INSTALL_DIR/data/node-confs/"*.conf >/dev/null 2>&1; } && ! $DRYRUN; then
   if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then   # token from kept .env, -key recovery, or convert — any re-enroll posts the lifecycle
-    LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
-    case "$PANEL_URL" in *//swg-panel|*//swg-panel/*|*//swg-panel:*)
-      LC_URL="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; LC_VERIFY=no ;; esac
+    # ⚠️ …TO A PANEL THAT CAN HEAR IT, AS A NODE. A panel-only install's NODE_TOKEN is the placeholder
+    # `set-in-nodes-screen` — POSTed as a token it got a 401 after up to 6 s, and "couldn't reach the panel" twice. And
+    # a panel install's own node (a master) reports to THIS box's docker panel: after an uninstall no swg-panel
+    # container is running, and the re-install spent 6 s telling the removed panel it was "reinstalling" (1.8.8
+    # qualification, q3). A node-profile run reports to its panel wherever that is, as before.
+    if [ "$NODE_TOKEN" != set-in-nodes-screen ] \
+       && { [ "$PROFILE" = node ] || docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; }; then
+      LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
+      case "$PANEL_URL" in *//swg-panel|*//swg-panel/*|*//swg-panel:*)
+        LC_URL="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; LC_VERIFY=no ;; esac
+    fi
     rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
   fi
   # set the panel header file when a swg-panel container exists (re-install) OR will be created by THIS run

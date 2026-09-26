@@ -77,24 +77,45 @@ refuse_on_declarative_host 'services.swg-node = { enable = true; ... };'
 # signal "updating" → updated / aborted / failed for whichever this box is: a node (POST via its agent
 # config) and/or a panel host (host_proc file). Best-effort; armed only when there's something to tell.
 lc_emit_upd(){ [ -n "${LC_FILE:-}" ] && lc_emit_file "$1" "${2:-}"; [ -n "${LC_TOKEN:-}" ] && [ -n "${LC_URL:-}" ] && lc_emit_post "$1" "${2:-}"; return 0; }
-if ! $DRYRUN; then
-  # host_proc drives the PANEL header's update status. A node-only update (a co-located node self-updating)
-  # must NOT touch it — otherwise updating just the node lights up "up to date" on the panel + every tile.
-  ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ] && [ -d /var/lib/swg-panel ] && LC_FILE=/var/lib/swg-panel/host_proc
+# lc_targets — WHERE this run reports itself. Two independent answers, one per audience:
+#   · LC_FILE, the host_proc file the PANEL's header reads — the panel that is RUNNING on this box. The bare one
+#     unless it is parked (bare_panel_parked, lib/common.sh), else the docker one when it is live (docker_panel_live).
+#     ⚠️ The bare file was taken whenever the bare panel was INSTALLED, and the docker one only when there was none:
+#     on a box carrying both, with the bare panel parked beside a live docker panel, every update wrote its status into
+#     the stopped panel's state — the live panel's header stayed "updating" and read "update failed" after a run that
+#     exited 0 (1.8.8 qualification, R8). A node-only update (a co-located node self-updating) touches no panel file:
+#     updating just the node must not light up "up to date" on the panel and every tile.
+#   · LC_URL / LC_TOKEN, the node's own status POST — only for a NODE that is here: the bare agent config, else a
+#     swg-node container with a real token. ⚠️ A docker panel-only install writes the placeholder
+#     NODE_TOKEN=set-in-nodes-screen (compose interpolates every service), and it was POSTed as a node token: 401, a
+#     6 s + 25 s wait and two "couldn't reach the panel to record …" lines on every update of a box with no node at all
+#     (1.8.8 qualification, R8; 1.8.7 did the same). It used to be read only when no bare file had been picked, too —
+#     so the docker panel of a box whose node is bare never got its header written.
+lc_targets(){
+  if ! $NODE_ONLY; then
+    if [ -f "$PANEL_DIR/swg-panel-server" ] && [ -d /var/lib/swg-panel ] && ! bare_panel_parked; then
+      LC_FILE=/var/lib/swg-panel/host_proc
+    elif [ -d "$DOCKER_DIR/data/lib" ] && docker_panel_live; then
+      LC_FILE="$DOCKER_DIR/data/lib/host_proc"
+    fi
+  fi
   if [ -f /etc/swg-agent/config.json ]; then
     LC_URL="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
     LC_TOKEN="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
     LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
-  fi
-  # docker deployment: the panel host_proc lives in ./data/lib, the node token/URL in .env (no bare-metal paths)
-  if [ -z "${LC_FILE:-}" ] && [ -z "${LC_TOKEN:-}" ] && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/.env" ]; then
-    ! $NODE_ONLY && command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel && [ -d "$DOCKER_DIR/data/lib" ] && LC_FILE="$DOCKER_DIR/data/lib/host_proc"
+  elif [ -f "$DOCKER_DIR/.env" ] && command -v docker >/dev/null 2>&1 \
+       && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
+    # docker deployment: the node token/URL live in .env (the agent config is inside the container)
     LC_TOKEN="$(sed -n 's/^NODE_TOKEN=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
+    [ "$LC_TOKEN" = set-in-nodes-screen ] && LC_TOKEN=""
     LC_URL="$(sed -n 's/^PANEL_URL=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
     LC_VERIFY="$(sed -n 's/^TLS_VERIFY=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"; LC_VERIFY="${LC_VERIFY:-no}"
     case "$LC_URL" in *//swg-panel|*//swg-panel/*|*//swg-panel:*)   # master: swg-panel isn't resolvable from the host → loopback
       LC_URL="$(printf '%s' "$LC_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:$(sed -n 's/^PANEL_PORT=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')#")"; LC_VERIFY=no ;; esac
   fi
+  return 0; }
+if ! $DRYRUN; then
+  lc_targets
   { [ -n "${LC_FILE:-}" ] || [ -n "${LC_TOKEN:-}" ]; } && lc_init update lc_emit_upd
 fi
 
