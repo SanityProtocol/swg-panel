@@ -293,6 +293,8 @@ class Box:
         if op == "-nL":
             return R(0 if ch in self.chains else 1)
         if op == "-S":
+            if not ch:                                         # the whole table: every user chain, as iptables lists it
+                return R(0, "".join("-N %s\n" % c for c in self.chains if not c.startswith("@")))
             if ch not in self.chains:
                 return R(1)
             return R(0, "-N %s\n" % ch + "".join("-A %s %s\n" % (ch, " ".join(r)) for r in self.chains[ch]))
@@ -352,8 +354,17 @@ class Box:
         dev = (pkt["iif"] if fl[1] == "src" else None) if DIMS[s["type"]] == 2 else None
         return any(addr in net and (DIMS[s["type"]] == 1 or d == dev) for net, d in s["m"])
 
-    def walk(self, pkt, ct):
-        for r in self.chains.get("SWGK", []) if self.hooked else []:
+    def flat(self, chain="SWGK"):
+        """SWGK read back flat — each `-j SWGK_<n>` replaced by that chain's rules — in the order a packet meets them."""
+        out = []
+        for r in self.chains.get(chain, []):
+            t = r[r.index("-j") + 1] if "-j" in r else ""
+            out += self.chains[t] if t in self.chains and t != chain else [r]
+        return out
+
+    def walk(self, pkt, ct, chain="SWGK"):
+        # SWGK dispatches to one chain per source (`-j SWGK_<n>`): a jump walks that chain, and its RETURN comes back here
+        for r in (self.chains.get(chain, []) if (self.hooked or chain != "SWGK") else []):
             i, ok, tgt = 0, True, None
             while i < len(r) and ok:
                 t = r[i]
@@ -377,6 +388,9 @@ class Box:
                 else:
                     raise AssertionError("model cannot read %r in %r" % (t, r))
             if not ok:
+                continue
+            if tgt[0] in self.chains:                          # a user chain: walk it, then carry on after the jump
+                self.walk(pkt, ct, tgt[0])
                 continue
             if tgt[0] == "MARK":
                 pkt["mark"] = int(tgt[2], 0)
@@ -410,7 +424,7 @@ class Box:
         return {str(n.network_address) for n, _ in (self.sets.get(N._xts_setname(cat)) or {}).get("m", set())}
 
     def strings(self):
-        return sum(1 for r in self.chains.get("SWGK", []) if "string" in r)
+        return sum(1 for r in self.flat() if "string" in r)
 
 
 # ── the fixture ──────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -529,7 +543,7 @@ xpass(B, [ROW_YT, EV_TG], srcs={W1: [["wg0", BOB + "/32"]]})
 check("a scratch set left by an interrupted swap is destroyed on the next pass", SN1 + "t" not in B.sets, sorted(B.sets))
 r = xpass(B, [EV_TG])
 check("the row removed: its set is destroyed in the same pass, once SWGK no longer names it",
-      SN1 not in B.sets and not any(SN1 in x for x in B.chains.get("SWGK", [])), (sorted(B.sets), r))
+      SN1 not in B.sets and not any(SN1 in x for x in B.flat()), (sorted(B.sets), r))
 check("…and nothing was refused on the way", not r["errors"] and not B.refused, (r, B.refused[:2]))
 xpass(B, [ROW_YT, EV_TG]); xpass(B, [], active=False)
 check("Kernel SNI torn down: no swgk_ or swgs_ set left", not [n for n in B.sets if n.startswith(("swgk_", "swgs_"))], sorted(B.sets))
@@ -558,7 +572,7 @@ for ok in (False, True):
     except Exception as e:
         err = "%s: %s" % (type(e).__name__, e)
     tag = "probe %s: " % ("passes" if ok else "fails")
-    rules = B.chains.get("SWGK", [])
+    rules = B.flat()
     check(tag + "the pass runs", not err, err)
     check(tag + "the rule for everyone is built either way", any("custom_tg" in " ".join(x) for x in rules), rules[:2])
     check(tag + "no probe set is left behind", "swgs_probe" not in B.sets, sorted(B.sets))
@@ -673,7 +687,12 @@ if p1src.returncode == 0:
         B = Box()
         mod.run = B
         mod._ensure_smart_xtstring([dict(EV_YT), dict(EV_TG)], DOMS, RESET, {"changed": 0, "errors": []}, ttl=3600)
-        got[label] = (B.chains.get("SWGK"), open(os.path.join(mod.GEO_DIR, ".xtstring-sig")).read())
+        # read back FLAT (each jump replaced by its chain's rules), the shape P1 wrote — a packet meets them in this order
+        flat = []
+        for r in B.chains.get("SWGK") or []:
+            t = r[r.index("-j") + 1] if "-j" in r else ""
+            flat += B.chains[t] if t in B.chains and t != "SWGK" else [r]
+        got[label] = (flat, open(os.path.join(mod.GEO_DIR, ".xtstring-sig")).read())
     # ⚠️ ONE RULE MORE, BY DECISION: the chain now OPENS with its way out for packets past the scan window (1.8.8
     # qualification — 10 040 rules walked by every HTTPS data packet held a Kernel SNI node to 21–32 Mbit/s). So every
     # Kernel SNI node rebuilds SWGK once on the upgrade that brings it; everything after that rule is P1's, rule for rule.
@@ -682,7 +701,7 @@ if p1src.returncode == 0:
     check("the chain opens with the scan window's way out", bool(this_rules) and this_rules[0] == WIN, this_rules[:1])
     check("…and after it, the same rules as P1, in the same order", got["P1"][0] == this_rules[1:],
           (len(got["P1"][0] or []), len(this_rules[1:])))
-    check("the signature moves (one rebuild on the upgrade, for that rule alone)", got["P1"][1] != got["this"][1], got)
+    check("the signature moves (one rebuild on the upgrade: the window rule, and the chain per source)", got["P1"][1] != got["this"][1], got)
 
 shutil.rmtree(STATE, ignore_errors=True)
 print("\n%s" % ("ALL PASS" if not FAILS else "FAILED (%d): %s" % (len(FAILS), ", ".join(FAILS))))

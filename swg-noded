@@ -6619,6 +6619,7 @@ def _apply_full_reset(reset_val, res):
     # 3) drop the kernel-SNI iptables chain + destroy the learned ipsets
     run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", "SWGK"])
     run(["iptables", "-t", "mangle", "-F", "SWGK"]); run(["iptables", "-t", "mangle", "-X", "SWGK"])
+    _xts_drop_subchains()
     for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
         run(["ipset", "flush", setn])      # the learned IPs go even where the destroy is refused: SWG_CATK still counts with
         run(["ipset", "destroy", setn])    # the set (rebuilt later this pass) — destroy alone left them all in place
@@ -8154,6 +8155,48 @@ def _ipt_restore_arg(a):
     return a if _IPT_SAFE_ARG.fullmatch(a) else '"' + a.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _xts_split(rules, chain):
+    """SWGK as a DISPATCHER: its source-free rules (the scan window's way out) first, then one jump per SOURCE — a
+    subnet, or the arrivals' pairs — into a chain holding that source's rules alone, in their order. Returns the rules
+    of every chain, and the names of the per-source ones (`SWGK_1`, `SWGK_2`, … in first-appearance order).
+
+    ⚠️ A COST FIX, AND ORDER-PRESERVING BY CONSTRUCTION. Every tcp/443 packet in a connection's scan window walked
+    every rule of every source: on msk-main (the default list's categories lowered once per subnet that uses them,
+    10 240 rules) a client of a subnet with FIFTY rules of its own paid ~15 ms of softirq per new HTTPS connection
+    (1.8.8 qualification, 60 connections with the chain hooked vs unhooked: 108 vs 18 jiffies) — the walk, not the
+    string search. The sources are disjoint (distinct local subnets, and arrivals that never share a local subnet —
+    see the ARRIVALS note above), so a packet can match one group only, and a RETURN in its chain lands in SWGK after
+    that jump, where no other jump can take it. Within a group the relative order is exactly the rendered order."""
+    head, groups, order = [], {}, []
+    for r in rules:
+        a = r[2:]
+        if "-s" in a:
+            key = ("-s", a[a.index("-s") + 1])
+        elif "--match-set" in a and a[a.index("--match-set") + 1] == _XTS_ARR:
+            key = ("arr", _XTS_ARR)
+        else:
+            head.append(r)
+            continue
+        if key not in groups:
+            groups[key] = []; order.append(key)
+        groups[key].append(a)
+    out, subs = list(head), []
+    for i, key in enumerate(order, 1):
+        subs.append("%s_%d" % (chain, i))
+        sel = ["-s", key[1]] if key[0] == "-s" else ["-m", "set", "--match-set", _XTS_ARR, "src,src"]
+        out.append(["-A", chain, *sel, "-j", subs[-1]])
+    for name, key in zip(subs, order):
+        out += [["-A", name, *a] for a in groups[key]]
+    return out, subs
+
+
+def _xts_drop_subchains(keep=()):
+    """Flush and delete every `SWGK_<n>` chain not in `keep` — called only where nothing references them any more."""
+    for c in re.findall(r"^-N (SWGK_\d+)$", run(["iptables", "-t", "mangle", "-S"]).stdout or "", re.M):
+        if c not in keep:
+            run(["iptables", "-t", "mangle", "-F", c]); run(["iptables", "-t", "mangle", "-X", c])
+
+
 def _xts_reap(want_cats, want_srcs=()):
     """Destroy every `swgk_*` learned-IP set no category claims any more — and every `swgs_<wid>` selection set no row
     names, plus any scratch `swgs_<wid>t` an interrupted swap left behind (_xts_src_sets). Called only where SWGK no
@@ -8393,6 +8436,7 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
             # every copy writes one constant, and `--save-mark` cannot name a category at all.
             rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
                           "-j", "CONNMARK", "--save-mark"])
+    rules, subs = _xts_split(rules, CHAIN)                     # one chain per source — see _xts_split
     sig = hashlib.sha1((json.dumps(rules) + "|ttl:" + str(ttl)).encode()).hexdigest()[:16]
     sigf = os.path.join(GEO_DIR, ".xtstring-sig")
     try:
@@ -8441,11 +8485,12 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
         # ones do. Anything it refuses falls back to the rule-by-rule path below, which says what it could not add.
         for c in want_cats:                                    # the sets exist before the rules that name them
             run(["ipset", "create", _xts_setname(c), "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])
-        lines = ["*mangle", ":%s - [0:0]" % CHAIN] + [" ".join(_ipt_restore_arg(x) for x in a) for a in rules]
+        lines = ["*mangle"] + [":%s - [0:0]" % c for c in [CHAIN] + subs] + [" ".join(_ipt_restore_arg(x) for x in a) for a in rules]
         if not hooked:
             lines.append("-A PREROUTING -p tcp --dport 443 -j %s" % CHAIN)
         r = run(["iptables-restore", "--noflush", "-w", "5"], input_text="\n".join(lines + ["COMMIT"]) + "\n", timeout=120)
         if r.returncode == 0:
+            _xts_drop_subchains(keep=subs)                     # a source that left: its chain is unreferenced now
             _xts_reap(want_cats, want_srcs)                    # the old rules no longer name what they named
             res["changed"] += 1
             with contextlib.suppress(OSError):
@@ -8455,6 +8500,7 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
                              % ((r.stderr or "").strip().splitlines() or ["?"])[-1][:100])
     run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", CHAIN])   # unhook, rebuild fresh
     run(["iptables", "-t", "mangle", "-F", CHAIN]); run(["iptables", "-t", "mangle", "-X", CHAIN])
+    _xts_drop_subchains()                                      # unreferenced once SWGK is gone
     if not entries and not arr_ents:                           # teardown: drop the chain + our learned ipsets
         for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
             run(["ipset", "destroy", setn])
@@ -8471,6 +8517,8 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
     for c in want_cats:                                        # per-category learned-IP set MUST exist before the rules reference it
         run(["ipset", "create", _xts_setname(c), "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])
     _ipt("-N", CHAIN)
+    for c in subs:
+        _ipt("-N", c)
     for a in rules:                                            # exactly what was signed, in the order it was signed
         _ipt(*a)
     _ipt("-A", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", CHAIN)   # hook once, last

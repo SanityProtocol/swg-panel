@@ -42,7 +42,7 @@ import importlib.machinery, importlib.util, os, re, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from _iptrestore import restore_to_calls  # noqa: E402
+from _iptrestore import restore_to_calls, flatten  # noqa: E402
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
@@ -121,7 +121,9 @@ N._ensure_smart_xtstring(ENTRIES, {"custom_abc": ["wikipedia.org"]}, RESET, res,
                          active=True, ttl=3600, contains={"custom_abc": ["wikipedia"]})
 
 # the chain as the node would have written it, in order
-CHAIN = [c[3:] for c in CALLS if c[:3] == ["iptables", "-t", "mangle"] and "-A" in c and "SWGK" in c]
+# (a dispatcher now — one chain per source — read back flat, in the order a packet meets it)
+CHAIN = flatten([c[3:] for c in CALLS if c[:3] == ["iptables", "-t", "mangle"] and "-A" in c
+                 and any(str(x).startswith("SWGK") for x in c)])
 def txt(r):
     return " ".join(r)
 LINES = [txt(r) for r in CHAIN]
@@ -227,7 +229,8 @@ N._ensure_smart_xtstring(
      {"subnet": "10.15.0.0/24", "category": "video", "table": "7001"}],
     {"news": ["bbc.co.uk"], "video": ["youtube.com"]}, RESET,
     {"errors": [], "changed": 0}, active=True, ttl=3600, contains={})
-L2 = [txt(c[3:]) for c in CALLS if c[:3] == ["iptables", "-t", "mangle"] and "-A" in c and "SWGK" in c]
+L2 = [txt(r) for r in flatten([c[3:] for c in CALLS if c[:3] == ["iptables", "-t", "mangle"] and "-A" in c
+                                       and any(str(x).startswith("SWGK") for x in c)])]
 learn = [l for l in L2 if "-j SET --add-set" in l]
 check("both categories still learn", len(learn) == 2, learn)
 check("⚠️ every learn rule is keyed on its OWN string, never on the shared mark",

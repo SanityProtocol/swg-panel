@@ -25,3 +25,22 @@ def restore_to_calls(text):
             continue
         calls.append(["iptables", "-t", table] + shlex.split(line))
     return calls
+
+
+def flatten(rules, chain="SWGK"):
+    """The Kernel SNI chain is a DISPATCHER now (1.8.8 qualification: one jump per source into `SWGK_<n>`, so a packet
+    walks its own source's rules alone). Gates written against the flat chain read it back flat: each `-j SWGK_<n>`
+    jump is replaced, in place, by that chain's rules — renamed to `chain` — so ORDER checks still read the order a
+    packet meets. `rules` are argv lists starting at "-A" (["-A", chain, ...])."""
+    by = {}
+    for r in rules:
+        if len(r) > 1 and r[0] == "-A":
+            by.setdefault(r[1], []).append(r)
+    out = []
+    for r in by.get(chain, []):
+        tgt = r[r.index("-j") + 1] if "-j" in r else ""
+        if tgt.startswith(chain + "_") and tgt in by:
+            out += [["-A", chain] + x[2:] for x in by[tgt]]
+        else:
+            out.append(r)
+    return out

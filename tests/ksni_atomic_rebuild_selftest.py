@@ -21,12 +21,17 @@ from _iptrestore import restore_to_calls  # noqa: E402
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
+PERTURB_SPLIT = "--perturb-split" in sys.argv
 
 src = open(NODED, encoding="utf-8").read()
 if PERTURB:
     a = "    if entries or arr_ents:\n        # ⚠️ ONE TRANSACTION, THE HOOK LEFT IN PLACE."
     assert src.count(a) == 1, "perturbation anchor missing — would FALSE-PASS"
     src = src.replace(a, "    if False:\n        # ⚠️ ONE TRANSACTION, THE HOOK LEFT IN PLACE.")
+if PERTURB_SPLIT:                                        # one flat chain again (every packet walks every source's rules)
+    a = "    rules, subs = _xts_split(rules, CHAIN)"
+    assert src.count(a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    src = src.replace(a, "    subs = []")
 path = os.path.join(tempfile.mkdtemp(prefix="ksni-atomic-"), "noded.py")
 open(path, "w", encoding="utf-8").write(src)
 loader = importlib.machinery.SourceFileLoader("swgnoded_atomic", path)
@@ -81,7 +86,8 @@ check("…not one rule added by its own process", not [c for c in calls if c[:1]
 tx = texts[0] if texts else ""
 got = restore_to_calls(tx)
 check("…it declares SWGK (--noflush empties and refills it) and holds every rule",
-      ["iptables", "-t", "mangle", "-F", "SWGK"] in got and sum(1 for c in got if "-A" in c and "SWGK" in c) >= 7, tx[:400])
+      ["iptables", "-t", "mangle", "-F", "SWGK"] in got
+      and sum(1 for c in got if "-A" in c and any(str(x).startswith("SWGK") for x in c)) >= 7, tx[:400])
 check("…the window rule first, the operand with a space quoted back into ONE argument",
       next((c for c in got if "-A" in c), [])[-1:] == ["RETURN"] and any("gamma example" in c for c in got), got[:3])
 check("…and no second hook", not any("PREROUTING" in c for c in got), tx[-200:])
@@ -96,9 +102,23 @@ calls, texts, res = build(hooked=True, restore_rc=1)
 check("the fallback adds the rules one by one", sum(1 for c in calls if c[:1] == ["iptables"] and "-A" in c) >= 7, calls[-3:])
 check("…and the refusal is reported", any("one-transaction rebuild refused" in e for e in res["errors"]), res["errors"])
 
+print("\n[4] SWGK dispatches: a packet walks its own source's rules, not every source's")
+calls, texts, res = build(hooked=True)
+got = [c[3:] for c in restore_to_calls(texts[0] if texts else "") if "-A" in c]
+head = [r for r in got if r[1] == "SWGK"]
+subs = sorted({r[1] for r in got if r[1].startswith("SWGK_")})
+check("SWGK holds the window rule and one jump per source — no scan of its own",
+      len(head) == 1 + len(subs) and not any("--string" in r for r in head) and len(subs) == 2, head)
+check("each source's chain holds that source's rules alone",
+      all(len({r[r.index("-s") + 1] for r in got if r[1] == c and "-s" in r}) == 1 for c in subs), got[:4])
+for c in subs:
+    src_ = next(r[r.index("-s") + 1] for r in got if r[1] == c and "-s" in r)
+    walked = len(head) + sum(1 for r in got if r[1] == c)
+    check("a packet from %s walks %d rules, not all %d" % (src_, walked, len(got)), walked < len(got), walked)
+
 print()
 if FAILS:
     print("FAIL (%d): %s" % (len(FAILS), "; ".join(FAILS)))
     sys.exit(1)
-print("ALL PASS" + (" — but the perturbation was planted and should have gone RED" if PERTURB else ""))
-sys.exit(2 if PERTURB else 0)
+print("ALL PASS" + (" — but the perturbation was planted and should have gone RED" if (PERTURB or PERTURB_SPLIT) else ""))
+sys.exit(2 if (PERTURB or PERTURB_SPLIT) else 0)
