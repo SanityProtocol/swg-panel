@@ -30107,7 +30107,9 @@ class _Listeners:
     """Registry of the panel's live listening sockets, each served in its own daemon thread. Add/remove
     at runtime so Access & TLS can dual-listen during an address change."""
     def __init__(self):
-        self._lock = threading.Lock(); self._by_id = {}; self._seq = 0
+        # RE-ENTRANT: the SIGHUP handler runs on the main thread and takes this lock (reload_tls), and main() holds it
+        # while it registers listeners — a plain Lock would deadlock the panel if a renewal's reload landed right then.
+        self._lock = threading.RLock(); self._by_id = {}; self._seq = 0
     def add(self, host, port, cert, key, primary=False, role="full"):
         srv = _TLSServer((host, port), Handler)        # binds here — raises OSError if the port is taken
         if cert and key:
@@ -31469,6 +31471,13 @@ def _fd_watchdog_loop():
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "passwd":   # host-side password reset, never starts the server
         return passwd_cmd(sys.argv)
+    # SIGHUP → reload the TLS listeners. FIRST, before the migrations, the store loads and the traffic ledger's start
+    # (a second or more with a long history): an acme.sh renewal reloads the panel with a SIGHUP, and one landing in
+    # that window took the default action and killed the process — which systemd counts as a clean exit, so
+    # Restart=on-failure never brought the panel back. The handler is safe this early: there is no listener to reload
+    # yet, and the follow worker started further down answers the kick it leaves.
+    with contextlib.suppress(ValueError, OSError, AttributeError):
+        signal.signal(signal.SIGHUP, _sighup_reload)
     _assert_node_door()   # the node-door allow-list must still match the real dispatch table (see _assert_node_door)
     fleet = load_json(FLEET_PATH, None)
     if fleet is None:
@@ -31611,8 +31620,6 @@ def main():
                                                 ) if ((Handler.deps["panel_settings"].get("access") or {}).get("tls") or {}).get("mode", "") in ("", "skip") else ""
     globals()["_CONFIRMED_URL"] = _compute_public_url(Handler.deps)   # provisional early seed (non-None); the BLESSED-aware seed below is authoritative (after the cert self-heals)
     normalize_sub_perms(Handler.deps)   # make swg-sub's readable subset group-readable (fixes 0600 files from older builds)
-    with contextlib.suppress(ValueError, OSError, AttributeError):
-        signal.signal(signal.SIGHUP, _sighup_reload)   # install NOW so a SIGHUP during the self-heal below can't kill us
     # self-heal an INTERRUPTED domain-change apply: a leftover <cert>.applyback means issue-cert clobbered the
     # live cert but the change never committed/reverted (e.g. the panel was restarted mid-apply). Restore it
     # BEFORE binding the listener, so the fresh listener never serves the wrong cert (a strict origin check
