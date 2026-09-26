@@ -22,6 +22,9 @@ NODE_NAME="${NODE_NAME:-}"             # local label for this box's systemd unit
 ENDPOINT_IP="${ENDPOINT_IP:-}"         # public IP/host clients dial for THIS node's wg
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected)
 ADOPTED_IFACES="${ADOPTED_IFACES:-}"   # interfaces migrated in by convert.sh — shown as "already on this node", not orphan/docker
+ADOPTED_ENDPOINTS="${ADOPTED_ENDPOINTS:-}"   # "name=host,…" convert.sh hands over: the endpoint each migrated interface's clients already dial
+# No terminal: debconf has nobody to ask and says so four lines per package — quiet it (a value already set stays).
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
 WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 DNS="${DNS:-1.1.1.1}"
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes = verify panel's cert (real CA); no = self-signed
@@ -155,10 +158,12 @@ detect_public_ip(){ # best public IPv4: default-route source, then first hostnam
 
 # ── idempotent re-install: read the current install's panel URL/token + per-interface endpoints, to
 #    offer as defaults (so re-running keeps everything). Fresh install = run the uninstaller first.
-EXIST_URL=""; EXIST_TOKEN=""; EXISTING=no
+EXIST_URL=""; EXIST_TOKEN=""; EXIST_EP=""; EXIST_REF=""; EXISTING=no
 read_existing(){
   { [ -f /etc/swg-agent/config.json ] && have python3; } || return 0
   EXISTING=yes
+  EXIST_EP="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("endpoint_host","") or "")' 2>/dev/null || true)"
+  EXIST_REF="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("node") or {}).get("update_ref") or "")' 2>/dev/null || true)"
   EXIST_URL="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("url",""))' 2>/dev/null || true)"
   EXIST_TOKEN="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("token",""))' 2>/dev/null || true)"
   while IFS='|' read -r n ep; do [ -n "$n" ] && [ -z "${IF_ENDPOINT[$n]:-}" ] && IF_ENDPOINT[$n]="$ep"; done < <(python3 -c '
@@ -468,6 +473,9 @@ apply_node_switch(){
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "$n" ] || continue   # the guard the line above already has
     [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }
     [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
+    # a CONFIGURED node endpoint (-endpoint / ENDPOINT_IP, or the one this node already had — see NODE SETUP) is what
+    # the interface advertises: left blank here, it falls back to it exactly as before this run, never re-detected
+    case "${ENDPOINT_IP:-}" in ""|127.*|localhost) ;; *) echo "    Kept $(bb "$ENDPOINT_IP") (this node's endpoint) for $(col "$C_GREEN" "$n")"; continue;; esac
     _ep="$(detect_public_ip)"; IF_ENDPOINT[$n]="$_ep"   # auto endpoint clients dial (change it later in the panel)
     echo "    Used $(bb "$_ep") endpoint IP for $(col "$C_GREEN" "$n")"; done
   [ "${#SELECTED[@]}" -gt 0 ] && echo
@@ -482,7 +490,9 @@ apply_node_switch(){
   # The LOCAL set — what this node manages after this run: wg/awg from config.json + its WDTT instances (whose
   # interfaces have no .conf, so they'd otherwise look absent). Listed, not re-asked: a re-install keeps them.
   local _l _li _lls _lsub; local -a _loc=()
-  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <(local_ifaces)
+  # + this run's SELECTED: a convert (or a first install) writes config.json only AFTER this listing, so its interfaces
+  # printed "No local interfaces yet" and then, one line below, "✓ Managing: awg0 wg0" (1.8.8 qualification).
+  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <({ local_ifaces; printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"}; } | tr -d ' ' | awk 'NF && !s[$0]++')
   if [ "${#_loc[@]}" -gt 0 ]; then
     echo; info "Found ${#_loc[@]} wg/awg/wdtt local interface(s) on this box:"; echo
     detect_wg
@@ -726,6 +736,19 @@ fi
 # ═══════════════ NODE SETUP ═══════════════
 echo; info "BARE-METAL SWG NODE SETUP"
 read_existing
+# ⚠️ THE ENDPOINT THIS NODE ALREADY HAS IS THE DEFAULT, NOT THE DEFAULT ROUTE. A re-run read each interface's OWN
+# endpoint back (read_existing) but not the node's, so every interface without one — every interface the panel
+# created, which carry none and fall back to the node's — was re-detected from the default route and written back
+# PINNED to that address: on a box dialled by a LAN address or a DNS name, the panel's client configs all changed to
+# the raw address (1.8.8 qualification: 192.168.77.x → 10.0.2.15). ENDPOINT_IP / -endpoint still wins.
+case "$EXIST_EP" in 127.*|localhost|"::1") EXIST_EP="";; esac   # never hand clients a loopback
+[ -n "$ENDPOINT_IP" ] || ENDPOINT_IP="$EXIST_EP"
+# …and a docker → bare-metal convert says what each migrated interface's clients dial ("name=host,…" — convert.sh's
+# docker_iface_endpoints): kept per interface, under whatever this box already records for it.
+for _ae in $(printf '%s' "$ADOPTED_ENDPOINTS" | tr ',' ' '); do
+  _an="${_ae%%=*}"; _ah="${_ae#*=}"
+  [ -n "$_an" ] && [ "$_an" != "$_ae" ] && [ -n "$_ah" ] && [ -z "${IF_ENDPOINT[$_an]:-}" ] && IF_ENDPOINT[$_an]="$_ah"
+done
 if [ "$EXISTING" = yes ]; then
   info "Existing node install detected — keeping your interfaces + data. Press $(b Enter) to keep each value (to start fresh, run the uninstaller first)."
 fi
@@ -739,6 +762,7 @@ if [ "$EXISTING" = yes ] && ! $DRYRUN && [ "${SWG_CONVERT:-}" != 1 ] && [ -n "$E
   LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
   lc_init reinstall lc_emit_post
   LC_SUCCESS="reinstalled-updated"
+  _SUM_BEFORE="$(installed_sum "$AGENT_DIR" "$NODED_DIR")"   # "…and updated" only if the install changes these (see the end)
 fi
 
 # Panel connection — normally supplied by the install command's -host / -key flags; on a re-install
@@ -873,7 +897,11 @@ FP=""; [ -n "$TLS_FINGERPRINT" ] && FP=$',\n    "fingerprint": "'"$TLS_FINGERPRI
 # ⚠️ THE REF THIS BOX IS BEING INSTALLED FROM, recorded so the node's self-update tracks it. `bootstrap.sh`
 # exports SWG_REF; without this the node falls back to `main` and the panel's Update button rolls a
 # branch install backwards — the node half of the downgrade `51a4b10` fixed for the panel.
-_swg_ref="${SWG_REF:-main}"
+# …and a re-run started by hand (no bootstrap, so no SWG_REF) keeps the branch the node already follows instead of
+# falling to `main` — the same re-point bootstrap.sh's commit path had (see its _track). A commit is never tracked.
+printf '%s' "$EXIST_REF" | grep -qE '^[0-9a-f]{7,40}$' && EXIST_REF=""
+printf '%s' "$EXIST_REF" | grep -qE '^[A-Za-z0-9._/-]{1,100}$' || EXIST_REF=""
+_swg_ref="${SWG_REF:-${EXIST_REF:-main}}"
 writef /etc/swg-agent/config.json 640 <<EOF
 {
   "interfaces": {
@@ -948,6 +976,11 @@ $DRYRUN || [ -n "${SWG_CONVERT:-}${SWG_TURN_ADD:-}" ] || rm -f /var/lib/swg-reco
 if [ "${SWG_CONVERT:-}" = 1 ]; then
   echo; ok "Node '$(bb "$NODE_NAME")' is up — fully converted to bare-metal (interfaces + turn-proxies)."
   exit 0
+fi
+# "re-installed AND UPDATED" only when the programs changed — the same build re-installed is plain "re-installed"
+# (install-host.sh does the same; install-docker.sh compares image ids)
+if [ "${LC_SUCCESS:-}" = reinstalled-updated ] && [ -n "${_SUM_BEFORE:-}" ] && [ "$(installed_sum "$AGENT_DIR" "$NODED_DIR")" = "$_SUM_BEFORE" ]; then
+  LC_SUCCESS=reinstalled
 fi
 echo; ok "Node '$(bb "$NODE_NAME")' install complete."
 print_summary "$([ "$EXISTING" = yes ] && echo RE-INSTALL || echo INSTALL)"

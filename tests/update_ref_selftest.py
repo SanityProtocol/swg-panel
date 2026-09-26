@@ -141,7 +141,10 @@ check("…and it defaults to main when nothing recorded a ref",
       'DEFAULT_UPDATE_REF = "main"' in nsrc["swg-noded"])
 for f in ("install-node.sh", "install-host.sh"):
     check("%s records the installed ref for the node" % f, '"update_ref"' in nsrc[f])
-    check("…from SWG_REF, defaulting to main", re.search(r'_swg_[a-z_]*ref="\$\{SWG_REF:-main\}"', nsrc[f]) is not None)
+    # install-node.sh defaults a hand-run re-install to the branch the node ALREADY follows (EXIST_REF), then main —
+    # still SWG_REF first and main last; tests/node_track_ref_selftest.py [3] exercises it.
+    check("…from SWG_REF, defaulting to main",
+          re.search(r'_swg_[a-z_]*ref="\$\{SWG_REF:-(main|\$\{EXIST_REF:-main\})\}"', nsrc[f]) is not None)
 
 # and the command it actually builds, for each ref — driven through the real function
 import importlib.machinery, importlib.util

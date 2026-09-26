@@ -15,6 +15,9 @@ ROLE="${ROLE:-}"                       # master (panel + this box is an entry se
 HOST_NODE_NAME="${HOST_NODE_NAME:-}"   # node name for THIS box (master only)
 HOST_ENDPOINT_IP="${HOST_ENDPOINT_IP:-}" # public IP clients dial for this box's wg (master only)
 _EP_GIVEN="$HOST_ENDPOINT_IP"            # …as the operator GAVE it, before any default fills it (seeds the panel's node record)
+# No terminal (an unattended install, a convert, curl|bash under CI): debconf has nobody to ask and says so — four
+# lines per package ("This frontend requires a controlling tty"). A value already set is left as it is.
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected; master only)
 WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 
@@ -331,12 +334,17 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
   local _ep
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }
     [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
+    # the endpoint the operator GAVE (HOST_ENDPOINT_IP) is what the interface advertises — left blank here it falls
+    # back to it; re-detecting pinned the default-route address instead (install-node.sh does the same, see there)
+    case "${HOST_ENDPOINT_IP:-}" in ""|127.*|localhost) ;; *) echo "    Kept $(bb "$HOST_ENDPOINT_IP") (this node's endpoint) for $(col "$C_GREEN" "$n")"; continue;; esac
     _ep="$(detect_public_ip)"; IF_ENDPOINT[$n]="$_ep"   # auto endpoint clients dial (change it later in the panel)
     echo "    Used $(bb "$_ep") endpoint IP for $(col "$C_GREEN" "$n")"; done
   # The LOCAL set — what this node manages after this run: wg/awg from config.json + its WDTT instances (whose
   # interfaces have no .conf, so they'd otherwise look absent). Listed, not re-asked: a re-install keeps them.
   local _l _li _lls _lsub; local -a _loc=()
-  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <(local_ifaces)
+  # + this run's SELECTED: config.json is written only AFTER this listing, so they read "No local interfaces yet"
+  # right above "✓ Managing: …" (1.8.8 qualification — install-node.sh's twin of this block).
+  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <({ local_ifaces; printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"}; } | tr -d ' ' | awk 'NF && !s[$0]++')
   if [ "${#_loc[@]}" -gt 0 ]; then
     echo; info "Found ${#_loc[@]} wg/awg/wdtt local interface(s) on this box:"; echo
     detect_wg
@@ -662,6 +670,16 @@ if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
   [ -z "$BASE_SAVED" ] && [ -f "$_unit" ] && BASE_SAVED="$(sed -n 's/^Environment=SWG_PANEL_BASE=//p' "$_unit" | head -1)"
   info "Existing panel install detected — keeping your login, users, nodes + certs; your previous settings are the defaults below. To start fresh, run the uninstaller first."
 fi
+# ⚠️ …AND THE ENDPOINT THIS BOX'S NODE ALREADY HAS. ENDPOINT_SAVED was read and then used for nothing: a master re-install
+# without HOST_ENDPOINT_IP listed its interfaces at the default-route address (10.0.2.15 where they are dialled at
+# 192.168.77.1), pinned that address on any interface it adopted, and wrote install.conf back with HOST_ENDPOINT_IP=
+# empty (1.8.8 qualification, q1). The node's own agent config is the live answer, install.conf the fallback; a value
+# given now still wins. Not the value that seeds the panel's record — that is only one GIVEN (_EP_GIVEN, above).
+if [ -z "$HOST_ENDPOINT_IP" ] && [ "$EXISTING_HOST" = yes ]; then
+  _aep="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("endpoint_host") or "")' 2>/dev/null || true)"
+  case "$_aep" in 127.*|localhost|"::1") _aep="";; esac
+  HOST_ENDPOINT_IP="${_aep:-$ENDPOINT_SAVED}"
+fi
 
 # RE-INSTALL: signal "re-installing" the MOMENT the script starts (before any prompt) and ARM the lifecycle
 # traps now, so an abort/failure at ANY point is reported. Emits to BOTH the panel header (host_proc file)
@@ -680,6 +698,8 @@ if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
   # "converted" WITH its final summary instead of us firing it mid-flow before the node phase. Skip our own lc_init.
   [ "${SWG_LC_PARENT:-}" = 1 ] || lc_init "${SWG_CONVERT_DIR:-reinstall}" lc_emit_host   # convert.sh passes convert-bare → "converting/converted to bare-metal"
   [ -z "${SWG_CONVERT_DIR:-}" ] && LC_SUCCESS="reinstalled-updated"   # plain re-install installs the latest; a convert keeps its converted-bare success
+  # …"and updated" only if it actually changed what is installed (checked against this, before the summary)
+  _SUM_BEFORE="$(installed_sum "$PANEL_DIR" "$SUB_DIR" "$NODED_DIR" "$AGENT_DIR" /usr/local/bin/swg-netctl /usr/local/bin/swg-passwd)"
 fi
 # deferred-start convert (SWG_DEFER_START=1): install + enable the panel but DON'T start it here — the docker panel
 # still holds :443 and keeps serving the UI; convert.sh stops docker + starts it at the switch. _NOW = "--now"
@@ -1194,7 +1214,17 @@ PYID
   # Read to a variable FIRST, write after. Piping straight into writef races: both ends of a pipeline start at
   # once and writef's `cat > file` truncates the very file python is still reading, so the merge saw an empty
   # store and "preserved" nothing — the exact bug it exists to prevent, hidden behind a fix that looked right.
-  _NODES_MERGED="$(python3 - "$PREFIX$STATE_DIR/nodes.json" "$LOCAL_NODE_ID" "$HOST_NODE_NAME" "${PALETTE[0]}" "$LOCAL_TOKHASH" "$_EP_GIVEN" <<'PYNODES'
+  # The panel's node record is not only what clients dial: it is ALSO the listen address the panel pre-fills for every
+  # turn-proxy / WDTT / csqtt created on this node, and its health check flags an IP literal that is not on the box.
+  # So only an address this box actually HAS goes in (a LAN address, a public one on the NIC, a name resolving to
+  # one). A NAT'd public IP (a cloud box's elastic IP) stays out — exactly the record it had before — and is still
+  # what clients dial: it is in the agent config, which the node reports its interfaces with.
+  _EP_SEED=""
+  if [ -n "$_EP_GIVEN" ]; then
+    if host_is_local "$_EP_GIVEN"; then _EP_SEED="$_EP_GIVEN"
+    else sub "HOST_ENDPOINT_IP=$_EP_GIVEN is not an address of this box (behind NAT?) — clients still dial it, but it is left out of the panel's node record (the listen address it pre-fills for turn-proxies)"; fi
+  fi
+  _NODES_MERGED="$(python3 - "$PREFIX$STATE_DIR/nodes.json" "$LOCAL_NODE_ID" "$HOST_NODE_NAME" "${PALETTE[0]}" "$LOCAL_TOKHASH" "$_EP_SEED" <<'PYNODES'
 import json, sys, time
 path, nid, name, color, tokhash, ep_given = sys.argv[1:7]
 try:
@@ -2089,6 +2119,12 @@ if [ -f "$PREFIX$SUB_DIR/swg-sub" ]; then write_sub_unit; run systemctl daemon-r
 write_netctl   # privileged network/TLS helper for the panel's Access & TLS settings (root; drains a validated queue)
 [ "$SERVE_MODE" = nginx ] && { run nginx -t && run systemctl reload nginx || warn "nginx -t failed; fix the vhost then: systemctl reload nginx"; }
 
+# ⚠️ "RE-INSTALLED AND UPDATED" ONLY WHEN SOMETHING WAS. A re-install of the same build said "updated" on every run —
+# the panel's header then announced an update that never happened. Same files before and after → plain "re-installed".
+if [ "${LC_SUCCESS:-}" = reinstalled-updated ] && [ -n "${_SUM_BEFORE:-}" ] \
+   && [ "$(installed_sum "$PANEL_DIR" "$SUB_DIR" "$NODED_DIR" "$AGENT_DIR" /usr/local/bin/swg-netctl /usr/local/bin/swg-passwd)" = "$_SUM_BEFORE" ]; then
+  LC_SUCCESS=reinstalled
+fi
 # ───────────────────────── SUMMARY ─────────────────────────
 # A convert (SWG_CONVERT_DIR set) prints ONE unified summary at the very end in convert.sh — suppress this
 # mid-flow panel summary so the converted box doesn't show two (matches bare→docker's single end summary).

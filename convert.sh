@@ -43,8 +43,11 @@ die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 # BY DESIGN; `ensure_update_unit` is panel-only). Two identical bare-metal nodes then differ by history
 # alone, and the stale wrapper on the converted one is never rewritten.
 #
-# Safe for every role: a bare PANEL gets its own wrapper back from install-host.sh's `ensure_update_unit`,
-# which runs later in this same conversion. Best-effort throughout — a missing unit must not trip set -e.
+# ⚠️ WHEN matters, because a bare PANEL's updater is the SAME five paths: a PANEL convert retires this BEFORE
+# install-host.sh writes the bare panel's own (it "ran later" only in this comment — the call sat after install-host,
+# and removed the updater the bare panel had just been given: Update pressed, nothing ran, 1.8.8 qualification). A
+# NODE convert retires it only when no panel, bare or docker, is left on the box to own those files.
+# Best-effort throughout — a missing unit must not trip set -e.
 # Found on hel-fresh doing the bare→docker→bare round trip, 1.8.6 qualification.
 # ⚠️ PLAIN COMMANDS, not `run`/`rmrf`: those are the INSTALLERS' helpers (install-host.sh, install-docker.sh,
 # uninstall.sh each define their own) and convert.sh has neither — it calls things directly, like line 139
@@ -62,6 +65,32 @@ retire_docker_updater(){
         /usr/local/bin/swg-update-check /var/lib/swg-update.stamp 2>/dev/null || true
   systemctl daemon-reload 2>/dev/null || true
 }
+
+# "name=host,…" — the endpoint each ADOPTED interface's clients already dial on the docker node, handed to
+# install-node.sh (ADOPTED_ENDPOINTS) so a docker → bare-metal convert KEEPS it. Without it install-node re-detected
+# every interface's endpoint from the default route: on a box behind NAT or dialled by a DNS name the panel's client
+# configs changed to the box's raw address (measured: 1.8.8 qualification, every interface → 10.0.2.15, where the
+# docker node served 192.168.77.x). Same precedence the docker node itself used: what the RUNNING node reports for the
+# interface (its agent config inside the container), else the NODE_IFACES spec's endpoint field, else NODE_ENDPOINT.
+# Usage: docker_iface_endpoints "<names>" <node-endpoint> "<NODE_IFACES spec>"
+docker_iface_endpoints(){ local names="$1" nep="$2" specs="$3" live n ep e out=""
+  live="$(docker exec swg-node cat /etc/swg-agent/config.json 2>/dev/null | python3 -c '
+import json, sys
+try: d = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for n, ic in (d.get("interfaces") or {}).items():
+    e = (ic or {}).get("endpoint_host") or ""
+    if e: print("%s=%s" % (n, e))' 2>/dev/null || true)"
+  for n in $names; do
+    ep="$(printf '%s\n' "$live" | sed -n "s/^$n=//p" | head -1)"
+    if [ -z "$ep" ]; then for e in $(printf '%s' "$specs" | tr ',' ' '); do
+      [ "${e%%:*}" = "$n" ] && { ep="$(printf '%s' "$e" | cut -d: -f5-)"; break; }; done; fi
+    [ -n "$ep" ] || ep="$nep"
+    ep="$(printf '%s' "$ep" | tr -cd 'A-Za-z0-9.:_[]-')"   # a host and nothing else — ',' and '=' frame the list
+    case "$ep" in ""|127.*|localhost) continue;; esac       # never hand clients a loopback
+    out="${out:+$out,}$n=$ep"
+  done
+  printf '%s' "$out"; }
 
 fwd_iface_for(){ local cp="${1##*:}" f lp; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue; lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" | head -1)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return 0; }; done; return 0; }   # no match → empty + success (a non-zero here would trip set -e in callers)
 # turn_row <service> <listen> <connect> — green service + "listen → connect (iface)"
@@ -683,6 +712,13 @@ EOF
   # that nothing ever called, so the sub silently fell back to the unit default while the panel kept advertising
   # the configured port — links pointed at a port nothing listened on, with the service reporting perfectly healthy.
   rm -f /etc/systemd/system/swg-sub.service.d/*.conf 2>/dev/null || true
+  # ⚠️ RETIRE THE DOCKER UPDATER BEFORE install-host WRITES THE BARE ONE — never after. They are the SAME five paths
+  # (/usr/local/bin/swg-update, swg-update-check, swg-update.{service,timer}, the stamp): a bare panel and a docker
+  # install on one box share one updater by design. Retired after, as this used to be, it deleted the updater the bare
+  # panel had just been given: every Update press then wrote a trigger nothing read and the panel sat on "updating"
+  # (1.8.8 qualification, docker → bare master). The docker panel still serves until the switch; it just can't
+  # one-click-update in the minute this install takes.
+  retire_docker_updater
   info "Installing the bare-metal panel — the docker panel keeps serving until the switch…"
   # A MASTER has a co-located node coming in the LATER install-node step, but there's no agent config for install-host
   # to detect yet — flag it so the panel binds the dedicated loopback port (SWG_PANEL_LOCAL_PORT) that the node dials.
@@ -805,9 +841,17 @@ print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") 
     # Dial the DEDICATED STABLE loopback ($PLOCALPORT, plain HTTP at ROOT) — the same URL a fresh master's node uses
     # (install-host.sh LOCAL_PANEL_URL) — NOT the public TLS port. A later panel address/port flip never moves :8088,
     # so the co-located node can't be stranded by it; pointing it at the public port would defeat that stable-port design.
-    env NODE_TOKEN="$NTOK" PANEL_URL="http://127.0.0.1:$PLOCALPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
+    MEPS="$(docker_iface_endpoints "$mnames" "$NEP" "$(getv NODE_IFACES)")"
+    [ -n "$MEPS" ] && sub "keeping each interface's client endpoint: $(printf '%s' "$MEPS" | sed 's/,/, /g')"
+    env NODE_TOKEN="$NTOK" PANEL_URL="http://127.0.0.1:$PLOCALPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" ADOPTED_ENDPOINTS="$MEPS" \
         SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
       || warn "the local node setup reported an error — check it on the panel."
+    # The containers went one by one (the docker node had to outlive the panel, copy-first), so compose never took
+    # the project down and its network — swg-panel-docker_default and its br-… bridge — outlived the install. Remove
+    # it now that nothing is attached (docker refuses while anything still is, so this can't cut a live container off).
+    for _nw in $(docker network ls -q --filter "label=com.docker.compose.project=$(basename "$DOCKER_DIR")" 2>/dev/null); do
+      docker network rm "$_nw" >/dev/null 2>&1 || true
+    done
   else
     # host-only (no node phase): the bare panel is up → flip the header tile to "converted" NOW, mirroring the
     # master's tile-split above. Otherwise only the end-of-run EXIT trap emits it (after the dir-move + summary),
@@ -815,7 +859,7 @@ print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") 
     lc_emit_file converted-bare
   fi
 
-  retire_docker_updater   # the docker-only one-click updater has no meaning on a bare box — see above
+  # (the docker updater was retired BEFORE install-host — the files it would remove here are the bare panel's now)
   # 3) move the old docker dir aside so a later convert-back isn't blocked by the leftover .env, then done
   if [ -d "$DOCKER_DIR" ]; then
     _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
@@ -964,14 +1008,21 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   info "Running install-node.sh — adopt $(b "$names") (add more if you want); then it does the switch as the last step…"
   echo
   # NB: '|| warn' — a non-zero exit (e.g. one interface failed to come up) must NOT abort the convert under set -e.
-  env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
+  NEPS="$(docker_iface_endpoints "$names" "$NEP" "$NIFS")"
+  [ -n "$NEPS" ] && sub "keeping each interface's client endpoint: $(printf '%s' "$NEPS" | sed 's/,/, /g')"
+  env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" ADOPTED_ENDPOINTS="$NEPS" \
       SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" TLS_FINGERPRINT="$NFP" SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
     || warn "install-node.sh reported an error — check the node on the panel."
 
   # move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker convert isn't
   # blocked by the leftover .env — UNLESS the docker PANEL is still running from this dir (a co-located master-split:
   # only the node converted, the panel stays on docker and needs the dir + its compose/.env + bind mounts).
-  retire_docker_updater   # the docker-only one-click updater has no meaning on a bare box — see above
+  # The docker updater has no job on a bare NODE (a bare node has none by design) — but the same files ARE the
+  # updater of a panel still on this box: a docker panel staying put (co-located split) or a bare-metal panel beside
+  # this node. Retiring them there broke that panel's Update button, so only when no panel remains.
+  if ! bare_panel_present && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
+    retire_docker_updater
+  fi
   if [ -d "$DOCKER_DIR" ] && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
     _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S)"
     if mv "$DOCKER_DIR" "$_bak" 2>/dev/null; then info "moved the old docker dir aside → $(b "$_bak") (backup — safe to delete)"

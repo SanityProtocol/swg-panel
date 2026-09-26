@@ -541,7 +541,12 @@ apply_full_data_fate(){   # run AFTER teardown, using the decision captured by a
   # CASES 2 & 3 — wiping the live data dir: first stash a recovery copy (node token + interface keys) under
   # $DOCKER_DIR.uninstalled-<ts> so a future re-install can recover this node from the leftover-identity list
   # (its peers re-sync from the panel). Panel / TLS secrets are stripped from the copy.
-  if [ -f "$DOCKER_DIR/.env" ]; then
+  # ⚠️ NOT WHEN THE RUN WAS TOLD TO KEEP NONE. With ARCHIVES_DEL=y preset (an unattended wipe) the copy was made,
+  # announced as "kept for re-install", and deleted a minute later by the archive sweep at the end of this run.
+  local _saved=no
+  case "${ARCHIVES_DEL:-}" in [Yy]*)
+    [ -f "$DOCKER_DIR/.env" ] && info "  no recovery copy saved — ARCHIVES_DEL=y asks for none to be kept (this node cannot be recovered from this box)";;
+  *) if [ -f "$DOCKER_DIR/.env" ]; then
     _bak="$DOCKER_DIR.uninstalled-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
     run mkdir -p "$_bak/data"
     run cp -a "$DOCKER_DIR/.env" "$_bak/.env"
@@ -549,17 +554,29 @@ apply_full_data_fate(){   # run AFTER teardown, using the decision captured by a
     [ -d "$DOCKER_DIR/data/node" ] && run cp -a "$DOCKER_DIR/data/node" "$_bak/data/node"   # swg-noded state incl. turn-proxy.json → turn-proxies re-create on recovery
     run sed -i -E '/^(PANEL_PASSWORD|CF_TOKEN|CF_ORIGIN_TOKEN|ACME_EMAIL)=/d' "$_bak/.env"
     info "  saved a recovery copy (node token + interface keys + turn-proxies) to $(b "$_bak") — re-install and pick it from the recovery list"
-  fi
+    _saved=yes; RUN_ARCHIVES="${RUN_ARCHIVES:-} $_bak"
+  fi;;
+  esac
   if [ "$DOCKER_KEEP_CONFS" = yes ]; then
     # CASE 2 — keep the peers (interface server keys) LIVE so existing client configs keep working
     run sh -c "find '$DOCKER_DIR' -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} + 2>/dev/null; find '$DOCKER_DIR/data' -mindepth 1 -maxdepth 1 ! -name node-confs ! -name node -exec rm -rf {} + 2>/dev/null"
-    ok "Kept $DOCKER_DIR/data/node-confs (peers) + node (turn-proxies) live; token recoverable from the backup"
+    ok "Kept $DOCKER_DIR/data/node-confs (peers) + node (turn-proxies) live$([ "$_saved" = yes ] && printf '; token recoverable from the backup')"
   else
     # CASE 3 — wipe everything live; full recovery (token + interface keys) is in the backup
     rmrf "$DOCKER_DIR"
-    ok "Removed $DOCKER_DIR — a recovery copy (token + interface keys) is kept for re-install"
+    ok "Removed $DOCKER_DIR$([ "$_saved" = yes ] && printf ' — a recovery copy (token + interface keys) is kept for re-install')"
   fi
 }
+# The compose project's own networks (swg-panel-docker_default + its br-… bridge). `compose down` drops them only when
+# it runs — and a docker panel removed while its node stays, or a stack whose containers went one by one, never gets
+# one, so the network outlived the uninstall (1.8.8 qualification). By the project's label, so nothing else's network
+# is touched; docker refuses while anything is still attached, so a container that stays is never cut off.
+docker_rm_project_networks(){
+  command -v docker >/dev/null 2>&1 || return 0
+  local _nw
+  for _nw in $(docker network ls -q --filter "label=com.docker.compose.project=$(basename "$DOCKER_DIR")" 2>/dev/null); do
+    run sh -c "docker network rm '$_nw' >/dev/null 2>&1 || true"
+  done; }
 docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only once NO swg container remains
   if docker_running swg-panel || docker_running swg-node; then return 0; fi
   # host one-click updater units (install-docker's wire_host_updater) — remove now that no swg container remains
@@ -570,6 +587,7 @@ docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only onc
     local DC=""; if docker compose version >/dev/null 2>&1; then DC="docker compose"; elif command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
     # activate every profile so `down` stops profile-gated services too (swg-sub); plain `down` skips them and --remove-orphans won't (it's in the compose file, not an orphan)
     [ -n "$DC" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ] && run sh -c "cd '$DOCKER_DIR' && COMPOSE_PROFILES=host,master,node,host-node $DC down --remove-orphans >/dev/null 2>&1 || true"   # drop the network + any straggler
+    docker_rm_project_networks   # …and the network itself when `down` could not (see above)
     local RMI="${REMOVE_DOCKER_IMAGES:-}"; echo; ask_yn "  Remove the pulled swg-panel / swg-node images too?" n RMI
     # ⚠️ BY REPOSITORY, NOT BY TAG. This named `:latest` explicitly, which was every box until
     # SWG_IMAGE_TAG started reaching existing installs — a box pinned to `sha-<short>` then kept every
@@ -592,6 +610,7 @@ rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
     ask_yn "  Delete the panel data (login, roster (users+peers), nodes, certs)? The node's interface configs are kept." n DELP
   else ask_full_data_fate; fi         # panel is the last container → the whole data dir
   run sh -c 'docker rm -f swg-panel swg-sub >/dev/null 2>&1 || true'   # swg-sub is the panel's companion surface (a profile-gated service `down` won't stop) — remove it alongside
+  docker_rm_project_networks   # the panel + sub were the network's only members (a node runs on host networking)
   # …and its host-side address helper (install-docker.sh's wire_docker_netctl). It was left for a separate
   # "(leftover helper)" question, which also listed it as a leftover while this very panel was still running.
   for _nc in swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
@@ -648,6 +667,7 @@ rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"
   # The dir-based component doesn't go through rm_docker_node/panel, so tear down ANY swg container here too
   # (incl. compose's "<id>_swg-node" recreate-backups, which is why the node sometimes isn't detected by name).
   ( cd "$DOCKER_DIR" 2>/dev/null && { docker compose down --remove-orphans >/dev/null 2>&1 || docker-compose down --remove-orphans >/dev/null 2>&1; } ) || true
+  docker_rm_project_networks
   for _p in swg-node swg-panel swg-turn-; do docker ps -aq -f "name=$_p" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done
   docker_node_goodbye   # sign off AFTER the container is gone (no further sync clears the panel's "Uninstalled")
   ask_full_data_fate; apply_full_data_fate; rmrf /var/lib/swg-recovery; ok "Docker deployment files removed"; }
@@ -1295,10 +1315,12 @@ _archives(){ ls -d /opt/swg-panel*.converted-* /opt/swg-panel*.uninstalled-* /et
                    /etc/swg-panel*.uninstalled-* /var/lib/swg-panel*.converted-* /var/lib/swg-panel*.uninstalled-* 2>/dev/null; }
 if [ -n "$(_archives)" ]; then
   _na="$(_archives | wc -l)"
-  info "$_na recovery archive(s) from earlier converts/uninstalls remain (node token + interface keys)."
+  # …and say which of them THIS run saved (asked interactively, the answer covers it too — so it must say so).
+  _nr=0; for _a in ${RUN_ARCHIVES:-}; do [ -e "$_a" ] && _nr=$((_nr+1)); done
+  info "$_na recovery archive(s) remain (node token + interface keys)$([ "$_nr" -gt 0 ] && printf ' — %s saved by this run, the rest from earlier converts/uninstalls' "$_nr")."
   ask_yn "  Delete them too? A future install can no longer offer them for recovery." n ARCHIVES_DEL
   if [ "${ARCHIVES_DEL:-}" = yes ]; then _archives | while IFS= read -r _a; do [ -n "$_a" ] && rmrf "$_a"; done
-    ok "removed $_na recovery archive(s)"
+    ok "removed $_na recovery archive(s)$([ "$_nr" -gt 0 ] && printf ' — including the copy saved above: this node can no longer be recovered from this box')"
   else info "  Kept — delete by hand once you no longer need them."; fi
 fi
 

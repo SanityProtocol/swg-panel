@@ -223,6 +223,16 @@ if printf '%s' "$REF" | grep -qE '^[0-9a-f]{7,40}$'; then
     _track="$(sed -nE 's#.*raw\.githubusercontent\.com/[^/]+/[^/]+/([^/]+)/bootstrap\.sh.*#\1#p' /usr/local/bin/swg-update | head -1)"
     printf '%s' "$_track" | grep -qE '^[0-9a-f]{7,40}$' && _track=""
   fi
+  # ⚠️ …AND A NODE-ONLY BOX HAS NO WRAPPER. The panel's one-click wrapper is written only where a panel is; a node
+  # records the branch its self-update follows in its agent config (node.update_ref — install-node.sh / update.sh).
+  # Without reading it, taking a dev-tracking node back to a commit re-pointed it at `main` (1.8.8 qualification, q2).
+  if [ -z "$_track" ] && [ -f /etc/swg-agent/config.json ] && need python3; then
+    _track="$(python3 -c 'import json,sys;print(str(((json.load(open(sys.argv[1])).get("node") or {}).get("update_ref")) or "").strip())' \
+                /etc/swg-agent/config.json 2>/dev/null || true)"
+    printf '%s' "$_track" | grep -qE '^[0-9a-f]{7,40}$' && _track=""
+  fi
+  # a ref goes into a URL and a shell command — the same character set swg-noded accepts for update_ref, or nothing
+  printf '%s' "$_track" | grep -qE '^[A-Za-z0-9._/-]{1,100}$' || _track=""
   export SWG_REF="${_track:-main}"
   info "installing commit $REF — this box's Update button keeps following $(b "$SWG_REF")"
 elif need git; then

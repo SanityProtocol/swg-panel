@@ -124,7 +124,9 @@ check("a stopped container with restart=no is parked", parked("docker_parked swg
 check("a stopped compose container (unless-stopped) is not", not parked("docker_parked swg-panel", "false unless-stopped"))
 check("a running container is not", not parked("docker_parked swg-panel", "true no"))
 up = UPSRC
-check("update.sh leaves a parked bare panel stopped", "if bare_panel_parked; then" in up and up.index("if bare_panel_parked; then") < up.index("elif run systemctl restart swg-panel-server"))
+# the restart branch is `restart_panel_seeding_node_ep` since update.sh seeds a master's blank node endpoint while the
+# panel is stopped (it restarts exactly like before when there is nothing to seed) — the ORDER is what this pins
+check("update.sh leaves a parked bare panel stopped", "if bare_panel_parked; then" in up and up.index("if bare_panel_parked; then") < up.index("elif restart_panel_seeding_node_ep; then"))
 check("update.sh does not count a parked container as a live stack", 'docker_parked "$_n" || { _DSTACK=yes; return 0; }' in up)
 rc, out, calls = run("baremetal", "swg-panel\n", "swg-panel\n", env={"SWG_OTHER_PANEL": "stop"})
 check("stopping a docker panel parks its subscription server too", "docker update --restart=no swg-sub" in calls and "docker stop swg-sub" in calls, calls)

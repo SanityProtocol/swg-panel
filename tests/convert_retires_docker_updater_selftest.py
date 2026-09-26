@@ -36,16 +36,20 @@ def check(name, ok, detail=""):
         FAILS.append(name)
 
 SRC = open(CONV, encoding="utf-8").read()
-CALL = "  retire_docker_updater   # the docker-only one-click updater has no meaning on a bare box — see above"
-assert SRC.count(CALL) == 2, "anchor missing (%d call sites) — this run would FALSE-PASS" % SRC.count(CALL)
+# A call site is a line that is nothing but the call. (Anchored on the old trailing comment until the panel path's
+# call moved AHEAD of install-host.sh and the node path's into a no-panel-left guard — see
+# convert_keeps_bare_updater_selftest.py for why WHEN matters; this file still asserts THAT both paths call it.)
+CALL_RE = re.compile(r"^[ \t]+retire_docker_updater[ \t]*$", re.M)
+_calls = list(CALL_RE.finditer(SRC))
+assert len(_calls) == 2, "anchor missing (%d call sites) — this run would FALSE-PASS" % len(_calls)
 if PERTURB:
-    SRC = SRC.replace(CALL, "  :", 1)          # drop the first (the panel/host path)
+    SRC = SRC[:_calls[0].start()] + "  :" + SRC[_calls[0].end():]          # drop the first (the panel/host path)
 
 print("[1] it is defined at TOP LEVEL, so both call sites can reach it")
 i_def = SRC.index("retire_docker_updater(){")
 depth = SRC[:i_def].count("{") - SRC[:i_def].count("}")
 check("brace depth 0 at the definition", depth == 0, depth)
-for n, m in enumerate(re.finditer(r"^  retire_docker_updater", SRC, re.M), 1):
+for n, m in enumerate(CALL_RE.finditer(SRC), 1):
     check("call site %d comes after the definition" % n, m.start() > i_def)
 
 print("\n[2] convert.sh's OWN idiom — `run`/`rmrf` do not exist in this file")
@@ -67,7 +71,7 @@ for step in ("systemctl disable --now", "rm -f", "systemctl daemon-reload"):
     check("`%s` cannot abort the conversion" % step, "|| true" in line or "|| continue" in line, line.strip())
 
 print("\n[4] BOTH docker→bare paths call it (host/master and node)")
-check("two call sites remain", SRC.count("retire_docker_updater   #") == 2, SRC.count("retire_docker_updater   #"))
+check("two call sites remain", len(CALL_RE.findall(SRC)) == 2, len(CALL_RE.findall(SRC)))
 
 print("\n[5] behaviour: it removes exactly the six docker-updater artefacts, and tolerates their absence")
 tmp = tempfile.mkdtemp(prefix="retire-")

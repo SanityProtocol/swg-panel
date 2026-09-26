@@ -142,7 +142,7 @@ check("no pin anywhere: empty, as before (and no abort on the missing learned fi
       docker_to_bare("d2b-nopin", ENV.replace("TLS_FINGERPRINT=%s\n" % PIN, "")) == ("", "no"))
 
 print("\n[6] install-node.sh is handed the pin")
-inv = re.search(r'env NODE_TOKEN="\$NTOK" PANEL_URL="\$PURL" ENDPOINT_IP="\$NEP" ADOPTED_IFACES="\$names" \\\n(.*?)bash "\$SRC/install-node\.sh"', src, re.S)
+inv = re.search(r'env NODE_TOKEN="\$NTOK" PANEL_URL="\$PURL" ENDPOINT_IP="\$NEP" ADOPTED_IFACES="\$names"[^\n]*\\\n(.*?)bash "\$SRC/install-node\.sh"', src, re.S)
 check('the docker → bare hand-off passes TLS_FINGERPRINT="$NFP"', inv is not None and 'TLS_FINGERPRINT="$NFP"' in inv.group(1),
       inv.group(1) if inv else "invocation not found")
 

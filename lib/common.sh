@@ -87,8 +87,27 @@ _refuse(){
   printf '\033[31m✗ %s\033[0m\n' "$1" >&2; exit 1
 }
 
-# pretty protocol name for interface listings: awg → AmneziaWG, wg → Wireguard (anything else passes through)
-proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
+# pretty protocol name for interface listings: awg → AmneziaWG, wg → WireGuard (anything else passes through).
+# The product's own spelling — the summary's _sum_proto_label already says WireGuard, and one listing said both.
+proto_label(){ case "$1" in wg) printf 'WireGuard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
+# installed_sum <path…> — ONE sha256 over every regular file under the given paths (name + content, sorted), or
+# nothing when there are none. A re-install compares it before/after to tell "re-installed" from "re-installed AND
+# updated": the version stamp cannot, a dev build keeps one VERSION across many commits. (install-docker.sh compares
+# the containers' image ids for the same reason.)
+installed_sum(){ local p out
+  out="$(for p in "$@"; do [ -e "$p" ] && find "$p" -type f -print0 2>/dev/null; done | sort -z | xargs -0 -r sha256sum 2>/dev/null)" || true
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out" | sha256sum | cut -d' ' -f1; }
+# local_addrs — every address assigned to this box, one per line (what `ip` lists, plus `hostname -I`). Never fails.
+local_addrs(){ { ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1; hostname -I 2>/dev/null | tr ' ' '\n'; } \
+  | awk 'NF && !s[$0]++' || true; }
+# host_is_local <host> — 0 iff <host> IS, or resolves to, an address of this box. Unresolvable ⇒ 1: fail safe, it is
+# asked before a value is written somewhere that assumes the box can bind it (see install-host.sh's node record).
+host_is_local(){ local h="${1:-}" a l; [ -n "$h" ] || return 1; l="$(local_addrs)"
+  for a in "$h" $(getent ahosts "$h" 2>/dev/null | awk '!s[$1]++ {print $1}' || true); do
+    grep -qxF -- "$a" <<< "$l" && return 0
+  done
+  return 1; }
 
 # System (panel-managed inter-node mesh-link) interfaces use a reserved name prefix (default `swg_`); user
 # interfaces can never use it (the panel rejects it). These are NOT user interfaces and must never be
@@ -1131,10 +1150,10 @@ ensure_swap(){ # PANEL-HOST: a low-RAM box with NO active swap OOM-kills the pan
 # again had its parked panel DISABLED but ACTIVE — "not parked" to the old test, which restarted it once more, and two
 # panels answered at one address for good. A disabled unit beside a LIVE docker panel is that park, and counts; a
 # disabled unit with nothing beside it that is running anyway is the operator's own doing and is left to run.
-docker_panel_live(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel && ! docker_parked swg-panel; }
 bare_panel_parked(){ systemctl is-enabled --quiet swg-panel-server 2>/dev/null && return 1
   ! systemctl is-active --quiet swg-panel-server 2>/dev/null || docker_panel_live; }
 docker_parked(){ [ "$(docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' "$1" 2>/dev/null)" = "false no" ]; }
+docker_panel_live(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel && ! docker_parked swg-panel; }
 guard_second_panel(){
   [ -n "${SWG_CONVERT_DIR:-}" ] && return 0
   local me="$1" what="" live=no ans="" _c

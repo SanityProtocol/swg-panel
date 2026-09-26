@@ -490,7 +490,10 @@ if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ] || ls "$INSTA
   # SWG_LC_PARENT=1 ⇒ a parent convert (master = host+node) owns the lifecycle terminal, so don't lc_init here
   # (we'd emit a premature 'converted' when THIS sub-step exits, before the other half + the final summary).
   { [ "${SWG_LC_PARENT:-}" != 1 ] && { [ -n "${LC_TOKEN:-}" ] || [ -n "${LC_FILE:-}" ]; }; } && lc_init "$_lcop" lc_emit_docker
-  [ -z "${SWG_CONVERT_DIR:-}" ] && LC_SUCCESS="reinstalled-updated"   # plain re-install → "re-installed and updated"
+  [ -z "${SWG_CONVERT_DIR:-}" ] && LC_SUCCESS="reinstalled-updated"   # plain re-install → "re-installed and updated"…
+  # …but only if the code actually changes. The image each container runs NOW, compared after `up` below: a same-image
+  # re-install was labelled "re-installed and updated" on the panel (1.8.8 qualification) when nothing was updated.
+  _IMG_BEFORE="$(docker inspect -f '{{.Name}} {{.Image}}' swg-panel swg-node 2>/dev/null | sort || true)"
 fi
 
 # bare→docker CONVERT: the panel login (pbkdf2) is already staged in data/etc/auth — never regenerate or
@@ -500,6 +503,22 @@ if [ -n "${SWG_CONVERT_DIR:-}" ] && [ -f "$PREFIX$INSTALL_DIR/data/etc/auth" ]; 
   KEEP_AUTH=yes
   _au="$(cut -d: -f1 "$PREFIX$INSTALL_DIR/data/etc/auth" 2>/dev/null | head -1)"; [ -n "$_au" ] && PANEL_USER="$_au"
   PANEL_PASSWORD="(preserved)"
+fi
+# ⚠️ …AND A RE-INSTALL THAT DOESN'T KNOW THE PASSWORD KEEPS THE LOGIN IT HAS. uninstall.sh keeps data/ + .env for a
+# later re-install but strips PANEL_PASSWORD from the .env (no plaintext password at rest) — so the re-install minted
+# a random one, deleted the kept login and printed a "new login": the operator's own password stopped working and
+# nothing said why (1.8.8 qualification: q3 uninstall → re-install). The login itself IS kept, in data/etc/auth; keep
+# using it, as bare-metal does (install-host's KEEP_AUTH). A placeholder in .env is not a password either — re-applying
+# "(preserved)" would make the placeholder the login. `-pass` still sets a new one; a real password in .env is still
+# re-applied, as before.
+KEPT_LOGIN=no
+case "${PANEL_PASSWORD:-}" in ""|"(preserved)"|converted-login-preserved|unused-on-node-only) _pw_unknown=yes;; *) _pw_unknown=no;; esac
+if [ "$KEEP_AUTH" != yes ] && [ "$PROFILE" != node ] && [ "$EXISTING_DOCKER" = yes ] && [ "$_pw_unknown" = yes ] \
+   && [ -s "$INSTALL_DIR/data/etc/auth" ]; then
+  KEEP_AUTH=yes; KEPT_LOGIN=yes
+  _au="$(cut -d: -f1 "$INSTALL_DIR/data/etc/auth" 2>/dev/null | head -1)"; [ -n "$_au" ] && PANEL_USER="$_au"
+  PANEL_PASSWORD="(preserved)"
+  info "Keeping the existing panel login ($(b "$PANEL_USER")) — this re-install has no password for it (an uninstall removes it from .env). Pass $(b -pass) to set a new one."
 fi
 
 # ───────────────────────── per-profile requirements ─────────────────────────
@@ -561,7 +580,8 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
   if   [ "${PANEL_PORT_EXPLICIT:-no}" = yes ]; then :
   elif [ -n "$URL_PORT" ];                     then PANEL_PORT="$URL_PORT"
   else PANEL_PORT="${PANEL_PORT:-443}"; fi
-  [ "${PANEL_USER:-admin}" = admin ] && PANEL_USER="admin$(( RANDOM % 900 + 100 ))"   # admin+3 digits, like bare-metal (-user overrides)
+  # admin+3 digits, like bare-metal (-user overrides) — never over a KEPT login's own user name, even one that is "admin"
+  [ "$KEEP_AUTH" != yes ] && [ "${PANEL_USER:-admin}" = admin ] && PANEL_USER="admin$(( RANDOM % 900 + 100 ))"
   [ -z "$PANEL_PASSWORD" ] && PANEL_PASSWORD="$(rand_pw)"   # auto-generated; pass -pass to set your own
   return 0   # never let a short-circuited && above make the function (and set -e) fail
 }
@@ -1206,7 +1226,7 @@ elif [ -n "${SWG_IMAGE_TAG:-}" ]; then _IMAGE_TAG_LINE="SWG_IMAGE_TAG=$SWG_IMAGE
 # node — a silent downgrade. Keep it, except the tag a --build stamped on its own images: this run pulls, and a
 # name GHCR never published would only fail the pull and leave the stale local build running.
 elif _prev_tag="$(grep -m1 '^SWG_IMAGE_TAG=' "$INSTALL_DIR/.env" 2>/dev/null)" && [ -n "$(_env_val SWG_IMAGE_TAG "$INSTALL_DIR/.env")" ]; then
-  case "$_prev_tag" in *"built on this box from source"*) ;; *) _IMAGE_TAG_LINE="SWG_IMAGE_TAG=$(_env_val SWG_IMAGE_TAG "$INSTALL_DIR/.env")";; esac
+  case "$_prev_tag" in *"built on this box from source"*) ;; *) _IMAGE_TAG_LINE="SWG_IMAGE_TAG=$(_env_val SWG_IMAGE_TAG "$INSTALL_DIR/.env")"; _KEPT_TAG=yes;; esac
 fi
 # ⚠️ .env IS REWRITTEN WHOLE, so every key this script does not write was DELETED by a re-install: SWG_LATEST_URL
 # (the panel's pre-release update channel, which .env.example tells operators to add), SWG_TURN_IMAGE, and anything
@@ -1267,8 +1287,11 @@ if [ -n "$_OLD_ENV" ]; then
     match($0, /^[A-Za-z_][A-Za-z0-9_]*=/) { k = substr($0, 1, RLENGTH-1); if (!(k in have)) { print; have[k] = 1 } }')"
   if [ -n "$_carried" ]; then
     printf '\n# ───────── kept from the previous .env (not written by the installer) ─────────\n%s\n' "$_carried" >> "$PREFIX$INSTALL_DIR/.env"
-    sub "kept from the previous .env: $(printf '%s\n' "$_carried" | sed 's/=.*//' | tr '\n' ' ')"
   fi
+  # one line naming everything kept — the image pin too, which is decided above rather than carried here, and which
+  # this line used to leave out although it was kept
+  _kept_names="$([ "${_KEPT_TAG:-no}" = yes ] && printf 'SWG_IMAGE_TAG ')$(printf '%s\n' "$_carried" | sed -n 's/=.*//p' | tr '\n' ' ')"
+  [ -n "${_kept_names// /}" ] && sub "kept from the previous .env: $_kept_names"
 fi
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
 ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
@@ -1504,6 +1527,14 @@ if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFIL
 else
   for _c in $(case "$PROFILE" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
   ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
+# "re-installed AND UPDATED" only when a container that was already running now runs a different image. Same images
+# (or nothing was running — an uninstall came first) → plain "re-installed". See _IMG_BEFORE above.
+if [ "${LC_SUCCESS:-}" = reinstalled-updated ] && ! $DRYRUN; then
+  _IMG_AFTER="$(docker inspect -f '{{.Name}} {{.Image}}' swg-panel swg-node 2>/dev/null | sort || true)"
+  if [ -z "${_IMG_BEFORE:-}" ] || [ -z "$(printf '%s\n' "$_IMG_BEFORE" | grep -Fxv -f <(printf '%s\n' "$_IMG_AFTER") || true)" ]; then
+    LC_SUCCESS=reinstalled
+  fi
+fi
 $DRYRUN || rm -f /var/lib/swg-recovery 2>/dev/null || true   # stack is up → clear any convert-recovery marker
 
 # After compose's "✔ Container … Started" lines the container(s) initialise silently (panel: start the server +
@@ -1661,5 +1692,6 @@ echo; ok "Docker install complete (profile: $PROFILE)."
 [ "${NEW_LOGIN:-no}" = yes ] && export SWG_SUMMARY_PASS="$PANEL_PASSWORD"
 print_summary "$([ -n "${SWG_CONVERT_DIR:-}" ] && echo CONVERSION || { [ "$EXISTING_DOCKER" = yes ] && echo RE-INSTALL || echo INSTALL; })" "$([ -n "${SWG_CONVERT_DIR:-}" ] && { [ "$PROFILE" = node ] && echo node || echo host; } || true)"
 unset SWG_SUMMARY_PASS
+[ "${KEPT_LOGIN:-no}" = yes ] && { echo; info "The panel login $(b "$PANEL_USER") was kept with its existing password — this re-install had none to set (an uninstall removes it from .env). Forgot it? $(b 'docker exec -it swg-panel swg-passwd')"; }
 fi   # end of the full summary (suppressed for a master sub-step)
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun$INSTALL_DIR/.env"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command

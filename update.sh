@@ -23,6 +23,9 @@ for a in "$@"; do case "$a" in
   --node-only) NODE_ONLY=true;;     # update ONLY the bare-metal node/agent — never the co-located panel/docker
 esac; done
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# No terminal (the one-click update, an unattended run): debconf has nobody to ask and says so four lines per package
+# it touches. A value already set is left as it is. Same line as install-host.sh / install-node.sh.
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
 
 # ───────────────────────── one update at a time ─────────────────────────
 # The panel's one-click writes a trigger that a 30s timer turns into ANOTHER run of this script, so an
@@ -599,6 +602,88 @@ repark_bare_panel(){
   DID_UPDATE=yes; note "bare-metal swg-panel: parked again (stopped:$did)"
   ok "bare-metal panel parked again (stopped:$did) — it is disabled because a docker panel runs on this box, and an older update had started it"
   return 0; }
+
+# seed_local_node_ep <check|write> — a MASTER's own node record in the panel (nodes.json) with a BLANK endpoint_host gets
+# the endpoint its co-located node already has (agent config), printed; nothing printed = nothing to seed. Only a
+# first enrolment ever wrote that record's endpoint (install-host.sh), so a master installed before that — or by 1.8.7
+# — kept '' through every update: the panel fills a blank from the node's first PUBLIC address, and a box with none (a
+# LAN, a NAT'd lab) never got one — no mesh dial host, and WDTT/csqtt on a wildcard bind advertised nothing.
+# Seeded ONLY when all of these hold, so that no client config changes — the record's endpoint OVERRIDES what the
+# node reports for each interface (apply_iface_meta), so it must equal what every interface reports today:
+#   · the agent dials THIS box's panel (a loopback URL) and its token matches the record (token_sha, else pbkdf2);
+#   · the record's endpoint_host is blank — a set one is the operator's (Nodes screen) or the panel's own fill;
+#   · every interface in the agent config reports the node-level endpoint (its own is blank or the same);
+#   · that endpoint is an address of this box — the record is also the listen address the panel pre-fills for
+#     turn-proxies, and a NAT'd public IP there cannot be bound (install-host.sh's seed asks the same).
+# `write` re-checks all of it on a fresh read and keeps the file's owner + mode (the panel runs as its own user).
+seed_local_node_ep(){
+  local nodes="${STATE_DIR:-/var/lib/swg-panel}/nodes.json" cfg=/etc/swg-agent/config.json
+  [ -f "$nodes" ] && [ -f "$cfg" ] && have python3 || return 0
+  SWG_LOCAL_ADDRS="$(local_addrs)" python3 - "$1" "$nodes" "$cfg" <<'PYSEED' 2>/dev/null || true
+import base64, hashlib, hmac, json, os, socket, sys
+from urllib.parse import urlparse
+mode, np, cp = sys.argv[1:4]
+try:
+    cfg = json.load(open(cp)); nodes = json.load(open(np))
+except Exception:
+    sys.exit(0)
+pan = cfg.get("panel") or {}
+if (urlparse(pan.get("url") or "").hostname or "") not in ("127.0.0.1", "localhost", "::1"):
+    sys.exit(0)                                   # this node syncs to ANOTHER panel — its record is not here
+tok = str(pan.get("token") or "")
+if not tok or not isinstance(nodes, dict):
+    sys.exit(0)
+def mine(n):
+    if not isinstance(n, dict):
+        return False
+    ts = n.get("token_sha")
+    if ts:
+        return hmac.compare_digest(ts, hashlib.sha256(tok.encode()).hexdigest())
+    try:
+        _a, it, salt, want = (n.get("token_hash") or "").split("$")
+        got = base64.b64encode(hashlib.pbkdf2_hmac("sha256", tok.encode(), base64.b64decode(salt), int(it))).decode()
+        return hmac.compare_digest(got, want)
+    except Exception:
+        return False
+nid = next((k for k, v in nodes.items() if mine(v)), None)
+if nid is None or (nodes[nid].get("endpoint_host") or "").strip():
+    sys.exit(0)
+cand = str(cfg.get("endpoint_host") or "").strip()
+if not cand or cand.startswith("127.") or cand in ("localhost", "::1"):
+    sys.exit(0)
+for _n, ic in (cfg.get("interfaces") or {}).items():
+    if (str((ic or {}).get("endpoint_host") or "").strip() or cand) != cand:
+        sys.exit(0)                               # this interface reports its OWN endpoint — the record would override it
+local = set(os.environ.get("SWG_LOCAL_ADDRS", "").split())
+try:
+    res = {ai[4][0] for ai in socket.getaddrinfo(cand, None)}
+except Exception:
+    sys.exit(0)
+if not (res & local):
+    sys.exit(0)                                   # not an address of this box (NAT, or a name pointing elsewhere)
+if mode == "write":
+    st = os.stat(np)
+    nodes[nid]["endpoint_host"] = cand
+    tmp = np + ".swg-seed.tmp"
+    with open(tmp, "w") as f:
+        json.dump(nodes, f, indent=2); f.write("\n")
+    os.chown(tmp, st.st_uid, st.st_gid); os.chmod(tmp, st.st_mode & 0o7777)
+    os.replace(tmp, np)
+print(cand)
+PYSEED
+}
+# restart_panel_seeding_node_ep — the bare panel's restart during an update. When its own node record has an endpoint
+# to seed (above), the write happens while the panel is STOPPED: nodes.json is the panel's store, read-modify-written
+# under its own lock, and a write from outside while it runs can lose an edit landing in the same moment.
+restart_panel_seeding_node_ep(){
+  local ep; ep="$(seed_local_node_ep check)"
+  if [ -z "$ep" ]; then run systemctl restart swg-panel-server; return; fi
+  if $DRYRUN; then echo "    [skip] stop the panel, set its own node's blank endpoint to $ep, start it"; return 0; fi
+  systemctl stop swg-panel-server || { run systemctl restart swg-panel-server; return; }
+  ep="$(seed_local_node_ep write)"
+  [ -n "$ep" ] && { ok "the panel's record of its own node now carries its endpoint $(col_v "$ep") (it was blank)"
+                    note "bare-metal swg-panel: its own node's endpoint set to $ep (was blank)"; }
+  systemctl start swg-panel-server; }
 
 ensure_sub_server(){   # HEAL (install-if-missing) the swg-sub subscription surface on a bare-metal panel.
   # swg-sub is the public, read-only per-user QR/config page. The panel drives it over swg-netctl
@@ -1244,7 +1329,12 @@ os.replace(tmp, p); os.chmod(p, 0o640)
 print("changed")
 PYREF
 )" || return 0
-  [ -n "$out" ] && ok "node self-update now tracks $(col_v "$want")"
+  # ⚠️ …AND IT IS A CHANGE. swg-noded reads config.json only at startup, so a new ref written here reached nothing
+  # running: a same-version run switched the ref, printed "✓ Update finished — nothing changed." and left the daemon
+  # following the OLD branch until something else restarted it (1.8.8 qualification, q2). Counted, and flagged for the
+  # restart the node block below makes (once — a version update restarts it anyway, AFTER this has written).
+  [ -n "$out" ] && { ok "node self-update now tracks $(col_v "$want")"; DID_UPDATE=yes; NODE_REF_CHANGED=yes
+                     note "bare-metal swg-node: self-update now tracks $want"; }
   return 0
 }
 
@@ -1499,7 +1589,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     install_update_unit                              # ensure one-click host self-update is wired
     if bare_panel_parked; then   # stopped + disabled on purpose (guard_second_panel) — updated on disk, left stopped
       ok "swg-panel updated — left stopped (it is disabled: another panel runs on this box)"; note "bare-metal swg-panel: ${pold} → ${NEW_VER} (parked, not started)"
-    elif run systemctl restart swg-panel-server; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
+    elif restart_panel_seeding_node_ep; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-panel-server"; note "bare-metal swg-panel: updated but RESTART FAILED"; fi
     # swg-sub (the subscription surface) ships with the panel. Refresh it in place when already installed;
     # ensure_sub_server (below, unconditional) provisions it first-time on a panel that lacks the unit/user.
@@ -1559,6 +1649,10 @@ fi
 # ───────────────────────── bare-metal node daemon (node or master) ─────────────────────────
 if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   found=1; nod_seen=yes; nold="$(oldver "$NODED_DIR")"
+  # FIRST, before the restart below: that restart is where the daemon reads the ref. Written after it (as it was),
+  # a version update restarted swg-noded on the old ref and then changed the file under the running daemon.
+  NODE_REF_CHANGED=no; _noded_restarted=no
+  ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
   if should_update "bare-metal swg-node" "$NODED_DIR"; then
     info "updating bare-metal swg-node ($AGENT_DIR + $NODED_DIR)"
     [ -d "$AGENT_DIR" ] && [ -f "$SRC/swg-agent" ] && { run cp "$SRC/swg-agent" "$AGENT_DIR/"; run chmod 755 "$AGENT_DIR/swg-agent"; }
@@ -1568,10 +1662,14 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-sni" ] && { run cp "$SRC/swg-sni" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-sni"; }   # SNI-router classifier
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-relay" ] && { run cp "$SRC/swg-relay" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-relay"; }   # TCP-terminating relay
     stamp "$NODED_DIR"
-    if run systemctl restart swg-noded; then ok "swg-node updated + restarted"; note "bare-metal swg-node: ${nold} → ${NEW_VER}"
+    if run systemctl restart swg-noded; then _noded_restarted=yes; ok "swg-node updated + restarted"; note "bare-metal swg-node: ${nold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal swg-node: updated but RESTART FAILED"; fi
   else note "bare-metal swg-node: unchanged (${nold})"; fi
-  ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
+  # the ref moved and nothing restarted the daemon → restart it now, or it keeps following the branch it started on
+  if [ "$NODE_REF_CHANGED" = yes ] && [ "$_noded_restarted" = no ] && ! $DRYRUN && systemctl is-active --quiet swg-noded 2>/dev/null; then
+    if run systemctl restart swg-noded; then ok "swg-noded restarted — it reads the ref it follows only at startup"
+    else DID_FAIL=yes; warn "couldn't restart swg-noded — it keeps the old ref until restarted: systemctl restart swg-noded"; fi
+  fi
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
   ensure_noded_no_nnp    # MIGRATE: retract NoNewPrivileges — it blocked the AppArmor transition wg-quick/awg-quick need
   ensure_noded_reach_sweep "$NODED_DIR"   # HEAL: the drop-in that sweeps the device-access tables when an OLDER swg-noded starts
