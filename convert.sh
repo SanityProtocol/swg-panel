@@ -337,6 +337,7 @@ write_recovery(){   # write_recovery <space-separated interface names>
   mkdir -p /var/lib 2>/dev/null || true
   { printf "SWG_RV_FROM='%s'\nSWG_RV_TO='%s'\nSWG_RV_ROLE='%s'\n" "$FROM" "$TO" "$ROLE"
     printf "SWG_RV_TOKEN='%s'\nSWG_RV_URL='%s'\nSWG_RV_EP='%s'\nSWG_RV_VERIFY='%s'\n" "$NTOK" "$PURL" "$NEP" "${NVERIFY:-no}"
+    printf "SWG_RV_FP='%s'\n" "$(printf '%s' "${NFP:-}" | tr -cd '0-9A-Fa-f:')"   # the panel-cert pin (hex only — this file is sourced)
     printf "SWG_RV_NAMES='%s'\nSWG_RV_AT='%s'\n" "${1:-}" "$(date +%s 2>/dev/null || echo 0)"
   } > "$RECOVERY" 2>/dev/null && chmod 600 "$RECOVERY" 2>/dev/null || true
 }
@@ -834,7 +835,23 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//' || true; }   # || true: a missing .env must fall through to recovery state, not abort under pipefail+set -e
   NTOK="$(getv NODE_TOKEN)"; PURL="$(getv PANEL_URL)"; NEP="$(getv NODE_ENDPOINT)"
   NIFS="$(getv NODE_IFACES)"; NIF="$(getv NODE_IFACE)"; NPLAIN="$(getv NODE_PLAIN_WG)"; NVERIFY="$(getv TLS_VERIFY)"
-  [ -n "${SWG_RV_TOKEN:-}" ] && { NTOK="$SWG_RV_TOKEN"; PURL="$SWG_RV_URL"; NEP="$SWG_RV_EP"; NVERIFY="${SWG_RV_VERIFY:-no}"; }   # resume: saved identity wins
+  # ⚠️ …AND THE PANEL-CERT PIN. Only TLS_VERIFY was carried, which is `no` on every node of a self-signed panel —
+  # the PIN is how such a node trusts it — so the bare node came out verifying nothing at all. Carry the pin the
+  # running node actually uses: a self-learned one (data/node/panel-fp, from a re-point/transfer) wins over the .env
+  # value, and the learned verify flag likewise — exactly as docker/node-entrypoint.sh decides them.
+  NFP="$(getv TLS_FINGERPRINT | sed 's/[[:space:]]\{1,\}#.*$//' | tr -cd '0-9A-Fa-f:' || true)"
+  # (`|| true` inside: no learned file is the NORMAL case, and a failed `head` under pipefail + set -e would abort here)
+  _lfp="$(head -n1 "$DOCKER_DIR/data/node/panel-fp" 2>/dev/null | tr -cd '0-9A-Fa-f:' || true)"; [ -n "$_lfp" ] && NFP="$_lfp"
+  _lvf="$(head -n1 "$DOCKER_DIR/data/node/panel-verify" 2>/dev/null | tr -d '[:space:]' || true)"; [ -n "$_lvf" ] && NVERIFY="$_lvf"
+  # ⚠️ …AND THE ADDRESS AND TOKEN IT LEARNED. A node the panel RE-POINTED (host/port moved) or TRANSFERRED (another
+  # panel took it over) runs on data/node/panel-url / panel-token — node-entrypoint.sh reads them ahead of the .env on
+  # every start — while the .env still names where it USED to sync. Converting from the .env alone handed the bare
+  # node the old address (it synced nowhere) or the old panel's token (401 for ever). Same precedence as the entrypoint.
+  _lpu="$(head -n1 "$DOCKER_DIR/data/node/panel-url" 2>/dev/null | tr -d '[:space:]' || true)"
+  [ -n "$_lpu" ] && [ "$_lpu" != "$PURL" ] && { sub "the node re-pointed itself to $(b "$_lpu") — converting with that, not the .env's ${PURL:-(blank)}"; PURL="$_lpu"; }
+  _lpt="$(head -n1 "$DOCKER_DIR/data/node/panel-token" 2>/dev/null | tr -d '[:space:]' || true)"
+  [ -n "$_lpt" ] && [ "$_lpt" != "$NTOK" ] && { sub "the node was transferred — converting with the token it learned, not the .env's"; NTOK="$_lpt"; }
+  [ -n "${SWG_RV_TOKEN:-}" ] && { NTOK="$SWG_RV_TOKEN"; PURL="$SWG_RV_URL"; NEP="$SWG_RV_EP"; NVERIFY="${SWG_RV_VERIFY:-no}"; NFP="${SWG_RV_FP:-}"; }   # resume: saved identity wins
   [ "$NVERIFY" = yes ] || NVERIFY=no
   # co-located master-split (the panel STAYS on docker, only the local node converts to bare): the node's PANEL_URL
   # is the compose DNS name (swg-panel:PORT), unreachable outside the compose network. Point the bare node at the
@@ -948,7 +965,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   echo
   # NB: '|| warn' — a non-zero exit (e.g. one interface failed to come up) must NOT abort the convert under set -e.
   env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
-      SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
+      SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" TLS_FINGERPRINT="$NFP" SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
     || warn "install-node.sh reported an error — check the node on the panel."
 
   # move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker convert isn't
@@ -972,19 +989,24 @@ if [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
   cfg=/etc/swg-agent/config.json
   [ -f "$cfg" ] || [ -n "${SWG_RV_TOKEN:-}" ] || die "no bare-metal node found ($cfg missing)"   # resuming? recovery state covers a half-torn-down config
   command -v python3 >/dev/null 2>&1 || die "python3 is required to read $cfg"
-  # token / panel URL / verify / node endpoint
-  read -r NTOK PURL NVERIFY NEP <<EOF
+  # token / panel URL / verify / node endpoint / panel-cert pin
+  # ⚠️ THE PIN TOO. It was never read, and TLS_VERIFY alone is `no` on every node of a self-signed panel (the pin is
+  # how such a node trusts it), so the docker node came up with `verify: False` and no fingerprint — trusting any
+  # certificate at all, where the bare node it replaced had been pinned (1.8.8 qualification, by reading this path).
+  read -r NTOK PURL NVERIFY NEP NFP <<EOF
 $(python3 - "$cfg" <<'PY'
 import json,sys
 try: c=json.load(open(sys.argv[1]))   # on a RESUME the bare config is already gone → recovery state fills these in
 except Exception: c={}
 p=c.get("panel") or {}
-print(p.get("token","-"), p.get("url","-"), "yes" if p.get("verify",True) else "no", c.get("endpoint_host","") or "-")
+fp="".join(ch for ch in str(p.get("fingerprint") or "") if ch in "0123456789abcdefABCDEF:")
+print(p.get("token","-"), p.get("url","-"), "yes" if p.get("verify",True) else "no", c.get("endpoint_host","") or "-", fp or "-")
 PY
 )
 EOF
   [ "$NEP" = "-" ] && NEP=""
-  [ -n "${SWG_RV_TOKEN:-}" ] && { NTOK="$SWG_RV_TOKEN"; PURL="$SWG_RV_URL"; NEP="$SWG_RV_EP"; NVERIFY="${SWG_RV_VERIFY:-no}"; }   # resume: saved identity wins
+  [ "$NFP" = "-" ] && NFP=""
+  [ -n "${SWG_RV_TOKEN:-}" ] && { NTOK="$SWG_RV_TOKEN"; PURL="$SWG_RV_URL"; NEP="$SWG_RV_EP"; NVERIFY="${SWG_RV_VERIFY:-no}"; NFP="${SWG_RV_FP:-}"; }   # resume: saved identity wins
   [ -n "$NTOK" ] && [ "$NTOK" != "-" ] && [ "$PURL" != "-" ] || die "couldn't read the node token / panel URL (config missing and no recovery state)"
   # interface  name<TAB>conf-path  lines
   ifaces="$(python3 - "$cfg" <<'PY'
@@ -1047,7 +1069,7 @@ PY
   info "Running install-docker.sh (docker node) — adopt $(b "$names") and finish the setup…"
   echo
   lc_handoff   # exec replaces us → install-docker.sh owns the terminal; SWG_CONVERT_DIR makes it emit "converted-docker"
-  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" NODE_ENDPOINT="$NEP" TLS_VERIFY="$NVERIFY" SWG_CONVERT_DIR=convert-docker \
+  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" NODE_ENDPOINT="$NEP" TLS_VERIFY="$NVERIFY" TLS_FINGERPRINT="$NFP" SWG_CONVERT_DIR=convert-docker \
        SWG_CONVERT_TURNS="$MIGRATED_TURNS" bash "$SRC/install-docker.sh" node
 fi
 

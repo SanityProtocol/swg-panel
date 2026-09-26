@@ -37,9 +37,17 @@ set -euo pipefail
 for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT PANEL_BASE \
           PANEL_LOCAL_PORT SUB_PORT SUB_DOMAIN PANEL_BIND SUB_BIND SUB_TRUST_XFF CONSOLE_PORT CONSOLE_BIND \
           NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET TURN_MANAGE DNS TLS_VERIFY \
-          ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
+          TLS_FINGERPRINT ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
   eval "_GIVEN_$_k=\"\${$_k:-}\""
 done
+# bootstrap.sh exports `-endpoint` as ENDPOINT_IP (the bare-metal name); it becomes NODE_ENDPOINT below, so it is
+# just as explicit. Missing here, a re-install's .env import quietly put the OLD endpoint back over it.
+_GIVEN_NODE_ENDPOINT="${NODE_ENDPOINT:-${ENDPOINT_IP:-}}"
+# ⚠️ …AND A FLAG IS AN EXPLICIT VALUE TOO. The snapshot above runs before the flags are parsed, so every value
+# given as a flag (-domain, -port, -user, -base, -endpoint, …) looked "not given", and the .env import replaced it
+# with the stored one: re-installing with `-domain 10.0.2.15` kept serving the old address and issued the new
+# certificate for it. The flag parser records what it sets through _flag, below.
+_flag(){ printf -v "$1" '%s' "$2"; printf -v "_GIVEN_$1" '%s' "$2"; }
 PROFILE="${PROFILE:-host}"
 ROLE="${ROLE:-}"                        # master | host — asked in Step 1 when the entry is `host`.
                                         # master ⇒ master compose profile (panel + a co-located,
@@ -118,13 +126,23 @@ detect_public_ip(){ local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n
 ask_tty(){ local v p="$1" d="${2:-}"   # prompt on the terminal (curl|bash keeps a tty); else use default
   # NB: this runs in a $() subshell (ask_yn_tty captures it), so it can only READ _SWG_NL, not set it — hence just
   # a flag-aware LEADING blank; the following step/helper supplies the trailing blank (its own leading, flag clear).
-  [ -n "${_SWG_NL:-}" ] || printf '\n' >/dev/tty 2>/dev/null || true
+  [ -n "${_SWG_NL:-}" ] || printf '\n' 2>/dev/null >/dev/tty || true
   if printf '  %s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then printf '%s' "${v:-$d}"
   else printf '%s' "$d"; fi; }
 ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (default when blank / no tty)
   v="$(ask_tty "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N'))" "")"
   case "${v:-$d}" in [Yy]*) printf yes;; *) printf no;; esac; }
 rand_pw(){ head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16; }
+# Is there a terminal to ask on? `curl | sudo bash` keeps one (/dev/tty); `setsid … </dev/null`, cron and CI do not.
+# ⚠️ Without it every `read … </dev/tty` below printed a raw "line 216: /dev/tty: No such device or address" into an
+# unattended log — the redirection fails before the read runs, so a trailing 2>/dev/null never covered it. Probe once.
+HAVE_TTY=no; { : </dev/tty; } 2>/dev/null && HAVE_TTY=yes
+# the value of KEY in an .env file, as compose reads it: first KEY= line, an unquoted value's inline ` # comment`
+# dropped, surrounding quotes stripped. ⚠️ Reading the raw line fed the comment back in as part of the value: every
+# re-install wrote `CONSOLE_PORT=8445   # …   # …` with one more copy of its comment than the last.
+_env_val(){ local v; v="$(sed -n "s/^$1=//p" "$2" 2>/dev/null | head -1)"
+  case "$v" in \"*|\'*) ;; *) v="$(printf '%s' "$v" | sed 's/[[:space:]]\{1,\}#.*$//')";; esac
+  v="${v%"${v##*[![:space:]]}"}"; v="${v%\"}"; v="${v#\"}"; printf '%s' "$v"; }
 
 # ── styling shared with the bare-metal installers (same palette + bold ▸ headers) ──
 if { [ -t 1 ] || [ -n "${SWG_FORCE_COLOR:-}" ]; } && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_GREY=$'\033[90m'; C_CYAN=$'\033[36m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'
@@ -138,7 +156,11 @@ keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # defaul
 keyg(){ printf '%s[%s]%s%s'   "$C_GREY"        "$1" "$2" "$RESET"; }   # de-emphasised label grey:  keyg n 'one'                → [n]one
 STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # skip the leading blank when a prompt already printed one
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
-ask(){ local v p="$1" d="${2:-}"; echo; read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; printf -v "$3" '%s' "${v:-$d}"; }
+ask(){ local v p="$1" d="${2:-}"; echo
+  if [ "$HAVE_TTY" = yes ]; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; else v=""; _notty "$p" "$d"; fi
+  printf -v "$3" '%s' "${v:-$d}"; }
+# no terminal: say which answer was taken for the prompt that could not be shown, so an unattended log still reads
+_notty(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(no terminal — default taken)"; }
 v_ip(){ printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1; local o; for o in ${1//./ }; do [ "$o" -le 255 ] 2>/dev/null || return 1; done; }
 v_host(){ v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) return 1;; *) return 0;; esac; }
 v_port(){ case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
@@ -167,6 +189,12 @@ cert_covers_host(){ local cert="$1" host="$2" txt
   txt="$( { openssl x509 -in "$cert" -noout -ext subjectAltName; openssl x509 -in "$cert" -noout -subject; } 2>/dev/null || true)"
   if printf '%s' "$txt" | grep -qE "(DNS:|IP Address:|CN ?= ?)${host//./\\.}(\$|[^0-9A-Za-z.-])"; then return 0; fi
   return 1; }
+# 0 iff cert file $1 is SELF-SIGNED (issuer == subject) — the same test as docker/entrypoint.sh's cert_is_selfsigned.
+# openssl's `issuer=`/`subject=` labels are stripped, else the two strings always differ.
+cert_is_selfsigned(){ local i s; [ -s "$1" ] && command -v openssl >/dev/null 2>&1 || return 1
+  i="$(openssl x509 -in "$1" -noout -issuer 2>/dev/null | sed 's/^issuer= *//')"
+  s="$(openssl x509 -in "$1" -noout -subject 2>/dev/null | sed 's/^subject= *//')"
+  [ -n "$i" ] && [ "$i" = "$s" ]; }
 v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }   # panel node name for this box (mirrors bare-metal)
 # v_iface/v_subnet/v_hostport + next_free_port now in lib/common.sh
 v_url(){     case "$1" in ""|*" "*) return 1;; esac
@@ -201,7 +229,7 @@ parse_panel_url(){ local u="$1" hostport rest
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   while :; do
-    if read -rp "  $p [$(bb "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if [ "$HAVE_TTY" = yes ] && read -rp "  $p [$(bb "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option (1-indexed menus)
     for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; _pnl; return; }; done
@@ -213,7 +241,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
   if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if [ "$HAVE_TTY" = yes ] && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
     [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; _pnl; return; }
@@ -362,23 +390,23 @@ while [ $# -gt 0 ]; do
     master)                 PROFILE=master; ROLE=master; shift;; # bare-metal-style role word → master profile
     host|node|host-node)    PROFILE="$1"; shift;;          # bare positional profile (e.g. "docker node")
     -role|--role)           ROLE="${2:-}"; shift 2 || shift;;    # master|host — skips the Step 1 role prompt
-    -pass|--pass|-password) PANEL_PASSWORD="${2:-}"; shift 2 || shift;;
-    -user|--user|-username) PANEL_USER="${2:-}"; shift 2 || shift;;
-    -domain|--domain)       PANEL_DOMAIN="${2:-}"; shift 2 || shift;;
-    -base|--base)           PANEL_BASE="${2:-}"; shift 2 || shift;;
-    -port|--port)           PANEL_PORT="${2:-}"; PANEL_PORT_EXPLICIT=yes; shift 2 || shift;;
+    -pass|--pass|-password) _flag PANEL_PASSWORD "${2:-}"; shift 2 || shift;;
+    -user|--user|-username) _flag PANEL_USER "${2:-}"; shift 2 || shift;;
+    -domain|--domain)       _flag PANEL_DOMAIN "${2:-}"; shift 2 || shift;;
+    -base|--base)           _flag PANEL_BASE "${2:-}"; shift 2 || shift;;
+    -port|--port)           _flag PANEL_PORT "${2:-}"; PANEL_PORT_EXPLICIT=yes; shift 2 || shift;;
     -tls|--tls)             TLS="${2:-}"; shift 2 || shift;;
-    -email|--email)         ACME_EMAIL="${2:-}"; shift 2 || shift;;
-    -cf-token|--cf-token)   CF_TOKEN="${2:-}"; shift 2 || shift;;
-    -cf-origin|--cf-origin) CF_ORIGIN_TOKEN="${2:-}"; shift 2 || shift;;
-    -key|--key|-token)      NODE_TOKEN="${2:-}"; shift 2 || shift;;
-    -host|--host|-url)      PANEL_URL="${2:-}"; shift 2 || shift;;
-    -endpoint|--endpoint)   NODE_ENDPOINT="${2:-}"; shift 2 || shift;;
-    -net|--net|--network)   NODE_NET="${2:-}"; shift 2 || shift;;
-    -turn-manage|--turn-manage) TURN_MANAGE="${2:-}"; shift 2 || shift;;
-    -verify|--verify)       TLS_VERIFY="${2:-}"; shift 2 || shift;;
-    -iface|--iface)         NODE_IFACE="${2:-}"; shift 2 || shift;;
-    -ifaces|--ifaces)       NODE_IFACES="${2:-}"; shift 2 || shift;;
+    -email|--email)         _flag ACME_EMAIL "${2:-}"; shift 2 || shift;;
+    -cf-token|--cf-token)   _flag CF_TOKEN "${2:-}"; shift 2 || shift;;
+    -cf-origin|--cf-origin) _flag CF_ORIGIN_TOKEN "${2:-}"; shift 2 || shift;;
+    -key|--key|-token)      _flag NODE_TOKEN "${2:-}"; shift 2 || shift;;
+    -host|--host|-url)      _flag PANEL_URL "${2:-}"; shift 2 || shift;;
+    -endpoint|--endpoint)   _flag NODE_ENDPOINT "${2:-}"; shift 2 || shift;;
+    -net|--net|--network)   _flag NODE_NET "${2:-}"; shift 2 || shift;;
+    -turn-manage|--turn-manage) _flag TURN_MANAGE "${2:-}"; shift 2 || shift;;
+    -verify|--verify)       _flag TLS_VERIFY "${2:-}"; shift 2 || shift;;
+    -iface|--iface)         _flag NODE_IFACE "${2:-}"; shift 2 || shift;;
+    -ifaces|--ifaces)       _flag NODE_IFACES "${2:-}"; shift 2 || shift;;
     --build)                BUILD=true; shift;;
     --dry-run)              shift;;
     *)                      shift;;
@@ -391,7 +419,9 @@ case "$ROLE" in ""|master|host) ;; *) die "role must be master|host";; esac
 [ -n "$PANEL_BASE" ] && PANEL_BASE="/$(printf '%s' "$PANEL_BASE" | sed 's#^/*##; s#/*$##')"
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
-$DRYRUN && { info "DRY RUN — .env renders under ./dryrun, no Docker commands run."; rm -rf "$PREFIX"; }
+# (not "no Docker commands run": read-only probes such as `docker compose version` still do — nothing is pulled,
+# created, started, stopped or written outside ./dryrun)
+$DRYRUN && { info "DRY RUN — the .env renders under ./dryrun; nothing is installed, pulled, started or changed."; rm -rf "$PREFIX"; }
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, dl_turn_bin
 # Refuse on a declaratively managed host BEFORE anything is written — the docker path laid down here would
@@ -412,21 +442,24 @@ lc_emit_docker(){
 EXISTING_DOCKER=no; EXIST_TLS=""
 if [ -f "$INSTALL_DIR/.env" ]; then
   EXISTING_DOCKER=yes
+  # PANEL_LOCAL_PORT is here because the panel itself moves it (swg-netctl-docker set-local-port writes it to .env) —
+  # a re-install that left it out put the co-located node back on 8088 behind the operator's back.
   for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT PANEL_BASE \
-            SUB_PORT SUB_DOMAIN PANEL_BIND SUB_BIND SUB_TRUST_XFF CONSOLE_PORT CONSOLE_BIND \
+            PANEL_LOCAL_PORT SUB_PORT SUB_DOMAIN PANEL_BIND SUB_BIND SUB_TRUST_XFF CONSOLE_PORT CONSOLE_BIND \
             NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET TURN_MANAGE DNS TLS_VERIFY \
-            ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
+            TLS_FINGERPRINT ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
     _g="_GIVEN_$_k"; [ -n "${!_g:-}" ] && continue      # an explicit flag/env wins — checked against the PRE-DEFAULT snapshot
-    _v="$(sed -n "s/^${_k}=//p" "$INSTALL_DIR/.env" 2>/dev/null | head -1)"
-    _v="${_v%\"}"; _v="${_v#\"}"                        # strip surrounding quotes
+    _v="$(_env_val "$_k" "$INSTALL_DIR/.env")"
     # The CF creds land in *_SAVED (a prompt DEFAULT) instead of the live var — see install-host.sh: loading
     # them live made the prompt self-skip on a re-install, so a broken token was reused without a word.
-    case "$_k" in CF_TOKEN|CF_ORIGIN_TOKEN) [ -n "$_v" ] && printf -v "${_k}_SAVED" '%s' "$_v"; continue;; esac
+    # TLS_FINGERPRINT likewise: it is the pin for the panel URL it was taken against, so ask_node_conn decides
+    # whether it still applies (same URL, same certificate) instead of it riding along blindly.
+    case "$_k" in CF_TOKEN|CF_ORIGIN_TOKEN|TLS_FINGERPRINT) [ -n "$_v" ] && printf -v "${_k}_SAVED" '%s' "$_v"; continue;; esac
     [ -n "$_v" ] && printf -v "$_k" '%s' "$_v"
   done
-  EXIST_TLS="$(sed -n 's/^TLS=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1)"   # for the 'reuse' TLS option (not auto-applied)
+  EXIST_TLS="$(_env_val TLS "$INSTALL_DIR/.env")"   # for the 'reuse' TLS option (not auto-applied)
   if [ "$PROFILE" = node ]; then
-    info "Existing node install detected — keeping your interfaces + data. Press $(b Enter) to keep each value (to start fresh, run the uninstaller first)."
+    info "Existing node install detected — keeping your interfaces + data.$([ "$HAVE_TTY" = yes ] && printf ' Press %s to keep each value' "$(b Enter)") (to start fresh, run the uninstaller first)."
   else
     info "Existing docker install detected in $INSTALL_DIR — keeping your .env + ./data (token, login, interfaces). To start fresh, uninstall first."
   fi
@@ -462,7 +495,7 @@ fi
 
 # bare→docker CONVERT: the panel login (pbkdf2) is already staged in data/etc/auth — never regenerate or
 # overwrite it; show it as "unchanged" in the summary. (A fresh/re-install has no SWG_CONVERT_DIR.)
-KEEP_AUTH=no
+KEEP_AUTH=no; KEEP_CERT=no   # KEEP_CERT: ask_panel_tls keeps a fitting self-signed cert (never inherited from the environment)
 if [ -n "${SWG_CONVERT_DIR:-}" ] && [ -f "$PREFIX$INSTALL_DIR/data/etc/auth" ]; then
   KEEP_AUTH=yes
   _au="$(cut -d: -f1 "$PREFIX$INSTALL_DIR/data/etc/auth" 2>/dev/null | head -1)"; [ -n "$_au" ] && PANEL_USER="$_au"
@@ -480,9 +513,11 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
   echo
   local def="${PANEL_DOMAIN:-$(detect_public_ip)}"; [ -z "$def" ] && def=localhost; local _url_ans _forced="" _pp _who
   # re-install (or -host): show the saved port/subpath in the default URL, e.g. host:8443/swg — not just the host
-  if [ -n "${PANEL_DOMAIN:-}" ]; then
+  # (only onto a BARE host — a -domain given as a whole URL already says its own port/subpath, and appending the
+  # stored ones made `host:8443:2087`)
+  if [ -n "${PANEL_DOMAIN:-}" ]; then case "$PANEL_DOMAIN" in *:*|*/*) ;; *)
     { [ -n "${PANEL_PORT:-}" ] && [ "$PANEL_PORT" != 443 ]; } && def="$def:$PANEL_PORT"
-    [ -n "${PANEL_BASE:-}" ] && def="$def$PANEL_BASE"
+    [ -n "${PANEL_BASE:-}" ] && def="$def$PANEL_BASE";; esac
   fi
   PANEL_DOMAIN=""   # ask_valid skips if non-empty; force the prompt and parse the result
   ask_valid "Enter panel URL (https://…)" "$def" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
@@ -495,7 +530,7 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
       echo; warn "port $(col "$C_YEL" ":$_pp") is already in use${_who:+ (by $(col "$C_YEL" "$_who"))} — the panel can't bind it"
       echo "    Give the panel its own port (e.g. $(b "${PANEL_HOST_NOPORT}:8443")), or stop whatever holds it."
       printf '  Enter a different URL, or type %s to publish on :%s anyway: ' "$(bb force)" "$_pp"
-      read -r _url_ans </dev/tty || _url_ans=force
+      read -r _url_ans 2>/dev/null </dev/tty || _url_ans=force
       case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
         force|FORCE) _forced="$_pp";;
         "") :;;
@@ -512,7 +547,7 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
     echo "         certificates won't work. ($(b letsencrypt)/$(b selfsigned) on a directly-reachable port is fine.)"
     echo
     printf '  To keep the port %s type %s, or enter a new URL to change: ' "$URL_PORT" "$(bb proceed)"
-    read -r _url_ans </dev/tty || _url_ans=proceed
+    read -r _url_ans 2>/dev/null </dev/tty || _url_ans=proceed
     case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
       proceed|"") break;;                                           # keep the current port
       *) if _u="$(answer_to_url "$(printf '%s' "$_url_ans" | tr -d '[:space:]')")"; then PANEL_DOMAIN="$_u"   # adopt it; loop re-parses
@@ -535,7 +570,8 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
   echo
   # Panel URL shape decides the certs offered: domain → letsencrypt/cloudflare/cf15; public IP → letsencrypt-ip
   # (LE short-lived IP cert); private/bare → selfsigned/none only.
-  local _url_is_domain=no _ip_public=no _opts _def _le _reuse_avail=no _w80 _ans80 _tn
+  local _url_is_domain=no _ip_public=no _opts _def _le _reuse_avail=no _w80 _ans80 _tn _tls_in="${TLS:-}"
+  local _cur_cert="$INSTALL_DIR/data/etc/tls/fullchain.pem" _cur_key="$INSTALL_DIR/data/etc/tls/key.pem"
   case "$PANEL_DOMAIN" in *[a-zA-Z]*) case "$PANEL_DOMAIN" in *.*) _url_is_domain=yes;; esac;; esac
   [ "$_url_is_domain" = yes ] || { ip_public "$PANEL_DOMAIN" && _ip_public=yes; }
   local _lip _ss
@@ -553,6 +589,12 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
   else                               _le="$(keyd l 'etsencrypt (default)')"; _lip="$(keyd l 'etsencrypt-ip (default)')"; _ss="$(keyd s 'elfsigned (default)')"; fi
   while :; do
     _tn=0
+    # ⚠️ A TLS the caller already GAVE (-tls / TLS=) is the answer — ask_choice returns on it without asking. The
+    # menu used to print anyway, with "[r]euse (default) … it already covers <host>" over a run that then issued a
+    # NEW certificate: a menu describing a choice nobody was offered. Say what was given instead.
+    if [ -n "${TLS:-}" ] && _in "$TLS" "$_opts"; then
+      ok "TLS certificate: $(b "$TLS") (given — not asked)"
+    else
     [ "$_reuse_avail" = yes ] && { _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"    "Keep the existing $(b "${EXIST_TLS:-cert}") certificate — it already covers $(b "$PANEL_DOMAIN"), no re-issue (recommended for a re-install)"; }
     if [ "$_url_is_domain" = yes ]; then
       _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_le"                                "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
@@ -567,6 +609,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
     fi
     _tn=$((_tn+1)); menu "$(col "$C_GREY" "[$_tn]") $(keyg n 'one')"                     "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
     [ "$_url_is_domain" = yes ] || [ "$_ip_public" = yes ] || sub "Let's Encrypt needs a public domain or public IP — hidden because $(b "$PANEL_DOMAIN") is private / not routable."
+    fi
     ask_choice "Select TLS certificate (number, letter or name)" "$_def" TLS "$_opts"
     if [ "$_ip_public" = yes ]; then   # on an IP menu every letsencrypt alias means the IP cert
       case "$TLS" in r) TLS=reuse;; l|ip|lip|letsencrypt|letsencrypt-ip) TLS=letsencrypt-ip;; s|selfsigned) TLS=selfsigned;; n|none) TLS=none;; esac
@@ -594,6 +637,21 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
     break
   done
   if [ "$TLS" = reuse ]; then REUSE_TLS=yes; TLS="${EXIST_TLS:-selfsigned}"; ok "reusing the existing certificate (TLS mode: $(b "$TLS"))"; return 0; fi
+  # ⚠️ A GIVEN `selfsigned` OVER A SELF-SIGNED CERT THAT ALREADY FITS KEEPS THAT CERT. Re-issuing it hands the panel a
+  # NEW self-signed certificate, and every node that pinned the old one — a pin is how a node trusts a self-signed
+  # panel — stops syncing with "tls fingerprint mismatch" until someone re-installs it. Measured in the 1.8.8
+  # qualification: a docker master re-installed with TLS=selfsigned, and its docker node (q4) went dark. Nothing was
+  # gained by it: the old cert already named the host. So only the cert FILES are spared (the login is re-applied as
+  # before), only for a GIVEN mode — an operator who picks `selfsigned` from a menu that offered reuse is asking for a
+  # new one — and only for a self-signed cert with its key: a CA cert, a cert for another host, or none at all, and
+  # every other mode, behave exactly as before.
+  case "$_tls_in" in s|self|selfsigned)
+    if [ "$TLS" = selfsigned ] && [ "$EXISTING_DOCKER" = yes ] && [ -s "$_cur_key" ] \
+       && cert_is_selfsigned "$_cur_cert" && cert_covers_host "$_cur_cert" "$PANEL_DOMAIN"; then
+      KEEP_CERT=yes
+      ok "keeping the existing self-signed certificate — it already covers $(b "$PANEL_DOMAIN"), so the nodes pinned to it keep syncing (remove $_cur_cert first to issue a new one)"
+    fi;;
+  esac
   case "$TLS" in
     letsencrypt) ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com"
                  sub "letsencrypt validates over HTTP-01 — the installer publishes host port $(b 80) to the panel container for you (compose override, written below)";;
@@ -616,6 +674,51 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
   esac
   return 0
 }
+# How this node trusts the panel's certificate: CA verification, or a PIN of a self-signed one (trust on first use).
+# The decision a fresh install makes, shared with a re-install. $1 = the pin an earlier install recorded for THIS
+# SAME panel URL, if any: it is kept while the panel still presents that certificate — and also while the panel
+# can't be reached to say otherwise, because a panel outage during a node re-install must not cost the node its pin.
+# A certificate that CHANGED is decided afresh, out loud. Sets TLS_VERIFY / TLS_FINGERPRINT.
+node_panel_trust(){ local _old="${1:-}" _tls_def=y _rc _fp=""
+  if [ -n "$_old" ]; then
+    $DRYRUN || _fp="$(_docker_panel_fp "$PANEL_URL")"
+    # a pin carried from elsewhere (a bare node's config, a hand edit) may be `AB:CD:…` — swg-noded compares it with
+    # the colons dropped and lower-cased, so compare it the same way (else the SAME cert reads as CHANGED)
+    if [ -z "$_fp" ] || [ "$_fp" = "$(printf '%s' "$_old" | tr -d ':' | tr 'A-F' 'a-f')" ]; then
+      TLS_FINGERPRINT="$_old"; TLS_VERIFY=no
+      if [ -n "$_fp" ]; then ok "keeping the panel cert pin (sha256 ${_old:0:16}…) — the panel still presents that certificate"
+      elif $DRYRUN;     then sub "keeping the panel cert pin (sha256 ${_old:0:16}…) — dry run, not re-checked against the panel"
+      else warn "couldn't reach the panel to re-check its certificate — keeping the existing pin (sha256 ${_old:0:16}…)"; fi
+      return 0
+    fi
+    warn "the panel's certificate CHANGED since this node pinned it (was sha256 ${_old:0:16}…, now ${_fp:0:16}…) — deciding afresh, as a new install would. If nobody re-issued the panel's certificate, find out why before trusting it."
+  fi
+  # Verify by DEFAULT (secure); auto-detect a self-signed panel so a fresh node never fails its first sync.
+  if [ -n "$PANEL_URL" ]; then
+    _rc=0; curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null || _rc=$?   # capture rc WITHOUT letting set -e abort — a self-signed/unreachable panel (the case this block exists for) makes curl exit non-zero
+    # only a genuine cert-verification failure (60/51) with -k then working means self-signed; a transient
+    # error keeps the secure default (verify) rather than silently downgrading a real-CA panel.
+    if { [ "$_rc" = 60 ] || [ "$_rc" = 51 ]; } && curl -sSk --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; then
+      if panel_cert_expired "$PANEL_URL"; then   # lib/common.sh
+        # an EXPIRED real certificate: keep CA verification (see panel_cert_expired) — never pin it
+        warn "The panel's TLS certificate has EXPIRED (or is not valid yet) — it is not self-signed, so this node keeps verifying it. It syncs as soon as the panel's certificate is renewed; renew it on the panel host."
+      else
+        _tls_def=n
+      fi
+    fi
+  fi
+  # SELF-SIGNED → PIN the panel cert (TOFU) so the sync is MITM-protected by default, instead of unverified.
+  # Real-CA panels keep CA verification (a pin would break on cert renewal).
+  if [ "$_tls_def" = n ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
+    _fp="$(_docker_panel_fp "$PANEL_URL")"
+    if [ -n "$_fp" ]; then
+      TLS_FINGERPRINT="$_fp"; TLS_VERIFY=no
+      info "Panel cert is self-signed — pinning it (sha256 ${_fp:0:16}…) so a man-in-the-middle can't impersonate the panel."
+    fi
+  fi
+  [ -z "${TLS_FINGERPRINT:-}" ] && TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (auto-detected default: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def")"
+  return 0
+}
 ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the per-interface wg/awg step)
   # Panel connection — normally supplied by the install command's -host / -key flags.
   # On a re-install, ALWAYS re-prompt the URL + TLS (the panel may have moved / changed cert) with the
@@ -636,10 +739,28 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
     return 0
   fi
   if [ "$EXISTING_DOCKER" = yes ]; then
-    local _exurl="$PANEL_URL" _extls="$TLS_VERIFY"; PANEL_URL=""; TLS_VERIFY=""
+    local _exurl="$PANEL_URL" _extls="$TLS_VERIFY" _exfp="${TLS_FINGERPRINT_SAVED:-}" _pinurl; PANEL_URL=""; TLS_VERIFY=""
+    # the URL the stored pin was taken against is the STORED one — not $_exurl, which a -host flag already replaced
+    _pinurl="$(_env_val PANEL_URL "$INSTALL_DIR/.env")"; case "$_pinurl" in http://*|https://*) ;; ?*) _pinurl="https://$_pinurl";; esac
     ask_valid "Panel URL (https://host[/subpath])" "$_exurl" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
     case "$PANEL_URL" in https://*) ;; http://*) _url_is_loopback "$PANEL_URL" || warn "panel URL is http:// — the key would travel in clear. Continue only if you know why.";; *) PANEL_URL="https://$PANEL_URL";; esac   # no scheme → default https://
-    TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" "$([ "$_extls" = yes ] && echo y || echo n)")"
+    # ⚠️ THE PIN IS PART OF THE INSTALL, NOT A FRESH-INSTALL EXTRA. This branch used to ask a bare "verify? (y/N)"
+    # defaulted from the stored TLS_VERIFY — which is `no` on EVERY pinned node, because a pin is how a self-signed
+    # panel is trusted — and never looked at TLS_FINGERPRINT at all. An Enter (or no terminal) therefore rewrote the
+    # .env with `TLS_VERIFY=no` and `TLS_FINGERPRINT=`: the node synced verifying nothing. Measured on a docker node
+    # (q4, 1.8.8 qualification). Now: an explicit -verify / TLS_FINGERPRINT wins; a CA-verified node keeps verifying;
+    # everything else goes through the same decision a fresh install makes, with the stored pin carried over while
+    # it is still for this URL and the panel still presents it.
+    if [ -n "${_GIVEN_TLS_VERIFY:-}" ] || [ -n "${_GIVEN_TLS_FINGERPRINT:-}" ]; then
+      TLS_VERIFY="${_GIVEN_TLS_VERIFY:-no}"; TLS_FINGERPRINT="${_GIVEN_TLS_FINGERPRINT:-}"
+    elif [ "${PANEL_URL#http://}" != "$PANEL_URL" ]; then
+      TLS_VERIFY="${_extls:-no}"                    # plain http (a co-located node's loopback): no certificate to trust
+    elif [ "$_extls" = yes ] && [ "${PANEL_URL%/}" = "${_pinurl%/}" ]; then
+      TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate?" y)"
+      [ "$TLS_VERIFY" = yes ] || node_panel_trust   # declined CA verification → pin (or ask) rather than trust nothing
+    else
+      node_panel_trust "$([ "${PANEL_URL%/}" = "${_pinurl%/}" ] && printf '%s' "$_exfp")"
+    fi
     # offer to change the box name shown in the panel (default = its current name); push via /api/node/rename
     local _ins=""; [ "$TLS_VERIFY" = yes ] || _ins="-k"; local _cur
     _cur="$(auth_curl "${NODE_TOKEN:-}" -fsS $_ins --max-time 8 "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
@@ -649,33 +770,7 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
   ask_valid "Panel URL (https://host[/subpath])" "$PANEL_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
   ask_secret "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"
   case "$PANEL_URL" in https://*) ;; *) _url_is_loopback "$PANEL_URL" || warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
-  if [ -z "$TLS_VERIFY" ] && [ -z "${TLS_FINGERPRINT:-}" ]; then
-    # Verify by DEFAULT (secure); auto-detect a self-signed panel so a fresh node never fails its first sync.
-    local _tls_def=y _rc
-    if [ -n "$PANEL_URL" ]; then
-      _rc=0; curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null || _rc=$?   # capture rc WITHOUT letting set -e abort — a self-signed/unreachable panel (the case this block exists for) makes curl exit non-zero
-      # only a genuine cert-verification failure (60/51) with -k then working means self-signed; a transient
-      # error keeps the secure default (verify) rather than silently downgrading a real-CA panel.
-      if { [ "$_rc" = 60 ] || [ "$_rc" = 51 ]; } && curl -sSk --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; then
-        if panel_cert_expired "$PANEL_URL"; then   # lib/common.sh
-          # an EXPIRED real certificate: keep CA verification (see panel_cert_expired) — never pin it
-          warn "The panel's TLS certificate has EXPIRED (or is not valid yet) — it is not self-signed, so this node keeps verifying it. It syncs as soon as the panel's certificate is renewed; renew it on the panel host."
-        else
-          _tls_def=n
-        fi
-      fi
-    fi
-    # SELF-SIGNED → PIN the panel cert (TOFU) so the sync is MITM-protected by default, instead of unverified.
-    # Real-CA panels keep CA verification (a pin would break on cert renewal).
-    if [ "$_tls_def" = n ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
-      local _fp; _fp="$(_docker_panel_fp "$PANEL_URL")"
-      if [ -n "$_fp" ]; then
-        TLS_FINGERPRINT="$_fp"; TLS_VERIFY=no
-        info "Panel cert is self-signed — pinning it (sha256 ${_fp:0:16}…) so a man-in-the-middle can't impersonate the panel."
-      fi
-    fi
-    [ -z "${TLS_FINGERPRINT:-}" ] && TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (auto-detected default: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def")"
-  fi
+  if [ -z "$TLS_VERIFY" ] && [ -z "${TLS_FINGERPRINT:-}" ]; then node_panel_trust; fi
   return 0
 }
 # subnet (10.x.y.0/24) -> the server's interface address (10.x.y.1/24). Accepts either form as input.
@@ -1106,7 +1201,18 @@ esac
 _IMAGE_TAG_LINE=""
 if $BUILD; then _IMAGE_TAG_LINE="SWG_IMAGE_TAG=${SWG_IMAGE_TAG:-local}   # built on this box from source — not a published GHCR tag"
 elif [ -n "${SWG_IMAGE_TAG:-}" ]; then _IMAGE_TAG_LINE="SWG_IMAGE_TAG=$SWG_IMAGE_TAG"
+# ⚠️ …AND A PIN ALREADY IN .env IS THE OPERATOR'S TOO. This rewrite used to keep SWG_IMAGE_TAG only when it was
+# exported again, so a plain re-install of a box pinned to sha-6bd6d8c pulled `latest` (1.8.7-beta) for panel AND
+# node — a silent downgrade. Keep it, except the tag a --build stamped on its own images: this run pulls, and a
+# name GHCR never published would only fail the pull and leave the stale local build running.
+elif _prev_tag="$(grep -m1 '^SWG_IMAGE_TAG=' "$INSTALL_DIR/.env" 2>/dev/null)" && [ -n "$(_env_val SWG_IMAGE_TAG "$INSTALL_DIR/.env")" ]; then
+  case "$_prev_tag" in *"built on this box from source"*) ;; *) _IMAGE_TAG_LINE="SWG_IMAGE_TAG=$(_env_val SWG_IMAGE_TAG "$INSTALL_DIR/.env")";; esac
 fi
+# ⚠️ .env IS REWRITTEN WHOLE, so every key this script does not write was DELETED by a re-install: SWG_LATEST_URL
+# (the panel's pre-release update channel, which .env.example tells operators to add), SWG_TURN_IMAGE, and anything
+# else the operator put there. Snapshot the previous file now; its extra keys are appended below, after the keys
+# this run owns (read from the LIVE file even on --dry-run: that is the file a real run would rewrite).
+_OLD_ENV="$(cat "$INSTALL_DIR/.env" 2>/dev/null || true)"
 cat > "$PREFIX$INSTALL_DIR/.env" <<EOF
 # generated by install-docker.sh — profile: $_ENV_PROFILE
 # ───────── Panel (profiles: host, master) ─────────
@@ -1151,6 +1257,19 @@ DNS=$DNS
 $_SECCOMP_LINE
 $_IMAGE_TAG_LINE
 EOF
+# carry forward: every KEY= line of the previous .env whose key the file above does not define — first one wins,
+# the operator's own line kept byte for byte (comment included). Keys this script writes are never duplicated, and
+# SWG_IMAGE_TAG is decided above (a --build's own tag must NOT come back through here).
+if [ -n "$_OLD_ENV" ]; then
+  _carried="$(printf '%s\n' "$_OLD_ENV" | awk -v new="$PREFIX$INSTALL_DIR/.env" '
+    BEGIN { have["SWG_IMAGE_TAG"] = 1
+            while ((getline l < new) > 0) if (match(l, /^[A-Za-z_][A-Za-z0-9_]*=/)) have[substr(l, 1, RLENGTH-1)] = 1 }
+    match($0, /^[A-Za-z_][A-Za-z0-9_]*=/) { k = substr($0, 1, RLENGTH-1); if (!(k in have)) { print; have[k] = 1 } }')"
+  if [ -n "$_carried" ]; then
+    printf '\n# ───────── kept from the previous .env (not written by the installer) ─────────\n%s\n' "$_carried" >> "$PREFIX$INSTALL_DIR/.env"
+    sub "kept from the previous .env: $(printf '%s\n' "$_carried" | sed 's/=.*//' | tr '\n' ' ')"
+  fi
+fi
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
 ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
 
@@ -1216,11 +1335,13 @@ if [ "$PROFILE" != node ]; then
   if [ "${REUSE_TLS:-no}" = yes ]; then
     : # reuse: keep the existing login + certificate (entrypoint serves them as-is)
   elif [ "${KEEP_AUTH:-no}" = yes ]; then
-    $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"   # convert: keep the staged login, but re-apply the chosen TLS
+    # convert: keep the staged login, but re-apply the chosen TLS — unless ask_panel_tls kept a fitting self-signed cert
+    $DRYRUN || [ "${KEEP_CERT:-no}" = yes ] || rm -f "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
   else
-    $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth" \
-                     "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
-    NEW_LOGIN=yes
+    $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth"
+    # the cert goes too — except the self-signed one ask_panel_tls decided to keep (KEEP_CERT: its pinned nodes)
+    $DRYRUN || [ "${KEEP_CERT:-no}" = yes ] || rm -f "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
+    $DRYRUN || NEW_LOGIN=yes   # a dry run deleted nothing — the login in force is still the old one
   fi
 fi
 # always recreate (incl. node): a plain `up -d` just (re)starts the EXISTING container on its OLD .env,
@@ -1234,9 +1355,14 @@ RECREATE="--force-recreate"
 # Merge into any existing nodes.json so a reinstall keeps other (remote) nodes intact.
 if [ "${AUTOENROLL:-}" = yes ] && ! $DRYRUN; then
   ndir="$PREFIX$INSTALL_DIR/data/lib"; mkdir -p "$ndir"
-  if python3 - "$ndir/nodes.json" "$NODE_NAME" "$NODE_TOKEN" "$NODE_COLOR" <<'PY'
+  # The endpoint the operator GAVE this run (-endpoint / NODE_ENDPOINT / ENDPOINT_IP) is also the address the panel
+  # hands out for this node — nodes.json endpoint_host. Left blank, the panel only auto-fills it from a PUBLIC IP the
+  # node reports, so a master whose clients dial a private/LAN or NAT'd address came up with no dial host at all
+  # (measured: NODE_ENDPOINT=192.168.77.6 → endpoint_host ''). Fills a BLANK one only — an address set in the panel
+  # is the operator's and stays; an auto-detected endpoint is left to the panel, as before.
+  if python3 - "$ndir/nodes.json" "$NODE_NAME" "$NODE_TOKEN" "$NODE_COLOR" "${_GIVEN_NODE_ENDPOINT:-}" <<'PY'
 import sys, os, json, hashlib, base64
-path, name, token, color = sys.argv[1:5]
+path, name, token, color, given_ep = sys.argv[1:6]
 try:
     nodes = json.load(open(path)); assert isinstance(nodes, dict)
 except Exception:
@@ -1261,11 +1387,13 @@ key = next((k for k, v in nodes.items() if isinstance(v, dict) and validates(v.g
 if key is None:
     key = next((k for k, v in nodes.items() if isinstance(v, dict) and v.get("name") == name), None)
 if key is None:
-    nodes[name] = {"name": name, "color": color, "endpoint_host": "",
+    nodes[name] = {"name": name, "color": color, "endpoint_host": given_ep.strip(),
                    "stats_file": "stats-%s.json" % name, "token_hash": tok_hash(token), "created": 0}
 else:
     e = nodes[key]; e["name"] = name
     e.setdefault("color", color); e.setdefault("endpoint_host", "")
+    if given_ep.strip() and not (e.get("endpoint_host") or "").strip():
+        e["endpoint_host"] = given_ep.strip()
     e.setdefault("stats_file", "stats-%s.json" % name); e.setdefault("created", 0)
     if not validates(e.get("token_hash", ""), token):   # token changed (e.g. a new -key) → refresh in place
         e["token_hash"] = tok_hash(token)
@@ -1448,7 +1576,12 @@ wire_host_updater
 # .path unit — inotify never sees the container's write across a bind mount. Panel-bearing profiles only.
 wire_docker_netctl(){
   case "$PROFILE" in host|master|host-node) ;; *) return 0;; esac
-  local drainer="$INSTALL_DIR/docker/swg-netctl-docker"
+  # ⚠️ FROM THE SOURCE TREE, like update.sh's ensure_netctl_docker. It used to look only in $INSTALL_DIR/docker/,
+  # which exists only after a --build (that is the one path that stages docker/). A default, image-pulling install
+  # therefore NEVER wired the helper — "swg-netctl-docker missing" on every fresh panel — until the first update
+  # healed it. The staged copy stays as a fallback for a run from a tree that lacks it.
+  local drainer="$SRC/docker/swg-netctl-docker"
+  [ -f "$drainer" ] || drainer="$INSTALL_DIR/docker/swg-netctl-docker"
   if $DRYRUN; then echo "    [skip] wire the docker address helper (swg-netctl-docker.timer → docker compose restart/up)"; return 0; fi
   [ -f "$drainer" ] || { warn "docker/swg-netctl-docker missing — one-click address changes will fall back to a manual restart"; return 0; }
   mkdir -p "$INSTALL_DIR/data/lib/netctl/queue" "$INSTALL_DIR/data/lib/netctl/status"   # the panel writes requests here (via the data/lib bind mount)
@@ -1512,6 +1645,13 @@ fi
 # A master sub-step (SWG_LC_PARENT=1) prints just a one-liner — convert.sh emits ONE unified summary at the very
 # end of the master convert. An individual host/node convert (not a sub-step) prints its full summary here.
 if [ "${SWG_LC_PARENT:-}" = 1 ]; then echo; ok "$PROFILE → docker done — continuing the master convert…"
+# ⚠️ A DRY RUN HAS NOTHING TO SUMMARISE. print_summary describes the LIVE box (it reads the installed .env and
+# `docker exec`s the running containers for their version), so on a dry run it announced "RE-INSTALL COMPLETE" and
+# printed a "new login — save the password now" that had never been applied. Say what a dry run actually did.
+elif $DRYRUN; then
+  echo; ok "Dry run of the docker $(b "$PROFILE") $([ "$EXISTING_DOCKER" = yes ] && echo re-install || echo install) finished — nothing was installed or changed."
+  if [ "$PROFILE" = node ]; then echo "    The node would sync to $(b "$PANEL_URL") ($([ -n "$TLS_FINGERPRINT" ] && echo "panel cert pinned, sha256 ${TLS_FINGERPRINT:0:16}…" || { [ "$TLS_VERIFY" = yes ] && echo "CA-verified" || echo "certificate NOT verified"; }))."
+  else echo "    The panel would be served at $(b "$([ "$TLS" = none ] && echo http || echo https)://$PANEL_DOMAIN$(case "${PANEL_PORT:-443}" in 443) ;; *) printf ':%s' "$PANEL_PORT";; esac)${PANEL_BASE}/") (TLS $(b "$TLS"))."; fi
 else
 echo; ok "Docker install complete (profile: $PROFILE)."
 # We MINTED this login → hand the plaintext to the summary, the only place it is ever shown (the auth file keeps
