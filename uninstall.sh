@@ -185,12 +185,14 @@ rm_panel(){
   # box that has one — and it listed just the bare trio. A box carrying leftover swg-netctl-docker.* from an
   # earlier conversion therefore kept them through an uninstall, with the .path waiting and the .timer RUNNING,
   # polling a queue for a panel that no longer existed. Measured on a bare-metal master: 4 swg units survived.
-  for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service \
-             swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
-    run systemctl disable --now "$_nc" 2>/dev/null || true; done   # unguarded, same reason as swg-update below
-  # one-click self-update bits the panel installed (mk_update_unit): units, wrapper, and the env drop-in.
-  # Not gated on the fragment existing — disabling something already gone is harmless.
-  for _su in swg-update.timer swg-update.path; do run systemctl disable --now "$_su" 2>/dev/null || true; done
+  # ⚠️ …BUT THE DOCKER FAMILY ONLY WHEN NO DOCKER PANEL IS LEFT. A box can carry both panels (guard_second_panel parks
+  # one beside the other), and there swg-netctl-docker.* is not a leftover — it is the LIVE docker panel's address
+  # helper. Removing the bare panel took it anyway: the docker panel kept running with nothing to carry out its address
+  # changes (1.8.8 qualification, R8). rm_docker_panel removes it with the docker panel; rm_netctl, the same test.
+  for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service; do
+    run systemctl disable --now "$_nc" 2>/dev/null || true; done   # unguarded — disabling something already gone is harmless
+  docker_running swg-panel || for _nc in swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
+    run systemctl disable --now "$_nc" 2>/dev/null || true; done
   # ⚠️ `.service.d` FOR swg-netctl TOO — the two beside it already reap theirs, and this is the ONE unit
   # here that actually gets a drop-in written: `update.sh`'s `ensure_acme_home` pins LE_WORKING_DIR into
   # `swg-netctl.service.d/acme-home.conf`, because acme.sh otherwise follows $HOME and the helper has none.
@@ -202,9 +204,9 @@ rm_panel(){
   # residue suppresses the very correction that would fix it. ([[acme-store-split-and-arms]])
   rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d $SD/swg-sub.service $SD/swg-sub.service.d \
        $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl \
-       /var/lib/swg-netctl \
-       $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker \
-       $SD/swg-update.service $SD/swg-update.path $SD/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update.new /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
+       /var/lib/swg-netctl
+  docker_running swg-panel || rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+  rm_updater_if_last bare-gone   # the one-click updater: shared with a docker install, so it goes only with the last of them
   # ⚠️ A DANGLING ENABLEMENT SYMLINK OUTLIVES ITS UNIT FILE, and `systemctl disable` CANNOT clear it: it
   # reads [Install] from the FRAGMENT to learn which symlinks to drop, so once the fragment is gone the link
   # in multi-user.target.wants/ is orphaned and systemd reports that name for ever as "not-found inactive
@@ -304,7 +306,11 @@ _goodbye_post(){
   # COMPLETES that removal, peers and all. A dry run describes the sign-off; it never sends one.
   if $DRYRUN; then echo "    [dry] sign off from the panel ($url)"; return 0; fi
   info "Signing off from the panel…"
-  python3 - "$url" "$tok" "$verify" <<'PY'
+  # ⚠️ THE REASON COMES BACK ON STDOUT, INTO THE ONE LINE BELOW — never printed raw. A refused connection printed
+  # python's own `<urlopen error [Errno 111] Connection refused>` above the friendly warning (1.8.8 qualification),
+  # and a rejected token a bare "HTTP 401" — and then "Couldn't reach the panel" about a panel that had answered.
+  local _why _rc
+  _why="$(python3 - "$url" "$tok" "$verify" <<'PY'
 import ssl, sys, http.client, urllib.request
 url = sys.argv[1].rstrip("/") + "/api/node/goodbye"; tok = sys.argv[2]; verify = sys.argv[3] == "yes"
 ctx = ssl.create_default_context()
@@ -332,14 +338,18 @@ except ConnectionResetError:
 except urllib.error.HTTPError as e:
     if e.code in (200, 404): sys.exit(0)        # removed / already gone
     if 500 <= e.code <= 599: sys.exit(2)        # proxy/gateway error — request reached the panel, node likely dropped
-    sys.stderr.write("HTTP %s\n" % e.code); sys.exit(1)   # 401 etc — rejected, not removed
+    print("HTTP %s" % e.code); sys.exit(3)      # 401 etc — it answered, and rejected it: not removed
 except Exception as e:
-    sys.stderr.write(str(e) + "\n"); sys.exit(1)
+    r = getattr(e, "reason", None) or e         # a URLError carries the socket error as its reason
+    r = str(getattr(r, "strerror", None) or r or type(r).__name__)
+    print(r[:1].lower() + r[1:]); sys.exit(1)   # "connection refused", "timed out", "name or service not known"
 PY
-  case $? in
+)"; _rc=$?
+  case $_rc in
     0) ok "Panel notified — your peers are KEPT for a re-install (re-enroll with the same token to restore them). To purge for good, use Nodes → remove in the panel.";;
     2) warn "The panel closed the connection without a reply — it almost certainly ACTIONED the sign-off (it removes the node before responding). Check the Nodes screen to confirm.";;
-    *) warn "Couldn't reach the panel; the node will just go offline there (your peers are kept). Remove it from the Nodes screen if you want it gone.";;
+    3) warn "The panel turned the sign-off down (${_why:-rejected}); the node will just go offline there (your peers are kept). Remove it from the Nodes screen if you want it gone.";;
+    *) warn "Couldn't reach the panel${_why:+ ($_why)}; the node will just go offline there (your peers are kept). Remove it from the Nodes screen if you want it gone.";;
   esac
 }
 # ⚠️ NOBODY LEFT TO TELL. A node whose panel is THIS box's own (a master's co-located node dials http://127.0.0.1:8088)
@@ -577,12 +587,25 @@ docker_rm_project_networks(){
   for _nw in $(docker network ls -q --filter "label=com.docker.compose.project=$(basename "$DOCKER_DIR")" 2>/dev/null); do
     run sh -c "docker network rm '$_nw' >/dev/null 2>&1 || true"
   done; }
+# The ONE-CLICK UPDATER — swg-update, swg-update-check, swg-update.{service,path,timer} and the stamp — is one set of
+# files that a bare-metal panel (install-host.sh's mk_update_unit) and a docker install of any profile
+# (install-docker.sh's wire_host_updater) both write, at the same paths, reading the same trigger list. So it belongs
+# to whichever of them is still here, and goes only with the last: a bare panel, or a swg-panel / swg-node container.
+# Each remover used to take it with ITSELF — on a box carrying both panels, removing the parked bare one left the live
+# docker panel's Update button writing a trigger that nothing read, and removing the docker one did the same to the
+# bare one (1.8.8 qualification, R8). $1 = bare-gone: this run is removing the bare panel right now, so it does not
+# count even while a dry run leaves its files where they are.
+rm_updater_if_last(){
+  if { [ "${1:-}" != bare-gone ] && { [ -d /opt/swg-panel ] || [ -f "$SD/swg-panel-server.service" ]; }; } \
+     || docker_running swg-panel || docker_running swg-node; then return 0; fi
+  for _su in swg-update.timer swg-update.path; do run systemctl disable --now "$_su" 2>/dev/null || true; done
+  rmrf "$SD/swg-update.service" "$SD/swg-update.path" "$SD/swg-update.timer" /usr/local/bin/swg-update \
+       /usr/local/bin/swg-update.new /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
+  run systemctl daemon-reload 2>/dev/null || true
+}
 docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only once NO swg container remains
   if docker_running swg-panel || docker_running swg-node; then return 0; fi
-  # host one-click updater units (install-docker's wire_host_updater) — remove now that no swg container remains
-  for _su in swg-update.timer swg-update.path; do [ -e "/etc/systemd/system/$_su" ] && run systemctl disable --now "$_su" 2>/dev/null || true; done
-  rmrf /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /etc/systemd/system/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update.new /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
-  run systemctl daemon-reload 2>/dev/null || true
+  rm_updater_if_last   # the host one-click updater — unless a bare-metal panel on this box still uses it
   if command -v docker >/dev/null 2>&1; then
     local DC=""; if docker compose version >/dev/null 2>&1; then DC="docker compose"; elif command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
     # activate every profile so `down` stops profile-gated services too (swg-sub); plain `down` skips them and --remove-orphans won't (it's in the compose file, not an orphan)
@@ -811,6 +834,36 @@ rm_leftovers(){
   NEED_NETOBJ_SWEEP=true
   ok "leftover swg files removed"
 }
+# A KEPT PANEL THAT WAS PARKED FOR THE ONE THIS RUN REMOVED IS STARTED AGAIN. It was stopped for one reason only — two
+# panels would answer at one address — and with the other gone that reason is gone too. Left stopped, the box had no
+# panel at all while the summary said "Kept: Bare-metal swg-panel" (1.8.8 qualification, R8: nothing answered on its
+# ports). Started rather than explained, because keeping a component means keeping it working (the take-over restore
+# above does the same) and the operator who kept it has nothing left to decide; its one-click updater is still there
+# (rm_updater_if_last). Safe for its servers: each panel's nodes hold that panel's token only, so the ones enrolled to
+# the removed panel are refused by this one and keep their peers (a refused sync never reconciles), and this panel's
+# own nodes simply find it back. A panel the operator stopped with nothing beside it is not parked and is left alone.
+unpark_kept_panel(){
+  local _lbl="" _how="" _why=""
+  if $_BARE_PARKED && [ -f "$SD/swg-panel-server.service" ] && ! docker_running swg-panel; then
+    _lbl="Bare-metal swg-panel"
+    if run systemctl enable --now swg-panel-server 2>/dev/null; then
+      [ -f "$SD/swg-sub.service" ] && { run systemctl enable --now swg-sub 2>/dev/null || warn "  couldn't start swg-sub — start it by hand: systemctl enable --now swg-sub"; }
+      _how="started again"
+    else _how="still stopped"; warn "couldn't start the bare-metal panel — start it by hand: systemctl enable --now swg-panel-server swg-sub"; fi
+    _why="the Docker panel answered at the same address"
+  elif $_DOCKER_PARKED && docker_running swg-panel && [ ! -f "$SD/swg-panel-server.service" ] && [ ! -d /opt/swg-panel ]; then
+    _lbl="Docker panel (swg-panel)"
+    if run sh -c 'for c in swg-panel swg-sub; do docker inspect "$c" >/dev/null 2>&1 || continue
+                    docker update --restart=unless-stopped "$c" >/dev/null && docker start "$c" >/dev/null || exit 1; done'; then
+      _how="started again"
+    else _how="still stopped"; warn "couldn't start the Docker panel — start it by hand: cd $DOCKER_DIR && docker compose up -d"; fi
+    _why="the bare-metal panel answered at the same address"
+  fi
+  [ -n "$_lbl" ] || return 0
+  [ "$_how" = "started again" ] && ok "$_lbl started again — it was stopped only because $_why, and that panel is gone now."
+  local i; for i in "${!DID_KEEP[@]}"; do
+    [ "${DID_KEEP[$i]}" = "$_lbl" ] && DID_KEEP[$i]="$_lbl — $_how (it had been stopped while $_why)"; done
+  return 0; }
 _has_bare_netctl(){ ls $SD/swg-netctl.* >/dev/null 2>&1; }
 _has_docker_netctl(){ ls $SD/swg-netctl-docker.* >/dev/null 2>&1; }
 _has_leftovers(){ [ -d /etc/swg-sub ] || [ -d /opt/swg-sub ] || [ -e "$SD/swg-sub.service" ] || [ -d "$SD/swg-sub.service.d" ] \
@@ -1185,6 +1238,16 @@ if command -v docker >/dev/null 2>&1; then
 fi
 $DPANEL && add "Docker panel (swg-panel)" "container swg-panel" rm_docker_panel
 $DNODE  && add "Docker node (swg-node)"   "$(docker_node_detail)"   rm_docker_node
+# A PANEL PARKED FOR THE OTHER ONE. guard_second_panel (lib/common.sh) stops one panel when a panel of the other method
+# would answer beside it at the same address: a bare one disabled + stopped, a docker one stopped with restart=no. Which
+# of them is parked is read NOW, before anything is removed — unpark_kept_panel (below) needs to know it once the other
+# one is gone. TWIN of lib/common.sh's docker_parked / docker_panel_live (this file does not source it).
+_ctr_parked(){ [ "$(docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' "$1" 2>/dev/null)" = "false no" ]; }
+_BARE_PARKED=false; _DOCKER_PARKED=false
+if [ -f "$SD/swg-panel-server.service" ] && $DPANEL; then
+  if ! systemctl is-enabled --quiet swg-panel-server 2>/dev/null; then ! _ctr_parked swg-panel && _BARE_PARKED=true
+  else _ctr_parked swg-panel && _DOCKER_PARKED=true; fi
+fi
 # swg-netctl units lingering WITHOUT the panel they serve → offer on their own. ⚠️ PER FAMILY: swg-netctl.* belongs to
 # a bare panel (rm_panel sweeps both families), swg-netctl-docker.* to a docker one — which rm_docker_panel now removes.
 # Testing only "is there a bare panel" listed a LIVE docker panel's own helper as "(leftover helper)" (1.8.8 qualification).
@@ -1308,6 +1371,7 @@ if [ -n "${ADOPTED_CTRS:-}" ] && command -v docker >/dev/null 2>&1; then
   else info "  Left stopped — start one by hand with: docker start <name>"; fi
 fi
 
+unpark_kept_panel
 # Recovery archives from earlier converts/uninstalls (.converted-* / .uninstalled-*). They are OURS, but they are
 # deliberately-kept state — a node token plus interface private keys — and the installer offers them as a recovery
 # list, so they are never deleted without being asked. Default NO; a preset ARCHIVES_DEL=y covers unattended wipes.
