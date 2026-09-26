@@ -915,9 +915,9 @@ export function ClientEntryLabel({ e }) {
 }
 export function ClientEntryBadges({ e }) {
   return html`<span class="ce-badges">
-    <span class=${"ce-tag " + (e.obf ? "ce-obf" : "ce-plain")}>${e.obf || "plain"}</span>
-    <span class=${"ce-tag " + (e.native ? "ce-native" : "ce-cross")}>${e.native ? "Native" : "crossplatform"}</span>
-    <span class=${"ce-tag " + (e.isCli ? "ce-cli" : "ce-app")}>${e.isCli ? "CLI" : "app"}</span>
+    <span class=${"ce-tag " + (e.obf ? "ce-obf" : "ce-plain")}>${e.obf || T("tag|plain")}</span>
+    <span class=${"ce-tag " + (e.native ? "ce-native" : "ce-cross")}>${e.native ? T("tag|Native") : T("tag|crossplatform")}</span>
+    <span class=${"ce-tag " + (e.isCli ? "ce-cli" : "ce-app")}>${e.isCli ? "CLI" : T("tag|app")}</span>
     ${autostartIcon(e.autostart)}
   </span>`;
 }

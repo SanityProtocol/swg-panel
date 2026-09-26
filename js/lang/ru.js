@@ -713,6 +713,9 @@ export const STR = {
 
   // ── charts (js/charts.js) ──────────────────────────────────────────────────────────────────────
   "Throughput": "Трафик",
+  // the Overview's Traffic card: whose rate the number is — the nodes picked in the fleet list, or all of them
+  "sum|selected": "по выбранным",
+  "sum|aggregate": "всего",
   "no data": "нет данных",
   "Vertical scale — nearest 1/5/10/50/100/500 unit above the peak (≥15% headroom)":
     "Шкала — ближайшее 1/5/10/50/100/500 выше пика (запас ≥15%)",
@@ -989,6 +992,14 @@ export const STR = {
   "Set csqtt instance": "Настроен экземпляр csqtt",
   "Moved RAW-IP": "RAW-IP перенесён",
   "tag|ignored": "скрыт",
+  // a turn client's catalogue badges (js/turn.js ClientEntryBadges)
+  "tag|plain": "без маскировки",
+  "tag|Native": "нативный",
+  "tag|crossplatform": "кроссплатформенный",
+  "tag|app": "приложение",
+  // the flow map's bubble: what the number is — a range's total, or a live rate
+  "fm|volume": "объём",
+  "fm|throughput": "скорость",
   "Another program owns this interface — it runs in its own container":
     "Этим интерфейсом владеет другая программа — он работает в своём контейнере",
   "col|Peer": "ПИР",

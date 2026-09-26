@@ -1068,7 +1068,7 @@ export function FlowMap2({ selIds, range, hist }) {
           onMouseEnter=${() => setHov({ id: s.id })} onMouseLeave=${() => setHov(null)}><${Ic} i=${s.ic}/></button>`; })}
       ${hv && hv.type === "flow" ? html`<div class="fm2-bub" style=${bubStyle}>
         <div class="fm2-bub-h" style="flex-direction:row;gap:6px;align-items:center;flex-wrap:wrap"><span style=${"color:" + hv.ca}>${hv.a}</span><span style="color:var(--faint)">→</span><span style=${"color:" + hv.cb}>${hv.b}</span></div>
-        <div class="fm2-bub-r"><span style="color:var(--dim)">${ranged ? "volume" : "throughput"}</span><b>${fmt(hv.v)}</b></div>
+        <div class="fm2-bub-r"><span style="color:var(--dim)">${ranged ? T("fm|volume") : T("fm|throughput")}</span><b>${fmt(hv.v)}</b></div>
       </div>` : hv ? html`<div class="fm2-bub" style=${bubStyle}>
         <div class="fm2-bub-h" style=${"color:" + hv.col}>${hv.name}<span class="fm2-bub-k">${hv.sub}</span></div>
         <div class="fm2-bub-r"><span style=${"color:" + FLOW_IN}>${T("↓ ingress")}</span><b>${fmt(hv.ib || 0)}</b></div>
@@ -1547,7 +1547,7 @@ export function Overview() {
       <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">${T("Users")}</div><div class="v">${sUsers.length}</div><div class="sub">${scoped ? T("{v1} here", { v1: plural(sPeers.length, "peer") }) : T("{v1} total", { v1: plural(sPeers.length, "peer") })}</div></div></a>
       <a class="stat clk" href="#/peers"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">${T("Peers")}</div><div class="v" style="font-size:19px"><span style="color:var(--ink)">${pAssigned}</span> · <span style="color:var(--dim)">${pUnassigned}</span></div><div class="sub">${T("assigned · unassigned")}</div>${orphans.length ? html`<div class="sub" style="color:#E8912D;font-weight:600">${T("Orphan peers {n}", { n: orphans.length })}</div>` : ""}</div></a>
       <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">${T("col|Nodes")}</div><div class="v">${liveNodes}<small> / ${fleetSel.length}</small></div><div class="sub">${plural(ifaceCount, "interface")}</div>${nodesAlerting ? html`<div class="sub" style="color:var(--dangling)">${T("{n} alerting", { n: nodesAlerting })}</div>` : ""}</div></a>
-      <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">${T("Throughput")}</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span>${scoped ? " selected" : " aggregate"}</div></div></div>
+      <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">${T("Throughput")}</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span>${" " + (scoped ? T("sum|selected") : T("sum|aggregate"))}</div></div></div>
     </div>
 
     ${secTitle(T("Fleet"), scoped ? T("{n} of {total}", { n: fleetSel.length, total: plural(fleet.length, "server") }) : plural(fleet.length, "server"), undefined, "fleet")}
