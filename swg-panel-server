@@ -13181,6 +13181,13 @@ def routed_catalog_cats(nodes):
                     c = r.get("category") if isinstance(r, dict) else None
                     if _is_routed_list_cat(c):
                         out.add(c)
+        # …and the node's DEFAULT LIST (P3), the fourth routing block — the same three consequences as above if it is
+        # missed. Measured on the 1.8.8 candidate: nixos routed `cat_mc_twitch` from its default list alone while
+        # `cat_sizes` had no such list.
+        for r in (n.get("default_routing") if isinstance(n.get("default_routing"), list) else ()):
+            c = r.get("category") if isinstance(r, dict) else None
+            if _is_routed_list_cat(c):
+                out.add(c)
     return out
 
 def provider_update_all(nodes_path):

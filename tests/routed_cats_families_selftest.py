@@ -17,8 +17,13 @@ the screen. Every other list had a second way in — an interface's rule (`mc:cl
 on awg2), another node's interface (`mc:tld-ru` on nixos/awg0), or the curated set (`meta`, `google`).
 That is why one row and not six: the bug needs a category with no second path.
 
+THE FOURTH FAMILY (1.8.8 qualification): a node's DEFAULT LIST (`default_routing`, P3) is a routing block too, and
+the walker missed it — measured on the candidate: nixos routed `cat_mc_twitch` from its default list alone while
+`cat_sizes` had no such list. Same three consequences.
+
 Run: python3 tests/routed_cats_families_selftest.py      (0 = pass)
-     --perturb   walks `ifaces` alone again and expects RED.
+     --perturb          walks `ifaces` alone again and expects RED.
+     --perturb-default  forgets the node's default list and expects RED.
 """
 import importlib.machinery, importlib.util, os, re, sys, tempfile
 
@@ -26,6 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 PERTURB = "--perturb" in sys.argv
+PERTURB_DEF = "--perturb-default" in sys.argv
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -38,7 +44,17 @@ _ANCH = '''        for _src in ("ifaces", "wdtt", "csqtt"):
             for ifo in (n.get(_src) or {}).values():
                 for r in ((ifo or {}).get("routing") or []):'''
 assert SRC.count(_ANCH) == 1, "anchor missing — this run would FALSE-PASS"
+_ANCH_DEF = '''        for r in (n.get("default_routing") if isinstance(n.get("default_routing"), list) else ()):
+            c = r.get("category") if isinstance(r, dict) else None
+            if _is_routed_list_cat(c):
+                out.add(c)
+'''
+assert SRC.count(_ANCH_DEF) == 1, "default-list anchor missing — this run would FALSE-PASS"
 path = PANEL
+if PERTURB_DEF:                               # the shipped 1.8.8 candidate: three families, no default list
+    SRC = SRC.replace(_ANCH_DEF, "")
+    _fd, path = tempfile.mkstemp(suffix=".py", prefix="routedcats-", dir=HERE)
+    os.write(_fd, SRC.encode()); os.close(_fd)
 if PERTURB:                                   # the shipped walker: interfaces only
     SRC = SRC.replace(_ANCH, '''        for _src in ("ifaces",):
             for ifo in (n.get(_src) or {}).values():
@@ -54,7 +70,7 @@ def _load(p, n):
     return m
 
 P = _load(path, "swgpanel")
-if PERTURB:
+if PERTURB or PERTURB_DEF:
     os.unlink(path)
 
 # msk-main's real shape, trimmed: the cats that DO have a second path, and the one that does not.
@@ -68,13 +84,19 @@ NODES = {"n1": {
               "csqtt2": {"routing": [{"category": "mc:cloudflare"}]}},
     "wdtt": {"wdtt1": {"routing": []},
              "wdttplus1": {"routing": [{"category": "mc:wdtt-only"}]}},
-}}
+},
+    # nixos's measured shape: a provider list named ONLY by the node's default list (+ a custom rule and the catch-all)
+    "n2": {"default_routing": [{"category": "custom", "action": "block", "aud": "cascaded"},
+                               {"category": "mc:twitch", "action": "block"}, {"category": "all", "action": "direct"}]},
+    "n3": {"default_routing": None},
+}
 
 got = P.routed_catalog_cats(NODES)
 
 print("[1] the category with NO second path — the reported symptom")
 check("mc:spacex is routed (csqtt1 names it, nothing else does)", "mc:spacex" in got, sorted(got))
 check("mc:wdtt-only is routed (a WDTT server names it)", "mc:wdtt-only" in got, sorted(got))
+check("mc:twitch is routed (a node's default list names it, nothing else does)", "mc:twitch" in got, sorted(got))
 
 print("\n[2] the ones that were already visible stay visible")
 for c in ("mc:cloudflare", "mc:ookla-speedtest", "mc:tld-ru"):
