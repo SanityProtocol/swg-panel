@@ -712,7 +712,7 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${meta.address || "—"}</span></div>
-          <div class="ig-item"><span class="ig-l">${T("Throughput")}</span><span class="ig-v">${ifTrafficBadge(meta.egress_mode, meta.egress_node, node, meta.exit_id)}</span></div>
+          <div class="ig-item"><span class="ig-l">${T("Traffic")}</span><span class="ig-v">${ifTrafficBadge(meta.egress_mode, meta.egress_node, node, meta.exit_id)}</span></div>
           ${(() => {
             // MTU used to sit here. It is a create-time constant that never moves on its own and is still on
             // Edit interface; this one changes minute to minute and had nowhere on this page to live.
@@ -883,7 +883,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
       <div class="iface-grid">
         <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${w.listen || cfg.listen || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${(isCsq ? (w.tun_addr || cfg.tun_addr) : w.wg_addr) || "—"}</span></div>
-        <div class="ig-item"><span class="ig-l">${T("Throughput")}</span><span class="ig-v">${ifTrafficBadge(cfg.egress_mode, cfg.egress_node, node, cfg.exit_id)}</span></div>
+        <div class="ig-item"><span class="ig-l">${T("Traffic")}</span><span class="ig-v">${ifTrafficBadge(cfg.egress_mode, cfg.egress_node, node, cfg.exit_id)}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Fork")}</span><span class="ig-v"><${ForkTag} fork=${fork}/></span></div>
       </div>
     <//>
