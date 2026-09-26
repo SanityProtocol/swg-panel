@@ -19,14 +19,14 @@ import { rulesToRows, rowsToRules, badgeIdentity, rowHasBadge, newGid,
          badgeText, readToken as rrReadToken,
          customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho, rowLints, badgeCovers } from "./rulerows.js";
 import { esc, seen } from "./util.js";
-import { isSelfContainedName, nodeStale } from "./model.js";
+import { isSelfContainedName, nodeStale, kindOf, awgGen } from "./model.js";
 import { meshHealth, deviceLabel } from "./views.js";
 import { UserPicker } from "./peer-actions.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed } from "./theme.js";
 import { Ic, Tag, Panel, Switch, Dropdown, Disclosure, autoGrow, Sheet, footRow, secTitle, SearchBox,
          Popover, Portal, toast, openModal, pushModal, closeModal, closeAllModals, openConfirm, goSettings,
-         useReorder, GRIP_SVG, NodeIpPick, ConfirmPhrase, CapList, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
+         useReorder, GRIP_SVG, NodeIpPick, ConfirmPhrase, CapList, ListPager, LIST_PAGE, pageSlice, ifaceColor } from "./ui.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -2657,10 +2657,23 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
           ⚠️ KEYED BY THE NODE. `NodeIpPick` holds "am I in Custom mode" in its own state and only leaves it when the
           operator picks a listed option — so one instance reused across a change of "Leaves by" carried the PREVIOUS
           node's Custom mode over. A key makes it a different control for a different node, which is what it is. */""}
-    ${(() => { const note = !addr ? "" : !addr.ips.length ? T("{v1} hasn't reported its addresses yet — type one it has, or leave this on Auto.", { v1: Store.nodeName(addr.node) })
-        : dRec ? T("Everything this interface sends straight out of {v1} leaves as this address.", { v1: Store.nodeName(node) })
-        : nodeScope ? T("Every rule of this node's default that sends traffic through {v1} leaves as this address.", { v1: Store.nodeName(asNode) })
-        : T("Every rule that sends this interface through {v1} leaves as this address.", { v1: Store.nodeName(asNode) });
+    ${(() => {
+      // THE SENTENCE NAMES WHAT IT IS ABOUT, in the colours the rest of the panel gives them: the interface in its type's
+      // colour (WG, AWG 2.0, AWG 3.1, WDTT, csqtt — Settings → Interfaces), the node and the address it leaves as in that
+      // node's colour, all three bold. It read "this interface … this address", with the address one field away and on
+      // Auto not even chosen yet — so Auto says whose default it is.
+      const b = (txt, color) => html`<b style=${color ? "color:" + color : ""}>${txt}</b>`;
+      const k = kindOf(node, iface);
+      const ifB = b(iface, ifaceColor(k === "awg" && awgGen(node, iface) === "3.1" ? "awg3" : k));
+      const nB = addr ? b(Store.nodeName(addr.node), Store.nodeColor(addr.node)) : null;
+      const aB = addr && addr.value ? b(addr.value, Store.nodeColor(addr.node)) : null;
+      const note = !addr ? "" : !addr.ips.length ? Trich("{v1} hasn't reported its addresses yet — type one it has, or leave this on Auto.", { v1: nB })
+        : dRec ? (aB ? Trich("Everything {iface} sends straight out of {node} leaves as {addr}.", { iface: ifB, node: nB, addr: aB })
+                     : Trich("Everything {iface} sends straight out of {node} leaves as {node}'s default address.", { iface: ifB, node: nB }))
+        : nodeScope ? (aB ? Trich("Every rule of this node's default that sends traffic through {node} leaves as {addr}.", { node: nB, addr: aB })
+                          : Trich("Every rule of this node's default that sends traffic through {node} leaves as {node}'s default address.", { node: nB }))
+        : aB ? Trich("Every rule that sends {iface} through {node} leaves as {addr}.", { iface: ifB, node: nB, addr: aB })
+        : Trich("Every rule that sends {iface} through {node} leaves as {node}'s default address.", { iface: ifB, node: nB });
       return html`<div class="row2 rs-where">
         <div class="field"><label>${T("Leaves by")}</label>
           <span class="rrdest rsdest"><${Dropdown} value=${dest} onChange=${setDest} options=${dests}/></span></div>

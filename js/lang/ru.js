@@ -6562,8 +6562,18 @@ export const STR = {
     "Трафик, пришедший с {node}, пропускает это правило — иначе он вернулся бы туда, откуда пришёл.",
   "Kernel SNI on this node can't match hostnames for traffic cascaded in — only IP addresses and networks apply to it.":
     "Kernel SNI на этом узле не умеет сопоставлять имена хостов для трафика с других узлов — к нему применяются только IP-адреса и сети.",
-  "Every rule of this node's default that sends traffic through {v1} leaves as this address.":
-    "Все правила по умолчанию этого узла, которые отправляют трафик через {v1}, выходят с этого адреса.",
+  "Every rule that sends {iface} through {node} leaves as {addr}.":
+    "Все правила, которые отправляют {iface} через {node}, выходят с адреса {addr}.",
+  "Every rule that sends {iface} through {node} leaves as {node}'s default address.":
+    "Все правила, которые отправляют {iface} через {node}, выходят с адреса по умолчанию узла {node}.",
+  "Everything {iface} sends straight out of {node} leaves as {addr}.":
+    "Всё, что {iface} отправляет напрямую с {node}, выходит с адреса {addr}.",
+  "Everything {iface} sends straight out of {node} leaves as {node}'s default address.":
+    "Всё, что {iface} отправляет напрямую с {node}, выходит с адреса по умолчанию узла {node}.",
+  "Every rule of this node's default that sends traffic through {node} leaves as {addr}.":
+    "Все правила по умолчанию этого узла, которые отправляют трафик через {node}, выходят с адреса {addr}.",
+  "Every rule of this node's default that sends traffic through {node} leaves as {node}'s default address.":
+    "Все правила по умолчанию этого узла, которые отправляют трафик через {node}, выходят с адреса по умолчанию узла {node}.",
   "Routes {ifaces} here and the traffic {sources} send out through this node.":
     "Направляет {ifaces} этого узла и трафик, который {sources} выпускают через этот узел.",
   "{v1} arrive from two nodes at once and are left to this node's own route.":
