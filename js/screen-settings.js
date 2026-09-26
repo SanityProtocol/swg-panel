@@ -2693,9 +2693,13 @@ const sectionLabel = k => ({
                   : (sr.engine === "dns" && sr.dnsmasq === true) ? ["1.1.1.1", "8.8.8.8"] : null;
                 if (!run || savedMode !== "forcedns") return null;
                 const saved = ((nodeRec || {}).dns_upstream || []).length ? nodeRec.dns_upstream : ["1.1.1.1", "8.8.8.8"];
+                // ⚠️ SAY WHICH ONE IT IS. The SPA knows: a node that runs the setting reports it; one too old to know it does
+                // not. One sentence covering both promised "the next sync" on a node that will never apply it (F1).
                 return run.join(",") === saved.join(",")
                   ? html`<div class="hint">${T("In effect on this node: {v1}", { v1: run.join(", ") })}</div>`
-                  : html`<div class="hint warnish">${T("Not on the node yet — it still asks {v1}. It applies on the next sync; a node too old to know this setting keeps the default until it updates.", { v1: run.join(", ") })}</div>`; })()}
+                  : Array.isArray(sr.dns_upstream)
+                    ? html`<div class="hint warnish">${T("Not on the node yet — it still asks {v1}. It applies on the next sync.", { v1: run.join(", ") })}</div>`
+                    : html`<div class="hint warnish">${T("This node is too old to use this setting — it keeps asking {v1} until it is updated.", { v1: run.join(", ") })}</div>`; })()}
             </div>` : null}
           </div>`; })()}
 
