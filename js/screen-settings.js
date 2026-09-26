@@ -2763,8 +2763,8 @@ const sectionLabel = k => ({
           </div>` : null}` : null}
 
           <div class="lg-legend">
-            <div class="lg-leg-row">${Trich("{v1} matched by address range (GeoIP / ASN) — works in every mode.", { v1: html`<span class="capb ip">IP</span>` })}</div>
-            <div class="lg-leg-row">${Trich("{v1} matched by domain name — needs Force-DNS or SNI mode.", { v1: html`<span class="capb host">${T("Host")}</span>` })}</div>
+            ${legRow(Trich("{v1} matched by address range (GeoIP / ASN) — works in every mode.", { v1: html`<span class="capb ip">IP</span>` }))}
+            ${legRow(Trich("{v1} matched by domain name — needs Force-DNS or SNI mode.", { v1: html`<span class="capb host">${T("Host")}</span>` }))}
             ${provFleetCats.some(id => !catUsableInMode(id, nodeMode)) ? html`<div class="lg-leg-row faint">${T("Greyed rows are Host-only — this node is IP-only, so they can't match here. The pull stays remembered; switch to Force-DNS or SNI to activate them.")}</div>` : null}
           </div>` : null}
 
@@ -2856,9 +2856,9 @@ const sectionLabel = k => ({
               </div>
               <div class="lgrid">${cats.map(bkRow)}</div>
               <div class="lg-legend">
-                <div class="lg-leg-row">${Trich("{v1} matched by IP address — works in every mode.", { v1: html`<span class="capb ip">IP</span>` })}</div>
-                <div class="lg-leg-row">${Trich("{v1} matched by domain name — needs *{v2}* or *Hybrid-SNI* mode (they fill the block set from DNS). IP-only and Kernel-SNI can't match domains.", { v1: html`<span class="capb host">${T("Host")}</span>`, v2: T("Force-DNS") })}</div>
-                <div class="lg-leg-row">${Trich("{v1} a domain list can't enforce on an IP-only or Kernel-SNI node — it's skipped, never pushed. Switch that node to Force-DNS / Hybrid-SNI, or add an IP list.", { v1: html`<span class="bk-nabadge">${T("Not available")}</span>` })}</div>
+                ${legRow(Trich("{v1} matched by IP address — works in every mode.", { v1: html`<span class="capb ip">IP</span>` }))}
+                ${legRow(Trich("{v1} matched by domain name — needs *{v2}* or *Hybrid-SNI* mode (they fill the block set from DNS). IP-only and Kernel-SNI can't match domains.", { v1: html`<span class="capb host">${T("Host")}</span>`, v2: T("Force-DNS") }))}
+                ${legRow(Trich("{v1} a domain list can't enforce on an IP-only or Kernel-SNI node — it's skipped, never pushed. Switch that node to Force-DNS / Hybrid-SNI, or add an IP list.", { v1: html`<span class="bk-nabadge">${T("Not available")}</span>` }))}
               </div>
             <//>`;
           })() : null}
@@ -4239,6 +4239,15 @@ export function NodeMeshForm({ node, vals, set }) {
 /** A stored rule list, through the editor's own round trip — the form the draft holds and the save sends, so a list opened
  *  and left alone compares equal to the one on the server. */
 const normRules = rs => { const { rows, catchAll } = rulesToRows(rs || []); return rowsToRules(rows, catchAll); };
+
+/* A legend row: the badge, then its sentence as ONE flowing text. `Trich` hands the sentence back as several nodes (plain runs,
+   *bold* runs), and in this flex row each became its own column — "Force-DNS" and "Hybrid-SNI" wrapped by themselves and "or"
+   lost its space, "orHybrid-SNI" (1.8.8 qualification, GUI review). The badge keeps its hanging column; the words flow. Every
+   language puts the badge first today; one that does not still reads as text, just without the hanging indent. */
+export function legRow(parts) {
+  const a = [parts].flat(Infinity).filter(x => x != null && x !== ""), lead = typeof a[0] === "string" ? null : a[0];   // Trich nests: the badge arrives inside the first run's array
+  return html`<div class="lg-leg-row">${lead ? html`${lead}<span>${a.slice(1)}</span>` : html`<span>${a}</span>`}</div>`;
+}
 
 /* THE NODE'S DEFAULT LIST (D2, ROUTING-PEERS-MESH-PLAN §7.3) — the interfaces' own `RoutingRules`, in the node scope. Its rows
    are held HERE, because a row carries an identity (`_gid`) and draft state (`_draft`, a badge being typed) that the rule list
