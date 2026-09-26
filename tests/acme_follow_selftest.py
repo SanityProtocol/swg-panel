@@ -26,6 +26,10 @@ PATHS = {k: os.environ.get("SWG_AF_" + k) or os.path.join(ROOT, v) for k, v in S
 
 # (file key, anchor, replacement, the check that must go red)
 PLANTS = [
+    # 1.8.8 qualification: ownership is asked BEFORE anything is cleared or issued
+    ("NETCTL", '    foreign = _acme_foreign_target(domains[0])\n    if foreign and not DRYRUN:\n        rc, out = run(acme_argv(acme, "--renew"',
+     '    foreign = ""\n    if foreign and not DRYRUN:\n        rc, out = run(acme_argv(acme, "--renew"',
+     "…NO --issue (it would save our challenge method over theirs when due) — renewed by its OWN method instead"),
     # 1.8.8 qualification: the SIGHUP handler is installed FIRST in main() — an acme renewal's reload during the
     # migrations / store loads / ledger start took the default action and killed the panel (a clean exit to systemd)
     ("PANEL", "    with contextlib.suppress(ValueError, OSError, AttributeError):\n        signal.signal(signal.SIGHUP, _sighup_reload)\n",
@@ -506,6 +510,8 @@ before = tree(d)
 del CALLS[:]
 N._issue_acme(N.SERVICES["panel"], "panel", [DOM], "letsencrypt", CREDS, reloadcmd=True)
 check("issue over a foreign entry: NO --install-cert", not any("--install-cert" in c for c in CALLS), CALLS)
+check("…NO --issue (it would save our challenge method over theirs when due) — renewed by its OWN method instead",
+      not any("--issue" in c for c in CALLS) and any(c[-4:] == ["--renew", "-d", DOM, "--ecc"] for c in CALLS), CALLS)
 check("…the entry's certificate is copied into our path", sha(SERVED) == sha(DNS[0]) and sha(SERVED_KEY) == sha(DNS[1]))
 check("…and the panel is reloaded itself", any("HUP" in c for c in CALLS), CALLS)
 check("…the entry is untouched", tree(d) == before)
@@ -513,6 +519,18 @@ del CALLS[:]
 serve(*OLD)
 N._issue_acme(N.SERVICES["panel"], "panel", [DOM], "letsencrypt", CREDS, reloadcmd=False)
 check("a live-apply (noreload) copies without reloading", sha(SERVED) == sha(DNS[0]) and not any("HUP" in c for c in CALLS), CALLS)
+
+# another program's entry that holds NO certificate (its own issuance failed, or is under way): never deleted by us
+d = entry(DOM, DNS[0], DNS[1], foreign_fc)
+for _f in ("fullchain.cer", DOM + ".cer"):
+    os.unlink(os.path.join(d, _f))
+del CALLS[:]
+try:
+    N._issue_acme(N.SERVICES["panel"], "panel", [DOM], "letsencrypt", CREDS, reloadcmd=True)
+except N.Reject:
+    pass                                          # nothing to copy is a refusal — never a reason to delete
+check("a foreign entry with NO certificate is not cleared (it is not ours to delete)",
+      os.path.isdir(d) and os.path.exists(os.path.join(d, DOM + ".key")) and not any("--issue" in c for c in CALLS), CALLS)
 
 entry(DOM, DNS[0], DNS[1], foreign_fc)
 open(N.CONF, "w").write("SERVE_MODE=nginx\n")    # behind the installer's nginx, which serves the same file

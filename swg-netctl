@@ -590,6 +590,26 @@ def _issue_selfsigned(svc, domains):
 def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
     acme = find_acme()
     env = dict(os.environ)
+    # ⚠️ ANOTHER PROGRAM'S ENTRY IS ASKED ABOUT FIRST — before anything is cleared or issued. `--issue` saves OUR
+    # challenge method (`--standalone`, or our DNS hook) into the entry whenever its certificate is due, over whatever
+    # that program renews with, and `_acme_clear_unusable` deletes an entry that holds no certificate yet. Neither is
+    # ours to do to an entry another program installs (the certificate series' rule). So such an entry is RENEWED by
+    # its own saved method — `--renew` skips a certificate that is not due and never rewrites the method, exactly
+    # what acme.sh's own cron does to it every day — and its certificate is copied. The panel's 6-hourly sync-acme
+    # brings every later renewal across. The reload acme's --reloadcmd would have done is ours.
+    foreign = _acme_foreign_target(domains[0])
+    if foreign and not DRYRUN:
+        rc, out = run(acme_argv(acme, "--renew", "-d", domains[0], "--ecc"), env=env)
+        if rc not in (0, 2):           # 2 = RENEW_SKIP: still valid, nothing to do
+            raise Reject("acme --renew failed (rc %d) for %s, which acme.sh installs for another program (%s): %s"
+                         % (rc, domains[0], foreign, out.strip()[-400:]))
+        d = _acme_ecc_dir(domains[0])
+        _copy_pair(svc, os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % domains[0]), domains[0])
+        log("acme.sh installs %s for another program (%s) — renewed by its own method, copied its certificate, "
+            "left its install target alone" % (domains[0], foreign))
+        if reloadcmd:
+            _reload_front(service)
+        return
     # BEFORE the order, not after: a leftover from a previous failure would refuse THIS attempt too, and the
     # operator would read "Domain key exists" instead of the reason issuance is actually failing on this box.
     _acme_clear_unusable(domains[0])
@@ -613,18 +633,6 @@ def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
         # …and again on the way out, so the NEXT attempt meets the real error rather than this one's residue.
         _acme_clear_unusable(domains[0])
         raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, ",".join(domains), out.strip()[-400:]))
-    foreign = _acme_foreign_target(domains[0])
-    if foreign and not DRYRUN:
-        # Another program's entry: copy its current certificate, leave its install target and reload command
-        # alone. The panel's 6-hourly sync-acme — which runs on every bare-metal panel, behind a proxy too — brings
-        # every later renewal across. The reload acme's --reloadcmd would have done is ours.
-        d = _acme_ecc_dir(domains[0])
-        _copy_pair(svc, os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % domains[0]), domains[0])
-        log("acme.sh installs %s for another program (%s) — copied its certificate, left its install target alone"
-            % (domains[0], foreign))
-        if reloadcmd:
-            _reload_front(service)
-        return
     inst = acme_argv(acme, "--install-cert", "-d", domains[0], "--ecc",   # install/renew keyed by the primary -d
                      "--key-file", svc["key"], "--fullchain-file", svc["cert"])
     if reloadcmd:                       # renewals reload the running service; a live-apply must NOT (the old
