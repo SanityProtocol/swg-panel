@@ -16,6 +16,13 @@
       "Existing docker install detected … To start fresh, uninstall first" (bare → Docker, once per stage) and
       "Existing panel install detected … To start fresh, run the uninstaller first" (Docker → bare). A plain
       re-install still says it.
+  [f] the convert's "Interfaces to migrate" list (both directions) sized its name column for 10 characters, so a mesh
+      link (swg_<8 hex>, 12) pushed its own row two columns right of the others (q4). The column is now as wide as the
+      longest name; a list without a long name prints exactly as before.
+  [e] an answer the caller already GAVE (-flag / env) left its step empty: a master installed with HOST_NODE_NAME set
+      printed "Step 4. Node name for THIS box" and then the next step. Every prompt helper of both bare installers now
+      says it — "<prompt>: <value>  (given — not asked)", the twin of the no-terminal line — except a value the script
+      derived itself (the panel's port, from its URL), and a given value that fails validation is still asked for.
 
 choose_ifaces (install-host.sh), the prompt helpers of both bare installers, the local-interface listing of
 install-node.sh and its final-name line, and both installers' existing-install blocks are lifted out AS SHIPPED;
@@ -54,6 +61,16 @@ if PERTURB:
     N = plant(N, "awk 'NF && !s[$0]++' | drop_sys_ifaces)", "awk 'NF && !s[$0]++')")
     D = plant(D, '  if [ -n "${SWG_CONVERT_DIR:-}" ]; then :\n  elif [ "$PROFILE" = node ]; then', '  if [ "$PROFILE" = node ]; then')
     H = plant(H, '  [ -n "${SWG_CONVERT_DIR:-}" ] || info "Existing panel install detected', '  info "Existing panel install detected')
+    N = plant(N, "printf '    %s%-*s%s %-9s  %s:%-6s %s\\n' \"$C_GREEN\" \"$_w\" \"$n\"", "printf '    %s%-10s%s %-9s  %s:%-6s %s\\n' \"$C_GREEN\" \"$n\"")
+    D = plant(D, "printf '    %s%-*s%s %-9s  %s:%-6s %s\\n' \"$C_GREEN\" \"$_w\" \"$n\"", "printf '    %s%-10s%s %-9s  %s:%-6s %s\\n' \"$C_GREEN\" \"$n\"")
+    for _src in ("N", "H"):   # a given answer taken silently again, in all four helpers
+        _t = globals()[_src]
+        _t = plant(_t, 'for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}"; _pnl; return; }; done', 'for o in $opts; do [ "${!var}" = "$o" ] && return; done')
+        _t = plant(_t, '"$fn" "${!var}" && { [ "${6:-}" = derived ] || { [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!var}"; _pnl; }; return; }', '"$fn" "${!var}" && return')
+        _t = plant(_t, 'ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi', 'ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then return; fi')
+        _t, _n = re.subn(r'(ask\(\)\{ local v p="\$1" d="\$\{2:-\}"; if \[ -n "\$\{!3:-\}" \]; then )[^\n]*?_given "\$p" "\$\{!3\}";[^\n]*?return; fi', r'\1return; fi', _t, count=1)
+        assert _n == 1, "perturbation anchor missing in " + _src + " — would FALSE-PASS: ask()"
+        globals()[_src] = _t
 
 def fn(src, name):
     m = re.search(r"^%s\(\)\{" % re.escape(name), src, re.M)
@@ -164,6 +181,53 @@ out = host_greet("convert-bare")
 check("install-host.sh (Docker → bare-metal convert): no \"Existing panel install detected\"", "Existing" not in out, out)
 out = host_greet("")
 check("install-host.sh (re-install): still says it", "INFO Existing panel install detected" in out, out)
+
+print("\n[e] an answer given in advance is said, not left out")
+for src, label in ((N, "install-node.sh"), (H, "install-host.sh")):
+    HELPERS = fn(src, "_notty") + fn(src, "_given") + fn(src, "ask_valid") + fn(src, "ask_choice") + fn(src, "ask") + fn(src, "ask_yn")
+    out = run('_tty(){ { : </dev/tty; } 2>/dev/null; }\nv_name(){ case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; }\n'
+              'v_port(){ case "$1" in ""|*[!0-9]*) return 1;; esac; }\n%s'
+              'step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "Step $1"; }\n'
+              'step "4. Node name for THIS box"\nHOST_NODE_NAME=q1m; ask_valid "Node name for THIS box" q4n HOST_NODE_NAME v_name "1-40 chars"\n'
+              'step "5. Web server"\nSERVE_MODE=internal; ask_choice "Select web server" i SERVE_MODE "internal nginx i n"\n'
+              'SUB_DOMAIN=sub.example.com; ask "Subscription page hostname" "" SUB_DOMAIN\n'
+              'VERIFY=no; ask_yn "Verify the panel\'s TLS certificate?" y VERIFY\n'
+              'PORT=2087; ask_valid "Public HTTPS port for the panel" "$PORT" PORT v_port "1-65535" derived\n'
+              'step "6. Datapath tooling"\nBAD="no spaces!"; ask_valid "Other name" okname BAD v_name "1-40 chars"; echo "BAD=$BAD"\n' % HELPERS,
+              setsid=True)
+    blk = out.split("Step 4. Node name for THIS box", 1)[-1].split("Step 5.", 1)[0]
+    check("%s: the node-name step says the given name — the header is not left empty" % label,
+          "Node name for THIS box: q1m  (given — not asked)" in blk, out)
+    check("%s: …and so do a given menu choice, a given free-text answer and a given yes/no" % label,
+          "Select web server: internal  (given — not asked)" in out and "Subscription page hostname: sub.example.com  (given — not asked)" in out
+          and "Verify the panel's TLS certificate?: no  (given — not asked)" in out, out)
+    check("%s: a value the script derived itself (the port, from the panel URL) is not presented as given" % label,
+          "Public HTTPS port" not in out, out)
+    check("%s: a given value that fails validation is still refused and asked for (here: no terminal → the default, said as such)" % label,
+          "ignoring invalid BAD" in out and "Other name: okname  (no terminal — default taken)" in out and "BAD=okname" in out, out)
+    check("%s: one blank line around each answer, none doubled before the next step" % label, "\n\n\nStep" not in out and "\n\n\n  " not in out, repr(out[:400]))
+
+print("\n[f] the convert's migrate list lines up, a mesh link included")
+def migrate_rows(src, fname, names, pre):
+    t = tempfile.mkdtemp(prefix="instl-mig-"); awgd, wgd = os.path.join(t, "awg"), os.path.join(t, "wg")
+    os.makedirs(awgd); os.makedirs(wgd)
+    for n, (proto, port, addr) in names.items():
+        open(os.path.join(awgd if proto == "awg" else wgd, n + ".conf"), "w").write(
+            "[Interface]\nAddress = %s\nListenPort = %s\n%s" % (addr, port, "Jc = 4\n" if proto == "awg" else ""))
+    body = fn(src, fname).replace("/etc/amnezia/amneziawg", awgd).replace("/etc/wireguard", wgd)
+    out = run('detect_public_ip(){ echo 192.168.77.4; }\nmigrate_wdtt(){ :; }\nmigrate_csqtt(){ :; }\nmigrate_node_state(){ :; }\n'
+              'INSTALL_DIR=%s\n%s\n%s%s\n' % (t, pre, body, fname))
+    return [l for l in out.splitlines() if l.startswith("    ") and ("AmneziaWG" in l or "WireGuard" in l)]
+MESH = {"awg0": ("awg", 51821, "10.64.2.1/24"), "swg_cac8a245": ("awg", 9999, "10.255.0.0/31"), "wg0": ("wg", 51820, "10.64.1.1/24")}
+for src, fname, pre, label in ((N, "migrate_docker_ifaces", "SWG_CONVERT=1; ENDPOINT_IP=192.168.77.4", "install-node.sh (Docker → bare)"),
+                               (D, "migrate_baremetal_ifaces", "SWG_CONVERT_DIR=convert-docker; NODE_ENDPOINT=192.168.77.4", "install-docker.sh (bare → Docker)")):
+    rows = migrate_rows(src, fname, MESH, pre)
+    cols = {(l.index("AmneziaWG") if "AmneziaWG" in l else l.index("WireGuard"), l.index("192.168.77.4")) for l in rows}
+    check("%s: all three rows, the mesh link's included, share their columns" % label, len(rows) == 3 and len(cols) == 1, "\n" + "\n".join(rows))
+    rows = migrate_rows(src, fname, {"awg0": MESH["awg0"], "wg0": MESH["wg0"]}, pre)
+    check("%s: a list without a long name prints exactly as before" % label,
+          rows == ["    awg0       AmneziaWG  192.168.77.4:51821  10.64.2.1/24", "    wg0        WireGuard  192.168.77.4:51820  10.64.1.1/24"],
+          "\n" + "\n".join(rows))
 
 print()
 if FAILS:

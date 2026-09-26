@@ -150,9 +150,9 @@ STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo 
 # terminal) makes bash print a raw "line N: /dev/tty: No such device or address" before the read fails and the
 # default is taken — every prompt below then reads as a crash. Same fall-through, without the noise.
 _tty(){ { : </dev/tty; } 2>/dev/null; }
-ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi
+ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
   echo; _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; }
-ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then return; fi
+ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _tty && read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; _pnl; }
 
@@ -222,9 +222,12 @@ cert_self_signed(){ local i s   # 0 iff the cert $1 is its own issuer — one mk
 # No terminal: say which answer was taken for the prompt that could not be shown — else an unattended log reads a step
 # header with nothing under it (1.8.8 qualification). Same line as install-docker.sh's and install-node.sh's.
 _notty(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(no terminal — default taken)"; }
+# …and an answer the caller already GAVE (-flag / env): the step still says what it is, or a preset run reads a step
+# header with nothing under it ("Step 4. Node name for THIS box", then the next step — 1.8.8 qualification).
+_given(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(given — not asked)"; }
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
-  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done
+  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}"; _pnl; return; }; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
     if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
@@ -238,9 +241,10 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
     echo "  re-enter, or append $(b ' --force') to use your value anyway"
   done; }
 
-# ask_valid <prompt> <default> <var> <validator> <hint>  — re-prompts on bad input; ' --force' overrides
+# ask_valid <prompt> <default> <var> <validator> <hint> [derived]  — re-prompts on bad input; ' --force' overrides.
+# A valid value already in <var> is said ("given — not asked"), unless `derived`: the caller filled it in itself.
 ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
-  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return
+  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && { [ "${6:-}" = derived ] || { [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!var}"; _pnl; }; return; }
     warn "ignoring invalid $var='${!var}' ($hint)"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
@@ -948,7 +952,7 @@ case "$SERVE_MODE" in r) SERVE_MODE=reuse;; i) SERVE_MODE=internal;; n) SERVE_MO
 # port: internal serves the public port itself; proxy/manual modes keep the panel on a loopback port
 if [ "$SERVE_MODE" = internal ]; then
   [ -z "$PORT" ] && PORT="${URL_PORT:-${PORT_SAVED:-443}}"
-  ask_valid "Public HTTPS port for the panel" "$PORT" PORT v_port "port must be 1–65535"
+  ask_valid "Public HTTPS port for the panel" "$PORT" PORT v_port "port must be 1–65535" derived   # the panel URL's own port — validated, not a question
 else
   [ -z "$PORT" ] && PORT="${URL_PORT:-${PORT_SAVED:-8088}}"
 fi

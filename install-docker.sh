@@ -925,12 +925,13 @@ migrate_baremetal_ifaces(){
   ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u || true)" || true; ifs="$(echo $ifs)"
   [ -n "$ifs" ] || return 0
   echo; info "Interfaces to migrate from the bare-metal node:"; echo
+  local _w=10; for n in $ifs; do [ "${#n}" -le "$_w" ] || _w="${#n}"; done   # name column as wide as the longest (a mesh link, swg_<8 hex>, is 12)
   _mep="${NODE_ENDPOINT:-}"; case "$_mep" in 127.*|"") _mep="$(detect_public_ip 2>/dev/null || true)";; esac   # public endpoint clients dial (this box) — show it like the "already on this node" list below
   for n in $ifs; do
     c="/etc/amnezia/amneziawg/$n.conf"; pr=AmneziaWG; [ -f "$c" ] || { c="/etc/wireguard/$n.conf"; pr=WireGuard; }
     lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$c" | head -1)"
     addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$c" | head -1)"
-    printf '    %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${_mep:-?}" "${lp:-?}" "${addr:-?}"
+    printf '    %s%-*s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$_w" "$n" "$RESET" "$pr" "${_mep:-?}" "${lp:-?}" "${addr:-?}"
   done
   echo
   # Approach B: auto-carry — always migrate the bare node's managed interfaces (no prompt). New ones / adoption of

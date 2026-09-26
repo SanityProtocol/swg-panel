@@ -94,9 +94,9 @@ STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo 
 # terminal) makes bash print a raw "line N: /dev/tty: No such device or address" before the read fails and the
 # default is taken — every prompt below then reads as a crash. Same fall-through, without the noise.
 _tty(){ { : </dev/tty; } 2>/dev/null; }
-ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi
+ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; _pnl; }
-ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then return; fi
+ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _tty && read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; _pnl; }
 
@@ -121,9 +121,12 @@ v_token(){   [ -n "$1" ] && [ "${#1}" -ge 8 ]; }   # v_iface/v_subnet/v_hostport
 # header with nothing under it ("Step 1. Node name for THIS box", then the next step — 1.8.8 qualification, a Docker →
 # bare-metal convert). Same line as install-docker.sh's.
 _notty(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(no terminal — default taken)"; }
+# …and an answer the caller already GAVE (-flag / env): the step still says what it is, or a preset run reads a step
+# header with nothing under it ("Step 4. Node name for THIS box", then the next step — 1.8.8 qualification).
+_given(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(given — not asked)"; }
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
-  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done
+  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}"; _pnl; return; }; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
     if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
@@ -137,9 +140,10 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
     echo "  re-enter, or append $(b ' --force') to use your value anyway"
   done; }
 
-# ask_valid <prompt> <default> <var> <validator> <hint>  — re-prompts on bad input; ' --force' overrides
+# ask_valid <prompt> <default> <var> <validator> <hint> [derived]  — re-prompts on bad input; ' --force' overrides.
+# A valid value already in <var> is said ("given — not asked"), unless `derived`: the caller filled it in itself.
 ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
-  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return
+  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && { [ "${6:-}" = derived ] || { [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!var}"; _pnl; }; return; }
     warn "ignoring invalid $var='${!var}' ($hint)"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
@@ -666,11 +670,12 @@ migrate_docker_ifaces(){
   ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u || true)" || true; ifs="$(echo $ifs)"
   [ -n "$ifs" ] || return 0
   echo; info "Interfaces to migrate from the docker node:"; echo
+  local _w=10; for n in $ifs; do [ "${#n}" -le "$_w" ] || _w="${#n}"; done   # name column as wide as the longest (a mesh link, swg_<8 hex>, is 12)
   _mep="${ENDPOINT_IP:-}"; case "$_mep" in 127.*|"") _mep="$(detect_public_ip 2>/dev/null || true)";; esac   # public endpoint clients dial (this box) — show it like the node's own interface list
   for n in $ifs; do c="/etc/amnezia/amneziawg/$n.conf"; pr=AmneziaWG; [ -f "$c" ] || { c="/etc/wireguard/$n.conf"; pr=WireGuard; }
     lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$c" | head -1)"
     addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$c" | head -1)"
-    printf '    %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${_mep:-?}" "${lp:-?}" "${addr:-?}"; done
+    printf '    %s%-*s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$_w" "$n" "$RESET" "$pr" "${_mep:-?}" "${lp:-?}" "${addr:-?}"; done
   echo
   # Approach B: auto-carry — always keep the migrated interface confs (no prompt). They're adopted below and
   # surface in the panel; new interfaces are created there.
