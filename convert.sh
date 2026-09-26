@@ -419,12 +419,27 @@ PY
 
   if [ "$CHECK" = yes ]; then
     [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") will be moved aside."
+    command -v docker >/dev/null 2>&1 || info "note: Docker isn't installed on this box yet — the conversion installs it first (get.docker.com), before anything else is touched."
     sub "pre-flight OK"
     if [ "$ROLE" = master ]; then info "Master → docker keeps: URL $(b "$PDOM"), login, roster, nodes, the $(b "$PTLS") cert AND the local node (token + interfaces + turn-proxies). Brief downtime at the switch."
     else info "Panel → docker keeps: URL $(b "$PDOM"), login, roster, nodes + the $(b "$PTLS") cert. Brief panel downtime at the switch (nodes self-heal)."; fi
     exit 0
   fi
-  command -v docker >/dev/null 2>&1 || die "docker is required"
+  # ⚠️ DOCKER IS INSTALLED HERE, NOT REFUSED. A bare-metal box asked to become a Docker one usually has no Docker
+  # yet: the pre-flight said "OK", the operator said yes, and this line answered "docker is required" (1.8.8
+  # qualification, a fresh 1.8.7 master VM) — while install-docker.sh, which this hands off to, installs it for a
+  # fresh install. Installed and proven BEFORE the recovery marker and the staging below, so a failure leaves the
+  # bare-metal install untouched and nothing to resume.
+  if ! command -v docker >/dev/null 2>&1; then
+    info "installing Docker (get.docker.com) — nothing else has been touched yet"
+    sh -c "curl -fsSL https://get.docker.com | sh" \
+      || die "Docker could not be installed — nothing has been changed, and your bare-metal install is still serving. Install it by hand (curl -fsSL https://get.docker.com | sh) and re-run."
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    systemctl start docker >/dev/null 2>&1 || true
+    for _dwait in 1 2 3 4 5 6 7 8 9 10; do docker info >/dev/null 2>&1 && break; sleep 1; done
+    docker info >/dev/null 2>&1 || die "the Docker daemon isn't running (docker info failed). Start it with $(b 'systemctl start docker') and re-run — nothing has been changed, and your bare-metal install is still serving."
+  fi
 
   info "Converting the bare-metal $(b "$ROLE") → docker — keeping the panel's URL/login/roster/nodes/cert$([ "$ROLE" = master ] && echo " and the local node")."
   PURL="$PDOM"; write_recovery ""   # persist FROM/TO/ROLE for resume BEFORE any teardown
