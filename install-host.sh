@@ -92,6 +92,24 @@ iface_row(){ local n="$1" conf proto ep lp addr   # set -e safe; prefer a just-q
 # Every interface this node ALREADY manages (wg/awg from config.json + its WDTT instances) — the "local" set, as
 # opposed to anything else on the box, which is an adoption candidate for the panel.
 local_ifaces(){ { node_ifaces; wdtt_local | cut -f1; } 2>/dev/null | awk 'NF' | sort -u; }
+# The interfaces the panel's record for THIS node owns — the record a re-install binds to, found by the node's name as
+# LOCAL_NODE_ID finds it — read from a kept state dir; nothing on a first install. The panel hands these to the node as
+# owned_ifaces, and swg-noded takes a live one back by itself. Mesh links (system) are not listed.
+kept_panel_ifaces(){ [ -f "$STATE_DIR/nodes.json" ] && [ -n "${HOST_NODE_NAME:-}" ] && have python3 || return 0
+  python3 - "$STATE_DIR/nodes.json" "$HOST_NODE_NAME" <<'PY' 2>/dev/null | drop_sys_ifaces || true
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit
+for v in (d.values() if isinstance(d, dict) else []):
+    if isinstance(v, dict) and v.get("name") == sys.argv[2]:
+        for n, ov in (v.get("ifaces") or {}).items():
+            if not (isinstance(ov, dict) and ov.get("system")):
+                print(n)
+        break
+PY
+}
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
 # conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions.
 iface_onboarded(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] && grep -q '^#swg:onboarded' "$c" 2>/dev/null; }
@@ -202,12 +220,15 @@ cert_self_signed(){ local i s   # 0 iff the cert $1 is its own issuer — one mk
   [ -n "$i" ] && [ "$i" = "$s" ]; }
 # v_iface/v_subnet/v_hostport now in lib/common.sh
 
+# No terminal: say which answer was taken for the prompt that could not be shown — else an unattended log reads a step
+# header with nothing under it (1.8.8 qualification). Same line as install-docker.sh's and install-node.sh's.
+_notty(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(no terminal — default taken)"; }
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
-    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option
@@ -224,7 +245,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
     warn "ignoring invalid $var='${!var}' ($hint)"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
@@ -301,6 +322,7 @@ for n, ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or
 }
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' creates more
+  local -a BACK=()   # the kept panel's own interfaces, live here (see the record-only branch)
   detect_wg
   # ⚠️ THE MASTER PATH HAD NONE OF THIS. `MANAGE_IFACES=none bootstrap master` wrote a managed interface
   # called `none` into config.json and the node then reported `none: cannot read interface` on every sync,
@@ -314,17 +336,28 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     # re-install keeps them). Anything ELSE on the box is an adoption candidate — reported to the panel, where the
     # operator classifies (WG / AWG / WDTT) or ignores it. Nothing is touched here; new ones are created in the panel.
     detect_wg
-    local n _mine; local -a cand=()
+    local n _mine _kept; local -a cand=()
     _mine=" $(local_ifaces | tr '\n' ' ') "
+    # ⚠️ …AND WHAT THE KEPT PANEL ALREADY MANAGES FOR THIS NODE IS NOT A CANDIDATE EITHER. A master re-installed over a
+    # kept state dir (uninstall: panel data and interfaces kept, node removed) has no agent config yet, so every live
+    # interface read "NOT managed by the panel — adopt them from the panel" although the panel's record for this node
+    # still owns them, and the node takes a live one back by itself on its first sync (swg-noded's self-heal, from the
+    # reply's owned_ifaces) — within seconds (1.8.8 qualification, q1). Listed as what they are; nothing is adopted here.
+    _kept=" $(kept_panel_ifaces | tr '\n' ' ') "
     for n in "${!IF_CMD[@]}"; do
       is_sys_iface "$n" && continue
       case "$_mine" in *" $n "*) continue;; esac   # already managed by this node → local, not a candidate
+      case "$_kept" in *" $n "*) ip link show "$n" >/dev/null 2>&1 && { BACK+=("$n"); continue; };; esac
       cand+=("$n")
     done
+    if [ "${#BACK[@]}" -gt 0 ]; then
+      echo; info "Found ${#BACK[@]} wg/awg interface(s) the panel already manages for this node — it takes them back on its first sync:"; echo
+      for n in "${BACK[@]}"; do iface_row "$n"; done; echo
+    fi
     if [ "${#cand[@]}" -gt 0 ]; then
       echo; info "Found ${#cand[@]} wg/awg/wdtt interface(s) NOT managed by the panel — adopt them from the panel (Node → Interfaces → adoption candidates):"; echo
       for n in "${cand[@]}"; do iface_row "$n"; done; echo
-    else
+    elif [ "${#BACK[@]}" -eq 0 ]; then
       info "No unmanaged wg/awg/wdtt interfaces found on this box — nothing to adopt."
     fi
     SELECTED=()   # record-only: nothing auto-adopted; the panel decides per candidate (adopt / ignore)
@@ -344,7 +377,9 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
   local _l _li _lls _lsub; local -a _loc=()
   # + this run's SELECTED: config.json is written only AFTER this listing, so they read "No local interfaces yet"
   # right above "✓ Managing: …" (1.8.8 qualification — install-node.sh's twin of this block).
-  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <({ local_ifaces; printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"}; } | tr -d ' ' | awk 'NF && !s[$0]++')
+  # …and never a mesh link (swg_*): iface_row prints none, so a convert carrying one read "Found 3 … interface(s)" over two
+  # rows (1.8.8 qualification, q4). They are the panel's links, shown apart in the summary.
+  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <({ local_ifaces; printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"}; } | tr -d ' ' | awk 'NF && !s[$0]++' | drop_sys_ifaces)
   if [ "${#_loc[@]}" -gt 0 ]; then
     echo; info "Found ${#_loc[@]} wg/awg/wdtt local interface(s) on this box:"; echo
     detect_wg
@@ -354,8 +389,9 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
         [ -n "$_li" ] && wdtt_row "$_li" "$_lls" "$_lsub"
       fi
     done; echo
-  else info "No local interfaces yet — this node is managed from the panel (Interfaces → Load new interface)."; fi
-  [ "${#SELECTED[@]}" -gt 0 ] && ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")" || true
+  elif [ "${#BACK[@]}" -eq 0 ]; then info "No local interfaces yet — this node is managed from the panel (Interfaces → Load new interface)."; fi
+  _l="$(printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"} | tr -d ' ' | drop_sys_ifaces | awk 'NF' | tr '\n' ' ')"
+  [ -n "${_l// /}" ] && ok "Managing: $(b "$(col "$C_GREEN" "${_l% }")")" || true
 }
 
 # ───────────────────────── turn-proxy (vk-turn-proxy) ─────────────────────────
@@ -668,7 +704,8 @@ if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
   # fallback for installs predating install.conf: recover PORT + subpath from the running unit
   [ -z "$PORT_SAVED" ] && [ -f "$_unit" ] && PORT_SAVED="$(sed -n 's/^Environment=SWG_PANEL_PORT=//p' "$_unit" | head -1)"
   [ -z "$BASE_SAVED" ] && [ -f "$_unit" ] && BASE_SAVED="$(sed -n 's/^Environment=SWG_PANEL_BASE=//p' "$_unit" | head -1)"
-  info "Existing panel install detected — keeping your login, users, nodes + certs; your previous settings are the defaults below. To start fresh, run the uninstaller first."
+  # not during a convert: that state is the one the conversion itself just staged (install-docker.sh, same note)
+  [ -n "${SWG_CONVERT_DIR:-}" ] || info "Existing panel install detected — keeping your login, users, nodes + certs; your previous settings are the defaults below. To start fresh, run the uninstaller first."
 fi
 # ⚠️ …AND THE ENDPOINT THIS BOX'S NODE ALREADY HAS. ENDPOINT_SAVED was read and then used for nothing: a master re-install
 # without HOST_ENDPOINT_IP listed its interfaces at the default-route address (10.0.2.15 where they are dialled at

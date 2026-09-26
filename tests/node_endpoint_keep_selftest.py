@@ -46,7 +46,7 @@ if PERTURB:
     H = plant(H, '  HOST_ENDPOINT_IP="${_aep:-$ENDPOINT_SAVED}"\n', '  :\n')
     for src in ("N", "H"):
         globals()[src] = plant(globals()[src],
-                               "< <({ local_ifaces; printf '%s\\n' ${SELECTED[@]+\"${SELECTED[@]}\"}; } | tr -d ' ' | awk 'NF && !s[$0]++')",
+                               "< <({ local_ifaces; printf '%s\\n' ${SELECTED[@]+\"${SELECTED[@]}\"}; } | tr -d ' ' | awk 'NF && !s[$0]++' | drop_sys_ifaces)",
                                "< <(local_ifaces)")
     C = plant(C, "proto_label(){ case \"$1\" in wg) printf 'WireGuard';;", "proto_label(){ case \"$1\" in wg) printf 'Wireguard';;")
 
@@ -66,8 +66,9 @@ STUBS = ('BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""\nhave(){ command -v "$1" >/de
          'info(){ echo "INFO $*"; }\nok(){ echo "OK $*"; }\nwarn(){ :; }\nsub(){ :; }\nrun(){ :; }\n'
          'detect_public_ip(){ echo 10.0.2.15; }\napply_specs(){ :; }\ndetect_wg(){ :; }\nensure_wg_tools(){ return 0; }\n'
          'bringup(){ return 0; }\nlc_teardown_docker(){ :; }\nlocal_ifaces(){ printf "%s" "$LOCAL"; }\nwdtt_local(){ :; }\n'
-         'wdtt_row(){ :; }\nis_sys_iface(){ return 1; }\nconf_get(){ echo "?"; }\n'
-         'declare -A IF_CMD IF_CONF IF_ENDPOINT SPEC_CMD SPEC_PORT SPEC_ADDR SPEC_EP; declare -a SELECTED\n')
+         'wdtt_row(){ :; }\nconf_get(){ echo "?"; }\n'
+         'declare -A IF_CMD IF_CONF IF_ENDPOINT SPEC_CMD SPEC_PORT SPEC_ADDR SPEC_EP; declare -a SELECTED\n'
+         'SWG_SYS_PREFIX=swg_\n' + fn(C, "is_sys_iface") + fn(C, "drop_sys_ifaces"))   # lib/common.sh's, as the installers source them
 
 print("[1] install-node.sh: a re-run or a convert keeps the endpoints this node already has")
 setup = N[N.index("read_existing\n# ⚠️ THE ENDPOINT THIS NODE ALREADY HAS"):]
@@ -140,10 +141,10 @@ check("…and the plain-WireGuard row says 'WireGuard'", re.search(r"wg0\s+WireG
 out = node(existing={"endpoint_host": "192.168.77.2", "interfaces": {}}, selected=(), local="")
 check("…a node with truly nothing still says 'No local interfaces yet'", "No local interfaces yet" in out, out)
 hlist = H[H.index("  # + this run's SELECTED: config.json is written only AFTER this listing"):]
-hlist = hlist[:hlist.index('  [ "${#SELECTED[@]}" -gt 0 ] && ok "Managing:')] if "# + this run's SELECTED" in H else ""
+hlist = hlist[:hlist.index('  _l="$(printf \'%s\\n\' ${SELECTED[@]+')] if "# + this run's SELECTED" in H else ""
 if not hlist:   # perturbed: the comment is still there, the listing is the old one — take it from its first line
     hlist = H[H.index("  while IFS= read -r _l; do [ -n \"$_l\" ] && _loc+=(\"$_l\"); done < <(local_ifaces)"):]
-    hlist = hlist[:hlist.index('  [ "${#SELECTED[@]}" -gt 0 ] && ok "Managing:')]
+    hlist = hlist[:hlist.index('  _l="$(printf \'%s\\n\' ${SELECTED[@]+')]
 script = ('%sLOCAL=""\nSELECTED=(awg0)\nIF_CMD[awg0]=awg\n%sf(){\n  local _l _li _lls _lsub; local -a _loc=()\n%s}\nf\n') % (
     STUBS, fn(H, "iface_row").replace("iface_row", "iface_row", 1) + fn(C, "proto_label"), hlist)
 r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)

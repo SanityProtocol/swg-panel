@@ -118,12 +118,16 @@ turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 
 v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }
 v_token(){   [ -n "$1" ] && [ "${#1}" -ge 8 ]; }   # v_iface/v_subnet/v_hostport now in lib/common.sh
 
+# No terminal: say which answer was taken for the prompt that could not be shown, or an unattended log reads a step
+# header with nothing under it ("Step 1. Node name for THIS box", then the next step — 1.8.8 qualification, a Docker →
+# bare-metal convert). Same line as install-docker.sh's.
+_notty(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(no terminal — default taken)"; }
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
-    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option
@@ -140,7 +144,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
     warn "ignoring invalid $var='${!var}' ($hint)"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
@@ -492,7 +496,9 @@ apply_node_switch(){
   local _l _li _lls _lsub; local -a _loc=()
   # + this run's SELECTED: a convert (or a first install) writes config.json only AFTER this listing, so its interfaces
   # printed "No local interfaces yet" and then, one line below, "✓ Managing: awg0 wg0" (1.8.8 qualification).
-  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <({ local_ifaces; printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"}; } | tr -d ' ' | awk 'NF && !s[$0]++')
+  # …and never a mesh link (swg_*): iface_row prints none, so a convert carrying one read "Found 3 … interface(s)" over two
+  # rows (1.8.8 qualification, q4). They are the panel's links, shown apart in the summary.
+  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <({ local_ifaces; printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"}; } | tr -d ' ' | awk 'NF && !s[$0]++' | drop_sys_ifaces)
   if [ "${#_loc[@]}" -gt 0 ]; then
     echo; info "Found ${#_loc[@]} wg/awg/wdtt local interface(s) on this box:"; echo
     detect_wg
@@ -503,7 +509,8 @@ apply_node_switch(){
       fi
     done; echo
   else info "No local interfaces yet — this node is managed from the panel (Interfaces → Load new interface)."; fi
-  [ "${#SELECTED[@]}" -gt 0 ] && ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")" || true
+  _l="$(printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"} | tr -d ' ' | drop_sys_ifaces | awk 'NF' | tr '\n' ' ')"
+  [ -n "${_l// /}" ] && ok "Managing: $(b "$(col "$C_GREEN" "${_l% }")")" || true
 }
 
 # ───────────────────────── turn-proxy (vk-turn-proxy) ─────────────────────────
@@ -971,10 +978,14 @@ run systemctl restart swg-noded || warn "couldn't start swg-noded"   # turn-prox
 # WHOLE convert is done. Clearing here would strand an interrupt after this point with no resume offer.
 $DRYRUN || [ -n "${SWG_CONVERT:-}${SWG_TURN_ADD:-}" ] || rm -f /var/lib/swg-recovery 2>/dev/null || true
 
+# The node's name as the PANEL has it, when this run asked (a re-install or a convert: the rename step above) — else the
+# local label. NODE_NAME is this box's hostname, and "Node 'q4' is up" named a node the panel calls q4n (1.8.8
+# qualification, both Docker → bare-metal converts). A fresh install does not ask the panel, so it keeps the label.
+_PNAME="${PUSH_NAME:-${_cur:-$NODE_NAME}}"
 # during a convert, skip this summary entirely — convert.sh prints ONE final combined summary (interfaces +
 # turn-proxies) after. The switch is done here (interfaces + turn-proxies + daemon all up).
 if [ "${SWG_CONVERT:-}" = 1 ]; then
-  echo; ok "Node '$(bb "$NODE_NAME")' is up — fully converted to bare-metal (interfaces + turn-proxies)."
+  echo; ok "Node '$(bb "$_PNAME")' is up — fully converted to bare-metal (interfaces + turn-proxies)."
   exit 0
 fi
 # "re-installed AND UPDATED" only when the programs changed — the same build re-installed is plain "re-installed"
@@ -982,7 +993,7 @@ fi
 if [ "${LC_SUCCESS:-}" = reinstalled-updated ] && [ -n "${_SUM_BEFORE:-}" ] && [ "$(installed_sum "$AGENT_DIR" "$NODED_DIR")" = "$_SUM_BEFORE" ]; then
   LC_SUCCESS=reinstalled
 fi
-echo; ok "Node '$(bb "$NODE_NAME")' install complete."
+echo; ok "Node '$(bb "$_PNAME")' install complete."
 print_summary "$([ "$EXISTING" = yes ] && echo RE-INSTALL || echo INSTALL)"
 [ -n "$TLS_FINGERPRINT" ] && echo "  TLS       panel cert pinned (sha256 ${TLS_FINGERPRINT:0:16}…) — MITM-protected"
 [ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       ${C_BROWN}not verifying the panel cert${RESET} — set TLS_FINGERPRINT to pin it (MITM protection)"

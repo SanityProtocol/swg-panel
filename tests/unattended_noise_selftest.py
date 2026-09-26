@@ -81,7 +81,7 @@ PRE = ('set -euo pipefail\nRESET=""; BOLD=""; C_BLUE=""; C_BROWN=""; C_RED=""; C
 
 print("[1] no terminal → the prompt takes its default WITHOUT a raw '/dev/tty' error")
 for label, src in (("install-host.sh", H), ("install-node.sh", N)):
-    helpers = fn(src, "_tty") + fn(src, "ask") + fn(src, "ask_yn") + fn(src, "ask_choice") + fn(src, "ask_valid")
+    helpers = fn(src, "_tty") + fn(src, "_notty") + fn(src, "ask") + fn(src, "ask_yn") + fn(src, "ask_choice") + fn(src, "ask_valid")
     rc, out, err, _, _ = bash(PRE + helpers + 'ask "Name" dflt A; ask_yn "Sure" y Y; ask_choice "Pick" one C "one two"; '
                               'ask_valid "Port" 8443 V v_ok "need one"\necho "A=$A Y=$Y C=$C V=$V"\n')
     check("%s: ask / ask_yn / ask_choice / ask_valid all take their default" % label, "A=dflt Y=yes C=one V=8443" in out, (out, err))

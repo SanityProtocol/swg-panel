@@ -458,7 +458,11 @@ if [ -f "$INSTALL_DIR/.env" ]; then
     [ -n "$_v" ] && printf -v "$_k" '%s' "$_v"
   done
   EXIST_TLS="$(_env_val TLS "$INSTALL_DIR/.env")"   # for the 'reuse' TLS option (not auto-applied)
-  if [ "$PROFILE" = node ]; then
+  # ⚠️ NOT DURING A CONVERT: there the .env is the one the conversion itself just staged, and "existing install …
+  # to start fresh, uninstall first" described the conversion's own work as somebody else's install (1.8.8
+  # qualification, bare → docker master: once per stage). convert.sh has already said what it staged.
+  if [ -n "${SWG_CONVERT_DIR:-}" ]; then :
+  elif [ "$PROFILE" = node ]; then
     info "Existing node install detected — keeping your interfaces + data.$([ "$HAVE_TTY" = yes ] && printf ' Press %s to keep each value' "$(b Enter)") (to start fresh, run the uninstaller first)."
   else
     info "Existing docker install detected in $INSTALL_DIR — keeping your .env + ./data (token, login, interfaces). To start fresh, uninstall first."
