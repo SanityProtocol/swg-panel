@@ -29,7 +29,7 @@ the same wire. The properties are the server's either way.
 
 Upstream reads the client DNS only from `panel.db`'s inbound row, which swg-panel never writes, so every
 client got `1.1.1.1` with no way to change it. `-dns a[,b]` (1–2 IPv4) sets it, with the same flag name as
-the other WDTT forks. swg-noded passes it only to a build whose `-h` lists it (`docs/DNS-SETTINGS-PLAN.md`).
+the other WDTT forks. swg-noded passes it only to a build whose `-h` lists it (`_wdtt_takes_dns` in `swg-noded`).
 
 - The override is re-applied **inside `applyInboundRuntimeSettings`**, not only at startup: every SIGHUP (one
   per password change) runs `reloadDBFromDisk → loadInboundSettings → applyInboundRuntimeSettings`, which
