@@ -2770,9 +2770,9 @@ export const STR = {
   "Ways out of {v1}": "Выходы ноды {v1}",
   "Every way *{v1}* can leave that isn't its own address. WARP accounts and pasted profiles are created under Settings → WARP; the devices below the line are this node's own, or names you add here.":
     "Всё, через что *{v1}* может выходить, кроме собственного адреса. Аккаунты WARP и вставленные профили создаются в разделе «Настройки → WARP»; устройства ниже — собственные устройства этой ноды или имена, добавленные здесь.",
-  "val|WARP+": "ВАРП+",
-  "WARP exit": "ВАРП выход",
-  "WARP+ exit": "ВАРП+ выход",
+  "val|WARP+": "WARP+",
+  "WARP exit": "Выход WARP",
+  "WARP+ exit": "Выход WARP+",
   "Custom exit": "Свой выход",
   "val|Edit": "Изменить",
   "Exit IP": "IP выхода",
@@ -2791,7 +2791,7 @@ export const STR = {
   "{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.":
     "{v1} будет удалён с этой ноды, туннель опустится. Вместе с ним удаляется и аккаунт Cloudflare: при повторном добавлении регистрируется НОВЫЙ аккаунт с другим IP выхода.",
   "No WARP exits on this node yet. Register a free Cloudflare account, or paste a WireGuard profile from somewhere else.":
-    "На этой ноде пока нет ВАРП выходов. Зарегистрируйте бесплатный аккаунт Cloudflare или вставьте профиль WireGuard откуда-то ещё.",
+    "На этой ноде пока нет выходов WARP. Зарегистрируйте бесплатный аккаунт Cloudflare или вставьте профиль WireGuard откуда-то ещё.",
   "val|Unsaved": "Не сохранён",
   "Refused: {v1}": "Отклонён: {v1}",
   "This node hasn't reported a device by this name.": "Нода не сообщала об устройстве с таким именем.",
@@ -2864,7 +2864,7 @@ export const STR = {
   "Leaves this node through {v1}": "Выходит с этой ноды через {v1}",
   "The exit this interface was set to is gone — traffic goes out directly, and the interface keeps the selection":
     "Указанного для этого интерфейса exit'а больше нет — трафик уходит напрямую, выбор сохраняется",
-  "{v1} — external exits": "{v1} — ВАРП выходы",
+  "{v1} — external exits": "{v1} — внешние выходы",
   "Register with WARP": "Зарегистрировать WARP",
   "state|On": "Вкл",
   "Default exit": "Выход по умолчанию",
@@ -2885,7 +2885,7 @@ export const STR = {
   "{v1} s": "{v1} с",
   "This node has no key for this exit. Restore the escrowed one to keep the same address, or leave it to register a new account.":
     "У этой ноды нет ключа для этого exit'а. Восстановите сохранённый, чтобы адрес не изменился, либо оставьте как есть — будет зарегистрирован новый аккаунт.",
-  "val|WARP": "ВАРП",
+  "val|WARP": "WARP",
   "No nodes yet — enroll a node to give it a way out that isn't its own address.":
     "Нод пока нет — подключите ноду, чтобы дать ей путь наружу, отличный от её собственного адреса.",
   "This node isn't dialling out anywhere yet, so there's nothing to offer. Register with WARP or paste a profile instead — or type a device name if you run one.":
