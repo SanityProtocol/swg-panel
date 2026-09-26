@@ -1,13 +1,13 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.7-beta</code></p>
+<p align="center"><code>1.8.8-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.7-beta** — [full changelog](CHANGELOG.md)
-> - **Networks behind a device.** A device can front a network — the office LAN behind a router, the home network behind a Raspberry Pi — and the node carries it to clients whether their interface sends traffic direct, forwards it to another node or routes it by rule. The node can test that the network answers, and you choose who reaches it: everyone on the node, or only its owner and the people and groups you share it with.
-> - **Who can reach a device, and Private devices.** Every interface, WDTT server and csqtt server sets who may open connections to the devices on it — Everyone on this node, Same user and their groups, or Nobody — and a device marked Private is reachable only by its owner's other devices. ⚠️ Interfaces you already have start at Same user and their groups, so after the update devices of different users stop reaching each other until you put those people in a group or set the interface to Everyone on this node.
-> - **User groups.** Put people in named groups: members reach each other's devices, and a network can be shared with a whole group at once.
-> - **Relay works on smart-routing legs.** Forward or Relay is now a choice for a mesh leg that carries only some of an interface's destinations, not only for one that carries the whole interface.
+> **What's new in 1.8.8-beta** — [full changelog](CHANGELOG.md)
+> - **Traffic totals for any stretch of days.** The Peers, Users and Groups screens count every device's traffic through counter restarts, reinstalls and container recreates, over all time or any days you pick. A person's total keeps their deleted and handed-on devices, a group's adds up its members', and days can be counted in your own time zone.
+> - **Routing rules for chosen people.** A routing rule can apply to everyone on an interface or only to chosen people, groups and single devices — a user's new device is covered with no edit — and it can choose the address its traffic leaves by. ⚠️ On Hybrid SNI and Kernel SNI, a Block rule placed below an Exit or Direct rule that covers some of the same destinations no longer stops them after the update — the rule above wins, as the list's order says — so move such a Block above it.
+> - **A server's default can be a rule list.** One list routes the server's interfaces set to Auto, what its smart interfaces leave unsaid, and the traffic other servers send out through it — by site, list or address: out one of its exits, directly, or blocked. A Forward to … rule there sends that traffic one hop further, to a server the first one cannot reach.
+> - **AmneziaWG 3.1.** An AmneziaWG interface can run AmneziaWG 3.1 — header protection, random trailers and Amnezia's 3.1 timings — chosen when you create it or switched either way later, and before a switch the panel lists every device it cuts off until they re-import. Only apps that carry 3.1 connect, and the server's AmneziaWG module and tools must be 3.1 too.
 <!-- WHATS-NEW:END -->
 
 ---

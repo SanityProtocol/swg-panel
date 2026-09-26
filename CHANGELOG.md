@@ -3,6 +3,363 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.8-beta] — 2026-09-26
+
+### Added
+
+- **Traffic totals per device, person and group, for any stretch of days.** The Peers, Users and Groups screens
+  count every device's traffic through counter restarts, reinstalls and container recreates. A rail on the right
+  edge sets the window for all three — **All time** (the default), **Day**, **Week**, **Month** or **Custom** dates
+  — and the live counter moved into the figure's bubble. A person's total keeps their deleted devices and the ones
+  handed to someone else (up to the handover), and traffic between two of one person's own devices counts on both;
+  clicking a user's total opens their graph and every device they had, and a group's row adds up its members'.
+  **Settings → Display → Data** shows how much disk the history uses and how fast it grows, sets its detail
+  (**History resolution**, 5 minutes to a day), and with **Infinite history** off keeps that detail for the last 33
+  days only — totals for any period stay either way. Counting starts when the panel is updated: each device's
+  counter at that moment becomes its opening balance, so its lifetime includes what that counter held — the traffic
+  since it last restarted. Servers need no update for it.
+- **The Overview for any days you pick.** **Custom** on the Overview's side rail shows every chart and figure for
+  chosen days from the last 33, counted in the panel's days.
+- **Days are counted in your own time zone.** Servers usually run on UTC, so the panel's day ended at 03:00 in
+  Moscow. **Settings → Display → Days are counted in** picks the zone — your browser's is one click — and traffic
+  totals, the charts and the turn-proxy update hour follow it. Left on **This server's zone** (the default), nothing
+  changes. After a change the charts draw what they recorded before it shifted by the difference, until it scrolls
+  out of them (up to 33 days).
+- **A routing rule can apply to chosen people.** The sliders button before a rule's destination opens **Rule
+  settings**: where the rule leaves by, and for whom — **Everyone on this interface**, or **Chosen people and
+  devices**: people, groups and single devices. A user's new device is covered with no edit, and a group follows its
+  members. The rule's chip counts the devices it covers here and how many it can't — those on a WDTT or csqtt build
+  that can't prove which user is sending — with who and why in its bubble. A server that needs an update applies
+  such rules to nobody, and its card says so. They match site names too — on Kernel SNI only when they leave by an
+  exit (see Fixed), and never on a server whose kernel can't tie an address to its device: there they match by IP
+  address and network only, and the rule's list says so.
+- **A rule can choose the address its traffic leaves by.** In **Rule settings**, **As address** sits beside **Leaves
+  by**: for a **Forward to …** rule it picks one of that server's addresses, for **Direct** one of this server's;
+  left on **Auto**, the server picks. The address belongs to the interface and that server, so every rule sending
+  the interface there — or every Direct rule on it — leaves by it, and each of those rules shows it. The far server
+  needs no update: even an older one applies it. If a server stops reporting an address you chose, the rule turns
+  amber and says so — its traffic still leaves with that address, and those connections fail until you choose
+  another. Moving that server to a new box (**Migrate**) puts such choices back to Auto, unless the move names the
+  new box's address.
+- **A server's default can be a rule list.** **Settings → Network → Default exit → Routing (smart cascade)**: one
+  list routes the server's interfaces set to Auto, what its smart interfaces leave unsaid, and the traffic other
+  servers send out through it — by site, list or address; out one of its exits, directly, or blocked. A rule's
+  settings can narrow it to **Own clients** or to traffic **Cascaded in**, and the line under the list says whom it
+  affects. A **Forward to …** rule there sends traffic cascaded in one hop further, to a server the first one cannot
+  reach: the middle server masquerades it to its own link address, and the last one lets it out and never forwards
+  it again. A routing list named only there is sized, refreshed and kept like any other.
+- **AmneziaWG 3.1.** An AmneziaWG interface can run AmneziaWG 3.1 — header protection, random trailers and
+  Amnezia's 3.1 timings. Pick it under **AmneziaWG version** when you create the interface, or switch either way from
+  its Edit sheet, where flipping to 3.1 shows the 3.1 values at once, so one Save switches with the values you want.
+  Before a switch the panel shows every device it cuts off until they re-import, network gateways first, and refuses
+  while a WINGS-N turn proxy points at the interface; subscription pages serve the new config at once. Only apps that
+  carry 3.1 can connect: Amnezia VPN 5.0.1.5 or newer (an older one imports the config without complaint and never
+  connects), AmneziaWG from the App Store or GitHub (not the Google Play build), WG Tunnel 5.6 or newer and
+  FreeTurn 4.3 — not WINGS V, Keenetic or MikroTik. A server offers 3.1 only when its AmneziaWG module (or
+  amneziawg-go) and tools are 3.1; where they are not — a NixOS node on a 2.0 channel, say — the switch says why. 3.1
+  interfaces wear a blue badge, with its own swatch in **Settings → Interfaces** beside WG and AWG 2.0. That section
+  also sets the version new interfaces start on (2.0 by default) and the 3.1 values an interface takes when it is
+  created on 3.1 or switched to it — padding and timings; the header protection key is always its own.
+- **Client DNS for WDTT and csqtt servers.** Each of these servers hands its clients a DNS server when they
+  connect, and the panel never set one, so every fork gave its own — 1.1.1.1, 8.8.8.8 or Yandex's — and csqtt's
+  could not be changed anywhere. A WDTT or csqtt interface's **Edit interface** sheet now has **Client DNS** under
+  **Advanced settings**: one or two IPv4 addresses. Left empty, clients get what the server gave before, which the
+  field shows; saving restarts the server. A build that cannot take the setting says so — ildarmaga takes it from
+  1.5.0-4. Taking over a WDTT server that runs with its own DNS keeps it.
+- **Force-DNS asks the resolver you choose.** On a server in Force-DNS mode every client's plain DNS is answered by
+  the server's own resolver, which always asked 1.1.1.1 and 8.8.8.8. **Settings → Routing & Blocking** now has
+  **Upstream DNS** for a server in that mode: up to four IPv4 or IPv6 addresses, each optionally with `#port` — a
+  local resolver such as `127.0.0.1#5335` works. Left empty, nothing changes. The field says whether the server
+  already uses what is saved.
+- **Renew now.** acme.sh's scheduled renewal fails in silence — port 80 taken, a firewall, a CA error — while the
+  certificate runs out. **Settings → Panel access → Certificate** now has **Renew now** inside the certificate
+  warning: it runs acme.sh's renewal there and then and shows the new expiry, "not due yet", or acme.sh's own error.
+  When another program owns the acme.sh entry it asks first, since acme.sh then runs that program's reload command.
+  Settings also says when another program renews the certificate, or when nothing does; a certificate that lives ten
+  days or less (an IP certificate) warns once two-thirds of its life have passed, not from the day it was issued; and
+  panels behind the installer's nginx or caddy get the warning and the button too. It is not for a Docker panel,
+  which renews its certificate itself every 12 hours, or a NixOS one.
+- **Mesh links on demand.** **Settings → Network → Mesh links**: **Full mesh** (every pair, as before), **On demand**
+  (only the pairs a forward or a smart rule routes over; a link nothing uses is removed after an hour) or **Auto**
+  (the default: a full mesh up to 30 nodes, on demand above). **Fleets of up to 30 nodes see no change.** Above that
+  the panel no longer keeps a link for every pair — a 200-node fleet's sync costs the panel about 29 ms instead of
+  490, and nodes.json shrinks from 68 MB to under 3 MB — and each node carries only the links it uses. On demand, a
+  newly chosen forward target takes 10–15 s to come up; its traffic waits for the link rather than leaving directly.
+- **A notice when two different panels answer at one address.** A panel installed beside another — bare metal and
+  Docker, or a leftover from a reinstall — keeps its own servers, settings and lists, and the page showed whichever
+  one answered: one fleet on one reload, another on the next, and saves that never reached the servers. The page
+  now says **Two different panels are answering at this address**, naming each one's install, version, state
+  directory and how many servers report to it: keep that one, stop the other. The installers now ask before starting
+  a panel beside a running one of the other kind — abort, stop the other (its data stays) or keep both; an unattended
+  install refuses unless `SWG_OTHER_PANEL=stop` or `keep` says otherwise. A panel stopped that way stays stopped
+  through updates, and so does its subscription page.
+
+### Changed
+
+- **⚠️ A content-filter category switched off for a server stops filtering there.** Switching **Filter on
+  <server>** off hid the category's chip on every interface of that server, while those interfaces kept blocking it
+  — a filter nobody could see or untick. It is now enforced only where it is on, and switching it back on restores
+  it as it was. If you relied on that hidden filter, switch the category back on for that server.
+- **The Users screen filters by group, and groups get a grid of their own.** The Users | Groups switch is gone: a
+  **Groups** filter narrows the list to one group's members, and an icon beside the title opens the groups grid.
+  There each group is a row — its members and how many are online, peers, nodes, the networks shared with it, and
+  its members' speed and traffic added together, all sortable — which opens onto its members; a group's traffic
+  window draws its graph and lists each member's figure. A new **Online** filter shows only users with a device
+  online, and **New peer** moved to the Peers screen.
+- **Every VK call link reaches the apps that take a list, and a new user starts with three.** Each call link is its
+  own pool of TURN streams, so a config carrying one link runs at a fraction of what the user's links allow. FreeTurn
+  (samosvalishe), the MYSOREZ app and the free-turn and MYSOREZ command lines now carry every link; they carried only
+  the first. A new user now gets 3 links from the pool — distinct, least-used first — where it got 1: **Settings →
+  Turn proxies → Links per new user** sets the number (0–16). Existing users keep what they have.
+- **kiper292 and its WireGuard-TURN client are gone.** The fork was already hidden from every picker; it is now
+  removed, with its Android client (the "plain" WINGS-N pairing included) and the subscription page's .conf import
+  walkthrough. A kiper292 proxy a node still runs keeps syncing and stays listed: its config falls back to the
+  panel's command-line one, and the subscription page hides it. A saved default of WireGuard-TURN falls back to the
+  fork's next app.
+- **Hybrid SNI does less work per connection.** It is now handed only the packets that carry the ClientHello — one
+  or two a connection, where it was every packet the client sent during the handshake (4.5 on average, up to 6 for
+  Chrome) — and no longer wakes 40 times a second with nothing to learn. On a busy server that is under a third of
+  its CPU time per connection (about 48 → 14 µs on a workstation core).
+- **A Docker panel stops cleanly.** As the container's first process it ignored `docker stop`'s signal and was
+  killed ten seconds later; it now saves its traffic history and exits, waiting up to about 8 seconds for an
+  operator action in progress. A bare-metal panel does the same on `systemctl stop` and `restart`.
+- **Every release's Docker images stay available, tagged with the version.** Each release's push deleted the
+  previous release's images, so a Docker server had nothing to go back to — the 1.8.5 and 1.8.6 images are gone.
+  From 1.8.7 on they are kept, and from this release on each is also published as
+  `ghcr.io/sanityprotocol/swg-panel:<version>` and `swg-node:<version>` — this one as `1.8.8-beta`.
+- **Newer server builds.** csqtt 2.1.9-4, qWDTT 1.4.3-4, WDTT-Plus 18-2 and ildarmaga 1.5.0-4; what they fix is
+  under Fixed and Security, and ildarmaga 1.5.0-4 also takes the client DNS setting (see Added).
+
+### Fixed
+
+- **A server's own clients could lose all their traffic when another server sent it a subnet it also used.** Routing
+  rules, a whole-interface forward or a server's default list that sent an interface's traffic to a server whose own
+  interface overlaps it — the installers' 10.8.0.0/24 and 10.9.0.0/24, or a server added from another panel — made
+  that server route its own clients' traffic back to the sender; two servers sending one server the same subnet left
+  one of them without replies. Such traffic is no longer sent there: rules toward that server are skipped for that
+  interface, a forward to it is off (its traffic leaves by the sending server's own address), and the sending
+  server's card names both interfaces and both subnets. Give one of them a different subnet.
+- **On Hybrid SNI and Kernel SNI, an Exit or Direct rule above an overlapping Block rule lost its connections.** The
+  first packet left by the rule above and the Block below dropped everything after it, so "first match wins" failed
+  for exactly the exceptions it exists for. Blocks behave as before otherwise: they still cut a connection the moment
+  its destination lands in their list, one already running included. One exception stays on Kernel SNI: an address or
+  network Block that overlaps a site-name rule blocks those sites whatever order the two rules are in, because the
+  site name is checked after the address.
+- **⚠️ The other side of that fix:** on Hybrid SNI and Kernel SNI, a **Block** rule placed below an Exit or Direct
+  rule whose destinations include some of its own — a country's addresses above a range inside that country, say —
+  no longer stops those destinations: the rule above takes them, as it always did on **IP only** and as "first match
+  wins" says. Before, their connections got out their first packet and nothing more, which looked like blocking. To
+  block them, move the Block above the other rule. The routing list gives no warning for this overlap.
+- **On Hybrid SNI, sites opened in current Chrome, Edge and other Chromium browsers were missed on about half their
+  connections.** Their ClientHello — about 2 KB since the post-quantum key exchange — takes two packets, and with its
+  parts in random order the site name was in the second one about half the time. Hybrid SNI read only the first, so
+  those connections took the default route, or got past a Block rule, until a later one happened to show the name
+  early. It now puts the two packets back together.
+- **On Hybrid SNI, a site's learned address expired one learning period after it was first seen, however busy it
+  was** — an hour, or two minutes with IP learning off. Refreshing it did nothing, because adding an address that is
+  already in a set leaves its expiry unchanged, so for up to half a period new connections to the site took the
+  interface's other rules — an Exit or Direct rule's site left by the wrong route, and a blocked site got through —
+  until the address was learned again. It is now refreshed for real, and an address in use stays.
+- **On Hybrid SNI, two rules for the same clients naming the same site could send its first connection the wrong
+  way** — most often an interface's own rule and the server's default list behind it. The connection an app opens
+  right after the site is first seen could leave by the lower rule's route instead of the upper one's, because the
+  two rules' address sets were filled about 50 ms apart; measured, 2 first visits of 5. Both are now filled at the
+  same instant.
+- **On Kernel SNI, turning IP learning on or off did not reach a running server.** The addresses it had learned kept
+  their old lifetime until a reboot, with nothing reported; **Reset all routing** left them in place; and a server
+  switched away from Kernel SNI dropped them up to a minute later. All three now take effect at once, and a server
+  already caught this way is put right when it updates.
+- **On Kernel SNI, a Direct or Block rule by site name did nothing, while the rule list showed it working.** Kernel
+  SNI learns a site's address only for rules that leave by an exit — another server or a device — so a Block by site
+  name let the site through, and a Direct exception above a forward went out the forward anyway; it has been so since
+  Kernel SNI came in. Such a rule's row now says it matches by address only there and names the switch to **Hybrid
+  SNI**, and a list holding both sites and addresses keeps its address half and says so. To block a site by name, or
+  to except it from a forward, use **Hybrid SNI** or **Force-DNS**.
+- **After a server's routing mode was switched, what the old mode had learned went on deciding.** Addresses
+  Force-DNS had resolved, or sites Hybrid SNI or Kernel SNI had learned, kept their old verdicts under the new mode
+  until **Reset learned IPs** or a reboot. Measured: a server switched from Force-DNS to Kernel SNI kept blocking a
+  site by the address its resolver had seen, so a rule that cannot work there looked as if it did — until the site
+  moved. The first pass on the new mode now clears what the old one learned, once, as **Reset learned IPs** does;
+  lists are kept.
+- **Content-filter lists were downloaded once and never again.** Each list is now re-downloaded on the update
+  schedule; a list that finishes downloading after an interface's filter was built reaches the servers on their next
+  sync, where it could wait a day; and a list that cannot be fetched is retried less and less often instead of on
+  every sync. The **Blocking** tab shows each list's count as it arrives, or why it has none.
+- **An IP list in a custom category blocked nothing.** FireHOL and Tor lists added to a custom category went into the
+  name filter, where they match nothing, in every mode. A list now blocks by its own kind.
+- **The Overview's Protection figures counted filters that were not running** — domain lists on an **IP only** or
+  **Kernel SNI** server, lists of a provider switched off, categories switched off for that server — and left out
+  WDTT and csqtt servers. They now count what the servers enforce, and a category none of whose lists is in use reads
+  as inactive on the interface, with the reason.
+- **Top talkers read what each person actually used.** Over an hour, day, week or month the Overview's top talkers
+  were estimated from one speed reading a minute, and could show a third of the real figure — or many times it for
+  bursty traffic. They are now counted from the same exact totals as the Users screen, deleted and handed-on devices
+  included.
+- **A healthy server read "stale" because a clock was off.** A server's page said **stale** and greyed out every
+  action on it — creating an interface included — while the server list said **reporting**. It happened to anyone
+  whose computer's clock differed from that server's by more than the staleness window (**Settings → Display**, 30 s
+  by default), and restarting the server or the panel did not help. The panel now judges a server by when its sync
+  arrived, on its own clock, so the server list and the server's page can no longer disagree. A peer's last
+  handshake on an interface's page is now the server's own measurement too; on a server whose clock drifted it could
+  read hours old.
+- **An interface's Drops read 40–50% while nobody lost anything.** Three of the kernel's four drop counters on a
+  WireGuard or AmneziaWG interface are not loss: packets held for a client that was asleep, out of coverage or just
+  removed; traffic to an address no client owns; and a client sending from outside its own address. A client
+  interface's **Drops** now counts only what the server itself lost — its receive backlog overflowing — and shows the
+  rest apart as **Not counted**. Mesh links, and interfaces a userspace program runs (csqtt, WDTT, userspace
+  AmneziaWG), still count every kind. Below 200 packets the figure is a count, not a percentage.
+- **An operator's edit could be quietly undone by a node sync.** A sync saved the copy of the node store it had read
+  before its request arrived, so a change made in the seconds after creating something — an interface's S4 right
+  after its create, for one — could revert to the old value. The sync now waits for the store and re-reads it. The
+  same fault let the transfer status bring back a transfer you had cancelled and the turn-proxy auto-update (when
+  switched on) undo a pending delete or stop, and a new name the node installer sent for its server never took
+  effect. While the panel is busy with a long action a node may now be answered "busy" and skip that pass, which is
+  safe — **update your nodes together with the panel**: an older node takes "busy" for a failure.
+- **One value in Settings → Network could stop every node's sync.** A panel mesh subnet of /32 or an IPv6 range was
+  accepted, and from the next pair of nodes that needed a mesh link every node's sync failed until someone found the
+  setting. Both mesh-subnet fields now take only an IPv4 range of /31 or larger, and a node's own must hold the links
+  it anchors. A pool that runs out is now reported on the node, naming the peers it cannot link — before, those pairs
+  simply never linked, and anything routed over them left directly.
+- **A mesh link could send every full-size packet as two fragments** when the mesh MTU had been raised (to 1420,
+  say): the link's S4 padding pushed full-size packets past 1500 bytes, roughly halving throughput. A link's S4 now
+  fits its MTU; links already over it are refitted on both ends once, with no re-handshake.
+- **A WARP outage made the node go offline in the panel.** Every exit was tested one after another, each waiting out
+  its timeouts, so with several WARP exits a pass took about a minute: the node read offline, its webhooks flapped,
+  and switching the traffic away took three minutes. The exits are tested together now.
+- **An update could leave AmneziaWG unable to start after the next reboot on a node whose awg tools were built by
+  hand before AmneziaWG 3.** 1.8.7 registered, and the module repair built, the current AmneziaWG 3 kernel module;
+  tools older than 3.0 cannot configure it (`Unable to modify interface: Invalid argument`), so at the next boot no
+  awg interface came up, mesh links included. Nodes our installer set up are not affected — their tools are always
+  current. Such a node now keeps the module it has, or runs on the userspace fallback, and the update says to rebuild
+  amneziawg-tools. **If a node already fails this way:** build amneziawg-tools from
+  https://github.com/amnezia-vpn/amneziawg-tools (`make -C src && make -C src install PREFIX=/usr WITH_WGQUICK=yes`),
+  then `systemctl daemon-reload && systemctl restart awg-quick@<interface>` — no reboot needed.
+- **A conf rebuilt from a live AmneziaWG 3.x device carried lines only the 3.x kernel accepts,** so the interface
+  could not come up on the userspace fallback or an older module; those lines are dropped. An older amneziawg-go of
+  ours without AmneziaWG 3.1 support is replaced by the pinned build.
+- **A client config rebuilt after Edit or a deployment-settings save cut `I1`–`I5` at the first space,** and every
+  client and datapath refused it. The full values are kept.
+- **An update could sit for about three and a half minutes after "Update complete".** Reporting the result to the
+  panel promised "up to 25s" but counted attempts, each allowed six seconds, so when the panel's address dropped
+  packets — the panel down, a firewall — every attempt waited them out. It now stops at the time it prints.
+- **A Docker address change that expired while its check ran was applied anyway** — the container was recreated
+  onto the new address against settings already rolled back. It is now refused, and **Settings → Panel access** says
+  the change expired.
+- **A panel could serve an expired certificate while acme.sh renewed it on time.** acme.sh keeps one install target
+  per name, and another program sharing it — 3x-ui's certificate menu, or swg-sub on the same name — took that
+  target over, so every renewal went to the other program. On bare metal the panel now takes acme.sh's renewed
+  certificate itself, and nginx or caddy set up by the installer are reloaded when it changes. The installer and
+  address changes no longer take another program's acme.sh entry or delete it; issuing a certificate for a name
+  another program's entry holds renews that entry by its own method instead of issuing over it; and dropping an old
+  panel name keeps the entry swg-sub still uses. IP certificates now count as covering their address, so saving
+  **Panel access** on an IP panel no longer asks for a re-issue it cannot do. A self-signed panel certificate that
+  nodes pinned is never swapped automatically — Settings says so, and when acme.sh itself would overwrite it. A
+  renewal now reloads the panel instead of restarting it (an update rewrites the old command).
+- **A node installed while the panel's certificate had expired dropped out once the panel was renewed.** The node
+  installers took the expired certificate for a self-signed one and pinned it; once the panel was renewed the pin
+  stopped matching and the node stopped syncing. They now pin only a certificate that really is self-signed or from
+  a private CA. **A node already pinned that way:** re-run the node installer — its log says so once an hour.
+- **A certificate reload while the panel was starting could stop it for good.** acme.sh reloads the panel with a
+  signal, and one that arrived while the panel was still starting ended the process in a way systemd does not
+  restart. Handling that signal is now the first thing the panel sets up.
+- **One config now works on another phone, on every server the panel ships.** A csqtt password stayed tied to the
+  first device that used it, so a user who moved their config to a new phone was refused ("the password is bound to
+  another device"); it now moves to the newest device, keeping its address, and two phones starting it at the same
+  moment no longer bounce it between them — nor can csqtt's own main password take a user's device. On qWDTT, a
+  device taking over a RAW session gets all of its replies instead of about half, and in WireGuard mode three of a
+  client's four connections were refused on every device. A WDTT-Plus password bound to a device before the panel
+  managed the server — an adopted one, say — was refused on every device; it now connects, keeping its address where
+  the server still holds it. Fixed in csqtt 2.1.9-4, qWDTT 1.4.3-4 and WDTT-Plus 18-2.
+- **Moving a WDTT or csqtt server to a new build on bare metal started it again if you had stopped it,** while the
+  panel still showed it stopped — which this release's server updates would otherwise have done on every node. A
+  stopped server now stays down and takes the new build at its next start.
+- **An iPhone that imported a csqtt server's link kept one VK call link and lost the rest.** anton48's VK TURN Proxy
+  reads only the first call link of a `csqtt://` link, and its import replaced the call links already saved on the
+  phone with that one. The iPhone now gets its own `vkturnproxy://` link, on the subscription page and in the panel,
+  carrying every call link; the CSQTT, FOCSQ and La Lune apps keep the `csqtt://` link. A csqtt server's card in a
+  peer's config view also gains **Alternatives**: pick the device and the app, and get that app's link.
+- **A fork updated from Settings → Turn proxies kept showing its old version until the page was reloaded.** The row
+  now holds **updating…** until every server the update reached reports the new version, then says **updated**, and
+  an update clicked right after **Check for updates** is no longer undone by that check.
+- **A server kept an empty counter for each interface that left device access.** Setting an interface to **Everyone
+  on this node**, or deleting it, left an unused blocked-packet counter in the server's device-access table until its
+  next restart. It is now removed at once, and the interface's count is kept if it comes back.
+- **Enter in a user search pressed the window's main button.** In **New peer**, **Edit peer**, a group's sheet and a
+  network's **People with access**, Enter on a typed name now picks it — **New peer** used to try to create the peer
+  before its user was set — and Escape closes the list before the window.
+- **Escape in a list search closed the window behind it.** In a routing rule's target list, once a row had been
+  clicked, Escape did nothing or closed the whole window, and a block category's **Add list** ignored it. Both now
+  close on Escape or on a ✕ of their own, and the next Escape closes the window.
+- **Block, Delete and Rotate all keys were a size smaller than the buttons beside them,** and the device view's last
+  button wrapped onto a second row in Russian.
+- **Dates in chart tooltips were English in the Russian panel.**
+- **A few sentences sent you to a Settings section by a name the sidebar does not show** — «Политики» in the
+  Russian panel, "Routing lists" on a rule's badge. They now name **Routing & Blocking** the way the sidebar does.
+
+### Security
+
+- **Traffic another server routed into a server by rule leaked out by that server's own address, even with the
+  exit's kill-switch on.** It ignored the server's default exit, which whole-interface forwarding took, so the sites
+  it reached saw the server's own address instead of the exit's — a privacy leak, and the one the kill-switch exists
+  to prevent. It now takes the default exit the same way, unless you chose the address it leaves that server by, and
+  with the kill-switch on it stops when the exit is down. Servers need no update for this.
+- **On Force-DNS and Hybrid SNI, a Block on one interface could be bypassed through another interface's rule.** A
+  site named by one interface's rule was taken away from a broader rule on another interface: a Block on
+  `example.com` for wg0 stopped blocking `shop.example.com` the moment wg1 had any rule naming `shop.example.com`.
+  That no longer happens, and a rule for chosen people likewise changes nothing for anyone it does not choose. Where
+  two rules for the same devices overlap, the more specific one still wins, as before.
+- **A client holding a valid password could crash a qWDTT server and drop every client on it.** A device switch, a
+  revoked password or an idle timeout that closed a connection while data was on its way to it ended the server — by
+  chance, or on purpose by a client switching its config between two devices. The fault was in every earlier build;
+  fixed in qWDTT 1.4.3-4.
+- **Anything running as the panel's user could have root overwrite a `.json` file anywhere on the box.** The root
+  helper that carries out the panel's privileged actions wrote its answers through the panel's own `netctl/`
+  directory, which that user can rearrange — a folder there swapped for a link sent root's write wherever the link
+  pointed — and the Docker helper took a request id holding `../` as a path. The helper now works there only through
+  directories it has checked are root's own, follows no link the panel's user controls, and takes a request id as a
+  plain file name.
+
+### Upgrading
+
+- **⚠️ Update the servers together with the panel.** Until a server reports the new version it takes the panel's new
+  "busy" answer for a failure; rules for chosen people apply to nobody there, and its card says so; traffic other
+  servers send out through it leaves by its default list's **Everything else** as a plain default — through that exit
+  when it is one, by the server's own address when it is **Direct**, **Block** or **Forward to …** — and its card
+  says so when that changes where traffic cascaded in goes; and **Upstream DNS**, **Client DNS**, the new **Drops**
+  figure and the server-side fixes above wait for it. On a NixOS native node a rebuild does not restart the daemon:
+  run `sudo systemctl restart swg-noded` once it is done.
+- **Each server rebuilds its routing chains once when it updates.** Its first sync after the update records its
+  routing mode and resets nothing: a server switched between modes before the update keeps what the old mode learned
+  until you press **Reset learned IPs** or it reboots.
+- **csqtt, qWDTT, WDTT-Plus and ildarmaga servers move to the new builds on their next sync** and restart once, so
+  their clients reconnect. A server you rolled back to a chosen build stays on it; taking qWDTT back to 1.4.3-3 or
+  earlier brings back the crash fixed in 1.4.3-4.
+- **⚠️ Three things that looked blocked may get through.** A category switched off with **Filter on <server>** stops
+  filtering on that server — switch it back on where you relied on it (see Changed). On Hybrid SNI and Kernel SNI, a
+  **Block** rule below an Exit or Direct rule whose destinations overlap it no longer stops the overlap — move the
+  Block above (see Fixed). And on Kernel SNI a **Block** rule by site name never blocked; its row now says so — block
+  such sites on **Hybrid SNI** or **Force-DNS** (see Fixed).
+- **Drops after the update.** On a kernel WireGuard or AmneziaWG client interface you reset before this update,
+  **Since reset** starts over once, at the update.
+- **Going back to 1.8.7 — the panel.** Saving an interface on an older panel drops the chosen people from its rules
+  for good; the rules stay, switched off. An older panel never reads a server's default list, so none of its rules
+  apply: a server whose **Everything else** is an exit or **Direct** keeps that as a plain default, and one whose
+  **Everything else** is **Block** or **Forward to …** lets traffic out by its own address. An address chosen under
+  **As address** for a **Forward to …** rule only pauses — the rules keep reaching the right server, which picks the
+  address itself — and applies again after the upgrade.
+- **Going back to 1.8.7 — a server.** A server taken back keeps routing chains and sets it does not know — from rules
+  for chosen people, a default list, and any Block rule below an Exit or Direct rule on Hybrid SNI or Kernel SNI. On
+  Hybrid SNI they stop it applying the next change to IP learning. Run `sudo nft delete table inet swg_smart` on it
+  once (on a Kernel SNI server that ran a default list, also `sudo ipset destroy swga`); it rebuilds within a minute.
+  A Kernel SNI server that ran rules for chosen people also keeps unused `swgs_*` ipsets until a reboot — harmless;
+  `ipset destroy` them to tidy.
+- **Going back takes one command.** On bare metal `SWG_REF` now takes a commit:
+  `curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo SWG_REF=df3bb45 bash -s update`
+  installs 1.8.7-beta, and the box's **Update** button goes on following the branch it followed — the header offers
+  this release again, and one press brings it back. On Docker, set `SWG_IMAGE_TAG=sha-df3bb45` in the install's
+  `.env` and run `docker compose pull` and `docker compose up -d` with its profile; remove the line to come forward.
+  Every release's images now stay published (see Changed).
+
 ## [1.8.7-beta] — 2026-09-17
 
 ### Added
