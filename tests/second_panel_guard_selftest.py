@@ -10,8 +10,12 @@ bare-metal-side cases stub `systemctl` and point the check at a temp unit via a 
   4. SWG_OTHER_PANEL=keep → continues without touching it; abort → exit 1
   5. the other is installed but stopped and not set to start → a note, no question
   6. a convert (SWG_CONVERT_DIR) is exempt — convert.sh owns the switch-over
+  7. a parked panel stays parked through update.sh — its subscription server with it (1.8.8 qualification: the
+     bare branch disabled only swg-panel-server, so the bare swg-sub kept serving the parked panel's frozen store on
+     the port the Docker stack's own swg-sub publishes, and every update restarted it and re-enabled it)
 
-Run:  python3 tests/second_panel_guard_selftest.py   (exit 0 = all pass)
+Run:  python3 tests/second_panel_guard_selftest.py             (exit 0 = all pass)
+      python3 tests/second_panel_guard_selftest.py --perturb   the three swg-sub guards taken back out → RED
 """
 import os, subprocess, sys, tempfile
 
@@ -23,7 +27,17 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
+PERTURB = "--perturb" in sys.argv
 src = open(LIB).read()
+UPSRC = open(os.path.join(HERE, "..", "update.sh")).read()
+if PERTURB:
+    _a = "systemctl disable --now swg-panel-server swg-sub >/dev/null 2>&1 || true"
+    assert src.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    src = src.replace(_a, "systemctl disable --now swg-panel-server >/dev/null 2>&1 || true")
+    for _b, _c in (("      if bare_panel_parked; then   # its panel is parked (guard_second_panel), and it is parked with it\n", "      if false; then\n"),
+                   ("  [ -f /etc/systemd/system/swg-panel-server.service ] && bare_panel_parked && return 0\n", "")):
+        assert UPSRC.count(_b) == 1, "perturbation anchor missing — would FALSE-PASS: %r" % _b[:60]
+        UPSRC = UPSRC.replace(_b, _c)
 i = src.index("guard_second_panel(){"); j = src.index("\n}\n", i) + 3
 FN = src[i:j]
 
@@ -109,11 +123,23 @@ check("a running unit is not", not parked("bare_panel_parked", active=True))
 check("a stopped container with restart=no is parked", parked("docker_parked swg-panel", "false no"))
 check("a stopped compose container (unless-stopped) is not", not parked("docker_parked swg-panel", "false unless-stopped"))
 check("a running container is not", not parked("docker_parked swg-panel", "true no"))
-up = open(os.path.join(HERE, "..", "update.sh")).read()
+up = UPSRC
 check("update.sh leaves a parked bare panel stopped", "if bare_panel_parked; then" in up and up.index("if bare_panel_parked; then") < up.index("elif run systemctl restart swg-panel-server"))
 check("update.sh does not count a parked container as a live stack", 'docker_parked "$_n" || { _DSTACK=yes; return 0; }' in up)
 rc, out, calls = run("baremetal", "swg-panel\n", "swg-panel\n", env={"SWG_OTHER_PANEL": "stop"})
 check("stopping a docker panel parks its subscription server too", "docker update --restart=no swg-sub" in calls and "docker stop swg-sub" in calls, calls)
+rc, out, calls = run("docker", unit=True, active=True, env={"SWG_OTHER_PANEL": "stop"})
+check("stopping a bare panel parks ITS subscription server too (disable --now swg-sub)",
+      rc == 0 and "systemctl disable --now swg-panel-server swg-sub" in calls, calls)
+_sub = up[up.index('if [ -f "$SUB_DIR/swg-sub" ] && [ -f "$SRC/swg-sub" ]; then'):]
+_sub = _sub[:_sub.index("\n    fi\n") + 7]
+check("update.sh leaves a parked panel's swg-sub stopped (refreshed on disk, not restarted)",
+      "if bare_panel_parked; then   # its panel is parked" in _sub
+      and _sub.index("if bare_panel_parked; then") < _sub.index("run systemctl restart swg-sub"), _sub[-400:])
+_ens = up[up.index("ensure_sub_server(){"):up.index("ensure_sub_server(){") + 2500]
+check("…and the heal pass does not re-enable it (ensure_sub_server returns for a parked bare panel, and only there)",
+      "[ -f /etc/systemd/system/swg-panel-server.service ] && bare_panel_parked && return 0" in _ens
+      and _ens.index("bare_panel_parked && return 0") < _ens.index("systemctl enable --quiet swg-sub"), _ens[:600])
 
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAILED: %s" % (len(FAILS), ", ".join(FAILS))))
 sys.exit(1 if FAILS else 0)

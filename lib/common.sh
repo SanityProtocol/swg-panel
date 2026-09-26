@@ -1159,7 +1159,10 @@ guard_second_panel(){
           docker update --restart=no "$_c" >/dev/null 2>&1 || true; docker stop "$_c" >/dev/null 2>&1 || true
         done
       else
-        systemctl disable --now swg-panel-server >/dev/null 2>&1 || true
+        # …and the subscription server that belongs to it, as the Docker branch above stops both containers: left
+        # running it serves that panel's subscription pages from a store nothing updates any more, on the port the
+        # Docker stack's own swg-sub publishes (8444 by default)
+        systemctl disable --now swg-panel-server swg-sub >/dev/null 2>&1 || true
       fi
       echo "  ✓ stopped $what — its data is still on disk"; return 0;;
     k|K|keep) echo "  · keeping both — two panels will answer on this box"; return 0;;

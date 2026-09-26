@@ -553,6 +553,8 @@ ensure_sub_server(){   # HEAL (install-if-missing) the swg-sub subscription surf
   #   set-listen drop-in — then enable so it survives a reboot. Piece templates MUST mirror install-host.sh's
   #   swg-sub install + write_sub_unit. Inert until enabled in the panel (the surface 404s until then).
   [ -f "$SRC/swg-sub" ] || return 0
+  # a PARKED bare panel's swg-sub is parked with it (guard_second_panel) — enabling it would bring it back at boot
+  [ -f /etc/systemd/system/swg-panel-server.service ] && bare_panel_parked && return 0
   local st="${STATE_DIR:-/var/lib/swg-panel}" etc="${ETC_DIR:-/etc/swg-panel}" tls="${TLS_DIR:-/etc/swg-panel/tls}"
   local subusr="${SUB_USER:-swgsub}" subport="${SUB_PORT:-8444}" subbind="${SUB_BIND:-0.0.0.0}"
   local unit=/etc/systemd/system/swg-sub.service
@@ -1444,7 +1446,11 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
       for f in $SUB_WEB; do [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$SUB_DIR/"; done
       [ -f "$SRC/vendor/qrcode.js" ] && { run mkdir -p "$SUB_DIR/vendor"; run cp "$SRC/vendor/qrcode.js" "$SUB_DIR/vendor/"; }
       stamp "$SUB_DIR"
-      run systemctl restart swg-sub 2>/dev/null && ok "swg-sub updated + restarted" || warn "swg-sub present but not restarted"
+      if bare_panel_parked; then   # its panel is parked (guard_second_panel), and it is parked with it
+        ok "swg-sub updated — left stopped (its panel is parked: another panel runs on this box)"
+      else
+        run systemctl restart swg-sub 2>/dev/null && ok "swg-sub updated + restarted" || warn "swg-sub present but not restarted"
+      fi
     fi
     # swg-passwd (admin login + Encryption-Vault reset helper) ships with the panel — refresh in place when present.
     # It's coupled to the panel's vault, so a stale copy after an update can mismatch; keep it in lockstep with the panel.
