@@ -838,8 +838,12 @@ def _ver_ahead(have, ref):
 
 # Latest published version — fetched from the public repo so the panel can tell when IT is behind
 # (works for any bare-metal/docker install; just an outbound HTTPS GET). Refreshed in a daemon thread.
-REMOTE_VERSION_URL = os.environ.get(
-    "SWG_LATEST_URL", "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/VERSION")
+# ⚠️ EMPTY IS UNSET. docker-compose passes `SWG_LATEST_URL: "${SWG_LATEST_URL:-}"`, so a Docker panel whose .env does not
+# name one gets the variable SET TO "" — and `environ.get(name, default)` returns that "", not the default: every Docker
+# panel's release check asked for `?cb=…`, failed with a ValueError, and never learned a new release was out (1.8.8 VM
+# re-run, D4 — q1 on Docker, q3, q6).
+REMOTE_VERSION_URL = (os.environ.get("SWG_LATEST_URL") or "").strip() \
+    or "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/VERSION"
 REMOTE_CHANGELOG_URL = REMOTE_VERSION_URL.rsplit("/", 1)[0] + "/CHANGELOG.md"   # sibling of VERSION on the same ref
 
 def _changelog_url(lang):
@@ -5822,6 +5826,15 @@ def net_share_for_node(roster, nid, carry, snap=None):
 REACH_LEVELS = ("everyone", "user", "none")
 
 
+def awg_params_differ(want, rep):
+    """Do two AmneziaWG parameter sets differ AS VALUES? The same test the sync uses before it pushes (`str` on both sides):
+    the panel stores what the Edit sheet typed — strings, `"94"` — and a node reports integers, `94`, so comparing the dicts
+    raw said every interface ever saved from the sheet was still waiting for its node (`awg_pending` true for good on
+    msk-main's awg2 — 1.8.8 qualification, O3). Two readers of one fact, one grammar."""
+    want, rep = want or {}, rep or {}
+    return set(want) != set(rep) or any(str(want[k]) != str(rep[k]) for k in want)
+
+
 def reach_level(v):
     """A stored level as the node enforces it: absent is "user" (A3), and a value this panel does not know — a hand edit, a
     transfer from a newer panel — is "none" (§16 A4). Every place the panel plans or publishes a level reads it through here, so
@@ -10386,7 +10399,7 @@ def apply_iface_meta(node_cfg, interfaces, ivk_pub="", vault_restore_ok=False):
             # back to 2.0 is not rendered into a single config.
             ifc["awg_params"] = {**{k: v for k, v in rep_awg.items() if k not in AWG3_FIELDS},
                                  **{k: ovawg[k] for k in ovawg if ovawg[k] not in (None, "")}}
-            ifc["awg_pending"] = ifc["awg_params"] != rep_awg
+            ifc["awg_pending"] = awg_params_differ(ifc["awg_params"], rep_awg)
     return interfaces
 
 
