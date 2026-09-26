@@ -26,12 +26,27 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Prune swg-panel + swg-node (keep 3 latest tagged)
+      # Never a release: `latest`, the version tags, and every commit on main (one per release — the images an
+      # operator rolls back to). The same list docker.yml's own prune keeps; see the note there.
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: rel
+        run: |
+          keep="latest,*-beta"
+          # a release commit's subject is `<version> — <headline>` (the squash); older history is granular, not releases
+          for h in $(git log --first-parent --format='%H %s' HEAD | awk '$2 ~ /^[0-9]+[.][0-9]+[.][0-9]+(-[a-z]+)?$/ {print $1}'); do
+            keep="$keep,sha-${h:0:7}"
+          done
+          echo "keep=$keep" >> "$GITHUB_OUTPUT"
+      - name: Prune swg-panel + swg-node (keep 3 latest tagged, never a release)
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
           owner: ${{ github.repository_owner }}
           packages: swg-panel,swg-node
           keep-n-tagged: 3
+          exclude-tags: ${{ steps.rel.outputs.keep }}
           delete-untagged: true
           delete-partial-images: true
           dry-run: ${{ inputs.dry_run }}
