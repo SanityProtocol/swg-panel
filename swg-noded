@@ -13489,6 +13489,29 @@ def write_inventory(node_cfg):
         _INV_LAST["sig"] = sig
 
 
+def _relay_leftovers(prev_kind):
+    """The previous run-model's relay instances, asked of ITS registry by name -> (units, containers).
+
+    ⚠️ NOT FROM THE INVENTORY. Relays were never recorded there, and the container arm records no units and — its
+    fork servers being its own children — often no containers either, so the handover returned before stopping
+    anything. MEASURED in the 1.8.8 qualification (nixos, podman -> native): `swg-relay-awg0.<peer>` and
+    `swg-relay-wg9.<peer>` kept running under `--restart unless-stopped` and holding their ports, every native
+    `swg-relay@` instance failed to start, and the divert stayed DISARMED ("relay not answering") — relayed
+    links silently back on plain forwarding. Asking the runtime also covers an inventory an older build wrote.
+    Each arm's own sweep cannot see the other's instances (see _relay_existing), so this is the only place
+    they are ever found."""
+    units, ctrs = [], []
+    with contextlib.suppress(Exception):
+        if prev_kind == "docker" and NODE_KIND != "docker":
+            r = run([_ctr_cli(), "ps", "-a", "--filter", "name=" + _relay_cname(""), "--format", "{{.Names}}"], timeout=30)
+            ctrs = sorted(n for n in (r.stdout or "").split() if n.startswith(_relay_cname("")))
+        elif prev_kind != "docker" and NODE_KIND == "docker":
+            r = host_sh("systemctl list-units --all --plain --no-legend 'swg-relay@*.service' 2>/dev/null "
+                        "| awk '{print $1}'", timeout=30)
+            units = sorted(u for u in (r.stdout or "").split() if re.match(r"^swg-relay@.+\.service$", u))
+    return units, ctrs
+
+
 def handover_from_previous_runmodel():
     """Stop what a PREVIOUS run-model left running here, by the names IT recorded. Once, at startup.
 
@@ -13510,6 +13533,9 @@ def handover_from_previous_runmodel():
         return                                   # same model — its components are ours, not leftovers
     units = [u for u in (prev.get("units") or []) if isinstance(u, str) and u]
     ctrs = [c for c in (prev.get("containers") or []) if isinstance(c, str) and c]
+    r_units, r_ctrs = _relay_leftovers(prev.get("kind"))
+    units += [u for u in r_units if u not in units]
+    ctrs += [c for c in r_ctrs if c not in ctrs]
     if not (units or ctrs):
         return
     print("run-model changed (%s/%s -> %s/%s) — handing over %d unit(s), %d container(s) from the previous one"
@@ -13522,7 +13548,10 @@ def handover_from_previous_runmodel():
             stuck.append(u)
     for c in ctrs:
         with contextlib.suppress(Exception):
-            if run([_ctr_cli(), "stop", "-t", "10", c], timeout=60).returncode != 0 and _ctr_running(c):
+            # A relay holds no state — the new arm recreates it from the panel's plan — so it is REMOVED, not just
+            # stopped: nothing on this side would ever look for a stopped one again.
+            verb = ["rm", "-f"] if c.startswith(_relay_cname("")) else ["stop", "-t", "10"]
+            if run([_ctr_cli()] + verb + [c], timeout=60).returncode != 0 and _ctr_running(c):
                 stuck.append(c)
     _handover_fork_dirs()
     _handover_turn()
