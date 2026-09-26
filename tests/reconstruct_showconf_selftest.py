@@ -188,13 +188,18 @@ open(os.path.join(STUB, "ip"), "w").write('#!/bin/sh\ncase "$*" in *route*) echo
 for f in ("awg", "wg", "ip"):
     os.chmod(os.path.join(STUB, f), 0o755)
 _in = re.search(r"^_in\(\)\{.*$", inst, re.M).group(0) + "\n"          # a one-line function
+# the NAT hook writers the function calls (lib/common.sh) — lifted as shipped, like the function itself
+_common = open(os.path.join(ROOT, "lib", "common.sh"), encoding="utf-8").read()
+_a = _common.index("_ipt_reap_sh(){"); _b = _common.index("\n# installed_sum <path…>", _a)
+NAT_HOOKS = _common[_a:_b] + "\n"
 
 def sh_rebuild(showconf):
     for d in (AWGD, WGD):
         shutil.rmtree(d, ignore_errors=True)
     fx = os.path.join(T, "fixture")
     open(fx, "w").write(showconf)
-    script = "set -eu\nDRYRUN=false\ninfo(){ :; }\nb(){ printf '%s' \"$*\"; }\n" + _in + fn + "reconstruct_live_orphans\n"
+    script = ("set -eu\nDRYRUN=false\ninfo(){ :; }\nb(){ printf '%s' \"$*\"; }\n" + _in + NAT_HOOKS + fn
+              + "reconstruct_live_orphans\n")
     env = dict(os.environ, PATH=STUB + ":" + os.environ.get("PATH", ""), FIXTURE=fx, IP_ADDR=IP_ADDR,
                SWG_CONVERT="1", ADOPTED_IFACES="g1f")
     r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)

@@ -90,6 +90,20 @@ _refuse(){
 # pretty protocol name for interface listings: awg → AmneziaWG, wg → WireGuard (anything else passes through).
 # The product's own spelling — the summary's _sum_proto_label already says WireGuard, and one listing said both.
 proto_label(){ case "$1" in wg) printf 'WireGuard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
+# nat_hook_up / nat_hook_down <subnet> <wan> — the PostUp / PostDown pair a managed interface's conf carries,
+# BYTE FOR BYTE what swg-agent writes (_ipt_set / _ipt_reap there): the up REAPS THEN ADDS, so the chain ends with
+# exactly one copy of each rule however many a bring-up without its tear-down left behind (a convert, a killed
+# container, a crash); the down reaps every copy. The installers wrote a plain `-A` / one `-D`, so after a Docker →
+# bare-metal convert every interface carried two copies of each rule and an uninstall left one behind (1.8.8
+# qualification, round 4). tests/nat_hooks_selftest.py holds the two writers to one text.
+_ipt_reap_sh(){ printf 'for _n in 1 2 3 4 5 6 7 8; do iptables %s-D %s 2>/dev/null || break; done' "${1:+$1 }" "$2"; }
+_ipt_set_sh(){ printf '%s; iptables %s-A %s || true' "$(_ipt_reap_sh "$1" "$2")" "${1:+$1 }" "$2"; }
+nat_hook_up(){ printf 'sysctl -q -w net.ipv4.ip_forward=1 || true; %s; %s; %s' \
+  "$(_ipt_set_sh '-t nat' "POSTROUTING -s $1 -o $2 -j MASQUERADE")" "$(_ipt_set_sh '' "FORWARD -i %i -o $2 -j ACCEPT")" \
+  "$(_ipt_set_sh '' "FORWARD -i $2 -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT")"; }
+nat_hook_down(){ printf '%s; %s; %s; true' \
+  "$(_ipt_reap_sh '-t nat' "POSTROUTING -s $1 -o $2 -j MASQUERADE")" "$(_ipt_reap_sh '' "FORWARD -i %i -o $2 -j ACCEPT")" \
+  "$(_ipt_reap_sh '' "FORWARD -i $2 -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT")"; }
 # installed_sum <path…> — ONE sha256 over every regular file under the given paths (name + content, sorted), or
 # nothing when there are none. A re-install compares it before/after to tell "re-installed" from "re-installed AND
 # updated": the version stamp cannot, a dev build keeps one VERSION across many commits. (install-docker.sh compares

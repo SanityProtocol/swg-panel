@@ -635,8 +635,8 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
     addr="${SPEC_ADDR[$name]}"; wan="${SPEC_WAN[$name]}"; ep="${SPEC_EP[$name]}"; dir="${SPEC_DIR[$name]}"; conf="$dir/$name.conf"
     if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
     # gateway plumbing: forward + masquerade the tunnel subnet out the WAN (bound to iface lifecycle)
-    up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
-    down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+    up="$(nat_hook_up "${subnet}" "${wan}")"   # reap-then-add: one copy whatever was there (lib/common.sh)
+    down="$(nat_hook_down "${subnet}" "${wan}")"
     printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
     run sysctl -q -w net.ipv4.ip_forward=1
     run sysctl -q -w net.ipv4.conf.all.route_localnet=1   # lets Force-DNS DNAT client :53 to loopback dnsmasq (else silent DNS blackhole on this master's local node)

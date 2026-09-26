@@ -666,6 +666,21 @@ rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
                       || info "  Kept the panel data; node interface configs untouched."
   else docker_cleanup_if_last; fi     # applies the data-dir decision captured above
   ok "swg-panel container removed"; }
+# reap_iface_rules <iface> [<subnet>] — the rules a node's interface left in THIS box's tables: every FORWARD rule that
+# names it (the hooks' accept pair and the tagged ACL alike — the interface is being removed, so none of them can match
+# again) and its subnet's MASQUERADE, in whatever number of copies. A Docker node runs with host networking, so its
+# hooks and node-entrypoint's NAT write the HOST's tables, and removing the container ran no PostDown: every uninstall
+# left them, and they piled up across installs (1.8.8 qualification, round 4 — 8 MASQUERADE and 6 FORWARD accepts on
+# one box, for interfaces long gone).
+reap_iface_rules(){ local n="$1" s="${2:-}" l _s
+  command -v iptables >/dev/null 2>&1 && [ -n "$n" ] || return 0
+  iptables -S FORWARD 2>/dev/null | grep -E -- "-[io] ${n}( |$)" | while IFS= read -r l; do
+    run sh -c "iptables $(printf '%s' "$l" | sed 's/^-A /-D /') 2>/dev/null" || true; done
+  [ -n "$s" ] || return 0
+  _s="$(printf '%s' "$s" | sed 's/[.]/\\./g')"
+  iptables -t nat -S POSTROUTING 2>/dev/null | grep -xE -- "-A POSTROUTING -s ${_s} -o [^ ]+ -j MASQUERADE" | while IFS= read -r l; do
+    run sh -c "iptables -t nat $(printf '%s' "$l" | sed 's/^-A /-D /') 2>/dev/null" || true; done
+}
 rm_docker_node(){  info "Removing Docker node container (swg-node)"
   docker_node_uninstalling   # flash a red "uninstalling" tag on the panel before we tear down
   local KNODE="${DOCKER_KEEP_CONFS:-}"   # same shadowing bug as DELP above — inherit, do not blank
@@ -678,6 +693,10 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
   local _ifn _n _c
   _ifn="$(docker exec swg-node sh -c 'for d in /etc/amnezia/amneziawg /etc/wireguard; do ls "$d"/*.conf 2>/dev/null; done' 2>/dev/null | sed 's#.*/##; s#\.conf$##' | tr '\n' ' ')"
   [ -n "$_ifn" ] || _ifn="$(for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] && basename "$_c" .conf; done | tr '\n' ' ')"
+  # …and each one's subnet, for the MASQUERADE its bring-up added (the conf is the one place that says it)
+  local _nets
+  _nets="$(docker exec swg-node sh -c 'for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$f" ] && printf "%s %s\n" "$(basename "$f" .conf)" "$(sed -n "s/^[[:space:]]*[Aa]ddress[[:space:]]*=[[:space:]]*//p" "$f" | head -1 | cut -d, -f1)"; done' 2>/dev/null || true)"
+  [ -n "$_nets" ] || _nets="$(for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] && printf '%s %s\n' "$(basename "$_c" .conf)" "$(sed -n 's/^[[:space:]]*[Aa]ddress[[:space:]]*=[[:space:]]*//p' "$_c" | head -1 | cut -d, -f1)"; done)"
   # Same debt the bare-metal node owes (see rm_node): an interface taken over from somebody else's container
   # left that container stopped with restart=no. Read the mirror off the bind-mounted state dir, and — for a
   # take-over that predates the mirror — the container's own config.json while it is still up to be asked.
@@ -694,6 +713,10 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
     awg-quick down "$_n" >/dev/null 2>&1 || wg-quick down "$_n" >/dev/null 2>&1 || true   # clean teardown if it can
     ip link delete dev "$_n" >/dev/null 2>&1 || true                                      # ALWAYS force-delete (down may exit 0 without removing it)
     info "  removed leftover host interface $(b "$_n")"; done
+  # …and their rules (see reap_iface_rules) — for every interface the node had, whether or not its device was still up
+  for _n in $_ifn; do [ -n "$_n" ] || continue
+    reap_iface_rules "$_n" "$(printf '%s\n' "$_nets" | awk -v n="$_n" '$1==n {print $2; exit}' | python3 -c 'import ipaddress,sys; s=sys.stdin.read().strip(); print(ipaddress.ip_network(s, strict=False) if s else "")' 2>/dev/null)"
+  done
   if docker_running swg-panel; then
     [ "$KNODE" = yes ] && info "  Kept $DOCKER_DIR/data/node-confs (peers re-onboardable); panel data untouched." \
                        || { _rm_node_data; info "  Removed the node's interface configs; panel data untouched."; }

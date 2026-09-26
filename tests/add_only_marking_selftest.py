@@ -86,7 +86,7 @@ def fn(src, name):
 PRE = ('set -euo pipefail\nDRYRUN=false; BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_BL=""\n'
        'info(){ echo "INFO $*"; }; ok(){ echo "OK $*"; }; warn(){ echo "WARN $*"; }; sub(){ :; }; b(){ printf %s "$*"; }\n'
        'SWG_SYS_PREFIX=swg_\n' + fn(C_SH, "is_sys_iface") + fn(C_SH, "drop_sys_ifaces") + fn(N_SH, "iface_onboarded")
-       + fn(N_SH, "_in"))
+       + fn(N_SH, "_in") + "".join(fn(C_SH, n) for n in ("_ipt_reap_sh", "_ipt_set_sh", "nat_hook_up", "nat_hook_down")))
 
 def bash(script, path_prefix=None):
     env = dict(os.environ, PATH=(path_prefix + ":" if path_prefix else "") + os.environ["PATH"])
