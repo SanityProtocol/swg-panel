@@ -116,7 +116,7 @@ check("HOST_ENDPOINT_IP=192.168.77.1 → the adopted awg0 advertises 192.168.77.
 out = host("")
 check("none given → the default-route address, as before", "EFF awg0=10.0.2.15" in out, out)
 
-hre = H[H.index('if [ -z "$HOST_ENDPOINT_IP" ] && [ "$EXISTING_HOST" = yes ]; then'):]
+hre = H[H.index('if [ -z "$HOST_ENDPOINT_IP" ] && { [ "$EXISTING_HOST" = yes ] || [ -n "$ENDPOINT_SAVED" ]; }; then'):]
 hre = hre[:hre.index("\nfi\n") + 4]
 def host_rerun(agent_ep=None, saved="", given=""):
     d = tempfile.mkdtemp(prefix="hre-"); cfg = os.path.join(d, "config.json")

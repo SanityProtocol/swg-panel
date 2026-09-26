@@ -176,6 +176,10 @@ REMOVED_PANEL=false; REMOVED_NODE=false
 
 rm_panel(){
   info "Removing swg-panel (control panel)"
+  # ASKED FIRST: what "keep the data" keeps decides the acme renewal and /etc/swg-panel below, not only the roster.
+  # Default NO = keep it for a future re-install (matches the docker data-dir prompt); yes = wipe it.
+  local PANEL_DATA_DEL="${PANEL_DATA_DEL:-}" _kept=""
+  ask_yn "  Delete the panel's data — /var/lib/swg-panel (users, peers, nodes) and /etc/swg-panel (its login, certificate and address)?" n PANEL_DATA_DEL
   if [ -e $SD/swg-panel-server.service ]; then run systemctl disable --now swg-panel-server; fi
   # swg-sub (the subscription surface) is a companion of the panel — remove it alongside
   if [ -e $SD/swg-sub.service ]; then run systemctl disable --now swg-sub; fi
@@ -246,6 +250,8 @@ rm_panel(){
         case "$_rp" in /etc/swg-panel/tls/*|/etc/swg-sub/tls/*) ;;
           *) warn "keeping the acme entry for $DOMAIN in $_h — it installs into ${_rp:-somewhere else}, so it is not ours to remove"; continue;; esac
         _dir="$(dirname "$_conf")"
+        # a KEPT certificate keeps its renewal: the re-install serves the same certificate and never re-issues it
+        [ "$PANEL_DATA_DEL" = yes ] || { info "Kept acme.sh's renewal of $DOMAIN — the certificate stays with the panel's data"; continue; }
         info "Removing acme.sh renewal for $DOMAIN (it installs into $_rp)"
         case "$_dir" in *_ecc) [ -n "$_acme" ] && run "$_acme" --home "$_h" --remove -d "$DOMAIN" --ecc || true;;
                         *)     [ -n "$_acme" ] && run "$_acme" --home "$_h" --remove -d "$DOMAIN" || true;; esac
@@ -260,31 +266,31 @@ rm_panel(){
       fi
     done
   fi
-  ufw_forget /etc/swg-panel/ufw-added   # BEFORE /etc/swg-panel goes: the record of the ufw rules the installer opened lives there
+  ufw_forget /etc/swg-panel/ufw-added   # the ports the installer opened close with the panel, kept data or not
   # /usr/local/bin/swg-passwd is the panel's login-reset helper (install-host.sh) — it outlived every uninstall.
-  rmrf /opt/swg-panel /opt/swg-sub /etc/swg-panel /etc/swg-sub /var/www/wgstats /var/www/acme /usr/local/bin/swg-passwd   # /etc/swg-sub = swg-sub's OWN tls dir; it was never referenced, so it survived every uninstall
-  # default NO = keep the roster for a future re-install (matches the docker data-dir prompt); yes = wipe it
-  local PANEL_DATA_DEL="${PANEL_DATA_DEL:-}"
-  ask_yn "  Delete the data dir /var/lib/swg-panel (users, peers, nodes)?" n PANEL_DATA_DEL
-  if [ "$PANEL_DATA_DEL" = yes ]; then rmrf /var/lib/swg-panel
-  elif [ -d /var/lib/swg-panel ]; then
-    rmrf /var/lib/swg-panel/.ssh /var/lib/swg-panel/configs            # keep the roster; never leave secrets at rest
-    ok "Kept /var/lib/swg-panel (users, peers, nodes) for a future re-install"
-    # The vault lives in the dir we just kept; the login it is wrapped under lives in /etc/swg-panel, which we
-    # removed a few lines up. Say so HERE — this is the last moment the operator still has the old password.
-    if [ -f /var/lib/swg-panel/subs/vault.json ]; then
-      sub "  Your Encryption Vault is in there too — but the login it is sealed under is not (that lived in /etc/swg-panel)."
-      sub "  A re-install mints a NEW password, so the panel will ask you to reconnect the vault with the OLD"
-      sub "  password or your encryption key. Keep one of them, or your subscription links and escrowed"
-      sub "  interface keys stay sealed."
-    fi
+  rmrf /opt/swg-panel /opt/swg-sub /var/www/wgstats /var/www/acme /usr/local/bin/swg-passwd
+  if [ "$PANEL_DATA_DEL" = yes ]; then rmrf /var/lib/swg-panel /etc/swg-panel /etc/swg-sub   # /etc/swg-sub = swg-sub's OWN tls dir
+  else
+    # ⚠️ KEEPING THE DATA KEEPS THE PANEL, not only its roster. /etc/swg-panel went with every uninstall — the login,
+    # the TLS certificate and key, install.conf — so the re-install minted a new certificate and every node pinned to
+    # the old one stopped syncing ("tls fingerprint mismatch") until its own installer was re-run; an Enter-through
+    # re-install also moved the panel to the default-route address, minted a new login name and renamed its node
+    # (1.8.8 qualification, round 4). The Docker path always kept them (data/etc). Kept here too: the re-install then
+    # finds its own login, certificate, address and node name and comes back as the same panel. Secrets that are not
+    # its identity still go: stored client configs, the panel's ssh dir, the Cloudflare tokens in install.conf (the
+    # Docker path strips the same from .env), and the ufw record whose rules were removed just above.
+    rmrf /var/lib/swg-panel/.ssh /var/lib/swg-panel/configs /etc/swg-panel/ufw-added
+    [ -f /etc/swg-panel/install.conf ] && run sed -i -E 's/^(CF_TOKEN|CF_ORIGIN_TOKEN)=.*/\1=/' /etc/swg-panel/install.conf
+    _kept=""; [ -d /var/lib/swg-panel ] && _kept="/var/lib/swg-panel (users, peers, nodes)"
+    [ -d /etc/swg-panel ] && _kept="${_kept:+$_kept and }/etc/swg-panel (its login, certificate and address)"
+    [ -n "$_kept" ] && ok "Kept $_kept — a re-install comes back as this same panel, and its nodes keep syncing"
   fi
   # Hand any KEPT state back to root BEFORE the users go. State deliberately outlives an uninstall, and a
   # deleted user leaves its files holding a numeric uid that belongs to nobody — which `useradd -r` then
   # reissues to whichever service account is created first on the next install. That is how a panel ended up
   # unable to read its own 0600 session.key (the sub user had inherited the old panel's uid), signing cookies
   # with a throwaway secret and logging every operator out on each restart. root owns nothing by accident.
-  for _sd in /var/lib/swg-panel /var/lib/swg-noded; do
+  for _sd in /var/lib/swg-panel /var/lib/swg-noded /etc/swg-panel /etc/swg-sub; do   # the key too: its group goes below
     [ -d "$_sd" ] && run chown -R root:root "$_sd" 2>/dev/null || true
   done
   if id swgpanel >/dev/null 2>&1; then run userdel swgpanel; fi

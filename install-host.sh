@@ -708,14 +708,52 @@ if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
   [ -z "$PORT_SAVED" ] && [ -f "$_unit" ] && PORT_SAVED="$(sed -n 's/^Environment=SWG_PANEL_PORT=//p' "$_unit" | head -1)"
   [ -z "$BASE_SAVED" ] && [ -f "$_unit" ] && BASE_SAVED="$(sed -n 's/^Environment=SWG_PANEL_BASE=//p' "$_unit" | head -1)"
   # not during a convert: that state is the one the conversion itself just staged (install-docker.sh, same note)
-  [ -n "${SWG_CONVERT_DIR:-}" ] || info "Existing panel install detected — keeping your login, users, nodes + certs; your previous settings are the defaults below. To start fresh, run the uninstaller first."
+  if [ -n "${SWG_CONVERT_DIR:-}" ]; then :
+  elif [ -f "$_unit" ]; then info "Existing panel install detected — keeping your login, users, nodes + certs; your previous settings are the defaults below. To start fresh, run the uninstaller first."
+  else info "Found this panel's kept data (login, certificate, users, nodes) — re-installing it as it was; its previous settings are the defaults below. To start fresh, uninstall again and delete the data."; fi
+elif [ -f "$STATE_DIR/panel-settings.json" ] || [ -f "$STATE_DIR/nodes.json" ]; then
+  # ⚠️ A STATE DIR AN OLDER UNINSTALL KEPT WITHOUT /etc/swg-panel. Its login and certificate are gone for good, but its
+  # address and its node's name are still in the store, and nothing read them: an Enter-through re-install moved the
+  # panel to the default-route address and renamed its node after the hostname (1.8.8 qualification, round 4). Offer
+  # them as the defaults; the local node is the one keyed by this box's machine-id (LOCAL_NODE_ID below).
+  { IFS= read -r DOM_SAVED; IFS= read -r PORT_SAVED; IFS= read -r BASE_SAVED; IFS= read -r TLS_SAVED
+    IFS= read -r NODENAME_SAVED; IFS= read -r ENDPOINT_SAVED; } < <(python3 - "$STATE_DIR" <<'PYKEPT' 2>/dev/null || true
+import hashlib, json, os, socket, sys
+from urllib.parse import urlparse
+st = sys.argv[1]
+def load(n):
+    try:
+        d = json.load(open(os.path.join(st, n)))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+acc = load("panel-settings.json").get("access") or {}
+u = urlparse(((acc.get("panel") or {}).get("url") or "").strip())
+base = (u.path or "").rstrip("/")
+mid = ""
+for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+    try:
+        mid = open(p).read().strip()
+    except Exception:
+        mid = ""
+    if mid:
+        break
+nid = hashlib.sha256(((mid or socket.gethostname()) + "|swg-local-node").encode()).hexdigest()[:12]
+me = load("nodes.json").get(nid) or {}
+for v in (u.hostname or "", str(u.port or ""), base, (acc.get("tls") or {}).get("mode") or "",
+          me.get("name") or "", me.get("endpoint_host") or ""):
+    print(str(v).replace("\n", " "))
+PYKEPT
+)
+  [ -n "$NODENAME_SAVED" ] && ROLE_SAVED=master
+  [ -n "$DOM_SAVED$NODENAME_SAVED" ] && info "Found this panel's data from an earlier uninstall — its address ($(b "${DOM_SAVED:-?}${PORT_SAVED:+:$PORT_SAVED}${BASE_SAVED}")) and node name ($(b "${NODENAME_SAVED:-?}")) are the defaults below. Its login and certificate were not kept, so a new login is minted and nodes pinned to the old certificate need their installer re-run."
 fi
 # ⚠️ …AND THE ENDPOINT THIS BOX'S NODE ALREADY HAS. ENDPOINT_SAVED was read and then used for nothing: a master re-install
 # without HOST_ENDPOINT_IP listed its interfaces at the default-route address (10.0.2.15 where they are dialled at
 # 192.168.77.1), pinned that address on any interface it adopted, and wrote install.conf back with HOST_ENDPOINT_IP=
 # empty (1.8.8 qualification, q1). The node's own agent config is the live answer, install.conf the fallback; a value
 # given now still wins. Not the value that seeds the panel's record — that is only one GIVEN (_EP_GIVEN, above).
-if [ -z "$HOST_ENDPOINT_IP" ] && [ "$EXISTING_HOST" = yes ]; then
+if [ -z "$HOST_ENDPOINT_IP" ] && { [ "$EXISTING_HOST" = yes ] || [ -n "$ENDPOINT_SAVED" ]; }; then   # (the latter: an older uninstall's kept store)
   _aep="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("endpoint_host") or "")' 2>/dev/null || true)"
   case "$_aep" in 127.*|localhost|"::1") _aep="";; esac
   HOST_ENDPOINT_IP="${_aep:-$ENDPOINT_SAVED}"
@@ -740,6 +778,9 @@ if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
   [ -z "${SWG_CONVERT_DIR:-}" ] && LC_SUCCESS="reinstalled-updated"   # plain re-install installs the latest; a convert keeps its converted-bare success
   # …"and updated" only if it actually changed what is installed (checked against this, before the summary)
   _SUM_BEFORE="$(installed_sum "$PANEL_DIR" "$SUB_DIR" "$NODED_DIR" "$AGENT_DIR" /usr/local/bin/swg-netctl /usr/local/bin/swg-passwd)"
+  # …and after an uninstall that kept the data there are no programs to compare: the version the panel last ran is the
+  # one thing left that tells a same-build re-install from an update (the panel writes it at every start)
+  [ -n "$_SUM_BEFORE" ] || _VER_BEFORE="$(head -1 "$STATE_DIR/panel_version" 2>/dev/null || true)"
 fi
 # deferred-start convert (SWG_DEFER_START=1): install + enable the panel but DON'T start it here — the docker panel
 # still holds :443 and keeps serving the UI; convert.sh stops docker + starts it at the switch. _NOW = "--now"
@@ -1089,6 +1130,9 @@ if [ -f "$SRC/swg-sub" ]; then
   # swg-sub's OWN TLS dir — its cert lives here (never the panel's key). swg-netctl/acme write it as root;
   # group swg (swgsub) reads it. Separate from — and NOT the — masked panel tls dir.
   mkdir -p "$PREFIX/etc/swg-sub/tls"; run chown root:swg /etc/swg-sub/tls; run chmod 750 /etc/swg-sub/tls
+  # …and a certificate KEPT in it by an uninstall comes back root:root — give it the group swg-sub reads with (netctl's modes)
+  for _sf in /etc/swg-sub/tls/fullchain.pem /etc/swg-sub/tls/key.pem; do [ -f "$PREFIX$_sf" ] && run chown root:swg "$_sf"; done
+  [ -f "$PREFIX/etc/swg-sub/tls/key.pem" ] && run chmod 640 /etc/swg-sub/tls/key.pem
   ok "installed swg-sub to $SUB_DIR (disabled until enabled in the panel)"
 fi
 mkdir -p "$PREFIX$STATE_DIR"; [ -f "$PREFIX$STATE_DIR/users.json" ] || { echo '{}' > "$PREFIX$STATE_DIR/users.json"; run chown "$PANEL_USER:swg" "$STATE_DIR/users.json"; run chmod 640 "$STATE_DIR/users.json"; ok "seeded empty users.json"; }
@@ -1653,7 +1697,7 @@ PYAUTH
   fi
   ok "login: $BASIC_USER  (stored hashed in ${ETC_DIR}/auth)"
 }
-cert_perms(){ run chown root:swg "$TLS_DIR/fullchain.pem" "$TLS_DIR/key.pem" 2>/dev/null || true
+cert_perms(){ run chown root:swg "$TLS_DIR" "$TLS_DIR/fullchain.pem" "$TLS_DIR/key.pem" 2>/dev/null || true   # the dir too: a KEPT one comes back root:root (uninstall)
   chmod 644 "$PREFIX$TLS_DIR/fullchain.pem" 2>/dev/null || true; chmod 640 "$PREFIX$TLS_DIR/key.pem" 2>/dev/null || true; }
 san_for(){ case "$1" in *[a-zA-Z]*) echo "DNS:$1";; *) echo "IP:$1";; esac; }
 # ⚠️ THE PROGRAM AND ITS STORE ARE TWO DIFFERENT THINGS, and conflating them cost us a silent
@@ -2166,6 +2210,9 @@ write_netctl   # privileged network/TLS helper for the panel's Access & TLS sett
 # the panel's header then announced an update that never happened. Same files before and after → plain "re-installed".
 if [ "${LC_SUCCESS:-}" = reinstalled-updated ] && [ -n "${_SUM_BEFORE:-}" ] \
    && [ "$(installed_sum "$PANEL_DIR" "$SUB_DIR" "$NODED_DIR" "$AGENT_DIR" /usr/local/bin/swg-netctl /usr/local/bin/swg-passwd)" = "$_SUM_BEFORE" ]; then
+  LC_SUCCESS=reinstalled
+elif [ "${LC_SUCCESS:-}" = reinstalled-updated ] && [ -z "${_SUM_BEFORE:-}" ] && [ -n "${_VER_BEFORE:-}" ] \
+   && [ "$_VER_BEFORE" = "$(head -1 "$SRC/VERSION" 2>/dev/null)" ]; then
   LC_SUCCESS=reinstalled
 fi
 # ───────────────────────── SUMMARY ─────────────────────────

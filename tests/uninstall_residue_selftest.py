@@ -104,6 +104,10 @@ out, calls, _ = bash(PRE + 'SD=/nonexistent; DOMAIN=""; PANEL_DATA_DEL=no; REMOV
 rmrf = " ".join(l for l in out.splitlines() if l.startswith("RMRF"))
 check("/usr/local/bin/swg-passwd is in rm_panel's removal", "/usr/local/bin/swg-passwd" in rmrf.split(), rmrf)
 check("…and the docker address helper's binary a docker era left (seen on a bare master)", "/usr/local/bin/swg-netctl-docker" in rmrf.split(), rmrf)
+# the ufw record lives in /etc/swg-panel, which goes only with the data (a kept panel keeps it — kept_panel_identity_selftest)
+out, calls, _ = bash(PRE + 'SD=/nonexistent; DOMAIN=""; PANEL_DATA_DEL=yes; REMOVED_PANEL=false\n'
+                     'rmrf(){ echo "RMRF $*"; }\nask_yn(){ :; }\nufw_forget(){ echo "UFWFORGET $*"; }\nid(){ return 1; }\n'
+                     + fn(U, "rm_panel") + "rm_panel\n", {"systemctl": "exit 0", "nginx": "exit 1"})
 lines = out.splitlines()
 fi = next((k for k, l in enumerate(lines) if l.startswith("UFWFORGET /etc/swg-panel/ufw-added")), None)
 ri = next((k for k, l in enumerate(lines) if l.startswith("RMRF") and " /etc/swg-panel " in l + " "), None)

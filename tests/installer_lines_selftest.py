@@ -60,7 +60,8 @@ if PERTURB:
         globals()[_src] = _t.replace('rc=1; v=""; _tty || _notty "$p" "$d"; fi', 'rc=1; v=""; fi')
     N = plant(N, "awk 'NF && !s[$0]++' | drop_sys_ifaces)", "awk 'NF && !s[$0]++')")
     D = plant(D, '  if [ -n "${SWG_CONVERT_DIR:-}" ]; then :\n  elif [ "$PROFILE" = node ]; then', '  if [ "$PROFILE" = node ]; then')
-    H = plant(H, '  [ -n "${SWG_CONVERT_DIR:-}" ] || info "Existing panel install detected', '  info "Existing panel install detected')
+    H = plant(H, '  if [ -n "${SWG_CONVERT_DIR:-}" ]; then :\n  elif [ -f "$_unit" ]; then info "Existing panel install detected',
+              '  if false; then :\n  elif [ -f "$_unit" ]; then info "Existing panel install detected')
     N = plant(N, "printf '    %s%-*s%s %-9s  %s:%-6s %s\\n' \"$C_GREEN\" \"$_w\" \"$n\"", "printf '    %s%-10s%s %-9s  %s:%-6s %s\\n' \"$C_GREEN\" \"$n\"")
     D = plant(D, "printf '    %s%-*s%s %-9s  %s:%-6s %s\\n' \"$C_GREEN\" \"$_w\" \"$n\"", "printf '    %s%-10s%s %-9s  %s:%-6s %s\\n' \"$C_GREEN\" \"$n\"")
     for _src in ("N", "H"):   # a given answer taken silently again, in all four helpers
@@ -174,13 +175,19 @@ for prof in ("host", "node"):
 a = H.index('EXISTING_HOST=no; KEEP_AUTH=no\n')   # with the defaults it initialises
 b = H.index("\nfi\n", H.index('if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then', a)) + 4
 HBLOCK = H[a:b]
-def host_greet(convert):
+def host_greet(convert, unit=True):
     t = tempfile.mkdtemp(prefix="instl-h-"); open(os.path.join(t, "auth"), "w").write("admin1:hash\n")
-    return run('ETC_DIR=%s; BASIC_USER=admin; SUB_DOMAIN=""; SWG_CONVERT_DIR="%s"\n%s' % (t, convert, HBLOCK.replace("/etc/systemd/system/swg-panel-server.service", t + "/none")))
+    if unit:
+        open(os.path.join(t, "unit"), "w").write("[Unit]\n")
+    return run('ETC_DIR=%s; STATE_DIR=%s/state; BASIC_USER=admin; SUB_DOMAIN=""; SWG_CONVERT_DIR="%s"\n%s' % (
+        t, t, convert, HBLOCK.replace("/etc/systemd/system/swg-panel-server.service", t + "/unit")))
 out = host_greet("convert-bare")
 check("install-host.sh (Docker → bare-metal convert): no \"Existing panel install detected\"", "Existing" not in out, out)
 out = host_greet("")
 check("install-host.sh (re-install): still says it", "INFO Existing panel install detected" in out, out)
+out = host_greet("", unit=False)   # an uninstall kept the data (login, certificate, install.conf) and removed the panel
+check("install-host.sh onto data an uninstall kept: says so, and that it re-installs it as it was",
+      "INFO Found this panel's kept data" in out and "Existing panel install detected" not in out, out)
 
 print("\n[e] an answer given in advance is said, not left out")
 for src, label in ((N, "install-node.sh"), (H, "install-host.sh")):
