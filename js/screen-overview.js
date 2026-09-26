@@ -11,7 +11,7 @@
 import {
   ago, dur, fmtBytes, seen, panelNowS,
 } from "./util.js";
-import { T, Trich, plural, pluralWord, srvVerb, srvDetail, srvText } from "./i18n.js";
+import { T, Trich, plural, pluralWord, srvVerb, srvDetail, srvName, srvText } from "./i18n.js";
 import {
   Store, api, bus, useStore,
 } from "./store.js";
@@ -1613,7 +1613,7 @@ export function Overview() {
       <div class="actlist">${recent.map(e => html`<a class=${"act-row" + (e.click ? "" : " noclk")} href=${e.click ? e.click.href : null} key=${e.key}
           onClick=${e.click && e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : (e.click ? null : (ev => ev.preventDefault()))}>
         <span class=${"act-ic t-" + e.slug}><${Ic} i=${e.icon}/></span>
-        <span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${e.name}</span>` : null}
+        <span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${srvName(e)}</span>` : null}
         ${e.detail || e.detail_key ? html`<span class="act-detail">${srvDetail(e)}</span>` : null}
         <span class="grow"></span><span class="when">${ago(e.ts)}</span>${e.click ? html`<span class="act-arrow"><${Ic} i="arrow"/></span>` : null}</a>`)}</div>
       <div class="act-morewrap"><a class="act-more" href="#/activity">${T("Show all history »")}</a></div>

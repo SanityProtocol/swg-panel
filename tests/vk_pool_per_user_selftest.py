@@ -116,8 +116,11 @@ try:
     after = {k: v.get("vk_links") for k, v in roster_users().items() if k in before}
     check("existing users unchanged", before == after)
     evs = open(D + "/state/events.jsonl").read() if os.path.exists(D + "/state/events.jsonl") else ""
-    verbs = [json.loads(l).get("verb") for l in evs.splitlines() if l.strip()]
-    check("the change is in the activity log", "VK links per new user: 3 → 5" in verbs, verbs[-3:])
+    rows = [json.loads(l) for l in evs.splitlines() if l.strip()]
+    # a fixed verb the browser can look up, the numbers as the detail (the verb once carried them, and no Russian
+    # catalog key could ever match "VK links per new user: 3 → 5" — tests/activity_log_keys_selftest.py)
+    check("the change is in the activity log", any(r.get("verb") == "Changed VK links per new user" and r.get("detail") == "3 → 5"
+                                                   for r in rows), [(r.get("verb"), r.get("detail")) for r in rows[-3:]])
     code, r = call("POST", "/api/vk-pool/per-user", {"n": 0})
     u10 = mk("u10")
     check("n=0 → no links", code == 200 and not u10.get("vk_links"), u10)

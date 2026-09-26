@@ -9,7 +9,7 @@
 import {
   ago, seen, tkey, isPrimaryTarget,
 } from "./util.js";
-import { T, Tsplit, Trich, plural, srvVerb, srvDetail } from "./i18n.js";
+import { T, Tsplit, Trich, plural, srvVerb, srvDetail, srvName } from "./i18n.js";
 import {
   Store, api, bus, useStore,
 } from "./store.js";
@@ -227,8 +227,8 @@ export function ActivityHistoryScreen() {
       : html`<div class="acthist">${pageRows.map(e => html`<div class=${"act-row" + (e.click ? "" : " noclk")} key=${e.key}>
           <span class=${"act-ic t-" + e.slug}><${Ic} i=${e.icon}/></span>
           ${e.click
-            ? html`<a class="act-link" href=${e.click.href} onClick=${e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : null}><span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${e.name}</span>` : null}</a>`
-            : html`<span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${e.name}</span>` : null}`}
+            ? html`<a class="act-link" href=${e.click.href} onClick=${e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : null}><span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${srvName(e)}</span>` : null}</a>`
+            : html`<span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${srvName(e)}</span>` : null}`}
           ${e.detail || e.detail_key ? html`<span class="act-detail">${srvDetail(e)}</span>` : null}
           <span class="grow"></span>
           <span class="act-cat">${e.itemLabel || e.item}</span>

@@ -198,18 +198,68 @@ export function srvVars(vars) {
   return out;
 }
 
-/* The activity log's optional context line. Old rows carry only `detail` — a bare value or, for the two
-   that had prose, an English sentence — so they still render; new rows carry detail_key + detail_vars
-   and translate. */
+/* The activity log's optional context line. A row carries `detail` — a bare value (a name, node/iface, a URL) —
+   and, when that detail is prose, detail_key + detail_vars, which translate. Rows written before a detail had
+   its key keep their English on disk for good (the log is never rewritten), so the few prose shapes that were
+   ever written are recognised here — each only under the VERB that wrote it, so a user or a node that happens
+   to be named like one of these phrases is never "translated". Two details are lists the browser itself can
+   name: the settings sections a Save touched (the SPA's own labels) and a user's changed fields. */
+const USER_FIELDS = { tag: "Tag", note: "Note", vk_link: "VK call link", vk_links: "VK call links", expiry: "Subscription expiry" };
+const ACT_FIELDS = { awg_params: "act|AmneziaWG parameters", listen_port: "act|listen port", mtu: "MTU" };
+const LEGACY_DETAIL = {
+  "Deleted peer": [[/^(\d+) targets?$/, m => plural(+m[1], "target")]],
+  "Unassigned peer": [[/^was (.+)$/, m => T("was {v1}", { v1: m[1] })]],
+  "Assigned peer": [[/^fresh key issued$/, () => T("fresh key issued")]],
+  "An exit key restore expired without being applied": [[/^the node never reported the restored key — it may be too old to accept one$/,
+    () => T("the node never reported the restored key — it may be too old to accept one")]],
+  "Interface came back different from the request": [[/^(.+): (awg_params|listen_port|mtu)$/, m => `${m[1]}: ${T(ACT_FIELDS[m[2]])}`]],
+  "Adopted from the live interface": [[/^couldn't read (.+?) — adopted from the live interface instead \(keys, peers and ports kept; any DNS\/Table\/PostUp lines in that file are not\)$/,
+    m => T("couldn't read {v1} — adopted from the live interface instead (keys, peers and ports kept; any DNS/Table/PostUp lines in that file are not)", { v1: m[1] })]],
+  "Updated panel settings": [[/^(.+)$/, m => m[1].split(", ").map(x => T(x)).join(", ")]],
+  "Updated user": [[/^([a-z_]+(?:, [a-z_]+)*)$/, m => m[1].split(", ").map(f => (USER_FIELDS[f] ? T(USER_FIELDS[f]) : f)).join(", ")]],
+};
+// …and the reclaimed-server rows, whose verb carried the family (see LEGACY_VERB)
+const RECLAIMED = [[/^(\d+) user\(s\) kept$/, m => T("{count} kept", { count: plural(+m[1], "user") })],
+                   [/^no users in its store$/, () => T("no users in its store")]];
+for (const v of ["Reclaimed a WDTT server", "Reclaimed a csqtt server", "Reclaimed a wdtt server"]) LEGACY_DETAIL[v] = RECLAIMED;
+
+/* An activity row's NAME is a value — a person, a node, an interface — and renders as it is. Two rows once carried
+   prose there instead ("Update requested · with the panel", "Starting interface · wg0 (automatic, attempt 2 of 5)");
+   the panel now writes the node / interface as the name and the prose as a keyed detail, and the old rows are
+   recognised here, under their own verb only. */
+export function srvName(e) {
+  const n = (e && e.name) || "";
+  if (e && e.verb === "Update requested" && n === "with the panel") return T("with the panel");
+  const m = e && e.verb === "Starting interface" && /^(.+) \(automatic, attempt (\d+) of (\d+)\)$/.exec(n);
+  if (m) return `${m[1]} (${T("automatic, attempt {v1} of {v2}", { v1: m[2], v2: m[3] })})`;
+  return n;
+}
+
 export function srvDetail(e) {
   if (!e) return "";
   if (e.detail_key) return T(e.detail_key, srvVars(e.detail_vars));
-  return e.detail || "";
+  const d = e.detail || "";
+  for (const [re, f] of (d && LEGACY_DETAIL[e.verb]) || []) { const m = re.exec(d); if (m) return f(m); }
+  return d;
 }
 
 /* An activity VERB. It is stored in English on purpose (see ev_append) and translated only for display,
-   so history written before this existed reads in Russian too. Routing and filtering use kind/id. */
-export const srvVerb = v => (v ? T(v) : "");
+   so history written before this existed reads in Russian too. Routing and filtering use kind/id.
+   Three verbs were once written with a value inside them, so no key could match; new rows use fixed verbs
+   (the value moved to the detail) and the old ones are recognised here. */
+const LEGACY_VERB = [
+  [/^VK pool changed — reassigned (\d+) user\(s\)$/, m => T("VK pool changed — reassigned %d user(s)").replace("%d", m[1])],
+  [/^VK links per new user: (\d+) → (\d+)$/, m => T("VK links per new user: %d → %d").replace("%d", m[1]).replace("%d", m[2])],
+  [/^Reclaimed a (wdtt|csqtt) server$/, m => T(m[1] === "wdtt" ? "Reclaimed a WDTT server" : "Reclaimed a csqtt server")],
+];
+export const srvVerb = v => {
+  if (!v) return "";
+  // A verb whose English is also a BUTTON's: the catalog holds the button's imperative («Сбросить выученные IP»),
+  // and the log needs what happened — its own context key, for the rows already on disk too.
+  if (v === "Reset learned IPs") return T("act|Reset learned IPs");
+  if (STR[v] == null) for (const [re, f] of LEGACY_VERB) { const m = re.exec(v); if (m) return f(m); }
+  return T(v);
+};
 
 /* A counted noun. English gets two forms from the noun itself; every other language consults its own
    table, because the rule is not derivable — Russian picks between three by the last digit, with a

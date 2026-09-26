@@ -827,7 +827,7 @@ def _cascade_node_updates(deps, nodes, roster_path):
         c["update"] = {"to": target, "from": snap.get("noded_version"), "at": int(now)}
         started.append(nm)
         with contextlib.suppress(Exception):
-            ev_append(roster_path, "node", nid, "Update requested", "with the panel")
+            ev_append(roster_path, "node", nid, "Update requested", nm, "with the panel", detail_key="with the panel")
     return {"started": started, "skipped": skipped}
 
 
@@ -23496,7 +23496,8 @@ def api(method, path, qs, body, deps):
         del roster["peers"][pid]
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Deleted peer", label,
-                  ("%d target%s" % (ntargets, "" if ntargets == 1 else "s")) if ntargets else "")
+                  ("%d target%s" % (ntargets, "" if ntargets == 1 else "s")) if ntargets else "",
+                  detail_key="{count}" if ntargets else "", detail_vars={"count": {"n": ntargets, "noun": "target"}})
         webhook_emit(deps, "peer.removed", {"peer_id": pid, "title": p.get("title") or None, "targets": _tgts})
         return 200, {"ok": True, "data": {"id": pid, "deleted": True}}
 
@@ -23513,7 +23514,7 @@ def api(method, path, qs, body, deps):
         unassign_peer(p, store_configs, config_dir, now())
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Unassigned peer", p.get("title") or label,
-                  ("was " + former) if former else "")
+                  ("was " + former) if former else "", detail_key="was {v1}" if former else "", detail_vars={"v1": former})
         return 200, {"ok": True, "data": p}
 
     if method == "POST" and path == "/api/peers/rekey":
@@ -23550,7 +23551,7 @@ def api(method, path, qs, body, deps):
         p2 = peer_set(roster, pid, {"user_id": uid or None, "pubkey": pubkey, "psk": psk}, now())
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Assigned peer", peer_label(roster, p2),
-                  "fresh key issued")
+                  "fresh key issued", detail_key="fresh key issued")
         # the fresh key is encrypted into the peer's blob by the browser (subMaybePublish); no plaintext at rest.
         return 200, {"ok": True, "data": p2}
 
@@ -24039,7 +24040,8 @@ def api(method, path, qs, body, deps):
         moved = _vk_pool_cascade(roster, ps)
         if moved:
             roster_save(roster_path, roster)
-            ev_append(roster_path, "settings", "", "VK pool changed — reassigned %d user(s)" % moved, "")
+            ev_append(roster_path, "settings", "", "VK pool changed", "", "reassigned %d user(s)" % moved,
+                      detail_key="reassigned {count}", detail_vars={"count": {"n": moved, "noun": "user"}})
         return 200, {"ok": True, "data": {"pool": pool, "rev": ps["vk_pool_rev"], "reassigned": moved}}
 
     if method == "POST" and path == "/api/vk-pool/per-user":
@@ -24055,7 +24057,7 @@ def api(method, path, qs, body, deps):
         deps["panel_settings"] = ps
         save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
         if n != was:
-            ev_append(roster_path, "settings", "", "VK links per new user: %d → %d" % (was, n), "")
+            ev_append(roster_path, "settings", "", "Changed VK links per new user", "", "%d → %d" % (was, n))
         return 200, {"ok": True, "data": {"vk_pool_per_user": n}}
 
     if method == "POST" and path == "/api/user/vk-pool-add":
@@ -25671,8 +25673,10 @@ def api(method, path, qs, body, deps):
             roster_save(roster_path, roster)
         nodes[nid].setdefault(fam, {})[iface] = inst      # …and only NOW does the panel claim it
         nodes_save(deps["nodes_path"], nodes)
-        ev_append(roster_path, "node", nid, "Reclaimed a %s server" % fam, iface,
-                  ("%d user(s) kept" % imported) if imported else "no users in its store")
+        ev_append(roster_path, "node", nid, "Reclaimed a WDTT server" if fam == "wdtt" else "Reclaimed a csqtt server", iface,
+                  ("%d user(s) kept" % imported) if imported else "no users in its store",
+                  detail_key="{count} kept" if imported else "no users in its store",
+                  detail_vars={"count": {"n": imported, "noun": "user"}})
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "family": fam, "users": imported}}
 
     if method == "POST" and path == "/api/csqtt/adopt":
@@ -28352,7 +28356,8 @@ class Handler(BaseHTTPRequestHandler):
                         ev_append(Handler.deps["roster_path"], "node", nid,
                                   "An exit key restore expired without being applied",
                                   _xrec.get("label") or str(_xrec.get("id") or ""),
-                                  "the node never reported the restored key — it may be too old to accept one")
+                                  "the node never reported the restored key — it may be too old to accept one",
+                                  detail_key="the node never reported the restored key — it may be too old to accept one")
                     _xrec.pop("key_restore", None)
                     _xrec.pop("key_restore_pub", None)
                     _xrec.pop("key_restore_at", None)
@@ -28548,8 +28553,13 @@ class Handler(BaseHTTPRequestHandler):
                 # here, and the handler's own catch turned that into a 500 on EVERY sync carrying the note.
                 # The node then never receives `desired`, so it freezes: no new peers, no interface changes,
                 # no mesh updates — while `node_seen` was already stamped above, so it stays green in the UI.
+                _am = re.match(r"couldn't read (.+?) — adopted from the live interface instead \(keys, peers and ports kept; "
+                               r"any DNS/Table/PostUp lines in that file are not\)$", _msg)
                 ev_append(Handler.deps["roster_path"], "node", nid,
-                          "Adopted from the live interface", _ifn, _msg[:200])
+                          "Adopted from the live interface", _ifn, _msg[:200],
+                          detail_key=("couldn't read {v1} — adopted from the live interface instead (keys, peers and ports "
+                                      "kept; any DNS/Table/PostUp lines in that file are not)") if _am else "",
+                          detail_vars={"v1": _am.group(1)} if _am else None)
             for _ifn in list(_seen):                      # forget once the node stops reporting it
                 if _ifn not in _notes:
                     _seen.pop(_ifn, None); _noted_dirty = True
@@ -28989,7 +28999,10 @@ class Handler(BaseHTTPRequestHandler):
                         if _syn.pop(_f, None) is not None or _dft.pop(_f, None) is not None:
                             ifaces_dirty = True
                         ev_append(Handler.deps["roster_path"], "node", nid,
-                                  "Interface came back different from the request", "%s: %s" % (_ifn, _f))
+                                  "Interface came back different from the request", "%s: %s" % (_ifn, _f),
+                                  detail_key="{v1}: {v2}",
+                                  detail_vars={"v1": _ifn, "v2": perr({"awg_params": "act|AmneziaWG parameters",
+                                                                      "listen_port": "act|listen port", "mtu": "MTU"}[_f])})
                 if ifaces_dirty:
                     with contextlib.suppress(Exception):
                         nodes_save(Handler.deps["nodes_path"], nodes)
@@ -29125,8 +29138,10 @@ class Handler(BaseHTTPRequestHandler):
             # Logged every time. An interface that needs starting after every reboot is a box with a real
             # fault underneath, and silently papering over it each morning is how the fault stays unknown.
             with contextlib.suppress(Exception):
-                ev_append(Handler.deps["roster_path"], "node", nid, "Starting interface",
-                          "%s (automatic, attempt %d of %d)" % (_ifn, _n + 1, len(IFACE_AUTOSTART_GAPS)))
+                ev_append(Handler.deps["roster_path"], "node", nid, "Starting interface", _ifn,
+                          "automatic, attempt %d of %d" % (_n + 1, len(IFACE_AUTOSTART_GAPS)),
+                          detail_key="automatic, attempt {v1} of {v2}",
+                          detail_vars={"v1": _n + 1, "v2": len(IFACE_AUTOSTART_GAPS)})
         if _auto_dirty:
             if _auto:
                 node["iface_autostart"] = _auto

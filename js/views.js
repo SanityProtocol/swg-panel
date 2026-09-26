@@ -1431,6 +1431,7 @@ export function evItem(e) {
   if (e.kind === "user") return "User";
   if (e.kind === "group") return "User";   // a group lives on the Users screen (docs/GROUPS-PLAN.md G11)
   if (e.kind === "panel") return v === "Panel updated" ? "Update" : "Settings";   // i18n-keys: e.verb is the SERVER's English — never compare it to a translation
+  if (e.kind === "settings") return "Settings";   // the VK pool rows (the panel writes kind "settings") — they read as a Node before
   if (/interface/i.test(v)) return "Interface";       // kind === node from here
   if (/turn-proxy/i.test(v)) return "Turn-proxy";
   if (/mesh/i.test(v)) return "Mesh";   // i18n-keys: canonical EV_ITEMS value
