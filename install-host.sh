@@ -14,6 +14,7 @@ METHOD="${METHOD:-baremetal}"          # baremetal (systemd). For Docker, use do
 ROLE="${ROLE:-}"                       # master (panel + this box is an entry server) | host (panel only)
 HOST_NODE_NAME="${HOST_NODE_NAME:-}"   # node name for THIS box (master only)
 HOST_ENDPOINT_IP="${HOST_ENDPOINT_IP:-}" # public IP clients dial for this box's wg (master only)
+_EP_GIVEN="$HOST_ENDPOINT_IP"            # …as the operator GAVE it, before any default fills it (seeds the panel's node record)
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected; master only)
 WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 
@@ -23,6 +24,7 @@ STORE_CONFIGS="${STORE_CONFIGS:-true}"   # keep client configs on the panel so Q
 SERVE_MODE="${SERVE_MODE:-}"           # internal (self-contained) | nginx | caddy | skip  (blank = ask)
 # TLS — how to obtain the certificate:
 TLS_MODE="${TLS_MODE:-}"               # cloudflare | letsencrypt | selfsigned | skip  (blank = ask)
+_TLS_GIVEN="$TLS_MODE"                 # …as GIVEN (env, unattended), before any prompt or default touches it
 ACME_EMAIL="${ACME_EMAIL:-}"           # account email for letsencrypt/cloudflare
 CF_TOKEN="${CF_TOKEN:-}"               # cloudflare: API token with Zone:DNS:Edit
 CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-}"     # cloudflare: optional account id
@@ -124,10 +126,14 @@ keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # defaul
 keyg(){ printf '%s[%s]%s%s'   "$C_GREY"        "$1" "$2" "$RESET"; }   # de-emphasised label grey:  keyg n 'one'                → [n]one
 STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # sequential; skip the leading blank when a prompt already printed one
 
+# ⚠️ A TERMINAL, ASKED QUIETLY FIRST. `read … </dev/tty` with none (an unattended run, `</dev/null`, no controlling
+# terminal) makes bash print a raw "line N: /dev/tty: No such device or address" before the read fails and the
+# default is taken — every prompt below then reads as a crash. Same fall-through, without the noise.
+_tty(){ { : </dev/tty; } 2>/dev/null; }
 ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi
-  echo; read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; }
+  echo; _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; }
 ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then return; fi
-  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
+  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _tty && read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; _pnl; }
 
 # ── input validators (0 = ok) ──
@@ -150,6 +156,16 @@ v_freeport(){ v_port "$1" && port_free "$1"; }
 panel_owns_port(){ have ss || return 1; local pid
   pid="$(ss -lntpH "sport = :$1" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
   [ -n "$pid" ] && grep -qs swg-panel-server "/proc/$pid/cgroup"; }
+# The address the start check asks — one THIS unit actually serves (write_panel_unit). A co-located node's
+# plain-HTTP loopback exists only when there is one (SWG_PANEL_LOCAL_PORT); a HOST-role panel has no such
+# listener, so asking it there reported every host install as "did NOT start" over a panel that was serving.
+# Otherwise the panel's own listener on 127.0.0.1:$PORT — TLS when it terminates TLS itself (internal + cert;
+# -k at the call: it proves the door answers, not the cert) — and /healthz under the base, unauthenticated.
+panel_probe_url(){
+  if [ "$_HAS_LOCAL_NODE" = yes ]; then printf 'http://127.0.0.1:%s/' "$LOCAL_PORT"; return 0; fi
+  local sch=http
+  [ "$SERVE_MODE" = internal ] && [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ] && sch=https
+  printf '%s://127.0.0.1:%s%s/healthz' "$sch" "$PORT" "${PANEL_BASE:-}"; }
 # smart default ports: first install offers the base; later ones offer (highest used OF THAT KIND)+1, then the
 # next host-free port. turn = TP_LISTEN units; wg/awg = highest ListenPort across confs, never below 51820+queued.
 turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 0 ]; then for lis in "${TP_LISTEN[@]}"; do p="${lis##*:}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 56000; }
@@ -176,6 +192,11 @@ cert_covers_host(){ local cert="$1" host="$2" txt
   txt="$( { openssl x509 -in "$cert" -noout -ext subjectAltName; openssl x509 -in "$cert" -noout -subject; } 2>/dev/null || true)"
   if printf '%s' "$txt" | grep -qE "(DNS:|IP Address:|CN ?= ?)${host//./\\.}(\$|[^0-9A-Za-z.-])"; then return 0; fi
   return 1; }
+cert_self_signed(){ local i s   # 0 iff the cert $1 is its own issuer — one mk_selfsigned made, never a CA's
+  command -v openssl >/dev/null 2>&1 || return 1
+  i="$(openssl x509 -in "$1" -noout -issuer 2>/dev/null | sed 's/^issuer= *//')"
+  s="$(openssl x509 -in "$1" -noout -subject 2>/dev/null | sed 's/^subject= *//')"
+  [ -n "$i" ] && [ "$i" = "$s" ]; }
 # v_iface/v_subnet/v_hostport now in lib/common.sh
 
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
@@ -183,7 +204,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
-    if read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option
@@ -200,7 +221,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
     warn "ignoring invalid $var='${!var}' ($hint)"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
@@ -830,6 +851,18 @@ esac
 # REUSE_TLS so the cert step skips re-issue. (reuse matched no case above, so no FQDN check / cred prompt ran.)
 REUSE_TLS=no
 if [ "$TLS_MODE" = reuse ]; then REUSE_TLS=yes; TLS_MODE="${TLS_SAVED:-selfsigned}"; ok "reusing the existing certificate in $TLS_DIR — no re-issue (TLS mode: $(b "$TLS_MODE"))"; fi
+# ⚠️ A GIVEN `selfsigned` DOES NOT MINT A NEW ONE OVER THE SELF-SIGNED CERT ALREADY HERE. Every node of this panel PINS
+# the certificate it enrolled against, and a fresh self-signed one — same host, new key — strands all of them until each
+# is re-installed (the node's pin heal only ever moves a pin to CA verification, never to another self-signed cert).
+# An unattended re-install says TLS_MODE=selfsigned because that is what the box uses, not because it wants the fleet
+# cut off. So: re-install (or convert), selfsigned given in the environment, and the cert on disk is ITSELF self-signed
+# and already covers this host → keep it. Typed at the prompt, a CA's cert, or one for another host: unchanged.
+if [ "$REUSE_TLS" = no ] && [ "$_reuse_avail" = yes ] && [ "$TLS_MODE" = selfsigned ] \
+   && case "$_TLS_GIVEN" in s|self|selfsigned) true;; *) false;; esac \
+   && cert_self_signed "$PREFIX$TLS_DIR/fullchain.pem"; then
+  REUSE_TLS=yes
+  ok "keeping the existing self-signed certificate — it already covers $(b "$PANEL_DOMAIN"), so the nodes pinned to it keep syncing (remove $TLS_DIR first to issue a new one)"
+fi
 
 # web server
 step "Web server"
@@ -923,14 +956,17 @@ fi
 info "Users, groups, directories"
 run groupadd -f swg
 id "$PANEL_USER" >/dev/null 2>&1 || run useradd -r -g swg -d "$STATE_DIR" -s /usr/sbin/nologin "$PANEL_USER"
-run usermod -d "$STATE_DIR" -g swg "$PANEL_USER"
+# usermod only when it would CHANGE something: on an existing user it printed "usermod: no changes" on every re-install.
+usermod_to(){ [ "$(getent passwd "$1" 2>/dev/null | cut -d: -f6)" = "$2" ] && [ "$(id -gn "$1" 2>/dev/null)" = "$3" ] && return 0
+  run usermod -d "$2" -g "$3" "$1"; }
+usermod_to "$PANEL_USER" "$STATE_DIR" swg
 # swg-sub runs as its OWN unprivileged user in group swg — it only READS the state (never the panel
 # user's identity), and only the group-readable subset (roster/nodes/subs blobs+serve). The secrets it
 # must never see — the login hash, the TLS key, the subscription-key vault — stay 0600/owner-only, so
 # this user simply can't open them. See swg-sub's least-privilege note + write_sub_unit's InaccessiblePaths.
 if [ -f "$SRC/swg-sub" ]; then
   id "$SUB_USER" >/dev/null 2>&1 || run useradd -r -g swg -d "$SUB_DIR" -s /usr/sbin/nologin "$SUB_USER"
-  run usermod -d "$SUB_DIR" -g swg "$SUB_USER"
+  usermod_to "$SUB_USER" "$SUB_DIR" swg
 fi
 for d in "$PANEL_DIR" "$ETC_DIR" "$STATE_DIR" "$STATS_DIR"; do mkdir -p "$PREFIX$d"; done
 run chown "$PANEL_USER:swg" "$STATE_DIR"; run chmod 750 "$STATE_DIR"   # group(swg) traverse → swg-sub can reach the files it may read
@@ -1158,9 +1194,9 @@ PYID
   # Read to a variable FIRST, write after. Piping straight into writef races: both ends of a pipeline start at
   # once and writef's `cat > file` truncates the very file python is still reading, so the merge saw an empty
   # store and "preserved" nothing — the exact bug it exists to prevent, hidden behind a fix that looked right.
-  _NODES_MERGED="$(python3 - "$PREFIX$STATE_DIR/nodes.json" "$LOCAL_NODE_ID" "$HOST_NODE_NAME" "${PALETTE[0]}" "$LOCAL_TOKHASH" <<'PYNODES'
+  _NODES_MERGED="$(python3 - "$PREFIX$STATE_DIR/nodes.json" "$LOCAL_NODE_ID" "$HOST_NODE_NAME" "${PALETTE[0]}" "$LOCAL_TOKHASH" "$_EP_GIVEN" <<'PYNODES'
 import json, sys, time
-path, nid, name, color, tokhash = sys.argv[1:6]
+path, nid, name, color, tokhash, ep_given = sys.argv[1:7]
 try:
     d = json.load(open(path))
     assert isinstance(d, dict)
@@ -1178,6 +1214,14 @@ cur.update({"id": nid, "name": name, "token_hash": tokhash, "stats_file": "stats
 cur.pop("token_sha", None)
 cur.setdefault("color", color)
 cur.setdefault("endpoint_host", "")
+# ⚠️ THE ENDPOINT THE OPERATOR GAVE, into the record the PANEL reads. It went only into the agent config, so the panel's
+# own node record stayed '' — the panel then fills it from the node's first PUBLIC address and a box with none (a LAN,
+# a NAT'd lab) never got one: mesh peers had nothing to dial and a ghost interface's recreate fell back to the node's
+# first IP (10.0.2.15 on the qualification guests, installed with HOST_ENDPOINT_IP=192.168.77.1). Only an explicit
+# value, and only into an empty field: a detected default is exactly what the panel's own fill does better, and an
+# endpoint already set — by the operator in the Nodes screen, or that fill — is theirs.
+if ep_given.strip() and not (cur.get("endpoint_host") or "").strip():
+    cur["endpoint_host"] = ep_given.strip()
 cur.setdefault("created", int(time.time()))
 d[nid] = cur
 json.dump(d, sys.stdout, indent=1)
@@ -1806,7 +1850,15 @@ serve_internal(){
   # this restart just fails to bind — but not before the panel partial-boots and reconciles the staged settings/blessed
   # against a not-yet-live state (blanking the saved address / TLS mode). The convert starts it once at the switch.
   if [ "${SWG_DEFER_START:-}" != 1 ] && [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then run systemctl restart swg-panel-server; fi
-  if command -v ufw >/dev/null 2>&1; then run ufw allow "${PORT}/tcp" 2>/dev/null || true; fi
+  # …and RECORD a rule we actually opened, so uninstall.sh can take back exactly that one (it outlived every
+  # uninstall). ufw says "Skipping adding existing rule" for one it already had — somebody else's, never recorded.
+  if command -v ufw >/dev/null 2>&1; then
+    _ufw_out="$(run ufw allow "${PORT}/tcp" 2>/dev/null || true)"
+    if ! $DRYRUN && [ -n "$_ufw_out" ] && ! printf '%s' "$_ufw_out" | grep -q 'Skipping'; then
+      grep -qsx "${PORT}/tcp" "$ETC_DIR/ufw-added" || echo "${PORT}/tcp" >> "$ETC_DIR/ufw-added"
+      chmod 600 "$ETC_DIR/ufw-added" 2>/dev/null || true
+    fi
+  fi
   local sch="https"; [ -n "${CERT_FULLCHAIN:-}" ] || sch="http"
   [ "$sch" = http ] && warn "TLS skipped — login travels in the clear. Use selfsigned/letsencrypt/cloudflare for real use."
   ok "Internal: panel serves ${sch}://${PANEL_DOMAIN}:${PORT}${PANEL_BASE}/ directly (no extra web server)"
@@ -2004,20 +2056,33 @@ run systemctl enable --quiet $_NOW swg-panel-server
 if [ "${SWG_DEFER_START:-}" != 1 ] && ! $DRYRUN; then
   # Ask the PANEL, not systemd. The unit is Type=simple, so systemd reports "active" the moment it forks the
   # process — a panel that dies on bind a second later still looks active, and then Restart=on-failure keeps
-  # it flapping between activating and failed. Probing the loopback port is the only answer that means
-  # "serving": it is plain HTTP, always present, and is exactly what a co-located node dials.
-  _pw=0; while [ $_pw -lt 12 ] && ! curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${LOCAL_PORT}/" 2>/dev/null; do sleep 1; _pw=$((_pw+1)); done
-  if ! curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${LOCAL_PORT}/" 2>/dev/null; then
-    PANEL_UP=no
-    _bp="${URL_PORT:-443}"
-    _bw="$(ss -lntpH "sport = :$_bp" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
-    warn "the panel did NOT start — it is installed but not running"
-    if [ -n "$_bw" ]; then
-      echo "    port :$_bp is already held by $(col "$C_YEL" "$_bw")."
-      echo "    Give the panel a free port (re-run with PANEL_DOMAIN=${PANEL_DOMAIN}:8443),"
-      echo "    or serve it behind that web server (SERVE_MODE=nginx)."
+  # it flapping between activating and failed. Probing a port the unit serves is the only answer that means
+  # "serving" — see panel_probe_url for which one.
+  _pu="$(panel_probe_url)"
+  _pw=0; while [ $_pw -lt 12 ] && ! curl -kfsS -o /dev/null --max-time 2 "$_pu" 2>/dev/null; do sleep 1; _pw=$((_pw+1)); done
+  if ! curl -kfsS -o /dev/null --max-time 2 "$_pu" 2>/dev/null; then
+    # ⚠️ THE PORT THE UNIT BINDS, and NEVER BLAME OUR OWN PANEL FOR HOLDING IT. This read the URL's port (443 when
+    # the URL names none), which is the web server's in a proxy mode, and it named whatever held it — so a panel
+    # that was serving (probed at the wrong door, above) was reported as "held by python3", which was itself.
+    _bp="$PORT"
+    if panel_owns_port "$_bp"; then
+      warn "the panel is running (it holds :$_bp) but did not answer $_pu within ${_pw}s"
+      echo "    What went wrong:  journalctl -u swg-panel-server -n 30"
+    else
+      PANEL_UP=no
+      _bw="$(ss -lntpH "sport = :$_bp" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
+      warn "the panel did NOT start — it is installed but not running"
+      if [ -n "$_bw" ]; then
+        echo "    port :$_bp is already held by $(col "$C_YEL" "$_bw")."
+        if [ "$SERVE_MODE" = internal ]; then
+          echo "    Give the panel a free port (re-run with PANEL_DOMAIN=${PANEL_DOMAIN}:8443),"
+          echo "    or serve it behind that web server (SERVE_MODE=nginx)."
+        else
+          echo "    Give the panel a free loopback port (re-run with PORT=<free port>)."
+        fi
+      fi
+      echo "    What went wrong:  journalctl -u swg-panel-server -n 30"
     fi
-    echo "    What went wrong:  journalctl -u swg-panel-server -n 30"
   fi
 fi
 if [ -f "$PREFIX$SUB_DIR/swg-sub" ]; then write_sub_unit; run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-sub || warn "couldn't start swg-sub"; fi   # inert until enabled in Settings → Subscriptions

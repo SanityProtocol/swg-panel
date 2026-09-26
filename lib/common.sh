@@ -128,9 +128,11 @@ ask_secret(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v rc
     warn "ignoring invalid $var (${hint})"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    printf '  %s%s: ' "$p" "${d:+ [$(col "${C_BLUE:-}" 'keep current')]}" >/dev/tty 2>/dev/null || printf '  %s: ' "$p"
-    if read -rs v </dev/tty; then rc=0; else rc=1; v=""; fi
-    printf '\n' >/dev/tty 2>/dev/null || echo               # read -s swallows the newline the operator pressed
+    # 2>/dev/null BEFORE >/dev/tty (and on the read): redirections apply left to right, so the other order printed a
+    # raw "/dev/tty: No such device or address" whenever there was no terminal to open.
+    printf '  %s%s: ' "$p" "${d:+ [$(col "${C_BLUE:-}" 'keep current')]}" 2>/dev/null >/dev/tty || printf '  %s: ' "$p"
+    if read -rs v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
+    printf '\n' 2>/dev/null >/dev/tty || echo               # read -s swallows the newline the operator pressed
     v="${v:-$d}"
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
     [ "$rc" -ne 0 ] && die "no value for ‘$p’ and no interactive input to re-prompt"
@@ -687,9 +689,15 @@ lc_teardown_docker(){   # stop+remove the docker datapath (container + stack), f
 # Guards keep it safe: a docker leftover is removed only when NO swg-node/swg-panel container exists; a
 # bare-metal leftover only the /etc confs that MATCH this docker node's confs and only when no swg-noded is
 # installed — never a live install or an unrelated WireGuard config. Needs the caller's info() for messaging.
+# ⚠️ …AND NEVER WHAT AN UNINSTALL KEPT: its "keep the data" answer leaves data/ (+ .env, the node token) with the
+# docker-compose.yml stripped, while a convert's staging copies the compose file in beside the data — so no compose
+# file ⇒ kept, and said. TWIN of bootstrap.sh's copy of this (it does not source this file); change both.
 lc_clear_convert_leftover(){
   local method="$1" dd="${2:-/opt/swg-panel-docker}" c n d cleared=
-  if [ "$method" = baremetal ] && [ -d "$dd" ] && command -v docker >/dev/null 2>&1 \
+  if [ "$method" = baremetal ] && [ -d "$dd" ] && [ ! -f "$dd/docker-compose.yml" ] && command -v docker >/dev/null 2>&1 \
+       && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'swg-(node|panel)'; then
+    info "keeping $dd — no container runs from it, but it is not a convert's leftover: an uninstall kept its data (peers, node token) for a re-install. Delete it by hand once you no longer need it."
+  elif [ "$method" = baremetal ] && [ -d "$dd" ] && command -v docker >/dev/null 2>&1 \
        && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'swg-(node|panel)'; then
     info "removing a stale docker leftover at $dd — no container present (likely a cancelled bare→docker convert); your live install is untouched"
     rm -rf "$dd" 2>/dev/null || true
@@ -1118,7 +1126,14 @@ ensure_swap(){ # PANEL-HOST: a low-RAM box with NO active swap OOM-kills the pan
 # PARKED = stopped by guard_second_panel below, and it must STAY stopped: update.sh asks these before it restarts a
 # bare panel or recreates a docker stack. Read from state the guard leaves (a disabled, inactive unit; a stopped
 # container with restart=no — compose never writes restart=no), not a marker file that could outlive the facts.
-bare_panel_parked(){ ! systemctl is-enabled --quiet swg-panel-server 2>/dev/null && ! systemctl is-active --quiet swg-panel-server 2>/dev/null; }
+# ⚠️ DISABLED IS THE DECISION; "inactive" IS ONLY WHETHER SOMETHING UNDID IT. 1.8.7's update.sh restarted
+# swg-panel-server unconditionally (and enabled + restarted swg-sub), so a box that went back to 1.8.7 and came forward
+# again had its parked panel DISABLED but ACTIVE — "not parked" to the old test, which restarted it once more, and two
+# panels answered at one address for good. A disabled unit beside a LIVE docker panel is that park, and counts; a
+# disabled unit with nothing beside it that is running anyway is the operator's own doing and is left to run.
+docker_panel_live(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel && ! docker_parked swg-panel; }
+bare_panel_parked(){ systemctl is-enabled --quiet swg-panel-server 2>/dev/null && return 1
+  ! systemctl is-active --quiet swg-panel-server 2>/dev/null || docker_panel_live; }
 docker_parked(){ [ "$(docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' "$1" 2>/dev/null)" = "false no" ]; }
 guard_second_panel(){
   [ -n "${SWG_CONVERT_DIR:-}" ] && return 0
@@ -1145,7 +1160,7 @@ guard_second_panel(){
   echo "    A server on this box that syncs to the one you stop keeps its peers but gets no changes until it is enrolled here."
   if [ "${DRYRUN:-false}" = true ]; then echo "    [skip] dry run — would ask: abort / stop the other / keep both"; return 0; fi
   echo "      [a]bort              exit without changing anything (default)"
-  echo "      [s]top the other     stop it and keep it from starting again (its data stays on disk; nothing is deleted)"
+  echo "      [s]top the other     stop it and its subscription server (swg-sub), and keep both from starting again (its data stays on disk; nothing is deleted)"
   echo "      [k]eep both          continue anyway"
   ans="${SWG_OTHER_PANEL:-}"
   if [ -z "$ans" ]; then
@@ -1164,7 +1179,7 @@ guard_second_panel(){
         # Docker stack's own swg-sub publishes (8444 by default)
         systemctl disable --now swg-panel-server swg-sub >/dev/null 2>&1 || true
       fi
-      echo "  ✓ stopped $what — its data is still on disk"; return 0;;
+      echo "  ✓ stopped $what and its subscription server (swg-sub) — its data is still on disk"; return 0;;   # both branches stop swg-sub too — say so
     k|K|keep) echo "  · keeping both — two panels will answer on this box"; return 0;;
     *) echo "  ✗ aborted — nothing was changed"; exit 1;;
   esac

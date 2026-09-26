@@ -31,6 +31,24 @@ rmdir_if_empty(){ local d="$1"
   fi
   run rmdir "$d"
 }
+# ufw_forget <record-file> — delete EXACTLY the ufw rules our installer recorded opening (install-host.sh's
+# serve_internal writes one `<port>/tcp` per line, only for a rule it actually ADDED — never for one ufw already had,
+# which is somebody else's). A rule opened by an installer older than that record cannot be told from the operator's
+# own, so it is named, not deleted. No record + no ufw = nothing to do.
+ufw_forget(){ local f="$1" r p
+  command -v ufw >/dev/null 2>&1 || return 0
+  if [ -f "$f" ]; then
+    while IFS= read -r r; do
+      case "$r" in [0-9]*/tcp) ;; *) continue;; esac
+      run sh -c "ufw delete allow '$r' >/dev/null 2>&1" && info "  removed the ufw rule 'allow $r' the installer added"
+    done < "$f"
+    return 0
+  fi
+  p="$(sed -n 's/^PORT=//p' "$(dirname "$f")/install.conf" 2>/dev/null | head -1)"
+  [ -n "$p" ] && grep -q '^SERVE_MODE=internal$' "$(dirname "$f")/install.conf" 2>/dev/null \
+    && ufw show added 2>/dev/null | grep -qx "ufw allow $p/tcp" \
+    && info "  ufw still allows $p/tcp — an older installer opened it for the panel; if nothing else needs it: ufw delete allow $p/tcp"
+  return 0; }
 # ask_yn <prompt> <default> <outvar>  — preset outvar (env) or --yes skips the prompt
 ask_yn(){ local v p="$1" d="${2:-n}"
   # A PRESET answer (unattended run) is normalised exactly like a typed one. It used to be returned verbatim, so
@@ -145,6 +163,10 @@ fi
 # a bare ="" clobbered the caller's DOCKER_DATA_DEL=y before ask_yn ever read it, so the data dir it was told to
 # delete was kept — the same silent-preset class as the [Yy] normalisation in ask_yn, one layer further out.
 DOCKER_DATA_DEL="${DOCKER_DATA_DEL:-}"; DOCKER_KEEP_CONFS="${DOCKER_KEEP_CONFS:-}"
+# This box's own panel address as its install recorded it — read NOW, before rm_panel / rm_docker_* remove the files
+# that say so. _url_is_this_box (below) uses it to recognise a node that signs off to the panel on this very box.
+_OWN_PANEL_HOST="$(sed -n 's/^PANEL_DOMAIN=//p' /etc/swg-panel/install.conf "$DOCKER_DIR/.env" 2>/dev/null | head -1 \
+                   | tr -d '"' | sed -e 's#^[A-Za-z]*://##' -e 's#[/:].*##')"
 DOMAIN=""
 [ -f /etc/nginx/sites-available/swg-panel.conf ] && \
   DOMAIN="$(sed -n 's/[[:space:]]*server_name[[:space:]]\+\([^;]*\);.*/\1/p' /etc/nginx/sites-available/swg-panel.conf | head -n1 | tr -d ' ')"
@@ -181,7 +203,7 @@ rm_panel(){
   rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d $SD/swg-sub.service $SD/swg-sub.service.d \
        $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl \
        /var/lib/swg-netctl \
-       $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer \
+       $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker \
        $SD/swg-update.service $SD/swg-update.path $SD/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update.new /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
   # ⚠️ A DANGLING ENABLEMENT SYMLINK OUTLIVES ITS UNIT FILE, and `systemctl disable` CANNOT clear it: it
   # reads [Install] from the FRAGMENT to learn which symlinks to drop, so once the fragment is gone the link
@@ -236,7 +258,9 @@ rm_panel(){
       fi
     done
   fi
-  rmrf /opt/swg-panel /opt/swg-sub /etc/swg-panel /etc/swg-sub /var/www/wgstats /var/www/acme   # /etc/swg-sub = swg-sub's OWN tls dir; it was never referenced, so it survived every uninstall
+  ufw_forget /etc/swg-panel/ufw-added   # BEFORE /etc/swg-panel goes: the record of the ufw rules the installer opened lives there
+  # /usr/local/bin/swg-passwd is the panel's login-reset helper (install-host.sh) — it outlived every uninstall.
+  rmrf /opt/swg-panel /opt/swg-sub /etc/swg-panel /etc/swg-sub /var/www/wgstats /var/www/acme /usr/local/bin/swg-passwd   # /etc/swg-sub = swg-sub's OWN tls dir; it was never referenced, so it survived every uninstall
   # default NO = keep the roster for a future re-install (matches the docker data-dir prompt); yes = wipe it
   local PANEL_DATA_DEL="${PANEL_DATA_DEL:-}"
   ask_yn "  Delete the data dir /var/lib/swg-panel (users, peers, nodes)?" n PANEL_DATA_DEL
@@ -274,6 +298,11 @@ _goodbye_post(){
   local url="$1" tok="$2" verify="$3"
   [ -n "$url" ] && [ -n "$tok" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
+  # ⚠️ NOT ON A DRY RUN. This POST is not a `run` — it went out for real from `--dry-run`, and the panel acted on it:
+  # measured on a bare master (1.8.8 qualification, q1), the dry run flagged its node "uninstalled" and logged
+  # "Node uninstalled — kept for re-install"; for a node the operator had marked for removal, a received sign-off
+  # COMPLETES that removal, peers and all. A dry run describes the sign-off; it never sends one.
+  if $DRYRUN; then echo "    [dry] sign off from the panel ($url)"; return 0; fi
   info "Signing off from the panel…"
   python3 - "$url" "$tok" "$verify" <<'PY'
 import ssl, sys, http.client, urllib.request
@@ -313,6 +342,23 @@ PY
     *) warn "Couldn't reach the panel; the node will just go offline there (your peers are kept). Remove it from the Nodes screen if you want it gone.";;
   esac
 }
+# ⚠️ NOBODY LEFT TO TELL. A node whose panel is THIS box's own (a master's co-located node dials http://127.0.0.1:8088)
+# signs off to a panel this same run may already have removed — the components go panel first — so the bare-metal
+# master's uninstall ended its node removal with "Couldn't reach the panel; the node will just go offline there", about
+# a panel that no longer exists (1.8.8 qualification, q1). The docker path skipped this case already; both now ask the
+# same two things. Skipped ONLY when no panel of either method is left on the box: "uninstall the node, keep the panel"
+# still signs off, so that panel shows it Uninstalled — and a bare node beside a DOCKER panel (or the reverse) still
+# reaches it at the same loopback address, which the docker path's container-only test used to skip.
+_url_is_this_box(){ local h="${1#*://}"; h="${h%%/*}"
+  case "$h" in \[*) h="${h#\[}"; h="${h%%\]*}";; *) h="${h%%:*}";; esac   # drop the port (an IPv6 host is bracketed)
+  [ -n "$h" ] || return 1
+  case "$h" in swg-panel|localhost|127.*|::1) return 0;; esac
+  [ -n "${_OWN_PANEL_HOST:-}" ] && [ "$h" = "$_OWN_PANEL_HOST" ] && return 0
+  # a here-string, not a pipe into grep -q: under pipefail an early match SIGPIPEs the producer and reads as "no"
+  grep -qxF -- "$h" <<< "$(ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1; hostname -I 2>/dev/null | tr ' ' '\n')"; }
+_panel_left_here(){ [ -f "$SD/swg-panel-server.service" ] || docker_running swg-panel; }
+_goodbye_nobody(){ [ -n "$1" ] && _url_is_this_box "$1" && ! _panel_left_here; }
+_goodbye_skipped(){ info "No sign-off to send: this node's panel was this box's own, and it is gone now (removed in this run) — nobody is left to tell."; }
 # bare-metal node — read the panel URL + token from its config.json
 node_goodbye(){
   local cfg=/etc/swg-agent/config.json
@@ -322,6 +368,7 @@ node_goodbye(){
   url="$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("panel") or {}).get("url",""))' "$cfg" 2>/dev/null)"
   tok="$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("panel") or {}).get("token",""))' "$cfg" 2>/dev/null)"
   verify="$(python3 -c 'import json,sys;print("yes" if (json.load(open(sys.argv[1])).get("panel") or {}).get("verify",True) else "no")' "$cfg" 2>/dev/null)"
+  _goodbye_nobody "$url" && { _goodbye_skipped; return 0; }
   _goodbye_post "$url" "$tok" "$verify"
 }
 # docker node — the token + panel URL live in the deployment .env (config.json is inside the container)
@@ -332,22 +379,15 @@ docker_node_goodbye(){
   tok="$(sed -n 's/^NODE_TOKEN=//p' "$env" | head -1)"; tok="${tok%\"}"; tok="${tok#\"}"
   verify="$(sed -n 's/^TLS_VERIFY=//p' "$env" | head -1)"; verify="${verify%\"}"; verify="${verify#\"}"
   [ "$verify" = yes ] || verify=no
-  # A co-located master's node signs off to its OWN panel. If that panel was already removed
-  # earlier in this same run (master teardown removes swg-panel before swg-node), the goodbye
-  # would just hit a dead local port — skip it instead of printing a scary connection error.
-  local host="${url#*://}"; host="${host%%/*}"; host="${host%%:*}"
-  case "$host" in swg-panel|127.0.0.1|localhost|::1)
-    if ! docker_running swg-panel; then
-      info "Local panel already removed — skipping node sign-off (Force-remove the node in the panel later if it persists)."
-      return 0
-    fi ;;
-  esac
+  # A co-located master's node signs off to its OWN panel — skipped when no panel is left to hear it (see above).
+  _goodbye_nobody "$url" && { _goodbye_skipped; return 0; }
   _goodbye_post "$url" "$tok" "$verify"
 }
 # POST proc-status (best-effort) — flashes a red "uninstalling" tag on the panel the moment teardown starts.
 _proc_post(){  # <url> <token> <verify> <state>
   local url="$1" tok="$2" verify="$3" state="$4"
   { [ -n "$url" ] && [ -n "$tok" ] && command -v python3 >/dev/null 2>&1; } || return 0
+  $DRYRUN && return 0   # a dry run tells the panel nothing (see _goodbye_post)
   python3 - "$url" "$tok" "$verify" "$state" <<'PY' 2>/dev/null || true
 import ssl, sys, json, urllib.request
 url = sys.argv[1].rstrip("/") + "/api/node/proc-status"; tok = sys.argv[2]; verify = sys.argv[3] == "yes"; state = sys.argv[4]
@@ -552,6 +592,13 @@ rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
     ask_yn "  Delete the panel data (login, roster (users+peers), nodes, certs)? The node's interface configs are kept." n DELP
   else ask_full_data_fate; fi         # panel is the last container → the whole data dir
   run sh -c 'docker rm -f swg-panel swg-sub >/dev/null 2>&1 || true'   # swg-sub is the panel's companion surface (a profile-gated service `down` won't stop) — remove it alongside
+  # …and its host-side address helper (install-docker.sh's wire_docker_netctl). It was left for a separate
+  # "(leftover helper)" question, which also listed it as a leftover while this very panel was still running.
+  for _nc in swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
+    [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true
+  done
+  rmrf "$SD/swg-netctl-docker.service" "$SD/swg-netctl-docker.service.d" "$SD/swg-netctl-docker.path" "$SD/swg-netctl-docker.timer" /usr/local/bin/swg-netctl-docker
+  run systemctl daemon-reload 2>/dev/null || true
   if docker_running swg-node; then
     [ "$DELP" = yes ] && { _rm_panel_data; info "  Removed the panel data; node interface configs untouched."; } \
                       || info "  Kept the panel data; node interface configs untouched."
@@ -687,12 +734,20 @@ rm_netctl(){   # a leftover swg-netctl (e.g. after a docker convert) with no bar
   # BOTH families: the bare-metal swg-netctl.* and the docker helper swg-netctl-docker.*. The docker pair was
   # invisible to every uninstall — the detection globbed swg-netctl.* , which needs a literal dot and so never
   # matched swg-netctl-docker.service — leaving an ACTIVE .timer polling a queue for a panel that was gone.
-  for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service \
-             swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
-    [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true   # one at a time: a multi-unit disable aborts wholesale on the first missing unit
-  done
-  rmrf $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer \
-       $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl
+  # ⚠️ …but only a family whose panel is GONE (asked now, after the panel components ran): a docker panel that is
+  # still here — kept by this run — keeps its own helper, and a bare panel likewise.
+  if [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ]; then
+    for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service; do
+      [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true   # one at a time: a multi-unit disable aborts wholesale on the first missing unit
+    done
+    rmrf $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl
+  fi
+  if ! docker_running swg-panel; then
+    for _nc in swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
+      [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true
+    done
+    rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+  fi
   run systemctl daemon-reload; ok "swg-netctl removed"
 }
 # Host-side remnants of a DOCKER or converted install that no container remover owns: swg-sub's own tls dir and its
@@ -701,7 +756,14 @@ rm_netctl(){   # a leftover swg-netctl (e.g. after a docker convert) with no bar
 rm_leftovers(){
   info "Removing leftover swg files (docker/converted install)"
   for _u in swg-sub.service; do [ -e "$SD/$_u" ] && run systemctl disable --now "$_u" 2>/dev/null || true; done
-  rmrf /etc/swg-sub /opt/swg-sub "$SD/swg-sub.service" "$SD/swg-sub.service.d" /usr/local/bin/swg-sub
+  # + the rest of what the BARE install laid down and a bare→docker convert leaves behind (teardown_bare_panel moves
+  # the panel's state aside but not these): its stats dir, the login-reset helper, and a ufw rule it opened — whose
+  # record the convert carried into the docker data (or into the moved-aside /etc/swg-panel.converted-*).
+  rmrf /etc/swg-sub /opt/swg-sub "$SD/swg-sub.service" "$SD/swg-sub.service.d" /usr/local/bin/swg-sub \
+       /var/www/wgstats /usr/local/bin/swg-passwd
+  if ! docker_running swg-panel; then
+    for _uf in "$DOCKER_DIR/data/etc/ufw-added" /etc/swg-panel.converted-*/ufw-added; do [ -f "$_uf" ] && ufw_forget "$_uf"; done
+  fi
   # ⚠️ AND THE RELAY UNITS, for the box the FIX CANNOT REACH. `rm_node` learned to remove swg-relay.slice,
   # but `rm_node` only runs when a node component is still detected — so a box uninstalled by an older
   # build keeps an ACTIVE slice for ever, and re-running the new uninstaller walks straight past it. This
@@ -712,16 +774,27 @@ rm_leftovers(){
   run systemctl daemon-reload
   # Service identities the pre-convert BARE install created. rm_panel/rm_node own these, and neither runs on a
   # docker-only box, so they outlived the uninstall — leaving swgpanel + group swg on a box with no swg on it.
-  # Safe here by construction: this component only exists when no panel/node install remains. Same -r split as
-  # the owners use (swgpush/swgagent carry a home dir; swgpanel/swgsub do not).
-  for _su in swgpanel swgsub; do id "$_su" >/dev/null 2>&1 && run userdel "$_su" 2>/dev/null || true; done
-  for _su in swgpush swgagent; do id "$_su" >/dev/null 2>&1 && run userdel -r "$_su" 2>/dev/null || true; done
-  REMOVED_LEFTOVERS=true      # lets the shared group cleanup at the end run for a docker/converted box too
+  # Same -r split as the owners use (swgpush/swgagent carry a home dir; swgpanel/swgsub do not).
+  # ⚠️ ASKED AT RUN TIME, NOT AT DETECTION. This component is listed after the docker ones, so by now they have been
+  # removed or kept. A docker install still HERE keeps them (it is not ours to orphan); one removed with its data KEPT
+  # no longer blocks them — that box kept every bare-era identity and file for good (1.8.8 qualification) — and its
+  # kept data is handed to root first, as rm_panel does, so a uid freed here cannot be reissued to a new service user
+  # that then owns it.
+  if docker_running swg-panel || docker_running swg-node; then
+    info "  keeping the service users — a docker install is still on this box"
+  else
+    [ -d "$DOCKER_DIR/data" ] && run chown -R root:root "$DOCKER_DIR/data" 2>/dev/null || true
+    for _su in swgpanel swgsub; do id "$_su" >/dev/null 2>&1 && run userdel "$_su" 2>/dev/null || true; done
+    for _su in swgpush swgagent; do id "$_su" >/dev/null 2>&1 && run userdel -r "$_su" 2>/dev/null || true; done
+    REMOVED_LEFTOVERS=true    # lets the shared group cleanup at the end run for a docker/converted box too
+  fi
   NEED_NETOBJ_SWEEP=true
   ok "leftover swg files removed"
 }
-_has_netctl(){ ls $SD/swg-netctl.* >/dev/null 2>&1 || ls $SD/swg-netctl-docker.* >/dev/null 2>&1; }
+_has_bare_netctl(){ ls $SD/swg-netctl.* >/dev/null 2>&1; }
+_has_docker_netctl(){ ls $SD/swg-netctl-docker.* >/dev/null 2>&1; }
 _has_leftovers(){ [ -d /etc/swg-sub ] || [ -d /opt/swg-sub ] || [ -e "$SD/swg-sub.service" ] || [ -d "$SD/swg-sub.service.d" ] \
+  || [ -d /var/www/wgstats ] || [ -e /usr/local/bin/swg-passwd ] \
   || [ -e "$SD/swg-relay.slice" ] || [ -e "$SD/swg-relay@.service" ] || [ -d /etc/swg-panel/relay ] \
   || id swgpanel >/dev/null 2>&1 || id swgsub >/dev/null 2>&1 || id swgpush >/dev/null 2>&1 || id swgagent >/dev/null 2>&1 \
   || getent group swg >/dev/null 2>&1; }
@@ -748,6 +821,7 @@ EOS
 #   • the "swg_smart" nftables table (smart-routing / blocking)
 #   • "swgk_*" / "swgs_*" ipsets (Kernel-SNI categories, and its per-person selections)
 #   • policy-routing rules + tables in swg's OWN band 7000-7099 (SWG_RT_BASE..SWG_RT_MAX; priority == table id)
+#     + the upstream-mark rules in 6890-6989 (SWG_RT_UP_BASE..SWG_RT_UP_MAX; rules only — they name no table)
 #   • the forwarding sysctl drop-in the installer wrote
 rm_node_netobjects(){
   info "Removing swg datapath objects (iptables/nft/ipset/policy-routing tagged swg-*)"
@@ -788,6 +862,14 @@ rm_node_netobjects(){
   if command -v ip >/dev/null 2>&1; then
     for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1>=7000 && $1<=7099'); do
       run ip rule del pref "$n"; run ip route flush table "$n"
+    done
+    # ⚠️ AND THE UPSTREAM-MARK BAND BELOW IT (swg-noded's SWG_RT_UP_BASE..SWG_RT_UP_MAX = 6890..6989: `fwmark M lookup T`,
+    # how the relay names a leg). It survived every uninstall — `6890: from all fwmark 0x1aea lookup 7000` was still
+    # there on a fully removed master (1.8.8 qualification). A priority in it is NOT a table id (its rule looks up one in
+    # the 7000 band, flushed above), so only the rule goes — never `table 6890`. Band spelled out: this file does not
+    # read swg-noded; derived there as BASE − (MAX − BASE) − 11, so a change to the table band moves it.
+    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1>=6890 && $1<=6989'); do
+      run ip rule del pref "$n"
     done
   fi
   # Orphaned wg-quick PostUp rules for a node<->node MESH link (swg-agent writes the FORWARD accept pair; `swg_` is
@@ -1070,9 +1152,7 @@ except Exception: print("")' "$CSQTT_DIR/$iface" 2>/dev/null)"
   add "Bare-metal swg-panel" "control panel (/opt/swg-panel)" rm_panel
 [ -d /opt/swg-noded ] || [ -d /opt/swg-agent ] || [ -f $SD/swg-noded.service ] && \
   add "Bare-metal node (swg-node)" "$(bm_node_detail)" rm_node
-# swg-netctl units lingering WITHOUT a bare panel (rm_panel would otherwise sweep them) → offer on their own
-{ [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ]; } && _has_netctl && \
-  add "swg-netctl (leftover helper)" "privileged network/TLS helper units" rm_netctl
+# (the "swg-netctl (leftover helper)" component is added AFTER the docker detection below, for the same reason.)
 # (the "Leftover swg files" component is added AFTER the docker detection below — it must know whether a docker
 #  install is present, since the identities it removes own that install's data-dir files.)
 
@@ -1085,13 +1165,19 @@ if command -v docker >/dev/null 2>&1; then
 fi
 $DPANEL && add "Docker panel (swg-panel)" "container swg-panel" rm_docker_panel
 $DNODE  && add "Docker node (swg-node)"   "$(docker_node_detail)"   rm_docker_node
+# swg-netctl units lingering WITHOUT the panel they serve → offer on their own. ⚠️ PER FAMILY: swg-netctl.* belongs to
+# a bare panel (rm_panel sweeps both families), swg-netctl-docker.* to a docker one — which rm_docker_panel now removes.
+# Testing only "is there a bare panel" listed a LIVE docker panel's own helper as "(leftover helper)" (1.8.8 qualification).
+{ { [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ] && _has_bare_netctl; } || { ! $DPANEL && _has_docker_netctl; }; } && \
+  add "swg-netctl (leftover helper)" "privileged network/TLS helper units" rm_netctl
 
 # swg-sub's dirs/units and the bare-metal service identities are removed by rm_panel/rm_node, which a docker-only
 # or post-convert box never runs — so they outlived every uninstall on exactly the boxes that have them. Offered
-# only when NO swg install of any kind is left: `swgpanel` owns the docker data-dir files, so removing it while a
-# docker install is live (or being kept) would orphan their ownership.
-if ! $DPANEL && ! $DNODE && [ ! -d "$DOCKER_DIR" ] \
-   && [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ] \
+# whenever no BARE-METAL panel/node is left (those own them). A docker install on the box used to keep this off the
+# list altogether — live, being removed in this very run, or already removed with its data dir KEPT — so a converted
+# box kept every bare-era file and identity for good. rm_leftovers now decides the identities at run time instead,
+# after the docker components above have been removed or kept (`swgpanel` owns data a convert copied in).
+if [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ] \
    && [ ! -d /opt/swg-noded ] && [ ! -f $SD/swg-noded.service ] && _has_leftovers; then
   add "Leftover swg files" "swg-sub dirs/units + service identities from a docker or converted install" rm_leftovers
 fi
@@ -1156,7 +1242,14 @@ DID_REMOVE=(); DID_KEEP=(); NOT_DONE=()   # NOT_DONE: asked for, attempted, and 
 for i in $(seq 0 $((N-1))); do
   if ask_comp "${CPROMPT[$i]}" "${CHINT[$i]}" "${CVERB[$i]}" "${CNOAUTO[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"
     case " ${NOT_DONE[*]-} " in *" ${CLABEL[$i]} "*) :;; *) DID_REMOVE+=("${CLABEL[$i]}");; esac
-  else info "Kept ${CLABEL[$i]}."; DID_KEEP+=("${CLABEL[$i]}"); fi
+  else info "Kept ${CLABEL[$i]}."; DID_KEEP+=("${CLABEL[$i]}")
+    # Does what was kept RUN on swg's datapath objects? A package, the panel, a helper, leftover files or somebody
+    # else's interface does not — keeping one of those used to skip the sweep below all the same, so the common
+    # "remove swg, keep the wg/awg packages" left every swg ip rule, nft table and iptables tag behind for good.
+    # Anything not named here counts as datapath (a new component is safe until someone decides otherwise).
+    case "${CFN[$i]}" in rm_awg_pkg|rm_wg_pkg|rm_awg_foreign|rm_wg_foreign|rm_panel|rm_docker_panel|rm_docker_files|rm_netctl|rm_leftovers) ;;
+      *) KEPT_DATAPATH=true;; esac
+  fi
   echo
 done
 
@@ -1165,7 +1258,7 @@ done
 # turn-proxies and WDTT servers the operator may have chosen to KEEP, so it cannot run before they are asked.
 # Anything kept has already had its own rules removed by its own remover (rm_wdtt → _rm_egress_rules).
 if [ "${NEED_NETOBJ_SWEEP:-false}" = true ]; then
-  if [ "${#DID_KEEP[@]}" -gt 0 ]; then
+  if [ "${KEPT_DATAPATH:-false}" = true ]; then
     # The sweep is all-or-nothing by tag — it cannot tell a kept interface's swg-egress rule from a removed one's.
     # Keeping something means keeping it WORKING, so leave the objects: stale rules on a box that still runs our
     # datapath are harmless, whereas deleting a kept WDTT server's SNAT silently kills internet for its clients.
@@ -1215,6 +1308,14 @@ if { $REMOVED_PANEL || $REMOVED_NODE || [ "${REMOVED_LEFTOVERS:-false}" = true ]
   run groupdel swg 2>/dev/null || info "group 'swg' still in use — left in place."
 fi
 rmdir /etc/swg-agent 2>/dev/null || true
+# The interface-config dirs, once EMPTY and NOT a package's. Our installers create them (writef's mkdir -p) and a
+# bare→docker convert empties them; with the wg/awg package still installed dpkg owns them and they stay (so does
+# anything with a file left in it, or any box without dpkg to ask). Seen: both left empty after a full uninstall.
+if [ "${#DID_REMOVE[@]}" -gt 0 ] && command -v dpkg >/dev/null 2>&1; then
+  for _d in /etc/amnezia/amneziawg /etc/amnezia /etc/wireguard; do
+    [ -d "$_d" ] && [ -z "$(ls -A "$_d" 2>/dev/null)" ] && ! dpkg -S "$_d" >/dev/null 2>&1 && run rmdir "$_d"
+  done
+fi
 
 echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
 if [ "${#DID_REMOVE[@]}" -gt 0 ]; then echo "  $(b Removed):"

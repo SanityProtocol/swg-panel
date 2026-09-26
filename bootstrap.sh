@@ -16,6 +16,8 @@
 #   -name       <name>  node name               (-> NODE_NAME)
 #   -endpoint   <ip>    public endpoint IP       (-> ENDPOINT_IP)
 #   -method <bare-metal|docker>   -role <master|host|node>
+#   convert|keep|abort  (or -on-conflict <…>, env SWG_ON_CONFLICT) — the answer when the box already holds the
+#                       OTHER method's install: convert it, keep + re-install it as it is, or stop. Unattended runs.
 #
 # Override the source with SWG_REPO / SWG_REF (branch or tag). Anything else is passed through.
 set -euo pipefail
@@ -60,9 +62,10 @@ auth_curl(){ local _tok="$1"; shift
 header = "Authorization: Bearer ${_tok}"
 CURLCFG
 }
-# ask_choice <prompt> <default> <var> "<opt…>" — accepts a full option OR its first-letter shortcut;
-# shows the default's letter as [x]; friendly re-prompt on bad input.
-ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
+# ask_choice <prompt> <default> <var> "<opt…>" [how] — accepts a full option OR its first-letter shortcut;
+# shows the default's letter as [x]; friendly re-prompt on bad input. [how] = how to answer it without a terminal,
+# named in the refusal — only where the generic "pass it as a flag" would name a flag that does not exist.
+ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" how="${5:-}" v o rc sc pr i
   sc="${d:0:1}"
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
@@ -77,7 +80,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
     # $d is always a valid option, so the match loop returned the default and went home. A default that answers
     # itself is not a fallback but a decision — this is the prompt that picks bare-metal vs docker, master vs
     # node, and convert-vs-keep-vs-abort on a box that already has an install.
-    [ "$rc" -ne 0 ] && die "no interactive input for '$p' — run this from a terminal (ssh -t), or pass it as a flag (one of: $opts)"
+    [ "$rc" -ne 0 ] && die "no interactive input for '$p' — run this from a terminal (ssh -t), or ${how:-pass it as a flag (one of: $opts)}"
     v="${v:-$d}"
     case "$v" in ''|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] → the Nth option
     for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; _pnl; return; }; done
@@ -100,6 +103,7 @@ ask_yn(){ local p="$1" d="$2" var="$3" v pr   # ask_yn <prompt> <y|n default> <v
   case "$v" in [Yy]*) printf -v "$var" yes;; *) printf -v "$var" no;; esac; _pnl; }
 
 ACTION=""; METHOD="${METHOD:-}"; ROLE="${ROLE:-}"; ROLE_EXPLICIT=no; HAVE_KEY=no
+ON_CONFLICT="${SWG_ON_CONFLICT:-}"   # convert|keep|abort — the cross-method question's answer, for an unattended run
 PASS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -114,6 +118,11 @@ while [ $# -gt 0 ]; do
     -endpoint|--endpoint)        export ENDPOINT_IP="${2:-}"; shift 2 || shift;;
     -method|--method)            METHOD="${2:-}"; shift 2 || shift;;
     -role|--role)                ROLE="${2:-}"; ROLE_EXPLICIT=yes; shift 2 || shift;;
+    # ⚠️ THE FLAG THE REFUSAL NAMES. With no terminal the convert/keep/abort question died with "pass it as a flag (one
+    # of: convert keep abort)", and there was no such flag — the one question an unattended re-install on a box of the
+    # other method cannot get past. A bare word, like the method and role words above.
+    convert|keep|abort)          ON_CONFLICT="$1"; shift;;
+    -on-conflict|--on-conflict)  ON_CONFLICT="${2:-}"; shift 2 || shift;;
     --)                          shift;;
     *)                           PASS+=("$1"); shift;;
   esac
@@ -352,7 +361,12 @@ if [ -n "$CONFLICT" ]; then
     menu "$(b "$(col "$C_BLUE" '[1] [c]onvert')")"      "Migrate it to $(mlabel "$METHOD") — all settings / users / peers are preserved. A port/interface pre-flight runs first."
     menu "$(col "$C_BLUE" '[2] [k]eep and re-install')" "Leave it on $(mlabel "$OTHER") and just re-install it (you didn't mean to switch methods)."
     menu "$(col "$C_BLUE" '[3] [a]bort')"               "Exit without changing anything."
-    CHOICE=""; ask_choice "Convert, keep, or abort (number, letter or name)" "convert" CHOICE "convert keep abort"
+    # A preset answer is taken ONCE: `convert` whose pre-flight refused (or was declined) comes back round this loop,
+    # and answering it again from the flag would spin for ever — so the second time round it must be a person.
+    [ -n "${_conflict_used:-}" ] && [ -n "$ON_CONFLICT" ] && die "the conversion did not go ahead (see above) — nothing was changed. Fix the conflicts, or pass keep / abort instead of $ON_CONFLICT."
+    CHOICE="$ON_CONFLICT"; _conflict_used=1
+    ask_choice "Convert, keep, or abort (number, letter or name)" "convert" CHOICE "convert keep abort" \
+      "pass the answer as a word or -on-conflict (convert | keep | abort; env SWG_ON_CONFLICT)"
     case "$CHOICE" in
       abort) info "aborted — nothing changed."; exit 0;;
       keep)  METHOD="$OTHER"; info "keeping the existing $(mlabel "$OTHER") install — re-installing it as-is."; break;;
@@ -366,13 +380,16 @@ if [ -n "$CONFLICT" ]; then
           echo
           menu "$(b "$(col "$C_BLUE" '[1] [m]aster (default)')")"      "Convert BOTH the panel and the node to $(mlabel "$METHOD") — keep this box a single-method master (recommended)."
           menu "$(col "$C_BLUE" "[2] [${ROLE:0:1}]${ROLE:1}")"         "Convert only the $ROLE to $(mlabel "$METHOD"); the rest stays on $(mlabel "$OTHER") — a mixed-method box you'd manage in two places."
-          _msel=""; ask_choice "Convert the whole master, or just the $ROLE (number, letter or name)" master _msel "master $ROLE"
+          _msel=""; ask_choice "Convert the whole master, or just the $ROLE (number, letter or name)" master _msel "master $ROLE" \
+            "name the role master to convert the whole box (converting only the $ROLE needs a terminal)"
           [ "$_msel" = master ] && ROLE=master
         fi
         # pre-flight (port/interface check) lives in convert.sh --check: exit 0 = clear, non-0 = printed conflicts
         if bash "./convert.sh" --check "$OTHER" "$METHOD" "$ROLE"; then
           echo
-          _ans=no; ask_yn "No conflicts found, do you want to proceed with the conversion" y _ans
+          _ans=no
+          if [ "$ON_CONFLICT" = convert ]; then _ans=yes     # the flag IS the answer to this confirm — it named convert
+          else ask_yn "No conflicts found, do you want to proceed with the conversion" y _ans; fi
           [ "$_ans" = yes ] && run_script convert.sh "$OTHER" "$METHOD" "$ROLE" ${PASS[@]+"${PASS[@]}"}
         fi
         ;;   # conflicts (or 'no' at the confirm) → loop the menu again
@@ -383,15 +400,28 @@ fi
 # A plain (re-)install clears a stale leftover from an ABORTED conversion — it's just an outdated copy, so no
 # prompt. The live node (still on its original method) is untouched: an ACTIVE other-method install would have
 # offered 'convert' above, so reaching here as a plain install means there's nothing live of the other method.
+# ⚠️ …BUT NEVER WHAT AN UNINSTALL KEPT, AND NOTHING ON A DRY RUN. uninstall.sh's "keep the data" answer leaves
+# $DOCKER_DIR holding data/ + .env (the node token) and says "Kept … for a future reinstall"; the next bare-metal
+# install deleted it right here, without a prompt, as "a cancelled bare→docker convert" (1.8.8 qualification, q1).
+# The two are told apart by docker-compose.yml: a convert's staging copies it in beside the data, and the uninstaller
+# strips it on every keep path (1.8.7's too). No compose file ⇒ not a convert's staging ⇒ kept, and said out loud.
+# ⚠️ TWIN: lib/common.sh's lc_clear_convert_leftover (update.sh's copy of this) — change one, change both.
+_dryrun_flag=no; for _a in ${PASS[@]+"${PASS[@]}"}; do [ "$_a" = --dry-run ] && _dryrun_flag=yes; done
 if [ "${CHOICE:-}" != convert ]; then
   if [ "$METHOD" = baremetal ] && [ -d "$DOCKER_DIR" ] && command -v docker >/dev/null 2>&1 \
        && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'swg-(node|panel)'; then
-    info "removing a stale docker leftover at $(b "$DOCKER_DIR") — no container present (likely a cancelled bare→docker convert); your live install is untouched"
-    rm -rf "$DOCKER_DIR" 2>/dev/null || true
+    if [ ! -f "$DOCKER_DIR/docker-compose.yml" ]; then
+      info "keeping $(b "$DOCKER_DIR") — no container runs from it, but it is not a convert's leftover: an uninstall kept its data (peers, node token) for a re-install. Delete it by hand once you no longer need it."
+    elif [ "$_dryrun_flag" = yes ]; then
+      info "dry run — would remove a stale docker leftover at $(b "$DOCKER_DIR") (no container present; likely a cancelled bare→docker convert)"
+    else
+      info "removing a stale docker leftover at $(b "$DOCKER_DIR") — no container present (likely a cancelled bare→docker convert); your live install is untouched"
+      rm -rf "$DOCKER_DIR" 2>/dev/null || true
+    fi
   fi
   # docker (re-)install: drop ONLY the bare confs that match this docker node's confs (i.e. copies a docker→bare
   # convert left behind) and only when no swg-noded is installed — never an unrelated WireGuard config.
-  if [ "$METHOD" = docker ] && [ -d "$DOCKER_DIR/data/node-confs" ] && command -v systemctl >/dev/null 2>&1 \
+  if [ "$METHOD" = docker ] && [ "$_dryrun_flag" != yes ] && [ -d "$DOCKER_DIR/data/node-confs" ] && command -v systemctl >/dev/null 2>&1 \
        && ! systemctl list-unit-files swg-noded.service >/dev/null 2>&1; then
     _cleared=
     for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] || continue; _n="$(basename "$_c" .conf)"

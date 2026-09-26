@@ -580,8 +580,25 @@ EOF
   systemctl daemon-reload
   systemctl enable --quiet --now swg-netctl.path 2>/dev/null || warn "couldn't enable swg-netctl.path"
   systemctl enable --quiet --now swg-netctl.timer 2>/dev/null || warn "couldn't enable swg-netctl.timer"
+  DID_UPDATE=yes; note "swg-netctl root helper: provisioned (was missing)"
   ok "swg-netctl root helper provisioned — Access & subscription-address changes will work now"
 }
+
+# repark_bare_panel — a PARKED bare panel (bare_panel_parked, lib/common.sh: disabled, a docker panel live beside it)
+# that something STARTED anyway is stopped again, with its swg-sub, which is kept from starting at boot. The something
+# is 1.8.7's update.sh: it restarted swg-panel-server unconditionally and enabled + restarted swg-sub, so a box that
+# went back to 1.8.7 and came forward again answered with two panels. Run on every update (heal pass), not only when
+# the panel's version moved — a re-run at the same version must not leave it standing either.
+repark_bare_panel(){
+  [ -f /etc/systemd/system/swg-panel-server.service ] && bare_panel_parked || return 0
+  local did=""
+  if systemctl is-active --quiet swg-panel-server 2>/dev/null; then run systemctl stop swg-panel-server; did=" swg-panel-server"; fi
+  if systemctl is-active --quiet swg-sub 2>/dev/null || systemctl is-enabled --quiet swg-sub 2>/dev/null; then
+    run systemctl disable --now swg-sub 2>/dev/null || true; did="$did swg-sub"; fi
+  [ -n "$did" ] || return 0
+  DID_UPDATE=yes; note "bare-metal swg-panel: parked again (stopped:$did)"
+  ok "bare-metal panel parked again (stopped:$did) — it is disabled because a docker panel runs on this box, and an older update had started it"
+  return 0; }
 
 ensure_sub_server(){   # HEAL (install-if-missing) the swg-sub subscription surface on a bare-metal panel.
   # swg-sub is the public, read-only per-user QR/config page. The panel drives it over swg-netctl
@@ -664,6 +681,7 @@ EOF
     systemctl daemon-reload
   fi
   systemctl enable --quiet --now swg-sub 2>/dev/null || warn "couldn't enable swg-sub"
+  DID_UPDATE=yes; note "swg-sub: healed (was missing pieces)"
   ok "swg-sub subscription surface healed — Settings → Subscriptions will work now"
 }
 
@@ -707,6 +725,7 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable --quiet --now swg-noded 2>/dev/null || warn "couldn't enable swg-noded"
+  DID_UPDATE=yes; note "swg-noded unit: healed (was missing)"
   ok "swg-noded unit healed — the node will sync + survive a reboot now"
 }
 
@@ -1154,7 +1173,7 @@ ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-me
   local email; email="$(sed -n 's/^ACME_EMAIL=//p' "$conf" 2>/dev/null | head -1)"
   info "Installing acme.sh (TLS mode $mode needs it; renewals and address changes were failing without it)"
   sh -c "curl -fsSL https://get.acme.sh | sh -s email=${email:-admin@localhost}" >/dev/null 2>&1 || true
-  [ -x /root/.acme.sh/acme.sh ] && ok "acme.sh installed" \
+  [ -x /root/.acme.sh/acme.sh ] && { DID_UPDATE=yes; note "acme.sh: installed (TLS mode $mode needs it)"; ok "acme.sh installed"; } \
     || warn "couldn't install acme.sh — renewals and address changes will keep failing until it is"
   return 0; }
 
@@ -1242,7 +1261,7 @@ ensure_update_unit(){   # HEAL (install-if-missing) the one-click self-update wi
   fi
   info "healing the one-click self-update wiring (missing — the panel's Update button would do nothing)"
   install_update_unit
-  $DRYRUN || ok "one-click self-update wiring healed"
+  $DRYRUN || { DID_UPDATE=yes; note "one-click self-update wiring: healed (was missing)"; ok "one-click self-update wiring healed"; }
 }
 
 ensure_access_seed(){   # HEAL (fill-if-empty) the panel's Access & TLS settings from install.conf / .env.
@@ -1356,6 +1375,7 @@ EOF
         systemctl daemon-reload 2>/dev/null || true
         systemctl enable --quiet --now swg-netctl-docker.path 2>/dev/null || true
         systemctl restart swg-netctl-docker.timer 2>/dev/null || true
+        DID_UPDATE=yes; note "docker address helper: now watches the queue (was a 1s poll)"
         ok "docker address helper: now watches the queue (was a 1s poll)"
       fi
     fi
@@ -1406,6 +1426,7 @@ EOF
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable --quiet --now swg-netctl-docker.path 2>/dev/null || warn "couldn't enable swg-netctl-docker.path"
   systemctl enable --quiet --now swg-netctl-docker.timer 2>/dev/null || warn "couldn't enable swg-netctl-docker.timer"
+  DID_UPDATE=yes; note "docker address helper: healed (was missing)"
   ok "docker address helper healed — one-click address changes will work now"
 }
 
@@ -1447,6 +1468,7 @@ ensure_update_unit_docker(){   # HEAL (install-if-missing) the docker one-click 
   info "healing the docker one-click self-update wiring (missing — the panel's Update button would do nothing)"
   if $DRYRUN; then echo "    [skip] install /usr/local/bin/swg-update{,-check} + swg-update.{service,timer} (enable --now)"; return 0; fi
   write_docker_updater   # shared writer (lib/common.sh): same pieces install-docker.sh writes
+  DID_UPDATE=yes; note "docker one-click self-update wiring: healed (was missing)"
   ok "docker one-click self-update wiring healed — the Update button will work now"
 }
 
@@ -1522,6 +1544,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   # bearing scaffolding we can't safely template (the panel unit) is WARNED about, not recreated. Detecting
   # present-but-broken services is NOT done here — that's the panel's runtime "needs attention" job.
   # NEW SERVICE? add its ensure_<svc> here (and a matching writer in the installer) so update heals it too.
+  repark_bare_panel      # a parked panel an older update started beside the docker one → stopped again (+ swg-sub)
   ensure_netctl_helper   # swg-netctl privileged helper (+ queue dirs + trigger units)
   ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
   ensure_acme_client     # HEAL: the ACME client itself, when TLS_MODE needs it (a convert leaves the state, not the program)
@@ -2022,6 +2045,8 @@ fi
 if [ "$DID_FAIL" = no ] && [ "$DID_UPDATE" = no ]; then lc_emit uptodate; lc_handoff; fi
 echo
 if   [ "$DID_FAIL" = yes ]; then echo "${C_RED}✗${RESET} Update finished with errors — some components FAILED (see the summary below)."
+# ⚠️ A HEAL IS A CHANGE. Every ensure_* that installs a missing piece sets DID_UPDATE (+ a note) — they did not, and a run
+# printed "✓ docker address helper healed" and then "✓ Update finished — nothing changed." two lines apart.
 elif [ "$DID_UPDATE" = no ]; then ok "Update finished — nothing changed."
 else                              ok "Update complete."; fi
 if [ "${#RESULTS[@]}" -gt 0 ]; then   # only ACTUAL changes — drop the inventory notes (absent / unchanged / skipped components aren't "changes")
