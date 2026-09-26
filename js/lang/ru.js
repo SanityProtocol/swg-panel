@@ -524,7 +524,7 @@ export const STR = {
     "Панель пока не маршрутизирует такие адреса — запись разбирается и сохраняется, но сопоставить её не может ни одна нода.",
   "No engine on this node routes this kind yet — {v1} does.":
     "Движок этой ноды пока не маршрутизирует такие адреса — а «{v1}» умеет.",
-  "Switched off for this node in Settings ▸ Routing lists.": "Отключён для этой ноды в «Настройки ▸ Списки маршрутизации».",
+  "Switched off for this node in Settings ▸ Routing & Blocking.": "Отключён для этой ноды в «Настройки ▸ Маршрутизация».",
   "This list's provider is switched off — turn it back on in Settings ▸ Geo data providers.":
     "Источник этого списка выключен — включите его в «Настройки ▸ Провайдеры гео-данных».",
   "Stored and matched as {v1}.": "Хранится и сопоставляется как {v1}.",
@@ -2638,7 +2638,7 @@ export const STR = {
   "No content-filter categories are enabled on this node yet — turn them on in {where}.":
     "На этой ноде пока не включена ни одна категория контент-фильтрации — включите их в {where}.",
   // budget-ok: inline link inside wrapping prose
-  "Settings ▸ Routing & Blocking": "Настройки ▸ Политики",
+  "Settings ▸ Routing & Blocking": "Настройки ▸ Маршрутизация",
   "No IP list in this category — domain lists can't match in {mode}. Use Force-DNS / Hybrid-SNI, or add an IP list.":
     "В этой категории нет списка IP — доменные списки не совпадают в режиме «{mode}». Используйте Force-DNS / Hybrid-SNI или добавьте список IP.",
   // budget-ok: toolbar button, row has a grow spacer
@@ -4601,7 +4601,7 @@ export const STR = {
   "Geo lists will refresh on each node's next sync.": "Гео-списки обновятся при следующей синхронизации нод.",
   "Couldn't save the list.": "Не удалось сохранить список.",
   "Content filters": "Фильтры содержимого",
-  "Routing lists": "Списки маршрутов",
+  "Routing lists": "Списки маршрутизации",
   "Filtering runs on the entry node — where a client's tunnel lands. Exit and relay hops in a multi-hop path never see the client, so there's nothing there for them to filter.":
     "Фильтрация работает на входной ноде — там, где заканчивается туннель клиента. Выходные и промежуточные узлы клиента не видят, фильтровать им нечего.",
   "Routing runs on the entry node — where a client's tunnel lands. Exit and relay hops in a multi-hop path just forward what's already been steered.":

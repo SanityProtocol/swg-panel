@@ -1229,7 +1229,7 @@ export function gateReason(g, modeLabel) {
     case "unbuilt": return g.fix
       ? T("No engine on this node routes this kind yet — {v1} does.", { v1: (MODE_META[g.fix] || {}).label || g.fix })
       : T("This panel doesn't route this kind of address yet — it's classified and stored, but no node can match it.");
-    case "list_off_node": return T("Switched off for this node in Settings ▸ Routing lists.");
+    case "list_off_node": return T("Switched off for this node in Settings ▸ Routing & Blocking.");
     case "person_ksni": return T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.");
     case "ksni_verdict": return T("Kernel SNI matches site names only for rules that leave by an exit — a Direct or Block rule by site name does nothing here. Switch to Hybrid SNI to match them.");
     case "prov_off": return T("This list's provider is switched off — turn it back on in Settings ▸ Geo data providers.");
