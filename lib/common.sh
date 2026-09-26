@@ -155,7 +155,7 @@ ask_secret(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v rc
     v="${v:-$d}"
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
     [ "$rc" -ne 0 ] && die "no value for ‘$p’ and no interactive input to re-prompt"
-    warn "$hint"
+    if declare -F "${fn}_why" >/dev/null 2>&1; then warn "$("${fn}_why" "$v")"; else warn "$hint"; fi   # as ask_valid does
   done; }
 
 # the bordered, bold title every summary opens with — keeps one style across install / re-install / convert /

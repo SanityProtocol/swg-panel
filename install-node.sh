@@ -780,7 +780,8 @@ else ask_valid "Panel URL (https://host[/subpath])" "$EXIST_URL" PANEL_URL v_htt
 # a fresh install (or no stored token) still asks. -key always wins.
 if [ -n "$NODE_TOKEN" ]; then :                                                # provided via -key
 elif [ "$EXISTING" = yes ] && [ -n "$EXIST_TOKEN" ]; then NODE_TOKEN="$EXIST_TOKEN"
-elif $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN
+# a dry run asks too, but must not die without one (it writes nothing) — and a key is never echoed, dry run or not
+elif $DRYRUN; then ask_secret "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN true ""
 else ask_secret "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
 case "$PANEL_URL" in https://*) ;; http://*) _url_is_loopback "$PANEL_URL" || warn "panel URL is http:// — the key would travel in clear. Continue only if you know why.";; *) PANEL_URL="https://$PANEL_URL";; esac   # no scheme → default https://
 # if the operator re-pointed the node at a different panel, the lc terminal should reach the NEW one
