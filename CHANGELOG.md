@@ -94,7 +94,9 @@ earlier releases predate the changelog — see the git history. · Русски�
   directory and how many servers report to it: keep that one, stop the other. The installers now ask before starting
   a panel beside a running one of the other kind — abort, stop the other (its data stays) or keep both; an unattended
   install refuses unless `SWG_OTHER_PANEL=stop` or `keep` says otherwise. A panel stopped that way stays stopped
-  through updates, and so does its subscription page.
+  through updates, and so does its subscription page. An update reports its result to the panel that is running, and
+  the install that stopped the other one ends with its own login. Removing either panel with the uninstaller leaves the other its
+  one-click update and its address changes, and starts it again if it was the one stopped.
 
 ### Changed
 
@@ -243,7 +245,10 @@ earlier releases predate the changelog — see the git history. · Русски�
   client and datapath refused it. The full values are kept.
 - **An update could sit for about three and a half minutes after "Update complete".** Reporting the result to the
   panel promised "up to 25s" but counted attempts, each allowed six seconds, so when the panel's address dropped
-  packets — the panel down, a firewall — every attempt waited them out. It now stops at the time it prints.
+  packets — the panel down, a firewall — every attempt waited them out. It now stops at the time it prints. A Docker
+  panel without a node of its own reported a node status anyway, with the placeholder token, so every update waited
+  about 30 s and twice said it couldn't reach the panel; it no longer does, and neither does a Docker master
+  re-installed after an uninstall, which spent 6 s telling its removed panel it was re-installing.
 - **A Docker address change that expired while its check ran was applied anyway** — the container was recreated
   onto the new address against settings already rolled back. It is now refused, and **Settings → Panel access** says
   the change expired.
@@ -332,6 +337,11 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Installing a panel on its own reported that it had not started** although it was serving. A fresh Docker panel
   now wires its one-click address changes at once (they used to wait for the first update), and a master's endpoint
   reaches its own node record.
+- **Servers with only private addresses never linked up.** A link between two servers got a peer only once the far
+  server's address was known — the one set in **Settings**, or a public address it reports — so two servers on a LAN
+  or behind NAT had a link with no peer at either end: cascades and exits between them never worked, and nothing said
+  so. The panel now falls back to the address each server already hands its clients, and a master's own node record
+  gets its address on an update or a re-install too, on Docker as on bare metal.
 - **Uninstalling left things behind:** ip rules, `swg-passwd`, the firewall rule the installer opened, the Docker
   network, and files of the other method after a conversion. A master's uninstall no longer tries to sign off from
   the panel it has just removed, and `--dry-run` no longer really signs off.
@@ -340,7 +350,10 @@ earlier releases predate the changelog — see the git history. · Русски�
   node so it takes effect.
 - **Unattended runs printed raw terminal errors** and a question that named a flag which did not exist; `convert`,
   `keep` and `abort` (or `-on-conflict`) answer it now. An update that only repaired something now says it changed
-  something, and a re-install of the same build says "reinstalled", not "reinstalled and updated".
+  something, and a re-install of the same build says "reinstalled", not "reinstalled and updated". Unattended
+  bare-metal installs now say which default they took; a node's failed sign-off gives its reason in one line instead
+  of Python's raw error; a convert names the node as the panel does and no longer calls its own staging an existing
+  install; and a re-install lists the interfaces the panel still manages as the panel's, not as ones to adopt.
 - **Confirming a Docker panel's new address could say "Couldn't run the dry-run" while it was still running** — on
   Cloudflare the dry-run issues a real certificate, which can take longer than the page waited, and a second click ran
   it again. The page now waits as long as the panel does.
@@ -366,6 +379,9 @@ earlier releases predate the changelog — see the git history. · Русски�
   revoked password or an idle timeout that closed a connection while data was on its way to it ended the server — by
   chance, or on purpose by a client switching its config between two devices. The fault was in every earlier build;
   fixed in qWDTT 1.4.3-4.
+- **Re-installing with a saved Cloudflare token showed the token on the screen** — it was the prompt's default,
+  printed beside the question. The installers now read a token with echo off and offer a saved one as `keep current`;
+  nothing prints it, an unattended install's log included.
 - **Re-installing a Docker node turned off its check of the panel's certificate.** A node that had pinned a
   self-signed panel came back verifying nothing. It keeps its pin now, and says so when the panel's certificate changed.
 - **A node's config file, which holds its panel token, became readable by every user on the box** after the first
