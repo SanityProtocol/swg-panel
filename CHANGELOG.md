@@ -334,6 +334,9 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Unattended runs printed raw terminal errors** and a question that named a flag which did not exist; `convert`,
   `keep` and `abort` (or `-on-conflict`) answer it now. An update that only repaired something now says it changed
   something, and a re-install of the same build says "reinstalled", not "reinstalled and updated".
+- **Confirming a Docker panel's new address could say "Couldn't run the dry-run" while it was still running** — on
+  Cloudflare the dry-run issues a real certificate, which can take longer than the page waited, and a second click ran
+  it again. The page now waits as long as the panel does.
 - **Block, Delete and Rotate all keys were a size smaller than the buttons beside them,** and the device view's last
   button wrapped onto a second row in Russian.
 - **Dates in chart tooltips were English in the Russian panel.**
