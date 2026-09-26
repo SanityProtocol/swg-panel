@@ -111,10 +111,9 @@ for v in (d.values() if isinstance(d, dict) else []):
 PY
 }
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
-# conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions.
+# conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions — and
+# an installer only ever READS it: the adoption that writes it happens in the panel (swg-noded onboard_ifaces).
 iface_onboarded(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] && grep -q '^#swg:onboarded' "$c" 2>/dev/null; }
-onboard_mark(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] || return 0; $DRYRUN && return 0; [ -f "$c" ] || return 0
-  grep -q '^#swg:onboarded' "$c" 2>/dev/null || sed -i '1i #swg:onboarded' "$c" 2>/dev/null || true; }
 info(){ _nlguard; echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
 sub(){  _nlguard; echo "${C_BL}::${RESET} $*"; }                    # :: blue sub-item / progress detail
 ok(){   _nlguard; echo "${C_GREEN}✓${RESET} $*"; }

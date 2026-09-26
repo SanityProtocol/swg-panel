@@ -12741,6 +12741,17 @@ def _selfcontained_listeners():
     return out
 
 
+_ONBOARDED_RE = re.compile(r"(?m)^#swg:onboarded")   # the conf's add-only mark, read as the installers and node-entrypoint read it
+
+
+def _add_only(iface, ic):
+    """Is this interface ADD-ONLY — does it keep peers it is merely not sent? Its config says (`onboarded`, from the conf's
+    #swg:onboarded, set when it was adopted with peers of its own) — but never a mesh link. `swg_` is the panel's reserved
+    link prefix, which adoption refuses (iface_candidates), so no link was ever adopted and every peer on one is the
+    panel's. Converts before 1.8.8 stamped links anyway; this one test is what reconcile and the snapshot both ask."""
+    return bool((ic or {}).get("onboarded")) and not str(iface).startswith("swg_")
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -12764,11 +12775,11 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 _bp = iface_boot_persists(iface, ic.get("cmd"), now)
                 if iface in stopped_set:            # the operator stopped it — a choice, not a failure (no error)
                     interfaces[iface] = {"peers": [], "meta": _meta, "stopped": True,
-                                         "onboarded": bool(ic.get("onboarded")), "boot_persist": _bp}
+                                         "onboarded": _add_only(iface, ic), "boot_persist": _bp}
                 else:
                     interfaces[iface] = {"peers": [], "meta": _meta,
                         "down": ((_r.stderr or "").strip() or "interface is not up")[:140],
-                        "onboarded": bool(ic.get("onboarded")), "boot_persist": _bp}
+                        "onboarded": _add_only(iface, ic), "boot_persist": _bp}
                 ensure_iface_backup(iface, conf_text, cmd)
                 continue
             dump = _r.stdout
@@ -12787,7 +12798,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 "meta": build_meta(iface_line, conf_text,
                                    ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
                                    node_cfg.get("dns", []), cmd, iface),
-                "onboarded": bool(ic.get("onboarded")),   # add-only: its peers are the panel's to import (T-19)
+                "onboarded": _add_only(iface, ic),   # add-only: its peers are the panel's to import (T-19)
                 "boot_persist": iface_boot_persists(iface, ic.get("cmd"), now),   # will it come back after a reboot?
             }
             if iface in stopped_set:               # it's up again (e.g. brought up outside the panel) → clear the stopped mark
@@ -13301,8 +13312,9 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                 _op_fail(akey); res["errors"].append(f"add {pk[:8]}: {r.get('error')}")
         # An onboarded interface is ADD-ONLY: the panel never removes peers it didn't create, so an
         # interface adopted from another tool (e.g. wg-easy) keeps its existing peers. They surface
-        # as adoptable orphans instead of being wiped.
-        if ic.get("onboarded"):
+        # as adoptable orphans instead of being wiped. (What the panel cuts off still goes — it is named
+        # in `remove`, above.) Never a mesh link: see _add_only.
+        if _add_only(iface, ic):
             continue
         for pk in current - set(desired):
             r = run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
@@ -13375,8 +13387,9 @@ def _strip_showconf_only(body):
     return "\n".join(l for l in body.splitlines() if not _SHOWCONF_ONLY.match(l))
 
 
-def _reconstruct_conf(iface, cmd):
-    """Rebuild an interface's .conf from the LIVE device and return its path ('' if that isn't possible).
+def _reconstruct_conf(iface, cmd, mark=True):
+    """Rebuild an interface's .conf from the LIVE device and return its path ('' if that isn't possible). `mark`: stamp the
+    rebuilt conf add-only (#swg:onboarded) — what the device's history was is not on the device (see onboard_ifaces).
 
     A docker node mounts its own dir over /etc/amnezia/amneziawg, so a pre-existing HOST interface's .conf is
     invisible in here and the candidate is reported with conf="" — adoption then failed for every wg/awg device on
@@ -13423,7 +13436,7 @@ def _reconstruct_conf(iface, cmd):
             # which is not the same one the next model will read it from — so the file has to carry the
             # answer rather than let its location imply one (see the agent's writer for why the content
             # cannot be probed for it).
-            f.write("#swg:onboarded\n#swg:cmd " + (cmd[0] if cmd else "awg") + "\n" + body + "\n")
+            f.write(("#swg:onboarded\n" if mark else "") + "#swg:cmd " + (cmd[0] if cmd else "awg") + "\n" + body + "\n")
         os.chmod(path, 0o600)
         return path
     return ""
@@ -13751,10 +13764,17 @@ def selfheal_ifaces(node_cfg, desired_ifaces, owned=None):
     return out
 
 
-def onboard_ifaces(node_cfg, onboard):
+def onboard_ifaces(node_cfg, onboard, heal=()):
     """Add panel-requested interfaces to this node's managed set (config.json) when they exist
     locally — for a wg/awg interface the panel didn't auto-detect. Once added, build_snapshot
-    reports it and the panel closes the request (no separate ack needed). Only ever on a 200."""
+    reports it and the panel closes the request (no separate ack needed). Only ever on a 200.
+
+    `heal` names the ones being TAKEN BACK (the self-heal: the panel owns it, this node lost its record) rather than
+    adopted. An adopted interface is add-only — the peers it came with are not the panel's to remove. One taken back
+    stays what it was: add-only only if its conf says so (#swg:onboarded, written when it was adopted). Stamping every
+    one made each interface the panel CREATED add-only after a master re-install (1.8.8 qualification, q1), and add-only
+    keeps a peer the panel merely stops sending. A conf that has to be rebuilt from the device cannot say, so that one
+    stays add-only (kept peers can be removed later; wiped ones are gone) — unless it is a mesh link (see _add_only)."""
     res = {"added": [], "errors": []}
     if not onboard:
         return res
@@ -13765,12 +13785,13 @@ def onboard_ifaces(node_cfg, onboard):
             continue
         cmd = want.get("cmd") or ["awg"]
         conf = want.get("conf") or ""
+        _mark = _add_only(iface, {"onboarded": True})   # False only for a mesh link
         try:
             _asked = conf
             if not conf or not os.path.exists(conf):
                 # No readable .conf (a docker node cannot see the host's) — rebuild it from the live device.
-                conf = _reconstruct_conf(iface, cmd if cmd != ["auto"] else ["awg"]) or \
-                       (_reconstruct_conf(iface, ["wg"]) if cmd == ["auto"] else "")
+                conf = _reconstruct_conf(iface, cmd if cmd != ["auto"] else ["awg"], _mark) or \
+                       (_reconstruct_conf(iface, ["wg"], _mark) if cmd == ["auto"] else "")
                 if not conf:
                     res["errors"].append(f"{iface}: no config on disk and the live interface couldn't be read"); continue
                 # Which source won is not a detail: adopting from the device keeps the keys, peers, ports and
@@ -13792,22 +13813,26 @@ def onboard_ifaces(node_cfg, onboard):
             run(cmd + ["show", iface, "dump"])      # raises if the interface isn't actually up
         except Exception as e:
             res["errors"].append(f"{iface}: {e}"); continue
-        ifaces[iface] = {"cmd": cmd, "conf": conf, "onboarded": True}   # add-only: never wipe its peers
-        try:                                            # persist the markers in the conf so a docker restart
-            with open(conf) as _f: _t = _f.read()       # (config.json rebuilt from confs) keeps it add-only
-            _pre = "" if "#swg:onboarded" in _t else "#swg:onboarded\n"
-            # …and which protocol it is. This conf is the OPERATOR's file, adopted where it lies, so unlike
-            # the rebuilt one (see _reconstruct_conf) nothing has stamped it. Its directory is not evidence:
-            # a container writes every conf to the AmneziaWG dir, so an adopted plain-WireGuard interface
-            # that goes through a convert or a run-model switch comes back up as `awg` — node-entrypoint's
+        try:
+            with open(conf) as _f: _t = _f.read()
+        except OSError:
+            _t = None
+        # adopted → add-only; taken back → whatever its conf says (unreadable: add-only, the side that keeps peers)
+        _onb = _mark and (iface not in heal or _t is None or bool(_ONBOARDED_RE.search(_t)))
+        ifaces[iface] = {"cmd": cmd, "conf": conf, **({"onboarded": True} if _onb else {})}   # add-only: never wipe its peers
+        if _t is not None:                              # persist the markers in the conf so a docker restart
+            _pre = "#swg:onboarded\n" if _onb and not _ONBOARDED_RE.search(_t) else ""   # (config.json rebuilt
+            # from confs) keeps it as it is — and which protocol it is. This conf is the OPERATOR's file, adopted
+            # where it lies, so unlike the rebuilt one (see _reconstruct_conf) nothing has stamped it. Its directory
+            # is not evidence: a container writes every conf to the AmneziaWG dir, so an adopted plain-WireGuard
+            # interface that goes through a convert or a run-model switch comes back up as `awg` — node-entrypoint's
             # add_iface falls back to location precisely when this line is missing. backfill_cmd_markers
             # would stamp it, but only at the NEXT node start, and a convert need not include one.
             if "#swg:cmd" not in _t.split("[Interface]")[0]:
                 _pre += "#swg:cmd " + (cmd[0] if cmd else "awg") + "\n"
             if _pre:
-                with open(conf, "w") as _f: _f.write(_pre + _t)
-        except OSError:
-            pass
+                with contextlib.suppress(OSError):
+                    with open(conf, "w") as _f: _f.write(_pre + _t)
         changed = True
         res["added"].append(iface)
     if changed:
@@ -19331,7 +19356,10 @@ def main():
                 if _heal:
                     print("self-heal: adopting live interface(s) the panel manages but we hold no conf for: "
                           + ", ".join(sorted(_heal)), flush=True)
-                ob = onboard_ifaces(node_cfg, {**(reply.get("onboard") or {}), **_heal})   # add panel-requested interfaces first
+                # add panel-requested interfaces first. A name the operator asked to adopt is an adoption even when the
+                # self-heal found it too (an onboard with an endpoint already gives it a record the panel then owns).
+                _obreq = reply.get("onboard") or {}
+                ob = onboard_ifaces(node_cfg, {**_obreq, **_heal}, heal=set(_heal) - set(_obreq))
                 # Before any turn-family server is installed or restarted below — the cap is read at socket
                 # creation, so raising it first is what lets a (re)started listener actually claim the buffer.
                 # Count the listeners the panel actually wants here — the cap is sized against them so one

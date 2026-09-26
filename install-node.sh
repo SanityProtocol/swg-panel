@@ -68,10 +68,9 @@ iface_row(){ local n="$1" conf proto ep lp addr _c   # set -e safe; prefer a jus
 # opposed to anything else on the box, which is an adoption candidate for the panel.
 local_ifaces(){ { node_ifaces; wdtt_local | cut -f1; } 2>/dev/null | awk 'NF' | sort -u; }
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
-# conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions.
+# conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions — and
+# an installer only ever READS it: the adoption that writes it happens in the panel (swg-noded onboard_ifaces).
 iface_onboarded(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] && grep -q '^#swg:onboarded' "$c" 2>/dev/null; }
-onboard_mark(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] || return 0; $DRYRUN && return 0; [ -f "$c" ] || return 0
-  grep -q '^#swg:onboarded' "$c" 2>/dev/null || sed -i '1i #swg:onboarded' "$c" 2>/dev/null || true; }
 info(){ _nlguard; echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
 sub(){  _nlguard; echo "${C_BL}::${RESET} $*"; }                    # :: blue sub-item / progress detail
 ok(){   _nlguard; echo "${C_GREEN}✓${RESET} $*"; }
@@ -399,7 +398,9 @@ reconstruct_live_orphans(){
       # only on the same kind of kernel — amneziawg-go (our pinned fallback included), a 3.0 go, 2.0 tools and a 2.0
       # module refuse it — so those lines are dropped; a non-zero AWG3 value is real config and stays (swg-noded
       # _strip_showconf_only is the twin).
-      { echo '#swg:onboarded'; printf '%s\n' "$sc" | awk -v a="$addr" -v u="$up" -v d="$down" '
+      # Add-only (#swg:onboarded): the device cannot say whether it was adopted, and keeping peers is the side that
+      # can be undone — but never a mesh link, whose peers are all the panel's (swg-noded _add_only).
+      { is_sys_iface "$n" || echo '#swg:onboarded'; printf '%s\n' "$sc" | awk -v a="$addr" -v u="$up" -v d="$down" '
         function flush(  i) { if (np == 0) return
           for (i = 1; i <= np; i++) if (ka || peer[i] !~ /^[ \t]*[Ee]ndpoint[ \t]*=/) print peer[i]
           np = 0; ka = 0 }
@@ -426,15 +427,12 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
   elif [ -n "${ADOPTED_IFACES:-}" ]; then
-    # convert: carry the interfaces the convert migrated (the already-MANAGED set) — no re-decision.
+    # convert: carry the interfaces the convert migrated (the already-MANAGED set) — no re-decision, and each as it
+    # was: a conf arrives with its own #swg:onboarded if it was adopted, and without one if the panel made it. This
+    # used to stamp every one that "arrived without a marker" — exactly the interfaces the panel created and its mesh
+    # links — and add-only keeps whatever a node is merely not sent (1.8.8 qualification, q4). Before 1.6.0 this
+    # branch skipped conversion imports for that reason.
     IFS=', ' read -ra SELECTED <<< "$ADOPTED_IFACES"
-    # add-only mark for any that arrived without a marker (keep their peers)
-    local n _nodeifs; _nodeifs="$(node_ifaces | tr '\n' ' ')"
-    for n in ${SELECTED[@]+"${SELECTED[@]}"}; do n="${n// /}"; [ -z "$n" ] && continue
-      _in "$n" "$_nodeifs" && continue
-      _in "$n" "${CREATED[*]:-}" && continue
-      onboard_mark "$n"
-    done
   else
     # Approach B (record-only): no picker, no auto-adopt. Detect the wg/awg interfaces already on this box and just
     # DISPLAY them — the node reports them to the panel, where they appear as adoption candidates for the operator to
