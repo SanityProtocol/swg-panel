@@ -550,7 +550,16 @@ apply_full_data_fate(){   # run AFTER teardown, using the decision captured by a
          "$DOCKER_DIR/swg-panel-server" "$DOCKER_DIR/swg-agent" "$DOCKER_DIR/swg-noded" \
          "$DOCKER_DIR/index.html" "$DOCKER_DIR/app.css" "$DOCKER_DIR/app.js" "$DOCKER_DIR/reconcile.js" \
          "$DOCKER_DIR/js"
-    ok "Kept $DOCKER_DIR/data + .env (node token) for a future reinstall"
+    # Say what that .env still holds. A panel-only install has no node token — its NODE_TOKEN is the placeholder
+    # set-in-nodes-screen — and "(node token)" named a key the box never had (1.8.8 qualification, q5).
+    local _tok _held="" _env=""
+    if [ -f "$DOCKER_DIR/.env" ]; then
+      _tok="$(sed -n 's/^NODE_TOKEN=//p' "$DOCKER_DIR/.env" | head -1)"; _tok="${_tok%\"}"; _tok="${_tok#\"}"
+      case "$_tok" in ""|set-in-nodes-screen) ;; *) _held="node token";; esac
+      { [ -d "$DOCKER_DIR/data/lib" ] || [ -d "$DOCKER_DIR/data/etc" ]; } && _held="${_held:+$_held, }the panel's address and ports"
+      _env=" + .env${_held:+ ($_held)}"
+    fi
+    ok "Kept $DOCKER_DIR/data$_env for a future reinstall"
     return
   fi
   # CASES 2 & 3 — wiping the live data dir: first stash a recovery copy (node token + interface keys) under
@@ -809,6 +818,8 @@ rm_leftovers(){
   # record the convert carried into the docker data (or into the moved-aside /etc/swg-panel.converted-*).
   rmrf /etc/swg-sub /opt/swg-sub "$SD/swg-sub.service" "$SD/swg-sub.service.d" /usr/local/bin/swg-sub \
        /var/www/wgstats /usr/local/bin/swg-passwd
+  # Left alone while a docker panel runs, which changes nothing: Docker publishes its ports past ufw (its own nat and
+  # FORWARD rules, never ufw's INPUT chain), so this rule never governed the port that panel serves.
   if ! docker_running swg-panel; then
     for _uf in "$DOCKER_DIR/data/etc/ufw-added" /etc/swg-panel.converted-*/ufw-added; do [ -f "$_uf" ] && ufw_forget "$_uf"; done
   fi

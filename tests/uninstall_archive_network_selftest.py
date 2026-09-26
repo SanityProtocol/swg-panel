@@ -9,6 +9,10 @@
       drops it only when it runs, and a panel removed while its node stays never gets one. Now removed by the
       project's label wherever the panel or the stack goes (docker refuses while anything is attached).
 
+  [3] Told to keep the data, the uninstaller said "Kept …/data + .env (node token) for a future reinstall" on every box —
+      also on a panel-only one, whose .env carries no node token (the placeholder set-in-nodes-screen; 1.8.8
+      qualification, q5). It now says what that .env holds: the node token, the panel's address and ports, or both.
+
 apply_full_data_fate, the archive sweep, docker_rm_project_networks and rm_docker_panel are lifted out of uninstall.sh
 AS SHIPPED; docker / systemctl are stubs, the recovery-archive paths are temp dirs.
 
@@ -38,6 +42,8 @@ if PERTURB:
     plant("including the copy saved above: this node can no longer be recovered from this box", "")            # [1] wording
     plant('docker_rm_project_networks(){\n  command -v docker >/dev/null 2>&1 || return 0\n',
           'docker_rm_project_networks(){\n  return 0\n')                                                        # [2]
+    plant('    ok "Kept $DOCKER_DIR/data$_env for a future reinstall"\n',
+          '    ok "Kept $DOCKER_DIR/data + .env (node token) for a future reinstall"\n')                          # [3]
 
 def fn(name):
     m = re.search(r"^%s\(\)\{" % re.escape(name), U, re.M)
@@ -107,6 +113,30 @@ out, calls = nets(fn("docker_rm_project_networks") + fn("rm_docker_panel") +
                   'rm_docker_panel\n')
 check("a docker panel removed while its node STAYS → its network goes too (the node runs on host networking)",
       "docker network rm net-abc" in calls, (calls, out))
+
+print("\n[3] the kept-data line says what the kept .env holds")
+def kept(token, panel, node, env=True):
+    d = tempfile.mkdtemp(prefix="kept-"); dd = os.path.join(d, "swg-panel-docker")
+    for sub, on in (("lib", panel), ("etc", panel), ("node-confs", node)):
+        if on:
+            os.makedirs(os.path.join(dd, "data", sub))
+    os.makedirs(os.path.join(dd, "data"), exist_ok=True)
+    if env:
+        open(os.path.join(dd, ".env"), "w").write("PANEL_PASSWORD=p\nPANEL_DOMAIN=192.168.77.5\nNODE_TOKEN=%s\n" % token)
+    r = subprocess.run(["bash", "-c", PRE + 'DOCKER_DIR=%s; DOCKER_DATA_DEL=no; DOCKER_KEEP_CONFS=""\n%sapply_full_data_fate\n'
+                        % (dd, fn("apply_full_data_fate"))], capture_output=True, text=True)
+    envtxt = open(os.path.join(dd, ".env")).read() if env else ""
+    return (r.stdout + r.stderr).replace(dd, "DIR"), envtxt
+out, envtxt = kept("set-in-nodes-screen", panel=True, node=False)
+check("a panel-only box: the panel's address and ports — no node token it never had",
+      "OK Kept DIR/data + .env (the panel's address and ports) for a future reinstall" in out and "node token" not in out, out)
+check("…and the panel password is still stripped from the kept .env", "PANEL_PASSWORD" not in envtxt, envtxt)
+out, _ = kept("N3fJrealtoken", panel=False, node=True)
+check("a node-only box: the node token", "OK Kept DIR/data + .env (node token) for a future reinstall" in out, out)
+out, _ = kept("N3fJrealtoken", panel=True, node=True)
+check("a master: both", "OK Kept DIR/data + .env (node token, the panel's address and ports) for a future reinstall" in out, out)
+out, _ = kept("", panel=True, node=False, env=False)
+check("no .env left at all: only the data is claimed", "OK Kept DIR/data for a future reinstall" in out, out)
 
 print()
 if FAILS:
