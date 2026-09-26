@@ -196,7 +196,15 @@ info "fetching $REPO @ $REF"
 # "GitHub unreachable" and going straight to the tarball works, but silently costs every 22.04 node the
 # git path for ever — and hides a defect that is one flag from fixed.
 _fetched=""
-if need git; then
+# ⚠️ A COMMIT IS HOW A RELEASE IS NAMED. Panel releases carry no tag — each is one squashed commit on main — so going
+# back to one means its commit (SWG_REF=df3bb45 is 1.8.7-beta), and `git clone --branch` takes only a branch or a tag.
+# GitHub serves an archive of any commit, which is the tarball road below by another URL. 7–40 hex digits, never a
+# branch or a tag name this repo uses.
+if printf '%s' "$REF" | grep -qE '^[0-9a-f]{7,40}$'; then
+  if need curl && need tar && curl -fsSL "$REPO/archive/$REF.tar.gz" | tar -xz -C "$TMP"; then
+    mv "$TMP"/swg-panel-* "$TMP/swg-panel" && _fetched=tar
+  fi
+elif need git; then
   if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
     _fetched=git
   else
