@@ -290,6 +290,14 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Escape in a list search closed the window behind it.** In a routing rule's target list, once a row had been
   clicked, Escape did nothing or closed the whole window, and a block category's **Add list** ignored it. Both now
   close on Escape or on a ✕ of their own, and the next Escape closes the window.
+- **Switching a node from a container back to native left its relays running in containers.** They kept their ports,
+  the node's own relays could not start, and relayed links fell back to plain forwarding. The switch now removes the
+  container relays (and, the other way, stops the host's), and the node's own relays take over at once.
+- **A node's uninstaller said the panel closed the connection without a reply** although the panel had received the
+  sign-off. The panel now answers such a request before closing.
+- **Editing an interface: a change made by a click vanished on Escape.** The AmneziaWG version switch, access level,
+  exit, routing rules and filter chips closed the Edit interface sheet without a word on Escape, ✕ or a click outside,
+  and **Cancel** skipped the question even for typed fields. The sheet now asks before dropping any change.
 - **Block, Delete and Rotate all keys were a size smaller than the buttons beside them,** and the device view's last
   button wrapped onto a second row in Russian.
 - **Dates in chart tooltips were English in the Russian panel.**
@@ -341,18 +349,37 @@ earlier releases predate the changelog — see the git history. · Русски�
   such sites on **Hybrid SNI** or **Force-DNS** (see Fixed).
 - **Drops after the update.** On a kernel WireGuard or AmneziaWG client interface you reset before this update,
   **Since reset** starts over once, at the update.
-- **Going back to 1.8.7 — the panel.** Saving an interface on an older panel drops the chosen people from its rules
-  for good; the rules stay, switched off. An older panel never reads a server's default list, so none of its rules
-  apply: a server whose **Everything else** is an exit or **Direct** keeps that as a plain default, and one whose
-  **Everything else** is **Block** or **Forward to …** lets traffic out by its own address. An address chosen under
-  **As address** for a **Forward to …** rule only pauses — the rules keep reaching the right server, which picks the
-  address itself — and applies again after the upgrade.
+- **Going back to 1.8.7 — the panel.** Saving an interface, a WDTT or a csqtt server on an older panel drops the
+  chosen people from its rules for good; the rules stay, switched off — and switching one on there applies it to
+  everyone on the interface. An older panel never reads a server's default list, so none of its rules apply: a server
+  whose **Everything else** is an exit or **Direct** keeps that as a plain default, and one whose **Everything else**
+  is **Block** or **Forward to …** lets traffic out by its own address. An address chosen under **As address** and a
+  server's **Upstream DNS** only pause — Force-DNS servers ask 1.1.1.1 and 8.8.8.8 meanwhile — and apply again after
+  the upgrade. The first save in **Settings** there clears the AmneziaWG 3.1 defaults under **Settings → Interfaces**;
+  note them first.
+- **⚠️ Going back moves turn servers to the older builds.** On their next sync csqtt, qWDTT, WDTT-Plus and ildarmaga
+  servers take 1.8.7's builds and restart once, and the fixes above go with them: one config on a second phone is
+  refused again, a client can crash a qWDTT server, and ildarmaga clients get 1.1.1.1 whatever **Client DNS** says. A
+  server you rolled back to a chosen build stays on it. Coming forward moves them up again.
+- **⚠️ AmneziaWG 3.1 interfaces on an older panel.** Devices already set up keep connecting, but every config, QR code
+  and subscription page 1.8.7 produces for a 3.1 interface lacks the 3.1 lines and does not connect, and saving the
+  interface there drops its 3.1 values from the panel. To stay on 1.8.7, switch those interfaces to 2.0 before going
+  back. Coming forward after such a save, the interface's Edit sheet says **Edited directly on the server** — press
+  **Adopt**; **Restore panel value** turns the server to 2.0 and cuts every 3.1 device.
+- **Going back on a fleet of more than 30 nodes** (or with **Mesh links** on **On demand**) links every pair of nodes
+  again on the older panel's first sync — a new link on every node for every other node. Coming forward removes the
+  unused ones within an hour.
+- **Traffic totals across a stint on 1.8.7.** Its days show no traffic; what flowed then is counted on the day you
+  come forward, and traffic of peers created or deleted there, or sent before a server restarted there, is partly
+  missing.
 - **Going back to 1.8.7 — a server.** A server taken back keeps routing chains and sets it does not know — from rules
   for chosen people, a default list, and any Block rule below an Exit or Direct rule on Hybrid SNI or Kernel SNI. On
   Hybrid SNI they stop it applying the next change to IP learning. Run `sudo nft delete table inet swg_smart` on it
   once (on a Kernel SNI server that ran a default list, also `sudo ipset destroy swga`); it rebuilds within a minute.
   A Kernel SNI server that ran rules for chosen people also keeps unused `swgs_*` ipsets until a reboot — harmless;
-  `ipset destroy` them to tidy.
+  `ipset destroy` them to tidy. Its Force-DNS resolver asks 1.1.1.1 and 8.8.8.8 again, a WDTT server's **Client DNS**
+  lasts only until the server is next reconfigured or restarted, and its **Drops** figure counts the kernel counters
+  that are not loss again.
 - **Going back takes one command.** On bare metal `SWG_REF` now takes a commit:
   `curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo SWG_REF=df3bb45 bash -s update`
   installs 1.8.7-beta, and the box's **Update** button goes on following the branch it followed — the header offers
