@@ -460,6 +460,9 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   and its `awg` tools); on one that isn't, the switch is greyed out and says which part. The cost,
   measured: +1–2 % CPU at the rates a VPS carries; a server that is already CPU-bound loses 7–20 % of its
   throughput ceiling to the header masks, and no setting takes that back.
+- **On Kernel SNI a site name only steers traffic to an exit.** A rule that leaves by another server or a device
+  matches site names there; a **Direct** or **Block** rule matches addresses and networks only, and its row says so.
+  To block a site by name, or to except it from a forward, use **Hybrid SNI** or **Force-DNS**.
 - **A rule for chosen people covers the devices a server can tell apart.** Their WireGuard and AmneziaWG devices
   always; WDTT and csqtt devices only where the server's build can prove which user is sending — the same builds as
   in **Who can reach a device** — and the rule's row says how many devices it doesn't cover. A server running an

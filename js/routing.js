@@ -1198,10 +1198,19 @@ export const badgeGate = (mode, node, b) => b.t === "list" ? listGate(mode, b.id
 const _ipKind = k => k === "ip" || k === "asn";
 export function rowGate(row, mode, node, b) {
   const g = badgeGate(mode, node, b);
-  if (!g.ok || !(row && row.who) || mode !== "sni_kernel" || ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) >= 2) return g;
+  if (!g.ok || mode !== "sni_kernel") return g;
   const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
   const host = caps ? !!caps.host : !_ipKind(b.kind);
   if (!host) return g;
+  // ⚠️ A DIRECT OR BLOCK ROW MATCHES BY ADDRESS ONLY ON KERNEL SNI. The in-kernel scanner learns a site's address only for
+  // a row that leaves by an exit — swg-noded hands `_ensure_smart_xtstring` its exit rows alone (a Direct or Block verdict
+  // needs no table, and nothing else lowers its names) — so a Direct or Block by site name matched nothing while this row
+  // read as working: a Block let the site through, a Direct exception above a forward went out the forward anyway.
+  // Measured on msk-main (1.8.8 qualification), from a wiped table. Said on the badge, with the switch that fixes it.
+  if (row && (row.action === "direct" || row.action === "block"))
+    return caps && caps.ip ? { ...g, note: T("Kernel SNI matches site names only for rules that leave by an exit — this rule applies to the list's IP addresses and networks alone here. Switch to Hybrid SNI to match its sites.") }
+      : { ok: false, why: "ksni_verdict", fix: "sni" };
+  if (!(row && row.who) || ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) >= 2) return g;
   return caps && caps.ip ? { ...g, note: T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.") }
     : { ok: false, why: "person_ksni", fix: "sni" };
 }
@@ -1222,6 +1231,7 @@ export function gateReason(g, modeLabel) {
       : T("This panel doesn't route this kind of address yet — it's classified and stored, but no node can match it.");
     case "list_off_node": return T("Switched off for this node in Settings ▸ Routing lists.");
     case "person_ksni": return T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.");
+    case "ksni_verdict": return T("Kernel SNI matches site names only for rules that leave by an exit — a Direct or Block rule by site name does nothing here. Switch to Hybrid SNI to match them.");
     case "prov_off": return T("This list's provider is switched off — turn it back on in Settings ▸ Geo data providers.");
     case "engine": return T("{v1} matches by IP only — this needs a host layer.", { v1: modeLabel });
     // ⚠️ ONE SENTENCE PER ENGINE MUST BE TRUE OF EVERY KIND THAT ENGINE REFUSES — five each, and both of

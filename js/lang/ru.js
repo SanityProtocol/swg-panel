@@ -6517,6 +6517,10 @@ export const STR = {
   "Choose at least one person or device, or pick “Everyone on this interface”.": "Выберите хотя бы одного человека или устройство либо «Все на этом интерфейсе».",
   "Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.":
     "Kernel SNI на этом узле не умеет сопоставлять имена хостов для выбранных людей — здесь действуют только IP-адреса и сети этого правила. Переключите узел на Hybrid SNI, чтобы они работали.",
+  "Kernel SNI matches site names only for rules that leave by an exit — this rule applies to the list's IP addresses and networks alone here. Switch to Hybrid SNI to match its sites.":
+    "Kernel SNI сопоставляет имена сайтов только для правил, которые выпускают трафик через выход, — здесь это правило действует лишь на IP-адреса и сети списка. Переключите узел на Hybrid SNI, чтобы работали и его сайты.",
+  "Kernel SNI matches site names only for rules that leave by an exit — a Direct or Block rule by site name does nothing here. Switch to Hybrid SNI to match them.":
+    "Kernel SNI сопоставляет имена сайтов только для правил, которые выпускают трафик через выход, — правило «Напрямую» или «Заблокировать» по имени сайта здесь ничего не делает. Переключите узел на Hybrid SNI, чтобы они работали.",
   "{devices} not covered": "не охвачено: {devices}",
   "{devices} · {v1} not covered": "{devices} · не охвачено: {v1}",
   "{devices} in the rule": "в правиле: {devices}",
