@@ -1481,6 +1481,22 @@ const BADGE_CAP = 10;
    rather than to the list, and the catalog is hidden because a list cannot hold one. Everything else — the
    badges, the text view, click-to-edit, the per-token reasons — is the same control an operator already
    knows from a rule, which is the whole point of reusing it. */
+/** What a rule's field shows that its row does not hold, or "" — reported through `onLint` into the row's `_draft`, which
+ *  every Save path asks (egressSaveBlock, nodeListBlock, the custom-list sheet). The text view's unapplied draft — and,
+ *  the same silent loss one step earlier, text typed into the box and never added: a Save posts `row.badges`, so it
+ *  dropped that text without a word while the operator looked at it (the routing plan promised this block for the node
+ *  list and every interface sheet; measured in the 1.8.8 qualification, it held for the text view only). A badge
+ *  opened to read and left as it was is not unapplied — the row still holds it. The strings are fixed, so the parent
+ *  hears the transition, not every keystroke (see the effect below). */
+export function unappliedLint({ asText, draft, q, editing, pending }) {
+  if (asText) return String(draft || "").trim()
+    ? ((pending || {}).text || T("This text hasn't been applied yet — press </> to apply it, or Escape to discard."))
+    : "";
+  const typed = String(q || "").trim();
+  if (!typed || (editing && editing.b && typed === idnHost(editing.b.raw))) return "";
+  return T("Text typed into this rule hasn't been added yet — press Enter to add it, or clear it.");
+}
+
 export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode, onLint, trailing, leading, listEditor }) {
   // ── THE FIELD'S STATE, and the two rules that keep it consistent ────────────────────────────────────
   // This component is large because it is one control with two readings (badges and text) over one rule.
@@ -1893,13 +1909,11 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
   const lintSent = useRef("");
   useEffect(() => {
     if (!onLint) return;
-    const v = asText && draft.trim()
-      ? (pending.text || T("This text hasn't been applied yet — press </> to apply it, or Escape to discard."))
-      : "";
+    const v = unappliedLint({ asText, draft, q, editing, pending });
     if (v === lintSent.current) return;
     lintSent.current = v;
     onLint(v);
-  }, [asText, draft, pending.text]);
+  }, [asText, draft, q, editing, pending.text]);
 
   const fromText = () => {
     // THE LINE IS THE UNIT HERE, not the token. `classifyAll` splits on whitespace, which is right for a

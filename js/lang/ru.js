@@ -2702,6 +2702,8 @@ export const STR = {
   // budget-ok: a foot lint under a field, wraps
   "This text hasn't been applied yet — press </> to apply it, or Escape to discard.":
     "Этот текст ещё не применён — нажмите </>, чтобы применить, или Escape, чтобы отменить.",
+  "Text typed into this rule hasn't been added yet — press Enter to add it, or clear it.":
+    "Текст, набранный в правиле, ещё не добавлен — нажмите Enter, чтобы добавить его, или сотрите.",
   // a list cannot hold a list — cascade_plan expands one, it never recurses
   "A list can't contain another list — add its addresses here instead":
     "Список не может содержать другой список — добавьте его адреса сюда",
