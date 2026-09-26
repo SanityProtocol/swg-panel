@@ -223,8 +223,13 @@ _sum_dctr(){ have docker || return 1
   docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null \
     | grep -q "^$1|" && ! docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null | grep -qx "$1|created"; }
 _sum_detect(){ local hm="" nm=""   # echoes "<host_method> <node_method>", each ∈ baremetal|docker|"" (none)
-  if _sum_dctr swg-panel; then hm=docker
-  elif [ -f /etc/systemd/system/swg-panel-server.service ] || [ -x /opt/swg-panel/swg-panel-server ]; then hm=baremetal; fi
+  # ⚠️ A PARKED DOCKER PANEL IS NOT THE ONE THAT ANSWERS. With both panels on the box (guard_second_panel), a bare-metal
+  # install that had just stopped the docker panel printed the DOCKER panel's summary — its user name next to the new
+  # bare password under "new login — save the password now", its .env and compose commands (1.8.8 qualification, q5).
+  # The live docker panel first, then a bare one, then a docker one that is only parked.
+  if _sum_dctr swg-panel && ! docker_parked swg-panel; then hm=docker
+  elif [ -f /etc/systemd/system/swg-panel-server.service ] || [ -x /opt/swg-panel/swg-panel-server ]; then hm=baremetal
+  elif _sum_dctr swg-panel; then hm=docker; fi
   if _sum_dctr swg-node; then nm=docker
   elif [ -f /etc/systemd/system/swg-noded.service ] || [ -f /etc/swg-agent/config.json ]; then nm=baremetal; fi
   printf '%s %s' "$hm" "$nm"; }

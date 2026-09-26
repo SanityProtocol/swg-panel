@@ -389,6 +389,10 @@ docker_node_goodbye(){
   tok="$(sed -n 's/^NODE_TOKEN=//p' "$env" | head -1)"; tok="${tok%\"}"; tok="${tok#\"}"
   verify="$(sed -n 's/^TLS_VERIFY=//p' "$env" | head -1)"; verify="${verify%\"}"; verify="${verify#\"}"
   [ "$verify" = yes ] || verify=no
+  # A panel-only install has NO node: its .env carries the placeholder NODE_TOKEN=set-in-nodes-screen (compose
+  # interpolates every service), and a files cleanup on such a box said "No sign-off to send: this node's panel was
+  # this box's own…" about a node it never had (1.8.8 qualification, q5). Nothing to sign off, nothing to say.
+  [ "$tok" = set-in-nodes-screen ] && return 0
   # A co-located master's node signs off to its OWN panel — skipped when no panel is left to hear it (see above).
   _goodbye_nobody "$url" && { _goodbye_skipped; return 0; }
   _goodbye_post "$url" "$tok" "$verify"
@@ -415,6 +419,7 @@ docker_node_uninstalling(){   # red "uninstalling" tag while a docker node tears
   url="$(sed -n 's/^PANEL_URL=//p' "$env" | head -1)"; url="${url%\"}"; url="${url#\"}"
   tok="$(sed -n 's/^NODE_TOKEN=//p' "$env" | head -1)"; tok="${tok%\"}"; tok="${tok#\"}"
   verify="$(sed -n 's/^TLS_VERIFY=//p' "$env" | head -1)"; verify="${verify%\"}"; verify="${verify#\"}"; [ "$verify" = yes ] || verify=no
+  [ "$tok" = set-in-nodes-screen ] && return 0   # the panel-only placeholder is not a node's token (docker_node_goodbye)
   _proc_post "$url" "$tok" "$verify" uninstalling
 }
 
