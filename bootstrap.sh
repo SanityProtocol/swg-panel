@@ -204,6 +204,18 @@ if printf '%s' "$REF" | grep -qE '^[0-9a-f]{7,40}$'; then
   if need curl && need tar && curl -fsSL "$REPO/archive/$REF.tar.gz" | tar -xz -C "$TMP"; then
     mv "$TMP"/swg-panel-* "$TMP/swg-panel" && _fetched=tar
   fi
+  # ⚠️ …BUT A COMMIT IS WHAT TO INSTALL, NEVER WHAT TO TRACK. The scripts below bake SWG_REF into the one-click
+  # wrapper and the node's update_ref, and a commit there never moves: the Update button of a box taken back to one
+  # fetched THAT commit's bootstrap, which (1.8.7 and older) cannot fetch a commit — so every later Update failed,
+  # while the header went on offering the newer release. The box keeps tracking the branch its wrapper already names
+  # (main when it names none, or names a commit); SWG_TRACK overrides. Pressing Update then comes forward again.
+  _track="${SWG_TRACK:-}"
+  if [ -z "$_track" ] && [ -f /usr/local/bin/swg-update ]; then
+    _track="$(sed -nE 's#.*raw\.githubusercontent\.com/[^/]+/[^/]+/([^/]+)/bootstrap\.sh.*#\1#p' /usr/local/bin/swg-update | head -1)"
+    printf '%s' "$_track" | grep -qE '^[0-9a-f]{7,40}$' && _track=""
+  fi
+  export SWG_REF="${_track:-main}"
+  info "installing commit $REF — this box's Update button keeps following $(b "$SWG_REF")"
 elif need git; then
   if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
     _fetched=git
