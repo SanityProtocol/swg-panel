@@ -4194,7 +4194,7 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .uc-list.uc-pop{position:fixed;z-index:90}
 .uc-opt{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;color:var(--ink);cursor:pointer;
   padding:6px 8px;border-radius:6px;font:inherit;font-size:13px;text-align:left}
-.uc-opt:hover{background:var(--surface-2)}
+.uc-opt:hover,.uc-opt.act{background:var(--surface-2)}
 .uc-empty{padding:8px;color:var(--faint);font-size:12px}
 /* peer view sheet */
 .pv-head{display:flex;align-items:center;gap:8px}

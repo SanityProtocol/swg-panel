@@ -552,8 +552,24 @@ export function UserCombo({ onPick, placeholder }) {
 // through their own callback, so a group's id never reaches a caller that expects a user's.
 // `devices` + `onDevice` (ROUTING-PEERS-MESH-PLAN §7.2 — Rule settings): single devices offered after the people, `{id, name, sub}`,
 // through their own callback for the same reason groups have one.
+/** The picker's keys as one pure step, so a gate can drive them: → {close, open, act, pick, prevent}. `opts` are the rows in
+ *  the order they are drawn ([kind, id]; "— unassigned —" is ["u", ""]), `act` the highlighted one (−1 = none, TargetField's
+ *  convention), `n` how many rows MATCH what is typed (the unassigned row is not a match). Without arrow keys a person,
+ *  group or device could be picked from the keyboard only when exactly one matched — Rule settings, New peer, a group's
+ *  sheet (1.8.8 qualification, F2). Enter never falls through to the window's main button while the list is open. */
+export function ucKeyStep(key, { open, q, act, opts, n }) {
+  if (key === "Escape") return { close: true };
+  if (key === "ArrowDown") return { open: true, act: Math.min(act + 1, opts.length - 1), prevent: true };
+  if (key === "ArrowUp") return { act: Math.max(act - 1, -1), prevent: true };
+  if (key !== "Enter" || !open) return {};
+  if (act >= 0 && act < opts.length) return { pick: opts[act], prevent: true };
+  if (q && n === 1) return { pick: opts.find(o => o[1] !== "" || o[0] !== "u"), prevent: true };
+  return { prevent: !!q };
+}
+
 export function UserPicker({ value, onChange, allowUnassigned, placeholder, exclude, groups, onGroup, devices, onDevice }) {
   const [q, setQ] = useState(""); const [open, setOpen] = useState(false);
+  const [act, setAct] = useState(-1);
   const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const sel = users.find(u => u.id === value);
   const selText = sel ? sel.name + (sel.tag ? " · " + sel.tag : "") : "";
@@ -568,26 +584,39 @@ export function UserPicker({ value, onChange, allowUnassigned, placeholder, excl
   const gshown = groups ? groups.filter(g => searchMatch(g.name, ql)).slice(0, 4) : [];
   const dshown = devices ? devices.filter(d => searchMatch(d.name + " " + (d.sub || ""), ql)).slice(0, 6) : [];
   const { wrapRef, listRef, pos, popStyle } = useAnchoredList(open, setOpen, [q]);
-  const pick = uid => { setOpen(false); setQ(""); onChange(uid); };
-  const pickGroup = gid => { setOpen(false); setQ(""); onGroup(gid); };
-  const pickDevice = pid => { setOpen(false); setQ(""); onDevice(pid); };
+  const pick = uid => { setOpen(false); setQ(""); setAct(-1); onChange(uid); };
+  const pickGroup = gid => { setOpen(false); setQ(""); setAct(-1); onGroup(gid); };
+  const pickDevice = pid => { setOpen(false); setQ(""); setAct(-1); onDevice(pid); };
+  // the rows in the order they are drawn — what the arrow keys walk
+  const opts = [...(allowUnassigned ? [["u", ""]] : []), ...gshown.map(g => ["g", g.id]), ...shown.map(u => ["u", u.id]), ...dshown.map(d => ["d", d.id])];
+  const at = act < opts.length ? act : -1;
+  const isAct = (kind, id) => at >= 0 && opts[at][0] === kind && opts[at][1] === id;
+  const onKey = e => {
+    const r = ucKeyStep(e.key, { open, q, act: at, opts, n: gshown.length + shown.length + dshown.length });
+    if (r.prevent) e.preventDefault();
+    if (r.close) { setOpen(false); setAct(-1); return; }
+    if (r.open && !open) { setOpen(true); setQ(""); }
+    if (r.act !== undefined) setAct(r.act);
+    if (r.pick) { const [k, id] = r.pick; if (k === "g") pickGroup(id); else if (k === "d") pickDevice(id); else pick(id); }
+  };
+  useEffect(() => {                                       // keep the highlighted row in view as the keys walk a long list
+    const el = at >= 0 && listRef.current && listRef.current.querySelector(".uc-opt.act");
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+  }, [at]);
   return html`<div class="usercombo" ref=${wrapRef}>
     <input class="uc-input" value=${open ? q : selText} data-enter=${open ? "self" : null}
       placeholder=${placeholder || (allowUnassigned ? T("— unassigned —") : T("Assign to a user…"))}
-      onClick=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}
-      onKeyDown=${e => { if (e.key === "Escape") { setOpen(false); return; }
-        // while actively filtering, Enter never saves the form: exactly one match selects it, anything else does nothing.
-        if (e.key === "Enter" && open && q) { e.preventDefault();
-          if (gshown.length + shown.length + dshown.length === 1) { if (gshown.length) pickGroup(gshown[0].id); else if (shown.length) pick(shown[0].id); else pickDevice(dshown[0].id); } } }}/>
+      onClick=${() => { setOpen(true); setQ(""); setAct(-1); }} onInput=${e => { setQ(e.target.value); setOpen(true); setAct(-1); }}
+      onKeyDown=${onKey}/>
     ${open && pos ? html`<${Portal}><div class="uc-list uc-pop" ref=${listRef} style=${popStyle}>
-      ${allowUnassigned ? html`<button class="uc-opt" onClick=${() => pick("")}><span class="faint">${T("— unassigned —")}</span></button>` : null}
-      ${gshown.map(g => html`<button class="uc-opt uc-group" key=${"g:" + g.id} onClick=${() => pickGroup(g.id)}><${Ic} i="users"/><span>${g.name}</span><span class="faint">${plural(g.users.length, "member")}</span></button>`)}
-      ${shown.length || gshown.length || dshown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>`
+      ${allowUnassigned ? html`<button class=${"uc-opt" + (isAct("u", "") ? " act" : "")} onClick=${() => pick("")}><span class="faint">${T("— unassigned —")}</span></button>` : null}
+      ${gshown.map(g => html`<button class=${"uc-opt uc-group" + (isAct("g", g.id) ? " act" : "")} key=${"g:" + g.id} onClick=${() => pickGroup(g.id)}><${Ic} i="users"/><span>${g.name}</span><span class="faint">${plural(g.users.length, "member")}</span></button>`)}
+      ${shown.length || gshown.length || dshown.length ? shown.map(u => html`<button class=${"uc-opt" + (isAct("u", u.id) ? " act" : "")} key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>`
           : named[u.name] > 1 ? html`<span class="faint">${u.created_at
             ? T("{devices}, added {date}", { devices: plural(Store.peersOfUser(u.id).length, "device"), date: fmtDate(u.created_at) })
             : plural(Store.peersOfUser(u.id).length, "device")}</span>` : null}</button>`)
         : html`<div class="uc-empty">${pool.length || (groups || []).length || (devices || []).length ? T("no match") : users.length ? T("everyone is already added") : T("no users yet")}</div>`}
-      ${dshown.map(d => html`<button class="uc-opt uc-group" key=${"d:" + d.id} onClick=${() => pickDevice(d.id)}><${Ic} i="device"/><span>${d.name}</span>${d.sub ? html`<span class="faint">${d.sub}</span>` : null}</button>`)}
+      ${dshown.map(d => html`<button class=${"uc-opt uc-group" + (isAct("d", d.id) ? " act" : "")} key=${"d:" + d.id} onClick=${() => pickDevice(d.id)}><${Ic} i="device"/><span>${d.name}</span>${d.sub ? html`<span class="faint">${d.sub}</span>` : null}</button>`)}
     </div><//>` : null}
   </div>`;
 }
