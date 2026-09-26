@@ -36,6 +36,7 @@ connection the next response is then read from the wrong offset". This is the re
 
 Run: python3 tests/keepalive_body_drain_selftest.py      (0 = pass)
      --perturb   removes the drain, the way it shipped, and expects the 501 back.
+     --perturb-close   the drain skipping a closing connection again → [3b] RED
 """
 import http.client, json, os, re, socket, subprocess, sys, tempfile, time
 
@@ -54,8 +55,14 @@ SRC = open(SERVER, encoding="utf-8").read()
 _CALL = "                self._drain_request_body()\n"
 assert SRC.count(_CALL) == 1, "drain anchor missing — this run would FALSE-PASS"
 server = SERVER
+PERTURB_CLOSE = "--perturb-close" in sys.argv
+if PERTURB_CLOSE:                                 # the drain skipping a closing connection, the way it shipped
+    _G = "        if not getattr(self, \"headers\", None):\n"
+    assert SRC.count(_G) == 1, "closing-drain anchor missing — this run would FALSE-PASS"
+    SRC = SRC.replace(_G, "        if self.close_connection or not getattr(self, \"headers\", None):\n")
 if PERTURB:
     SRC = SRC.replace(_CALL, "                pass\n")
+if PERTURB or PERTURB_CLOSE:
     fd, server = tempfile.mkstemp(suffix=".py", prefix="kadrain-", dir=HERE)
     os.write(fd, SRC.encode()); os.close(fd)
 
@@ -165,6 +172,56 @@ try:
     check("an oversized body is refused, not swallowed", line is None or "501" not in (line or ""), line)
     s.close()
 
+    print("\n[3b] a request that asks to CLOSE still gets its answer — the unread body is read first")
+    # `Connection: close` (urllib always sends it) set close_connection before the handler ran, and the drain
+    # used to skip every closing connection. The socket was then closed with the body still unread, which the
+    # kernel answers with a RST instead of a FIN — and the client lost the reply it had already been sent:
+    # every node uninstaller's sign-off printed "the panel closed the connection without a reply" although the
+    # panel had logged it (1.8.8 qualification, a bare and a docker panel). It shows over TLS, which is how
+    # every panel is reached, so this section runs a second, TLS panel and sends the uninstaller's exact
+    # request (urllib, `{}`, a token the panel refuses) ten times — a RST is a race, one round proves nothing.
+    import ssl, urllib.request, urllib.error
+    key, crt = os.path.join(tmp, "t.key"), os.path.join(tmp, "t.crt")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt,
+                    "-days", "2", "-subj", "/CN=127.0.0.1"], capture_output=True, check=True)
+    tport, ttmp = free_port(), tempfile.mkdtemp(prefix="kadrain-tls-")   # its own state: one panel per state dir
+    for d in ("state", "conf", "stats"):
+        os.makedirs(os.path.join(ttmp, d), exist_ok=True)
+    json.dump({"nodes_path": os.path.join(ttmp, "state", "nodes.json"),
+               "roster_path": os.path.join(ttmp, "state", "users.json"),
+               "panel_settings_path": os.path.join(ttmp, "state", "panel-settings.json"),
+               "config_dir": os.path.join(ttmp, "conf"), "stats_dir": os.path.join(ttmp, "stats"),
+               "store_configs": False}, open(os.path.join(ttmp, "fleet.json"), "w"))
+    tproc = subprocess.Popen([sys.executable, server], env={**env, "SWG_PANEL_PORT": str(tport),
+                             "SWG_PANEL_FLEET": os.path.join(ttmp, "fleet.json"),
+                             "SWG_PANEL_TLS_CERT": crt, "SWG_PANEL_TLS_KEY": key},
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+        for _ in range(150):
+            try:
+                urllib.request.urlopen("https://127.0.0.1:%d/healthz" % tport, timeout=2, context=ctx).read(); break
+            except Exception:
+                time.sleep(0.1)
+        got = []
+        for _ in range(10):
+            rq = urllib.request.Request("https://127.0.0.1:%d/api/node/goodbye" % tport, data=b"{}", method="POST",
+                                        headers={"Authorization": "Bearer not-a-token", "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(rq, timeout=10, context=ctx) as rs:
+                    rs.read(); got.append(rs.status)
+            except urllib.error.HTTPError as e:
+                got.append(e.code)
+            except Exception as e:
+                got.append(type(e).__name__ + ":" + str(getattr(e, "reason", e))[:60])
+        check("the uninstaller's sign-off, over TLS: answered every time, never reset", got == [401] * 10, got)
+    finally:
+        tproc.terminate()
+        try:
+            tproc.wait(timeout=10)
+        except Exception:
+            tproc.kill()
+
     print("\n[4] the invariant is stated where it is enforced")
     live = open(SERVER, encoding="utf-8").read()
     check("the drain runs in a finally", "finally:\n            try:\n                self._drain_request_body()" in live)
@@ -193,7 +250,7 @@ finally:
         proc.wait(timeout=10)
     except Exception:
         proc.kill()
-    if PERTURB:
+    if PERTURB or PERTURB_CLOSE:
         os.unlink(server)
 
 print()

@@ -27219,8 +27219,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _drain_request_body(self):
         """Swallow whatever of the request body the handler left, or close rather than read it."""
-        if self.close_connection or not getattr(self, "headers", None):
-            return                           # already closing (send_error, or a request that never parsed)
+        # ⚠️ A CLOSING CONNECTION IS DRAINED TOO. `Connection: close` (urllib always sends it) and send_error both
+        # set close_connection, and skipping those left the body unread when the socket closed — which the kernel
+        # answers with a RST instead of a FIN, so the client lost the reply it had already been sent. Every node
+        # uninstaller's sign-off printed "the panel closed the connection without a reply" although the panel
+        # had logged it (1.8.8 qualification, measured over TLS). The bound below still holds for them.
+        if not getattr(self, "headers", None):
+            return                           # a request that never parsed has no length to drain by
         te = (self.headers.get("Transfer-Encoding") or "").strip().lower()
         if te and te != "identity":          # chunked: no Content-Length to bound a drain by
             self.close_connection = True     # nothing legitimate sends it — the node and the SPA both post
