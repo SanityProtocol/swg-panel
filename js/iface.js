@@ -1784,16 +1784,23 @@ export function EditIfaceSheet({ node, iface }) {
   const _ifBody = { endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), reach, ...egressBody(eg) };
   const _ifOrig = { endpoint_host: epHost, listen_port: String(meta.desired_port || meta.listen_port || ""), dns: (meta.dns || []).join(", "), mtu: String(meta.mtu || 1280), keepalive: String(meta.keepalive || 25), reach: meta.reach || "user", ...egressBody(egressInit(meta)) };
   const _awgTrim = src => AWG_ORDER.reduce((o, k) => { const v = String((src || {})[k] == null ? "" : (src || {})[k]).trim(); if (v) o[k] = v; return o; }, {});
-  const ifaceDirty = notup
-    || JSON.stringify(_ifBody) !== JSON.stringify(_ifOrig)
+  const edited = JSON.stringify(_ifBody) !== JSON.stringify(_ifOrig)
     || JSON.stringify([...blk].sort()) !== JSON.stringify([...(meta.block || [])].sort())
     || (isAwg && JSON.stringify(_awgTrim(awg)) !== JSON.stringify(_awgTrim(meta.awg_params))) || genChanged;
-  return html`<${Sheet} title=${T("Edit {v1} interface · {v2}", { v1: kindOf(node, iface).toUpperCase(), v2: iface })} width=${720}
+  const ifaceDirty = notup || edited;
+  // ⚠️ WHAT WAS CHANGED BY A CLICK COUNTS AS A CHANGE TO LOSE. The sheet's own guard sees typed fields only (input/change), so the
+  // AmneziaWG version switch, the access level, the exit and its routing rules, the filter chips — all clicks — closed on
+  // Escape, ✕ or a click outside with no word, and the footer's Cancel bypassed the guard altogether (1.8.8 qualification: a
+  // pending 2.0 → 3.1 switch vanished on Escape while a changed port asked). `edited` is the same test that enables Save;
+  // a down interface's bring-up (`notup`) is not an edit.
+  const dirtyRef = useRef(false), closeRef = useRef(null);
+  dirtyRef.current = edited;
+  return html`<${Sheet} title=${T("Edit {v1} interface · {v2}", { v1: kindOf(node, iface).toUpperCase(), v2: iface })} width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bring this interface up on the node")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> ${T("Start service")}</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Take this interface down on the node (stays down until started)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bounce this interface's service on the node (down then up)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
     <div class="iface-intro"><div>${Trich("Changing the *endpoint* or *port* will break the existing clients' connections; you will need to re-distribute the configs / QR codes.")}</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("This interface is *down* on the node. Change the *Listen port* to a free one and *Save* — the panel will write the new port and restart the interface to bring it up.")}</span></div>` : null}
     ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
