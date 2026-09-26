@@ -1457,10 +1457,16 @@ export function evClick(e) {
   if (/\b(removed node|uninstalled)\b/i.test(v)) return { href: "#/nodes" };   // the node is gone
   return e.id ? { href: "#/node/" + encodeURIComponent(e.id) } : { href: "#/nodes" };
 }
+// A deployment in an activity detail is "<node id>/<iface>" — an id the operator cannot map to anything. Shown by the
+// node's CURRENT name (a renamed node reads right in old rows too); an id the store does not know stays as it is.
+const NODE_REF = /\b([0-9a-f]{12})(?=\/)/g;
+const withNodeNames = v => (typeof v === "string" ? v.replace(NODE_REF, id => Store.nodeName(id) || id) : v);
 export function evDecorate(e, i) {
   const item = evItem(e);
   const action = evAction(e);
-  return { ...e, item, itemLabel: evItemLabel(item), action, actionLabel: evActionLabel(action), icon: EV_ITEM_IC[item] || "info", slug: evSlug(item),
+  const dv = e.detail_vars && Object.fromEntries(Object.entries(e.detail_vars).map(([k, v]) => [k, withNodeNames(v)]));
+  return { ...e, detail: withNodeNames(e.detail), ...(dv ? { detail_vars: dv } : {}),
+           item, itemLabel: evItemLabel(item), action, actionLabel: evActionLabel(action), icon: EV_ITEM_IC[item] || "info", slug: evSlug(item),
            click: evClick(e), key: "e" + (e.eid || e.ts) + "_" + i };
 }
 // Fallback feed when the server log is still empty: synthesise created/updated rows from the roster's

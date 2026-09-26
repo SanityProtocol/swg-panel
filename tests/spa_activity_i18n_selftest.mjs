@@ -75,4 +75,15 @@ check("a phrase nested with perr() is translated in place",
       srvDetail({ verb: "Interface came back different from the request", detail_key: "{v1}: {v2}",
                   detail_vars: { v1: "wg1", v2: { error: "listen port", error_key: "act|listen port", error_vars: {} } } }) === "wg1: порт прослушивания");
 
+console.log("\n[a deployment is named by its node, not the node's id]");
+const { Store } = await import(new URL("file://" + path.join(ROOT, "js", "store.js")).href);
+const { evDecorate } = await import(new URL("file://" + path.join(ROOT, "js", "views.js")).href);
+Store.fleet = [{ id: "ebc7097094ab", name: "msk-main" }];
+const cp = evDecorate({ verb: "Created peer", kind: "peer", name: "qa-peer", detail: "1 target · ebc7097094ab/wgq", detail_key: "{count} · {where}",
+                        detail_vars: { count: { n: 1, noun: "target" }, where: "ebc7097094ab/wgq" } }, 0);
+check("Created peer's `where` reads msk-main/wgq", srvDetail(cp) === "1 назначение · msk-main/wgq", srvDetail(cp));
+const ad = evDecorate({ verb: "Added deployment", kind: "peer", name: "p", detail: "ebc7097094ab/awg2" }, 1);
+check("an unkeyed deployment detail too", srvDetail(ad) === "msk-main/awg2", srvDetail(ad));
+check("an id the store does not know stays as it is", srvDetail(evDecorate({ verb: "Added deployment", kind: "peer", detail: "0138f33f65c3/wg0" }, 2)) === "0138f33f65c3/wg0");
+
 done(PERTURB, "legacy-detail lookup removed");
