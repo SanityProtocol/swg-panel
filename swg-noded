@@ -14509,7 +14509,7 @@ def create_ifaces(node_cfg, create, agent, sudo):
     return res
 
 
-def orphan_mesh_links(node_cfg, owned):
+def orphan_mesh_links(node_cfg, owned, staged=()):
     """Mesh links (`swg_*`) we manage that the CURRENT panel does not claim — leftovers from a previous one.
 
     A mesh link belongs to whichever panel created it: the node never invents one. Two things leave one
@@ -14527,6 +14527,13 @@ def orphan_mesh_links(node_cfg, owned):
     interface: the key must be PRESENT (an older panel omits it — reap nothing), and non-empty (a panel that
     has lost its own record must not be able to tear the mesh down), and only `swg_*` names are considered —
     a USER interface the panel does not own is an adoption candidate, which is a different answer entirely.
+
+    `staged` is the same reply's `delete` list. A link the panel asked to delete is not claimed any more either
+    (mesh on demand retires an unused pair that way, and so does every ordinary link teardown), but it is not a
+    leftover: the panel is removing it. It still goes through the delete — by request — and is left out of what
+    this returns, so the caller's "does not claim (its peer node is gone, or this node moved panels)" line names
+    only real leftovers. Measured in the 1.8.8 qualification: every on-demand retirement printed that line on
+    both ends, naming a peer that was alive and a panel that had not changed.
     """
     if not isinstance(owned, list) or not owned:
         return []
@@ -14564,7 +14571,7 @@ def orphan_mesh_links(node_cfg, owned):
         # on, once per pass, for ever.
         with contextlib.suppress(Exception):
             _persist_config(node_cfg)
-    return sorted(out)
+    return sorted(out - {x for x in (staged or ()) if isinstance(x, str)})
 
 
 def delete_ifaces(node_cfg, delete, agent, sudo):
@@ -19311,7 +19318,7 @@ def main():
                             update_fired = _at
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
                 # …plus any mesh link left behind by a panel this node used to sync with — see orphan_mesh_links.
-                _orph = orphan_mesh_links(node_cfg, reply.get("owned_ifaces"))
+                _orph = orphan_mesh_links(node_cfg, reply.get("owned_ifaces"), reply.get("delete"))
                 if _orph:
                     print("mesh: dropping link(s) this panel does not claim (its peer node is gone, or "
                           "this node moved panels): " + ", ".join(_orph), flush=True)
