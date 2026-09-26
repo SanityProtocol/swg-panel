@@ -4054,22 +4054,22 @@ export const STR = {
   "Applying can take up to a minute — the nodes reconfigure and re-pull their lists. This stays open until it finishes.":
     "Применение может занять до минуты — ноды перенастраиваются и заново тянут списки. Окно закроется по завершении.",
   "Reset this node's smart routing — clear just the learned IPs, or wipe + rebuild + re-pull every list. Use it to recover a stuck node.":
-    "Сброс умной маршрутизации на этой ноде: очистить только выученные адреса или стереть, собрать заново и перетянуть все списки. Помогает расклинить нода.",
+    "Сброс умной маршрутизации на этой ноде: очистить только выученные адреса или стереть, собрать заново и перетянуть все списки. Помогает расклинить ноду.",
   "{v1} currently runs on {v2}": "{v1} сейчас работает: {v2}",
   "Node": "Нода",
   "Every mode matches by destination *IP* first (GeoIP / ASN / your IP lists) — that layer is *always on* and carries all traffic, including calls, UDP and QUIC. The choice adds an optional *host (domain)* matching layer on top: none, via the node's *DNS*, or read from the *TLS handshake*. Traffic always stays in-kernel in any mode including *{v1}* (no userspace proxy). Changing it reconfigures {v2} and changes which lists its interfaces can use.":
     "Любой режим сначала смотрит на *IP* назначения (GeoIP, ASN, ваши списки адресов) — этот слой *всегда включён* и ведёт весь трафик, включая звонки, UDP и QUIC. Выбор добавляет сверху необязательный слой по *домену*: никак, через *DNS* ноды или чтением *рукопожатия TLS*. Трафик в любом режиме, включая *{v1}*, остаётся в ядре (без прокси в пользовательском пространстве). Смена режима перенастроит {v2} и изменит, какие списки доступны его интерфейсам.",
   "the node": "нода",
   "*Reset routing* recovers a stuck node — clear just the learned IPs, or wipe + rebuild + re-pull everything.":
-    "*Сброс маршрутизации* расклинивает нода: очистить только выученные адреса или стереть, собрать заново и перетянуть всё.",
+    "*Сброс маршрутизации* расклинивает ноду: очистить только выученные адреса или стереть, собрать заново и перетянуть всё.",
   "Large lists are memory-hungry — every enabled list is loaded into RAM on *each* entry node that uses it, roughly *130 MB per 1M domains*. Keep your smallest node's memory in mind before turning on big lists.":
-    "Большие списки едят память — каждый включённый список грузится в RAM на *каждой* входной ноде, где он нужен, примерно *130 МБ на 1 млн доменов*. Оглядывайтесь на самый слабый нода, прежде чем включать большие списки.",
+    "Большие списки едят память — каждый включённый список грузится в RAM на *каждой* входной ноде, где он нужен, примерно *130 МБ на 1 млн доменов*. Оглядывайтесь на самую слабую ноду, прежде чем включать большие списки.",
   "Untitled list": "Список без имени",
   "src|Custom": "Свой",
   "{v1} matched by domain name — needs Force-DNS or SNI mode.":
     "{v1} по имени домена — нужен режим Force-DNS или SNI.",
   "Greyed rows are Host-only — this node is IP-only, so they can't match here. The pull stays remembered; switch to Force-DNS or SNI to activate them.":
-    "Серые строки работают только по домену, а эта нода — только по IP, поэтому здесь они не сработают. Выбор запомнится; переключите нода на Force-DNS или SNI, чтобы включить их.",
+    "Серые строки работают только по домену, а эта нода — только по IP, поэтому здесь они не сработают. Выбор запомнится; переключите ноду на Force-DNS или SNI, чтобы включить их.",
   "no lists yet — add one →": "списков пока нет — добавьте →",
   "drop ads, malware, adult, threat IPs — by domain or IP":
     "режем рекламу, вирусы, 18+, опасные адреса — по домену или IP",
@@ -4077,7 +4077,7 @@ export const STR = {
   "{v1} matched by domain name — needs *{v2}* or *Hybrid-SNI* mode (they fill the block set from DNS). IP-only and Kernel-SNI can't match domains.":
     "{v1} по имени домена — нужен режим *{v2}* или *Hybrid-SNI* (они наполняют набор блокировок из DNS). Режимы «только IP» и Kernel-SNI домены не различают.",
   "{v1} a domain list can't enforce on an IP-only or Kernel-SNI node — it's skipped, never pushed. Switch that node to Force-DNS / Hybrid-SNI, or add an IP list.":
-    "{v1} доменный список не работает на ноде с режимом «только IP» или Kernel-SNI — его просто пропускают и не отправляют. Переключите нода на Force-DNS или Hybrid-SNI либо добавьте список адресов.",
+    "{v1} доменный список не работает на ноде с режимом «только IP» или Kernel-SNI — его просто пропускают и не отправляют. Переключите ноду на Force-DNS или Hybrid-SNI либо добавьте список адресов.",
   "Not available": "Недоступно",
   "Turn proxies are off.": "Turn-прокси выключены.",
   "Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.":
@@ -4159,7 +4159,7 @@ export const STR = {
   "Hostname or IP — e.g. node.example.com": "Имя хоста или IP — например node.example.com",
   "(auto)": "(авто)",
   "Obfuscation for the mesh links that terminate on *{v1}* — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).":
-    "Маскировка для связей сети, которые приходят на *{v1}* — каждый подключающийся нода примет её и переподключится при сохранении. Пусто — авто (свой набор на связь).",
+    "Маскировка для связей сети, которые приходят на *{v1}* — каждая подключающаяся нода примет её и переподключится при сохранении. Пусто — авто (свой набор на связь).",
   "Configure a panel login first.": "Сначала настройте вход в панель.",
   "Sign-in requires a code from your authenticator app. Keep your recovery codes somewhere safe in case you lose the device.":
     "Для входа нужен код из приложения-аутентификатора. Сохраните запасные коды в надёжном месте на случай потери устройства.",
@@ -4478,9 +4478,9 @@ export const STR = {
   "Source IP clients egress from.": "Адрес, с которого клиенты выходят.",
   // budget-ok: a message bar / notice — full width, wraps, nothing beside it
   "IP-only mode routes by IP only — remove the domains ({list}), or switch this node to Force-DNS.":
-    "Режим «только IP» ведёт трафик по адресам — уберите домены ({list}) или переключите нода на Force-DNS.",
+    "Режим «только IP» ведёт трафик по адресам — уберите домены ({list}) или переключите ноду на Force-DNS.",
   "IP-only mode routes by IP only — remove the domain ({list}), or switch this node to Force-DNS.":
-    "Режим «только IP» ведёт трафик по адресам — уберите домен ({list}) или переключите нода на Force-DNS.",
+    "Режим «только IP» ведёт трафик по адресам — уберите домен ({list}) или переключите ноду на Force-DNS.",
   "Node is running a newer version than the panel — update the panel to catch up":
     "На ноде версия новее, чем у панели — обновите панель",
   "Node settings": "Настройки ноды",
@@ -4706,7 +4706,7 @@ export const STR = {
   "On Save you'll confirm reassigning — the current user loses access for good and the new user needs a fresh config.":
     "При сохранении подтвердите передачу — прежний владелец теряет доступ навсегда, новому нужен свежий конфиг.",
   "Give the node a name.": "Дайте ноде имя.",
-  "couldn't create node": "не удалось создать нода",
+  "couldn't create node": "не удалось создать ноду",
   "A label for this node — you can rename it anytime. The swatches set its colour per theme.":
     "Название ноды — переименовать можно когда угодно. Образцы задают цвет для каждой темы.",
   "Node created": "Нода создан",
