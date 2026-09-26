@@ -1387,6 +1387,7 @@ CF_ORIGIN_TOKEN=${CF_ORIGIN_TOKEN:-}
 HOST_NODE_NAME=${HOST_NODE_NAME:-}
 HOST_ENDPOINT_IP=${HOST_ENDPOINT_IP:-}
 EOF
+run chown root:swg "$ETC_DIR/install.conf" 2>/dev/null || true   # a KEPT one comes back root:root (uninstall) — the group a fresh one gets
 # Seed the panel's OWN Access & TLS settings from the answers just given — see seed_access_settings, lib/common.sh.
 if ! $DRYRUN && have python3; then
   PANEL_DOMAIN="$PANEL_DOMAIN" PANEL_BASE="$PANEL_BASE" PORT="$PORT" TLS_MODE="$TLS_MODE" \

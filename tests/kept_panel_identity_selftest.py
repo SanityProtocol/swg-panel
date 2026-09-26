@@ -21,6 +21,7 @@ kept its login and certificate (data/etc).
         login and certificate were not kept
     [5] the lifecycle word: after an uninstall there are no programs to compare, so the panel's last version decides
         "reinstalled" (same) or "reinstalled-updated" (different)
+    [6] a kept install.conf, rewritten by the re-install, gets back the group a fresh one has (the uninstall gave it root's)
 
 Run: python3 tests/kept_panel_identity_selftest.py        (0 = pass)
      --perturb   the shipped uninstall (always deletes /etc/swg-panel) and a re-install that reads no kept store → RED
@@ -49,6 +50,7 @@ if PERTURB:
               '  rmrf /etc/swg-panel /etc/swg-sub\n  if [ "$PANEL_DATA_DEL" = yes ]; then rmrf /var/lib/swg-panel\n  else\n')
     H = plant(H, 'elif [ -f "$STATE_DIR/panel-settings.json" ] || [ -f "$STATE_DIR/nodes.json" ]; then\n',
               'elif false; then\n')
+    H = plant(H, 'run chown root:swg "$ETC_DIR/install.conf" 2>/dev/null || true   # a KEPT one comes back root:root (uninstall) — the group a fresh one gets\n', "")
 
 def fn(src, name):
     m = re.search(r"^%s\(\)\{" % re.escape(name), src, re.M)
@@ -184,6 +186,15 @@ def lc(ver_before):
 check("[5] the same version → reinstalled", "LC=reinstalled\n" in lc(VERSION), lc(VERSION))
 check("[5] a different one → reinstalled-updated", "LC=reinstalled-updated" in lc("1.8.7-beta"), lc("1.8.7-beta"))
 check("[5] nothing known → reinstalled-updated, as before", "LC=reinstalled-updated" in lc(""), lc(""))
+
+print("\n[6] install.conf gets its group back when the re-install rewrites a kept one")
+a = H.index('writef "$ETC_DIR/install.conf" 600 <<EOF\n'); b = H.index("\n# Seed the panel's OWN Access & TLS settings", a) + 1
+WR = H[a:b]
+t = tempfile.mkdtemp(prefix="kpi-wr-")
+r = subprocess.run(["bash", "-c", 'ETC_DIR=%s\nwritef(){ cat > "$ETC_DIR/install.conf"; }\nrun(){ echo "RUN $*"; }\n%s' % (t, WR)],
+                   capture_output=True, text=True, env=dict(os.environ, ROLE_SEL="master"))
+check("[6] the writer is followed by chown root:swg (a kept file keeps the root:root the uninstall gave it)",
+      ("RUN chown root:swg %s/install.conf" % t) in r.stdout, r.stdout + r.stderr)
 
 print()
 if PERTURB:
