@@ -13940,8 +13940,24 @@ def apply_iface_keys(node_cfg, iface_key, agent, sudo):
 
 
 def _persist_config(node_cfg):
+    """Rewrite config.json — which holds this node's panel token — keeping the file's mode and owner, never world-readable.
+
+    ⚠️ It was written through a temp file created with the process umask, so the first interface change turned the
+    installer's 0640 (root:swg) into 0644: the bearer token readable by every local user (1.8.8 VM re-run, D5). The temp
+    file is created 0600, then given the old file's mode without the world bits and its owner; a file already left 0644
+    by an older build heals on the next write."""
     tmp = CONFIG_PATH + ".tmp"
-    with open(tmp, "w") as f:
+    try:
+        st = os.stat(CONFIG_PATH)
+        mode, owner = st.st_mode & 0o770, (st.st_uid, st.st_gid)
+    except OSError:
+        mode, owner = 0o600, None
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), mode or 0o600)
+        if owner:
+            with contextlib.suppress(OSError):
+                os.fchown(f.fileno(), *owner)
         json.dump(node_cfg, f, indent=2)
     os.replace(tmp, CONFIG_PATH)
 
@@ -19180,7 +19196,12 @@ def main():
     with contextlib.suppress(OSError):              # resume a mid-swap candidate after a restart (external nodes have no loopback _heal)
         _SWAP["cand"] = open(os.path.join(STATE_DIR, "panel-url-cand")).read().strip()
     _load_transfer()                                # …and a mid-flight TRANSFER candidate, same reason
-    update_started = False                          # spawn the self-updater at most once per process
+    # The `at` of the update request this process last ACTED on. One run per REQUEST, not per process: it used to be a
+    # latch for the life of the process — so an update that changed nothing (nothing new, or a Docker node whose images
+    # were already current, which since 236400f is not recreated) left the daemon running with the latch set, and every
+    # later press of Update was ignored until a restart; the panel then called it "never reported a new version" five
+    # minutes on (1.8.8 qualification, VM re-run D3). A request without an `at` keeps the old rule: once per process.
+    update_fired = ""
     print(f"swg-noded: panel={panel['url']} interval={interval}s "
           f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
     # BEFORE the first sync: if a previous run-model left its servers running here, stop them by the names
@@ -19243,24 +19264,24 @@ def main():
                     exit_vault_process(reply.get("iface_vault_pub"), reply.get("exit_vault_want"))   # …and imported-exit keys (same vault, same relay)
                 wdtt_vault_process(reply.get("iface_vault_pub"), reply.get("wdtt_vault_want"))   # seal WDTT server identities (owner pw + wg-keys.dat) to the same vault
                 _upd0 = reply.get("update")
-                if _upd0 and not update_started:   # already fired THIS exact request (a recreate restarted us)? then DON'T re-fire — else the update loops forever (recreate → restart → re-trigger → recreate …)
-                    _at = str((_upd0 or {}).get("at") or "")
+                _at = (str(_upd0.get("at") or "") if isinstance(_upd0, dict) else "") or "no-at"
+                if _upd0 and _at != update_fired:   # already fired THIS exact request (a recreate restarted us)? then DON'T re-fire — else the update loops forever (recreate → restart → re-trigger → recreate …)
                     _marker = os.path.join(STATE_DIR, ".update-done")   # persists across the container recreate (bind-mounted to data/node)
                     try: _prev = open(_marker).read().strip()
                     except Exception: _prev = ""
-                    if _at and _at == _prev: update_started = True
-                if reply.get("update") and not update_started:        # panel asked us to self-update (and we haven't fired this one yet)
+                    if _at == _prev: update_fired = _at
+                if _upd0 and _at != update_fired:        # panel asked us to self-update (and we haven't fired this one yet)
                     _trig = os.environ.get("SWG_UPDATE_TRIGGER")
                     if _trig:   # docker node: a container can't recreate its own image — touch the HOST trigger
                         try:    # instead; its swg-update.path runs `compose pull && up` on the host (swg images only)
                             with open(_trig, "w") as _f: _f.write(str(int(time.time())) + "\n")
                             try: open(_marker, "w").write(_at)   # remember the request we fired so a recreate-restart won't re-fire it
                             except Exception: pass
-                            update_started = True; print(f"update trigger written → {_trig}", flush=True)
+                            update_fired = _at; print(f"update trigger written → {_trig}", flush=True)
                         except Exception as _e:
                             print("update trigger failed:", _e, flush=True)
                             report_proc(panel, "update-failed", f"swg-noded could not write the update trigger {_trig}: {_e}")
-                            update_started = True   # reported the failure — don't retry the bad write every sync
+                            update_fired = _at   # reported the failure — don't retry the bad write every sync
                     elif NODE_DECLARATIVE:
                         # This node's installation is owned by its configuration. The self-update command would run
                         # `bootstrap.sh update` here, and on such a host that is not a no-op — it appears to work
@@ -19275,7 +19296,7 @@ def main():
                                     "configuration — not something the panel can start. Update the swg input and "
                                     "rebuild on the box (`nixos-rebuild switch`), or enable the module's "
                                     "selfUpdate option to wire this button to that rebuild.")
-                        update_started = True
+                        update_fired = _at
                     elif NODE_KIND == "docker":
                         # docker node with NO host updater wired: a container can't recreate its own image, so
                         # run_self_update can do nothing. Report a clear failure instead of silently no-op'ing.
@@ -19284,9 +19305,10 @@ def main():
                                     "This docker node has no one-click host updater wired. Re-install it "
                                     "(bootstrap docker node) to enable the panel's Update button, or update on the box: "
                                     "cd /opt/swg-panel-docker && docker compose --profile node pull && docker compose --profile node up -d")
-                        update_started = True
+                        update_fired = _at
                     else:
-                        update_started = run_self_update(node_cfg, reply["update"])
+                        if run_self_update(node_cfg, reply["update"]):   # a failed START is retried on the next sync
+                            update_fired = _at
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
                 # …plus any mesh link left behind by a panel this node used to sync with — see orphan_mesh_links.
                 _orph = orphan_mesh_links(node_cfg, reply.get("owned_ifaces"))
