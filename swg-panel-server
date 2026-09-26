@@ -9282,10 +9282,33 @@ def rebuild_plan(deps, nodes, nid, snaps, seen, assume=None, supersede=None):
     # row an operator could not match to anything they can see on the box.
     mesh_ifaces = sorted(ifn for ifn, ov in (c.get("ifaces") or {}).items() if (ov or {}).get("system"))
 
+    # 5b. …and the addresses OTHER servers pinned on this one (P2). A rule that forwards to this node can choose which of
+    #     its addresses the traffic leaves by; that choice is stored on the SENDING server — `routing_exit_ips[this
+    #     node]` per interface, WDTT and csqtt server, `default_routing_exit_ips[this node]` for its default list — and
+    #     it names the OLD box's address exactly as this node's own egress source does. So it takes the same rule
+    #     (`bind_swap`): kept only when the rebuild names the new box's address, otherwise back to Auto. Left standing,
+    #     every such rule would have the new box SNAT to an address it does not own: the kernel accepts it and no
+    #     reply ever comes back. Computed here, applied by the handler — the preview lists what the act clears.
+    pin_resets = []
+    for _on, _orec in (nodes or {}).items():
+        if _on == nid or not isinstance(_orec, dict):
+            continue
+        _maps = [(_k, _ifn, _ov.get("routing_exit_ips")) for _k in ("ifaces", "wdtt", "csqtt")
+                 for _ifn, _ov in (_orec.get(_k) or {}).items() if isinstance(_ov, dict)]
+        _maps.append(("default", "", _orec.get("default_routing_exit_ips")))
+        for _k, _ifn, _m in _maps:
+            _v = str((_m or {}).get(nid) or "") if isinstance(_m, dict) else ""
+            if _v and _bind_swap_transform(_v, ctx) != _v:
+                pin_resets.append({"node": _on, "kind": _k, "iface": _ifn, "from": _v})
+    addr_actions = list(addr_actions) + [
+        ("pin.%s.%s" % (_p["node"], _p["iface"] or "default"), "reset '%s' -> ''" % _p["from"],
+         "an address another server's rules chose to leave this node by — the old box's, so back to Auto")
+        for _p in pin_resets]
+
     # 6. whether a rollback point will EXIST afterwards — which is not the same question as whether THIS
     #    arming creates one. A marker kept from an earlier migration is still a rollback point, and the
     #    sheet's "no rollback point was kept" warning would be a lie if it ignored one.
-    return {"record": newrec, "requests": requests,
+    return {"record": newrec, "requests": requests, "pin_resets": pin_resets,
             "armed": armed, "unrestorable": unrestorable,
             "needs_vault": need_vault, "no_escrow": no_escrow,
             "orphan_escrow": orphan_escrow, "incomplete": incomplete,
@@ -26383,6 +26406,13 @@ def api(method, path, qs, body, deps):
             mesh_reprovision_node(nodes, nid)
             reconcile_mesh(nodes, snaps, deps)
             meshed = len(c.get("links") or {})
+        # 5b. the pins other servers hold on the old box's addresses — exactly the ones the plan listed, back to Auto
+        for _p in plan["pin_resets"]:
+            _orec = nodes.get(_p["node"]) or {}
+            _m = (_orec.get("default_routing_exit_ips") if _p["kind"] == "default"
+                  else ((_orec.get(_p["kind"]) or {}).get(_p["iface"]) or {}).get("routing_exit_ips"))
+            if isinstance(_m, dict) and str(_m.get(nid) or "") == _p["from"]:
+                _m.pop(nid, None)
 
         # 6. rotate the token LAST, and keep the previous pair. /api/nodes/rotate overwrites it and keeps no
         #    copy, so without this a rollback would need shell on the old box — and §7's control is that a

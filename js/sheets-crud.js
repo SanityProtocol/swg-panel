@@ -2053,6 +2053,9 @@ export function RebuildOutcome({ d, preview }) {
     if ((p[0] === "wdtt" || p[0] === "csqtt") && p.length >= 3) return p[1] + port + " " + T("word|endpoint");
     if (p[0] === "ifaces" && p[2] === "endpoint_host") return p[1] + port + " " + T("word|endpoint");
     if (p[0] === "ifaces" && p[2] === "egress_ip") return p[1] + " " + T("word|egress");
+    // another server's rules chose to leave THIS node by that address (`pin.<server>.<interface|default>`)
+    if (p[0] === "pin" && p.length >= 3)
+      return Store.nodeName(p[1]) + " · " + (p[2] === "default" ? T("Default exit") : p[2]) + " · " + T("As address");
     return { default_egress_ip: T("this node") + " " + T("word|egress"),
              panel_ip: T("word|panel source"),
              mesh_egress_ip: T("word|mesh source"),
