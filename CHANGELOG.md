@@ -298,6 +298,9 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Editing an interface: a change made by a click vanished on Escape.** The AmneziaWG version switch, access level,
   exit, routing rules and filter chips closed the Edit interface sheet without a word on Escape, ✕ or a click outside,
   and **Cancel** skipped the question even for typed fields. The sheet now asks before dropping any change.
+- **Text typed into a routing rule without pressing Enter was dropped by Save.** When anything else on the sheet or
+  the page had changed, Save went through without it. Save now says the text isn't added yet — press Enter to add it,
+  or clear it — as it already did for a rule's text view.
 - **Block, Delete and Rotate all keys were a size smaller than the buttons beside them,** and the device view's last
   button wrapped onto a second row in Russian.
 - **Dates in chart tooltips were English in the Russian panel.**
