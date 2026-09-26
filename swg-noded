@@ -13506,9 +13506,9 @@ def _relay_leftovers(prev_kind):
             r = run([_ctr_cli(), "ps", "-a", "--filter", "name=" + _relay_cname(""), "--format", "{{.Names}}"], timeout=30)
             ctrs = sorted(n for n in (r.stdout or "").split() if n.startswith(_relay_cname("")))
         elif prev_kind != "docker" and NODE_KIND == "docker":
-            r = host_sh("systemctl list-units --all --plain --no-legend 'swg-relay@*.service' 2>/dev/null "
-                        "| awk '{print $1}'", timeout=30)
-            units = sorted(u for u in (r.stdout or "").split() if re.match(r"^swg-relay@.+\.service$", u))
+            r = host_sh("systemctl list-units --all --plain --no-legend 'swg-relay@*.service' 2>/dev/null", timeout=30)
+            units = sorted(ln.split()[0] for ln in (r.stdout or "").splitlines()
+                           if ln.split() and re.match(r"^swg-relay@.+\.service$", ln.split()[0]))
     return units, ctrs
 
 
