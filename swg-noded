@@ -17708,8 +17708,13 @@ def _csqtt_update_binary(inst, ver, ifaces):
                 if e: err = i + ": " + e
         return err
     host_sh("chmod 755 " + shlex.quote(binshared))
+    insts = _csqtt_load()
     for i in (ifaces or [inst["iface"]]):
+        if (insts.get(i) or {}).get("stopped"):
+            continue                                          # deliberately down: `restart` would START it; the new binary is used at its next start
         host_sh("systemctl restart " + shlex.quote(_csqtt_svc(i)) + " >/dev/null 2>&1")
+    if (insts.get(inst["iface"]) or {}).get("stopped"):
+        return ""                                             # nothing was started, so nothing to verify
     return _csqtt_verify(inst["iface"])
 
 

@@ -31,6 +31,7 @@ Run: python3 tests/turn_client_dns_selftest.py         (0 = pass)
      --perturb-upsig   the upstream is not in the signature → RED 15
      --perturb-change  drops dns from _wdtt_params_changed → RED 5
      --perturb-clear   clearing stores nothing             → RED 7
+     --perturb-cstop   csqtt swap restarts a stopped server → RED 13b
 """
 import os, sys, types
 
@@ -49,6 +50,8 @@ N_PLANTS = {
                         '            ())\n'),
     "--perturb-unknown": ('    if not flags:\n        _WDTT_DNS_RETRY[key] = time.time() + _WDTT_DNS_BACKOFF\n        return None\n',
                           '    if not flags:\n        _WDTT_TAKES_DNS[key] = False\n        return False\n'),
+    "--perturb-cstop": ('            continue                                          # deliberately down: `restart` would START it; the new binary is used at its next start\n',
+                        '            pass\n'),
 }
 P_PLANTS = {
     "--perturb-clear": ('        return ([p for p in dflt.split(",") if p] or None), None\n', '        return None, None\n'),
@@ -275,6 +278,49 @@ check("swap: forced probe, and no answer leaves the file as it was", "if _wdtt_t
 check("swap: chmod before the probe", ub.index('host_sh("chmod 755 "') < ub.index("_wdtt_takes_dns(fork, force=True)"))
 check("swap: a stopped instance is not restarted (bare metal, like docker)",
       'if (insts.get(i) or {}).get("stopped"):\n            continue' in ub)
+
+# ── 13b ───────────────────────────────────────────────────────────────────────────────────────────────────
+print("13b a bare-metal build swap restarts only what is up (run, not grepped)")
+_sv = {k: getattr(N, k) for k in ("host_sh", "NODE_KIND", "_csqtt_load", "_csqtt_fetch_bin", "_csqtt_bin_shared",
+                                   "_csqtt_write_ver", "_csqtt_verify", "_wdtt_load", "_wdtt_fetch_bin", "_wdtt_bin_shared",
+                                   "_wdtt_write_ver", "_wdtt_verify", "_wdtt_takes_dns")}
+_cmds, _ver = [], []
+class _R: stdout = ""; returncode = 0
+_binp = os.path.join(TMP, "swapbin"); open(_binp, "w").close()
+N.host_sh = lambda c, *a, **k: (_cmds.append(c), _R())[1]
+N.NODE_KIND = "baremetal"
+N._csqtt_fetch_bin = lambda inst, dest, *a, **k: ""
+N._csqtt_bin_shared = lambda: _binp
+N._csqtt_write_ver = lambda v: None
+N._csqtt_verify = lambda i: (_ver.append(i), "")[1]
+N._csqtt_load = lambda: {"csqtt1": {"stopped": True}, "csqtt2": {}}
+_e = N._csqtt_update_binary({"iface": "csqtt1"}, "2.1.9-4", ["csqtt1", "csqtt2"])
+_rs = [c for c in _cmds if "systemctl restart" in c]
+check("csqtt: the stopped instance is NOT restarted", not any(N._csqtt_svc("csqtt1") in c for c in _rs), _rs)
+check("csqtt: the running one IS restarted onto the new binary", any(N._csqtt_svc("csqtt2") in c for c in _rs), _rs)
+check("csqtt: a stopped primary is not verified (nothing was started) and the swap reports no error",
+      _ver == [] and _e == "", (_ver, _e))
+_cmds.clear(); _ver.clear()
+N._csqtt_load = lambda: {"csqtt1": {}, "csqtt2": {"stopped": True}}
+_e = N._csqtt_update_binary({"iface": "csqtt1"}, "2.1.9-4", ["csqtt1", "csqtt2"])
+_rs = [c for c in _cmds if "systemctl restart" in c]
+check("csqtt: a running primary is restarted and verified; the stopped sibling is left down",
+      any(N._csqtt_svc("csqtt1") in c for c in _rs) and not any(N._csqtt_svc("csqtt2") in c for c in _rs)
+      and _ver == ["csqtt1"], (_rs, _ver))
+# the WDTT twin, run the same way (it was fixed by text in d83b8b8; run it so the twins cannot drift again)
+_cmds.clear()
+N._wdtt_fetch_bin = lambda fork, inst, dest, ver=None: ""
+N._wdtt_bin_shared = lambda fork: _binp
+N._wdtt_write_ver = lambda fork, v: None
+N._wdtt_verify = lambda svc: (_ver.append(svc), "")[1]
+N._wdtt_takes_dns = lambda fork, force=False: None
+N._wdtt_load = lambda: {"wdtt1": {"stopped": True, "fork": "qwdtt"}, "wdtt2": {"fork": "qwdtt"}}
+_e = N._wdtt_update_binary({"iface": "wdtt1", "fork": "qwdtt"}, "1.4.3-4", ["wdtt1", "wdtt2"])
+_rs = [c for c in _cmds if "systemctl restart" in c]
+check("wdtt twin: the stopped instance is NOT restarted, the running one is",
+      not any(N._wdtt_svc("wdtt1") in c for c in _rs) and any(N._wdtt_svc("wdtt2") in c for c in _rs), _rs)
+for _k, _v in _sv.items():
+    setattr(N, _k, _v)
 
 # ── 14 ────────────────────────────────────────────────────────────────────────────────────────────────────
 print("14 the server's own DNS")
