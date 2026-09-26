@@ -1398,8 +1398,8 @@ ensure_access_seed(){   # HEAL (fill-if-empty) the panel's Access & TLS settings
   local ps="" conf="" env_f=""
   if [ -f "$PANEL_DIR/swg-panel-server" ] && [ -f /etc/swg-panel/install.conf ]; then
     ps=/var/lib/swg-panel/panel-settings.json; conf=/etc/swg-panel/install.conf
-  elif [ -f "$DOCKER_DIR/.env" ] && [ -d "$DOCKER_DIR/data/lib" ]; then
-    ps="$DOCKER_DIR/data/lib/panel-settings.json"; env_f="$DOCKER_DIR/.env"
+  elif [ -f "$DOCKER_DIR/.env" ] && [ -d "$DOCKER_DIR/data/lib" ] && case "$(docker_profile 2>/dev/null | tail -n1)" in host|master|host-node) true;; *) false;; esac; then
+    ps="$DOCKER_DIR/data/lib/panel-settings.json"; env_f="$DOCKER_DIR/.env"   # (a node-only stack has no panel to seed)
   else return 0; fi
   have python3 || return 0
   $DRYRUN && { sub "[dry] would fill any EMPTY Access & TLS settings from ${conf:-$env_f}"; return 0; }
@@ -2045,8 +2045,13 @@ PYDRIFT
   fi
   ensure_netctl_docker "$prof"   # HEAL: install the docker address helper if a panel-bearing host lacks it
   ensure_update_unit_docker "$prof"   # HEAL: install the docker one-click self-update wiring if a panel-bearing host lacks it
-  ensure_access_seed                  # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from .env
-  $DRYRUN || ensure_docker_mask_files "$DOCKER_DIR"   # HEAL: pre-create the files swg-sub /dev/null-masks (a pre-fix install may lack them → recreate would fail)
+  # ⚠️ PANEL-BEARING PROFILES ONLY, both. On a node-only box these created the four empty panel files swg-sub masks
+  # (data/etc/auth among them, 0 bytes) at the first update, and the next update found ".env + data/lib" there and wrote
+  # a panel URL of https://localhost into a panel that does not exist (1.8.8 qualification, round 4; since 1.4.0).
+  case "$prof" in host|master|host-node)
+    ensure_access_seed                  # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from .env
+    $DRYRUN || ensure_docker_mask_files "$DOCKER_DIR"   # HEAL: pre-create the files swg-sub /dev/null-masks (a pre-fix install may lack them → recreate would fail)
+  ;; esac
   if grep -qE '^[[:space:]]*build:' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
     # build-from-source deployment → restage the source and rebuild (don't touch the user's compose/.env)
     if should_update "docker ($prof, source build)" "$DOCKER_DIR"; then
