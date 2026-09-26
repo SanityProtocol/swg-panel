@@ -884,10 +884,10 @@ const STATUS_REASONS = once(() => ({
   expiring: T("the access date is coming up — will be removed from every server when it passes"),
 }));
 export const statusReason = s => STATUS_REASONS()[s] || "";
-// The blocked "wrong params" hint, naming the datapath the deployment runs (wg → Wireguard, awg → AmneziaWG,
+// The blocked "wrong params" hint, naming the datapath the deployment runs (wg → WireGuard, awg → AmneziaWG,
 // unknown → both) so it points at the right knobs. Mirrors the dynamic reason reconcile.js sets peer-wide.
 // The protocol name is INTERPOLATED, not concatenated: it lands mid-sentence, and only one language puts it there.
-export function protoLabel(type) { return type === "awg" ? "AmneziaWG" : type === "wg" ? "Wireguard" : T("Wireguard or AmneziaWG"); }   // i18n-keys: protocol names
+export function protoLabel(type) { return type === "awg" ? "AmneziaWG" : type === "wg" ? "WireGuard" : T("WireGuard or AmneziaWG"); }   // i18n-keys: protocol names
 export function blockedReason(type) { return T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {proto} params", { proto: protoLabel(type) }); }
 // The other "restricted" signature: the handshake DOES complete, repeatedly, because the session will not
 // hold. Mirrors the dynamic reason reconcile.js sets peer-wide.

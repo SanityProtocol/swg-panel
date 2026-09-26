@@ -3068,7 +3068,7 @@ const sectionLabel = k => ({
           <p class="hint" style="margin:0 0 10px">${Trich("Two ways a peer can be under a filter, each independently switchable. Both raise the same {v1} badge — one is blocked at the door, the other gets in and can't stay. A peer that simply has nothing to send is never flagged.", { v1: html`<span class="b-blocked" style="padding:1px 6px;border-radius:6px">${T("tag|restricted")}</span>` })}</p>
           <div class="condrow"><${Switch} on=${statusConds.blocked} onChange=${v => setStatusConds(c => ({ ...c, blocked: v }))}/>
             <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>${T("tag|restricted")}</span></span>
-            <span class="cond-t">${T("The client's packets reach the server but no handshake has ever completed — blocked at the door (likely DPI / MTU / wrong Wireguard or AmneziaWG params).")}</span></div>
+            <span class="cond-t">${T("The client's packets reach the server but no handshake has ever completed — blocked at the door (likely DPI / MTU / wrong WireGuard or AmneziaWG params).")}</span></div>
           <div class="condrow"><${Switch} on=${statusConds.faulty} onChange=${v => setStatusConds(c => ({ ...c, faulty: v }))}/>
             <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>${T("tag|restricted")}</span></span>
             <span class="cond-t">${T("The tunnel keeps collapsing and being rebuilt: handshakes far more often than the 120s a healthy session renews at, from an endpoint that isn't moving. A peer that simply has nothing to send is not flagged.")}</span></div>

@@ -783,7 +783,7 @@ export const STR = {
   // Hover prose, not chips — these wrap freely, so they are translated in full.
   "reaching the server but the handshake never completes — likely DPI / MTU / wrong {proto} params":
     "доходит до сервера, но хендшейк не завершается — вероятно DPI / MTU / неверные параметры {proto}",
-  "Wireguard or AmneziaWG": "Wireguard или AmneziaWG",
+  "WireGuard or AmneziaWG": "WireGuard или AmneziaWG",
   "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface":
     "интерфейс поднят, но IP пира вне его подсети — исправить нужно запись, а не интерфейс",
   "access is blocked — removed from every server until unblocked":
@@ -2369,7 +2369,7 @@ export const STR = {
   // budget-ok: appended to a popover row tooltip, wraps
   "Jitter {v1}ms.": "Джиттер {v1}мс.",
   // budget-ok: settings description, wraps
-  "The client's packets reach the server but no handshake has ever completed — blocked at the door (likely DPI / MTU / wrong Wireguard or AmneziaWG params).": "Пакеты клиента доходят до сервера, но рукопожатие ни разу не завершилось — блокировка на входе (вероятно DPI / MTU / неверные параметры Wireguard или AmneziaWG).",
+  "The client's packets reach the server but no handshake has ever completed — blocked at the door (likely DPI / MTU / wrong WireGuard or AmneziaWG params).": "Пакеты клиента доходят до сервера, но рукопожатие ни разу не завершилось — блокировка на входе (вероятно DPI / MTU / неверные параметры WireGuard или AmneziaWG).",
   // budget-ok: settings description, wraps
   "The tunnel keeps collapsing and being rebuilt: handshakes far more often than the 120s a healthy session renews at, from an endpoint that isn't moving. A peer that simply has nothing to send is not flagged.": "Туннель постоянно рвётся и пересобирается: рукопожатия намного чаще, чем раз в 120 с, как обновляется здоровая сессия, и при этом адрес не меняется. Пир, которому просто нечего передавать, не помечается.",
   // budget-ok: status reason sentence, wraps
