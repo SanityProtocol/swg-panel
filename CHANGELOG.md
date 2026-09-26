@@ -301,6 +301,16 @@ earlier releases predate the changelog — see the git history. · Русски�
 - **Text typed into a routing rule without pressing Enter was dropped by Save.** When anything else on the sheet or
   the page had changed, Save went through without it. Save now says the text isn't added yet — press Enter to add it,
   or clear it — as it already did for a rule's text view.
+- **Pressing Update again did nothing on a node whose last update found nothing to do.** A node acted on one update
+  request per run of its daemon, and an update that changed nothing (no new version, or a Docker node already on the
+  newest images) did not restart it, so every later press was ignored and five minutes on the panel called it a
+  failure. Every press now runs once.
+- **A Docker panel never learned that a new release was out.** It read an empty update address as the address to
+  check. It now checks the published release, as a bare-metal panel does.
+- **Two turn-proxy servers by the same author shared one name on the Overview** — amurcanov's WDTT and CSQTT servers
+  both read "amurcanov". They read "amurcanov · WDTT" and "amurcanov · CSQTT" now.
+- **The Blocking legend broke into columns** ("needs Force-DNS orHybrid-SNI mode"); an interface's route read
+  "Throughput: smart cascade" — it reads "Traffic" now, and "Throughput" stays for rates.
 - **Block, Delete and Rotate all keys were a size smaller than the buttons beside them,** and the device view's last
   button wrapped onto a second row in Russian.
 - **Dates in chart tooltips were English in the Russian panel.**
@@ -323,6 +333,9 @@ earlier releases predate the changelog — see the git history. · Русски�
   revoked password or an idle timeout that closed a connection while data was on its way to it ended the server — by
   chance, or on purpose by a client switching its config between two devices. The fault was in every earlier build;
   fixed in qWDTT 1.4.3-4.
+- **A node's config file, which holds its panel token, became readable by every user on the box** after the first
+  interface the node changed. It keeps its mode and owner now, and a file an older version left open is closed again on
+  the next change.
 - **Anything running as the panel's user could have root overwrite a `.json` file anywhere on the box.** The root
   helper that carries out the panel's privileged actions wrote its answers through the panel's own `netctl/`
   directory, which that user can rearrange — a folder there swapped for a link sent root's write wherever the link
@@ -332,6 +345,9 @@ earlier releases predate the changelog — see the git history. · Русски�
 
 ### Upgrading
 
+- **⚠️ A Docker panel on 1.8.7 does not tell you this release is out** (fixed in this one). Update it on the box:
+  `sudo /usr/local/bin/swg-update`, or `docker compose pull && docker compose up -d` with its profile in the install's
+  directory.
 - **⚠️ Update the servers together with the panel.** Until a server reports the new version it takes the panel's new
   "busy" answer for a failure; rules for chosen people apply to nobody there, and its card says so; traffic other
   servers send out through it leaves by its default list's **Everything else** as a plain default — through that exit
