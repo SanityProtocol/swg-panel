@@ -11454,9 +11454,31 @@ def node_public_ip(snap):
     return ""
 
 
-def mesh_endpoint_host(node, snap):
-    """The host a peer dials for this node's mesh: the explicit endpoint_host, else its reported public IP."""
-    return (node.get("endpoint_host") or "").strip() or node_public_ip(snap)
+def mesh_advertised_host(snap, iface):
+    """The host a node ADVERTISES on one of its interfaces — what it tells that interface's clients to dial (its agent
+    config's endpoint, reported with the interface as `meta.endpoint`). "" for a wildcard, a loopback, or an IPv6
+    literal (the mesh is sized for IPv4 — see mesh_s4_room)."""
+    ep = str(((((snap or {}).get("interfaces") or {}).get(iface) or {}).get("meta") or {}).get("endpoint") or "")
+    host = ep.rsplit(":", 1)[0] if ":" in ep else ""
+    if not host or ":" in host or host in ("0.0.0.0", "localhost") or host.startswith("127."):
+        return ""
+    return host
+
+
+def mesh_endpoint_host(node, snap, iface=None):
+    """The host a peer dials for this node's mesh: the explicit endpoint_host, else its reported public IP, else the
+    host the node itself advertises on that link.
+
+    ⚠️ THE LAST RESORT IS WHAT MAKES A PRIVATE-ADDRESS FLEET MESH AT ALL. With only the first two, a node whose every
+    address is private — a LAN, a NAT'd cloud VM, the qualification lab — had no dial host unless an operator typed
+    its ingress address, and a link whose REMOTE end has none gets no peer (desired_mesh_for_node): WireGuard drops a
+    handshake from a key it does not hold, so one blank end took the whole link down, with no issue raised anywhere.
+    Measured (1.8.8 qualification, q3m ↔ q4n, both Docker, both 192.168.77.x): both ends peerless; the master's own
+    endpoint set → the node dialled it and was ignored; both set → handshake within seconds. The advertised host is
+    the address that node's clients are already handed — a link that works today resolves before reaching it, so
+    nothing that meshes now changes; a remote behind NAT that dials OUT is answered too (WireGuard roams to where the
+    handshake came from, and swg-noded re-asserts an endpoint only when the DESIRED one changes)."""
+    return (node.get("endpoint_host") or "").strip() or node_public_ip(snap) or mesh_advertised_host(snap, iface)
 
 
 def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None, snaps=None):
@@ -11473,10 +11495,11 @@ def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None, snaps=N
         if not peer:
             continue
         iface = lr.get("iface")
-        rov = (peer.get("ifaces") or {}).get((peer.get("links") or {}).get(nid, {}).get("iface")) or {}
         rlr = (peer.get("links") or {}).get(nid) or {}
+        rov = (peer.get("ifaces") or {}).get(rlr.get("iface")) or {}
         pub = rov.get("public_key"); rport = rlr.get("listen_port")
-        rhost = (lr.get("dial_endpoint") or "").strip() or mesh_endpoint_host(peer, snaps.get(peer_nid))   # per-connection override → peer's ingress IP → reported public IP
+        # per-connection override → peer's ingress IP → reported public IP → the host the peer advertises on this link
+        rhost = (lr.get("dial_endpoint") or "").strip() or mesh_endpoint_host(peer, snaps.get(peer_nid), rlr.get("iface"))
         if not (pub and rport and rhost and iface):
             continue                                   # remote not ready → no peer yet (the iface still exists)
         out.setdefault(iface, []).append({
