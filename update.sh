@@ -294,6 +294,47 @@ PYPORT
        then re-run the update."
   return 1
 }
+# ── Is every container of this profile already running the image its reference names? (1.8.8 qualification) ──
+# Asked AFTER `compose pull`. The recreate below removes the containers first, and a docker NODE's interfaces live
+# in its container: every recreate drops every client's tunnel until it re-handshakes (measured on a Docker master
+# VM: 20–40 s of nothing). It ran on EVERY press of Update — the dialog tells the operator it is worth pressing when
+# already up to date — and on every node update a panel update fans out, current or not. So when nothing new was
+# pulled, only `compose up -d` runs, which recreates just a service whose compose settings changed.
+# 0 = every service runs the pulled image (skip the recreate) · 1 = something differs · 2 = cannot tell (recreate).
+docker_images_current(){                      # $1 = profile
+  local prof="$1" cfg _cf rc
+  have docker && have python3 || return 2
+  cfg="$(cd "$DOCKER_DIR" 2>/dev/null && $COMPOSE --profile "$prof" config --format json 2>/dev/null)" || return 2
+  case "$cfg" in *'"services"'*) ;; *) return 2 ;; esac
+  _cf="$(mktemp)" || return 2
+  printf '%s' "$cfg" > "$_cf"
+  python3 - "$_cf" >/dev/null 2>&1 <<'PYIMG'
+import json, subprocess, sys
+def out(*argv):
+    r = subprocess.run(list(argv), capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+try:
+    svcs = json.load(open(sys.argv[1])).get("services") or {}
+    if not svcs:
+        sys.exit(2)
+    for name, svc in svcs.items():
+        ref = svc.get("image")
+        if not ref:                                   # a build: service — the full path owns it
+            sys.exit(1)
+        want = out("docker", "image", "inspect", "-f", "{{.Id}}", ref)
+        have = out("docker", "inspect", "-f", "{{.Image}} {{.State.Running}}", svc.get("container_name") or name)
+        if not want or have != want + " true":        # a stopped, missing or older container is work to do
+            sys.exit(1)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(2)
+sys.exit(0)
+PYIMG
+  rc=$?
+  rm -f "$_cf"
+  return $rc
+}
 docker_profile(){
   local names sniff="" mark
   if have docker; then
@@ -1871,19 +1912,33 @@ PYDRIFT
     # prebuilt-image deployment (default) → just pull the newest image + recreate (no restaging)
     echo
     if confirm "Pull the latest image for $(col_l "docker ($prof)")?"; then
-      DID_UPDATE=yes; info "pulling latest image + recreating ($DOCKER_DIR)"
-      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d --force-recreate)"; note "docker ($prof): would pull + recreate"
+      info "pulling the latest image ($DOCKER_DIR)"
+      if $DRYRUN; then DID_UPDATE=yes; echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d --force-recreate)"; note "docker ($prof): would pull + recreate"
       # --force-recreate: after `pull` updates :latest, a plain `up -d` may just (re)start the EXISTING
       # container on the OLD image (log shows "Started", not "Recreated") — so the node keeps the old
       # version until a 2nd run. Forcing recreation guarantees it runs the freshly-pulled image.
       elif ! docker_ports_preflight "$prof"; then DID_FAIL=yes; note "docker ($prof): REFUSED — a published port is held by another process"
+      # ⚠️ PULL FIRST, WHILE THE STACK STILL RUNS. The pull used to come after the `docker rm -f` below, so a pull
+      # that failed — the registry unreachable or filtered, a rate limit, a full disk — left the box with its
+      # containers removed and nothing started: panel, node and every client down until someone ssh'd in.
+      elif ! ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" pull ); then
+        DID_FAIL=yes; note "docker ($prof): pull FAILED — nothing was touched"
+        warn "could not pull the new image — the containers are still running on the current one, nothing was
+       touched. Check the box can reach ghcr.io (and has disk space), then re-run the update."
+      elif docker_images_current "$prof"; then
+        # Nothing new arrived: only a service whose compose settings changed is recreated; every other container
+        # (a node's tunnels among them) keeps running.
+        ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" up -d ) \
+          && { ok "docker ($prof) already runs the newest image — nothing recreated"; note "docker ($prof): unchanged — the newest image already runs"; } \
+          || { DID_FAIL=yes; warn "compose up failed — check $DOCKER_DIR"; note "docker ($prof): up FAILED"; }
       else
+        DID_UPDATE=yes
         rescue_container_confs "$prof"
         # ⚠️ EVERYTHING BELOW THIS LINE IS DESTRUCTIVE — the containers are removed before `up` runs, so a
         # failure here has nothing to fall back to. That is why the port check is a PRE-flight and sits in
-        # the `elif` above, not inside this branch.
+        # the `elif` above, not inside this branch — and why the pull happens up there too.
         for _c in $(case "$prof" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
-        ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" pull && on_tty $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
+        ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose up failed — check $DOCKER_DIR"; note "docker ($prof): up FAILED"; }; fi
     else warn "docker ($prof): skipped"; note "docker ($prof): skipped"; fi
   fi
 fi
