@@ -188,7 +188,9 @@ pkg_update(){ local label="$1"; shift; local pkg cur cand
 
 NEW_VER="$(cat "$SRC/VERSION" 2>/dev/null || echo unknown)"
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
-found=0; DID_UPDATE=no; DID_FAIL=no; AWG_PKG_ROUTE=no   # AWG_PKG_ROUTE: ensure_awg_pkg_follow owns the amnezia packages here   # DID_FAIL flips to yes on ANY component failure → partial-failure status + exit 1
+# DID_FAIL flips to yes on ANY component failure → partial-failure status + exit 1; AWG_PKG_ROUTE: ensure_awg_pkg_follow owns
+# the amnezia packages here (the datapath summary line says they follow the PPA, not that they were skipped)
+found=0; DID_UPDATE=no; DID_FAIL=no; AWG_PKG_ROUTE=no
 # per-component outcome, printed as a summary at the end — so a multi-component box (e.g. a docker
 # master AND a bare-metal node on the same host) clearly shows EVERY component was considered.
 RESULTS=(); note(){ RESULTS+=("$*"); }
@@ -944,21 +946,21 @@ awg_kernel_takes(){ # <conf> — would the loaded kernel module accept this inte
 awg_kdevs(){   # the amneziawg KERNEL devices in this network namespace, one per line (amneziawg-go runs a tun — never listed)
   ip -o link show type amneziawg 2>/dev/null | awk -F': ' '{sub(/@.*/, "", $2); print $2}'
 }
-awg_kdevs_elsewhere(){   # OTHER network namespaces holding an amneziawg device — `modprobe -r` would destroy it there too
-  # Named ones (`ip netns`) AND every process's: a Docker container's namespace is not named, and an AmneziaWG device a
-  # container made on the host's module (Amnezia's own containers, say) would otherwise go without a word.
-  local n me ns seen="" p
+awg_kdevs_elsewhere(){   # OTHER network namespaces holding an amneziawg device — `modprobe -r` would destroy it there too.
+  # Named ones (`ip netns`) AND every process's (`lsns`): a Docker container's namespace is not named, and an AmneziaWG device
+  # a container made on the host's module (Amnezia's own containers, say) would otherwise go without a word. Prints "?"
+  # when it cannot look (no lsns / nsenter) — the caller must then not unload: it cannot know it cuts no one.
+  local n me ns pid
   for n in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     [ -n "$(ip -n "$n" -o link show type amneziawg 2>/dev/null)" ] && echo "$n"
   done
-  have nsenter || return 0
-  me="$(readlink /proc/self/ns/net 2>/dev/null)"
-  for p in /proc/[0-9]*/ns/net; do
-    ns="$(readlink "$p" 2>/dev/null)" || continue
-    [ -n "$ns" ] && [ "$ns" != "$me" ] || continue
-    case " $seen " in *" $ns "*) continue ;; esac; seen="$seen $ns"
-    [ -n "$(nsenter --net="$p" ip -o link show type amneziawg 2>/dev/null)" ] && echo "$ns"
-  done; return 0
+  have lsns && have nsenter || { echo "?"; return 0; }
+  me="$(readlink /proc/self/ns/net 2>/dev/null)" || me=""
+  while read -r ns pid; do
+    [ -n "$pid" ] && [ "net:[$ns]" != "$me" ] || continue
+    [ -n "$(nsenter --net="/proc/$pid/ns/net" ip -o link show type amneziawg 2>/dev/null)" ] && echo "net:[$ns]"
+  done < <(lsns -t net -n -o NS,PID 2>/dev/null || true)
+  return 0
 }
 awg_src_refresh(){   # refresh the amnezia apt source ALONE — a whole `apt-get update` on every one-click update is not needed here
   local f d; f="$(ls /etc/apt/sources.list.d/*amnezia* 2>/dev/null | sed -n 1p)"; [ -n "$f" ] || return 1
@@ -977,13 +979,16 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
   [ "$HAVE_BNODE" = yes ] || return 0
   have apt-get && have dpkg-query && have dpkg || return 0
   local cur cand awgp pk disk loaded
-  cur="$(pkg_installed amneziawg-dkms)"; [ -n "$cur" ] || return 0
+  # ⚠️ EVERY ASSIGNMENT HERE MUST SURVIVE `set -euo pipefail`: dpkg-query exits 1 for a package that is not installed,
+  # and a bare `cur="$(…)"` then ended the whole update on every node without amneziawg-dkms (plain WireGuard, a
+  # source-built module) — every later step skipped, in silence (1.8.9 code review, reproduced in bash).
+  cur="$(pkg_installed amneziawg-dkms)" || cur=""; [ -n "$cur" ] || return 0
   awgp="$(command -v awg 2>/dev/null)" || return 0
   case "$(dpkg -S "$awgp" 2>/dev/null)" in amneziawg-tools:*) ;; *) return 0 ;; esac   # never `| grep -q` under pipefail
   AWG_PKG_ROUTE=yes
   if $DRYRUN; then ok "AmneziaWG packages: an update checks the amnezia PPA and follows its build (module and tools together)"; return 0; fi
   [ "$APT_DONE" = yes ] || awg_src_refresh || true
-  cand="$(pkg_candidate amneziawg-dkms)"
+  cand="$(pkg_candidate amneziawg-dkms)" || cand=""
   { [ -n "$cand" ] && [ "$cand" != "(none)" ] && dpkg --compare-versions "$cand" gt "$cur"; } || return 0
   # Held on purpose (`apt-mark hold`) → the operator's call: said once per update, never an error every update.
   case " $(apt-mark showhold 2>/dev/null | tr '\n' ' ') " in *" amneziawg-dkms "*|*" amneziawg-tools "*|*" amneziawg "*)
@@ -1005,7 +1010,7 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
     return 0
   fi
   DID_UPDATE=yes; note "AmneziaWG packages: $cur → $cand"
-  disk="$(modinfo -F version amneziawg 2>/dev/null)"; loaded="$(cat /sys/module/amneziawg/version 2>/dev/null)"
+  disk="$(modinfo -F version amneziawg 2>/dev/null)" || disk=""; loaded="$(cat /sys/module/amneziawg/version 2>/dev/null)" || loaded=""
   if [ -z "$loaded" ] || [ "$disk" = "$loaded" ]; then ok "AmneziaWG packages updated (kernel module $disk)"; return 0; fi
   if [ -z "$(awg_kdevs)" ] && [ -z "$(awg_kdevs_elsewhere)" ]; then   # nobody on the module → load the new one now, cutting no one
     if modprobe -r amneziawg 2>/dev/null && modprobe amneziawg 2>/dev/null; then

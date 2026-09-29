@@ -16,8 +16,14 @@
 #  [11] the install waits for the dpkg lock rather than failing on it (unattended-upgrades)
 #  [12] a device in a CONTAINER's namespace (not named, seen only through /proc) → not reloaded
 #  [13] the automatic load unloaded the old module but the new one will not load → says the box runs on userspace
+#  [14] ⚠️ under update.sh's own `set -euo pipefail`, with tools that FAIL the way the real ones do: no amneziawg-dkms
+#       (dpkg-query exits 1), a module that is not loaded after the upgrade (no /sys/module) — the update goes on
+#  [15] no lsns → it cannot see containers' namespaces → the module is not unloaded
+# The harness runs the extracted functions under `set -euo pipefail` — the 1.8.9 code review found that without it this
+# gate passed while every node without amneziawg-dkms had its update end at the first line of the function.
 # Run: bash tests/awg_pkg_follow_selftest.sh     --perturb drops the tools-ownership check, the device check, the tools
-#      from the transaction, the hold check, the headers check and the /proc scan; expects RED on [2] [4] [6] [9] [10] [12].
+#      from the transaction, the hold check, the headers check, the namespace scan and the errexit-safe assignment; expects RED
+#      on [1] [2] [4] [6] [9] [10] [12] [15].
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 FAILS=0; check(){ if [ "$2" = 0 ]; then echo "  PASS $1"; else echo "  FAIL $1 ${3:-}"; FAILS=$((FAILS+1)); fi; }
@@ -33,15 +39,17 @@ if [ "${1:-}" = "--perturb" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/pk="amneziawg-dkms amneziawg-tools"/pk="amneziawg-dkms"/')"; _planted "$_b" "$fn" "the tools in the transaction"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/\*" amneziawg-dkms "\*|\*" amneziawg-tools "\*|\*" amneziawg "\*)/*" never-held "*)/')"; _planted "$_b" "$fn" "the hold check"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's|if \[ ! -e "[^"]*/libmod/$(uname -r)/build" \]; then|if false; then|')"; _planted "$_b" "$fn" "the headers check"
-  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's|  have nsenter \|\| return 0|  return 0|')"; _planted "$_b" "$fn" "the /proc scan"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#  have lsns \&\& have nsenter || { echo "?"; return 0; }#  return 0#')"; _planted "$_b" "$fn" "the namespace scan"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/cur="$(pkg_installed amneziawg-dkms)" || cur=""/cur="$(pkg_installed amneziawg-dkms)"/')"; _planted "$_b" "$fn" "the errexit-safe assignment"
 fi
 mkdir -p "$T/bin" "$T/sld" "$T/usr-bin"
 stub(){ printf '#!/bin/sh\n%s\n' "$2" > "$T/bin/$1"; chmod +x "$T/bin/$1"; }
 stub apt-get 'echo "apt-get $*" >> "$SBX/calls"; case "$*" in *install*) [ -e "$SBX/apt-fail" ] && exit 100; cp "$SBX/cand" "$SBX/inst-amneziawg-dkms"; [ -e "$SBX/disk-after" ] && cp "$SBX/disk-after" "$SBX/disk";; esac; exit 0'
 stub apt-cache 'printf "%s:\n  Installed: x\n  Candidate: %s\n" "$2" "$(cat "$SBX/cand")"'
-stub dpkg-query 'f="$SBX/inst-${4:-$3}"; [ -e "$f" ] && cat "$f"; exit 0'
+stub dpkg-query 'f="$SBX/inst-${4:-$3}"; [ -e "$f" ] || { echo "dpkg-query: no packages found matching ${4:-$3}" >&2; exit 1; }; cat "$f"'
 stub dpkg 'if [ "$1" = -S ]; then cat "$SBX/owner" 2>/dev/null; [ -s "$SBX/owner" ]; exit $?; fi; exec /usr/bin/dpkg "$@"'
-stub modinfo 'cat "$SBX/disk"'
+stub modinfo '[ -s "$SBX/disk" ] || { echo "modinfo: ERROR: Module amneziawg not found." >&2; exit 1; }; cat "$SBX/disk"'
+stub lsns 'cat "$SBX/lsns" 2>/dev/null; exit 0'
 stub modprobe 'echo "modprobe $*" >> "$SBX/calls"; if [ "$1" = -r ]; then rm -rf "$SYSMOD"; exit 0; fi; [ -e "$SBX/load-fail" ] && exit 1; mkdir -p "$SYSMOD"; exit 0'
 stub apt-mark 'cat "$SBX/held" 2>/dev/null; exit 0'
 stub nsenter 'n="${1#--net=}"; shift; [ "$(readlink "$n")" = "net:[4026532999]" ] && [ -e "$SBX/ctr-dev" ] && echo "9: awg-ctr: <POINTOPOINT>"; exit 0'
@@ -49,11 +57,12 @@ stub uname 'echo 6.8.0-test'
 stub ip 'case "$*" in "netns list") cat "$SBX/netns" 2>/dev/null;; "-n "*) [ -e "$SBX/ns-dev" ] && echo "7: e0: <POINTOPOINT> mtu 1420";; *type\ amneziawg*) cat "$SBX/kdevs" 2>/dev/null;; esac; exit 0'
 printf '#!/bin/sh\n' > "$T/usr-bin/awg"; chmod +x "$T/usr-bin/awg"
 cat > "$T/run.sh" <<EOF
+set -euo pipefail
 HAVE_BNODE=yes; DRYRUN=false; APT_DONE=\${APT_DONE:-no}; DID_UPDATE=no; DID_FAIL=no
-have(){ command -v "\$1" >/dev/null 2>&1; }; run(){ "\$@"; }
+have(){ [ "\${HIDE_LSNS:-}" = 1 ] && [ "\$1" = lsns ] && return 1; command -v "\$1" >/dev/null 2>&1; }; run(){ "\$@"; }
 ok(){ echo "OK \$*"; }; warn(){ echo "WARN \$*"; }; note(){ echo "NOTE \$*"; }
 $fn
-AWG_PKG_ROUTE=no; ensure_awg_pkg_follow; echo "DID_UPDATE=\$DID_UPDATE DID_FAIL=\$DID_FAIL ROUTE=\$AWG_PKG_ROUTE"
+AWG_PKG_ROUTE=no; ensure_awg_pkg_follow; echo "DID_UPDATE=\$DID_UPDATE DID_FAIL=\$DID_FAIL ROUTE=\$AWG_PKG_ROUTE"; echo "AFTER: the update goes on"
 EOF
 case_(){   # case_ <name> : a fresh sandbox — 1.0 installed and loaded, 3.1 in the PPA, awg owned by amneziawg-tools
   export SBX="$T/$1"; rm -rf "$SBX"; mkdir -p "$SBX"; : > "$SBX/calls"
@@ -67,12 +76,14 @@ case_(){   # case_ <name> : a fresh sandbox — 1.0 installed and loaded, 3.1 in
   export SYSMOD="$T/sysmod"; mkdir -p "$SYSMOD" "$T/libmod/6.8.0-test/build"
   rm -rf "$T/proc"; mkdir -p "$T/proc/self/ns" "$T/proc/1/ns" "$T/proc/4242/ns"
   ln -s "net:[4026531840]" "$T/proc/self/ns/net"; ln -s "net:[4026531840]" "$T/proc/1/ns/net"; ln -s "net:[4026532999]" "$T/proc/4242/ns/net"
+  printf '4026531840 1\n4026532999 4242\n' > "$SBX/lsns"
 }
 go(){ PATH="$T/bin:$T/usr-bin:/usr/bin:/bin" bash "$T/run.sh" 2>&1; }
 
 echo; echo "[1] no amneziawg-dkms"
 case_ c1; rm "$SBX/inst-amneziawg-dkms"; out="$(go)"
 check "nothing asked of apt" "$([ ! -s "$SBX/calls" ] && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+check "…and under set -euo pipefail the update goes on (dpkg-query exits 1 for it)" "$(printf '%s' "$out" | grep -q 'AFTER' && echo 0 || echo 1)" "$out"
 
 echo; echo "[2] hand-built awg"
 case_ c2; : > "$SBX/owner"; out="$(go)"
@@ -132,6 +143,16 @@ check "not reloaded" "$(grep -q 'modprobe -r' "$SBX/calls" && echo 1 || echo 0)"
 echo; echo "[13] the new module will not load"
 case_ c13; : > "$SBX/kdevs"; touch "$SBX/load-fail"; out="$(go)"
 check "says the box runs on the userspace fallback (not that the old module stays)" "$(printf '%s' "$out" | grep -q 'userspace fallback until it does' && echo 0 || echo 1)" "$out"
+
+echo; echo "[14] the module is not loaded after the upgrade (every interface on userspace)"
+case_ c14; rm -f "$T/loaded"; out="$(go)"
+check "the update goes on, and says the packages were updated" "$(printf '%s' "$out" | grep -q 'AFTER' && printf '%s' "$out" | grep -q 'packages updated' && echo 0 || echo 1)" "$out"
+case_ c14b; : > "$SBX/disk-after"; : > "$SBX/disk"; out="$(go)"
+check "…and when modinfo finds no module either" "$(printf '%s' "$out" | grep -q 'AFTER' && echo 0 || echo 1)" "$out"
+
+echo; echo "[15] no lsns"
+case_ c15; : > "$SBX/kdevs"; out="$(HIDE_LSNS=1 go)"   # the host's own lsns sits in /usr/bin on the test PATH
+check "containers cannot be seen → not unloaded" "$(grep -q 'modprobe -r' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
 
 echo
 if [ "${1:-}" = "--perturb" ]; then [ "$FAILS" -gt 0 ] && { echo "perturb: RED as it must be ($FAILS)"; exit 0; } || { echo "perturb: NOT CAUGHT"; exit 1; }; fi
