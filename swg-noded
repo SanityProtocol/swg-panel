@@ -10972,33 +10972,72 @@ def _with_awg_gen(dp):
 # The node acts when the counter differs from its stamp AND the request is under AWG_LOAD_MAX_AGE old, so a node that is
 # re-installed or restored from a backup never reloads its module on a press from last week. It acts ONCE per press
 # whatever happens (the stamp is written first): a reload that went wrong is reported, never retried by itself.
-AWG_LOAD_STAMP = os.path.join(STATE_DIR, "awg-load.json")
+AWG_LOAD_STAMP = os.path.join(STATE_DIR, "awg-load.json")          # the press this node has taken, and (after) its result
+AWG_LOAD_RESULT = os.path.join(STATE_DIR, "awg-load-result.json")  # the agent's own record of an op that got past its checks
 AWG_LOAD_MAX_AGE = 600
+# Codes the agent refuses with BEFORE it stops anything — every other outcome (done, load_failed, busy, a timeout or an
+# internal error mid-op) may have bounced the interfaces, so the routing reconcile must run.
+AWG_LOAD_PRECHECK = {"nothing_newer", "tools_old", "no_way_back", "other_netns", "not_loaded", "container", "cannot_check"}
 _AWG_LOAD = {"v": None}
+_AWG_LOAD_KEYS = ("n", "id", "ok", "code", "ifaces", "was", "loaded", "error")
+
+
+def _awg_load_result(d, n, pid):
+    ok = d.get("result") == "done"
+    return {"n": n, "id": pid, "ok": ok, "code": d.get("result") or "internal", "ifaces": d.get("ifaces") or {},
+            "was": d.get("was") or "", "loaded": d.get("loaded") or ""}
+
+
+def _awg_load_boot():
+    """At start: the last press's result — the agent's record when it matches the press taken (a swg-noded restarted during
+    the op never got the agent's answer on stdout, but the op finished in its own scope and wrote this), else the stamp's."""
+    st, res = {}, {}
+    with contextlib.suppress(Exception):
+        with open(AWG_LOAD_STAMP) as f:
+            st = json.load(f) or {}
+    with contextlib.suppress(Exception):
+        with open(AWG_LOAD_RESULT) as f:
+            res = json.load(f) or {}
+    if isinstance(st, dict) and isinstance(res, dict) and res.get("id") and res.get("id") == st.get("id") and "code" not in st:
+        _AWG_LOAD["v"] = _awg_load_result(res, int(st.get("n") or 0), res["id"])
+    elif isinstance(st, dict) and "code" in st:
+        _AWG_LOAD["v"] = {k: st[k] for k in _AWG_LOAD_KEYS if k in st}
+
+
 with contextlib.suppress(Exception):
-    with open(AWG_LOAD_STAMP) as _f:
-        _v = json.load(_f)
-    if isinstance(_v, dict) and "code" in _v:
-        _AWG_LOAD["v"] = {k: _v[k] for k in ("n", "ok", "code", "ifaces", "was", "loaded", "error") if k in _v}
+    _awg_load_boot()
 
 
 def awg_load_request(req, agent, sudo):
-    """→ True when the module was reloaded this pass (the interfaces were bounced)."""
+    """→ True when the interfaces may have been bounced this pass (the routing reconcile must follow).
+
+    A press is its counter AND its time (`id`, from the panel): a node record re-created on the panel restarts the counter,
+    and a counter alone would then match an old press — skipped here, and its old result shown as the new one's."""
     try:
         n, age = int((req or {}).get("n") or 0), float((req or {}).get("age"))
     except (TypeError, ValueError):
         return False
+    pid = str((req or {}).get("id") or n)
     if n <= 0 or age < 0 or age > AWG_LOAD_MAX_AGE:
         return False
     try:
         with open(AWG_LOAD_STAMP) as f:
-            if int((json.load(f) or {}).get("n") or 0) == n:
-                return False
+            st = json.load(f) or {}
+        if str(st.get("id") or st.get("n") or "") == pid:
+            return False
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    with contextlib.suppress(OSError):
+    # ⚠️ ONCE PER PRESS NEEDS THE PRESS RECORDED FIRST. Unrecorded (a full or read-only state dir), every pass for ten minutes
+    # would take it for new and cut every client again — so a press that cannot be recorded is refused, not acted on.
+    try:
         with open(AWG_LOAD_STAMP, "w") as f:
-            json.dump({"n": n, "at": int(time.time())}, f)
+            json.dump({"n": n, "id": pid, "at": int(time.time())}, f)
+    except OSError as e:
+        _AWG_LOAD["v"] = {"n": n, "id": pid, "ok": False, "code": "cannot_record", "ifaces": {}, "was": "", "loaded": "",
+                          "error": str(e)[:200]}
+        return False
+    with contextlib.suppress(OSError):
+        os.remove(AWG_LOAD_RESULT)
     extra = {}
     with contextlib.suppress(OSError):
         for fn in os.listdir(EXIT_DIR):             # exits come up by conf path, not by a unit — the agent needs the path
@@ -11006,19 +11045,24 @@ def awg_load_request(req, agent, sudo):
                 extra[fn[:-5]] = os.path.join(EXIT_DIR, fn)
     # ⚠️ NEVER THE DEFAULT 20 s: a timeout kills the agent, and killed between the unload and the bring-up it would leave
     # every AmneziaWG interface down on an unloaded module. The agent bounds its own waits (10 s per device).
-    r = run_agent(agent, sudo, {"op": "reload-awg-module", "extra_confs": extra}, timeout=600,
-                  scope="swg-awg-load-%d-%d" % (n, int(time.time())))
-    d = r.get("data") or {}
-    _AWG_LOAD["v"] = {"n": n, "ok": bool(r.get("ok")) and d.get("result") == "done",
-                      "code": d.get("result") if r.get("ok") else (r.get("code") or "internal"),
-                      "ifaces": d.get("ifaces") or {}, "was": d.get("was") or "", "loaded": d.get("loaded") or "",
-                      **({} if r.get("ok") else {"error": str(r.get("error") or "")[:300]})}
+    r = run_agent(agent, sudo, {"op": "reload-awg-module", "extra_confs": extra, "id": pid, "result_path": AWG_LOAD_RESULT},
+                  timeout=600, scope="swg-awg-load-%d-%d" % (n, int(time.time())))
+    if r.get("ok"):
+        _AWG_LOAD["v"] = _awg_load_result(r.get("data") or {}, n, pid)
+    else:
+        code = r.get("code") or "internal"
+        rec = {}
+        with contextlib.suppress(Exception):
+            with open(AWG_LOAD_RESULT) as f:
+                rec = json.load(f) or {}
+        base = _awg_load_result(rec, n, pid) if rec.get("id") == pid else _awg_load_result({}, n, pid)
+        _AWG_LOAD["v"] = dict(base, ok=False, code=code, error=str(r.get("error") or "")[:300])
     _AWG_GEN["v"] = None                            # the next snapshot reads the module that is loaded NOW
     with contextlib.suppress(OSError):              # the result outlives a daemon restart, so the panel still gets it
         with open(AWG_LOAD_STAMP, "w") as f:
             json.dump(dict(_AWG_LOAD["v"], at=int(time.time())), f)
     print("awg module load #%d: %s %s" % (n, _AWG_LOAD["v"]["code"], json.dumps(_AWG_LOAD["v"]["ifaces"])), flush=True)
-    return bool(r.get("ok"))
+    return _AWG_LOAD["v"]["code"] not in AWG_LOAD_PRECHECK
 
 
 def awg_need(awg):

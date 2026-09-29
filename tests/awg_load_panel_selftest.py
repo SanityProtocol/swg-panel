@@ -6,10 +6,11 @@ auth; the nodes are played by POSTing snapshots to /api/node/sync.
       a Docker node and an older node (no report) are not
   [2] the press: refused for a node with nothing to load; a counter for one that has
   [3] the sync hands the node {n, age} — the age on the panel's clock
-  [4] pending until the node reports that press; then its result, worded (done / not every interface / busy)
+  [4] pending until the node reports THAT press (its id, not only its counter); then its result, worded (done / partial /
+      busy)
   [5] a press the node never answers reads as lost once the node would no longer act on it (11 min); the next press is n + 1
 
-Run: python3 tests/awg_load_panel_selftest.py      --plant anyload | noage | nodisk   (exit 0 when caught)
+Run: python3 tests/awg_load_panel_selftest.py      --plant anyload | noage | nodisk | pidmatch | partial   (exit 0 when caught)
 """
 import json, os, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
@@ -17,7 +18,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
-PLANTS = {"anyload": ("[2]", "        if not awg_loadable(snap):\n            return 409,", "        if False:\n            return 409,"),
+PLANTS = {"pidmatch": ("[4]", "    if (str(got.get(\"id\")) != pid) if got.get(\"id\") else (_awg_int(got.get(\"n\")) != n):",
+                       "    if _awg_int(got.get(\"n\")) != n:"),
+          "partial": ("[4]", "(\"partial\" if us or dn else \"done\") if got.get(\"ok\")", "\"done\" if got.get(\"ok\")"),
+          "anyload": ("[2]", "        if not awg_loadable(snap):\n            return 409,", "        if False:\n            return 409,"),
           "noage": ("[3]", "\"age\": max(0, int(time.time()) - _awg_int((node.get(\"awg_load\") or {}).get(\"at\")))}}",
                     "\"age\": 0}}"),
           "nodisk": ("[1]", "    return g.get(\"disk\") == \"3.1\" and g.get(\"module\") in (\"2.0\", \"3.0\") and g.get(\"tools\") == \"3.1\"",
@@ -142,19 +146,23 @@ try:
     print("\n[3] the sync")
     time.sleep(2)
     d = sync("ld").get("awg_load") or {}
-    check("the node is handed {n, age}", d.get("n") == 1 and isinstance(d.get("age"), int), d)
+    check("the node is handed {n, id, age}", d.get("n") == 1 and isinstance(d.get("age"), int) and str(d.get("id", "")).startswith("1:"), d)
+    PID1 = d.get("id")
     check("…the age on the panel's clock (seconds since the press)", 1 <= (d.get("age") or 0) <= 30, d)
 
     SECTION[0] = "[4]"
     print("\n[4] pending, then the result")
     check("pending until the node reports this press", (rec("ld").get("awg_load") or {}).get("state") == "pending", rec("ld").get("awg_load"))
-    sync("ld", {"n": 1, "ok": True, "code": "done", "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel", "swg_ab": "kernel"}})
+    sync("ld", {"n": 1, "id": "1:1600000000", "ok": True, "code": "done", "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel"}})
+    check("a result for the same n but an OLD press (a re-created record) is not taken as this press's answer",
+          (rec("ld").get("awg_load") or {}).get("state") == "pending", rec("ld").get("awg_load"))
+    sync("ld", {"n": 1, "id": PID1, "ok": True, "code": "done", "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel", "swg_ab": "kernel"}})
     a = rec("ld").get("awg_load") or {}
     check("done, worded", a.get("state") == "done" and "every AmneziaWG interface is back on the kernel module" in key(a.get("msg")), a)
     sync("ld", {"n": 1, "ok": True, "code": "done", "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel", "awg1": "userspace"}})
     a = rec("ld").get("awg_load") or {}
-    check("not every interface back → named", "not every interface came back" in key(a.get("msg"))
-          and "awg1" in json.dumps(a.get("msg")), a)
+    check("not every interface back → named, and the state says so (partial, shown as a problem)", "not every interface came back" in key(a.get("msg"))
+          and "awg1" in json.dumps(a.get("msg")) and a.get("state") == "partial", a)
     sync("ld", {"n": 1, "ok": False, "code": "busy", "ifaces": {}})
     a = rec("ld").get("awg_load") or {}
     check("busy → failed, worded", a.get("state") == "failed" and "could not be unloaded" in key(a.get("msg")), a)

@@ -1743,37 +1743,30 @@ _PROC = "/proc"                     # …and this one
 
 def _awg_devs_elsewhere():
     """Network namespaces OTHER than this one holding an amneziawg KERNEL device — `modprobe -r` destroys them all.
-    Named ones (`ip netns`) AND every process's: a Docker container's namespace is not named, and an AmneziaWG device a
-    container made on the host's module (Amnezia's own containers, say) would otherwise go without a word."""
+    Named ones (`ip netns`) AND every process's (`lsns -t net`, one line per namespace): a Docker container's namespace is
+    not named, and an AmneziaWG device a container made on the host's module (Amnezia's own containers, say) would
+    otherwise go without a word. None when it cannot look (no lsns / nsenter) — the caller must refuse: it cannot know it
+    cuts no one."""
     out = []
     for ln in subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout.splitlines():
         ns = ln.split()[0] if ln.split() else ""
         if ns and _awg_kernel_devs(ns):
             out.append(ns)
-    if not shutil.which("nsenter"):
-        return out
+    if not (shutil.which("lsns") and shutil.which("nsenter")):
+        return None
     try:
         me = os.readlink(_PROC + "/self/ns/net")
     except OSError:
-        return out
-    seen = set()
-    for pid in os.listdir(_PROC):
-        if not pid.isdigit():
+        me = ""
+    for ln in subprocess.run(["lsns", "-t", "net", "-n", "-o", "NS,PID"], capture_output=True, text=True).stdout.splitlines():
+        f = ln.split()
+        if len(f) < 2 or "net:[%s]" % f[0] == me:
             continue
-        path = "%s/%s/ns/net" % (_PROC, pid)
-        try:
-            ns = os.readlink(path)
-        except OSError:
-            continue
-        if ns == me or ns in seen:
-            continue
-        seen.add(ns)
-        p = subprocess.run(["nsenter", "--net=" + path, "ip", "-o", "link", "show", "type", "amneziawg"],
+        p = subprocess.run(["nsenter", "--net=%s/%s/ns/net" % (_PROC, f[1]), "ip", "-o", "link", "show", "type", "amneziawg"],
                            capture_output=True, text=True)
         if (p.stdout or "").strip():
-            out.append("%s (process %s)" % (ns, pid))
+            out.append("net:[%s] (process %s)" % (f[0], f[1]))
     return out
-
 
 def _awg_ver_gen(v):
     """The AmneziaWG generation a module's version string names: `1.0.*` is the 2.0 protocol, `3.0.*`, `3.1.*`; else None."""
@@ -1815,14 +1808,19 @@ def op_reload_awg_module(cfg, req):
         raise AgentError("nothing_newer", f"the installed module ({disk or 'none'}) is not newer than the loaded one ({loaded})")
     awg = shutil.which("awg") or ""
     if _AWG_GEN_ORDER[gd] >= 1:
+        # The key of the generation the module ON DISK speaks — RandomTrailers for 3.1, HeaderProtectionKey for 3.0 (the
+        # same keys swg-noded reads for `tools`). 3.0 tools configure a 3.1 module without its 3.1 settings.
+        key = b"RandomTrailers" if gd == "3.1" else b"HeaderProtectionKey"
         try:
             with open(awg, "rb") as f:
-                ok_tools = b"HeaderProtectionKey" in f.read()
+                ok_tools = key in f.read()
         except OSError:
             ok_tools = False
         if not ok_tools:
-            raise AgentError("tools_old", "the awg tools predate AmneziaWG 3 and could not configure the new module")
+            raise AgentError("tools_old", "the awg tools predate AmneziaWG %s and could not configure the new module" % gd)
     ns_busy = _awg_devs_elsewhere()
+    if ns_busy is None:
+        raise AgentError("cannot_check", "lsns or nsenter is missing, so the other network namespaces cannot be checked")
     if ns_busy:
         raise AgentError("other_netns", "an AmneziaWG device lives in network namespace " + ", ".join(ns_busy))
     extra = {k: v for k, v in (req.get("extra_confs") or {}).items() if isinstance(v, str)}
@@ -1863,18 +1861,30 @@ def op_reload_awg_module(cfg, req):
             return "down"
         return "userspace" if os.path.exists(_SYS + f"/class/net/{dev}/tun_flags") else "kernel"
 
+    def _record(res):
+        """From here on every interface has been bounced: the outcome goes to `result_path` too, so a swg-noded that was
+        restarted meanwhile (its stdout gone with it) still reports it — the op runs on in a scope of its own."""
+        rp = req.get("result_path") or ""
+        if rp:
+            with contextlib.suppress(OSError):
+                tmp = rp + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(dict(res, id=req.get("id") or ""), f)
+                os.replace(tmp, rp)
+        return res
+
     for step in plan:
         _down(*step)
     if _awg_kernel_devs() or subprocess.run(["modprobe", "-r", "amneziawg"], capture_output=True).returncode != 0:
-        for step in plan:
-            _up(*step)
+        ifaces = {step[0]: _up(*step) for step in plan}
+        _record({"result": "busy", "was": loaded, "loaded": loaded, "ifaces": ifaces})
         raise AgentError("busy", "the kernel module could not be unloaded — every interface was brought back as it was")
     load_ok = subprocess.run(["modprobe", "amneziawg"], capture_output=True).returncode == 0
     ifaces = {step[0]: _up(*step) for step in plan}
     now = ""
     with contextlib.suppress(OSError):
         now = open(_SYS + "/module/amneziawg/version").read().strip()
-    return {"result": "done" if load_ok and now else "load_failed", "was": loaded, "loaded": now, "ifaces": ifaces}
+    return _record({"result": "done" if load_ok and now else "load_failed", "was": loaded, "loaded": now, "ifaces": ifaces})
 
 
 def op_restore_iface_key(cfg, req):

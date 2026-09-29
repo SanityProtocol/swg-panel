@@ -55,7 +55,7 @@ PROVIDES = {
     "systemctl": "systemd", "systemd-run": "systemd",
     "cat": "coreutils", "base64": "coreutils", "chmod": "coreutils", "mkdir": "coreutils", "sleep": "coreutils", "grep": "gnugrep",
     "rm": "coreutils", "tail": "coreutils", "journalctl": "systemd",
-    "nsenter": "util-linux", "awg-quick": "amneziawg-tools", "wg-quick": "wireguard-tools",
+    "nsenter": "util-linux", "lsns": "util-linux", "awg-quick": "amneziawg-tools", "wg-quick": "wireguard-tools",
 }
 SYSTEMD_APPENDED = {"coreutils", "findutils", "gnugrep", "gnused", "systemd"}
 # Named, not assumed: commands the native unit does not carry, each with the reason it is outside this gate. `docker` is NOT
@@ -121,7 +121,7 @@ for c in sorted(cmds):
 DEB = {"ping": "iputils-ping", "ip": "iproute2", "ss": "iproute2", "tc": "iproute2", "nft": "nftables", "iptables": "iptables",
        "iptables-save": "iptables", "iptables-restore": "iptables", "ipset": "ipset", "wg": "wireguard-tools", "curl": "curl",
        "dnsmasq": "dnsmasq", "pgrep": "procps", "pkill": "procps", "kill": "procps", "sysctl": "procps", "ps": "procps",
-       "conntrack": "conntrack", "nsenter": "util-linux"}
+       "conntrack": "conntrack", "nsenter": "util-linux", "lsns": "util-linux"}
 SLIM_BASE = {"sh", "bash", "id", "tar"}              # dash, bash, coreutils, tar: essential in every Debian slim image
 IMAGE_EXCLUDED = {
     "journalctl": "swg-agent's _bounce reads it only after an awg-quick@ UNIT failed to start — by_unit is False in a container (_unit_started)",

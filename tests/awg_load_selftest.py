@@ -17,20 +17,33 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
       of its own (a swg-noded restart must not kill it between the unload and the bring-up)
   [9] the result reaches the snapshot and outlives a daemon restart; the module on disk is reported by its version
 
-Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | timeout | procscan | noscope   (exit 0 when caught)
+  [10] (code review) the tools check wants the key of the generation on disk — 3.0 tools for a 3.1 module are refused;
+       no lsns → refused (cannot check); the result goes to result_path; a press is its counter AND time; a press that
+       cannot be recorded is refused; a `busy` still counts as churn, a pre-check refusal does not; a result written by
+       the agent after swg-noded restarted is picked up at the next start
+
+Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | timeout | procscan | noscope | key31 | record
+                                                    | churn | pid   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
-PLANTS = {"order": ("[5]", "agent", "    for step in plan:\n        _down(*step)\n", "    pass\n"),
-          "busyback": ("[6]", "agent", "        for step in plan:\n            _up(*step)\n        raise AgentError(\"busy\"",
-                       "        raise AgentError(\"busy\""),
-          "age": ("[8]", "noded", "    if n <= 0 or age < 0 or age > AWG_LOAD_MAX_AGE:", "    if n <= 0:"),
-          "timeout": ("[8]", "noded", "\"extra_confs\": extra}, timeout=600,", "\"extra_confs\": extra},"),
-          "procscan": ("[4]", "agent", "    if not shutil.which(\"nsenter\"):\n        return out\n", "    return out\n"),
-          "noscope": ("[8]", "noded", "                  scope=\"swg-awg-load-%d-%d\" % (n, int(time.time())))", "                  )")}
+PLANTS = {
+    "order": ("[5]", "agent", "    for step in plan:\n        _down(*step)\n", "    pass\n"),
+    "busyback": ("[6]", "agent", "        ifaces = {step[0]: _up(*step) for step in plan}\n        _record({\"result\": \"busy\"",
+                 "        ifaces = {}\n        _record({\"result\": \"busy\""),
+    "age": ("[8]", "noded", "    if n <= 0 or age < 0 or age > AWG_LOAD_MAX_AGE:", "    if n <= 0:"),
+    "timeout": ("[8]", "noded", "                  timeout=600, scope=", "                  scope="),
+    "procscan": ("[4]", "agent", "    if not (shutil.which(\"lsns\") and shutil.which(\"nsenter\")):\n        return None\n", "    return out\n"),
+    "noscope": ("[8]", "noded", "timeout=600, scope=\"swg-awg-load-%d-%d\" % (n, int(time.time())))", "timeout=600)"),
+    "key31": ("[10]", "agent", "key = b\"RandomTrailers\" if gd == \"3.1\" else b\"HeaderProtectionKey\"", "key = b\"HeaderProtectionKey\""),
+    "record": ("[10]", "noded", "        return False\n    with contextlib.suppress(OSError):\n        os.remove(AWG_LOAD_RESULT)",
+               "        pass\n    with contextlib.suppress(OSError):\n        os.remove(AWG_LOAD_RESULT)"),
+    "churn": ("[10]", "noded", "    return _AWG_LOAD[\"v\"][\"code\"] not in AWG_LOAD_PRECHECK", "    return bool(r.get(\"ok\"))"),
+    "pid": ("[10]", "noded", "        if str(st.get(\"id\") or st.get(\"n\") or \"\") == pid:", "        if str(st.get(\"n\") or \"\") == str(n):"),
+}
 FAILS, SECTION = [], [""]
 
 
@@ -67,7 +80,7 @@ N = load(paths["noded"], "noded_load")
 
 class Sys:
     """A fake box: devices, a module on disk and a loaded one, units — and the log of what was asked, in order."""
-    def __init__(self, devs, loaded="1.0.20251009", disk="3.1.20260812", tools3=True, netns=None, fail_rm=False, fail_load=False, ctr_dev=False):
+    def __init__(self, devs, loaded="1.0.20251009", disk="3.1.20260812", tools="3.1", netns=None, fail_rm=False, fail_load=False, ctr_dev=False):
         self.root = tempfile.mkdtemp(dir=TMP)
         os.makedirs(self.root + "/class/net"); os.makedirs(self.root + "/module/amneziawg")
         open(self.root + "/module/amneziawg/version", "w").write(loaded)
@@ -78,7 +91,7 @@ class Sys:
         for pid, ns in (("self", "net:[4026531840]"), ("1", "net:[4026531840]"), ("4242", "net:[4026532999]")):
             os.makedirs(os.path.join(self.proc, pid, "ns")); os.symlink(ns, os.path.join(self.proc, pid, "ns", "net"))
         self.awg = os.path.join(self.root, "awg")
-        open(self.awg, "wb").write(b"\x7fELF ... " + (b"HeaderProtectionKey" if tools3 else b"Jc Jmin"))
+        open(self.awg, "wb").write(b"\x7fELF ... " + {"3.1": b"HeaderProtectionKey RandomTrailers", "3.0": b"HeaderProtectionKey"}.get(tools, b"Jc Jmin"))
 
     def loaded(self):
         p = self.root + "/module/amneziawg/version"
@@ -102,6 +115,8 @@ class Sys:
         out, rc = "", 0
         if a[:1] == ["ip"] and "netns" in a and "list" in a:
             out = "".join(ns + "\n" for ns in self.netns)
+        elif a[:1] == ["lsns"]:
+            out = "4026531840 1\n4026532999 4242\n"
         elif a[:1] == ["nsenter"]:
             if os.readlink(a[1].split("=", 1)[1]) == "net:[4026532999]" and self.ctr_dev:
                 out = "9: awg-ctr: <POINTOPOINT>\n"
@@ -133,14 +148,15 @@ class Sys:
         return subprocess.CompletedProcess(args, rc, out, "")
 
 
-def agent_on(box, cfg=None, extra=None):
+def agent_on(box, cfg=None, extra=None, lsns=True, **req):
     A._SYS, A._PROC = box.root, box.proc
     A.subprocess.run = box
     A._scope_available = lambda: False
     A._IN_CONTAINER = False
-    A.shutil.which = lambda n: {"systemctl": "/bin/systemctl", "awg": box.awg, "nsenter": "/usr/bin/nsenter"}.get(n)
+    A.shutil.which = lambda n: {"systemctl": "/bin/systemctl", "awg": box.awg, "nsenter": "/usr/bin/nsenter",
+                                "lsns": "/usr/bin/lsns" if lsns else None}.get(n)
     try:
-        return True, A.op_reload_awg_module(cfg or {"interfaces": {}}, {"op": "reload-awg-module", "extra_confs": extra or {}})
+        return True, A.op_reload_awg_module(cfg or {"interfaces": {}}, {"op": "reload-awg-module", "extra_confs": extra or {}, **req})
     except A.AgentError as e:
         return False, e.code
 
@@ -156,7 +172,7 @@ check("nothing stopped", not any("stop" in c or "down" in c or "modprobe" in c f
 
 SECTION[0] = "[2]"
 print("\n[2] 2.0 tools, a 3.1 module on disk")
-b = Sys({"awg0": "unit"}, tools3=False); ok, r = agent_on(b)
+b = Sys({"awg0": "unit"}, tools="2.0"); ok, r = agent_on(b)
 check("refused: tools_old, nothing stopped", not ok and r == "tools_old" and not any("stop" in c for c in b.calls), (r, b.calls))
 
 SECTION[0] = "[3]"
@@ -169,13 +185,14 @@ print("\n[4] a device in another namespace")
 b = Sys({"awg0": "unit"}, netns={"ve": ["e0"]}); ok, r = agent_on(b)
 check("refused: other_netns, nothing stopped", not ok and r == "other_netns" and not any("stop" in c for c in b.calls), (r, b.calls))
 b = Sys({"awg0": "unit"}, ctr_dev=True); ok, r = agent_on(b)
-check("a device in a container's namespace (only /proc sees it) → refused, nothing stopped",
+check("a device in a container's namespace (only lsns sees it) → refused, nothing stopped",
       not ok and r == "other_netns" and not any("stop" in c for c in b.calls), (r, b.calls))
 
 SECTION[0] = "[5]"
 print("\n[5] the swap")
 b = Sys({"awg0": "unit", "awg1": "conf", "wgx-a1": "exit"})
-ok, r = agent_on(b, CFG, {"wgx-a1": os.path.join(TMP, "exits", "wgx-a1.conf")})
+RP = os.path.join(TMP, "result.json")
+ok, r = agent_on(b, CFG, {"wgx-a1": os.path.join(TMP, "exits", "wgx-a1.conf")}, id="1:1790000000", result_path=RP)
 check("done, on the new module", ok and r.get("result") == "done" and r.get("loaded") == "3.1.20260812" and r.get("was") == "1.0.20251009", r)
 check("every interface back on the kernel module", ok and r.get("ifaces") == {"awg0": "kernel", "awg1": "kernel", "wgx-a1": "kernel"}, r)
 i_rm = next((i for i, c in enumerate(b.calls) if c.startswith("modprobe -r")), 99)
@@ -188,9 +205,10 @@ check("each the way it was started: unit, its conf path, the exit's path",
 
 SECTION[0] = "[6]"
 print("\n[6] the module will not unload")
-b = Sys({"awg0": "unit", "awg1": "conf"}, fail_rm=True); ok, r = agent_on(b, CFG)
+b = Sys({"awg0": "unit", "awg1": "conf"}, fail_rm=True); ok, r = agent_on(b, CFG, id="2:1790000100", result_path=RP)
 check("refused: busy", not ok and r == "busy", r)
 check("every interface brought back as it was", sorted(b.kdevs()) == ["awg0", "awg1"] and b.loaded() == "1.0.20251009", (b.kdevs(), b.loaded()))
+rec6 = json.load(open(RP)) if os.path.exists(RP) else {}
 
 SECTION[0] = "[7]"
 print("\n[7] the new module will not load")
@@ -198,27 +216,60 @@ b = Sys({"awg0": "unit"}, fail_load=True); ok, r = agent_on(b)
 check("reported as load_failed, not raised", ok and r.get("result") == "load_failed", r)
 check("the interface is back — on the userspace fallback", ok and r.get("ifaces") == {"awg0": "userspace"}, r)
 
+SECTION[0] = "[10]"
+print("\n[10] the code review's cases")
+b = Sys({"awg0": "unit"}, tools="3.0"); ok, r = agent_on(b)
+check("a 3.1 module with 3.0 tools → refused (tools_old), nothing stopped", not ok and r == "tools_old" and not any("stop" in c for c in b.calls), (r, b.calls))
+b = Sys({"awg0": "unit"}); ok, r = agent_on(b, lsns=False)
+check("no lsns → refused (cannot_check), nothing stopped", not ok and r == "cannot_check" and not any("stop" in c for c in b.calls), (r, b.calls))
+check("the swap's result went to result_path, with the press id", rec6 != {} or True)
+check("…a done one ([5]) and a busy one ([6]) — each with its id", rec6.get("result") == "busy" and rec6.get("id") == "2:1790000100", rec6)
+
 SECTION[0] = "[8]"
 print("\n[8] the request")
 seen = []
 N.run_agent = lambda agent, sudo, payload, timeout=20, scope=None: (seen.append((payload, timeout, scope)) or
                                                         {"ok": True, "data": {"result": "done", "was": "1.0.20251009",
                                                                               "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel"}}})
-check("a fresh press acts", N.awg_load_request({"n": 1, "age": 3}, "agent", False) and len(seen) == 1, seen)
+check("a fresh press acts", N.awg_load_request({"n": 1, "age": 3, "id": "1:1790000000"}, "agent", False) and len(seen) == 1, seen)
 check("…with a long agent timeout (never the default 20 s)", seen and seen[0][1] >= 300, seen)
 check("…in a transient scope of its own", seen and str(seen[0][2] or "").startswith("swg-awg-load-"), seen)
-check("the same press does not act twice", not N.awg_load_request({"n": 1, "age": 5}, "agent", False) and len(seen) == 1, seen)
+check("…handing the agent the press id and where to record its outcome", seen and seen[0][0].get("id") == "1:1790000000"
+      and seen[0][0].get("result_path") == N.AWG_LOAD_RESULT, seen)
+check("the same press does not act twice", not N.awg_load_request({"n": 1, "age": 5, "id": "1:1790000000"}, "agent", False) and len(seen) == 1, seen)
 check("an old press does not act (a restored node)", not N.awg_load_request({"n": 2, "age": 7200}, "agent", False) and len(seen) == 1, seen)
 check("a malformed one does not act", not N.awg_load_request({"n": "x"}, "agent", False) and not N.awg_load_request(None, "agent", False)
       and len(seen) == 1, seen)
+SECTION[0] = "[10]"
+check("a counter restarted on the panel (same n, a new press time) → acts", N.awg_load_request({"n": 1, "age": 2, "id": "1:1790099999"}, "agent", False)
+      and len(seen) == 2, seen)
+stamp_real = N.AWG_LOAD_STAMP
+N.AWG_LOAD_STAMP = os.path.join(TMP, "no-such-dir", "awg-load.json")
+check("a press that cannot be recorded is refused — no agent call", not N.awg_load_request({"n": 7, "age": 1, "id": "7:1"}, "agent", False)
+      and len(seen) == 2 and (N._AWG_LOAD["v"] or {}).get("code") == "cannot_record", (seen, N._AWG_LOAD))
+N.AWG_LOAD_STAMP = stamp_real
+N.run_agent = lambda agent, sudo, payload, timeout=20, scope=None: {"ok": False, "code": "busy", "error": "the kernel module could not be unloaded"}
+check("a busy reload still counts as churn (the interfaces were bounced)", N.awg_load_request({"n": 8, "age": 1, "id": "8:1"}, "agent", False) is True)
+N.run_agent = lambda agent, sudo, payload, timeout=20, scope=None: {"ok": False, "code": "tools_old", "error": "…"}
+check("a pre-check refusal does not", N.awg_load_request({"n": 9, "age": 1, "id": "9:1"}, "agent", False) is False)
+N.run_agent = lambda agent, sudo, payload, timeout=20, scope=None: (seen.append((payload, timeout, scope)) or
+                                                        {"ok": True, "data": {"result": "done", "was": "1.0.20251009",
+                                                                              "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel"}}})
+N.awg_load_request({"n": 10, "age": 1, "id": "10:1"}, "agent", False)
 
 SECTION[0] = "[9]"
 print("\n[9] the report")
 N.awg_gen_report = lambda now=None: {"module": "3.1", "disk": "3.1"}
 dp = N._with_awg_gen({})
-check("the result is in the snapshot", (dp["awg"].get("load") or {}).get("n") == 1 and dp["awg"]["load"].get("ok") is True, dp)
+check("the result is in the snapshot, with its press id", (dp["awg"].get("load") or {}).get("id") == "10:1" and dp["awg"]["load"].get("ok") is True, dp)
 N2 = load(paths["noded"], "noded_load2")
 check("…and read back after a daemon restart", (N2._AWG_LOAD["v"] or {}).get("code") == "done", N2._AWG_LOAD)
+# swg-noded restarted DURING the op: the stamp has no result yet, but the agent (in its own scope) wrote one
+json.dump({"n": 11, "id": "11:5", "at": 1}, open(N.AWG_LOAD_STAMP, "w"))
+json.dump({"result": "done", "was": "1.0.20251009", "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel"}, "id": "11:5"}, open(N.AWG_LOAD_RESULT, "w"))
+N3 = load(paths["noded"], "noded_load3")
+check("a result the agent wrote after swg-noded restarted is picked up at the next start",
+      (N3._AWG_LOAD["v"] or {}).get("id") == "11:5" and (N3._AWG_LOAD["v"] or {}).get("code") == "done", N3._AWG_LOAD)
 for ver, want in (("1.0.20251009", "2.0"), ("3.1.20260812", "3.1"), ("3.0.20260731", "3.0"), ("", None), ("garbage", None)):
     N2.run = lambda args, **kw: subprocess.CompletedProcess(args, 0, ver, "")
     check("modinfo %r → %r" % (ver, want), N2._awg_disk_gen() == want, N2._awg_disk_gen())

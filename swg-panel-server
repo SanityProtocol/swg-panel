@@ -1124,7 +1124,11 @@ def _check_latest_remote(budget=120):
         if _vtuple(v) == (0, 0, 0):      # not a version -> treat it as no answer at all
             v = ""
         if v:
-            LATEST_REMOTE["version"] = v            # the notes are read when a bubble opens (/api/changelog?want=)
+            # ⚠️ FORWARD ONLY. VERSION comes from raw's CDN, whose edges disagree for a while after a publish: one check can
+            # read the new release and the next an edge still serving the old one — and the badge would vanish again.
+            # A panel restart starts afresh, which is also how a changed SWG_LATEST_URL takes effect.
+            if not LATEST_REMOTE.get("version") or _vtuple(v) >= _vtuple(LATEST_REMOTE["version"]):
+                LATEST_REMOTE["version"] = v        # the notes are read when a bubble opens (/api/changelog?want=)
             ok = True
         else:
             # Reached it, and what came back was not a version — a captive portal or a block page answering
@@ -11070,7 +11074,10 @@ def awg_load_status(node, snap, name, now=None):
     now = now or time.time()
     age = max(0, int(now - at))                  # the SPA stops showing a result an hour after the press
     got = _awg_datapath(snap).get("load") if isinstance(_awg_datapath(snap).get("load"), dict) else {}
-    if _awg_int(got.get("n")) != n:
+    # The press is its counter AND its time: a node record re-created here restarts the counter, and n alone would pair a
+    # new press with the node's result for an old one. A node without `id` in its report is matched by n, as before.
+    pid = "%d:%d" % (n, int(at))
+    if (str(got.get("id")) != pid) if got.get("id") else (_awg_int(got.get("n")) != n):
         if now - at > AWG_LOAD_LOST_S:
             return {"n": n, "age": age, "state": "lost", "msg": perr("{v1} has not answered the request to load the AmneziaWG module — it "
                                                          "may be offline, or on a version without it", v1=name)}
@@ -11093,13 +11100,20 @@ def awg_load_status(node, snap, name, now=None):
     elif code == "no_way_back":
         msg = perr("{v1}: nothing was changed — nothing would bring back {v2}", v1=name,
                    v2=str(got.get("error") or "").split(": ", 1)[-1][:200])
+    elif code == "cannot_record":
+        msg = perr("{v1}: nothing was changed — the node could not record the request (its state directory is not writable)",
+                   v1=name)
+    elif code == "cannot_check":
+        msg = perr("{v1}: nothing was changed — the node cannot check its other network namespaces (lsns or nsenter is "
+                   "missing)", v1=name)
     elif code == "other_netns":
         msg = perr("{v1}: nothing was changed — an AmneziaWG device lives in another network namespace", v1=name)
     elif code == "nothing_newer":
         msg = perr("{v1}: nothing was changed — the installed module is not newer than the one in use", v1=name)
     else:
         msg = perr("{v1}: the AmneziaWG module was not loaded — {v2}", v1=name, v2=str(got.get("error") or code)[:200])
-    return {"n": n, "age": age, "state": "done" if got.get("ok") else "failed", "msg": msg}
+    # "partial": the module is loaded but not every interface came back on it — shown as a problem, not as a success
+    return {"n": n, "age": age, "state": ("partial" if us or dn else "done") if got.get("ok") else "failed", "msg": msg}
 
 def awg31_rendered(rec, rep):
     """Is an interface AmneziaWG 3.1 in the configs its clients are given? The dict apply_iface_meta renders — the record's
@@ -29772,6 +29786,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "restart": list((node.get("restart") or {}).keys()),   # interfaces to bounce
                                 # "Load now": the counter WITH ITS AGE on this clock — the node acts once, and only on a fresh press
                                 **({"awg_load": {"n": _awg_int((node.get("awg_load") or {}).get("n")),
+                                                 "id": "%d:%d" % (_awg_int((node.get("awg_load") or {}).get("n")),
+                                                                  _awg_int((node.get("awg_load") or {}).get("at"))),
                                                  "age": max(0, int(time.time()) - _awg_int((node.get("awg_load") or {}).get("at")))}}
                                    if isinstance(node.get("awg_load"), dict) else {}),
                                 "iface_stop": list((node.get("iface_stop") or {}).keys()),    # interfaces to stop (down + disable)

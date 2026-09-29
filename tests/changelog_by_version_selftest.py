@@ -7,19 +7,21 @@ with the badge's version as `want`, and a cached copy without that version is fe
 
 Real functions: `_check_latest_remote`, `_changelog_entries`; the network is a stub of urllib.request.urlopen.
 
-  [1] the version check reads VERSION only — no changelog, no GitHub API call (the commit pinning is gone)
+  [1] the version check reads VERSION only — no changelog, no GitHub API call (the commit pinning is gone) — and moves
+      FORWARD only (a stale CDN edge must not take the badge back)
   [2] a stale copy (no `want` in it) is fetched again — but at most once a minute, not on every open
   [3] a copy that holds `want` is kept for the hour
   [4] /api/state no longer ships notes; /api/changelog passes the badge's version
 
-Run: python3 tests/changelog_by_version_selftest.py      --plant keepstale | nowant   (exit 0 when caught)
+Run: python3 tests/changelog_by_version_selftest.py      --plant backward | keepstale | nowant   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, io, os, sys, tempfile, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(HERE, "..", "swg-panel-server")
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
-PLANTS = {"keepstale": ("[2]", "(has or now - cache.get(\"tried\", 0) < CHANGELOG_RETRY_S)", "True"),
+PLANTS = {"backward": ("[1]", "            if not LATEST_REMOTE.get(\"version\") or _vtuple(v) >= _vtuple(LATEST_REMOTE[\"version\"]):", "            if True:"),
+          "keepstale": ("[2]", "(has or now - cache.get(\"tried\", 0) < CHANGELOG_RETRY_S)", "True"),
           "nowant": ("[4]", "\"entries\": _changelog_entries(_req_lang(), want)}}", "\"entries\": _changelog_entries(_req_lang())}}")}
 FAILS, SECTION = [], [""]
 
@@ -78,6 +80,19 @@ m._check_latest_remote(budget=20)
 check("the new version is known", m.LATEST_REMOTE.get("version") == "1.8.9-beta", m.LATEST_REMOTE)
 check("…from VERSION alone: no changelog, no GitHub API call", all("/VERSION" in d for d in dials), dials)
 check("…and no notes kept beside it", set(m.LATEST_REMOTE) <= {"version", "checked", "why"}, m.LATEST_REMOTE)
+_ver = {"v": b"1.8.8-beta\n"}
+_real_open = urllib.request.urlopen
+def _stale_version(req, *a, **k):
+    u = req.full_url if hasattr(req, "full_url") else str(req)
+    return _R(_ver["v"]) if "/VERSION" in u else _real_open(req, *a, **k)
+urllib.request.urlopen = _stale_version
+m._check_latest_remote(budget=20)
+check("a stale CDN edge answering the OLD version next hour does not take the badge back (forward only)",
+      m.LATEST_REMOTE.get("version") == "1.8.9-beta", m.LATEST_REMOTE)
+_ver["v"] = b"1.9.0-beta\n"; m._check_latest_remote(budget=20)
+check("…a newer one still moves it forward", m.LATEST_REMOTE.get("version") == "1.9.0-beta", m.LATEST_REMOTE)
+urllib.request.urlopen = _real_open
+m.LATEST_REMOTE["version"] = "1.8.9-beta"
 
 SECTION[0] = "[2]"
 print("\n[2] a stale copy")

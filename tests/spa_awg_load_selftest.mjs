@@ -53,6 +53,8 @@ check("done → its sentence, no button", /is loaded/.test(texts(l4)) && !hasBtn
 const l4b = L({ awg31_loadable: true, awg_load: { n: 1, age: 20, state: "failed", msg: msg("{v1}: the AmneziaWG module could not be unloaded — every interface was brought back as it was") } });
 check("failed → its sentence in the failure colour, and the button again", /could not be unloaded/.test(texts(l4b)) && /err/.test(cls(l4b)) && hasBtn(l4b),
       [texts(l4b), cls(l4b)]);
+const l4c = L({ awg31_loadable: false, awg_load: { n: 1, age: 20, state: "partial", msg: msg("{v1}: AmneziaWG {v2} is loaded, but not every interface came back on it — on the userspace fallback: {v3}; down: {v4}") } });
+check("partial (loaded, not every interface back) → in the failure colour, not as a success", /err/.test(cls(l4c)), [texts(l4c), cls(l4c)]);
 console.log("\n[5] an old result");
 check("an hour on, a done result is gone", L({ awg31_loadable: false, awg_load: { n: 1, age: 4000, state: "done", msg: msg("{v1}: AmneziaWG {v2} is loaded — every AmneziaWG interface is back on the kernel module") } }) == null);
 console.log("\n[6] where the switch shows it");
