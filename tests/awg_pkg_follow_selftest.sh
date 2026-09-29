@@ -41,7 +41,7 @@ HAVE_BNODE=yes; DRYRUN=false; APT_DONE=\${APT_DONE:-no}; DID_UPDATE=no; DID_FAIL
 have(){ command -v "\$1" >/dev/null 2>&1; }; run(){ "\$@"; }
 ok(){ echo "OK \$*"; }; warn(){ echo "WARN \$*"; }; note(){ echo "NOTE \$*"; }
 $fn
-ensure_awg_pkg_follow; echo "DID_UPDATE=\$DID_UPDATE DID_FAIL=\$DID_FAIL"
+AWG_PKG_ROUTE=no; ensure_awg_pkg_follow; echo "DID_UPDATE=\$DID_UPDATE DID_FAIL=\$DID_FAIL ROUTE=\$AWG_PKG_ROUTE"
 EOF
 case_(){   # case_ <name> : a fresh sandbox — 1.0 installed and loaded, 3.1 in the PPA, awg owned by amneziawg-tools
   export SBX="$T/$1"; rm -rf "$SBX"; mkdir -p "$SBX"; : > "$SBX/calls"
@@ -62,6 +62,7 @@ check "nothing asked of apt" "$([ ! -s "$SBX/calls" ] && echo 0 || echo 1)" "$(c
 echo; echo "[2] hand-built awg"
 case_ c2; : > "$SBX/owner"; out="$(go)"
 check "nothing upgraded" "$(grep -q install "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+check "…and not recorded as the package route" "$(printf '%s' "$out" | grep -q 'ROUTE=no' && echo 0 || echo 1)" "$out"
 
 echo; echo "[3] nothing newer"
 case_ c3; cp "$SBX/inst-amneziawg-dkms" "$SBX/cand"; out="$(go)"
@@ -75,6 +76,7 @@ check "one transaction: dkms + tools + the metapackage" "$(grep -c 'install -y -
 check "the loaded module is left alone" "$(grep -q 'modprobe -r' "$SBX/calls" && echo 1 || echo 0)"
 check "the output says: next reboot, or from the panel" "$(printf '%s' "$out" | grep -q 'until the next reboot, or load it now from the panel' && echo 0 || echo 1)" "$out"
 check "counted as an update, not a failure" "$(printf '%s' "$out" | grep -q 'DID_UPDATE=yes DID_FAIL=no' && echo 0 || echo 1)"
+check "…and the package route recorded (the later summary line says the module and tools follow the PPA)" "$(printf '%s' "$out" | grep -q 'ROUTE=yes' && echo 0 || echo 1)"
 
 echo; echo "[5] newer build, no device"
 case_ c5; : > "$SBX/kdevs"; out="$(go)"

@@ -188,7 +188,7 @@ pkg_update(){ local label="$1"; shift; local pkg cur cand
 
 NEW_VER="$(cat "$SRC/VERSION" 2>/dev/null || echo unknown)"
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
-found=0; DID_UPDATE=no; DID_FAIL=no   # DID_FAIL flips to yes on ANY component failure → partial-failure status + exit 1
+found=0; DID_UPDATE=no; DID_FAIL=no; AWG_PKG_ROUTE=no   # AWG_PKG_ROUTE: ensure_awg_pkg_follow owns the amnezia packages here   # DID_FAIL flips to yes on ANY component failure → partial-failure status + exit 1
 # per-component outcome, printed as a summary at the end — so a multi-component box (e.g. a docker
 # master AND a bare-metal node on the same host) clearly shows EVERY component was considered.
 RESULTS=(); note(){ RESULTS+=("$*"); }
@@ -969,6 +969,7 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
   cur="$(pkg_installed amneziawg-dkms)"; [ -n "$cur" ] || return 0
   awgp="$(command -v awg 2>/dev/null)" || return 0
   case "$(dpkg -S "$awgp" 2>/dev/null)" in amneziawg-tools:*) ;; *) return 0 ;; esac   # never `| grep -q` under pipefail
+  AWG_PKG_ROUTE=yes
   if $DRYRUN; then ok "AmneziaWG packages: an update checks the amnezia PPA and follows its build (module and tools together)"; return 0; fi
   [ "$APT_DONE" = yes ] || awg_src_refresh || true
   cand="$(pkg_candidate amneziawg-dkms)"
@@ -2195,7 +2196,8 @@ fi
 # bare-metal node → the system package (amneziawg via the amnezia PPA, or wireguard). docker node → the
 # datapath (amneziawg-go) lives in the swg-node image and refreshes with the image pull above.
 if $NO_COMPONENTS && [ "$HAVE_BNODE" = yes ]; then
-  ok "$(col_l "WireGuard / AmneziaWG"): skipped — third-party datapath (--no-components: swg programs only)"
+  if [ "$AWG_PKG_ROUTE" = yes ]; then ok "$(col_l "WireGuard / AmneziaWG"): the AmneziaWG module and tools follow the amnezia PPA (above); other packages skipped (--no-components)"
+  else ok "$(col_l "WireGuard / AmneziaWG"): skipped — third-party datapath (--no-components: swg programs only)"; fi
 elif [ "$HAVE_BNODE" = yes ]; then
   pkg_update "WireGuard / AmneziaWG" amneziawg amneziawg-tools amneziawg-dkms wireguard wireguard-tools
 elif [ "$HAVE_DOCK" = yes ] && [ "$DOCK_PROF" != host ]; then
