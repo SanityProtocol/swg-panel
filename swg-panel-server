@@ -11200,12 +11200,13 @@ def awg_load_status(node, snap, name, now=None):
     if n <= 0:
         return None
     now = now or time.time()
+    age = max(0, int(now - at))                  # the SPA stops showing a result an hour after the press
     got = _awg_datapath(snap).get("load") if isinstance(_awg_datapath(snap).get("load"), dict) else {}
     if _awg_int(got.get("n")) != n:
         if now - at > AWG_LOAD_LOST_S:
-            return {"n": n, "state": "lost", "msg": perr("{v1} has not answered the request to load the AmneziaWG module — it "
+            return {"n": n, "age": age, "state": "lost", "msg": perr("{v1} has not answered the request to load the AmneziaWG module — it "
                                                          "may be offline, or on a version without it", v1=name)}
-        return {"n": n, "state": "pending"}
+        return {"n": n, "age": age, "state": "pending"}
     ifs = got.get("ifaces") if isinstance(got.get("ifaces"), dict) else {}
     us = sorted(k for k, v in ifs.items() if v == "userspace"); dn = sorted(k for k, v in ifs.items() if v == "down")
     code, ver = str(got.get("code") or ""), str(got.get("loaded") or "")
@@ -11230,7 +11231,7 @@ def awg_load_status(node, snap, name, now=None):
         msg = perr("{v1}: nothing was changed — the installed module is not newer than the one in use", v1=name)
     else:
         msg = perr("{v1}: the AmneziaWG module was not loaded — {v2}", v1=name, v2=str(got.get("error") or code)[:200])
-    return {"n": n, "state": "done" if got.get("ok") else "failed", "msg": msg}
+    return {"n": n, "age": age, "state": "done" if got.get("ok") else "failed", "msg": msg}
 
 def awg31_rendered(rec, rep):
     """Is an interface AmneziaWG 3.1 in the configs its clients are given? The dict apply_iface_meta renders — the record's

@@ -986,7 +986,23 @@ const awg3Apps = () => T("Only apps that carry AmneziaWG 3.1 can connect: Amnezi
 // `no3` / `no2` are the panel's own reason a switch that way would be refused here (its sentence, never the rule re-derived),
 // which greys that side and is said under it. `was` (the Edit sheet: the saved version) keeps it quiet until the version is being
 // changed — an Edit sheet opened for anything else does not explain AmneziaWG versions every time.
-export function AwgGenField({ value, onChange, no3, no2, label, hint, was }) {
+// "Load now" (docs/AWG31-LOAD-PLAN.md D5): under the switch of a node where an update installed AmneziaWG 3.1 but the kernel
+// module in use is older — the button, then "loading…" until the node answers that press, then its result for an hour. The
+// panel decides it can be offered (`awg31_loadable`) and words the result (`awg_load.msg`); nothing is re-derived here.
+export function AwgLoadLine({ node, nrec }) {
+  const st = (nrec || {}).awg_load || null;
+  const name = (nrec || {}).name || node;
+  const pending = !!st && st.state === "pending";
+  const res = st && st.msg && (st.age || 0) < 3600 ? srvText(st.msg) : "";
+  if (!nrec || (!nrec.awg31_loadable && !pending && !res)) return null;
+  const ask = () => openConfirm({ title: T("Load AmneziaWG 3.1 · {name}", { name }), confirmLabel: T("Load now"), warn: true,
+    body: T("Every AmneziaWG interface on {name} restarts on the new kernel module. Connected devices lose traffic for about 15 seconds while they reconnect; nothing else changes. Or leave it: the module loads at the next reboot.", { name }),
+    onConfirm: async () => { const r = await api.awgLoad({ id: node }); if (!r.ok) return toast(srvText(r) || T("Failed"), "err"); await Store.poll(); } });
+  if (pending) return html`<div class="hint warnish">${T("Loading the AmneziaWG module on {name}…", { name })}</div>`;
+  return html`<div class=${"hint" + (st && st.state !== "done" && res ? " err" : "")}>${res}${res && nrec.awg31_loadable ? " " : ""}${nrec.awg31_loadable
+    ? html`<button type="button" class="linkbtn" onClick=${ask}>${T("Load now")}</button>` : null}</div>`;
+}
+export function AwgGenField({ value, onChange, no3, no2, label, hint, was, node, nrec }) {
   label = label || T("AmneziaWG version");
   const why = value === "3.1" ? no2 : no3;
   // ⚠️ THE CREATE FORM NAMES THE APPS (`was == null`: nothing saved yet). The Edit sheet stays quiet on 3.1 because the switch
@@ -999,6 +1015,7 @@ export function AwgGenField({ value, onChange, no3, no2, label, hint, was }) {
       aria-checked=${value === g} class=${(value === g ? "on" : "") + (g === "3.1" ? " sw-awg3" : "")} disabled=${value !== g && !!no}
       title=${value !== g && no ? no : null} onClick=${() => onChange(g)}>${g}</button>`)}</div>
     ${say ? html`<div class="hint">${say}</div>` : null}
+    ${nrec ? html`<${AwgLoadLine} node=${node} nrec=${nrec}/>` : null}
   </div>`;
 }
 // The devices a switch cuts, in their own window (15 a page, a filter once it pages): a list sized by the fleet never renders inline.
@@ -1327,7 +1344,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       </div>
       ${adoptMode ? html`<div class="hint" style="margin-top:8px">${T("Taking over an interface already on the node — its keys and peers are kept.")}</div>` : null}
     </div>
-    ${proto === "awg" && !existing ? html`<${AwgGenField} value=${gen} onChange=${setGen} no3=${no31} no2=""/>` : null}
+    ${proto === "awg" && !existing ? html`<${AwgGenField} value=${gen} onChange=${setGen} no3=${no31} no2="" node=${node} nrec=${nrec}/>` : null}
     ${existing ? html`<${Fragment}>
       ${exWdtt ? html`<div class="notice"><${Ic} i="info"/><span>${Trich("If the node has discovered this server it is quicker to adopt it from its *orphan card* on the node screen — the node has already read its fork, ports and identity. Point at the directory here when it hasn't: an install that was moved, renamed, or is stopped.")}</span></div>` : html`
       <div class="row2">
@@ -1879,7 +1896,7 @@ export function EditIfaceSheet({ node, iface }) {
         <div class="hint">${T("What clients dial — config-facing only")}</div></div>
       <div class="field"><label>${T("Listen port")}</label><input class=${iperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/>${iperr ? html`<div class="hint err">${iperr}</div>` : html`<div class="hint">${T("Applied to the node (currently {v1})", { v1: meta.listen_port || "—" })}</div>`}</div>
     </div>
-    ${genSw ? html`<${AwgGenField} value=${gen} onChange=${setGen} no3=${no3} no2=${no2} was=${genWas}/>` : null}
+    ${genSw ? html`<${AwgGenField} value=${gen} onChange=${setGen} no3=${no3} no2=${no2} was=${genWas} node=${node} nrec=${nrec}/>` : null}
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
     ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}

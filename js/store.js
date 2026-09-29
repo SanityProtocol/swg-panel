@@ -151,7 +151,8 @@ export const api = {
   apiWebhookSave(b) { return this.post("/api/integrations/webhook", b); },
   apiWebhookDelete(id) { return this.post("/api/integrations/webhook/delete", { id }); },
   apiWebhookTest(id) { return this.post("/api/integrations/webhook/test", { id }); },
-  routingReset(b) { return this.post("/api/node/routing-reset", b); },   // per-node: wipe + rebuild + re-pull all smart-routing state
+  routingReset(b) { return this.post("/api/node/routing-reset", b); },
+  awgLoad(b) { return this.post("/api/node/awg-load", b); },   // "Load now": swap in the AmneziaWG module an update installed   // per-node: wipe + rebuild + re-pull all smart-routing state
   asnCount(n) { return this.get("/api/asn?n=" + encodeURIComponent(n)); },   // resolve an ASN → prefix count (live editor feedback)
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
   // Restore / migrate: arms the rebuild (baseline, interface restores, turn capture, mesh re-provision)
