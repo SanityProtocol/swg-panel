@@ -1012,11 +1012,14 @@ def _latest_notes(lang="en"):
     if lang == "en":
         return LATEST_REMOTE.get("date") or "", LATEST_REMOTE.get("notes") or []
     now = int(time.time())
+    cur = LATEST_REMOTE.get("version") or ""
     c = _LATEST_NOTES.get(lang)
-    if c and now - c["at"] < 3600:
+    if c and now - c["at"] < 3600 and c.get("ver") == cur:
         return c["date"], c["notes"]
     _cv, date, notes = _fetch_latest_changelog(lang, LATEST_REMOTE.get("sha", ""))
-    _LATEST_NOTES[lang] = {"at": now, "date": date, "notes": notes}
+    if cur and _short_ver(_cv or "") != cur:        # a stale or failed fetch: never another release's notes
+        return "", []
+    _LATEST_NOTES[lang] = {"at": now, "ver": cur, "date": date, "notes": notes}
     return date, notes
 def _changelog_entries(lang="en"):
     """Parse the FULL remote changelog → [{version, date, notes[]}] newest-first, for the version changelog browser
@@ -1248,7 +1251,13 @@ def _check_latest_remote(budget=120):
             # with empty — a blip erasing what the operator was reading. Take the notes only when they came
             # back naming THIS version; otherwise keep the last good ones and let the next check correct.
             if cv and _short_ver(cv) == v:
-                LATEST_REMOTE["date"], LATEST_REMOTE["notes"] = cdate, cnotes
+                LATEST_REMOTE["date"], LATEST_REMOTE["notes"], LATEST_REMOTE["notes_ver"] = cdate, cnotes, v
+            elif LATEST_REMOTE.get("notes_ver") != v:
+                # ⚠️ "THE LAST GOOD ONES" ARE THE PREVIOUS RELEASE'S the moment a new version appears — kept, they
+                # sat under the new version's heading: 1.8.8's publish showed 1.8.7's notes and date in the bubble
+                # (the API was unreachable, so the fetch fell back to the CDN's stale changelog). No notes until
+                # the next check brings this version's, rather than another release's.
+                LATEST_REMOTE["date"], LATEST_REMOTE["notes"] = "", []
             ok = True
         else:
             # Reached it, and what came back was not a version — a captive portal or a block page answering
