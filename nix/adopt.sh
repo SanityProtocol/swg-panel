@@ -100,8 +100,8 @@ BARE_NODE=no;  if [ -f "$NODE_CFG" ] || [ -e "$SD/swg-noded.service" ] || [ -x /
 BARE_PANEL=no; if [ -e "$SD/swg-panel-server.service" ] || [ -x /opt/swg-panel/swg-panel-server ]; then BARE_PANEL=yes; fi
 DOCKER_NODE=no; DOCKER_PANEL=no
 if command -v docker >/dev/null 2>&1; then
-  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node  && DOCKER_NODE=yes
-  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel && DOCKER_PANEL=yes
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx swg-node >/dev/null  && DOCKER_NODE=yes
+  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx swg-panel >/dev/null && DOCKER_PANEL=yes
 fi
 # A docker install whose containers are already gone is still a docker install: its data dir holds the state.
 [ "$DOCKER_NODE" = no ]  && [ -d "$DOCKER_DIR/data/node" ] && DOCKER_NODE=stale
@@ -133,7 +133,7 @@ PY
 read_docker_env(){  # same five, out of the compose .env
   local e="$DOCKER_DIR/.env" g
   [ -f "$e" ] || return 0
-  g(){ sed -n "s/^$1=//p" "$e" 2>/dev/null | head -1 | sed 's/^"//; s/"$//'; }
+  g(){ sed -n "s/^$1=//p" "$e" 2>/dev/null | sed -n 1p | sed 's/^"//; s/"$//'; }
   printf '%s\t%s\t%s\t%s\t%s\n' "$(g NODE_TOKEN)" "$(g PANEL_URL)" "$(g NODE_ENDPOINT)" "$(g TLS_VERIFY)" "$(g TLS_FINGERPRINT)"
 }
 mask(){ local t="${1:-}"; [ -n "$t" ] || { printf '(none)'; return; }
@@ -370,7 +370,7 @@ if [ "$DO_RELEASE" = yes ]; then
       else ( cd "$DOCKER_DIR" && { docker compose down >/dev/null 2>&1 || docker-compose down >/dev/null 2>&1; } ) \
              && sub "stopped the compose stack ($DOCKER_DIR)" || warn "couldn't bring the compose stack down — do it by hand before the rebuild"; fi
     else
-      for c in swg-node swg-panel swg-sub; do docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$c" && { run docker rm -f "$c" >/dev/null 2>&1 || true; sub "removed the $c container"; }; done
+      for c in swg-node swg-panel swg-sub; do docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx "$c" >/dev/null && { run docker rm -f "$c" >/dev/null 2>&1 || true; sub "removed the $c container"; }; done
     fi
     # host netdevs outlive `compose down` (host networking), and they hold the ports the new arm needs.
     for c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$c" ] || continue

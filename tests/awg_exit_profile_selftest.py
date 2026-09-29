@@ -96,7 +96,7 @@ rec_a = {"priv": "k", "address": "10.77.0.2", "mtu": 1280, "peer_key": "p", "end
 txt = N._exit_conf_text(rec_a)
 for k in ("Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", "H3", "H4"):
     check("conf carries %s" % k, ("\n%s = " % k) in txt, txt)
-check("they sit in [Interface], before [Peer]", txt.index("Jc = ") < txt.index("[Peer]"), txt)
+check("they sit in [Interface], before [Peer]", "Jc = " in txt and txt.index("Jc = ") < txt.index("[Peer]"), txt)
 check("`Table = off` is still there — the route hazard is untouched", "\nTable = off\n" in txt)
 import random
 shuffled = dict(sorted(rec_a["awg"].items(), key=lambda kv: random.random()))
@@ -152,11 +152,13 @@ ss = open(os.path.join(ROOT, "js", "screen-settings.js"), encoding="utf-8").read
 check("the node measures the underlay hop", "def _exit_ping(endpoint" in nsrc)
 check("…with raw ICMP (the datagram kind is EACCES here, and `ping` is not in the node image)",
       "socket.SOCK_RAW, socket.IPPROTO_ICMP" in nsrc)
-check("…accepting only OUR echo reply, not any ICMP that arrives", "if typ == 0 and rid == ident:" in nsrc)
+check("…accepting only OUR echo reply, from the server pinged, not any ICMP that arrives",
+      "if typ == 0 and rid == ident and frm[0] == ip:" in nsrc and "ident = secrets.randbelow(0xFFFF) + 1" in nsrc)
 check("…and caching the endpoint's DNS instead of resolving per exit per sync", "_EXIT_EP_IP" in nsrc)
 check("select and struct are imported (a NameError here would read as 'cannot measure')",
       bool(re.search(r"^import select$", nsrc, re.M)) and bool(re.search(r"^import struct$", nsrc, re.M)))
-check("it is reported to the panel", '"ping_ms": (_exit_ping(rec.get("endpoint")) if _live else None)' in nsrc)
+check("it is reported to the panel (measured with the other probes, all devices at once — _exit_probe_all)",
+      'res[dev] = (tr, rch, _exit_ping(rec.get("endpoint")))' in nsrc and '"ping_ms": (ping if _live else None),' in nsrc)
 check("the through-tunnel request time is still measured", '"rtt_ms": int((time.monotonic() - _t0) * 1000)' in nsrc)
 check("the exits table has a Latency column", 'T("Latency")' in ss)
 check("…and it shows the UNDERLAY hop", "Number.isFinite(l.ping_ms)\n              ? T(\"{v1} ms\", { v1: l.ping_ms })" in ss)

@@ -43,7 +43,12 @@ N, P = _load(NODED, "swgnoded"), _load(PANEL, "swgpanel")
 _REAL_WARP_REGISTER = N._warp_register
 if PERTURB:
     _orig = N._exit_conf_text
-    N._exit_conf_text = lambda rec: _orig(rec).replace("Table = off\n", "")
+    def _no_table_off(rec):
+        t = _orig(rec)
+        # ⚠️ ASSERT THE ANCHOR: a conf without the line would make this plant nothing and the run read green (round 10)
+        assert "Table = off\n" in t, "perturbation anchor missing (no `Table = off` in the exit conf) — this run would FALSE-PASS"
+        return t.replace("Table = off\n", "")
+    N._exit_conf_text = _no_table_off
 
 class _R:
     def __init__(s, out="", rc=0): s.stdout, s.stderr, s.returncode = out, "", rc

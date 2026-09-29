@@ -79,8 +79,11 @@ for rel in SHELL:
     p = os.path.join(ROOT, rel)
     src = open(p, encoding="utf-8").read()
     if PERTURB and rel == "lib/common.sh":                # un-escape one, as it shipped
-        src = src.replace("on a docker box this is \\`compose pull && up\\`.",
-                          "on a docker box this is `compose pull && up`.")
+        # ⚠️ ASSERT THE ANCHOR. The sentence this used to un-escape was reworded (e2dba3f) and the replace planted
+        # nothing — the "perturbed" run read green for rounds (1.8.8 qualification, round 10). A dead plant stops here.
+        _old = "host unit runs \\`compose pull && up\\`)."
+        assert src.count(_old) == 1, "perturbation anchor missing in lib/common.sh — this run would FALSE-PASS: " + _old
+        src = src.replace(_old, "host unit runs `compose pull && up`).")
     hits = scan(p, src)
     total += len(hits)
     if hits:

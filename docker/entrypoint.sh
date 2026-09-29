@@ -127,6 +127,13 @@ STATS_DIR="${STATS_DIR:-/var/www/wgstats}"
 # file would be mistaken for "auth already set" and we'd skip generation → the panel would run with NO login. -s
 # regenerates from PANEL_PASSWORD whenever the file is missing OR empty, while a real mounted auth still wins.
 if [ -n "${SWG_PANEL_AUTH:-}" ] && [ ! -s "$SWG_PANEL_AUTH" ]; then
+  # ⚠️ A PLACEHOLDER IS NEVER A PASSWORD. .env holds "(preserved)" once the panel holds its login (and after a re-install
+  # or a convert: converted-login-preserved), so a login file lost AFTER that would have become a login whose password
+  # is the placeholder. Refused: no login is minted from it, and the panel does not start without one.
+  case "${PANEL_PASSWORD:-}" in "(preserved)"|converted-login-preserved|unused-on-node-only)
+    log "ERROR: the login file ($SWG_PANEL_AUTH) is missing and .env holds no password (PANEL_PASSWORD is a placeholder) — refusing to start without a login. Re-run the installer (it keeps your data and sets a new login), or put a password in PANEL_PASSWORD in .env and recreate the container."
+    exit 1;;
+  esac
   if [ -n "${PANEL_PASSWORD:-}" ]; then
     mkdir -p "$(dirname "$SWG_PANEL_AUTH")"
     python3 - "$PANEL_USER" "$PANEL_PASSWORD" > "$SWG_PANEL_AUTH" <<'PY'

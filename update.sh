@@ -23,6 +23,9 @@ for a in "$@"; do case "$a" in
   --node-only) NODE_ONLY=true;;     # update ONLY the bare-metal node/agent — never the co-located panel/docker
 esac; done
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# No terminal (the one-click update, an unattended run): debconf has nobody to ask and says so four lines per package
+# it touches. A value already set is left as it is. Same line as install-host.sh / install-node.sh.
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
 
 # ───────────────────────── one update at a time ─────────────────────────
 # The panel's one-click writes a trigger that a 30s timer turns into ANOTHER run of this script, so an
@@ -74,24 +77,48 @@ refuse_on_declarative_host 'services.swg-node = { enable = true; ... };'
 # signal "updating" → updated / aborted / failed for whichever this box is: a node (POST via its agent
 # config) and/or a panel host (host_proc file). Best-effort; armed only when there's something to tell.
 lc_emit_upd(){ [ -n "${LC_FILE:-}" ] && lc_emit_file "$1" "${2:-}"; [ -n "${LC_TOKEN:-}" ] && [ -n "${LC_URL:-}" ] && lc_emit_post "$1" "${2:-}"; return 0; }
-if ! $DRYRUN; then
-  # host_proc drives the PANEL header's update status. A node-only update (a co-located node self-updating)
-  # must NOT touch it — otherwise updating just the node lights up "up to date" on the panel + every tile.
-  ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ] && [ -d /var/lib/swg-panel ] && LC_FILE=/var/lib/swg-panel/host_proc
+# lc_targets — WHERE this run reports itself. Two independent answers, one per audience:
+#   · LC_FILE, the host_proc file the PANEL's header reads — the panel that is RUNNING on this box. The bare one
+#     unless it is parked (bare_panel_parked, lib/common.sh), else the docker one when it is live (docker_panel_live).
+#     ⚠️ The bare file was taken whenever the bare panel was INSTALLED, and the docker one only when there was none:
+#     on a box carrying both, with the bare panel parked beside a live docker panel, every update wrote its status into
+#     the stopped panel's state — the live panel's header stayed "updating" and read "update failed" after a run that
+#     exited 0 (1.8.8 qualification, R8). A node-only update (a co-located node self-updating) touches no panel file:
+#     updating just the node must not light up "up to date" on the panel and every tile.
+#   · LC_URL / LC_TOKEN, the node's own status POST — only for a NODE that is here: the bare agent config, else a
+#     swg-node container with a real token. ⚠️ A docker panel-only install writes the placeholder
+#     NODE_TOKEN=set-in-nodes-screen (compose interpolates every service), and it was POSTed as a node token: 401, a
+#     6 s + 25 s wait and two "couldn't reach the panel to record …" lines on every update of a box with no node at all
+#     (1.8.8 qualification, R8; 1.8.7 did the same). It used to be read only when no bare file had been picked, too —
+#     so the docker panel of a box whose node is bare never got its header written.
+lc_targets(){
+  if ! $NODE_ONLY; then
+    if [ -f "$PANEL_DIR/swg-panel-server" ] && [ -d /var/lib/swg-panel ] && ! bare_panel_parked; then
+      LC_FILE=/var/lib/swg-panel/host_proc
+    elif [ -d "$DOCKER_DIR/data/lib" ] && docker_panel_live; then
+      LC_FILE="$DOCKER_DIR/data/lib/host_proc"
+    fi
+  fi
   if [ -f /etc/swg-agent/config.json ]; then
     LC_URL="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
     LC_TOKEN="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
     LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
-  fi
-  # docker deployment: the panel host_proc lives in ./data/lib, the node token/URL in .env (no bare-metal paths)
-  if [ -z "${LC_FILE:-}" ] && [ -z "${LC_TOKEN:-}" ] && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/.env" ]; then
-    ! $NODE_ONLY && command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel && [ -d "$DOCKER_DIR/data/lib" ] && LC_FILE="$DOCKER_DIR/data/lib/host_proc"
-    LC_TOKEN="$(sed -n 's/^NODE_TOKEN=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
-    LC_URL="$(sed -n 's/^PANEL_URL=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
-    LC_VERIFY="$(sed -n 's/^TLS_VERIFY=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"; LC_VERIFY="${LC_VERIFY:-no}"
+    # …AND ITS PIN. The status went out with curl -k whenever verify was off — on every pinned node, so to whatever answered
+    # at the panel's address (1.8.8 qualification, round 6). panel_req checks the panel with it on the same connection.
+    LC_FP="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("fingerprint") or "")' 2>/dev/null || true)"
+  elif [ -f "$DOCKER_DIR/.env" ] && command -v docker >/dev/null 2>&1 \
+       && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx swg-node >/dev/null; then
+    # docker deployment: the node token/URL/trust live in .env and what the node learned since (the agent config is
+    # inside the container) — docker_node_panel reads them as the node's entrypoint does
+    docker_node_panel "$DOCKER_DIR"
+    LC_TOKEN="$DNP_TOKEN"; [ "$LC_TOKEN" = set-in-nodes-screen ] && LC_TOKEN=""
+    LC_URL="$DNP_URL"; LC_VERIFY="$DNP_VERIFY"; LC_FP="$DNP_FP"
     case "$LC_URL" in *//swg-panel|*//swg-panel/*|*//swg-panel:*)   # master: swg-panel isn't resolvable from the host → loopback
-      LC_URL="$(printf '%s' "$LC_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:$(sed -n 's/^PANEL_PORT=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')#")"; LC_VERIFY=no ;; esac
+      LC_URL="$(printf '%s' "$LC_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:$(sed -n 's/^PANEL_PORT=//p' "$DOCKER_DIR/.env" 2>/dev/null | sed -n 1p | tr -d '"')#")"; LC_VERIFY=no; LC_FP="" ;; esac
   fi
+  return 0; }
+if ! $DRYRUN; then
+  lc_targets
   { [ -n "${LC_FILE:-}" ] || [ -n "${LC_TOKEN:-}" ]; } && lc_init update lc_emit_upd
 fi
 
@@ -104,10 +131,17 @@ have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
 stamp(){ $DRYRUN || printf '%s\n' "$NEW_VER" > "$1/VERSION" 2>/dev/null || true; }
 oldver(){ cat "$1/VERSION" 2>/dev/null || echo '?'; }
-# current version of a docker component — read from the RUNNING container (the live image actually serving now),
-# falling back to the staged $DOCKER_DIR/VERSION, then '?'. $1 = container name, $2 = VERSION path in the image.
+# current version of a docker component — read from the RUNNING container (the live image actually serving now); a
+# STOPPED one is read with `docker cp`, which exec cannot do; then the staged $DOCKER_DIR/VERSION, then '?'.
+# $1 = container name, $2 = VERSION path in the image.
+# ⚠️ THE IMAGE IS THE ONLY THING THAT KNOWS. A pull install stages no VERSION of its own (only a --build one copies the
+# source's), and staging one would be a guess — it pulls a tag, not this checkout — so with its containers stopped the
+# update's header showed no current version at all (1.8.8 qualification, round 10, N11). A stopped container still
+# holds its image's file.
 docker_ver(){ local c="$1" path="$2" v=""
-  have docker && v="$(docker exec "$c" cat "$path" 2>/dev/null | head -1 | tr -d '[:space:]')"
+  have docker && v="$(docker exec "$c" cat "$path" 2>/dev/null | sed -n 1p | tr -d '[:space:]' || true)"
+  if [ -z "$v" ] && have docker; then
+    v="$(docker cp "$c:$path" - 2>/dev/null | tar -xOf - 2>/dev/null | sed -n 1p | tr -d '[:space:]' || true)"; fi
   [ -n "$v" ] || v="$(oldver "$DOCKER_DIR")"
   printf '%s' "${v:-?}"; }
 # header line showing the installed version vs the latest, so it's clear whether an update is needed
@@ -134,8 +168,8 @@ col_v(){ printf '%s%s%s' "$C_BLUE" "$*" "$RESET"; }
 #    get.docker.com's apt repo). Version check is automatic; the upgrade itself asks y/n (empty line first). ──
 APT_DONE=no
 apt_refresh(){ [ "$APT_DONE" = yes ] && return 0; APT_DONE=yes; have apt-get && run apt-get update -qq 2>/dev/null || true; }
-pkg_installed(){ dpkg-query -W -f='${Version}' "$1" 2>/dev/null | head -1; }   # installed version, or empty
-pkg_candidate(){ apt-cache policy "$1" 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | head -1; }
+pkg_installed(){ dpkg-query -W -f='${Version}' "$1" 2>/dev/null | sed -n 1p; }   # installed version, or empty
+pkg_candidate(){ apt-cache policy "$1" 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p; }
 first_pkg(){ local p; for p in "$@"; do [ -n "$(pkg_installed "$p")" ] && { echo "$p"; return 0; }; done; return 1; }
 # pkg_update <label> <pkg…> : auto-check the first installed pkg; prompt y/n only if a newer candidate exists
 pkg_update(){ local label="$1"; shift; local pkg cur cand
@@ -186,10 +220,14 @@ docker_stack_live(){
   if ! have docker || ! docker info >/dev/null 2>&1; then _DSTACK=yes; return 0; fi   # cannot tell → unchanged
   # `created` is NOT evidence: an aborted conversion allocates the containers and never starts them, and
   # those leftovers outlive the compose dir they came from. Anything that has actually run counts.
-  if docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null \
-       | grep -E '^(swg-panel|swg-node|swg-sub)\|' | grep -qv '|created$'; then
-    _DSTACK=yes; return 0
-  fi
+  # …nor is a container the installer PARKED (guard_second_panel, lib/common.sh: stopped + restart=no, because a panel
+  # of the other method runs here). Counting it recreated the parked panel on the next update, and two panels answered
+  # again. A master whose panel is parked still counts through its running node — docker_profile then says `node`.
+  local _n
+  for _n in $(docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null \
+               | grep -E '^(swg-panel|swg-node|swg-sub)\|' | grep -v '|created$' | cut -d'|' -f1); do
+    docker_parked "$_n" || { _DSTACK=yes; return 0; }
+  done
   # No containers — and that on its own is NOT proof of a leftover. An operator who ran
   # `docker compose down` has a real install with none, and this branch is exactly what would bring it
   # back (`compose pull` + `up -d --force-recreate`). Skipping them would be a silent no-op update on a
@@ -290,6 +328,47 @@ PYPORT
        then re-run the update."
   return 1
 }
+# ── Is every container of this profile already running the image its reference names? (1.8.8 qualification) ──
+# Asked AFTER `compose pull`. The recreate below removes the containers first, and a docker NODE's interfaces live
+# in its container: every recreate drops every client's tunnel until it re-handshakes (measured on a Docker master
+# VM: 20–40 s of nothing). It ran on EVERY press of Update — the dialog tells the operator it is worth pressing when
+# already up to date — and on every node update a panel update fans out, current or not. So when nothing new was
+# pulled, only `compose up -d` runs, which recreates just a service whose compose settings changed.
+# 0 = every service runs the pulled image (skip the recreate) · 1 = something differs · 2 = cannot tell (recreate).
+docker_images_current(){                      # $1 = profile
+  local prof="$1" cfg _cf rc
+  have docker && have python3 || return 2
+  cfg="$(cd "$DOCKER_DIR" 2>/dev/null && $COMPOSE --profile "$prof" config --format json 2>/dev/null)" || return 2
+  case "$cfg" in *'"services"'*) ;; *) return 2 ;; esac
+  _cf="$(mktemp)" || return 2
+  printf '%s' "$cfg" > "$_cf"
+  python3 - "$_cf" >/dev/null 2>&1 <<'PYIMG'
+import json, subprocess, sys
+def out(*argv):
+    r = subprocess.run(list(argv), capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+try:
+    svcs = json.load(open(sys.argv[1])).get("services") or {}
+    if not svcs:
+        sys.exit(2)
+    for name, svc in svcs.items():
+        ref = svc.get("image")
+        if not ref:                                   # a build: service — the full path owns it
+            sys.exit(1)
+        want = out("docker", "image", "inspect", "-f", "{{.Id}}", ref)
+        have = out("docker", "inspect", "-f", "{{.Image}} {{.State.Running}}", svc.get("container_name") or name)
+        if not want or have != want + " true":        # a stopped, missing or older container is work to do
+            sys.exit(1)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(2)
+sys.exit(0)
+PYIMG
+  rc=$?
+  rm -f "$_cf"
+  return $rc
+}
 docker_profile(){
   local names sniff="" mark
   if have docker; then
@@ -299,7 +378,7 @@ docker_profile(){
       *swg-node*)  sniff=node;;
     esac
   fi
-  mark="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 || true)"
+  mark="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | sed -n 1p || true)"
   [ "$mark" = host-node ] && mark=master        # legacy alias, same stack
   if [ -n "$sniff" ]; then
     [ -n "$mark" ] && [ "$mark" != "$sniff" ] && \
@@ -325,7 +404,7 @@ else TITLE="SWG UPDATE"; fi
 _haspanel=no; { [ "$HAVE_BPAN" = yes ] || { [ "$HAVE_DOCK" = yes ] && [ "$DOCK_PROF" != node ]; }; } && _haspanel=yes
 _hasnode=no;  { [ "$HAVE_BNODE" = yes ] || { [ "$HAVE_DOCK" = yes ] && [ "$DOCK_PROF" != host ]; }; } && _hasnode=yes
 echo; info "$TITLE"
-if $DRYRUN; then info "DRY RUN — nothing will change."; fi
+if $DRYRUN; then info "DRY RUN — nothing will change."; else seal_archives; fi   # recovery archives: root's alone (lib/common.sh, F90)
 echo
 # Panel-host heal: a low-RAM / zero-swap box OOM-kills the panel on a list-resolve spike. Ensure swap exists (host-level
 # — a bare-metal panel and a docker panel both use host memory). Only where a panel lives; a node never resolves.
@@ -375,74 +454,10 @@ install_update_unit(){   # idempotent: wire one-click host self-update for an ex
   #     mv     → `update-ok`, rc=0
   # It is also simply the right way to replace a root-owned executable: an interrupted `cat >` leaves a
   # truncated one behind, a rename cannot.
-  cat > /usr/local/bin/swg-update.new <<WRAP
-#!/usr/bin/env bash
-# ⚠️ THE WHOLE BODY IS ONE COMPOUND COMMAND, AND THE \`exit\` AT THE END IS PART OF THE FIX.
-# THIS SCRIPT REWRITES ITSELF. The update it runs re-bakes /usr/local/bin/swg-update, and bash reads a
-# script INCREMENTALLY — so when the pipeline returned, bash went back to the file for the next command at
-# the byte offset it had reached, landed in the middle of the NEW file's last line, and ran the tail of a
-# comment. Measured on swgt at the end of a completely successful panel update:
-#     /usr/local/bin/swg-update: line 15: pass: command not found
-# — from \`# extra flags (e.g. --node-only) pass through\`, in a file that is only 14 lines long. Under
-# \`set -e\` that is a non-zero exit after the update has already reported success, so a real update ends by
-# announcing a failure that did not happen. It fires ONLY when something is actually installed, which is
-# why a second run looks clean and why this survived every dry run.
-# Braces make bash parse the whole body before executing any of it, and the \`exit\` means it never reads
-# from the file again.
-{
-# swg-update — fixed root entrypoint for one-click in-place update (swg programs only).
-set -euo pipefail
-# ⚠️ EXPORTED, not just used. \`bootstrap.sh\` derives the ref from the URL IT WAS FETCHED FROM, reading
-# \$SWG_BOOTSTRAP_URL out of its own environment — and this line used the baked URL only as a shell
-# DEFAULT, so the piped bash saw the variable UNSET, inferred nothing, and fell back to \`main\`. The
-# wrapper fetched dev's bootstrap and then installed main from it: the panel silently downgraded itself
-# and re-baked this very file back to main, which is word for word the failure the inference was added to
-# prevent. Measured on swgt: 1.8.6-beta -> 1.8.5-beta, wrapper dev -> main, on one press of Update.
-# Exporting the URL (rather than forcing SWG_REF) keeps an operator's own \$SWG_BOOTSTRAP_URL authoritative
-# — their URL then decides the ref, which is the whole point of deriving it from the URL.
-URL="\${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/${_swg_ref}/bootstrap.sh}"
-export SWG_BOOTSTRAP_URL="\$URL"
-# ⚠️ DOWNLOADED FIRST, RUN SECOND — AND A SECOND DOOR WHEN RAW CANNOT BE HAD. Byte-identical in install-host.sh,
-# update.sh and lib/common.sh; tests/update_bootstrap_fallback_selftest.py runs all three and compares them.
-# \`curl | bash\` executes whatever arrived before the connection died, so a reset halfway through bootstrap.sh
-# ran half of it. A file is run only once curl says the whole of it arrived.
-# raw.githubusercontent.com resolves into the address range filtered in the networks this product is most used
-# in, and api.github.com does not (docs/UPDATE-RESILIENCE-PLAN.md, 0a). This one file is the ONLY thing an
-# update reads from raw — bootstrap.sh fetches the tree from github.com itself — so reading it through the API
-# is what lets a filtered box update at all. Same repo, same ref, same TLS: nothing new to trust. Only a GitHub
-# raw URL has that door; an operator's own SWG_BOOTSTRAP_URL mirror is not handed a source it never named.
-B="\$(mktemp)"; trap 'rm -f "\$B"' EXIT
-API="\$(printf '%s' "\$URL" | sed -nE 's#^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/([^?#]+).*#https://api.github.com/repos/\1/\2/contents/\4?ref=\3#p')"
-if ! curl -fsSL --connect-timeout 20 --max-time 120 "\$URL" -o "\$B"; then
-  [ -n "\$API" ] || exit 1
-  echo "swg-update: could not fetch bootstrap.sh from \$URL — trying api.github.com" >&2
-  curl -fsSL --connect-timeout 20 --max-time 120 -H 'Accept: application/vnd.github.raw' "\$API" -o "\$B"
-fi
-bash "\$B" update -y --no-components "\$@"   # extra flags (e.g. --node-only) pass through
-exit
-}
-WRAP
+  swg_update_wrapper_text "$_swg_ref" > /usr/local/bin/swg-update.new   # the one text (lib/common.sh)
   chmod 755 /usr/local/bin/swg-update.new
   mv -f /usr/local/bin/swg-update.new /usr/local/bin/swg-update   # see the rename note above — NEVER `cat >`
-  cat > /usr/local/bin/swg-update-check <<'WRAP2'
-#!/usr/bin/env bash
-set -euo pipefail
-STAMP=/var/lib/swg-update.stamp
-PANEL_TRIGGERS="/var/lib/swg-panel/.update-request /opt/swg-panel-docker/data/lib/.update-request"
-NODE_TRIGGERS="/var/lib/swg-noded/.update-request /opt/swg-panel-docker/data/node/.update-request"
-_run=no; _panel=no
-for _t in $PANEL_TRIGGERS $NODE_TRIGGERS; do
-  [ -f "$_t" ] || continue
-  if { [ ! -e "$STAMP" ] || [ "$_t" -nt "$STAMP" ]; }; then
-    _run=yes
-    case " $PANEL_TRIGGERS " in *" $_t "*) _panel=yes;; esac   # a PANEL trigger → this is a host update
-  fi
-done
-[ "$_run" = yes ] || exit 0
-touch "$STAMP"            # mark this batch handled BEFORE updating, so we never loop
-if [ "$_panel" = yes ]; then exec /usr/local/bin/swg-update
-else exec /usr/local/bin/swg-update --node-only; fi
-WRAP2
+  swg_update_check_text > /usr/local/bin/swg-update-check   # the one text (lib/common.sh)
   chmod 755 /usr/local/bin/swg-update-check
   cat > /etc/systemd/system/swg-update.service <<EOF
 [Unit]
@@ -485,6 +500,7 @@ ensure_netctl_helper(){   # idempotent: provision the swg-netctl root helper whe
   # here, unconditionally, so an update repairs such boxes. MUST mirror install-host.sh's write_netctl.
   [ -f "$SRC/swg-netctl" ] || return 0
   local st="${STATE_DIR:-/var/lib/swg-panel}" etc="${ETC_DIR:-/etc/swg-panel}" usr="${PANEL_USER:-swgpanel}"
+  $DRYRUN || netctl_dirs_heal "$st"   # claims/ root's again, the empty untrusted dirs an install left cleared (F96)
   # already complete? (binary + queue dir + both trigger units) → nothing to do; the refresh path keeps it current.
   if [ -f /usr/local/bin/swg-netctl ] && [ -d "$st/netctl/queue" ] \
      && [ -f /etc/systemd/system/swg-netctl.path ] && [ -f /etc/systemd/system/swg-netctl.timer ]; then return 0; fi
@@ -535,8 +551,121 @@ EOF
   systemctl daemon-reload
   systemctl enable --quiet --now swg-netctl.path 2>/dev/null || warn "couldn't enable swg-netctl.path"
   systemctl enable --quiet --now swg-netctl.timer 2>/dev/null || warn "couldn't enable swg-netctl.timer"
+  DID_UPDATE=yes; note "swg-netctl root helper: provisioned (was missing)"
   ok "swg-netctl root helper provisioned — Access & subscription-address changes will work now"
 }
+
+# repark_bare_panel — a PARKED bare panel (bare_panel_parked, lib/common.sh: disabled, a docker panel live beside it)
+# that something STARTED anyway is stopped again, with its swg-sub, which is kept from starting at boot. The something
+# is 1.8.7's update.sh: it restarted swg-panel-server unconditionally and enabled + restarted swg-sub, so a box that
+# went back to 1.8.7 and came forward again answered with two panels. Run on every update (heal pass), not only when
+# the panel's version moved — a re-run at the same version must not leave it standing either.
+repark_bare_panel(){
+  [ -f /etc/systemd/system/swg-panel-server.service ] && bare_panel_parked || return 0
+  local did=""
+  if systemctl is-active --quiet swg-panel-server 2>/dev/null; then run systemctl stop swg-panel-server; did=" swg-panel-server"; fi
+  if systemctl is-active --quiet swg-sub 2>/dev/null || systemctl is-enabled --quiet swg-sub 2>/dev/null; then
+    run systemctl disable --now swg-sub 2>/dev/null || true; did="$did swg-sub"; fi
+  [ -n "$did" ] || return 0
+  DID_UPDATE=yes; note "bare-metal swg-panel: parked again (stopped:$did)"
+  ok "bare-metal panel parked again (stopped:$did) — it is disabled because a docker panel runs on this box, and an older update had started it"
+  return 0; }
+
+# seed_local_node_ep <check|write> — a MASTER's own node record in the panel (nodes.json) with a BLANK endpoint_host gets
+# the endpoint its co-located node already has (agent config), printed; nothing printed = nothing to seed. Only a
+# first enrolment ever wrote that record's endpoint (install-host.sh), so a master installed before that — or by 1.8.7
+# — kept '' through every update: the panel fills a blank from the node's first PUBLIC address, and a box with none (a
+# LAN, a NAT'd lab) never got one — no mesh dial host, and WDTT/csqtt on a wildcard bind advertised nothing.
+# Seeded ONLY when all of these hold, so that no client config changes — the record's endpoint OVERRIDES what the
+# node reports for each interface (apply_iface_meta), so it must equal what every interface reports today:
+#   · the agent dials THIS box's panel (a loopback URL) and its token matches the record (token_sha, else pbkdf2);
+#   · the record's endpoint_host is blank — a set one is the operator's (Nodes screen) or the panel's own fill;
+#   · every interface in the agent config reports the node-level endpoint (its own is blank or the same);
+#   · that endpoint is an address of this box — the record is also the listen address the panel pre-fills for
+#     turn-proxies, and a NAT'd public IP there cannot be bound (install-host.sh's seed asks the same).
+# `write` re-checks all of it on a fresh read and keeps the file's owner + mode (the panel runs as its own user).
+# $2 / $3 name the panel's store and the agent config for the DOCKER twin (seed_docker_node_ep, below); a docker
+# master's node dials its panel as `swg-panel` when it is not on host networking, which is this box's panel too.
+seed_local_node_ep(){
+  local nodes="${2:-${STATE_DIR:-/var/lib/swg-panel}/nodes.json}" cfg="${3:-/etc/swg-agent/config.json}"
+  [ -f "$nodes" ] && [ -f "$cfg" ] && have python3 || return 0
+  SWG_LOCAL_ADDRS="$(local_addrs)" python3 - "$1" "$nodes" "$cfg" <<'PYSEED' 2>/dev/null || true
+import base64, hashlib, hmac, json, os, socket, sys
+from urllib.parse import urlparse
+mode, np, cp = sys.argv[1:4]
+try:
+    cfg = json.load(open(cp)); nodes = json.load(open(np))
+except Exception:
+    sys.exit(0)
+pan = cfg.get("panel") or {}
+if (urlparse(pan.get("url") or "").hostname or "") not in ("127.0.0.1", "localhost", "::1", "swg-panel"):
+    sys.exit(0)                                   # this node syncs to ANOTHER panel — its record is not here
+tok = str(pan.get("token") or "")
+if not tok or not isinstance(nodes, dict):
+    sys.exit(0)
+def mine(n):
+    if not isinstance(n, dict):
+        return False
+    ts = n.get("token_sha")
+    if ts:
+        return hmac.compare_digest(ts, hashlib.sha256(tok.encode()).hexdigest())
+    try:
+        _a, it, salt, want = (n.get("token_hash") or "").split("$")
+        got = base64.b64encode(hashlib.pbkdf2_hmac("sha256", tok.encode(), base64.b64decode(salt), int(it))).decode()
+        return hmac.compare_digest(got, want)
+    except Exception:
+        return False
+nid = next((k for k, v in nodes.items() if mine(v)), None)
+if nid is None or (nodes[nid].get("endpoint_host") or "").strip():
+    sys.exit(0)
+cand = str(cfg.get("endpoint_host") or "").strip()
+if not cand or cand.startswith("127.") or cand in ("localhost", "::1"):
+    sys.exit(0)
+for _n, ic in (cfg.get("interfaces") or {}).items():
+    if (str((ic or {}).get("endpoint_host") or "").strip() or cand) != cand:
+        sys.exit(0)                               # this interface reports its OWN endpoint — the record would override it
+local = set(os.environ.get("SWG_LOCAL_ADDRS", "").split())
+try:
+    res = {ai[4][0] for ai in socket.getaddrinfo(cand, None)}
+except Exception:
+    sys.exit(0)
+if not (res & local):
+    sys.exit(0)                                   # not an address of this box (NAT, or a name pointing elsewhere)
+if mode == "write":
+    st = os.stat(np)
+    nodes[nid]["endpoint_host"] = cand
+    tmp = np + ".swg-seed.tmp"
+    with open(tmp, "w") as f:
+        json.dump(nodes, f, indent=2); f.write("\n")
+    os.chown(tmp, st.st_uid, st.st_gid); os.chmod(tmp, st.st_mode & 0o7777)
+    os.replace(tmp, np)
+print(cand)
+PYSEED
+}
+# restart_panel_seeding_node_ep — the bare panel's restart during an update. When its own node record has an endpoint
+# to seed (above), the write happens while the panel is STOPPED: nodes.json is the panel's store, read-modify-written
+# under its own lock, and a write from outside while it runs can lose an edit landing in the same moment.
+restart_panel_seeding_node_ep(){
+  local ep; ep="$(seed_local_node_ep check)"
+  if [ -z "$ep" ]; then run systemctl restart swg-panel-server; return; fi
+  if $DRYRUN; then echo "    [skip] stop the panel, set its own node's blank endpoint to $ep, start it"; return 0; fi
+  systemctl stop swg-panel-server || { run systemctl restart swg-panel-server; return; }
+  ep="$(seed_local_node_ep write)"
+  [ -n "$ep" ] && { ok "the panel's record of its own node now carries its endpoint $(col_v "$ep") (it was blank)"
+                    note "bare-metal swg-panel: its own node's endpoint set to $ep (was blank)"; }
+  systemctl start swg-panel-server; }
+# seed_docker_node_ep <agent-config copy> — the DOCKER twin of the seed above. A docker master's own node record kept
+# endpoint_host '' through every update and re-install (1.8.8 qualification, q3: install-docker.sh writes it only when an
+# endpoint is GIVEN on that run, and the seed above is bare-metal only) — the same "no mesh dial host" D7 fixed on bare
+# metal. Same rules and the same writer, with the docker inputs: the panel's store in ./data/lib, and the agent config
+# the RUNNING node container reports with, copied out before the recreate removes it. Called only in the window where
+# both containers are gone and not yet re-created — the panel's store is written while no panel runs, as above.
+seed_docker_node_ep(){
+  local ep; [ -s "${1:-}" ] || return 0
+  ep="$(seed_local_node_ep write "$DOCKER_DIR/data/lib/nodes.json" "$1")"
+  [ -n "$ep" ] && { ok "the panel's record of its own node now carries its endpoint $(col_v "$ep") (it was blank)"
+                    note "docker: the panel's own node endpoint set to $ep (was blank)"; }
+  return 0; }
 
 ensure_sub_server(){   # HEAL (install-if-missing) the swg-sub subscription surface on a bare-metal panel.
   # swg-sub is the public, read-only per-user QR/config page. The panel drives it over swg-netctl
@@ -549,12 +678,19 @@ ensure_sub_server(){   # HEAL (install-if-missing) the swg-sub subscription surf
   #   set-listen drop-in — then enable so it survives a reboot. Piece templates MUST mirror install-host.sh's
   #   swg-sub install + write_sub_unit. Inert until enabled in the panel (the surface 404s until then).
   [ -f "$SRC/swg-sub" ] || return 0
+  # a PARKED bare panel's swg-sub is parked with it (guard_second_panel) — enabling it would bring it back at boot
+  [ -f /etc/systemd/system/swg-panel-server.service ] && bare_panel_parked && return 0
   local st="${STATE_DIR:-/var/lib/swg-panel}" etc="${ETC_DIR:-/etc/swg-panel}" tls="${TLS_DIR:-/etc/swg-panel/tls}"
   local subusr="${SUB_USER:-swgsub}" subport="${SUB_PORT:-8444}" subbind="${SUB_BIND:-0.0.0.0}"
   local unit=/etc/systemd/system/swg-sub.service
-  # fully present? leave every file exactly as-is; only make sure it's enabled for reboot, then stop.
+  # fully present? leave every file exactly as-is; only make sure a RUNNING one is enabled for reboot, then stop.
+  # ⚠️ A swg-sub THE OPERATOR DISABLED AND STOPPED STAYS SO. This enabled it whenever it was not enabled, so an update
+  # undid `systemctl disable --now swg-sub` for the next boot (1.8.8 qualification, round 12, F93 on q5: left stopped by
+  # the update, but enabled). Enabled here only when it RUNS off the boot list (an older path started it that way).
   if [ -f "$SUB_DIR/swg-sub" ] && id "$subusr" >/dev/null 2>&1 && [ -f "$unit" ]; then
-    $DRYRUN || systemctl is-enabled --quiet swg-sub 2>/dev/null || systemctl enable --quiet swg-sub 2>/dev/null || true
+    if ! $DRYRUN && ! systemctl is-enabled --quiet swg-sub 2>/dev/null && systemctl is-active --quiet swg-sub 2>/dev/null; then
+      systemctl enable --quiet swg-sub 2>/dev/null || true
+    fi
     return 0
   fi
   info "healing the swg-sub subscription surface (installing missing pieces — needed for Settings → Subscriptions)"
@@ -617,6 +753,7 @@ EOF
     systemctl daemon-reload
   fi
   systemctl enable --quiet --now swg-sub 2>/dev/null || warn "couldn't enable swg-sub"
+  DID_UPDATE=yes; note "swg-sub: healed (was missing pieces)"
   ok "swg-sub subscription surface healed — Settings → Subscriptions will work now"
 }
 
@@ -660,6 +797,7 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable --quiet --now swg-noded 2>/dev/null || warn "couldn't enable swg-noded"
+  DID_UPDATE=yes; note "swg-noded unit: healed (was missing)"
   ok "swg-noded unit healed — the node will sync + survive a reboot now"
 }
 
@@ -708,7 +846,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   # route first, then builds from source, and only then falls back to the userspace datapath.
   # Docker nodes run userspace amneziawg-go from their image → skipped by the HAVE_BNODE gate.
   [ "$HAVE_BNODE" = yes ] || return 0
-  local _tools=no _mod=no _hf=0
+  local _tools=no _mod=no _hf=0 _rs=0
   have awg && have awg-quick && _tools=yes
   { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes
   # D1: the pinned userspace fallback, install-if-missing, BEFORE the "already working" return — that return is exactly
@@ -726,14 +864,17 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   if [ "$_tools" = yes ] && [ "$_mod" = yes ] && ! $DRYRUN; then
     # ⚠️ rc is CAPTURED, never read from a bare call: this script runs under `set -e`, and the function returns 10
     # (installed now), 1 (none) and 2 (failed) on perfectly normal paths — a bare call aborted the whole update right here.
-    _hf=0; ensure_awg_headers_follow || _hf=$?; case $_hf in 10) DID_UPDATE=yes; ok "AmneziaWG: kernel headers now follow kernel upgrades ($(awg_headers_meta | tr "\n" " " | sed "s/ $//")) — the module is rebuilt when a new kernel arrives" ;;
+    _hf=0; ensure_awg_headers_follow || _hf=$?; case $_hf in 10) DID_UPDATE=yes; ok "AmneziaWG: kernel headers now follow kernel upgrades ($(awg_headers_meta | tr "\n" " " | sed "s/ $//"))$([ -n "$(dkms status amneziawg 2>/dev/null)" ] && echo " — the module is rebuilt when a new kernel arrives")" ;;
       2) note "AmneziaWG: the kernel headers metapackage could not be installed — the next kernel will rely on the userspace fallback (tried again on the next update)" ;;
     esac
     # A module an older installer built with `make install` loads on THIS kernel and exists for no other. Register it
     # with DKMS once — unless the amnezia package can own it (then the package route is the owner, never us).
     if have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && ! apt-cache show amneziawg-dkms >/dev/null 2>&1; then
-      if awg_dkms_register_source; then DID_UPDATE=yes; ok "AmneziaWG: the kernel module is now rebuilt by DKMS whenever a kernel is installed"
-      else note "AmneziaWG: could not register the kernel module with DKMS — the next kernel will rely on the userspace fallback"; fi
+      _rs=0; awg_dkms_register_source || _rs=$?
+      case $_rs in 0) DID_UPDATE=yes; ok "AmneziaWG: the kernel module is now rebuilt by DKMS whenever a kernel is installed" ;;
+        3) note "AmneziaWG: $(awg_tools_old_why) — the module is left as it is; the next kernel will rely on the userspace fallback" ;;
+        *) note "AmneziaWG: could not register the kernel module with DKMS — the next kernel will rely on the userspace fallback" ;;
+      esac
     fi
     awg_dkms_build_all_kernels
   fi
@@ -745,11 +886,12 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   else
     info "healing the AmneziaWG kernel module (not loadable on kernel $(uname -r) — awg interfaces can't come up)"
   fi
-  # 1. package route: fastest where it works (Ubuntu with Launchpad reachable). Every step already tolerant.
-  if have apt-get; then
+  # 1. package route: fastest where it works (Ubuntu with Launchpad reachable). Every step already tolerant. Ubuntu and the
+  #    systems built on it only — the PPA publishes nothing else, and trying it elsewhere was all noise (lib/common.sh).
+  local _ppa=""
+  if have apt-get && _ppa="$(awg_ppa_suite)"; then
     apt_refresh
-    run apt-get install -y software-properties-common 2>/dev/null || true
-    run add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
+    awg_ppa_add "$_ppa" 2>/dev/null
     run apt-get update -qq 2>/dev/null || true
     run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
     ensure_awg_headers_follow || true
@@ -762,6 +904,9 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     modprobe amneziawg 2>/dev/null || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null
                                         run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true
     run modprobe amneziawg 2>/dev/null || true
+  elif have apt-get; then
+    info "AmneziaWG: building it from source — its packages are published for Ubuntu only, and this is $(awg_os_name)"
+    apt_refresh
   fi
   # 2. source build — the only route to the KERNEL datapath off Ubuntu, and the answer when the PPA is
   #    unreachable. No-op for the tools half when they are already present.
@@ -775,7 +920,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     note "AmneziaWG: kernel module ready for $(uname -r)"
   elif have awg && have awg-quick && have amneziawg-go; then
     DID_UPDATE=yes; ok "AmneziaWG healed — running the slower USERSPACE datapath (no loadable kernel module)"
-    note "AmneziaWG: userspace (amneziawg-go); install matching linux-headers for the faster kernel module"
+    note "AmneziaWG: userspace (amneziawg-go); $(awg_tools_drive_3x && echo 'install matching linux-headers for the faster kernel module' || awg_tools_old_why)"
   elif have awg && have awg-quick; then
     DID_FAIL=yes; warn "AmneziaWG tools are installed but its kernel module will not load on $(uname -r), and the userspace datapath could not be built — awg interfaces cannot come up"
   else
@@ -863,7 +1008,9 @@ ensure_awg_back_on_kernel(){   # SURGICAL — NOT part of the general heal: move
   done
   [ -n "$xmoved" ] && { DID_UPDATE=yes; note "AmneziaWG exits taken off the userspace fallback — swg-noded brings them back up on the kernel module:$xmoved"; }
   [ -n "$moved" ] && { DID_UPDATE=yes; ok "AmneziaWG back on the kernel datapath:$moved"; }
-  [ -n "$refused" ] && warn "AmneziaWG stays on the userspace fallback:$refused — the kernel module does not accept its configuration (a module older than the interface needs?)"
+  # The loaded module refusing a conf is either a module older than the interface needs, or tools older than the module —
+  # the second only on a box whose own awg predates AmneziaWG 3, and there a reboot takes these interfaces down for good.
+  [ -n "$refused" ] && warn "AmneziaWG stays on the userspace fallback:$refused — the kernel module does not accept its configuration ($(awg_tools_drive_3x && echo 'a module older than the interface needs?' || echo "$(awg_tools_old_why); until then a reboot takes them down"))"
   [ -n "$stuck" ] && warn "AmneziaWG still on the userspace fallback after a restart:$stuck — the kernel module did not take them"
   [ -n "$down" ] && { DID_FAIL=yes; warn "AmneziaWG interface(s) did not come back after moving them to the kernel datapath:$down — start them from the panel"; }
   return 0
@@ -1028,6 +1175,50 @@ ensure_cert_perms(){   # HEAL (fix-if-wrong) ownership of the files the panel mu
   return 0; }
 
 ACME_HOME_CANON="${ACME_HOME_CANON:-/root/.acme.sh}"   # the ONE acme store — see ensure_acme_home below
+# HEAL: the reload command earlier installers stored in the panel's acme entry restarted the panel on every renewal
+# (`systemctl restart swg-panel-server`). A SIGHUP reloads the certificate live — no dropped requests, and a Renew now
+# pressed in Settings keeps the job that is waiting for that renewal. Narrow on purpose: only the panel's OWN entry,
+# only while it installs into the panel's managed path, and only when it still carries exactly that restart — an
+# entry another program re-pointed, or a command an operator changed, is left as it is. Idempotent.
+heal_acme_reloadcmd(){
+  local conf="${ETC_DIR:-/etc/swg-panel}/install.conf" dom f
+  dom="$(sed -n 's/^PANEL_DOMAIN=//p' "$conf" 2>/dev/null | sed -n 1p | tr -d "'\"")"
+  [ -n "$dom" ] || return 0
+  f="$ACME_HOME_CANON/${dom}_ecc/${dom}.conf"
+  [ -f "$f" ] || return 0
+  if $DRYRUN; then echo "    [skip] acme reload command for $dom: systemctl restart → SIGHUP (if it still restarts the panel)"; return 0; fi
+  local out; out="$(python3 - "$f" "${TLS_DIR:-/etc/swg-panel/tls}/fullchain.pem" <<'PY' 2>/dev/null
+import base64, os, re, sys
+path, ours = sys.argv[1], os.path.realpath(sys.argv[2])
+lines = open(path).read().split("\n")
+def val(k):
+    for l in lines:
+        if l.startswith(k + "="):
+            return l.split("=", 1)[1].strip().strip("'\"")
+    return ""
+if os.path.realpath(val("Le_RealFullChainPath") or "/nonexistent") != ours:
+    sys.exit(0)                                   # not installing into the panel's path: not ours to change
+raw = val("Le_ReloadCmd")
+m = re.match(r"^__ACME_BASE64__START_(.*)__ACME_BASE64__END_$", raw)
+cmd = base64.b64decode(m.group(1)).decode() if m else raw
+# the exact command earlier installers and convert.sh wrote — `.service` spelled or not — and nothing that merely
+# starts with it (a plain substring replace turned `…swg-panel-server.service` into `… || true.service`)
+pat = re.compile(r"systemctl restart swg-panel-server(?:\.service)?(?=\s*(?:;|&&|\|\||$))")
+if not pat.search(cmd):
+    sys.exit(0)
+new = pat.sub("systemctl kill -s HUP swg-panel-server.service 2>/dev/null || true", cmd)
+enc = "__ACME_BASE64__START_%s__ACME_BASE64__END_" % base64.b64encode(new.encode()).decode()
+lines = [("Le_ReloadCmd='%s'" % enc) if l.startswith("Le_ReloadCmd=") else l for l in lines]
+tmp = path + ".swgtmp"
+open(tmp, "w").write("\n".join(lines))
+os.chmod(tmp, os.stat(path).st_mode & 0o777)
+os.replace(tmp, path)
+print("healed")
+PY
+)" || true
+  [ "$out" = healed ] && { DID_UPDATE=yes; ok "acme renewals now reload the panel's certificate live (SIGHUP) instead of restarting it"
+                           note "acme reload command: restart → SIGHUP"; }
+  return 0; }
 ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-metal panel whose TLS needs it.
   # The cert and its renewal STATE live in /root/.acme.sh, but the PROGRAM is separate — and a docker→bare-metal
   # convert brings the state across without it, because in docker acme.sh lives inside the image. The result is a
@@ -1035,7 +1226,7 @@ ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-me
   # change fails with "acme.sh not found" pointing at a directory that plainly exists. Only for modes that
   # actually use it; never fatal — an update that otherwise succeeded must not abort over the renewer.
   local conf="${ETC_DIR:-/etc/swg-panel}/install.conf" mode=""
-  [ -f "$conf" ] && mode="$(sed -n 's/^TLS_MODE=//p' "$conf" | head -1)"
+  [ -f "$conf" ] && mode="$(sed -n 's/^TLS_MODE=//p' "$conf" | sed -n 1p)"
   case "$mode" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 0;; esac
   # ⚠️ present is not the same as USABLE. acme.sh ≤3.1.3 writes the CA's HTTP body to <domain>.cer
   # even when that body is a 404, so a failed issuance is cached as a certificate and every later
@@ -1044,9 +1235,9 @@ ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-me
   local ACME_MIN=3.1.4
   local a; for a in /root/.acme.sh/acme.sh "${HOME:-/root}/.acme.sh/acme.sh" "$(command -v acme.sh 2>/dev/null || true)"; do
     if [ -n "$a" ] && [ -x "$a" ]; then
-      local v; v="$("$a" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+      local v; v="$("$a" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sed -n 1p)"
       if [ -n "$v" ] && [ "$v" != "$ACME_MIN" ] \
-         && [ "$(printf '%s\n%s\n' "$v" "$ACME_MIN" | sort -V | head -1)" = "$v" ]; then
+         && [ "$(printf '%s\n%s\n' "$v" "$ACME_MIN" | sort -V | sed -n 1p)" = "$v" ]; then
         info "Upgrading acme.sh $v → $ACME_MIN or newer (older builds cache a failed issuance as a cert)"
         # --home pins WHICH acme.sh gets upgraded. Without it the target is $HOME/.acme.sh, and this
         # heal can run from a context whose HOME is not root's — upgrading a store nothing renews.
@@ -1055,11 +1246,29 @@ ensure_acme_client(){   # HEAL (install-if-missing) the ACME client on a bare-me
       return 0
     fi
   done
-  local email; email="$(sed -n 's/^ACME_EMAIL=//p' "$conf" 2>/dev/null | head -1)"
+  local email; email="$(sed -n 's/^ACME_EMAIL=//p' "$conf" 2>/dev/null | sed -n 1p)"
   info "Installing acme.sh (TLS mode $mode needs it; renewals and address changes were failing without it)"
   sh -c "curl -fsSL https://get.acme.sh | sh -s email=${email:-admin@localhost}" >/dev/null 2>&1 || true
-  [ -x /root/.acme.sh/acme.sh ] && ok "acme.sh installed" \
+  [ -x /root/.acme.sh/acme.sh ] && { DID_UPDATE=yes; note "acme.sh: installed (TLS mode $mode needs it)"; ok "acme.sh installed"; } \
     || warn "couldn't install acme.sh — renewals and address changes will keep failing until it is"
+  return 0; }
+# HEAL: the certificate's ONLY renewer is acme.sh's daily cron entry, and a box installed without cron never got one —
+# acme.sh would not even install there — so its certificate expired with nothing renewing it (round 12b). Cron and the
+# entry (lib/common.sh ensure_acme_cron) wherever acme.sh is, and where TLS_MODE needs it but it is missing: cron is
+# what lets ensure_acme_client, right after this, install it. Bare panels only — this heal pass — and not a PARKED
+# one: the Docker panel beside it renews inside its container.
+ensure_acme_renewal(){
+  bare_panel_parked && return 0
+  local conf="${ETC_DIR:-/etc/swg-panel}/install.conf" mode="" a="" c
+  for c in /root/.acme.sh/acme.sh "${HOME:-/root}/.acme.sh/acme.sh" "$(command -v acme.sh 2>/dev/null || true)"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then a="$c"; break; fi
+  done
+  if [ -z "$a" ]; then
+    [ -f "$conf" ] && mode="$(sed -n 's/^TLS_MODE=//p' "$conf" | sed -n 1p)"
+    case "$mode" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 0;; esac
+  fi
+  ensure_acme_cron "$a" "$ACME_HOME_CANON"
+  if [ -n "$ACME_CRON_DID" ]; then DID_UPDATE=yes; note "certificate renewal: $ACME_CRON_DID"; fi
   return 0; }
 
 # ⚠️ THE SECOND ACME STORE, and it silently stopped renewals. acme.sh keeps state in
@@ -1129,7 +1338,12 @@ os.replace(tmp, p); os.chmod(p, 0o640)
 print("changed")
 PYREF
 )" || return 0
-  [ -n "$out" ] && ok "node self-update now tracks $(col_v "$want")"
+  # ⚠️ …AND IT IS A CHANGE. swg-noded reads config.json only at startup, so a new ref written here reached nothing
+  # running: a same-version run switched the ref, printed "✓ Update finished — nothing changed." and left the daemon
+  # following the OLD branch until something else restarted it (1.8.8 qualification, q2). Counted, and flagged for the
+  # restart the node block below makes (once — a version update restarts it anyway, AFTER this has written).
+  [ -n "$out" ] && { ok "node self-update now tracks $(col_v "$want")"; DID_UPDATE=yes; NODE_REF_CHANGED=yes
+                     note "bare-metal swg-node: self-update now tracks $want"; }
   return 0
 }
 
@@ -1146,7 +1360,7 @@ ensure_update_unit(){   # HEAL (install-if-missing) the one-click self-update wi
   fi
   info "healing the one-click self-update wiring (missing — the panel's Update button would do nothing)"
   install_update_unit
-  $DRYRUN || ok "one-click self-update wiring healed"
+  $DRYRUN || { DID_UPDATE=yes; note "one-click self-update wiring: healed (was missing)"; ok "one-click self-update wiring healed"; }
 }
 
 ensure_access_seed(){   # HEAL (fill-if-empty) the panel's Access & TLS settings from install.conf / .env.
@@ -1158,23 +1372,34 @@ ensure_access_seed(){   # HEAL (fill-if-empty) the panel's Access & TLS settings
   local ps="" conf="" env_f=""
   if [ -f "$PANEL_DIR/swg-panel-server" ] && [ -f /etc/swg-panel/install.conf ]; then
     ps=/var/lib/swg-panel/panel-settings.json; conf=/etc/swg-panel/install.conf
-  elif [ -f "$DOCKER_DIR/.env" ] && [ -d "$DOCKER_DIR/data/lib" ]; then
-    ps="$DOCKER_DIR/data/lib/panel-settings.json"; env_f="$DOCKER_DIR/.env"
+  elif [ -f "$DOCKER_DIR/.env" ] && [ -d "$DOCKER_DIR/data/lib" ] && case "$(docker_profile 2>/dev/null | tail -n1)" in host|master|host-node) true;; *) false;; esac; then
+    ps="$DOCKER_DIR/data/lib/panel-settings.json"; env_f="$DOCKER_DIR/.env"   # (a node-only stack has no panel to seed)
   else return 0; fi
   have python3 || return 0
   $DRYRUN && { sub "[dry] would fill any EMPTY Access & TLS settings from ${conf:-$env_f}"; return 0; }
-  local _dom _base _port _tls _mail
+  local _dom _base _port _tls _mail _proxied=no _out
   if [ -n "$conf" ]; then
-    _dom="$(sed -n 's/^PANEL_DOMAIN=//p' "$conf" | head -1)"; _base="$(sed -n 's/^PANEL_BASE=//p' "$conf" | head -1)"
-    _port="$(sed -n 's/^PORT=//p' "$conf" | head -1)";        _tls="$(sed -n 's/^TLS_MODE=//p' "$conf" | head -1)"
-    _mail="$(sed -n 's/^ACME_EMAIL=//p' "$conf" | head -1)"
+    _dom="$(sed -n 's/^PANEL_DOMAIN=//p' "$conf" | sed -n 1p)"; _base="$(sed -n 's/^PANEL_BASE=//p' "$conf" | sed -n 1p)"
+    _port="$(sed -n 's/^PORT=//p' "$conf" | sed -n 1p)";        _tls="$(sed -n 's/^TLS_MODE=//p' "$conf" | sed -n 1p)"
+    _mail="$(sed -n 's/^ACME_EMAIL=//p' "$conf" | sed -n 1p)"
+    # plain HTTP behind a proxy = the panel's unit gives it no certificate (its live environment, drop-ins included);
+    # with no systemd answer, install.conf's serve mode says the same
+    local _penv; _penv="$(systemctl show -p Environment --value swg-panel-server 2>/dev/null || true)"
+    if [ -n "$_penv" ]; then case " $_penv " in *" SWG_PANEL_TLS_CERT="[!\ ]*) ;; *) _proxied=yes;; esac
+    else case "$(sed -n 's/^SERVE_MODE=//p' "$conf" | sed -n 1p)" in nginx|caddy|skip) _proxied=yes;; esac; fi
   else
-    _dom="$(sed -n 's/^PANEL_DOMAIN=//p' "$env_f" | head -1)"; _base="$(sed -n 's/^PANEL_BASE=//p' "$env_f" | head -1)"
-    _port="$(sed -n 's/^PANEL_PORT=//p' "$env_f" | head -1)";  _tls="$(sed -n 's/^TLS=//p' "$env_f" | head -1)"
-    _mail="$(sed -n 's/^ACME_EMAIL=//p' "$env_f" | head -1)"
+    _dom="$(sed -n 's/^PANEL_DOMAIN=//p' "$env_f" | sed -n 1p)"; _base="$(sed -n 's/^PANEL_BASE=//p' "$env_f" | sed -n 1p)"
+    _port="$(sed -n 's/^PANEL_PORT=//p' "$env_f" | sed -n 1p)";  _tls="$(sed -n 's/^TLS=//p' "$env_f" | sed -n 1p)"
+    _mail="$(sed -n 's/^ACME_EMAIL=//p' "$env_f" | sed -n 1p)"
   fi
   _dom="${_dom%\"}"; _dom="${_dom#\"}"; _tls="${_tls%\"}"; _tls="${_tls#\"}"   # .env values may be quoted
-  PANEL_DOMAIN="$_dom" PANEL_BASE="$_base" PORT="$_port" TLS_MODE="$_tls" ACME_EMAIL="$_mail" \
+  [ "$_tls" = none ] && _proxied=yes
+  # ⚠️ BEHIND A REVERSE PROXY THE EMPTY TLS TYPE IS THE RIGHT ONE. The panel serves plain HTTP there, and its settings say so
+  # with tls.mode "" ("None — reverse proxy"). This fill-if-empty took "" for unset and wrote install.conf's TLS_MODE
+  # ("skip", or the proxy's letsencrypt) — and the panel's next start rolled it back, with a line blaming unconfirmed
+  # settings: one round trip per update, for ever (1.8.8 qualification, round 10, N4). A proxied install's TLS type is left
+  # alone; the public URL and the ACME email still fill when empty. What it fills is said on one line of its own now.
+  _out="$(PANEL_DOMAIN="$_dom" PANEL_BASE="$_base" PORT="$_port" TLS_MODE="$_tls" ACME_EMAIL="$_mail" PROXIED="$_proxied" \
   python3 - "$ps" <<'PYACC' || true
 import json, os, sys
 p = sys.argv[1]
@@ -1193,7 +1418,8 @@ if not (pan.get("url") or "").strip() and dom:          # ONLY when empty — ne
     if port and port not in ("443", "80") and ":" not in host.split("://", 1)[1]:
         host += ":" + port
     pan["url"] = host + (base or ""); changed.append("public URL")
-if not (tls.get("mode") or "").strip() and (os.environ.get("TLS_MODE") or "").strip():
+if (not (tls.get("mode") or "").strip() and (os.environ.get("TLS_MODE") or "").strip()
+        and os.environ.get("PROXIED") != "yes"):       # behind a reverse proxy "" IS the TLS type (N4)
     tls["mode"] = os.environ["TLS_MODE"].strip(); changed.append("TLS type")
 if not (tls.get("email") or "").strip() and (os.environ.get("ACME_EMAIL") or "").strip():
     tls["email"] = os.environ["ACME_EMAIL"].strip(); changed.append("ACME email")
@@ -1204,6 +1430,9 @@ with open(tmp, "w") as f: json.dump(d, f, indent=2)
 os.replace(tmp, p)
 print(", ".join(changed))
 PYACC
+)"
+  [ -n "$_out" ] && ok "Access & TLS: filled what was empty in the panel's settings from ${conf:-$env_f} — $_out"
+  return 0
 }
 
 ensure_panel_unit_warn(){   # DETECT + WARN only — never recreate. The panel unit bakes in the operator's
@@ -1260,6 +1489,7 @@ EOF
         systemctl daemon-reload 2>/dev/null || true
         systemctl enable --quiet --now swg-netctl-docker.path 2>/dev/null || true
         systemctl restart swg-netctl-docker.timer 2>/dev/null || true
+        DID_UPDATE=yes; note "docker address helper: now watches the queue (was a 1s poll)"
         ok "docker address helper: now watches the queue (was a 1s poll)"
       fi
     fi
@@ -1310,6 +1540,7 @@ EOF
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable --quiet --now swg-netctl-docker.path 2>/dev/null || warn "couldn't enable swg-netctl-docker.path"
   systemctl enable --quiet --now swg-netctl-docker.timer 2>/dev/null || warn "couldn't enable swg-netctl-docker.timer"
+  DID_UPDATE=yes; note "docker address helper: healed (was missing)"
   ok "docker address helper healed — one-click address changes will work now"
 }
 
@@ -1323,7 +1554,7 @@ rescue_container_confs(){   # $1 = compose profile
   # the fixed agent writes, leaving only a disposable symlink behind in /etc/wireguard).
   [ "${1:-}" = host ] && return 0
   $DRYRUN && { echo "    [skip] rescue container-local interface confs"; return 0; }
-  docker ps -aq -f name=swg-node 2>/dev/null | grep -q . || return 0
+  docker ps -aq -f name=swg-node 2>/dev/null | grep -c . >/dev/null || return 0
   [ -d "$DOCKER_DIR/data/node-confs" ] || return 0
   _rescue="$(mktemp -d)" || return 0
   if docker cp swg-node:/etc/wireguard/. "$_rescue"/ >/dev/null 2>&1; then
@@ -1337,20 +1568,41 @@ rescue_container_confs(){   # $1 = compose profile
   rm -rf "$_rescue" 2>/dev/null || true
 }
 
-ensure_update_unit_docker(){   # HEAL (install-if-missing) the docker one-click self-update wiring on a panel-bearing docker host.
+ensure_update_unit_docker(){   # HEAL the docker one-click self-update wiring on a panel-bearing docker host: write it when missing, rewrite a piece an older release wrote.
   # install-docker.sh's wire_host_updater lays this down at install time; on an older/partial docker host with the
   # wrappers or units missing, the panel's one-click "Update" button silently does nothing. All pieces are STATIC
   # templates (no operator config), shared with the installer via write_docker_updater (lib/common.sh), so a full
-  # (re)write is safe. HEAL CONTRACT: only when MISSING; enable the timer when present.
+  # (re)write is safe.
+  # ⚠️ PRESENT IS NOT CURRENT. This wrote them only when missing, so a Docker box upgraded from 1.8.7 kept 1.8.7's
+  # wrapper for ever — without the api.github.com door and the fetch-then-run that the bare path's install_update_unit
+  # brings with every update (1.8.8 qualification, round 10, N12). Each piece is compared with this release's text, and
+  # the wiring is rewritten when one differs. The ref the wrapper follows stays the box's: SWG_REF (bootstrap exports
+  # it), else the one baked into the wrapper there now — `main` only when neither says.
   case "${1:-}" in host|master|host-node) ;; *) return 0;; esac    # panel-bearing profiles only (mirrors ensure_netctl_docker)
+  local _ref="${SWG_REF:-}" _stale=""
+  [ -n "$_ref" ] || _ref="$(sed -n 's#^URL=.*/swg-panel/\([^/]*\)/bootstrap\.sh}".*#\1#p' /usr/local/bin/swg-update 2>/dev/null | sed -n 1p || true)"
+  _ref="${_ref:-main}"
   if [ -x /usr/local/bin/swg-update ] && [ -x /usr/local/bin/swg-update-check ] \
      && [ -f /etc/systemd/system/swg-update.service ] && [ -f /etc/systemd/system/swg-update.timer ]; then
-    $DRYRUN || systemctl is-enabled --quiet swg-update.timer 2>/dev/null || systemctl enable --quiet --now swg-update.timer 2>/dev/null || true
+    [ "$(cat /usr/local/bin/swg-update 2>/dev/null || true)" = "$(swg_update_wrapper_text "$_ref")" ] || _stale="swg-update"
+    [ "$(cat /usr/local/bin/swg-update-check 2>/dev/null || true)" = "$(swg_update_check_docker_text)" ] || _stale="${_stale:+$_stale, }swg-update-check"
+    [ "$(cat /etc/systemd/system/swg-update.service 2>/dev/null || true)" = "$(swg_update_docker_service_text)" ] || _stale="${_stale:+$_stale, }swg-update.service"
+    [ "$(cat /etc/systemd/system/swg-update.timer 2>/dev/null || true)" = "$(swg_update_docker_timer_text)" ] || _stale="${_stale:+$_stale, }swg-update.timer"
+    if [ -z "$_stale" ]; then
+      $DRYRUN || systemctl is-enabled --quiet swg-update.timer 2>/dev/null || systemctl enable --quiet --now swg-update.timer 2>/dev/null || true
+      return 0
+    fi
+    info "rewriting the docker one-click self-update wiring — an older release's text ($_stale), following $(b "$_ref")"
+    if $DRYRUN; then echo "    [skip] rewrite $_stale with this release's text"; return 0; fi
+    SWG_REF="$_ref" write_docker_updater   # shared writer (lib/common.sh): same pieces install-docker.sh writes
+    DID_UPDATE=yes; note "docker one-click self-update wiring: rewritten ($_stale)"
+    ok "docker one-click self-update wiring rewritten — this release's text"
     return 0
   fi
   info "healing the docker one-click self-update wiring (missing — the panel's Update button would do nothing)"
   if $DRYRUN; then echo "    [skip] install /usr/local/bin/swg-update{,-check} + swg-update.{service,timer} (enable --now)"; return 0; fi
-  write_docker_updater   # shared writer (lib/common.sh): same pieces install-docker.sh writes
+  SWG_REF="$_ref" write_docker_updater   # shared writer (lib/common.sh): same pieces install-docker.sh writes
+  DID_UPDATE=yes; note "docker one-click self-update wiring: healed (was missing)"
   ok "docker one-click self-update wiring healed — the Update button will work now"
 }
 
@@ -1379,7 +1631,9 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     fi
     run chmod 755 "$PANEL_DIR/swg-panel-server"; stamp "$PANEL_DIR"
     install_update_unit                              # ensure one-click host self-update is wired
-    if run systemctl restart swg-panel-server; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
+    if bare_panel_parked; then   # stopped + disabled on purpose (guard_second_panel) — updated on disk, left stopped
+      ok "swg-panel updated — left stopped (it is disabled: another panel runs on this box)"; note "bare-metal swg-panel: ${pold} → ${NEW_VER} (parked, not started)"
+    elif restart_panel_seeding_node_ep; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-panel-server"; note "bare-metal swg-panel: updated but RESTART FAILED"; fi
     # swg-sub (the subscription surface) ships with the panel. Refresh it in place when already installed;
     # ensure_sub_server (below, unconditional) provisions it first-time on a panel that lacks the unit/user.
@@ -1389,7 +1643,15 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
       for f in $SUB_WEB; do [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$SUB_DIR/"; done
       [ -f "$SRC/vendor/qrcode.js" ] && { run mkdir -p "$SUB_DIR/vendor"; run cp "$SRC/vendor/qrcode.js" "$SUB_DIR/vendor/"; }
       stamp "$SUB_DIR"
-      run systemctl restart swg-sub 2>/dev/null && ok "swg-sub updated + restarted" || warn "swg-sub present but not restarted"
+      if bare_panel_parked; then   # its panel is parked (guard_second_panel), and it is parked with it
+        ok "swg-sub updated — left stopped (its panel is parked: another panel runs on this box)"
+      elif ! $DRYRUN && ! systemctl is-active --quiet swg-sub 2>/dev/null; then
+        # ⚠️ A STOPPED swg-sub STAYS STOPPED. `restart` STARTS a stopped unit: every update started a swg-sub the operator
+        # had stopped (1.8.8 qualification, round 10, F93 — the panel's start did the same). Updated on disk, left as it was.
+        ok "swg-sub updated — left stopped, as it was (it runs the new build when it starts)"
+      else
+        run systemctl restart swg-sub 2>/dev/null && ok "swg-sub updated + restarted" || warn "swg-sub present but not restarted"
+      fi
     fi
     # swg-passwd (admin login + Encryption-Vault reset helper) ships with the panel — refresh in place when present.
     # It's coupled to the panel's vault, so a stale copy after an update can mismatch; keep it in lockstep with the panel.
@@ -1420,10 +1682,13 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   # bearing scaffolding we can't safely template (the panel unit) is WARNED about, not recreated. Detecting
   # present-but-broken services is NOT done here — that's the panel's runtime "needs attention" job.
   # NEW SERVICE? add its ensure_<svc> here (and a matching writer in the installer) so update heals it too.
+  repark_bare_panel      # a parked panel an older update started beside the docker one → stopped again (+ swg-sub)
   ensure_netctl_helper   # swg-netctl privileged helper (+ queue dirs + trigger units)
   ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
+  ensure_acme_renewal    # HEAL: cron + acme.sh's daily renewal entry, the certificate's ONLY renewer (before the client: no cron, no acme.sh)
   ensure_acme_client     # HEAL: the ACME client itself, when TLS_MODE needs it (a convert leaves the state, not the program)
   ensure_acme_home       # HEAL: pin the helper's acme store + rescue certs stranded in /.acme.sh (no renewer)
+  heal_acme_reloadcmd    # HEAL: the panel's acme entry reloads it with SIGHUP, not `systemctl restart`
                          # (ensure_cert_perms runs ABOVE, before the restart it protects — see the note there)
   ensure_update_unit     # one-click self-update wiring (wrappers + service/timer + trigger drop-in)
   ensure_access_seed     # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from install.conf
@@ -1433,6 +1698,10 @@ fi
 # ───────────────────────── bare-metal node daemon (node or master) ─────────────────────────
 if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   found=1; nod_seen=yes; nold="$(oldver "$NODED_DIR")"
+  # FIRST, before the restart below: that restart is where the daemon reads the ref. Written after it (as it was),
+  # a version update restarted swg-noded on the old ref and then changed the file under the running daemon.
+  NODE_REF_CHANGED=no; _noded_restarted=no
+  ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
   if should_update "bare-metal swg-node" "$NODED_DIR"; then
     info "updating bare-metal swg-node ($AGENT_DIR + $NODED_DIR)"
     [ -d "$AGENT_DIR" ] && [ -f "$SRC/swg-agent" ] && { run cp "$SRC/swg-agent" "$AGENT_DIR/"; run chmod 755 "$AGENT_DIR/swg-agent"; }
@@ -1442,10 +1711,14 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-sni" ] && { run cp "$SRC/swg-sni" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-sni"; }   # SNI-router classifier
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-relay" ] && { run cp "$SRC/swg-relay" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-relay"; }   # TCP-terminating relay
     stamp "$NODED_DIR"
-    if run systemctl restart swg-noded; then ok "swg-node updated + restarted"; note "bare-metal swg-node: ${nold} → ${NEW_VER}"
+    if run systemctl restart swg-noded; then _noded_restarted=yes; ok "swg-node updated + restarted"; note "bare-metal swg-node: ${nold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal swg-node: updated but RESTART FAILED"; fi
   else note "bare-metal swg-node: unchanged (${nold})"; fi
-  ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
+  # the ref moved and nothing restarted the daemon → restart it now, or it keeps following the branch it started on
+  if [ "$NODE_REF_CHANGED" = yes ] && [ "$_noded_restarted" = no ] && ! $DRYRUN && systemctl is-active --quiet swg-noded 2>/dev/null; then
+    if run systemctl restart swg-noded; then ok "swg-noded restarted — it reads the ref it follows only at startup"
+    else DID_FAIL=yes; warn "couldn't restart swg-noded — it keeps the old ref until restarted: systemctl restart swg-noded"; fi
+  fi
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
   ensure_noded_no_nnp    # MIGRATE: retract NoNewPrivileges — it blocked the AppArmor transition wg-quick/awg-quick need
   ensure_noded_reach_sweep "$NODED_DIR"   # HEAL: the drop-in that sweeps the device-access tables when an OLDER swg-noded starts
@@ -1786,8 +2059,20 @@ PYDRIFT
   fi
   ensure_netctl_docker "$prof"   # HEAL: install the docker address helper if a panel-bearing host lacks it
   ensure_update_unit_docker "$prof"   # HEAL: install the docker one-click self-update wiring if a panel-bearing host lacks it
-  ensure_access_seed                  # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from .env
-  $DRYRUN || ensure_docker_mask_files "$DOCKER_DIR"   # HEAL: pre-create the files swg-sub /dev/null-masks (a pre-fix install may lack them → recreate would fail)
+  # ⚠️ PANEL-BEARING PROFILES ONLY, both. On a node-only box these created the four empty panel files swg-sub masks
+  # (data/etc/auth among them, 0 bytes) at the first update, and the next update found ".env + data/lib" there and wrote
+  # a panel URL of https://localhost into a panel that does not exist (1.8.8 qualification, round 4; since 1.4.0).
+  case "$prof" in host|master|host-node)
+    ensure_access_seed                  # HEAL: fill any EMPTY Access & TLS settings (public URL / TLS type) from .env
+    $DRYRUN || ensure_docker_mask_files "$DOCKER_DIR"   # HEAL: pre-create the files swg-sub /dev/null-masks (a pre-fix install may lack them → recreate would fail)
+    # ⚠️ …AND THE PASSWORD LEAVES .env BEFORE THE CONTAINERS ARE RECREATED. It went after `up`, so every update recreated the
+    # panel from a .env still holding it, and the container kept it — `docker inspect`, config.v2.json — until the next
+    # compose up (1.8.8 qualification, round 10, F94). The panel already holds its login here, so nothing is waited for;
+    # a password it does not hold stays, as before. The `up` below then creates the panel without it.
+    if ! $DRYRUN; then _env_pw="$(sed -n 's/^PANEL_PASSWORD=//p' "$DOCKER_DIR/.env" 2>/dev/null | sed -n 1p)"
+      docker_env_forget_password "$DOCKER_DIR" 0
+      [ "$(sed -n 's/^PANEL_PASSWORD=//p' "$DOCKER_DIR/.env" 2>/dev/null | sed -n 1p)" = "$_env_pw" ] || ENV_PW_LEFT=yes; fi
+  ;; esac
   if grep -qE '^[[:space:]]*build:' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
     # build-from-source deployment → restage the source and rebuild (don't touch the user's compose/.env)
     if should_update "docker ($prof, source build)" "$DOCKER_DIR"; then
@@ -1809,21 +2094,50 @@ PYDRIFT
     # prebuilt-image deployment (default) → just pull the newest image + recreate (no restaging)
     echo
     if confirm "Pull the latest image for $(col_l "docker ($prof)")?"; then
-      DID_UPDATE=yes; info "pulling latest image + recreating ($DOCKER_DIR)"
-      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d --force-recreate)"; note "docker ($prof): would pull + recreate"
+      info "pulling the latest image ($DOCKER_DIR)"
+      if $DRYRUN; then DID_UPDATE=yes; echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d --force-recreate)"; note "docker ($prof): would pull + recreate"
       # --force-recreate: after `pull` updates :latest, a plain `up -d` may just (re)start the EXISTING
       # container on the OLD image (log shows "Started", not "Recreated") — so the node keeps the old
       # version until a 2nd run. Forcing recreation guarantees it runs the freshly-pulled image.
       elif ! docker_ports_preflight "$prof"; then DID_FAIL=yes; note "docker ($prof): REFUSED — a published port is held by another process"
+      # ⚠️ PULL FIRST, WHILE THE STACK STILL RUNS. The pull used to come after the `docker rm -f` below, so a pull
+      # that failed — the registry unreachable or filtered, a rate limit, a full disk — left the box with its
+      # containers removed and nothing started: panel, node and every client down until someone ssh'd in.
+      elif ! ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" pull ); then
+        DID_FAIL=yes; note "docker ($prof): pull FAILED — nothing was touched"
+        warn "could not pull the new image — the containers are still running on the current one, nothing was
+       touched. Check the box can reach ghcr.io (and has disk space), then re-run the update."
+      elif docker_images_current "$prof"; then
+        # Nothing new arrived: only a service whose compose settings changed is recreated; every other container
+        # (a node's tunnels among them) keeps running.
+        # (the panel's container is re-created only if its configuration still held the password — said as it happened)
+        _pc0="$(docker inspect -f '{{.Created}}' swg-panel 2>/dev/null || true)"
+        ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" up -d ) \
+          && { _pc1="$(docker inspect -f '{{.Created}}' swg-panel 2>/dev/null || true)"
+               if [ "${ENV_PW_LEFT:-no}" = yes ] && [ "$_pc0" != "$_pc1" ]; then ok "docker ($prof) already runs the newest image — only the panel's container re-created, without the password"
+               elif [ "${ENV_PW_LEFT:-no}" = yes ]; then ok "docker ($prof) already runs the newest image — nothing recreated (the panel's container did not hold the password)"
+               else ok "docker ($prof) already runs the newest image — nothing recreated"; fi; note "docker ($prof): unchanged — the newest image already runs"; } \
+          || { DID_FAIL=yes; warn "compose up failed — check $DOCKER_DIR"; note "docker ($prof): up FAILED"; }
       else
+        DID_UPDATE=yes
         rescue_container_confs "$prof"
+        # a master's node reports with the agent config inside its container — copied out now, for the seed below
+        _seedcfg=""; case "$prof" in master|host-node)
+          _seedcfg="$(mktemp)" && { docker exec swg-node cat /etc/swg-agent/config.json > "$_seedcfg" 2>/dev/null || : > "$_seedcfg"; };; esac
         # ⚠️ EVERYTHING BELOW THIS LINE IS DESTRUCTIVE — the containers are removed before `up` runs, so a
         # failure here has nothing to fall back to. That is why the port check is a PRE-flight and sits in
-        # the `elif` above, not inside this branch.
+        # the `elif` above, not inside this branch — and why the pull happens up there too.
         for _c in $(case "$prof" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
-        ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" pull && on_tty $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
+        [ -n "$_seedcfg" ] && { seed_docker_node_ep "$_seedcfg"; rm -f "$_seedcfg"; }   # the panel is down now — see seed_docker_node_ep
+        ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose up failed — check $DOCKER_DIR"; note "docker ($prof): up FAILED"; }; fi
     else warn "docker ($prof): skipped"; note "docker ($prof): skipped"; fi
   fi
+fi
+
+# a Docker panel installed before round 9b still holds its password in .env — it leaves once the panel holds it
+if [ "$HAVE_DOCK" = yes ] && ! $DRYRUN && case "$DOCK_PROF" in host|master|host-node) true;; *) false;; esac \
+   && docker ps --format '{{.Names}}' 2>/dev/null | grep -cx swg-panel >/dev/null; then
+  docker_env_forget_password "$DOCKER_DIR" 60
 fi
 
 # ───────────────────────── WireGuard / AmneziaWG datapath ─────────────────────────
@@ -1905,6 +2219,8 @@ fi
 if [ "$DID_FAIL" = no ] && [ "$DID_UPDATE" = no ]; then lc_emit uptodate; lc_handoff; fi
 echo
 if   [ "$DID_FAIL" = yes ]; then echo "${C_RED}✗${RESET} Update finished with errors — some components FAILED (see the summary below)."
+# ⚠️ A HEAL IS A CHANGE. Every ensure_* that installs a missing piece sets DID_UPDATE (+ a note) — they did not, and a run
+# printed "✓ docker address helper healed" and then "✓ Update finished — nothing changed." two lines apart.
 elif [ "$DID_UPDATE" = no ]; then ok "Update finished — nothing changed."
 else                              ok "Update complete."; fi
 if [ "${#RESULTS[@]}" -gt 0 ]; then   # only ACTUAL changes — drop the inventory notes (absent / unchanged / skipped components aren't "changes")

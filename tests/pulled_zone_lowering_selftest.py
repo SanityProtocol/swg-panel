@@ -126,7 +126,7 @@ check("the merge goes into `_pats`, not into the `_zones` alias",
       '_zb = _pats.setdefault("zone", {})' in src)
 check("…and it happens BEFORE the signature is taken",
       src.index('_zb = _pats.setdefault("zone", {})') < src.index("dom_sig = _dom_signature("))
-check("swg-sni is still handed the whole bucket dict", "patterns=_pats)" in src)
+check("swg-sni is still handed the whole bucket dict", "patterns=_pats)" in src or "patterns=_pats,\n" in src)
 check("the pulled zones are never unioned into `domains`",
       "domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))" in src
       and "domains[cat] = sorted(set(domains.get(cat) or []) | set(_zs))" not in src)

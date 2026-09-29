@@ -17,7 +17,7 @@ and every command it would execute is read back from its `[skip]` lines.
 Run: python3 tests/kept_login_readable_selftest.py (0 = pass)
      --perturb   the keep branch goes back to touching nothing → RED on [1]
 """
-import os, re, shutil, subprocess, sys, tempfile
+import base64, hashlib, os, re, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PERTURB = "--perturb" in sys.argv
@@ -46,7 +46,11 @@ def dry(with_auth):
     etc = os.path.join(T, "etc-" + ("keep" if with_auth else "new"))
     os.makedirs(etc, exist_ok=True)
     if with_auth:
-        open(os.path.join(etc, "auth"), "w").write("admin347:pbkdf2_sha256$200000$c2FsdA==$aGFzaA==\n")
+        # a login that holds the BASIC_PASS below: a re-install GIVEN a password its login does not hold sets a new one
+        # (round 12, F91's bare twin) — this check is about the one it keeps
+        _salt = os.urandom(16)
+        open(os.path.join(etc, "auth"), "w").write("admin347:pbkdf2_sha256$1000$%s$%s\n" % (
+            base64.b64encode(_salt).decode(), base64.b64encode(hashlib.pbkdf2_hmac("sha256", b"dry-run-pass", _salt, 1000)).decode()))
         os.chmod(os.path.join(etc, "auth"), 0o600)
     env = dict(os.environ, ETC_DIR=etc, ROLE="host", SERVE_MODE="internal", TLS_MODE="selfsigned", BASIC_PASS="dry-run-pass",
                PANEL_DOMAIN="127.0.0.1", PORT="2087")

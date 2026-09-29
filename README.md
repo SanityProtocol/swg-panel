@@ -1,13 +1,13 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.7-beta</code></p>
+<p align="center"><code>1.8.8-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.7-beta** — [full changelog](CHANGELOG.md)
-> - **Networks behind a device.** A device can front a network — the office LAN behind a router, the home network behind a Raspberry Pi — and the node carries it to clients whether their interface sends traffic direct, forwards it to another node or routes it by rule. The node can test that the network answers, and you choose who reaches it: everyone on the node, or only its owner and the people and groups you share it with.
-> - **Who can reach a device, and Private devices.** Every interface, WDTT server and csqtt server sets who may open connections to the devices on it — Everyone on this node, Same user and their groups, or Nobody — and a device marked Private is reachable only by its owner's other devices. ⚠️ Interfaces you already have start at Same user and their groups, so after the update devices of different users stop reaching each other until you put those people in a group or set the interface to Everyone on this node.
-> - **User groups.** Put people in named groups: members reach each other's devices, and a network can be shared with a whole group at once.
-> - **Relay works on smart-routing legs.** Forward or Relay is now a choice for a mesh leg that carries only some of an interface's destinations, not only for one that carries the whole interface.
+> **What's new in 1.8.8-beta** — [full changelog](CHANGELOG.md)
+> - **Traffic totals for any stretch of days.** The Peers, Users and Groups screens count every device's traffic through counter restarts, reinstalls and container recreates, over all time or any days you pick. A person's total keeps their deleted and handed-on devices, a group's adds up its members', and days can be counted in your own time zone.
+> - **Routing rules for chosen people.** A routing rule can apply to everyone on an interface or only to chosen people, groups and single devices — a user's new device is covered with no edit — and it can choose the address its traffic leaves by. ⚠️ On Hybrid SNI and Kernel SNI, a Block rule placed below an Exit or Direct rule that covers some of the same destinations no longer stops them after the update — the rule above wins, as the list's order says — so move such a Block above it.
+> - **A server's default can be a rule list.** One list routes the server's interfaces set to Auto, what its smart interfaces leave unsaid, and the traffic other servers send out through it — by site, list or address: out one of its exits, directly, or blocked. A Forward to … rule there sends that traffic one hop further, to a server the first one cannot reach.
+> - **AmneziaWG 3.1.** An AmneziaWG interface can run AmneziaWG 3.1 — header protection, random trailers and Amnezia's 3.1 timings — chosen when you create it or switched either way later, and before a switch the panel lists every device it cuts off until they re-import. Only apps that carry 3.1 connect, and the server's AmneziaWG module and tools must be 3.1 too.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -66,6 +66,11 @@ subscription and no one else sitting in the middle of your traffic.
 - **Panel here or apart.** Run the panel on the same server as a VPN node, or on a separate box that only manages your nodes — either works.
 - **Hard to block.** Uses **AmneziaWG** (a stealthier WireGuard) and can route traffic cleverly by
   destination, so it keeps working where plain VPNs get blocked.
+- **AmneziaWG 3.1 when you want it.** Each AmneziaWG interface runs 2.0, which every AmneziaWG app
+  understands, or 3.1, which adds header protection and random trailers. Pick it when you create the
+  interface and switch either way later: the panel first shows who the switch cuts off until they
+  re-import, network gateways first, and refuses while a WINGS-N turn proxy points there. A 3.1 interface
+  wears a blue badge. [Which apps connect ↓](#a-few-things-worth-knowing)
 - **Filter out the junk.** Block ads, trackers, malware, adult content, gambling and more — per server, from
   curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
   which user is behind the torrents and port-scans it flags.
@@ -313,12 +318,33 @@ Its limits:
 ## Using it day to day
 
 - **Watch the dashboard.** The **Overview** page shows who’s online, the busiest servers, and where
-  traffic is going — all live.
+  traffic is going — live, or over the last hour, day, week, month, or any days you pick from the last 33
+  (**Custom** on the side rail). Its top talkers are counted exactly, the same way as the **Peers** and **Users** pages.
 - **Add or remove users anytime.** Changes reach your servers within seconds. Remove someone and their
   access stops on the next check-in.
 - **Change the panel’s login** under **Settings → Authentication** — it takes effect immediately. While you’re there, switch on **two-factor authentication** (Google Authenticator) for stronger sign-in security.
+- **Count days in your own time zone.** Servers usually run on UTC, so the panel’s day would end at 03:00 in
+  Moscow. Pick your zone under **Settings → Display → Days are counted in**: traffic totals, the charts and the
+  turn-proxy update hour follow it. The charts draw what they recorded before the change shifted by the
+  difference until it scrolls out of them (up to 33 days).
+- **See how much each person used — for any stretch of days.** The **Peers** and **Users** pages (users and groups) count
+  every device’s traffic through counter restarts and reinstalls, for **All time**, a **Day**, **Week** or **Month**, or any
+  dates you pick from the menu on the right edge; a user’s or a group’s graph icon opens their graph with every device
+  (or member) behind it, including devices deleted or handed to someone else.
+  A person’s total adds up their devices, so traffic between two of their own devices (for example to a home network
+  shared through the VPN) counts on both. History is kept for ever by default — **Settings → Display → Data** shows how
+  much disk it uses, and can keep the hour-by-hour detail for the last 33 days only; totals for any period are always kept.
 - **Route certain sites through a certain country (optional).** For example, send streaming out through a
   server abroad and keep everything else local. Set it per server under **Settings → Routing & Blocking**.
+  A rule can also apply to chosen people only: open its settings (the sliders button before its destination) and choose
+  people, groups or single devices. The same window is where a rule that forwards to another server picks
+  **which of that server's addresses** the traffic leaves it by — useful when a server has several and a site
+  expects one of them. For a **Direct** rule it picks this server's own address — one for the whole interface.
+  A server's own default can be a rule list too — **Settings → Network → Default exit → Routing (smart cascade)**:
+  one list for its interfaces set to **Auto** and for the traffic other servers send out through it, and each rule
+  can narrow itself to **this node's own clients** or to **traffic cascaded in**. A **Forward to node** rule there
+  sends traffic cascaded in one hop further — to a server the first one can't reach — and that server lets it out
+  and never forwards it again.
 - **Get past tougher blocks (optional).** If plain VPN traffic is blocked on a network, swgPanel can wrap
   it through a **turn-proxy** — set up under a server’s details and in **Settings → Turn proxies**.
 - **Feed other tools (optional).** The panel can share live status with dashboards like **Grafana** or
@@ -426,6 +452,61 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   users’ ordinary DNS and routes by the site names it sees. A device that uses its own encrypted DNS (DoH, DoT
   or DoQ) is marked instead of cut off: its rules by site name don’t match, its rules by IP still do. To stop
   encrypted DNS, turn on the interface’s **DoH / DoT / DoQ** block.
+- **AmneziaWG 3.1 needs a 3.1 app.** These connect: Amnezia VPN 5.0.1.5 or newer, AmneziaWG on iPhone
+  and Mac (App Store), on Android (the GitHub release — the Google Play build is still 2.0) and on Windows,
+  WG Tunnel 5.6 or newer, FreeTurn 4.3. These cannot: the Google Play AmneziaWG, WINGS V, Keenetic and
+  MikroTik routers — and Amnezia VPN 5.0.0.5 or older imports a 3.1 config without complaint and never
+  connects. The server needs 3.1 too (its AmneziaWG kernel module, or `amneziawg-go` where there is none,
+  and its `awg` tools); on one that isn't, the switch is greyed out and says which part. The cost,
+  measured: +1–2 % CPU at the rates a VPS carries; a server that is already CPU-bound loses 7–20 % of its
+  throughput ceiling to the header masks, and no setting takes that back.
+- **Blocking by site name, per mode.** **Hybrid SNI** and **Kernel SNI** refuse each connection to a blocked name and
+  never block another site on its address. **Force-DNS** blocks by the address a name resolves to, so a blocked site
+  that shares its address with an allowed one stays reachable. Domain **block lists** (ads, malware) run on Force-DNS
+  and Hybrid SNI only — on Kernel SNI they are too long for an in-kernel scan. A Kernel SNI site rule matches the site
+  and its subdomains, and can also catch a longer name that carries it inside (`example.com.evil.net`). No mode sees
+  a name hidden by ECH, or a request sent inside a connection already open to another site on the same server.
+- **A rule for chosen people covers the devices a server can tell apart.** Their WireGuard and AmneziaWG devices
+  always; WDTT and csqtt devices only where the server's build can prove which user is sending — the same builds as
+  in **Who can reach a device** — and the rule's row says how many devices it doesn't cover. A server running an
+  older version applies such rules to nobody until you update it, and its card says so. They match site names in
+  every mode that does, **Kernel SNI** included — except on a server whose kernel can't tie an address to its device:
+  there they match by IP address and network only, and the rule's list says so. On **Kernel SNI**, an address or
+  network **Block** rule that overlaps a site-name rule blocks those sites whatever order the two rules are in, for
+  everyone as for chosen people: the site name is checked after the address. Going back to an
+  older panel and saving an interface there drops the chosen people from its rules for good. Going back to an
+  older version on a server that ran these rules — or, on **Hybrid SNI** or **Kernel SNI**, a **Block** rule below an
+  Exit or Direct rule — run `nft delete table inet swg_smart` on it once: it rebuilds its routing within a minute.
+- **The address is one per interface and server.** Every rule that sends one interface through that server
+  leaves by it — it's a property of the pair, not of a single rule, which is why it shows on all of them.
+  The far server needs no update: even an older one applies it. An older panel ignores it while it runs —
+  the rules keep forwarding to the right server and that server picks the address itself — and it starts
+  applying again when you upgrade. If a server stops reporting an address something is pinned to, the rule
+  says so: traffic would leave with a source that server can't receive replies on.
+- **A server's routing list applies to traffic cascaded in once that server is updated.** Until then it sends
+  all of it out the list's **Everything else** as a plain default — or out its own address when that is Direct or
+  Block — and its card says so. Traffic an interface pins to one of that server's addresses skips the list, as it
+  skips a plain default. An interface whose own **Everything else** is left on **Node default** goes through the
+  server's list after its own rules; on **Hybrid SNI** and **Force-DNS** a more specific site in the server's list
+  wins over the interface's broader one, and the interface's rule says so. Once the list has a rule for this
+  server's own clients, its interfaces set to **Auto** are routed by it the way a smart interface is: their IPv6 is
+  dropped, and on **Hybrid SNI** or **Kernel SNI** they lose HTTP/3 too. A list with only **Everything else** changes
+  nothing for them. Clients cascaded into a **Hybrid SNI**
+  or **Kernel SNI** server lose HTTP/3, as on a smart interface. Their traffic is counted on the dashboard of the
+  server they connected to. Going back to an older version on a server that ran such a list: run
+  `nft delete table inet swg_smart` on it once (and on **Kernel SNI** also `ipset destroy swga`).
+- **An onward hop hides the clients from the last server.** Traffic a server's list forwards one hop further reaches
+  that server as coming from the middle server, so abuse is traced through the middle server's connections. A
+  server behind heavy filtering that cascades everything to a neighbour shows its own links abroad as down under
+  **Full mesh**; switch the fleet to **On demand**, which never creates them.
+- **A default exit now also catches routed traffic.** Traffic another server sends through this one by a routing
+  rule now leaves by this server's default exit, as whole-interface forwarding always did — with the exit's
+  kill-switch on, it now stops when the exit is down instead of leaving by the server's own address.
+- **Two servers can't share a subnet across a cascade.** An interface's traffic is never sent to a server that uses an
+  overlapping subnet itself, or that another server already sends one — the installers' 10.8.0.0/24 and 10.9.0.0/24,
+  or a server added from another panel — because its replies couldn't be told apart. Rules toward that server are
+  skipped for the interface, a forward to it is off (its traffic leaves by this server's own address), and the
+  sending server's card names both sides; give one of them a different subnet.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more

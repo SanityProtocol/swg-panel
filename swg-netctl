@@ -20,6 +20,9 @@ caller can't escape (callers pass only "panel"/"sub", never a unit name or file 
     issue-cert  <panel|sub> <domain>      acme.sh issue+install to that service's cert path (+ SIGHUP reload hook)
     drop-cert   <panel|sub> <domain>      stop auto-renewing one domain (after a confirmed domain switch)
     adopt-cert  <panel|sub> <cert> <key>  install an operator-supplied cert pair (TLS mode `skip`)
+    sync-acme   <panel|sub>               install acme.sh's renewed cert for that service's name when it is
+                                          newer than the served one — whoever the entry installs for
+    renew-acme  <panel|sub>               renew that name's acme.sh entry now (never --force), then sync-acme
     restart     <panel|sub>               restart one service unit
 
 Security model:
@@ -34,12 +37,15 @@ stdlib-only Python 3, single file — same as the other swg programs.
 """
 
 import contextlib
+import errno
 import grp
+import hashlib
 import ipaddress
 import json
 import os
 import pwd
 import shutil
+import signal
 import ssl
 import urllib.error
 import urllib.parse
@@ -60,6 +66,17 @@ UNIT_DIR = os.environ.get("SWG_UNIT_DIR", "/etc/systemd/system")
 CONF = os.path.join(ETC_DIR, "install.conf")
 QUEUE_DIR = os.path.join(STATE_DIR, "netctl", "queue")
 STATUS_DIR = os.path.join(STATE_DIR, "netctl", "status")
+# ⚠️ STATE_DIR/netctl IS THE PANEL USER'S DIRECTORY (it writes the queue), and so is STATE_DIR itself: the panel can
+# rename any entry in it — status/ included, whoever owns that — and put a symlink in its place. Everything this helper
+# (root) creates, writes, renames or deletes under it therefore goes through DIRECTORY FILE DESCRIPTORS opened with
+# O_NOFOLLOW, and root's own children (status/, claims/) are verified with fstat as root's, not group/other-writable,
+# before use — a path the panel can change is never resolved twice. Before this, `status` swapped for a symlink to
+# /etc/docker plus a request with id "daemon" had root overwrite /etc/docker/daemon.json (see _netctl_dirs).
+# claims/ sits BESIDE the queue (same filesystem, so taking a request is one atomic rename) and is root's alone.
+NETCTL_DIR = os.path.join(STATE_DIR, "netctl")
+# Root's own state, out of the panel's reach (its parent, /var/lib, is root's): the fingerprint of the certificate
+# nginx/caddy last loaded (see _front_sync).
+HELPER_STATE = os.environ.get("SWG_NETCTL_STATE") or "/var/lib/swg-netctl"
 DRYRUN = os.environ.get("SWG_NETCTL_DRYRUN") == "1"
 
 # The ONLY things the helper is allowed to touch, keyed by the service names callers may pass.
@@ -127,17 +144,30 @@ def v_domain(s):
 
 
 # ── low-level helpers ─────────────────────────────────────────────────────────────
-def run(argv, env=None):
-    """Run an argv list (never a shell string). Returns (rc, combined_output)."""
+def run(argv, env=None, timeout=None):
+    """Run an argv list (never a shell string). Returns (rc, combined_output).
+
+    `timeout` (seconds) bounds it: this helper drains ONE queue, one request at a time, so a command that hangs
+    stalls every Access operation behind it (binds, certificates, restarts). On expiry the command's whole
+    process group is killed — acme.sh's standalone mode runs its own listener child on :80, which a kill of
+    acme.sh alone would leave holding the port — and rc 124 is returned, as timeout(1) does."""
     log("exec: " + " ".join(argv))
     if DRYRUN:
         return 0, "(dry-run)"
-    p = subprocess.run(argv, env=env, stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT, text=True)
-    if p.stdout:
-        for line in p.stdout.rstrip().splitlines():
+    p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         start_new_session=timeout is not None)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(Exception):
+            os.killpg(p.pid, signal.SIGKILL)
+        out, _ = p.communicate()
+        rc, out = 124, (out or "") + "\n(stopped: still running after %d s)" % timeout
+    if out:
+        for line in out.rstrip().splitlines():
             log("  | " + line)
-    return p.returncode, p.stdout or ""
+    return rc, out or ""
 
 
 def load_conf():
@@ -247,9 +277,99 @@ def _acme_clear_unusable(domain):
     return True
 
 
+def _acme_owner(d, name):
+    """(owner, path) — who acme.sh installs entry `d` for: ours | other | none, and the path that says so.
+
+    ONE rule, used by everything that asks (issue-cert, drop-cert, sync-acme). All three install targets are
+    read: a tool that installed with --cert-file/--key-file and no --fullchain-file owns the entry just the same.
+    "Ours" is an exact match to one of our four files (the panel's and swg-sub's cert and key) — never a
+    directory prefix, so install-host.sh's twin (acme_foreign_target) answers the same."""
+    ours = {os.path.realpath(p) for s in SERVICES.values() for p in (s["cert"], s["key"])}
+    paths = [p for p in (_acme_conf_value(d, name, k)
+                         for k in ("Le_RealFullChainPath", "Le_RealCertPath", "Le_RealKeyPath")) if p]
+    if not paths:
+        return "none", ""
+    foreign = [p for p in paths if os.path.realpath(p) not in ours]
+    return ("other", foreign[0]) if foreign else ("ours", paths[0])
+
+
+def _acme_foreign_target(domain):
+    """The path acme.sh installs `domain`'s entry to, when that is ANOTHER program's. "" when the entry is ours,
+    has no install target, or does not exist.
+
+    ⚠️ acme.sh keeps ONE install target per name, and a second tool sharing the store (3x-ui's certificate
+    menu, met in the field) owns it as surely as we do. `--install-cert` would take it from them — their
+    renewals then land in OUR path and their certificate silently expires, exactly what they did to us — and
+    `--remove` would delete their renewal state outright. Neither is ours to do: we copy the certificate
+    instead, and sync-acme keeps our copy current from the entry whoever owns it."""
+    d = _acme_ecc_dir(domain)
+    if d is None:
+        return ""
+    owner, path = _acme_owner(d, domain)
+    return path if owner == "other" else ""
+
+
+_FRONT_MARK = os.path.join(HELPER_STATE, "front-cert.sha256")   # root's own dir — never the panel's (see NETCTL_DIR)
+
+
+def _front():
+    """The installer's proxy in front of the panel ("nginx" | "caddy"), or "" when the panel serves its own TLS."""
+    f = load_conf().get("SERVE_MODE", "")
+    return f if f in ("nginx", "caddy") else ""
+
+
+def _front_sync(force=False):
+    """Reload the installer's nginx/caddy when the panel's managed certificate is not the one they last loaded.
+    They read the file only on (re)load, so a renewal written to disk by anyone — acme's cron through a stored
+    reload command that knows nothing of them, sync-acme, the operator — is served only after this. The
+    fingerprint of what they last loaded is kept, so an unchanged file never reloads them."""
+    front = _front()
+    if not front:
+        return
+    try:
+        cur = _sha256_path(SERVICES["panel"]["cert"])
+    except OSError:
+        return
+    last = ""
+    with contextlib.suppress(OSError):
+        with open(_FRONT_MARK) as f:
+            last = f.read().strip()
+    if cur == last and not force:
+        return
+    rc, _out = run(["systemctl", "reload", front])
+    if rc == 0 and not DRYRUN:
+        with contextlib.suppress(OSError):
+            os.makedirs(os.path.dirname(_FRONT_MARK), mode=0o700, exist_ok=True)
+            with open(_FRONT_MARK + ".tmp", "w") as f:
+                f.write(cur + "\n")
+            os.replace(_FRONT_MARK + ".tmp", _FRONT_MARK)
+
+
+def _sha256_path(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _reload_front(service):
+    """Make `service` serve the certificate just placed at its path: SIGHUP its own unit (both the panel and
+    swg-sub reload on it), and for the panel behind the installer's nginx/caddy, reload them too."""
+    with contextlib.suppress(Exception):
+        run(["systemctl", "kill", "-s", "HUP", SERVICES[service]["unit"]])
+    if service == "panel":
+        with contextlib.suppress(Exception):
+            _front_sync(force=True)
+
+
 def reload_cmd_for(service):
-    # both the panel and swg-sub reload their cert on SIGHUP with zero downtime.
-    return "systemctl kill -s HUP %s" % SERVICES[service]["unit"]
+    # both the panel and swg-sub reload their cert on SIGHUP with zero downtime. nginx/caddy in front of the panel are
+    # reloaded by sync-acme when the file they serve CHANGES (_front_sync) — never baked into acme.sh's stored command,
+    # which goes stale the moment the serve mode is flipped and misses entries issued before.
+    # `|| true`: a unit that is stopped (swg-sub disabled) must not turn a renewal that DID install into acme.sh's
+    # "Reload error" — which it would report on every later renewal too.
+    return "systemctl kill -s HUP %s 2>/dev/null || true" % SERVICES[service]["unit"]
 
 
 # ── verbs ─────────────────────────────────────────────────────────────────────────
@@ -470,6 +590,26 @@ def _issue_selfsigned(svc, domains):
 def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
     acme = find_acme()
     env = dict(os.environ)
+    # ⚠️ ANOTHER PROGRAM'S ENTRY IS ASKED ABOUT FIRST — before anything is cleared or issued. `--issue` saves OUR
+    # challenge method (`--standalone`, or our DNS hook) into the entry whenever its certificate is due, over whatever
+    # that program renews with, and `_acme_clear_unusable` deletes an entry that holds no certificate yet. Neither is
+    # ours to do to an entry another program installs (the certificate series' rule). So such an entry is RENEWED by
+    # its own saved method — `--renew` skips a certificate that is not due and never rewrites the method, exactly
+    # what acme.sh's own cron does to it every day — and its certificate is copied. The panel's 6-hourly sync-acme
+    # brings every later renewal across. The reload acme's --reloadcmd would have done is ours.
+    foreign = _acme_foreign_target(domains[0])
+    if foreign and not DRYRUN:
+        rc, out = run(acme_argv(acme, "--renew", "-d", domains[0], "--ecc"), env=env)
+        if rc not in (0, 2):           # 2 = RENEW_SKIP: still valid, nothing to do
+            raise Reject("acme --renew failed (rc %d) for %s, which acme.sh installs for another program (%s): %s"
+                         % (rc, domains[0], foreign, out.strip()[-400:]))
+        d = _acme_ecc_dir(domains[0])
+        _copy_pair(svc, os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % domains[0]), domains[0])
+        log("acme.sh installs %s for another program (%s) — renewed by its own method, copied its certificate, "
+            "left its install target alone" % (domains[0], foreign))
+        if reloadcmd:
+            _reload_front(service)
+        return
     # BEFORE the order, not after: a leftover from a previous failure would refuse THIS attempt too, and the
     # operator would read "Domain key exists" instead of the reason issuance is actually failing on this box.
     _acme_clear_unusable(domains[0])
@@ -656,14 +796,28 @@ def _v_srcpath(p, what):
     return rp
 
 
+def _ip_norm(s):
+    """`s` as a canonical IP string, or None when it is not an IP address. The stdlib prints an IPv6 SAN
+    uncompressed and upper-case ("2001:DB8:0:0:0:0:0:1"), so only a canonical form compares equal."""
+    with contextlib.suppress(ValueError):
+        return str(ipaddress.ip_address(str(s).strip().strip("[]")))
+    return None
+
+
 def _cert_names(path):
-    """Every name the certificate answers to — DNS SANs plus the subject CN."""
+    """Every name the certificate answers to — DNS SANs, IP SANs (canonical form) plus the subject CN.
+
+    ⚠️ IP SANs count. A Let's Encrypt IP certificate (letsencrypt-ip) has NO DNS name and an empty subject:
+    its one name is an `IP Address` SAN. Reading DNS alone called every IP certificate "for no host at all",
+    so no IP panel could adopt one."""
     names = set()
     with contextlib.suppress(Exception):
         info = ssl._ssl._test_decode_cert(path)
         for typ, val in info.get("subjectAltName", ()):
             if typ == "DNS":
                 names.add(str(val).lower())
+            elif typ == "IP Address" and _ip_norm(val):
+                names.add(_ip_norm(val))
         for rdn in info.get("subject", ()):
             for k, v in rdn:
                 if k == "commonName":
@@ -672,7 +826,7 @@ def _cert_names(path):
 
 
 def _cert_covers_host(path, host):
-    d = (host or "").lower()
+    d = _ip_norm(host) or (host or "").lower()
     for n in _cert_names(path):
         if n == d or (n.startswith("*.") and d.split(".", 1)[-1:] == [n[2:]]):
             return True
@@ -695,30 +849,22 @@ def _service_host(service):
     return host.strip().lower()
 
 
-def do_adopt_cert(service, cert_src, key_src, reload="reload"):
-    svc = SERVICES[v_service(service)]
-    if reload not in ("reload", "noreload"):
-        raise Reject("bad reload flag %r" % (reload,))
-    c = _v_srcpath(cert_src, "certificate")
-    k = _v_srcpath(key_src, "private key")
-    # THE pair test: the same call the service itself will make when it binds. A pass here means the
-    # listener comes up; it rejects a non-PEM, a key that does not match the leaf, and a passphrase-
-    # protected key (which would otherwise hang a service that has no terminal to ask on).
+def _check_pair(c, k, host):
+    """THE pair test: the same call the service itself makes when it binds. A pass means the listener comes up;
+    it rejects a non-PEM, a key that does not match the leaf, and a passphrase-protected key (which would
+    otherwise hang a service that has no terminal to ask on) — and a certificate that does not name `host`."""
     try:
         ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(c, k, password=lambda: b"")
     except Exception as e:
         raise Reject("%s and %s are not a usable certificate + private key pair: %s"
-                     % (cert_src, key_src, str(e).strip()[-200:] or e.__class__.__name__))
-    host = _service_host(service)
+                     % (c, k, str(e).strip()[-200:] or e.__class__.__name__))
     if host and not _cert_covers_host(c, host):
         raise Reject("that certificate does not cover %s — it names %s"
                      % (host, ", ".join(sorted(_cert_names(c))) or "no host at all"))
-    with contextlib.suppress(Exception):
-        left = int((ssl.cert_time_to_seconds(ssl._ssl._test_decode_cert(c)["notAfter"]) - time.time()) // 86400)
-        if left < 0:
-            raise Reject("that certificate expired %d day(s) ago" % -left)
-    if DRYRUN:
-        log("would install %s + %s as the %s certificate" % (cert_src, key_src, service)); return "dry-run"
+
+
+def _place_pair(svc, c, k):
+    """Put a checked pair at `svc`'s paths atomically, with the service's permissions (no reload)."""
     os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
     for src, dst in ((c, svc["cert"]), (k, svc["key"])):
         if os.path.realpath(src) == os.path.realpath(dst):
@@ -727,6 +873,32 @@ def do_adopt_cert(service, cert_src, key_src, reload="reload"):
         shutil.copyfile(src, tmp)
         os.replace(tmp, dst)
     _fix_cert_perms(svc)
+
+
+def _copy_pair(svc, c, k, host):
+    """Check and place. `host` is passed, not read from settings: an address change issues for the NEW name
+    before that name is saved."""
+    _check_pair(c, k, host)
+    _place_pair(svc, c, k)
+
+
+def do_adopt_cert(service, cert_src, key_src, reload="reload"):
+    svc = SERVICES[v_service(service)]
+    if reload not in ("reload", "noreload"):
+        raise Reject("bad reload flag %r" % (reload,))
+    c = _v_srcpath(cert_src, "certificate")
+    k = _v_srcpath(key_src, "private key")
+    _check_pair(c, k, _service_host(service))   # the host is read HERE, from settings — never from the request
+    # ⚠️ The raise sits OUTSIDE the suppress: Reject is an Exception, so raised inside it was swallowed and an
+    # expired certificate was installed without a word.
+    left = None
+    with contextlib.suppress(Exception):
+        left = int((ssl.cert_time_to_seconds(ssl._ssl._test_decode_cert(c)["notAfter"]) - time.time()) // 86400)
+    if left is not None and left < 0:
+        raise Reject("that certificate expired %d day(s) ago" % -left)
+    if DRYRUN:
+        log("would install %s + %s as the %s certificate" % (cert_src, key_src, service)); return "dry-run"
+    _place_pair(svc, c, k)
     if reload == "reload":
         with contextlib.suppress(Exception):
             run(["systemctl", "kill", "-s", "HUP", svc["unit"]])
@@ -736,6 +908,38 @@ def do_adopt_cert(service, cert_src, key_src, reload="reload"):
 def do_drop_cert(service, domain):
     v_service(service)
     v_domain(domain)
+    foreign = _acme_foreign_target(domain)
+    if foreign:
+        # Not ours to stop: acme.sh renews this name for another program, and --remove plus the rmtree below
+        # would delete its renewal state — its certificate would expire with nothing to say why.
+        return "left %s renewing — acme.sh installs it for another program (%s)" % (domain, foreign)
+    # …nor while OUR OTHER service still needs it. The panel and swg-sub commonly share one name, and one entry: when the
+    # panel moves to a new name, dropping the old one deleted the entry that renews swg-sub's certificate (whose
+    # install target it may well be — `issue-cert sub` re-points it). Kept while the other serves that name, or
+    # while the entry installs into the other's paths.
+    d = _acme_ecc_dir(domain)
+    for other in SERVICES:
+        if other == service:
+            continue
+        mine = {os.path.realpath(SERVICES[other][k]) for k in ("cert", "key")}
+        targets = {os.path.realpath(p) for p in (_acme_conf_value(d, domain, k) for k in
+                   ("Le_RealFullChainPath", "Le_RealCertPath", "Le_RealKeyPath")) if p} if d else set()
+        # "serves that name" counts only when acme.sh issues for this box: under `skip` swg-sub serves the operator's
+        # own certificate, and moving this entry onto it would fight _adopt_resync for its files on every renewal.
+        serves = _service_host(other) == domain.lower() and _load_access_tls()["mode"] in _ACME_FOLLOW_MODES
+        if serves or (targets & mine):
+            # …and if it still installs into THIS service's paths, point it at the other's: left as it was, its next
+            # renewal would write the OLD name's certificate over the one this service now serves for its new name.
+            here = {os.path.realpath(SERVICES[service][k]) for k in ("cert", "key")}
+            if d and (targets & here) and not DRYRUN:
+                rc, out = run(acme_argv(find_acme(), "--install-cert", "-d", domain, "--ecc",
+                                        "--key-file", SERVICES[other]["key"], "--fullchain-file", SERVICES[other]["cert"],
+                                        "--reloadcmd", reload_cmd_for(other)))
+                if rc:
+                    raise Reject("kept %s for %s, but could not move its install target off %s (rc %d): %s"
+                                 % (domain, other, service, rc, out.strip()[-200:]))
+                return "left %s renewing for %s — its install target moved to %s's certificate" % (domain, other, other)
+            return "left %s renewing — %s still uses it" % (domain, other)
     acme = find_acme()
     rc, out = run(acme_argv(acme, "--remove", "-d", domain, "--ecc"))
     if rc:
@@ -748,12 +952,182 @@ def do_drop_cert(service, domain):
     # apply, burning Let's Encrypt's 5-per-week duplicate limit. We have just declared we do not want
     # this certificate, so drop its directory — the same thing install-host.sh's
     # prune_stale_acme_installs already does for a superseded entry.
-    for _d in ("%s_ecc" % domain, domain):
+    # Only the `_ecc` entry: we always issue ec-256, so an RSA `<domain>` directory beside it was never ours —
+    # on a shared box it is another tool's (see _acme_ecc_dir), and deleting it took their renewal state too.
+    for _d in ("%s_ecc" % domain,):
         _p = os.path.join(ACME_HOME, _d)
         # only ever a domain directory directly under the store we own, and only one acme just removed
         if os.path.dirname(os.path.realpath(_p)) == os.path.realpath(ACME_HOME) and os.path.isdir(_p):
             shutil.rmtree(_p, ignore_errors=True)
     return "stopped auto-renewing %s" % (domain,)
+
+
+# ── follow acme.sh's entry for our name, whoever owns its install target ──────────────
+# ⚠️ AN ACME ENTRY HAS ONE INSTALL TARGET, AND ANYTHING ELSE SHARING THE STORE CAN TAKE IT. acme.sh keys its
+# store by name (`<name>_ecc`) and remembers ONE --install-cert destination and reload command per entry.
+# 3x-ui's certificate menu (x-ui.sh: `--issue` for the same name, then `--installcert --force`) re-points our
+# entry at /root/cert/…, and from then on acme's cron renews on schedule and delivers every renewal THERE.
+# The panel went on serving the last certificate that reached it until it expired — a 6-day IP certificate,
+# so under a week — while the renewal itself was perfectly healthy (seen live, 2026-09-25). We do it to
+# ourselves as well: when swg-sub shares the panel's name, `issue-cert sub <name>` re-installs the panel's
+# entry into the sub's path, and the panel's copy stops being renewed.
+#
+# So stop depending on the install target: read the renewed certificate straight out of the entry and put it
+# in place here. READ-ONLY toward acme's store — the other tool keeps its target and reload command, so
+# following it never breaks it. Whatever lands is checked by do_adopt_cert exactly like an operator's file.
+_ACME_FOLLOW_MODES = ("letsencrypt", "letsencrypt-ip", "cloudflare")
+
+
+def _acme_conf_value(d, name, key):
+    """One `KEY='value'` line of an entry's `<name>.conf`, or "" when absent."""
+    with contextlib.suppress(OSError):
+        with open(os.path.join(d, "%s.conf" % name)) as f:
+            for line in f:
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip().strip("'\"")
+    return ""
+
+
+def _cert_end_and_selfsigned(path):
+    """(notAfter as epoch seconds, self-signed?) of a certificate file, or (None, False) when unreadable."""
+    try:
+        info = ssl._ssl._test_decode_cert(path)
+        return ssl.cert_time_to_seconds(info["notAfter"]), info.get("issuer") == info.get("subject")
+    except Exception:
+        return None, False
+
+
+def do_sync_acme(service):
+    """Install acme.sh's current certificate for `service`'s name when it is newer than the one served.
+
+    Returns a JSON object (the panel reads it): state ∈ adopted | current | refused | no-entry | skipped,
+    owner ∈ ours | other | none — who acme.sh installs this entry for — and install_path."""
+    svc = SERVICES[v_service(service)]
+    # `front`: the installer's proxy that serves the panel's file ("" = the panel serves it) — the panel reports that
+    # file's health only when one does. `transient`: a skip that says nothing about who renews the certificate, so
+    # the panel keeps its last report instead of replacing it.
+    res = {"service": service, "state": "skipped", "owner": "", "install_path": "", "front": _front()}
+    mode = _load_access_tls()["mode"]
+    host = _service_host(service)
+    if mode not in _ACME_FOLLOW_MODES:
+        res["reason"] = "TLS mode %r is not issued by acme.sh" % (mode,)
+    elif not host or len(host) > 253 or not _HOST_RE.match(host):
+        res["reason"] = "no usable %s address configured" % service
+    elif os.path.exists(svc["cert"] + ".applyback"):
+        res["reason"], res["transient"] = "an address change is in flight", True   # its apply/confirm/revert owns the served cert
+    if res.get("reason"):
+        return json.dumps(res)
+    res["host"] = host                                         # on EVERY report from here, no-entry included: the
+    d = _acme_ecc_dir(host)                                    # panel drops a report about a name it no longer serves
+    if d is None or not _acme_entry_usable(d, host):
+        res["state"] = "no-entry"
+        return json.dumps(res)
+    res["owner"], res["install_path"] = _acme_owner(d, host)   # the panel's OR swg-sub's paths — both are us
+    src_cert, src_key = os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % host)
+    new_end, _ = _cert_end_and_selfsigned(src_cert)
+    cur_end, cur_self = _cert_end_and_selfsigned(svc["cert"]) if os.path.exists(svc["cert"]) else (None, False)
+    # ⚠️ THE PANEL'S SELF-SIGNED CERTIFICATE IS NEVER REPLACED FROM HERE. The node installers PIN a self-signed panel
+    # certificate (trust on first use), and a pinned node refuses anything else — so installing acme.sh's CA
+    # certificate over it (an installer whose --install-cert failed fell back to self-signed while the entry stayed
+    # usable) would silently cut every such node off, and the panel cannot tell which nodes pinned. It is reported
+    # as HELD instead; the operator switches deliberately (Panel access → Save) and re-runs the node installer where
+    # pinned. The PANEL's only: nothing pins swg-sub's certificate — subscription clients never do — so a
+    # self-signed one there yields to the CA certificate like any older one.
+    if service == "panel" and cur_self and new_end is not None:
+        res["state"], res["reason"] = "held", "the panel serves a self-signed certificate that nodes may have pinned"
+        # Held HERE — but when the entry itself installs into the panel's path, acme.sh's own renewal will copy the CA
+        # certificate over it anyway (the installer's --install-cert stores that target even when it then fails).
+        # Nothing here can stop that short of editing the entry, so say WHEN, and let the operator switch first.
+        if {os.path.realpath(svc["cert"]), os.path.realpath(svc["key"])} & {os.path.realpath(p) for p in (
+                _acme_conf_value(d, host, k) for k in ("Le_RealFullChainPath", "Le_RealCertPath", "Le_RealKeyPath")) if p}:
+            res["swap_at"] = _acme_conf_value(d, host, "Le_NextRenewTimeStr") or "its next renewal"
+        return json.dumps(res)
+    # Newer by expiry — the one comparison that holds whoever renewed it (a self-signed swg-sub placeholder always
+    # yields, whatever its 10-year date says).
+    if new_end is None or (cur_end is not None and not cur_self and new_end <= cur_end):
+        res["state"] = "current"
+        if service == "panel":
+            with contextlib.suppress(Exception):
+                _front_sync()                                   # a renewal someone else wrote: nginx/caddy load it too
+        return json.dumps(res)
+    try:
+        do_adopt_cert(service, src_cert, src_key, "noreload")   # pair, name and expiry checks; atomic copy
+    except Reject as e:
+        res["state"], res["reason"] = "refused", str(e)[:300]
+        return json.dumps(res)
+    _reload_front(service)                                      # the service — and nginx/caddy when they serve it
+    res["state"] = "adopted"
+    return json.dumps(res)
+
+
+# ── renew now (the operator's button) ─────────────────────────────────────────────
+# acme.sh's own cron renews on schedule and sends its output to /dev/null, so a renewal that fails — port 80 taken,
+# a firewall, a CA error — fails silently for days while the certificate runs out (seen live 2026-09-25). This
+# runs the same renewal on demand and hands its real error back to the screen that is warning about it.
+# NO --force: an expired, overdue or near-expiry certificate is due anyway, and forcing one that is not would
+# spend Let's Encrypt's duplicate-certificate limit; acme.sh answers "not due" instead, which we report. Works
+# whoever owns the entry (sync-acme installs the result either way) and for letsencrypt-ip, which issue-cert
+# cannot do — renewing an existing entry needs nothing but the entry.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# A standalone HTTP-01 renewal is 10-60 s; well past that it is hung, and the queue behind it is stuck. Kept well under
+# the panel's own wait for the answer (see _RENEW_ANSWER_S there) so the panel always hears how it ended.
+_RENEW_TIMEOUT_S = 240
+
+
+def do_renew_acme(service):
+    """Renew `service`'s acme.sh entry now, then install the result. Returns JSON: state ∈ renewed | not-due |
+    failed | no-entry | skipped, message (acme.sh's own words on failure), owner/install_path, and sync."""
+    SERVICES[v_service(service)]
+    res = {"service": service, "state": "skipped", "message": "", "source": "helper"}   # source: whose words `message` is
+    creds = _load_access_tls()
+    mode = creds["mode"]
+    host = _service_host(service)
+    if mode not in _ACME_FOLLOW_MODES:
+        res["message"] = "TLS mode %r is not issued by acme.sh" % (mode,)
+        return json.dumps(res)
+    if not host or len(host) > 253 or not _HOST_RE.match(host):
+        res["message"] = "no usable %s address configured" % service
+        return json.dumps(res)
+    d = _acme_ecc_dir(host)
+    if d is None or not _acme_entry_usable(d, host):
+        res["state"], res["message"] = "no-entry", "acme.sh holds no certificate for %s" % host
+        return json.dumps(res)
+    res["owner"], res["install_path"] = _acme_owner(d, host)
+    env = dict(os.environ)
+    # acme.sh colours its errors (_err → __red) only when stdout is a terminal — never through our pipe — unless
+    # asked to. The red lines are how the reason is picked out of its output below, so ask.
+    env["ACME_FORCE_COLOR"] = "1"
+    if mode == "cloudflare" and creds["cf_token"]:                 # DNS-01 renews through the API it issued with
+        env["CF_Token"] = creds["cf_token"]
+        if creds["cf_account"]:
+            env["CF_Account_ID"] = creds["cf_account"]
+    rc, out = run(acme_argv(find_acme(), "--renew", "-d", host, "--ecc"), env=env, timeout=_RENEW_TIMEOUT_S)
+    if rc == 0 or DRYRUN:
+        res["state"] = "renewed"
+    elif rc == 2:                                                  # RENEW_SKIP: not due yet
+        res["state"] = "not-due"
+        res["message"] = _acme_conf_value(d, host, "Le_NextRenewTimeStr")
+    elif rc == 124:
+        res["state"], res["message"] = "failed", ("acme.sh did not finish within %d s and was stopped — the CA or "
+                                                  "its validation of this server did not answer" % _RENEW_TIMEOUT_S)
+    else:
+        # the lines that say why, not the whole trace: acme.sh prints its errors in RED (_err), which is the one
+        # signal that does not depend on guessing its wording; keyword matches next, the last lines otherwise
+        raw = (out or "").splitlines()
+        red = [_ANSI_RE.sub("", l).strip() for l in raw if "\x1b[31m" in l or "\x1b[1;31m" in l]
+        lines = [_ANSI_RE.sub("", l).strip() for l in raw]
+        why = red or [l for l in lines if re.search(r"error|fail|refus|invalid|timeout|unauthori[sz]ed|not found|in use|already used", l, re.I)]
+        res["state"], res["message"], res["source"] = "failed", "\n".join((why or [l for l in lines if l])[-6:])[-900:], "acme"
+    with contextlib.suppress(Exception):
+        res["sync"] = json.loads(do_sync_acme(service))            # install what acme.sh now holds, whoever owns it
+    # …and for swg-sub when it serves the same name (the common case — one hostname, two ports): otherwise the
+    # subscription page kept the old certificate until the panel's next 6-hourly follow. Only where swg-sub has
+    # a certificate already — never creating its directory on a box that does not run it.
+    for other in SERVICES:
+        if other != service and os.path.exists(SERVICES[other]["cert"]) and _service_host(other) == host:
+            with contextlib.suppress(Exception):
+                do_sync_acme(other)
+    return json.dumps(res)
 
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9.:_-]+$")
@@ -834,6 +1208,8 @@ VERBS = {
     "issue-cert": (do_issue_cert, (2, 3)),      # optional 3rd arg: reload | noreload (live-apply uses noreload)
     "drop-cert": (do_drop_cert, 2),
     "adopt-cert": (do_adopt_cert, (3, 4)),
+    "sync-acme": (do_sync_acme, 1),              # install acme.sh's renewed cert, whoever owns the entry's target
+    "renew-acme": (do_renew_acme, 1),            # the operator's "Renew now": acme --renew (never --force), then sync-acme
     "backup-cert": (do_backup_cert, 1),
     "restore-cert": (do_restore_cert, 1),
     "clear-backup": (do_clear_backup, 1),
@@ -863,21 +1239,85 @@ def _panel_uid():
         return None
 
 
-def _write_status(rid, status, message, nonce):
+def _open_dir(name, dir_fd=None):
+    """fd of directory `name` (relative to dir_fd), opened WITHOUT following a symlink, or None."""
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except OSError:
+        return None
+
+
+def _root_child(nfd, name, mode):
+    """fd of root's own child directory `name` of the netctl dir, created if missing and PROVEN root's (fstat on the
+    fd: owned by us, not group/other-writable). Anything else sitting at that name — a symlink, a file, a directory
+    the panel made — is moved aside and a fresh one made. None when that fails too (the caller degrades)."""
+    for attempt in (1, 2):
+        with contextlib.suppress(FileExistsError, OSError):
+            os.mkdir(name, mode, dir_fd=nfd)
+        fd = _open_dir(name, nfd)
+        if fd is not None:
+            st = os.fstat(fd)
+            if st.st_uid == os.geteuid() and not (st.st_mode & 0o022):
+                return fd
+            os.close(fd)
+        if attempt == 1:
+            with contextlib.suppress(OSError):
+                # a unique name: two in the same second (a panel re-planting) must not collide and leave it in place
+                os.rename(name, "%s.untrusted.%d.%d" % (name, time.time_ns(), os.getpid()), src_dir_fd=nfd, dst_dir_fd=nfd)
+                log("moved aside a %s/ this helper did not make — it is recreated as root's own" % name)
+    return None
+
+
+def _netctl_dirs():
+    """(netctl, queue, status, claims) directory fds — None for any that cannot be had safely. Close with _close."""
+    nfd = _open_dir(NETCTL_DIR)
+    if nfd is None:
+        return None, None, None, None
+    qfd = _open_dir("queue", nfd)
+    sfd = _root_child(nfd, "status", 0o750)
+    cfd = _root_child(nfd, "claims", 0o700)
+    if sfd is not None:
+        with contextlib.suppress(KeyError, OSError):
+            os.fchown(sfd, -1, grp.getgrnam(PANEL_GROUP).gr_gid)   # the panel (group swg) reads its answers here
+    return nfd, qfd, sfd, cfd
+
+
+def _close(*fds):
+    for fd in fds:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def _write_status(rid, status, message, nonce, sfd=None):
+    """Write request `rid`'s answer into status/ — through the verified status dir fd, never a path: the tmp file is
+    created O_EXCL|O_NOFOLLOW (nothing already there is written through), chowned by fd, then renamed in place."""
     # writing a status file is not a privileged/system mutation, so it happens even in DRYRUN.
-    os.makedirs(STATUS_DIR, exist_ok=True)
-    doc = {"id": rid, "status": status, "message": message,
-           "nonce": nonce, "at": int(time.time())}
-    tmp = os.path.join(STATUS_DIR, rid + ".json.tmp")
-    final = os.path.join(STATUS_DIR, rid + ".json")
-    with open(tmp, "w") as f:
-        json.dump(doc, f)
-    os.chmod(tmp, 0o640)
-    try:                                             # group-readable by the panel (group swg)
-        os.chown(tmp, 0, grp.getgrnam(PANEL_GROUP).gr_gid)
-    except (KeyError, PermissionError, OSError):
-        pass
-    os.replace(tmp, final)
+    own = sfd is None
+    if own:
+        nfd = _open_dir(NETCTL_DIR)
+        sfd = _root_child(nfd, "status", 0o750) if nfd is not None else None
+        _close(nfd)
+    if sfd is None:
+        log("answer for [%s] not written: no safe status dir" % rid)
+        return
+    try:
+        doc = {"id": rid, "status": status, "message": message,
+               "nonce": nonce, "at": int(time.time())}
+        tmp, final = rid + ".json.tmp", rid + ".json"
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp, dir_fd=sfd)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=sfd)
+        with os.fdopen(fd, "w") as f:
+            json.dump(doc, f)
+            try:                                     # group-readable by the panel (group swg)
+                os.fchown(f.fileno(), 0, grp.getgrnam(PANEL_GROUP).gr_gid)
+            except (KeyError, PermissionError, OSError):
+                pass
+        os.replace(tmp, final, src_dir_fd=sfd, dst_dir_fd=sfd)
+    finally:
+        if own:
+            _close(sfd)
 
 
 def _safe_rid(name):
@@ -888,38 +1328,99 @@ def _safe_rid(name):
     return re.sub(r"[^A-Za-z0-9_.-]", "_", rid) or "req"
 
 
+def _read_request(name, dir_fd):
+    """The request `name` in dir_fd, read WITHOUT following a symlink and without blocking on a FIFO (O_NONBLOCK);
+    the checks are made on the descriptor that is read, so nothing can be swapped in between."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    with os.fdopen(fd) as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise Reject("not a regular file")
+        puid = _panel_uid()
+        if puid is not None and st.st_uid != puid:
+            raise Reject("request not owned by %s (uid %d) — ignored" % (PANEL_USER, st.st_uid))
+        return json.load(f)
+
+
+def _sweep(dir_fd, older_than, keep=lambda n: False):
+    """Remove entries of dir_fd older than `older_than` seconds (0 = all) that `keep` does not keep. unlink() never
+    follows a symlink; a directory goes by the fd-based rmtree (symlink-safe), where Python has it."""
+    with contextlib.suppress(OSError):
+        for name in os.listdir(dir_fd):
+            if keep(name):
+                continue
+            with contextlib.suppress(OSError):
+                st = os.lstat(name, dir_fd=dir_fd)
+                if older_than and time.time() - st.st_mtime <= older_than:
+                    continue
+                if stat.S_ISDIR(st.st_mode):
+                    if sys.version_info >= (3, 11):
+                        shutil.rmtree(name, dir_fd=dir_fd)
+                else:
+                    os.unlink(name, dir_fd=dir_fd)
+
+
 def process_queue():
-    if not os.path.isdir(QUEUE_DIR):
-        return
-    puid = _panel_uid()
-    for name in sorted(os.listdir(QUEUE_DIR)):
-        if not name.endswith(".json"):
-            continue
-        path = os.path.join(QUEUE_DIR, name)
-        rid = _safe_rid(name)
-        try:
-            st = os.lstat(path)
-            if not stat.S_ISREG(st.st_mode):
-                raise Reject("not a regular file")
-            if puid is not None and st.st_uid != puid:
-                raise Reject("request not owned by %s (uid %d) — ignored" % (PANEL_USER, st.st_uid))
-            with open(path) as f:
-                req = json.load(f)
-            rid = _safe_rid(str(req.get("id") or rid))
-            msg = dispatch(req.get("verb"), req.get("args") or [])
-            log("ok [%s]: %s" % (rid, msg))
-            _write_status(rid, "ok", msg, req.get("nonce"))
-        except Reject as e:
-            log("reject [%s]: %s" % (rid, e))
-            _write_status(rid, "error", str(e), None)
-        except Exception as e:                      # never let one bad request wedge the queue
-            log("error [%s]: %s" % (rid, e))
-            _write_status(rid, "error", "internal error: %s" % (e,), None)
-        finally:
+    nfd, qfd, sfd, cfd = _netctl_dirs()
+    try:
+        if qfd is None:
+            return
+        names = os.listdir(qfd)
+        if not names:
+            return                                   # an idle timer tick: nothing to do, nothing to log
+        # Anything in the WATCHED queue dir that is not a request keeps DirectoryNotEmpty true, and swg-netctl.path then
+        # restarts this helper in a tight loop: a `.json.tmp` the panel was killed while writing (a write takes
+        # milliseconds, so one a minute old is abandoned), a `.json.taking` claim an earlier build left there, a stray
+        # directory. Cleared through the queue fd.
+        _sweep(qfd, 0, keep=lambda n: n.endswith(".json") or (n.endswith(".json.tmp") and not _older(qfd, n, 60)))
+        if sfd is not None:
+            _sweep(sfd, 3600)    # answers: read within seconds by their waiter, who cannot delete them (status/ is root's)
+        if cfd is not None:
+            _sweep(cfd, 3600)    # a claim a helper killed mid-request left: never run twice, just cleared
+        else:
+            log("claims unavailable — running requests in place")
+        for name in sorted(os.listdir(qfd)):
+            if not name.endswith(".json"):
+                continue
+            rid = _safe_rid(name)
+            # ⚠️ TAKEN IS A STATE THE PANEL CAN SEE. The request is renamed out of the queue BEFORE it runs, so a waiter
+            # that sees `<rid>.json` still there knows the helper has not started it, and one that sees it gone knows
+            # it has. Deleting it only after dispatch() returned made a long request (a DNS-01 renewal waiting on its
+            # TXT record) look untaken, and the panel withdrew — and reported — a renewal still running. The rename is
+            # also the claim: a waiter withdrawing a request (unlinking it) and this helper cannot both win.
+            where = qfd
+            if cfd is not None:
+                try:
+                    os.rename(name, name, src_dir_fd=qfd, dst_dir_fd=cfd)
+                    where = cfd
+                except FileNotFoundError:
+                    continue                         # withdrawn by its waiter a moment ago — nothing to run
+                except OSError as e:
+                    log("could not claim [%s] (%s) — running it in place" % (rid, e))
             try:
-                os.unlink(path)
-            except OSError:
-                pass
+                req = _read_request(name, where)
+                rid = _safe_rid(str(req.get("id") or rid))
+                msg = dispatch(req.get("verb"), req.get("args") or [])
+                log("ok [%s]: %s" % (rid, msg))
+                _write_status(rid, "ok", msg, req.get("nonce"), sfd)
+            except Reject as e:
+                log("reject [%s]: %s" % (rid, e))
+                _write_status(rid, "error", str(e), None, sfd)
+            except Exception as e:                  # never let one bad request wedge the queue
+                log("error [%s]: %s" % (rid, e))
+                _write_status(rid, "error", "internal error: %s" % (e,), None, sfd)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(name, dir_fd=where)
+    finally:
+        _close(cfd, sfd, qfd, nfd)
+
+
+def _older(dir_fd, name, secs):
+    try:
+        return time.time() - os.lstat(name, dir_fd=dir_fd).st_mtime > secs
+    except OSError:
+        return True
 
 
 def main(argv):

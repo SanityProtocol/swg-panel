@@ -96,11 +96,21 @@ if PERTURB_SWAP:
     N._gtable_swap = lambda table, old_guard, guard, counters, gen, old: N._gtable_declare(table, N.SHARE_HOOK_PRI, guard, counters, gen)
 if PERTURB_BARE:
     _gd = N._gtable_declare
-    N._gtable_declare = lambda *a: _gd(*a).replace('ip daddr @guard counter name "gc" drop', 'counter name "gc" drop')
+    def _bare_guard(*a):
+        t = _gd(*a)
+        # ⚠️ ASSERT THE ANCHOR: without it this plant changes nothing and the run reads green (round 10)
+        assert 'ip daddr @guard counter name "gc" drop' in t, "perturbation anchor missing in _gtable_declare's text — this run would FALSE-PASS"
+        return t.replace('ip daddr @guard counter name "gc" drop', 'counter name "gc" drop')
+    N._gtable_declare = _bare_guard
+IFACE_PLANTED = [0]      # ⚠️ counted: once no line matches, this plant changes nothing — a FALSE-PASS, said at the end
 if PERTURB_IFACE:
-    _sg = N._share_generation
-    N._share_generation = lambda plan, now, g: dict(_sg(plan, now, g), lines=[re.sub(r'iifname "[^"]+" ip saddr', "ip saddr", l)
-                                                                              for l in _sg(plan, now, g)["lines"]])
+    _sgen = N._share_generation              # its own name (--perturb binds `_sg` to share_grants)
+    def _any_iface(plan, now, g):
+        r = _sgen(plan, now, g)
+        lines = [re.sub(r'iifname "[^"]+" ip saddr', "ip saddr", l) for l in r["lines"]]
+        IFACE_PLANTED[0] += lines != r["lines"]
+        return dict(r, lines=lines)
+    N._share_generation = _any_iface
 if PERTURB_FAULT:
     N.reconcile_net_share = lambda node_cfg, desired, share, res, now=None: N._share_converge(node_cfg, desired, share, res, now)
 if PERTURB_NESTED:
@@ -625,5 +635,8 @@ except Exception:
     _mref = True
 check("the model refuses overlapping map keys, as nft does (measured on 1.0.9 and 1.0.2)", _mref)
 
+if PERTURB_IFACE and not IFACE_PLANTED[0]:
+    print("\nSTALE ANCHOR — --perturb-iface changed no line (no `iifname … ip saddr` left to widen): this run would FALSE-PASS")
+    sys.exit(2)
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

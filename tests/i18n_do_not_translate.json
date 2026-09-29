@@ -8,7 +8,7 @@
   },
   "fork_authors": {
     "_why": "The handle a turn-proxy fork is published under. These are how an operator finds the build on GitHub.",
-    "names": ["amurcanov", "anton48", "ildarmaga", "samosvalishe", "kiper292", "cacggghp", "Ivan4537",
+    "names": ["amurcanov", "anton48", "ildarmaga", "samosvalishe", "cacggghp", "Ivan4537",
               "Moroka8", "SpaceNeuroX", "MYSOREZ", "XXcipherX", "WINGS-N"]
   },
   "wire_names": {

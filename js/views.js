@@ -17,13 +17,14 @@
 
 import { tkey, seen, fmtBytes } from "./util.js";
 import { lossColor, lossColorMesh } from "./charts.js";
-import { Store, api, bus } from "./store.js";
+import { Store, api, bus, isCustomKey, customKeyWindow } from "./store.js";
 import { ifaceIsAwg, ifaceMatch, ifaceIsAll, nodeStale, tgtXfer, tgtSeenAge,
          isWdttName, isCsqttName, isSelfContainedName } from "./model.js";
 import { go } from "./router.js";
 import { statusLabel, Popover, Ic, Tag, toast, inProc, setPendingSection } from "./ui.js";
 import { subFeatureOn } from "./crypto.js";
 import { T, plural, pluralWord, fmtNum, srvText, locale } from "./i18n.js";
+import { trafficData, trafficFreezeTag, trafficView, chartsFirstDay } from "./traffic.js";
 import { h } from "preact";
 import { useState } from "preact/hooks";
 import htm from "htm";
@@ -164,8 +165,35 @@ export const PEER_SORT = {
   online: ({ t }) => { const a = tgtSeenAge(t); return a != null ? a : Infinity; },
   rate: ({ t }) => { const x = tgtXfer(t); return x ? (x.rx_speed || 0) + (x.tx_speed || 0) : 0; },
   total: ({ t }) => { const x = tgtXfer(t); return x ? (x.rx_bytes || 0) + (x.tx_bytes || 0) : 0; },
+  // The ranged total (traffic.js): the whole device, or — in a user's own list (`o`, its owner) — what it carried while it
+  // was that user's. A Map lookup per comparison, never a walk.
+  rtotal: ({ p, o }) => { const a = peerTraffic(p.id, o); return a ? a.rx + a.tx : 0; },
 };
-export const PEER_DEFDIR = { status: -1, rate: -1, total: -1, online: 1, title: 1, user: 1, server: 1, address: 1, endpoint: 1 };   // first-click direction per column
+export const PEER_DEFDIR = { status: -1, rate: -1, total: -1, rtotal: -1, online: 1, title: 1, user: 1, server: 1, address: 1, endpoint: 1 };   // first-click direction per column
+// ── ranged totals (traffic.js) ──────────────────────────────────────────────────────────────────────────────
+// A peer's total in the window: the whole device, or with `owner` what it carried while it was that user's.
+export function peerTraffic(pid, owner) {
+  const d = trafficData();
+  return d ? (owner ? d.slot.get(owner + "|" + pid) : d.peer.get(pid)) || null : null;
+}
+export function userTraffic(uid) { const d = trafficData(); return d ? d.user.get(uid) || null : null; }
+// ⚠️ stableOrder freezes a known row's slot, so a sort by ranged total that rendered before the totals landed would keep
+// its all-zero order for good. The freeze key carries the window and whether its totals are in — and nothing that moves
+// every minute, or the rows would reshuffle each time "until now" refreshes.
+const rtotalTag = sort => sort === "rtotal" ? "|" + trafficFreezeTag() : "";
+// The column's name is the window's: "All time", "Today", "Last 7 days", "Last 30 days", or the custom dates (month names through Intl).
+export function trafficRangeLabel(v) {
+  v = v || trafficView;
+  if (v.range === "all") return T("All time");
+  if (v.range === "today") return T("Today");
+  if (v.range === "7d") return T("Last 7 days");
+  if (v.range === "30d") return T("Last 30 days");
+  if (v.range === "custom" && v.from && v.to) {
+    const f = d => { try { return new Intl.DateTimeFormat(locale(), { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(d + "T00:00:00Z")); } catch (_) { return d; } };
+    return v.from === v.to ? f(v.from) : f(v.from) + " – " + f(v.to);
+  }
+  return v.range === "month" ? T("This month") : T("All time");   // a custom window missing a date is asked as All time
+}
 // ── order freeze ─────────────────────────────────────────────────────────────────────────────────
 // Keep rows where they are WHILE you look at them: editing a record (rename, status flip) must not make its
 // row jump or leave the page. The sorted order is snapshotted per (list, sort, dir); a known row holds its
@@ -188,7 +216,7 @@ export function sortPeerRows(rows, sort, dir, freeze) {
   const key = PEER_SORT[sort] || PEER_SORT.status;
   const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1)
     || String(a.p.title || a.p.name || "").localeCompare(String(b.p.title || b.p.name || ""));
-  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir, rows, r => r.p.id + "|" + tkey(r.t.node, r.t.iface), cmp)
+  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir + rtotalTag(sort), rows, r => r.p.id + "|" + tkey(r.t.node, r.t.iface), cmp)
     : rows.slice().sort(cmp);
   return pinRecentlyCreated(s, r => r.p.id);   // a just-created peer stays on TOP regardless of sort/freeze
 }
@@ -223,7 +251,12 @@ export const connView = { mode: "peers", node: "", iface: "", q: "", online: tru
 
 // Independent view-state per grid so search / server / interface / page never bleed across them.
 export const usersView = { q: "", node: "", iface: "", page: 1, pageSize: 20, sort: "status", dir: -1, expanded: {},   // node/iface filter the LIST (expand shows all peers)
-  mode: "users", gq: "", gpage: 1, gpageSize: 20 };   // the Users | Groups switch, and the groups list's own search and page
+  mode: "users", group: "", online: false,   // Users or Groups; `group` narrows the users list to one group ("" = all); Online
+  gq: "", gpage: 1, gpageSize: 20, gsort: "name", gdir: 1, gexpanded: {} };   // the groups grid's own search, page, sort, open rows
+// Landing on a user (a reveal, a user just created) clears what could hide them: the group, node, interface and Online filters
+// all narrow the list, and userPageOf() counts the page over the whole of it.
+export function clearUserFilters() { usersView.group = ""; usersView.node = ""; usersView.iface = ""; usersView.online = false; }
+export const groupMemberViews = {};   // gid -> { page, pageSize, sort, dir } for that group's expanded members list
 export const unassignedView = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 };
 export const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize, sort, dir } for the expanded grid
 
@@ -238,7 +271,7 @@ export function userStatTag(user, live) {
 // Combined live stats across ALL of a user's peers/targets — for the user row's rate/total/last columns.
 export function userStats(uid) {
   let rx = 0, tx = 0, rxb = 0, txb = 0, last = null;
-  for (const p of Store.peersOfUser(uid)) for (const t of p.targets) {
+  for (const p of Store.peersByUser(uid)) for (const t of p.targets) {
     const o = tgtXfer(t); if (!o) continue;
     rx += o.rx_speed || 0; tx += o.tx_speed || 0; rxb += o.rx_bytes || 0; txb += o.tx_bytes || 0;
     if (o.handshake_age != null) last = (last == null) ? o.handshake_age : Math.min(last, o.handshake_age);
@@ -267,14 +300,14 @@ export function userIdentityMatchesQ(u, q) { return searchMatch((u.name || "") +
 export function userMatchesQ(u, q) {
   if (!q) return true;
   if (userIdentityMatchesQ(u, q)) return true;
-  return Store.peersOfUser(u.id).some(p => peerMatchesQ(p, q));
+  return Store.peersByUser(u.id).some(p => peerMatchesQ(p, q));
 }
 // does the user have a peer deployed on this node (and interface, if given)? — for the Users node/iface filter.
 // The user LIST is filtered by this; the expanded grid still shows ALL of the user's peers.
 export function userOnNodeIface(u, node, iface) {
   const anyIface = !iface || iface === "*";   // *awg / *wg still filter (by type) — only ""/"*" mean "all interfaces"
   if (!node && anyIface) return true;
-  return Store.peersOfUser(u.id).some(p => p.targets.some(t => (!node || node === "*" || t.node === node) && ifaceMatch(t.iface, iface, t)));
+  return Store.peersByUser(u.id).some(p => p.targets.some(t => (!node || node === "*" || t.node === node) && ifaceMatch(t.iface, iface, t)));
 }
 // User-list sorting (clickable header). Callers hold sort/dir in their view-state under caller-chosen keys.
 export const USER_SORT = {
@@ -283,21 +316,22 @@ export const USER_SORT = {
   last: u => { const s = userStats(u.id); return s.last == null ? Infinity : s.last; },
   rate: u => { const s = userStats(u.id); return s.rx + s.tx; },
   total: u => { const s = userStats(u.id); return s.rxb + s.txb; },
+  rtotal: u => { const a = userTraffic(u.id); return a ? a.rx + a.tx : 0; },   // every slot the user held, in the window
   // by node count first, then the total distinct interfaces across those nodes (encoded: nodes×10000 + ifaces)
-  nodes: u => { const nm = {}; let ifs = 0; for (const p of Store.peersOfUser(u.id)) for (const t of p.targets) { const s = nm[t.node] = nm[t.node] || new Set(); if (!s.has(t.iface)) { s.add(t.iface); ifs++; } } return Object.keys(nm).length * 10000 + ifs; },
+  nodes: u => { const nm = {}; let ifs = 0; for (const p of Store.peersByUser(u.id)) for (const t of p.targets) { const s = nm[t.node] = nm[t.node] || new Set(); if (!s.has(t.iface)) { s.add(t.iface); ifs++; } } return Object.keys(nm).length * 10000 + ifs; },
 };
-export const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, total: -1, name: 1, nodes: -1 };
+export const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, total: -1, rtotal: -1, name: 1, nodes: -1 };
 export function sortUsers(users, sort, dir, freeze) {
   const key = USER_SORT[sort] || USER_SORT.status;
   const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1) || String(a.name).localeCompare(String(b.name));
-  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir, users, u => u.id, cmp) : users.slice().sort(cmp);
+  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir + rtotalTag(sort), users, u => u.id, cmp) : users.slice().sort(cmp);
   return pinRecentlyCreated(s, u => u.id);   // a just-created user stays on TOP regardless of sort/freeze
 }
 export function sortColToggle(view, sk, dk, col, defdir) { if (view[sk] === col) view[dk] = -view[dk]; else { view[sk] = col; view[dk] = defdir[col] || 1; } }
 
 // which Users page a user lands on (mirrors UsersScreen's sort; search is cleared before we navigate)
 export function userPageOf(uid) {
-  const users = sortUsers(Store.recon.users, usersView.sort, usersView.dir);
+  const users = sortUsers(Store.recon.users, usersView.sort, usersView.dir, "users");   // the list's own frozen order, or the page is off
   const idx = users.findIndex(u => u.id === uid);
   return idx < 0 ? 1 : Math.floor(idx / (usersView.pageSize || 20)) + 1;
 }
@@ -307,9 +341,54 @@ export function userPageOf(uid) {
 // the share (and should not — turning the flag off has to give it back), so the grant sits in the roster while share_grants
 // hands the group nobody. Without this test the Groups screen counted it, its bubble named the device and its prefixes, and
 // two DESTRUCTIVE confirms — removing a member, deleting the group — warned about losing networks nobody ever reached.
-export function groupShares(gid) {
-  return Store.recon.peers.filter(p => !p.private && (p.routes || []).length && p.share && p.share.groups && typeof p.share.groups === "object"
-    && Object.prototype.hasOwnProperty.call(p.share.groups, gid));
+export function groupShares(gid) { return Store.sharesByGroup(gid); }
+// A group's figures in a window's totals (`td`, a trafficTotals() reply): its current members' added together — each member's
+// every slot, as their own row counts. null while nothing is counted. ONE fold for the grid's cell and the group window.
+export function groupTraffic(td, gid) {
+  const g = td && Store.group(gid);
+  let out = null;
+  for (const uid of (g ? g.users : [])) {
+    const a = td.user.get(uid); if (!a) continue;
+    out = out || { rx: 0, tx: 0, lifetime_rx: 0, lifetime_tx: 0, opening_rx: 0, opening_tx: 0, since: 0 };
+    out.rx += a.rx || 0; out.tx += a.tx || 0; out.lifetime_rx += a.lifetime_rx || 0; out.lifetime_tx += a.lifetime_tx || 0;
+    out.opening_rx += a.opening_rx || 0; out.opening_tx += a.opening_tx || 0;
+    if (a.since && (!out.since || a.since < out.since)) out.since = a.since;
+  }
+  return out;
+}
+// A group's row: its members' figures added together — who is online (a member with a device online, the users list's own
+// rule), their devices, the nodes those are on, the networks shared with the group, the live rate, and the ranged totals.
+export function groupStats(g) {
+  let online = 0, peers = 0, peersOn = 0, rx = 0, tx = 0;
+  const nodes = new Set();
+  for (const uid of g.users) {
+    const mine = Store.peersByUser(uid);
+    let on = 0;
+    for (const p of mine) { if (p.online) on++; for (const t of p.targets) nodes.add(t.node); }
+    peers += mine.length; peersOn += on; if (on) online++;
+    const s = userStats(uid);
+    rx += s.rx; tx += s.tx;
+  }
+  return { members: g.users.length, online, peers, peersOn, nodes: nodes.size, nets: groupShares(g.id).length, rx, tx,
+    traffic: groupTraffic(trafficData(), g.id) };
+}
+// Groups-grid sorting, over the stats computed once per render (`st` = gid -> groupStats).
+export const GROUP_SORT = {
+  name: g => g.name.toLowerCase(), members: (g, s) => s.members, peers: (g, s) => s.peers, nodes: (g, s) => s.nodes,
+  nets: (g, s) => s.nets, rate: (g, s) => s.rx + s.tx,
+  rtotal: (g, s) => s.traffic ? s.traffic.rx + s.traffic.tx : 0,
+};
+export const GROUP_DEFDIR = { name: 1, members: -1, peers: -1, nodes: -1, nets: -1, rate: -1, rtotal: -1 };
+// A sort by a figure is frozen like the users list (stableOrder): rate re-reads every 5 s, and rows must not jump under the
+// pointer. Freeze over ALL groups and let the caller filter after — frozen over a filtered list, clearing a search sent every
+// other group to the end. A name sort is not frozen: names do not move on a poll, and a new group belongs where its name puts
+// it. `st(g)` gives a group's stats — asked only by a sort that reads them.
+export function sortGroups(groups, st, sort, dir) {
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  if (!GROUP_SORT[sort] || sort === "name") return groups.slice().sort((a, b) => byName(a, b) * (dir || 1));
+  const key = GROUP_SORT[sort];
+  const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a, st(a)), key(b, st(b))) * (dir || 1) || byName(a, b);
+  return stableOrder("groups|" + sort + "|" + dir + rtotalTag(sort), groups, g => g.id, cmp);
 }
 // A device as a sentence names it: its title, else its owner's name.
 export const shareDeviceName = p => p.title || (p.user_id && Store.user(p.user_id) ? Store.user(p.user_id).name : T("Untitled"));
@@ -754,7 +833,7 @@ export function namedFew(names) {
 // flow (when it started on the Users screen). It opens the USERS list even if the operator last left the screen on Groups.
 export function revealUser(userId, peerId) {
   if (!userId) return;
-  usersView.mode = "users"; usersView.q = ""; usersView.expanded[userId] = true;
+  usersView.mode = "users"; usersView.q = ""; clearUserFilters(); usersView.expanded[userId] = true;
   go("#/users");
   setTimeout(() => {                          // after the poll + re-render settles
     usersView.page = userPageOf(userId);      // the page this user actually lands on (not always page 1)
@@ -768,7 +847,9 @@ export function revealUser(userId, peerId) {
 export function revealPeer(peer) {
   if (!peer) { usersView.mode = "users"; return go("#/users"); }
   if (peer.user_id != null) { revealUser(peer.user_id, peer.id); return; }
-  usersView.mode = "users"; Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
+  usersView.mode = "users"; clearUserFilters();
+  Object.assign(unassignedView, { node: "", iface: "", q: "", page: 1 });   // the peer glows in the unassigned grid: nothing there may hide it
+  Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
 }
 // Land on the PEERS screen with a specific peer visible + its row flashing (activity-feed clicks). Filters
 // the grid to that peer (unique IP) so it's guaranteed on-page, then scrolls to + glows it for ~2.5s.
@@ -983,24 +1064,48 @@ export function MeshStat({ nodeId, mode }) {
 }
 
 // ───── interface drops: what the kernel counters can actually tell an operator ─────
-// The card shows one percentage. One percentage cannot be acted on: a node that cannot send fast enough,
-// a send that failed outright, and traffic refused on arrival are three different faults wearing the same
+// The card shows one percentage. One percentage cannot be acted on: a receive backlog overflowing, a link
+// whose far end had no session, and a send that failed outright are different faults wearing the same
 // number. This bubble splits it the way the kernel already counts it, and adds the two things a rolling
 // mean hides — the worst single sample (bursts are what users feel; a 0.02% mean can be one 5% sample)
 // and whether it is happening NOW or is a scar from hours ago.
 //
 // Everything here is free: the node reads sysfs counters it was already reading. Fields are all optional,
 // because a node on an older build reports only pct/window_* and this must degrade to that quietly.
+//
+// ⚠️ THE HEADLINE COUNTS ONLY THE NODE'S `fault_kinds`. On a client-facing kernel wg/awg interface that is rx_drop alone:
+// the kernel's tx_dropped there is packets held for a client that had no session (asleep, out of coverage, just removed),
+// tx_errors is traffic to an address no client owns, rx_errors is one client sending from outside its range — none of it
+// something a connected client lost, and together they read 40-50% on quiet interfaces. The node says which kinds count
+// (see _FAULT_ALL in swg-noded); the rest are summed into one "Not counted" row, with a line saying what they are.
+// The old labels had rx_drop as "refused" — that is rx_errors.
 const DROP_KINDS = [
-  { k: "tx_drop", dir: "out", lbl: () => T("queue full"),
-    hint: () => T("This node couldn't send fast enough and dropped from its own queue — local pressure, not the path.") },
+  // On a kernel device a counted tx_drop can only be a mesh link (a client interface leaves it out), and there it is
+  // no queue at all: packets held for a far end with no session. "queue full" is true of a TUN only.
+  { k: "tx_drop", dir: "out", lbl: d => d.dp === "wg" ? T("no session") : T("queue full"),
+    hint: d => d.dp === "wg" ? T("Packets held for the other server were discarded because the link had no working session — it was down.")
+      : d.dp === "tun" ? T("The program serving this interface didn't read its queue in time — local load, or it was restarting.")
+      : T("Packets waiting to go out were discarded before they could be sent.") },
   { k: "tx_err",  dir: "out", lbl: () => T("failed"),
     hint: () => T("Sends failed outright — no route out, or a peer whose endpoint this node doesn't know yet.") },
-  { k: "rx_drop", dir: "in",  lbl: () => T("refused"),
-    hint: () => T("Traffic arrived and wasn't accepted — typically a stale key, or a source outside the peer's allowed range.") },
-  { k: "rx_err",  dir: "in",  lbl: () => T("errors"),
-    hint: () => T("Malformed or truncated frames arrived on this interface.") },
+  { k: "rx_drop", dir: "in",  lbl: () => T("overflow"),
+    hint: () => T("Packets arrived faster than this node could take them in — local load, not the path.") },
+  { k: "rx_err",  dir: "in",  lbl: () => T("refused"),
+    hint: () => T("Packets came from a source outside the sender's allowed range, or were malformed — usually one misconfigured sender.") },
 ];
+
+// Below this many packets in the window a percentage is arithmetic, not a measurement — 3 drops among 4 packets is 43% —
+// so the count shows instead, and the node card stays quiet. The same number as the node's per-sample floor
+// (IFACE_PEAK_MIN in swg-noded) but NOT the same floor: that one is per 5 s sample, this one is the whole window. Kept in
+// the browser on purpose: `pct` stays a number, so a panel older than this still renders what a newer node sends.
+const DROP_PCT_MIN = 200;
+export const dropsEnough = d => (d.window_pkts || 0) + (d.window_bad || 0) >= DROP_PCT_MIN;
+// Below the floor the COUNT shows even when it is 0: "0%" over a window that moved no packets looks like a clean measurement.
+export function DropsFigure({ d }) {
+  return !dropsEnough(d)
+    ? html`<span class="dp-num">${fmtCount(d.window_bad)} ${T("dropped")}</span>`
+    : html`<span class="dp-num" style=${"color:" + lossColor(d.pct)}>${d.pct}%</span>`;
+}
 
 // ───── mesh loss: the same treatment, for the number that comes off the probe ─────
 // ⚠️ THE HEADLINE PERCENTAGE OVERSTATES ITS OWN PRECISION. 20 packets a minute over a 30-probe window is
@@ -1138,17 +1243,20 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
     else { setReset(""); toast(srvText(r) || T("Couldn't reset the counters."), "err"); }
   };
   const has = k => typeof d[k] === "number";
-  const split = DROP_KINDS.filter(x => has(x.k));
+  // A node older than fault_kinds counts every kind — which is exactly what it put in its pct.
+  const counts = k => !Array.isArray(d.fault_kinds) || d.fault_kinds.includes(k);
+  const split = DROP_KINDS.filter(x => has(x.k) && counts(x.k));
+  const offN = DROP_KINDS.filter(x => has(x.k) && !counts(x.k)).reduce((a, x) => a + d[x.k], 0);
   // The dominant kind names the fault. Only when it is genuinely dominant (over half) — a 50/50 mix has no
   // single explanation and inventing one would send the operator down the wrong path.
   const top = split.slice().sort((a, b) => d[b.k] - d[a.k])[0];
-  const hint = top && d[top.k] > 0 && d[top.k] * 2 > d.window_bad ? top.hint() : null;
+  const hint = top && d[top.k] > 0 && d[top.k] * 2 > d.window_bad ? top.hint(d) : null;
   const rowsFor = dir => split.filter(x => x.dir === dir);
   const pair = (dir, label) => {
     const rs = rowsFor(dir);
     if (!rs.length) return null;
     return html`<div class="dp-row"><span class="dp-l">${label}</span><span class="dp-v">${rs.map(x => html`
-      <span class=${"dp-kind" + (d[x.k] ? "" : " zero")}>${x.lbl()} <b>${fmtCount(d[x.k])}</b></span>`)}</span></div>`;
+      <span class=${"dp-kind" + (d[x.k] ? "" : " zero")}>${x.lbl(d)} <b>${fmtCount(d[x.k])}</b></span>`)}</span></div>`;
   };
   return html`<${Popover} cls="drops-pop" popCls="dp-bubble" flipFit=${true} alignRight=${alignRight !== false} trigger=${trigger}>
     <div class="onpop-h dp-h">${T("Drops · {v1}", { v1: iface })}
@@ -1159,10 +1267,11 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
           instead of on the left among the labels. */""}
     <div class="dp-head">
       <span class="dp-sub">${T("{v1} of {v2} packets", { v1: fmtCount(d.window_bad), v2: fmtCount(d.window_pkts) })}</span>
-      <b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>
+      ${dropsEnough(d) ? html`<b class="dp-pct" style=${"color:" + lossColor(d.pct)}>${d.pct}%</b>` : null}
     </div>
     ${pair("out", T("Sending"))}
     ${pair("in", T("Receiving"))}
+    ${offN ? html`<div class="dp-row"><span class="dp-l">${T("Not counted")}</span><span class="dp-v">${fmtCount(offN)}</span></div>` : null}
     ${(() => {
       // ⚠️ THE RATE AND THE COUNT ANSWER DIFFERENT QUESTIONS, AND THE RATE CAN LIE. A 5s sample that pushed
       // 2 packets while dropping 70 is 97.22%, which the panel duly showed an operator as "Worst sample
@@ -1182,10 +1291,11 @@ export function DropsPop({ d, iface, node, trigger, alignRight }) {
     ${/* the ratio alone made the reader do the division — give them the rate too, at the row's own size */""}
     ${has("life_bad") ? html`<div class="dp-row"><span class="dp-l">${
       d.life_since ? T("Since reset") : T("Since boot")}</span><span class="dp-v">${
-      T("{v1} of {v2}", { v1: fmtCount(d.life_bad), v2: fmtCount(d.life_pkts) })}${d.life_pkts
+      T("{v1} of {v2}", { v1: fmtCount(d.life_bad), v2: fmtCount(d.life_pkts) })}${d.life_pkts + d.life_bad >= DROP_PCT_MIN
         ? html`<span class="dp-life" style=${"color:" + lossColor(100 * d.life_bad / d.life_pkts)}>${
             (100 * d.life_bad / d.life_pkts).toFixed(4)}%</span>` : null}</span></div>` : null}
     ${hint ? html`<div class="dp-hint">${hint}</div>` : null}
+    ${offN ? html`<div class="dp-hint">${T("Not counted: packets for clients that weren't connected, traffic to addresses no client owns, and traffic one client sent from outside its range. None of it is something a connected client lost.")}</div>` : null}
     <div class="dp-foot">${d.span_s ? T("measured over the last {v1}", { v1: seen(d.span_s) }) : T("this node's own queues and datapath, not the path to the client")}</div>
   </${Popover}>`;
 }
@@ -1212,7 +1322,7 @@ export function OnlineUsersTag({ nodeId, cls, trigger, presence, rangeLabel }) {
 // "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.
 export function OnlinePeersTag({ nodeId, iface, total, cls, trigger, orphans, orphHref }) {
   return html`<${OnlPop} peer title=${T("Online peers")} rows=${onlinePeerRows(nodeId, iface)} orphans=${orphans} orphHref=${orphHref} cls=${cls}
-    trigger=${trigger || (c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>${total != null ? " / " + total : ""} online`)}/>`;
+    trigger=${trigger || (c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>${(total != null ? " / " + total : "") + " " + T("val|online")}`)}/>`;
 }
 
 // Jump to the Live screen already switched to the peers/users tab the caller means.
@@ -1240,21 +1350,35 @@ export const openLiveTab = mode => e => {
 export const DASH_RANGES = [["live", "Live"], ["hour", "Hour"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];   // i18n-keys: canonical (persisted range key + English label)
 /* The range word, translated. Two forms because the dashboard uses both: capitalised on the rail buttons,
    lowercase inside a section subtitle ("distribution · за сутки"). Literal T() calls, as always. */
-export const rangeLabel = k => ({ live: T("range|Live"), hour: T("range|Hour"), day: T("range|Day"), week: T("range|Week"), month: T("range|Month") }[k] || k);   // i18n-keys
-export const rangeWord = k => (({ live: T("range|live"), hour: T("range|hour"), day: T("range|day"), week: T("range|week"), month: T("range|month") })[k] || T("range|live"));   // i18n-keys
-export const dashState = { nodes: null, range: "live", peers: true, mesh: true, ov: {} };
+export const rangeLabel = k => isCustomKey(k) ? customKeyLabel(k) : ({ live: T("range|Live"), hour: T("range|Hour"), day: T("range|Day"), week: T("range|Week"), month: T("range|Month") }[k] || k);   // i18n-keys
+export const rangeWord = k => isCustomKey(k) ? customKeyLabel(k) : (({ live: T("range|live"), hour: T("range|hour"), day: T("range|day"), week: T("range|week"), month: T("range|month") })[k] || T("range|live"));   // i18n-keys
+// A custom Overview window (P3) travels as a KEY — "custom:YYYYMMDD-YYYYMMDD", the server's own `rangeKey` — never as the
+// bare word "custom": two custom windows are both "custom", so a guard comparing that would render the last window's
+// numbers under the new title. Everything ranged (fetch, stale guard, label, step) reads the key it LOADED.
+export { isCustomKey, customKeyWindow };   // the grammar is store.js's (rangeQ reads it too)
+export const customKeyLabel = k => trafficRangeLabel(customKeyWindow(k));
+export const dashState = { nodes: null, range: "live", from: "", to: "", peers: true, mesh: true, ov: {} };
+// The Overview's range key: a named range, or the custom window's key.
+// A custom window kept from an earlier visit may have aged past what the charts keep (33 days): it is read from the first
+// day they still hold — the rail and every title show the days actually read — instead of a page of refusals.
+export function dashKey() {
+  if (dashState.range !== "custom" || !dashState.from || !dashState.to) return dashState.range === "custom" ? "live" : dashState.range;
+  const first = chartsFirstDay(), from = dashState.from < first ? first : dashState.from, to = dashState.to < from ? from : dashState.to;
+  return "custom:" + from.replace(/-/g, "") + "-" + to.replace(/-/g, "");
+}
 (function () {
   try {
     const raw = JSON.parse(localStorage.getItem("swg-dash") || "{}");
     if (Array.isArray(raw.nodes) && raw.nodes.length) dashState.nodes = new Set(raw.nodes);   // ignore a stale empty selection → default to the whole fleet
     if (DASH_RANGES.some(r => r[0] === raw.range)) dashState.range = raw.range;
+    else if (raw.range === "custom" && /^\d{4}-\d{2}-\d{2}$/.test(raw.from || "") && /^\d{4}-\d{2}-\d{2}$/.test(raw.to || "")) Object.assign(dashState, { range: "custom", from: raw.from, to: raw.to });
     if (typeof raw.peers === "boolean") dashState.peers = raw.peers;
     if (typeof raw.mesh === "boolean") dashState.mesh = raw.mesh;
     if (raw.ov && typeof raw.ov === "object") dashState.ov = raw.ov;
   } catch (_) {}
 })();
 export function dashSave() {
-  try { localStorage.setItem("swg-dash", JSON.stringify({ nodes: dashState.nodes ? [...dashState.nodes] : null, range: dashState.range, peers: dashState.peers, mesh: dashState.mesh, ov: dashState.ov })); } catch (_) {}
+  try { localStorage.setItem("swg-dash", JSON.stringify({ nodes: dashState.nodes ? [...dashState.nodes] : null, range: dashState.range, ...(dashState.range === "custom" ? { from: dashState.from, to: dashState.to } : {}), peers: dashState.peers, mesh: dashState.mesh, ov: dashState.ov })); } catch (_) {}
 }
 
 // ── which nodes the Overview charts include (persisted per browser) ──
@@ -1307,6 +1431,7 @@ export function evItem(e) {
   if (e.kind === "user") return "User";
   if (e.kind === "group") return "User";   // a group lives on the Users screen (docs/GROUPS-PLAN.md G11)
   if (e.kind === "panel") return v === "Panel updated" ? "Update" : "Settings";   // i18n-keys: e.verb is the SERVER's English — never compare it to a translation
+  if (e.kind === "settings") return "Settings";   // the VK pool rows (the panel writes kind "settings") — they read as a Node before
   if (/interface/i.test(v)) return "Interface";       // kind === node from here
   if (/turn-proxy/i.test(v)) return "Turn-proxy";
   if (/mesh/i.test(v)) return "Mesh";   // i18n-keys: canonical EV_ITEMS value
@@ -1325,17 +1450,23 @@ export function evClick(e) {
   const item = evItem(e), v = e.verb || "", gone = /\bdeleted\b/i.test(v);
   if (item === "Peer") return gone ? { href: "#/peers" } : { href: "#/peers", on: () => revealPeerInPeersById(e.id) };   // i18n-keys: canonical EV_ITEMS value
   // a group's id is not a user's: it opens Users → Groups, never revealUser
-  if (e.kind === "group") return { href: "#/users", on: () => { usersView.mode = "groups"; usersView.gq = ""; go("#/users"); Store.apply(); } };
+  if (e.kind === "group") return { href: "#/users", on: () => { usersView.mode = "groups"; usersView.gq = ""; usersView.gpage = 1; clearUserFilters(); go("#/users"); Store.apply(); } };
   if (item === "User") return gone ? { href: "#/users" } : { href: "#/users", on: () => revealUser(e.id) };
   if (item === "Settings") return { href: "#/panel/settings", on: () => { setPendingSection((e.id && e.id !== "settings") ? e.id : null); go("#/panel/settings"); } };
   if (item === "Update") return null;                 // panel version bump / update lifecycle — nothing to open
   if (/\b(removed node|uninstalled)\b/i.test(v)) return { href: "#/nodes" };   // the node is gone
   return e.id ? { href: "#/node/" + encodeURIComponent(e.id) } : { href: "#/nodes" };
 }
+// A deployment in an activity detail is "<node id>/<iface>" — an id the operator cannot map to anything. Shown by the
+// node's CURRENT name (a renamed node reads right in old rows too); an id the store does not know stays as it is.
+const NODE_REF = /\b([0-9a-f]{12})(?=\/)/g;
+const withNodeNames = v => (typeof v === "string" ? v.replace(NODE_REF, id => Store.nodeName(id) || id) : v);
 export function evDecorate(e, i) {
   const item = evItem(e);
   const action = evAction(e);
-  return { ...e, item, itemLabel: evItemLabel(item), action, actionLabel: evActionLabel(action), icon: EV_ITEM_IC[item] || "info", slug: evSlug(item),
+  const dv = e.detail_vars && Object.fromEntries(Object.entries(e.detail_vars).map(([k, v]) => [k, withNodeNames(v)]));
+  return { ...e, detail: withNodeNames(e.detail), ...(dv ? { detail_vars: dv } : {}),
+           item, itemLabel: evItemLabel(item), action, actionLabel: evActionLabel(action), icon: EV_ITEM_IC[item] || "info", slug: evSlug(item),
            click: evClick(e), key: "e" + (e.eid || e.ts) + "_" + i };
 }
 // Fallback feed when the server log is still empty: synthesise created/updated rows from the roster's

@@ -85,7 +85,9 @@ check("⚠️ …and reads no client settings at all",
 # "Android"/"iOS" in the COMMENT explaining why the platform came out — a check that failed on its own
 # rationale. [[lesson-broken-test-not-broken-code]]
 import re as _re
-_lab = _re.search(r'label:\s*"([^"]*)"', blk)
+# The csqtt:// artifact's label — the one AFTER the link is built. The branch above it is anton48's iOS app only
+# (it gets its own vkturnproxy:// link, since it keeps just the first hash of a csqtt:// one), and says iOS rightly.
+_lab = _re.search(r'label:\s*"([^"]*)"', blk[blk.index('"csqtt://connect?"'):])
 check("the csqtt artifact has a label", bool(_lab), blk[:120])
 if _lab:
     check("…and it names no one platform", "Android" not in _lab.group(1) and "iOS" not in _lab.group(1),

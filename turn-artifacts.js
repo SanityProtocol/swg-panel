@@ -17,7 +17,6 @@
  *   • anton48   vkturnproxy:// JSON  "version": 1
  *   • samosvalishe freeturn:// JSON "v": 1 — the free-turn-proxy server (vk-turn-proxy is archived); the
  *                 link embeds the WG config + rtpopus obf key. Imported by turn-proxy-android + the CLI.
- *   • kiper292  #@wgt: comments, PeerType SERVER-COUPLED → proxy_v2 (what a "kiper292" proxy IS)
  *   • WINGS-N   wingsv:// = 0x12 ‖ zlib(protobuf Config); hand-encoded. Config.ver = 1.
  */
 (function (root) {
@@ -28,7 +27,8 @@
 
   "use strict";
 
-  var AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
+  var AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
+    "HeaderProtectionKey", "RandomTrailers", "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "DisableCookies"];   // + AmneziaWG 3.x; twin of js/crypto.js AWG_ORDER
 
   // ── byte helpers ──
   function b64ToBytes(b64) {
@@ -243,8 +243,12 @@
   }
   // Strip comments, blank lines and any MTU line (MTU rides in its own link field) — shorter link, denser
   // QR. Mirrors ShareLinkBuilder.normalizeConf so our links look like the app's own.
+  // A ranged keepalive (an AmneziaWG 3.1 interface's `k-(k+10)`) goes as its `k`: FreeTurn 4.3.0 pins free-turn-proxy core
+  // 3.2.0, which reads PersistentKeepalive with Atoi and rejects the range (docs/AWG3-PLAN.md §3). A 2.0 config has none.
   function freeturnConf(conf) {
-    return String(conf || "").split("\n").map(function (l) { return l.trim(); }).filter(function (l) {
+    return String(conf || "").split("\n").map(function (l) {
+      return l.trim().replace(/^(PersistentKeepalive\s*=\s*)(\d+)\s*-\s*\d+$/i, "$1$2");
+    }).filter(function (l) {
       if (!l || l.charAt(0) === "#" || l.charAt(0) === ";") return false;
       if (/^MTU/i.test(l) && l.indexOf("=") >= 0) return false;
       return true;
@@ -261,9 +265,12 @@
     // `vk` carries the VK call link. We used to write `link` + `links`, mirroring the CLI's -link/-links —
     // the app's share parser reads NEITHER, so the call link never arrived and the call dropped (issue #5).
     // `vk` is what the client actually reads; confirmed on a real samosvalishe relay before changing this.
-    // One URL: the call link is per-client, so the primary is the one that belongs in this client's link.
+    // ALL of the user's links, comma-joined. The core copies `vk` into -links (internal/config/raw.go applyURI) and
+    // splits it on commas (normalizeVKLinks), and every link gets its own pool of -n streams — so one link was a
+    // third of the throughput for a user holding three. The Android app keeps `vk` as its one callLink string and
+    // hands it to the core as relay.links=[callLink], which the core joins and splits the same way.
     var vks = (vkLinks || []).map(function (s) { return (s || "").trim(); }).filter(Boolean);
-    if (vks.length) o.vk = vks[0];
+    if (vks.length) o.vk = vks.join(",");
     // Client (app) knobs — omitted when default/blank so the link stays minimal (empty/default keys are dropped, per uri.md).
     var n = csNum(cs, "n", 0); if (n > 0) o.n = n;                   // parallel TURN streams (-n); omit → app default (10)
     var spc = csNum(cs, "spc", 0); if (spc > 0) o.spc = spc;        // streams per cached credential (-streams-per-cred); omit → default (10)
@@ -345,7 +352,14 @@
     var flags = core.flags;
     String((cs || {}).rawFlags || "").split(/[\r\n]+/).map(function (s) { return s.trim(); }).filter(Boolean)   // admin-added raw args (the app's Raw-mode flags box)
       .forEach(function (f, i) { flags.push({ id: "flag-raw-" + i, label: "Custom", argument: f, enabled: true, deletable: true }); });
-    var config = { serverAddress: listen, vkLink: (vkList && vkList[0]) || "", linkArgument: core.linkArgument,
+    // The app passes vkLink to the core as ONE argv token after linkArgument (ProxyService), no shell. The MYSOREZ
+    // core's -vk and the free-turn core's -links both take a comma list (one stream pool per call); -vk-link (cacggghp,
+    // Moroka8) and free-turn's deprecated -link take exactly one (they split it on "join/"), so those get the primary.
+    // Keyed on the flag actually sent, not the fork: the admin can override linkArgument.
+    var la = String(core.linkArgument || "").replace(/^-+/, "");   // Go's flag package takes -links and --links alike
+    var multi = (la === "links" || la === "vk");
+    var vkArg = multi ? (vkList || []).join(",") : ((vkList && vkList[0]) || "");
+    var config = { serverAddress: listen, vkLink: vkArg, linkArgument: core.linkArgument,
       localPort: "127.0.0.1:9000", isRawMode: false, rawCommand: "", customFlags: flags };
     var threads = csNum(cs, "threads", 0); if (threads > 0) config.threads = threads;   // -n; omitted → the app's own default (8)
     return { id: "swg-" + (addr || listen).replace(/[^0-9A-Za-z]+/g, "-"), name: "SWG " + (addr || listen), isDefault: false, config: config };
@@ -386,13 +400,13 @@
   // A server's NATIVE client encoder (the app built for that fork).
   // Returns an ENCODER id (matches swg-panel-server TURN_CLIENTS[*].encoder, which the SPA passes as `asClient`).
   function nativeEncoder(fork) {
-    return ({ "WINGS-N": "wingsv", "kiper292": "kiper292", "anton48": "anton48",
+    return ({ "WINGS-N": "wingsv", "anton48": "anton48",
       "samosvalishe": "freeturn", "MYSOREZ": "vktgz", "cacggghp": "vktgz" })[fork] || "sidecar";
   }
   // The fork (turn-proxy server) a client encoder is NATIVE to — the canonical publisher, reverse of nativeEncoder.
   // Lets the UI colour a cross-fork pairing: the SERVER used vs the fork the chosen app belongs to.
   function encoderFork(enc) {
-    return ({ wingsv: "WINGS-N", anton48: "anton48", kiper292: "kiper292", freeturn: "samosvalishe", vktgz: "MYSOREZ" })[enc] || "";
+    return ({ wingsv: "WINGS-N", anton48: "anton48", freeturn: "samosvalishe", vktgz: "MYSOREZ" })[enc] || "";
   }
   // A stable per-peer id (attribution / allowlist-ready), derived from the peer's tunnel IP so it survives regen.
   function stableCid(cf, tp) { return "swg-" + String(String(cf.address || "").split("/")[0] || (tp.listen || "")).replace(/[^0-9A-Za-z]+/g, "-"); }
@@ -401,7 +415,6 @@
   var CLIENT_META = {
     wingsv:   { app: "WINGS V",        platform: "Android", author: "WINGS-N" },
     anton48:  { app: "VK TURN Proxy",  platform: "iOS",     author: "anton48" },
-    kiper292: { app: "WireGuard-TURN", platform: "Android", author: "kiper292" },
     freeturn: { app: "FreeTurn",       platform: "Android", author: "samosvalishe" },
     vktgz:    { app: "VK TURN Proxy",  platform: "Android", author: "MYSOREZ" }
   };
@@ -471,8 +484,9 @@
     cs = cs || {};                                        // client (app) settings for THIS client (admin-chosen; defaults applied per reader)
     var listen = tp.listen || "";
     // The user's VK call links — an ordered list (primary first). vkLink is the legacy single (= primary). Each fork
-    // uses what its app supports: WINGS embeds all (Turn.links[]), anton48 all (multiline vkLink), kiper292/sidecar
-    // the primary; freeturn shows them all for the user to paste in-app.
+    // uses what its app supports: WINGS embeds all (Turn.links[]), anton48 all (multiline vkLink), freeturn all
+    // (comma-joined `vk`), VKTGZ + CLI all where the core takes a list (free-turn, MYSOREZ); the cacggghp and Moroka8
+    // cores take exactly one link, so they get the primary.
     var vkList = (Array.isArray(vkLinks) && vkLinks.length ? vkLinks : (vkLink ? [vkLink] : [])).map(function (s) { return (s || "").trim(); }).filter(Boolean);
     var vkRaw = vkList[0] || "";                          // the PRIMARY VK call link — empty when unset
     var vkText = vkRaw || "<PASTE VK CALL LINK>";          // placeholder ONLY in plain-text configs (a visible fill-in line the user edits)
@@ -485,17 +499,6 @@
       return { fork: fork, app: "WINGS V", label: clientLabel(fork, "wingsv"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
         hint: "Scan the QR with the WINGS V app, or paste the wingsv:// link (Settings → import from link).",
         buildAsync: function () { return wingsvLink(baseConf, tp, vkList, cs); } };   // pass ALL VK links → Turn.links[]; empty omitted
-    }
-    if (enc === "kiper292") {
-      var wdt = csNum(cs, "watchdogTimeout", 0);                       // inactivity watchdog (s); 0 = off → emit only when > 0
-      var block = ["", "#@wgt:EnableTURN = true", "#@wgt:UseUDP = false", "#@wgt:IPPort = " + listen,
-        "#@wgt:VKLink = " + vkText, "#@wgt:Mode = vk_link", "#@wgt:PeerType = proxy_v2",
-        "#@wgt:StreamNum = " + csNum(cs, "streamNum", 4), "#@wgt:LocalPort = 9000",
-        "#@wgt:StreamsPerCred = " + csNum(cs, "streamsPerCred", 4)]
-        .concat(wdt > 0 ? ["#@wgt:WatchdogTimeout = " + wdt] : []).join("\n");
-      return { fork: fork, app: "WireGuard-TURN", label: clientLabel(fork, "kiper292"), ext: "conf", qr: true, vkMissing: vkMissing, enc: enc,
-        hint: "Scan the QR or import .conf into the kiper292 WireGuard-TURN app. The TURN settings ride along as #@wgt: comments (the Endpoint stays the real server).",
-        text: baseConf.replace(/\s*$/, "") + "\n" + block + "\n" };
     }
     if (enc === "anton48") {
       // C path — a faithful port of the app's own generator (anton48/vk-turn-proxy-ios/quick_link.py, build_link):
@@ -513,7 +516,7 @@
       // → WRAP-S mode: useWrapS=true, obfProfile=rtpopus, the obf key in wrapKeyHex, and an allowlist-ready clientID.
       var isWrapS = (fork === "samosvalishe") || csBool(cs, "useWrapS", false);
       // vkturnproxy obfuscates ONLY on its native/friendly pairings: anton48 (native — bare -srtp = SRTP, -wrap-srtp = SRTP+WRAP),
-      // Moroka8 (-wrap = SRTP+WRAP), samosvalishe (rtpopus = WRAP-S). Every PLAIN pairing — cacggghp/kiper292 (no obf) AND
+      // Moroka8 (-wrap = SRTP+WRAP), samosvalishe (rtpopus = WRAP-S). Every PLAIN pairing — cacggghp (no obf) AND
       // MYSOREZ/WINGS-N (whose native wrap the vkturnproxy app can't ride) — connects bare DTLS+WG → Legacy: all obf modes off,
       // no wrap key (never carry the server's own -password/-wrap key here — it isn't an anton48 SRTP-WRAP key). See compat matrix.
       var vkObf = (fork === "anton48" || fork === "Moroka8" || fork === "samosvalishe");
@@ -592,7 +595,9 @@
         else if (a === "samosvalishe") obf = " -obf-profile " + obfProfileOf(cs, tp) + " -obf-key " + tp.wrap_key;
         else if (a === "MYSOREZ") obf = " -password " + tp.wrap_key + " -vk-anon-path vkcalls -captcha-mode auto -vk-auth anonymous";
       }
-      return "./client -listen 127.0.0.1:9000 -peer " + listen + link + vkText + obf + (rawExtra ? " " + rawExtra : "");
+      // free-turn's -links and MYSOREZ's -vk take every call comma-joined (a stream pool each); Moroka8's -vk-link takes one.
+      var vkArg = (a === "samosvalishe" || a === "MYSOREZ") && vkList.length ? vkList.join(",") : vkText;
+      return "./client -listen 127.0.0.1:9000 -peer " + listen + link + vkArg + obf + (rawExtra ? " " + rawExtra : "");
     }
     var authors = authorForks.map(function (a) { return { fork: a, cmd: authorCmd(a), native: (a === fork) }; });
     return { fork: fork, app: fork, label: clientLabel(fork, "sidecar"), ext: "conf", qr: true, vkMissing: vkMissing, enc: enc,
@@ -702,7 +707,7 @@
   // Format is authoritative from the app's own CsqttLinkTest.kt: host = server IP (IPv6 gets bracketed by the app on
   // read, so we just URL-encode it), peer = the DTLS listen port, password URL-encoded, hashes = VK call hashes joined
   // by '+' (a literal '+' inside a hash is %2B-escaped), max 6, omitted when there are none. `c` = {host,port,password,hashes[]}.
-  function csqttArtifact(c) {
+  function csqttArtifact(c, asClient) {
     c = c || {};
     // TURN-credential hashes: the peer's own vk_hash + every VK call link on the user (each stripped to its bare
     // hash), deduped, max 6. One place — both the operator app and the sub page pass raw {vk_hash, vk_links} and
@@ -714,16 +719,33 @@
       (Array.isArray(c.vk_links) ? c.vk_links : (c.vk_links ? [c.vk_links] : [])).forEach(function (l) { var h = stripVkUrl(l); if (h) hs.push(h); });
     }
     hs = hs.map(function (s) { return String(s || "").trim(); }).filter(Boolean);
-    var seen = {}; hs = hs.filter(function (h) { if (seen[h]) return false; seen[h] = 1; return true; }).slice(0, VK_LINK_CAPS.csqtt);
+    var seen = {}; hs = hs.filter(function (h) { if (seen[h]) return false; seen[h] = 1; return true; });
+    if (asClient === "anton48" || asClient === "vkturnproxy") {
+      // anton48's iOS VK TURN Proxy reads a csqtt:// link too, but its parser (BackupManager.parseCsqttLink) keeps
+      // only the FIRST hash, and the import then OVERWRITES the app's global call-link list with that one link.
+      // Its own vkturnproxy:// link carries vkLink whole: the app stores it verbatim as a multiline string, one
+      // call per line (TunnelManager splits on newlines; line one is the anonymous-mode call, VKAuth mode spreads
+      // across them all). useCsqtt + csqttPassword + peerAddress is quick_link.py's REQUIRED_CSQTT set. No cap:
+      // the 6 is the CSQTT app's, not this one's. No device id: quick_link.py leaves it out of a link, and the
+      // app mints one on import.
+      var s = { useCsqtt: true, csqttPassword: String(c.password || ""),
+        peerAddress: String(c.host || "") + ":" + (parseInt(c.port, 10) || ""),
+        vkLink: hs.map(function (h) { return "https://vk.ru/call/join/" + h; }).join("\n") };
+      var uriA = "vkturnproxy://import?data=" + b64urlUtf8(jsonSortedCompact({ version: 1, type: "connection", settings: s }));
+      return { fork: "csqtt", app: "VK TURN Proxy", label: "CSQTT via VK TURN Proxy (iOS) by anton48", ext: "txt", uri: true, qr: false,
+        vkMissing: hs.length === 0, enc: asClient, hint: "Open the link on the iPhone (or VK TURN Proxy → Settings → Import from connection link) to import in csqtt mode. It needs VK TURN Proxy build 364 or newer — an older build imports it as a WireGuard server without keys.", text: uriA };
+    }
+    hs = hs.slice(0, VK_LINK_CAPS.csqtt);
     var vkMissing = hs.length === 0;   // VK hashes are the TURN credential; a link without them only works for a self-test
     var qp = ["v=2", "host=" + encodeURIComponent(String(c.host || "")),
               "peer=" + (parseInt(c.port, 10) || ""), "password=" + encodeURIComponent(String(c.password || ""))];
     if (hs.length) qp.push("hashes=" + hs.map(function (h) { return h.replace(/\+/g, "%2B"); }).join("+"));
     var uri = "csqtt://connect?" + qp.join("&");
     // qr:false — the CSQTT app has no scanner yet, so a QR is a dead end for the user. Link only until it does.
-    // ⚠️ THE LABEL NAMED A PLATFORM, AND THERE ARE TWO NOW. anton48's iOS VK TURN Proxy speaks csqtt from
-    // build 364, and its parser takes this exact link (BackupManager.parseCsqttLink) — so the same string
-    // serves both apps and the label must stop saying "Android". The platform comes out; the app family and
+    // ⚠️ THE LABEL NAMED A PLATFORM, AND THERE ARE SEVERAL. This link serves the CSQTT app (Android) and FOCSQ /
+    // La Lune (Android + desktop), and anton48's iOS VK TURN Proxy still reads it when pasted (build 364+,
+    // BackupManager.parseCsqttLink) — though the panel hands that app its own vkturnproxy:// link (the branch
+    // above), since it keeps only the first hash of this one. So the label must not say "Android". The platform comes out; the app family and
     // the scheme stay, which is the shape every other artifact label here has. (A bare "csqtt://connect"
     // was tried and reverted: `artLabel` runs this through T(), and a URL scheme is not a sentence anyone
     // can translate — it would be catalogue noise for a string that is a literal in every language.)

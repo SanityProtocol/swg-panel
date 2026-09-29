@@ -54,7 +54,8 @@ PLANTS = {
                 '''ExecStartPre=-/bin/sh -c 'true && exit 0;'''),
     "escape": ("lib", r"nft list table inet \$\$t >/dev/null 2>&1 || continue; nft delete table inet \$\$t",
                r"nft list table inet \$t >/dev/null 2>&1 || continue; nft delete table inet \$t"),
-    "uninstall": ("uni", "rmrf $SD/swg-noded.service $SD/swg-noded.service.d; run systemctl daemon-reload",
+    # (the drop-ins went into _node_dropins_away in 41e23b8 — the old anchor matched nothing from then on: round 10)
+    "uninstall": ("uni", "rmrf $SD/swg-noded.service; _node_dropins_away; run systemctl daemon-reload",
                   "rmrf $SD/swg-noded.service; run systemctl daemon-reload"),
     "heal": ("upd", '  ensure_noded_reach_sweep "$NODED_DIR"', "  :"),
 }
@@ -83,7 +84,11 @@ for label, text in (("install-node.sh", inode), ("install-host.sh (master)", iho
 check("the drop-in lives under swg-noded.service.d/, not in the unit an older update.sh may recreate",
       re.search(r"^NODED_REACH_SWEEP_DROPIN=swg-noded\.service\.d/[\w.-]+\.conf$", lib, re.M) is not None)
 check("update.sh heals it in the bare-metal node block", 'ensure_noded_reach_sweep "$NODED_DIR"' in upd)
-check("uninstall.sh removes the drop-in directory with the unit", "rmrf $SD/swg-noded.service $SD/swg-noded.service.d;" in uni)
+# (round 8: the directory itself stays when an operator's own drop-in is kept on "keep the data" — ours never does)
+_nda = uni[uni.find("_node_dropins_away(){"):uni.find("\nrm_node(){")]
+check("uninstall.sh removes our drop-in with the unit (_node_dropins_away: the file on keep, the directory otherwise)",
+      "rmrf $SD/swg-noded.service; _node_dropins_away;" in uni and 'rmrf "$d/10-swg-reach-sweep.conf"' in _nda and 'else rmrf "$d"; fi' in _nda,
+      _nda[:200])
 check("the bare→docker teardown removes it too", "rm -rf /etc/systemd/system/swg-noded.service /etc/systemd/system/swg-noded.service.d;" in lib)
 check("⚠️ the pre-copy sweep that could never run is gone from update.sh", "reach_tables_drop_if_unsupported" not in upd + lib)
 

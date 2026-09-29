@@ -87,8 +87,44 @@ _refuse(){
   printf '\033[31m✗ %s\033[0m\n' "$1" >&2; exit 1
 }
 
-# pretty protocol name for interface listings: awg → AmneziaWG, wg → Wireguard (anything else passes through)
-proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
+# pretty protocol name for interface listings: awg → AmneziaWG, wg → WireGuard (anything else passes through).
+# The product's own spelling — the summary's _sum_proto_label already says WireGuard, and one listing said both.
+proto_label(){ case "$1" in wg) printf 'WireGuard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
+# nat_hook_up / nat_hook_down <subnet> <wan> — the PostUp / PostDown pair a managed interface's conf carries,
+# BYTE FOR BYTE what swg-agent writes (_ipt_set / _ipt_reap there): the up REAPS THEN ADDS, so the chain ends with
+# exactly one copy of each rule however many a bring-up without its tear-down left behind (a convert, a killed
+# container, a crash); the down reaps every copy. The installers wrote a plain `-A` / one `-D`, so after a Docker →
+# bare-metal convert every interface carried two copies of each rule and an uninstall left one behind (1.8.8
+# qualification, round 4). tests/nat_hooks_selftest.py holds the two writers to one text.
+# The MASQUERADE names its interface (swg-nat:%i — wg-quick puts the name): the untagged text was shared by every
+# interface on a subnet, so one's down took another's rule (a node's transfer home: the mesh link re-made on the same
+# /31, the old one's down leaving the new one with no NAT on either end). See swg-agent _nat_hooks.
+_ipt_reap_sh(){ printf 'for _n in 1 2 3 4 5 6 7 8; do iptables %s-D %s 2>/dev/null || break; done' "${1:+$1 }" "$2"; }
+_ipt_set_sh(){ printf '%s; iptables %s-A %s || true' "$(_ipt_reap_sh "$1" "$2")" "${1:+$1 }" "$2"; }
+nat_hook_up(){ printf 'sysctl -q -w net.ipv4.ip_forward=1 || true; %s; %s; %s' \
+  "$(_ipt_set_sh '-t nat' "POSTROUTING -s $1 -o $2 -m comment --comment swg-nat:%i -j MASQUERADE")" "$(_ipt_set_sh '' "FORWARD -i %i -o $2 -j ACCEPT")" \
+  "$(_ipt_set_sh '' "FORWARD -i $2 -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT")"; }
+nat_hook_down(){ printf '%s; %s; %s; true' \
+  "$(_ipt_reap_sh '-t nat' "POSTROUTING -s $1 -o $2 -m comment --comment swg-nat:%i -j MASQUERADE")" "$(_ipt_reap_sh '' "FORWARD -i %i -o $2 -j ACCEPT")" \
+  "$(_ipt_reap_sh '' "FORWARD -i $2 -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT")"; }
+# installed_sum <path…> — ONE sha256 over every regular file under the given paths (name + content, sorted), or
+# nothing when there are none. A re-install compares it before/after to tell "re-installed" from "re-installed AND
+# updated": the version stamp cannot, a dev build keeps one VERSION across many commits. (install-docker.sh compares
+# the containers' image ids for the same reason.)
+installed_sum(){ local p out
+  out="$(for p in "$@"; do [ -e "$p" ] && find "$p" -type f -print0 2>/dev/null; done | sort -z | xargs -0 -r sha256sum 2>/dev/null)" || true
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out" | sha256sum | cut -d' ' -f1; }
+# local_addrs — every address assigned to this box, one per line (what `ip` lists, plus `hostname -I`). Never fails.
+local_addrs(){ { ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1; hostname -I 2>/dev/null | tr ' ' '\n'; } \
+  | awk 'NF && !s[$0]++' || true; }
+# host_is_local <host> — 0 iff <host> IS, or resolves to, an address of this box. Unresolvable ⇒ 1: fail safe, it is
+# asked before a value is written somewhere that assumes the box can bind it (see install-host.sh's node record).
+host_is_local(){ local h="${1:-}" a l; [ -n "$h" ] || return 1; l="$(local_addrs)"
+  for a in "$h" $(getent ahosts "$h" 2>/dev/null | awk '!s[$1]++ {print $1}' || true); do
+    grep -qxF -- "$a" <<< "$l" && return 0
+  done
+  return 1; }
 
 # System (panel-managed inter-node mesh-link) interfaces use a reserved name prefix (default `swg_`); user
 # interfaces can never use it (the panel rejects it). These are NOT user interfaces and must never be
@@ -107,15 +143,94 @@ command -v bb >/dev/null 2>&1 || bb(){ printf '%s%s%s%s' "${BOLD:-}" "${C_BLUE:-
 # doesn't define it, so _sum_detect printed "have: command not found" and returned no methods → an empty summary.
 command -v have >/dev/null 2>&1 || have(){ command -v "$1" >/dev/null 2>&1; }
 
-# Run curl with a node bearer token kept OFF the argv — so it can't leak through `ps` / /proc/<pid>/cmdline
-# (world-readable by default) to another local user or a co-resident process during an install. The token is fed
-# to curl through a --config file on stdin (the `header` config option is exactly `-H`); URL, method, --data, -k
-# and everything non-secret stay on the argv as usual. Usage:  auth_curl <token> <curl-args...>
-# NB: the wrapped curl must NOT itself read stdin (no `-d @-` / `--config -`) — stdin carries the auth header here.
-auth_curl(){ local _tok="$1"; shift
-  curl "$@" --config /dev/stdin <<CURLCFG
-header = "Authorization: Bearer ${_tok}"
-CURLCFG
+# ── THE NODE TOKEN GOES ONLY TO THE PANEL THIS NODE TRUSTS ──────────────────────────────────────────────────────────
+# panel_req <METHOD> <url> <verify:yes|no> <fingerprint> [<timeout-s>]   — the token in $SWG_TOK, a JSON body in $SWG_BODY
+# EVERY installer / updater / converter / uninstaller call that carries the node token goes through this. The panel's
+# certificate is checked ON THE CONNECTION THE TOKEN THEN TRAVELS ON, as swg-noded's post_json does: a fingerprint → the
+# handshake's certificate must hash to it (sha256 of its DER) or nothing is sent; verify=yes → CA verification, hostname
+# included; neither → unverified, the posture the node itself syncs with (a loopback URL, or an operator's TLS_VERIFY=no).
+# ⚠️ `curl -k`, which this replaced (auth_curl), sent the token to WHATEVER answered — for every pinned node, i.e. to the
+# very certificate a re-install had just refused as a possible interceptor, and when the post did reach the real panel
+# it acted on it ("reinstalling" dropped the node's interface keys): 1.8.8 qualification, round 6. A probe first and a
+# send afterwards would not do either — the second connection is not the one that was checked.
+# The token and the body stay off the argv (/proc/<pid>/cmdline is world-readable; a process's environment is not).
+# Prints the answer's body (2xx), else ONE line saying why not. Exit: 0 = 2xx · 3 = the panel answered with an HTTP error
+# ("HTTP <code>") · 2 = the request went out and no answer came back · 4 = the certificate is not the one this node
+# trusts — NOTHING was sent · 1 = the panel was not reached ("<reason>"). The whole call is held to <timeout-s> (8).
+# ⚠️ TWIN: uninstall.sh and bootstrap.sh carry the same program (neither sources this file); the three are held to one
+# text by tests/panel_req_selftest.py, which also runs it against live listeners.
+panel_req(){ python3 - "$@" <<'PANELREQ'
+import hashlib, http.client, math, os, re, signal, ssl, sys, urllib.parse
+a = (sys.argv[1:] + [""] * 5)[:5]
+meth, url, verify = a[0] or "GET", a[1], a[2] == "yes"
+fp = a[3].strip().replace(":", "").lower()
+if fp and not re.fullmatch(r"[0-9a-f]{64}", fp):      # a pin that is not a sha256 is never read as "no pin": fail closed
+    print("the pin on record (%s…) is not a sha256 fingerprint — nothing was sent" % fp[:16])
+    sys.exit(4)
+try:
+    tmo = max(1.0, float(a[4]))
+except ValueError:
+    tmo = 8.0
+tok, body = os.environ.get("SWG_TOK", ""), os.environ.get("SWG_BODY", "")
+u = urllib.parse.urlparse(url if "://" in url else "https://" + url)
+sent, conn = False, None
+
+
+def late(*_):
+    raise TimeoutError("timed out")
+
+
+signal.signal(signal.SIGALRM, late)
+signal.alarm(int(math.ceil(tmo)))
+try:
+    host, port = u.hostname or "", u.port or (443 if u.scheme == "https" else 80)
+    path = (u.path or "/") + ("?" + u.query if u.query else "")
+    if u.scheme == "http":
+        conn = http.client.HTTPConnection(host, port, timeout=tmo)
+    elif u.scheme == "https":
+        ctx = ssl.create_default_context() if (verify and not fp) else ssl._create_unverified_context()
+        conn = http.client.HTTPSConnection(host, port, timeout=tmo, context=ctx)
+    else:
+        print("unsupported URL scheme %r" % u.scheme)
+        sys.exit(1)
+    try:
+        conn.connect()                                   # the handshake, and a CA check, before a byte of the request
+    except ssl.SSLCertVerificationError as e:
+        print("the panel's certificate did not verify (%s) — nothing was sent" % (e.verify_message or e.reason or e))
+        sys.exit(4)
+    if fp and u.scheme == "https":
+        got = hashlib.sha256(conn.sock.getpeercert(True) or b"").hexdigest()
+        if got != fp:
+            print("the panel presents a certificate other than the pinned one (sha256 %s…, pinned %s…) — nothing was sent"
+                  % (got[:16], fp[:16]))
+            sys.exit(4)
+    hdr = {"Authorization": "Bearer " + tok, "User-Agent": "swg-noded"}
+    if body:
+        hdr["Content-Type"] = "application/json"
+    sent = True
+    conn.request(meth, path, body=body.encode() if body else None, headers=hdr)
+    r = conn.getresponse()
+    try:
+        data = r.read()
+    except http.client.IncompleteRead as e:
+        data = e.partial
+    if 200 <= r.status < 300:
+        sys.stdout.write(data.decode("utf-8", "replace"))
+        sys.exit(0)
+    print("HTTP %d" % r.status)
+    sys.exit(3)
+except Exception as e:
+    why = str(getattr(e, "reason", None) or getattr(e, "strerror", None) or e or type(e).__name__)
+    print(why[:1].lower() + why[1:])
+    sys.exit(2 if sent else 1)
+finally:
+    signal.alarm(0)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+PANELREQ
 }
 
 # Prompt for a SECRET (the node enrollment key) with terminal echo OFF, so it never lands in scrollback / a
@@ -128,13 +243,16 @@ ask_secret(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v rc
     warn "ignoring invalid $var (${hint})"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    printf '  %s%s: ' "$p" "${d:+ [$(col "${C_BLUE:-}" 'keep current')]}" >/dev/tty 2>/dev/null || printf '  %s: ' "$p"
-    if read -rs v </dev/tty; then rc=0; else rc=1; v=""; fi
-    printf '\n' >/dev/tty 2>/dev/null || echo               # read -s swallows the newline the operator pressed
+    # 2>/dev/null BEFORE >/dev/tty (and on the read): redirections apply left to right, so the other order printed a
+    # raw "/dev/tty: No such device or address" whenever there was no terminal to open.
+    printf '  %s%s: ' "$p" "${d:+ [$(col "${C_BLUE:-}" 'keep current')]}" 2>/dev/null >/dev/tty || printf '  %s: ' "$p"
+    if read -rs v 2>/dev/null </dev/tty; then rc=0; printf '\n' 2>/dev/null >/dev/tty || echo   # read -s swallows the newline the operator pressed
+    else rc=1; v=""   # …and with no terminal the prompt line ended blank (1.8.8 qualification): say what happens instead
+      if [ -n "$d" ]; then echo "(no terminal — the saved one is kept)"; else echo "(no terminal — nothing given)"; fi; fi
     v="${v:-$d}"
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
     [ "$rc" -ne 0 ] && die "no value for ‘$p’ and no interactive input to re-prompt"
-    warn "$hint"
+    if declare -F "${fn}_why" >/dev/null 2>&1; then warn "$("${fn}_why" "$v")"; else warn "$hint"; fi   # as ask_valid does
   done; }
 
 # the bordered, bold title every summary opens with — keeps one style across install / re-install / convert /
@@ -147,7 +265,9 @@ summary_end(){ echo; }
 # node summary footer: "reconfigure in the panel, or directly on the server", with the method's real paths +
 # commands. <baremetal|docker> [docker_install_dir]. b()/COMPOSE come from the sourcing script (installers/convert).
 node_reconfig_block(){
-  local method="$1" dir="${2:-/opt/swg-panel-docker}" prof="${3:-node}" C="${COMPOSE:-docker compose}"
+  local method="$1" dir="${2:-/opt/swg-panel-docker}" prof="${3:-}" C="${COMPOSE:-docker compose}"
+  # the stack this box runs: `--profile node` on a master recreated the node only and left the panel on its old .env
+  [ -n "$prof" ] || { docker ps --format '{{.Names}}' 2>/dev/null | grep -cx swg-panel >/dev/null && prof=master || prof=node; }
   echo "  Interfaces, turn-proxies, WDTT and csqtt servers can be re-configured in the web panel, or directly on the server:"; echo
   if [ "$method" = docker ]; then
     printf '    %-13s %s\n' "Interfaces"   "$(b "ls $dir/data/node-confs/*.conf")"
@@ -180,12 +300,12 @@ node_reconfig_block(){
 # two when both exist. Self-contained — DETECTS the methods and reads the live config, so every caller is just
 # `print_summary <OP> [host|node|both]`.   <OP> ∈ INSTALL | RE-INSTALL | UPDATE | CONVERSION.
 _SUM_DDIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
-_sum_get(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1 | sed 's/^"//; s/"$//' || true; }   # || true: pipefail+set -e safe when the file is missing
+_sum_get(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | sed -n 1p | sed 's/^"//; s/"$//' || true; }   # || true: pipefail+set -e safe when the file is missing
 _sum_proto_label(){ case "$1" in wg|wireguard|WireGuard) echo WireGuard;; *) echo AmneziaWG;; esac; }
-_sum_fwd_iface(){ local cp="${1##*:}" f lp; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$_SUM_DDIR"/data/node-confs/*.conf; do [ -f "$f" ] || continue; lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" 2>/dev/null | head -1)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return 0; }; done; return 0; }
+_sum_fwd_iface(){ local cp="${1##*:}" f lp; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$_SUM_DDIR"/data/node-confs/*.conf; do [ -f "$f" ] || continue; lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" 2>/dev/null | sed -n 1p)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return 0; }; done; return 0; }
 _sum_iface_row(){ local n="$1" proto="$2" conf="$3" ep="$4" lp addr
-  lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
-  addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
+  lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | sed -n 1p || true)"
+  addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | sed -n 1p || true)"
   printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "${C_GREEN:-}" "$(printf '%-10s' "$n")" "${RESET:-}" "${BOLD:-}" "$(_sum_proto_label "$proto")" "${RESET:-}" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 _sum_turn_row(){ local fw; fw="$(_sum_fwd_iface "${3:-}")"; printf '    %s%s%s %s → %s%s\n' "${C_GREEN:-}" "$1" "${RESET:-}" "${2:-?}" "${3:-?}" "${fw:+ ($fw)}"; }
 _sum_node_ep(){ local ep; ep="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("endpoint_host") or ""))' 2>/dev/null || true)"; [ -n "$ep" ] || ep="$(_sum_get "$_SUM_DDIR/.env" NODE_ENDPOINT)"; [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"; printf '%s' "$ep"; }
@@ -200,10 +320,15 @@ _sum_node_purl(){ local u; u="$(python3 -c 'import json;print((json.load(open("/
 _sum_dctr(){ have docker || return 1
   [ -f "$_SUM_DDIR/.env" ] || return 1
   docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null \
-    | grep -q "^$1|" && ! docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null | grep -qx "$1|created"; }
+    | grep -c "^$1|" >/dev/null && ! docker ps -a --format '{{.Names}}|{{.State}}' 2>/dev/null | grep -cx "$1|created" >/dev/null; }
 _sum_detect(){ local hm="" nm=""   # echoes "<host_method> <node_method>", each ∈ baremetal|docker|"" (none)
-  if _sum_dctr swg-panel; then hm=docker
-  elif [ -f /etc/systemd/system/swg-panel-server.service ] || [ -x /opt/swg-panel/swg-panel-server ]; then hm=baremetal; fi
+  # ⚠️ A PARKED DOCKER PANEL IS NOT THE ONE THAT ANSWERS. With both panels on the box (guard_second_panel), a bare-metal
+  # install that had just stopped the docker panel printed the DOCKER panel's summary — its user name next to the new
+  # bare password under "new login — save the password now", its .env and compose commands (1.8.8 qualification, q5).
+  # The live docker panel first, then a bare one, then a docker one that is only parked.
+  if _sum_dctr swg-panel && ! docker_parked swg-panel; then hm=docker
+  elif [ -f /etc/systemd/system/swg-panel-server.service ] || [ -x /opt/swg-panel/swg-panel-server ]; then hm=baremetal
+  elif _sum_dctr swg-panel; then hm=docker; fi
   if _sum_dctr swg-node; then nm=docker
   elif [ -f /etc/systemd/system/swg-noded.service ] || [ -f /etc/swg-agent/config.json ]; then nm=baremetal; fi
   printf '%s %s' "$hm" "$nm"; }
@@ -256,10 +381,10 @@ summary_host_block(){   # <method> <converted?yes|no>
   local m="$1" conv="$2" url login tls ver mlabel note="" e dom port base sch ps reset
   if [ "$m" = docker ]; then e="$_SUM_DDIR/.env"; mlabel=Docker
     dom="$(_sum_get "$e" PANEL_DOMAIN)"; port="$(_sum_get "$e" PANEL_PORT)"; base="$(_sum_get "$e" PANEL_BASE)"; tls="$(_sum_get "$e" TLS)"
-    login="$(_sum_get "$e" PANEL_USER)"; ver="$(docker exec swg-panel cat /opt/swg-panel/VERSION 2>/dev/null | head -1 || true)"
+    login="$(_sum_get "$e" PANEL_USER)"; ver="$(docker exec swg-panel cat /opt/swg-panel/VERSION 2>/dev/null | sed -n 1p || true)"
   else mlabel=Bare-metal
     dom="$(_sum_get /etc/swg-panel/install.conf PANEL_DOMAIN)"; port="$(_sum_get /etc/swg-panel/install.conf PORT)"; base="$(_sum_get /etc/swg-panel/install.conf PANEL_BASE)"; tls="$(_sum_get /etc/swg-panel/install.conf TLS_MODE)"
-    login="$(sed -n 's/^\([^:]*\):.*/\1/p' /etc/swg-panel/auth 2>/dev/null | head -1 || true)"; ver="$(cat /opt/swg-panel/VERSION 2>/dev/null | head -1 || true)"
+    login="$(sed -n 's/^\([^:]*\):.*/\1/p' /etc/swg-panel/auth 2>/dev/null | sed -n 1p || true)"; ver="$(cat /opt/swg-panel/VERSION 2>/dev/null | sed -n 1p || true)"
   fi
   sch=https; [ "$tls" = none ] && sch=http; ps=":$port"; case "$port" in 443|80|"") ps="";; esac; url="${sch}://${dom}${ps}${base}/"
   [ "$conv" = yes ] && note="  ·  $(_sum_note "$m")"
@@ -268,7 +393,10 @@ summary_host_block(){   # <method> <converted?yes|no>
   # A fresh install MINTS the login, and the auth file only ever holds the pbkdf2 hash — so this summary is the one
   # and only place the plaintext password is ever shown. The installer hands it over in SWG_SUMMARY_PASS; without it
   # (re-install / convert) the existing login is untouched and there's no password to show.
+  # A password the operator GAVE is never printed (SWG_SUMMARY_PASS_GIVEN): they have it, and the log of an unattended
+  # install would hold it (1.8.8 qualification, round 8) — only a GENERATED one is shown, once.
   if [ -n "${SWG_SUMMARY_PASS:-}" ]; then echo "  $(b 'Panel') (new login — $(b 'save the password now'), it is not shown again):"
+  elif [ -n "${SWG_SUMMARY_PASS_GIVEN:-}" ]; then echo "  $(b 'Panel') (new login — with the password you gave):"
   else                                    echo "  $(b 'Panel') (login + the $(b "${tls:-?}") cert preserved):"; fi
   echo
   printf '    %-9s%s\n' "URL"     "$(bb "$url")"
@@ -277,6 +405,9 @@ summary_host_block(){   # <method> <converted?yes|no>
   if [ -n "${SWG_SUMMARY_PASS:-}" ]; then
     printf '    %-9s%s\n' "Login"    "$(b "${login:-admin}")"
     printf '    %-9s%s\n' "Password" "$(b "$SWG_SUMMARY_PASS")  (change it in the panel: Account · or reset with $(b "$reset"))"
+  elif [ -n "${SWG_SUMMARY_PASS_GIVEN:-}" ]; then
+    printf '    %-9s%s\n' "Login"    "$(b "${login:-admin}")"
+    printf '    %-9s%s\n' "Password" "the one you gave — not shown  (change it in the panel: Account · or reset with $(b "$reset"))"
   else
     printf '    %-9s%s\n' "Login"   "$(b "${login:-admin}")  (to reset the password run: $(b "$reset"))"
   fi
@@ -364,8 +495,8 @@ EOS
 summary_node_block(){   # <method> <converted?yes|no>
   local m="$1" conv="$2" ver mlabel note="" nep purl conf n proto units svc inst lis con u _trec _meshif
   nep="$(_sum_node_ep)"; purl="$(_sum_node_purl)"
-  if [ "$m" = docker ]; then mlabel=Docker; ver="$(docker exec swg-node cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"
-  else mlabel=Bare-metal; ver="$(cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"; fi
+  if [ "$m" = docker ]; then mlabel=Docker; ver="$(docker exec swg-node cat /opt/swg-noded/VERSION 2>/dev/null | sed -n 1p || true)"
+  else mlabel=Bare-metal; ver="$(cat /opt/swg-noded/VERSION 2>/dev/null | sed -n 1p || true)"; fi
   [ "$conv" = yes ] && note="  ·  $(_sum_note "$m")"
   echo "${C_BLUE:-}▸${RESET:-} $(b "$mlabel SWG Node")${ver:+ $(b "v$ver")}${purl:+  ·  syncs to $(bb "$purl")}$note"
   if [ "$m" = docker ]; then
@@ -439,8 +570,8 @@ PY
     units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
     if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
       for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
-        con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
+        lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
+        con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
         _sum_turn_row "$svc" "$lis" "$con"; done; fi
     _sum_wdtt_block baremetal
     _sum_csqtt_block baremetal
@@ -511,14 +642,22 @@ panel_node_name(){ [ -f "$2" ] || return 0
 _SWG_NL=""
 _pnl(){ echo; _SWG_NL=1; }                     # call at the end of a prompt helper (interactive path only)
 _nlguard(){ _SWG_NL=""; }                      # call from real-output helpers so they don't get swallowed
-LC_OP=""; LC_EMIT=""; LC_LOG=""; LC_ABORT=""; LC_HANDOFF=""; LC_DONE=""; LC_SUCCESS=""
+LC_OP=""; LC_EMIT=""; LC_LOG=""; LC_ABORT=""; LC_HANDOFF=""; LC_DONE=""; LC_SUCCESS=""; LC_WITHHELD=""
 _lc_inprogress(){ case "$1" in reinstall) echo reinstalling;; convert-bare) echo converting-bare;; convert-docker) echo converting-docker;; update) echo updating;; uninstall) echo uninstalling;; esac; }
 _lc_success(){    case "$1" in reinstall) echo reinstalled;; convert-bare) echo converted-bare;; convert-docker) echo converted-docker;; update) echo updated;; uninstall) echo "";; esac; }
 _lc_prefix(){     case "$1" in convert-*) echo convert;; *) echo "$1";; esac; }   # aborted/failed are op-generic
 lc_emit(){ [ -n "${LC_EMIT:-}" ] && [ -n "${1:-}" ] && "$LC_EMIT" "$1" "${2:-}" || true; }
 lc_handoff(){ LC_HANDOFF=1; }                                  # another script now owns the terminal (convert→installer)
+# The node's TRUST travels with its token: LC_VERIFY (yes = CA verification) and LC_FP (its pinned certificate) — every
+# POST goes through panel_req, which checks the panel on the connection the token is sent on. The caller sets LC_FP
+# wherever the node has a pin (bare: the agent config's panel.fingerprint; Docker: TLS_FINGERPRINT / its learned
+# panel-fp); a loopback URL (a co-located node dialling its own panel) needs neither.
+# ⚠️ ONE REFUSAL ENDS IT FOR THE RUN (LC_WITHHELD): a panel that fails the node's trust once gets no further status —
+# and no terminal post from the EXIT trap either — and the run says so once. The first refusal is final because nothing
+# in a run changes the certificate a panel presents, and retrying it for 25 s would only be noise.
 lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
-  local ins=""; [ "${LC_VERIFY:-no}" = yes ] || ins="-k"; local data="" _i
+  [ -n "${LC_WITHHELD:-}" ] && return 0
+  local data="" _i _why _rc
   if [ -n "${2:-}" ]; then data="$(python3 -c 'import json,sys;print(json.dumps({"state":sys.argv[1],"err":sys.argv[2]}))' "$1" "$2" 2>/dev/null)"; fi
   [ -n "$data" ] || data="{\"state\":\"$1\"}"
   # RETRY: a single best-effort POST silently drops the status when the panel is briefly unreachable mid-convert
@@ -535,23 +674,71 @@ lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
   # *-aborted state must never be announced as done. Both lines below said "this finished" / "the conversion
   # itself is done" for every op and every outcome — so `bootstrap.sh update` on a box with no install at all
   # ended its "no swg-panel install found" error with a line claiming a conversion had completed.
-  local _tries _phase; case "$1" in
-    updating|reinstalling|converting-bare|converting-docker|uninstalling) _tries=4; _phase="started";;
-    *) _tries=25; _phase="finished";; esac
+  local _secs _phase; case "$1" in
+    updating|reinstalling|converting-bare|converting-docker|uninstalling) _secs=6; _phase="started";;
+    *) _secs=25; _phase="finished";; esac
   # SAY SO while waiting. This runs from the EXIT trap, i.e. AFTER the completion summary has printed, so a
-  # silent 25-retry loop looks exactly like a hang at the very moment the operator has been told it's done —
+  # silent 25-second loop looks exactly like a hang at the very moment the operator has been told it's done —
   # and the run then exits fine, which is more baffling still. One line on the first failure, one on give-up.
-  _i=0
-  while [ "$_i" -lt "$_tries" ]; do
-    auth_curl "$LC_TOKEN" -fsS $ins --max-time 6 -X POST -H "Content-Type: application/json" \
-      --data "$data" "${LC_URL%/}/api/node/proc-status" >/dev/null 2>&1 && {
-        [ "$_i" -gt 0 ] && echo "    panel reached — status recorded." || true; return 0; }
-    [ "$_i" -eq 0 ] && echo "    telling the panel this $_phase (it may still be restarting) — up to ${_tries}s…"
-    _i=$((_i + 1)); sleep 1
+  # ⚠️ The budget is WALL-CLOCK seconds and each attempt gets only what is left of it. It was an attempt COUNT printed
+  # as seconds: true while a restarting panel refuses at once, but a panel address that DROPS packets made every attempt
+  # wait out `--max-time 6` — 29 × 7 s ≈ 3.4 min after "Update complete" (measured on a Debian VM, 2026-09-18). A
+  # refusing panel still gets a retry about every second for the whole budget. 6 s, not less, for an in-progress state:
+  # its first attempt keeps the full 6 s it always had — `reinstalling` is where the panel adopts the box's current
+  # keys, which no sync repeats, and a node with a dead first nameserver spends ~5 s in DNS alone.
+  local _end=$((SECONDS + _secs)) _left; _i=0
+  while _left=$((_end - SECONDS)); [ "$_left" -gt 0 ]; do
+    _rc=0; _why="$(SWG_TOK="$LC_TOKEN" SWG_BODY="$data" panel_req POST "${LC_URL%/}/api/node/proc-status" \
+      "${LC_VERIFY:-no}" "${LC_FP:-}" "$(( _left < 6 ? _left : 6 ))" 2>/dev/null)" || _rc=$?
+    if [ "$_rc" = 0 ]; then [ "$_i" -gt 0 ] && echo "    panel reached — status recorded." || true; return 0; fi
+    if [ "$_rc" = 4 ]; then LC_WITHHELD=1
+      echo "    the panel was not told \"$1\": ${_why:-it is not the panel this node trusts}. The node token goes nowhere for the rest of this run."
+      return 0; fi
+    # ⚠️ A REFUSAL IS AN ANSWER, NOT AN OUTAGE. HTTP 401/403: the panel is up and does not accept this node's key. It was
+    # asked again about once a second for the whole budget — up to 25 s after "Update complete" — to hear the same thing
+    # (1.8.8 qualification, round 10, N13). One answer is enough; the line below says what it was.
+    case "$_rc:$_why" in "3:HTTP 401"|"3:HTTP 403") break;; esac
+    [ "$_i" -eq 0 ] && echo "    telling the panel this $_phase (it may still be restarting) — up to ${_secs}s…"
+    _i=$((_i + 1)); [ $((_end - SECONDS)) -gt 0 ] || break; sleep 1
   done
   # Name the state we could not record and stop there. Whether the op succeeded is not this function's news to
   # break: it only failed to POST, which changes nothing either way about what happened on the box.
-  echo "    couldn't reach the panel to record \"$1\" — the panel corrects the tag on the node's next sync."
+  # ⚠️ …AND SAY WHAT THE PANEL ANSWERED WHEN IT ANSWERED. A panel that turned every attempt down (HTTP 401: it does not
+  # accept this node's key) was reported as "couldn't reach the panel" after the whole budget (1.8.8 qualification,
+  # round 8) — the one cause the operator could act on, hidden behind the one they could not.
+  case "$_rc:$_why" in
+    "3:HTTP 401"|"3:HTTP 403")
+      echo "    the panel did not record \"$1\" — it answered $_why: it does not accept this node's key (check the node in the panel's Nodes screen, or re-enroll it).";;
+    3:*) echo "    the panel did not record \"$1\" — it answered ${_why:-an error}; it corrects the tag on the node's next sync.";;
+    *)   echo "    couldn't reach the panel to record \"$1\" — the panel corrects the tag on the node's next sync.";;
+  esac
+  return 0; }
+# docker_node_panel <install-dir> — the panel a DOCKER node really talks to, and how it trusts it, for the calls made on
+# its behalf from the host (update.sh's status, …). Sets DNP_URL DNP_TOKEN DNP_VERIFY DNP_FP: the kept .env, overridden
+# by what the node LEARNED (data/node/panel-url / -token / -verify / -fp — a re-point or a Transfer), exactly as
+# docker/node-entrypoint.sh decides them at every start (convert.sh reads them the same way). The .env alone named the
+# panel the node USED to sync with — and its pin was never read at all, so these calls went out with curl -k.
+# ⚠️ TWIN: uninstall.sh's _docker_node_panel (it does not source this file).
+# DNP_LEARNED names the learned files that were there (empty = the .env is the whole story).
+# ⚠️ A TRANSFER TO A PANEL A PUBLIC CA VOUCHES FOR LEAVES NO PIN BEHIND — and none must come back. swg-noded writes the
+# posture it promoted with (swg-noded _persist_panel_auth): panel-verify=yes and NO panel-fp when the far panel answered
+# under CA verification. Taking the .env's pin in that case — the pin of the panel the node LEFT — pinned the new panel
+# to the old one's certificate: every call refused, and the node itself refused every sync from its next start on
+# (docker/node-entrypoint.sh read it the same way). Only a learned verify=yes clears it: a learned verify=no with no fp
+# keeps the configured pin, because a blank pin there would mean "verify nothing" (see the entrypoint).
+docker_node_panel(){ local d="$1" k v _lv="" _lf=""
+  for k in PANEL_URL NODE_TOKEN TLS_VERIFY TLS_FINGERPRINT; do
+    v="$(sed -n "s/^$k=//p" "$d/.env" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]\{1,\}#.*$//' | tr -d '"' || true)"
+    case "$k" in PANEL_URL) DNP_URL="$v";; NODE_TOKEN) DNP_TOKEN="$v";; TLS_VERIFY) DNP_VERIFY="$v";; TLS_FINGERPRINT) DNP_FP="$v";; esac
+  done
+  DNP_LEARNED=""
+  v="$(head -n1 "$d/data/node/panel-url" 2>/dev/null | tr -d '[:space:]' || true)";    [ -n "$v" ] && { DNP_URL="$v"; DNP_LEARNED="panel-url"; }
+  v="$(head -n1 "$d/data/node/panel-token" 2>/dev/null | tr -d '[:space:]' || true)";  [ -n "$v" ] && { DNP_TOKEN="$v"; DNP_LEARNED="$DNP_LEARNED panel-token"; }
+  _lv="$(head -n1 "$d/data/node/panel-verify" 2>/dev/null | tr -d '[:space:]' || true)"; [ -n "$_lv" ] && { DNP_VERIFY="$_lv"; DNP_LEARNED="$DNP_LEARNED panel-verify"; }
+  _lf="$(head -n1 "$d/data/node/panel-fp" 2>/dev/null | tr -d '[:space:]' || true)";     [ -n "$_lf" ] && { DNP_FP="$_lf"; DNP_LEARNED="$DNP_LEARNED panel-fp"; }
+  [ "$_lv" = yes ] && [ -z "$_lf" ] && DNP_FP=""
+  DNP_LEARNED="${DNP_LEARNED# }"
+  [ "$DNP_VERIFY" = yes ] || DNP_VERIFY=no
   return 0; }
 lc_emit_file(){ local f="${LC_FILE:-}"; [ -n "$f" ] || return 0; mkdir -p "$(dirname "$f")" 2>/dev/null || true
   if [ -n "${2:-}" ]; then printf '%s\n%s\n' "$1" "$2" > "$f" 2>/dev/null || true
@@ -659,19 +846,108 @@ teardown_bare_panel(){
   rm -f /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf /etc/nginx/conf.d/swg-panel.conf
   command -v nginx >/dev/null 2>&1 && { nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1; } || true
   rm -rf /opt/swg-panel /usr/local/bin/swg-panel-server   # remove the bare binary too, else the box still reads as a bare panel (bootstrap won't offer convert-back)
-  for _d in /var/lib/swg-panel /etc/swg-panel; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)" 2>/dev/null || true; done
+  local _ts _d; _ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
+  for _d in /var/lib/swg-panel /etc/swg-panel; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$_ts" 2>/dev/null && seal_archive "$_d.converted-$_ts"; done
   systemctl daemon-reload >/dev/null 2>&1 || true; }
+
+# ── A RECOVERY ARCHIVE IS ROOT'S ALONE ────────────────────────────────────────────────────────────────────────────────
+# ⚠️ AN ARCHIVE OUTLIVES THE ACCOUNTS THAT OWN ITS FILES. A convert moves the panel's state aside WITH its owners
+# (/var/lib/swg-panel.converted-*: swgpanel, group swg; /etc/swg-panel.converted-*: 2775 root:swg), the uninstall keeps it
+# by default, and deletes swgpanel, swgsub and group swg — so the archive held a uid and a gid that belonged to nobody, and
+# the next accounts created on the box took them: a `useradd -m -U` account (the group's gid) read the archived login hash
+# and the LIVE panel's TLS key and could write into the archive, a `useradd -r` account (the panel's uid) read the LIVE
+# session.key, the settings, the vault and every PSK (1.8.8 qualification, round 10, F90 — in 1.8.7 too). What an archive
+# holds is recovered by root (the installers' recovery list), so it becomes root's the moment it is moved aside: owner
+# root:root, no group write, no setgid, no write for others, and the archive itself closed to everyone else (700).
+# seal_archives heals the ones an earlier build left — every install, update and convert calls it. TWIN: uninstall.sh
+# (_seal_archive, _seal_archives — it does not source this file); change both.
+SWG_ARCHIVE_GLOBS='/etc/swg-panel*.converted-* /etc/swg-panel*.uninstalled-* /var/lib/swg-panel*.converted-* /var/lib/swg-panel*.uninstalled-* /opt/swg-panel*.converted-* /opt/swg-panel*.uninstalled-* /opt/swg-panel*.pre-convert-*'
+seal_archive(){   # seal_archive <path…> — never through a symlink: -h on the owner, and a link itself is skipped
+  local p
+  for p in "$@"; do
+    [ -e "$p" ] && [ ! -L "$p" ] || continue
+    chown -R -h root:root "$p" 2>/dev/null || true
+    chmod -R g-ws,o-w "$p" 2>/dev/null || true
+    if [ -d "$p" ]; then chmod 700 "$p" 2>/dev/null || true; fi
+  done
+  return 0; }
+# netctl_dirs_heal <state dir> — swg-netctl's claims/ is ROOT'S (its _root_child: root-owned, 0700). The installer's
+# `chown -R $PANEL_USER:swg $STATE_DIR` (and a docker → bare convert's) handed it to the panel, so the helper's next run
+# moved it aside as claims.untrusted.<ts>.<pid> — one more after every install (1.8.8 qualification, round 10, F96). It goes
+# back to root, and the EMPTY untrusted directories an earlier run left go (rmdir: a non-empty one stays, to be read).
+netctl_dirs_heal(){ local st="${1:-}" d
+  [ -n "$st" ] && [ -d "$st/netctl" ] || return 0
+  if [ -d "$st/netctl/claims" ] && [ ! -L "$st/netctl/claims" ]; then
+    chown -R -h root:root "$st/netctl/claims" 2>/dev/null || true; chmod 700 "$st/netctl/claims" 2>/dev/null || true
+  fi
+  # …and status/ is root's too (group swg reads the answers): the same chown -R took it, and the helper moved it aside
+  if [ -d "$st/netctl/status" ] && [ ! -L "$st/netctl/status" ]; then
+    chown root:swg "$st/netctl/status" 2>/dev/null || chown root "$st/netctl/status" 2>/dev/null || true
+    chmod 750 "$st/netctl/status" 2>/dev/null || true
+  fi
+  for d in "$st"/netctl/claims.untrusted.* "$st"/netctl/status.untrusted.*; do
+    if [ -d "$d" ] && [ ! -L "$d" ]; then rmdir "$d" 2>/dev/null || true; fi
+  done
+  return 0; }
+seal_archives(){ local p d="${SWG_DOCKER_DIR:-}"   # …and a Docker dir moved from somewhere else (SWG_DOCKER_DIR)
+  for p in $SWG_ARCHIVE_GLOBS ${d:+$d.converted-* $d.uninstalled-* $d.pre-convert-*}; do [ -e "$p" ] && seal_archive "$p"; done; return 0; }
+# ⚠️ A DOCKER NODE'S nft TABLES THE HOST CANNOT READ GO WITH THE NODE'S OWN nft, BEFORE ITS CONTAINER DOES (round 12d, R29 —
+# F98 on the convert path). An image older than e72529b declared its sets with plain keys, which Debian 12's nft 1.0.6 crashes
+# on; left in the kernel at a docker → bare switch, the bare node — which runs the host's nft — could neither read nor change
+# them: every sync logged "smart nft check" / "doh block nft load failed" / "mech block nft load failed", and routing and
+# blocking edits did not apply until a reboot. So when the host's own nft cannot read the ruleset, the container is stopped
+# (a running swg-noded re-creates a table within one sync), a throwaway run of its image deletes every swg* table in one
+# batch — the same batch uninstall.sh's _node_nft_sweep sends (it does not source this file) — and the bare node declares
+# them afresh on its first sync. A ruleset the host reads is left exactly as before: it keeps enforcing across the switch,
+# and the bare node takes it over.
+# ⚠️ …AND ITS INTERFACES GO BEFORE ITS TABLES (round 12e, R31-X3). wg0 is kernel WireGuard: it outlives `docker stop` and
+# forwards with whatever tables the kernel holds. The teardown deleted it only after `docker rm` and the turn-proxies, so for
+# ~0.3 s it forwarded with NO swg table — measured on Debian 12 probing every 10 ms: 17 replies through the reach guard and 3
+# TCP connects to a Blocked address. The stopped node's interfaces (its data/node-confs names, the ones the teardown deletes)
+# go first now; while one of them cannot be deleted the tables are left enforcing (fail closed: no interface, no forwarding).
+lc_node_nft_sweep(){
+  local d="${1:-/opt/swg-panel-docker}" img tl dels left
+  command -v nft >/dev/null 2>&1 && tl="$(nft list tables 2>/dev/null)" && return 0   # (in a substitution: a crash prints no "Segmentation fault" line)
+  img="$(docker inspect -f '{{.Config.Image}}' swg-node 2>/dev/null || true)"
+  [ -n "$img" ] || return 0
+  docker stop -t 10 swg-node >/dev/null 2>&1 || true
+  left="$(lc_del_node_ifaces "$d")"
+  if [ -n "$left" ]; then
+    warn "this host's nft cannot read the Docker node's nft tables, and its interface(s)$left could not be deleted — the tables are left enforcing; the bare node cannot change them until a reboot"; return 0
+  fi
+  if ! tl="$(docker run --rm --net host --cap-add NET_ADMIN --entrypoint nft "$img" list tables 2>/dev/null)"; then
+    warn "this host's nft cannot read the Docker node's nft tables, and its own nft could not either — the bare node cannot change them until a reboot"; return 0
+  fi
+  dels="$(printf '%s\n' "$tl" | sed -n 's/^table \([a-z0-9]*\) \(swg[A-Za-z0-9_]*\)$/delete table \1 \2/p')"
+  [ -n "$dels" ] || return 0
+  if printf '%s\n' "$dels" | docker run -i --rm --net host --cap-add NET_ADMIN --entrypoint nft "$img" -f - >/dev/null 2>&1; then
+    info "this host's nft cannot read the Docker node's nft tables — took its interfaces down, then removed the tables with the node's own nft:$(printf '%s\n' "$dels" | sed 's/^delete table [a-z0-9]* / /' | tr -d '\n'); the bare node declares them afresh"
+  else
+    warn "this host's nft cannot read the Docker node's nft tables, and its own nft could not delete them — the bare node cannot change them until a reboot"
+  fi
+  return 0; }
+# lc_del_node_ifaces <docker_dir> — docker host networking leaves the node's wg/awg interfaces in the HOST netns (`docker stop`
+# and `docker rm` cannot remove them): delete the ones it managed, by the names of its confs in data/node-confs. Idempotent.
+# Prints the names still there afterwards (nothing: every one is gone), for a caller that must not go on while one forwards.
+lc_del_node_ifaces(){
+  local d="$1" c n
+  for c in "$d/data/node-confs/"*.conf; do [ -f "$c" ] || continue; n="${c##*/}"; n="${n%.conf}"
+    command -v ip >/dev/null 2>&1 || { printf ' %s' "$n"; continue; }
+    ip link delete dev "$n" >/dev/null 2>&1 || true
+    ! ip link show "$n" >/dev/null 2>&1 || printf ' %s' "$n"; done
+  return 0; }
 lc_teardown_docker(){   # stop+remove the docker datapath (container + stack), freeing wg ports + host netdevs
   local d="${1:-/opt/swg-panel-docker}"
   command -v docker >/dev/null 2>&1 || return 0
+  lc_node_nft_sweep "$d"   # its nft tables the host cannot read — its interfaces first — with its own nft, before the container goes
   docker rm -f swg-node >/dev/null 2>&1 || true
   for _c in $(docker ps -aq --filter name=swg-turn- 2>/dev/null || true); do docker rm -f "$_c" >/dev/null 2>&1 || true; done   # turn-proxy containers hold the listen ports the migrated bare units need
   # docker host networking leaves the node's wg/awg interfaces in the HOST netns — `docker rm` can't remove them.
   # Delete the ones it managed (names from data/node-confs) so they don't linger as confless orphans (a later
   # install would adopt one as a ghost) or collide with a fresh bring-up; whatever's still wanted is recreated after.
-  if command -v ip >/dev/null 2>&1; then for _c in "$d/data/node-confs/"*.conf; do [ -f "$_c" ] || continue
-    ip link delete dev "$(basename "$_c" .conf)" >/dev/null 2>&1 || true; done; fi
-  if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then   # node-only → take the stack down
+  # (The sweep above already deleted them when it ran: this finds them gone.)
+  lc_del_node_ifaces "$d" >/dev/null
+  if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx swg-panel >/dev/null; then   # node-only → take the stack down
     [ -f "$d/docker-compose.yml" ] && ( cd "$d" && { docker compose down >/dev/null 2>&1 || docker-compose down >/dev/null 2>&1 || true; } )
   fi
   return 0; }   # always succeed — a missing compose file (node-only box) must not return non-zero mid-switch and trip set -e
@@ -681,10 +957,16 @@ lc_teardown_docker(){   # stop+remove the docker datapath (container + stack), f
 # Guards keep it safe: a docker leftover is removed only when NO swg-node/swg-panel container exists; a
 # bare-metal leftover only the /etc confs that MATCH this docker node's confs and only when no swg-noded is
 # installed — never a live install or an unrelated WireGuard config. Needs the caller's info() for messaging.
+# ⚠️ …AND NEVER WHAT AN UNINSTALL KEPT: its "keep the data" answer leaves data/ (+ .env, the node token) with the
+# docker-compose.yml stripped, while a convert's staging copies the compose file in beside the data — so no compose
+# file ⇒ kept, and said. TWIN of bootstrap.sh's copy of this (it does not source this file); change both.
 lc_clear_convert_leftover(){
   local method="$1" dd="${2:-/opt/swg-panel-docker}" c n d cleared=
-  if [ "$method" = baremetal ] && [ -d "$dd" ] && command -v docker >/dev/null 2>&1 \
-       && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'swg-(node|panel)'; then
+  if [ "$method" = baremetal ] && [ -d "$dd" ] && [ ! -f "$dd/docker-compose.yml" ] && command -v docker >/dev/null 2>&1 \
+       && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cxE 'swg-(node|panel)' >/dev/null; then
+    info "keeping $dd — no container runs from it, but it is not a convert's leftover: an uninstall kept its data (peers, node token) for a re-install. Delete it by hand once you no longer need it."
+  elif [ "$method" = baremetal ] && [ -d "$dd" ] && command -v docker >/dev/null 2>&1 \
+       && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cxE 'swg-(node|panel)' >/dev/null; then
     info "removing a stale docker leftover at $dd — no container present (likely a cancelled bare→docker convert); your live install is untouched"
     rm -rf "$dd" 2>/dev/null || true
   elif [ "$method" = docker ] && [ -d "$dd/data/node-confs" ] && command -v systemctl >/dev/null 2>&1 \
@@ -841,12 +1123,7 @@ stop_bare_csqtt(){
   [ "$n" -gt 0 ] && { systemctl daemon-reload >/dev/null 2>&1 || true; echo "    stopped $n bare-metal csqtt server(s) — the container owns them now"; }
   return 0; }
 
-# ── turn-proxy: the curated forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──
-turn_repo_owner(){ case "$1" in
-  WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/free-turn-proxy";;
-  kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
-  Moroka8) echo "Moroka8/vk-turn-proxy";; MYSOREZ) echo "MYSOREZ/vk-turn-proxy";;
-  cacggghp) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
+# ── turn-proxy: the binary download (GitHub direct, then opt-in mirrors) ──
 
 # Axis-2 P3: systemd sandbox for turn-proxy units — shared by install-host/node + convert (mirrors swg-noded's
 # TURN_UNIT_HARDENING). A forwarder only shuffles bytes between two sockets, so confine it hard: a compromised
@@ -948,25 +1225,14 @@ print_proxy_configs(){
   echo
 }
 
-# ── docker one-click self-update wiring (STATIC templates — no per-install config) ──────────────────────────────
-# The swg-update + swg-update-check wrappers and the poll service/timer. Shared by install-docker.sh's
-# wire_host_updater (fresh install) AND update.sh's ensure_update_unit_docker (heal) so both write byte-identical
-# pieces. Writes the files, retires the legacy .path watch, stamps NOW (so the first poll can't fire a spurious
-# update), reloads systemd, and enables the 30s timer. Caller owns $DRYRUN gating + container trigger pre-creation.
-# systemctl calls are best-effort so this never trips set -e. Returns 0.
-write_docker_updater(){
-    # ⚠️ THE REF THE BOX WAS INSTALLED FROM, not `main`. `bootstrap.sh` deliberately supports installing a
-  # branch or tag (SWG_REF, or inferred from the URL it was fetched from) — and its own comment says why:
-  # "a panel tracking a pre-release branch SILENTLY DOWNGRADED itself on every one-click update". That fix
-  # covered the bootstrap and NOT this wrapper, which is the thing the Update button actually runs. Baked in
-  # at write time because nothing else on the box records the branch, and this file IS rewritten by every
-  # update — so a box installed from a ref keeps tracking it without any new state to keep in step.
-  _swg_ref="${SWG_REF:-main}"
-  # ⚠️ WRITTEN BESIDE, THEN RENAMED. Same reason as update.sh's `install_update_unit`, which this must stay
-  # identical to: the braces + `exit` below cannot help the one press of Update that INSTALLS them, because
-  # the script running then is the old unguarded wrapper and `cat >` refills the very inode its bash still
-  # holds open. A rename gives the new file a new inode, so the old bash reads EOF and exits 0.
-  cat > /usr/local/bin/swg-update.new <<WRAP
+# ── THE swg-update WRAPPER, AND A BARE BOX'S CHECK: ONE TEXT EACH ──────────────────────────────────────────────────────
+# install-host.sh (mk_update_unit), update.sh (install_update_unit) and write_docker_updater (below) each carried the same
+# code under their own comments, so /usr/local/bin/swg-update's digest flipped with whichever wrote it last (1.8.8
+# qualification, round 8). The texts live here, once; every writer renders them. The wrapper takes the ref the box
+# follows (baked in: nothing else on the box records it). The check is a BARE box's (install-host, update.sh): a Docker
+# box writes its own in write_docker_updater — there a node's trigger is the container's, which --node-only would skip.
+swg_update_wrapper_text(){ local _swg_ref="${1:-main}"
+  cat <<WRAP
 #!/usr/bin/env bash
 # ⚠️ THE WHOLE BODY IS ONE COMPOUND COMMAND, AND THE \`exit\` AT THE END IS PART OF THE FIX.
 # THIS SCRIPT REWRITES ITSELF. The update it runs re-bakes /usr/local/bin/swg-update, and bash reads a
@@ -981,22 +1247,21 @@ write_docker_updater(){
 # Braces make bash parse the whole body before executing any of it, and the \`exit\` means it never reads
 # from the file again.
 {
-# swg-update — root entrypoint for the panel/node one-click update. swg programs + images only (--no-components
-# skips docker engine / wg-awg / turn-proxies); on a docker box this is \`compose pull && up\`. A container can't
-# recreate itself, so the panel/node touches its trigger and THIS (host, root) unit does the recreate.
+# swg-update — fixed root entrypoint for the one-click in-place update of EVERY swg component on this box: a bare
+# panel, a bare node, a Docker install (a container cannot recreate itself: the panel/node touches its trigger and this
+# host unit runs \`compose pull && up\`). swg programs + images only (--no-components: never the docker engine, wg/awg
+# or turn-proxies). Logs to journal. ONE TEXT for every writer — swg_update_wrapper_text, lib/common.sh.
 set -euo pipefail
 # ⚠️ EXPORTED, not just used. \`bootstrap.sh\` derives the ref from the URL IT WAS FETCHED FROM, reading
-# \$SWG_BOOTSTRAP_URL out of its own environment — and this line used the baked URL only as a shell
-# DEFAULT, so the piped bash saw the variable UNSET, inferred nothing, and fell back to \`main\`. The
-# wrapper fetched dev's bootstrap and then installed main from it: the panel silently downgraded itself
-# and re-baked this very file back to main, which is word for word the failure the inference was added to
-# prevent. Measured on swgt: 1.8.6-beta -> 1.8.5-beta, wrapper dev -> main, on one press of Update.
-# Exporting the URL (rather than forcing SWG_REF) keeps an operator's own \$SWG_BOOTSTRAP_URL authoritative
-# — their URL then decides the ref, which is the whole point of deriving it from the URL.
+# \$SWG_BOOTSTRAP_URL out of its own environment. Baked in only as a shell DEFAULT, the piped bash sees the variable
+# UNSET, infers nothing and falls back to \`main\`: the wrapper fetched dev's bootstrap, installed main from it and
+# re-baked this very file back to main (measured on swgt: 1.8.6-beta -> 1.8.5-beta, wrapper dev -> main, on one press
+# of Update; and on a box installed FRESH from a branch). Exporting the URL (rather than forcing SWG_REF) keeps an
+# operator's own \$SWG_BOOTSTRAP_URL authoritative — their URL then decides the ref.
 URL="\${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/${_swg_ref}/bootstrap.sh}"
 export SWG_BOOTSTRAP_URL="\$URL"
-# ⚠️ DOWNLOADED FIRST, RUN SECOND — AND A SECOND DOOR WHEN RAW CANNOT BE HAD. Byte-identical in install-host.sh,
-# update.sh and lib/common.sh; tests/update_bootstrap_fallback_selftest.py runs all three and compares them.
+# ⚠️ DOWNLOADED FIRST, RUN SECOND — AND A SECOND DOOR WHEN RAW CANNOT BE HAD. tests/update_bootstrap_fallback_selftest.py
+# runs this text, and every writer of it.
 # \`curl | bash\` executes whatever arrived before the connection died, so a reset halfway through bootstrap.sh
 # ran half of it. A file is run only once curl says the whole of it arrived.
 # raw.githubusercontent.com resolves into the address range filtered in the networks this product is most used
@@ -1015,12 +1280,33 @@ bash "\$B" update -y --no-components "\$@"   # extra flags (e.g. --node-only) pa
 exit
 }
 WRAP
-  chmod 755 /usr/local/bin/swg-update.new
-  mv -f /usr/local/bin/swg-update.new /usr/local/bin/swg-update   # see the rename note above — NEVER `cat >`
-  # The trigger files are written by the panel/node CONTAINER through a bind mount, and inotify does NOT cross that
-  # bind mount — a host `.path` unit (PathModified) NEVER sees the container's write. So we POLL the trigger mtimes
-  # from the host instead (stat across the bind mount works — it's a shared inode). A timer runs this every 30s.
-  cat > /usr/local/bin/swg-update-check <<'WRAP2'
+}
+swg_update_check_text(){ cat <<'WRAP2'
+#!/usr/bin/env bash
+set -euo pipefail
+STAMP=/var/lib/swg-update.stamp
+PANEL_TRIGGERS="/var/lib/swg-panel/.update-request /opt/swg-panel-docker/data/lib/.update-request"
+NODE_TRIGGERS="/var/lib/swg-noded/.update-request /opt/swg-panel-docker/data/node/.update-request"
+_run=no; _panel=no
+for _t in $PANEL_TRIGGERS $NODE_TRIGGERS; do
+  [ -f "$_t" ] || continue
+  if { [ ! -e "$STAMP" ] || [ "$_t" -nt "$STAMP" ]; }; then
+    _run=yes
+    case " $PANEL_TRIGGERS " in *" $_t "*) _panel=yes;; esac   # a PANEL trigger → this is a host update
+  fi
+done
+[ "$_run" = yes ] || exit 0
+touch "$STAMP"            # mark this batch handled BEFORE updating, so we never loop
+# Only a NODE trigger fired (no panel trigger) → update JUST the node: --node-only keeps the update off the
+# panel's host_proc, so a co-located node self-updating doesn't light up "up to date" on the panel header.
+if [ "$_panel" = yes ]; then exec /usr/local/bin/swg-update
+else exec /usr/local/bin/swg-update --node-only; fi
+WRAP2
+}
+# A Docker box's check, service and timer: ONE TEXT each, which write_docker_updater writes and update.sh's
+# ensure_update_unit_docker compares with what the box has (a box upgraded from an older release kept that release's
+# texts: they were written only when missing — 1.8.8 qualification, round 10, N12).
+swg_update_check_docker_text(){ cat <<'WRAP2'
 #!/usr/bin/env bash
 set -euo pipefail
 STAMP=/var/lib/swg-update.stamp
@@ -1033,16 +1319,17 @@ done
 touch "$STAMP"            # mark this batch handled BEFORE updating, so we never loop
 exec /usr/local/bin/swg-update
 WRAP2
-  chmod 755 /usr/local/bin/swg-update-check
-  cat > /etc/systemd/system/swg-update.service <<EOF
+}
+swg_update_docker_service_text(){ cat <<'UNIT'
 [Unit]
 Description=swg-panel one-click self-update (swg programs only)
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/swg-update-check
-EOF
-  cat > /etc/systemd/system/swg-update.timer <<EOF
+UNIT
+}
+swg_update_docker_timer_text(){ cat <<'UNIT'
 [Unit]
 Description=poll for a swg-panel one-click update request (docker)
 
@@ -1052,7 +1339,36 @@ OnUnitActiveSec=30s
 
 [Install]
 WantedBy=timers.target
-EOF
+UNIT
+}
+# ── docker one-click self-update wiring (STATIC templates — no per-install config) ──────────────────────────────
+# The swg-update + swg-update-check wrappers and the poll service/timer. Shared by install-docker.sh's
+# wire_host_updater (fresh install) AND update.sh's ensure_update_unit_docker (heal) so both write byte-identical
+# pieces. Writes the files, retires the legacy .path watch, stamps NOW (so the first poll can't fire a spurious
+# update), reloads systemd, and enables the 30s timer. Caller owns $DRYRUN gating + container trigger pre-creation.
+# systemctl calls are best-effort so this never trips set -e. Returns 0.
+write_docker_updater(){
+    # ⚠️ THE REF THE BOX WAS INSTALLED FROM, not `main`. `bootstrap.sh` deliberately supports installing a
+  # branch or tag (SWG_REF, or inferred from the URL it was fetched from) — and its own comment says why:
+  # "a panel tracking a pre-release branch SILENTLY DOWNGRADED itself on every one-click update". That fix
+  # covered the bootstrap and NOT this wrapper, which is the thing the Update button actually runs. Baked in
+  # at write time because nothing else on the box records the branch, and this file IS rewritten by every
+  # update — so a box installed from a ref keeps tracking it without any new state to keep in step.
+  _swg_ref="${SWG_REF:-main}"
+  # ⚠️ WRITTEN BESIDE, THEN RENAMED. Same reason as update.sh's `install_update_unit`, which this must stay
+  # identical to: the braces + `exit` below cannot help the one press of Update that INSTALLS them, because
+  # the script running then is the old unguarded wrapper and `cat >` refills the very inode its bash still
+  # holds open. A rename gives the new file a new inode, so the old bash reads EOF and exits 0.
+  swg_update_wrapper_text "$_swg_ref" > /usr/local/bin/swg-update.new   # the one text (above)
+  chmod 755 /usr/local/bin/swg-update.new
+  mv -f /usr/local/bin/swg-update.new /usr/local/bin/swg-update   # see the rename note above — NEVER `cat >`
+  # The trigger files are written by the panel/node CONTAINER through a bind mount, and inotify does NOT cross that
+  # bind mount — a host `.path` unit (PathModified) NEVER sees the container's write. So we POLL the trigger mtimes
+  # from the host instead (stat across the bind mount works — it's a shared inode). A timer runs this every 30s.
+  swg_update_check_docker_text > /usr/local/bin/swg-update-check   # the one text (above)
+  chmod 755 /usr/local/bin/swg-update-check
+  swg_update_docker_service_text > /etc/systemd/system/swg-update.service
+  swg_update_docker_timer_text > /etc/systemd/system/swg-update.timer
   systemctl disable --now swg-update.path >/dev/null 2>&1 || true   # retire the old inotify watch from a pre-poll install
   rm -f /etc/systemd/system/swg-update.path
   touch /var/lib/swg-update.stamp   # stamp NOW (newer than any just-created triggers) so the first poll doesn't fire a spurious update
@@ -1061,6 +1377,76 @@ EOF
   return 0
 }
 
+# ── THE PANEL PASSWORD LEAVES THE DOCKER .env ONCE THE PANEL HOLDS IT ──────────────────────────────────────────────────
+# A Docker panel's login lives in data/etc/auth (pbkdf2) from its first start on — the entrypoint writes it from .env's
+# PANEL_PASSWORD only when that file is missing. Yet a fresh install left the password there in plain text (0600, root)
+# until the next re-install replaced it with the placeholder (1.8.8 qualification, round 9b). Once the login VERIFIES
+# against .env's value, the value goes: "(preserved)" — the placeholder a re-install writes — and one line says so. Every
+# later flow reads the login, not the value: a re-install keeps a login it has no password for (install-docker.sh, KEPT
+# LOGIN), an update recreates onto the same auth, a convert to bare metal carries data/etc/auth, a keep-data uninstall
+# strips the line; compose only needs it non-empty. A placeholder is NEVER a password: the entrypoint refuses to mint a
+# login from one (docker/entrypoint.sh), and a re-install with no login left generates a new one instead.
+DOCKER_PW_PLACEHOLDERS="(preserved) converted-login-preserved unused-on-node-only"
+# login_holds <auth file> <user> <password> — 0 when the login file's user is <user> and its pbkdf2 hash verifies <password>
+login_holds(){ [ -s "${1:-}" ] && have python3 || return 1
+  SWG_LU="${2:-}" SWG_PW="${3:-}" python3 - "$1" <<'PYLH' 2>/dev/null
+import base64, hashlib, hmac, os, sys
+try:
+    u, h = open(sys.argv[1]).readline().strip().split(":", 1)
+    scheme, it, salt, dig = h.split("$")
+    ok = u == os.environ["SWG_LU"] and scheme == "pbkdf2_sha256" and hmac.compare_digest(
+        hashlib.pbkdf2_hmac("sha256", os.environ["SWG_PW"].encode(), base64.b64decode(salt), int(it)), base64.b64decode(dig))
+except Exception:
+    ok = False
+sys.exit(0 if ok else 1)
+PYLH
+}
+docker_pw_placeholder(){ local p; [ -n "${1:-}" ] || return 0
+  for p in $DOCKER_PW_PLACEHOLDERS; do [ "$1" = "$p" ] && return 0; done; return 1; }
+# docker_env_forget_password <install dir> [<seconds to wait for the panel to take its login>]
+docker_env_forget_password(){
+  local d="${1:-}" w="${2:-0}" t0 v
+  [ -f "$d/.env" ] && have python3 || return 0
+  v="$(sed -n 's/^PANEL_PASSWORD=//p' "$d/.env" | sed -n 1p)"
+  case "$v" in \"*\") v="${v#\"}"; v="${v%\"}";; \'*\') v="${v#\'}"; v="${v%\'}";; esac
+  docker_pw_placeholder "$v" && return 0
+  t0="$(date +%s)"
+  until SWG_PW="$v" python3 - "$d/data/etc/auth" <<'PYPW' 2>/dev/null; do
+import base64, hashlib, hmac, os, sys
+try:
+    _u, h = open(sys.argv[1]).readline().strip().split(":", 1)
+    scheme, it, salt, dig = h.split("$")
+    ok = scheme == "pbkdf2_sha256" and hmac.compare_digest(
+        hashlib.pbkdf2_hmac("sha256", os.environ["SWG_PW"].encode(), base64.b64decode(salt), int(it)), base64.b64decode(dig))
+except Exception:
+    ok = False
+sys.exit(0 if ok else 1)
+PYPW
+    if [ "$(( $(date +%s) - t0 ))" -ge "$w" ]; then
+      info "the panel's login does not hold the password in $d/.env yet — it stays there (0600) until an update or a re-install finds the panel holding it"
+      return 0
+    fi
+    sleep 2
+  done
+  python3 - "$d/.env" <<'PYENV' 2>/dev/null || { warn "couldn't take the panel password out of $d/.env — it stays there (0600)"; return 0; }
+import os, sys
+p = sys.argv[1]
+lines = open(p).read().split("\n")
+done = False
+for i, ln in enumerate(lines):
+    if ln.startswith("PANEL_PASSWORD=") and not done:
+        lines[i] = "PANEL_PASSWORD=(preserved)"; done = True
+if not done:
+    sys.exit(1)
+tmp = p + ".tmp"
+with open(tmp, "w") as f:
+    f.write("\n".join(lines))
+os.chmod(tmp, 0o600)
+os.replace(tmp, p)
+PYENV
+  info "the panel holds its login now — its password is no longer kept in $d/.env (a re-install and an update keep the login; to change it: the panel's Account screen, or docker exec -it swg-panel swg-passwd)"
+  return 0
+}
 # ── docker: pre-create the secret files swg-sub masks with /dev/null (docker-compose.yml) ───────────────────────
 # swg-sub bind-mounts /dev/null over the panel's auth/panel-settings/vault/escrow so the public surface can never
 # read them. Docker needs the mount TARGET to already exist, and swg-sub mounts /etc/swg-panel + /var/lib/swg-panel
@@ -1105,6 +1491,79 @@ ensure_swap(){ # PANEL-HOST: a low-RAM box with NO active swap OOM-kills the pan
   return 0
 }
 
+# guard_second_panel <baremetal|docker> — the method being installed. TWO PANELS ON ONE BOX. A bare-metal panel and a
+# Docker panel keep separate state (/var/lib/swg-panel vs the compose ./data), so the state-dir lock cannot see one from
+# the other, and both can be live behind the same address: Docker's port forward catches outside traffic while the host
+# process answers another path, or each answers one address family. The browser then shows one fleet on one load and the
+# other on the next, and saves land on whichever answered — reported from a client's master (2026-09-24: the node picker
+# read 1/1, then 2/2). bootstrap.sh's cross-method prompt only fires when THIS method is missing the part, so a box that
+# already had both went through it, and running an installer directly skipped it. Called before the panel is (re)started.
+# A convert owns its own switch-over (it stops the old side), so it is exempt. Unattended: SWG_OTHER_PANEL=stop|keep|abort;
+# with neither a terminal nor that, it refuses — the same contract as bootstrap.sh's prompts.
+# PARKED = stopped by guard_second_panel below, and it must STAY stopped: update.sh asks these before it restarts a
+# bare panel or recreates a docker stack. Read from state the guard leaves (a disabled, inactive unit; a stopped
+# container with restart=no — compose never writes restart=no), not a marker file that could outlive the facts.
+# ⚠️ DISABLED IS THE DECISION; "inactive" IS ONLY WHETHER SOMETHING UNDID IT. 1.8.7's update.sh restarted
+# swg-panel-server unconditionally (and enabled + restarted swg-sub), so a box that went back to 1.8.7 and came forward
+# again had its parked panel DISABLED but ACTIVE — "not parked" to the old test, which restarted it once more, and two
+# panels answered at one address for good. A disabled unit beside a LIVE docker panel is that park, and counts; a
+# disabled unit with nothing beside it that is running anyway is the operator's own doing and is left to run.
+bare_panel_parked(){ systemctl is-enabled --quiet swg-panel-server 2>/dev/null && return 1
+  ! systemctl is-active --quiet swg-panel-server 2>/dev/null || docker_panel_live; }
+docker_parked(){ [ "$(docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' "$1" 2>/dev/null)" = "false no" ]; }
+docker_panel_live(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx swg-panel >/dev/null && ! docker_parked swg-panel; }
+guard_second_panel(){
+  [ -n "${SWG_CONVERT_DIR:-}" ] && return 0
+  local me="$1" what="" live=no ans="" _c
+  if [ "$me" = baremetal ]; then
+    command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx swg-panel >/dev/null || return 0
+    what="a Docker panel (container swg-panel)"
+    { docker ps --format '{{.Names}}' 2>/dev/null | grep -cx swg-panel >/dev/null \
+      || [ "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' swg-panel 2>/dev/null)" = always ]; } && live=yes
+  else
+    [ -f /etc/systemd/system/swg-panel-server.service ] || return 0
+    what="a bare-metal panel (swg-panel-server.service)"
+    { systemctl is-active --quiet swg-panel-server 2>/dev/null || systemctl is-enabled --quiet swg-panel-server 2>/dev/null; } && live=yes
+  fi
+  if [ "$live" != yes ]; then
+    echo "  · $what is also installed here, stopped and not set to start — leaving it alone (the uninstaller removes it)"
+    return 0
+  fi
+  echo
+  echo "  ! $what is already running on this box, with its OWN servers, users and settings."
+  echo "    Installing a second panel beside it makes both answer — the browser shows whichever one replies, and"
+  echo "    changes saved on one never reach servers that sync to the other."
+  echo "    To MOVE to $( [ "$me" = baremetal ] && echo bare-metal || echo docker ) keeping everything, abort and run bootstrap.sh with that method — it converts."
+  echo "    A server on this box that syncs to the one you stop keeps its peers but gets no changes until it is enrolled here."
+  if [ "${DRYRUN:-false}" = true ]; then echo "    [skip] dry run — would ask: abort / stop the other / keep both"; return 0; fi
+  echo "      [a]bort              exit without changing anything (default)"
+  echo "      [s]top the other     stop it and its subscription server (swg-sub), and keep both from starting again (its data stays on disk; nothing is deleted)"
+  echo "      [k]eep both          continue anyway"
+  ans="${SWG_OTHER_PANEL:-}"
+  # a preset answer is said, not taken in silence under a menu whose "(default)" it overrides (1.8.8 qualification)
+  [ -n "$ans" ] && echo "  Abort, stop the other, or keep both [a/s/k]: $(b "$ans")  (given by SWG_OTHER_PANEL — not asked)"
+  if [ -z "$ans" ]; then
+    printf '  Abort, stop the other, or keep both [a/s/k]: ' 2>/dev/null >/dev/tty || printf '  Abort, stop the other, or keep both [a/s/k]: '
+    read -r ans 2>/dev/null </dev/tty || { echo; echo "  ✗ no interactive input — run from a terminal (ssh -t), or set SWG_OTHER_PANEL=stop|keep|abort"; exit 1; }
+  fi
+  case "$ans" in
+    s|S|stop)
+      if [ "$me" = baremetal ]; then
+        for _c in swg-sub swg-panel; do   # the panel and the subscription server that belongs to it (a node container is left alone)
+          docker update --restart=no "$_c" >/dev/null 2>&1 || true; docker stop "$_c" >/dev/null 2>&1 || true
+        done
+      else
+        # …and the subscription server that belongs to it, as the Docker branch above stops both containers: left
+        # running it serves that panel's subscription pages from a store nothing updates any more, on the port the
+        # Docker stack's own swg-sub publishes (8444 by default)
+        systemctl disable --now swg-panel-server swg-sub >/dev/null 2>&1 || true
+      fi
+      echo "  ✓ stopped $what and its subscription server (swg-sub) — its data is still on disk"; return 0;;   # both branches stop swg-sub too — say so
+    k|K|keep) echo "  · keeping both — two panels will answer on this box"; return 0;;
+    *) echo "  ✗ aborted — nothing was changed"; exit 1;;
+  esac
+}
+
 # seed_access_settings <panel-settings.json path> — merge this run's Access & TLS answers into the panel's own
 # settings file. panel-settings.json lives in the STATE dir, which an uninstall KEEPS by default, so a fresh
 # install onto a kept state dir would otherwise show the PREVIOUS install's address/TLS in Settings → Access (or
@@ -1135,7 +1594,9 @@ if dom:
     pan["url"] = host + (base or "")
 if port.isdigit(): pan["port"] = int(port)
 pan["base"] = (base or "/")
-tls["mode"]  = (os.environ.get("TLS_MODE") or tls.get("mode") or "").strip()
+# behind a reverse proxy the panel serves plain HTTP, and "" (None — reverse proxy) is its TLS type: the installer's
+# "skip" / "none" / the proxy's certificate mode seeded here was rolled back by the panel's first start (N4)
+tls["mode"]  = "" if os.environ.get("PROXIED") == "yes" else (os.environ.get("TLS_MODE") or tls.get("mode") or "").strip()
 tls["email"] = (os.environ.get("ACME_EMAIL") or tls.get("email") or "").strip()
 for k, e in (("cf_token", "CF_TOKEN"), ("cf_origin_token", "CF_ORIGIN_TOKEN")):
     v = (os.environ.get(e) or "").strip()
@@ -1228,7 +1689,7 @@ ngx_upstream(){
 nginx_convert_fixup(){
   local tlsdir="$1" up_panel="$2" up_sub="${3:-}"
   have nginx || return 0
-  _ngx_enabled_files | grep -q . || return 0
+  _ngx_enabled_files | grep -c . >/dev/null || return 0
   local swgvh="" f
   for f in "$NGINX_DIR/sites-enabled/swg-panel.conf" "$NGINX_DIR/conf.d/swg-panel.conf"; do [ -e "$f" ] && swgvh="$f" && break; done
   [ -n "$swgvh" ] && [ -L "$swgvh" ] && swgvh="$(readlink -f "$swgvh" 2>/dev/null || echo "$swgvh")"
@@ -1294,7 +1755,7 @@ EOF
   else
     [ -n "$swgbak" ] && [ -f "$swgbak" ] && { cp -a "$swgbak" "$swgvh"; warn "our vhost edit didn't validate — restored the original"; }
     warn "nginx -t FAILS, so nginx cannot reload (it is still serving its old in-memory config until something restarts it):"
-    nginx -t 2>&1 | sed 's/^/    /' | head -4
+    nginx -t 2>&1 | sed 's/^/    /' | sed -n 1,4p
   fi
   [ -n "$swgbak" ] && rm -f "$swgbak" 2>/dev/null || true
   return 0; }
@@ -1335,6 +1796,61 @@ v_cftoken_why(){
   echo "that is only ${#1} characters — a Cloudflare API token is 40 or more"
 }
 v_cforigin_why(){ v_cftoken_why "$1"; }
+
+# ── A BARE PANEL'S CERTIFICATE RENEWS ONLY FROM acme.sh's CRON ENTRY ────────────────────────────────────────────────
+# acme.sh's daily cron entry (`acme.sh --cron --home /root/.acme.sh`) is the ONE renewer of a bare panel's Let's Encrypt
+# certificate, a domain's (90 days) and an IP's (~6 days) alike: the panel's 6-hourly sync-acme brings a renewed
+# certificate in and never renews one, and only an operator's "Renew now" does. A box without cron (Debian cloud images,
+# "minimal" VPS templates) never got that entry — acme.sh's installer refuses to install there at all ("It is recommended
+# to install crontab first … Please add '--force'", 3.1.4), so a convert or a re-install kept a certificate nothing
+# renewed and update.sh's heal could not install acme.sh either. It expired: browsers refused the panel, nodes that
+# verify it stopped syncing, subscription pages failed (round 12b). Other paths rely on that entry: no systemd timer.
+# ensure_acme_cron [<acme.sh> [<home>]] — cron FIRST, installed on demand as nftables / dnsmasq / ipset are (apt, its
+# index refreshed first; the unit enabled and started); then, given an acme.sh that is there, its renewal entry when no
+# crontab line runs one (acme.sh's own --install-cronjob). Never fatal, never silent: what it cannot fix it says — the
+# certificate will NOT renew, and the command that fixes it. ACME_CRON_DID: what it did, for update.sh's summary.
+# Bare panels only: install-host.sh and update.sh's bare heal call it (a Docker panel renews inside its container, a
+# node uses no acme, NixOS refuses these scripts).
+ensure_acme_cron(){
+  local a="${1:-}" home="${2:-/root/.acme.sh}" c="" e="" aerr=""
+  local reg="${a:-/root/.acme.sh/acme.sh} --install-cronjob --home $home"
+  ACME_CRON_DID=""
+  if ! command -v crontab >/dev/null 2>&1; then
+    if ${DRYRUN:-false}; then
+      echo "    [skip] would install cron (apt-get install cron, then enable and start it) — acme.sh renews the certificate only from a daily cron entry, and this box has no crontab"
+      return 0
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+      info "this box has no cron, so acme.sh's daily certificate renewal cannot run — installing cron"
+      aerr="$( { apt-get update -qq || true; apt-get install -y cron; } 2>&1 >/dev/null | grep -E '^E: ' | tail -n 1 || true)"
+    else
+      aerr="no apt-get on this system"
+    fi
+    if ! command -v crontab >/dev/null 2>&1; then
+      warn "cron is missing and could not be installed${aerr:+ ($aerr)} — the panel's Let's Encrypt certificate will NOT renew: it expires (a domain's within 90 days, an IP's within about 6), then browsers refuse the panel and nodes stop syncing. Fix: apt-get install cron && systemctl enable --now cron${a:+, then $reg}"
+      return 0
+    fi
+    systemctl enable --now cron >/dev/null 2>&1 \
+      || warn "cron is installed but did not start — acme.sh's renewals need it running: systemctl enable --now cron"
+    c=c
+  fi
+  if [ -n "$a" ] && [ -x "$a" ] && ! acme_cron_entry; then
+    if ${DRYRUN:-false}; then echo "    [skip] would register acme.sh's daily renewal entry in root's crontab ($reg)"; return 0; fi
+    "$a" --install-cronjob --home "$home" >/dev/null 2>&1 || true
+    if acme_cron_entry; then e=e
+    else warn "acme.sh's renewal entry is not in root's crontab and could not be added — the certificate will NOT renew on its own. Fix: $reg"; fi
+  fi
+  case "$c$e" in
+    ce) ACME_CRON_DID="cron installed + renewal entry registered"
+        ok "cron installed and acme.sh's daily renewal entry registered — the certificate renews on its own again";;
+    c)  ACME_CRON_DID="cron installed"; ok "cron installed — acme.sh can renew the certificate from its daily entry";;
+    e)  ACME_CRON_DID="renewal entry registered"
+        ok "acme.sh's daily renewal entry was missing from root's crontab — registered; the certificate renews on its own again";;
+  esac
+  return 0; }
+# 0 = a crontab line (root's, /etc/crontab or /etc/cron.d; comments aside) runs `acme.sh --cron` — acme.sh's own test
+acme_cron_entry(){ { crontab -l 2>/dev/null || true; cat /etc/crontab /etc/cron.d/* 2>/dev/null || true; } \
+  | grep -v '^[[:space:]]*#' | grep -c 'acme\.sh --cron' >/dev/null; }
 
 # ── host addresses for a DOCKER panel ────────────────────────────────────────────────────────────
 # host_bindable_ips — the HOST's bindable, public-servable addresses as "ip|iface" (comma-separated).
@@ -1418,6 +1934,37 @@ git_clone_depth1(){ # <url> <dest> [<tag or branch>]
   rm -rf "${2:?}"
   run env GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth=1 ${3:+--branch "$3"} "$1" "$2"
 }
+
+# ── the amnezia PPA serves Ubuntu, and only Ubuntu ──────────────────────────────────────────────────────────────────
+# AmneziaWG's packages come from Launchpad (ppa:amnezia/ppa), which builds for Ubuntu series only. Tried everywhere, it cost
+# a Debian user software-properties-common and ~36 packages (packagekit and polkit left running), a raw Python traceback from
+# add-apt-repository ("'NoneType' object has no attribute 'people'") and four "E: Unable to locate package amneziawg…" before
+# the source build that actually installs AmneziaWG there — the first thing a Debian user saw, and it read as a failed
+# install (1.8.8 qualification, R27: Debian 12 and 13). awg_ppa_suite prints the Ubuntu series the PPA would serve this box —
+# Ubuntu itself, or a derivative that says ID_LIKE=ubuntu (Mint, Pop!_OS, elementary…), by its UBUNTU_CODENAME, since a
+# derivative's own codename need not be an Ubuntu series — and fails anywhere else. SWG_OS_RELEASE: another file (the gate).
+awg_ppa_suite(){
+  local f="${SWG_OS_RELEASE:-/etc/os-release}" v id like ucn vcn
+  [ -r "$f" ] || return 1
+  v="$( . "$f" >/dev/null 2>&1; printf '%s|%s|%s|%s' "${ID:-}" "${ID_LIKE:-}" "${UBUNTU_CODENAME:-}" "${VERSION_CODENAME:-}" )" || return 1
+  id="${v%%|*}"; v="${v#*|}"; like="${v%%|*}"; v="${v#*|}"; ucn="${v%%|*}"; vcn="${v#*|}"
+  case "$id" in ubuntu) ;; *) case " $like " in *" ubuntu "*) ;; *) return 1;; esac;; esac
+  [ -n "${ucn:-$vcn}" ] || return 1
+  printf '%s\n' "${ucn:-$vcn}"; }
+awg_os_name(){ ( . "${SWG_OS_RELEASE:-/etc/os-release}" >/dev/null 2>&1; printf '%s' "${PRETTY_NAME:-${NAME:-this system}}" ) || printf 'this system'; }
+# awg_ppa_add <series> — the amnezia PPA for that Ubuntu series. add-apt-repository names the suite after the running system's
+# own codename; on a derivative whose codename is no Ubuntu series (elementary's "horus") that entry is re-pointed at it.
+awg_ppa_add(){
+  local s="$1" own f
+  run apt-get install -y software-properties-common || true
+  run add-apt-repository -y ppa:amnezia/ppa || true
+  own="$( . "${SWG_OS_RELEASE:-/etc/os-release}" >/dev/null 2>&1; printf '%s' "${VERSION_CODENAME:-}" )" || own=""
+  if [ -n "$own" ] && [ "$own" != "$s" ]; then
+    for f in "${SWG_APT_SOURCES_D:-/etc/apt/sources.list.d}"/*amnezia*; do
+      [ -f "$f" ] && run sed -i -E "s/(^|[[:space:]])$own([[:space:]]|\$)/\\1$s\\2/g" "$f"
+    done
+  fi
+  return 0; }
 
 # ── the kernel module rebuilds itself when the kernel changes (docs/AWG-DATAPATH-RESILIENCE-PLAN.md D4) ──────────
 # `linux-headers-$(uname -r)` is headers for ONE kernel. The next kernel arrives through the image metapackage with no
@@ -1505,9 +2052,27 @@ awg_dkms_register_dir(){ # <module src dir> — register upstream's module with 
     && run dkms build -m amneziawg -v "$ver" -k "$(uname -r)" && run dkms install -m amneziawg -v "$ver" -k "$(uname -r)" || return 1
   awg_dkms_build_all_kernels
 }
-awg_dkms_register_source(){ # clone upstream and register it — ONLY when no amneziawg tree is registered at all. 0 = registered now
+awg_tools_drive_3x(){ # 0 = the `awg` on PATH can configure an AmneziaWG 3.x kernel module — the only kind we build from source
+  # Every module below is upstream master: AmneziaWG 3.x since 2026-07-31. Tools older than 3.0 cannot configure one AT ALL
+  # (H1–H4 and a peer's keepalive changed type), so `awg setconf` answers "Invalid argument" and every awg interface fails to
+  # come up — silently at first, because the old module keeps serving until the next reboot. Measured on Debian 12
+  # (2026-09-18): tools v1.0.x → EINVAL on the 3.1 module; v3.0 and v3.1 → configured. Our own source route has built 3.1
+  # tools since it began (2026-08-20) and the PPA builds both packages from upstream master, so what this catches is tools
+  # WE did not install — built by hand before AmneziaWG 3. Those stay the operator's: never rebuilt, only not outrun.
+  # Asked of the PARSER, not a version: versions lie (the PPA's 3.1 tools PACKAGE is 1.0.20210914-…). HeaderProtectionKey
+  # is a 3.x key that 2.0 tools do not contain. A wrong "no" costs a box its kernel module (userspace instead), never its
+  # interfaces. ⚠️ Generation-specific: a future module that 3.x tools cannot drive needs its own probe here.
+  local a; a="$(command -v awg 2>/dev/null)" || return 1
+  grep -qa HeaderProtectionKey "$a" 2>/dev/null
+}
+awg_tools_old_why(){ # the operator-facing reason awg_tools_drive_3x said no, and what to do about it
+  local v; v="$(awg --version 2>/dev/null | awk 'NR==1{print $2}')"
+  printf 'the awg tools on this node%s predate AmneziaWG 3 and cannot configure the kernel module upstream ships now — rebuild amneziawg-tools to use it' "${v:+ ($v)}"
+}
+awg_dkms_register_source(){ # clone upstream and register it — ONLY when no amneziawg tree is registered at all. 0 = registered now · 3 = tools too old
   have dkms && have git && have make || return 1
   [ -z "$(dkms status amneziawg 2>/dev/null)" ] || return 1            # a tree exists (ours or the package's): its owner builds it
+  awg_tools_drive_3x || return 3   # registering master would outrun the tools: every awg interface down at the next boot
   $DRYRUN && { echo "    [skip] register amneziawg with DKMS from source"; return 0; }
   local w rc=1; w="$(mktemp -d)"
   git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/log" 2>&1 \
@@ -1534,7 +2099,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # because its template comes from the distro's own wireguard-tools.
   #
   # This alone does NOT heal a box that already has the tools — see ensure_awg_quick_unit in update.sh.
-  local w; w="$(mktemp -d)"
+  local w built=no; w="$(mktemp -d)"
   if ! have awg || ! have awg-quick; then
     info "building AmneziaWG tools from source (the amnezia PPA is Ubuntu-only)…"
     # ca-certificates is NOT optional here: without it every https git clone below fails cert verification.
@@ -1553,6 +2118,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
         && run make -C "$w/tools/src" \
         && run make -C "$w/tools/src" install PREFIX=/usr WITH_BASHCOMPLETION=no \
                 WITH_WGQUICK=yes; } >"$w/build.log" 2>&1 || true
+    built=yes   # master, like the module below — never probed (a parser that renames the word must not cost a fresh node its module)
   fi
   $DRYRUN && { rm -rf "$w"; return 0; }
   have awg && have awg-quick || {
@@ -1565,6 +2131,9 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # by falling through to userspace rather than returning modprobe's 127 to the caller.
   have modprobe || { rm -rf "$w"; return 1; }
   if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
+  # Tools we did not build (they were already here) may be too old for the master module below: it would load now or at
+  # the next boot and take every awg interface down. The caller's next rung, userspace, serves them instead.
+  [ "$built" = yes ] || awg_tools_drive_3x || { warn "AmneziaWG: $(awg_tools_old_why) — not building it; awg interfaces use the userspace datapath"; rm -rf "$w"; return 1; }
   info "building the AmneziaWG kernel module for $(uname -r)…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
   ensure_awg_headers_follow >/dev/null 2>&1 || true
@@ -1715,7 +2284,7 @@ ensure_wg_apparmor(){   # HEAL (extend-if-supported) the AppArmor policy confini
 # one file runs on any glibc. The node IMAGE builds the same ref with its own base image's Go, so it is the same
 # source, not the same bytes. Identify the asset by tag + sha256 only — its `--version` prints upstream's stale
 # 0.0.20250522. Verified before install: it runs as root at every boot.
-AWG_GO_TAG="amneziawg-go-3.1.20260828"          # upstream amnezia-vpn/amneziawg-go tag v3.1.20260828
+AWG_GO_TAG="amneziawg-go-3.1.20260828"          # upstream amnezia-vpn/amneziawg-go tag v3.1.20260828 — ≥ 3.1, or awg_go_needs_install reinstalls it every run
 AWG_GO_SHA256_amd64="85ebee7e01d6a18dd05c1116ceb52df60b0a64778afdc00eb06bf1f554ec1524"
 AWG_GO_SHA256_arm64="de0eb94f5b09e57438f5fd86fb15cb1aac5a656b9c39b5c41300a24283b9601e"
 # sha256 of EARLIER pinned builds (any arch), space-separated. A box still carrying one of OURS is moved to the current pin;
@@ -1761,11 +2330,18 @@ ensure_noded_reach_sweep(){ # <noded dir> [<systemd dir>] — HEAL the drop-in b
   systemctl daemon-reload 2>/dev/null || true
 }
 
-awg_go_needs_install(){ # 0 = no amneziawg-go on PATH, or it is one of our EARLIER pinned builds
+awg_go_needs_install(){ # 0 = no amneziawg-go on PATH, one of our EARLIER pinned builds, or a stale build at OUR path
   have amneziawg-go || return 0
-  local cur; cur="$(sha256sum "$(command -v amneziawg-go)" 2>/dev/null | cut -d' ' -f1)"
+  local bin cur; bin="$(command -v amneziawg-go)"
+  cur="$(sha256sum "$bin" 2>/dev/null | cut -d' ' -f1)"
   [ -n "$cur" ] || return 1
   case " $AWG_GO_REPLACES " in *" $cur "*) return 0 ;; esac
+  # Before the pin, ensure_awg_userspace built upstream HEAD into /usr/local/bin — swgt still carries a 3.0 build from
+  # 2026-07-30 (sha dfe3b143…) that no sha list can name, and it is the datapath every awg interface there falls back
+  # to. A build without `random_trailers` in its UAPI is older than AmneziaWG 3.1 (version strings lie; this key does
+  # not — docs/AWG3-PLAN.md §4.2). Only OUR file is replaced — we write a regular file there, never a link: a binary
+  # anywhere else, or a symlink here pointing at one, is the operator's or a package's.
+  [ "$bin" = /usr/local/bin/amneziawg-go ] && [ ! -L "$bin" ] && ! grep -aq random_trailers "$bin" 2>/dev/null && return 0
   return 1
 }
 awg_go_pinned(){ # fetch the pinned amneziawg-go, verify its sha256, install it. 0 = installed
@@ -1877,4 +2453,106 @@ manage_ifaces_resolve(){
     Found here: ${_have:-(no wg/awg interfaces at all)}
     Leave MANAGE_IFACES blank to report every interface this box has and adopt them from the panel."
   fi
+}
+
+# panel_pin_changed <old_fp> <new_fp> [<url>] — a node re-install found the panel presenting a DIFFERENT certificate from
+# the one this node pinned. 0 = trust the new one, 1 = keep the old pin (and PIN_KEPT=yes). NEVER TAKEN SILENTLY: the bare
+# installer re-pinned it with one info line and the Docker one with a warning (1.8.8 qualification, round 4). Anyone able
+# to intercept this node's traffic presents a different certificate, and the node would hand them its panel token and
+# take its peer set from them. With a terminal the operator decides (default: no); without one it is refused, with the
+# way to accept it. Priority 1 (fail safe): a node that keeps its old pin stops syncing and keeps serving the peers it
+# has, which is undone by accepting later; a node that trusted an impostor cannot be undone from the node. A run that
+# keeps the old pin then stops before anything else happens (pin_kept_stop, below).
+# ⚠️ THE QUESTION IS PRINTED ON THE TERMINAL ITSELF. It was `read -rp "…" </dev/tty 2>/dev/null`: read -p writes its prompt
+# to stderr, and that redirect sent it to /dev/null — at a terminal the operator saw the warning, then silence, with the
+# run waiting for an answer to a question nobody could see (1.8.8 qualification, round 6, a Docker node at a pty).
+# ⚠️ A CERTIFICATE A PUBLIC CA VOUCHES FOR IS VERIFIED, NOT PINNED. The panel's own advice after moving it to a CA
+# certificate is to re-run the node installer on its pinned nodes; `y` here pinned the CA certificate, which its CA
+# re-issues every few months — the node went dark at the first renewal, the 2026-09-25 outage by another road. Given the
+# URL, a new certificate that verifies through its CA is offered as CA verification instead (PIN_TO_CA=yes on `y`);
+# still asked, still refused unattended — with TLS_VERIFY=yes as the way to accept it.
+panel_pin_changed(){ local old="$1" new="$2" url="${3:-}" v="" ca=no q _on
+  PIN_KEPT=""; PIN_TO_CA=""
+  [ -n "$url" ] && panel_ca_ok "$url" && ca=yes
+  # ⚠️ A PIN ON RECORD THAT IS NOT A SHA256 DID NOT "CHANGE". Read as a changed certificate, a damaged pin (a stray
+  # character, a digit short) printed "CHANGED (was 56f1d0c2…, now 56f1d0c2…)" — the same sixteen characters twice, and a
+  # question about a certificate change that did not happen (1.8.8 qualification, round 8). Said as what it is; the
+  # decision after it is the same (asked at a terminal, refused unattended).
+  _on="$(printf '%s' "$old" | tr -d ':' | tr 'A-F' 'a-f')"
+  if ! printf '%s' "$_on" | grep -cxE '[0-9a-f]{64}' >/dev/null; then
+    warn "the pin on record for the panel is not a sha256 fingerprint (\"${old:0:24}$([ "${#old}" -gt 24 ] && printf '…')\") — the panel presents sha256 ${new:0:16}…$([ "$ca" = yes ] && printf '%s' ', and a public CA vouches for it')"
+  else
+    warn "the panel's certificate CHANGED since this node pinned it (was sha256 ${old:0:16}…, now ${new:0:16}…)$([ "$ca" = yes ] && printf '%s' ' — and a public CA vouches for the new one')"
+  fi
+  if [ "$ca" = yes ]; then
+    echo "  Accept it only if the panel moved to a CA certificate on purpose. Accepted, this node verifies the panel through"
+    echo "  its CA from now on instead of pinning it — a CA re-issues the certificate every few months, and a pin would stop"
+    echo "  the node at the first renewal."
+    q="Verify the panel through its CA from now on? (y/N): "
+  else
+    echo "  Trust the new one only if the panel's certificate was re-issued on purpose — a machine intercepting this"
+    echo "  node's traffic presents a different certificate too, and would receive this node's panel token."
+    q="Trust the new certificate? (y/N): "
+  fi
+  if { : </dev/tty; } 2>/dev/null; then
+    printf '  %s' "$q" 2>/dev/null >/dev/tty
+    read -r v </dev/tty 2>/dev/null || v=""
+    case "$v" in [Yy]*)
+      if [ "$ca" = yes ]; then PIN_TO_CA=yes; ok "this node verifies the panel's certificate through its CA from now on — the pin is dropped"
+      else ok "re-pinned the panel certificate (sha256 ${new:0:16}…)"; fi
+      return 0;; esac
+  else echo "  $q$(b n)  (no terminal — a changed certificate is never accepted unattended)"; fi
+  PIN_KEPT=yes
+  if [ "$ca" = yes ]; then
+    warn "kept the old pin — this node will not sync until the panel presents that certificate again. If the panel moved to its CA certificate on purpose, re-run this installer with TLS_VERIFY=yes (or at a terminal, and accept it)"
+  else
+    warn "kept the old pin — this node will not sync until the panel presents that certificate again. If the new one is the panel's, check it on the panel's host (openssl x509 -noout -fingerprint -sha256 -in <its tls/fullchain.pem>) and re-run this installer with TLS_FINGERPRINT=$new (or at a terminal, and accept it)"
+  fi
+  return 1; }
+# …and a run that KEPT the old pin stops right there: before it changes anything on this box, and before the node token
+# goes anywhere. It used to carry on — install the programs, recreate the node, post its lifecycle with the token to
+# whatever answered (curl -k) — while its own warning named that answer a possible interceptor (1.8.8 qualification,
+# round 6). Priority 1, fail safe: the box keeps exactly what it had and serves the peers it has (a node that cannot reach
+# a panel it trusts never reconciles), where carrying on would have left new programs under a pin that still does not
+# match — the node could not sync afterwards either. Only accepting the certificate (or the panel presenting the old one
+# again) brings it back, and the lines above say how. Exit 1: the re-install the caller asked for did not happen.
+pin_kept_stop(){
+  warn "stopped before changing anything — this box is exactly as it was and serves the peers it has, and the node token was sent nowhere."
+  exit 1; }
+# panel_ca_ok <url> — 0 when the panel's certificate verifies through the system's CAs for the URL's host (hostname
+# included). A probe, never a call with the token: whatever it answers, every call that carries the token checks the
+# panel again on its own connection (panel_req).
+panel_ca_ok(){ python3 - "$1" <<'PY' 2>/dev/null
+import socket, ssl, sys, urllib.parse
+r = sys.argv[1]; u = urllib.parse.urlparse(r if "://" in r else "https://" + r)
+if u.scheme != "https" or not u.hostname:
+    sys.exit(1)
+try:
+    with socket.create_connection((u.hostname, u.port or 443), timeout=6) as s:
+        with ssl.create_default_context().wrap_socket(s, server_hostname=u.hostname):
+            pass
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+# Shared by install-node.sh and install-docker.sh (one probe, not two copies to drift apart).
+# 0 when the panel's certificate fails verification ONLY because it is outside its validity window — expired
+# (or not yet valid) — which is a real CA certificate the panel has failed to renew, NOT a self-signed one.
+# ⚠️ curl calls both "60", and the installers' TLS auto-detect read every 60 as "self-signed" and PINNED the expired
+# certificate. The node then synced — until the panel's certificate was renewed, when the pin stopped matching
+# and the node went dark (mesh down) until it was re-installed. Seen live 2026-09-25 on a letsencrypt-ip panel.
+panel_cert_expired(){ python3 - "$1" <<'PY' 2>/dev/null
+import ssl,socket,sys,urllib.parse
+r=sys.argv[1]; u=urllib.parse.urlparse(r if '://' in r else 'https://'+r)
+host=u.hostname; port=u.port or 443
+try:
+    with socket.create_connection((host,port),timeout=6) as s:
+        with ssl.create_default_context().wrap_socket(s,server_hostname=host):
+            pass
+except ssl.SSLCertVerificationError as e:
+    sys.exit(0 if getattr(e,"verify_code",0) in (9,10) else 1)   # 9 not yet valid, 10 expired
+sys.exit(1)
+PY
 }

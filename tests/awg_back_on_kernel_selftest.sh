@@ -20,8 +20,14 @@ FAILS=0; check(){ if [ "$2" = 0 ]; then echo "  PASS $1"; else echo "  FAIL $1 $
 fn="$(awk '/^awg_kernel_takes\(\)\{/,/^}$/' "$ROOT/update.sh"; awk '/^ensure_awg_back_on_kernel\(\)\{/,/^}$/' "$ROOT/update.sh")"
 [ -n "$fn" ] || { echo "  FAIL function not found in update.sh"; exit 1; }
 fn="${fn//\/sys\/class\/net/$T/sys}"; fn="${fn//\/etc\/amnezia\/amneziawg/$T/etc-awg}"; fn="${fn//\/etc\/amneziawg/$T/etc-awg2}"; fn="${fn//\/var\/run\/amneziawg/$T/run}"
-[ "${1:-}" = "--perturb" ] && fn="${fn//\[ -n \"\$conf\" \] || continue/:}"
-[ "${1:-}" = "--perturb" ] && fn="$(printf '%s\n' "$fn" | sed -e 's/if have systemctl; then run systemctl start/if false; then run systemctl start/' -e '/\[ -S "\$sock" \] || pgrep/s/.*/      :/' -e 's/awg_kernel_takes "\$conf" ||/true ||/')"
+# ⚠️ EACH PLANT MUST CHANGE WHAT IT PLANTS INTO — one whose anchor is gone plants nothing and would read green (round 10)
+_planted(){ [ "$1" != "$2" ] || { echo "  STALE PERTURBATION — $3: its anchor is missing, nothing was planted, this run would FALSE-PASS"; exit 3; }; }
+if [ "${1:-}" = "--perturb" ]; then
+  _b="$fn"; fn="${fn//\[ -n \"\$conf\" \] || continue/:}"; _planted "$_b" "$fn" "the conf check"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/if have systemctl; then run systemctl start/if false; then run systemctl start/')"; _planted "$_b" "$fn" "the unit start"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e '/\[ -S "\$sock" \] || pgrep/s/.*/      :/')"; _planted "$_b" "$fn" "the exit's amneziawg-go"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/awg_kernel_takes "\$conf" ||/true ||/')"; _planted "$_b" "$fn" "the kernel probe"
+fi
 mkdir -p "$T/bin"
 cat > "$T/bin/modprobe" <<'EOF'
 #!/bin/sh

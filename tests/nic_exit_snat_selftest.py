@@ -89,11 +89,16 @@ def wire(k, devexit, ifaces):
     N.reconcile_egress({"interfaces": {IF: {"conf": "/dev/null"}}}, ifaces, "")
     return res
 
+RENAMED = [0]
 if PERTURB:
     # The obvious implementation: a tag that says what it is. It reads better, and it deletes the baseline.
+    # ⚠️ Counted: a tag without the anchor passes through untouched, and a run that renamed none measured nothing —
+    # a FALSE-PASS, never a gate that "does not actually test the tag".
     _orig = N._snat_reconcile_rule
-    N._snat_reconcile_rule = lambda tag, subnet, des, rules: _orig(
-        tag.replace("swg-egress:exit:", "swg-devexit:"), subnet, des, rules)
+    def _renamed(tag, subnet, des, rules):
+        RENAMED[0] += "swg-egress:exit:" in tag
+        return _orig(tag.replace("swg-egress:exit:", "swg-devexit:"), subnet, des, rules)
+    N._snat_reconcile_rule = _renamed
 
 DX = [{"subnet": SUB, "dev": NIC, "table": 7000, "killswitch": False, "egress_ip": "", "gw": ""}]
 OV = {IF: {"egress_ip": "", "wan_iface": "", "egress_mode": "exit", "exit_id": "x1"}}
@@ -160,6 +165,9 @@ check("…and they are still distinguishable by tag, so neither reconciler eats 
 
 print("")
 if PERTURB:
+    if not RENAMED[0]:
+        print("STALE ANCHOR — no SNAT tag carried \"swg-egress:exit:\", so the rename planted nothing: this run would FALSE-PASS")
+        sys.exit(2)
     ok = len(FAILS) > 0
     print(("perturbed: the out-of-namespace tag was CAUGHT (%d red) — the baseline would have died" % len(FAILS))
           if ok else "perturbed: NOTHING FAILED — this gate does not actually test the tag")

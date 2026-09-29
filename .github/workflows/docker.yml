@@ -105,6 +105,25 @@ jobs:
       matrix:
         image: [swg-panel, swg-node]
     steps:
+      # THE RELEASE HISTORY. `main` is one squashed commit per release, so every commit on it names a published
+      # release, and those images are what an operator rolls BACK to. The prune below kept "the newest 3 tagged", and
+      # every dev push adds a `sha-` tag, so each release's push deleted the previous release's image: the 1.8.5 and
+      # 1.8.6 images (sha-5c98297, sha-76ffeb9) answer 404, and a Docker server that had updated had no image to go
+      # back to. Full history, so `git log` can list them.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: rel
+        run: |
+          echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+          # tags the prune must never take: latest, every release's version tag, and every release commit's sha tag
+          # (type=sha,format=short = the first 7 hex digits). Only the prune reads this, and it runs on main only.
+          keep="latest,*-beta"
+          # a release commit's subject is `<version> — <headline>` (the squash); older history is granular, not releases
+          for h in $(git log --first-parent --format='%H %s' HEAD | awk '$2 ~ /^[0-9]+[.][0-9]+[.][0-9]+(-[a-z]+)?$/ {print $1}'); do
+            keep="$keep,sha-${h:0:7}"
+          done
+          echo "keep=$keep" >> "$GITHUB_OUTPUT"
       # Collect this image's per-arch digests (both amd64 + arm64) into one dir.
       - uses: actions/download-artifact@v8
         with:
@@ -127,6 +146,7 @@ jobs:
           images: ${{ steps.ref.outputs.image }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.rel.outputs.version }},enable={{is_default_branch}}
             type=ref,event=tag
             type=sha,format=short
       - name: Create + push the multi-arch manifest list
@@ -147,7 +167,8 @@ jobs:
       # SILENTLY, without failing the push.
       #   1. main only. Every `dev` push adds a `sha-<short>` tag; with keep-n-tagged: 3 a few dev
       #      pushes would age `latest` out of the newest three and prune it.
-      #   2. exclude-tags: latest. Even on main, `latest` is never a prune candidate.
+      #   2. exclude-tags: latest, and every RELEASE (its version tag and its commit's sha tag, from the history
+      #      above) — a release image is a rollback target, never a prune candidate.
       # Verified against the action's own action.yml (v1) that `exclude-tags` is a real input — an
       # unknown key here would be accepted and ignored, which is exactly the silent failure being
       # guarded against.
@@ -160,6 +181,6 @@ jobs:
           owner: ${{ github.repository_owner }}
           packages: ${{ matrix.image }}
           keep-n-tagged: 3
-          exclude-tags: latest
+          exclude-tags: ${{ steps.rel.outputs.keep }}
           delete-untagged: true
           delete-partial-images: true

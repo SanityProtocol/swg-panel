@@ -34,7 +34,7 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 _SRC = open(PANEL, encoding="utf-8").read()
-_ANCH = "    if m and not force and (_meta_n(m) or list_failed(cat, tier)):\n        return m"
+_ANCH = "    if m and not force and _meta_n(m):\n        return m"
 assert _SRC.count(_ANCH) == 1, "anchor missing — this run would FALSE-PASS"
 if PERTURB:
     _SRC = _SRC.replace(_ANCH, "    if m and not force:\n        return m")   # the shipped behaviour
@@ -166,9 +166,20 @@ try:
 finally:
     P.list_store = _real
 check("once it expires, it tries again (so it still heals)", len(_n2) == 1, len(_n2))
-check("a `force`d refresh ignores the cooldown entirely",
-      "if m and not force and (_meta_n(m) or list_failed(cat, tier)):" in
-      open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read())
+# A forced attempt waits out the back-off too: the manifest builder forces every list with no copy yet, on every
+# node sync, so a force that skipped it re-fetched a never-landing list every five seconds (code review 09-24).
+_forced = []
+def _count3(c, t):
+    _forced.append(1); seed(c, t, 0)
+P._LIST_FAILED["mc:hot-empty|host"] = time.time()          # a failure just happened
+_real, P.list_store = P.list_store, _count3
+try:
+    for _ in range(3):
+        P.list_ensure("mc:hot-empty", "host", force=True)
+        time.sleep(0.02)
+finally:
+    P.list_store = _real
+check("a `force`d attempt inside the back-off fetches nothing", len(_forced) == 0, len(_forced))
 
 print("\n[6] TWO READERS: /api/list-info must judge by records too, not by 'a meta exists'")
 src = open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read()

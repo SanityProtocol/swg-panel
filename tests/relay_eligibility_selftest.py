@@ -60,13 +60,11 @@ def cut(a, b, why):
 
 if P_DEV:
     # The mistake this guards: reading eligibility off the wire, where a device exit is an `exit` entry too.
-    cut('''            if _de not in sn["devexit"]:
-                sn["devexit"].append(_de)''',
-        '''            if _de not in sn["devexit"]:
-                sn["devexit"].append(_de)
-            if (S, xkey) not in sn["_leg_seen"]:
-                sn["_leg_seen"].add((S, xkey))
-                sn["_legs"].append({"subnet": S, "peer": xkey, "mark": T})''', "dev leg")
+    cut('''            _dx_add(sn, _de)''',
+        '''            _dx_add(sn, _de)
+            if (S, xkey, "smart") not in sn["_leg_seen"]:
+                sn["_leg_seen"].add((S, xkey, "smart"))
+                sn["_legs"].append({"subnet": S, "peer": xkey, "mark": T, "mode": "smart"})''', "dev leg")
 if P_BAND:
     cut('    if mark and not (SWG_RT_BASE <= mark <= SWG_RT_MAX):',
         '    if False:', "band guard")

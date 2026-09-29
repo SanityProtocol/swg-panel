@@ -10,9 +10,10 @@ ref, same TLS, nothing new to trust.
 The same change retires `curl | bash`, which executes whatever arrived before the connection died. A reset
 halfway through bootstrap.sh ran half of it; a downloaded file is run only once curl says all of it arrived.
 
-Four places carry the fetch, and all four are exercised as SHIPPED — none is restated here:
-  · the root `swg-update` wrapper, written by install-host.sh, update.sh and lib/common.sh. Each heredoc is
-    lifted out of its file and rendered by bash exactly as it is at install time, then run.
+Two places carry the fetch, and both are exercised as SHIPPED — none is restated here:
+  · the root `swg-update` wrapper: ONE text, swg_update_wrapper_text (lib/common.sh), lifted and rendered by bash exactly
+    as it is at install time, then run. Its three writers — install-host.sh, update.sh, write_docker_updater — used to
+    carry a copy each under their own comments, so the file's digest flipped with whoever wrote it last (round 8).
   · swg-noded's `default_update_cmd()`, loaded from the real module and run — once bare, and once through the
     real `_self_update_wrapper()` (0b), because that seam is where a node's verdict is written.
 
@@ -27,21 +28,24 @@ What has to hold, each a place a plausible version goes wrong:
      losing that is the silent main-downgrade 51a4b10 fixed.
   7. the wrapper survives rewriting itself mid-run (the braces + `exit` fix), the temp file is removed, and
      bootstrap's exit code is the wrapper's.
-  8. the three wrapper copies are byte-identical from `URL=` to `exit` — they have drifted before.
+  8. ONE TEXT: each of the three writers is run (its paths remapped) and writes the same swg-update, byte for byte, and
+     the two bare writers the same swg-update-check; none carries a heredoc of its own.
 
 Hermetic: `curl` is a stub on PATH that records every URL dialled and plays ok / fail / partial per host;
 bootstrap is a stub that records its args and environment. No network, no root, no systemd.
 
 Run: python3 tests/update_bootstrap_fallback_selftest.py            (0 = pass)
-     --perturb   three perturbations of the shipped source — the wrappers lose the API door; the wrappers run
-                 what arrived; the node loses the API door — and exits 0 only if EVERY one goes red.
+     --perturb   four perturbations of the shipped source — the wrapper loses the API door; the wrapper runs what
+                 arrived; the node loses the API door; install-host.sh writes a text of its own — and exits 0 only if
+                 EVERY one goes red.
 """
 import importlib.machinery, importlib.util, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.path.join(ROOT, "swg-noded")
-WRAPPERS = ("install-host.sh", "update.sh", "lib/common.sh")
+WRAPPERS = ("lib/common.sh",)                     # the one text (swg_update_wrapper_text)
+WRITERS = ("install-host.sh", "update.sh", "lib/common.sh")
 PERTURB = "--perturb" in sys.argv
 
 RAW_DEV = "https://raw.githubusercontent.com/SanityProtocol/swg-panel/dev/bootstrap.sh"
@@ -205,13 +209,23 @@ def suite(wrapper_srcs, noded_path):
         check("[7b] %s: ⚠️ survives rewriting itself mid-run" % f,
               p.returncode == 0 and "command not found" not in p.stderr, (p.returncode, p.stderr[-200:]))
 
-    def _fetch_block(s):
-        m = re.search(r'^URL=.*?^exit$', s, re.S | re.M)
-        return m.group(0) if m else None
-    blocks = {f: _fetch_block(s) for f, s in rendered.items()}
-    check("[8] ⚠️ the three wrapper copies are byte-identical from URL= to exit",
-          len(rendered) == 3 and None not in blocks.values() and len(set(blocks.values())) == 1,
-          {f: (len(b) if b else None) for f, b in blocks.items()})
+    # ── [8] one text: every writer run, what it writes compared ─────────────────────────────────────────────────
+    written = writers_write(wrapper_srcs)
+    for f in WRITERS:
+        check("[8] %s writes swg-update through swg_update_wrapper_text, with no heredoc of its own" % f,
+              "swg_update_wrapper_text \"$_swg_ref\"" in written[f]["fn"] and "<<WRAP\n" not in written[f]["fn"], written[f]["fn"][:160])
+    wraps = {f: written[f].get("swg-update") for f in WRITERS}
+    check("[8] ⚠️ the three writers write the SAME swg-update, byte for byte (and it is the one text, rendered)",
+          None not in wraps.values() and len(set(wraps.values())) == 1 and wraps["lib/common.sh"] == rendered.get("lib/common.sh"),
+          {f: (len(w) if w else None) for f, w in wraps.items()})
+    checks = {f: written[f].get("swg-update-check") for f in ("install-host.sh", "update.sh")}
+    check("[8] …and the two bare writers the same swg-update-check", None not in checks.values() and len(set(checks.values())) == 1,
+          {f: (len(w) if w else None) for f, w in checks.items()})
+    _dchk = subprocess.run(["bash", "-c", _lift(wrapper_srcs["lib/common.sh"], "swg_update_check_docker_text") + "swg_update_check_docker_text\n"],
+                           capture_output=True, text=True).stdout
+    check("[8] …and the Docker writer its own check, the one text (swg_update_check_docker_text)",
+          bool(_dchk) and written["lib/common.sh"].get("swg-update-check") == _dchk and written["lib/common.sh"]["rc"] == 0,
+          (len(written["lib/common.sh"].get("swg-update-check") or ""), len(_dchk), written["lib/common.sh"]["err"]))
 
     # ── swg-noded's own update command ───────────────────────────────────────────────────────────────────────
     m = _load_noded(noded_path)
@@ -264,6 +278,49 @@ def suite(wrapper_srcs, noded_path):
     return fails
 
 
+def _lift(src, name):
+    m = re.search(r"^%s\(\)\{" % re.escape(name), src, re.M)
+    assert m, "cannot lift " + name
+    lines = src[m.start():].split("\n")
+    for k, l in enumerate(lines):
+        if l.split("  #")[0].rstrip().endswith("}"):
+            text = "\n".join(lines[:k + 1]) + "\n"
+            if subprocess.run(["bash", "-n"], input=text, capture_output=True, text=True).returncode == 0:
+                return text
+    raise AssertionError("unterminated " + name)
+
+
+def writers_write(srcs):
+    """Run each writer as shipped — install-host.sh mk_update_unit, update.sh install_update_unit, lib/common.sh
+    write_docker_updater — with its paths remapped into a temp root; return what each wrote."""
+    lib = srcs.get("lib/common.sh") or open(os.path.join(ROOT, "lib/common.sh"), encoding="utf-8").read()
+    texts = "".join(_lift(lib, n) for n in ("swg_update_wrapper_text", "swg_update_check_text", "swg_update_check_docker_text",
+                                             "swg_update_docker_service_text", "swg_update_docker_timer_text"))
+    out = {}
+    for f, name in (("install-host.sh", "mk_update_unit"), ("update.sh", "install_update_unit"), ("lib/common.sh", "write_docker_updater")):
+        src = srcs.get(f) or open(os.path.join(ROOT, f), encoding="utf-8").read()
+        body = _lift(src, name)
+        root = tempfile.mkdtemp(prefix="writer-", dir=TMP)
+        for d in ("/usr/local/bin", "/etc/systemd/system", "/var/lib"):
+            os.makedirs(root + d, exist_ok=True)
+        run_body = body if f == "install-host.sh" else (body.replace("/usr/local/bin/", root + "/usr/local/bin/")
+                                                             .replace("/etc/systemd/system/", root + "/etc/systemd/system/")
+                                                             .replace("/var/lib/swg-update.stamp", root + "/var/lib/swg-update.stamp"))
+        script = ('set -u\nDRYRUN=false; PREFIX="%s"; SWG_REF=dev; STATE_DIR="%s/var/lib/swg-panel"; PANEL_USER=swgpanel\n'
+                  'mkdir -p "$STATE_DIR"\nok(){ :; }; info(){ :; }; warn(){ :; }; run(){ "$@" 2>/dev/null || true; }\n'
+                  'systemctl(){ :; }; chown(){ :; }; docker(){ :; }\n'
+                  'writef(){ local full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "${2:-644}" "$full"; }\n'
+                  'writef_atomic(){ local full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full.new"; chmod "${2:-644}" "$full.new"; mv -f "$full.new" "$full"; }\n'
+                  '%s%s%s\n') % (root, root, texts, body if f == "install-host.sh" else run_body, name)
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+        res = {"fn": body, "rc": r.returncode, "err": r.stderr[-300:]}
+        for fn in ("swg-update", "swg-update-check"):
+            pth = root + "/usr/local/bin/" + fn
+            res[fn] = open(pth).read() if os.path.exists(pth) else None
+        out[f] = res
+    return out
+
+
 # ── perturbations of the SHIPPED source ──────────────────────────────────────────────────────────────────────
 API_LINE = "  curl -fsSL --connect-timeout 20 --max-time 120 -H 'Accept: application/vnd.github.raw' \"\\$API\" -o \"\\$B\"\n"
 IF_LINE = "if ! curl -fsSL --connect-timeout 20 --max-time 120 \"\\$URL\" -o \"\\$B\"; then\n"
@@ -271,7 +328,7 @@ IF_PIPE = ("if ! { curl -fsSL --connect-timeout 20 --max-time 120 \"\\$URL\" -o 
            "bash \"\\$B\" update -y --no-components \"\\$@\"; }; then\n")
 NODE_API = "    'curl -fsSL --connect-timeout 20 --max-time 120 -o \"$B\" -H \"Accept: application/vnd.github.raw\" '\n"
 
-srcs = {f: open(os.path.join(ROOT, f), encoding="utf-8").read() for f in WRAPPERS}
+srcs = {f: open(os.path.join(ROOT, f), encoding="utf-8").read() for f in WRITERS}
 noded_src = open(NODED, encoding="utf-8").read()
 
 try:
@@ -290,10 +347,15 @@ try:
         return text.replace(old, new, 1)
 
     perts = []
-    perts.append(("the wrappers lose the API door",
-                  {f: _swap(s, API_LINE, "  false\n", f) for f, s in srcs.items()}, noded_src, ("[3", "[4b", "[6b")))
-    perts.append(("the wrappers run what arrived",
-                  {f: _swap(s, IF_LINE, IF_PIPE, f) for f, s in srcs.items()}, noded_src, ("[4] ",)))
+    def _one(label, old, new):          # the ONE text (lib/common.sh) perturbed; the writers render it
+        d = dict(srcs); d["lib/common.sh"] = _swap(srcs["lib/common.sh"], old, new, "lib/common.sh"); return d
+    perts.append(("the wrapper loses the API door", _one("api", API_LINE, "  false\n"), noded_src, ("[3", "[4b", "[6b")))
+    perts.append(("the wrapper runs what arrived", _one("pipe", IF_LINE, IF_PIPE), noded_src, ("[4] ",)))
+    _own = dict(srcs); _own["install-host.sh"] = _swap(
+        srcs["install-host.sh"], '  swg_update_wrapper_text "$_swg_ref" | writef_atomic /usr/local/bin/swg-update 755',
+        '  { swg_update_wrapper_text "$_swg_ref"; echo "# install-host.sh\'s own comment"; } | writef_atomic /usr/local/bin/swg-update 755',
+        "install-host.sh")
+    perts.append(("install-host.sh writes a text of its own", _own, noded_src, ("[8] ⚠️",)))
     perts.append(("the node loses the API door",
                   srcs, _swap(noded_src, NODE_API, "    'false '\n", "swg-noded"), ("[N3", "[N4", "[N7")))
 

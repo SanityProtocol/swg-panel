@@ -16,6 +16,8 @@
 #   -name       <name>  node name               (-> NODE_NAME)
 #   -endpoint   <ip>    public endpoint IP       (-> ENDPOINT_IP)
 #   -method <bare-metal|docker>   -role <master|host|node>
+#   convert|keep|abort  (or -on-conflict <…>, env SWG_ON_CONFLICT) — the answer when the box already holds the
+#                       OTHER method's install: convert it, keep + re-install it as it is, or stop. Unattended runs.
 #
 # Override the source with SWG_REPO / SWG_REF (branch or tag). Anything else is passed through.
 set -euo pipefail
@@ -32,7 +34,7 @@ REPO="${SWG_REPO:-https://github.com/SanityProtocol/swg-panel}"
 _ref_from_url(){   # https://raw.githubusercontent.com/<owner>/<repo>/<ref>/bootstrap.sh  → <ref>
   printf '%s' "${1:-}" | sed -nE \
     -e 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/([^/]+)/.*#\1#p' \
-    -e 's#^https?://[^/]+/[^/]+/[^/]+/raw/([^/]+)/.*#\1#p' | head -1
+    -e 's#^https?://[^/]+/[^/]+/[^/]+/raw/([^/]+)/.*#\1#p' | sed -n 1p
 }
 REF="${SWG_REF:-}"
 [ -z "$REF" ] && REF="$(_ref_from_url "${SWG_BOOTSTRAP_URL:-}")"
@@ -49,22 +51,97 @@ menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }            # universal flags: :: blue, ! brown, ✗ red
 # data-entry spacing: a prompt ends with _pnl (one trailing blank + mark); step() skips its leading blank while the
 # mark is up; warn/info clear it. (bootstrap doesn't source lib/common.sh, so these live here.)
-_SWG_NL=""; _pnl(){ printf '\n' >/dev/tty 2>/dev/null || echo; _SWG_NL=1; }; _nlguard(){ _SWG_NL=""; }
+# (2>/dev/null BEFORE >/dev/tty: redirections apply left to right, and the other order printed a raw
+# "/dev/tty: No such device or address" whenever there was no terminal — as it did under a given answer, round 5)
+_SWG_NL=""; _pnl(){ printf '\n' 2>/dev/null >/dev/tty || echo; _SWG_NL=1; }; _nlguard(){ _SWG_NL=""; }
 warn(){ _nlguard; echo "${C_BROWN}!${RESET} $*" >&2; }
 info(){ _nlguard; echo "${C_BL}::${RESET} $*"; }
-# curl with a node bearer token kept OFF the argv (out of `ps` / /proc/<pid>/cmdline) — passed via a --config file
-# on stdin instead of an -H flag. (bootstrap doesn't source lib/common.sh, so this lives here too.) The wrapped
-# curl must not itself read stdin. Usage: auth_curl <token> <curl-args...>
-auth_curl(){ local _tok="$1"; shift
-  curl "$@" --config /dev/stdin <<CURLCFG
-header = "Authorization: Bearer ${_tok}"
-CURLCFG
+# panel_req <METHOD> <url> <verify:yes|no> <fingerprint> [<timeout-s>] — the token in $SWG_TOK (never the argv), a JSON
+# body in $SWG_BODY. The one way a call carrying a node token leaves this box: the panel's certificate is checked on the
+# connection the token then travels on — a pin → it must hash to it, verify=yes → CA verification; either failing sends
+# NOTHING (exit 4). ⚠️ TWIN of lib/common.sh's panel_req (bootstrap is fetched and run before the repo exists, so it
+# cannot source it) — see there; tests/panel_req_selftest.py holds the program text to one copy. It replaced a curl -k
+# that sent a leftover identity's token to whatever answered at its old panel address (1.8.8 qualification, round 6).
+panel_req(){ python3 - "$@" <<'PANELREQ'
+import hashlib, http.client, math, os, re, signal, ssl, sys, urllib.parse
+a = (sys.argv[1:] + [""] * 5)[:5]
+meth, url, verify = a[0] or "GET", a[1], a[2] == "yes"
+fp = a[3].strip().replace(":", "").lower()
+if fp and not re.fullmatch(r"[0-9a-f]{64}", fp):      # a pin that is not a sha256 is never read as "no pin": fail closed
+    print("the pin on record (%s…) is not a sha256 fingerprint — nothing was sent" % fp[:16])
+    sys.exit(4)
+try:
+    tmo = max(1.0, float(a[4]))
+except ValueError:
+    tmo = 8.0
+tok, body = os.environ.get("SWG_TOK", ""), os.environ.get("SWG_BODY", "")
+u = urllib.parse.urlparse(url if "://" in url else "https://" + url)
+sent, conn = False, None
+
+
+def late(*_):
+    raise TimeoutError("timed out")
+
+
+signal.signal(signal.SIGALRM, late)
+signal.alarm(int(math.ceil(tmo)))
+try:
+    host, port = u.hostname or "", u.port or (443 if u.scheme == "https" else 80)
+    path = (u.path or "/") + ("?" + u.query if u.query else "")
+    if u.scheme == "http":
+        conn = http.client.HTTPConnection(host, port, timeout=tmo)
+    elif u.scheme == "https":
+        ctx = ssl.create_default_context() if (verify and not fp) else ssl._create_unverified_context()
+        conn = http.client.HTTPSConnection(host, port, timeout=tmo, context=ctx)
+    else:
+        print("unsupported URL scheme %r" % u.scheme)
+        sys.exit(1)
+    try:
+        conn.connect()                                   # the handshake, and a CA check, before a byte of the request
+    except ssl.SSLCertVerificationError as e:
+        print("the panel's certificate did not verify (%s) — nothing was sent" % (e.verify_message or e.reason or e))
+        sys.exit(4)
+    if fp and u.scheme == "https":
+        got = hashlib.sha256(conn.sock.getpeercert(True) or b"").hexdigest()
+        if got != fp:
+            print("the panel presents a certificate other than the pinned one (sha256 %s…, pinned %s…) — nothing was sent"
+                  % (got[:16], fp[:16]))
+            sys.exit(4)
+    hdr = {"Authorization": "Bearer " + tok, "User-Agent": "swg-noded"}
+    if body:
+        hdr["Content-Type"] = "application/json"
+    sent = True
+    conn.request(meth, path, body=body.encode() if body else None, headers=hdr)
+    r = conn.getresponse()
+    try:
+        data = r.read()
+    except http.client.IncompleteRead as e:
+        data = e.partial
+    if 200 <= r.status < 300:
+        sys.stdout.write(data.decode("utf-8", "replace"))
+        sys.exit(0)
+    print("HTTP %d" % r.status)
+    sys.exit(3)
+except Exception as e:
+    why = str(getattr(e, "reason", None) or getattr(e, "strerror", None) or e or type(e).__name__)
+    print(why[:1].lower() + why[1:])
+    sys.exit(2 if sent else 1)
+finally:
+    signal.alarm(0)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+PANELREQ
 }
-# ask_choice <prompt> <default> <var> "<opt…>" — accepts a full option OR its first-letter shortcut;
-# shows the default's letter as [x]; friendly re-prompt on bad input.
-ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
+# ask_choice <prompt> <default> <var> "<opt…>" [how] — accepts a full option OR its first-letter shortcut;
+# shows the default's letter as [x]; friendly re-prompt on bad input. [how] = how to answer it without a terminal,
+# named in the refusal — only where the generic "pass it as a flag" would name a flag that does not exist.
+ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" how="${5:-}" v o rc sc pr i
   sc="${d:0:1}"
-  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
+  # a preset answer is said under its menu, not taken in silence (the installers' "given — not asked" line)
+  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { echo "  $p: $(b "$o")  (given — not asked)"; _pnl; return; }; done; fi
   pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
   while :; do
     # read -p writes the prompt to stderr (lost if redirected) — print it to the tty ourselves. The redirect
@@ -77,7 +154,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
     # $d is always a valid option, so the match loop returned the default and went home. A default that answers
     # itself is not a fallback but a decision — this is the prompt that picks bare-metal vs docker, master vs
     # node, and convert-vs-keep-vs-abort on a box that already has an install.
-    [ "$rc" -ne 0 ] && die "no interactive input for '$p' — run this from a terminal (ssh -t), or pass it as a flag (one of: $opts)"
+    [ "$rc" -ne 0 ] && die "no interactive input for '$p' — run this from a terminal (ssh -t), or ${how:-pass it as a flag (one of: $opts)}"
     v="${v:-$d}"
     case "$v" in ''|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] → the Nth option
     for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; _pnl; return; }; done
@@ -100,6 +177,7 @@ ask_yn(){ local p="$1" d="$2" var="$3" v pr   # ask_yn <prompt> <y|n default> <v
   case "$v" in [Yy]*) printf -v "$var" yes;; *) printf -v "$var" no;; esac; _pnl; }
 
 ACTION=""; METHOD="${METHOD:-}"; ROLE="${ROLE:-}"; ROLE_EXPLICIT=no; HAVE_KEY=no
+ON_CONFLICT="${SWG_ON_CONFLICT:-}"   # convert|keep|abort — the cross-method question's answer, for an unattended run
 PASS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -114,6 +192,11 @@ while [ $# -gt 0 ]; do
     -endpoint|--endpoint)        export ENDPOINT_IP="${2:-}"; shift 2 || shift;;
     -method|--method)            METHOD="${2:-}"; shift 2 || shift;;
     -role|--role)                ROLE="${2:-}"; ROLE_EXPLICIT=yes; shift 2 || shift;;
+    # ⚠️ THE FLAG THE REFUSAL NAMES. With no terminal the convert/keep/abort question died with "pass it as a flag (one
+    # of: convert keep abort)", and there was no such flag — the one question an unattended re-install on a box of the
+    # other method cannot get past. A bare word, like the method and role words above.
+    convert|keep|abort)          ON_CONFLICT="$1"; shift;;
+    -on-conflict|--on-conflict)  ON_CONFLICT="${2:-}"; shift 2 || shift;;
     --)                          shift;;
     *)                           PASS+=("$1"); shift;;
   esac
@@ -130,7 +213,7 @@ done
 #
 # Deliberately a second, SMALLER copy of the detection rather than a shared one: bootstrap.sh is
 # fetched and run on its own, before the repo exists, which is the same reason it redefines
-# warn/info/auth_curl above. lib/common.sh is the authority; keep this in step with it by intent.
+# warn/info/panel_req above. lib/common.sh is the authority; keep this in step with it by intent.
 if [ -e /etc/NIXOS ] || grep -qsE '^ID="?nixos"?[[:space:]]*$' /etc/os-release; then
   die "NixOS detected — bootstrap.sh must not run here.
     It writes into /opt and /etc/systemd/system, which nixos-rebuild neither manages nor sees, so it
@@ -196,7 +279,37 @@ info "fetching $REPO @ $REF"
 # "GitHub unreachable" and going straight to the tarball works, but silently costs every 22.04 node the
 # git path for ever — and hides a defect that is one flag from fixed.
 _fetched=""
-if need git; then
+# ⚠️ A COMMIT IS HOW A RELEASE IS NAMED. Panel releases carry no tag — each is one squashed commit on main — so going
+# back to one means its commit (SWG_REF=df3bb45 is 1.8.7-beta), and `git clone --branch` takes only a branch or a tag.
+# GitHub serves an archive of any commit, which is the tarball road below by another URL. 7–40 hex digits, never a
+# branch or a tag name this repo uses.
+if printf '%s' "$REF" | grep -cE '^[0-9a-f]{7,40}$' >/dev/null; then
+  if need curl && need tar && curl -fsSL "$REPO/archive/$REF.tar.gz" | tar -xz -C "$TMP"; then
+    mv "$TMP"/swg-panel-* "$TMP/swg-panel" && _fetched=tar
+  fi
+  # ⚠️ …BUT A COMMIT IS WHAT TO INSTALL, NEVER WHAT TO TRACK. The scripts below bake SWG_REF into the one-click
+  # wrapper and the node's update_ref, and a commit there never moves: the Update button of a box taken back to one
+  # fetched THAT commit's bootstrap, which (1.8.7 and older) cannot fetch a commit — so every later Update failed,
+  # while the header went on offering the newer release. The box keeps tracking the branch its wrapper already names
+  # (main when it names none, or names a commit); SWG_TRACK overrides. Pressing Update then comes forward again.
+  _track="${SWG_TRACK:-}"
+  if [ -z "$_track" ] && [ -f /usr/local/bin/swg-update ]; then
+    _track="$(sed -nE 's#.*raw\.githubusercontent\.com/[^/]+/[^/]+/([^/]+)/bootstrap\.sh.*#\1#p' /usr/local/bin/swg-update | sed -n 1p)"
+    printf '%s' "$_track" | grep -cE '^[0-9a-f]{7,40}$' >/dev/null && _track=""
+  fi
+  # ⚠️ …AND A NODE-ONLY BOX HAS NO WRAPPER. The panel's one-click wrapper is written only where a panel is; a node
+  # records the branch its self-update follows in its agent config (node.update_ref — install-node.sh / update.sh).
+  # Without reading it, taking a dev-tracking node back to a commit re-pointed it at `main` (1.8.8 qualification, q2).
+  if [ -z "$_track" ] && [ -f /etc/swg-agent/config.json ] && need python3; then
+    _track="$(python3 -c 'import json,sys;print(str(((json.load(open(sys.argv[1])).get("node") or {}).get("update_ref")) or "").strip())' \
+                /etc/swg-agent/config.json 2>/dev/null || true)"
+    printf '%s' "$_track" | grep -cE '^[0-9a-f]{7,40}$' >/dev/null && _track=""
+  fi
+  # a ref goes into a URL and a shell command — the same character set swg-noded accepts for update_ref, or nothing
+  printf '%s' "$_track" | grep -cE '^[A-Za-z0-9._/-]{1,100}$' >/dev/null || _track=""
+  export SWG_REF="${_track:-main}"
+  info "installing commit $REF — this box's Update button keeps following $(b "$SWG_REF")"
+elif need git; then
   if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
     _fetched=git
   else
@@ -231,7 +344,7 @@ fi
 # ───────────────── existing-install detection (drives the routing below) ─────────────────
 SD=/etc/systemd/system; DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 dkr(){ command -v docker >/dev/null 2>&1; }
-dkr_has(){ dkr && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; }
+dkr_has(){ dkr && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx "$1" >/dev/null; }
 BARE_PANEL=no; BARE_NODE=no; DOCK_PANEL=no; DOCK_NODE=no
 if [ -d /opt/swg-panel ] || [ -f "$SD/swg-panel-server.service" ]; then BARE_PANEL=yes; fi
 if [ -d /opt/swg-noded ] || [ -d /opt/swg-agent ] || [ -f "$SD/swg-noded.service" ]; then BARE_NODE=yes; fi
@@ -249,6 +362,8 @@ if [ -z "$METHOD" ] && [ -z "$ROLE" ]; then
   { [ "$DOCK_PANEL" = yes ] || [ "$DOCK_NODE" = yes ]; } && _dock=yes
   if [ "$_bare" = yes ] && [ "$_dock" = yes ]; then
     info "both a bare-metal and a docker install are present — choose which to re-install:"   # mixed → fall through to the prompts
+    [ "$BARE_PANEL" = yes ] && [ "$DOCK_PANEL" = yes ] \
+      && warn "that is TWO panels, each with its own servers and settings — the installer will offer to stop the one you don't pick"
   elif [ "$_bare" = yes ]; then METHOD=baremetal
     if   [ "$BARE_PANEL" = yes ] && [ "$BARE_NODE" = yes ]; then ROLE=master
     elif [ "$BARE_PANEL" = yes ]; then ROLE=host; else ROLE=node; fi
@@ -272,7 +387,7 @@ if [ -f /var/lib/swg-recovery ]; then
   # a complete uninstall can leave the marker behind; if NEITHER side of the convert is on the box any more,
   # the marker is orphaned (nothing to resume) — drop it silently so a fresh install doesn't offer Resume.
   if [ ! -e /etc/swg-agent ] && [ ! -e "$DOCKER_DIR" ] && [ ! -e "$SD/swg-noded.service" ] \
-     && ! { command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; }; then
+     && ! { command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx swg-node >/dev/null; }; then
     rm -f /var/lib/swg-recovery 2>/dev/null || true
   elif [ -n "${SWG_RV_FROM:-}" ] && [ -n "${SWG_RV_TO:-}" ] && [ -n "${SWG_RV_ROLE:-}" ]; then
     echo
@@ -323,6 +438,10 @@ elif has_comp "$OTHER" panel; then OTHER_ROLE=host
 else OTHER_ROLE=node; fi
 if [ -n "$CONFLICT" ]; then
   while :; do
+    # A preset answer is taken ONCE: `convert` whose pre-flight refused (or was declined) comes back round this loop,
+    # and answering it again from the flag would spin for ever — so the second time round it must be a person. Checked
+    # BEFORE the menu: printed again under the refusal, it read as a second question nobody was asked (1.8.8 qualification).
+    [ -n "${_conflict_used:-}" ] && [ -n "$ON_CONFLICT" ] && die "the conversion did not go ahead (see above) — nothing was changed. Fix the conflicts, or pass keep / abort instead of $ON_CONFLICT."
     echo
     echo "$(b "! A $(mlabel "$OTHER") $OTHER_ROLE is already installed on this box.")"
     echo "  Convert it to a $(mlabel "$METHOD") $OTHER_ROLE, or re-install it as it is?"
@@ -330,7 +449,9 @@ if [ -n "$CONFLICT" ]; then
     menu "$(b "$(col "$C_BLUE" '[1] [c]onvert')")"      "Migrate it to $(mlabel "$METHOD") — all settings / users / peers are preserved. A port/interface pre-flight runs first."
     menu "$(col "$C_BLUE" '[2] [k]eep and re-install')" "Leave it on $(mlabel "$OTHER") and just re-install it (you didn't mean to switch methods)."
     menu "$(col "$C_BLUE" '[3] [a]bort')"               "Exit without changing anything."
-    CHOICE=""; ask_choice "Convert, keep, or abort (number, letter or name)" "convert" CHOICE "convert keep abort"
+    CHOICE="$ON_CONFLICT"; _conflict_used=1
+    ask_choice "Convert, keep, or abort (number, letter or name)" "convert" CHOICE "convert keep abort" \
+      "pass the answer as a word or -on-conflict (convert | keep | abort; env SWG_ON_CONFLICT)"
     case "$CHOICE" in
       abort) info "aborted — nothing changed."; exit 0;;
       keep)  METHOD="$OTHER"; info "keeping the existing $(mlabel "$OTHER") install — re-installing it as-is."; break;;
@@ -344,13 +465,16 @@ if [ -n "$CONFLICT" ]; then
           echo
           menu "$(b "$(col "$C_BLUE" '[1] [m]aster (default)')")"      "Convert BOTH the panel and the node to $(mlabel "$METHOD") — keep this box a single-method master (recommended)."
           menu "$(col "$C_BLUE" "[2] [${ROLE:0:1}]${ROLE:1}")"         "Convert only the $ROLE to $(mlabel "$METHOD"); the rest stays on $(mlabel "$OTHER") — a mixed-method box you'd manage in two places."
-          _msel=""; ask_choice "Convert the whole master, or just the $ROLE (number, letter or name)" master _msel "master $ROLE"
+          _msel=""; ask_choice "Convert the whole master, or just the $ROLE (number, letter or name)" master _msel "master $ROLE" \
+            "name the role master to convert the whole box (converting only the $ROLE needs a terminal)"
           [ "$_msel" = master ] && ROLE=master
         fi
         # pre-flight (port/interface check) lives in convert.sh --check: exit 0 = clear, non-0 = printed conflicts
         if bash "./convert.sh" --check "$OTHER" "$METHOD" "$ROLE"; then
           echo
-          _ans=no; ask_yn "No conflicts found, do you want to proceed with the conversion" y _ans
+          _ans=no
+          if [ "$ON_CONFLICT" = convert ]; then _ans=yes     # the flag IS the answer to this confirm — it named convert
+          else ask_yn "No conflicts found, do you want to proceed with the conversion" y _ans; fi
           [ "$_ans" = yes ] && run_script convert.sh "$OTHER" "$METHOD" "$ROLE" ${PASS[@]+"${PASS[@]}"}
         fi
         ;;   # conflicts (or 'no' at the confirm) → loop the menu again
@@ -361,15 +485,28 @@ fi
 # A plain (re-)install clears a stale leftover from an ABORTED conversion — it's just an outdated copy, so no
 # prompt. The live node (still on its original method) is untouched: an ACTIVE other-method install would have
 # offered 'convert' above, so reaching here as a plain install means there's nothing live of the other method.
+# ⚠️ …BUT NEVER WHAT AN UNINSTALL KEPT, AND NOTHING ON A DRY RUN. uninstall.sh's "keep the data" answer leaves
+# $DOCKER_DIR holding data/ + .env (the node token) and says "Kept … for a future reinstall"; the next bare-metal
+# install deleted it right here, without a prompt, as "a cancelled bare→docker convert" (1.8.8 qualification, q1).
+# The two are told apart by docker-compose.yml: a convert's staging copies it in beside the data, and the uninstaller
+# strips it on every keep path (1.8.7's too). No compose file ⇒ not a convert's staging ⇒ kept, and said out loud.
+# ⚠️ TWIN: lib/common.sh's lc_clear_convert_leftover (update.sh's copy of this) — change one, change both.
+_dryrun_flag=no; for _a in ${PASS[@]+"${PASS[@]}"}; do [ "$_a" = --dry-run ] && _dryrun_flag=yes; done
 if [ "${CHOICE:-}" != convert ]; then
   if [ "$METHOD" = baremetal ] && [ -d "$DOCKER_DIR" ] && command -v docker >/dev/null 2>&1 \
-       && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'swg-(node|panel)'; then
-    info "removing a stale docker leftover at $(b "$DOCKER_DIR") — no container present (likely a cancelled bare→docker convert); your live install is untouched"
-    rm -rf "$DOCKER_DIR" 2>/dev/null || true
+       && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cxE 'swg-(node|panel)' >/dev/null; then
+    if [ ! -f "$DOCKER_DIR/docker-compose.yml" ]; then
+      info "keeping $(b "$DOCKER_DIR") — no container runs from it, but it is not a convert's leftover: an uninstall kept its data (peers, node token) for a re-install. Delete it by hand once you no longer need it."
+    elif [ "$_dryrun_flag" = yes ]; then
+      info "dry run — would remove a stale docker leftover at $(b "$DOCKER_DIR") (no container present; likely a cancelled bare→docker convert)"
+    else
+      info "removing a stale docker leftover at $(b "$DOCKER_DIR") — no container present (likely a cancelled bare→docker convert); your live install is untouched"
+      rm -rf "$DOCKER_DIR" 2>/dev/null || true
+    fi
   fi
   # docker (re-)install: drop ONLY the bare confs that match this docker node's confs (i.e. copies a docker→bare
   # convert left behind) and only when no swg-noded is installed — never an unrelated WireGuard config.
-  if [ "$METHOD" = docker ] && [ -d "$DOCKER_DIR/data/node-confs" ] && command -v systemctl >/dev/null 2>&1 \
+  if [ "$METHOD" = docker ] && [ "$_dryrun_flag" != yes ] && [ -d "$DOCKER_DIR/data/node-confs" ] && command -v systemctl >/dev/null 2>&1 \
        && ! systemctl list-unit-files swg-noded.service >/dev/null 2>&1; then
     _cleared=
     for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] || continue; _n="$(basename "$_c" .conf)"
@@ -391,7 +528,7 @@ export STEP_BASE="$STEP"          # the installer numbers its steps from here
 _have_live_token=no
 if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ]; then
   if [ "$METHOD" = docker ]; then
-    if [ -f "$DOCKER_DIR/.env" ]; then _lt="$(sed -n 's/^NODE_TOKEN=//p' "$DOCKER_DIR/.env" | head -1 | tr -d '"')"
+    if [ -f "$DOCKER_DIR/.env" ]; then _lt="$(sed -n 's/^NODE_TOKEN=//p' "$DOCKER_DIR/.env" | sed -n 1p | tr -d '"')"
       [ -n "$_lt" ] && [ "$_lt" != "set-in-nodes-screen" ] && _have_live_token=yes; fi
   else
     if [ -f /etc/swg-agent/config.json ] && command -v python3 >/dev/null 2>&1; then
@@ -407,7 +544,38 @@ _salv_created(){ local s="$1" ts
   case "$s" in *.converted-*|*.uninstalled-*) ts="$(printf '%s' "$s" | sed -n 's/.*\.\(converted\|uninstalled\)-\([0-9]\{8\}\)-\([0-9]\{6\}\).*/\2\3/p')"
     [ -n "$ts" ] && { printf '%s.%s.%s %s:%s:%s\n' "${ts:6:2}" "${ts:4:2}" "${ts:0:4}" "${ts:8:2}" "${ts:10:2}" "${ts:12:2}"; return; };; esac
   [ -f "$s" ] && _fmt_epoch "$(stat -c %Y "$s" 2>/dev/null)" || echo "unknown"; }
-_salv_block(){ local idx="$1" tok="$2" url="$3" src="$4" method dir ifaces turns name last wj ls
+# _salv_trust <source> → "<verify yes|no> <fingerprint>": how the identity found there trusted its panel — the agent
+# config's panel.verify / fingerprint, or a Docker .env's TLS_VERIFY / TLS_FINGERPRINT (+ a learned data/node/panel-fp
+# beside it), or the leftover container's own environment. A learned panel-verify=yes with NO learned panel-fp is a
+# transfer to a CA-verified panel: no pin then — never the pin of the panel the node left (as lib/common.sh's
+# docker_node_panel and docker/node-entrypoint.sh read it).
+_salv_trust(){ local s="$1" v="" f="" d
+  case "$s" in
+    *config.json)
+      v="$(python3 -c 'import json,sys;print("yes" if (json.load(open(sys.argv[1])).get("panel") or {}).get("verify",True) else "no")' "$s" 2>/dev/null || true)"
+      f="$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("panel") or {}).get("fingerprint") or "")' "$s" 2>/dev/null || true)";;
+    "the swg-node container")
+      d="$(docker inspect swg-node --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)"
+      v="$(printf '%s\n' "$d" | sed -n 's/^TLS_VERIFY=//p' | sed -n 1p)"; f="$(printf '%s\n' "$d" | sed -n 's/^TLS_FINGERPRINT=//p' | sed -n 1p)"
+      d=/opt/swg-panel-docker;;
+    *)
+      v="$(sed -n 's/^TLS_VERIFY=//p' "$s" 2>/dev/null | sed -n 1p | tr -d '"' || true)"
+      f="$(sed -n 's/^TLS_FINGERPRINT=//p' "$s" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]\{1,\}#.*$//' | tr -d '"' || true)"
+      d="$(dirname "$s" 2>/dev/null)";;
+  esac
+  case "$s" in *config.json) ;; *)
+    _lv="$(head -n1 "$d/data/node/panel-verify" 2>/dev/null | tr -d '[:space:]' || true)"; [ -n "$_lv" ] && v="$_lv"
+    _lf="$(head -n1 "$d/data/node/panel-fp" 2>/dev/null | tr -d '[:space:]' || true)"; [ -n "$_lf" ] && f="$_lf"
+    [ "$_lv" = yes ] && [ -z "$_lf" ] && f="";; esac
+  [ "$v" = yes ] || v=no
+  printf '%s %s\n' "$v" "$(printf '%s' "$f" | tr -cd '0-9A-Fa-f:')"; }
+# _salv_learned <docker dir> — what that Docker node LEARNED about its panel overrides the $_t / $_u just read from its
+# .env (or its container's environment): data/node/panel-token and panel-url, as docker/node-entrypoint.sh reads them.
+_salv_learned(){ local _x
+  _x="$(head -n1 "$1/data/node/panel-token" 2>/dev/null | tr -d '[:space:]' || true)"; [ -n "$_x" ] && _t="$_x"
+  _x="$(head -n1 "$1/data/node/panel-url" 2>/dev/null | tr -d '[:space:]' || true)";   [ -n "$_x" ] && _u="$_x"
+  return 0; }
+_salv_block(){ local idx="$1" tok="$2" url="$3" src="$4" method dir ifaces turns name last wj ls _sv _sf
   case "$src" in
     *config.json) method="Bare-metal"; dir="/etc/swg-agent";;
     "the swg-node container") method="Docker"; dir="/opt/swg-panel-docker";;
@@ -419,14 +587,19 @@ _salv_block(){ local idx="$1" tok="$2" url="$3" src="$4" method dir ifaces turns
     ifaces="$(python3 -c 'import json;print(" ".join((json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).keys()))' 2>/dev/null || true)"; turns="?"
   fi
   name=""; last=""
-  if [ -n "$url" ] && command -v curl >/dev/null 2>&1; then
-    wj="$(auth_curl "$tok" -fsS -k --max-time 6 "${url%/}/api/node/whoami" 2>/dev/null || true)"
+  # …asked WITH THE TRUST THAT IDENTITY HAD (its pin, or its CA) — a salvaged token is still a live credential, and a
+  # curl -k sent it to whatever now answers at the address it last knew. No answer = the same "unknown" as before.
+  if [ -n "$url" ] && command -v python3 >/dev/null 2>&1; then
+    read -r _sv _sf <<< "$(_salv_trust "$src")"
+    wj="$(SWG_TOK="$tok" panel_req GET "${url%/}/api/node/whoami" "${_sv:-no}" "${_sf:-}" 6 2>/dev/null || true)"
     name="$(printf '%s' "$wj" | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p')"
     ls="$(printf '%s' "$wj" | sed -n 's/.*"last_seen": *\([0-9][0-9]*\).*/\1/p')"; [ -n "$ls" ] && last="$(_fmt_epoch "$ls")"
   fi
   echo "  [$idx]  $(b "$method node${name:+ $name}")"
   echo "           Panel URL:     ${url:-unknown}"
-  echo "           Token:         $tok"
+  # the token is a live credential, and this menu is printed on unattended runs too (their logs keep it): shown only as
+  # much as tells two identities apart (1.8.8 qualification, round 8)
+  echo "           Token:         $([ "${#tok}" -gt 12 ] && printf '%s…%s' "${tok:0:6}" "${tok: -4}" || printf '%s' '(hidden)')"
   echo "           Configs path:  $dir/"
   echo "           Interfaces:    ${ifaces:-none}"
   echo "           Turn-proxies:  ${turns:-0}"
@@ -438,15 +611,22 @@ if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ] && { [ "$_have_live_token" = n
   _salvf="$(mktemp 2>/dev/null || echo "/tmp/swg-salv.$$")"; : > "$_salvf"
   # collect every candidate identity as "<token>\t<url>\t<source>" — most authoritative first: a leftover
   # swg-node container, then docker .env (live + moved backups, NEWEST first), then the bare agent config.
+  # ⚠️ A DOCKER IDENTITY IS WHAT THE NODE LEARNED, WHERE IT LEARNED ANYTHING. A transfer (another panel took the node
+  # over) or a re-point writes data/node/panel-url / panel-token beside the .env, and the node ran on those — its .env
+  # (and the container's environment, made from it) still named the panel it LEFT. Recovering from the .env re-enrolled
+  # a transferred node with the old panel's address and key. (_salv_learned, above; the trust: _salv_trust.)
   if command -v docker >/dev/null 2>&1; then
     _env="$(docker inspect swg-node --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)"
-    _t="$(printf '%s\n' "$_env" | sed -n 's/^NODE_TOKEN=//p' | head -1)"
-    [ -n "$_t" ] && printf '%s\t%s\t%s\n' "$_t" "$(printf '%s\n' "$_env" | sed -n 's/^PANEL_URL=//p' | head -1)" "the swg-node container" >> "$_salvf"
+    _t="$(printf '%s\n' "$_env" | sed -n 's/^NODE_TOKEN=//p' | sed -n 1p)"; _u="$(printf '%s\n' "$_env" | sed -n 's/^PANEL_URL=//p' | sed -n 1p)"
+    _salv_learned /opt/swg-panel-docker
+    [ -n "$_t" ] && printf '%s\t%s\t%s\n' "$_t" "$_u" "the swg-node container" >> "$_salvf"
   fi
   for _f in /opt/swg-panel-docker/.env $(ls -dt /opt/swg-panel-docker.converted-*/.env /opt/swg-panel-docker.uninstalled-*/.env 2>/dev/null || true); do
     [ -f "$_f" ] || continue
-    _t="$(sed -n 's/^NODE_TOKEN=//p' "$_f" | head -1 | tr -d '"')"
-    [ -n "$_t" ] && [ "$_t" != "set-in-nodes-screen" ] && printf '%s\t%s\t%s\n' "$_t" "$(sed -n 's/^PANEL_URL=//p' "$_f" | head -1 | tr -d '"')" "$_f" >> "$_salvf"
+    _t="$(sed -n 's/^NODE_TOKEN=//p' "$_f" | sed -n 1p | tr -d '"')"; _u="$(sed -n 's/^PANEL_URL=//p' "$_f" | sed -n 1p | tr -d '"')"
+    [ -n "$_t" ] && [ "$_t" != "set-in-nodes-screen" ] || continue
+    _salv_learned "$(dirname "$_f")"
+    printf '%s\t%s\t%s\n' "$_t" "$_u" "$_f" >> "$_salvf"
   done
   if [ -f /etc/swg-agent/config.json ] && command -v python3 >/dev/null 2>&1; then
     python3 - >> "$_salvf" 2>/dev/null <<'PY' || true
@@ -479,8 +659,8 @@ PY
     while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); _salv_block "$_i" "$_t" "$_u" "$_s"; done <<EOF2
 $_uniq
 EOF2
-    printf "  Number to re-enroll with (or $(b Enter) to skip and set up a new node — you supply a token, panel → Nodes or -key): "; _pick=""; read -r _pick 2>/dev/null </dev/tty || _pick=""
-    if printf '%s' "$_pick" | grep -qE '^[0-9]+$'; then
+    printf "  Number to re-enroll with (or $(b Enter) to skip and set up a new node — you supply a token, panel → Nodes or -key): "; _pick=""; read -r _pick 2>/dev/null </dev/tty || { _pick=""; echo "(no terminal — skipped)"; }
+    if printf '%s' "$_pick" | grep -cE '^[0-9]+$' >/dev/null; then
       _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
       salv_tok="$(printf '%s' "$_line" | cut -f1)"; salv_url="$(printf '%s' "$_line" | cut -f2)"; salv_src="$(printf '%s' "$_line" | cut -f3-)"
     fi

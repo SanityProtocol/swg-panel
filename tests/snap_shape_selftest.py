@@ -62,6 +62,17 @@ P._snap_sanitise(s)
 check("a rate map keeps its good entries and drops the rest",
       s["exit_rate"] == {"tun0": {"up": 7.0, "down": 2.0}}, s["exit_rate"])
 
+# `generated_at` is cleaned the same way, and for the same reason: three readers int() it — fp_converged on
+# every convergence check, the warm start at boot — so an unparseable one used to raise THERE. A node sending an
+# ISO string (a plausible future build) could stop a sync mid-flight, or keep the panel from starting.
+for bad, want in (("1700000000", 1700000000), (1700000000.9, 1700000000), ("x", None), ({}, None), (None, None)):
+    s = {"generated_at": bad, "interfaces": {}}
+    err = P._snap_sanitise(s)
+    got = s.get("generated_at")
+    check("generated_at %r is cleaned to %r, never refused" % (bad, want), err is None and got == want, (err, got))
+check("a good generated_at is left exactly as it was", P._snap_sanitise(s := {"generated_at": 42}) is None
+      and s["generated_at"] == 42, s)
+
 print("\n[2] malformed STATE is refused, with a reason that names the field")
 for field, bad in (("interfaces", {"awg0": "x"}), ("interfaces", "x"),
                    ("wdtt", ["x"]), ("csqtt", 7), ("csqtt", {"c1": 3})):

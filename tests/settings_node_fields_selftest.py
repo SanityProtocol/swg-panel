@@ -22,6 +22,7 @@ Structural, from the source — it cannot be satisfied by a comment or a test fi
 
 Run: python3 tests/settings_node_fields_selftest.py (0 = pass)
      --perturb  drops `exits` from diffList, the way the first pass shipped it, and expects RED.
+     --perturb-publish  drops `default_routing` from the /api/state node record and expects RED (exit 0 when caught).
 """
 import os, re, sys
 
@@ -139,10 +140,60 @@ cs = block(psrc, r'"csqtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k =
 check("the interface meta publishes exit_id", bool(meta))
 check("wdtt_cfg publishes exit_id", '"exit_id"' in wd, wd[:120])
 check("csqtt_cfg publishes exit_id", '"exit_id"' in cs, cs[:120])
-# …and they must agree about the whole egress quartet, since one ladder serves all three kinds.
-for k in ("egress_mode", "egress_node", "egress_ip", "wan_iface", "routing", "exit_id"):
-    check("both self-contained kinds publish %s" % k, ('"%s"' % k) in wd and ('"%s"' % k) in cs)
+# …and they must agree about the whole egress set, since one ladder serves all three kinds.
+#
+# ⚠️ DERIVED FROM THE SAVE PATH, NOT TYPED HERE. This used to be a hand-written tuple of six names, and a
+# seventh field (`routing_exit_ips`, the exit IP) was added to the ladder, stored, and published by none of
+# the three builders — the EXACT defect at the top of this file, past the gate written for it, because the
+# gate could only see the names somebody remembered to add. Read the keys the egress ladder actually writes
+# instead: every `rec[...] = ` and `rec.pop(...)` in `_apply_egress_mode` and its helpers is a field the
+# browser must get back, or the next save rebuilds the record without it.
+def _fn(src, name):
+    """One top-level function's body, by name — sliced to the next top-level `def`."""
+    i = src.index("\ndef %s(" % name) + 1
+    j = src.find("\ndef ", i + 1)
+    return src[i:j if j > 0 else len(src)]
 
+
+_ladder = _fn(psrc, "_apply_egress_mode") + _fn(psrc, "_apply_exit_ips")
+_written = set(re.findall(r'rec\["([a-z_]+)"\]\s*=', _ladder)) | set(re.findall(r'rec\.pop\("([a-z_]+)"', _ladder))
+# ⚠️ THE TYPED LIST IS A FLOOR, AND THE DERIVATION ONLY ADDS TO IT. Replacing the floor WITH the derivation
+# is what the first version of this did, and it silently dropped `egress_ip` — which the ladder does not
+# write (the per-handler code sets it), so deriving from the ladder alone left the one field the SNAT
+# depends on unguarded, and removing it from `wdtt_cfg` kept the gate green. Verified by perturbation both
+# ways. The floor can only grow: a field here is checked whoever writes it, and a NEW ladder field is picked
+# up without anyone remembering to type it.
+_FLOOR = {"egress_mode", "egress_node", "egress_ip", "wan_iface", "routing", "exit_id"}
+check("the egress ladder's fields were found (an empty set would leave only the floor)", len(_written) >= 5, sorted(_written))
+check("…and the derivation still covers the ladder's own half of the floor (a rename would show up here)",
+      _FLOOR - {"egress_ip"} <= _written, sorted((_FLOOR - {"egress_ip"}) - _written))
+for k in sorted(_FLOOR | _written):
+    check("the interface meta publishes %s" % k, ('ifc["%s"]' % k) in psrc, k)
+    check("both self-contained kinds publish %s" % k, ('"%s"' % k) in wd and ('"%s"' % k) in cs, k)
+
+# ── the server half for a NODE-level field: /api/state must PUBLISH what nFields reads ─────────────────────
+# ⚠️ THE SAME write-once-then-lost SHAPE, ONE LEVEL UP. `nFields` rebuilds the node draft from the record /api/state
+# serves; a field the node-update handler stores and the node publisher does not send reads as absent, the draft holds
+# its empty form, and the next Settings save of ANYTHING on that node posts it back and clears it. The interface half of
+# this file could never see it: node fields have their own publisher. Derived from what `nFields` actually reads
+# (`n.<field>`), so a new node field is checked the day it is drafted. P3's `default_routing` is the reason this exists.
+_nf_blk = block(src, r"const nFields = n => \(\{")
+_nf_blk = _nf_blk[:_nf_blk.index("exits: (n.exits")] if "exits: (n.exits" in _nf_blk else _nf_blk   # the exit map reads `x.`, not `n.`
+_reads = set(re.findall(r"\bn\.([a-z_]+)", _nf_blk))
+_pub = block(psrc, r'out\.append\((?=\{"id": nid, "name": c\.get\("name", nid\), "color")', "(", ")")
+if "--perturb-publish" in sys.argv:
+    _cut = '"default_routing": c.get("default_routing")'
+    assert _cut in _pub, "perturbation anchor missing — this run would FALSE-PASS"
+    _pub = _pub.replace(_cut, '"_gone": c.get("default_routing")')
+check("the node publisher was read at all", len(_pub) > 2000 and len(_reads) >= 10, (len(_pub), sorted(_reads)))
+_unpub = sorted(k for k in _reads if ('"%s":' % k) not in _pub)
+check("every node field the Settings draft reads is PUBLISHED by /api/state, or the next save clears it",
+      not _unpub, _unpub)
+check("…default_routing and its exit addresses among them (P3)",
+      {"default_routing", "default_routing_exit_ips"} <= _reads, sorted(_reads))
+
+if "--perturb-publish" in sys.argv:
+    sys.exit(0 if any("PUBLISHED" in f for f in FAILS) else 1)
 if PERTURB:
     if FAILS:
         print("\nperturbed: a per-node field missing from diffList was CAUGHT (%d red) — Save would have "

@@ -552,6 +552,7 @@ def main():
                 os.remove(path)
             continue
         rid = str(req.get("id") or name[:-5])
+        rid = re.sub(r"[^A-Za-z0-9_.-]", "_", os.path.basename(rid)).lstrip(".") or "req"   # a file name, never a path (`../`)
         try:
             ok, msg = _handle(str(req.get("verb") or ""), [str(a) for a in (req.get("args") or [])])
         except Exception as e:

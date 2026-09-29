@@ -1,0 +1,76 @@
+{
+ "base": "4c700c7",
+ "dead_after": 3052800,
+ "now": 1790249840,
+ "range_spec": {
+  "day": [
+   1,
+   300,
+   86400
+  ],
+  "hour": [
+   0,
+   250,
+   3600
+  ],
+  "live": [
+   0,
+   200,
+   3000
+  ],
+  "month": [
+   3,
+   400,
+   2592000
+  ],
+  "week": [
+   2,
+   350,
+   604800
+  ]
+ },
+ "replies": {
+  "/api/block-stats?range=day": "12a55d04c19e419b5720510e7c9c3ce28b0b38845a7c95a107b06e5f9d525a6e",
+  "/api/block-stats?range=hour": "a1fc85e49575a948ba385fb5e22043174d3216db533da2fc7cd1c13fd611adf4",
+  "/api/block-stats?range=live": "6a731c2805da0b6abc7fc25a8d6a3133aa1b79b4da299324c4a2b92174154530",
+  "/api/block-stats?range=month": "d1d9820f667b58734ba4ce0fd7c2fd6f5c2f416a939d94c822915dac26dafbc7",
+  "/api/block-stats?range=week": "376daafab42159ed6ca4c5c2d3dfca3b63175a0a7cc6186c461e6fdec4778012",
+  "/api/category-history?range=day": "9ba27cd7fcbf9ed0024c5d444fcdbaebdcb0ed152a58389163b5a761ec8b47f6",
+  "/api/category-history?range=hour": "5c7b1623628d7cf14b447ff70b6d2409085b67b268ce9491c4f851867f7c9fd7",
+  "/api/category-history?range=live": "ede4d7b1f5e8ec0361562274c215bcfeb0ae56f03b6c49c828bcc4b3da61eb2b",
+  "/api/category-history?range=month": "3b766f933f0a35195e5a335ca352bfb19ce55389868a3a499b8b66d0ca2c2d0c",
+  "/api/category-history?range=week": "deab78eab40c4a0beb247a1deffa9f9e14843c4403be8b58cb51235d5fcdb61b",
+  "/api/exit-history?range=day": "6feba72bbb6e4205a207dda2dfca837e50f2b3d88d61365f3158dacdc692f7bf",
+  "/api/exit-history?range=hour": "78e2f7da1f9ea557c73145cda7fb251bc80a102141e6367710cd6091f7eff127",
+  "/api/exit-history?range=live": "2ecc727962f8bb06f6bc00330f9e16988043b4fdc77403f72956dd072468ecaa",
+  "/api/exit-history?range=month": "6097dac382fdcc97080314e1f57a00c57b1627e8b904f22de0d4731dbfdfb49b",
+  "/api/exit-history?range=week": "618480478502e7dba9a7e081e9ee3cac4436560dff25a863018cec789f7f2c6a",
+  "/api/iface-series?node=n1&iface=awg0&range=day": "39c513a610fd59c619ed7223b410fe4ea9e5cae86b081312b032b862f4527e73",
+  "/api/iface-series?node=n1&iface=awg0&range=hour": "06356e50d7a7737debbfb81cf40f40d2c15250465184d350d90b6487cb5e759c",
+  "/api/iface-series?node=n1&iface=awg0&range=live": "cb55d77ffc40be2a896aaba1913130ccfbfb538c373e57bd7f3fb612e28c72bb",
+  "/api/iface-series?node=n1&iface=awg0&range=month": "bcd9ecf47e07e4c1a6a5cb4b58f116c5a4f37c36591edb91b12a83e54e362432",
+  "/api/iface-series?node=n1&iface=awg0&range=week": "660b84999af298446efa9956a0b80abfe708224380e98dfb92260d636076f180",
+  "/api/mesh-history?range=day": "9af167cce68b11d6fc78124f27d9ac12874950083b249397f3c84a93af2c0df2",
+  "/api/mesh-history?range=hour": "c7b8328df7f6cdf55a4dd02f400364f7143ee2d090c78492da010c1114869f33",
+  "/api/mesh-history?range=live": "d32c6bbbcbf70d440820a33a6d8f264f493f3d1646a89a688c0f2f685be57fca",
+  "/api/mesh-history?range=month": "45cd88210bddc0ed2e18b12909404b2d42d72b4e60009f19899723300ca1ba8d",
+  "/api/mesh-history?range=week": "6cafe57b8d0607f5e25d3cbd479df89896d5a4f548c16d20ab1097ad3c17bc6f",
+  "/api/node-history?node=n1": "045b5d3f47717b17f4d5cdba571f946cebca6003d4e881c580142ae3c323f308",
+  "/api/node-history?node=n1&range=day": "1af8b8945be94e5e0dc1d7ee28482a2c090e80beef364aae33f064c7f732a334",
+  "/api/node-history?node=n1&range=hour": "1f3d08f352fb4540891ab2a68aa79dac0d4d1de583fee1c3aaa033afa9caec02",
+  "/api/node-history?node=n1&range=live": "045b5d3f47717b17f4d5cdba571f946cebca6003d4e881c580142ae3c323f308",
+  "/api/node-history?node=n1&range=month": "23f196446feb4c34078e73a8292be626201ab0e32051365e2ebd3d9c2c8f999d",
+  "/api/node-history?node=n1&range=week": "be29b43296c3441f5ceca7b1704d8f963ee4c90a49138528ae8e92ce1551c7fc",
+  "/api/presence?range=day": "3d359ee2ae1f8a73de470f5c654f22399796bb9d6ea13e74c60cbc4bd620f5b8",
+  "/api/presence?range=day&blocks=24&step=3600": "3d359ee2ae1f8a73de470f5c654f22399796bb9d6ea13e74c60cbc4bd620f5b8",
+  "/api/presence?range=hour&blocks=24&step=3600": "9e2ed4b7de77f3ebcdf47180557eb558ea8db2bcb0041dd89c4a6b6f1dbf0c4b",
+  "/api/presence?range=live&blocks=24&step=3600": "7517d952c326943543617830902a752079b322a2c26b82664abe8c6c8a19bf75",
+  "/api/presence?range=month&blocks=24&step=3600": "6740f01cbdf819c0ad22c34aa5b84024d0b416058032fd4b4f054b61de6bba5d",
+  "/api/presence?range=week&blocks=24&step=3600": "fe80cb8ffbc0a2b36448624d52a42c882c945c35b85ca9d71b817b2a85b95b97",
+  "/api/turn-history?range=day": "73c9f491cff3fb0cb636388d9a22b9b60ab25b1963d37ee8900f09121bd506df",
+  "/api/turn-history?range=hour": "8d3657c0afcbf8636721abe234ee453531ba7ddbf2a47dc2934fe9d918426e0b",
+  "/api/turn-history?range=live": "afae82a9733624841d64be35152ee3d819b81fa89eb60c2119a4fd2cbb27cb3e",
+  "/api/turn-history?range=month": "0787ef1bc64dcda96f70be0afd4c3a4dcec3fd6b75ec5927da23c99293eeec42",
+  "/api/turn-history?range=week": "848a06081cbd33210a3a8a010e7d1b0a1b47ced0f48f3ab362016dfddd617cd6"
+ }
+}

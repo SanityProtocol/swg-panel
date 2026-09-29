@@ -18,9 +18,8 @@ import { pickThemed } from "./theme.js";
 // keyflag,color,colorL,protocols}); this array is only the boot/offline FALLBACK (and a mixed-version safety
 // net if the panel predates the catalog). Keep it in step with TURN_SERVERS. `protocols` (a fork missing "awg"
 // is WireGuard-only) supersedes the old TURN_WG_ONLY set. See docs/TURN-PROXY-OVERHAUL-PLAN.md.
-// WireGuard-only rationale: kiper292 = plain wireguard-go + a parser that REJECTS awg params; anton48 (iOS) has
-// no AmneziaWG fields; samosvalishe = free-turn-proxy's FreeTurn app (integrated plain-WG client). WINGS-N is
-// app-integrated but DOES support awg; the sidecar forks relay UDP transparently.
+// WireGuard-only rationale: anton48 (iOS) has no AmneziaWG fields; samosvalishe = free-turn-proxy's FreeTurn app
+// (integrated plain-WG client). WINGS-N is app-integrated but DOES support awg; the sidecar forks relay UDP transparently.
 // Order mirrors the panel's TURN_SERVER_ORDER (cacggghp + WINGS-N pinned, then by server+app stars). This is
 // only the boot/offline fallback; the served catalog is authoritative.
 export const TURN_FORKS_FALLBACK = [
@@ -28,7 +27,6 @@ export const TURN_FORKS_FALLBACK = [
   { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0", colorL: "#9B4FC7", protocols: ["wg", "awg"] },
   { id: "MYSOREZ", label: "MYSOREZ", owner: "MYSOREZ/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#4FC7B4", colorL: "#12897A", protocols: ["wg", "awg"] },
   { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/free-turn-proxy", wrap: "-obf-profile rtpopus", keyflag: "-obf-key", color: "#E0A85F", colorL: "#C07A1E", protocols: ["wg"] },
-  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#6FD9A8", colorL: "#12A46B", protocols: ["wg"], hidden: true },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F", colorL: "#8E8420", protocols: ["wg"] },
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A", colorL: "#C24468", protocols: ["wg", "awg"] },
 ];
@@ -48,7 +46,7 @@ export function turnOwner(svc) {
 }
 
 // the installable turn-proxy forks (owner repo + the fork's obfuscation flags — the node appends a
-// fresh -wrap-key). Mirrors the installer's turn_repo_owner / turn_wrap_flags.
+// fresh -wrap-key). Mirrors the installer's turn_wrap_flags.
 // each fork has a dark-mode `color` and a deeper `colorL` (light-mode default, legible on white).
 // The turn fork registry is now SERVER-OWNED (swg-panel-server TURN_SERVERS → /api/state.turn_catalog).
 // the live fork list — served catalog mapped to the SPA shape, else the fallback (mixed-version safe).
@@ -62,11 +60,13 @@ export function turnForkList() {
       settings: Array.isArray(s.settings) ? s.settings : [], client_settings: Array.isArray(s.client_settings) ? s.client_settings : [], clients: s.clients || [], compat: s.compat || {}, client_schemas: s.client_schemas || {},
       wdtt_versions: Array.isArray(s.wdtt_versions) ? s.wdtt_versions : [],   // published builds; EMPTY = nothing a node could install yet
       reach_vouched: s.reach_vouched === true,   // DEVICE ACCESS §11.2 F4: the build a create installs proves a device's owner (else the create sheet warns)
+      awg3: s.awg3 !== false,   // can its app carry AmneziaWG 3.1? The catalog says false for WINGS-N only; absent = yes (docs/AWG3-PLAN.md D-apps)
       default_client: s.default_client || "",   // the fork's own preferred app, when it should win over the one-tap rule
+      client_dns: s.client_dns || "",   // the DNS a WDTT / csqtt server hands its clients when the panel sets none (docs/DNS-SETTINGS-PLAN.md §3.3)
       cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));
   return TURN_FORKS_FALLBACK;
 }
-// Operator-facing fork list — the full catalog MINUS hidden/dead forks (cacggghp/kiper292). Lookups (turnColor/
+// Operator-facing fork list — the full catalog MINUS hidden/dead forks (cacggghp). Lookups (turnColor/
 // turnFork label) use the FULL turnForkList() so a deployed hidden-fork instance still resolves; only the pickers/
 // toggles/dropdowns use this filtered view.
 export function turnForksVisible() { return turnForkList().filter(f => !f.hidden); }
@@ -89,10 +89,25 @@ export function forkProduct(fork) {
   const f = turnForkList().find(x => x.id === fork) || {};
   return f.product || (f.kind === "wdtt" ? "WDTT" : f.label) || fork || "";
 }
+// ONE NAME PER FORK FOR A LIST OF THEM SIDE BY SIDE — a legend, a ring: the author, as everywhere, except where two listed
+// forks share an author, and then "author · product". amurcanov ships both a WDTT and a CSQTT server, and the Overview's
+// turn-proxy rings drew them as two rows both reading "amurcanov" (1.8.8 qualification, O1). Only the colliding rows grow.
+export function forkNames(forks) {
+  const n = {}, out = {};
+  (forks || []).forEach(fk => { const l = forkLabel(fk); n[l] = (n[l] || 0) + 1; });
+  (forks || []).forEach(fk => { out[fk] = n[forkLabel(fk)] > 1 ? forkPickLabel(fk) : forkLabel(fk); });
+  return out;
+}
 export function forkPickLabel(fork) {   // fork dropdowns: "author · product" (author alone where there is no product)
   const f = turnForkList().find(x => x.id === fork) || {};
   const lbl = f.label || fork || "";
   return f.product ? lbl + " · " + f.product : lbl;
+}
+// Can this fork's app carry an AmneziaWG 3.1 interface? The catalog says `awg3: false` for WINGS-N only (its app, WINGS V,
+// parses AmneziaWG 2.0); unknown → yes, the panel refuses what it has to (docs/AWG3-PLAN.md D-apps).
+export function forkSupportsAwg3(fork) {
+  const f = turnForkList().find(x => x.id === fork);
+  return !f || f.awg3 !== false;
 }
 export function forkSupportsAwg(fork) {
   const f = turnForkList().find(x => x.id === fork);

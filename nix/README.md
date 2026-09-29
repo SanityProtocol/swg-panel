@@ -922,6 +922,15 @@ its output where the panel and the node read them, so the Update dialog says *yo
 bumping* instead of *the button is broken*. And this repo's own CI floats nixpkgs weekly against
 both VM suites for exactly this — the early warning is meant to reach us before it reaches you.
 
+**AmneziaWG 3.1 waits for your channel.** The panel offers an interface's 3.1 switch only on a node
+whose AmneziaWG kernel module (or `amneziawg-go`, where no module is loaded) and `awg` tools are 3.1 —
+it reads that from the node itself. nixpkgs 25.11 and 26.05 ship 2.0, so on a NixOS node the switch is
+greyed out with *"its AmneziaWG kernel module is 2.0"*. There is nothing to configure: it unlocks by
+itself once the node's channel ships 3.1 (unstable does already). We do not overlay unstable's AmneziaWG
+for you — the module, the tools and `amneziawg-go` have to move together (2.0 tools cannot drive a 3.x
+module at all), the module would build from source on every kernel change, and a failed build fails your
+whole `nixos-rebuild`.
+
 ### Switching `delivery` on a node that already runs
 
 Changing `delivery` and rebuilding is not a migration, and it is not a supported one — the two arms

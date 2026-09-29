@@ -1,13 +1,13 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.7-beta</code></p>
+<p align="center"><code>1.8.8-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.7-beta** — [full changelog](CHANGELOG.md)
-> - **Networks behind a device.** A device can front a network — the office LAN behind a router, the home network behind a Raspberry Pi — and the node carries it to clients whether their interface sends traffic direct, forwards it to another node or routes it by rule. The node can test that the network answers, and you choose who reaches it: everyone on the node, or only its owner and the people and groups you share it with.
-> - **Who can reach a device, and Private devices.** Every interface, WDTT server and csqtt server sets who may open connections to the devices on it — Everyone on this node, Same user and their groups, or Nobody — and a device marked Private is reachable only by its owner's other devices. ⚠️ Interfaces you already have start at Same user and their groups, so after the update devices of different users stop reaching each other until you put those people in a group or set the interface to Everyone on this node.
-> - **User groups.** Put people in named groups: members reach each other's devices, and a network can be shared with a whole group at once.
-> - **Relay works on smart-routing legs.** Forward or Relay is now a choice for a mesh leg that carries only some of an interface's destinations, not only for one that carries the whole interface.
+> **What's new in 1.8.8-beta** — [full changelog](CHANGELOG.md)
+> - **Traffic totals for any stretch of days.** The Peers, Users and Groups screens count every device's traffic through counter restarts, reinstalls and container recreates, over all time or any days you pick. A person's total keeps their deleted and handed-on devices, a group's adds up its members', and days can be counted in your own time zone.
+> - **Routing rules for chosen people.** A routing rule can apply to everyone on an interface or only to chosen people, groups and single devices — a user's new device is covered with no edit — and it can choose the address its traffic leaves by. ⚠️ On Hybrid SNI and Kernel SNI, a Block rule placed below an Exit or Direct rule that covers some of the same destinations no longer stops them after the update — the rule above wins, as the list's order says — so move such a Block above it.
+> - **A server's default can be a rule list.** One list routes the server's interfaces set to Auto, what its smart interfaces leave unsaid, and the traffic other servers send out through it — by site, list or address: out one of its exits, directly, or blocked. A Forward to … rule there sends that traffic one hop further, to a server the first one cannot reach.
+> - **AmneziaWG 3.1.** An AmneziaWG interface can run AmneziaWG 3.1 — header protection, random trailers and Amnezia's 3.1 timings — chosen when you create it or switched either way later, and before a switch the panel lists every device it cuts off until they re-import. Only apps that carry 3.1 connect, and the server's AmneziaWG module and tools must be 3.1 too.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -162,6 +162,8 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 **TLS:**
 - **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
 - **letsencrypt-ip** — real cert for a **public IP**, no domain needed. Short-lived (**~6 days**); `acme.sh` renews it daily, so a renewal outage of about a week expires it. Offered only when the panel URL is a public IP.
+- **Sharing acme.sh with another panel** (e.g. 3x-ui on the same box): acme.sh keeps one install target per address or domain, and the other panel's certificate menu takes it over. The panel does not depend on it — every 6 hours it takes the current certificate straight from acme.sh's entry when it is newer than the one it serves (behind the installer's nginx/caddy too, which it reloads), and says under **Settings → Panel access → Certificate** that another program renews it. Bare metal only; a Docker panel has its own acme.sh.
+- **Renew now** — when the certificate is expired, overdue or its renewal is failing, **Settings → Panel access → Certificate** offers **Renew now**: it runs acme.sh's own renewal (never forced — a certificate that is not due is reported as such) and shows acme.sh's error when it fails, instead of the silence of its cron job. Bare metal only.
 - **cloudflare** — real cert via DNS-01; **never uses port 80**. The token needs `Zone:DNS:Edit` + `Zone:Read`.
 - **cf15** — Cloudflare **Origin** certificate, **15 years**, issued via the CF API (needs an **API token** with `Zone` → `SSL and Certificates` → `Edit`; the legacy Origin CA Key is deprecated). ⚠️ Only trusted **behind Cloudflare's proxy** (orange cloud) — a direct hit to the origin shows an untrusted cert. No renewal needed for 15 years.
 - **selfsigned** — instant; browsers warn once. Good for getting going or behind a tunnel.
@@ -176,6 +178,8 @@ sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.
      BASIC_USER=admin BASIC_PASS='…' bash -s bare-metal \
      < <(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)
 ```
+
+**One panel per box.** If a panel of the *other* method is already running here (a Docker panel when you install bare-metal, or the reverse), the installer stops and asks: **abort** (default), **stop the other** (it is disabled / set to `restart=no` and left stopped — nothing is deleted, and `update.sh` leaves it stopped), or **keep both**. Two panels keep separate servers and settings and both answer at the same address, so the browser shows whichever replies. To *move* between methods, use `bootstrap.sh` with the other method — it converts. Unattended runs answer with `SWG_OTHER_PANEL=abort|stop|keep`; with neither a terminal nor that, the installer refuses.
 
 ## Adding a node
 
@@ -199,7 +203,7 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
 - **A WDTT or csqtt server in a container** — every fork ships a Docker install, and such a server's `-config-dir` is a path inside *its* filesystem, not the node's. Both the scan and the take-over resolve it through the server's own mount namespace (`/proc/<pid>/root`), so a box that has also run a fork on bare metal — where both sit at `/etc/wdtt` — cannot have the two attributed to each other: reading the wrong one would seed the adoption with the wrong identity and password store and break every client of both. Taking one over copies the identity and store from inside the container, then stops the **container** rather than only the process, the same way a systemd unit is disabled rather than killed — one set to `restart: unless-stopped` otherwise returns at once and holds the port. Needs docker access, as above.
 - Ignored candidates are recorded and listed under **Settings → Interfaces**; one that later becomes managed drops off by itself.
 
-Against a **self-signed** panel the installer **auto-pins the cert on first contact** (trust-on-first-use): the node stores its sha256 and checks it on every handshake, before the token is sent — so a man-in-the-middle can't impersonate the panel even without a CA. A **real-CA** panel is verified against the system trust store instead. Override with `TLS_VERIFY=yes|no` or an explicit `TLS_FINGERPRINT=<sha256-hex>`. If the panel later moves (host/port), a node **auto-re-points** to the new address — but only when it still presents the pinned/trusted cert.
+Against a **self-signed** panel the installer **auto-pins the cert on first contact** (trust-on-first-use): the node stores its sha256 and checks it on every handshake, before the token is sent — so a man-in-the-middle can't impersonate the panel even without a CA. A **real-CA** panel is verified against the system trust store instead. Override with `TLS_VERIFY=yes|no` or an explicit `TLS_FINGERPRINT=<sha256-hex>`. If the panel later moves (host/port), a node **auto-re-points** to the new address — but only when it still presents the pinned/trusted cert. An **expired** real-CA certificate is never pinned as if it were self-signed (the node keeps verifying it and syncs once the panel is renewed). A pin that stops matching fails closed — the node cannot tell a renewed certificate from an impersonator's — and its log says what to do. **A re-install never takes a changed certificate on its own:** it decides whom the node trusts *before* it sends the node's token anywhere or changes anything — at a terminal it asks (Enter keeps the old pin), unattended it refuses; either way a refused run **stops there**, the box exactly as it was and serving its peers, the token sent nowhere. Accept the new certificate by answering `y`, or with `TLS_FINGERPRINT=<its sha256>` (`TLS_VERIFY=yes` when a public CA vouches for it — such a certificate is then verified, not pinned, since its CA re-issues it every few months). Every installer, updater, converter and uninstaller call that carries the node token checks the panel on the very connection it sends on — the pin, or the CA — exactly as the node does.
 
 **Per-node actions:** **Edit** (endpoint/colour — the endpoint goes into client configs), **Rotate token** (the old one stops working immediately; re-enroll), **Remove** (revokes the token and unassigns the node).
 
@@ -264,6 +268,18 @@ cascade is one instance, `<iface>`, and each peer node a smart-routing interface
 `<iface>.<peer>`, whose divert matches that leg's routing mark. The divert takes only a new TCP connection whose
 destination the kernel routes into a mesh link, and a watchdog removes it whenever the relay cannot be proven to be
 accepting what it is handed. Every relay on a node shares one CPU-capped slice.
+
+**Mesh links.** **Settings → Network → Mesh links** decides which node pairs get a link. A **full mesh** links every
+pair: every leg is measured and a newly chosen forward target works at once, and each node carries one AmneziaWG
+interface, one `/31` and one UDP port per other node. **On demand** links only the pairs a forward or a smart rule's
+exit routes over (plus a link the operator configured — relay, dial address), creates a link in the same sync that
+plans the traffic over it (the entry node creates the interface before it routes, so the interface's traffic is held
+until the link is up, typically 10–15 s, rather than sent out directly — only a link the node fails to create lets it
+out, as a failed rebuild already can), and removes a link nothing has used for an hour.
+**Auto**, the default, is a full mesh up to 30 nodes and on demand above. A mesh subnet — per node or the panel's —
+must be an IPv4 range of `/31` or larger, and a node's own must hold the links it anchors (every link takes its `/31`
+from the pool of the pair's smaller node id); a pool that runs out is reported on that node, naming the peers it
+cannot link.
 
 ## Subscriptions & access control
 

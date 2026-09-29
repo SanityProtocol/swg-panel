@@ -60,6 +60,10 @@ services:
       # a Cloudflare Full zone. Defaults to PANEL_DOMAIN so a sub sharing the panel's domain (a different port) just
       # works; set it explicitly in .env when the sub is on its own subdomain.
       SUB_DOMAIN: "${SUB_DOMAIN:-${PANEL_DOMAIN:-}}"
+      # Where swg-sub is published (the swg-sub service's `ports:` below): the panel records it as the subscription
+      # address in Settings when nobody chose one there, so Settings, the links it builds and swg-sub agree.
+      SWG_PANEL_SUB_BIND: "${SUB_BIND:-0.0.0.0}"
+      SWG_PANEL_SUB_PORT: "${SUB_PORT:-8444}"
       # TLS is issued INSIDE the container by the bundled acme.sh — same options as bare-metal:
       #   letsencrypt | letsencrypt-ip | cloudflare | cf15 | selfsigned | none   (or mount a real cert below)
       TLS: "${TLS:-selfsigned}"

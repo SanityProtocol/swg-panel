@@ -13,13 +13,18 @@ install: the userspace fallback awg-quick uses by itself was only ever installed
       after ensure_awg_quick_unit.
   [5] ensure_awg_userspace tries the pinned download before any source build.
   [6] forks/amneziawg-go/build.sh reproduces the pin: a full upstream commit for lib's tag, and the Go toolchain lib names.
+  [8] a build older than 3.1 at OUR path (/usr/local/bin) is replaced; the same build elsewhere is kept; the pin is a no-op.
 
 Run: python3 tests/awg_go_pin_selftest.py    (0 = pass)
      --perturb   moves install-node.sh's fallback line after the early return and lets awg_go_pinned skip its sha256 check; expects RED on [2], [3].
+     --perturb-path   drops the /usr/local/bin test from the stale-build rule; expects RED on [8] (and [2]'s operator binary).
+     --perturb-link   drops the not-a-symlink test from the stale-build rule; expects RED on [8].
 """
 import os, re, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 PERTURB = "--perturb" in sys.argv
+PERTURB_PATH = "--perturb-path" in sys.argv
+PERTURB_LINK = "--perturb-link" in sys.argv
 FAILS = []
 def check(name, cond, detail=""):
     print(("  PASS " if cond else "  FAIL ") + name + (("  — " + str(detail)) if detail and not cond else ""))
@@ -61,6 +66,13 @@ os.chmod(T + "/bin/curl", 0o755)
 CLEAN_PATH = ":".join(d for d in os.environ.get("PATH", "").split(":") if d and not os.path.exists(os.path.join(d, "amneziawg-go")))
 fns = (grab("awg_go_pinned") + grab("awg_go_needs_install")).replace("/usr/local/bin/amneziawg-go", T + "/usrlocal/amneziawg-go")
 if PERTURB: fns = fns.replace("| sha256sum -c - >/dev/null 2>&1", "| cat >/dev/null")   # the pin stops verifying
+if PERTURB_PATH:
+    _t = '[ "$bin" = %s/usrlocal/amneziawg-go ] && ' % T
+    assert _t in fns, "anchor missing — this run would FALSE-PASS"
+    fns = fns.replace(_t, "")                                                   # the path test dropped
+if PERTURB_LINK:
+    assert '[ ! -L "$bin" ] && ' in fns, "anchor missing — this run would FALSE-PASS"
+    fns = fns.replace('[ ! -L "$bin" ] && ', "")                               # the symlink test dropped
 def sh(body, serve=good, onpath=None, **env_extra):
     for f in os.listdir(T + "/path"): os.remove(T + "/path/" + f)
     if onpath: _sh.copy(onpath, T + "/path/amneziawg-go"); os.chmod(T + "/path/amneziawg-go", 0o755)
@@ -86,6 +98,29 @@ check("[2] needs install: nothing on PATH", nd(None) == "NEEDS", nd(None))
 check("[2] needs install: one of OUR earlier pins", nd(old) == "NEEDS", nd(old))
 check("[2] keeps: the operator's own binary", nd(mine) == "KEEP", nd(mine))
 check("[2] keeps: the current pin", nd(good) == "KEEP", nd(good))
+# [8] D-fallback (docs/AWG3-PLAN.md §6): a build at OUR path that is older than 3.1 is replaced. Before the pin,
+#     ensure_awg_userspace compiled upstream HEAD into /usr/local/bin — swgt still runs a 3.0 build from 2026-07-30 that no
+#     sha list names. Its UAPI lacks `random_trailers` (§4.2: measured to classify five real builds right). The same build
+#     anywhere else is the operator's or a package's and is never touched; the pin itself is a no-op.
+g30 = T + "/g30.bin"; open(g30, "wb").write(b"\x7fELF uapi: jc s1 h1 i1 header_protection content_padding\x00\n")
+g20 = T + "/g20.bin"; open(g20, "wb").write(b"\x7fELF uapi: jc s1 h1 i1\x00\n")
+g31 = T + "/g31.bin"; open(g31, "wb").write(b"\x7fELF uapi: jc s1 h1 i1 header_protection random_trailers\x00\n")
+def nd_at(binary, ours, link=False):
+    for d in ("/usrlocal", "/path"):
+        for f in os.listdir(T + d): os.remove(T + d + "/" + f)
+    dst = T + ("/usrlocal" if ours else "/path") + "/amneziawg-go"
+    if link: os.symlink(binary, dst); os.chmod(binary, 0o755)
+    else: _sh.copy(binary, dst); os.chmod(dst, 0o755)
+    script = ('set -euo pipefail\nhave(){ command -v "$1" >/dev/null 2>&1; }\nDRYRUN=false\nAWG_GO_REPLACES="%s"\n%s\n'
+              'if awg_go_needs_install; then echo NEEDS; else echo KEEP; fi\n' % (H(old), fns))
+    env = dict(os.environ, PATH=T + "/bin:" + T + "/usrlocal:" + T + "/path:" + CLEAN_PATH)
+    r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    return (r.stdout + r.stderr).strip()
+check("[8] replaces: a 3.0 build at our path", nd_at(g30, True) == "NEEDS", nd_at(g30, True))
+check("[8] replaces: a 2.0 build at our path", nd_at(g20, True) == "NEEDS", nd_at(g20, True))
+check("[8] no-op: a 3.1 build (the pin) at our path", nd_at(g31, True) == "KEEP", nd_at(g31, True))
+check("[8] keeps: the same 3.0 build anywhere else (/usr/bin, /opt/x)", nd_at(g30, False) == "KEEP", nd_at(g30, False))
+check("[8] keeps: a symlink at our path to a 3.0 build elsewhere", nd_at(g30, True, link=True) == "KEEP", nd_at(g30, True, link=True))
 for f, s in inst.items():
     body = s[s.index("ensure_wg_tools(){"):]
     body = body[:body.index("\n}\n")]

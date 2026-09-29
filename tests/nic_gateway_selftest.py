@@ -61,7 +61,7 @@ if PERTURB:
     # Reverting only the first left the rule scope's regression uncaught — which is how it shipped.
     _cuts += [('(["via", _gw] if _gw else [])', "[]"),
               ('(["via", _sg] if _sg else [])', "[]"),
-              ('for e in smart_exit if not e.get("_noroute")', "for e in smart_exit"),
+              ('for e in smart_exit + arr_exit if not e.get("_noroute")', "for e in smart_exit + arr_exit"),
               ('               and not (e["needs_gw"] and not e["gw"])]', "               ]")]
 if PSIG:
     _cuts += [("""sig.add(f"T|{T}|default|{e['via_iface']}|{str(e.get('gw') or '')}")""",

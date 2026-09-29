@@ -147,7 +147,10 @@ for name, line in (("one line", "Address = fd42::1/64, 10.8.0.1/24"), ("two line
           A.iface_net(ainfo) == ipaddress.ip_interface("10.8.0.1/24")
           and A.next_free_ip(ainfo, [{"allowed_ips": "10.8.0.2/32"}]) == "10.8.0.3")
     check("%s: the reachability test sends from 10.8.0.1" % name, N._iface_own_addr(cfg, "wg0") == "10.8.0.1")
-    mem = N._net_members(cfg, {"wg0": [{"public_key": "k", "allowed_ips": "10.8.0.2/32,192.168.50.0/24"}]})
+    try:
+        mem = N._net_members(cfg, {"wg0": [{"public_key": "k", "allowed_ips": "10.8.0.2/32,192.168.50.0/24"}]})
+    except Exception as e:          # the first-entry reader compares a v4 member with the v6 /64 and raises: a FAIL, not the end
+        mem = "raised %r" % e
     check("%s: a network behind a peer on it is read, so it is judged" % name, mem == {"wg0": {"192.168.50.0/24": ["k"]}}, mem)
 
 # ── [4] ───────────────────────────────────────────────────────────────────────────────────────────────────────────

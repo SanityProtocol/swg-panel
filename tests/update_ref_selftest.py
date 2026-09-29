@@ -44,19 +44,25 @@ WRITERS = ("update.sh", "lib/common.sh", "install-host.sh")
 NODE_SRC = ("swg-noded", "install-node.sh", "install-host.sh", "update.sh")
 srcs = {f: open(os.path.join(ROOT, f), encoding="utf-8").read() for f in WRITERS}
 if PERTURB:
+    # ⚠️ ASSERT THE ANCHOR: the one text lives in lib/common.sh now; a replace that finds it nowhere plants nothing (round 10)
+    assert sum(srcs[f].count("swg-panel/${_swg_ref}/bootstrap.sh") for f in srcs) >= 1, \
+        "perturbation anchor missing (swg-panel/${_swg_ref}/bootstrap.sh) — this run would FALSE-PASS"
     for f in srcs:
         srcs[f] = srcs[f].replace("swg-panel/${_swg_ref}/bootstrap.sh", "swg-panel/main/bootstrap.sh")
 
 print("\n[1] every writer of the update wrapper bakes the ref")
+# ONE TEXT (round 8): swg_update_wrapper_text in lib/common.sh; the three writers render it with the ref they resolved.
+m = re.search(r"^swg_update_wrapper_text\(\)\{.*?\nWRAP\n\}\n", srcs["lib/common.sh"], re.S | re.M)
+text = m.group(0) if m else ""
+# ⚠️ THE ASSIGNMENT, not any mention. This matched the first line CONTAINING the name, and a
+# comment added above it silently took that slot — the gate then judged prose instead of code.
+urls = [l for l in text.splitlines() if l.lstrip().startswith('URL="')]
+check("the wrapper text (lib/common.sh swg_update_wrapper_text) sets URL once", len(urls) == 1, urls)
+check("…and its default names the ref it is handed, not `main`",
+      bool(urls) and "${_swg_ref}" in urls[0] and "/main/bootstrap.sh" not in urls[0], urls[0] if urls else "")
 for f in WRITERS:
     body = srcs[f]
-    # the URL line inside the heredoc that becomes /usr/local/bin/swg-update
-    # ⚠️ THE ASSIGNMENT, not any mention. This matched the first line CONTAINING the name, and a
-    # comment added above it silently took that slot — the gate then judged prose instead of code.
-    urls = [l for l in body.splitlines() if l.lstrip().startswith('URL="')]
-    check("%s writes the wrapper" % f, len(urls) == 1, urls)
-    check("…and its default names the installed ref, not `main`",
-          bool(urls) and "${_swg_ref}" in urls[0] and "/main/bootstrap.sh" not in urls[0], urls[0] if urls else "")
+    check("%s writes the wrapper from that text, with the ref it resolved" % f, 'swg_update_wrapper_text "$_swg_ref"' in body)
     check("…resolved with `main` only as the fallback",
           '_swg_ref="${SWG_REF:-main}"' in body, "no _swg_ref default in " + f)
 
@@ -68,7 +74,7 @@ check("…after the default is applied, so it is never empty",
       boot.index('export SWG_REF="$REF"') > boot.index('REF="${REF:-main}"'))
 
 print("\n[3] the generated wrapper is correct for each ref, and keeps its runtime overrides")
-tmpl = [l for l in srcs["update.sh"].splitlines() if l.lstrip().startswith('URL="')][0]
+tmpl = urls[0] if urls else 'URL=""'
 for ref, want in (("", "main"), ("dev", "dev"), ("v1.9.0", "v1.9.0")):
     out = subprocess.run(["bash", "-c", '_swg_ref="${SWG_REF:-main}"; cat <<WRAP\n%s\nWRAP' % tmpl],
                          capture_output=True, text=True, env={**os.environ, "SWG_REF": ref}).stdout
@@ -91,21 +97,19 @@ print("\n[3b] ⚠️ THE SEAM — the baked ref must REACH bootstrap, not merely
 # therefore wrote a wrapper that would fetch dev's bootstrap and install main from it — found by installing
 # dev onto a wiped box and reading the wrapper (`exports=0`, where the update path writes 1), not by
 # reading the source. [[two-readers-one-grammar]]
-for f in WRITERS:
-    body = srcs[f]
-    check("%s EXPORTS the URL so bootstrap can infer from it" % f,
-          'export SWG_BOOTSTRAP_URL=' in body,
-          "the ref is baked into a variable bootstrap never sees")
+# (round 8: ONE text — every writer renders swg_update_wrapper_text, which [1] proved each of them calls)
+check("the one wrapper text EXPORTS the URL so bootstrap can infer from it", 'export SWG_BOOTSTRAP_URL=' in text,
+      "the ref is baked into a variable bootstrap never sees")
 
 # …and drive it: build the wrapper for a ref, run it with a stubbed curl+bash, and read what REF bootstrap
 # would resolve. This is the only check here that exercises the two together.
-_tmpl_lines = [l for l in srcs["update.sh"].splitlines()
+_tmpl_lines = [l for l in text.splitlines()
                if l.lstrip().startswith(('URL="', "export SWG_BOOTSTRAP_URL=", "curl -fsSL"))]
 _wrap = "\n".join(_tmpl_lines)
 _infer = """
 _ref_from_url(){ printf '%s' "${1:-}" | sed -nE \
     -e 's#^https?://raw\\.githubusercontent\\.com/[^/]+/[^/]+/([^/]+)/.*#\\1#p' \
-    -e 's#^https?://[^/]+/[^/]+/[^/]+/raw/([^/]+)/.*#\\1#p' | head -1; }
+    -e 's#^https?://[^/]+/[^/]+/[^/]+/raw/([^/]+)/.*#\\1#p' | sed -n 1p; }
 REF="${SWG_REF:-}"; [ -z "$REF" ] && REF="$(_ref_from_url "${SWG_BOOTSTRAP_URL:-}")"; echo "REF=${REF:-main}"
 """
 for ref, want in (("dev", "dev"), ("v1.9.0", "v1.9.0"), ("", "main")):
@@ -132,6 +136,7 @@ if PERTURB:
     nsrc["swg-noded"] = nsrc["swg-noded"].replace(_tm.group(0), _tm.group(0).replace("{ref}", "main"), 1)
     for f in ("install-node.sh", "install-host.sh"):
         nsrc[f] = re.sub(r'\n\s*"update_ref": "\$\{_swg_[a-z_]*ref\}"', "", nsrc[f])
+    assert nsrc["update.sh"].count("  ensure_node_update_ref #") == 1, "perturbation anchor missing in update.sh — this run would FALSE-PASS"
     nsrc["update.sh"] = nsrc["update.sh"].replace("  ensure_node_update_ref #", "  #")
 
 check("swg-noded's self-update command is a TEMPLATE, not a hardcoded ref",
@@ -141,7 +146,10 @@ check("…and it defaults to main when nothing recorded a ref",
       'DEFAULT_UPDATE_REF = "main"' in nsrc["swg-noded"])
 for f in ("install-node.sh", "install-host.sh"):
     check("%s records the installed ref for the node" % f, '"update_ref"' in nsrc[f])
-    check("…from SWG_REF, defaulting to main", re.search(r'_swg_[a-z_]*ref="\$\{SWG_REF:-main\}"', nsrc[f]) is not None)
+    # install-node.sh defaults a hand-run re-install to the branch the node ALREADY follows (EXIST_REF), then main —
+    # still SWG_REF first and main last; tests/node_track_ref_selftest.py [3] exercises it.
+    check("…from SWG_REF, defaulting to main",
+          re.search(r'_swg_[a-z_]*ref="\$\{SWG_REF:-(main|\$\{EXIST_REF:-main\})\}"', nsrc[f]) is not None)
 
 # and the command it actually builds, for each ref — driven through the real function
 import importlib.machinery, importlib.util

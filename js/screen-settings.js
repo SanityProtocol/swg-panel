@@ -10,10 +10,10 @@
  * lives here rather than being split between screen and store.
  */
 
-import { T, Trich, Tsplit, plural, srvText } from "./i18n.js";
+import { T, Trich, Tsplit, plural, srvText, locale } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
 import {
-  BASE, ago, ipChoices, seen, url,
+  BASE, ago, ipChoices, seen, url, fmtBytes, panelNow,
 } from "./util.js";
 import {
   LEAVE_MSG, clearUnsavedGuard, setUnsavedGuard,
@@ -43,20 +43,21 @@ import {
 import {
   AsnHint, BlockListPicker, CAT_PROVIDER_DEFAULTS, DescInfo, FleetAssign, HostHealth, ListInfo,
   MODE_META, ModeTabs, NewBlockCatSheet, ProvTag, blockCatDisabled, blockSrcOk, capBadges, catCap, catDescOf,
-  catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
+  blistText, blockCatLabel, catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
   TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitOptionGroups, fleetRuleCats, provLabelOf, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
-  exitHealthMark,
+  exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
 } from "./routing.js";
 import { classifyAll } from "./classify.js";   // the one grammar — CustomListSheet accepts what a rule accepts
-import { customCaps, customTargets } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
+import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
 import {
   TURN_FORKS_DEFAULT, TurnCollectedIps, openRosterCheck, openServerClients, openServerDefaults,
   turnForkPlatforms, turnUpdateTarget, turnUpdating,
 } from "./turn.js";
 import {
-  IgnoredIfacesCard, openIfaceEditor,
+  IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS,
 } from "./iface.js";
+import { statsUsage, trafficInvalidate } from "./traffic.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useCallback } from "preact/hooks";
 import htm from "htm";
@@ -311,10 +312,43 @@ function VkPoolSheet() {
     <${VkSortHead} sort=${sort} desc=${desc} setSort=${setSort} setDesc=${setDesc} withDate=${true}
       left=${html`<${VkPoolTotals} P=${P} big=${true}/>`}/>
     ${P.pool.length ? html`<${VkPoolRows} P=${P} rows=${rows.slice(pg * VK_PAGE_SHEET, (pg + 1) * VK_PAGE_SHEET)} withDate=${true}/>`
-      : html`<div class="vkpool-empty">${T("The pool is empty — add a link and new users will get one automatically.")}</div>`}
+      : html`<div class="vkpool-empty">${(vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
     ${addOpen ? html`<${VkPasteBox} onAdd=${P.addMany} onClose=${() => setAddOpen(false)}/>` : null}
     <div class="vkpool-bar"><span></span><${VkPager} page=${pg} setPage=${setPage} pages=${pages}/><span></span></div>
   <//>`;
+}
+
+const vkPerUser = () => { const n = parseInt((Store.panelSettings || {}).vk_pool_per_user, 10);
+  return isNaN(n) ? 3 : Math.max(0, Math.min(16, n)); };   // mirrors the server's _vk_pool_per_user
+
+// How many pool links a NEW user is handed (server default 3). Saves on its own the moment it is committed —
+// Enter or leaving the field — like every pool row; it never touches users who already exist.
+function VkPerUser() {
+  useStore();
+  // The server always sends the effective value (PANEL_SETTINGS_DEFAULTS); shown clamped the way it applies it.
+  const saved = String(vkPerUser());
+  const [v, setV] = useState(null);                // null = showing the saved value
+  const commit = async () => {
+    if (v === null) return;
+    if (v === "" || v === saved) { setV(null); return; }
+    let r = null;
+    try { r = await api.vkPoolPerUser(+v); } catch (_) { r = null; }   // network error / proxy error page → api.post throws
+    if (!r || !r.ok) { toast(srvText(r) || T("Couldn't save"), "err"); setV(null); return; }
+    // Take the saved value now: a failed follow-up poll must not put the old number back beside a success toast.
+    Store.panelSettings = { ...(Store.panelSettings || {}), vk_pool_per_user: +v };
+    bus.emit();                                    // the pool's hints read it too, and they only re-render on the bus
+    setV(null);
+    toast(T("New users will get {v1}.", { v1: plural(+v, "VK link") }), "ok");
+    Store.poll().catch(() => {});
+  };
+  return html`<div class="field" style="max-width:340px;margin:0 0 10px">
+    <label>${T("Links per new user")}</label>
+    <input type="text" inputmode="numeric" value=${v === null ? saved : v} onDblClick=${e => e.target.select()}
+      onInput=${e => { let x = e.target.value.replace(/[^0-9]/g, ""); if (+x > 16) x = "16"; setV(x); }}
+      onBlur=${commit} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } if (e.key === "Escape") setV(null); }}
+      placeholder="3"/>
+    <div class="hint">${T("Taken from the pool, least-used first, when a user is created (0 = none). Existing users keep what they have.")}</div>
+  </div>`;
 }
 
 function VkPoolEditor() {
@@ -329,13 +363,15 @@ function VkPoolEditor() {
   const [addOpen, setAddOpen] = useState(false);
   return html`<${Fragment}>
     <div class="seclabel" style="margin-top:18px">${T("Shared VK call link pool")}</div>
-    <p class="hint" style="margin:0 0 10px">${Trich("Links handed out to users *at random* — a new user gets one automatically, and you can give anyone more from the pool in their *Manage* view.")}</p>
+    <p class="hint" style="margin:0 0 10px">${vkPerUser() ? Trich("Links handed out to users *at random* — a new user gets them automatically, and you can give anyone more from the pool in their *Manage* view.")
+      : Trich("Links handed out to users *at random* — from the pool in their *Manage* view. New users get none automatically while the setting below is 0.")}</p>
+    <${VkPerUser}/>
     ${P.pool.length > 1
       ? html`<${VkSortHead} sort=${sort} desc=${desc} setSort=${setSort} setDesc=${setDesc}
               left=${html`<${VkPoolTotals} P=${P}/>`}/>`
       : html`<div class="vkpool-head"><${VkPoolTotals} P=${P}/></div>`}
     ${P.pool.length ? html`<${VkPoolRows} P=${P} rows=${rows.slice(pg * VK_PAGE_INLINE, (pg + 1) * VK_PAGE_INLINE)}/>`
-      : html`<div class="vkpool-empty">${T("The pool is empty — add a link and new users will get one automatically.")}</div>`}
+      : html`<div class="vkpool-empty">${(vkPerUser() ? T("The pool is empty — add links and new users will get them automatically.") : T("The pool is empty."))}</div>`}
     ${P.pool.length && !liveLeft ? html`<div class="hint vk-warn">${T("No live links left — users on a dead link will keep it until you add a working one.")}</div>` : null}
     ${addOpen ? html`<${VkPasteBox} onAdd=${P.addMany} onClose=${() => setAddOpen(false)}/>` : null}
     <div class="vkpool-bar">
@@ -347,6 +383,12 @@ function VkPoolEditor() {
   <//>`;
 }
 
+
+/** The mesh-mode choice as the operator reads it. `max` is the server's auto line (MESH_AUTO_FULL_MAX). */
+function meshModeLabel(v, max) {
+  return v === "full" ? T("Full mesh") : v === "demand" ? T("On demand")
+    : (max ? T("Auto — a full mesh up to {v1} nodes, on demand above", { v1: max }) : T("Auto"));
+}
 
 export function AccountScreen() {
   const [user, setUser] = useState("");
@@ -393,8 +435,9 @@ export function AccountScreen() {
   </div>`;
 }
 
-export const AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4",
-  "I1", "I2", "I3", "I4", "I5"];
+// The 2.0 set — what Settings edits: the interface defaults and mesh_awg stay AmneziaWG 2.0 (docs/AWG3-PLAN.md D-default,
+// D-mesh). Derived from AWG_ORDER, the SPA's one list, instead of a second copy of it.
+export const AWG_KEYS = AWG_ORDER.slice(0, AWG_ORDER.indexOf("HeaderProtectionKey"));
 // client-side AmneziaWG obfuscation generator — mirrors the panel's gen_awg_params (for the "Generate" button)
 export function genAwg() {
   const r = n => Math.floor(Math.random() * n), w = 15;
@@ -576,6 +619,12 @@ export const tlsModeLabel = (mode) =>
 // The panel + swg-sub network address (bindable IP + port) and the ONE certificate config both derive from.
 // A change is applied LIVE: the panel dual-listens on the new address and only drops the old once the browser
 // confirms the new one works, so a bad value never locks the operator out. swg-sub just restarts.
+// Renew now's memory across a panel restart. A successful renewal can restart the panel (the installer's acme entry
+// reloads it with `systemctl restart`), which drops the in-memory job — so the screen remembers the expiry it saw
+// when the button was pressed and, when the job is gone but the expiry moved, reports the renewal from that.
+// Module-level, per the SPA's view-object pattern, so it survives this card re-rendering.
+const RENEW_VIEW = { pressedAt: 0, before: 0 };
+
 export function AccessTLSCard({ onChange }) {
   const acc = (Store.panelSettings || {}).access || {};
   const p0 = acc.panel || {}, s0 = acc.sub || {}, t0 = acc.tls || {}, k0 = acc.console || {};
@@ -787,10 +836,10 @@ export function AccessTLSCard({ onChange }) {
             if (dp && p.state === "saved") {
               if (gs > 0) {   // a REBIND: this tab may now be on the OLD address — the GLOBAL "previous address" ribbon (top of every screen) guides the operator across + counts down
                 openModal(html`<${ConfirmSheet} title=${T("New address confirmed")} confirmLabel=${T("Got it")}
-                  body=${html`The panel is now reached at <b>${nu || T("the new address")}</b>. If this tab is on the previous address, the ribbon at the top takes you across — it keeps working while nodes move over, then stops. Switch when you’re ready.`}/>`);
+                  body=${Trich("The panel is now reached at *{v1}*. If this tab is on the previous address, the ribbon at the top takes you across — it keeps working while nodes move over, then stops. Switch when you’re ready.", { v1: nu || T("the new address") })}/>`);
               } else {        // url-only / cert-only: same bind → this address keeps working, just verified the new URL
                 openModal(html`<${ConfirmSheet} title=${T("Panel address confirmed")} confirmLabel=${T("Done")}
-                  body=${html`Verified — the panel is now reached at <b>${nu || T("the new address")}</b>.`}/>`);
+                  body=${Trich("Verified — the panel is now reached at *{v1}*.", { v1: nu || T("the new address") })}/>`);
               }
             }
           }
@@ -1201,12 +1250,18 @@ export function AccessTLSCard({ onChange }) {
     if (!dockerRestart) return;
     setBusy(true); setMsg({ ok: true, t: T("Checking the new address (dry-run)…") });
     try {
-      const r = await api.post("/api/access/docker-confirm", { nonce: dockerRestart.nonce });
+      // ⚠️ LONGER THAN THE SERVER'S OWN WAIT. The panel waits up to 220 s for this dry-run — on Cloudflare it issues a real
+      // DNS-01 certificate in a throwaway container — and every other call gives up at REQ_TIMEOUT (90 s): the operator
+      // read "Couldn't run the dry-run" while it carried on, and a second click ran a second one (loose ends D2).
+      const r = await api.post("/api/access/docker-confirm", { nonce: dockerRestart.nonce }, 240000);
       if (r && r.docker_recreate) {   // dry-run passed → the container is recreating onto the new address; show the reconnect hold
         setDockerRestart(null); setDockerFlip(r.new_url || dockerRestart.new_url || ""); setDockerFlipPort(r.port_move ? (r.port || dockerRestart.port || 0) : 0); setDockerArm(20); setBusy(false);
         return setMsg({ ok: true, t: r.message || T("Restarting the panel container. Reconnect at {v1} once it's back.", { v1: r.new_url || dockerRestart.new_url }) });
       }
       setBusy(false);
+      // EXPIRED while the dry-run ran: the server already rolled the change back, so there is nothing left to confirm or
+      // revert — the card goes (its buttons would only be refused) and the page says what happened.
+      if (r && r.code === "expired") { setDockerRestart(null); return setMsg({ ok: false, t: srvText(r) }); }
       // ONE rendering, in the confirm box — that is where Confirm/Revert live, so the failure belongs beside the
       // actions it applies to. Setting the page banner to the SAME string as well showed the identical sentence
       // twice on one screen (three times, with the box's own lead-in and trailing hint duplicating the server's).
@@ -1409,13 +1464,71 @@ export function AccessTLSCard({ onChange }) {
       // to someone reading the server log, while this screen showed a healthy certificate the whole time.
       const ts = Store.tls || {};
       const d = Number(ts.days_left);
-      if (ts.renew_ok === false) return html`<div class="notice warn" style="margin:0 0 12px" title=${ts.renew_last || ""}><${Ic} i="warn"/><div style="min-width:0">
-        ${Trich("*Automatic renewal is failing.* The certificate is still valid for *{v1}* more day(s), but nothing is renewing it — check that this host is reachable by the validation method above.", { v1: isFinite(d) ? d : "?" })}
-      </div></div>`;
-      if (!ts.self_signed && isFinite(d) && d <= 21) return html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
-        ${Trich("*This certificate expires in {v1} day(s).*", { v1: d })}
-      </div></div>`;
-      return null;
+      // "Renew now": acme.sh's cron fails silently (its output goes to /dev/null), so the button runs the same
+      // renewal on demand and shows acme.sh's own words. Offered only where an acme.sh entry exists to renew —
+      // `renewer` comes from the panel's follow of that entry; "missing" means there is nothing to renew.
+      const job = ts.renew_job || null;
+      const running = !!job && job.state === "running";
+      const canRenew = ts.renewer === "ours" || ts.renewer === "other";
+      const startRenew = async () => {
+        RENEW_VIEW.pressedAt = panelNow(); RENEW_VIEW.before = Number(ts.expires_at) || 0;
+        try {
+          const r = await api.post("/api/access/renew-cert", {});
+          if (!r || r.ok === false) toast(srvText(r) || T("Couldn't start the renewal."), "err");
+          else await Store.poll();
+        } catch (_) { toast(T("Couldn't start the renewal."), "err"); }
+      };
+      const onRenew = () => ts.renewer === "other"
+        ? openConfirm({ title: T("Renew the certificate now?"), confirmLabel: T("Renew now"), warn: true,
+            body: T("acme.sh renews this certificate for another program on this server as well ({v1}) and runs that program's reload command, which may restart it — exactly as its own scheduled renewals do.", { v1: ts.renewer_path || "?" }),
+            onConfirm: () => { startRenew(); return true; } })
+        : startRenew();
+      const renewBtn = canRenew ? html`<div style="margin-top:8px"><button type="button" class="btn btn-mini" disabled=${running} onClick=${onRenew}><${Ic} i="refresh"/> ${running ? T("Renewing…") : T("Renew now")}</button></div>` : null;
+      const warn = (body, title) => html`<div class="notice warn" style="margin:0 0 12px" title=${title || ""}><${Ic} i="warn"/><div style="min-width:0">${body}${renewBtn}</div></div>`;
+      let w = null;
+      // Expired comes first and has one wording for every certificate: the day count goes negative ("valid for -3
+      // more day(s)") and an hour count reads "0 hour(s) ago" in the first hour, so neither is shown past expiry.
+      const expired = Number(ts.expires_at) > 0 && Number(ts.expires_at) * 1000 <= panelNow();
+      if (expired) w = warn(Trich("*This certificate has expired.* Browsers refuse the panel and nodes that verify it stop syncing until it is renewed."), ts.renew_last);
+      else if (ts.renew_ok === false) w = warn(Trich("*Automatic renewal is failing.* The certificate is still valid for *{v1}* more day(s), but nothing is renewing it — check that this host is reachable by the validation method above.", { v1: isFinite(d) ? d : "?" }), ts.renew_last);
+      else if (ts.renewer === "missing" && !ts.self_signed) w = warn(Trich("*Nothing on this server renews this certificate.* acme.sh holds no certificate for this address, so it will expire in *{v1}* day(s) unless it is issued again.", { v1: isFinite(d) ? d : "?" }));
+      // A ~6-day certificate always has fewer than 21 days left — judged by days it warned from the day it was
+      // issued, so a real failure looked like every other day. Overdue = past 2/3 of its life, on the panel's clock.
+      else if (ts.short_lived) {
+        const left = Number(ts.expires_at) * 1000 - panelNow();
+        if (left < Number(ts.lifetime_s) * 1000 / 3) w = warn(Trich("*This certificate should already have been renewed.* It has *{v1}* hour(s) left.", { v1: Math.floor(left / 3600000) }));
+      }
+      else if (!ts.self_signed && isFinite(d) && d <= 21) w = warn(Trich("*This certificate expires in {v1} day(s).*", { v1: d }));
+      // HELD: acme.sh has a CA certificate for this address, but the panel serves a self-signed one — which nodes
+      // pin — so the follow will not swap it on its own. Said once, with the deliberate way to switch.
+      const held = ts.renewer_held ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
+        ${ts.held_swap_at
+          ? Trich("*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one — and acme.sh will install its next renewal over it ({v1}).* Nodes that pinned the self-signed certificate stop syncing at that moment. Switch now with *Save*, then re-run the node installer on the nodes that pinned it.", { v1: ts.held_swap_at })
+          : Trich("*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one.* It is not swapped automatically: nodes that pinned the self-signed certificate would stop syncing. Switch it here with *Save*, then re-run the node installer on the nodes that pinned it.")}
+      </div></div>` : null;
+      // Not a fault — the panel follows it — but the one fact that explains why its renewals live somewhere else.
+      const other = ts.renewer === "other" ? html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">
+        ${Trich("*Another program on this server renews this certificate* — acme.sh installs each renewal to `{v1}`. The panel takes the renewed certificate from acme.sh within 6 hours, so both keep working.", { v1: ts.renewer_path || "?" })}
+      </div></div>` : null;
+      // The last Renew-now's outcome, for a quarter of an hour: a success usually clears the warning it was pressed
+      // in, so the answer has to live beside it rather than inside it.
+      let done = null;
+      const until = Number(ts.expires_at) > 0 ? new Date(Number(ts.expires_at) * 1000).toLocaleString(locale()) : "?";
+      const renewedHtml = html`<div class="notice ok" style="margin:0 0 12px"><${Ic} i="check"/><div style="min-width:0">${Trich("*Renewed.* The panel now serves a certificate valid until {v1}.", { v1: until })}</div></div>`;
+      if (!job && RENEW_VIEW.pressedAt && panelNow() - RENEW_VIEW.pressedAt < 15 * 60000 && Number(ts.expires_at) > RENEW_VIEW.before) {
+        done = renewedHtml;                  // the job went with a restart, but the certificate says it worked
+      } else if (job && job.state === "done" && panelNow() - Number(job.at) * 1000 < 15 * 60000) {
+        if (job.result === "renewed") done = renewedHtml;
+        else if (job.result === "not-due") done = html`<div class="notice" style="margin:0 0 12px"><${Ic} i="info"/><div style="min-width:0">${Trich("*Not renewed — acme.sh says it is not due yet* (next renewal: {v1}). The certificate is valid until {v2}.", { v1: job.message || "?", v2: until })}</div></div>`;
+        else done = html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><div style="min-width:0">
+          <b>${job.result === "not-installed" ? T("acme.sh renewed the certificate, but the panel did not install it.")
+            : job.result === "skipped" ? T("Nothing was renewed.") : T("The renewal failed.")}</b>
+          ${job.result === "no-entry" ? T("acme.sh holds no certificate for this address, so there is nothing to renew.")
+            : job.message ? (job.source === "acme" ? T("acme.sh said:") : T("Details:")) : null}
+          ${job.message && job.result !== "no-entry" ? html`<pre style="white-space:pre-wrap;margin:6px 0 0;font-size:11.5px">${job.message}</pre>` : null}
+        </div></div>`;
+      }
+      return (w || other || done || held) ? html`${done}${w}${held}${other}` : null;
     })()}
     <div class="field"><label>${T("Type")}</label><${Dropdown} value=${mode} onChange=${setModeLinked} options=${TLS_MODE_OPTS()}/></div>
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>${T("Account email")}</label><input type="text" placeholder=${T("admin@example.com")} value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
@@ -1680,6 +1793,58 @@ export function ConfigMigrationCard() {
     </div>
   </div></div>`;
 }
+// "Days are counted in" (Display → Data): the zones THIS server has, from GET /api/time-zones — asked for the first
+// time Display opens, then kept for the page's life. The browser's own zone comes back as the server names it: Chrome
+// still reports Asia/Calcutta, which Debian 13 keeps only as an alias of Asia/Kolkata.
+let _tzCat = null;
+const browserZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) { return ""; } };
+const tzPlace = z => { const p = z.replace(/_/g, " ").split("/"); return p[p.length - 1] + (p.length === 3 ? " (" + p[1] + ")" : ""); };
+function tzOptions(cat, now, cur) {
+  const zones = (cat && cat.zones) || [], mine = (cat && cat.browser) || "";
+  const opts = [{ value: "", label: now.server ? T("This server's zone ({v1})", { v1: now.server }) : T("This server's zone") }];
+  if (mine) opts.push({ value: mine, label: T("{v1} (this browser's zone)", { v1: tzPlace(mine) }) });
+  const groups = new Map();
+  for (const z of zones) {
+    if (!z.includes("/")) { opts.push({ value: z, label: z }); continue; }
+    const a = z.split("/")[0];
+    if (!groups.has(a)) groups.set(a, []);
+    groups.get(a).push({ value: z, label: tzPlace(z) });
+  }
+  for (const [group, items] of groups) opts.push({ group, items });
+  if (cur && cur !== mine && !zones.includes(cur)) opts.push({ value: cur, label: tzPlace(cur) });   // stored, but not listed (lost, or the list is not in yet)
+  return opts;
+}
+// ── Display → Data: the traffic history (P2) ──────────────────────────────────────────────────────────────────
+const HIST_RES = [300, 900, 3600, 86400];
+const histResLabel = n => ({ 300: T("5 minutes"), 900: T("15 minutes"), 3600: T("1 hour"), 86400: T("1 day") }[n] || T("1 hour"));   // i18n-keys
+// What the history uses, MEASURED by the panel (GET /api/stats-usage: one directory walk, a minute's cache) — its own
+// component, subscribed to the store, so the form around it is not re-rendered by the poll.
+function HistoryUsage() {
+  useStore();
+  const u = statsUsage();
+  const d = u.data;
+  if (!d) return html`<div class="field"><div class="hint">${u.err ? T("Could not read how much disk the traffic history uses.") : T("Measuring the traffic history…")}</div></div>`;
+  if (!d.on) return html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Traffic totals are off, so nothing is being counted: {v1}", { v1: d.why_off || "?" })}</span></div>`;
+  return html`<div class="field"><div class="hint">
+    <div>${T("Traffic history uses {v1} in {v2} ({v3} free on that disk).", { v1: fmtBytes(d.bytes_ledger), v2: d.dir, v3: fmtBytes(d.free_bytes) })}</div>
+    <div>${d.basis === "estimate"
+      ? T("At {v1} resolution and {v2} active peers it will grow by about {v3} a day ({v4} a year) — an estimate until a full day is recorded.", { v1: histResLabel(d.resolution_next), v2: d.active_slots, v3: fmtBytes(d.per_day_bytes), v4: fmtBytes(d.per_year_bytes) })
+      : T("At {v1} resolution and {v2} active peers it grows by about {v3} a day ({v4} a year).", { v1: histResLabel(d.resolution_next), v2: d.active_slots, v3: fmtBytes(d.per_day_bytes), v4: fmtBytes(d.per_year_bytes) })}</div>
+    ${!d.infinite ? html`<div>${T("The detail is kept for the last 33 days; totals for any period are always kept.")}</div>` : null}
+  </div></div>`;
+}
+// Turning it off says what goes, from the read-out already measured (at most a minute old). ⚠️ With no measurement to
+// hand — not loaded, failed, or the ledger off — the confirm must not say that nothing goes.
+function confirmHistOff(ok) {
+  const u = statsUsage().data;
+  const d = u && u.on ? u : null;
+  openConfirm({ title: T("Turn off infinite history?"), danger: true, confirmLabel: T("Turn off"),
+    body: !d ? T("The panel will keep the traffic detail — each day's figures at the history resolution — for the last 33 days only. When you save, older detail is deleted and cannot be recovered. Totals for any period are kept — a day further back still shows, as one figure for the whole day.")
+      : d.sweep_days
+      ? T("The panel will keep the traffic detail — each day's figures at the history resolution — for the last 33 days only. When you save, the detail of {v1} older days — {v2} — is deleted and cannot be recovered. Totals for any period are kept — a day further back still shows, as one figure for the whole day.", { v1: d.sweep_days, v2: fmtBytes(d.sweep_bytes) })
+      : T("The panel will keep the traffic detail — each day's figures at the history resolution — for the last 33 days only. None is older than that yet, so nothing is deleted when you save; from then on, each day's detail is deleted once it is 33 days old. Totals for any period are kept."),
+    onConfirm: ok });
+}
 export function PanelSettingsScreen() {
   // NOTE: deliberately NOT subscribed to the 5s poll (no useStore) — this is an edit form seeded from a
   // snapshot at mount. Re-rendering every poll re-diffs every controlled input (the source of the checkbox
@@ -1693,9 +1858,14 @@ export function PanelSettingsScreen() {
   const [ka, setKa] = useState(String(idf.keepalive || 25));
   const [awgDef, setAwgDef] = useState(() => ({ ...(idf.awg_params || {}) }));   // new-interface AWG obfuscation
   const [reachDef, setReachDef] = useState(idf.reach || "user");   // device access (§10.6): the level the create sheet preselects
+  const [awgGenDef, setAwgGenDef] = useState(idf.awg_gen === "3.1" ? "3.1" : "2.0");   // the AmneziaWG version the create form starts on (D-default)
   // only FILLED cells count: a blank one means "leave it to the node", so clearing a cell must read as
   // back-to-default rather than as a change, and must not be sent as an empty override.
   const awgTrim = o => AWG_KEYS.reduce((a, k) => { const v = String((o || {})[k] ?? "").trim(); if (v) a[k] = v; return a; }, {});
+  // …and the AmneziaWG 3.1 defaults (the panel's awg3_defaults): the six cells an interface's Edit sheet has too, blank =
+  // Amnezia's own value. Sent only when there is something to say — a fleet that never fills one sends what it always sent.
+  const [awg3Def, setAwg3Def] = useState(() => ({ ...(idf.awg3_params || {}) }));
+  const awg3Trim = o => AWG3_EDIT_COLS.flat().reduce((a, k) => { const v = String((o || {})[k] ?? "").trim(); if (v) a[k] = v; return a; }, {});
   const [awgOpen, setAwgOpen] = useState(false);
   const [geoMir, setGeoMir] = useState(mir.geo || "");
   const [turnMir, setTurnMir] = useState(mir.turn || "");
@@ -1785,6 +1955,11 @@ export function PanelSettingsScreen() {
   const [sc, setSc] = useState(_scMode);
   const [tput, setTput] = useState(ps.throughput_perspective === "peers" ? "peers" : "nodes");
   const [tunit, setTunit] = useState(ps.throughput_units === "bits" ? "bits" : "bytes");
+  const [tz, setTz] = useState(ps.time_zone || "");
+  // Display → Data (P2): keep the traffic history for ever (default on, like showLans), and its fine resolution
+  const [infHist, setInfHist] = useState(ps.infinite_history !== false);
+  const [histRes, setHistRes] = useState(String(ps.history_resolution || 3600));   // Display → Data: the zone days are counted in ("" = this server's own)
+  const [tzCat, setTzCat] = useState(_tzCat);
   const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
   const [graceS, setGraceS] = useState(String(Math.round((adv.peer_grace_ms || 60000) / 1000)));
   const [ttlD, setTtlD] = useState(String(adv.geo_ttl_days || 3));
@@ -1793,6 +1968,7 @@ export function PanelSettingsScreen() {
   const [warnDays, setWarnDays] = useState(String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days));
   // On unless an operator has switched it off — which closes these networks rather than merely hiding them.
   const [showLans, setShowLans] = useState(ps.show_node_lans !== false);
+  const [meshMode, setMeshMode] = useState(ps.mesh_mode || "auto");   // which node pairs get a mesh link (auto | full | demand)
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: customTargets(l) })));
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
   const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || TURN_FORKS_DEFAULT));   // forks offered in the install picker
@@ -1824,6 +2000,7 @@ export function PanelSettingsScreen() {
   const [ifaceColors, setIfaceColors] = useState(() => ({
     wg: asThemed((ps.iface_colors || {}).wg, IFACE_COLOR_DEFAULTS.wg.dark, IFACE_COLOR_DEFAULTS.wg.light),
     awg: asThemed((ps.iface_colors || {}).awg, IFACE_COLOR_DEFAULTS.awg.dark, IFACE_COLOR_DEFAULTS.awg.light),
+    awg3: asThemed((ps.iface_colors || {}).awg3, IFACE_COLOR_DEFAULTS.awg3.dark, IFACE_COLOR_DEFAULTS.awg3.light),
     wdtt: asThemed((ps.iface_colors || {}).wdtt, IFACE_COLOR_DEFAULTS.wdtt.dark, IFACE_COLOR_DEFAULTS.wdtt.light),
     csqtt: asThemed((ps.iface_colors || {}).csqtt, IFACE_COLOR_DEFAULTS.csqtt.dark, IFACE_COLOR_DEFAULTS.csqtt.light) }));
   const [themeColorS, setThemeColorS] = useState(clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false));         // dark-mode accent (shown = applied)
@@ -1840,7 +2017,7 @@ export function PanelSettingsScreen() {
   // overrides derived from a raw source (state OR the stored panel-settings), normalized identically so a legacy
   // single-colour value in panel-settings compares equal to its normalized {dark,light} form (no phantom "dirty").
   const forkOvFrom = src => { const o = {}; for (const f of turnForkList()) { const t = asThemed((src || {})[f.id], f.color, f.colorL); if (!sameThemed(t, f.color, f.colorL)) o[f.id] = t; } return o; };
-  const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg", "wdtt", "csqtt"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
+  const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg", "awg3", "wdtt", "csqtt"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
   const forkColorOverrides = () => forkOvFrom(forkColors);
   const ifaceColorOverrides = () => ifaceOvFrom(ifaceColors);
   const statusCondsOut = () => ({ blocked: statusConds.blocked, faulty: statusConds.faulty });
@@ -1892,8 +2069,32 @@ export function PanelSettingsScreen() {
       next[f.id] = (lt && dep.length && dep.some(v => v !== lt)) ? { status: "update", latest: lt } : { status: "uptodate" };
     }
     setTurnCheck(next);
-    setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.status === "update" ? v : {}]))), 5000);   // T("up to date") clears after 5s; "update" persists
+    setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.status === "update" || v.status === "updating" ? v : {}]))), 5000);   // T("up to date") clears after 5s; "update" (and an update clicked meanwhile) persists
   };
+  // A staged update lands on the node's NEXT sync, and this screen does not follow the poll — so the row kept
+  // its old version and never said it was done until a reload. While a fork is updating, follow the poll here:
+  // redraw on each one (the version label moves), flip to "updated" once every deployed copy reports the target
+  // and none is still installing, or give up quietly at the deadline.
+  const turnFollow = Object.values(turnCheck).some(v => v && v.status === "updating" && v.until);
+  useEffect(() => {
+    if (!turnFollow) return;
+    return bus.sub(() => setTurnCheck(c => {
+      const n = { ...c };   // always a new object: the redraw itself is the point
+      for (const [fid, v] of Object.entries(c)) {
+        if (!v || v.status !== "updating" || !v.until) continue;
+        const st = forkNodeStates(fid).filter(s => canTurnAct(s.node));   // a node the update skipped keeps its version — don't wait on it
+        if (st.length && st.every(s => s.version === v.latest && !s.installing)) n[fid] = { status: "updated" };   // i18n-keys
+        else if (Date.now() > v.until) n[fid] = {};
+      }
+      return n;
+    }));
+  }, [turnFollow]);
+  const turnDone = Object.keys(turnCheck).filter(k => (turnCheck[k] || {}).status === "updated").join();
+  useEffect(() => {
+    if (!turnDone) return;
+    const t = setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v && v.status === "updated" ? {} : v]))), 5000);
+    return () => clearTimeout(t);
+  }, [turnDone]);
   // update every deployed instance of a fork to `latest` — reinstall (re-download binary) on each (node,service)
   // A node whose turn management is off does not IGNORE a request the panel stages — it fails it, and
   // that lands as a red error tag on a node whose operator asked for nothing, with a pending that never
@@ -1914,8 +2115,8 @@ export function PanelSettingsScreen() {
       turnUpdateTarget[fid] = { ver: latest, until: Date.now() + 120000 };
       const seen = new Set();
       for (const t of ct) { if (seen.has(t.node)) continue; seen.add(t.node); await api.csqttVersion({ node: t.node, iface: t.iface, ver: "" }); }
+      setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest, until: Date.now() + 120000 } }));   // i18n-keys
       await Store.poll();
-      setTurnCheck(c => ({ ...c, [fid]: {} }));
       toast(T("Update requested on {v1} — each node applies it on its next sync.", { v1: plural(seen.size, "node") }), "ok");
       skipNote(cskip);
       return;
@@ -1927,9 +2128,10 @@ export function PanelSettingsScreen() {
       const wskip = new Set(all.filter(t => !canTurnAct(t.node)).map(t => t.node)).size;
       if (!wt.length) { skipNote(wskip); return; }
       setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));   // i18n-keys
+      turnUpdateTarget[fid] = { ver: latest, until: Date.now() + 120000 };
       for (const t of wt) await api.wdttVersion({ node: t.node, iface: t.iface, ver: "" });
+      setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest, until: Date.now() + 120000 } }));   // i18n-keys
       await Store.poll();
-      setTurnCheck(c => ({ ...c, [fid]: {} }));
       toast(T("Update requested on {v1} — each node applies it on its next sync.", { v1: plural(wt.length, "WDTT server") }), "ok");
       skipNote(wskip);
       return;
@@ -1943,8 +2145,8 @@ export function PanelSettingsScreen() {
     setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));   // i18n-keys
     turnUpdateTarget[fid] = { ver: latest, until: Date.now() + 120000 };   // persists past the turnCheck reset so the bubble can show per-node updating→updated
     for (const t of targets) { turnUpdating[t.node + "|" + t.service] = Date.now() + 120000; await api.turnReinstall({ node: t.node, service: t.service, owner }); }
+    setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest, until: Date.now() + 120000 } }));   // i18n-keys
     await Store.poll();
-    setTurnCheck(c => ({ ...c, [fid]: {} }));
     toast(T("Update requested on {v1} — each node applies it on its next sync.", { v1: plural(targets.length, "proxy") }), "ok");
     skipNote(skipped);
   };
@@ -1994,14 +2196,25 @@ export function PanelSettingsScreen() {
   useEffect(() => { registerSectionSetter(setSection); return () => registerSectionSetter(null); }, []);   // one-shot section pin + expose setSection so a modal can switch the rail (confirm modal → Access & TLS)
   const [routeTab, setRouteTab] = useState("routing");   // "Routing & Blocking" section: Routing (route→exit) | Blocking (drop) — both gated by the node's mode above
   useEffect(() => { if (routeTab === "blocking" || section === "geo") loadBlockCatalog(); }, [routeTab, section]);   // lazy-load the block catalog for the Blocking tab and the Geo-data Filters-providers list
+  useEffect(() => {   // the zone list (tzOptions): once per page, the first time Display opens
+    if (section !== "display" || _tzCat) return;
+    let live = true;
+    api.get("/api/time-zones?browser=" + encodeURIComponent(browserZone()))
+      .then(r => { if (r && r.ok) { _tzCat = r.data; if (live) setTzCat(r.data); } }).catch(() => {});
+    return () => { live = false; };
+  }, [section]);
   const _bkCountTries = useRef(0);
-  useEffect(() => {   // list counts resolve in the background on the panel — refetch a few times until they land (or give up)
+  // List counts resolve in the background on the panel — refetch until every LIST has one. Judged per list, not per
+  // category: a category whose first list landed used to count as done, so a slower list beside it (a big feed on a
+  // one-core panel resolves one list at a time) kept a blank count until the next Save. Backs off 4 s → 30 s and
+  // keeps going while the tab is open; a list the panel could not fetch says so on its row instead of staying blank.
+  useEffect(() => {
     if (routeTab !== "blocking") return;
     const bc = Store.blockCatalog; if (!bc) return;
-    const pending = Object.values(bc.categories || {}).some(c => (c.sources || []).length && !c.size);
+    const on = new Set((bc.providers || []).filter(p => p.enabled !== false).map(p => p.id));
+    const pending = Object.values(bc.categories || {}).some(c => (c.sources || []).some(s => s.n == null && on.has(s.provider)));
     if (!pending) { _bkCountTries.current = 0; return; }
-    if (_bkCountTries.current >= 6) return;
-    const t = setTimeout(() => { _bkCountTries.current++; loadBlockCatalog(true); }, 4000);
+    const t = setTimeout(() => { _bkCountTries.current++; loadBlockCatalog(true); }, Math.min(30000, 4000 * 2 ** Math.floor(_bkCountTries.current / 3)));
     return () => clearTimeout(t);
   }, [routeTab, Store.blockCatalog]);
   const [blockProvEdits, setBlockProvEdits] = useState({});   // staged Filters-providers toggle deltas {prov_id:bool} → panelSettings.block_providers (committed by the shared Save)
@@ -2037,9 +2250,15 @@ export function PanelSettingsScreen() {
   // changes; the single Save commits the global settings AND one nodeUpdate per changed node.
   const eq = (a, b) => { const c = v => v == null ? "" : Array.isArray(v) ? JSON.stringify([...v].sort()) : typeof v === "object" ? JSON.stringify(Object.keys(v).sort().reduce((o, k) => (o[k] = v[k], o), {})) : String(v); return c(a) === c(b); };
   const nFields = n => ({ routing_mode: n.routing_mode || "kernel", ip_learning: n.ip_learning !== false, endpoint_host: n.endpoint_host || "",
+    dns_upstream: (n.dns_upstream || []).join(", "),   // Force-DNS resolver's upstream, as typed ("" = the default)
     mesh_subnet: n.mesh_subnet || "", mesh_port: n.mesh_port ? String(n.mesh_port) : "", mesh_prefix: n.mesh_prefix || "",
     default_egress_ip: n.default_egress_ip || "", panel_ip: n.panel_ip || "", mesh_egress_ip: n.mesh_egress_ip || "",
     default_exit: n.default_exit || "",
+    // D2 — the default made smart, as the node's rule list (null when its default is not a list), NORMALISED through the
+    // same rows round trip the editor writes with, so opening it and changing nothing never reads as an edit. And the exit
+    // IP of its "Forward to node" rules, which lives beside the list on the node, not on a rule (§4.2).
+    default_routing: Array.isArray(n.default_routing) ? normRules(n.default_routing) : null,
+    default_routing_exit_ips: { ...(n.default_routing_exit_ips || {}) },
     endpoint_hosts: [...(n.endpoint_hosts || [])],
     catalog_cats: [...(n.catalog_cats || [])],   // provider-catalog categories opted into on this node (node-lens; separate from the 26 built-ins)
     // ⚠️ REBUILT FROM A KEY LIST ON PURPOSE. /api/state attaches a derived `why_not` to each stored exit, and
@@ -2066,6 +2285,20 @@ export function PanelSettingsScreen() {
   const [gridKeep, setGridKeep] = useState([]);   // provider-list rows kept visible after toggling to 0/N nodes (until × removes them)
   const setNV = (nid, patch) => setNodeEdits(e => ({ ...e, [nid]: { ...nFields((Store.nodes || []).find(n => n.id === nid) || {}), ...(e[nid] || {}), ...patch } }));
   const nv = (nid, f) => (nodeEdits[nid] || {})[f];
+  // ⚠️ AN EXIT WRITE IS PRUNED ON THE SERVER, AND THE DEFAULT LIST WITH IT. Removing an exit rewrites every rule of the
+  // node's list that named it to Direct and re-derives `default_exit` (prune_exit_refs, derive_default_exit) — a draft
+  // still holding the old rule then posts an exit the server no longer has, and the whole section comes back refused
+  // until the operator finds that rule (code review, P3). So the list is re-based with the exits: taken from the server
+  // where it was not being edited, and pruned the same way in the draft where it was.
+  const rebaseDefault = (nid, fresh) => {
+    const live = new Set((fresh.exits || []).map(x => String(x.id)));
+    setNodeEdits(e => { const cur = e[nid] || {}, o = orig[nid] || {};
+      let dr = cur.default_routing;
+      if (Array.isArray(dr)) dr = eq(dr, o.default_routing) ? fresh.default_routing
+        : dr.map(r => r && r.action === "dev" && !live.has(String(r.exit_id || "")) ? (({ exit_id, ...x }) => ({ ...x, action: "direct" }))(r) : r);
+      return { ...e, [nid]: { ...cur, default_routing: dr, default_exit: eq(cur.default_exit, o.default_exit) ? fresh.default_exit : cur.default_exit } }; });
+    setOrig(o => ({ ...o, [nid]: { ...(o[nid] || {}), default_routing: fresh.default_routing, default_exit: fresh.default_exit } }));
+  };
   const [saved, setSaved] = useState(0);   // timestamp; the green "All settings saved" flash shows while now < saved
   // Access & TLS reports its {dirty,busy,msg,run} up here so the shared footer drives its Save + status like every
   // other section. The ref always holds the latest; accessSig re-renders the footer only when a shown bit changes.
@@ -2086,7 +2319,8 @@ export function PanelSettingsScreen() {
       const r = await api.panelSettings({
         _ev: { first: (dirtySecs[0] || [""])[0], sections: dirtySecs.map(([s]) => secLabel[s]).join(", ") },   // display-only: which sections changed (drives the "Settings changed" activity row)
         interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25,
-          awg_params: awgTrim(awgDef), reach: reachDef },
+          awg_params: awgTrim(awgDef), reach: reachDef, awg_gen: awgGenDef,
+          ...(Object.keys(awg3Trim(awg3Def)).length || Object.keys(awg3Trim(idf.awg3_params)).length ? { awg3_params: awg3Trim(awg3Def) } : {}) },
         mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
         providers: provEnabled,
         block_providers: blockProvEdits,
@@ -2098,10 +2332,14 @@ export function PanelSettingsScreen() {
           languages: { enabled: subLangs, default: subLangDef } },
         throughput_perspective: tput,
         throughput_units: tunit,
+        time_zone: tz,
+        infinite_history: infHist,
+        history_resolution: +histRes || 3600,
         top_talkers: Math.max(1, Math.min(50, parseInt(topTalk) || 10)),
         top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
         expiry_warn_days: Math.max(0, Math.min(365, parseInt(warnDays) || 3)),
         show_node_lans: showLans,
+        mesh_mode: meshMode,
         reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
         mesh_awg: awgSet ? awg : {},
         advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
@@ -2117,6 +2355,7 @@ export function PanelSettingsScreen() {
         vk_link: vkLinkS.trim(),
       });
       if (!r.ok) return setMsg({ ok: false, t: srvText(r) || T("Failed to save.") });
+      if (dataDirty() || tzDirty()) trafficInvalidate();   // re-read what the save changed: a zone moves every day's edges
     }
     // interface-key escrow — applied on Save (not on toggle), like every other field. Enabling needs the vault unlocked.
     if (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit) {
@@ -2134,14 +2373,18 @@ export function PanelSettingsScreen() {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {};
       if (!Object.keys(nFields(n)).some(k => !eq(e[k], o[k]))) continue;
       const nr = await api.nodeUpdate({ id: n.id, routing_mode: e.routing_mode, ip_learning: e.ip_learning !== false, endpoint_host: (e.endpoint_host || "").trim(),
+        dns_upstream: String(e.dns_upstream || "").split(/[\s,]+/).filter(Boolean),
         mesh_subnet: (e.mesh_subnet || "").trim() === dSub ? "" : (e.mesh_subnet || "").trim(),
         mesh_port: (e.mesh_port || "").trim() === dPort ? "" : (e.mesh_port || "").trim(),
         mesh_prefix: (e.mesh_prefix || "").trim() === dPfx ? "" : (e.mesh_prefix || "").trim(),
         default_egress_ip: e.default_egress_ip || "", panel_ip: e.panel_ip || "", default_exit: e.default_exit || "",
+        default_routing: Array.isArray(e.default_routing) ? e.default_routing : null,
+        default_routing_exit_ips: e.default_routing_exit_ips || {},
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
         catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {}, exits: e.exits || [] });
       if (!nr.ok) nerr = srvText(nr) || (T("Couldn't save {v1}", { v1: n.name }));
+      else reportDropped(nr);   // what the default list's save could not keep (§5.4) — never swallowed
     }
     if (nerr) return setMsg({ ok: false, t: nerr });
     if (Object.keys(blockEdits).length || blockRemoved.length) {   // block-list category edits (availability/defaults/sources/custom) → panel_settings.block_catalog
@@ -2190,10 +2433,14 @@ export function PanelSettingsScreen() {
     if (glDirty("defaults")) out.push(T("Interfaces — colours / defaults"));
     if (glDirty("configs")) out.push(T("Client configs → {v1}", { v1: sc === "off" ? T("val|off") : T("val|encrypted") }));
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
-    if (glDirty("display")) out.push(T("Display — theme / status timing"));
+    if (dispDirty()) out.push(T("Display — theme / status timing"));
+    if (tzDirty()) out.push(tz ? T("Days are counted in {v1}", { v1: tz }) : T("Days are counted in this server's zone"));
+    if (infHist !== (ps.infinite_history !== false)) out.push(infHist ? T("Infinite history — on") : T("Infinite history — off: detail older than 33 days is deleted"));
+    if (histRes !== String(ps.history_resolution || 3600)) out.push(T("History resolution → {v1}, from the next day", { v1: histResLabel(+histRes) }));
     // Two changes share this section, so the line names the one that actually moved rather than reporting
     // "mesh defaults" for a disclosure toggle that is not one.
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
+    if (meshMode !== (ps.mesh_mode || "auto")) out.push(T("Mesh links — {v1}", { v1: meshModeLabel(meshMode, ps.mesh_auto_max) }));
     if (glDirty("mesh") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}))) out.push(T("System mesh defaults"));
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
@@ -2202,6 +2449,7 @@ export function PanelSettingsScreen() {
       // UI, next to a mode card that has been calling it "Kernel SNI" the whole time.
       if (!eq(e.routing_mode, o.routing_mode))
         fl.push(T("mode → {v1}", { v1: (MODE_META[e.routing_mode || "kernel"] || {}).label || e.routing_mode }));
+      if (!eq(e.dns_upstream, o.dns_upstream)) fl.push(T("upstream DNS → {v1}", { v1: e.dns_upstream || T("val|default") }));
       if (!eq(e.ip_learning !== false, o.ip_learning !== false)) fl.push(T("IP learning → {v1}", { v1: e.ip_learning !== false ? T("val|on") : T("val|off") }));
       if (!eq(e.endpoint_host, o.endpoint_host)) fl.push(T("ingress address → {v1}", { v1: e.endpoint_host || T("val|auto") }));
       if (!eq(e.mesh_subnet, o.mesh_subnet)) fl.push(T("mesh subnet → {v1}", { v1: e.mesh_subnet || T("val|default") }));
@@ -2209,6 +2457,9 @@ export function PanelSettingsScreen() {
       if (!eq(e.mesh_prefix, o.mesh_prefix)) fl.push(T("prefix → {v1}", { v1: e.mesh_prefix || T("val|default") }));
       if (!eq(e.default_egress_ip, o.default_egress_ip)) fl.push(T("egress IP → {v1}", { v1: e.default_egress_ip || T("val|auto") }));
       if (!eq(e.default_exit, o.default_exit)) fl.push(T("default exit"));
+      if (!eq(e.default_routing, o.default_routing) && (Array.isArray(e.default_routing) || eq(e.default_exit, o.default_exit)))
+        fl.push(Array.isArray(e.default_routing) ? T("default routing rules") : T("default exit"));   // one line for one change
+      if (!eq(e.default_routing_exit_ips, o.default_routing_exit_ips)) fl.push(T("default routing exit addresses"));
       if (!eq(e.panel_ip, o.panel_ip)) fl.push(T("panel IP → {v1}", { v1: e.panel_ip || T("val|auto") }));
       if (!eq(e.mesh_egress_ip, o.mesh_egress_ip)) fl.push(T("mesh egress IP → {v1}", { v1: e.mesh_egress_ip || T("val|auto") }));
       if (!eq((e.endpoint_hosts || []).filter(Boolean), (o.endpoint_hosts || []).filter(Boolean))) fl.push(T("other names"));
@@ -2225,6 +2476,12 @@ export function PanelSettingsScreen() {
   };
   const needsReprov = () => (Store.nodes || []).some(n => { const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}; return !eq(e.mesh_subnet, o.mesh_subnet) || !eq(e.mesh_prefix, o.mesh_prefix) || !eq(e.mesh_awg, o.mesh_awg); });
   const confirmSave = () => {
+    // a node's default list with something the rules cannot carry yet (a half-typed badge, an empty row) — say which,
+    // rather than save the list without it
+    // only the node ON SCREEN can hold a half-typed badge — another node's view, and its text, went when it was left
+    const _blk = [selNode].filter(Boolean).map(nid => [nid, Array.isArray((nodeEdits[nid] || {}).default_routing) ? nodeListBlock(nid, nodeEdits[nid].default_routing) : null])
+      .find(([, why]) => why);
+    if (_blk) { toast(T("{v1}: {v2}", { v1: ((Store.nodes || []).find(n => n.id === _blk[0]) || {}).name || _blk[0], v2: _blk[1] }), "err"); return; }
     const ch = diffList();
     if (!ch.length) { toast(T("No changes to save."), "ok"); return; }
     const rp = needsReprov();
@@ -2319,19 +2576,24 @@ const sectionLabel = k => ({
     onConfirm: () => removeCatFleet(id) });
   const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
   const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
-  const SECF = { routing: ["routing_mode", "ip_learning", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit"], exits: ["exits"] };
+  const SECF = { routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
+  // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
+  const dispDirty = () => tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || tunit !== (ps.throughput_units === "bits" ? "bits" : "bytes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase();
+  const tzDirty = () => tz !== (ps.time_zone || "");
+  // ⚠️ THE THIRD HALF of the settings idiom: without this in the display arm below, Save never enables for these two.
+  const dataDirty = () => infHist !== (ps.infinite_history !== false) || histRes !== String(ps.history_resolution || 3600);
   const glDirty = sec =>
     sec === "routing" ? (listsJSON(lists) !== listsJSON(ps.custom_lists || []) || Object.keys(blockEdits).length > 0 || blockRemoved.length > 0) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).filter(p => !p.builtin).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
-    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || reachDef !== (idf.reach || "user") || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
+    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || JSON.stringify(awg3Trim(awg3Def)) !== JSON.stringify(awg3Trim(idf.awg3_params)) || reachDef !== (idf.reach || "user") || awgGenDef !== (idf.awg_gen === "3.1" ? "3.1" : "2.0") || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
-    sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || tunit !== (ps.throughput_units === "bits" ? "bits" : "bytes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
-    sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false)) : false;
+    sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :
+    sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false) || meshMode !== (ps.mesh_mode || "auto")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
   const anyDirty = SECTIONS.some(([s]) => secDirty(s));
@@ -2419,6 +2681,29 @@ const sectionLabel = k => ({
               <span class="rds-k">${T("Overlaps")}</span><span class="rds-v">${mm.overlaps}</span>
             </div>` : null}
             <div class="rmode-desc">${mm.exp}</div>
+            ${/* Force-DNS only: where this node's resolver sends the lookups it answers for its clients. Until now a
+                  hardcoded 1.1.1.1 + 8.8.8.8 (docs/DNS-SETTINGS-PLAN.md §4). Plain addresses — no DoH/DoT engine is added. */""}
+            ${nodeMode === "forcedns" ? html`<div class="field rd-upstream">
+              <label>${T("Upstream DNS")}</label>
+              <input value=${nv(selNode, "dns_upstream") || ""} onInput=${e => setNV(selNode, { dns_upstream: e.target.value })} placeholder="1.1.1.1, 8.8.8.8" autocomplete="off"/>
+              <div class="hint">${T("Where this node's resolver sends the lookups it answers for Force-DNS clients. Empty = 1.1.1.1, 8.8.8.8. Up to four addresses, each optionally with #port (a local resolver like 127.0.0.1#5335 works). If none of them answers, clients on this node can't resolve names.")}</div>
+              ${(() => { /* what the node's resolver RUNS with (it reports it while it runs), against what is saved — an older node
+                            ignores the setting and keeps the default, so a saved value is not yet an applied one */
+                const sr = (Store.stats[selNode] || {}).smartroute || {};
+                // A node too old to know the setting never reports it — but its resolver IS running (engine dns, dnsmasq
+                // alive) on the upstream that node always had, so that is what is in effect there.
+                const run = Array.isArray(sr.dns_upstream) ? sr.dns_upstream
+                  : (sr.engine === "dns" && sr.dnsmasq === true) ? ["1.1.1.1", "8.8.8.8"] : null;
+                if (!run || savedMode !== "forcedns") return null;
+                const saved = ((nodeRec || {}).dns_upstream || []).length ? nodeRec.dns_upstream : ["1.1.1.1", "8.8.8.8"];
+                // ⚠️ SAY WHICH ONE IT IS. The SPA knows: a node that runs the setting reports it; one too old to know it does
+                // not. One sentence covering both promised "the next sync" on a node that will never apply it (F1).
+                return run.join(",") === saved.join(",")
+                  ? html`<div class="hint">${T("In effect on this node: {v1}", { v1: run.join(", ") })}</div>`
+                  : Array.isArray(sr.dns_upstream)
+                    ? html`<div class="hint warnish">${T("Not on the node yet — it still asks {v1}. It applies on the next sync.", { v1: run.join(", ") })}</div>`
+                    : html`<div class="hint warnish">${T("This node is too old to use this setting — it keeps asking {v1} until it is updated.", { v1: run.join(", ") })}</div>`; })()}
+            </div>` : null}
           </div>`; })()}
 
           <div class="rltabs">
@@ -2485,8 +2770,8 @@ const sectionLabel = k => ({
           </div>` : null}` : null}
 
           <div class="lg-legend">
-            <div class="lg-leg-row">${Trich("{v1} matched by address range (GeoIP / ASN) — works in every mode.", { v1: html`<span class="capb ip">IP</span>` })}</div>
-            <div class="lg-leg-row">${Trich("{v1} matched by domain name — needs Force-DNS or SNI mode.", { v1: html`<span class="capb host">${T("Host")}</span>` })}</div>
+            ${legRow(Trich("{v1} matched by address range (GeoIP / ASN) — works in every mode.", { v1: html`<span class="capb ip">IP</span>` }))}
+            ${legRow(Trich("{v1} matched by domain name — needs Force-DNS or SNI mode.", { v1: html`<span class="capb host">${T("Host")}</span>` }))}
             ${provFleetCats.some(id => !catUsableInMode(id, nodeMode)) ? html`<div class="lg-leg-row faint">${T("Greyed rows are Host-only — this node is IP-only, so they can't match here. The pull stays remembered; switch to Force-DNS or SNI to activate them.")}</div>` : null}
           </div>` : null}
 
@@ -2497,7 +2782,7 @@ const sectionLabel = k => ({
             const provLabel = p => ((bc.providers || []).find(x => x.id === p) || {}).label || p;
             const provTier = p => ((bc.providers || []).find(x => x.id === p) || {}).tier || "host";
             const provColor = p => { const bp = (bc.providers || []).find(x => x.id === p) || {}; return pickThemed(provColors[p] || asThemed((ps.provider_colors || {})[p], bp.color, bp.color_l || bp.color), _provColDefault(p).dark, _provColDefault(p).light); };
-            const srcLabel = s => { const L = (provList[s.provider] || []).find(x => x.id === (s.list || "")); return (L && L.label) || s.list || provLabel(s.provider); };
+            const srcLabel = s => { const L = (provList[s.provider] || []).find(x => x.id === (s.list || "")); return (L && blistText(L.label)) || s.list || provLabel(s.provider); };
             const bcat = id => { const b = (bc.categories || {})[id] || {}; return { id, ...b, ...(blockEdits[id] || {}) }; };
             const allIds = [...new Set([...(bc.cat_order || []), ...Object.keys(bc.categories || {}), ...Object.keys(blockEdits)])];
             const cats = allIds.map(bcat).filter(c => c.kind !== "mechanism" && !blockRemoved.includes(c.id));
@@ -2530,16 +2815,17 @@ const sectionLabel = k => ({
             const setSources = (c, sources) => setBlockEdits(e => ({ ...e, [c.id]: { ...(e[c.id] || {}), sources } }));
             const addSource = (c, p, l) => { if ((c.sources || []).some(s => s.provider === p && s.list === l)) return; setSources(c, [...(c.sources || []), { provider: p, list: l }]); };
             const removeSource = (c, i) => setSources(c, (c.sources || []).filter((_, j) => j !== i));
-            const srcDesc = s => { const L = (provList[s.provider] || []).find(x => x.id === (s.list || "")); return (L && L.desc) || ""; };
+            const srcDesc = s => { const L = (provList[s.provider] || []).find(x => x.id === (s.list || "")); return (L && blistText(L.desc)) || ""; };
             const srcUrl = s => { const L = (provList[s.provider] || []).find(x => x.id === (s.list || "")); return (L && L.src) || ""; };
             const setAvailNode = (c, nid, on) => { const en = new Set(c.enabled_nodes || []); on ? en.add(nid) : en.delete(nid);
               setBlockEdits(e => ({ ...e, [c.id]: { ...(e[c.id] || {}), enabled_nodes: [...en] } })); };
             const bkRow = c => { const src = c.sources || []; const nL = src.length; const open = !!bkOpen[c.id]; const dis = catDis(c);
+              const catNm = blockCatLabel(c.label);   // the whole name on hover — a narrow column cuts a long one off
               return html`<div class=${"bkitem" + (open ? " open" : "") + (dis ? " bk-dis" : "")} key=${c.id}>
                 <div class=${"bkrow" + (open ? " open" : "")} onClick=${() => setBkOpen(o => ({ ...o, [c.id]: !open }))}>
                   <div class="lg-pull" onClick=${e => e.stopPropagation()}><${Switch} on=${availOn(c) && !dis} disabled=${dis} title=${dis ? T("No IP list here — can't enforce in {v1}. Add an IP list, or use Force-DNS / Hybrid-SNI.", { v1: modeLabel }) : T("Filter on {v1}", { v1: nodeRec ? nodeRec.name : T("this node") })} onChange=${v => { if (!dis) setAvail(c, v); }}/></div>
                   <div class="bk-cat">
-                    <div class="bk-catline"><span class="lg-title">${c.label}</span><span class="bk-chev">▾</span></div>
+                    <div class="bk-catline"><span class="lg-title" title=${catNm}>${catNm}</span><span class="bk-chev">▾</span></div>
                     <div class="bk-lists">${nL ? src.map(srcLabel).join(", ") : html`<span class="faint">${T("no lists yet — add one →")}</span>`}</div>
                   </div>
                   <div class="bk-kind">${!c.predefined ? html`<span class="capb custom" title=${T("A category you created")}>${T("src|Custom")}</span>` : null}</div>
@@ -2548,7 +2834,7 @@ const sectionLabel = k => ({
                   <div class="bk-cap">${(() => { const cp = caps(c); return cp.host || cp.ip
                     ? html`<${Fragment}>${cp.host ? html`<span class="capb host" title=${T("Matched by domain — needs Force-DNS or Hybrid-SNI mode")}>${T("Host")}</span>` : null}${cp.ip ? html`<span class="capb ip" title=${T("Matched by IP — works in every mode")}>IP</span>` : null}<//>`
                     : html`<span class="bk-nocap" title=${T("No lists yet")}>—</span>`; })()}</div>
-                  <button class=${"bk-defchip" + (c.default_on ? " on" : "")} onClick=${e => { e.stopPropagation(); setDefault(c, !c.default_on); }} title=${T("Turn this category on automatically for every new interface (still toggled per interface)")}>Default ${c.default_on ? "ON" : "OFF"}</button>
+                  <button class=${"bk-defchip" + (c.default_on ? " on" : "")} onClick=${e => { e.stopPropagation(); setDefault(c, !c.default_on); }} title=${T("Turn this category on automatically for every new interface (still toggled per interface)")}>${c.default_on ? T("Default ON") : T("Default OFF")}</button>
                   <${BlockListPicker} providers=${bc.providers} provLists=${provList} current=${src} nodeMode=${nodeMode} onAdd=${(p, l) => addSource(c, p, l)} autoOpen=${bkAutoAdd === c.id}/>
                 </div>
                 ${open ? html`<div class="bk-expand">
@@ -2559,7 +2845,9 @@ const sectionLabel = k => ({
                       </div>
                       <span class="grow"></span>
                       ${!srcAvail(s) ? html`<span class="bk-nabadge">${T("Not available with {v1}", { v1: modeLabel })}</span>` : null}
-                      ${s.n != null ? html`<span class="bk-count" title=${srcHost(s) ? T("domains in this list") : T("IP ranges in this list")}>${fmtN(s.n)}</span>` : null}
+                      ${s.n != null ? html`<span class=${"bk-count" + (s.err ? " bk-stale" : "")} title=${(srcHost(s) ? T("domains in this list") : T("IP ranges in this list")) + (s.err ? " · " + T("the last update failed ({v1}) — the previous copy is still in use", { v1: s.err }) : "")}>${fmtN(s.n)}</span>`
+                        : s.err && !s.busy ? html`<span class="bk-count bk-fail" title=${T("The panel couldn't download this list ({v1}). It retries on its own, less often each time.", { v1: s.err })}>${T("not downloaded")}</span>`
+                        : (bc.providers || []).some(p => p.id === s.provider && p.enabled !== false) ? html`<span class="bk-count bk-wait" title=${T("The panel is downloading this list — the count appears when it's done")}>…</span>` : null}
                       <span class=${"capb " + (srcHost(s) ? "host" : "ip")} title=${srcHost(s) ? T("Domain list — needs Force-DNS or Hybrid-SNI mode") : T("IP list — works in every mode")}>${srcHost(s) ? T("Host") : T("cap|IP")}</span>
                       ${srcUrl(s) ? html`<a class="catrow-info" href=${srcUrl(s)} target="_blank" rel="noopener" title=${T("See what's in this list")} onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>` : null}
                       <button class="bk-lremove" title=${T("Remove this list from the category")} onClick=${e => { e.stopPropagation(); removeSource(c, i); }}><${Ic} i="x"/></button>
@@ -2576,9 +2864,11 @@ const sectionLabel = k => ({
               </div>
               <div class="lgrid">${cats.map(bkRow)}</div>
               <div class="lg-legend">
-                <div class="lg-leg-row">${Trich("{v1} matched by IP address — works in every mode.", { v1: html`<span class="capb ip">IP</span>` })}</div>
-                <div class="lg-leg-row">${Trich("{v1} matched by domain name — needs *{v2}* or *Hybrid-SNI* mode (they fill the block set from DNS). IP-only and Kernel-SNI can't match domains.", { v1: html`<span class="capb host">${T("Host")}</span>`, v2: T("Force-DNS") })}</div>
-                <div class="lg-leg-row">${Trich("{v1} a domain list can't enforce on an IP-only or Kernel-SNI node — it's skipped, never pushed. Switch that node to Force-DNS / Hybrid-SNI, or add an IP list.", { v1: html`<span class="bk-nabadge">${T("Not available")}</span>` })}</div>
+                ${legRow(Trich("{v1} matched by IP address — works in every mode.", { v1: html`<span class="capb ip">IP</span>` }))}
+                ${/* what each engine does with a blocked NAME since 1.8.8 (KSNI-HOSTNAMES D1/D2): Hybrid refuses the connection,
+                      Force-DNS drops the answer's address unless an allowed name shares it — the two stated, not "fills a set" */""}
+                ${legRow(Trich("{v1} matched by domain name — *{v2}* drops what a blocked name resolves to, unless an allowed site uses the same address; *Hybrid-SNI* refuses each connection to a blocked name. IP-only and Kernel-SNI skip domain lists.", { v1: html`<span class="capb host">${T("Host")}</span>`, v2: T("Force-DNS") }))}
+                ${legRow(Trich("{v1} a domain list can't enforce on an IP-only or Kernel-SNI node — it's skipped, never pushed. Switch that node to Force-DNS / Hybrid-SNI, or add an IP list.", { v1: html`<span class="bk-nabadge">${T("Not available")}</span>` }))}
               </div>
             <//>`;
           })() : null}
@@ -2587,7 +2877,7 @@ const sectionLabel = k => ({
           <div class="seclabel turnhead" style="margin-top:0">${T("Turn proxies")}<span class="grow"></span>
             <label class="swt" title=${turnEnabledS ? T("Turn proxies are on") : T("Turn proxies are off")}><input type="checkbox" checked=${turnEnabledS} onChange=${e => setTurnEnabledS(e.target.checked)}/><span class="track"></span><span class="knob"></span></label></div>
           ${!turnEnabledS ? html`<p class="hint" style="margin:0 0 12px"><b class="warntext">${T("Turn proxies are off.")}</b> ${T("Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.")}</p>`
-            : html`<p class="hint" style="margin:0 0 12px">${Trich("Which forks appear in the *{v1}* picker when you add a proxy to a node, and each fork's colour. Unticking one only *hides it from that list* — it never touches proxies you've already deployed. {v2}", { v1: T("Install a fork"), v2: turnForks.size === 0 ? html`*No forks are enabled — the install picker will be empty.*` : null })}</p>`}
+            : html`<p class="hint" style="margin:0 0 12px">${Trich("Which forks appear in the *{v1}* picker when you add a proxy to a node, and each fork's colour. Unticking one only *hides it from that list* — it never touches proxies you've already deployed. {v2}", { v1: T("Install a fork"), v2: turnForks.size === 0 ? html`<b>${T("No forks are enabled — the install picker will be empty.")}</b>` : null })}</p>`}
           ${html`<${Fragment}>
           <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${turnForksVisible().map(f => { const fcol = pickThemed(forkColors[f.id], f.color, f.colorL); return html`<div class=${"cl-row" + (turnForks.has(f.id) ? "" : " off")} key=${f.id}>
             <${Switch} on=${turnForks.has(f.id)} title=${T("Offer {v1}", { v1: T("{v1} in the install picker", { v1: f.label }) })} onChange=${v => setTurnForks(s => { const n = new Set(s); v ? n.add(f.id) : n.delete(f.id); return n; })}/>
@@ -2614,7 +2904,7 @@ const sectionLabel = k => ({
                 ${perNode.map(n => html`<span class="tf-vg-node">
                   <span class="tf-vg-dot" style=${"background:" + (Store.nodeColor(n.node) || "var(--ink)")}></span>
                   <span class="tf-vg-nm">${Store.nodeName(n.node)}</span>
-                  <span class=${"tf-vg-ver" + (n.held ? " held" : "")}>${n.held ? html`<${Ic} i="off"/> Held on ${n.held}` : (n.version || "—")}</span>
+                  <span class=${"tf-vg-ver" + (n.held ? " held" : "")}>${n.held ? html`<${Ic} i="off"/> ${T("Held on {v1}", { v1: n.held })}` : (n.version || "—")}</span>
                   ${n.installing ? html`<span class="tf-vg-st upd">${T("updating…")}</span>` : (n.updatePending && latest && n.version === latest) ? html`<span class="tf-vg-st ok"><${Ic} i="check"/>${T("updated")}</span>` : null}
                 </span>`)}
               </span>`;
@@ -2625,9 +2915,10 @@ const sectionLabel = k => ({
             })()}
             <span class="grow"></span>
             ${(() => { const cs = turnCheck[f.id]; if (!cs || !cs.status) return null;   // update status — right-aligned, just before the repo URL (like Geo data)
-              if (cs.status === "checking") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> checking…</span>`;
-              if (cs.status === "updating") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;   // i18n-keys
-              if (cs.status === "update") return html`<button class="tf-chk upd tf-updbtn" title=${T("Update every deployed {v1} proxy to {v2}", { v1: f.label, v2: cs.latest })} onClick=${() => updateFork(f.id, cs.latest)}><${Ic} i="download"/> update to ${cs.latest}</button>`;
+              if (cs.status === "checking") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> ${T("checking…")}</span>`;
+              if (cs.status === "updating") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> ${T("updating…")}</span>`;   // i18n-keys
+              if (cs.status === "updated") return html`<span class="tf-chk ok"><${Ic} i="check"/> ${T("updated")}</span>`;
+              if (cs.status === "update") return html`<button class="tf-chk upd tf-updbtn" title=${T("Update every deployed {v1} proxy to {v2}", { v1: f.label, v2: cs.latest })} onClick=${() => updateFork(f.id, cs.latest)}><${Ic} i="download"/> ${T("update to")} ${cs.latest}</button>`;
               return html`<span class="tf-chk ok"><${Ic} i="check"/> ${T("up to date")}</span>`; })()}
             <span class="tf-plats">${turnForkPlatforms(f).map(p => html`<span key=${p.os} class="tf-platwrap turnwrap" title="">
               <button type="button" aria-disabled=${p.disabled ? "true" : null}
@@ -2642,7 +2933,7 @@ const sectionLabel = k => ({
                       <span class="tf-plbub-app">${p.name}<span class="tf-plbub-by"> ${Trich("by {v1}", { v1: html`<span class="tf-plbub-who" style=${"color:" + (p.color || turnColor(p.author))}>${p.author}</span>` })}</span></span>
                       ${p.coreFork ? html`<span class="tf-plbub-core">${Trich("with {v1} core", { v1: html`<span style=${"color:" + turnColor(p.coreFork)}>${p.coreFork}</span>` })}</span>` : null}
                     </span>
-                    <span class=${"tf-plbub-obf" + (p.obfLabel ? "" : " plain")}>${p.obfLabel || "plain"}</span><//>`}
+                    <span class=${"tf-plbub-obf" + (p.obfLabel ? "" : " plain")}>${p.obfLabel || T("tag|plain")}</span><//>`}
               </span></span>`)}</span>
             <button class="iconbtn tf-gear" title=${T("Server-flag defaults for {v1} (pre-fill new proxies)", { v1: f.label })} onClick=${() => openServerDefaults(f.id)}><${Ic} i="gear"/></button>
           </div>`; })}</div>
@@ -2707,7 +2998,7 @@ const sectionLabel = k => ({
                 ${(() => { const u = providerUsage(p.id); return u.rules ? html`<span class="prov-use"
                   title=${T("Rules on your interfaces that route one of this provider's lists")}>${T("used by {v1} on {v2}", { v1: plural(u.rules, "prep|rule"), v2: plural(u.ifaces, "prep|interface") })}</span>` : null; })()}
                 ${p.builtin ? html`<span class="prov-always" title=${T("The panel maintains and resolves these itself — there is no provider to enable, and nothing to turn off")}>${T("always on")}</span>`
-                  : p.enabled === false ? null : html`<span class=${"prov-upd" + (p.last_updated ? "" : " never")} title=${p.last_updated ? T("When this provider's data was last pulled to the panel") : T("No list from this provider has been routed yet — nothing pulled")}>${p.last_updated ? html`updated ${ago(p.last_updated)}` : T("never updated")}</span>`}
+                  : p.enabled === false ? null : html`<span class=${"prov-upd" + (p.last_updated ? "" : " never")} title=${p.last_updated ? T("When this provider's data was last pulled to the panel") : T("No list from this provider has been routed yet — nothing pulled")}>${p.last_updated ? T("updated {v1}", { v1: ago(p.last_updated) }) : T("never updated")}</span>`}
               </div>
               ${p.desc ? html`<span class="bprov-note">${T(p.desc)}</span>` : null}
             </div>
@@ -2715,7 +3006,7 @@ const sectionLabel = k => ({
             ${p.builtin || p.enabled === false ? null
               : (() => { const s = p.status, flashing = provFlash[p.id] > Date.now();
               if (s === "downloading") return html`<${Fragment}><span class="prov-st upd" title=${T("Reading this provider's file list from GitHub. Its lists become searchable when it lands; nothing is routed yet.")}><span class="tf-arrow"><${Ic} i="refresh"/></span> ${T("Downloading…")}</span><button class="btn btn-mini" style="margin-left:8px" title=${T("GitHub allows 60 requests an hour without an account, and a fetch inside that window can sit for a couple of minutes. Cancelling stops the wait and turns the provider off — the request itself finishes on its own and its result is thrown away.")} onClick=${() => cancelProvider(p.id)}>${T("Cancel")}</button></>`;
-              if (s === "updating") return html`<span class="prov-st upd"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;   // i18n-keys
+              if (s === "updating") return html`<span class="prov-st upd"><span class="tf-arrow"><${Ic} i="refresh"/></span> ${T("updating…")}</span>`;   // i18n-keys
               if (s === "updated") return flashing ? html`<span class="prov-st ok"><${Ic} i="check"/> ${T("updated")}</span>` : null;   // i18n-keys
               if (s === "uptodate") return flashing ? html`<span class="prov-st ok"><${Ic} i="check"/> ${T("up to date")}</span>` : null;
               if (s === "failed" || p.error) return html`<${Fragment}><span class="prov-st err" title=${srvText(p) || ""}><${Ic} i="warn"/> ${p.last_updated ? T("update failed") : T("download failed")}</span><button class="btn btn-mini" style="margin-left:8px" onClick=${() => retryProvider(p.id)}>${T("Retry")}</button></>`;
@@ -2765,13 +3056,15 @@ const sectionLabel = k => ({
         ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">${T("Interface colours")}<span class="grow"></span>
-            ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg }, wdtt: { ...IFACE_COLOR_DEFAULTS.wdtt }, csqtt: { ...IFACE_COLOR_DEFAULTS.csqtt } })}><${Ic} i="refresh"/>${T("Reset")}</button>` : null}</div>
+            ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg }, awg3: { ...IFACE_COLOR_DEFAULTS.awg3 }, wdtt: { ...IFACE_COLOR_DEFAULTS.wdtt }, csqtt: { ...IFACE_COLOR_DEFAULTS.csqtt } })}><${Ic} i="refresh"/>${T("Reset")}</button>` : null}</div>
           <p class="hint" style="margin:0 0 12px">${T("The colour each protocol's tags take everywhere — a value per theme. Hover a swatch to preview it.")}</p>
           <div class="palrow">
-            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wg} title=WireGuard onChange=${nv => setIfaceColors(c => ({ ...c, wg: nv }))}
-              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>wg</span>`}/><span class="pallbl">WireGuard</span></span>
-            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.awg} title=AmneziaWG onChange=${nv => setIfaceColors(c => ({ ...c, awg: nv }))}
-              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/><span class="pallbl">AmneziaWG</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wg} title="WG" onChange=${nv => setIfaceColors(c => ({ ...c, wg: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>wg</span>`}/><span class="pallbl">WG</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.awg} title="AWG 2.0" onChange=${nv => setIfaceColors(c => ({ ...c, awg: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/><span class="pallbl">AWG 2.0</span></span>
+            <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.awg3} title="AWG 3.1" onChange=${nv => setIfaceColors(c => ({ ...c, awg3: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/><span class="pallbl">AWG 3.1</span></span>
             <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.wdtt} title=WDTT onChange=${nv => setIfaceColors(c => ({ ...c, wdtt: nv }))}
               sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>WDTT</span>`}/><span class="pallbl">WDTT</span></span>
             <span class="palcell sw1"><${ThemedSwatch} val=${ifaceColors.csqtt} title=CSQTT onChange=${nv => setIfaceColors(c => ({ ...c, csqtt: nv }))}
@@ -2781,7 +3074,7 @@ const sectionLabel = k => ({
           <p class="hint" style="margin:0 0 10px">${Trich("Two ways a peer can be under a filter, each independently switchable. Both raise the same {v1} badge — one is blocked at the door, the other gets in and can't stay. A peer that simply has nothing to send is never flagged.", { v1: html`<span class="b-blocked" style="padding:1px 6px;border-radius:6px">${T("tag|restricted")}</span>` })}</p>
           <div class="condrow"><${Switch} on=${statusConds.blocked} onChange=${v => setStatusConds(c => ({ ...c, blocked: v }))}/>
             <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>${T("tag|restricted")}</span></span>
-            <span class="cond-t">${T("The client's packets reach the server but no handshake has ever completed — blocked at the door (likely DPI / MTU / wrong Wireguard or AmneziaWG params).")}</span></div>
+            <span class="cond-t">${T("The client's packets reach the server but no handshake has ever completed — blocked at the door (likely DPI / MTU / wrong WireGuard or AmneziaWG params).")}</span></div>
           <div class="condrow"><${Switch} on=${statusConds.faulty} onChange=${v => setStatusConds(c => ({ ...c, faulty: v }))}/>
             <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>${T("tag|restricted")}</span></span>
             <span class="cond-t">${T("The tunnel keeps collapsing and being rebuilt: handshakes far more often than the 120s a healthy session renews at, from an endpoint that isn't moving. A peer that simply has nothing to send is not flagged.")}</span></div>
@@ -2802,11 +3095,21 @@ const sectionLabel = k => ({
                 ? html`<button type="button" class="linkbtn" onClick=${() => openModal(html`<${ReachEveryoneSheet}/>`)}>${T("Existing interfaces set to “Everyone on this node”: {n}", { n: everyone })}</button>`
                 : T("No existing interface is set to “Everyone on this node”.")}</div></div>`;
           })()}
+          ${/* AmneziaWG 3.1 (docs/AWG3-PLAN.md D-default): which way the create form's version switch starts. A preset, not a
+                parameter — the 2.0 obfuscation below goes to every new AWG interface whatever this says, its 3.1 cells only to one
+                created on 3.1 or switched to it, and a node that cannot run 3.1 still starts on 2.0. */""}
+          <${AwgGenField} value=${awgGenDef} onChange=${setAwgGenDef} label=${T("AmneziaWG version for new interfaces")}
+            hint=${T("Where the create form's switch starts. A node that cannot run 3.1 starts on 2.0, and existing interfaces keep their version.")}/>
             <${Disclosure} title=${T("AmneziaWG obfuscation")}
-              summary=${AWG_KEYS.some(k => String(awgDef[k] ?? "").trim() !== "") ? T("settings|customised") : T("settings|built-in")}
+              summary=${AWG_KEYS.some(k => String(awgDef[k] ?? "").trim() !== "") || Object.keys(awg3Trim(awg3Def)).length ? T("settings|customised") : T("settings|built-in")}
               open=${awgOpen} onToggle=${() => setAwgOpen(o => !o)}>
               <p class="hint" style="margin:0 0 10px">${T("Given to every new AmneziaWG interface. Leave a cell blank to keep what the node does today — S and H are rolled fresh for each interface, so two interfaces never look alike. WireGuard interfaces ignore all of it.")}</p>
               <${AwgGrid} value=${awgDef} onChange=${setAwgDef} placeholders=${awgBlankHints()}/>
+              <${Awg3Grid} value=${awg3Def} onKey=${(k, v) => setAwg3Def(o => ({ ...o, [k]: v }))} hpk=${T("val|per interface")} rt=${T("val|on")}
+                hpkTip=${T("Each interface gets a key of its own — one key shared by every interface would protect nothing.")}
+                rtTip=${T("On for every AmneziaWG 3.1 interface the panel sets up.")}
+                placeholders=${ps.awg31_builtin || {}}
+                hint=${T("Given to an interface when it is created on 3.1 or switched to it; one already on 3.1 keeps its own. A blank cell is Amnezia's default.")}/>
             <//>
           <div class="seclabel">${T("Key escrow & recovery")}</div>
           <p class="hint" style="margin:0 0 10px">${T("Backup each server's interface key so a wiped / rebuilt node restores its interfaces with their original identities.")}</p>
@@ -2894,6 +3197,18 @@ const sectionLabel = k => ({
               { value: "bytes", label: T("Bytes — MB/s, what the node counts") },
               { value: "bits", label: T("Bits — Mbit/s, like a speed test") }]}/>
             <div class="hint">${T("How every speed in the panel is written. The same measurement either way — bits are 8× the number, and are what speed tests, ISP plans and router pages quote. Totals are always in bytes.")}</div></div>
+          <div class="seclabel">${T("Data")}</div>
+          <div class="field"><label class="toggle-row"><${Switch} on=${infHist} onChange=${v => v ? setInfHist(true) : confirmHistOff(() => setInfHist(false))}/>
+            <span>${T("Infinite history")}</span></label>
+            <div class="hint">${T("Keep every peer's detailed traffic — at the history resolution below — for ever. Turn this off to keep that detail for the last 33 days only; totals for any period are always kept.")}</div></div>
+          <div class="field"><label>${T("History resolution")}</label>
+            <${Dropdown} value=${histRes} onChange=${v => setHistRes(v)} options=${HIST_RES.map(n => ({ value: String(n), label: histResLabel(n) }))}/>
+            <div class="hint">${T("How much detail the per-peer traffic graphs can show. Finer costs more disk. A change applies from the next day — today keeps the detail it started with.")}</div></div>
+          <${HistoryUsage}/>
+          <div class="field"><label>${T("Days are counted in")}</label>
+            <${Dropdown} value=${tz} onChange=${v => setTz(v)} options=${tzOptions(tzCat, ps.time_zone_now || {}, tz)}/>
+            <div class="hint">${T("Where each day starts and ends — for traffic totals, the charts and the turn-proxy update hour. Changing it shifts the charts' earlier points by the difference until they scroll out (up to 33 days).")}</div>
+            ${(ps.time_zone_now || {}).missing ? html`<div class="hint warn"><${Ic} i="warn"/> ${T("This server no longer has {v1}, so days are counted in its own zone. Pick another zone and save.", { v1: ps.time_zone_now.missing })}</div>` : null}</div>
           <div class="seclabel">${T("Status timing")}</div>
           <p class="hint" style="margin:0 0 12px">${T("How long the panel waits before treating things as stale — in seconds.")}</p>
           <div class="row2"><div class="field"><label>${T("Node stale after (s)")}</label><input value=${staleS} onInput=${e => setStaleS(e.target.value)} placeholder="30"/><div class="hint">${T("No sync for this long → the node shows stale.")}</div></div>
@@ -2937,6 +3252,7 @@ const sectionLabel = k => ({
                 const fresh = nFields((Store.nodes || []).find(n => n.id === selNode) || {});
                 setNV(selNode, { exits: fresh.exits });
                 setOrig(o => ({ ...o, [selNode]: { ...(o[selNode] || {}), exits: fresh.exits.map(x => ({ ...x })) } }));
+                rebaseDefault(selNode, fresh);
                 return true;
               }}
               onBlock=${m => setExitWhy(w => (w[selNode] === m ? w : { ...w, [selNode]: m }))}/>
@@ -2978,6 +3294,7 @@ const sectionLabel = k => ({
                 const fresh = nFields((Store.nodes || []).find(n => n.id === selNode) || {});
                 setNV(selNode, { exits: fresh.exits });
                 setOrig(o => ({ ...o, [selNode]: { ...(o[selNode] || {}), exits: fresh.exits.map(x => ({ ...x })) } }));
+                rebaseDefault(selNode, fresh);
                 return true;
               }}
               openManage=${seed => openModal(html`<${ExitManageSheet} node=${nodeRec}
@@ -2990,11 +3307,23 @@ const sectionLabel = k => ({
                   const fresh = nFields((Store.nodes || []).find(n => n.id === selNode) || {});
                   setNV(selNode, { exits: fresh.exits });
                   setOrig(o => ({ ...o, [selNode]: { ...(o[selNode] || {}), exits: nFields((Store.nodes || []).find(n => n.id === selNode) || {}).exits } }));
+                  rebaseDefault(selNode, fresh);
                 }}/>`)}/>
             <div class="seclabel">${T("{v1} — mesh", { v1: nodeRec.name })}</div>
             <${NodeMeshForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
           <//>`
             : html`<p class="hint" style="margin:0">${T("No nodes yet — enroll a node to configure how it is reached, how it exits, and how it links.")}</p>`}
+          ${/* FLEET-WIDE too: which node pairs get a link. The threshold and the mode in force come from the server
+                (`mesh_auto_max`, `mesh_effective`) — the browser never decides which side of the line a fleet is on. */""}
+          <div class="seclabel">${T("Mesh links")}</div>
+          <p class="hint" style="margin:0 0 8px">${T("A full mesh links every pair of nodes: every leg is measured and a new forward target works at once, but each node carries one link per other node. On demand links only the pairs a forward or a smart rule routes over, and removes a link nothing has used for an hour.")}</p>
+          <div class="field" style="max-width:460px;margin-bottom:6px"><${Dropdown} value=${meshMode} onChange=${v => setMeshMode(v)} options=${
+            ["auto", "full", "demand"].map(v => ({ value: v, label: meshModeLabel(v, ps.mesh_auto_max) }))}/></div>
+          ${/* What auto is doing NOW — so only while the dropdown shows the SAVED mode: `mesh_effective` is the server's answer
+                for what is saved, and read against an unsaved pick it would describe a mode the operator is leaving. */""}
+          ${meshMode === "auto" && (ps.mesh_mode || "auto") === "auto" && ps.mesh_effective ? html`<p class="hint" style="margin:0 0 14px">${ps.mesh_effective === "demand"
+            ? T("This fleet is linked on demand now.")
+            : T("Every pair in this fleet is linked now.")}</p>` : html`<div style="height:8px"></div>`}
           ${/* FLEET-WIDE, deliberately OUTSIDE the node picker above: "which of my nodes sit on a private network"
                 has no answer on a per-node page — it means opening every node in turn. Reported, never configured:
                 a node discloses the private addresses it holds on devices it does not run as its own tunnels. */""}
@@ -3917,8 +4246,73 @@ export function NodeMeshForm({ node, vals, set }) {
 }
 
 // Per-node egress IP roles, edited in Panel settings → Nodes egress (copied from node settings). Controlled by the parent.
+/** A stored rule list, through the editor's own round trip — the form the draft holds and the save sends, so a list opened
+ *  and left alone compares equal to the one on the server. */
+const normRules = rs => { const { rows, catchAll } = rulesToRows(rs || []); return rowsToRules(rows, catchAll); };
+
+/* A legend row: the badge, then its sentence as ONE flowing text. `Trich` hands the sentence back as several nodes (plain runs,
+   *bold* runs), and in this flex row each became its own column — "Force-DNS" and "Hybrid-SNI" wrapped by themselves and "or"
+   lost its space, "orHybrid-SNI" (1.8.8 qualification, GUI review). The badge keeps its hanging column; the words flow. Every
+   language puts the badge first today; one that does not still reads as text, just without the hanging indent. */
+export function legRow(parts) {
+  const a = [parts].flat(Infinity).filter(x => x != null && x !== ""), lead = typeof a[0] === "string" ? null : a[0];   // Trich nests: the badge arrives inside the first run's array
+  return html`<div class="lg-leg-row">${lead ? html`${lead}<span>${a.slice(1)}</span>` : html`<span>${a}</span>`}</div>`;
+}
+
+/* THE NODE'S DEFAULT LIST (D2, ROUTING-PEERS-MESH-PLAN §7.3) — the interfaces' own `RoutingRules`, in the node scope. Its rows
+   are held HERE, because a row carries an identity (`_gid`) and draft state (`_draft`, a badge being typed) that the rule list
+   in the Settings draft cannot: rebuilding rows from rules on every render would re-mint every row and drop the half-typed
+   badge. The parent re-keys this on a save, so it re-reads what the server kept. */
+function NodeDefaultRules({ node, nodeExits, base, rules, exitIps, mode, onChange }) {
+  // The rows are kept per node (NODE_LIST_ROWS) and reused for as long as they lower to the draft — as they are, or with an
+  // exit prune applied (`adoptRows`) — and the Save button asks them whether a badge is still being typed (nodeListBlock).
+  const live = new Set((nodeExits || []).map(x => String(x.id)));
+  const adopt = (held, rs) => adoptRows(held, rs, live);   // see rulerows.js — the draft's rows, keeping what it can
+  // ⚠️ A REMOUNT DROPS `_draft`. The half-typed text itself lives in the badge field's own state and is gone with the view
+  // (switching nodes discards it, as closing an interface sheet does); a row still flagged for it would block Save over
+  // text nobody can see any more. The block is for text still on the screen.
+  const [st0, setSt] = useState(() => { const c = NODE_LIST_ROWS[node];
+    return adopt(c && { ...c, rows: (c.rows || []).map(r => r && r._draft ? (({ _draft, ...x }) => x)(r) : r) }, rules); });
+  // …and when the draft changes from OUTSIDE these rows (Settings re-basing it after an exit write), follow it here too:
+  // the screen must show what Save will post, and the next edit must not put the old rule back (code review, P3).
+  const st = adopt(st0, rules);
+  if (st !== st0) setSt(st);
+  NODE_LIST_ROWS[node] = { base, rows: st.rows, catchAll: st.catchAll, mode };
+  return html`<${RoutingRules} scope="node" node=${node} rows=${st.rows} catchAll=${st.catchAll} exitIps=${exitIps || {}}
+    onChange=${(rows, catchAll, xs) => { setSt({ rows, catchAll }); NODE_LIST_ROWS[node] = { base, rows, catchAll, mode };
+      onChange(rowsToRules(rows, catchAll), xs); }}/>`;
+}
+/** node id → {base, rows, catchAll, mode}: the default list's rows as last edited (see NodeDefaultRules). */
+const NODE_LIST_ROWS = {};
+/** Why a node's default list cannot be saved yet, or null — what the interface sheets ask `egressSaveBlock`: a badge still
+ *  being typed, an empty row, an invalid target, which the rules the Save posts would silently drop. */
+const nodeListBlock = (nid, rules) => { const c = NODE_LIST_ROWS[nid];
+  return c && JSON.stringify(rowsToRules(c.rows, c.catchAll)) === JSON.stringify(rules || []) ? egressSaveBlock({ mode: "smart", rows: c.rows, catchAll: c.catchAll }, c.mode || "kernel") : null; };
+
+/* "Whom it affects" (§7.3) — from the last sync's plan (T16: never computed per /api/state), so it shows nothing
+   for one interval after a panel restart rather than a number that is not true. Bounded hovers, as everywhere. */
+function DefaultReach({ node }) {
+  const rc = node.default_reach;
+  if (!rc) return null;   // not planned yet (one interval after a panel restart): say nothing rather than a placeholder line
+  const auto = rc.auto || [], arr = rc.arr || [];
+  const ifTrig = html`<b>${plural(auto.length, "Auto interface")}</b>`;
+  const arTrig = html`<b>${plural(arr.length, "interface")}</b>`;
+  const hov = (trig, items) => items.length ? html`<${Popover} hoverOnly popCls="netroute-bub" trigger=${trig}>
+      ${items.slice(0, 10).map(x => html`<div class="netbub-row">${x}</div>`)}
+      ${items.length > 10 ? html`<div class="netbub-row sub">${T("…and {v1} more", { v1: items.length - 10 })}</div>` : null}<//>` : trig;
+  // two styled runs in one translated sentence: split on both markers, in whichever order the translation put them
+  const parts = T("Routes {ifaces} here and the traffic {sources} send out through this node.").split(/(\{ifaces\}|\{sources\})/);
+  const fill = { "{ifaces}": hov(ifTrig, auto), "{sources}": hov(arTrig, arr.map(([n, S]) => Store.nodeName(n) + " · " + S)) };
+  return html`<div class="hint">${parts.map(x => fill[x] || x)}
+    ${(rc.dup || []).length ? html` ${T("{v1} arrive from two nodes at once and are left to this node's own route.", { v1: rc.dup.join(", ") })}` : null}</div>`;
+}
+
 export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManage, saveExits }) {
   const ips = node.ips || []; const v = vals || {};
+  const isList = Array.isArray(v.default_routing);   // the default is a rule list (D2) — its presence is the switch
+  // The list's rules start folded: the section opens on its few settings, and the rules are there on a click. Opened by the
+  // choice that makes the default a list, so choosing it shows where the rules go.
+  const [rulesOpen, setRulesOpen] = useState(false);
   // "Custom interface…" is a MODE of this field, not a value it can hold — picking it opens the device
   // field below and the field's answer is what gets stored. Local state, because nothing is decided until
   // a device is named and there is nothing to save in the meantime.
@@ -3995,7 +4389,9 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       : [...exitsNow(), { id: newExitId(), ...patch, producer: "adopted",
                           device: d, enabled: true, killswitch: false }];
     setForm(null);
-    await commitExits(next, select ? { default_exit: have ? have.id : next[next.length - 1].id } : null);
+    // choosing a device is choosing a PLAIN default: a list still stored would make the server ignore it (§4.2)
+    await commitExits(next, select ? { default_exit: have ? have.id : next[next.length - 1].id,
+                                       ...(isList ? { default_routing: null } : {}) } : null);
   };
   // ⚠️ THE SOURCE RIDES WITH THE RENAME, so this form is not two acts wearing one button. It is still not a
   // REPOINT: `device` stays read-only for an existing exit, because changing which device an exit is is a
@@ -4049,7 +4445,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       ${/* The form belongs to this list, and so does any popup opened FROM the form — portalled to the
             body, so nothing the caller holds `contains` it. "A click in some open list is not a click away
             from this list" is the whole rule, and it needs no marker on either side to say so. */""}
-      <${Dropdown} value=${v.default_exit || ""} closeRef=${ddClose}
+      <${Dropdown} value=${isList ? "__smart__" : (v.default_exit || "")} closeRef=${ddClose}
         keep=${t => !!(t && t.closest && t.closest(".exname, .ddpop"))}
         ${/* While the form is up it sits directly below this control, so the list has to open the other way
               or it covers the fields the operator opened it to edit. */""}
@@ -4059,14 +4455,23 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
         onChange=${x => {
           if (x === "__custom__") return setForm({ kind: "custom", device: "", title: "", egress_ip: "" });
           setForm(null);
-          if (String(x).startsWith("dev:")) return addDevice(String(x).slice(4));
-          set({ default_exit: x });
+          // D2 — choosing the list keeps what the default was as its "Everything else", so nothing about where the
+          // remainder goes changes by choosing it; the operator adds rules above that.
+          if (x === "__smart__") return isList ? null
+            : (setRulesOpen(true), set({ default_routing: v.default_exit ? [{ enabled: true, category: "all", action: "dev", exit_id: v.default_exit }] : [] }));
+          if (String(x).startsWith("dev:")) return addDevice(String(x).slice(4));   // clears the list itself (see addDevice)
+          set({ default_exit: x, ...(isList ? { default_routing: null } : {}) });
         }}
         options=${[
         // NAME THE INTERFACE, not the concept. "This node's own connection" is a phrase; `Default (eth0)`
         // is the thing, and it matches the "Auto (MASQUERADE)" idiom the field below already uses. Falls
         // back to the bare word only while the node has not reported which device its default route uses.
         { value: "", label: node.wan_iface ? T("Default ({v1})", { v1: node.wan_iface }) : T("val|Default") },
+        // SECOND, beside Default: the default made smart — the SAME label and class as the interface picker's own entry. It
+        // is a way of deciding, not one more exit, so it sits with Default rather than after every device (operator, 09-26).
+        // ⚠️ The comment here once said a node's default "cannot be smart cascade". Reversed by D2 (ROUTING-PEERS-MESH-PLAN
+        // §3.1, §7.3): the default IS a rule list now, and what IT falls back to is its own "Everything else".
+        { value: "__smart__", label: T("Routing (smart cascade)"), className: "egopt-mode" },
         // ⚠️ THE DRAFT, NOT THE STORED RECORD. Built from `node.exits` the switch flipped the draft and the
         // row went on rendering the server's answer — it toggled, Save lit up, and nothing on screen moved.
         // A control has to show what it just did.
@@ -4132,7 +4537,8 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       // but it answers a DIFFERENT question: `dial_src` is which of this node's addresses BUILDS the tunnel,
       // and the field asks what source the packets carry. For an imported exit that IS the inside address —
       // and a pasted profile's is its own (10.9.0.44); only WARP's is a constant.
-      const _x = (node.exits || []).find(e => e.id === (v.default_exit || ""));
+      // with a list, the address below is the one its Direct rules and its silent "Everything else" leave by
+      const _x = isList ? null : (node.exits || []).find(e => e.id === (v.default_exit || ""));
       if (!_x) {
         return html`<div class="field"><label>${T("Default egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— direct internet exit")}</span></label>
           <${NodeIpPick} ips=${ips} value=${v.default_egress_ip || ""} onChange=${ip => set({ default_egress_ip: ip })} auto=${T("Auto (MASQUERADE)")}/></div>`;
@@ -4199,6 +4605,23 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
           ? T("A tunnel something else on this node runs that it hasn't reported — a proxy's TUN, a WireGuard client. It is added to this node's exits and chosen here.")
           : ""}/>` : null}
     </div>
+    ${/* D2 — THE DEFAULT, MADE SMART: one rule list for this node's Auto interfaces, its smart interfaces' silence and the
+          traffic other nodes cascade out through it (§3.1, §7.3). Keyed by what the server holds, so a save re-reads it. */""}
+    ${isList ? html`<div class="field">
+      <${Disclosure} title=${rulesTitle(node.id)} open=${rulesOpen} onToggle=${() => {
+          // Folding unmounts the rows, and the half-typed badge text goes with them — so its flag goes too, or Save would stay
+          // blocked by text nobody can see (nodeListBlock). The same thing a remount already does (NodeDefaultRules).
+          const c = NODE_LIST_ROWS[node.id];
+          if (rulesOpen && c) NODE_LIST_ROWS[node.id] = { ...c, rows: (c.rows || []).map(r => r && r._draft ? (({ _draft, ...x }) => x)(r) : r) };
+          setRulesOpen(o => !o); }}
+        sumCls="route" summary=${(() => { const { rows, catchAll } = rulesToRows(v.default_routing || []);   // the interface sections' own summary:
+          return rulesSummary(node.id, rows, catchAll); })()}>
+      <${NodeDefaultRules} key=${node.id + ":" + JSON.stringify(node.default_routing || [])} node=${node.id} mode=${v.routing_mode || node.routing_mode}
+        nodeExits=${v.exits || node.exits || []}
+        base=${JSON.stringify(node.default_routing || [])}
+        rules=${v.default_routing} exitIps=${v.default_routing_exit_ips || {}}
+        onChange=${(rules, xs) => set({ default_routing: rules, default_routing_exit_ips: xs || {} })}/>
+      <${DefaultReach} node=${node}/><//></div>` : null}
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
       <${NodeIpPick} ips=${ips} value=${v.panel_ip || ""} onChange=${ip => set({ panel_ip: ip })} auto=${T("Auto (default route)")}/></div>
     <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>

@@ -73,6 +73,16 @@ if [ -f /var/lib/swg-noded/panel-fp ]; then
     TLS_FINGERPRINT="$_pf"
   fi
 fi
+# ⚠️ …AND A LEARNED "VERIFY THROUGH ITS CA" WITH NO LEARNED PIN MEANS NO PIN. swg-noded writes the posture a transfer
+# promoted with (_persist_panel_auth): panel-verify=yes and NO panel-fp when the new panel answered under CA
+# verification. The configured pin is then the pin of the panel the node LEFT, and keeping it pinned the new panel to
+# the old one's certificate: from this start on every sync was refused ("tls fingerprint mismatch"), though the node
+# had synced fine until the restart. A learned verify=no keeps the configured pin, as above — never "verify nothing".
+# (lib/common.sh docker_node_panel, uninstall.sh and convert.sh read the learned files by the same rule.)
+if [ "${_pv:-}" = yes ] && [ -z "${_pf:-}" ] && [ -n "$TLS_FINGERPRINT" ]; then
+  log "panel pin: this node verifies its panel through its CA since it was transferred — the configured pin $(printf %.16s "$TLS_FINGERPRINT")… (the previous panel's) is not used"
+  TLS_FINGERPRINT=""
+fi
 # First boot seeds the NODE_IFACES bootstrap; after that, ./data/node-confs is the SINGLE source of
 # truth — a bootstrap interface deleted from the panel must NOT be regenerated on the next reboot.
 BOOT_MARKER=/var/lib/swg-noded/.bootstrapped   # persisted with ./data/node
@@ -209,7 +219,6 @@ done
 # module), and falls back to amneziawg-go otherwise. WG_QUICK_USERSPACE_IMPLEMENTATION only names the fallback.
 export WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
 WAN="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)"; WAN="${WAN:-eth0}"
-NATTED=""                                   # subnets already masqueraded (dedupe)
 
 # Clear our OWN leftovers: with host networking our wg/awg devices live in the HOST netns and survive a
 # container recreate, where they can still hold one of our ListenPorts (→ "Address already in use").
@@ -241,8 +250,19 @@ for _i in $(ip -o link show 2>/dev/null | sed -n 's/^[0-9]\+: \([^:@]*\).*/\1/p'
   esac
 done
 
+# ⚠️ AN INTERFACE THE OPERATOR STOPPED STAYS STOPPED. The panel's Stop takes it down and swg-noded records it
+# (iface-stopped.json in its state dir); on bare metal it also disables the interface's unit, so a reboot keeps it down.
+# This loop brought up every conf at every start, so on a Docker node a Stop lasted until the next container restart —
+# a reboot, an update, a recreate — and swg-noded then cleared the mark (1.8.8 qualification, round 10, N7). A stopped
+# interface is left down here, with its conf kept, until it is started from the panel — nothing else is done for it, as on
+# bare metal: no NAT of this loop's own (swg-noded's egress baseline, swg-egress:<iface>, covers a client subnet whatever
+# its conf carries, and a Start brings the conf's own hooks up with it).
+STOPPED_IFACES="$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(" ".join(x for x in v if isinstance(x, str)) if isinstance(v, list) else "")' \
+  /var/lib/swg-noded/iface-stopped.json 2>/dev/null || true)"
 for IFACE in $MANAGED; do
   dest="$(iface_conf "$IFACE")"
+  case " $STOPPED_IFACES " in *" $IFACE "*)
+    log "leaving $IFACE down — it was stopped from the panel, and stays down until it is started there"; continue;; esac
   # A plain-WireGuard conf is brought up with wg-quick; awg-quick would look for it under ITS OWN dir and fail
   # ("does not exist"), leaving an interface listed as managed but down. Pass the PATH, not the name, so
   # neither tool re-resolves it against the wrong directory. Which tool: the SAME answer add_iface wrote into
@@ -257,14 +277,15 @@ for IFACE in $MANAGED; do
   addr_line="$(awk -F= 'tolower($1) ~ /^[[:space:]]*address[[:space:]]*$/ {print $2; exit}' "$dest" | tr -d ' ' | cut -d, -f1)"
   SUBNET="$(python3 -c "import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))" "$addr_line" 2>/dev/null || echo "")"
   [ -n "$SUBNET" ] || { log "WARNING: could not read subnet for $IFACE — skipping its NAT"; continue; }
-  case " $NATTED " in *" $SUBNET "*) : ;; *)
-    if iptables -t nat -C POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE 2>/dev/null; then :; else
-      iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE \
-        && log "NAT: masquerading $SUBNET out $WAN ($IFACE)" \
-        || log "WARNING: could not add MASQUERADE for $SUBNET (need NET_ADMIN) — clients may have no internet"
-    fi
-    NATTED="$NATTED $SUBNET" ;;
-  esac
+  # ITS OWN MASQUERADE, named after it (swg-nat:<iface>, as swg-agent's hooks write it): one untagged rule per SUBNET was
+  # shared by every interface on it, so one interface's down took another's NAT (a mesh link re-made on the same /31).
+  # The untagged copy an older start (or an older conf's hooks) left for this subnet goes; the tagged one is ensured.
+  if ! iptables -t nat -C POSTROUTING -s "$SUBNET" -o "$WAN" -m comment --comment "swg-nat:$IFACE" -j MASQUERADE 2>/dev/null; then
+    iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$WAN" -m comment --comment "swg-nat:$IFACE" -j MASQUERADE \
+      && log "NAT: masquerading $SUBNET out $WAN ($IFACE)" \
+      || log "WARNING: could not add MASQUERADE for $SUBNET (need NET_ADMIN) — clients may have no internet"
+  fi
+  for _n in 1 2 3 4 5 6 7 8; do iptables -t nat -D POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE 2>/dev/null || break; done
 done
 
 # ───────── 3) swg-agent config: declarative HTTPS sync, all interfaces listed (with per-interface endpoints) ─────────
@@ -290,6 +311,57 @@ chmod 600 /etc/swg-agent/config.json
 
 # mark bootstrap done — from now on ./data/node-confs is the source of truth (deletes stick across reboots)
 touch "$BOOT_MARKER" 2>/dev/null || true
+
+# ───────── 3b) nft tables an earlier image left, in a form the host's own nft can read ─────────
+# ⚠️ THE HOST READS WHAT THIS NODE WRITES. With host networking the node's nft tables live in the host's kernel, and nft ≥ 1.1
+# (this image's) records a set or map declared with a plain `type ipv4_addr` / `type ifname` / `type inet_service` key in a
+# form Debian 12's nft 1.0.6 crashes on: set_make_key() calls the key's missing parse_udata, so `nft list ruleset`, `nft list
+# tables`, even `nft delete table` segfaulted on the host for as long as such a set existed — every host tool on nft with them
+# (1.8.8 qualification, R27). swg-noded declares a single key by the expression it is matched with now (`typeof ip daddr`),
+# which every nft reads; a table an earlier image wrote still holds the old sets, so each such table is re-loaded here, in
+# ONE transaction — the whole table as nft lists it, elements, timeouts and counters included, only its keys re-spelled —
+# before swg-noded runs. A clean table is left alone; a table that will not re-load stays as it was (never deleted: its
+# rules are what enforce), and says so.
+# ⚠️ ONLY THE SETS swg-noded DECLARES DECIDE, EACH RE-SPELLED BY ITS OWN EXPRESSION (round 12d, R29). A `meter` makes its own
+# set (swg_mech's psc_<subnet>), which every nft — 1.0.6 included — lists as `type ipv4_addr` and reads fine as the meter wrote
+# it: counted on the key word alone it re-loaded swg_mech after every rebuild and said "the host reads it now" of a table the
+# host already read. So it never decides. But a table re-loaded for another set declares it again, and declared plain by this
+# image's nft it is what 1.0.6 cannot read (measured on Debian 12: re-loaded as listed → `nft list tables` 139; as `typeof ip
+# saddr`, the key the meter counts by → 0), so there it is re-spelled with the rest. One expression for every set labelled the
+# source-keyed ones `typeof ip daddr` (the same datatype and bytes, the wrong words): NFT_TYPEOF_AWK knows the names swg-noded
+# declares and the expression it declares each with; any other set is left exactly as listed, and counts for nothing.
+NFT_TYPEOF_AWK='
+function key(s, t) {
+  if (t == "inet_service") return (s == "ports") ? "th dport" : ""
+  if (t == "ifname") return (s == "lg") ? "iifname" : ""
+  if (s == "doh_seen" || s == "ar" || s ~ /^pscf?_/ || s ~ /^f[0-9]+n[0-9]+_/ || s ~ /^a[0-9]+n[0-9]+_/) return "ip saddr"
+  if (s == "guard" || s == "cln" || s == "doh4" || s ~ /^catl?_/ || s ~ /^(dmap|nets)_/) return "ip daddr"
+  return ""
+}
+/^[ \t]*(set|map) [A-Za-z0-9_]+ [{]$/ { nm = $2 }
+/^[ \t]*[}]$/ { nm = "" }
+nm != "" && /^[ \t]+type (ipv4_addr|ifname|inet_service)( : verdict)?$/ { k = key(nm, $2); if (k != "") { sub(/type [a-z0-9_]+/, "typeof " k); m++; if (nm !~ /^psc_/) n++ } }
+{ print }
+END { print "#swg-typeof " (n + 0) " " (m + 0) }'
+nft_typeof_migrate(){
+  command -v nft >/dev/null 2>&1 || return 0
+  _tl="$(nft list tables 2>/dev/null)" || return 0
+  for _ft in $(printf '%s\n' "$_tl" | sed -n 's/^table \([a-z0-9]*\) \(swg[A-Za-z0-9_]*\)$/\1:\2/p'); do
+    _fam="${_ft%%:*}"; _t="${_ft#*:}"
+    _body="$(nft list table "$_fam" "$_t" 2>/dev/null)" || continue
+    _new="$(printf '%s\n' "$_body" | awk "$NFT_TYPEOF_AWK")" || continue
+    _cnt="$(printf '%s\n' "$_new" | sed -n 's/^#swg-typeof //p')"
+    _n="${_cnt%% *}"; _m="${_cnt##* }"                     # the sets that decide · every key re-spelled (a meter's too)
+    [ "${_n:-0}" -gt 0 ] || continue
+    if { printf 'delete table %s %s\n' "$_fam" "$_t"; printf '%s\n' "$_new" | sed '/^#swg-typeof /d'; } | nft -f - 2>/dev/null; then
+      log "nft: $_fam $_t re-declared its $_m set key(s) by expression, contents kept — the host's own nft reads it now"
+    else
+      log "nft: $_fam $_t could not be re-declared — left as it was (a host with nft 1.0.6 cannot read it until it is rebuilt)"
+    fi
+  done
+  return 0
+}
+nft_typeof_migrate
 
 # ───────── 4) sync loop: sample interfaces -> POST snapshot -> reconcile desired peers ─────────
 log "syncing to ${PANEL_URL} (interfaces:${MANAGED}, endpoint ${NODE_ENDPOINT})"

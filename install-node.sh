@@ -22,7 +22,11 @@ NODE_NAME="${NODE_NAME:-}"             # local label for this box's systemd unit
 ENDPOINT_IP="${ENDPOINT_IP:-}"         # public IP/host clients dial for THIS node's wg
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected)
 ADOPTED_IFACES="${ADOPTED_IFACES:-}"   # interfaces migrated in by convert.sh — shown as "already on this node", not orphan/docker
+ADOPTED_ENDPOINTS="${ADOPTED_ENDPOINTS:-}"   # "name=host,…" convert.sh hands over: the endpoint each migrated interface's clients already dial
+# No terminal: debconf has nobody to ask and says so four lines per package — quiet it (a value already set stays).
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
 WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
+_GIVEN_DNS="${DNS:-}"                  # given on this run (env / convert.sh) — else a re-install keeps the node's own (node_dns_json)
 DNS="${DNS:-1.1.1.1}"
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes = verify panel's cert (real CA); no = self-signed
 TLS_FINGERPRINT="${TLS_FINGERPRINT:-}" # optional: pin panel cert sha256 (hex) instead of verify
@@ -31,10 +35,12 @@ AGENT_DIR="${AGENT_DIR:-/opt/swg-agent}"
 NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 # ────────────────────────────────────────────────────────────────────────
 
-DRYRUN=false; [ "${1:-}" = "--dry-run" ] && DRYRUN=true
+# --dry-run wherever it stands: only a FIRST argument counted, and bootstrap.sh passes its flags through in the order they
+# were typed — `… node --yes --dry-run` ran a REAL install (1.8.8 qualification, round 12; install-host.sh the same).
+DRYRUN=false; for _a in "$@"; do case "$_a" in --dry-run) DRYRUN=true;; esac; done
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
+. "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, dl_turn_bin
 # Refuse on a declaratively managed host BEFORE anything is written — a node laid down here would
 # be invisible to the host's own tooling. Defined in lib/common.sh, above; a `--dry-run` still runs.
 refuse_on_declarative_host 'services.swg-node = { enable = true; ... };'
@@ -47,7 +53,7 @@ else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_GREY=""; C_CYAN=""; C_RED=""; C
 b(){   printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 bb(){  printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (summary highlights)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
-conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
+conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | sed -n 1p | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
 # one styled interface row (green name + proto + endpoint:port + address) for the manage-loop lists, matching the SUMMARY.
 iface_row(){ local n="$1" conf proto ep lp addr _c   # set -e safe; prefer a just-queued spec (no conf yet), else the conf
   is_sys_iface "$n" && return 0   # panel-managed mesh links are never shown in a user-facing interface list
@@ -65,10 +71,9 @@ iface_row(){ local n="$1" conf proto ep lp addr _c   # set -e safe; prefer a jus
 # opposed to anything else on the box, which is an adoption candidate for the panel.
 local_ifaces(){ { node_ifaces; wdtt_local | cut -f1; } 2>/dev/null | awk 'NF' | sort -u; }
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
-# conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions.
+# conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions — and
+# an installer only ever READS it: the adoption that writes it happens in the panel (swg-noded onboard_ifaces).
 iface_onboarded(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] && grep -q '^#swg:onboarded' "$c" 2>/dev/null; }
-onboard_mark(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] || return 0; $DRYRUN && return 0; [ -f "$c" ] || return 0
-  grep -q '^#swg:onboarded' "$c" 2>/dev/null || sed -i '1i #swg:onboarded' "$c" 2>/dev/null || true; }
 info(){ _nlguard; echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
 sub(){  _nlguard; echo "${C_BL}::${RESET} $*"; }                    # :: blue sub-item / progress detail
 ok(){   _nlguard; echo "${C_GREEN}✓${RESET} $*"; }
@@ -88,15 +93,19 @@ key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole l
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd a 'mneziawg (default)'  → [a]mneziawg (default)
 STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # skip the leading blank when a prompt already printed one
 
-ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi
-  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; _pnl; }
-ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then return; fi
-  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
+# ⚠️ A TERMINAL, ASKED QUIETLY FIRST. `read … </dev/tty` with none (an unattended run, `</dev/null`, no controlling
+# terminal) makes bash print a raw "line N: /dev/tty: No such device or address" before the read fails and the
+# default is taken — every prompt below then reads as a crash. Same fall-through, without the noise.
+_tty(){ { : </dev/tty; } 2>/dev/null; }
+ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
+  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; else _notty "$p" "$d"; fi; printf -v "$3" '%s' "${v:-$d}"; _pnl; }
+ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
+  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; _pnl; }
 
 # ── input validators (0 = ok) ──
 v_proto(){   case "$1" in a|awg|amneziawg|w|wg|wireguard) return 0;; *) return 1;; esac; }
-v_ip(){      printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+v_ip(){      printf '%s' "$1" | grep -cE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' >/dev/null || return 1
              local o; for o in ${1//./ }; do [ "$o" -le 255 ] 2>/dev/null || return 1; done; return 0; }
 v_host(){    v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) return 1;; *) return 0;; esac; }
 v_httpsurl(){ case "$1" in https://*|http://*) v_host "$(x="${1#http://}"; x="${x#https://}"; x="${x%%/*}"; printf '%s' "${x%%:*}")";; *) v_host "$(x="${1%%/*}"; printf '%s' "${x%%:*}")";; esac; }   # no scheme ok → https:// is prepended after the prompt
@@ -111,12 +120,19 @@ turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 
 v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }
 v_token(){   [ -n "$1" ] && [ "${#1}" -ge 8 ]; }   # v_iface/v_subnet/v_hostport now in lib/common.sh
 
+# No terminal: say which answer was taken for the prompt that could not be shown, or an unattended log reads a step
+# header with nothing under it ("Step 1. Node name for THIS box", then the next step — 1.8.8 qualification, a Docker →
+# bare-metal convert). Same line as install-docker.sh's.
+_notty(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(no terminal — default taken)"; }
+# …and an answer the caller already GAVE (-flag / env): the step still says what it is, or a preset run reads a step
+# header with nothing under it ("Step 4. Node name for THIS box", then the next step — 1.8.8 qualification).
+_given(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(given — not asked)"; }
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
-  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done
+  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}"; _pnl; return; }; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
-    if read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option
@@ -127,13 +143,14 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
     echo "  re-enter, or append $(b ' --force') to use your value anyway"
   done; }
 
-# ask_valid <prompt> <default> <var> <validator> <hint>  — re-prompts on bad input; ' --force' overrides
+# ask_valid <prompt> <default> <var> <validator> <hint> [derived]  — re-prompts on bad input; ' --force' overrides.
+# A valid value already in <var> is said ("given — not asked"), unless `derived`: the caller filled it in itself.
 ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
-  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return
+  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && { [ "${6:-}" = derived ] || { [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!var}"; _pnl; }; return; }
     warn "ignoring invalid $var='${!var}' ($hint)"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
@@ -144,19 +161,26 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
   done; }
 
 detect_public_ip(){ # best public IPv4: default-route source, then first hostname -I
-  local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
+  local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | sed -n 1p || true)"
   case "$ip" in 127.*) ip="";; esac                                                   # never the loopback — clients can't reach it
-  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -vE '^127\.' | head -n1 || true)"
+  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -vE '^127\.' | sed -n 1p || true)"
   printf '%s' "$ip"; }
 
 # ── idempotent re-install: read the current install's panel URL/token + per-interface endpoints, to
 #    offer as defaults (so re-running keeps everything). Fresh install = run the uninstaller first.
-EXIST_URL=""; EXIST_TOKEN=""; EXISTING=no
+EXIST_URL=""; EXIST_TOKEN=""; EXIST_EP=""; EXIST_REF=""; EXIST_FP=""; EXIST_VERIFY=""; EXIST_DNS_JSON=""; EXISTING=no
 read_existing(){
   { [ -f /etc/swg-agent/config.json ] && have python3; } || return 0
   EXISTING=yes
+  # the node's client DNS as its config has it (a list of names/addresses) — see node_dns_json
+  EXIST_DNS_JSON="$(python3 -c 'import json;d=json.load(open("/etc/swg-agent/config.json")).get("dns");print(json.dumps(d) if isinstance(d,list) and d and all(isinstance(x,str) and x.strip() for x in d) else "")' 2>/dev/null || true)"
+  EXIST_EP="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("endpoint_host","") or "")' 2>/dev/null || true)"
+  EXIST_REF="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("node") or {}).get("update_ref") or "")' 2>/dev/null || true)"
   EXIST_URL="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("url",""))' 2>/dev/null || true)"
   EXIST_TOKEN="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("token",""))' 2>/dev/null || true)"
+  EXIST_FP="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("fingerprint","") or "")' 2>/dev/null || true)"
+  # (default False, as swg-noded reads it: a config that never said `verify` is a node that never CA-verified)
+  EXIST_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",False) else "no")' 2>/dev/null || echo no)"
   while IFS='|' read -r n ep; do [ -n "$n" ] && [ -z "${IF_ENDPOINT[$n]:-}" ] && IF_ENDPOINT[$n]="$ep"; done < <(python3 -c '
 import json
 for n,ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).items():
@@ -164,7 +188,7 @@ for n,ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or 
     if e: print("%s|%s"%(n,e))' 2>/dev/null || true)
   return 0   # the while-loop falls through non-zero if the last iface's endpoint was already set; bare-called at NODE SETUP start
 }
-detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
+detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | sed -n 1p; }
 
 declare -A IF_CMD IF_CONF IF_ENDPOINT; declare -a SELECTED CREATED   # IF_ENDPOINT: per-interface public IP clients dial; CREATED: ifaces made this run
 declare -A SPEC_CMD SPEC_PROTO SPEC_PORT SPEC_SUBNET SPEC_ADDR SPEC_WAN SPEC_EP SPEC_DIR; declare -a SPEC_ORDER=()   # queued interfaces (prompted now, installed at the end by apply_specs)
@@ -201,16 +225,24 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # graceful degrade on a non-apt distro (Fedora/RHEL/Arch/Alpine): don't silently limp — tell the operator exactly
   # what to install with their own package manager. apt paths below stay for Debian/Ubuntu.
   $DRYRUN || have apt-get || { warn "AmneziaWG not installed — no apt-get on this system; install dkms, linux-headers-$(uname -r) and amneziawg-dkms with your package manager, then re-run"; return 1; }
-  info "installing AmneziaWG (tools + DKMS kernel module) via apt — this can take a minute…"
-  run apt-get update -qq || true
-  run apt-get install -y software-properties-common || true
-  run add-apt-repository -y ppa:amnezia/ppa || true
-  run apt-get update -qq || true
-  run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
-  ensure_awg_headers_follow || true   # D4: headers for the NEXT kernel too, so DKMS builds it when it arrives
-  awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
-  run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
-  build_awg_module
+  local _ppa=""
+  if _ppa="$(awg_ppa_suite)"; then   # Ubuntu, or a system built on it: the amnezia PPA serves its series (lib/common.sh)
+    info "installing AmneziaWG (tools + DKMS kernel module) from the amnezia PPA for Ubuntu $_ppa — this can take a minute…"
+    run apt-get update -qq || true
+    awg_ppa_add "$_ppa"
+    run apt-get update -qq || true
+    run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
+    ensure_awg_headers_follow || true   # D4: headers for the NEXT kernel too, so DKMS builds it when it arrives
+    awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
+    run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
+    build_awg_module
+  else
+    # Not Ubuntu: the PPA publishes nothing for this system, so none of it is tried (no software-properties-common, no
+    # add-apt-repository traceback, no "Unable to locate package amneziawg") — straight to the source build below, the
+    # tools and then the kernel module under DKMS, which is how AmneziaWG always ended up installed here.
+    info "installing AmneziaWG from source (tools + DKMS kernel module) — its packages are published for Ubuntu only, and this is $(awg_os_name) — this can take a few minutes…"
+    run apt-get update -qq || true
+  fi
   $DRYRUN && return 0
   have awg && modprobe amneziawg 2>/dev/null && return 0
   # The apt path did not get us there — Debian (the PPA is Ubuntu-only), a non-apt distro, or a kernel with
@@ -221,7 +253,7 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # back to userspace so the node can still serve AmneziaWG — awg-quick picks it up by itself.
   if ensure_awg_userspace; then
     warn "AmneziaWG will run on the SLOWER userspace datapath — no loadable kernel module on $(uname -r).$(
-      have apt-get && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
+      have apt-get && awg_tools_drive_3x && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
     return 0
   fi
   return 1
@@ -271,8 +303,17 @@ PY
 _net24(){ local ip="${1%%/*}" m="${1##*/}"; [ "$1" = "$m" ] && m=24; printf '%s.0/%s' "${ip%.*}" "$m"; }   # 10.9.0.1/24 → 10.9.0.0/24
 subnet_used(){ local s n a; s="$(_net24 "$1")"
   for n in ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do [ -n "${SPEC_SUBNET[$n]:-}" ] && [ "$(_net24 "${SPEC_SUBNET[$n]}")" = "$s" ] && return 0; done
-  for n in "${!IF_CONF[@]}"; do a="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "${IF_CONF[$n]}" 2>/dev/null | head -1)"; [ -n "$a" ] && [ "$(_net24 "$a")" = "$s" ] && return 0; done
+  for n in "${!IF_CONF[@]}"; do a="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "${IF_CONF[$n]}" 2>/dev/null | sed -n 1p)"; [ -n "$a" ] && [ "$(_net24 "$a")" = "$s" ] && return 0; done
   return 1; }
+# node_dns_json — the "dns" of the node's config, as JSON: the DNS line the panel puts in the configs it makes for this
+# node's interfaces (each interface reports it; a per-peer or per-interface choice in the panel still wins). Given on
+# this run (DNS=…, or a convert handing over the one the box had) → that; a RE-INSTALL → the node's own, kept (a
+# re-install wrote 1.1.1.1 over it — every client config made after it changed its DNS, silently: 1.8.8 qualification,
+# round 7); a fresh install → 1.1.1.1. Written as JSON by python, so a value is data, never config syntax.
+node_dns_json(){
+  if [ -n "${_GIVEN_DNS:-}" ]; then python3 -c 'import json,sys;print(json.dumps([sys.argv[1]]))' "$_GIVEN_DNS"
+  elif [ -n "${EXIST_DNS_JSON:-}" ]; then printf '%s\n' "$EXIST_DNS_JSON"
+  else python3 -c 'import json,sys;print(json.dumps([sys.argv[1]]))' "${DNS:-1.1.1.1}"; fi; }
 # default subnet = (highest used 10.X.0.0/24 second-octet)+1, then the next free above it (10.8 if none).
 next_free_subnet(){ local hi=7 n a o
   for n in ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do a="${SPEC_SUBNET[$n]:-}"; [ -n "$a" ] || continue; o="$(_net24 "$a" | cut -d. -f2)"; case "$o" in ''|*[!0-9]*) :;; *) [ "$o" -gt "$hi" ] && hi="$o";; esac; done
@@ -293,8 +334,8 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
     cmd="${SPEC_CMD[$name]}"; proto="${SPEC_PROTO[$name]}"; port="${SPEC_PORT[$name]}"; subnet="${SPEC_SUBNET[$name]}"
     addr="${SPEC_ADDR[$name]}"; wan="${SPEC_WAN[$name]}"; ep="${SPEC_EP[$name]}"; dir="${SPEC_DIR[$name]}"; conf="$dir/$name.conf"
     if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
-    up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
-    down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+    up="$(nat_hook_up "${subnet}" "${wan}")"   # reap-then-add: one copy whatever was there (lib/common.sh)
+    down="$(nat_hook_down "${subnet}" "${wan}")"
     printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
     run sysctl -q -w net.ipv4.ip_forward=1
     run sysctl -q -w net.ipv4.conf.all.route_localnet=1   # lets Force-DNS DNAT client :53 to loopback dnsmasq (else silent DNS blackhole)
@@ -330,10 +371,14 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
 node_ifaces(){ # interfaces this node already manages — config.json keys WHOSE CONF STILL EXISTS. A dangling entry
   # (conf file gone, no live device — e.g. a docker host-net interface orphaned by teardown) is a GHOST: skip it
   # so it's never shown as "already on this node" and re-adopted with blank fields (which then re-writes the ghost).
+  # ⚠️ MESH LINKS INCLUDED: this is the set a re-install writes back into config.json. It dropped them (drop_sys_ifaces),
+  # so every node re-install left its links unmanaged until the node's self-heal took them back from the panel — never,
+  # while the panel could not be reached (1.8.8 qualification, round 5: a re-install that kept its pin against a changed
+  # certificate). The listings filter them themselves (the local list, "Managing:", turn_wg_ports).
   { [ -f /etc/swg-agent/config.json ] && have python3; } || return 0
   python3 -c 'import json, os
 for n, ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).items():
-    if isinstance(ic, dict) and os.path.exists(ic.get("conf", "")): print(n)' 2>/dev/null | drop_sys_ifaces || true
+    if isinstance(ic, dict) and os.path.exists(ic.get("conf", "")): print(n)' 2>/dev/null || true
 }
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 # A LIVE wg/awg interface with NO conf on disk is invisible to the conf-based scan below (e.g. a removed docker
@@ -364,7 +409,7 @@ reconstruct_live_orphans(){
   # reconstructs anything.
   [ "${SWG_CONVERT:-}" = 1 ] || return 0
   _allow=" $(printf '%s' "${ADOPTED_IFACES:-}" | tr ', ' '  ') "
-  wan="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true)"; [ -n "$wan" ] || wan=eth0
+  wan="$(ip route show default 2>/dev/null | awk '!d{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); d=1; break}}' || true)"; [ -n "$wan" ] || wan=eth0
   for tool in awg wg; do
     command -v "$tool" >/dev/null 2>&1 || continue
     dir=/etc/amnezia/amneziawg; [ "$tool" = wg ] && dir=/etc/wireguard
@@ -373,19 +418,27 @@ reconstruct_live_orphans(){
       if [ -f "/etc/amnezia/amneziawg/$n.conf" ] || [ -f "/etc/wireguard/$n.conf" ]; then continue; fi   # already managed
       _in "$n" "$_allow" || continue   # not one of the interfaces THIS convert is migrating → leave it for the panel to offer as a candidate
       sc="$("$tool" showconf "$n" 2>/dev/null || true)"; [ -n "$sc" ] || continue
-      addr="$(ip -o -4 addr show "$n" 2>/dev/null | awk '{print $4; exit}' || true)"; [ -n "$addr" ] || continue
+      addr="$(ip -o -4 addr show "$n" 2>/dev/null | awk 'NR==1{print $4}' || true)"; [ -n "$addr" ] || continue
       sub="$(printf '%s' "${addr%/*}" | awk -F. '{print $1"."$2"."$3".0"}' || true)/${addr#*/}"
-      up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${sub} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
-      down="iptables -t nat -D POSTROUTING -s ${sub} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+      up="$(nat_hook_up "${sub}" "${wan}")"   # reap-then-add: one copy whatever was there (lib/common.sh)
+      down="$(nat_hook_down "${sub}" "${wan}")"
       mkdir -p "$dir" 2>/dev/null || true
       # `showconf` reports each peer's CURRENT endpoint — the source address of its last packet, not
       # configuration. Persisting it would pin a client's IP into a file that backups and the bare<->docker
       # conversion copy around, and wg re-learns it on the first authenticated packet anyway. A peer that
       # also sets PersistentKeepalive is a dial-OUT (mesh) peer: there the Endpoint IS config, so it stays.
-      { echo '#swg:onboarded'; printf '%s\n' "$sc" | awk -v a="$addr" -v u="$up" -v d="$down" '
+      # A 3.x kernel also prints eight AWG3 keys at 0/off and `AdvancedSecurity = off` on every peer. That text comes up
+      # only on the same kind of kernel — amneziawg-go (our pinned fallback included), a 3.0 go, 2.0 tools and a 2.0
+      # module refuse it — so those lines are dropped; a non-zero AWG3 value is real config and stays (swg-noded
+      # _strip_showconf_only is the twin).
+      # Add-only (#swg:onboarded): the device cannot say whether it was adopted, and keeping peers is the side that
+      # can be undone — but never a mesh link, whose peers are all the panel's (swg-noded _add_only).
+      { is_sys_iface "$n" || echo '#swg:onboarded'; printf '%s\n' "$sc" | awk -v a="$addr" -v u="$up" -v d="$down" '
         function flush(  i) { if (np == 0) return
           for (i = 1; i <= np; i++) if (ka || peer[i] !~ /^[ \t]*[Ee]ndpoint[ \t]*=/) print peer[i]
           np = 0; ka = 0 }
+        /^[ \t]*AdvancedSecurity[ \t]*=/ { next }
+        /^[ \t]*(ContentPaddingAddition|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts|RandomTrailers|DisableCookies)[ \t]*=[ \t]*(0|off)[ \t]*$/ { next }
         /^[ \t]*\[Interface\]/ { flush(); print; print "Address = " a; print "MTU = 1420"; print "PostUp = " u; print "PostDown = " d; next }
         /^[ \t]*\[Peer\]/      { flush(); peer[++np] = $0; next }
         np > 0                  { peer[++np] = $0; if ($0 ~ /^[ \t]*[Pp]ersistentKeepalive[ \t]*=/) ka = 1; next }
@@ -407,15 +460,12 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
   elif [ -n "${ADOPTED_IFACES:-}" ]; then
-    # convert: carry the interfaces the convert migrated (the already-MANAGED set) — no re-decision.
+    # convert: carry the interfaces the convert migrated (the already-MANAGED set) — no re-decision, and each as it
+    # was: a conf arrives with its own #swg:onboarded if it was adopted, and without one if the panel made it. This
+    # used to stamp every one that "arrived without a marker" — exactly the interfaces the panel created and its mesh
+    # links — and add-only keeps whatever a node is merely not sent (1.8.8 qualification, q4). Before 1.6.0 this
+    # branch skipped conversion imports for that reason.
     IFS=', ' read -ra SELECTED <<< "$ADOPTED_IFACES"
-    # add-only mark for any that arrived without a marker (keep their peers)
-    local n _nodeifs; _nodeifs="$(node_ifaces | tr '\n' ' ')"
-    for n in ${SELECTED[@]+"${SELECTED[@]}"}; do n="${n// /}"; [ -z "$n" ] && continue
-      _in "$n" "$_nodeifs" && continue
-      _in "$n" "${CREATED[*]:-}" && continue
-      onboard_mark "$n"
-    done
   else
     # Approach B (record-only): no picker, no auto-adopt. Detect the wg/awg interfaces already on this box and just
     # DISPLAY them — the node reports them to the panel, where they appear as adoption candidates for the operator to
@@ -448,7 +498,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
 # (convert.sh), so this is the only destructive step — run as the very last thing before the daemon starts.
 apply_node_switch(){
   local _n _ep n _c
-  if [ "${SWG_CONVERT:-}" = 1 ] && ! $DRYRUN && command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
+  if [ "${SWG_CONVERT:-}" = 1 ] && ! $DRYRUN && command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -cx swg-node >/dev/null; then
     info "Switching over — stopping the docker node, then bringing the interfaces up bare-metal…"
     lc_teardown_docker "${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
     for _n in ${SELECTED[@]+"${SELECTED[@]}"}; do _n="${_n// /}"; [ -n "$_n" ] && command -v ip >/dev/null 2>&1 && ip link show "$_n" >/dev/null 2>&1 && ip link delete dev "$_n" 2>/dev/null || true; done
@@ -458,6 +508,10 @@ apply_node_switch(){
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "$n" ] || continue   # the guard the line above already has
     [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }
     [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
+    is_sys_iface "$n" && continue               # a mesh link: the panel sets where it dials, clients never do
+    # a CONFIGURED node endpoint (-endpoint / ENDPOINT_IP, or the one this node already had — see NODE SETUP) is what
+    # the interface advertises: left blank here, it falls back to it exactly as before this run, never re-detected
+    case "${ENDPOINT_IP:-}" in ""|127.*|localhost) ;; *) echo "    Kept $(bb "$ENDPOINT_IP") (this node's endpoint) for $(col "$C_GREEN" "$n")"; continue;; esac
     _ep="$(detect_public_ip)"; IF_ENDPOINT[$n]="$_ep"   # auto endpoint clients dial (change it later in the panel)
     echo "    Used $(bb "$_ep") endpoint IP for $(col "$C_GREEN" "$n")"; done
   [ "${#SELECTED[@]}" -gt 0 ] && echo
@@ -472,7 +526,11 @@ apply_node_switch(){
   # The LOCAL set — what this node manages after this run: wg/awg from config.json + its WDTT instances (whose
   # interfaces have no .conf, so they'd otherwise look absent). Listed, not re-asked: a re-install keeps them.
   local _l _li _lls _lsub; local -a _loc=()
-  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <(local_ifaces)
+  # + this run's SELECTED: a convert (or a first install) writes config.json only AFTER this listing, so its interfaces
+  # printed "No local interfaces yet" and then, one line below, "✓ Managing: awg0 wg0" (1.8.8 qualification).
+  # …and never a mesh link (swg_*): iface_row prints none, so a convert carrying one read "Found 3 … interface(s)" over two
+  # rows (1.8.8 qualification, q4). They are the panel's links, shown apart in the summary.
+  while IFS= read -r _l; do [ -n "$_l" ] && _loc+=("$_l"); done < <({ local_ifaces; printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"}; } | tr -d ' ' | awk 'NF && !s[$0]++' | drop_sys_ifaces)
   if [ "${#_loc[@]}" -gt 0 ]; then
     echo; info "Found ${#_loc[@]} wg/awg/wdtt local interface(s) on this box:"; echo
     detect_wg
@@ -483,7 +541,8 @@ apply_node_switch(){
       fi
     done; echo
   else info "No local interfaces yet — this node is managed from the panel (Interfaces → Load new interface)."; fi
-  [ "${#SELECTED[@]}" -gt 0 ] && ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")" || true
+  _l="$(printf '%s\n' ${SELECTED[@]+"${SELECTED[@]}"} | tr -d ' ' | drop_sys_ifaces | awk 'NF' | tr '\n' ' ')"
+  [ -n "${_l// /}" ] && ok "Managing: $(b "$(col "$C_GREEN" "${_l% }")")" || true
 }
 
 # ───────────────────────── turn-proxy (vk-turn-proxy) ─────────────────────────
@@ -498,7 +557,7 @@ declare -A TP_LISTEN TP_CONNECT TP_WRAP
 gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }   # 32-byte key as 64 hex chars
   openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 # Per-fork obfuscation flags (verified from each binary's -h). Echoes the flags WITH a freshly generated
-# 64-hex key baked in (kiper292 has no obfuscation → empty). samosvalishe is now the free-turn-proxy server
+# 64-hex key baked in. samosvalishe is now the free-turn-proxy server
 # (the standalone vk-turn-proxy is archived): it uses -obf-profile rtpopus + -obf-key, and its clients
 # (turn-proxy-android / free-turn-proxy CLI) import a freeturn:// link carrying the same rtpopus key.
 turn_wrap_flags(){ local k; case "$1" in
@@ -511,7 +570,8 @@ turn_wg_ports(){   # echo "<iface>:<ListenPort>" for every interface managed in 
   local n p
   for n in ${SELECTED[@]+"${SELECTED[@]}"}; do
     [ -n "${IF_CONF[$n]:-}" ] || continue
-    p="$(grep -iE '^[[:space:]]*ListenPort[[:space:]]*=' "${IF_CONF[$n]}" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[^0-9].*//')"
+    is_sys_iface "$n" && continue   # a mesh link is no turn-proxy's forward target
+    p="$(grep -iE '^[[:space:]]*ListenPort[[:space:]]*=' "${IF_CONF[$n]}" 2>/dev/null | sed -n 1p | sed 's/.*=[[:space:]]*//; s/[^0-9].*//')"
     [ -n "$p" ] && printf '%s:%s\n' "$n" "$p"
   done
   return 0   # a final iface with no ListenPort would otherwise leave the loop non-zero → trips set -e at ports="$(turn_wg_ports)"
@@ -520,15 +580,15 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
   TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con wk envf params
   for u in /etc/systemd/system/*.service; do
     [ -e "$u" ] || continue
-    exe="$(sed -n 's/^ExecStart=//p' "$u" 2>/dev/null | head -1)"
+    exe="$(sed -n 's/^ExecStart=//p' "$u" 2>/dev/null | sed -n 1p)"
     case "$exe" in *-listen*-connect*|*-connect*-listen*) ;; *) continue;; esac
     name="$(basename "$u" .service)"
     case "$exe" in
       *'${SWG_'*)   # EnvironmentFile form — read listen/connect/params out of turn.env
-        envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" 2>/dev/null | head -1)"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | head -1)"
-        con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | head -1)"
-        params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | head -1)"
+        envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" 2>/dev/null | sed -n 1p)"
+        lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
+        con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | sed -n 1p)"
+        params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | sed -n 1p)"
         wk="$(printf '%s\n' "$params" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')"
         [ -n "$wk" ] || wk="$(printf '%s\n' "$params" | sed -n 's/.*-obf-key[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;   # free-turn-proxy uses -obf-key
       *)            # legacy baked-ExecStart form
@@ -605,7 +665,7 @@ migrate_docker_turns(){
   [ "${SWG_CONVERT:-}" = 1 ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
   local rec="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}/data/node/turn-proxy.json" list svc owner lis con params fork _yn
-  if [ ! -f "$rec" ] && command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
+  if [ ! -f "$rec" ] && command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -cx swg-node >/dev/null; then
     mkdir -p "$(dirname "$rec")"; docker cp swg-node:/var/lib/swg-noded/turn-proxy.json "$rec" 2>/dev/null || true   # robust vs an empty ./data bind mount
   fi
   [ -f "$rec" ] || return 0
@@ -641,11 +701,12 @@ migrate_docker_ifaces(){
   ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u || true)" || true; ifs="$(echo $ifs)"
   [ -n "$ifs" ] || return 0
   echo; info "Interfaces to migrate from the docker node:"; echo
+  local _w=10; for n in $ifs; do [ "${#n}" -le "$_w" ] || _w="${#n}"; done   # name column as wide as the longest (a mesh link, swg_<8 hex>, is 12)
   _mep="${ENDPOINT_IP:-}"; case "$_mep" in 127.*|"") _mep="$(detect_public_ip 2>/dev/null || true)";; esac   # public endpoint clients dial (this box) — show it like the node's own interface list
   for n in $ifs; do c="/etc/amnezia/amneziawg/$n.conf"; pr=AmneziaWG; [ -f "$c" ] || { c="/etc/wireguard/$n.conf"; pr=WireGuard; }
-    lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$c" | head -1)"
-    addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$c" | head -1)"
-    printf '    %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${_mep:-?}" "${lp:-?}" "${addr:-?}"; done
+    lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$c" | sed -n 1p)"
+    addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$c" | sed -n 1p)"
+    printf '    %s%-*s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$_w" "$n" "$RESET" "$pr" "${_mep:-?}" "${lp:-?}" "${addr:-?}"; done
   echo
   # Approach B: auto-carry — always keep the migrated interface confs (no prompt). They're adopted below and
   # surface in the panel; new interfaces are created there.
@@ -689,7 +750,7 @@ $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; 
 # beside the one already running" that is what the operator meant. FORCE_ALONGSIDE exists for the one
 # case a rule cannot judge: a container that is somebody else's, or is on its way out.
 if [ "${SWG_CONVERT:-}" != 1 ] && [ "${FORCE_ALONGSIDE:-}" != 1 ] && ! $DRYRUN \
-     && command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
+     && command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -cx swg-node >/dev/null; then
   die "this box already runs the swg-node CONTAINER, and a bare-metal install beside it would leave two
      daemons syncing the same node id and fighting over the same interfaces.
 
@@ -715,20 +776,23 @@ fi
 
 # ═══════════════ NODE SETUP ═══════════════
 echo; info "BARE-METAL SWG NODE SETUP"
+$DRYRUN || seal_archives   # every recovery archive an earlier build left becomes root's alone (lib/common.sh, F90)
 read_existing
+# ⚠️ THE ENDPOINT THIS NODE ALREADY HAS IS THE DEFAULT, NOT THE DEFAULT ROUTE. A re-run read each interface's OWN
+# endpoint back (read_existing) but not the node's, so every interface without one — every interface the panel
+# created, which carry none and fall back to the node's — was re-detected from the default route and written back
+# PINNED to that address: on a box dialled by a LAN address or a DNS name, the panel's client configs all changed to
+# the raw address (1.8.8 qualification: 192.168.77.x → 10.0.2.15). ENDPOINT_IP / -endpoint still wins.
+case "$EXIST_EP" in 127.*|localhost|"::1") EXIST_EP="";; esac   # never hand clients a loopback
+[ -n "$ENDPOINT_IP" ] || ENDPOINT_IP="$EXIST_EP"
+# …and a docker → bare-metal convert says what each migrated interface's clients dial ("name=host,…" — convert.sh's
+# docker_iface_endpoints): kept per interface, under whatever this box already records for it.
+for _ae in $(printf '%s' "$ADOPTED_ENDPOINTS" | tr ',' ' '); do
+  _an="${_ae%%=*}"; _ah="${_ae#*=}"
+  [ -n "$_an" ] && [ "$_an" != "$_ae" ] && [ -n "$_ah" ] && [ -z "${IF_ENDPOINT[$_an]:-}" ] && IF_ENDPOINT[$_an]="$_ah"
+done
 if [ "$EXISTING" = yes ]; then
   info "Existing node install detected — keeping your interfaces + data. Press $(b Enter) to keep each value (to start fresh, run the uninstaller first)."
-fi
-
-# RE-INSTALL: signal "re-installing" the MOMENT the script starts (before any prompt), using the stored panel
-# URL/token, and drop the keypair backups so swg-noded re-harvests. lc_init's traps emit the terminal on exit;
-# a re-install always installs the latest → "re-installed and updated". (convert.sh owns the signal mid-convert.)
-if [ "$EXISTING" = yes ] && ! $DRYRUN && [ "${SWG_CONVERT:-}" != 1 ] && [ -n "$EXIST_URL" ] && [ -n "$EXIST_TOKEN" ]; then
-  rm -rf /var/lib/swg-noded/iface-keys 2>/dev/null || true
-  LC_URL="$EXIST_URL"; LC_TOKEN="$EXIST_TOKEN"
-  LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
-  lc_init reinstall lc_emit_post
-  LC_SUCCESS="reinstalled-updated"
 fi
 
 # Panel connection — normally supplied by the install command's -host / -key flags; on a re-install
@@ -739,11 +803,10 @@ else ask_valid "Panel URL (https://host[/subpath])" "$EXIST_URL" PANEL_URL v_htt
 # a fresh install (or no stored token) still asks. -key always wins.
 if [ -n "$NODE_TOKEN" ]; then :                                                # provided via -key
 elif [ "$EXISTING" = yes ] && [ -n "$EXIST_TOKEN" ]; then NODE_TOKEN="$EXIST_TOKEN"
-elif $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN
+# a dry run asks too, but must not die without one (it writes nothing) — and a key is never echoed, dry run or not
+elif $DRYRUN; then ask_secret "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN true ""
 else ask_secret "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
 case "$PANEL_URL" in https://*) ;; http://*) _url_is_loopback "$PANEL_URL" || warn "panel URL is http:// — the key would travel in clear. Continue only if you know why.";; *) PANEL_URL="https://$PANEL_URL";; esac   # no scheme → default https://
-# if the operator re-pointed the node at a different panel, the lc terminal should reach the NEW one
-[ "$EXISTING" = yes ] && [ -n "${LC_TOKEN:-}" ] && [ -n "$PANEL_URL" ] && LC_URL="$PANEL_URL"
 
 # print the sha256 hex of the panel's TLS cert (unverified fetch), or nothing on failure. Matches the node's
 # `fingerprint` format: hashlib.sha256(DER).hexdigest(), lowercase, no colons.
@@ -759,20 +822,58 @@ if der: print(hashlib.sha256(der).hexdigest())
 PY
 }
 
+# ⚠️ A RE-INSTALL KEEPS THE PIN IT HAS. This node re-decided from scratch on every run, so a panel presenting a
+# DIFFERENT certificate was simply re-pinned — "pinning it (sha256 …)", one info line (1.8.8 qualification, round 4),
+# which is exactly what trust-on-first-use must not do on a second use. The Docker node's node_panel_trust already kept
+# its pin; this is that decision, and a changed certificate goes to panel_pin_changed (lib/common.sh) on both.
+# ⚠️ AND IT IS DECIDED FIRST — before this run tells the panel anything, and before it removes anything. The "reinstalling"
+# signal went out at the very start, token and all, with curl -k, to whatever answered at the stored URL — and the run
+# then "kept the old pin" against that very answer (1.8.8 qualification, round 6). A kept pin now stops the run here
+# (pin_kept_stop): nothing on the box changed, nothing was sent.
+if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ] && [ -n "$EXIST_FP" ] && [ "${PANEL_URL%/}" = "${EXIST_URL%/}" ]; then
+  _fp_now=""; $DRYRUN || _fp_now="$(_panel_fp "$PANEL_URL")"
+  if [ -z "$_fp_now" ] || [ "$_fp_now" = "$(printf '%s' "$EXIST_FP" | tr -d ':' | tr 'A-F' 'a-f')" ]; then
+    TLS_FINGERPRINT="$EXIST_FP"; TLS_VERIFY=no
+    if [ -n "$_fp_now" ]; then ok "keeping the panel cert pin (sha256 ${EXIST_FP:0:16}…) — the panel still presents that certificate"
+    elif $DRYRUN;        then sub "keeping the panel cert pin (sha256 ${EXIST_FP:0:16}…) — dry run, not re-checked against the panel"
+    else warn "couldn't reach the panel to re-check its certificate — keeping the existing pin (sha256 ${EXIST_FP:0:16}…)"; fi
+  elif panel_pin_changed "$EXIST_FP" "$_fp_now" "$PANEL_URL"; then
+    if [ "${PIN_TO_CA:-}" = yes ]; then TLS_VERIFY=yes; TLS_FINGERPRINT=""; else TLS_FINGERPRINT="$_fp_now"; TLS_VERIFY=no; fi
+  else pin_kept_stop; fi
+fi
+# ⚠️ …AND ONE THAT VERIFIES THIS PANEL THROUGH ITS CA KEEPS DOING SO. The fresh decision below re-probed it from scratch
+# and took a panel no CA vouched for any more as "self-signed — pinning it": trust on first use, on a SECOND use, of
+# whatever answered at the panel's address — and then the node token went to it (1.8.8 qualification, round 7). As the
+# Docker node does (ask_node_conn): asked, Enter (and an unattended run) keeps CA verification; `n` — the panel really
+# moved to a certificate no CA vouches for — hands the question to the fresh decision, which pins a self-signed one.
+if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ] && [ "$EXISTING" = yes ] && [ "$EXIST_VERIFY" = yes ] && [ -z "$EXIST_FP" ] \
+   && [ "${PANEL_URL%/}" = "${EXIST_URL%/}" ]; then
+  ask_yn "Verify the panel's TLS certificate? (this node verifies it through its CA)" y TLS_VERIFY
+  [ "$TLS_VERIFY" = yes ] || TLS_VERIFY=""
+fi
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   # Verify the panel's TLS certificate by DEFAULT (secure). To avoid a fresh install failing its first sync
   # against a self-signed panel, auto-detect the cert: probe once with strict TLS; only if that fails while
   # skipping verification works is the panel self-signed. The operator can still override.
-  _tls_def=y
+  _tls_def=y; _tls_why="auto-detected default"
   if [ -n "$PANEL_URL" ] && ! $DRYRUN; then
     _rc=0; curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null || _rc=$?   # capture rc WITHOUT letting set -e abort — a self-signed/unreachable panel (the case this block exists for) makes curl exit non-zero
     # Only a genuine cert-verification failure (curl 60/51) — where skipping verify then works — means the
     # panel is self-signed. A transient error (timeout/refused/other) keeps the SECURE default (CA verify), so
     # a network hiccup never silently downgrades a real-CA panel.
     if { [ "$_rc" = 60 ] || [ "$_rc" = 51 ]; } && curl -sSk --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; then
-      _tls_def=n
+      if panel_cert_expired "$PANEL_URL"; then   # lib/common.sh
+        # an EXPIRED real certificate: keep CA verification (see panel_cert_expired) — never pin it
+        warn "The panel's TLS certificate has EXPIRED (or is not valid yet) — it is not self-signed, so this node keeps verifying it. It syncs as soon as the panel's certificate is renewed; renew it on the panel host."
+      else
+        _tls_def=n
+      fi
     fi
   fi
+  # A dry run never probes the panel (above), so it has no verdict: its summary must not claim one — it said
+  # "CA-verified" whatever the panel serves (1.8.8 qualification, round 5) — and neither may its question: it offered
+  # an "auto-detected default" it never detected (round 6).
+  if $DRYRUN && [ -n "$PANEL_URL" ]; then _TLS_DRY_UNPROBED=1; _tls_why="not probed in a dry run — default"; fi
   # SELF-SIGNED panel → PIN its certificate (trust-on-first-use) so the sync is MITM-protected by default,
   # instead of running unverified. Real-CA panels keep CA verification (pinning them would break on renewal).
   if [ "$_tls_def" = n ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
@@ -784,26 +885,48 @@ if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   fi
   # real-CA (or the fingerprint fetch failed) → ask, defaulting to the secure choice
   if [ -z "$TLS_FINGERPRINT" ]; then
-    ask_yn "Verify the panel's TLS certificate? (auto-detected default: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def" TLS_VERIFY
+    ask_yn "Verify the panel's TLS certificate? ($_tls_why: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def" TLS_VERIFY
   fi
+fi
+
+# RE-INSTALL: signal "re-installing" now that the node's trust is decided — to the panel it decided on, with that trust
+# (LC_VERIFY / LC_FP → panel_req) — and drop the keypair backups so swg-noded re-harvests. lc_init's traps emit the
+# terminal on exit; a re-install always installs the latest → "re-installed and updated". (convert.sh owns the signal
+# mid-convert.) The token is the one this run installs: a -key recovery signs as the node it restores.
+if [ "$EXISTING" = yes ] && ! $DRYRUN && [ "${SWG_CONVERT:-}" != 1 ] && [ -n "$EXIST_URL" ] && [ -n "$EXIST_TOKEN" ]; then
+  rm -rf /var/lib/swg-noded/iface-keys 2>/dev/null || true
+  LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"; LC_FP="${TLS_FINGERPRINT:-}"
+  lc_init reinstall lc_emit_post
+  LC_SUCCESS="reinstalled-updated"
+  _SUM_BEFORE="$(installed_sum "$AGENT_DIR" "$NODED_DIR")"   # "…and updated" only if the install changes these (see the end)
 fi
 
 NODE_NAME="${NODE_NAME:-$(hostname -s 2>/dev/null || hostname)}"   # local label (systemd unit + final message)
 # Box name on the panel: on a re-install, offer to change it (default = the name the panel currently has for
 # this token). A fresh install's name comes from Nodes → Add node. PUSH_NAME != "" means push the change.
-PUSH_NAME=""
+# Both calls carry the token, so both go through panel_req with the trust decided above (never curl -k).
+# ⚠️ A NAME THE PANEL DID NOT GIVE IS NEVER PUSHED AS A DEFAULT. When whoami gave no name — refused (the panel is not the
+# one this node trusts), a 404, a timeout, an answer without one — the offered default was this box's hostname, and an
+# unattended re-install then renamed the node to it on the panel (1.8.8 qualification, round 8). The default is still
+# the name known here, but a rename goes out only when it differs from what was offered: typed at a terminal, or the
+# panel's own name changed. Unattended with no answer, the node keeps the name the panel has for it.
+PUSH_NAME=""; _cur=""
 if { [ "$EXISTING" = yes ] || [ "${SWG_CONVERT:-}" = 1 ]; } && [ -n "$NODE_TOKEN" ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
-  _ins=""; [ "${TLS_VERIFY:-no}" = yes ] || _ins="-k"
-  _cur="$(auth_curl "$NODE_TOKEN" -fsS $_ins --max-time 8 "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+  _whoami_why=""
+  if _wj="$(SWG_TOK="$NODE_TOKEN" panel_req GET "${PANEL_URL%/}/api/node/whoami" "${TLS_VERIFY:-no}" "${TLS_FINGERPRINT:-}" 8 2>/dev/null)"; then
+    _cur="$(printf '%s' "$_wj" | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+    [ -n "$_cur" ] || _whoami_why="its answer named no node"
+  else _whoami_why="${_wj:-no answer}"; fi
   step "Node name for THIS box"
+  [ -n "$_cur" ] || info "the panel did not say what it calls this node (${_whoami_why}) — its name there is left as it is unless you type another"
   ask_valid "Node name for THIS box" "${_cur:-$NODE_NAME}" PUSH_NAME v_name "1–40 chars: letters, digits, - or _"
-  [ -n "$_cur" ] && [ "$PUSH_NAME" = "$_cur" ] && PUSH_NAME=""    # unchanged → nothing to push
+  [ "$PUSH_NAME" = "${_cur:-$NODE_NAME}" ] && PUSH_NAME=""    # what was offered → nothing to push
 fi
 
 # push a box-name change (if the operator entered a new one above)
 if { [ "$EXISTING" = yes ] || [ "${SWG_CONVERT:-}" = 1 ]; } && ! $DRYRUN && [ -n "$PUSH_NAME" ]; then
-  auth_curl "$NODE_TOKEN" -fsS ${_ins:-} --max-time 8 -X POST -H "Content-Type: application/json" \
-    --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
+  SWG_TOK="$NODE_TOKEN" SWG_BODY="$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" \
+    panel_req POST "${PANEL_URL%/}/api/node/rename" "${TLS_VERIFY:-no}" "${TLS_FINGERPRINT:-}" 8 >/dev/null 2>&1 || true
 fi
 
 step "Datapath tooling"
@@ -858,14 +981,19 @@ FP=""; [ -n "$TLS_FINGERPRINT" ] && FP=$',\n    "fingerprint": "'"$TLS_FINGERPRI
 # ⚠️ THE REF THIS BOX IS BEING INSTALLED FROM, recorded so the node's self-update tracks it. `bootstrap.sh`
 # exports SWG_REF; without this the node falls back to `main` and the panel's Update button rolls a
 # branch install backwards — the node half of the downgrade `51a4b10` fixed for the panel.
-_swg_ref="${SWG_REF:-main}"
+# …and a re-run started by hand (no bootstrap, so no SWG_REF) keeps the branch the node already follows instead of
+# falling to `main` — the same re-point bootstrap.sh's commit path had (see its _track). A commit is never tracked.
+printf '%s' "$EXIST_REF" | grep -cE '^[0-9a-f]{7,40}$' >/dev/null && EXIST_REF=""
+printf '%s' "$EXIST_REF" | grep -cE '^[A-Za-z0-9._/-]{1,100}$' >/dev/null || EXIST_REF=""
+_swg_ref="${SWG_REF:-${EXIST_REF:-main}}"
+DNS_JSON="$(node_dns_json)"
 writef /etc/swg-agent/config.json 640 <<EOF
 {
   "interfaces": {
 $IFJSON
   },
   "endpoint_host": "${ENDPOINT_IP}",
-  "dns": ["${DNS}"],
+  "dns": ${DNS_JSON},
   "panel": {
     "url": "${PANEL_URL}",
     "token": "${NODE_TOKEN}",
@@ -882,9 +1010,14 @@ EOF
 warn "config.json holds the node key (mode 640, root:root). Treat it as a secret."
 
 # ───────────────────────── daemon service (root) ─────────────────────────
+# The node's name as the PANEL has it, when this run asked (a re-install or a convert: the rename step above) — else the
+# local label. NODE_NAME is this box's hostname, and "Node 'q4' is up" named a node the panel calls q4n (1.8.8
+# qualification, both Docker → bare-metal converts); the unit's own label said the hostname too, after every such convert
+# and re-install (round 9b). A fresh install does not ask the panel, so it keeps the label.
+_PNAME="${PUSH_NAME:-${_cur:-$NODE_NAME}}"
 writef /etc/systemd/system/swg-noded.service 644 <<EOF
 [Unit]
-Description=swg-noded (HTTPS sync to panel) — ${NODE_NAME}
+Description=swg-noded (HTTPS sync to panel) — ${_PNAME}
 After=network-online.target
 Wants=network-online.target
 
@@ -931,13 +1064,25 @@ $DRYRUN || [ -n "${SWG_CONVERT:-}${SWG_TURN_ADD:-}" ] || rm -f /var/lib/swg-reco
 # during a convert, skip this summary entirely — convert.sh prints ONE final combined summary (interfaces +
 # turn-proxies) after. The switch is done here (interfaces + turn-proxies + daemon all up).
 if [ "${SWG_CONVERT:-}" = 1 ]; then
-  echo; ok "Node '$(bb "$NODE_NAME")' is up — fully converted to bare-metal (interfaces + turn-proxies)."
+  echo; ok "Node '$(bb "$_PNAME")' is up — fully converted to bare-metal (interfaces + turn-proxies)."
   exit 0
 fi
-echo; ok "Node '$(bb "$NODE_NAME")' install complete."
+# "re-installed AND UPDATED" only when the programs changed — the same build re-installed is plain "re-installed"
+# (install-host.sh does the same; install-docker.sh compares image ids)
+if [ "${LC_SUCCESS:-}" = reinstalled-updated ] && [ -n "${_SUM_BEFORE:-}" ] && [ "$(installed_sum "$AGENT_DIR" "$NODED_DIR")" = "$_SUM_BEFORE" ]; then
+  LC_SUCCESS=reinstalled
+fi
+# ⚠️ A DRY RUN HAS NOTHING TO SUMMARISE (install-host.sh / install-docker.sh): print_summary describes the box as it IS,
+# so a dry run of a node said "install complete" over the summary of whatever else the box runs (q6: its Docker panel).
+if $DRYRUN; then
+  echo; ok "Dry run of the bare-metal node $([ "$EXISTING" = yes ] && echo re-install || echo install) finished — nothing was installed or changed."
+  echo "    The node would sync to $(b "$PANEL_URL") ($([ -n "$TLS_FINGERPRINT" ] && echo "panel cert pinned, sha256 ${TLS_FINGERPRINT:0:16}…" || { [ -n "${_TLS_DRY_UNPROBED:-}" ] && echo "its certificate is not checked in a dry run — the real run verifies a CA one or pins a self-signed one" || { [ "$VERIFY_JSON" = false ] && echo "certificate NOT verified" || echo "CA-verified"; }; }))."
+else
+echo; ok "Node '$(bb "$_PNAME")' install complete."
 print_summary "$([ "$EXISTING" = yes ] && echo RE-INSTALL || echo INSTALL)"
 [ -n "$TLS_FINGERPRINT" ] && echo "  TLS       panel cert pinned (sha256 ${TLS_FINGERPRINT:0:16}…) — MITM-protected"
 [ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       ${C_BROWN}not verifying the panel cert${RESET} — set TLS_FINGERPRINT to pin it (MITM protection)"
+fi
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # NB: an `if` (not `$DRYRUN && {…}`) so a non-dry-run doesn't make the script's LAST command exit non-zero (convert.sh read that as "install-node.sh reported an error")
 echo     # one blank line after the summary block (consistency)
 exit 0   # reaching here = success (every fatal error die'd with exit 1 earlier; a single interface that couldn't come up is a non-fatal warning)

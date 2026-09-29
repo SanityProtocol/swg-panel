@@ -87,10 +87,43 @@ check("`can't run here` and `pointing nowhere` are not folded into one count",
 
 console.log("\n[4] the picker keeps the stored value visible, rather than rendering a blank");
 const js = fs.readFileSync(SRC, "utf8");
+// (a third argument, `adv`, adds "Advanced…" to a list — a rule row's since §7.1, the catch-all's since P2 — and changes nothing here)
 check("`destOpts` is told which value the control is holding",
-      /const destOpts = \(withDefault, held\) =>/.test(js));
+      /const destOpts = \(withDefault, held(, adv)?\) =>/.test(js));
+/* ⚠️ THE FOUR CALL SITES OF THE RULE EDITOR MUST STAY IDENTICAL, and this file is where that is enforced
+   because it is the one that already reads routing.js as text. `RoutingRules` is rendered by the interface
+   create sheet, the interface edit sheet, the WDTT sheet and the csqtt sheet; each passes the rows, the
+   catch-all and (since the exit IP) the interface's address map, and hands all three back — and (since a041b78)
+   the interface's own Direct address as a fourth, which is why the map is matched as a prefix. routing.js says
+   it itself, about a different prop: "a new prop threaded up through EgressPicker would have had to be
+   wired into each of them separately, and the one that got missed is the one that loses the text." So
+   compare them to each other rather than to a pattern — four spellings of one call is the bug. */
+{
+  const sites = ["js/iface.js", "js/turn.js"].flatMap(f =>
+    (fs.readFileSync(f, "utf8").match(/<\$\{RoutingRules\}[^]*?\/>/g) || []).map(m => [f, m.replace(/\s+/g, " ")]));
+  check("all four sheets render the rule editor, and spell the call the same way",
+        sites.length === 4 && new Set(sites.map(([, m]) => m)).size === 1,
+        sites.map(([f, m]) => f + ": " + m.slice(0, 120)));
+  check("…and the call carries the interface's exit-IP map in BOTH directions",
+        sites.length > 0 && /exitIps=\$\{eg\.exitIps\}/.test(sites[0][1]) && /\(rows, catchAll, exitIps\b/.test(sites[0][1]),
+        sites[0] && sites[0][1]);
+}
+
+/* ⚠️ EVERY `NodeIpPick` IN THIS FILE IS KEYED. It holds "am I in Custom mode" in its own state and only
+   leaves it when a listed option is picked, while the list under it is rebuilt from a selection that can
+   change — so one instance reused across that change keeps the previous selection's Custom mode and offers
+   an empty box where the new one's "Auto" belongs. Both uses had it (the rule window's, found in review of
+   the exit-IP work; the egress picker's, found in review of that fix), so the rule is the file's, not one
+   call site's. */
+{
+  const picks = (fs.readFileSync(SRC, "utf8").match(/<\$\{NodeIpPick\}[^/]*?\/>/g) || []);
+  check("every address picker in routing.js is keyed to the selection its list comes from",
+        picks.length >= 2 && picks.every(m => /\skey=\$\{/.test(m)),
+        picks.map(m => m.replace(/\s+/g, " ").slice(0, 90)));
+}
+
 check("…and both controls tell it — the row and the catch-all",
-      /options=\$\{destOpts\(false, destVal\(row\)\)\}/.test(js) && /options=\$\{destOpts\(true, catchVal\)\}/.test(js));
+      /options=\$\{destOpts\(false, destVal\(row\)(, [^)}]+)?\)\}/.test(js) && /options=\$\{destOpts\(true, catchVal(, [^)}]+)?\)\}/.test(js));
 check("…a gone destination is appended as a REFUSING row, not a selectable one",
       /refuse: _gone\.why/.test(js) && /className: "bad"/.test(js));
 check("…and it is derived from the SAME lists the options are built from",

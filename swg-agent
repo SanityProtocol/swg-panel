@@ -25,6 +25,7 @@ import json
 import os
 import random
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,8 +38,22 @@ LOCK_PATH   = os.environ.get("SWG_AGENT_LOCK",   "/run/swg-agent.lock")
 VERSION     = "1.0"
 
 PUBKEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+# an Endpoint the conf can hold: host:port, IPv4:port or [IPv6]:port — one token, never a line break (a conf line is code)
+ENDPOINT_RE = re.compile(r"^(\[[0-9A-Fa-f:.]{2,45}\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252})):[0-9]{1,5}$")
 AWG_KEYS  = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
-             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
+             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
+             # AmneziaWG 3.x (docs/AWG3-PLAN.md §7.1). DisableCookies is never written, but KNOWN, so an edit drops one an
+             # onboarded interface brought. Twins: swg-noded, swg-panel-server, js/crypto.js, sub.js, turn-artifacts.js
+             # (tests/cross_language_twins_selftest.py [3]).
+             "HeaderProtectionKey", "RandomTrailers", "ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout",
+             "RejectAfterTime", "KeepaliveTimeout", "MaxHandshakeAttempts", "DisableCookies"]
+AWG3_KEYS = AWG_KEYS[AWG_KEYS.index("HeaderProtectionKey"):]
+
+
+def awg3_unset(k, v):
+    """A 3.x key at what a 3.1 kernel's showconf prints for "not set" (`= 0` / `= off`): read as absent. Twin of swg-noded's
+    awg3_unset — the two must agree on what a conf's generation is."""
+    return k in AWG3_KEYS and k != "HeaderProtectionKey" and str(v).strip().lower() in ("0", "off")
 
 
 class AgentError(Exception):
@@ -142,7 +157,7 @@ def conf_v4_address(address):
 def awg_params(info):
     out = {}
     for k in AWG_KEYS:
-        if k in info:
+        if k in info and not awg3_unset(k, info[k]):
             v = info[k]
             out[k] = int(v) if v.isdigit() else v
     return out
@@ -308,6 +323,31 @@ def rewrite_peer_allowed_in_conf(path, pub, allowed):
             write_conf_atomic(path, "\n".join(lines).rstrip("\n") + "\n")
             return
     # peer block not found in conf (live-only) — nothing to rewrite
+
+
+def rewrite_peer_endpoint_in_conf(path, pub, endpoint):
+    """Set the Endpoint line of the [Peer] block matching `pub` — replaced, or inserted after its PublicKey when the
+    block has none. Returns True when the file changed (False: already that endpoint, or no such block in the conf —
+    a live-only peer is left alone, as rewrite_peer_allowed_in_conf leaves it). Atomic, 0600."""
+    lines = read_conf(path).splitlines()
+    starts = [i for i, l in enumerate(lines) if l.strip().lower() == "[peer]"]
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        pk_at = [i for i in range(start, end) if re.match(rf"\s*PublicKey\s*=\s*{re.escape(pub)}\s*$", lines[i])]
+        if not pk_at:
+            continue
+        for i in range(start, end):
+            m = re.match(r"(?i)\s*Endpoint\s*=\s*(.*?)\s*$", lines[i])
+            if m:
+                if m.group(1) == endpoint:
+                    return False
+                lines[i] = f"Endpoint = {endpoint}"
+                break
+        else:
+            lines.insert(pk_at[0] + 1, f"Endpoint = {endpoint}")
+        write_conf_atomic(path, "\n".join(lines).rstrip("\n") + "\n")
+        return True
+    return False
 
 
 @contextlib.contextmanager
@@ -489,6 +529,25 @@ def op_set_peer_allowed(cfg, req):
     return {"iface": iface, "public_key": pub, "allowed_ips": allowed}
 
 
+def op_persist_peer_endpoint(cfg, req):
+    """Write an EXISTING peer's Endpoint into the interface's .conf — the .conf only, the datapath is not touched.
+    For a mesh/link peer the live interface already dials the address: WireGuard roamed to it when the far node came
+    in from there, and swg-noded's reconcile adopts that without re-adding a healthy link. The .conf kept the address
+    the peer was ADDED with, and every restart of the interface (a reboot, a container restart) dialled that old one
+    again; the reconcile did not re-dial it, having already recorded the new one as applied (1.8.8 qualification,
+    round 7). swg-noded calls this so the .conf always names the endpoint the panel wants."""
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)
+    pub = req.get("public_key", "")
+    if not PUBKEY_RE.match(pub):
+        raise AgentError("bad_pubkey", "public_key is not a valid WireGuard key")
+    ep = (req.get("endpoint") or "").strip()
+    if not ENDPOINT_RE.fullmatch(ep):
+        raise AgentError("bad_request", "endpoint must be host:port, a.b.c.d:port or [v6]:port")
+    changed = rewrite_peer_endpoint_in_conf(ic["conf"], pub, ep)
+    return {"iface": iface, "public_key": pub, "endpoint": ep, "changed": changed}
+
+
 def op_remove_peer(cfg, req):
     iface = req["iface"]
     ic = iface_cfg(cfg, iface)
@@ -525,6 +584,97 @@ def set_awg_in_conf(path, awg):
     write_conf_atomic(path, "\n".join(out).rstrip("\n") + "\n")
 
 
+def _awg3_norm(v):
+    """One spelling per AmneziaWG 3 value, so a device's readback compares with what was asked: unset, 0 and off are one
+    thing (a 3.1 kernel prints every unset key that way), on and 1 another, and a range `a-a` is `a`."""
+    s = re.sub(r"\s+", "", "" if v is None else str(v))
+    if s.lower() in ("", "0", "off", "false", "no"):
+        return ""
+    if s.lower() in ("1", "on", "true", "yes"):
+        return "1"
+    m = re.fullmatch(r"(\d+)-(\d+)", s)
+    return m.group(1) if m and m.group(1) == m.group(2) else s
+
+
+def _unit_started(tool, iface):
+    """Is this interface running under its <tool>-quick@ unit? Asked ONCE per change, before anything stops: a start that
+    fails leaves the unit `failed`, and the rollback must still come back up under it."""
+    if not shutil.which("systemctl") or _IN_CONTAINER:
+        return False
+    with contextlib.suppress(Exception):
+        return subprocess.run(["systemctl", "is-active", "--quiet", f"{tool}-quick@{iface}"],
+                              capture_output=True).returncode == 0
+    return False
+
+
+def _bounce(ic, iface, tool, by_unit):
+    """Down, then up, THE WAY THE INTERFACE WAS STARTED: through its <tool>-quick@ unit when it ran under one — a userspace
+    daemon then stays in the unit's cgroup, one copy — else as op_restart_iface does (resilience plan D3). The old
+    device, and a userspace daemon's UAPI socket, must be gone before the up: while the socket exists the awg CLI
+    configures the dying daemon instead of the new device."""
+    target = _quick_target(ic, iface)
+    unit = f"{tool}-quick@{iface}"
+    if by_unit:
+        run(["systemctl", "stop", unit], check=False)
+    else:
+        with contextlib.suppress(Exception):
+            run([tool + "-quick", "down", target])
+    sock = f"/var/run/amneziawg/{iface}.sock"
+    for _ in range(100):
+        if not os.path.exists(f"/sys/class/net/{iface}") and not os.path.exists(sock):
+            break
+        time.sleep(0.1)
+    if not os.path.exists(f"/sys/class/net/{iface}"):
+        with contextlib.suppress(OSError):
+            os.unlink(sock)                 # a daemon that outlived its device: its socket would take the new config
+    if not by_unit:
+        _quick_up(tool, iface, target)
+        return
+    p = subprocess.run(["systemctl", "start", unit], capture_output=True, text=True)
+    if p.returncode != 0:
+        log = subprocess.run(["journalctl", "-u", unit, "-n", "6", "--no-pager", "-o", "cat"],
+                             capture_output=True, text=True).stdout.strip()
+        raise AgentError("up_failed", f"{unit} did not start: {log or p.stderr.strip()}")
+
+
+def _awg_recreate(ic, iface, awg, before):
+    """An AmneziaWG edit on an interface whose conf or request holds a 3.x key: write the full dict, recreate the device
+    through the restart path, and prove it carries the 3.x keys asked for — or put `before` back up and refuse.
+
+    docs/AWG3-PLAN.md §7.4. Not a live `awg set`: the kernel keeps HeaderProtectionKey and RandomTrailers on a live device
+    whatever setconf says (an all-zero key is ON), the 3.x flags are kebab-case and the key wants a FILE, and that path
+    swallows its error while the conf takes the change — the next restart would then be refused. EVERY AWG edit on such
+    an interface comes here, a 2.0-key one included: one `awg set` carries the whole dict, fails on its first 3.x
+    argument, and a changed Jc never reaches the device. The interface ends where it started, never down; its peers come
+    back from the conf, and noded re-adds any other on its next pass."""
+    tool = (ic.get("cmd") or ["awg"])[0]
+    if not os.path.exists(f"/sys/class/net/{iface}"):
+        # Stopped, or down: the conf takes it and nothing is brought up — exactly what the live path does for such an
+        # interface. It applies at the next start, which noded has already checked this datapath can run.
+        set_awg_in_conf(ic["conf"], awg)
+        return awg
+    by_unit = _unit_started(tool, iface)
+    set_awg_in_conf(ic["conf"], awg)                 # the full dict: every KNOWN key it lacks is dropped
+    try:
+        _bounce(ic, iface, tool, by_unit)
+        dev = parse_interface_section(run([tool, "showconf", iface]))
+        bad = [k for k in AWG3_KEYS if _awg3_norm(awg.get(k)) != _awg3_norm(dev.get(k))]
+        if not bad:
+            return awg
+        err = f"{iface} came up without {', '.join(bad)} as asked"
+    except Exception as e:
+        err = e.msg if isinstance(e, AgentError) else str(e)
+    write_conf_atomic(ic["conf"], before)
+    try:
+        _bounce(ic, iface, tool, by_unit)
+    except Exception as e:
+        raise AgentError("awg_gen_refused", f"this node's AmneziaWG refused the change ({err}), and {iface} did not come "
+                                            f"back on its previous configuration either: "
+                                            f"{e.msg if isinstance(e, AgentError) else e}")
+    raise AgentError("awg_gen_refused", f"this node's AmneziaWG refused the change — {iface} is back on its previous "
+                                        f"configuration: {err}")
+
+
 def op_set_iface(cfg, req):
     """Change the interface's UDP listen port, link MTU and/or AmneziaWG obfuscation params on the
     live interface + its .conf. Peers (keys / AllowedIPs) are untouched; existing client tunnels
@@ -532,6 +682,11 @@ def op_set_iface(cfg, req):
     iface = req["iface"]
     ic = iface_cfg(cfg, iface)
     out = {"iface": iface}
+    # The conf as it stood before this request touched it — what an AmneziaWG 3 recreate rolls back to (_awg_recreate).
+    before = None
+    if isinstance(req.get("awg_params"), dict) and req["awg_params"]:
+        with contextlib.suppress(Exception):
+            before = read_conf(ic["conf"])
     if req.get("listen_port") is not None:
         try:
             port = int(req.get("listen_port"))
@@ -571,8 +726,15 @@ def op_set_iface(cfg, req):
         out["awg_params_skipped"] = "not an AmneziaWG interface"
         awg = None
     if isinstance(awg, dict) and awg:
-        awg = {k: str(awg[k]) for k in AWG_KEYS if k in awg and str(awg.get(k, "")) != ""}
-        if awg:
+        awg = {k: str(awg[k]) for k in AWG_KEYS if k in awg and str(awg.get(k, "")) != "" and not awg3_unset(k, awg[k])}
+        cur3 = {k: v for k, v in parse_interface_section(before or "").items() if k in AWG3_KEYS and not awg3_unset(k, v)}
+        if awg and cur3 and not req.get("awg_params_exact"):
+            # A set that does not say it is WHOLE never drops a 3.x key the conf has: an older panel knows none, and its
+            # 2.0-only edit must not switch a 3.1 interface back (plan §7.8). The panel says so when it switches back.
+            awg = {**{k: v for k, v in cur3.items() if k not in awg}, **awg}
+        if awg and before is not None and (cur3 or any(k in awg for k in AWG3_KEYS)):
+            out["awg_params"] = _awg_recreate(ic, iface, awg, before)
+        elif awg:
             # apply live where the awg tool supports it (best-effort), then persist to the conf
             args = ic["cmd"] + ["set", iface]
             for k in AWG_KEYS:
@@ -610,6 +772,34 @@ def _ipt_set(table, rule):
     """Exactly one copy of `rule`, whatever was there before."""
     t = (table + " ") if table else ""
     return _ipt_reap(table, rule) + f"; iptables {t}-A {rule} || true"
+
+
+# ⚠️ EACH INTERFACE'S OWN MASQUERADE. It used to be `-s <net> -o <wan> -j MASQUERADE` and nothing else, so two interfaces
+# on ONE subnet wrote ONE rule text — and since every down reaps every copy of its text, whichever went down second took
+# the other's rule with it. A node's transfer home does exactly that: the panel re-creates the mesh link under a new
+# name on the same /31, the new link comes up, the old one goes — and the new link was left with no NAT on either end,
+# for good (mesh links get no baseline from swg-noded). A rename done up-then-down, or a subnet reused while the old
+# interface is still up, is the same collision. The rule now names its interface (wg-quick puts the name for %i), so a
+# down takes its own rule and nobody else's. Existing interfaces move over with op_tag_nat_hooks. lib/common.sh's
+# nat_hook_up / nat_hook_down print the same text (tests/nat_hooks_selftest.py holds them together).
+NAT_TAG = "swg-nat:"
+
+
+def _nat_masq(net, wan, who="%i"):
+    return f"POSTROUTING -s {net} -o {wan} -m comment --comment {NAT_TAG}{who} -j MASQUERADE"
+
+
+def _nat_hooks(net, wan):
+    """(PostUp, PostDown) of a managed interface: its own tagged MASQUERADE and its FORWARD accept pair, exactly one copy
+    each on the way up (reap then add), every copy of its own on the way down."""
+    up = (f"sysctl -q -w net.ipv4.ip_forward=1 || true; "
+          f"{_ipt_set('-t nat', _nat_masq(net, wan))}; "
+          f"{_ipt_set('', f'FORWARD -i %i -o {wan} -j ACCEPT')}; "
+          f"{_ipt_set('', f'FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT')}")
+    down = (f"{_ipt_reap('-t nat', _nat_masq(net, wan))}; "
+            f"{_ipt_reap('', f'FORWARD -i %i -o {wan} -j ACCEPT')}; "
+            f"{_ipt_reap('', f'FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT')}; true")
+    return up, down
 
 
 def _wan_iface():
@@ -1203,13 +1393,7 @@ def op_create_iface(cfg, req):
     # 45-day-old node: twelve MASQUERADE rules, for subnets whose interfaces were long gone, beside a
     # box that had exactly one interface. Reaping on the way UP as well as down means a bring-up
     # converges the chain from any state — including the pile an install made before this fix.
-    up = (f"sysctl -q -w net.ipv4.ip_forward=1 || true; "
-          f"{_ipt_set('-t nat', f'POSTROUTING -s {net} -o {wan} -j MASQUERADE')}; "
-          f"{_ipt_set('', f'FORWARD -i %i -o {wan} -j ACCEPT')}; "
-          f"{_ipt_set('', f'FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT')}")
-    down = (f"{_ipt_reap('-t nat', f'POSTROUTING -s {net} -o {wan} -j MASQUERADE')}; "
-            f"{_ipt_reap('', f'FORWARD -i %i -o {wan} -j ACCEPT')}; "
-            f"{_ipt_reap('', f'FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT')}; true")
+    up, down = _nat_hooks(net, wan)       # its OWN tagged MASQUERADE — see _nat_hooks
     # ⚠️ The conf SAYS WHICH PROTOCOL IT IS. Everything else that could answer is circumstantial: the
     # directory is not (a container writes every conf to the AmneziaWG one, so a plain-WireGuard conf
     # that has been through one comes back as `awg` and the panel re-badges it), and the content is not
@@ -1334,7 +1518,8 @@ def op_create_iface(cfg, req):
             "listen_port": port, "unit_enabled": _unit}
 
 
-_EGRESS_MASQ_RE = re.compile(r"-s (\S+) -o (\S+) -j MASQUERADE")
+# the conf's MASQUERADE: the tagged form (-m comment --comment swg-nat:%i) or the legacy untagged one
+_EGRESS_MASQ_RE = re.compile(r"-s (\S+) -o (\S+) (-m comment --comment \S+ )?-j MASQUERADE")
 
 def _reap_egress_rules(conf_text, iface):
     """Delete EVERY copy of the egress rules this interface's conf installs, not just the one its
@@ -1351,7 +1536,10 @@ def _reap_egress_rules(conf_text, iface):
     if not m:
         return
     net, wan = m.group(1), m.group(2)
-    for args in (["-t", "nat", "-D", "POSTROUTING", "-s", net, "-o", wan, "-j", "MASQUERADE"],
+    # ⚠️ ITS OWN RULE ONLY. A tagged conf's rule carries this interface's name; the legacy untagged text was shared by
+    # every interface on the subnet, and reaping every copy of it here took a live twin's rule (see _nat_hooks).
+    masq = (["-m", "comment", "--comment", NAT_TAG + iface] if m.group(3) else [])
+    for args in (["-t", "nat", "-D", "POSTROUTING", "-s", net, "-o", wan] + masq + ["-j", "MASQUERADE"],
                  ["-D", "FORWARD", "-i", iface, "-o", wan, "-j", "ACCEPT"],
                  ["-D", "FORWARD", "-i", wan, "-o", iface, "-m", "state",
                   "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]):
@@ -1361,6 +1549,72 @@ def _reap_egress_rules(conf_text, iface):
                     break
             except Exception:
                 break
+
+
+_LEGACY_MASQ_RE = re.compile(r"POSTROUTING -s (\S+) -o (\S+) -j MASQUERADE")
+
+
+def _reap_own_nat(iface):
+    """Every copy of the rule named after this interface (swg-nat:<iface>), WHATEVER ITS .CONF SAYS.
+
+    ⚠️ A .CONF WITH NO HOOKS STILL HAD A RULE. A Docker node's confs carry no PostUp / PostDown (install-docker.sh strips
+    them on every bare → Docker convert, and the container NATs itself): its rule comes from docker/node-entrypoint.sh,
+    one per interface, and _reap_egress_rules — which reaps only what the hook text names — left it behind when the
+    interface was deleted (1.8.8 qualification, round 8: q4 kept `swg-nat:swg_51bc7bc8` for a link it no longer had).
+    By the tag, quoted or not, and anchored: swg-nat:wg0 is never swg-nat:wg01. Delete only (stop/restart keep it)."""
+    try:
+        out = subprocess.run(["iptables", "-t", "nat", "-S", "POSTROUTING"], capture_output=True, text=True).stdout or ""
+    except Exception:
+        return
+    tag = re.compile(r'--comment "?%s"?(?=\s|$)' % re.escape(NAT_TAG + iface))
+    for ln in out.splitlines():
+        if not ln.startswith("-A POSTROUTING ") or not tag.search(ln):
+            continue
+        try:
+            args = shlex.split(ln)
+        except ValueError:
+            continue
+        with contextlib.suppress(Exception):
+            subprocess.run(["iptables", "-t", "nat", "-D"] + args[1:], capture_output=True)
+
+
+def op_tag_nat_hooks(cfg, req):
+    """Move ONE managed interface to its own tagged MASQUERADE (see _nat_hooks): the legacy untagged rule text in its
+    .conf's PostUp / PostDown becomes the tagged one, and — when the interface is up — the live rule follows: every
+    untagged copy of its (subnet, WAN) goes and exactly one tagged copy stays. Idempotent: a tagged .conf is only
+    checked live. An ADOPTED interface (#swg:onboarded) keeps its hooks — they are somebody else's text. swg-noded runs
+    this once per start for each managed interface, which is how boxes installed before the tag move over."""
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)
+    path = ic["conf"]
+    text = read_conf(path)
+    if re.search(r"(?m)^\s*#swg:onboarded\b", text):
+        return {"iface": iface, "changed": False, "live": False, "why": "adopted — its hooks are its own"}
+    lines, pairs, changed = text.splitlines(), set(), False
+    for i, ln in enumerate(lines):
+        m = re.match(r"(?i)(\s*Post(?:Up|Down)\s*=\s*)(.*)$", ln)
+        if not m:
+            continue
+        body = m.group(2)
+        for mm in _EGRESS_MASQ_RE.finditer(body):
+            pairs.add((mm.group(1), mm.group(2)))
+        new_body = _LEGACY_MASQ_RE.sub(lambda mm: _nat_masq(mm.group(1), mm.group(2)), body)
+        if new_body != body:
+            lines[i] = m.group(1) + new_body
+            changed = True
+    if changed:
+        write_conf_atomic(path, "\n".join(lines).rstrip("\n") + "\n")
+    live = subprocess.run(["ip", "link", "show", iface], capture_output=True).returncode == 0
+    if live:                                  # the live rule follows — no gap: the tagged one is ensured, never re-added
+        for net, wan in sorted(pairs):
+            legacy = ["POSTROUTING", "-s", net, "-o", wan, "-j", "MASQUERADE"]
+            tagged = ["POSTROUTING", "-s", net, "-o", wan, "-m", "comment", "--comment", NAT_TAG + iface, "-j", "MASQUERADE"]
+            if subprocess.run(["iptables", "-t", "nat", "-C"] + tagged, capture_output=True).returncode != 0:
+                subprocess.run(["iptables", "-t", "nat", "-A"] + tagged, capture_output=True)
+            for _ in range(_IPT_REAP_TRIES):
+                if subprocess.run(["iptables", "-t", "nat", "-D"] + legacy, capture_output=True).returncode != 0:
+                    break
+    return {"iface": iface, "changed": changed, "live": live, "rules": sorted("%s via %s" % p for p in pairs)}
 
 
 def op_delete_iface(cfg, req):
@@ -1382,6 +1636,7 @@ def op_delete_iface(cfg, req):
         with contextlib.suppress(Exception):
             run(["ip", "link", "delete", "dev", iface])
     _reap_egress_rules(conf_text, iface)           # the down hook takes one copy; this takes the rest
+    _reap_own_nat(iface)                           # …and the rule named after it, which a hookless .conf does not name
     _iface_unit("disable", tool, iface)
     with contextlib.suppress(Exception):
         os.remove(ic["conf"])
@@ -1524,7 +1779,8 @@ def respond(ok, op, data=None, error=None, code=None):
 
 READ_OPS = {"describe": op_describe, "list-peers": op_list_peers, "next-ip": op_next_ip}
 WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface": op_set_iface,
-             "set-peer-allowed": op_set_peer_allowed,
+             "set-peer-allowed": op_set_peer_allowed, "persist-peer-endpoint": op_persist_peer_endpoint,
+             "tag-nat-hooks": op_tag_nat_hooks,
              "create-iface": op_create_iface, "delete-iface": op_delete_iface, "restart-iface": op_restart_iface,
              "stop-iface": op_stop_iface, "start-iface": op_start_iface,
              "restore-iface-key": op_restore_iface_key}

@@ -13,13 +13,13 @@
  * handles Esc/Enter/Tab. Without it a child sheet's Escape would close its parent too.
  */
 
-import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rateIn, niceScaleCeilIn, seen } from "./util.js";
+import { $, esc, tkey, ipOf, isPrivIp, fmtBytes, rateIn, niceScaleCeilIn, seen, panelNowS } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i18n.js";
 import { IFACE_COLOR_DEFAULTS, THEME_COLOR_DEFAULT, THEME_COLOR_LIGHT_DEFAULT, THEME_MODES,
          clampBrand, hexLum, pickThemed, resolvedTheme, themeMode } from "./theme.js";
-import { targetType, peerUncategorised } from "./model.js";
+import { targetType, peerUncategorised, awgGen, awgGenPending, nodeStale, tip3 } from "./model.js";
 import { turnColor, turnLabel, turnForkList } from "./turn-catalog.js";
 import { h, render, Fragment } from "preact";
 import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
@@ -88,6 +88,8 @@ export const ICON = {
   globe: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>',
   bolt: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>',
   gauge: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 13.5 16 9"/><path d="M4 18a9 9 0 1 1 16 0"/></svg>',
+  // a rule's own settings (where it leaves by, for whom, as which address) — tuning one thing, not the app's settings
+  sliders: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>',
   gear: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V20a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 4.6 13H4.5a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V2a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-1.1 2.7v.1a2 2 0 1 1 0 4z"/></svg>',
   trash: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/></svg>',
   link: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M10 13a4 4 0 0 0 6 .5l2-2a4 4 0 0 0-5.7-5.7l-1.2 1.1M14 11a4 4 0 0 0-6-.5l-2 2A4 4 0 0 0 11.7 18l1.2-1.1"/></svg>',
@@ -170,7 +172,7 @@ export function adoptOrphanPatch(o) {
     }
     peers["adopting:" + o.node + "|" + o.iface + "|" + o.pubkey] = {
       user_id: null, title: "", pubkey: o.pubkey, psk: o.preshared_key || "",
-      targets: [target], created_at: Math.floor(Date.now() / 1000),
+      targets: [target], created_at: panelNowS(),   // the grace window this is judged against runs on the PANEL's clock (reconcile.js)
     };
   };
 }
@@ -279,6 +281,7 @@ function useNoNativeTitle(ref, active) {
   }, [active]);
 }
 
+// `children` may be a function: it is handed `close`, for a bubble that carries its own close control.
 export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly, autoOpen, clickOnly }) {   // flipFit: now every bubble's behaviour (callers may still pass it)
   const [open, setOpen] = useState(false), [pinned, setPinned] = useState(!!autoOpen), [pos, setPos] = useState(null);
   const ref = useRef(null), popRef = useRef(null), closeT = useRef(null);
@@ -335,9 +338,22 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
       document.addEventListener("click", eat, true);
       setTimeout(() => document.removeEventListener("click", eat, true), 350);
     };
+    // ESCAPE CLOSES A PINNED BUBBLE, and only the bubble. On `window` in the capture phase so it runs before a Sheet's
+    // own Escape (document, capture) — otherwise the key meant for the bubble closed the whole sheet behind it.
+    // ⚠️ …BUT ONLY WHILE THE BUBBLE IS THE TOP LAYER. Running first, it also took the Escape meant for a Sheet or a
+    // confirm opened on top of it (from inside the bubble, or by code) and for an open dropdown, which then needed a
+    // second press. So it stands aside when the modal stack has grown since it was pinned, or a dropdown is open —
+    // that layer's own handler gets the key (the same test the Sheet makes).
+    const depthAtPin = modalDepth();
+    const onEsc = e => {
+      if (e.key !== "Escape") return;
+      if (modalDepth() !== depthAtPin) return;
+      if (document.querySelector(".ddpop")) return;     // a dropdown is open (it portals to <body>) — its Escape first
+      e.stopPropagation(); e.preventDefault(); setPinned(false); setOpen(false);
+    };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    if (pinned) document.addEventListener("pointerdown", onDoc, true);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); };
+    if (pinned) { document.addEventListener("pointerdown", onDoc, true); window.addEventListener("keydown", onEsc, true); }
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); window.removeEventListener("keydown", onEsc, true); };
   }, [show, pinned]);
   useEffect(() => () => clearTimeout(closeT.current), []);
   useNoNativeTitle(ref, show);
@@ -345,7 +361,8 @@ export function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly,
     onClick=${hoverOnly ? null : (e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
     onMouseEnter=${clickOnly ? null : () => { cancelClose(); setOpen(true); }} onMouseLeave=${clickOnly ? null : scheduleClose}>${trigger}
     ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "") + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;transform:" + (alignRight ? "translateX(-100%)" : "") + (pos.flip ? " translateY(-100%)" : "") + (pos.maxH ? ";max-height:" + pos.maxH + "px;overflow:auto" : "")}
-      onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div><//>` : null}
+      onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${typeof children === "function"
+        ? children(() => { setPinned(false); setOpen(false); }) : children}</div><//>` : null}
   </span>`;
 }
 
@@ -389,8 +406,23 @@ export const registerSectionSetter = fn => { _setSection = fn || (() => {}); };
 export const gotoSettingsSection = s => _setSection(s);
 
 // The generic inline tag chip — every dense row signature is built from these. `color` tints via --tgc.
-export function Tag({ kind, label, color, muted }) {
-  return html`<span class=${"tg tg-" + (kind || "gen") + (muted ? " muted" : "")} style=${color && !muted ? "--tgc:" + color : ""}>${label}</span>`;
+// `gen3`: an AWG tag of an AmneziaWG 3.1 interface — the 3.1 colour and its tooltip (docs/AWG3-PLAN.md D-colour); `notip` for a
+// tag that is itself a hover bubble's trigger, where a native tooltip would sit on top of the bubble.
+export function Tag({ kind, label, color, muted, gen3, notip }) {
+  return html`<span class=${"tg tg-" + (kind || "gen") + (gen3 ? " awg3" : "") + (muted ? " muted" : "")} style=${color && !muted ? "--tgc:" + color : ""} ...${notip ? {} : tip3(gen3)}>${label}</span>`;
+}
+// Is this roster target an AWG deployment on an AmneziaWG 3.1 interface? What every protocol tag of a target passes as `gen3`.
+export const tgt3 = t => !!t && awgGen(t.node, t.iface) === "3.1";
+// A generation switch the node has not applied yet (model.js awgGenPending) — from the moment the operator confirms it until the
+// node reports the new version, however long that is: new QR codes already carry the new config, and until the node switches they
+// do not connect. Nothing for an interface with no switch in flight, which is every interface of a 2.0 fleet. `short` on the interface
+// card, where the version is already said by the badge's colour and a long tag squeezes the name.
+export function awgSwitchTag(node, iface, short) {
+  const to = awgGenPending(node, iface);
+  if (!to) return null;
+  return html`<span class="tg tg-pending" title=${nodeStale(node)
+      ? T("{v1} is not reporting — the switch applies when it is back. Until then its clients keep working on the old config, and new QR codes already show the new one.", { v1: Store.nodeName(node) })
+      : T("Waiting for the node to apply it — until then its clients keep working on the old config, and new QR codes already show the new one.")}><${Ic} i="clock"/>${short ? T("tag|switching") : to === "3.1" ? T("tag|switching to 3.1") : T("tag|switching to 2.0")}</span>`;
 }
 
 // ───────────────────────── sheets, section furniture, confirms ─────────────────────────
@@ -457,7 +489,8 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
-    const onEdit = () => { dirty.current = true; };
+    // [data-nodirty]: a control that only chooses what the sheet SHOWS (a traffic window's dates) — nothing to save, nothing to lose
+    const onEdit = e => { if (!(e.target && e.target.closest && e.target.closest("[data-nodirty]"))) dirty.current = true; };
     root.addEventListener("input", onEdit, true);
     root.addEventListener("change", onEdit, true);
     // fields can opt out of autofocus with [data-noautofocus] (e.g. the VK box); and a view modal (noGuard)
@@ -816,9 +849,9 @@ export function turnProxyTitle(node, service) {
   const tp = ((Store.stats[node] || {}).turn_proxies || []).find(x => x && x.service === service);
   return (tp && tp.title) || "";
 }
-// The interface badge for one peer-grid row (protocol + iface name).
-export function gridIfaceTag(t) {
-  return html`<${Tag} kind=${targetType(t)} label=${t.iface} muted=${!t.online}/>`;
+// The interface badge for one peer-grid row (protocol + iface name). `notip` where it sits inside a status bubble's trigger.
+export function gridIfaceTag(t, notip) {
+  return html`<${Tag} kind=${targetType(t)} label=${t.iface} muted=${!t.online} gen3=${tgt3(t)} notip=${notip}/>`;
 }
 // …and for a GROUPED row, which stands for several deployments at once. Naming just the representative's
 // interface there is simply wrong — the row is the peer, not that one deployment — so a peer on more than
@@ -832,11 +865,11 @@ export function gridIfacesTag(prim, all) {
   // is a WRAPPING FLEX ROW meant for a handful of chips, and it laid the deployments out side by side.
   // One deployment per line, same as the +N bubble this sits beside.
   return html`<${Popover} hoverOnly cls="tgt-frontpop" popCls="iflistbub"
-    trigger=${html`<${Tag} kind=${targetType(prim)} label=${T("{n} interfaces", { n: ds.length })} muted=${!ds.some(d => d.online)}/>`}>
+    trigger=${html`<${Tag} kind=${targetType(prim)} label=${T("{n} interfaces", { n: ds.length })} muted=${!ds.some(d => d.online)} gen3=${tgt3(prim)} notip=${true}/>`}>
     <span class="tgt-frontlbl">${T("This peer's interfaces")}</span>
     ${ds.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
       <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
-      <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online}/>
+      <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online} gen3=${tgt3(d)}/>
       <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
   <//>`;
 }
@@ -851,10 +884,10 @@ const STATUS_REASONS = once(() => ({
   expiring: T("the access date is coming up — will be removed from every server when it passes"),
 }));
 export const statusReason = s => STATUS_REASONS()[s] || "";
-// The blocked "wrong params" hint, naming the datapath the deployment runs (wg → Wireguard, awg → AmneziaWG,
+// The blocked "wrong params" hint, naming the datapath the deployment runs (wg → WireGuard, awg → AmneziaWG,
 // unknown → both) so it points at the right knobs. Mirrors the dynamic reason reconcile.js sets peer-wide.
 // The protocol name is INTERPOLATED, not concatenated: it lands mid-sentence, and only one language puts it there.
-export function protoLabel(type) { return type === "awg" ? "AmneziaWG" : type === "wg" ? "Wireguard" : T("Wireguard or AmneziaWG"); }   // i18n-keys: protocol names
+export function protoLabel(type) { return type === "awg" ? "AmneziaWG" : type === "wg" ? "WireGuard" : T("WireGuard or AmneziaWG"); }   // i18n-keys: protocol names
 export function blockedReason(type) { return T("reaching the server but the handshake never completes — likely DPI / MTU / wrong {proto} params", { proto: protoLabel(type) }); }
 // The other "restricted" signature: the handshake DOES complete, repeatedly, because the session will not
 // hold. Mirrors the dynamic reason reconcile.js sets peer-wide.
@@ -1029,7 +1062,7 @@ export function DepBadge({ others }) {
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>
       ${others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
         <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
-        <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online}/>
+        <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online} gen3=${tgt3(d)}/>
         <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
     </div><//>` : null}
   </span>`;
@@ -1722,7 +1755,7 @@ export function applyForkColors() {
 export function ifaceColor(type) {
   const t = (type || "").toLowerCase();
   const ov = (Store.panelSettings && Store.panelSettings.iface_colors) || {};
-  const k = t === "awg" ? "awg" : t === "wdtt" ? "wdtt" : t === "csqtt" ? "csqtt" : "wg";   // WDTT + csqtt (keyless proxy targets) are operator-tunable too
+  const k = t === "awg" ? "awg" : t === "awg3" ? "awg3" : t === "wdtt" ? "wdtt" : t === "csqtt" ? "csqtt" : "wg";   // WDTT + csqtt (keyless proxy targets) are operator-tunable too
   return pickThemed(ov[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light);
 }
 // perceived brightness (0–1) of a #rrggbb / #rgb colour — used to pick a contrasting ink for text on the brand.
@@ -1737,8 +1770,8 @@ export function themeColor() {
 // faulty classes (they don't read a custom property, so like the turn tags they need an explicit rule).
 let _themeSig = null;
 export function applyThemeColors() {
-  const theme = themeColor(), wg = ifaceColor("wg"), awg = ifaceColor("awg"), wdtt = ifaceColor("wdtt"), csqtt = ifaceColor("csqtt");
-  const sig = [resolvedTheme(), theme, wg, awg, wdtt, csqtt].join("|");
+  const theme = themeColor(), wg = ifaceColor("wg"), awg = ifaceColor("awg"), awg3 = ifaceColor("awg3"), wdtt = ifaceColor("wdtt"), csqtt = ifaceColor("csqtt");
+  const sig = [resolvedTheme(), theme, wg, awg, awg3, wdtt, csqtt].join("|");
   if (sig === _themeSig) return;   // nothing changed since last poll → skip the DOM write
   _themeSig = sig;
   const de = document.documentElement, cm = (c, p, m) => "color-mix(in srgb, " + c + " " + p + "%, " + m + ")";
@@ -1746,6 +1779,7 @@ export function applyThemeColors() {
   de.style.setProperty("--brand", brand);
   de.style.setProperty("--brand-2", cm(brand, 70, "#fff"));   // the lighter brand accent
   de.style.setProperty("--tp-rx", brand);                      // throughput chart "down" series tracks the theme
+  de.style.setProperty("--awg3", awg3);                        // an AmneziaWG 3.1 interface's badges, switch and caption (app.css var(--awg3))
   // text sitting ON the brand colour (primary buttons) must contrast with whatever colour was applied — dark ink on a
   // light brand, light ink on a dark one — so a dark theme colour doesn't make the button label invisible.
   de.style.setProperty("--brand-ink", hexLum(brand) > 0.55 ? "#04232A" : "#EAFBFF");

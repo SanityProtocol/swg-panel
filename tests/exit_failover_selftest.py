@@ -20,6 +20,10 @@ carry traffic asks `_devexit_state`, which reads `dead` for an up device whose t
   [4] the drift signature moves the same pass the verdict does (no 60 s wait).
   [5] `reconcile_exits` reports `no_traffic` and a rebuilt tunnel starts unjudged.
   [6] the panel says what happened to the traffic, in words that differ by kill-switch.
+  [7] a pass with several failing exits pays ONE device's timeouts: every live device is probed at once (measured on
+      swgt 2026-09-18: one after another, four WARP exits in an outage stretched every pass 5 s → ~55 s, past the
+      panel's 30 s offline threshold); a probe that raises or outlasts the bound is no evidence; verdicts stay in the
+      calling thread.
 
 Hermetic: `run()` is stubbed and argv inspected; the probes are injected; nothing touches the network.
 
@@ -27,6 +31,11 @@ Run: python3 tests/exit_failover_selftest.py            (0 = pass)
      --perturb             `_devexit_state` ignores the verdict — the shipped behaviour — expects RED
      --perturb-hysteresis  the 30 s window is dropped, so three quick failures fail over — expects RED in [1]
      --perturb-reach       the trace alone decides — a Cloudflare-only problem fails the tunnel — RED in [1]
+     --perturb-serial      the exit probes run one device after another again — RED in [7]
+     --perturb-bound       a probe that never answers holds the pass — RED in [7]
+     --perturb-icmp        a ping takes any echo reply carrying its ident, whoever sent it — RED in [7]
+     --perturb-finally     a later exit whose setup raises leaves the earlier ones unjudged — RED in [7]
+     --perturb-evidence    a ping that overruns the bound takes the trace + reach evidence with it — RED in [7]
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -43,6 +52,12 @@ PLANTS = {
     "--perturb-hysteresis": ('and now - st["fail_since"] >= EXIT_DEAD_AFTER_S):', "):"),
     "--perturb-reach": ('carried = True if (tr or {}).get("ip") else (reach or _exit_reach)(dev)',
                         'carried = bool((tr or {}).get("ip"))'),
+    "--perturb-serial": ("    for t in ths:\n        t.start()\n", "    for t in ths:\n        t.start(); t.join()\n"),
+    "--perturb-bound": ("        t.join(max(0.0, end - time.monotonic()))\n", "        t.join()\n"),
+    "--perturb-icmp": ("if typ == 0 and rid == ident and frm[0] == ip:", "if typ == 0 and rid == ident:"),
+    "--perturb-finally": ("    finally:\n        # ⚠️ IN A `finally`: a later exit",
+                          "    except BaseException:\n        raise\n    if True:\n        # ⚠️ IN A `finally`: a later exit"),
+    "--perturb-evidence": ("        res[dev] = (tr, rch, None)", "        pass"),
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
 
@@ -72,6 +87,7 @@ if MODE:
 else:
     N = _load(NODED, "swgnoded")
 P = _load(PANEL, "swgpanel")
+_REAL_PING = N._exit_ping          # the real one, before any section stubs it
 
 class _R:
     def __init__(s, out="", rc=0): s.stdout, s.stderr, s.returncode = out, "", rc
@@ -230,6 +246,101 @@ N.reconcile_exits(_want, {"changed": 0, "errors": []})
 check("a tunnel rebuilt this pass is judged from scratch, not dead by inheritance",
       N._devexit_state(D) == "up" and next(x for x in N._EXITS["list"] if x["id"] == "aabbccdd").get("no_traffic")
       is None, N._EXIT_HEALTH.get(D))
+
+# ── 7. several failing exits cost one device's timeouts, not the sum ─────────────────────────────────────
+import threading, time as _t
+_calls.clear()
+N.EXIT_DIR = tempfile.mkdtemp()
+N._dev_link_state = lambda d: "up" if any((" up " in x and d in x) for x in _calls) else "absent"
+_SLOW = {"trace": 0.8, "reach": 0.3, "ping": 0.2}          # 1.3 s a device: four in a row = 5.2 s, together ≈ 1.3 s
+_raise, _stall, _judged_in = set(), set(), set()
+def _trace7(d):
+    if d in _raise:
+        raise OSError("probe blew up")
+    _t.sleep(3.0 if d in _stall else _SLOW["trace"]); return dict(BAD)
+N._exit_trace = _trace7
+N._exit_reach = lambda d, *a, **k: (_t.sleep(_SLOW["reach"]), False)[1]
+N._exit_ping = lambda ep, *a, **k: (_t.sleep(_SLOW["ping"]), None)[1]
+_real_judge = N._exit_judge
+def _judge7(*a, **k):
+    _judged_in.add(threading.current_thread() is threading.main_thread())
+    return _real_judge(*a, **k)
+N._exit_judge = _judge7
+N.EXIT_DEAD_AFTER_S, N.EXIT_DEAD_MIN_PROBES = 0, 2
+N._EXIT_HEALTH.clear()
+_w7 = [{"id": "a%07d" % i, "device": "wgx-a%07d" % i, "provider": "warp"} for i in range(1, 5)]
+N.reconcile_exits(_w7, {"changed": 0, "errors": []})         # pass 1 builds the four tunnels (their probes included)
+_t0 = _t.time(); N.reconcile_exits(_w7, {"changed": 0, "errors": []}); _dt = _t.time() - _t0
+_rows = {x["id"]: x for x in N._EXITS["list"]}
+check("four failing exits: the pass pays one device's timeouts (%.1f s; one after another would be 5.2 s)" % _dt,
+      _dt < 2.6, _dt)
+check("…every one of them is still reported and judged (dead after its second failing pass)",
+      all((_rows.get(x["id"]) or {}).get("no_traffic") for x in _w7) and [x["id"] for x in N._EXITS["list"]] == [x["id"] for x in _w7],
+      [(k, v.get("no_traffic")) for k, v in _rows.items()])
+check("…and every verdict was taken in the calling thread (_EXIT_HEALTH is never touched by a probe thread)",
+      _judged_in == {True}, _judged_in)
+N._EXIT_HEALTH.clear(); _raise.add("wgx-a0000002"); _stall.add("wgx-a0000003"); N.EXIT_PROBE_BOUND_S = 1.5
+_t0 = _t.time(); N.reconcile_exits(_w7, {"changed": 0, "errors": []}); _dt = _t.time() - _t0
+_rows = {x["id"]: x for x in N._EXITS["list"]}
+check("a probe that raises and one that outlasts the bound cost the pass no more than the bound (%.1f s)" % _dt, _dt < 2.2, _dt)
+check("…each is no evidence: reported, trace empty, its verdict untouched — the others judged as usual",
+      _rows["a0000002"]["trace"] == {} and _rows["a0000003"]["trace"] == {}
+      and all(not (N._EXIT_HEALTH.get(d) or {}).get("fails") and not (N._EXIT_HEALTH.get(d) or {}).get("dead")
+              for d in ("wgx-a0000002", "wgx-a0000003"))
+      and N._EXIT_HEALTH["wgx-a0000001"]["fails"] == 1 and N._EXIT_HEALTH["wgx-a0000004"]["fails"] == 1,
+      ({k: v["trace"] for k, v in _rows.items()}, {k: v.get("fails") for k, v in N._EXIT_HEALTH.items()}))
+# a ping that overruns the bound loses only itself: the trace + reach evidence is already recorded
+N._EXIT_HEALTH.clear(); _raise.clear(); _stall.clear(); N.EXIT_PROBE_BOUND_S = 1.5
+N._exit_ping = lambda ep, *a, **k: (_t.sleep(4.0), None)[1]
+N.reconcile_exits(_w7, {"changed": 0, "errors": []})
+check("a ping that overruns the bound does not cost the verdict its evidence (every device counted its failure)",
+      all((N._EXIT_HEALTH.get(x["device"]) or {}).get("fails") == 1 for x in _w7),
+      {k: v.get("fails") for k, v in N._EXIT_HEALTH.items()})
+# a later exit whose setup raises: the exits before it are still judged that pass (and the exception still propagates)
+N._EXIT_HEALTH.clear(); N.EXIT_PROBE_BOUND_S = 40
+N._exit_ping = lambda ep, *a, **k: None
+_real_link = N._dev_link_state
+def _link_boom(d):
+    if d == "wgx-a0000003":
+        raise ValueError("a malformed exit state")
+    return _real_link(d)
+N._dev_link_state = _link_boom
+_boom = None
+try:
+    N.reconcile_exits(_w7, {"changed": 0, "errors": []})
+except Exception as e:
+    _boom = e
+check("a later exit whose setup raises: the ones before it are still judged, and the exception still propagates",
+      isinstance(_boom, ValueError) and all((N._EXIT_HEALTH.get(d) or {}).get("fails") == 1 for d in ("wgx-a0000001", "wgx-a0000002")),
+      (_boom, {k: v.get("fails") for k, v in N._EXIT_HEALTH.items()}))
+N._dev_link_state = _real_link
+N._exit_judge = _real_judge
+
+# concurrent pings: every raw ICMP socket gets EVERY echo reply, so a probe must take only its own, from its own server
+import types
+_real_sock_mod, _real_sel_mod = N.socket, N.select
+class _FakeIcmp:
+    def __init__(s, *a): s.q, s.t0 = [], None
+    def settimeout(s, t): pass
+    def sendto(s, pkt, addr):
+        s.ident = int.from_bytes(pkt[4:6], "big"); s.t0 = _t.monotonic()
+        ihdr = bytes([0x45]) + bytes(19)                  # a 20-byte IPv4 header, as a raw socket hands it over
+        rep = lambda rid: ihdr + bytes([0, 0, 0, 0]) + rid.to_bytes(2, "big") + (1).to_bytes(2, "big")
+        s.q = [(0.0, rep(s.ident), ("198.51.100.9", 0)),          # ANOTHER exit's server answering first, same ident
+               (0.0, rep((s.ident + 1) & 0xFFFF), (addr[0], 0)),  # our server, someone else's ident
+               (0.06, rep(s.ident), (addr[0], 0))]               # ours: 60 ms
+    def recvfrom(s, n):
+        at, d, frm = s.q.pop(0)
+        _t.sleep(max(0.0, s.t0 + at - _t.monotonic())); return d, frm
+    def close(s): pass
+N.socket = types.SimpleNamespace(socket=_FakeIcmp, AF_INET=2, SOCK_RAW=3, IPPROTO_ICMP=1, gethostbyname=lambda h: h)
+N.select = types.SimpleNamespace(select=lambda r, w, x, t: (r, [], []))
+try:
+    _ms = _REAL_PING("203.0.113.7:2408")
+finally:
+    N.socket, N.select = _real_sock_mod, _real_sel_mod
+check("a ping takes only ITS echo reply, from the server it pinged — not another exit's (%s ms)" % _ms,
+      _ms is not None and _ms >= 55, _ms)
 
 # ── 6. the panel ──────────────────────────────────────────────────────────────────────────────────
 def issues(ks):

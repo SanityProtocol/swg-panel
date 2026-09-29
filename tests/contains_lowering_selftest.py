@@ -29,6 +29,8 @@ Run:  python3 tests/contains_lowering_selftest.py          (exit 0 = all pass)
 import importlib.machinery, importlib.util, json, os, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _iptrestore import restore_to_calls  # noqa: E402
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(HERE, "..", "swg-panel-server")
 NODED = os.environ.get("SWG_NODED") or os.path.join(HERE, "..", "swg-noded")
 FAILS = []
@@ -84,6 +86,9 @@ def main():
     added = []
 
     def fake_run(args, *a, **kw):
+        if args[:1] == ["iptables-restore"]:          # the one-transaction rebuild, as the calls it stands for
+            added.extend(c for c in restore_to_calls(kw.get("input_text")) if "-A" in c)
+            return _R(0)
         if (args[:1] == ["iptables"] and "-A" in args) or args[:2] == ["ipset", "create"]:
             added.append(args)
         if args[:1] == ["iptables"] and "-C" in args:
@@ -95,12 +100,17 @@ def main():
 
     def strings_for(prefix=""):
         """Every distinct `--string` operand the chain was told to match, in the order first emitted."""
+        # A SITE name is two patterns since KSNI-HOSTNAMES D4 — `|00 LL LL|<name>` (the exact name) and `.<name>` (under it) —
+        # read back as the one operand they stand for; a `contains` operand is its own single `--string`.
+        hexn = {a[a.index("--hex-string") + 1].split("|")[-1] for a in added if "--hex-string" in a}
         out = []
         for a in added:
-            if "--string" in a:
-                v = a[a.index("--string") + 1]
-                if v.startswith(prefix) and v not in out:
-                    out.append(v)
+            v = a[a.index("--hex-string") + 1].split("|")[-1] if "--hex-string" in a else \
+                (a[a.index("--string") + 1] if "--string" in a else None)
+            if v is None or ("--string" in a and v.startswith(".") and v[1:] in hexn):
+                continue
+            if v.startswith(prefix) and v not in out:
+                out.append(v)
         return out
 
     # DERIVED from the plan by the node's own transpose, never hand-built: a bucket the test assembles is a
@@ -247,7 +257,7 @@ def main():
         0x9999, {"errors": [], "changed": 0}, ttl=3600),
         open(os.path.join(d, ".xtstring-sig")).read().strip())[1])(N.GEO_DIR)
     before = sig_of()
-    N._xts_scan = lambda subnet: [x for x in _real_scan(subnet) if x != "--connbytes"]   # a shape change
+    N._xts_scan = lambda subnet, arr=False: [x for x in _real_scan(subnet, arr) if x != "--connbytes"]   # a shape change
     after = sig_of()
     N._xts_scan = _real_scan
     check("changing the RULE SHAPE moves the signature", before != after,
@@ -281,13 +291,17 @@ def main():
     # the flag itself is `-j MARK`. Selecting on the string "CONNMARK" therefore matched nothing and this
     # check went red for the right reason with the wrong name. Selected on the TARGET, positionally, so
     # "CONNMARK" can never be mistaken for "MARK" again.
+    # ONE SEARCH PER OPERAND now (KSNI-HOSTNAMES-PLAN §6.6): an operand's rule jumps to its category's learn chain, which
+    # learns AND flags — so "the learn and reset rules match identically" is one rule per operand, and every one of them
+    # must carry the same match (the learn chain itself searches nothing, so it cannot drift from it).
     tgt = lambda a: (a[a.index("-j") + 1] if "-j" in a else "")
-    learn = [a for a in strs if tgt(a) == "SET"]
-    reset = [a for a in strs if tgt(a) == "MARK"]
+    scan = [a for a in strs if tgt(a).startswith("SWGKL_")]
     pre = lambda a: a[:a.index("--string")]
-    check("…and the learn and reset rules match identically",
-          learn and reset and all(pre(x) == pre(learn[0]) for x in learn + reset),
-          json.dumps([pre(learn[0]) if learn else [], pre(reset[0]) if reset else []]))
+    lch = [a for a in added if len(a) > 1 and str(a[a.index("-A") + 1] if "-A" in a else "").startswith("SWGKL_")]
+    check("…and the learn and reset rules match identically (one rule per operand, both through its learn chain)",
+          scan and len(scan) == len(strs) and all(pre(x) == pre(scan[0]) for x in scan)
+          and {tgt(a) for a in lch} == {"SET", "MARK"},
+          json.dumps([pre(scan[0]) if scan else [], sorted({tgt(a) for a in lch})]))
     # …and the rule that saves the connection mark is deliberately NOT one of them: it is keyed on the mark
     # this chain just wrote, so it needs neither the string nor the connbytes window.
     _save = [a for a in added if "--save-mark" in a]

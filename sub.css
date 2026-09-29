@@ -388,11 +388,6 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .ph-step { font-size: 20px; font-weight: 600; line-height: 1.4; }
 .ph-step b { color: var(--brand); font-weight: 800; }   /* the labels a reader has to FIND on their own screen (app / menu / button names). Weight alone did nothing:
      the step text is already 600, so 800 at this size read as identical — the emphasis was invisible. Colour it. */
-.wt-step2 { line-height: 1.7; }   /* the WG-Turn "+" button row needs a little more height */
-/* WG Turn step 2: the app's blue rounded-square "+" button, inline with the text */
-.wt-plus { display: inline-flex; align-items: center; justify-content: center; width: 1.5em; height: 1.5em; margin: 0 .16em;
-  vertical-align: middle; background: #0b5cd6; border-radius: .4em; box-shadow: 0 1px 5px rgba(0, 0, 0, .35); }
-.wt-plus svg { width: 64%; height: 64%; display: block; }
 /* MYSOREZ: the 3-button choice — a compact popover above the button bar (like the Safari ask-on-tap) */
 .mz-choice .start-choice-t { font-size: 13px; font-weight: 800; color: var(--ink); letter-spacing: .2px; }
 .mz-cbtn { flex-direction: row; align-items: center; gap: 10px; text-align: left; }

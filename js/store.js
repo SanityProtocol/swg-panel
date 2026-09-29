@@ -17,7 +17,7 @@
  * rather than treating an expired session as an empty response.
  */
 
-import { url } from "./util.js";
+import { url, clock, panelNow, esc } from "./util.js";
 import { T, lang } from "./i18n.js";
 import { pickThemed, NODE_COLOR_DEFAULT } from "./theme.js";
 import { reconcile } from "../reconcile.js";
@@ -47,35 +47,45 @@ export const REQ_TIMEOUT = 90000;
    are fetched from OUTSIDE it (the changelog lives in the repo, in one file per language), and the server
    is the one holding the outbound connection. One header here beats a query parameter on each endpoint:
    it applies to calls that already exist, and it cannot be forgotten by the next endpoint someone adds. */
-async function _fetch(u, opts) {
+async function _fetch(u, opts, ms) {
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), REQ_TIMEOUT);
+  const t = setTimeout(() => ac.abort(), ms || REQ_TIMEOUT);   // `ms`: the one call that legitimately outlasts it (docker-confirm)
   const o = { ...(opts || {}), signal: ac.signal, headers: { ...((opts || {}).headers || {}), "X-SWG-Lang": lang() } };
   try { return await fetch(u, o); }
   catch (e) { if (e && e.name === "AbortError") throw new Error(T("the panel didn't respond in time")); throw e; }
   finally { clearTimeout(t); }
 }
+// A range key as a query: a named range, or a custom window's key "custom:YYYYMMDD-YYYYMMDD" (views.js dashKey) → its
+// panel days. The ranged endpoints answer a custom window with the axis they used (`axis`), which the Overview reads.
+// The custom-key grammar lives HERE, the lowest module, once: views.js re-exports it.
+export const isCustomKey = k => typeof k === "string" && /^custom:\d{8}-\d{8}$/.test(k);
+const _iso = d => d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6, 8);
+export function customKeyWindow(k) { const [f, t] = k.slice(7).split("-"); return { range: "custom", from: _iso(f), to: _iso(t) }; }
+export function rangeQ(k) {
+  if (!isCustomKey(k)) return "range=" + encodeURIComponent(k);
+  const w = customKeyWindow(k);
+  return "range=custom&from=" + w.from + "&to=" + w.to;
+}
 export const api = {
   async get(p) { const r = await _fetch(url(p)); if (r.status === 401) return _on401(); return r.json(); },
-  async post(p, b) { const r = await _fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }); if (r.status === 401 && !/\/api\/login$/.test(p)) return _on401(); return r.json(); },
+  async post(p, b, ms) { const r = await _fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }, ms); if (r.status === 401 && !/\/api\/login$/.test(p)) return _on401(); return r.json(); },
   login(b) { return this.post("/api/login", b); },
   logout() { return this.post("/api/logout", {}); },
   state() { return this.get("/api/state"); },
   events(limit) { return this.get("/api/events?limit=" + (limit || 15)); },
   eventDelete(eid) { return this.post("/api/events/delete", { eid }); },
   eventsClear() { return this.post("/api/events/clear", {}); },
-  nodeHistory(node, range) { return this.get("/api/node-history?node=" + encodeURIComponent(node) + "&range=" + encodeURIComponent(range)); },
-  meshHistory(range) { return this.get("/api/mesh-history?range=" + encodeURIComponent(range)); },
-  categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
-  turnHistory(range) { return this.get("/api/turn-history?range=" + encodeURIComponent(range)); },
-  exitHistory(range) { return this.get("/api/exit-history?range=" + encodeURIComponent(range)); },
-  peerHistory(range) { return this.get("/api/peer-history?range=" + encodeURIComponent(range)); },
-  blockStats(range) { return this.get("/api/block-stats?range=" + encodeURIComponent(range)); },
+  nodeHistory(node, range) { return this.get("/api/node-history?node=" + encodeURIComponent(node) + "&" + rangeQ(range)); },
+  meshHistory(range) { return this.get("/api/mesh-history?" + rangeQ(range)); },
+  categoryHistory(range) { return this.get("/api/category-history?" + rangeQ(range)); },
+  turnHistory(range) { return this.get("/api/turn-history?" + rangeQ(range)); },
+  exitHistory(range) { return this.get("/api/exit-history?" + rangeQ(range)); },
+  blockStats(range) { return this.get("/api/block-stats?" + rangeQ(range)); },
   // DISTINCT peers/users seen online over a range — set-union of per-bucket presence bitmaps, never a mean
   // and never a traffic proxy (so an idle-but-connected peer counts). One call feeds the bars, the node
   // cards and the doughnuts' "online" figure, so they can no longer disagree.
   presence(range, blocks, step, nodes) {
-    return this.get("/api/presence?range=" + encodeURIComponent(range) + "&blocks=" + blocks + "&step=" + step
+    return this.get("/api/presence?" + rangeQ(range) + "&blocks=" + blocks + "&step=" + step
       + (nodes && nodes.length ? "&nodes=" + encodeURIComponent(nodes.join(",")) : ""));
   },
   ifaceSeries(node, iface, range) { return this.get("/api/iface-series?node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface) + "&range=" + encodeURIComponent(range)); },
@@ -120,6 +130,7 @@ export const api = {
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
   panelSettings(b) { return this.post("/api/panel/settings", b); },
   vkPool(pool, rev) { return this.post("/api/vk-pool", { pool, rev }); },     // save the whole shared VK pool (cascades to holders server-side; rev guards a stale overwrite)
+  vkPoolPerUser(n) { return this.post("/api/vk-pool/per-user", { n }); },   // how many pool links a NEW user gets
   userVkPoolAdd(id) { return this.post("/api/user/vk-pool-add", { id }); },  // give this user one more link from the pool
   subVault() { return this.get("/api/sub/vault"); },
   subVaultSet(b) { return this.post("/api/sub/vault", b); },
@@ -178,6 +189,7 @@ export const api = {
   peerCreate(b) { return this.post("/api/peers/create", b); },
   peerUpdate(b) { return this.post("/api/peers/update", b); },
   peerNetworks(b) { return this.post("/api/peers/networks", b); },   // {peer_id, routes?} — routes = a draft, judged and reported, never saved
+  routingWho(b) { return this.post("/api/routing/who", b); },   // {node, iface, rows:[who]} — what each per-person selection covers there
   userNetworks(b) { return this.post("/api/users/networks", b); },   // {user_id} — what that user's devices can reach; on demand, never per poll
   peerNetworkProbe(b) { return this.post("/api/peers/networks/probe", b); },   // {peer_id, node, addr, port?} arms one reachability test from that node · {peer_id, id} reads it · {peer_id} lists this peer's
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
@@ -285,6 +297,17 @@ export const Store = {
     this._server = { roster: d.roster || { version: 1, users: {}, peers: {} }, nodes: d.nodes || [] };
     this.describe = d.describe || {};
     this.stats = d.snapshots || {};
+    // How far ahead of the PANEL this browser's clock reads — every age the SPA measures or prints is read on the
+    // panel's clock through it (util.js `clock`). `panel_now` is stamped while the (memoized, ≤ STATE_CACHE_TTL)
+    // bundle is built, so the reading is that old by the time it arrives: the offset comes out BIGGER by the
+    // bundle's age plus the round trip, panelNow() therefore reads a beat behind the panel's true now, and every
+    // age comes out a beat SMALL. That is the safe direction here — a node is called live for a second or two
+    // past its window, never greyed out early, which is the failure this whole change exists to prevent. Re-measured
+    // every poll, so a corrected panel clock is picked up in one round. A panel too old to send it → 0 → the
+    // behaviour before this existed. Not a number (a proxy's error page, a truncated body) → keep the last good
+    // offset: a NaN here would silently poison every window and every "x ago" in the console.
+    if (Number.isFinite(d.panel_now) && d.panel_now > 0) clock.skewMs = Date.now() - d.panel_now * 1000;
+    trackInstance(d.instance, d.panel_now, d.nodes || []);
     // store_configs is now an enum: "encrypted" (blob at rest) | "off". storeConfigs stays a convenience bool
     // meaning "the panel keeps configs" (now encrypted). configsPlaintext = legacy plaintext files awaiting migration.
     this.storeMode = (d.store_configs === "off" || d.store_configs === false) ? "off" : "encrypted";
@@ -383,7 +406,10 @@ export const Store = {
     const _adv = (this.panelSettings || {}).advanced || {};   // operator-tunable stale/grace thresholds
     this._probSince = this._probSince || {};   // {pid: firstProblemMs} — persists so Restore/Correct only offers after a real, sustained problem (not a hiccup / mid-create)
     const _sc = (this.panelSettings || {}).status_conditions || {};   // peer-health detection toggles (default on)
-    this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
+    // `nodeSeen`: when the PANEL received each node's last sync (its own clock, `node_seen` → nodes_view). Paired with
+    // panelNow() this is one machine's clock at both ends of every window reconcile measures — see reconcile.js.
+    const nodeSeen = {}; for (const n of (this.nodes || [])) if (n && n.last_seen != null) nodeSeen[n.id] = n.last_seen;
+    this.recon = reconcile(this.roster, this.stats, panelNow(), { retiring, systemIfaces, nodeSeen, rotating: new Set(Object.keys(this.rotating)),
       probSince: this._probSince,
       ...(_adv.churn_gap_s ? { churnGapS: _adv.churn_gap_s } : {}), ...(_adv.churn_min ? { churnMin: _adv.churn_min } : {}),
       // Both detectors raise the SAME badge ("restricted") from different evidence, and each stays
@@ -523,6 +549,22 @@ export const Store = {
     return this._gByUser.get(id) || [];
   },
   peersOfUser(id) { return this.recon.peers.filter(p => p.user_id === id); },
+  // The devices whose networks are shared with a group, keyed by GROUP and built once per recon (the peers' private flag and
+  // share live there): the Groups grid reads it per row on every poll, and a walk over every peer per group was
+  // O(groups · peers) each time. ⚠️ A PRIVATE device grants a group nothing, whatever its stored share still says — see
+  // groupShares() in views.js.
+  sharesByGroup(gid) {
+    if (this._sByGroupOf !== this.recon) {
+      const m = new Map();
+      for (const p of this.recon.peers) {
+        if (p.private || !(p.routes || []).length || !p.share || !p.share.groups || typeof p.share.groups !== "object") continue;
+        for (const g of Object.keys(p.share.groups)) (m.get(g) || m.set(g, []).get(g)).push(p);
+      }
+      this._sByGroup = m;
+      this._sByGroupOf = this.recon;
+    }
+    return this._sByGroup.get(gid) || [];
+  },
   // The same, by OWNER, built once per RECON (not per roster: these are the reconciled peers, rebuilt on every poll, and a stale
   // map would hand back devices with last poll's online state). peersOfUser() walks every peer per call — fine for one sheet,
   // O(users · peers) for a list that asks per row.
@@ -537,3 +579,59 @@ export const Store = {
   },
   unassignedPeers() { return this.recon.peers.filter(p => p.unassigned); },
 };
+
+
+// ── TWO PANELS BEHIND ONE ADDRESS (see _INSTANCE in swg-panel-server) ─────────────────────────────────────────────
+// Every /api/state names the panel process that built it. This browser remembers each one it has been served by and
+// how long it saw it alive — on the servers' own clocks, never this PC's. A restart or an update is a new process
+// whose life starts after the old one's last answer: nothing to say. Two processes alive AT THE SAME TIME behind the
+// same address is the failure: the fleet, the settings and the saves go to whichever answers, and the one the nodes
+// sync to may not be the one being edited. Judged across page loads, not between polls: the panel keeps connections
+// alive, so a single page often talks to ONE of the two for its whole life and only a reload lands on the other.
+// Keyed by the panel's mount path too: browser storage is per ORIGIN, and two separate panels under one domain
+// (`/swg` and `/swg2` behind a proxy) are two fleets, not one panel answering twice.
+const INST_KEY = "swg.panelInstances:" + url(""), INST_DISMISS = "swg.panelTwinsDismissed:" + url("");
+const INST_MARGIN = 120;          // seconds of clock disagreement tolerated between two servers' clocks
+// The other one must have answered within this window to still count. Short on purpose: once the operator stops the
+// stray, the notice must go away soon, or it reads as "stopping it did not work" (code review 09-24; was 6 h).
+const INST_RECENT = 30 * 60;
+// Pure: the remembered instance whose life overlaps `cur`'s and that answered recently, or null.
+export function panelTwin(list, cur) {
+  return (list || []).find(o => o && cur && o.id !== cur.id
+    && cur.started + INST_MARGIN < o.last && o.started + INST_MARGIN < cur.last
+    && cur.last - o.last < INST_RECENT) || null;
+}
+function trackInstance(inst, now, nodes) {
+  if (!inst || !inst.id || !Number.isFinite(now)) return;   // a panel too old to say → nothing to compare
+  let list = [];
+  try { list = JSON.parse(localStorage.getItem(INST_KEY) || "[]"); } catch (_) {}
+  if (!Array.isArray(list)) list = [];
+  // `reporting` = servers syncing to THIS panel right now — the one to keep is the one they report to
+  const cur = { id: String(inst.id), started: Number(inst.started) || now, last: now, nodes: nodes.length,
+                reporting: nodes.filter(n => n && n.status === "online").length,
+                version: inst.version || "", method: inst.method || "", state_dir: inst.state_dir || "" };
+  list = [cur, ...list.filter(o => o && o.id !== cur.id && now - (Number(o.last) || 0) < 7 * 86400)].slice(0, 8);
+  try { localStorage.setItem(INST_KEY, JSON.stringify(list)); } catch (_) {}
+  const twin = panelTwin(list.slice(1), cur);
+  let dismissed = "";
+  try { dismissed = localStorage.getItem(INST_DISMISS) || ""; } catch (_) {}
+  const pair = twin ? [cur.id, twin.id].sort().join("|") : "";
+  showTwinBanner(twin && pair !== dismissed ? { cur, twin, pair } : null);
+}
+function showTwinBanner(t) {
+  let b = document.getElementById("panel-twin-banner");
+  if (!t) { if (b) b.remove(); return; }
+  const sig = t.pair + "|" + t.cur.nodes + "|" + t.cur.reporting;
+  if (b && b.dataset.sig === sig) return;
+  if (!b) { b = document.createElement("div"); b.id = "panel-twin-banner"; b.className = "twin-banner"; document.body.insertBefore(b, document.body.firstChild); }
+  b.dataset.sig = sig;
+  const since = ts => new Date(ts * 1000).toLocaleString();
+  const who = o => T("{v1} · version {v2} · state {v3} · {v4} · running since {v5}", {
+    v1: o.method || "?", v2: o.version || "?", v3: o.state_dir || "?", v4: T("nodes: {n}, reporting here: {r}", { n: o.nodes, r: o.reporting == null ? "?" : o.reporting }), v5: since(o.started) });
+  b.innerHTML = `<b>${esc(T("Two different panels are answering at this address."))}</b> `
+    + esc(T("Each keeps its own servers, settings and lists, and the page shows whichever one answered — so what you see can change between reloads, and changes saved on the one your servers don't sync to never reach them. Keep the one your servers report to; stop the other."))
+    + `<div class="twin-rows"><div><span class="twin-tag">${esc(T("this page"))}</span>${esc(who(t.cur))}</div>`
+    + `<div><span class="twin-tag">${esc(T("also answered"))}</span>${esc(who(t.twin))} · ${esc(T("last seen {v1}", { v1: since(t.twin.last) }))}</div></div>`
+    + `<button type="button" class="twin-x">${esc(T("Dismiss"))}</button>`;
+  b.querySelector(".twin-x").onclick = () => { try { localStorage.setItem(INST_DISMISS, t.pair); } catch (_) {} b.remove(); };
+}

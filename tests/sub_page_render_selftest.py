@@ -321,7 +321,14 @@ try:
         if os_ == "macos":
             check("[1] macOS: no csqtt cell — no csqtt client exists for macOS", not cs, [c["tag"] for c in cs])
         else:
-            check("[1] %s: the csqtt cell is offered" % os_, len(cs) == 1 and (cs[0]["payload"] or "").startswith("csqtt://"), cs)
+            # iOS's csqtt client is anton48's VK TURN Proxy: it is handed its own vkturnproxy:// link, because it keeps only
+            # the first hash of a csqtt:// one. Every other OS's csqtt app takes the csqtt:// link.
+            want = "vkturnproxy://" if os_ == "ios" else "csqtt://"
+            check("[1] %s: the csqtt cell is offered (%s)" % (os_, want), len(cs) == 1 and (cs[0]["payload"] or "").startswith(want), cs)
+            if os_ == "ios" and len(cs) == 1 and (cs[0]["payload"] or "").startswith(want):
+                _b = cs[0]["payload"].split("data=")[1]
+                _st = json.loads(base64.urlsafe_b64decode(_b + "=" * (-len(_b) % 4)))["settings"]
+                check("[1] ios: …in csqtt mode, carrying every VK call link", _st.get("useCsqtt") is True and len(_st.get("vkLink", "").split("\n")) >= 2, _st)
     wd = [c for c in turn_cells(renders[("macos", "en")]) if (c["role"] or "") == "WDTT"]
     check("[1] macOS: the WDTT cell stays (a WDTT client ships for every OS) — the rule hides only what has no client", len(wd) == 1, wd)
     tab, rb = render("u2", "macos", "en")

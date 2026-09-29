@@ -41,6 +41,8 @@ Run: python3 tests/kernel_sni_marks_selftest.py      (0 = pass)
 import importlib.machinery, importlib.util, os, re, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _iptrestore import restore_to_calls, flatten  # noqa: E402
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
@@ -52,16 +54,16 @@ def check(name, ok, detail=""):
         FAILS.append(name)
 
 NSRC = open(NODED, encoding="utf-8").read()
-_P1 = '''        rules.append(["-A", CHAIN, "-s", e["subnet"], "-m", "set", "--match-set", setn, "dst", "-j", "MARK", "--set-mark", T])
+_P1 = '''        rules.append(["-A", CHAIN, "-s", e["subnet"], "-m", "set", "--match-set", setn, "dst", *who, "-j", "MARK", "--set-mark", T])
 '''
-_P2 = '''                rules.append(["-A", CHAIN, *_xts_scan(e["subnet"]), "--string", d, "-j", "MARK", "--set-mark", hex(reset_mark)])
+_P2 = '''            lrules.append(["-A", lchain[c], "-j", "MARK", "--set-mark", hex(reset_mark)])
 '''
 # The ct-mark save sits OUTSIDE the operand loop, so reverting the reset half means putting the per-operand
 # CONNMARK back AND taking this away — otherwise the perturbed tree is neither shape.
-_SAVE = '''            rules.append(["-A", CHAIN, "-s", e["subnet"], "-m", "mark", "--mark", hex(reset_mark),
+_SAVE = '''            rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
                           "-j", "CONNMARK", "--save-mark"])
 '''
-_SHIPPED = '''                rules.append(["-A", CHAIN, *_xts_scan(e["subnet"]), "--string", d, "-j", "CONNMARK", "--set-mark", hex(reset_mark)])
+_SHIPPED = '''            lrules.append(["-A", lchain[c], "-j", "CONNMARK", "--set-mark", hex(reset_mark)])
 '''
 # ⚠️ ASSERT BEFORE PERTURBING. A replacement that matches nothing leaves the tree intact and the run reads
 # as a clean PASS while measuring the code it was supposed to break.
@@ -73,7 +75,7 @@ if PERTURB:
     # empty body, and the run died with an IndentationError — which `grep -c FAIL` reads as zero failures
     # and a non-zero exit reads as "caught". A crash is not a measurement. Swapping the line for the one it
     # replaced reproduces the SHIPPED chain exactly: learn + connection mark, no packet mark anywhere.
-    NSRC = NSRC.replace(_P1, "").replace(_P2, _SHIPPED).replace(_SAVE, "")
+    NSRC = NSRC.replace(_P1, "").replace(_P2, _SHIPPED).replace(_SAVE, "            pass\n")   # the save's `if` keeps a body
     compile(NSRC, "<perturbed>", "exec")   # …and say so out loud if it ever stops parsing again
 
 npath = NODED
@@ -100,6 +102,8 @@ class R:
 CALLS = []
 def fake_run(cmd, **kw):
     CALLS.append(list(cmd))
+    if cmd[:1] == ["iptables-restore"]:                   # the one-transaction rebuild, as the calls it stands for
+        CALLS.extend(restore_to_calls(kw.get("input_text")))
     if cmd[:1] == ["ipset"] and "list" in cmd:
         return R(0, "")
     # the "-C PREROUTING … -j SWGK" probe: say NOT hooked, so the builder rebuilds rather than short-circuits
@@ -117,7 +121,9 @@ N._ensure_smart_xtstring(ENTRIES, {"custom_abc": ["wikipedia.org"]}, RESET, res,
                          active=True, ttl=3600, contains={"custom_abc": ["wikipedia"]})
 
 # the chain as the node would have written it, in order
-CHAIN = [c[3:] for c in CALLS if c[:3] == ["iptables", "-t", "mangle"] and "-A" in c and "SWGK" in c]
+# (a dispatcher now — one chain per source — read back flat, in the order a packet meets it)
+CHAIN = flatten([c[3:] for c in CALLS if c[:3] == ["iptables", "-t", "mangle"] and "-A" in c
+                 and any(str(x).startswith("SWGK") for x in c)])
 def txt(r):
     return " ".join(r)
 LINES = [txt(r) for r in CHAIN]
@@ -156,9 +162,19 @@ check("…and gated on THIS chain's own flag, not on every packet",
       all("-m mark --mark " + hex(RESET) in l for l in save), save)
 # The ordering is the whole reason it is emitted per entry rather than hoisted to one per subnet.
 check("…and it comes AFTER the packet marks it copies",
-      LINES.index(save[0]) > max(LINES.index(l) for l in scan if "-j MARK --set-mark " + hex(RESET) in l), LINES)
+      bool(save) and LINES.index(save[0]) > max((LINES.index(l) for l in scan if "-j MARK --set-mark " + hex(RESET) in l),
+                                                default=len(LINES)), LINES)
 check("⚠️ no per-operand CONNMARK survives — that is the cost this removes",
       not any("-j CONNMARK --set-mark " + hex(RESET) in l for l in scan), scan)
+
+# ⚠️ ONE SEARCH PER OPERAND (KSNI-HOSTNAMES-PLAN §6.6) — read from the REAL chain, not the flattened view above: each
+# operand appears in ONE `-m string` rule, which jumps to its category's learn chain; the learn chain searches nothing.
+RAW = [c[3:] for c in CALLS if c[:3] == ["iptables", "-t", "mangle"] and "-A" in c and any(str(x).startswith("SWGK") for x in c)]
+_ops = [r[r.index("--string") + 1] if "--string" in r else r[r.index("--hex-string") + 1] for r in RAW if "--string" in r or "--hex-string" in r]
+check("each pattern is searched ONCE per scanned packet (one `-m string` rule per pattern)",
+      bool(_ops) and len(_ops) == len(set(_ops)), _ops)
+check("…and the learn chain it jumps to searches nothing", all("--string" not in r for r in RAW if str(r[1]).startswith("SWGKL_")),
+      [r for r in RAW if str(r[1]).startswith("SWGKL_")])
 
 print("\n[3] the invariant, stated once: nothing may pin a mark to a flow without marking the packet")
 # Said as a rule rather than as two strings, so a THIRD mark added later cannot quietly repeat the bug.
@@ -222,16 +238,18 @@ N._ensure_smart_xtstring(
      {"subnet": "10.15.0.0/24", "category": "video", "table": "7001"}],
     {"news": ["bbc.co.uk"], "video": ["youtube.com"]}, RESET,
     {"errors": [], "changed": 0}, active=True, ttl=3600, contains={})
-L2 = [txt(c[3:]) for c in CALLS if c[:3] == ["iptables", "-t", "mangle"] and "-A" in c and "SWGK" in c]
+L2 = [txt(r) for r in flatten([c[3:] for c in CALLS if c[:3] == ["iptables", "-t", "mangle"] and "-A" in c
+                                       and any(str(x).startswith("SWGK") for x in c)])]
 learn = [l for l in L2 if "-j SET --add-set" in l]
-check("both categories still learn", len(learn) == 2, learn)
+_srch = lambda l: "--string" in l or "--hex-string" in l      # a site name is two patterns (KSNI-HOSTNAMES D4): exact + under it
+check("both categories still learn", {l.split("--add-set ")[1].split()[0] for l in learn} == {"swgk_news", "swgk_video"}, learn)
 check("⚠️ every learn rule is keyed on its OWN string, never on the shared mark",
-      all("--string" in l and "-m mark --mark" not in l for l in learn), learn)
+      all(_srch(l) and "-m mark --mark" not in l for l in learn), learn)
 # …and each category's learn names only its own set, so no rule can add to a set it does not belong to.
-for _c in ("news", "video"):
+for _c, _n in (("news", "bbc.co.uk"), ("video", "youtube.com")):
     _own = [l for l in learn if "swgk_" + _c in l]
-    check("the %s learn rule adds to swgk_%s and nothing else" % (_c, _c),
-          len(_own) == 1 and "--string" in _own[0], _own)
+    check("the %s learn rules add to swgk_%s and nothing else, keyed on its own name" % (_c, _c),
+          len(_own) == 2 and all(_srch(l) and _n in l for l in _own), _own)
 sv2 = [l for l in L2 if "-j CONNMARK --save-mark" in l]
 check("one ct-mark save per entry, so the second category's flags are saved too", len(sv2) == 2, sv2)
 check("…and both write the same constant, which is what makes the duplicate harmless",

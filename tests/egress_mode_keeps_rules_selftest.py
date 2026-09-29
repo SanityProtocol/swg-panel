@@ -36,12 +36,15 @@ _ANCH = '            rec.pop("egress_node", None); rec.pop("wan_iface", None)   
 assert SRC.count(_ANCH) == 1, "anchor missing — this run would FALSE-PASS"
 path = PANEL
 if PERTURB:                                   # the shipped ladder: every non-smart branch dropped the rules
-    SRC = SRC.replace(_ANCH, '            rec.pop("egress_node", None); rec.pop("routing", None); rec.pop("wan_iface", None)')
-    SRC = SRC.replace('            rec.pop("egress_node", None); rec.pop("exit_id", None)      # `routing` kept — see the note above',
-                      '            rec.pop("egress_node", None); rec.pop("routing", None); rec.pop("exit_id", None)')
     # …and the third branch, so the perturbation covers every mode the fix touched rather than two of three.
-    SRC = SRC.replace('            rec["egress_mode"] = "forward"; rec["egress_node"] = en\n',
-                      '            rec["egress_mode"] = "forward"; rec["egress_node"] = en\n            rec.pop("routing", None)\n')
+    # ⚠️ Each branch asserted: one that no longer matches would leave this "every mode" plant covering fewer, silently.
+    for _old, _new in ((_ANCH, '            rec.pop("egress_node", None); rec.pop("routing", None); rec.pop("wan_iface", None)'),
+                       ('            rec.pop("egress_node", None); rec.pop("exit_id", None)      # `routing` kept — see the note above',
+                        '            rec.pop("egress_node", None); rec.pop("routing", None); rec.pop("exit_id", None)'),
+                       ('            rec["egress_mode"] = "forward"; rec["egress_node"] = en\n',
+                        '            rec["egress_mode"] = "forward"; rec["egress_node"] = en\n            rec.pop("routing", None)\n')):
+        assert SRC.count(_old) == 1, "perturbation anchor missing — this run would FALSE-PASS: %r" % _old[:70]
+        SRC = SRC.replace(_old, _new)
     _fd, path = tempfile.mkstemp(suffix=".py", prefix="egkeep-", dir=HERE)
     os.write(_fd, SRC.encode()); os.close(_fd)
 

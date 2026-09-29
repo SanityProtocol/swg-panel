@@ -51,9 +51,64 @@ const isLegacy = r => !!(r && (r.match || r.tlds));          // a `tld` rule: sh
 // ⚠️ THE DESTINATION'S IDENTITY, WHOLE. `dev` rules name an exit, and if the key ignored it, two rules
 // pointing at DIFFERENT exits would group into one row, be re-emitted with the first row's exit, and the
 // second exit would be silently gone on the next save — §5.8's collapse, in the shape P5 introduces.
+// ⚠️ …AND WHOM IT IS FOR. Two runs with different selections must never merge, or the second is re-emitted with the
+// first one's people (ROUTING-PEERS-MESH-PLAN T13). Appended only when a rule has one, so every other key is unchanged.
 const rowKey = r => [r.action || "exit",
                      r.action === "exit" ? (r.node || "") : r.action === "dev" ? (r.exit_id || "") : "",
-                     r.enabled === false ? 0 : 1].join("|");
+                     ruleOn(r) ? 1 : 0].join("|") + (r.who ? "|" + JSON.stringify(canonWho(r.who)) : "")
+                     // …AND ITS AUDIENCE, on a node's default list (D9): a rule for this node's own clients and one for traffic
+                     // cascaded in are two rows, or the second is re-emitted with the first one's audience (T13). Appended only
+                     // when a rule has one, so every other key is unchanged.
+                     + (r.aud ? "|aud:" + r.aud : "");
+
+/* PER-PERSON RULES (ROUTING-PEERS-MESH-PLAN §4.2). A rule with `who` applies only to the users, groups and devices it names,
+   on its own interface. It is STORED `enabled: false`, so every older reader skips it — a released panel would otherwise
+   route it for the whole subnet — and its real switch is `who.on`. A row reads that switch as its `enabled` and carries the
+   selection as `who`; `rowsToRules` writes the guarded shape back. The panel's `rule_on` is the same test. */
+const ruleOn = r => r && r.who && typeof r.who === "object" ? r.who.on === true : !!r && r.enabled !== false;
+/** A selection's three lists, sorted and unique — the form the key, the window and the wire all use. */
+const whoList = v => Array.isArray(v) ? v.filter(x => typeof x === "string") : [];   // a stored shape the panel names nobody with
+export const canonWho = w => ({ users: [...new Set(whoList(w && w.users))].sort(), groups: [...new Set(whoList(w && w.groups))].sort(),
+                                peers: [...new Set(whoList(w && w.peers))].sort() });
+/** Does row `a` reach every device row `b` reaches? A row for everyone reaches all of them; a per-person row only a row
+ *  for the same selection. Only then can `a`'s badge make the same badge in `b` unreachable, or `a` take hosts from `b`
+ *  for everyone `b` is for. */
+export const rowCovers = (a, b) => (!(a && a.aud) || a.aud === (b && b.aud))   // an audience reaches only itself (D9); none reaches both
+  && (!(a && a.who) || (!!(b && b.who) && JSON.stringify(canonWho(a.who)) === JSON.stringify(canonWho(b.who))));
+
+/** The row lints, per row: `dupes` — badges an earlier row that reaches the same devices already sends somewhere (they can
+ *  never fire); `takenBy` — this row's hosts a more specific badge below takes, for everyone this row is for; `takenFew` — the
+ *  same, where this row is for everyone and the rule below for chosen people only, so it takes them for those people alone
+ *  (the node keeps them on this row for everyone else). Two different selections are not compared: which people they share
+ *  is the panel's to resolve, and a warning about an overlap that may not exist is worse than none. `destOf` is the caller's
+ *  destination key: two rules sending the same hosts to the same place are not worth a word. */
+export function rowLints(rows, destOf) {
+  const seen = new Map();                                   // badge identity → the earlier rows (and this one) holding it
+  return (rows || []).map((row, ri) => {
+    const badges = row.badges || [];
+    const dupes = [];
+    for (const b of badges) {
+      const k = badgeIdentity(b), held = seen.get(k) || [];
+      if (held.some(e => rowCovers(e, row))) dupes.push(b);
+      seen.set(k, [...held, row]);
+    }
+    const taken = new Map();                                // identity → {b, all}: `all` once ANY rule below reaches everyone here
+    for (const lower of rows.slice(ri + 1)) {
+      if (destOf(lower) === destOf(row)) continue;
+      const all = rowCovers(lower, row);
+      // two different selections, or a narrowed row above: not ours to judge (see above). A row for BOTH audiences above one
+      // narrowed to an audience is judged like a row for everyone above a per-person one — `takenFew`, for that audience
+      if (!all && (row.who || row.aud)) continue;
+      for (const nb of lower.badges || []) {
+        if (!badges.some(b => badgeCovers(b, nb))) continue;
+        const k = badgeIdentity(nb), t = taken.get(k);
+        taken.set(k, { b: t ? t.b : nb, all: (t && t.all) || all });
+      }
+    }
+    const tv = [...taken.values()];
+    return { dupes, takenBy: tv.filter(t => t.all).map(t => t.b), takenFew: tv.filter(t => !t.all).map(t => t.b) };
+  });
+}
 
 /** The badges one stored rule contributes.
  *  {t:"list", id}                  — a curated preset, a provider-catalog category, or a custom list
@@ -84,9 +139,11 @@ export function rulesToRows(rules) {
     const key = rowKey(rule);
     const last = rows[rows.length - 1];
     if (last && !last.locked && last._key === key) { last.badges.push(...badgesOf(rule)); continue; }
-    rows.push({ _gid: newGid(), _key: key, enabled: rule.enabled !== false, action: rule.action || "exit",
+    rows.push({ _gid: newGid(), _key: key, enabled: ruleOn(rule), action: rule.action || "exit",
                 node: rule.action === "exit" ? (rule.node || "") : "",
-                exit_id: rule.action === "dev" ? (rule.exit_id || "") : "", badges: badgesOf(rule) });
+                exit_id: rule.action === "dev" ? (rule.exit_id || "") : "", badges: badgesOf(rule),
+                ...(rule.who && typeof rule.who === "object" ? { who: canonWho(rule.who) } : {}),
+                ...(rule.aud === "local" || rule.aud === "cascaded" ? { aud: rule.aud } : {}) });
   }
   return { rows, catchAll };
 }
@@ -103,6 +160,9 @@ export function rowsToRules(rows, catchAll) {
     const base = { enabled: row.enabled !== false, action: row.action || "exit" };
     if (base.action === "exit") base.node = row.node || "";
     if (base.action === "dev") base.exit_id = row.exit_id || "";
+    // the guarded shape: off to every older reader, the switch and the people in `who`
+    if (row.who) { base.who = { on: base.enabled, ...canonWho(row.who) }; base.enabled = false; }
+    if (row.aud === "local" || row.aud === "cascaded") base.aud = row.aud;   // a node default-list rule's audience (D9)
     for (const b of badges) if (b.t === "list") out.push({ ...base, category: b.id });
     const typed = badges.filter(b => b.t === "target");
     // One custom rule for the whole row: identical bundles share an nft set on the node, and `targets` is
@@ -308,3 +368,25 @@ export const listTier2 = list => listBuckets(list).t2;
 export const tier2Count = (rows, lookupList) => (rows || []).reduce((n, r) =>
   n + (r.badges || []).reduce((m, b) => m + (b.t === "list" ? listTier2(lookupList ? lookupList(b.id) : null)
                                            : (b.t === "target" && patternTier(b.kind) === 2 ? 1 : 0)), 0), 0);
+
+/** THE ROWS FOR A DRAFT RULE LIST, keeping the rows already held where they ARE that draft (a node's default list in
+ *  Settings — ROUTING-PEERS-MESH-PLAN §7.3). A row carries what the rules cannot (a badge still being typed, `_draft`), so
+ *  rebuilding it from the rules loses that; this rebuilds only when it must:
+ *    · `held` as it is, when it lowers to exactly `rules`;
+ *    · `held` with the server's exit prune applied (a row or catch-all leaving by an exit not in `live` becomes Direct,
+ *      `exit_id` dropped, as `prune_exit_refs` does), when THAT lowers to `rules` — an exit removed while editing;
+ *    · otherwise rows rebuilt from `rules`.
+ *  Returns {rows, catchAll}; the very `held` object when nothing changed, so a caller can tell. */
+export function adoptRows(held, rules, live) {
+  const same = h => JSON.stringify(rowsToRules(h.rows, h.catchAll)) === JSON.stringify(rules || []);
+  if (held && same(held)) return held;
+  const gone = x => x && x.action === "dev" && !(live && live.has(String(x.exit_id || "")));
+  if (held) {
+    const pr = { rows: (held.rows || []).map(r => gone(r) ? { ...r, action: "direct", exit_id: "" } : r),
+                 catchAll: gone(held.catchAll) ? (({ exit_id, ...x }) => ({ ...x, action: "direct" }))(held.catchAll) : held.catchAll };
+    if (same(pr)) return pr;
+  }
+  const { rows, catchAll } = rulesToRows(rules || []);
+  for (const r of rows) for (const b of (r.badges || [])) b.stored = true;
+  return { rows, catchAll };
+}

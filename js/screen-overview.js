@@ -9,34 +9,36 @@
  */
 
 import {
-  ago, dur, fmtBytes, seen,
+  ago, dur, fmtBytes, seen, panelNowS,
 } from "./util.js";
-import { T, Trich, plural, pluralWord, srvVerb, srvDetail } from "./i18n.js";
+import { T, Trich, plural, pluralWord, srvVerb, srvDetail, srvName, srvText } from "./i18n.js";
 import {
   Store, api, bus, useStore,
 } from "./store.js";
 import {
-  turnColor, turnFork, turnForkList, forkLabel,
+  turnColor, turnFork, turnForkList, forkNames,
 } from "./turn-catalog.js";
 import {
-  targetType,
+  targetType, awgDict3, tip3, lastHeard,
 } from "./model.js";
 import {
   Badge, Popover, STATUS_RANK, Sheet, StoreOffBanner, closeModal, dlul, ifaceColor, modalDepth, openModal,
-  rateCell, secTitle, toast, xferCell,
+  rateCell, secTitle, toast, xferCell, tgt3,
   Ic,
   rate,
 } from "./ui.js";
 import {
-  MultiRing, OnlineBlocks, RANGE_CAP, RankBars, RingLegend, ThroughputChart, TrendSpark,
+  MultiRing, OnlineBlocks, RANGE_CAP, RANGE_WIN, axisCap, histTime, RankBars, RingLegend, ThroughputChart, TrendSpark,
 } from "./charts.js";
+import { RailCustom } from "./traffic-ui.js";
+import { panelToday, chartsFirstDay, trafficTotals, talkerGroups } from "./traffic.js";
 import {
-  DASH_RANGES, OnlineUsersTag, SVC_KINDWORD, dashNodes, dashSave, dashState, openLiveTab, rangeLabel, rangeWord, recentActivity,
+  DASH_RANGES, OnlineUsersTag, SVC_KINDWORD, dashKey, dashNodes, dashSave, dashState, isCustomKey, customKeyWindow, openLiveTab, rangeLabel, rangeWord, recentActivity,
   revealOrphans, revealPeer, revealPeersFiltered, revealUser, serviceIssues, svcKey, svcSaveSilence,
   svcSilence, svcSilencedSet,
 } from "./views.js";
 import {
-  CAT_UNCAT_COLOR, catLabelOf, dashRankColor, fmtCount, isBlockCat,
+  CAT_UNCAT_COLOR, blockCatLabel, catLabelOf, dashRankColor, fmtCount, isBlockCat,
 } from "./routing.js";
 import {
   enabledTurnForks, turnEnabled,
@@ -65,20 +67,24 @@ export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presenc
   const health = nrec.health || null;
   const tr = traffic || { rx: 0, tx: 0 };
   const trafCell = ranged ? xferCell(...dlul(tr.rx, tr.tx)) : rateCell(tr.rx, tr.tx);
-  let sync = T("no data"); if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? T("{v1} ago", { v1: seen(a) }) : T("stale · {v1}", { v1: seen(a) }); }
+  // The panel's own "last heard from it", like the node page's (model.js lastHeard) — one clock at both ends, so
+  // the age can never disagree with the live dot beside it.
+  const seenAt = lastHeard(nrec, snap);
+  let sync = T("no data"); if (seenAt) { const a = Math.floor(panelNowS() - seenAt); sync = live ? T("{v1} ago", { v1: seen(a) }) : T("stale · {v1}", { v1: seen(a) }); }
   const al = healthAlerts(health);
   // client interface-type badges — one per type present, "awg" / "awg ×5" (mesh/system ifaces excluded)
-  const ifs = Store.describe[n.id] || {}; let wg = 0, awg = 0;
-  for (const ifn in ifs) { const m = ifs[ifn]; if (!m || m.system) continue; if (m.awg_params && Object.keys(m.awg_params).length) awg++; else wg++; }
+  // An AmneziaWG 3.1 interface is counted on its own badge, in the 3.1 colour (docs/AWG3-PLAN.md D-colour) — one badge per colour.
+  const ifs = Store.describe[n.id] || {}; let wg = 0, awg = 0, awg3 = 0;
+  for (const ifn in ifs) { const m = ifs[ifn]; if (!m || m.system) continue; if (awgDict3(m.awg_params)) awg3++; else if (m.awg_params && Object.keys(m.awg_params).length) awg++; else wg++; }
   const wdtt = ((Store.stats[n.id] || {}).wdtt || []).filter(w => w && w.iface).length;   // WDTT interfaces (own their TUN; not in describe)
   const csqtt = ((Store.stats[n.id] || {}).csqtt || []).filter(c => c && c.iface).length;   // csqtt interfaces (own their raw TUN; not in describe)
-  const ifBadges = []; if (awg) ifBadges.push(["awg", awg]); if (wg) ifBadges.push(["wg", wg]); if (wdtt) ifBadges.push(["wdtt", wdtt]); if (csqtt) ifBadges.push(["csqtt", csqtt]);
+  const ifBadges = []; if (awg) ifBadges.push(["awg", awg]); if (awg3) ifBadges.push(["awg", awg3, true]); if (wg) ifBadges.push(["wg", wg]); if (wdtt) ifBadges.push(["wdtt", wdtt]); if (csqtt) ifBadges.push(["csqtt", csqtt]);
   return html`<a class=${"fnode " + (live ? "" : "stale")} href=${"#/node/" + encodeURIComponent(n.id)}>
     <div class="fnode-main">
-      <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span>${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c]) => html`<span key=${t} class=${"iftype " + t}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}<span class="rowarrow"><${Ic} i="arrow"/></span></div>
+      <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span>${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c, g3]) => html`<span key=${t + (g3 ? "3" : "")} class=${"iftype " + t + (g3 ? " awg3" : "")} ...${tip3(g3)}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}<span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
         <div><span class="fl">${T("Throughput")}</span>${trafCell}</div>
-        <div><span class="fl">${T("status|Online")}</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${histRange} trigger=${(c, w) => html`<span class="faint">${plural(c, w || "user")}</span>`}/></span></div>
+        <div><span class="fl">${T("status|Online")}</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${rangeWord(histRange)} trigger=${(c, w) => html`<span class="faint">${plural(c, w || "user")}</span>`}/></span></div>
         <div><span class="fl">${T("Sync")}</span><span class="fv">${sync}</span></div>
       </div>
     </div>
@@ -153,6 +159,8 @@ function ofTotal(dn, up) {
 }
 
 export function dashSetRange(r) { if (DASH_RANGES.some(x => x[0] === r)) { dashState.range = r; dashSave(); bus.emit(); } }
+// A custom window (P3): whole days of the panel's, set only by the date popover's Apply.
+export function dashSetCustom(from, to) { Object.assign(dashState, { range: "custom", from, to }); dashSave(); bus.emit(); }
 
 // Merge the SELECTED nodes' 15s health-ring series (server-provided, bucket-aligned) into one fleet
 // series summed per timestamp — powers the live fleet-throughput hero without a client accumulator, and
@@ -263,10 +271,21 @@ export function DashRail() {
       <div class="railpanel railmenu">
         ${DASH_RANGES.map(([k]) => html`<button key=${k} class=${"railmenu-b" + (range === k ? " on" : "")} onClick=${() => dashSetRange(k)} title=${rangeLabel(k)}>
           <span class="railmenu-ic">${k === "live" ? html`<span class="rlive-dot"></span>` : html`<${Ic} i=${RANGE_ICON[k]}/>`}</span><span class="railmenu-t">${rangeLabel(k)}</span></button>`)}
+        <${OverviewCustom} on=${range === "custom"}/>
       </div>
       ${fleet.length > 1 ? html`<${NodesRailPanel} nav=${false}/>` : null}
     </div>
   </div>`;
+}
+
+// The rail's Custom row (RailCustom — the grids' own bubble): two date fields (a draft until Apply), whole days of the
+// panel's, reaching back as far as the charts keep (chartsFirstDay). Keyed on the window in force, so an Apply closes it.
+function OverviewCustom({ on }) {
+  const today = panelToday(), k = dashKey();
+  const w = isCustomKey(k) ? customKeyWindow(k) : null;   // the window in force as read (dashKey clamps an aged one)
+  const first = chartsFirstDay(today), m1 = today.slice(0, 8) + "01";
+  const from = w ? w.from : (m1 < first ? first : m1), to = w ? (w.to > today ? today : w.to) : today;
+  return html`<${RailCustom} key=${k} on=${on} label=${rangeLabel(k)} from=${from} to=${to} min=${first} max=${today} onApply=${dashSetCustom}/>`;
 }
 
 // On-demand history for the range-driven visuals. Fetches per-node RRD (/api/node-history) for the
@@ -274,24 +293,81 @@ export function DashRail() {
 // the selection changes. Returns { loading, byNode:{id:{t,rx,tx,cpu,…}}, range }. Live → empty (widgets
 // read the /api/state bundle instead). One fetch burst per range change; results are held until it changes.
 export const RANGE_STEP = { hour: 15, day: 300, week: 1800, month: 7200 };   // seconds/bucket → volume = Σ(mean B/s)·step
+// The seconds per bucket of the history a ranged figure was read from. ⚠️ A custom window's step is the one the server
+// says it used (`axis`), never a per-range map entry: RANGE_STEP["custom"] would be undefined → 1, and six Overview volumes
+// would read 300–7200× too small with no error. No axis yet → 0: an empty figure, never a wrong one.
+export function rangeStep(key, hist) {
+  return isCustomKey(key) ? ((hist && hist.axis && hist.axis.step) || 0) : (RANGE_STEP[key] || 1);
+}
+// Top talkers over a ranged window read the traffic ledger through the grids' cache (traffic.js, `by=slot`) and fold it the
+// Users grid's way, so a person's figure is their Users-grid figure. The window for a range key: a custom one is its days —
+// the very entry the grids hold for those days; a named one is a rolling window of its length up to the panel's now
+// (`window=`) — an entry of its own, since the grids never ask for one, refreshed at most once a minute while shown (the
+// whole slot table: ~91 KB gzip at 10,000 peers). Pure — gated.
+export const talkWindow = key => isCustomKey(key) ? customKeyWindow(key) : { window: RANGE_WIN[key] };
+// Top talkers' subtitle: the window; with a subset of nodes, that each figure is the person's whole one (the ledger counts
+// a device, not a device on a node); and where a rolling window really starts when that matters — later than asked (where
+// history begins), or earlier by more than a tenth of the window (the ledger's bucket: an Hour at 1-hour detail is up to
+// two). Pure — gated.
+export function talkSub(key, d, scoped) {
+  let s = T("{range} · by volume", { range: rangeWord(key) });
+  if (scoped) s += " · " + T("each on all their servers");
+  const win = RANGE_WIN[key];
+  if (d && d.asked && win && (d.since > d.asked + 60 || d.asked - d.since > win / 10))
+    s += " · " + T("since {v1}", { v1: histTime(d.since, "day") });
+  return s;
+}
+// The ranked rows for a ranged window: a bar per person (their Users-grid figure) or per device that belongs to nobody;
+// the bubble lists a person's devices over the window, a deleted one or one handed on said so.
+function rangedTalkerRows(d, inScope, n) {
+  if (!d) return [];
+  return talkerGroups(d, inScope).slice(0, n).map((g, i) => {
+    const user = g.uid ? Store.user(g.uid) : null, p0 = g.uid ? null : Store.peer(g.pid);
+    const devs = g.devices.filter(x => x.rx + x.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx));
+    return {
+      label: user ? user.name : ((p0 && p0.title) || T("Unassigned peer")), value: g.rx + g.tx, count: devs.length,
+      sub: xferCell(...dlul(g.rx, g.tx)),
+      bub: devs.length > 1 ? devs.map(x => { const t = ((x.peer || {}).targets || [])[0]; const oct = ((t || {}).ip || "").split(".").pop();
+        const nm = x.name || (oct ? T("Peer .{v1}", { v1: oct }) : T("Peer"));
+        return { kind: t ? targetType(t) : null, gen3: t ? tgt3(t) : false, value: x.rx + x.tx, sub: xferCell(...dlul(x.rx, x.tx)),
+          name: x.gone === "deleted" ? nm + " · " + T("deleted") : x.gone === "handed" ? nm + " · " + T("handed on") : nm }; }) : null,
+      color: dashRankColor(i, "talker"), href: "#/users",
+      onClick: e => { e.preventDefault(); user ? revealUser(user.id) : p0 && revealPeer(p0); },
+    };
+  });
+}
+// The range every ranged figure shows: the one whose data is LOADED. It lags a click while the fetch runs — the old range's
+// figures (or live, before the first ranged fetch lands) stay under their own title, never an empty page. Pure — gated.
+export const effRangeOf = (dKey, loaded) => dKey === "live" ? "live" : loaded;
+// How often the Protection card re-reads its window: a named range every 15 s (the Blocked counter climbs as you watch);
+// a custom window that runs until the panel's today once a minute; one that ended never — it cannot change. Pure — gated.
+export function blockPollMs(key, today) {
+  if (!isCustomKey(key)) return 15000;
+  return customKeyWindow(key).to < today ? 0 : 60000;
+}
 // One fetch burst per range/selection change, shared by the doughnuts AND the flow map (lifted to Overview so
 // they don't each hit the API). Pulls per-node RRD + per-pair mesh means. Live → empty (widgets use the bundle).
 export function useRangeHistory(range, selIds) {
-  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], peers: [], presence: null, range: "live" });
-  const key = range + "|" + selIds.slice().sort().join(",");
+  const empty = { loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], presence: null, axis: null, err: null, range: "live" };
+  const [st, setSt] = useState(empty);
+  const key = range + "|" + selIds.slice().sort().join(",");   // `range` is the KEY — a custom window's carries its days
   useEffect(() => {
-    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], exits: [], peers: [], presence: null, range: "live" }); return; }
+    if (range === "live") { setSt(empty); return; }
     let alive = true; setSt(s => ({ ...s, loading: true }));
-    const [obN, obStep] = ONLINE_BLOCKS[range] || ONLINE_BLOCKS.live;   // the bars ask for exactly the blocks they draw
+    const custom = isCustomKey(range);
+    const [obN, obStep] = custom ? [0, 0] : (ONLINE_BLOCKS[range] || ONLINE_BLOCKS.live);   // the bars ask for exactly the blocks they draw (custom: the server picks)
     Promise.all([
-      Promise.all(selIds.map(id => api.nodeHistory(id, range).then(r => [id, (r && r.data) || null]).catch(() => [id, null]))),
+      Promise.all(selIds.map(id => api.nodeHistory(id, range).then(r => [id, r]).catch(() => [id, null]))),
       api.meshHistory(range).then(r => (r && r.data && r.data.pairs) || []).catch(() => []),
       api.categoryHistory(range).then(r => (r && r.data && r.data.cats) || []).catch(() => []),
       api.turnHistory(range).then(r => (r && r.data && r.data.turn) || []).catch(() => []),
       api.exitHistory(range).then(r => (r && r.data && r.data.exits) || []).catch(() => []),
-      api.peerHistory(range).then(r => (r && r.data && r.data.peers) || []).catch(() => []),
       api.presence(range, obN, obStep, selIds).then(r => (r && r.data) || null).catch(() => null),
-    ]).then(([rows, mesh, cats, turn, exits, peers, presence]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, cats, turn, exits, peers, presence, range }); });
+    ]).then(([rows, mesh, cats, turn, exits, presence]) => { if (!alive) return;
+      const byNode = {}; let axis = null, err = null;
+      rows.forEach(([id, r]) => { byNode[id] = (r && r.ok && r.data) || null;
+        if (r && r.ok && r.data && r.data.axis) axis = r.data.axis; else if (r && r.ok === false && !err) err = r; });
+      setSt({ loading: false, byNode, mesh, cats, turn, exits, presence, axis, err, range }); });
     return () => { alive = false; };
   }, [key]);
   return st;
@@ -306,8 +382,8 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const sel = new Set(selIds);
   const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
   const live = range === "live";
-  const ranged = !live && hist.range === range;   // caller passes the EFFECTIVE (loaded) range, so this holds the old data through a fetch instead of flashing live
-  const STEP = RANGE_STEP[range] || 1;
+  const ranged = !live && hist.range === range;   // caller passes the EFFECTIVE (loaded) range KEY, so this holds the old data through a fetch instead of flashing live
+  const STEP = rangeStep(range, hist);
   const isSys = (nid, ifn) => !!(Store.describe[nid] && Store.describe[nid][ifn] && Store.describe[nid][ifn].system);
   const ifType = (nid, ifn) => {
     if (((Store.stats[nid] || {}).wdtt || []).some(w => w && w.iface === ifn)) return "wdtt";   // WDTT owns its iface (snap.wdtt, not describe)
@@ -431,7 +507,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const cntLegTypes = TYPES.filter(([t]) => (typeCnt[t] || { tot: 0 }).tot > 0).map(([t, nm]) => ({ key: t, name: nm, color: ifaceColor(t), right: typeCnt[t].on + " / " + typeCnt[t].tot }));
 
   const rlabel = DASH_RANGES.find(r => r[0] === range);
-  const rname = rlabel ? rlabel[1].toLowerCase() : range;
+  const rname = rlabel ? rlabel[1].toLowerCase() : rangeWord(range);
   const loadingNote = (!live && hist.loading) ? html`<div class="donut-note">${T("loading {v1} history…", { v1: rname })}</div>` : null;
   const volNote = ranged ? html`<div class="donut-note">${T("volume over the {v1}", { v1: rname })}</div>` : null;
   const avgNote = ranged ? html`<div class="donut-note">${T("avg over the {v1}", { v1: rname })}</div>` : null;
@@ -493,15 +569,16 @@ export function DashDoughnuts({ selIds, range, hist }) {
     const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(11, dfs - 3);
     return html`<div class="mrc-def"><span class="mrc-k">${T("val|total")}</span>
       <span class="mrc-tot dn" style=${"font-size:" + dfs + "px"}>${ds}</span><span class="mrc-tot up" style=${"font-size:" + ufs + "px"}>${us}</span></div>`; };
-  const turnTrafRings = () => { const rxS = forks.map(fk => ({ key: fk, name: forkLabel(fk), value: fTraf(fk).rx, color: turnColor(fk) })),
-      txS = forks.map(fk => ({ key: fk, name: forkLabel(fk), value: fTraf(fk).tx, color: turnColor(fk) }));
+  const fkName = forkNames(forks);   // the author, or "author · product" where two listed forks share one (O1)
+  const turnTrafRings = () => { const rxS = forks.map(fk => ({ key: fk, name: fkName[fk], value: fTraf(fk).rx, color: turnColor(fk) })),
+      txS = forks.map(fk => ({ key: fk, name: fkName[fk], value: fTraf(fk).tx, color: turnColor(fk) }));
     const dn = povPeers ? txS : rxS, up = povPeers ? rxS : txS;
     return [{ label: T("traffic|Download"), dir: "dn", fmt: turnFmt, unitColor: "var(--online)", segments: dn }, { label: T("traffic|Upload"), dir: "up", fmt: turnFmt, unitColor: "var(--rate-up)", segments: up }]; };
   const turnCntRings = () => [
-    { label: T("Deployments"), fmt: v => v, segments: forks.map(fk => ({ key: fk, name: forkLabel(fk), value: fCnt(fk).tot, color: turnColor(fk) })) },
-    { label: T("Online"), fmt: v => v, segments: forks.map(fk => ({ key: fk, name: forkLabel(fk), value: fCnt(fk).on, color: turnColor(fk) })) }];
-  const turnTrafLeg = forks.map(fk => ({ key: fk, name: forkLabel(fk), color: turnColor(fk), ...(() => { const t = fTraf(fk), [d, u] = dlul(t.rx, t.tx); return { down: turnFmt(d), up: turnFmt(u) }; })() }));
-  const turnCntLeg = forks.map(fk => { const c = fCnt(fk); return { key: fk, name: forkLabel(fk), color: turnColor(fk), right: c.on + " / " + c.tot }; });
+    { label: T("Deployments"), fmt: v => v, segments: forks.map(fk => ({ key: fk, name: fkName[fk], value: fCnt(fk).tot, color: turnColor(fk) })) },
+    { label: T("Online"), fmt: v => v, segments: forks.map(fk => ({ key: fk, name: fkName[fk], value: fCnt(fk).on, color: turnColor(fk) })) }];
+  const turnTrafLeg = forks.map(fk => ({ key: fk, name: fkName[fk], color: turnColor(fk), ...(() => { const t = fTraf(fk), [d, u] = dlul(t.rx, t.tx); return { down: turnFmt(d), up: turnFmt(u) }; })() }));
+  const turnCntLeg = forks.map(fk => { const c = fCnt(fk); return { key: fk, name: fkName[fk], color: turnColor(fk), right: c.on + " / " + c.tot }; });
   const turnTot = forks.reduce((s, fk) => { const t = fTraf(fk), c = fCnt(fk); s.rx += t.rx; s.tx += t.tx; s.on += c.on; s.tot += c.tot; return s; }, { rx: 0, tx: 0, on: 0, tot: 0 });
   const turnLiveNote = html`<div class="donut-note">${T("live rates")}${ranged ? T(" · no history yet for this range") : ""}</div>`;
   const turnNote = turnRanged ? volNote : turnLiveNote;       // traffic card → volume
@@ -596,8 +673,8 @@ export function exitTraffic(nid, ranged, hist) {
 export function flowGraph(selIds, range, hist) {
   const sel = new Set(selIds);
   const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
-  const ranged = range && range !== "live" && hist && hist.range === range;   // caller passes the EFFECTIVE (loaded) range → holds old data through a fetch (no flash to live)
-  const STEP = RANGE_STEP[range] || 1;
+  const ranged = range && range !== "live" && hist && hist.range === range;   // caller passes the EFFECTIVE (loaded) range KEY → holds old data through a fetch (no flash to live)
+  const STEP = rangeStep(range, hist);
   const acc = {};
   fleet.forEach(n => acc[n.id] = { cl: { rx: 0, tx: 0 }, turn: {}, mesh: {}, offmesh: { rx: 0, tx: 0, n: new Set() }, inet: null });   // offmesh = traffic to fleet nodes NOT selected (n = which ones) · inet = MEASURED internet {out,in} B/s (node counter), null = fall back to the client-derived estimate
   if (ranged) {
@@ -991,7 +1068,7 @@ export function FlowMap2({ selIds, range, hist }) {
           onMouseEnter=${() => setHov({ id: s.id })} onMouseLeave=${() => setHov(null)}><${Ic} i=${s.ic}/></button>`; })}
       ${hv && hv.type === "flow" ? html`<div class="fm2-bub" style=${bubStyle}>
         <div class="fm2-bub-h" style="flex-direction:row;gap:6px;align-items:center;flex-wrap:wrap"><span style=${"color:" + hv.ca}>${hv.a}</span><span style="color:var(--faint)">→</span><span style=${"color:" + hv.cb}>${hv.b}</span></div>
-        <div class="fm2-bub-r"><span style="color:var(--dim)">${ranged ? "volume" : "throughput"}</span><b>${fmt(hv.v)}</b></div>
+        <div class="fm2-bub-r"><span style="color:var(--dim)">${ranged ? T("fm|volume") : T("fm|throughput")}</span><b>${fmt(hv.v)}</b></div>
       </div>` : hv ? html`<div class="fm2-bub" style=${bubStyle}>
         <div class="fm2-bub-h" style=${"color:" + hv.col}>${hv.name}<span class="fm2-bub-k">${hv.sub}</span></div>
         <div class="fm2-bub-r"><span style=${"color:" + FLOW_IN}>${T("↓ ingress")}</span><b>${fmt(hv.ib || 0)}</b></div>
@@ -1054,7 +1131,7 @@ export function ServiceIssueSheet({ issues }) {
     <div class="svc-modal">
       ${list.map(i => html`<div class=${"svc-item " + i.sev} key=${svcKey(i)}>
         <div class="svc-head"><span class=${"svc-dot " + i.sev}></span><b>${i.label}</b>
-          <span class=${"svc-tag " + i.sev}>${i.sev === "critical" ? "Critical" : "Warning"}</span></div>
+          <span class=${"svc-tag " + i.sev}>${i.sev === "critical" ? T("sev|Critical") : T("sev|Warning")}</span></div>
         <div class="svc-msg">${i.msg}.</div>
         ${i.unit ? html`<div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>journalctl -u ${i.unit} -e</code></div>`
           : html`<div class="svc-cmd"><code>dkms status</code> · <code>modprobe amneziawg</code></div>`}
@@ -1076,8 +1153,9 @@ export function useBlockStats(range) {
       .then(r => { if (alive) setBs({ loading: false, data: (r && r.data) || null, range }); })
       .catch(() => { if (alive) setBs(s => ({ ...s, loading: false })); });
     load();
-    const t = setInterval(load, 15000);   // live-poll so the Blocked counter climbs without a reload (RRD buckets are ≥15s)
-    return () => { alive = false; clearInterval(t); };
+    const ms = blockPollMs(range, panelToday());   // live-poll so the Blocked counter climbs without a reload (RRD buckets are ≥15s)
+    const t = ms ? setInterval(load, ms) : 0;
+    return () => { alive = false; if (t) clearInterval(t); };
   }, [range]);
   return bs;
 }
@@ -1117,7 +1195,7 @@ export function WhoBubble({ rows, color }) {
       </div>`)}
     </div>
     ${pages > 1 ? html`<div class="prot-who-pg">
-      <span class="prot-who-pglbl">${p * WHO_PER_PAGE + 1}–${Math.min(flat.length, p * WHO_PER_PAGE + WHO_PER_PAGE)} of ${fmtCount(flat.length)}</span>
+      <span class="prot-who-pglbl">${T("{v1}–{v2} of {v3}", { v1: p * WHO_PER_PAGE + 1, v2: Math.min(flat.length, p * WHO_PER_PAGE + WHO_PER_PAGE), v3: fmtCount(flat.length) })}</span>
       <span class="prot-who-pgbtns">
         <button class="prot-who-pgb" disabled=${p === 0} onClick=${() => go(-1)}>${T("Prev")}</button>
         <button class="prot-who-pgb" disabled=${p >= pages - 1} onClick=${() => go(1)}>${T("Next")}</button>
@@ -1138,7 +1216,7 @@ export function CatsBubble({ cats, color, counts }) {
     <div class="prot-who-h">${counts ? T("Blocked") : T("Filtering")}<span class="prot-who-sub">${counts ? T("sites caught") : T("by list size")}</span><span class="prot-who-tot">${fmtCount(cats.length)}</span></div>
     <div class=${"prot-who-list" + (scroll ? " scroll" : "")}>
       ${cats.map((c, i) => html`<div class="prot-who-r prot-cat-row" key=${i}>
-        <span class="prot-cat-nm">${c.label}</span>
+        <span class="prot-cat-nm">${blockCatLabel(c.label)}</span>
         <span class="prot-who-ago prot-cat-n" style=${"color:" + color}>${counts ? T("{v1} {v2}", { v1: kmb(c.count), v2: pluralWord(c.count, "site") }) : (c.threat_ips ? T("{v1} IPs", { v1: kmb(c.threat_ips) }) : T("{v1} dom", { v1: kmb(c.domains) }))}</span>
       </div>`)}
     </div>
@@ -1256,8 +1334,9 @@ export function Overview() {
   // Every widget aggregates over the SELECTED node set (default = whole fleet). A peer is "in scope" if
   // it has at least one target on a selected node; its counts/traffic come only from selected nodes.
   const selIds = dashNodes(), sel = new Set(selIds);
-  const rangeHist = useRangeHistory(dashState.range, selIds);   // one fetch, shared by the doughnuts + flow map
-  const blockStats = useBlockStats(dashState.range);            // Protection card feed (independent, supports live)
+  const dKey = dashKey();                                        // the range, or a custom window's key (its days)
+  const rangeHist = useRangeHistory(dKey, selIds);              // one fetch, shared by the doughnuts + flow map
+  const blockStats = useBlockStats(dKey);                       // Protection card feed (independent, supports live)
   // Fresh install (or every node removed) → there's no fleet to chart. Skip the whole dashboard and invite
   // the operator to add their first entry server. (After the two hooks above, so rules-of-hooks holds.)
   if (fleet.length === 0) return html`<div class="screen"><div class="nonodes">
@@ -1324,9 +1403,9 @@ export function Overview() {
   // EFFECTIVE range = the range whose data is actually loaded/showing. During a fetch it LAGS the just-clicked range
   // (rangeHist keeps the previous range's data), so every ranged figure holds the OLD range until the new one lands —
   // no flash to live, no layout jump. Live is immediate. Only the rail's active highlight reads the raw dashState.range.
-  const effRange = dashState.range === "live" ? "live" : (rangeHist.range || dashState.range);
+  const effRange = effRangeOf(dKey, rangeHist.range);
   const dRanged = effRange !== "live";
-  const dStep = RANGE_STEP[effRange] || 1;
+  const dStep = rangeStep(effRange, rangeHist);
   const nodeVol = id => { const d = rangeHist.byNode[id]; if (!d) return { rx: 0, tx: 0 };
     let rx = 0, tx = 0; const R = d.rx || [], T = d.tx || [], MR = d.mrx || [], MT = d.mtx || [];
     for (let i = 0; i < R.length; i++) { rx += Math.max(0, (R[i] || 0) - (MR[i] || 0)); tx += Math.max(0, (T[i] || 0) - (MT[i] || 0)); }
@@ -1360,28 +1439,26 @@ export function Overview() {
   //    ThroughputChart summed; online-peers resamples pon into the fixed per-range block count. ──
   const fleetHist = fleetHistory(selIds, effRange, rangeHist);
   const tputRange = effRange === "live" ? "hour" : effRange;   // fleet live feed IS the 15s (hour) ring
-  const [obN, obStep] = ONLINE_BLOCKS[effRange] || ONLINE_BLOCKS.live;
+  const _pres = rangeHist.presence;
+  const [obN, obStep] = isCustomKey(effRange) ? [((_pres || {}).blocks || []).length, (_pres || {}).step || 86400]   // custom: the server's own bars
+    : (ONLINE_BLOCKS[effRange] || ONLINE_BLOCKS.live);
   // Each bar = DISTINCT peers seen online in that bar's span, unioned from the presence bitmaps. `pon` (the
   // health ring) is a mean of concurrency and cannot answer this: five peers online 12 min each average to 1.
   // Live keeps the client-side accumulator — a 30s bar of T("online now") needs no server round-trip.
-  const _pres = rangeHist.presence;
   const onlineBlocks = (dRanged && _pres && _pres.blocks) ? _pres.blocks : resampleBlocks(fleetHist.onT, fleetHist.on, obN, obStep);
   const onlineEndTs = (dRanged && _pres) ? _pres.end : fleetHist.onT[fleetHist.onT.length - 1];
+  const onlineTimes = dRanged && _pres && isCustomKey(effRange) ? _pres.t : null;   // a custom window's bars, each named by its START (a day bar, by its day)
   const hasOnline = onlineBlocks.some(v => v != null);
   // how many rows the ranked lists show — operator-set in Panel settings → Display (1–50, default 10)
   const nTalk = Math.max(1, Math.min(50, (Store.panelSettings || {}).top_talkers || 10));
   const nDest = Math.max(1, Math.min(50, (Store.panelSettings || {}).top_destinations || 10));
-  // top talkers — peers ranked by traffic across the selected nodes. Live = current per-peer rx/tx from the
-  // snapshot; a range = per-peer windowed VOLUME from the peer RRD (/api/peer-history), matched back to the peer
-  // by pubkey. Same node-selector + perspective as every other figure.
-  let perPeer;   // per-PEER traffic first (live per-target speeds, or ranged per-peer volume from the RRD)…
-  if (dRanged) {
-    const pkPeer = {}; sPeers.forEach(p => { if (p.pubkey) pkPeer[p.pubkey] = p; pkPeer[p.id] = p; });   // wg peers keyed by pubkey; keyless (WDTT/csqtt) rows come back keyed by peer id
-    const byPk = {};
-    (rangeHist.peers || []).forEach(e => { if (!sel.has(e.node) || !pkPeer[e.pubkey]) return;
-      const a = byPk[e.pubkey] = byPk[e.pubkey] || { rx: 0, tx: 0 }; a.rx += e.rx || 0; a.tx += e.tx || 0; });
-    perPeer = Object.entries(byPk).map(([pk, v]) => ({ p: pkPeer[pk], rx: v.rx, tx: v.tx })).filter(x => x.p);
-  } else {
+  // top talkers — people (and devices that belong to nobody) ranked by traffic. Live = current per-peer rx/tx from the
+  // snapshot, across the selected nodes; a range = the traffic ledger through the grids' own cache (talkerGroups), so a
+  // person's figure is their Users-grid figure. Same node-selector + perspective as every other figure.
+  const talkE = dRanged ? trafficTotals(talkWindow(effRange)) : null;
+  const talkD = talkE && talkE.data;
+  let perPeer = [];   // live: per-PEER speeds first…
+  if (!dRanged) {
     perPeer = sPeers.map(p => {
       let r = 0, t = 0; p.targets.forEach(tg => { if (!sel.has(tg.node)) return;
         const o = tg.observed; if (o) { r += o.rx_speed || 0; t += o.tx_speed || 0; }
@@ -1396,8 +1473,9 @@ export function Overview() {
     const key = x.p.user_id ? "u" + x.p.user_id : "p" + x.p.id;
     const g = talkG[key] || (talkG[key] = { user: x.p.user_id ? Store.user(x.p.user_id) : null, sample: x.p, rx: 0, tx: 0, peers: [] });
     g.rx += x.rx; g.tx += x.tx; g.peers.push(x); });
-  const talkers = Object.values(talkG).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
-  const talkerRows = talkers.map((g, i) => {
+  const talkers = dRanged ? [] : Object.values(talkG).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
+  const talkerRows = dRanged ? rangedTalkerRows(talkD, scoped ? (pid => { const p = Store.peer(pid); return !!p && p.targets.some(t => sel.has(t.node)); }) : null, nTalk)
+    : talkers.map((g, i) => {
     const peers = g.peers.slice().sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx));
     return {
       label: g.user ? g.user.name : (g.sample.title || T("Unassigned peer")), value: g.rx + g.tx, count: peers.length,
@@ -1406,7 +1484,7 @@ export function Overview() {
       // Each row carries its protocol (wg/awg, from the live interface) + a name: the peer's title, or — when it has
       // none — "Peer .<last octet of its tunnel IP>" (e.g. 10.99.3.43 → "Peer .43"), never the user's name.
       bub: peers.length > 1 ? peers.map(pp => { const t = (pp.p.targets || [])[0] || {}; const oct = (t.ip || "").split(".").pop();
-        return { kind: targetType(t), name: pp.p.title || (oct ? T("Peer .{v1}", { v1: oct }) : T("Peer")), value: pp.rx + pp.tx,
+        return { kind: targetType(t), gen3: tgt3(t), name: pp.p.title || (oct ? T("Peer .{v1}", { v1: oct }) : T("Peer")), value: pp.rx + pp.tx,
           sub: dRanged ? xferCell(...dlul(pp.rx, pp.tx)) : rateCell(pp.rx, pp.tx) }; }) : null,
       color: dashRankColor(i, "talker"), href: "#/users",
       onClick: e => { e.preventDefault(); g.user ? revealUser(g.user.id) : revealPeer(g.sample); },
@@ -1463,12 +1541,13 @@ export function Overview() {
   return html`<div class="screen">
     <${StoreOffBanner}/>
     <${DashRail}/>
+    ${isCustomKey(dKey) && rangeHist.range === dKey && rangeHist.err ? html`<div class="notice warn">${srvText(rangeHist.err)}</div>` : null}
     <div class="statgrid">
       <a class="stat accent clk" href="#/connections" onClick=${openLiveTab("peers")}><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">${T("Online now")}</div><div class="v">${online}<small> / ${sPeers.length}</small></div><div class="sub">${T("live connections →")}</div></div></a>
       <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">${T("Users")}</div><div class="v">${sUsers.length}</div><div class="sub">${scoped ? T("{v1} here", { v1: plural(sPeers.length, "peer") }) : T("{v1} total", { v1: plural(sPeers.length, "peer") })}</div></div></a>
       <a class="stat clk" href="#/peers"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">${T("Peers")}</div><div class="v" style="font-size:19px"><span style="color:var(--ink)">${pAssigned}</span> · <span style="color:var(--dim)">${pUnassigned}</span></div><div class="sub">${T("assigned · unassigned")}</div>${orphans.length ? html`<div class="sub" style="color:#E8912D;font-weight:600">${T("Orphan peers {n}", { n: orphans.length })}</div>` : ""}</div></a>
       <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">${T("col|Nodes")}</div><div class="v">${liveNodes}<small> / ${fleetSel.length}</small></div><div class="sub">${plural(ifaceCount, "interface")}</div>${nodesAlerting ? html`<div class="sub" style="color:var(--dangling)">${T("{n} alerting", { n: nodesAlerting })}</div>` : ""}</div></a>
-      <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">${T("Throughput")}</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span>${scoped ? " selected" : " aggregate"}</div></div></div>
+      <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">${T("Throughput")}</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span>${" " + (scoped ? T("sum|selected") : T("sum|aggregate"))}</div></div></div>
     </div>
 
     ${secTitle(T("Fleet"), scoped ? T("{n} of {total}", { n: fleetSel.length, total: plural(fleet.length, "server") }) : plural(fleet.length, "server"), undefined, "fleet")}
@@ -1476,13 +1555,13 @@ export function Overview() {
       <div class="trendcard wide">
         <div class="donutcard-h"><h3>${T("Fleet throughput")}</h3></div>
         ${(fleetHist.t || []).length > 1
-          ? html`<${ThroughputChart} rx=${fleetHist.rx} tx=${fleetHist.tx} times=${fleetHist.t} range=${tputRange} cap=${RANGE_CAP[tputRange]} h=${70}/>`
+          ? html`<${ThroughputChart} rx=${fleetHist.rx} tx=${fleetHist.tx} times=${fleetHist.t} range=${tputRange} cap=${isCustomKey(tputRange) ? axisCap(rangeHist.axis) : RANGE_CAP[tputRange]} h=${70}/>`
           : html`<div class="harea-empty">${T("gathering — no history yet")}</div>`}
       </div>
       <div class="trendcard">
         <div class="donutcard-h"><h3>${T("Online peers")}</h3><span class="grow"></span><span class="trend-now">${dRanged && _pres ? (_pres.total || {}).peers : online}</span></div>
         ${hasOnline
-          ? html`<${OnlineBlocks} blocks=${onlineBlocks} step=${obStep} endTs=${onlineEndTs} range=${effRange} color="var(--online)" h=${70}/>`
+          ? html`<${OnlineBlocks} blocks=${onlineBlocks} step=${obStep} endTs=${onlineEndTs} times=${onlineTimes} range=${effRange} color="var(--online)" h=${70}/>`
           : html`<div class="harea-empty">${T("gathering — fills as it polls")}</div>`}
       </div>
     </div>` : null}
@@ -1511,9 +1590,12 @@ export function Overview() {
       <div class="rankcard"><${RankBars} rows=${rankRowsTraffic}/></div>
     <//>` : null}
 
-    ${talkerRows.length ? html`<${Fragment}>
-      ${secTitle(T("Top talkers"), dRanged ? T("{range} · by volume", { range: rangeWord(effRange) }) : T("by live throughput"), undefined, "toptalkers")}
-      <div class="rankcard"><${RankBars} rows=${talkerRows}/></div>
+    ${talkerRows.length || (dRanged && (!talkD || talkE.off || talkE.err)) ? html`<${Fragment}>
+      ${secTitle(T("Top talkers"), dRanged ? talkSub(effRange, talkD, scoped) : T("by live throughput"), undefined, "toptalkers")}
+      ${talkerRows.length ? html`<div class="rankcard"><${RankBars} rows=${talkerRows}/></div>`
+        : talkE.off ? html`<div class="hint">${T("Traffic totals are off — Settings → Display says why.")}</div>`
+        : talkE.err ? html`<div class="hint">${typeof talkE.err === "object" ? srvText(talkE.err) : T("The traffic totals could not be loaded.")}</div>`
+        : html`<div class="hint faint">…</div>`}
     <//>` : null}
 
     ${catRows.length ? html`<${Fragment}>
@@ -1531,7 +1613,7 @@ export function Overview() {
       <div class="actlist">${recent.map(e => html`<a class=${"act-row" + (e.click ? "" : " noclk")} href=${e.click ? e.click.href : null} key=${e.key}
           onClick=${e.click && e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : (e.click ? null : (ev => ev.preventDefault()))}>
         <span class=${"act-ic t-" + e.slug}><${Ic} i=${e.icon}/></span>
-        <span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${e.name}</span>` : null}
+        <span class="act-what">${srvVerb(e.verb)}</span>${e.name ? html`<span class="act-name">${srvName(e)}</span>` : null}
         ${e.detail || e.detail_key ? html`<span class="act-detail">${srvDetail(e)}</span>` : null}
         <span class="grow"></span><span class="when">${ago(e.ts)}</span>${e.click ? html`<span class="act-arrow"><${Ic} i="arrow"/></span>` : null}</a>`)}</div>
       <div class="act-morewrap"><a class="act-more" href="#/activity">${T("Show all history »")}</a></div>
@@ -1542,7 +1624,7 @@ export function Overview() {
       ? html`<div class="allclear"><${Ic} i="check"/><span>${T("Everything's deployed and reporting. No drift across the fleet.")}</span></div>`
       : html`<div class="attn">
           ${svcIssues.map(is => html`<div class=${"attn-row svc " + is.sev} key=${"svc" + svcKey(is)} onClick=${() => openModal(html`<${ServiceIssueSheet} issues=${[is]}/>`)}>
-            <span class=${"svc-badge " + is.sev}><${Ic} i="warn"/>${is.sev === "critical" ? "Critical" : "Warning"}</span>
+            <span class=${"svc-badge " + is.sev}><${Ic} i="warn"/>${is.sev === "critical" ? T("sev|Critical") : T("sev|Warning")}</span>
             <span class="name">${is.label} — ${SVC_KINDWORD[is.kind] || is.kind}</span>
             <span class="why">${is.msg}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
           ${statusGroups.map(g => html`<div class="attn-row" key=${"s" + g.status} onClick=${() => revealPeersFiltered({ status: g.status })}>

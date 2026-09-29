@@ -40,12 +40,12 @@ def cut(a, b, why):
     src = src.replace(a, b, 1)
 
 if P_SOCK:   # the shipped-regression shape: scope the established-connection rule by mark as well
-    cut('L.append("    ip saddr %s ct state != new meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
-        'L.append("    ip saddr %s ct state != new meta mark 0x1 meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
+    cut('L.append("    ip saddr %s ct state != new meta mark & 0x0000fffe != %#010x meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept"',
+        'L.append("    ip saddr %s ct state != new meta mark & 0x0000fffe != %#010x meta mark 0x1 meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept"',
         "socket transparent")
 if P_CTST:  # the shape this shipped in: the socket rule matching a SYN as well as an established packet
-    cut('L.append("    ip saddr %s ct state != new meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
-        'L.append("    ip saddr %s meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept" % (S, RELAY_MARK))',
+    cut('L.append("    ip saddr %s ct state != new meta mark & 0x0000fffe != %#010x meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept"',
+        'L.append("    ip saddr %s meta mark & 0x0000fffe != %#010x meta l4proto tcp socket transparent 1 counter meta mark set 0x%x accept"',
         "socket ct state")
 if P_MSS:
     cut('out = run(["ip", "route", "get", "1.1.1.1", "from", gw] + (["mark", str(mark)] if mark else [])).stdout or ""',
@@ -87,6 +87,10 @@ print("\n[2] ⚠️ the `socket transparent` rule is per SUBNET and carries NO m
 # and break a live connection mid-stream.
 check("one rule per distinct subnet, not per leg", len(sock) == 2, "%d rules for 2 subnets" % len(sock))
 check("⚠️ …and none of them matches a mark", not any("meta mark 0x" in l.split("socket")[0] for l in sock), sock)
+# …but each LETS GO a ClientHello refused by name (KSNI-hostnames 1.8.8): a negative match on the one mark only a refusal
+# carries, so a refused connection reaches the forward reset instead of the relay — and a live one still matches.
+check("…each lets a connection refused by name go (a negative match on SNI_BLOCK_MARK, and nothing else)",
+      all("meta mark & 0x0000fffe != 0x00009998" in l for l in sock), sock)
 check("…while the tproxy rules DO", any("meta mark 0x" in l for l in tproxy))
 # ⚠️ …AND IT MUST NOT MATCH A CONNECTION ATTEMPT. The relay listens on 0.0.0.0 because a transparent
 # socket must receive packets for ANY destination, so the kernel's listener lookup matches that wildcard

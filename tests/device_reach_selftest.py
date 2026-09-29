@@ -112,15 +112,27 @@ def load(name, path):
 N = load("swgnoded", NODED)
 T = "swg_reach"
 
+# ⚠️ A plant that edits what a function returns (a filter, a replace, a key dropped) plants NOTHING once what it matches
+# is gone — and that run would read as a gate that does not see the defect. Each such plant counts the times it changed
+# something; one that never did makes the run a FALSE-PASS, said at the end (round 12).
+PLANTED = {}
+def _counted(flag, before, after):
+    PLANTED[flag] = PLANTED.get(flag, 0) + (after != before)
+    return after
+
 if PERTURB:
-    _rp = N._reach_plan
+    PLANTED["--perturb"] = 0
+    # ⚠️ its own name: [16] binds `_rp` to a roster, and a wrapper calling `_rp` then crashed there (a dict called) —
+    # red for a reason that is not the plant (round 12)
+    _rp_rest = N._reach_plan
     def _no_rest(cfg, wire, devices=None):
-        p, sk = _rp(cfg, wire, devices)
-        return (p and dict(p, map=[e for e in p["map"] if not e[2].startswith("jump n")])), sk
+        p, sk = _rp_rest(cfg, wire, devices)
+        return (p and dict(p, map=_counted("--perturb", p["map"], [e for e in p["map"] if not e[2].startswith("jump n")]))), sk
     N._reach_plan = _no_rest
 if PERTURB_REPLY:
+    PLANTED["--perturb-reply"] = 0
     _gd = N._gtable_declare
-    N._gtable_declare = lambda *a: _gd(*a).replace("ct direction reply accept; ", "")
+    N._gtable_declare = lambda *a: (lambda t: _counted("--perturb-reply", t, t.replace("ct direction reply accept; ", "")))(_gd(*a))
 if PERTURB_HOLD:
     _rd = N._reach_devices
     def _forget(cfg, names):
@@ -136,19 +148,22 @@ if PERTURB_STALE:
 if PERTURB_SWAP:
     N._gtable_swap = lambda table, old_guard, guard, counters, gen, old: N._gtable_declare(table, N.REACH_HOOK_PRI, guard, counters, gen)
 if PERTURB_GUARD:
+    PLANTED["--perturb-guard"] = 0
     _rpg = N._reach_plan
     def _no_accept(cfg, wire, devices=None):
         p, sk = _rpg(cfg, wire, devices)
-        return (p and dict(p, map=[e for e in p["map"] if e[2] != "accept"])), sk
+        return (p and dict(p, map=_counted("--perturb-guard", p["map"], [e for e in p["map"] if e[2] != "accept"]))), sk
     N._reach_plan = _no_accept
 if PERTURB_COMPACT:
+    PLANTED["--perturb-compact"] = 0
     _rpc = N._reach_plan
-    N._reach_plan = lambda cfg, wire, devices=None: _rpc(cfg, {k: v for k, v in wire.items() if k != "users"} if isinstance(wire, dict) else wire, devices)
+    N._reach_plan = lambda cfg, wire, devices=None: _rpc(cfg, _counted("--perturb-compact", wire, {k: v for k, v in wire.items() if k != "users"}) if isinstance(wire, dict) else wire, devices)
 if PERTURB_FAULT:
     N.reconcile_dev_reach = lambda cfg, wire, res: N._reach_converge(cfg, wire, res)
 if PERTURB_OPEN:
+    PLANTED["--perturb-open"] = 0
     _rpo = N._reach_plan
-    N._reach_plan = lambda cfg, wire, devices=None: _rpo(cfg, {k: v for k, v in wire.items() if k != "open"} if isinstance(wire, dict) else wire, devices)
+    N._reach_plan = lambda cfg, wire, devices=None: _rpo(cfg, _counted("--perturb-open", wire, {k: v for k, v in wire.items() if k != "open"}) if isinstance(wire, dict) else wire, devices)
 if PERTURB_HELD:
     N._reach_held = lambda: N._reach_read_counters() if N._REACH["installed"] else None
 if PERTURB_VANISHED:
@@ -162,8 +177,9 @@ if PERTURB_RETRY:
         return N.run(["nft", "-f", "-"], input_text=text), gen, False
     N._gtable_load = _no_retry
 if PERTURB_IFACE:
+    PLANTED["--perturb-iface"] = 0
     _rg = N._reach_generation
-    N._reach_generation = lambda plan, g: dict(_rg(plan, g), lines=[re.sub(r'iifname "[^"]+" ip saddr', "ip saddr", l) for l in _rg(plan, g)["lines"]])
+    N._reach_generation = lambda plan, g: (lambda r: dict(r, lines=_counted("--perturb-iface", r["lines"], [re.sub(r'iifname "[^"]+" ip saddr', "ip saddr", l) for l in r["lines"]])))(_rg(plan, g))
 
 TMP = tempfile.mkdtemp(prefix="devreach-")
 def conf(name, addr):
@@ -494,8 +510,8 @@ _meta = P.apply_iface_meta({"ifaces": {"wgN": {"reach": "none"}}}, {"wgN": {}, "
 check("the interface meta publishes the level, 'user' when absent", _meta["wgN"]["reach"] == "none" and _meta["wg0"]["reach"] == "user", _meta)
 _psrc = open(PANEL, encoding="utf-8").read()
 check("wdtt_cfg and csqtt_cfg publish reach",
-      re.search(r'"wdtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"\)', _psrc) is not None
-      and re.search(r'"csqtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"\)', _psrc) is not None)
+      re.search(r'"wdtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"[^)]*\)', _psrc) is not None
+      and re.search(r'"csqtt_cfg": \{ifn: \{k: \(reach_level\(ov\.get\(k\)\) if k == "reach" else ov\.get\(k\)\) for k in \([^)]*"reach"[^)]*\)', _psrc) is not None)
 _nodes = {"n1": {"wdtt": {"wdtt1": {"iface": "wdtt1", "reach": "none", "fork": "qwdtt"}}, "csqtt": {"csqtt1": {"iface": "csqtt1", "reach": "none"}}}}
 check("⚠️ the node's WDTT and csqtt replies never carry the level (§10.8 Round 9)",
       "reach" not in P._wdtt_reply(R, _nodes, "n1")["wdtt1"] and "reach" not in P._csqtt_reply(R, _nodes, "n1")["csqtt1"])
@@ -706,10 +722,13 @@ check("a drop lands in the same counter in every generation, its count kept", _c
 N.reconcile_dev_reach(CFG, WIRE, res())
 check("…and the next swap alternates back to a", N._REACH["gen"] == "a" and "vmap @dmap_a" in K.loads[-1] and not any(n.endswith("_b") for n in _gen_names(K)))
 drops(7, "wg0", "10.8.0.9", "10.9.0.99")
+_i13 = len(K.loads)
 N.reconcile_dev_reach(CFG, {"ifaces": ["wg0"], "users": [], "zones": []}, res())
-check("subnets no longer protected leave the guard in the swap",
+_sw = K.loads[_i13] if len(K.loads) > _i13 else ""            # this pass's first load: the swap (the counters of the interfaces
+check("subnets no longer protected leave the guard in the swap",  # that left are deleted by a load after it, SWG-REACH-COUNTER-PLAN)
       sorted((x["lo"], x["hi"]) for x in K.m.tables[T]["sets"]["guard"]["els"]) == [_span("10.8.0.0/24")]
-      and "delete element inet swg_reach guard {" in K.loads[-1] and "add element" not in K.loads[-1] and pk("wg0", "10.8.0.9", "10.9.0.99") == "accept")
+      and _sw.startswith("table inet swg_reach {") and "delete element inet swg_reach guard {" in _sw and "add element" not in _sw
+      and pk("wg0", "10.8.0.9", "10.9.0.99") == "accept")
 N.reconcile_dev_reach(CFG, WIRE, res())
 check("an interface protected AGAIN reports its count at once (7), not a routing pass later (§11.8, found live)",
       (N._REACH["status"] or {}).get("blocked", {}).get("awg0") == 7, N._REACH["status"])
@@ -1107,5 +1126,9 @@ check("…while a date still in the future promotes normally — the guard is ex
 
 shutil.rmtree(TMP2, ignore_errors=True)
 shutil.rmtree(TMP, ignore_errors=True)
+_dead = sorted(f for f, n in PLANTED.items() if not n)
+if _dead:
+    print("\nSTALE ANCHOR — %s changed nothing (what it edits is gone): this run would FALSE-PASS" % ", ".join(_dead))
+    sys.exit(2)
 print("\n%s" % ("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS)))
 sys.exit(1 if FAILS else 0)

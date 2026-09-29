@@ -38,11 +38,13 @@ def check(name, ok, detail=""):
     if not ok:
         FAILS.append(name)
 
+# ONE TEXT (round 8): each writer renders lib/common.sh's swg_update_wrapper_text — this is the call it must make
 WRITERS = {
-    "update.sh":      r"cat > /usr/local/bin/swg-update\.new <<WRAP\n(.*?)\nWRAP\n",
-    "install-host.sh": r"writef_atomic /usr/local/bin/swg-update 755 <<WRAP\n(.*?)\nWRAP\n",
-    "lib/common.sh":  r"cat > /usr/local/bin/swg-update\.new <<WRAP\n(.*?)\nWRAP\n",
+    "update.sh":       'swg_update_wrapper_text "$_swg_ref" > /usr/local/bin/swg-update.new',
+    "install-host.sh": 'swg_update_wrapper_text "$_swg_ref" | writef_atomic /usr/local/bin/swg-update 755',
+    "lib/common.sh":   'swg_update_wrapper_text "$_swg_ref" > /usr/local/bin/swg-update.new',
 }
+TEXT_RE = r"^swg_update_wrapper_text\(\)\{ local _swg_ref=\"\$\{1:-main\}\"\n  cat <<WRAP\n(.*?)\nWRAP\n\}\n"
 # ⚠️ AND THE WRITER MUST INSTALL BY RENAME. Section [4] is the half the first fix missed entirely: the
 # braces + `exit` protect a wrapper that already has them, and can do nothing for the single press of Update
 # that INSTALLS them — the script running at that moment is the OLD, unguarded one. Each writer is therefore
@@ -56,8 +58,10 @@ RENAMERS = {
 def render(fname):
     """The wrapper exactly as the installer writes it — heredoc escapes resolved, ref substituted."""
     src = open(os.path.join(ROOT, fname), encoding="utf-8").read()
-    m = re.search(WRITERS[fname], src, re.S)
-    assert m, "no wrapper heredoc found in " + fname
+    assert src.count(WRITERS[fname]) == 1, "%s does not write the wrapper from the one text" % fname
+    lib = open(os.path.join(ROOT, "lib", "common.sh"), encoding="utf-8").read()
+    m = re.search(TEXT_RE, lib, re.S | re.M)
+    assert m, "no wrapper text found in lib/common.sh"
     body = m.group(1).replace("\\$", "$").replace("\\`", "`").replace("${_swg_ref}", "dev")
     if PERTURB:
         # exactly how it shipped: no compound-command guard, no exit

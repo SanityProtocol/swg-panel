@@ -5,7 +5,7 @@
 # wdtt://) — clients are interchangeable. This builds ONLY the datapath server (server/cmd), NOT the
 # bundled web panel / Xray / subscription server.
 #
-# BUILD LABEL: 1.5.0-3. ildarmaga publishes no source past PIN (ef69799 = the v1.5.0 tree); its
+# BUILD LABEL: 1.5.0-4 (-3 + the -dns flag). ildarmaga publishes no source past PIN (ef69799 = the v1.5.0 tree); its
 # 1.5.40/1.5.55/1.5.61 tags all point at that one commit and the shipped 1.5.x binaries were built from
 # unpublished commits. So we build v1.5.0 + our patch and label it honestly (NOT a borrowed 1.5.40/1.5.61).
 # -3 adds the K5 revocation/source fixes (see README) on top of the -no-nat/flags patch. Nothing published.

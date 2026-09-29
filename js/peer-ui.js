@@ -22,7 +22,7 @@ import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
   Popover, CapList, useCapped, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
   openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, rowSingle, rowDouble, rowNoSelect, RowError,
-  useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice, modalDepth,
+  useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice, modalDepth, tgt3,
 } from "./ui.js";
 import {
   QR, qrDataURL, qrZoom, copyQrImage, buildConf, parseFullConf, downloadConf, getConfig, configOverrides,
@@ -252,7 +252,7 @@ export function UserPeerCard({ peer, onOpen }) {
       // below did not reach it — that branch only renders when no head is passed, and one always is.
       ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(lt.status)}</span>`)
       : html`<${Badge} s=${lt.status}/>`}</div>
-    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
+    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface} gen3=${tgt3(t)}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps" title=${kinds.join(" · ")}>${kinds.length > 1 ? kinds.join(" · ") : plural(targets.length, "deployment")}</span>` : null}</div>
   </div>`;
   // Only a MULTI-config peer opens its own modal (a single-config peer has nothing extra to show — it's already
   // fully presented here). When it does: the whole card opens it EXCEPT the QR image (enlarges) and the action
@@ -692,7 +692,7 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
       ${a.qr ? html`<button class="btn btn-mini" onClick=${() => setView(v => v === "qr" ? "text" : "qr")}><${Ic} i=${qrView ? "doc" : "qr"}/> ${qrView ? T("Show config") : T("Show QR")}</button>` : null}
       <span class="grow"></span>
       <button class="btn btn-mini" disabled=${!ready} onClick=${() => qrView ? copyQrImage(text, T("QR image")) : copy(text, a.uri ? T("Link copied") : T("Config copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
-      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""), a.ext)}><${Ic} i="download"/> Download .${a.ext || "conf"}</button>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""), a.ext)}><${Ic} i="download"/> ${T("Download .{v1}", { v1: a.ext || "conf" })}</button>
     </div>
   </div>`;
 }
@@ -1329,9 +1329,12 @@ export function csqttArtInput(peer, t) {
   // Raw VK inputs — csqttArtifact strips/dedupes/caps them into the link's `hashes` (one place, shared with the sub page).
   return { host, port, password: peer.csqtt_password || "", vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) || [] };
 }
-export function csqttClientCfg(inp) {
-  const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp) : null;
-  return { art, uri: art && art.text, qr: !!(art && art.qr) };   // the encoder decides — the CSQTT app can't scan yet
+// One client's link, by its catalog id: the encoder decides. csqtt apps take the csqtt:// link; anton48's iOS
+// VK TURN Proxy is handed its own vkturnproxy:// one, because it reads only the first VK hash of a csqtt:// link.
+export function csqttClientCfg(inp, cid) {
+  const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
+  const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp, cl.encoder || "csqtt") : null;
+  return { cl, art, uri: art && art.text, qr: !!(art && art.qr) };   // the encoder decides — the CSQTT app can't scan yet
 }
 export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   useStore();
@@ -1339,7 +1342,9 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   const lt = (((Store.recon.peers.find(p => p.id === peer.id) || {}).targets) || []).find(d => d.node === t.node && d.iface === t.iface) || t;
   const col = Store.nodeColor(t.node); const dnode = Store.nodeName(t.node);
   const inp = csqttArtInput(peer, t);
-  const dc = csqttClientCfg(inp);
+  const rb = ((Store.stats[t.node] || {}).csqtt || []).find(x => x && x.iface === t.iface) || {};
+  const clientIds = wdttClientIds(rb.fork || "csqtt");   // same ordering as WDTT: [0] = the fork's own app (CSQTT)
+  const dc = csqttClientCfg(inp, clientIds[0] || "csqttapp");
   // the link is complete, but only because the panel-wide fallback filled it in — see vkOwnHash
   const vkFallbackHere = !vkOwnHash(peer, (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null);
   // An UNASSIGNED peer has no user, so the half of this note about "their subscription page" and "set a VK link
@@ -1377,6 +1382,7 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
     ${vkNote}
     ${uri ? html`<div class="acts">
       <button class="btn btn-mini" onClick=${() => copy(uri, T("csqtt link copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
+      ${clientIds.length > 1 ? html`<button class="btn btn-mini" onClick=${() => pushModal(html`<${WdttConfigSheet} peer=${peer} t=${t} kind="csqtt"/>`)}><${Ic} i="dots"/> ${T("Alternatives")}</button>` : null}
     </div>` : null}
   </div>`;
 }
@@ -1461,13 +1467,14 @@ export function TargetCardWdtt({ peer: peerProp, t, bare, primary, head }) {
     </div>` : null}
   </div>`;
 }
-// "Alternatives" — every app for this WDTT fork, by device: a Device dropdown + app chips ("app · by author", in the
+// "Alternatives" — every app for this WDTT (or, with kind="csqtt", csqtt) fork, by device: a Device dropdown + app chips ("app · by author", in the
 // author's colour) on one line, and the chosen app's config (QR where it scans one, else the link) underneath.
-export function WdttConfigSheet({ peer, t }) {
+export function WdttConfigSheet({ peer, t, kind }) {
   useStore();
-  const w = wdttArtInput(peer, t);
-  const rb = ((Store.stats[t.node] || {}).wdtt || []).find(x => x && x.iface === t.iface) || {};
-  const fork = rb.fork || "amurcanov";
+  const cs = kind === "csqtt";
+  const w = cs ? csqttArtInput(peer, t) : wdttArtInput(peer, t);
+  const rb = ((Store.stats[t.node] || {})[cs ? "csqtt" : "wdtt"] || []).find(x => x && x.iface === t.iface) || {};
+  const fork = rb.fork || (cs ? "csqtt" : "amurcanov");
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
   const all = wdttClientIds(fork).map(id => ({ id, ...(cmap[id] || {}) }));
   const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
@@ -1481,7 +1488,8 @@ export function WdttConfigSheet({ peer, t }) {
   const authorOf = id => (turnClientAuthor(id) || {}).fork || (cmap[id] || {}).author || fork;
   const clr = id => turnClientColor(id) || turnColor(authorOf(id));
   const base = (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node);
-  return html`<${Sheet} title=${T("WDTT client apps · {v1}", { v1: peer.title || peer.name || T("val|peer") })} width=${600} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+  const who = peer.title || peer.name || T("val|peer");
+  return html`<${Sheet} title=${cs ? T("CSQTT client apps · {v1}", { v1: who }) : T("WDTT client apps · {v1}", { v1: who })} width=${600} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
       headExtra=${html`<${PeerStatusLine} peer=${peer} pos="hr"/>`}>
     <div class="turncfg">
       <${PeerStatusLine} peer=${peer} pos="bar"/>
@@ -1493,12 +1501,14 @@ export function WdttConfigSheet({ peer, t }) {
               autostart: !!(((c.platforms || {})[curOs] || {}).autostart) }; })}
           onChange=${id => setCi(Math.max(0, clients.findIndex(c => c.id === id)))}/></div>` : null}
       </div>
-      ${client ? html`<${WdttCfgItem} key=${client.id + "|" + curOs} w=${w} cid=${client.id} base=${base} fork=${fork} os=${curOs}/>` : html`<div class="hint">${T("No client app for this device.")}</div>`}
+      ${client ? html`<${WdttCfgItem} key=${client.id + "|" + curOs} w=${w} cid=${client.id} base=${base} fork=${fork} os=${curOs} kind=${kind}/>` : html`<div class="hint">${T("No client app for this device.")}</div>`}
     </div>
   <//>`;
 }
-export function WdttCfgItem({ w, cid, base, fork, os }) {
-  const dc = wdttClientCfg(w, cid, fork, os); const uri = dc.uri;
+export function WdttCfgItem({ w, cid, base, fork, os, kind }) {
+  const cs = kind === "csqtt";
+  const dc = cs ? csqttClientCfg(w, cid) : wdttClientCfg(w, cid, fork, os); const uri = dc.uri;
+  const copied = cs ? T("csqtt link copied") : T("WDTT link copied");
   const [view, setView] = useState(dc.qr ? "qr" : "text");
   const taRef = useRef(null);
   useEffect(() => { setView(dc.qr ? "qr" : "text"); }, [cid]);
@@ -1506,15 +1516,15 @@ export function WdttCfgItem({ w, cid, base, fork, os }) {
   const qrView = dc.qr && view === "qr";
   return html`<div class="turncfg-item">
     <div class="turncfg-head"><span class="tcf-label">${clientHandoff(dc.cl, cid, dc.qr, os)}</span></div>
-    ${!uri ? html`<div class="qr-none">${T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
+    ${!uri ? html`<div class="qr-none">${cs ? T("csqtt link unavailable — the server isn't reporting yet.") : T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
       : qrView ? html`<div class="turncfg-qr"><${QR} conf=${uri} label=${dc.cl.name || cid}/></div>`
-      : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => { e.target.select(); copy(uri, T("WDTT link copied")); }}>${uri}</textarea>
-          <button class="cmd-copy" title=${T("Copy link")} onClick=${() => copy(uri, T("WDTT link copied"))}><${Ic} i="copy"/></button></div>`}
+      : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => { e.target.select(); copy(uri, copied); }}>${uri}</textarea>
+          <button class="cmd-copy" title=${T("Copy link")} onClick=${() => copy(uri, copied)}><${Ic} i="copy"/></button></div>`}
     <div class="turncfg-foot">
       ${dc.qr ? html`<button class="btn btn-mini" onClick=${() => setView(v => v === "qr" ? "text" : "qr")}><${Ic} i=${qrView ? "doc" : "qr"}/> ${qrView ? T("Show link") : T("Show QR")}</button>` : null}
       <span class="grow"></span>
-      <button class="btn btn-mini" disabled=${!uri} onClick=${() => qrView ? copyQrImage(uri, T("QR image")) : copy(uri, T("WDTT link copied"))}><${Ic} i="copy"/> ${T("Copy link")}</button>
-      <button class="btn btn-mini" disabled=${!uri} onClick=${() => downloadConf(uri, base + "-wdtt", "txt")}><${Ic} i="download"/> ${T("Download .txt")}</button>
+      <button class="btn btn-mini" disabled=${!uri} onClick=${() => qrView ? copyQrImage(uri, T("QR image")) : copy(uri, copied)}><${Ic} i="copy"/> ${T("Copy link")}</button>
+      <button class="btn btn-mini" disabled=${!uri} onClick=${() => downloadConf(uri, base + (cs ? "-csqtt" : "-wdtt"), "txt")}><${Ic} i="download"/> ${T("Download .txt")}</button>
     </div>
   </div>`;
 }
@@ -1535,10 +1545,10 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
   const ltype = targetType(t);
   const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : esc(T("val|Unassigned"))}</span>`
-    + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-${ltype}">${esc(t.iface)}</span>`;
+    + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-${ltype}${tgt3(t) ? " awg3" : ""}">${esc(t.iface)}</span>`;
 
   return html`<div class="deploy">
-    ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${peerUncategorised(t) && lt.status !== "blocked" && lt.status !== "faulty"
+    ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface} gen3=${tgt3(t)}/><span class="grow"></span>${peerUncategorised(t) && lt.status !== "blocked" && lt.status !== "faulty"
       ? uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(lt.status)}</span>`)
       : html`<${Badge} s=${lt.status}/>`}</div>`}
     <div class="deploy-body">
@@ -1568,7 +1578,7 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
         <div class="row"><span class="k">${T("row|address")}</span><span class="vv">${t.ip || "—"}</span></div>
         <div class="row"><span class="k">${T("row|handshake")}</span><span class="vv">${obs ? seen(obs.handshake_age) : "—"}</span></div>
         <div class="row"><span class="k">${T("row|rate")}</span><span class="vv">${(() => { const xf = tgtXfer(t); return xf ? rateCell(xf.rx_speed, xf.tx_speed) : "—"; })()}</span></div>
-        <div class="row"><span class="k">${T("row|transport")}</span><span class="vv">${lt.viaTurn ? html`via <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnLabel(lt.viaTurn))}>${turnLabel(lt.viaTurn)}</span>` : (lt.via === "direct" ? "direct" : "—")}</span></div>
+        <div class="row"><span class="k">${T("row|transport")}</span><span class="vv">${lt.viaTurn ? html`${T("via")} <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnLabel(lt.viaTurn))}>${turnLabel(lt.viaTurn)}</span>` : (lt.via === "direct" ? T("tag|direct") : "—")}</span></div>
         ${tps.map(tp => html`<div class="row"><span class="k">${T("turn-proxy")}</span><span class="vv">${tp.listen || "—"}
           ${tp.wrap_key ? html`<${Fragment}> ${T("· key")} <span class="addr">${String(tp.wrap_key).slice(0, 8)}…</span><button class="copybtn" title=${T("Copy wrap key")} onClick=${() => copy(tp.wrap_key, T("Wrap key copied"))}><${Ic} i="copy"/></button></>` : null}</span></div>`)}
       </div>`}

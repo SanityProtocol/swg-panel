@@ -170,12 +170,17 @@ def issued(devexit):
     N._ensure_fwd_iptables([], [], "eth0", res, "", devexit=devexit)
     return [" ".join(map(str, c)) if isinstance(c, list) else str(c) for c in calls], devs, res
 
+RENAMED = [0]
 if PERTURB:
     # The obvious implementation: a descriptive tag of its own. It reads better and it deletes the
     # interface's baseline NAT, because `_has_foreign_egress` only ever exempts the literal "swg-egress:".
+    # ⚠️ Counted: a tag without the anchor passes through untouched, and a run that renamed none measured nothing —
+    # a FALSE-PASS, never a gate that "does not see it".
     _orig = N._snat_reconcile_rule
-    N._snat_reconcile_rule = lambda tag, subnet, des, rules: _orig(
-        tag.replace("swg-egress:exit:", "swg-devexit:"), subnet, des, rules)
+    def _renamed(tag, subnet, des, rules):
+        RENAMED[0] += "swg-egress:exit:" in tag
+        return _orig(tag.replace("swg-egress:exit:", "swg-devexit:"), subnet, des, rules)
+    N._snat_reconcile_rule = _renamed
 
 calls, devs, res = issued(DX)
 added = [c for c in calls if " -I POSTROUTING " in c]
@@ -217,6 +222,9 @@ if KEYDEV:
     sys.exit(1)
 
 if PERTURB:
+    if not RENAMED[0]:
+        print("\nSTALE ANCHOR — no SNAT tag carried \"swg-egress:exit:\", so the rename planted nothing: this run would FALSE-PASS")
+        sys.exit(2)
     if FAILS:
         print("\nperturbed: the out-of-namespace tag was CAUGHT (%d red) — the baseline would have died" % len(FAILS))
         sys.exit(0)

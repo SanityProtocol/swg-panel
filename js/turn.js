@@ -18,14 +18,14 @@ import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
   TURN_FORKS_FALLBACK, turnLabel, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel, forkPickLabel,
-  forkSupportsAwg, turnColor, turnClientColor, turnClientAuthor,
+  forkSupportsAwg, forkSupportsAwg3, turnColor, turnClientColor, turnClientAuthor,
 } from "./turn-catalog.js";
-import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn,
+import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn, awg3Cls, awg3Tip, awgGen,
          isWdttName, isSelfContainedName, turnIfaceNameError,
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
          subnetServerAddr, suggestSubnet, ghostIface } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
-import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, RoutingRules, reportDropped, rulesSummary } from "./routing.js";
+import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle, reportDropped, rulesSummary } from "./routing.js";
 import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate, ReachField } from "./views.js";
 import { IfaceThroughput, RangedHistory, lossColor } from "./charts.js";
 import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, subFeatureOn,
@@ -129,6 +129,9 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
   const lp = portOf(tp.connect);
   const fronted = Object.keys(metas).find(i => String((metas[i] || {}).listen_port) === lp);
   const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
+  // A proxy whose app carries AmneziaWG 2.0 only, in front of a 3.1 interface — the panel refuses to make it so, but one taken
+  // over as it ran, or pointed by an older panel, can already be there: its clients cannot connect, and nothing else says so.
+  const off3 = !!fronted && !forkSupportsAwg3(turnFork(tp.service)) && awgGen(node, fronted) === "3.1";
   const _pendRaw = (nrec.turn_pending || {})[tp.service];
   const pend = _pendRaw === "title" ? undefined : _pendRaw;   // a cosmetic title rename is not a disruptive pending — never dim / "creating" / busy the card for it
   const err = (nrec.cmd_errors || {})[tp.service];
@@ -198,7 +201,7 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
           onClick=${e => { e.preventDefault(); e.stopPropagation(); }}><${ProxyDropsPop} d=${_pd} service=${tp.service}
             trigger=${html`<span class="dp-num" style=${"color:" + lossColor(Math.min(5, (_pd.per_min || 0) / 20))}>${dropRate(_pd.per_min)}${T("unit|/min")}</span>`}/></span></div>`;
       })()}
-      ${showForwards ? html`<div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + ((nodeStale(node) || ifaceNotUp(node, fronted)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
+      ${showForwards ? html`<div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + awg3Cls(node, fronted) + ((nodeStale(node) || ifaceNotUp(node, fronted)) ? " muted" : "")} ...${awg3Tip(node, fronted)} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}${off3 ? html` <span class="tg tg-warn" title=${T("{v1} runs AmneziaWG 3.1, and this proxy's app carries AmneziaWG 2.0 only — its clients cannot connect. Point it at a 2.0 interface.", { v1: fronted })}><${Ic} i="warn"/>${T("tag|2.0 app")}</span>` : null}</span></div>` : null}
     </div></div>`;
 }
 
@@ -249,7 +252,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
       <div class="ifcard-rows">
         <div class="ifrow"><span class="l">${T("Turn-proxy fork")}</span><span class="r">${turnFork(svc)}</span></div>
         <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${d.listen || "—"}</span></div>
-        <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
+        <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + awg3Cls(node, fronted)} ...${awg3Tip(node, fronted)} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
       </div></div>`; };
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length + wdttInsts.length + csqttInsts.length}
       actions=${nrec.turn_manage ? html`<${Fragment}>${(() => {
@@ -357,7 +360,7 @@ export function TurnIpsHeader({ node, svc }) {
   return html`<${Popover} hoverOnly cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
     <div class="onpop-h">${T("Collected VK IPs")}</div>
     ${rows.length ? html`<${Fragment}>
-      ${rows.map(r => html`<div class="tipbub-row" key=${r.ip}><span class=${"tipdot" + (r.on ? " on" : "")}></span><span class="tipbub-ip">${r.ip}</span><span class="grow"></span><span class="tipbub-when">${r.on ? "online" : _lastSeen(r.last)}</span></div>`)}
+      ${rows.map(r => html`<div class="tipbub-row" key=${r.ip}><span class=${"tipdot" + (r.on ? " on" : "")}></span><span class="tipbub-ip">${r.ip}</span><span class="grow"></span><span class="tipbub-when">${r.on ? T("val|online") : _lastSeen(r.last)}</span></div>`)}
       ${all.length > rows.length ? html`<div class="tipbub-more">${T("+{n} more in Settings", { n: all.length - rows.length })}</div>` : null}
       ${offlineN ? html`<button class="tipbub-flush" onClick=${flush}><${Ic} i="trash"/> ${T("Flush offline recorded IPs")}</button>` : null}
     <//>`
@@ -395,7 +398,7 @@ export function TurnCollectedIps() {
           <div class="tipgrid-h"><span>${T("Turn IP")}</span><span>${T("Last")}</span><span>${T("Collected by")}</span><span></span></div>
           ${rows.map(r => html`<div class="tiprow" key=${r.nid + "|" + r.ip}>
             <span class="tip-ip"><span class=${"tipdot" + (r.on ? " on" : "")}></span>${r.ip}</span>
-            <span class="tip-last">${r.on ? "online" : _lastSeen(r.last)}</span>
+            <span class="tip-last">${r.on ? T("val|online") : _lastSeen(r.last)}</span>
             <span class="tip-by">${r.by.map(_forkTag)}</span>
             <button class="xbtn" title=${T("Delete this IP record")} onClick=${() => del(r.nid, r.ip)}><${Ic} i="x"/></button>
           </div>`)}
@@ -430,12 +433,15 @@ export function TurnManageSheet({ node, tp }) {
   const [lport, setLport] = useState(lp);
   const tperr = portErrMsg(node, lport, [lp]);   // live listen-port collision check (this proxy's own port doesn't count)
   const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length,
+                        awg3: awgGen(node, n) === "3.1" }))   // the version the panel's record gives it — what its clients are handed
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
-  // this proxy's fork is fixed here; a WireGuard-only fork can't front an AmneziaWG interface → hide awg ones
+  // this proxy's fork is fixed here; a WireGuard-only fork can't front an AmneziaWG interface → hide awg ones — and a fork
+  // whose app carries AmneziaWG 2.0 only (WINGS-N) can't front a 3.1 one, which the panel refuses (docs/AWG3-PLAN.md D-apps)
   const fork = turnFork(svc);
-  const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
+  const ifaces = allIfaces.filter(i => (forkSupportsAwg(fork) || !i.awg) && (forkSupportsAwg3(fork) || !i.awg3));
   const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
+  const hideAwg3 = forkSupportsAwg(fork) && !forkSupportsAwg3(fork) && allIfaces.some(i => i.awg3);
   const conPort = con.includes(":") ? con.slice(con.lastIndexOf(":") + 1) : con;
   const match = ifaces.find(i => i.port === conPort);
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
@@ -549,6 +555,7 @@ export function TurnManageSheet({ node, tp }) {
         options=${[...ifaces.map(i => ({ value: i.name, label: i.name + " · 127.0.0.1:" + i.port })),
                    { value: "__custom__", label: T("Custom IP:Port…") }]}/>
       ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
+      ${hideAwg3 ? html`<div class="hint">${T("{v1} serves an app that carries AmneziaWG 2.0 only — AmneziaWG 3.1 interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
     </div>
     ${isCustom ? html`<${Fragment}>
       <div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>
@@ -799,7 +806,7 @@ export function AppDropdown({ value, options, onChange }) {
   useEffect(() => { if (!open) return; const h = () => setOpen(false); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [open]);
   if (!cur) return null;
   // "by <author>" is one translated phrase (the key ClientEntryLabel already uses): a literal " by " stayed English on a RU panel.
-  const lbl = o => html`<span class="osdd-lbl"><b style=${o.nameColor ? "color:" + o.nameColor : ""}>${o.name}</b><span class="app-by">${Trich("by {v1}", { v1: html`<span class="app-by-who" style=${"color:" + o.color}>${o.author || "—"}</span>` })}</span>${o.plain ? html`<span class="app-plain">PLAIN</span>` : null}${autostartIcon(o.autostart)}</span>`;
+  const lbl = o => html`<span class="osdd-lbl"><b style=${o.nameColor ? "color:" + o.nameColor : ""}>${o.name}</b><span class="app-by">${Trich("by {v1}", { v1: html`<span class="app-by-who" style=${"color:" + o.color}>${o.author || "—"}</span>` })}</span>${o.plain ? html`<span class="app-plain">${T("tag|plain").toUpperCase()}</span>` : null}${autostartIcon(o.autostart)}</span>`;
   return html`<div class="osdd appdd" onClick=${e => e.stopPropagation()}>
     <button type="button" class=${"osdd-btn" + (open ? " open" : "")} onClick=${() => setOpen(o => !o)}>
       ${lbl(cur)}<span class="osdd-car">${open ? "▴" : "▾"}</span></button>
@@ -908,9 +915,9 @@ export function ClientEntryLabel({ e }) {
 }
 export function ClientEntryBadges({ e }) {
   return html`<span class="ce-badges">
-    <span class=${"ce-tag " + (e.obf ? "ce-obf" : "ce-plain")}>${e.obf || "plain"}</span>
-    <span class=${"ce-tag " + (e.native ? "ce-native" : "ce-cross")}>${e.native ? "Native" : "crossplatform"}</span>
-    <span class=${"ce-tag " + (e.isCli ? "ce-cli" : "ce-app")}>${e.isCli ? "CLI" : "app"}</span>
+    <span class=${"ce-tag " + (e.obf ? "ce-obf" : "ce-plain")}>${e.obf || T("tag|plain")}</span>
+    <span class=${"ce-tag " + (e.native ? "ce-native" : "ce-cross")}>${e.native ? T("tag|Native") : T("tag|crossplatform")}</span>
+    <span class=${"ce-tag " + (e.isCli ? "ce-cli" : "ce-app")}>${e.isCli ? "CLI" : T("tag|app")}</span>
     ${autostartIcon(e.autostart)}
   </span>`;
 }
@@ -1124,7 +1131,7 @@ export function RosterCheckSheet() {
             const p4has = p4 && rcTotal(p4.counts) > 0;
             return html`<div class="roster-row" key=${cid}>
               <div class="roster-hd">
-                <span class="roster-nm" style=${color ? "color:" + color : ""}>${name}</span>${author ? html`<span class="roster-by">by ${author}</span>` : null}
+                <span class="roster-nm" style=${color ? "color:" + color : ""}>${name}</span>${author ? html`<span class="roster-by">${T("by {v1}", { v1: author })}</span>` : null}
                 ${p4 ? RosterCounts(p4.counts) : (t ? html`<span class=${"tg " + t[0]} title=${p1.status === "unwatched" ? T("No upstream source is tracked for this client — a format change here would not raise a flag.") : (p1.status === "unknown" ? T("The tracked file could not be fetched — the check did not run.") : "")}><${Ic} i=${t[1]}/>${t[2]}</span>` : null)}
                 <span class="grow"></span>
                 ${p4 && (p4.versions || []).length ? SetVersionPicker(p4, i => setVersion(cid, i), busy[cid]) : null}
@@ -1155,7 +1162,7 @@ export function RosterP1Files(p1) {
   return html`${(p1.files || []).map(f => html`<div class="roster-file"><span class="mono">${f.path.split("/").pop()}</span>
     ${f.status === "changed" ? html`<a href=${f.compare_url || f.url} target="_blank" rel="noopener">${T("view change → {v1}", { v1: f.latest_commit })}</a>`
       : f.status === "unknown" ? html`<a class="faint" href=${f.url} target="_blank" rel="noopener">${T("couldn't fetch")}</a>`
-      : html`<span class="faint">${f.latest_commit || "current"}</span>`}</div>`)}`;
+      : html`<span class="faint">${f.latest_commit || T("file|current")}</span>`}</div>`)}`;
 }
 // P4 review: adopt green (Add) / red (Remove) via p4/adopt; orange needs-wiring rows are disabled + labelled.
 export function openRosterP4Review(cid, rep, onDone) { pushModal(html`<${RosterP4ReviewSheet} cid=${cid} rep=${rep} onDone=${onDone}/>`); }
@@ -1582,11 +1589,12 @@ export function SetupTurnSheet({ node, forwardIface }) {
   const snap = Store.stats[node] || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";
   const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") || isSelfContainedName(n), awg: !!Object.keys((b.meta || {}).awg_params || {}).length,
+                        awg3: awgGen(node, n) === "3.1" }))   // the version the panel's record gives it — what its clients are handed
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
   // launched from an interface's page → pre-select it as the forwards-to (and, if it's AmneziaWG, start on a fork that can front it)
   const fwdPre = forwardIface ? allIfaces.find(i => i.name === forwardIface) : null;
-  const [fork, setFork] = useState(((fwdPre && fwdPre.awg ? FORKS.find(x => forkSupportsAwg(x.id)) : null) || FORKS[0] || turnForkList()[0]).id);
+  const [fork, setFork] = useState(((fwdPre && fwdPre.awg ? FORKS.find(x => forkSupportsAwg(x.id) && (!fwdPre.awg3 || forkSupportsAwg3(x.id))) : null) || FORKS[0] || turnForkList()[0]).id);
   const epIp = (() => {   // the node's PUBLIC endpoint (what clients dial); on bridge the proxy rebinds it to 0.0.0.0
     for (const b of Object.values(snap.interfaces || {})) {
       const ep = (b.meta || {}).endpoint || "";
@@ -1596,9 +1604,12 @@ export function SetupTurnSheet({ node, forwardIface }) {
   })();
   // include the public endpoint so bridge nodes (whose reported ips are container-private + filtered) still offer it
   const ips = ipChoices(nrec, epIp);
-  // a WireGuard-only fork can't front an AmneziaWG interface → hide awg interfaces from its picker
-  const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
+  // a WireGuard-only fork can't front an AmneziaWG interface → hide awg interfaces from its picker; a fork whose app carries
+  // AmneziaWG 2.0 only (WINGS-N) can't front a 3.1 one → hide those (the panel refuses it, docs/AWG3-PLAN.md D-apps)
+  const fits = (id, i) => (forkSupportsAwg(id) || !i.awg) && (forkSupportsAwg3(id) || !i.awg3);
+  const ifaces = allIfaces.filter(i => fits(fork, i));
   const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
+  const hideAwg3 = forkSupportsAwg(fork) && !forkSupportsAwg3(fork) && allIfaces.some(i => i.awg3);
   const lInit = listenHostInit(epIp, ips, (nrec || {}).ips);
   const [lsel, setLsel] = useState(lInit);
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? epIp : "");
@@ -1641,9 +1652,10 @@ export function SetupTurnSheet({ node, forwardIface }) {
     const cf = turnForkList().find(x => x.id === fork) || turnForkList()[0];
     const nf = turnForkList().find(x => x.id === id) || turnForkList()[0];
     if (params === dflParams(cf)) setParams(dflParams(nf));
-    // switching to a WG-only fork while an awg interface is selected → move to the first WG interface (or custom)
-    if (!forkSupportsAwg(id) && fwd !== "__custom__" && !allIfaces.some(i => i.name === fwd && !i.awg)) {
-      const firstWg = allIfaces.find(i => !i.awg); setFwd(firstWg ? firstWg.name : "__custom__");
+    // switching to a fork that cannot front the selected interface (WG-only onto AmneziaWG, a 2.0-only app onto 3.1) → move to
+    // the first interface it can front (or custom)
+    if (fwd !== "__custom__" && !allIfaces.some(i => i.name === fwd && fits(id, i))) {
+      const first = allIfaces.find(i => fits(id, i)); setFwd(first ? first.name : "__custom__");
     }
     setFork(id);
   };
@@ -1719,6 +1731,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
           options=${[...ifaces.map(i => ({ value: i.name, label: i.name + " · 127.0.0.1:" + i.port })),
                      { value: "__custom__", label: T("Custom IP:Port…") }]}/>
         ${hideAwg ? html`<div class="hint">${T("{v1} is WireGuard-only — AmneziaWG interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
+        ${hideAwg3 ? html`<div class="hint">${T("{v1} serves an app that carries AmneziaWG 2.0 only — AmneziaWG 3.1 interfaces are hidden.", { v1: forkLabel(fork) })}</div>` : null}
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
       <${Disclosure} title=${T("Server parameters")} summary=${forkSettings(fork).length ? null : html`<span class="faint">${T("val|none")}</span>`} open=${openSec === "server"} onToggle=${() => setOpenSec(s => s === "server" ? null : "server")}>
@@ -1852,6 +1865,67 @@ export function WdttCard({ node, w, reorder }) {
 // full interface detail instead). TODO Phase 2 (fork dimension): reshape this into the real turn modal —
 // fork switch + client-apps picker + server params — and let the interface detail own lifecycle/peers, so
 // the two views stop overlapping (see docs/WDTT-FORK-FAMILY-PLAN.md §"UI corrections").
+// CLIENT DNS for a WDTT / csqtt server (docs/DNS-SETTINGS-PLAN.md §3). The server hands it to every client when it
+// connects; it never resolves with it. 1–2 IPv4 — Android's VPN API takes addresses only, and csqtt / wdttplus refuse
+// a third. Empty = the fork's own default, read from the catalog (`client_dns`), so the operator sees what clients get.
+const _dnsParts = v => String(v || "").split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+// Twin of swg-panel-server `turn_dns_usable`: canonical IPv4, not 0/8, loopback, link-local, multicast or reserved.
+const _dnsUsable = x => /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(x)
+  && !/^(0|127)\./.test(x) && !/^169\.254\./.test(x) && +x.split(".")[0] < 224;
+function turnDnsErr(v) {
+  const p = [...new Set(_dnsParts(v))];
+  if (p.length > 2) return T("Client DNS takes at most two addresses.");
+  const bad = p.find(x => !_dnsUsable(x));
+  return bad ? T("Client DNS must be IPv4 addresses — {v1} is not one a phone can use.", { v1: bad }) : "";
+}
+// The value as the server compares it: split, de-duplicated, joined — so retyping the same address twice is no change.
+const _dnsNorm = v => [...new Set(_dnsParts(Array.isArray(v) ? v.join(",") : v))].join(",");
+const turnDnsDefault = fork => ((turnForkList().find(x => x.id === fork) || {}).client_dns || "").split(",").join(", ");
+// What clients get when the panel sets no DNS: the value the server had before the panel first set one (`dns_orig`,
+// kept by the panel), else what a server that remembers its own reports holding now (`dns_server`: csqtt, wdttplus),
+// else the fork's catalog default. `own` = it came from the server, not from the catalog.
+function turnDnsBaseline(cfg, fork, rep) {
+  if ((cfg.dns_orig || []).length) return { v: cfg.dns_orig.join(", "), own: true };
+  if (!(cfg.dns || []).length && rep && rep.dns_server) return { v: String(rep.dns_server).split(",").join(", "), own: true };
+  return { v: turnDnsDefault(fork), own: false };
+}
+function useTurnDns(cfg, fork, rep) {
+  // A stored value EQUAL to the baseline reads as empty: that is what clearing stores (wdttplus and csqtt keep their
+  // last value when no flag comes, so the panel sends it explicitly), and it is what clients get.
+  const base = turnDnsBaseline(cfg, fork, rep);
+  const stored = (cfg.dns || []).join(", ");
+  const cur = _dnsNorm(stored) === _dnsNorm(base.v) ? "" : stored;
+  const [val, set] = useState(cur);
+  const dirty = _dnsNorm(val) !== _dnsNorm(cur);
+  return { val, set, dirty, cur: stored, base, err: dirty ? turnDnsErr(val) : "", body: dirty ? { dns: [...new Set(_dnsParts(val))] } : {} };
+}
+const advSum = eg => "DNS" + (natPinApplies(eg) ? " · NAT" : "");   // i18n-keys: acronyms, as the wg/awg Edit sheet's Advanced summary spells them
+function TurnDnsField({ node, fork, rep, dns, params }) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const dflt = dns.base.v;
+  // A node too old to know the field doesn't echo `dns` in its report; a fork build that can't take it says so.
+  const oldNode = !!rep && ("active" in rep) && !("dns" in rep);   // a real report (every one carries `active`) without dns
+  const unsupported = !!(rep && rep.dns_unsupported);
+  // The operator's own `-dns` / `--dns` in Extra flags comes LAST on the command line (csqtt: an argument beats
+  // CSQTT_DNS), so it wins — say so rather than show a field that does nothing.
+  const inParams = /(^|\s)--?dns(\s|=|$)/.test(params || "");
+  // The node echoes the value it holds. Until it matches the record, the saved value is not on the server yet
+  // (next sync, or a value the node could not use) — say so rather than show it as live.
+  const pending = !oldNode && !!rep && ("dns" in rep) && _dnsNorm(rep.dns) !== _dnsNorm(dns.cur);
+  const hint = unsupported ? T("This fork's build can't set client DNS yet — its clients get {v1}.", { v1: dflt || "1.1.1.1" })
+    : inParams ? T("Extra flags set their own DNS, and that one wins over this field.")
+    : oldNode ? T("Saved now, applied once this node updates.")
+    : pending ? T("Saved — not on the server yet. The node applies it on its next sync.")
+    // Only a hint, not a verdict: the redirect covers the subnets whose routing matches by domain, which the node
+    // does not report per interface — so this says when it applies instead of claiming that it does.
+    : nrec.routing_mode === "forcedns" ? T("This node runs Force-DNS: if this server's routing matches by domain, the node's own resolver answers its clients' plain DNS instead.")
+    : (dflt && dns.base.own) ? T("Given to every client when it connects. Empty = not set by the panel; this server gives {v1}. Saving restarts the server.", { v1: dflt })
+    : dflt ? T("Given to every client when it connects. Empty = not set by the panel; this fork's default is {v1}. Saving restarts the server.", { v1: dflt })
+    : T("Given to every client when it connects. Saving restarts the server.");
+  return html`<div class="field"><label>${T("Client DNS")}</label>
+    <input class=${dns.err ? "bad" : ""} value=${dns.val} disabled=${unsupported} onInput=${e => dns.set(e.target.value)} placeholder=${dflt || "1.1.1.1"} autocomplete="off"/>
+    <div class=${"hint" + (dns.err ? " err" : "")}>${dns.err || hint}</div></div>`;
+}
 export function WdttManageSheet({ node, w: w0 }) {
   useStore();   // live status / config while open
   const iface = w0.iface;
@@ -1962,7 +2036,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting} title=${title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet}
-    title=${html`WDTT-proxy · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(fork) })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`}
+    title=${html`${T("WDTT-proxy")} · ${(title.trim() || iface)} · ${forkLabel}${w.version ? html` <span class="sheet-ver">${w.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkPickLabel(fork) })} onClick=${() => openServerDefaults(fork)}><${Ic} i="gear"/></button>`}
     width=${664}
     headExtra=${w.service ? html`<${ProxyDropsHeader} node=${node} svc=${w.service}/><${TurnIpsHeader} node=${node} svc=${w.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
@@ -2094,6 +2168,9 @@ export function EditWdttSheet({ node, iface }) {
   const [reach, setReach] = useState(cfg.reach || "user");   // device access (§10.6) — absent is "user"
   const [disc, setDisc] = useState({ routing: true, filters: false });   // Routing opens by default (only shown in Smart mode)
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
+  // Client DNS lives here, with the interface — as a wg/awg interface's DNS does — not with the turn proxies, none of which
+  // has one. Checked against the saved Extra flags: a `-dns` there wins (TurnDnsField says so).
+  const dns = useTurnDns(cfg, fork, w);
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = () => {
     // Optimistic, like the interface edit sheet: flip the card to an "applying" badge + close the modal(s) NOW;
@@ -2102,12 +2179,13 @@ export function EditWdttSheet({ node, iface }) {
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() };
     Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...egressBody(eg) })
+    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...dns.body, ...egressBody(eg) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4; busy → applied via trackIfaceOps
       .catch(e => fail((e && e.message) || T("save failed")));
   };
   const save = () => {
     const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
+    if (dns.err) return setMsg({ k: "err", t: dns.err });   // before the port confirm, which saves straight through
     if (wgPort.trim() && !/^\d+$/.test(wgPort.trim())) return setMsg({ k: "err", t: T("Internal WG port must be a number.") });
     // the internal WG port is baked into each wdtt:// link → a change re-issues it
     if (!!oldListen && (wgPort.trim() || "56001") !== String(cfg.wg_port || "56001")) {
@@ -2142,14 +2220,14 @@ export function EditWdttSheet({ node, iface }) {
       <div class="field"><label>${T("Internal WG port")}</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : html`<div class="hint">${T("Loopback userspace-WG port (server-internal)")}</div>`}</div>
     </div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
-    ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
+    ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
+      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)} unvouchedRaw=${(nrec.reach_unvouched_raw || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
-      summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
+      summary=${blockActiveN(node, blk) ? T("{v1} active", { v1: blockActiveN(node, blk) }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
       <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
     <//>
@@ -2157,12 +2235,12 @@ export function EditWdttSheet({ node, iface }) {
           them — the node runs the same `_egress_des` ladder for a WDTT/csqtt subnet as for an interface.
           Moving the pin under Advanced without giving them one would have deleted the control for this
           whole kind. One section, one control, same framing as the interface sheets. */""}
-    ${/* The whole section, not just its body: here Advanced holds ONLY the pin, so in a mode that does not
-          store one there is nothing to open. */""}
-    ${natPinApplies(eg) ? html`<${Disclosure} title=${T("Advanced settings")} summary=${eg.nic || T("val|Off")}
+    ${/* Advanced: the server's client DNS (always), and the NAT pin where the mode stores one. */""}
+    <${Disclosure} title=${T("Advanced settings")} summary=${advSum(eg)}
       open=${disc.advanced} onToggle=${() => tog("advanced")}>
-      <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
-    <//>` : null}
+      <${TurnDnsField} node=${node} fork=${fork} rep=${w} dns=${dns} params=${cfg.params || ""}/>
+      ${natPinApplies(eg) ? html`<${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>` : null}
+    <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -2300,7 +2378,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked} title=${title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet}
-    title=${html`csqtt-proxy · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`}
+    title=${html`${T("csqtt-proxy")} · ${(title.trim() || iface)}${c.version ? html` <span class="sheet-ver">${c.version}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: "CSQTT" })} onClick=${() => openServerDefaults("csqtt")}><${Ic} i="gear"/></button>`}
     width=${664}
     headExtra=${c.service ? html`<${ProxyDropsHeader} node=${node} svc=${c.service}/><${TurnIpsHeader} node=${node} svc=${c.service}/>` : null}
     foot=${footRow({ left: html`<${Fragment}>
@@ -2359,16 +2437,18 @@ export function EditCsqttSheet({ node, iface }) {
   const [blk, setBlk] = useState(() => [...(cfg.block || [])]);
   const [disc, setDisc] = useState({ routing: true, filters: false });
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
+  const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = () => {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...egressBody(eg) })
+    api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...dns.body, ...egressBody(eg) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
-  const save = () => { const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee }); doSave(); };
+  const save = () => { const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
+    if (dns.err) return setMsg({ k: "err", t: dns.err }); doSave(); };
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   const notup = c.active !== "active";
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px"
@@ -2387,14 +2467,14 @@ export function EditCsqttSheet({ node, iface }) {
       <div class="ro-field" style="display:flex;align-items:center;gap:10px"><span class="mono">${cfg.title || "csqtt"}</span><span class="grow"></span><span class="mono">${oldListen || "—"}</span></div>
       <div class="hint">${T("Endpoint & listen port are edited from the csqtt-proxy modal.")}</div></div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
-    ${eg.mode === "smart" ? html`<${Disclosure} title=${T("Routing rules")} sumCls="route"
+    ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
       open=${disc.routing} onToggle=${() => tog("routing")}>
-      <${RoutingRules} node=${node} rows=${eg.rows || []} catchAll=${eg.catchAll} onChange=${(rows, catchAll) => setEg({ ...eg, rows, catchAll })}/>
+      <${RoutingRules} node=${node} iface=${iface} rows=${eg.rows || []} catchAll=${eg.catchAll} exitIps=${eg.exitIps} directIp=${eg.ip || ""} onChange=${(rows, catchAll, exitIps, ip) => setEg({ ...eg, rows, catchAll, exitIps, ip })}/>
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
-      summary=${blk.length ? T("{v1} active", { v1: blk.length }) : html`<span class="faint">${T("val|none")}</span>`}
+      summary=${blockActiveN(node, blk) ? T("{v1} active", { v1: blockActiveN(node, blk) }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
       <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
     <//>
@@ -2402,12 +2482,12 @@ export function EditCsqttSheet({ node, iface }) {
           them — the node runs the same `_egress_des` ladder for a WDTT/csqtt subnet as for an interface.
           Moving the pin under Advanced without giving them one would have deleted the control for this
           whole kind. One section, one control, same framing as the interface sheets. */""}
-    ${/* The whole section, not just its body: here Advanced holds ONLY the pin, so in a mode that does not
-          store one there is nothing to open. */""}
-    ${natPinApplies(eg) ? html`<${Disclosure} title=${T("Advanced settings")} summary=${eg.nic || T("val|Off")}
+    ${/* Advanced: the server's client DNS (always), and the NAT pin where the mode stores one. */""}
+    <${Disclosure} title=${T("Advanced settings")} summary=${advSum(eg)}
       open=${disc.advanced} onToggle=${() => tog("advanced")}>
-      <${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>
-    <//>` : null}
+      <${TurnDnsField} node=${node} fork=${c.fork || cfg.fork || "csqtt"} rep=${c} dns=${dns} params=${cfg.params || ""}/>
+      ${natPinApplies(eg) ? html`<${NatSourcePick} node=${node} value=${eg} onChange=${setEg}/>` : null}
+    <//>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
