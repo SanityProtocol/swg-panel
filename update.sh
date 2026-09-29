@@ -968,7 +968,7 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
   local cur cand awgp pk disk loaded
   cur="$(pkg_installed amneziawg-dkms)"; [ -n "$cur" ] || return 0
   awgp="$(command -v awg 2>/dev/null)" || return 0
-  dpkg -S "$awgp" 2>/dev/null | grep -q '^amneziawg-tools:' || return 0
+  case "$(dpkg -S "$awgp" 2>/dev/null)" in amneziawg-tools:*) ;; *) return 0 ;; esac   # never `| grep -q` under pipefail
   if $DRYRUN; then ok "AmneziaWG packages: an update checks the amnezia PPA and follows its build (module and tools together)"; return 0; fi
   [ "$APT_DONE" = yes ] || awg_src_refresh || true
   cand="$(pkg_candidate amneziawg-dkms)"
