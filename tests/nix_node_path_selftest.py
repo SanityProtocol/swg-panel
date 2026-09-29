@@ -55,6 +55,7 @@ PROVIDES = {
     "systemctl": "systemd", "systemd-run": "systemd",
     "cat": "coreutils", "base64": "coreutils", "chmod": "coreutils", "mkdir": "coreutils", "sleep": "coreutils", "grep": "gnugrep",
     "rm": "coreutils", "tail": "coreutils", "journalctl": "systemd",
+    "nsenter": "util-linux", "awg-quick": "amneziawg-tools", "wg-quick": "wireguard-tools",
 }
 SYSTEMD_APPENDED = {"coreutils", "findutils", "gnugrep", "gnused", "systemd"}
 # Named, not assumed: commands the native unit does not carry, each with the reason it is outside this gate. `docker` is NOT
@@ -93,6 +94,14 @@ if PERTURB_HOSTSH:
         sys.exit(1)
     src = src.replace(_anchor, '        r = host_sh("docker stop " + shlex.quote(cid) + " >/dev/null 2>&1; :", timeout=60)')
 cmds = set(re.findall(r'\b(?:run|_run|Popen|check_output|call)\(\s*\[\s*"([a-z][a-z0-9._\-]*)"', src))
+# ⚠️ AND swg-agent's: swg-noded execs it as root, so it runs on the SAME PATH — and its commands were outside this gate
+# until 1.8.9's module reload added nsenter / modprobe / modinfo there (nsenter was missing from node.nix: the reload's
+# container-namespace check would have been skipped in silence on every NixOS native node). Only [3]/[5] read these.
+AGENT = os.environ.get("SWG_AGENT") or os.path.join(ROOT, "swg-agent")
+agent_cmds = set(re.findall(r'\b(?:run|_run|Popen|check_output|call)\(\s*\[\s*"([a-z][a-z0-9._\-]*)"', open(AGENT).read()))
+check("[4] the fixture: swg-agent's commands are read too (its module reload's nsenter)", "nsenter" in agent_cmds, sorted(agent_cmds))
+cmds_daemon = set(cmds)
+cmds |= agent_cmds
 check("[4] the fixture: the mesh probe's `ping` is among the daemon's commands", "ping" in cmds, sorted(cmds))
 check("[4] …the parse found a realistic set (nft, ip, iptables, wg)", {"nft", "ip", "iptables", "wg"} <= cmds, sorted(cmds))
 
@@ -112,9 +121,11 @@ for c in sorted(cmds):
 DEB = {"ping": "iputils-ping", "ip": "iproute2", "ss": "iproute2", "tc": "iproute2", "nft": "nftables", "iptables": "iptables",
        "iptables-save": "iptables", "iptables-restore": "iptables", "ipset": "ipset", "wg": "wireguard-tools", "curl": "curl",
        "dnsmasq": "dnsmasq", "pgrep": "procps", "pkill": "procps", "kill": "procps", "sysctl": "procps", "ps": "procps",
-       "conntrack": "conntrack"}
+       "conntrack": "conntrack", "nsenter": "util-linux"}
 SLIM_BASE = {"sh", "bash", "id", "tar"}              # dash, bash, coreutils, tar: essential in every Debian slim image
 IMAGE_EXCLUDED = {
+    "journalctl": "swg-agent's _bounce reads it only after an awg-quick@ UNIT failed to start — by_unit is False in a container (_unit_started)",
+    "modprobe": "only in swg-agent's reload-awg-module, which refuses first in a container (the module is the host's)",
     "modinfo": "the host's modules are not in the image — _awg_disk_gen returns None in a container without calling it",
     "systemctl": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",
     "systemd-run": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",

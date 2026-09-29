@@ -895,6 +895,9 @@ in
           # links carry traffic. Measured on the nixos fleet box (1.8.7 qualification PART 3). It survived because
           # .campaign/nix-path-audit.mjs reads only node-entrypoint.sh, never swg-noded's own commands.
           iputils
+          # `nsenter` — swg-agent's module reload (1.8.9) checks every process's network namespace for an amneziawg device
+          # before `modprobe -r`, which would destroy one in a container; without it that check is skipped in silence.
+          util-linux
         ];
 
         # ⚠️ `wants` as well as `after`: ordering alone does not PULL the secrets unit in, and being
