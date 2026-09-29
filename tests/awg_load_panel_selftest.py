@@ -7,7 +7,7 @@ auth; the nodes are played by POSTing snapshots to /api/node/sync.
   [2] the press: refused for a node with nothing to load; a counter for one that has
   [3] the sync hands the node {n, age} — the age on the panel's clock
   [4] pending until the node reports that press; then its result, worded (done / not every interface / busy)
-  [5] a press the node never answers reads as lost after 15 minutes; the next press is n + 1
+  [5] a press the node never answers reads as lost once the node would no longer act on it (11 min); the next press is n + 1
 
 Run: python3 tests/awg_load_panel_selftest.py      --plant anyload | noage | nodisk   (exit 0 when caught)
 """

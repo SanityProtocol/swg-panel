@@ -11053,7 +11053,8 @@ def _awg_int(v):
         return 0
 
 
-AWG_LOAD_LOST_S = 900        # a request the node has not answered in 15 min: offline, or a node without the op
+AWG_LOAD_LOST_S = 660        # the node acts on a press only while it is under 600 s old (AWG_LOAD_MAX_AGE) — past that plus one
+                             # sync it never will: offline, or a node without the op. Said then, not after a longer wait
 
 
 def awg_load_status(node, snap, name, now=None):

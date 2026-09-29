@@ -1089,8 +1089,12 @@ def op_quarantined():
     return sorted(k for k, v in _OP_BACKOFF.items() if v[0] >= 3)
 
 
-def run_agent(agent, sudo, payload, timeout=20):
+def run_agent(agent, sudo, payload, timeout=20, scope=None):
     prefix = ["sudo", "-n"] if sudo else []
+    if scope and os.geteuid() == 0 and NODE_KIND != "docker" and os.path.isdir("/run/systemd/system") and shutil.which("systemd-run"):
+        # A transient scope of its own: swg-noded's restart (an update pressed meanwhile) kills its whole cgroup, and an
+        # op that must finish once begun — the module reload — would die between the unload and the bring-up.
+        prefix = ["systemd-run", "--scope", "--quiet", "--collect", "--unit=" + scope] + prefix
     try:
         p = run(prefix + [agent], input_text=json.dumps(payload), timeout=timeout)
     except Exception as e:
@@ -11002,7 +11006,8 @@ def awg_load_request(req, agent, sudo):
                 extra[fn[:-5]] = os.path.join(EXIT_DIR, fn)
     # ⚠️ NEVER THE DEFAULT 20 s: a timeout kills the agent, and killed between the unload and the bring-up it would leave
     # every AmneziaWG interface down on an unloaded module. The agent bounds its own waits (10 s per device).
-    r = run_agent(agent, sudo, {"op": "reload-awg-module", "extra_confs": extra}, timeout=600)
+    r = run_agent(agent, sudo, {"op": "reload-awg-module", "extra_confs": extra}, timeout=600,
+                  scope="swg-awg-load-%d-%d" % (n, int(time.time())))
     d = r.get("data") or {}
     _AWG_LOAD["v"] = {"n": n, "ok": bool(r.get("ok")) and d.get("result") == "done",
                       "code": d.get("result") if r.get("ok") else (r.get("code") or "internal"),

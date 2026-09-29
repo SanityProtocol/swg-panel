@@ -8,15 +8,16 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
   [1] nothing newer installed → refused, nothing stopped
   [2] tools that cannot drive a 3.x module → refused, nothing stopped
   [3] a device with no unit and no conf → refused naming it, nothing stopped
-  [4] a device in another network namespace → refused (modprobe -r would destroy it), nothing stopped
+  [4] a device in another network namespace — named, or a CONTAINER's (seen only through /proc) → refused, nothing stopped
   [5] the swap: every device down BEFORE the unload, back the way it was started (unit / conf / an exit's conf path),
       on the new module
   [6] the module will not unload → every device brought back, "busy"
   [7] the new module will not load → every device brought back (userspace), "load_failed" — data, not an error
-  [8] the node acts ONCE per press, only on a fresh one (age on the panel's clock), with a long agent timeout
+  [8] the node acts ONCE per press, only on a fresh one (age on the panel's clock), with a long agent timeout, in a scope
+      of its own (a swg-noded restart must not kill it between the unload and the bring-up)
   [9] the result reaches the snapshot and outlives a daemon restart; the module on disk is reported by its version
 
-Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | timeout   (exit 0 when caught)
+Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | timeout | procscan | noscope   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
@@ -27,7 +28,9 @@ PLANTS = {"order": ("[5]", "agent", "    for step in plan:\n        _down(*step)
           "busyback": ("[6]", "agent", "        for step in plan:\n            _up(*step)\n        raise AgentError(\"busy\"",
                        "        raise AgentError(\"busy\""),
           "age": ("[8]", "noded", "    if n <= 0 or age < 0 or age > AWG_LOAD_MAX_AGE:", "    if n <= 0:"),
-          "timeout": ("[8]", "noded", "\"extra_confs\": extra}, timeout=600)", "\"extra_confs\": extra})")}
+          "timeout": ("[8]", "noded", "\"extra_confs\": extra}, timeout=600,", "\"extra_confs\": extra},"),
+          "procscan": ("[4]", "agent", "    if not shutil.which(\"nsenter\"):\n        return out\n", "    return out\n"),
+          "noscope": ("[8]", "noded", "                  scope=\"swg-awg-load-%d-%d\" % (n, int(time.time())))", "                  )")}
 FAILS, SECTION = [], [""]
 
 
@@ -64,13 +67,16 @@ N = load(paths["noded"], "noded_load")
 
 class Sys:
     """A fake box: devices, a module on disk and a loaded one, units — and the log of what was asked, in order."""
-    def __init__(self, devs, loaded="1.0.20251009", disk="3.1.20260812", tools3=True, netns=None, fail_rm=False, fail_load=False):
+    def __init__(self, devs, loaded="1.0.20251009", disk="3.1.20260812", tools3=True, netns=None, fail_rm=False, fail_load=False, ctr_dev=False):
         self.root = tempfile.mkdtemp(dir=TMP)
         os.makedirs(self.root + "/class/net"); os.makedirs(self.root + "/module/amneziawg")
         open(self.root + "/module/amneziawg/version", "w").write(loaded)
         self.devs, self.disk, self.netns, self.fail_rm, self.fail_load, self.calls = devs, disk, netns or {}, fail_rm, fail_load, []
         for d in devs:
             os.makedirs(self.root + "/class/net/" + d)
+        self.ctr_dev, self.proc = ctr_dev, os.path.join(self.root, "proc")
+        for pid, ns in (("self", "net:[4026531840]"), ("1", "net:[4026531840]"), ("4242", "net:[4026532999]")):
+            os.makedirs(os.path.join(self.proc, pid, "ns")); os.symlink(ns, os.path.join(self.proc, pid, "ns", "net"))
         self.awg = os.path.join(self.root, "awg")
         open(self.awg, "wb").write(b"\x7fELF ... " + (b"HeaderProtectionKey" if tools3 else b"Jc Jmin"))
 
@@ -96,6 +102,9 @@ class Sys:
         out, rc = "", 0
         if a[:1] == ["ip"] and "netns" in a and "list" in a:
             out = "".join(ns + "\n" for ns in self.netns)
+        elif a[:1] == ["nsenter"]:
+            if os.readlink(a[1].split("=", 1)[1]) == "net:[4026532999]" and self.ctr_dev:
+                out = "9: awg-ctr: <POINTOPOINT>\n"
         elif a[:2] == ["ip", "-n"]:
             out = "".join("%d: %s: <POINTOPOINT>\n" % (i, d) for i, d in enumerate(self.netns.get(a[2], []), 7))
         elif a[:1] == ["ip"] and "amneziawg" in a:
@@ -125,11 +134,11 @@ class Sys:
 
 
 def agent_on(box, cfg=None, extra=None):
-    A._SYS = box.root
+    A._SYS, A._PROC = box.root, box.proc
     A.subprocess.run = box
     A._scope_available = lambda: False
     A._IN_CONTAINER = False
-    A.shutil.which = lambda n: {"systemctl": "/bin/systemctl", "awg": box.awg}.get(n)
+    A.shutil.which = lambda n: {"systemctl": "/bin/systemctl", "awg": box.awg, "nsenter": "/usr/bin/nsenter"}.get(n)
     try:
         return True, A.op_reload_awg_module(cfg or {"interfaces": {}}, {"op": "reload-awg-module", "extra_confs": extra or {}})
     except A.AgentError as e:
@@ -159,6 +168,9 @@ SECTION[0] = "[4]"
 print("\n[4] a device in another namespace")
 b = Sys({"awg0": "unit"}, netns={"ve": ["e0"]}); ok, r = agent_on(b)
 check("refused: other_netns, nothing stopped", not ok and r == "other_netns" and not any("stop" in c for c in b.calls), (r, b.calls))
+b = Sys({"awg0": "unit"}, ctr_dev=True); ok, r = agent_on(b)
+check("a device in a container's namespace (only /proc sees it) → refused, nothing stopped",
+      not ok and r == "other_netns" and not any("stop" in c for c in b.calls), (r, b.calls))
 
 SECTION[0] = "[5]"
 print("\n[5] the swap")
@@ -189,11 +201,12 @@ check("the interface is back — on the userspace fallback", ok and r.get("iface
 SECTION[0] = "[8]"
 print("\n[8] the request")
 seen = []
-N.run_agent = lambda agent, sudo, payload, timeout=20: (seen.append((payload, timeout)) or
+N.run_agent = lambda agent, sudo, payload, timeout=20, scope=None: (seen.append((payload, timeout, scope)) or
                                                         {"ok": True, "data": {"result": "done", "was": "1.0.20251009",
                                                                               "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel"}}})
 check("a fresh press acts", N.awg_load_request({"n": 1, "age": 3}, "agent", False) and len(seen) == 1, seen)
 check("…with a long agent timeout (never the default 20 s)", seen and seen[0][1] >= 300, seen)
+check("…in a transient scope of its own", seen and str(seen[0][2] or "").startswith("swg-awg-load-"), seen)
 check("the same press does not act twice", not N.awg_load_request({"n": 1, "age": 5}, "agent", False) and len(seen) == 1, seen)
 check("an old press does not act (a restored node)", not N.awg_load_request({"n": 2, "age": 7200}, "agent", False) and len(seen) == 1, seen)
 check("a malformed one does not act", not N.awg_load_request({"n": "x"}, "agent", False) and not N.awg_load_request(None, "agent", False)

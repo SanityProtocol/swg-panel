@@ -1738,6 +1738,41 @@ def op_start_iface(cfg, req):
 
 _AWG_GEN_ORDER = {"2.0": 0, "3.0": 1, "3.1": 2}
 _SYS = "/sys"                       # a test points it at a temp tree
+_PROC = "/proc"                     # …and this one
+
+
+def _awg_devs_elsewhere():
+    """Network namespaces OTHER than this one holding an amneziawg KERNEL device — `modprobe -r` destroys them all.
+    Named ones (`ip netns`) AND every process's: a Docker container's namespace is not named, and an AmneziaWG device a
+    container made on the host's module (Amnezia's own containers, say) would otherwise go without a word."""
+    out = []
+    for ln in subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout.splitlines():
+        ns = ln.split()[0] if ln.split() else ""
+        if ns and _awg_kernel_devs(ns):
+            out.append(ns)
+    if not shutil.which("nsenter"):
+        return out
+    try:
+        me = os.readlink(_PROC + "/self/ns/net")
+    except OSError:
+        return out
+    seen = set()
+    for pid in os.listdir(_PROC):
+        if not pid.isdigit():
+            continue
+        path = "%s/%s/ns/net" % (_PROC, pid)
+        try:
+            ns = os.readlink(path)
+        except OSError:
+            continue
+        if ns == me or ns in seen:
+            continue
+        seen.add(ns)
+        p = subprocess.run(["nsenter", "--net=" + path, "ip", "-o", "link", "show", "type", "amneziawg"],
+                           capture_output=True, text=True)
+        if (p.stdout or "").strip():
+            out.append("%s (process %s)" % (ns, pid))
+    return out
 
 
 def _awg_ver_gen(v):
@@ -1787,11 +1822,7 @@ def op_reload_awg_module(cfg, req):
             ok_tools = False
         if not ok_tools:
             raise AgentError("tools_old", "the awg tools predate AmneziaWG 3 and could not configure the new module")
-    ns_busy = []
-    for ln in subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout.splitlines():
-        ns = ln.split()[0] if ln.split() else ""
-        if ns and _awg_kernel_devs(ns):
-            ns_busy.append(ns)
+    ns_busy = _awg_devs_elsewhere()
     if ns_busy:
         raise AgentError("other_netns", "an AmneziaWG device lives in network namespace " + ", ".join(ns_busy))
     extra = {k: v for k, v in (req.get("extra_confs") or {}).items() if isinstance(v, str)}
