@@ -1736,6 +1736,116 @@ def op_start_iface(cfg, req):
     return {"iface": iface, "started": True, "unit_enabled": _unit}
 
 
+_AWG_GEN_ORDER = {"2.0": 0, "3.0": 1, "3.1": 2}
+_SYS = "/sys"                       # a test points it at a temp tree
+
+
+def _awg_ver_gen(v):
+    """The AmneziaWG generation a module's version string names: `1.0.*` is the 2.0 protocol, `3.0.*`, `3.1.*`; else None."""
+    m = re.match(r"^\s*(\d+)\.(\d+)", v or "")
+    if not m:
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    return "2.0" if a == 1 else ("3.1" if a == 3 and b >= 1 else ("3.0" if a == 3 else None))
+
+
+def _awg_kernel_devs(ns=None):
+    """amneziawg KERNEL devices (a userspace amneziawg-go runs a tun and is never listed), in `ns` or this namespace."""
+    p = subprocess.run(["ip"] + (["-n", ns] if ns else []) + ["-o", "link", "show", "type", "amneziawg"],
+                       capture_output=True, text=True)
+    return [ln.split(":", 2)[1].strip().split("@")[0] for ln in (p.stdout or "").splitlines() if ln.count(":") >= 2]
+
+
+def op_reload_awg_module(cfg, req):
+    """Load the AmneziaWG kernel module that is installed but not loaded — without a reboot (docs/AWG31-LOAD-PLAN.md D3).
+
+    An update installs a newer module (update.sh ensure_awg_pkg_follow) but never swaps the one in use: every amneziawg
+    device goes with it. This does, on the operator's request: each kernel device is taken down the way it was started
+    (its awg-quick@ unit, or awg-quick on its conf), the module is swapped, and each comes back the same way. Measured on
+    a VM: the swap takes 0.3 s and a connected client re-handshakes within ~15 s. Refused BEFORE anything stops — with a
+    code the panel words — when there is nothing newer, the tools cannot drive the new module, a device has no way back,
+    or a device lives in another network namespace (`modprobe -r` destroys it there too). After the swap the result is
+    data, not an error: which interfaces came back on the kernel module, which on the userspace fallback, which did not.
+    `extra_confs` = {device: conf path} for devices the node brings up itself (exits)."""
+    if _IN_CONTAINER:
+        raise AgentError("container", "the kernel module is the host's — load it on the host")
+    loaded = ""
+    with contextlib.suppress(OSError):
+        loaded = open(_SYS + "/module/amneziawg/version").read().strip()
+    disk = subprocess.run(["modinfo", "-F", "version", "amneziawg"], capture_output=True, text=True).stdout.strip()
+    gl, gd = _awg_ver_gen(loaded), _awg_ver_gen(disk)
+    if not loaded:
+        raise AgentError("not_loaded", "the AmneziaWG kernel module is not loaded")
+    if gd is None or _AWG_GEN_ORDER[gd] <= _AWG_GEN_ORDER.get(gl, -1):
+        raise AgentError("nothing_newer", f"the installed module ({disk or 'none'}) is not newer than the loaded one ({loaded})")
+    awg = shutil.which("awg") or ""
+    if _AWG_GEN_ORDER[gd] >= 1:
+        try:
+            with open(awg, "rb") as f:
+                ok_tools = b"HeaderProtectionKey" in f.read()
+        except OSError:
+            ok_tools = False
+        if not ok_tools:
+            raise AgentError("tools_old", "the awg tools predate AmneziaWG 3 and could not configure the new module")
+    ns_busy = []
+    for ln in subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout.splitlines():
+        ns = ln.split()[0] if ln.split() else ""
+        if ns and _awg_kernel_devs(ns):
+            ns_busy.append(ns)
+    if ns_busy:
+        raise AgentError("other_netns", "an AmneziaWG device lives in network namespace " + ", ".join(ns_busy))
+    extra = {k: v for k, v in (req.get("extra_confs") or {}).items() if isinstance(v, str)}
+    plan, no_way = [], []
+    for dev in _awg_kernel_devs():
+        by_unit = _unit_started("awg", dev)
+        conf = extra.get(dev) or ""
+        if not conf:
+            with contextlib.suppress(Exception):
+                conf = _quick_target(iface_cfg(cfg, dev), dev)
+        if not conf or conf == dev:
+            conf = next((c for c in ("/etc/amnezia/amneziawg/%s.conf" % dev, "/etc/amneziawg/%s.conf" % dev)
+                         if os.path.isfile(c)), "")
+        if not by_unit and not conf:
+            no_way.append(dev)
+        plan.append((dev, by_unit, conf))
+    if no_way:
+        raise AgentError("no_way_back", "no unit or configuration brings back: " + ", ".join(no_way))
+
+    def _down(dev, by_unit, conf):
+        if by_unit:
+            run(["systemctl", "stop", f"awg-quick@{dev}"], check=False)
+        else:
+            with contextlib.suppress(Exception):
+                run(["awg-quick", "down", conf])
+        for _ in range(100):
+            if not os.path.exists(_SYS + f"/class/net/{dev}"):
+                break
+            time.sleep(0.1)
+
+    def _up(dev, by_unit, conf):
+        with contextlib.suppress(Exception):
+            if by_unit:
+                run(["systemctl", "start", f"awg-quick@{dev}"], check=False)
+            else:
+                _quick_up("awg", dev, conf)
+        if not os.path.exists(_SYS + f"/class/net/{dev}"):
+            return "down"
+        return "userspace" if os.path.exists(_SYS + f"/class/net/{dev}/tun_flags") else "kernel"
+
+    for step in plan:
+        _down(*step)
+    if _awg_kernel_devs() or subprocess.run(["modprobe", "-r", "amneziawg"], capture_output=True).returncode != 0:
+        for step in plan:
+            _up(*step)
+        raise AgentError("busy", "the kernel module could not be unloaded — every interface was brought back as it was")
+    load_ok = subprocess.run(["modprobe", "amneziawg"], capture_output=True).returncode == 0
+    ifaces = {step[0]: _up(*step) for step in plan}
+    now = ""
+    with contextlib.suppress(OSError):
+        now = open(_SYS + "/module/amneziawg/version").read().strip()
+    return {"result": "done" if load_ok and now else "load_failed", "was": loaded, "loaded": now, "ifaces": ifaces}
+
+
 def op_restore_iface_key(cfg, req):
     """Revert an interface to its blessed identity from the node's on-disk backup: rewrite the conf's
     [Interface] PrivateKey (+ Address + ListenPort), then bounce so the original server key is live."""
@@ -1783,7 +1893,7 @@ WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface"
              "tag-nat-hooks": op_tag_nat_hooks,
              "create-iface": op_create_iface, "delete-iface": op_delete_iface, "restart-iface": op_restart_iface,
              "stop-iface": op_stop_iface, "start-iface": op_start_iface,
-             "restore-iface-key": op_restore_iface_key}
+             "restore-iface-key": op_restore_iface_key, "reload-awg-module": op_reload_awg_module}
 
 
 def main():

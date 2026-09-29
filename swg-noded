@@ -1089,10 +1089,10 @@ def op_quarantined():
     return sorted(k for k, v in _OP_BACKOFF.items() if v[0] >= 3)
 
 
-def run_agent(agent, sudo, payload):
+def run_agent(agent, sudo, payload, timeout=20):
     prefix = ["sudo", "-n"] if sudo else []
     try:
-        p = run(prefix + [agent], input_text=json.dumps(payload))
+        p = run(prefix + [agent], input_text=json.dumps(payload), timeout=timeout)
     except Exception as e:
         return {"ok": False, "op": payload.get("op"), "error": str(e), "code": "internal"}
     out = (p.stdout or "").strip()
@@ -10912,6 +10912,25 @@ def _awg_module_gen():
     return "2.0" if v == 2 and m >= 25 else ("3.1" if v == 3 and m >= 34 else ("3.0" if v == 3 and m >= 32 else "unknown"))
 
 
+def _awg_disk_gen():
+    """The generation of the module INSTALLED for the running kernel — what the next load would bring (docs/AWG31-LOAD-PLAN.md
+    D2). An update installs a newer module without swapping the loaded one, and the panel tells "installed, not loaded"
+    apart from "not installed" by this. From modinfo's version: `1.0.*` is the 2.0 protocol, `3.0.*`, `3.1.*`; None when
+    there is no module file or no modinfo — never a guess. None in a container: its /lib/modules is the image's, and the
+    module it runs on is the HOST's, installed by the host's own packages (the "Load now" op refuses there too)."""
+    if NODE_KIND == "docker":
+        return None
+    try:
+        v = run(["modinfo", "-F", "version", "amneziawg"]).stdout.strip()
+    except Exception:
+        return None
+    m = re.match(r"^(\d+)\.(\d+)", v or "")
+    if not m:
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    return "2.0" if a == 1 else ("3.1" if a == 3 and b >= 1 else ("3.0" if a == 3 else None))
+
+
 def _bin_gen(path, k31, k30):
     """The AmneziaWG generation a binary speaks, from the keys compiled into it; None when there is no such binary. Mapped,
     not read: an amneziawg-go is megabytes, and this runs on the smallest boxes too."""
@@ -10926,7 +10945,7 @@ def awg_gen_report(now=None):
     now = now or time.monotonic()
     if _AWG_GEN["v"] is not None and now - _AWG_GEN["at"] < _AWG_GEN_TTL:
         return dict(_AWG_GEN["v"])
-    g = {"module": _awg_module_gen(), "fallback": None, "tools": None}
+    g = {"module": _awg_module_gen(), "fallback": None, "tools": None, "disk": _awg_disk_gen()}
     with contextlib.suppress(Exception):
         go = shutil.which(os.environ.get("WG_QUICK_USERSPACE_IMPLEMENTATION") or "amneziawg-go") or next(
             (p for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go",
@@ -10941,8 +10960,60 @@ def awg_gen_report(now=None):
 def _with_awg_gen(dp):
     """node_datapath_health's report plus `awg.gen`, on every kind of node — a docker node reports no health, and gen too."""
     dp = dict(dp or {})
-    dp["awg"] = dict(dp.get("awg") or {}, gen=awg_gen_report())
+    dp["awg"] = dict(dp.get("awg") or {}, gen=awg_gen_report(), **({"load": dict(_AWG_LOAD["v"])} if _AWG_LOAD["v"] else {}))
     return dp
+
+
+# ── "Load now" (docs/AWG31-LOAD-PLAN.md D3/D4): the panel's request is a counter WITH AN AGE, measured on the panel's clock ──
+# The node acts when the counter differs from its stamp AND the request is under AWG_LOAD_MAX_AGE old, so a node that is
+# re-installed or restored from a backup never reloads its module on a press from last week. It acts ONCE per press
+# whatever happens (the stamp is written first): a reload that went wrong is reported, never retried by itself.
+AWG_LOAD_STAMP = os.path.join(STATE_DIR, "awg-load.json")
+AWG_LOAD_MAX_AGE = 600
+_AWG_LOAD = {"v": None}
+with contextlib.suppress(Exception):
+    with open(AWG_LOAD_STAMP) as _f:
+        _v = json.load(_f)
+    if isinstance(_v, dict) and "code" in _v:
+        _AWG_LOAD["v"] = {k: _v[k] for k in ("n", "ok", "code", "ifaces", "was", "loaded", "error") if k in _v}
+
+
+def awg_load_request(req, agent, sudo):
+    """→ True when the module was reloaded this pass (the interfaces were bounced)."""
+    try:
+        n, age = int((req or {}).get("n") or 0), float((req or {}).get("age"))
+    except (TypeError, ValueError):
+        return False
+    if n <= 0 or age < 0 or age > AWG_LOAD_MAX_AGE:
+        return False
+    try:
+        with open(AWG_LOAD_STAMP) as f:
+            if int((json.load(f) or {}).get("n") or 0) == n:
+                return False
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    with contextlib.suppress(OSError):
+        with open(AWG_LOAD_STAMP, "w") as f:
+            json.dump({"n": n, "at": int(time.time())}, f)
+    extra = {}
+    with contextlib.suppress(OSError):
+        for fn in os.listdir(EXIT_DIR):             # exits come up by conf path, not by a unit — the agent needs the path
+            if fn.endswith(".conf"):
+                extra[fn[:-5]] = os.path.join(EXIT_DIR, fn)
+    # ⚠️ NEVER THE DEFAULT 20 s: a timeout kills the agent, and killed between the unload and the bring-up it would leave
+    # every AmneziaWG interface down on an unloaded module. The agent bounds its own waits (10 s per device).
+    r = run_agent(agent, sudo, {"op": "reload-awg-module", "extra_confs": extra}, timeout=600)
+    d = r.get("data") or {}
+    _AWG_LOAD["v"] = {"n": n, "ok": bool(r.get("ok")) and d.get("result") == "done",
+                      "code": d.get("result") if r.get("ok") else (r.get("code") or "internal"),
+                      "ifaces": d.get("ifaces") or {}, "was": d.get("was") or "", "loaded": d.get("loaded") or "",
+                      **({} if r.get("ok") else {"error": str(r.get("error") or "")[:300]})}
+    _AWG_GEN["v"] = None                            # the next snapshot reads the module that is loaded NOW
+    with contextlib.suppress(OSError):              # the result outlives a daemon restart, so the panel still gets it
+        with open(AWG_LOAD_STAMP, "w") as f:
+            json.dump(dict(_AWG_LOAD["v"], at=int(time.time())), f)
+    print("awg module load #%d: %s %s" % (n, _AWG_LOAD["v"]["code"], json.dumps(_AWG_LOAD["v"]["ifaces"])), flush=True)
+    return bool(r.get("ok"))
 
 
 def awg_need(awg):
@@ -19939,6 +20010,7 @@ def main():
                 sp = stop_ifaces(node_cfg, reply.get("iface_stop"), agent, sudo)    # stop (down + disable) / start (up + enable) on request
                 sa = start_ifaces(node_cfg, reply.get("iface_start"), agent, sudo)
                 ik = apply_iface_keys(node_cfg, reply.get("iface_key"), agent, sudo)   # keypair restore/rebaseline from the on-disk backup
+                _awg_loaded = awg_load_request(reply.get("awg_load"), agent, sudo)   # "Load now": swap in the installed AmneziaWG module
                 _def_egress = ((reply.get("node_egress") or {}).get("default_egress_ip") or "").strip()   # node IP role: fallback SNAT source
                 note_drops_resets(reply.get("desired_ifaces"))   # operator asked to re-baseline a drop counter
                 note_mesh_resets(reply.get("desired_ifaces"))    # …or to empty a mesh leg's probe window
@@ -19949,7 +20021,7 @@ def main():
                                          _devexit_sig(reply.get("cascade")),
                                          _NET["sig"], sorted(_NET["refused"]),
                                          reply.get("lan_share"), _SHARE["sig"]], sort_keys=True, default=str)
-                _iface_churn = bool(cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
+                _iface_churn = bool(_awg_loaded or cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
                                     or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"] or cq["changed"])   # a WDTT/csqtt install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
                 if (_route_sig != last_route_sig or _iface_churn
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):

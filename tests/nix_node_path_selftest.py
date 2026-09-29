@@ -51,7 +51,7 @@ PROVIDES = {
     "iptables": "iptables", "iptables-save": "iptables", "iptables-restore": "iptables", "ipset": "ipset",
     "wg": "wireguard-tools", "awg": "amneziawg-tools", "curl": "curl", "dnsmasq": "dnsmasq", "conntrack": "conntrack-tools",
     "pgrep": "procps", "pkill": "procps", "kill": "procps", "sysctl": "procps", "ps": "procps",
-    "sh": "bash", "bash": "bash", "id": "coreutils", "modprobe": "kmod", "tar": "gnutar", "openssl": "openssl",
+    "sh": "bash", "bash": "bash", "id": "coreutils", "modprobe": "kmod", "modinfo": "kmod", "tar": "gnutar", "openssl": "openssl",
     "systemctl": "systemd", "systemd-run": "systemd",
     "cat": "coreutils", "base64": "coreutils", "chmod": "coreutils", "mkdir": "coreutils", "sleep": "coreutils", "grep": "gnugrep",
     "rm": "coreutils", "tail": "coreutils", "journalctl": "systemd",
@@ -115,6 +115,7 @@ DEB = {"ping": "iputils-ping", "ip": "iproute2", "ss": "iproute2", "tc": "iprout
        "conntrack": "conntrack"}
 SLIM_BASE = {"sh", "bash", "id", "tar"}              # dash, bash, coreutils, tar: essential in every Debian slim image
 IMAGE_EXCLUDED = {
+    "modinfo": "the host's modules are not in the image — _awg_disk_gen returns None in a container without calling it",
     "systemctl": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",
     "systemd-run": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",
 }

@@ -126,7 +126,8 @@ N._awg_module_gen = lambda: calls.append(1) or "3.1"
 N._AWG_GEN.update(at=0.0, v=None)
 r1 = N.awg_gen_report(now=1000.0); r2 = N.awg_gen_report(now=1200.0); r3 = N.awg_gen_report(now=1400.0)
 check("probed once in 300 s, again after", len(calls) == 2 and r1 == r2 == r3, calls)
-check("the report has exactly module / fallback / tools", set(r1) == {"module", "fallback", "tools"}, r1)
+check("the report has exactly module / fallback / tools / disk (the module installed, AWG31-LOAD-PLAN D2)",
+      set(r1) == {"module", "fallback", "tools", "disk"}, r1)
 check("a docker node (no health report) still carries gen", set(N._with_awg_gen({})) == {"awg"}
       and set(N._with_awg_gen({})["awg"]) == {"gen"})
 _h = {"awg": {"needed": True, "ok": False, "fallback": True, "userspace": ["awg0"]}}
