@@ -999,8 +999,8 @@ export function AwgLoadLine({ node, nrec }) {
     body: T("Every AmneziaWG interface on {name} restarts on the new kernel module. Connected devices lose traffic for about 15 seconds while they reconnect; nothing else changes. Or leave it: the module loads at the next reboot.", { name }),
     onConfirm: async () => { const r = await api.awgLoad({ id: node }); if (!r.ok) return toast(srvText(r) || T("Failed"), "err"); await Store.poll(); } });
   if (pending) return html`<div class="hint warnish">${T("Loading the AmneziaWG module on {name}…", { name })}</div>`;
-  return html`<div class=${"hint" + (st && st.state !== "done" && res ? " err" : "")}>${res}${res && nrec.awg31_loadable ? " " : ""}${nrec.awg31_loadable
-    ? html`<button type="button" class="linkbtn" onClick=${ask}>${T("Load now")}</button>` : null}</div>`;
+  return html`<div class="awgload">${res ? html`<div class=${"hint" + (st.state !== "done" ? " err" : "")}>${res}</div>` : null}${nrec.awg31_loadable
+    ? html`<div class="hint"><button type="button" class="linkbtn" onClick=${ask}>${T("Load now")}</button></div>` : null}</div>`;
 }
 export function AwgGenField({ value, onChange, no3, no2, label, hint, was, node, nrec }) {
   label = label || T("AmneziaWG version");

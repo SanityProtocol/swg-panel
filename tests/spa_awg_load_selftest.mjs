@@ -33,7 +33,8 @@ finally { if (made) { try { fs.unlinkSync(made); } catch (_) { /* gone */ } } }
 
 const texts = n => { const out = []; const walk = x => { if (Array.isArray(x)) x.forEach(walk); else if (typeof x === "string") out.push(x);
   else if (x && typeof x === "object" && x.props) walk(x.props.children); }; walk(n); return out.join(" "); };
-const cls = n => (n && n.props && n.props.class) || "";
+const cls = n => { const out = []; const walk = x => { if (Array.isArray(x)) x.forEach(walk); else if (x && typeof x === "object" && x.props) {
+  if (x.props.class) out.push(x.props.class); walk(x.props.children); } }; walk(n); return out.join(" "); };   // every class in the tree
 const hasBtn = n => /Load now/.test(texts(n));
 const msg = k => ({ error: k, error_key: k, error_vars: { v1: "msk", v2: "3.1.20260812" } });
 const L = nrec => IF.AwgLoadLine({ node: "n1", nrec: { name: "msk", ...nrec } });
