@@ -83,9 +83,9 @@
   },
   "vkturnproxy": {
    "anton48/vk-turn-proxy-ios@main:quick_link.py": {
-    "date": "2026-09-06T13:02:00Z",
-    "sha": "f413e87aa2a8b0f29341a32ebcd015a352918195",
-    "url": "https://github.com/anton48/vk-turn-proxy-ios/commit/f413e87aa2a8b0f29341a32ebcd015a352918195"
+    "date": "2026-09-28T20:02:28Z",
+    "sha": "12454cbb3dc0621c6dd2a543ac7c991a7129ab03",
+    "url": "https://github.com/anton48/vk-turn-proxy-ios/commit/12454cbb3dc0621c6dd2a543ac7c991a7129ab03"
    }
   },
   "wdttplus": {
@@ -93,13 +93,6 @@
     "date": "2026-09-11T12:45:55Z",
     "sha": "b3935b947acd81d95107869c8f33507f3f5c1309",
     "url": "https://github.com/Ivan4537/WDTT-Plus/commit/b3935b947acd81d95107869c8f33507f3f5c1309"
-   }
-  },
-  "wgturn": {
-   "kiper292/wireguard-turn-android@main:ui/src/main/java/com/wireguard/android/turn/TurnSettings.kt": {
-    "date": "2026-04-08T12:05:43Z",
-    "sha": "049cbfb5f7b72fba1f50c888cfa49dead063a888",
-    "url": "https://github.com/kiper292/wireguard-turn-android/commit/049cbfb5f7b72fba1f50c888cfa49dead063a888"
    }
   },
   "wingsv": {
@@ -122,6 +115,6 @@
    }
   }
  },
- "generated_at": 1790592644,
+ "generated_at": 1790651812,
  "schema": 1
 }
