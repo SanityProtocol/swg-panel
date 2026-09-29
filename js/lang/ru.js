@@ -4507,6 +4507,7 @@ export const STR = {
   "Couldn't check for updates.": "Не удалось проверить обновления.",
   "No notes for this release.": "Описания у этого выпуска нет.",
   "See the changelog for what's new.": "Что нового — в списке изменений.",
+  "What's new in {v}": "Что нового в {v}",
   "Panel services need attention": "Службам панели нужно внимание",
   "Port scans": "Сканы портов",
   "Torrents caught": "Поймано торрентов",

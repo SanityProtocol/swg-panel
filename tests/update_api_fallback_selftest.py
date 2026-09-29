@@ -158,7 +158,6 @@ check("[6] a non-github source dials only itself",
       all("github" not in u for u in dialled) and len(dialled) >= 1, dialled)
 
 # ── [7] end to end: the CHECK itself survives a blocked raw ──────────────────────────────────────────────
-m._REF_SHA.update(at=0, bad_at=0)
 m.LATEST_REMOTE["version"] = None
 ok7 = run(lambda: m._check_latest_remote(budget=20), raw_ok=False)
 check("[7] ⚠️ blocked raw → the version check still reaches an answer", bool(ok7), m.LATEST_REMOTE.get("why"))
@@ -166,10 +165,10 @@ check("[7b] …and stored a real version", m.LATEST_REMOTE.get("version") == "1.
       m.LATEST_REMOTE.get("version"))
 
 # ── [8] the changelog fetch got the same door ────────────────────────────────────────────────────────────
-NOTES = b"## [1.9.0-beta] - 2026-09-12\n\n### Fixed\n\n- **A thing.** It was fixed.\n"
-cv, cdate, cnotes = run(lambda: m._fetch_latest_changelog(sha="abc1234"), raw_ok=False, body=NOTES)
-check("[8] blocked raw → changelog notes still arrive", cv == "1.9.0-beta" and len(cnotes) == 1,
-      (cv, cdate, cnotes))
+NOTES = "## [1.9.0-beta] — 2026-09-12\n\n### Fixed\n\n- **A thing.** It was fixed.\n".encode()
+es = run(lambda: m._changelog_entries("en", "1.9.0-beta"), raw_ok=False, body=NOTES)
+check("[8] blocked raw → the changelog (What's new, read on demand) still arrives",
+      bool(es) and es[0]["version"] == "1.9.0-beta" and len(es[0]["notes"]) == 1, es)
 
 print()
 if FAILS:

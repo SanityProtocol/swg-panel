@@ -854,62 +854,6 @@ def _changelog_url(lang):
     return REMOTE_CHANGELOG_URL[:-len(".md")] + "." + lang + ".md"
 
 
-# ── pin the version/changelog fetch to an immutable commit, so a CDN can't serve them inconsistently ──
-# After a release, raw.githubusercontent's CDN can hand back a FRESH VERSION but a STALE CHANGELOG for a
-# window — they cache independently and a ?cb= query does not reliably bust it — so the update bubble showed
-# the PREVIOUS release's notes under the new version's heading (the recurring publish-day bug). The GitHub
-# API is authoritative for a ref's tip and is NOT that CDN, so we resolve the ref's current SHA there and
-# fetch both files from the IMMUTABLE /<sha>/ path: never stale, and always the SAME commit -> version and
-# notes can never disagree.
-def _ref_raw_parts(url):
-    """(owner, repo, ref) if `url` is a github raw URL we can pin to a commit; else None (a custom mirror)."""
-    m = re.match(r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/", url or "")
-    return (m.group(1), m.group(2), m.group(3)) if m else None
-
-
-_REF_SHA = {"at": 0, "ref": "", "sha": "", "bad_at": 0}
-def _resolve_release_sha():
-    """Current commit SHA of the release ref, from the GitHub API (not raw's CDN -> never a stale tip). '' when
-    the source is a non-github mirror or the API is unreachable/rate-limited -> callers fall back to the mutable
-    ref, guarded by the version-match check. Cached 60s (one update check makes several fetches)."""
-    parts = _ref_raw_parts(REMOTE_VERSION_URL)
-    if not parts:
-        return ""
-    owner, repo, ref = parts
-    now = int(time.time())
-    if _REF_SHA["sha"] and _REF_SHA["ref"] == ref and now - _REF_SHA["at"] < 60:
-        return _REF_SHA["sha"]
-    # A FAILURE IS CACHED FOR THE SAME MINUTE. Only successes were remembered, so where the API is blocked
-    # or rate-limited this ran on every call — and it runs FIRST, spending its whole timeout before the fetch
-    # that actually matters even gets to start. The fallback below is designed to cope without a sha; making
-    # the operator wait out the same dead call on every click is not part of that.
-    if _REF_SHA["ref"] == ref and now - _REF_SHA["bad_at"] < 60:
-        return ""
-    try:
-        api = "https://api.github.com/repos/%s/%s/commits/%s" % (owner, repo, ref)
-        req = urllib.request.Request(api, headers={"User-Agent": "swg-panel",
-                                                   "Accept": "application/vnd.github.sha"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            sha = r.read(80).decode("ascii", "replace").strip()
-        if re.fullmatch(r"[0-9a-f]{7,40}", sha):
-            _REF_SHA.update(at=now, ref=ref, sha=sha, bad_at=0)
-            return sha
-    except Exception:
-        pass
-    _REF_SHA.update(ref=ref, bad_at=now)
-    return ""
-
-
-def _pinned(url, sha):
-    """Rewrite a github raw URL's ref to `sha` (immutable -> never CDN-stale). No-op for a non-github URL or an
-    empty sha (-> the mutable ref, which the version-match guard then protects)."""
-    p = _ref_raw_parts(url)
-    if not (p and sha):
-        return url
-    owner, repo, ref = p
-    return url.replace("/%s/%s/%s/" % (owner, repo, ref), "/%s/%s/%s/" % (owner, repo, sha), 1)
-
-
 # The panel has no fleet-wide language setting — js/i18n.js picks per browser (saved choice → navigator.language
 # → en). A crawler or a chat's preview fetcher runs none of that, so the shell's metadata mirrors the same rule on
 # the only signal a request carries: Accept-Language. Body text is still whatever the browser resolves; this is
@@ -949,87 +893,32 @@ def _req_lang():
     missing → English, which is also the fallback when a translated changelog isn't published yet."""
     v = (getattr(_REQ, "lang", "") or "").strip().lower()
     return v if re.fullmatch(r"[a-z]{2}", v or "") else "en"
-LATEST_REMOTE = {"version": None, "checked": 0, "date": "", "notes": []}
+LATEST_REMOTE = {"version": None, "checked": 0}
 
-def _fetch_latest_changelog(lang="en", sha="", deadline=None):
-    """Fetch the remote changelog's TOP entry → (version, date, [bullet notes]) for the 'update to …' hover.
-    `sha` pins the fetch to an immutable commit (never CDN-stale); '' falls back to the mutable ref. Best-effort
-    — ('', '', []) on any failure; markdown emphasis/code marks stripped from the bullets.
-
-    tries=1 deliberately: this is the hover's notes, not the answer the operator is waiting for, and its
-    failure is already tolerated by the caller. It gets the API second door (same host, same block) but not
-    a retry budget that would be spent out of the version check's."""
-    base = _pinned(_changelog_url(lang), sha)
-    if deadline is None:
-        deadline = time.time() + 16
-    try:
-        url = base + (("&" if "?" in base else "?") + "cb=" + str(int(time.time())))
-        text = _gh_get(url, {"User-Agent": "swg-panel", "Cache-Control": "no-cache"},
-                       24000, deadline, tries=1).decode("utf-8", "replace")
-    except Exception:
-        # a translated changelog may simply not be published yet → fall back to English rather than nothing
-        return ("", "", []) if lang == "en" else _fetch_latest_changelog("en", sha, deadline)
-    version, date, notes, started, cur = "", "", [], False, []
-    def _flush():
-        if cur:
-            b = re.sub(r"[*`]", "", " ".join(cur)).strip()   # join wrapped lines + drop **bold**/`code` marks
-            if b:
-                notes.append(b)
-    for ln in text.splitlines():
-        s = ln.strip()
-        if s.startswith("## ["):
-            if started:
-                break                                    # reached the NEXT version → stop
-            started = True
-            mv = re.match(r"##\s*\[([^\]]+)\]", s)        # the version this entry is FOR (for the match-guard)
-            if mv:
-                version = mv.group(1).strip()
-            m = re.search(r"—\s*(.+)$", s)               # "## [1.4.2-beta] — 2026-07-24"
-            if m:
-                date = m.group(1).strip()
-            continue
-        if not started:
-            continue
-        if s.startswith("- "):                           # a new bullet → flush the previous, start this one
-            _flush(); cur = [s[2:]]
-        elif s.startswith("### ") or not s:              # section header / blank line → the bullet ended
-            _flush(); cur = []
-        elif cur:                                        # a wrapped continuation of the current bullet
-            cur.append(s)
-    _flush()
-    return version, date, notes[:8]
-
-_CHANGELOG_CACHE = {}          # lang -> {"at": …, "entries": […]}   (one cache per language)
-_LATEST_NOTES = {}             # lang -> {"at": …, "date": …, "notes": […]}   (the update bubble's top entry)
+# ── What's new: read on demand, by VERSION ──────────────────────────────────────────────────────────────────────────────
+# The bubbles ask /api/changelog when they open, and the update bubble shows the entry whose heading IS the version on
+# the badge — never "the top entry". Until 1.8.9 the hourly check also fetched the top entry and shipped it in every
+# /api/state; right after a release raw's CDN served a fresh VERSION with a stale CHANGELOG, and the bubble put the
+# previous release's notes under the new version (1.8.8's publish, an operator's screenshot). Selected by version, a
+# stale copy can only mean "not there yet" — the bubble then points to the changelog, and the next open fetches again.
+_CHANGELOG_CACHE = {}          # lang -> {"at": …, "tried": …, "entries": […]}
+CHANGELOG_TTL_S = 3600         # a changelog that holds what was asked for is kept this long
+CHANGELOG_RETRY_S = 60         # one that lacks the asked-for version is fetched again at most this often
 
 
-def _latest_notes(lang="en"):
-    """(date, notes) of the newest changelog entry, in `lang` — what the 'update to …' hover shows.
-
-    English comes straight from the background version check, which already fetched it. Another language is
-    fetched on first ask and cached for an hour: an operator reading Russian should not be handed English
-    release notes, and the panel is the only thing here holding an outbound connection."""
-    if lang == "en":
-        return LATEST_REMOTE.get("date") or "", LATEST_REMOTE.get("notes") or []
+def _changelog_entries(lang="en", want=""):
+    """Parse the FULL remote changelog → [{version, date, notes[]}] newest-first — both bubbles read it. Cached an hour
+    PER LANGUAGE, unless it lacks `want` (the version on the update badge): then it is fetched again, at most once a
+    minute, so a copy read before the CDN caught up is not kept for the hour. Keeps the last good result on a failed
+    fetch. Best-effort → []."""
     now = int(time.time())
-    cur = LATEST_REMOTE.get("version") or ""
-    c = _LATEST_NOTES.get(lang)
-    if c and now - c["at"] < 3600 and c.get("ver") == cur:
-        return c["date"], c["notes"]
-    _cv, date, notes = _fetch_latest_changelog(lang, LATEST_REMOTE.get("sha", ""))
-    if cur and _short_ver(_cv or "") != cur:        # a stale or failed fetch: never another release's notes
-        return "", []
-    _LATEST_NOTES[lang] = {"at": now, "ver": cur, "date": date, "notes": notes}
-    return date, notes
-def _changelog_entries(lang="en"):
-    """Parse the FULL remote changelog → [{version, date, notes[]}] newest-first, for the version changelog browser
-    (prev/next). Cached ~1h PER LANGUAGE; keeps the last good result on a transient fetch failure. Best-effort → []."""
-    now = int(time.time())
-    cache = _CHANGELOG_CACHE.setdefault(lang, {"at": 0, "entries": []})
-    if cache["entries"] and now - cache["at"] < 3600:
+    cache = _CHANGELOG_CACHE.setdefault(lang, {"at": 0, "tried": 0, "entries": []})
+    has = not want or any(e.get("version") == want for e in cache["entries"])
+    if cache["entries"] and now - cache["at"] < CHANGELOG_TTL_S and (has or now - cache.get("tried", 0) < CHANGELOG_RETRY_S):
         return cache["entries"]
+    cache["tried"] = now
     try:
-        base = _pinned(_changelog_url(lang), LATEST_REMOTE.get("sha", ""))
+        base = _changelog_url(lang)
         url = base + (("&" if "?" in base else "?") + "cb=" + str(now))
         # ⚠️ The API door serves a file RAW only below 1 MB. CHANGELOG.ru.md is already ~216 KB and grows
         # every release; when it approaches that, this fallback stops working for the browser (the version
@@ -1038,7 +927,7 @@ def _changelog_entries(lang="en"):
                        200000, time.time() + 20, tries=1).decode("utf-8", "replace")
     except Exception:
         # not published in this language (yet) → English, so the browser always has something to show
-        return cache["entries"] or (_changelog_entries("en") if lang != "en" else [])
+        return cache["entries"] or (_changelog_entries("en", want) if lang != "en" else [])
     entries, cur_entry, cur = [], None, []
     def _flush():
         if cur_entry is not None and cur:
@@ -1224,15 +1113,7 @@ def _check_latest_remote(budget=120):
     ok, why, url = False, None, REMOTE_VERSION_URL
     deadline = time.time() + max(5, budget)
     try:
-        # Pin the fetch to the release ref's CURRENT COMMIT, resolved from the GitHub API (authoritative for a
-        # ref's tip, and not raw's CDN). A /<sha>/ raw URL is immutable, so a just-published release is seen at
-        # once and VERSION + CHANGELOG always come from ONE commit — the bubble can never show the previous
-        # release's notes under the new version. '' sha -> the mutable ref, guarded below. (?cb= stays as a
-        # best-effort buster for that fallback; it does NOT reliably bust raw's CDN, which was the whole bug.)
-        sha = _resolve_release_sha()
-        LATEST_REMOTE["sha"] = sha                   # reused by _latest_notes / _changelog_entries -> same commit
-        vsrc = _pinned(REMOTE_VERSION_URL, sha)
-        url = vsrc + (("&" if "?" in vsrc else "?") + "cb=" + str(int(time.time())))
+        url = REMOTE_VERSION_URL + (("&" if "?" in REMOTE_VERSION_URL else "?") + "cb=" + str(int(time.time())))
         v = _short_ver(_gh_get(url, {"User-Agent": "swg-panel", "Cache-Control": "no-cache"},
                                64, deadline).decode("utf-8", "replace").strip())
         # ⚠️ AND IT HAS TO LOOK LIKE A VERSION. _short_ver falls back to handing the whole string back when no
@@ -1243,21 +1124,7 @@ def _check_latest_remote(budget=120):
         if _vtuple(v) == (0, 0, 0):      # not a version -> treat it as no answer at all
             v = ""
         if v:
-            LATEST_REMOTE["version"] = v
-            cv, cdate, cnotes = _fetch_latest_changelog(sha=sha, deadline=deadline)   # bubble notes, same commit
-            # Never pair a new version with the PREVIOUS release's notes, and never let a FAILED changelog
-            # fetch blank good ones. The SHA path cannot mismatch (one commit); the ref fallback can, and a
-            # fetch that returned nothing at all used to fall through this guard and overwrite the bubble
-            # with empty — a blip erasing what the operator was reading. Take the notes only when they came
-            # back naming THIS version; otherwise keep the last good ones and let the next check correct.
-            if cv and _short_ver(cv) == v:
-                LATEST_REMOTE["date"], LATEST_REMOTE["notes"], LATEST_REMOTE["notes_ver"] = cdate, cnotes, v
-            elif LATEST_REMOTE.get("notes_ver") != v:
-                # ⚠️ "THE LAST GOOD ONES" ARE THE PREVIOUS RELEASE'S the moment a new version appears — kept, they
-                # sat under the new version's heading: 1.8.8's publish showed 1.8.7's notes and date in the bubble
-                # (the API was unreachable, so the fetch fell back to the CDN's stale changelog). No notes until
-                # the next check brings this version's, rather than another release's.
-                LATEST_REMOTE["date"], LATEST_REMOTE["notes"] = "", []
+            LATEST_REMOTE["version"] = v            # the notes are read when a bubble opens (/api/changelog?want=)
             ok = True
         else:
             # Reached it, and what came back was not a version — a captive portal or a block page answering
@@ -20710,8 +20577,6 @@ def api(method, path, qs, body, deps):
                            **_cat_labels_extra},         # + catalog cats in use → their provider label
 
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
-            "latest_remote_date": _latest_notes(_req_lang())[0],     # its changelog date + notes → the "update to …" hover bubble
-            "latest_remote_notes": _latest_notes(_req_lang())[1],     # …in the reader's language (see _latest_notes)
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             # Absent unless set, so /api/state on an ordinary panel carries exactly what it carried before.
             "env": {"docker": IN_DOCKER, "runtime": PANEL_RUNTIME, "fleet_path": FLEET_PATH,
@@ -25211,7 +25076,9 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {"latest": latest}}
     if method == "GET" and path == "/api/changelog":
         # Full panel changelog (newest-first) for the version info bubble's prev/next browser.
-        return 200, {"ok": True, "data": {"current": VERSIONS.get("panel") or "", "entries": _changelog_entries(_req_lang())}}
+        # `want` = the version on the update badge: a cached copy without it is fetched again (at most once a minute).
+        want = _short_ver((qs.get("want") or [""])[0])[:40]
+        return 200, {"ok": True, "data": {"current": VERSIONS.get("panel") or "", "entries": _changelog_entries(_req_lang(), want)}}
     if method == "GET" and path == "/api/turn/roster-check":
         # Client-app schema drift: each curated source file's latest GitHub commit vs the last-acknowledged one.
         return 200, {"ok": True, "data": _turn_roster_check()}
@@ -26619,8 +26486,6 @@ def api(method, path, qs, body, deps):
             # generic message it always did.
             **({"why_key": _why["error_key"], "why_vars": _why["error_vars"]} if _why else {}),
             "latest_remote": LATEST_REMOTE.get("version"),
-            "latest_remote_date": _latest_notes(_req_lang())[0],
-            "latest_remote_notes": _latest_notes(_req_lang())[1],
             # strictly-newer remote only (same rule as the data bundle) — never flag a dev build that's
             # AHEAD of main as "outdated", which would offer a downgrade and leave the header with no pill.
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version"))}}

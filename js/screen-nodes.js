@@ -1513,7 +1513,11 @@ export function hostHoverBubble(anchor, contentFn, onAction) {
     clearTimeout(t);
     if (bub && bub.isConnected) return;                                   // already showing → don't stack
     document.querySelectorAll(".hostupd-bub").forEach(x => x.remove());   // kill any orphan left by a re-render
-    const inner = contentFn(); if (!inner) return;   // no bubble → the anchor keeps its own tooltip
+    // `repaint`: a content function that loads what it shows (the update bubble's changelog) calls it when that lands
+    const bind = () => { if (onAction && bub) bub.querySelectorAll(".hub-act").forEach(b => b.addEventListener("click", ev => {
+      ev.stopPropagation(); ev.preventDefault(); clearTimeout(t); drop(); onAction(); })); };
+    const repaint = () => { if (!bub || !bub.isConnected) return; const h = contentFn(repaint); if (h) { bub.innerHTML = h; bind(); } };
+    const inner = contentFn(repaint); if (!inner) return;   // no bubble → the anchor keeps its own tooltip
     untitle = parkTitles(anchor);
     bub = document.createElement("div");
     bub.className = "deppop hostupd-bub";
@@ -1527,9 +1531,7 @@ export function hostHoverBubble(anchor, contentFn, onAction) {
     bub.addEventListener("mouseleave", later);
     // the in-bubble primary action (e.g. Update) — the whole point on touch, where the anchor's own
     // click is unreachable once the bubble covers it
-    if (onAction) bub.querySelectorAll(".hub-act").forEach(b => b.addEventListener("click", ev => {
-      ev.stopPropagation(); ev.preventDefault(); clearTimeout(t); drop(); onAction();
-    }));
+    bind();
     detach = dismissOnOutsideTap(bub, anchor, () => { clearTimeout(t); drop(); });
   };
   anchor.addEventListener("mouseenter", show);
@@ -1550,9 +1552,29 @@ export function hostHoverBubble(anchor, contentFn, onAction) {
 // one request to OUR OWN panel (which does its own ~1h upstream caching), and only when an operator
 // actually opens the bubble. Nothing polls in the background.
 const CHANGELOG_TTL = 5 * 60 * 1000;
+const CHANGELOG_WANT_RETRY = 30 * 1000;   // a copy without the badge's version is asked for again at most this often
 let _changelogCache = null;   // {entries:[{version,date,notes[]}], current}
 let _changelogAt = 0;         // when it was fetched — stale after CHANGELOG_TTL
 let _changelogIdx = 0;
+let _changelogReq = null;     // the request in flight — both bubbles share it
+// ONE loader for both bubbles. `want` = the version on the update badge: a cached copy that lacks it is fetched again
+// (the panel then asks GitHub again too), so a changelog read before the CDN caught up is not what the bubble keeps
+// showing. Resolves when the cache is as fresh as it is going to get.
+export function loadChangelog(want) {
+  const es = (_changelogCache && _changelogCache.entries) || [];
+  const age = Date.now() - _changelogAt;
+  const has = !want || es.some(e => e.version === want);
+  if (_changelogCache && age <= CHANGELOG_TTL && (has || age < CHANGELOG_WANT_RETRY)) return Promise.resolve(_changelogCache);
+  if (!_changelogReq) _changelogReq = api.changelog(want).then(res => {
+    _changelogCache = (res && res.ok) ? res.data : (_changelogCache || { entries: [] });
+    _changelogAt = Date.now();
+    return _changelogCache;
+  }).finally(() => { _changelogReq = null; });
+  return _changelogReq;
+}
+// The entry for exactly this version, or null — the update bubble never shows "the newest entry" under a version it
+// is not (that was 1.8.8's publish-day bug: the previous release's notes under the new version).
+export const changelogEntry = (version) => ((_changelogCache && _changelogCache.entries) || []).find(e => e.version === version) || null;
 export function versionHoverBubble(anchor) {
   let bub = null, t = null, detach = null, untitle = null;
   const drop = () => { if (untitle) { untitle(); untitle = null; } if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
@@ -1583,14 +1605,12 @@ export function versionHoverBubble(anchor) {
     bub.addEventListener("mouseenter", () => clearTimeout(t));
     bub.addEventListener("mouseleave", later);
     detach = dismissOnOutsideTap(bub, anchor, () => { clearTimeout(t); drop(); });   // see the note there — touch has no mouseout
+    // Every open starts at the INSTALLED version — the cache may have been filled by the update bubble, which never sets this
+    const atInstalled = () => { const i = ((_changelogCache || {}).entries || []).findIndex(x => x.version === ((_changelogCache || {}).current || ""));
+      _changelogIdx = i >= 0 ? i : 0; };
+    if (_changelogCache) atInstalled();
     paint();
-    if (!_changelogCache || Date.now() - _changelogAt > CHANGELOG_TTL) api.changelog().then(res => {
-      _changelogCache = (res && res.ok) ? res.data : { entries: [] };
-      _changelogAt = Date.now();
-      const i = (_changelogCache.entries || []).findIndex(x => x.version === (_changelogCache.current || ""));
-      _changelogIdx = i >= 0 ? i : 0;
-      if (bub) paint();
-    });
+    if (!_changelogCache || Date.now() - _changelogAt > CHANGELOG_TTL) loadChangelog().then(() => { atInstalled(); if (bub) paint(); });
   };
   anchor.addEventListener("mouseenter", show);
   anchor.addEventListener("mouseleave", later);
@@ -1623,11 +1643,20 @@ export function hubEntryHtml({ titleHtml, date, notes, emptyNote, footer, nav, a
     + `<div class="hub-list">${rows}</div>`
     + (footer ? `<div class="hub-foot">${esc(footer)}</div>` : "");
 }
-export function updBubbleHtml() {
+export function updBubbleHtml(repaint) {
+  const want = Store.latestRemote || "";
+  const e = changelogEntry(want);
+  // Not in hand yet: ask (the shared loader decides whether that is a fetch), and repaint when it lands. Until then
+  // the bubble says it is loading; if the changelog still has no entry for this version, it points to the changelog.
+  let loading = false;
+  if (!e && want) { loading = !_changelogCache || _changelogReq != null || Date.now() - _changelogAt >= CHANGELOG_WANT_RETRY;
+    if (loading) loadChangelog(want).then(() => { if (repaint) repaint(); }); }
   // ⚠️ no `footer` here any more. It read "Click to update this server." — which described the ANCHOR,
   // and the anchor is exactly what this bubble covers on a phone. The button says what it does.
-  return hubEntryHtml({ titleHtml: `What's new in <b>${esc(Store.latestRemote || "?")}</b>`, date: Store.latestRemoteDate,
-    notes: Store.latestRemoteNotes || [], emptyNote: T("See the changelog for what's new."),
+  // ONE translatable sentence with the version bolded in it — split on its own {v} marker so each language keeps its word order
+  const [wnA, wnB] = Tsplit("What's new in {v}", "v");
+  return hubEntryHtml({ titleHtml: `${esc(wnA)}<b>${esc(want || "?")}</b>${esc(wnB)}`, date: e ? e.date : "",
+    notes: e ? e.notes : [], emptyNote: loading ? T("Loading changelog…") : T("See the changelog for what's new."),
     // reuse the keys the catalogue already carries — "Update now" and "Update this server" are both
     // translated, and keeping the wording identical to the rest of the update flow matters more than
     // saving a word in a header ([[panel-i18n-plan]]: sentence = key, so a new phrasing = a new key).

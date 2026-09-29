@@ -252,7 +252,7 @@ export const api = {
   p4Adopt(client, body) { return this.post("/api/turn/p4/adopt", { client, ...(body || {}) }); },   // adopt {add,remove,vadd,vrem}
   p4SetVersion(client, index) { return this.post("/api/turn/p4/setversion", { client, index }); },     // rollback to an observed version (index=null → latest)
   turnVersions(q) { return this.get("/api/turn/versions?owner=" + encodeURIComponent(q.owner || "") + "&node=" + encodeURIComponent(q.node || "") + "&service=" + encodeURIComponent(q.service || "") + "&fork=" + encodeURIComponent(q.fork || "")); },   // mirrored (rollback-able) versions + any per-(node,fork) hold
-  changelog() { return this.get("/api/changelog"); },   // full panel changelog (newest-first) for the version info bubble
+  changelog(want) { return this.get("/api/changelog" + (want ? "?want=" + encodeURIComponent(want) : "")); },   // full panel changelog (newest-first) for the version info bubble
   nodeSelfUpdate(b) { return this.post("/api/node/update", b); },   // flag a node to self-update (≠ nodeUpdate, which renames)
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
@@ -346,8 +346,6 @@ export const Store = {
 
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
     this.turnUpdates = d.turn_updates || this.turnUpdates || [];   // [{fork,kind,node,installed,latest,ids}] — deployed turn-family servers behind their newest build, one row per (fork, node). Held forks are already excluded server-side.
-    if ("latest_remote_date" in d) this.latestRemoteDate = d.latest_remote_date || "";   // update-bubble: release date + changelog notes
-    if ("latest_remote_notes" in d) this.latestRemoteNotes = d.latest_remote_notes || [];
     if (s && s.ok) { this.hostProc = d.host_proc || null; this.hostProcErr = d.host_proc_err || null; }   // only on a clean poll → the tag HOLDS through the panel's own re-install downtime
     if (ev && Array.isArray(ev.data)) this.events = ev.data;
     this.apply();
