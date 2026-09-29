@@ -944,9 +944,20 @@ awg_kernel_takes(){ # <conf> — would the loaded kernel module accept this inte
 awg_kdevs(){   # the amneziawg KERNEL devices in this network namespace, one per line (amneziawg-go runs a tun — never listed)
   ip -o link show type amneziawg 2>/dev/null | awk -F': ' '{sub(/@.*/, "", $2); print $2}'
 }
-awg_kdevs_elsewhere(){   # named network namespaces holding an amneziawg device — `modprobe -r` would destroy it there too
-  local n; for n in $(ip netns list 2>/dev/null | awk '{print $1}'); do
+awg_kdevs_elsewhere(){   # OTHER network namespaces holding an amneziawg device — `modprobe -r` would destroy it there too
+  # Named ones (`ip netns`) AND every process's: a Docker container's namespace is not named, and an AmneziaWG device a
+  # container made on the host's module (Amnezia's own containers, say) would otherwise go without a word.
+  local n me ns seen="" p
+  for n in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     [ -n "$(ip -n "$n" -o link show type amneziawg 2>/dev/null)" ] && echo "$n"
+  done
+  have nsenter || return 0
+  me="$(readlink /proc/self/ns/net 2>/dev/null)"
+  for p in /proc/[0-9]*/ns/net; do
+    ns="$(readlink "$p" 2>/dev/null)" || continue
+    [ -n "$ns" ] && [ "$ns" != "$me" ] || continue
+    case " $seen " in *" $ns "*) continue ;; esac; seen="$seen $ns"
+    [ -n "$(nsenter --net="$p" ip -o link show type amneziawg 2>/dev/null)" ] && echo "$ns"
   done; return 0
 }
 awg_src_refresh(){   # refresh the amnezia apt source ALONE — a whole `apt-get update` on every one-click update is not needed here
@@ -974,9 +985,21 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
   [ "$APT_DONE" = yes ] || awg_src_refresh || true
   cand="$(pkg_candidate amneziawg-dkms)"
   { [ -n "$cand" ] && [ "$cand" != "(none)" ] && dpkg --compare-versions "$cand" gt "$cur"; } || return 0
+  # Held on purpose (`apt-mark hold`) → the operator's call: said once per update, never an error every update.
+  case " $(apt-mark showhold 2>/dev/null | tr '\n' ' ') " in *" amneziawg-dkms "*|*" amneziawg-tools "*|*" amneziawg "*)
+    ok "AmneziaWG packages: $cand is available, but they are held (apt-mark hold) — left as they are"; return 0 ;; esac
+  # ⚠️ NO HEADERS, NO UPGRADE. The old package's removal takes its DKMS module out for every kernel before the new one
+  # builds; without this kernel's headers the build fails, the running kernel is left with no module on disk (the next
+  # boot runs on the userspace fallback) and dpkg half-configured. The datapath heal installs the headers metapackage, so
+  # this is the rare box whose headers could not be had — it keeps what works.
+  if [ ! -e "/lib/modules/$(uname -r)/build" ]; then
+    note "AmneziaWG: $cand is available but not installed — this kernel's headers are missing"
+    warn "AmneziaWG: $cand is available, but the headers for this kernel ($(uname -r)) are not installed, so its module could not be built — the packages are left as they are (install linux-headers-$(uname -r), or reboot into a kernel that has them)"
+    return 0
+  fi
   pk="amneziawg-dkms amneziawg-tools"; [ -n "$(pkg_installed amneziawg)" ] && pk="$pk amneziawg"
   # shellcheck disable=SC2086   # $pk is a word list
-  if ! run env DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade $pk >/dev/null 2>&1; then
+  if ! run env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=180 --only-upgrade $pk >/dev/null 2>&1; then
     note "AmneziaWG: the package upgrade did not go through — tried again on the next update"
     warn "AmneziaWG: the amnezia packages could not be upgraded ($cur → $cand) — tried again on the next update"
     return 0
@@ -989,8 +1012,12 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
       ok "AmneziaWG $disk installed and loaded (no interface was using the kernel module)"; return 0
     fi
     modprobe amneziawg 2>/dev/null || true
+    if [ ! -e /sys/module/amneziawg ]; then   # unloaded, and the new one would not load: say what the box runs now
+      warn "AmneziaWG $disk installed, but its kernel module would not load — AmneziaWG interfaces run on the userspace fallback until it does"
+      return 0
+    fi
   fi
-  ok "AmneziaWG $disk installed — the kernel module in use stays $loaded until the next reboot, or load it now from the panel (every AmneziaWG client there reconnects within about 15 s)"
+  ok "AmneziaWG $disk installed — the kernel module in use stays $loaded until the next reboot, or load it now from the panel: Load now under the AmneziaWG version switch of any AmneziaWG interface there (every AmneziaWG client reconnects within about 15 s)"
 }
 ensure_awg_back_on_kernel(){   # SURGICAL — NOT part of the general heal: move AWG interfaces off the userspace fallback.
   # docs/AWG-DATAPATH-RESILIENCE-PLAN.md D3. A node whose module was missing runs every awg interface on amneziawg-go
