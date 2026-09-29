@@ -941,6 +941,56 @@ awg_kernel_takes(){ # <conf> — would the loaded kernel module accept this inte
   return $rc
 }
 
+awg_kdevs(){   # the amneziawg KERNEL devices in this network namespace, one per line (amneziawg-go runs a tun — never listed)
+  ip -o link show type amneziawg 2>/dev/null | awk -F': ' '{sub(/@.*/, "", $2); print $2}'
+}
+awg_kdevs_elsewhere(){   # named network namespaces holding an amneziawg device — `modprobe -r` would destroy it there too
+  local n; for n in $(ip netns list 2>/dev/null | awk '{print $1}'); do
+    [ -n "$(ip -n "$n" -o link show type amneziawg 2>/dev/null)" ] && echo "$n"
+  done; return 0
+}
+awg_src_refresh(){   # refresh the amnezia apt source ALONE — a whole `apt-get update` on every one-click update is not needed here
+  local f d; f="$(ls /etc/apt/sources.list.d/*amnezia* 2>/dev/null | sed -n 1p)"; [ -n "$f" ] || return 1
+  d="$(mktemp -d)" || return 1; ln -s "$f" "$d/" || { rm -rf "$d"; return 1; }   # keeps .list / .sources, so both formats parse
+  run apt-get update -qq -o Dir::Etc::sourcelist=/dev/null -o Dir::Etc::sourceparts="$d" -o APT::Get::List-Cleanup=0 >/dev/null 2>&1
+  local rc=$?; rm -rf "$d"; return $rc
+}
+ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current build — module AND tools together, the loaded module
+  # untouched unless nothing uses it (docs/AWG31-LOAD-PLAN.md D1). Runs under --no-components too, on purpose: every
+  # one-click update passes that flag, and ensure_awg_datapath is install-if-MISSING, so a node installed before AmneziaWG 3
+  # kept its 2.0 module and tools for good and could never run a 3.1 interface (production, 2026-09-29: dkms and tools from
+  # March, installed in May, never upgraded). Only where the package route owns the datapath: amneziawg-dkms installed and
+  # the `awg` on PATH belonging to amneziawg-tools — tools we did not install are never outrun (a 3.x module that 2.0
+  # tools cannot configure takes every awg interface down at the next boot). Module and tools move in ONE transaction:
+  # 3.1 tools drive the loaded 2.0 module, and the 3.1 module takes 2.0 configurations (AWG3-PLAN §2.3, measured).
+  [ "$HAVE_BNODE" = yes ] || return 0
+  have apt-get && have dpkg-query && have dpkg || return 0
+  local cur cand awgp pk disk loaded
+  cur="$(pkg_installed amneziawg-dkms)"; [ -n "$cur" ] || return 0
+  awgp="$(command -v awg 2>/dev/null)" || return 0
+  dpkg -S "$awgp" 2>/dev/null | grep -q '^amneziawg-tools:' || return 0
+  if $DRYRUN; then ok "AmneziaWG packages: an update checks the amnezia PPA and follows its build (module and tools together)"; return 0; fi
+  [ "$APT_DONE" = yes ] || awg_src_refresh || true
+  cand="$(pkg_candidate amneziawg-dkms)"
+  { [ -n "$cand" ] && [ "$cand" != "(none)" ] && dpkg --compare-versions "$cand" gt "$cur"; } || return 0
+  pk="amneziawg-dkms amneziawg-tools"; [ -n "$(pkg_installed amneziawg)" ] && pk="$pk amneziawg"
+  # shellcheck disable=SC2086   # $pk is a word list
+  if ! run env DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade $pk >/dev/null 2>&1; then
+    note "AmneziaWG: the package upgrade did not go through — tried again on the next update"
+    warn "AmneziaWG: the amnezia packages could not be upgraded ($cur → $cand) — tried again on the next update"
+    return 0
+  fi
+  DID_UPDATE=yes; note "AmneziaWG packages: $cur → $cand"
+  disk="$(modinfo -F version amneziawg 2>/dev/null)"; loaded="$(cat /sys/module/amneziawg/version 2>/dev/null)"
+  if [ -z "$loaded" ] || [ "$disk" = "$loaded" ]; then ok "AmneziaWG packages updated (kernel module $disk)"; return 0; fi
+  if [ -z "$(awg_kdevs)" ] && [ -z "$(awg_kdevs_elsewhere)" ]; then   # nobody on the module → load the new one now, cutting no one
+    if modprobe -r amneziawg 2>/dev/null && modprobe amneziawg 2>/dev/null; then
+      ok "AmneziaWG $disk installed and loaded (no interface was using the kernel module)"; return 0
+    fi
+    modprobe amneziawg 2>/dev/null || true
+  fi
+  ok "AmneziaWG $disk installed — the kernel module in use stays $loaded until the next reboot, or load it now from the panel (every AmneziaWG client there reconnects within about 15 s)"
+}
 ensure_awg_back_on_kernel(){   # SURGICAL — NOT part of the general heal: move AWG interfaces off the userspace fallback.
   # docs/AWG-DATAPATH-RESILIENCE-PLAN.md D3. A node whose module was missing runs every awg interface on amneziawg-go
   # (awg-quick falls back by itself). Once ensure_awg_datapath has made the module load again, nothing moves them back:
@@ -1724,6 +1774,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   ensure_noded_reach_sweep "$NODED_DIR"   # HEAL: the drop-in that sweeps the device-access tables when an OLDER swg-noded starts
   ensure_wg_apparmor     # HEAL: let the confined wg CLI reach the UAPI sockets (wdtt / csqtt / awg-userspace)
   ensure_awg_datapath    # HEAL: install AmneziaWG if missing, rebuild its module, else userspace
+  ensure_awg_pkg_follow  # FOLLOW: the amnezia packages to the PPA's build (module + tools); load it only where nothing uses it
   ensure_awg_quick_unit  # HEAL: the awg-quick@ template + the per-interface enable, so awg survives a reboot
   ensure_awg_back_on_kernel   # SURGICAL: interfaces left on the userspace fallback go back to the module once it loads
 fi

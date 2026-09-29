@@ -1,0 +1,100 @@
+#!/bin/bash
+# Self-test — update.sh follows the amnezia packages to the PPA's build (docs/AWG31-LOAD-PLAN.md D1). Sandboxed: the
+# functions are taken from update.sh; apt-get / apt-cache / dpkg-query / dpkg -S / modinfo / ip / modprobe are stubs that
+# record what they were asked (dpkg --compare-versions is the real one).
+#   [1] amneziawg-dkms not installed (source route, NixOS…) → nothing asked of apt
+#   [2] the `awg` on PATH is not amneziawg-tools' (hand-built) → nothing upgraded
+#   [3] the candidate is what is installed, or OLDER → nothing upgraded
+#   [4] a newer build, kernel devices up → ONE transaction with dkms + tools (+ the metapackage), the module left loaded,
+#       the output says it loads at the next reboot or from the panel
+#   [5] a newer build, no device anywhere → the new module is loaded now (modprobe -r, then modprobe)
+#   [6] a device in another named namespace → not reloaded (rmmod would destroy it there)
+#   [7] only the amnezia source is refreshed, never the whole index; a run that already refreshed it does not again
+#   [8] apt fails → a note, the update is not failed
+# Run: bash tests/awg_pkg_follow_selftest.sh     --perturb drops the tools-ownership check, the device check and the
+#      tools from the transaction; expects RED on [2], [4], [6].
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+FAILS=0; check(){ if [ "$2" = 0 ]; then echo "  PASS $1"; else echo "  FAIL $1 ${3:-}"; FAILS=$((FAILS+1)); fi; }
+fn="$(grep -E '^(pkg_installed|pkg_candidate)\(\)\{.*\}' "$ROOT/update.sh"     # one-liners
+      for f in awg_kdevs awg_kdevs_elsewhere awg_src_refresh ensure_awg_pkg_follow; do awk -v f="$f" '$0 ~ "^"f"\\(\\)\\{" {p=1} p {print} p && /^}$/ {exit}' "$ROOT/update.sh"; done)"
+printf '%s\n' "$fn" | grep -q '^ensure_awg_pkg_follow' || { echo "  FAIL ensure_awg_pkg_follow not found in update.sh"; exit 1; }
+fn="${fn//\/etc\/apt\/sources.list.d/$T/sld}"; fn="${fn//\/sys\/module\/amneziawg\/version/$T/loaded}"
+_planted(){ [ "$1" != "$2" ] || { echo "  STALE PERTURBATION — $3: its anchor is missing, nothing was planted, this run would FALSE-PASS"; exit 3; }; }
+if [ "${1:-}" = "--perturb" ]; then
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e "s/dpkg -S \"\$awgp\" 2>\/dev\/null | grep -q '^amneziawg-tools:' || return 0/:/")"; _planted "$_b" "$fn" "the tools-ownership check"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/if \[ -z "\$(awg_kdevs)" \] && \[ -z "\$(awg_kdevs_elsewhere)" \]; then/if true; then/')"; _planted "$_b" "$fn" "the device check"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/pk="amneziawg-dkms amneziawg-tools"/pk="amneziawg-dkms"/')"; _planted "$_b" "$fn" "the tools in the transaction"
+fi
+mkdir -p "$T/bin" "$T/sld" "$T/usr-bin"
+stub(){ printf '#!/bin/sh\n%s\n' "$2" > "$T/bin/$1"; chmod +x "$T/bin/$1"; }
+stub apt-get 'echo "apt-get $*" >> "$SBX/calls"; case "$*" in *install*) [ -e "$SBX/apt-fail" ] && exit 100; cp "$SBX/cand" "$SBX/inst-amneziawg-dkms"; [ -e "$SBX/disk-after" ] && cp "$SBX/disk-after" "$SBX/disk";; esac; exit 0'
+stub apt-cache 'printf "%s:\n  Installed: x\n  Candidate: %s\n" "$2" "$(cat "$SBX/cand")"'
+stub dpkg-query 'f="$SBX/inst-${4:-$3}"; [ -e "$f" ] && cat "$f"; exit 0'
+stub dpkg 'if [ "$1" = -S ]; then cat "$SBX/owner" 2>/dev/null; [ -s "$SBX/owner" ]; exit $?; fi; exec /usr/bin/dpkg "$@"'
+stub modinfo 'cat "$SBX/disk"'
+stub modprobe 'echo "modprobe $*" >> "$SBX/calls"; exit 0'
+stub ip 'case "$*" in "netns list") cat "$SBX/netns" 2>/dev/null;; "-n "*) [ -e "$SBX/ns-dev" ] && echo "7: e0: <POINTOPOINT> mtu 1420";; *type\ amneziawg*) cat "$SBX/kdevs" 2>/dev/null;; esac; exit 0'
+printf '#!/bin/sh\n' > "$T/usr-bin/awg"; chmod +x "$T/usr-bin/awg"
+cat > "$T/run.sh" <<EOF
+HAVE_BNODE=yes; DRYRUN=false; APT_DONE=\${APT_DONE:-no}; DID_UPDATE=no; DID_FAIL=no
+have(){ command -v "\$1" >/dev/null 2>&1; }; run(){ "\$@"; }
+ok(){ echo "OK \$*"; }; warn(){ echo "WARN \$*"; }; note(){ echo "NOTE \$*"; }
+$fn
+ensure_awg_pkg_follow; echo "DID_UPDATE=\$DID_UPDATE DID_FAIL=\$DID_FAIL"
+EOF
+case_(){   # case_ <name> : a fresh sandbox — 1.0 installed and loaded, 3.1 in the PPA, awg owned by amneziawg-tools
+  export SBX="$T/$1"; rm -rf "$SBX"; mkdir -p "$SBX"; : > "$SBX/calls"
+  echo "1.0.0-0~202603291904+ac946a9~ubuntu24.04.1" > "$SBX/inst-amneziawg-dkms"
+  echo "1.0.20210914-0~202602231231+5d6179a~ubuntu24.04.1" > "$SBX/inst-amneziawg"
+  echo "1.0.0-0~202609061402+4569c4c~ubuntu24.04.1" > "$SBX/cand"
+  echo "amneziawg-tools: $T/usr-bin/awg" > "$SBX/owner"
+  echo "1.0.20251009" > "$SBX/disk"; echo "3.1.20260812" > "$SBX/disk-after"; echo "1.0.20251009" > "$T/loaded"
+  echo "5: awg0: <POINTOPOINT,NOARP,UP> mtu 1420" > "$SBX/kdevs"
+  echo 'Types: deb' > "$T/sld/amnezia-ubuntu-ppa-noble.sources"
+}
+go(){ PATH="$T/bin:$T/usr-bin:/usr/bin:/bin" bash "$T/run.sh" 2>&1; }
+
+echo; echo "[1] no amneziawg-dkms"
+case_ c1; rm "$SBX/inst-amneziawg-dkms"; out="$(go)"
+check "nothing asked of apt" "$([ ! -s "$SBX/calls" ] && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+
+echo; echo "[2] hand-built awg"
+case_ c2; : > "$SBX/owner"; out="$(go)"
+check "nothing upgraded" "$(grep -q install "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+
+echo; echo "[3] nothing newer"
+case_ c3; cp "$SBX/inst-amneziawg-dkms" "$SBX/cand"; out="$(go)"
+check "the same build → nothing upgraded" "$(grep -q install "$SBX/calls" && echo 1 || echo 0)"
+case_ c3b; echo "1.0.0-0~202601011111+000000~ubuntu24.04.1" > "$SBX/cand"; out="$(go)"
+check "an OLDER candidate → nothing upgraded" "$(grep -q install "$SBX/calls" && echo 1 || echo 0)"
+
+echo; echo "[4] newer build, devices up"
+case_ c4; out="$(go)"
+check "one transaction: dkms + tools + the metapackage" "$(grep -c 'install -y --only-upgrade amneziawg-dkms amneziawg-tools amneziawg$' "$SBX/calls" | grep -qx 1 && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+check "the loaded module is left alone" "$(grep -q 'modprobe -r' "$SBX/calls" && echo 1 || echo 0)"
+check "the output says: next reboot, or from the panel" "$(printf '%s' "$out" | grep -q 'until the next reboot, or load it now from the panel' && echo 0 || echo 1)" "$out"
+check "counted as an update, not a failure" "$(printf '%s' "$out" | grep -q 'DID_UPDATE=yes DID_FAIL=no' && echo 0 || echo 1)"
+
+echo; echo "[5] newer build, no device"
+case_ c5; : > "$SBX/kdevs"; out="$(go)"
+check "the new module is loaded now" "$(grep -q 'modprobe -r amneziawg' "$SBX/calls" && grep -q '^modprobe amneziawg' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+check "…and says so" "$(printf '%s' "$out" | grep -q 'installed and loaded' && echo 0 || echo 1)" "$out"
+
+echo; echo "[6] a device in another namespace"
+case_ c6; : > "$SBX/kdevs"; echo "ve" > "$SBX/netns"; touch "$SBX/ns-dev"; out="$(go)"
+check "not reloaded" "$(grep -q 'modprobe -r' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+
+echo; echo "[7] the refresh"
+case_ c7; out="$(go)"
+check "only the amnezia source is refreshed" "$(grep 'apt-get update' "$SBX/calls" | grep -q 'sourcelist=/dev/null' && grep -q 'sourceparts=' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+case_ c7b; out="$(APT_DONE=yes go)"
+check "an index refreshed earlier in the run is not refreshed again" "$(grep -q 'apt-get update' "$SBX/calls" && echo 1 || echo 0)"
+
+echo; echo "[8] apt fails"
+case_ c8; touch "$SBX/apt-fail"; out="$(go)"
+check "a note, not a failed update" "$(printf '%s' "$out" | grep -q 'NOTE AmneziaWG: the package upgrade did not go through' && printf '%s' "$out" | grep -q 'DID_FAIL=no' && echo 0 || echo 1)" "$out"
+
+echo
+if [ "${1:-}" = "--perturb" ]; then [ "$FAILS" -gt 0 ] && { echo "perturb: RED as it must be ($FAILS)"; exit 0; } || { echo "perturb: NOT CAUGHT"; exit 1; }; fi
+[ "$FAILS" = 0 ] && echo "ALL PASS" || echo "FAIL: $FAILS"; exit $((FAILS > 0))
