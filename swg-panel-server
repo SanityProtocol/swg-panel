@@ -5506,6 +5506,7 @@ def node_remove(deps, nid):
     # the leg's card and its Datapath switch — but the interface that pointed here kept saying `forward` to
     # an id that no longer resolves, and `cascade_plan` silently dropped it. See `prune_node_refs`.
     _orphans = prune_node_refs(nodes)
+    prune_p2p_refs(nodes)                                     # …and a torrent route to it becomes Block
     nodes_save(deps["nodes_path"], nodes)
     changed = False
     for pid in list(roster["peers"].keys()):
@@ -7615,9 +7616,14 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
     # only on the interfaces whose switch is on — so "blocked everywhere" would be a claim the datapath does not keep.
     # ASKED of the node (it reports `p2p` while the policy runs), never inferred from a version; a node that has not
     # reported smart status at all says nothing either way.
-    if p2p_policy(c) in ("block", "direct") and isinstance(snap.get("smartroute"), dict) and not snap["smartroute"].get("p2p"):
+    _p2pa = p2p_policy(c)
+    if _p2pa != "iface" and isinstance(snap.get("smartroute"), dict) and not snap["smartroute"].get("p2p"):
         issues.append(perr("the torrent policy needs a node update — until then torrents are blocked only on interfaces "
                            "that have Torrents / P2P switched on"))
+    # A route the plan could not lower (no mesh link to the node, a subnet clash there, the exit disabled or gone): the node
+    # runs it as Block — fail closed — and says so by reporting mode block. Said here, or "routed" would be a quiet lie.
+    elif _p2pa in ("exit", "dev") and ((snap.get("smartroute") or {}).get("p2p") or {}).get("mode") == "block":
+        issues.append(perr("the torrent route is unavailable — torrent traffic is blocked until it is"))
     return issues
 
 # A DNS name as an operator may type it: labels of letters/digits/hyphens, at least one dot, or a bare
@@ -12019,8 +12025,9 @@ BLOCK_CAT_ORDER = list(BLOCK_CATEGORIES.keys()) + list(MECH_CATEGORIES.keys())
 # interfaces, mesh arrivals, the node's own processes — not only an interface's own subnet.
 #   block   dropped everywhere          direct  only out this node's own address (its main default route)
 #   iface   each interface's "Torrents / P2P" switch decides (the per-interface mechanism, as before this policy)
-# Route via an exit or another node is P3. The node is sent block|direct; iface is the absence of a policy there.
-P2P_ACTIONS = ("block", "direct", "iface")
+#   exit    out through the mesh to another node ({"node": nid})   dev   out through one of this node's exits ({"exit_id"})
+# The node is sent block|direct, or route + the lowered entry (cascade_plan's `_p2p`); iface is the absence of a policy.
+P2P_ACTIONS = ("block", "direct", "iface", "exit", "dev")
 
 
 def p2p_policy(node):
@@ -15894,6 +15901,19 @@ def derive_default_exit(rec):
         rec.pop("default_exit", None)
 
 
+def prune_p2p_refs(nodes):
+    """A torrent route whose target is gone — the node removed, or the exit deleted — becomes Block: the route asked for
+    torrents to leave ONE way, so with that way gone the honest fallback is none, not the WAN. Fleet-wide and
+    unconditional like the prunes it sits beside, so a record already in that state heals on the next save of anything."""
+    for _n in (nodes or {}).values():
+        _p = (_n or {}).get("p2p")
+        if not isinstance(_p, dict):
+            continue
+        if (_p.get("action") == "exit" and _p.get("node") not in nodes) or (
+                _p.get("action") == "dev" and str(_p.get("exit_id")) not in {str((e or {}).get("id")) for e in (_n.get("exits") or [])}):
+            _n["p2p"] = {"action": "block"}
+
+
 def prune_default_exit(rec):
     """Drop a node's `default_exit` when no exit on that node carries the id any more. Mutates `rec`.
 
@@ -16785,6 +16805,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
 
     # 1) collect forward + smart items; per-node target order (UNION) → stable table ids shared by both modes
     fwd_items, smart_items, devexit_items = [], [], []
+    p2p_items = []                                            # (nid, kind, target key, dev_n, dev_p, base_p, subnets, ks, egress_ip, gw)
     exit_ips_of = {}                                      # (node, subnet) → {far node: address} — see the smart branch
 
     def _rule_cat(nid, r):
@@ -17066,6 +17087,40 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             if not S:
                 continue
             _collect_egress(nid, _cov, S, targets, _cn)
+        # P2P ROUTE (docs/P2P-POLICY-PLAN.md P3): the node's torrent policy sends P2P from EVERY one of its own client
+        # subnets out ONE way — another node over the mesh, or one of its own exits — whatever each subnet's own egress.
+        # Gated exactly as a rule to the same target is (a mesh link with both devices reported, the T37/T15 clash test per
+        # subnet, `resolve_exit` for a device), and given its table the same way: as a target of this node. What survives
+        # the gates is the only thing the node will route; everything else P2P there is blocked (fail closed).
+        _pp = node.get("p2p") if isinstance(node.get("p2p"), dict) else {}
+        if _pp.get("action") in ("exit", "dev"):
+            _own = []
+            for _in, _io in (node.get("ifaces") or {}).items():
+                if not (_io or {}).get("system") and _iface_subnet_from_snap(snaps, nid, _in):
+                    _own.append((_in, _iface_subnet_from_snap(snaps, nid, _in)))
+            for _wn, _wov in (node.get("wdtt") or {}).items():
+                for _k in (("wg_addr", "raw_addr") if (_wov or {}).get("raw_port") else ("wg_addr",)):
+                    if _wdtt_net((_wov or {}).get(_k) or ""):
+                        _own.append((_wn, _wdtt_net(_wov[_k])))
+            for _cn, _cov in (node.get("csqtt") or {}).items():
+                if _wdtt_net((_cov or {}).get("tun_addr") or ""):
+                    _own.append((_cn, _wdtt_net(_cov["tun_addr"])))
+            if _pp["action"] == "dev":
+                _rx = resolve_exit(nodes, snaps, nid, _pp.get("exit_id"))
+                if _rx and _own:
+                    _ddev, _dkey, _dks, _deg, _dgw = _rx
+                    if _dkey not in targets:
+                        targets.append(_dkey)
+                    p2p_items.append((nid, "dev", _dkey, _ddev, None, None, [s for _, s in _own], _dks, _deg, _dgw))
+            else:
+                _Q = _pp.get("node")
+                if _Q in nodes and _Q != nid and all(_link_devs(nodes, nid, _Q)):
+                    _dn, _dp, _bp = _link_devs(nodes, nid, _Q)
+                    _subs = [s for n_, s in _own if not _clashes(nid, n_, s, _Q, "rule")]
+                    if _subs:
+                        if _Q not in targets:
+                            targets.append(_Q)
+                        p2p_items.append((nid, "exit", _Q, _dn, _dp, _bp, _subs, False, "", ""))
         # A node with a default exit reserves its table WHETHER OR NOT a local interface uses it, because
         # traffic cascaded in from ANOTHER node may need it and that is only known after every node has been
         # walked — by which point this node's table map is frozen. One of a hundred tables, on a node that
@@ -17271,6 +17326,31 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     _k = classify_target(_p)
                     if _k.get("kind") in _PATTERN_KINDS:
                         b.setdefault(_k["kind"], []).append(_k["value"])
+
+    # 2b) P2P ROUTES — the far side exactly as a rule's: a node target gets the exit record (`to S lookup T` + SNAT), the
+    # mesh ACL, its arrival default and the relay leg record; a device gets a RULE-scoped devexit per subnet (its SNAT, and
+    # its kill-switch). Before the arrivals pass, so a subnet sent to P for P2P is one of P's arrivals like any other.
+    # `_p2p` is UNDERSCORED: the sync reply carries it inside smart.p2p, never as a slot key of its own.
+    for (nid, kind, key, dev_n, dev_p, base_p, subs, xks, xeg, xgw) in p2p_items:
+        sn = slot(nid)
+        T = sn["_targets"].get(key)
+        if T is None or T > SWG_RT_MAX:
+            continue
+        if kind == "exit":
+            sn["allowed"][dev_n] = "0.0.0.0/0"
+            for S in subs:
+                pin = _ip4((exit_ips_of.get((nid, S)) or {}).get(key))
+                add_exit(key, S, dev_p, T, pin, "", base_p)
+                slot(key).setdefault("_from", {}).setdefault(S, nid)
+                arrival_default(key, S, pin, "")
+                if (S, key, "smart") not in sn["_leg_seen"]:
+                    sn["_leg_seen"].add((S, key, "smart"))
+                    sn["_legs"].append({"subnet": S, "peer": key, "mark": T, "mode": "smart"})
+        else:
+            for S in subs:
+                _dx_add(sn, {"subnet": S, "dev": dev_n, "table": T, "killswitch": bool(xks), "scope": "rule",
+                             "egress_ip": xeg, "gw": xgw})
+        sn["_p2p"] = {"table": T, "via_iface": dev_n, "subnets": sorted(set(subs))}
 
     # 3) ARRIVALS — P's default list, lowered ONCE for the traffic other nodes cascade out through P (D2/D3, §3.1–3.4, §4.3).
     # A second pass because the arrivals are only known now: they are P's exit records, which every other node's entries
@@ -24221,7 +24301,18 @@ def api(method, path, qs, body, deps):
             if _pp is None:
                 nodes[nid].pop("p2p", None)
             elif isinstance(_pp, dict) and _pp.get("action") in P2P_ACTIONS:
-                nodes[nid]["p2p"] = {"action": _pp["action"]}
+                _prec = {"action": _pp["action"]}
+                if _pp["action"] == "exit":           # through the mesh to another node: one that exists and is not this one
+                    _q = str(_pp.get("node") or "")
+                    if _q not in nodes or _q == nid:
+                        return 400, {"ok": False, "error": "torrents can only be routed to another node of this fleet", "code": "bad_request"}
+                    _prec["node"] = _q
+                elif _pp["action"] == "dev":          # through one of THIS node's exits (after `exits` above, so one made in this save counts)
+                    _x = str(_pp.get("exit_id") or "")
+                    if _x not in {str((e or {}).get("id")) for e in (nodes[nid].get("exits") or [])}:
+                        return 400, {"ok": False, "error": "torrents can only be routed through one of this node's exits", "code": "bad_request"}
+                    _prec["exit_id"] = _x
+                nodes[nid]["p2p"] = _prec
             else:
                 return 400, {"ok": False, "error": "torrent policy must be one of: " + ", ".join(P2P_ACTIONS), "code": "bad_request"}
         # …and nothing else is left pointing at an exit that is gone either — see `prune_exit_refs` and
@@ -24237,6 +24328,7 @@ def api(method, path, qs, body, deps):
         # written here would record a rewrite that was never persisted — then record it again on the next
         # successful save. `node_remove` already has this ordering; this path did not.
         _orphans_u = prune_node_refs(nodes)
+        prune_p2p_refs(nodes)
         nodes[nid].pop("enabled_categories", None)   # §6.9: deleted, never read; drop the dead key as we pass
         if "catalog_cats" in body:              # categories the operator opted THIS node into (node-lens): provider-catalog
             cc = body.get("catalog_cats")       # ids (<prov>:<id>) AND curated built-ins (bare id) — both first-class + pullable
@@ -29927,7 +30019,11 @@ class Handler(BaseHTTPRequestHandler):
                                           "block_doh": (node.get("routing_mode") or "kernel") == "forcedns",
                                           "mech": _blk_mech,   # {subnet: [mechanism ids]} → node builds the FREE L4/rate drops (smtp/quic/portscan) + doh; "torrents" = strict subnets
                                           # the node-wide P2P policy; None = iface (the node keeps the per-interface mechanism alone)
-                                          "p2p": ({"action": _p2pa} if (_p2pa := p2p_policy(node)) in ("block", "direct") else None),
+                                          # route: the entry cascade_plan lowered ({table, via_iface, subnets}) — none when it could
+                                          # not be lowered, which the node runs as block (fail closed) and reports
+                                          "p2p": ({"action": _p2pa} if (_p2pa := p2p_policy(node)) in ("block", "direct")
+                                                  else {"action": "route", "entry": (my_plan or {}).get("_p2p")} if _p2pa in ("exit", "dev")
+                                                  else None),
                                           "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
                                           "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
                                           "routing_reset_learned": int(node.get("routing_reset_learned") or 0)},   # 'Reset learned IPs' counter → node clears only its learned-IP sets

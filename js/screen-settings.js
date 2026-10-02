@@ -2462,7 +2462,7 @@ export function PanelSettingsScreen() {
       if (!eq(e.default_routing, o.default_routing) && (Array.isArray(e.default_routing) || eq(e.default_exit, o.default_exit)))
         fl.push(Array.isArray(e.default_routing) ? T("default routing rules") : T("default exit"));   // one line for one change
       if (!eq(e.default_routing_exit_ips, o.default_routing_exit_ips)) fl.push(T("default routing exit addresses"));
-      if (!eq(e.p2p, o.p2p)) fl.push(T("torrents → {v1}", { v1: P2P_SHORT()[(e.p2p || {}).action] || "" }));
+      if (!eq(e.p2p, o.p2p)) fl.push(T("torrents → {v1}", { v1: p2pLabel(e.p2p, e.exits || n.exits) }));
       if (!eq(e.panel_ip, o.panel_ip)) fl.push(T("panel IP → {v1}", { v1: e.panel_ip || T("val|auto") }));
       if (!eq(e.mesh_egress_ip, o.mesh_egress_ip)) fl.push(T("mesh egress IP → {v1}", { v1: e.mesh_egress_ip || T("val|auto") }));
       if (!eq((e.endpoint_hosts || []).filter(Boolean), (o.endpoint_hosts || []).filter(Boolean))) fl.push(T("other names"));
@@ -4317,6 +4317,17 @@ const P2P_OPTS = () => [
   { value: "direct", label: T("Allow, only out this server's own address") },
   { value: "iface", label: T("Each interface decides") }];
 const P2P_SHORT = () => ({ block: T("blocked"), direct: T("this server's address only"), iface: T("per interface") });
+// Route (P3): the picker's value names the target — "dev:<exit id>" (one of this node's exits) or "exit:<node id>" (another
+// node over the mesh) — and the stored record is {action:"dev", exit_id} / {action:"exit", node}, the routing rule's shape.
+const p2pVal = p => !p || !p.action ? "" : p.action === "dev" ? "dev:" + p.exit_id : p.action === "exit" ? "exit:" + p.node : p.action;
+const p2pRec = val => val.startsWith("dev:") ? { action: "dev", exit_id: val.slice(4) }
+  : val.startsWith("exit:") ? { action: "exit", node: val.slice(5) } : { action: val };
+const p2pExitName = x => (x && (x.label || x.device || x.id)) || "?";
+const p2pNodeName = id => ((Store.nodes || []).find(n => n.id === id) || {}).name || id;
+const p2pTarget = (p, exits) => p.action === "dev" ? p2pExitName((exits || []).find(x => x.id === p.exit_id) || { id: p.exit_id })
+  : p.action === "exit" ? p2pNodeName(p.node) : "";
+const p2pLabel = (p, exits) => !p || !p.action ? "" : (p.action === "dev" || p.action === "exit")
+  ? T("via {v1}", { v1: p2pTarget(p, exits) }) : (P2P_SHORT()[p.action] || "");
 const P2P_HINT = () => ({
   block: T("Torrent traffic is dropped on every way out of this server: its interfaces, traffic other nodes send out through it, and programs running on it. Web, calls and games are not affected."),
   direct: T("Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route."),
@@ -4639,14 +4650,25 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
         onChange=${(rules, xs) => set({ default_routing: rules, default_routing_exit_ips: xs || {} })}/>
       <${DefaultReach} node=${node}/><//></div>` : null}
     ${(() => {   // shown as the policy IN FORCE: what is stored, or the computed default the server says applies
-      const cur = (v.p2p && v.p2p.action) || node.p2p_eff || "iface";
+      const exits = v.exits || node.exits || [];
+      const curRec = (v.p2p && v.p2p.action) ? v.p2p : { action: node.p2p_eff || "iface" };
+      const cur = p2pVal(curRec), routed = curRec.action === "dev" || curRec.action === "exit";
       const pn = node.p2p_node;
+      const opts = [...P2P_OPTS(),
+        ...exits.filter(x => x && x.id).map(x => ({ value: "dev:" + x.id, label: T("Route through {v1}", { v1: p2pExitName(x) }) })),
+        ...(Store.nodes || []).filter(n => n.id !== node.id).map(n => ({ value: "exit:" + n.id, label: T("Route through node {v1}", { v1: n.name }) }))];
+      // A node that drops P2P other nodes send it: Block, or a route of its own (it routes only its own clients' P2P).
+      const tgt = curRec.action === "exit" ? (Store.nodes || []).find(n => n.id === curRec.node) : null;
+      const tgtDrops = tgt && ["block", "exit", "dev"].includes(tgt.p2p_eff);
       return html`<div class="field">
         <${Disclosure} title=${T("Filters & abuse")} sumCls="on" open=${p2pOpen} onToggle=${() => setP2pOpen(o => !o)}
-          summary=${T("Torrents / P2P: {v1}", { v1: P2P_SHORT()[cur] })}>
+          summary=${T("Torrents / P2P: {v1}", { v1: p2pLabel(curRec, exits) })}>
           <div class="field"><label>${T("Torrents / P2P")}</label>
-            <${Dropdown} value=${cur} onChange=${a => set({ p2p: { action: a } })} options=${P2P_OPTS()}/>
-            <div class="hint">${P2P_HINT()[cur]}</div>
+            <${Dropdown} value=${cur} onChange=${a => set({ p2p: p2pRec(a) })} options=${opts}/>
+            <div class="hint">${routed
+              ? T("Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server, and programs running on it, are blocked.", { v1: p2pTarget(curRec, exits) })
+              : P2P_HINT()[cur]}</div>
+            ${tgtDrops ? html`<div class="hint warnish">${T("{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.", { v1: tgt.name })}</div>` : null}
             ${pn && pn.state === "degraded" && cur !== "iface" ? html`<div class="hint warnish">${T("This server's kernel can't read packet contents (5.16 or newer is needed), so torrents are recognised by their connection pattern only.")}</div>` : null}
           </div>
         <//></div>`; })()}

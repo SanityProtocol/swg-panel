@@ -4477,6 +4477,18 @@ export const STR = {
     "Блокируют только интерфейсы, где включено «Торренты / P2P». Трафик других нод, выходящий через этот сервер, и программы на нём не проверяются.",
   "This server's kernel can't read packet contents (5.16 or newer is needed), so torrents are recognised by their connection pattern only.":
     "Ядро этого сервера не умеет читать содержимое пакетов (нужно 5.16 или новее), поэтому торренты узнаются только по характеру соединений.",
+  // P3 — routing torrent traffic through an exit or another node
+  "via {v1}": "через {v1}",
+  "Route through {v1}": "Направлять через {v1}",
+  "Route through node {v1}": "Направлять через ноду {v1}",
+  "Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server, and programs running on it, are blocked.":
+    "Торрент-трафик может выходить только через {v1}. Если этот путь не работает, торрент-трафик блокируется — другим путём он не уходит. Трафик других нод, выходящий через этот сервер, и программы на нём блокируются.",
+  "{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.":
+    "{v1} блокирует торрент-трафик, который ей присылают другие ноды, — направленное туда не выйдет. Разрешите его на {v1} или оставьте решать каждому интерфейсу.",
+  "the torrent route is unavailable — torrent traffic is blocked until it is":
+    "маршрут для торрентов недоступен — пока он не заработает, торрент-трафик блокируется",
+  "torrents can only be routed to another node of this fleet": "торренты можно направить только на другую ноду этого флота",
+  "torrents can only be routed through one of this node's exits": "торренты можно направить только через один из выходов этой ноды",
   "the torrent policy needs a node update — until then torrents are blocked only on interfaces that have Torrents / P2P switched on":
     "для политики торрентов нужно обновить ноду — пока торренты блокируются только на интерфейсах, где включено «Торренты / P2P»",
   "Drop outbound mail on TCP :25 — stops spam being relayed through this exit.":

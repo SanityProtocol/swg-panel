@@ -16,6 +16,9 @@
   [12] the @ih capability PROBE is valid nft: every closing brace on its own line (a one-line `{ … } }` is a syntax error
        on every kernel and silently disabled signatures fleet-wide, 2026-10-02) — and, where `sudo -n nft` exists, the
        real nft accepts it (`nft -c`); said SKIPPED out loud when it cannot ask
+  [13] route (P3): only a lowered entry in the band routes — none, junk or a table outside 7000-7099 → block (fail closed);
+       the routable set is the entry's subnets minus the strict ones; the mark is T|P2P_BIT with `fwmark T|P2P_BIT lookup T`
+       at 6880; only entry.via_iface may carry P2P; everything outside the routable set is blocked in prerouting
   [10] a node with nothing to do pays no subprocess per sync once it has looked; a new strict subnet still builds
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
@@ -41,6 +44,8 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "ctid-key":     ('"  set flag { typeof ip saddr; flags timeout; size 65535; }",', '"  set flag { typeof ip saddr; flags timeout; size 65535; }", "  set p2p_ct { typeof ct id; flags timeout; }",'),
     "probe-1line":  ('P2P_PROBE = "table inet swg_p2p_probe {\\n  chain c {\\n    meta l4proto udp @ih,0,64 0x0000041727101980 counter\\n  }\\n}\\n"',
                      'P2P_PROBE = "table inet swg_p2p_probe { chain c { meta l4proto udp @ih,0,64 0x0000041727101980 counter } }\\n"'),
+    "route-open":   ('        return "route" if _p2p_entry(p2p) else "block"', '        return "route"'),
+    "route-strict": ('                    if n.version == 4 and str(n) not in strict:', '                    if n.version == 4:'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
 }
 
@@ -80,7 +85,7 @@ class Box:
         elif a[:2] == ["ip", "rule"] and a[2] == "show":
             out = "".join(r + "\n" for r in self.rules)
         elif a[:3] == ["ip", "rule", "add"]:
-            self.rules.append("%s:\tfrom all fwmark %s lookup main" % (a[-1], a[4]))
+            self.rules.append("%s:\tfrom all fwmark %s lookup %s" % (a[-1], a[4], a[6]))
         elif a[:3] == ["ip", "rule", "del"]:
             before = len(self.rules)
             self.rules = [r for r in self.rules if not r.startswith(a[-1] + ":")][:]
@@ -204,6 +209,20 @@ def run_checks(src):
         ok(r.returncode == 0, "[12] the real nft accepts the probe (%s)" % (r.stderr or "").strip()[:80])
     else:
         print("  [12] real-nft check SKIPPED — no passwordless sudo here; the static check above still ran")
+
+    # [13] route
+    E = {"table": 7003, "via_iface": "wgx0", "subnets": ["10.68.0.0/24", "10.67.0.0/24"]}
+    ok(m._p2p_mode({"action": "route", "entry": E}) == "route", "[13] a lowered route runs as route")
+    for bad in (None, {}, {"table": 6000, "via_iface": "x"}, {"table": "zz", "via_iface": "x"}, {"table": 7003}):
+        ok(m._p2p_mode({"action": "route", "entry": bad}) == "block", "[13] route without a usable entry → block (%s)" % bad)
+    m, b = fresh()
+    m._ensure_p2p({"action": "route", "entry": E}, {"10.67.0.0/24": ["torrents"]}, {}, {"changed": 0, "errors": []})
+    t = b.tables.get("swg_p2p", "")
+    ok("set routable { typeof ip saddr; flags interval; elements = { 10.68.0.0/24 } }" in t, "[13] routable = entry subnets minus strict")
+    ok("meta mark set %#x" % (7003 | m.P2P_BIT) in t and 'oifname != { "wgx0" }' in t, "[13] mark T|BIT, only via_iface allowed")
+    ok("ip saddr != @routable ip saddr @flag" in t and "ip saddr @strict ip saddr @flag" in t, "[13] outside routable / strict → dropped")
+    ok(any(r.startswith("6880:") and "fwmark %#x" % (7003 | m.P2P_BIT) in r and r.endswith("lookup 7003") for r in b.rules),
+       "[13] fwmark T|BIT lookup T at 6880 (%s)" % b.rules)
 
     # [9] retirement
     m, b = fresh()
