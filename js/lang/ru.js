@@ -4475,8 +4475,8 @@ export const STR = {
     "Торрент-трафик может выходить только через собственный адрес сервера — никогда через выход или другую ноду. Остальной трафик идёт своим маршрутом.",
   "Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked.":
     "Блокируют только интерфейсы, где включено «Торренты / P2P». Трафик других нод, выходящий через этот сервер, и программы на нём не проверяются.",
-  "This server's kernel can't read packet contents (5.16 or newer is needed), so torrents are recognised by their connection pattern only.":
-    "Ядро этого сервера не умеет читать содержимое пакетов (нужно 5.16 или новее), поэтому торренты узнаются только по характеру соединений.",
+  "This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.":
+    "Этот сервер не умеет читать содержимое пакетов (слишком старое ядро или nft), поэтому торренты узнаются только по характеру соединений.",
   // P3 — routing torrent traffic through an exit or another node
   "via {v1}": "через {v1}",
   "Route through {v1}": "Направлять через {v1}",

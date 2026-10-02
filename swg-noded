@@ -6658,7 +6658,7 @@ P2P_PROBE = "table inet swg_p2p_probe {\n  chain c {\n    meta l4proto udp @ih,0
 
 
 def _p2p_ih_ok():
-    """Can this kernel match raw L4 payload (`@ih`: nft >= 1.0.1, kernel >= 5.16)? Asked by LOADING a probe table rather
+    """Can this box match raw L4 payload (`@ih`; nft >= 1.0.1 and a kernel that has it — 5.15 does, measured on svo-im)? Asked by LOADING a probe table rather
     than by reading versions — a backported kernel says yes and a stripped one says no, and only the load knows."""
     if _P2P["ih"] is None:
         r = run(["nft", "-f", "-"], input_text=P2P_PROBE)

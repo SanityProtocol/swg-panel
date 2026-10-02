@@ -4669,7 +4669,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
               ? T("Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server, and programs running on it, are blocked.", { v1: p2pTarget(curRec, exits) })
               : P2P_HINT()[cur]}</div>
             ${tgtDrops ? html`<div class="hint warnish">${T("{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.", { v1: tgt.name })}</div>` : null}
-            ${pn && pn.state === "degraded" && cur !== "iface" ? html`<div class="hint warnish">${T("This server's kernel can't read packet contents (5.16 or newer is needed), so torrents are recognised by their connection pattern only.")}</div>` : null}
+            ${pn && pn.state === "degraded" && cur !== "iface" ? html`<div class="hint warnish">${T("This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.")}</div>` : null}
           </div>
         <//></div>`; })()}
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
