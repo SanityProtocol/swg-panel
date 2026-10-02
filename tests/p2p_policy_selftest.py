@@ -24,6 +24,11 @@
        was dropped instead of routed while the node reported "route"); a dead exit withholds the route (fail closed)
   [15] route state: the table in force has a default route → "up", none → "down" (the card names it)
   [16] the device name the panel sends is written into nft and ip rules: anything but an interface name → no route
+  [17] CODE REVIEW: a route through a DOWN or ABSENT device is withheld (never signed, never attempted) — the P2P route,
+       and a routing rule's own smart exit too: signed, it could not install, and the band was rebuilt on every pass
+  [18] CODE REVIEW: a node whose only routing is a P2P route still gets forwarding + loose rp_filter on the route's device
+  [19] CODE REVIEW: the route state is judged by a `default dev/via` line (a kill-switch table's `prohibit default` is not
+       a way out), is cleared each pass, and every status report corrects "up" by the device itself
   [10] a node with nothing to do pays no subprocess per sync once it has looked; a new strict subnet still builds
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
@@ -53,9 +58,18 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "route-open":   ('        return "route" if _p2p_entry(p2p) else "block"', '        return "route"'),
     "route-strict": ('                    if n.version == 4 and str(n) not in strict:', '                    if n.version == 4:'),
     "rt-borrowed":  ('    if _pe:\n        arr_exit = arr_exit + [', '    if False:\n        arr_exit = arr_exit + ['),
-    "rt-nostate":   ('"up" if "default" in (run(["ip", "route", "show", "table", str(ent["table"])]).stdout or "") else "down")', '"up")'),
+    "rt-nostate":   ('            _P2P["route"] = "up" if any(ln.split()[:1] == ["default"] for ln in _rt.splitlines()) else "down"',
+                     '            _P2P["route"] = "up"'),
     "iface-any":    ('and re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", str(e.get("via_iface") or ""))):', 'and e.get("via_iface")):'),
     "fib-perpkt":   ('    L += ["    " + h for h in held]\n    # Traffic TO the node', '    L.append("    fib daddr type local return")\n    L += ["    " + h for h in held]\n    # Traffic TO the node'),
+    "rt-prohibit":  ('            _P2P["route"] = "up" if any(ln.split()[:1] == ["default"] for ln in _rt.splitlines()) else "down"',
+                     '            _P2P["route"] = "up" if "default" in _rt else "down"'),
+    "withhold-down":('        return dev in _wh or _lst[dev] != "up"', '        return dev in _wh'),
+    "rp-gate":      ('        if fwd or smart_e or exit_ or arr_exit:', '        if fwd or smart_e or exit_:'),
+    "status-stale": ('        if _r == "up" and _devexit_state(', '        if False and _devexit_state('),
+    "route-stale":  ('        _P2P.update(route="", route_dev="")', '        pass'),
+    "read-table":   ('            cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")',
+                     '            cj = json.loads(run(["nft", "-j", "list", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
 }
 
@@ -196,14 +210,19 @@ def run_checks(src):
     ok("6881" not in b.tables.get("swg_mech", "") and "tcp . 25" in b.tables.get("swg_mech", ""), "[8] torrent port-hint retired, smtp kept")
     m._P2P["on"] = True
     def fake(args, input_text=None, timeout=20):
-        if args[:5] == ["nft", "-j", "list", "table", "inet"]:
-            o = {"nftables": [{"counter": {"name": n, "packets": p}} for n, p in (("dht", 3), ("fan_flag", 4), ("dropped", 99))]
-                 + [{"set": {"name": "flag", "elem": [{"elem": {"val": "10.68.0.7", "timeout": 600}}]}}]}
+        if args[:5] == ["nft", "-j", "list", "counters", "table"]:
+            o = {"nftables": [{"counter": {"name": n, "packets": p}} for n, p in (("dht", 3), ("fan_flag", 4), ("dropped", 99))]}
             return types.SimpleNamespace(returncode=0, stdout=json.dumps(o), stderr="")
+        if args[:4] == ["nft", "-j", "list", "set"]:
+            o = {"nftables": [{"set": {"name": "flag", "elem": [{"elem": {"val": "10.68.0.7", "timeout": 600}}]}}]}
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps(o), stderr="")
+        if args[:4] == ["nft", "-j", "list", "table"]:
+            return types.SimpleNamespace(returncode=0, stdout="WHOLE TABLE READ", stderr="")
         return types.SimpleNamespace(returncode=1, stdout="", stderr="")
     m.run = fake
     act = m._block_activity()
-    ok(act.get("*", {}).get("torrent") == 7 and act["*"].get("torrent_ips") == ["10.68.0.7"], "[8] activity = sig + fan under *, flagged IPs")
+    ok(act.get("*", {}).get("torrent") == 7 and act["*"].get("torrent_ips") == ["10.68.0.7"],
+       "[8] activity = sig + fan under *, flagged IPs — by two TARGETED reads, never the whole table (meter + flow sets)")
 
     # [11] keys the host's older nft can read
     import re as _re
@@ -237,9 +256,12 @@ def run_checks(src):
        "[13] fwmark T|BIT lookup T at 6880 (%s)" % b.rules)
 
     # [14] the route's table, through the real reconcile_cascade with everything around it stubbed
-    def recon(entry, dead=False):
+    def recon(entry, dead=False, link="up", smart_entries=(), sysctls=None):
         m = load(src)
         calls = []
+        m._dev_link_state = lambda dev: link if dev in ("wgx9", "swg_q") else "up"
+        if sysctls is not None:
+            m._sysctl_ensure = lambda key, val, ok=None: sysctls.append((key, val)) or val
         def rr(a, input_text=None, timeout=20):
             calls.append(list(a))
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -256,8 +278,8 @@ def run_checks(src):
         cfg = {"interfaces": {"wg0": {"conf": "/nonexistent"}}}
         m._iface_subnet = lambda c, n: {"wg0": "10.9.0.0/24"}.get(n, "")
         plan = {"devexit": [{"subnet": "10.9.0.0/24", "dev": "wgx9", "table": 7005, "killswitch": True, "scope": "rule",
-                             "egress_ip": "", "gw": ""}]} if entry["via_iface"] == "wgx9" else {}
-        m.reconcile_cascade(cfg, plan, {"entries": [], "p2p": {"action": "route", "entry": entry}})
+                             "egress_ip": "", "gw": ""}]} if entry and entry["via_iface"] == "wgx9" else {}
+        m.reconcile_cascade(cfg, plan, {"entries": list(smart_entries), "p2p": {"action": "route", "entry": entry} if entry else None})
         return calls
     for via in ("wgx9", "swg_q"):
         c = recon({"table": 7005, "via_iface": via, "subnets": ["10.9.0.0/24"]})
@@ -268,6 +290,25 @@ def run_checks(src):
     ok(["ip", "route", "replace", "default", "dev", "wgx9", "table", "7005"] not in c,
        "[14] a DEAD exit withholds the route (the table stays empty → P2P dropped, never sent another way)")
 
+    # [17] down / absent devices are withheld — the P2P route and a routing rule's own smart exit alike
+    for st in ("down", "absent"):
+        c = recon({"table": 7005, "via_iface": "wgx9", "subnets": ["10.9.0.0/24"]}, link=st)
+        ok(not any(x[:4] == ["ip", "route", "replace", "default"] and "wgx9" in x for x in c),
+           "[17] P2P route via a %s device: the route is withheld, not attempted" % st)
+        ok(any(x[:7] == ["ip", "rule", "add", "fwmark", "7005", "lookup", "7005"] for x in c),
+           "[17] …while its fwmark rule stays (the way into the table, kill-switch reachable)")
+        c = recon(None, link=st, smart_entries=[{"subnet": "10.9.0.0/24", "category": "x", "action": "exit", "via_iface": "swg_q", "table": 7004}])
+        ok(not any(x[:4] == ["ip", "route", "replace", "default"] and "swg_q" in x for x in c),
+           "[17] a routing rule's smart exit via a %s leg is withheld too (the band no longer churns)" % st)
+    c = recon(None, link="up", smart_entries=[{"subnet": "10.9.0.0/24", "category": "x", "action": "exit", "via_iface": "swg_q", "table": 7004}])
+    ok(["ip", "route", "replace", "default", "dev", "swg_q", "table", "7004"] in c, "[17] …and installed again the moment it is up")
+
+    # [18] forwarding + loose rp_filter with only a P2P route
+    sc = []
+    recon({"table": 7005, "via_iface": "wgx9", "subnets": ["10.9.0.0/24"]}, sysctls=sc)
+    ok(("net.ipv4.ip_forward", 1) in sc and ("net.ipv4.conf.wgx9.rp_filter", 2) in sc,
+       "[18] a node whose only routing is a P2P route gets ip_forward and loose rp_filter on the route's device (%s)" % sc)
+
     # [15] route up / down
     m, b = fresh()
     E2 = {"table": 7006, "via_iface": "wgx0", "subnets": ["10.68.0.0/24"]}
@@ -277,6 +318,19 @@ def run_checks(src):
     b.tables_rt["7006"] = "default dev wgx0 scope link\n"
     m._ensure_p2p({"action": "route", "entry": E2}, {}, {}, {"changed": 0, "errors": []})
     ok(m._P2P["route"] == "up", "[15] default route present → route up")
+    b.tables_rt["7006"] = "prohibit default metric 4096\n"
+    m._ensure_p2p({"action": "route", "entry": E2}, {}, {}, {"changed": 0, "errors": []})
+    ok(m._P2P["route"] == "down", "[19] a kill-switch table (`prohibit default`) is NOT a way out → down")
+    m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
+    ok(m._P2P["route"] == "" and m._P2P["route_dev"] == "", "[19] leaving route clears the state (no stale answer)")
+    # [19] every report corrects "up" by the device
+    m._P2P.update(on=True, state="ok", mode="route", route="up", route_dev="wgx0")
+    m.run = lambda a, input_text=None, timeout=20: types.SimpleNamespace(returncode=1, stdout="", stderr="")
+    for dev_state, want in (("down", "down"), ("dead", "down"), ("up", "up")):
+        m._devexit_state = lambda d, _s=dev_state: _s
+        with __import__("contextlib").suppress(Exception):
+            st = m.smart_status()
+        ok(((st or {}).get("p2p") or {}).get("route") == want, "[19] status report with the device %s → route %s" % (dev_state, want))
 
     # [16] the device name
     for bad in ('wgx"; drop', "a" * 16, "", "wg x", "wg/0"):

@@ -387,7 +387,7 @@ _real_nft = N._ensure_smart_nft
 N._ensure_smart_nft = lambda *a, **k: (_seen.setdefault("nft", []).append(k), {})[1]
 N._ensure_smart_xtstring = lambda host_entries, *a, **k: (_seen.setdefault("xt", []).append([dict(e) for e in host_entries]), [])[1]
 for stub in ("_smart_geo_refresh", "_smart_load_cidrs", "_panel_list_refresh", "_ensure_doh_block", "_ensure_mech_block",
-             "_ensure_torrent_sig", "_ensure_sni_router", "reconcile_catk_chain", "_dnsmasq_refill", "_ensure_smart_dnsmasq"):
+             "_ensure_p2p", "_ensure_sni_router", "reconcile_catk_chain", "_dnsmasq_refill", "_ensure_smart_dnsmasq"):
     setattr(N, stub, lambda *a, **k: None)
 N._smart_domain_refresh = lambda cats, res: ({}, {})
 N._ksni_src_ok = lambda: True

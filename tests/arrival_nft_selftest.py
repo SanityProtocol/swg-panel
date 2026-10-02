@@ -315,7 +315,7 @@ N._dev_is_ether = lambda dev: False
 cap = {}
 N._ensure_smart_nft = lambda *a, **k: cap.update(k) or {}
 for fn in ("_ensure_fwd_iptables", "_ensure_sni_router", "_ensure_smart_xtstring", "reconcile_catk_chain", "_ensure_smart_dnsmasq",
-           "_dnsmasq_refill", "_ensure_doh_block", "_ensure_mech_block", "_ensure_torrent_sig", "_smart_geo_refresh",
+           "_dnsmasq_refill", "_ensure_doh_block", "_ensure_mech_block", "_ensure_p2p", "_smart_geo_refresh",
            "_smart_load_cidrs", "_panel_list_refresh", "_apply_routing_reset", "_smart_domain_refresh"):
     setattr(N, fn, (lambda *a, **k: ({}, {})) if fn == "_smart_domain_refresh" else (lambda *a, **k: None))
 N.run = lambda a, input_text=None, timeout=20: __import__("subprocess").CompletedProcess(a, 0, "", "")

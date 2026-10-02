@@ -6573,7 +6573,7 @@ def _retire_swgp(res):
 P2P_NFT_TABLE = "swg_p2p"
 P2P_BIT = 0x40000000          # unused elsewhere: the band is 7000-7099 and SNI marks keep 0x999x in their low 16 bits
 P2P_RULE_PRI = 6880           # BELOW the band: a whole-interface forward's `from S lookup T` (pref T) must not outrank it
-_P2P = {"on": False, "mode": "", "state": "", "ih": None, "retired": False, "rule": None, "tbl": None, "route": ""}   # rule/tbl: None = not yet looked
+_P2P = {"on": False, "mode": "", "state": "", "ih": None, "retired": False, "rule": None, "tbl": None, "route": "", "route_dev": ""}   # rule/tbl: None = not yet looked
 _P2P_PORTOK = "3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200"   # STUN/TURN/Teams, IPsec, XMPP, Zoom, Meet, Steam
 _P2P_SHAPE = "meta l4proto { tcp, udp } th dport >= 1024 th dport != @portok ip daddr != @priv"
 _P2P_SIGS = (   # (counter, l4, raw-payload match) — exact protocol constants at fixed offsets, one compare each.
@@ -6808,6 +6808,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
                 if "torrents" in (ids or []) and ipaddress.ip_network(s, strict=False).version == 4:
                     strict.append(str(ipaddress.ip_network(s, strict=False)))
         _P2P["mode"] = mode
+        _P2P.update(route="", route_dev="")                  # never a stale answer if this pass ends early
         ent = _p2p_entry(p2p) if mode == "route" else None
         route = None
         if ent:
@@ -6833,10 +6834,14 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
             return
         ih = _p2p_ih_ok()
         oif = _p2p_wan_devs() if mode == "direct" else ([ent["via_iface"]] if ent else [])
-        # A route whose table has no default route right now drops every P2P flow (fail closed) — correct, and invisible
-        # unless said: reported as route "down" so the node's card names it. Read after the band was reconciled above.
-        _P2P["route"] = ("" if not ent else
-                         "up" if "default" in (run(["ip", "route", "show", "table", str(ent["table"])]).stdout or "") else "down")
+        # A route whose table has no way out right now drops every P2P flow (fail closed) — correct, and invisible unless
+        # said: reported as route "down" so the node's card names it. Read after the band was reconciled above, and judged
+        # by a line that IS a way out — `default dev …` / `default via …` — never by the word: a kill-switch exit's table
+        # always holds `prohibit default metric …`, which a substring test read as "up" (code review, 2026-10-03).
+        if ent:
+            _rt = run(["ip", "route", "show", "table", str(ent["table"])]).stdout or ""
+            _P2P["route"] = "up" if any(ln.split()[:1] == ["default"] for ln in _rt.splitlines()) else "down"
+            _P2P["route_dev"] = ent["via_iface"]
         text = _p2p_nft(mode, strict, oif, _p2p_link_nets(node_cfg), ih, route)
         _P2P.update(on=True, state="ok" if ih else "degraded")
         sig = hashlib.sha256(text.encode()).hexdigest()
@@ -8037,19 +8042,29 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # into the table the `prohibit` sits in. Without it the category quietly goes direct instead of failing
     # closed. So the entry stays and only its ROUTE is withheld — which leaves an empty table under a live
     # rule, exactly the shape a DOWN device already produces and which already degrades correctly.
-    # …and a DEAD tunnel withholds its route the same way. A down or absent device needs nothing here, because
-    # its route cannot be created and the table stays empty; a dead one is UP, so the route WOULD install and
-    # the category would keep going into a tunnel that answers nobody. Withheld, the table is the same empty
-    # table under a live fwmark rule that a down device leaves — the `prohibit` fails it closed, or it falls
-    # through to direct — and the signature already knows not to sign a withheld route.
+    # …and a DEAD tunnel withholds its route the same way: a dead one is UP, so the route WOULD install and the
+    # category would keep going into a tunnel that answers nobody. Withheld, the table is the same empty table
+    # under a live fwmark rule that a down device leaves — the `prohibit` fails it closed, or it falls through to
+    # direct — and the signature knows not to sign a withheld route.
+    # ⚠️ …AND SO DOES A DOWN OR ABSENT DEVICE — mesh legs included. Its route cannot be created (`ip route replace`
+    # fails ENETDOWN / ENODEV, `_dev_link_state`), and that was once thought to need nothing. It needs the SIGNATURE:
+    # a route the rebuild cannot install, signed as wanted, is the permanent drift the gateway filter above exists
+    # to prevent — the whole band flushed and rebuilt on every pass while, say, a WARP exit's registration had failed
+    # (found by the P2P code review, 2026-10-03). Withholding changes nothing in the datapath — the table was empty
+    # either way — and the moment the device is up the signature changes and the route goes in.
     _dxdead = {e["dev"] for e in _dxs if e["state"] == "dead"}
+    _wh, _lst = _dxnogw | _dxdead, {}                         # each device's link state read ONCE per pass (smart entries are per
+    def _withheld(dev):                                       # subnet × category — hundreds on a big node, a handful of devices)
+        if dev not in _lst:
+            _lst[dev] = _dev_link_state(dev)
+        return dev in _wh or _lst[dev] != "up"
     smart_exit = [dict(e, gw=_dxgw.get(e.get("via_iface"), ""),
-                       _noroute=(e.get("via_iface") in (_dxnogw | _dxdead))) for e in smart_exit]
+                       _noroute=_withheld(e.get("via_iface"))) for e in smart_exit]
     # ARRIVALS (P3, §4.3) — this node's default list for the traffic other nodes cascade out through it. Its exit entries get
     # what a smart one gets — the table, its route, the fwmark rule and rp_filter (T9) — with the same gateway and dead-tunnel
     # answers, and NOT an upstream mark (that band is for a relay's own sockets, and an arrival has no relay here: §3.7).
     arr_subs, arr_e = _arrivals_parse((smart or {}).get("arrivals"))
-    arr_exit = [dict(e, gw=_dxgw.get(e["via_iface"], ""), _noroute=(e["via_iface"] in (_dxnogw | _dxdead)))
+    arr_exit = [dict(e, gw=_dxgw.get(e["via_iface"], ""), _noroute=_withheld(e["via_iface"]))
                 for e in arr_e if e["action"] == "exit"]
     # ⚠️ THE P2P ROUTE'S TABLE IS INSTALLED HERE, NOT BORROWED. A rule-scoped device exit adds no `from S` rule and a mesh
     # leg's table is otherwise filled only by smart/arrival exit entries — so a route whose target no routing rule also
@@ -8061,7 +8076,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     if _pe:
         arr_exit = arr_exit + [{"subnet": "", "category": "p2p", "action": "exit", "via_iface": _pe["via_iface"],
                                 "table": int(_pe["table"]), "gw": _dxgw.get(_pe["via_iface"], ""),
-                                "_noroute": _pe["via_iface"] in (_dxnogw | _dxdead)}]
+                                "_noroute": _withheld(_pe["via_iface"])}]
     mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni | sni_kernel — the CONFIGURED host-match mode
     _SMART_MODE["m"] = mode                                     # report the configured mode for the panel's host-layer health
     # Resolve the ACTUAL host-fill engine; degrade kernel-SNI → userspace SNI if xt_string/ipset are missing on this box.
@@ -8095,7 +8110,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # ROUTING_RECONCILE_EVERY_S. That matters because the write can fail once and nothing would ever revisit
     # it: after a noded restart a node with a settled cascade would sit there dropping every reply and
     # reporting itself healthy. Reads only, a few bytes of /proc per device (~8us each), no fork.
-    _RPF["needed"] = bool(fwd or smart_e or exit_)
+    _RPF["needed"] = bool(fwd or smart_e or exit_ or arr_exit)   # arr_exit: a P2P route may be the node's only routing
     if _RPF["needed"]:
         _rall = _rp_filter_val("all")
         _RPF["bad"] = sorted(d for d in {_detect_wan()} | {e["via_iface"] for e in (fwd + smart_exit + arr_exit + exit_)}
@@ -8127,7 +8142,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     live_sig = _cascade_live_sig({str(p) for p in _band_tables(band)} | want_tables)
     # POLICY RULES/ROUTES — only touch them when they drift (avoids per-sync rule gaps).
     if want_sig != live_sig:
-        if fwd or smart_e or exit_:                            # enable forwarding + loose rp_filter (asymmetric paths)
+        if fwd or smart_e or exit_ or arr_exit:               # enable forwarding + loose rp_filter (asymmetric paths)
             _sysctl_ensure("net.ipv4.ip_forward", 1)
             wan = _detect_wan()
             # effective = max(all, <dev>), so `all` already at 2 covers a device sitting at 1 — test the
@@ -9327,12 +9342,15 @@ def _block_activity():
     IP = r"\d+\.\d+\.\d+\.\d+/\d+"
     with contextlib.suppress(Exception):                          # torrent: swg_p2p's named counters — every classified flow (signature
         if _P2P["on"]:                                            # hits + fan-out flags). Node-wide, not per subnet, so under "*":
-            tj = json.loads(run(["nft", "-j", "list", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")   # ONE read: counters + flag set
-            objs = tj.get("nftables", [])
-            out.setdefault("*", {})["torrent"] = sum(int(o["counter"].get("packets", 0)) for o in objs if "counter" in o
-                                                     and o["counter"].get("name") in ("bt_tcp", "bt_utp", "dht", "udptrk", "fan_flag"))
-            ips = [e["elem"]["val"] if isinstance(e, dict) else e for o in objs
-                   if "set" in o and o["set"].get("name") == "flag" for e in (o["set"].get("elem") or [])]
+            # TWO TARGETED READS, not `list table`: the table also holds the fan-out meter (an element per client that opened
+            # a high-port flow, each with its limit state) and the flow sets — dumping and parsing all that on every report
+            # cost more than it saved, and an nft that cannot render a meter in JSON would have lost the counts outright.
+            cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")
+            out.setdefault("*", {})["torrent"] = sum(int(o["counter"].get("packets", 0)) for o in cj.get("nftables", [])
+                                                     if "counter" in o and o["counter"].get("name") in ("bt_tcp", "bt_utp", "dht", "udptrk", "fan_flag"))
+            sj = json.loads(run(["nft", "-j", "list", "set", "inet", P2P_NFT_TABLE, "flag"]).stdout or "{}")
+            ips = [e["elem"]["val"] if isinstance(e, dict) else e
+                   for o in sj.get("nftables", []) if "set" in o for e in (o["set"].get("elem") or [])]
             if ips:
                 out["*"]["torrent_ips"] = [str(i) for i in ips]   # the panel maps IP → peer → user for the "who" bubble
     with contextlib.suppress(Exception):                          # scan: the FLAGGED-scanner set per subnet — only over-rate src IPs
@@ -9438,8 +9456,10 @@ def smart_status():
             "src": 2 if _KSNI_SRC["ok"] else 1,   # 1: per-person rows in the nft chain · 2: Kernel SNI matches their hostnames too
             "arr": 1}                             # runs `smart.arrivals` — the default list for traffic cascaded in (ROUTING-PEERS-MESH-PLAN §4.3)
     if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only), the mode in force,
-        base["p2p"] = {"state": _P2P["state"], "mode": _P2P["mode"],   # and under route whether its way out is up
-                       **({"route": _P2P["route"]} if _P2P.get("route") else {})}
+        _r = _P2P.get("route") or ""                            # and under route whether its way out is up — the last pass's answer,
+        if _r == "up" and _devexit_state(_P2P.get("route_dev") or "") != "up":   # corrected on EVERY report by the device itself
+            _r = "down"                                         # (sysfs + the exit judge, no fork): a way out lost between passes
+        base["p2p"] = {"state": _P2P["state"], "mode": _P2P["mode"], **({"route": _r} if _r else {})}
     # §10.5 item 9. `_XTS_MAXLEN` is a fact about xt_string — it refuses a pattern longer than this outright —
     # and it lived ONLY here, so an over-long operand was accepted by the field, stored, shipped, and dropped
     # at the node with a report. The failure ORDERING is right and item 5 is why: the panel must never grow a

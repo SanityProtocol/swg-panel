@@ -21,8 +21,10 @@
        empties after a save and the next save of anything posts a route with no target (refused): found live on swgt
   [11] a pruned route is SAID: node_remove writes "Torrent route removed" to the activity log
   [12] the card: a route whose way out is down (node reports route "down") is named
-  [13] the picker refuses targets that cannot carry anything — a switched-off exit, a node with no mesh link, a node not
-       reporting — and says when the policy shown is the automatic default
+  [13] the picker's exits ARE the routing pickers' list (`exitOptionGroups` — a switched-off exit and a WARP account that
+       is not ready refused with their reason); a node with no mesh link is refused; a node not reporting is a WARNING on
+       the chosen target, never a refusal (judged in this browser, before its first status pass too — code review);
+       and it says when the policy shown is the automatic default
   [9] the card: a route the node runs as block → "the torrent route is unavailable"; the target gone → pruned to block
 
 Run: python3 tests/p2p_policy_panel_selftest.py        (0 = pass)
@@ -58,7 +60,10 @@ PLANTS = {
     "no-prune-event":("    _report_p2p_pruned(deps, _p2p_pruned)\n", ""),
     "no-route-down": ("    elif _p2pa in (\"exit\", \"dev\") and ((snap.get(\"smartroute\") or {}).get(\"p2p\") or {}).get(\"route\") == \"down\":",
                       "    elif False:"),
-    "spa-no-refuse": ("          ...(x.enabled === false ? { refuse:", "          ...(false ? { refuse:"),
+    "spa-own-list":  ('        ...exitOptionGroups({ ...node, exits }, { prefix: "dev:", stored: node.exits || [] })',
+                      '        ...exits.filter(x => x && x.id).map(x => ({ value: "dev:" + x.id, label: x.label || x.id }))'),
+    "spa-stale-refuse": ('        ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : {}) }));',
+                         '        ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : nodeStale(n.id) ? { refuse: "x" } : {}) }));'),
     "unpublished":   ('                        "p2p_eff": p2p_policy(c),\n', ""),
 }
 
@@ -215,9 +220,12 @@ def run_checks(src, spa=None):
     line = line[:line.find(" : null,")]
     ok("n.p2p.node" in line and "n.p2p.exit_id" in line, "[10] the Settings draft keeps p2p.node and p2p.exit_id")
     blk = spa[spa.find("const linked = new Set("):]
-    blk = blk[:blk.find("const tgt =")]
-    ok("x.enabled === false ? { refuse:" in blk and "!linked.has(n.id) ? { refuse:" in blk and "nodeStale(n.id) ? { refuse:" in blk,
-       "[13] the picker refuses a switched-off exit, an unlinked node and a node not reporting")
+    blk = blk[:blk.find("return html`")]
+    ok('exitOptionGroups({ ...node, exits }, { prefix: "dev:", stored: node.exits || [] })' in blk,
+       "[13] the exits come from exitOptionGroups (with the stored record for health)")
+    ok("!linked.has(n.id) ? { refuse:" in blk, "[13] a node with no mesh link is refused")
+    ok("nodeStale" not in blk and "tgtStale" in blk and "refuse: T(\"{v1} is not reporting" not in blk,
+       "[13] a node not reporting is a warning on the chosen target, never a refusal")
     ok("Chosen automatically" in spa, "[13] the automatic default is said")
     return fails
 

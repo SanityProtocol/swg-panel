@@ -4485,9 +4485,9 @@ export const STR = {
     "Торрент-трафик может выходить только через {v1}. Если этот путь не работает, торрент-трафик блокируется — другим путём он не уходит. Трафик других нод, выходящий через этот сервер, и программы на нём блокируются.",
   "{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.":
     "{v1} блокирует торрент-трафик, который ей присылают другие ноды, — направленное туда не выйдет. Разрешите его на {v1} или оставьте решать каждому интерфейсу.",
-  "This exit is switched off — turn it on under External exits first.": "Этот выход выключен — сначала включите его во «Внешних выходах».",
+  "Through another node": "Через другую ноду",
   "There is no mesh link to {v1}.": "До {v1} нет mesh-связи.",
-  "{v1} is not reporting — torrent traffic sent there would not get out.": "{v1} не выходит на связь — торрент-трафик, отправленный туда, не выйдет.",
+  "{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.": "{v1} сейчас не выходит на связь — торрент-трафик, отправленный туда, не выйдет, пока связь не вернётся.",
   "Chosen automatically: every interface on this server blocks torrents. Pick a setting to keep it from changing when an interface does.":
     "Выбрано автоматически: все интерфейсы этого сервера блокируют торренты. Выберите значение явно, чтобы оно не менялось вместе с интерфейсами.",
   "Chosen automatically: an interface on this server lets torrents through. Pick a setting to fix the choice.":
