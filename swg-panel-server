@@ -5506,7 +5506,7 @@ def node_remove(deps, nid):
     # the leg's card and its Datapath switch — but the interface that pointed here kept saying `forward` to
     # an id that no longer resolves, and `cascade_plan` silently dropped it. See `prune_node_refs`.
     _orphans = prune_node_refs(nodes)
-    prune_p2p_refs(nodes)                                     # …and a torrent route to it becomes Block
+    _p2p_pruned = prune_p2p_refs(nodes)                       # …and a torrent route to it becomes Block
     nodes_save(deps["nodes_path"], nodes)
     changed = False
     for pid in list(roster["peers"].keys()):
@@ -5533,6 +5533,7 @@ def node_remove(deps, nid):
     # operator did not touch, so it is reported per node rather than folded into the removal line — the one
     # thing worse than an interface silently forwarding to a ghost is one silently repointed.
     _report_orphan_egress(deps, nodes, _orphans)
+    _report_p2p_pruned(deps, _p2p_pruned)
     return nm
 
 
@@ -7624,6 +7625,8 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
     # runs it as Block — fail closed — and says so by reporting mode block. Said here, or "routed" would be a quiet lie.
     elif _p2pa in ("exit", "dev") and ((snap.get("smartroute") or {}).get("p2p") or {}).get("mode") == "block":
         issues.append(perr("the torrent route is unavailable — torrent traffic is blocked until it is"))
+    elif _p2pa in ("exit", "dev") and ((snap.get("smartroute") or {}).get("p2p") or {}).get("route") == "down":
+        issues.append(perr("the torrent route's way out is down — torrent traffic is blocked until it is back"))
     return issues
 
 # A DNS name as an operator may type it: labels of letters/digits/hyphens, at least one dot, or a bare
@@ -15905,13 +15908,26 @@ def prune_p2p_refs(nodes):
     """A torrent route whose target is gone — the node removed, or the exit deleted — becomes Block: the route asked for
     torrents to leave ONE way, so with that way gone the honest fallback is none, not the WAN. Fleet-wide and
     unconditional like the prunes it sits beside, so a record already in that state heals on the next save of anything."""
-    for _n in (nodes or {}).values():
+    changed = []
+    for _nid, _n in (nodes or {}).items():
         _p = (_n or {}).get("p2p")
         if not isinstance(_p, dict):
             continue
         if (_p.get("action") == "exit" and _p.get("node") not in nodes) or (
                 _p.get("action") == "dev" and str(_p.get("exit_id")) not in {str((e or {}).get("id")) for e in (_n.get("exits") or [])}):
             _n["p2p"] = {"action": "block"}
+            changed.append((_nid, _n.get("name", _nid)))
+    return changed
+
+
+def _report_p2p_pruned(deps, changed):
+    """One event per node whose torrent route was turned into Block — a traffic change on a node the operator may not have
+    touched (the exit was deleted elsewhere, or the target node removed), so it is said rather than done silently."""
+    for _nid, _nm in changed or ():
+        with contextlib.suppress(Exception):
+            ev_append(deps["roster_path"], "node", _nid, "Torrent route removed", _nm,
+                      "its exit or node is gone — torrent traffic is now blocked",
+                      detail_key="its exit or node is gone — torrent traffic is now blocked")
 
 
 def prune_default_exit(rec):
@@ -17059,6 +17075,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
 
     for nid, node in nodes.items():
         targets = []
+        _own = []                                             # (name, subnet) of every client subnet the walk below visits — P2P route
         for iface, ov in (node.get("ifaces") or {}).items():
             if ov.get("system"):
                 continue
@@ -17066,6 +17083,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             if not S:
                 continue
             _collect_egress(nid, ov, S, targets, iface)
+            _own.append((iface, S))
         for _wn, _wov in (node.get("wdtt") or {}).items():   # WDTT instances egress like interfaces (subnet from wg_addr)
             if not _wov:
                 continue
@@ -17073,6 +17091,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             if not S:
                 continue
             _collect_egress(nid, _wov, S, targets, _wn)
+            _own.append((_wn, S))
             # RAW is a second subnet on the SAME instance, so it inherits that instance's egress mode and
             # routing rules — otherwise turning RAW on would quietly bypass a forward/smart policy (and the
             # Force-DNS + v6 fail-closed rules that ride the smart set with it).
@@ -17080,6 +17099,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                 _RS = _wdtt_net((_wov or {}).get("raw_addr") or "")
                 if _RS:
                     _collect_egress(nid, _wov, _RS, targets, name=_wn + " (raw)")
+                    _own.append((_wn + " (raw)", _RS))
         for _cn, _cov in (node.get("csqtt") or {}).items():   # csqtt instances too (subnet from tun_addr) — subnet-based, routed identically
             if not _cov:
                 continue
@@ -17087,6 +17107,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             if not S:
                 continue
             _collect_egress(nid, _cov, S, targets, _cn)
+            _own.append((_cn, S))
         # P2P ROUTE (docs/P2P-POLICY-PLAN.md P3): the node's torrent policy sends P2P from EVERY one of its own client
         # subnets out ONE way — another node over the mesh, or one of its own exits — whatever each subnet's own egress.
         # Gated exactly as a rule to the same target is (a mesh link with both devices reported, the T37/T15 clash test per
@@ -17094,17 +17115,6 @@ def cascade_plan(nodes, snaps, custom_lists=None):
         # the gates is the only thing the node will route; everything else P2P there is blocked (fail closed).
         _pp = node.get("p2p") if isinstance(node.get("p2p"), dict) else {}
         if _pp.get("action") in ("exit", "dev"):
-            _own = []
-            for _in, _io in (node.get("ifaces") or {}).items():
-                if not (_io or {}).get("system") and _iface_subnet_from_snap(snaps, nid, _in):
-                    _own.append((_in, _iface_subnet_from_snap(snaps, nid, _in)))
-            for _wn, _wov in (node.get("wdtt") or {}).items():
-                for _k in (("wg_addr", "raw_addr") if (_wov or {}).get("raw_port") else ("wg_addr",)):
-                    if _wdtt_net((_wov or {}).get(_k) or ""):
-                        _own.append((_wn, _wdtt_net(_wov[_k])))
-            for _cn, _cov in (node.get("csqtt") or {}).items():
-                if _wdtt_net((_cov or {}).get("tun_addr") or ""):
-                    _own.append((_cn, _wdtt_net(_cov["tun_addr"])))
             if _pp["action"] == "dev":
                 _rx = resolve_exit(nodes, snaps, nid, _pp.get("exit_id"))
                 if _rx and _own:
@@ -24328,7 +24338,7 @@ def api(method, path, qs, body, deps):
         # written here would record a rewrite that was never persisted — then record it again on the next
         # successful save. `node_remove` already has this ordering; this path did not.
         _orphans_u = prune_node_refs(nodes)
-        prune_p2p_refs(nodes)
+        _p2p_pruned_u = prune_p2p_refs(nodes)
         nodes[nid].pop("enabled_categories", None)   # §6.9: deleted, never read; drop the dead key as we pass
         if "catalog_cats" in body:              # categories the operator opted THIS node into (node-lens): provider-catalog
             cc = body.get("catalog_cats")       # ids (<prov>:<id>) AND curated built-ins (bare id) — both first-class + pullable
@@ -24421,6 +24431,7 @@ def api(method, path, qs, body, deps):
                 nodes[nid].pop("lan_share", None)
         nodes_save(deps["nodes_path"], nodes)
         _report_orphan_egress(deps, nodes, _orphans_u)
+        _report_p2p_pruned(deps, _p2p_pruned_u)
         if "color" in body:                       # server colour drives the subscription page's server name → refresh serve.json
             with contextlib.suppress(Exception):
                 write_sub_serve(deps)

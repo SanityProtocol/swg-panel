@@ -4485,6 +4485,17 @@ export const STR = {
     "Торрент-трафик может выходить только через {v1}. Если этот путь не работает, торрент-трафик блокируется — другим путём он не уходит. Трафик других нод, выходящий через этот сервер, и программы на нём блокируются.",
   "{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.":
     "{v1} блокирует торрент-трафик, который ей присылают другие ноды, — направленное туда не выйдет. Разрешите его на {v1} или оставьте решать каждому интерфейсу.",
+  "This exit is switched off — turn it on under External exits first.": "Этот выход выключен — сначала включите его во «Внешних выходах».",
+  "There is no mesh link to {v1}.": "До {v1} нет mesh-связи.",
+  "{v1} is not reporting — torrent traffic sent there would not get out.": "{v1} не выходит на связь — торрент-трафик, отправленный туда, не выйдет.",
+  "Chosen automatically: every interface on this server blocks torrents. Pick a setting to keep it from changing when an interface does.":
+    "Выбрано автоматически: все интерфейсы этого сервера блокируют торренты. Выберите значение явно, чтобы оно не менялось вместе с интерфейсами.",
+  "Chosen automatically: an interface on this server lets torrents through. Pick a setting to fix the choice.":
+    "Выбрано автоматически: один из интерфейсов этого сервера пропускает торренты. Выберите значение явно, чтобы закрепить его.",
+  "the torrent route's way out is down — torrent traffic is blocked until it is back":
+    "путь для торрентов сейчас не работает — пока он не восстановится, торрент-трафик блокируется",
+  "Torrent route removed": "Маршрут для торрентов снят",
+  "its exit or node is gone — torrent traffic is now blocked": "его выход или нода удалены — торрент-трафик теперь блокируется",
   "the torrent route is unavailable — torrent traffic is blocked until it is":
     "маршрут для торрентов недоступен — пока он не заработает, торрент-трафик блокируется",
   "torrents can only be routed to another node of this fleet": "торренты можно направить только на другую ноду этого флота",

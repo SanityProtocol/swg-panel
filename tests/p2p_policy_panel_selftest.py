@@ -19,6 +19,10 @@
   [8] the wire: route + the lowered entry; route that could not be lowered → route with entry None (the node blocks)
   [10] the Settings draft (js/screen-settings.js nFields) keeps the WHOLE record — a route's node / exit_id — or the picker
        empties after a save and the next save of anything posts a route with no target (refused): found live on swgt
+  [11] a pruned route is SAID: node_remove writes "Torrent route removed" to the activity log
+  [12] the card: a route whose way out is down (node reports route "down") is named
+  [13] the picker refuses targets that cannot carry anything — a switched-off exit, a node with no mesh link, a node not
+       reporting — and says when the policy shown is the automatic default
   [9] the card: a route the node runs as block → "the torrent route is unavailable"; the target gone → pruned to block
 
 Run: python3 tests/p2p_policy_panel_selftest.py        (0 = pass)
@@ -48,9 +52,13 @@ PLANTS = {
                       '        sn["_p2p"] = {"table": T, "via_iface": dev_n, "subnets": sorted(set(subs))}\n        sn["smart"].append({"subnet": subs[0], "category": "p2p", "action": "exit", "via_iface": dev_n, "table": T})'),
     "p3-iface-scope":('            for S in subs:\n                _dx_add(sn, {"subnet": S, "dev": dev_n, "table": T, "killswitch": bool(xks), "scope": "rule",',
                       '            for S in subs:\n                _dx_add(sn, {"subnet": S, "dev": dev_n, "table": T, "killswitch": bool(xks), "scope": "iface",'),
-    "p3-no-prune":   ('    prune_p2p_refs(nodes)                                     # …and a torrent route to it becomes Block\n', ''),
+    "p3-no-prune":   ("    _p2p_pruned = prune_p2p_refs(nodes)                       # …and a torrent route to it becomes Block\n", "    _p2p_pruned = []\n"),
     "spa-action-only": ('    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action, ...(n.p2p.node ? { node: n.p2p.node } : {}),\n                                   ...(n.p2p.exit_id ? { exit_id: n.p2p.exit_id } : {}) } : null,',
                         '    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action } : null,'),
+    "no-prune-event":("    _report_p2p_pruned(deps, _p2p_pruned)\n", ""),
+    "no-route-down": ("    elif _p2pa in (\"exit\", \"dev\") and ((snap.get(\"smartroute\") or {}).get(\"p2p\") or {}).get(\"route\") == \"down\":",
+                      "    elif False:"),
+    "spa-no-refuse": ("          ...(x.enabled === false ? { refuse:", "          ...(false ? { refuse:"),
     "unpublished":   ('                        "p2p_eff": p2p_policy(c),\n', ""),
 }
 
@@ -189,6 +197,16 @@ def run_checks(src, spa=None):
     json.dump(fleet(n1p={"action": "exit", "node": "n2"}), open(np_, "w"))   # …and through the real removal path
     P.node_remove(deps, "n2")
     ok(json.load(open(np_))["n1"].get("p2p") == {"action": "block"}, "[9] node_remove prunes the torrent route to it")
+    evs = ""
+    with __import__("contextlib").suppress(OSError):
+        evs = open(os.path.join(os.path.dirname(rp_), "events.jsonl")).read()
+    ok("Torrent route removed" in evs, "[11] node_remove records the pruned route in the activity log")
+    iss12 = [i.get("error_key") or i.get("error") for i in P._node_issues({"p2p": {"action": "dev", "exit_id": "x"}},
+             {"smartroute": {"p2p": {"state": "ok", "mode": "route", "route": "down"}}})]
+    ok(any("way out is down" in (i or "") for i in iss12), "[12] a route that is down is named on the card")
+    iss12b = [i.get("error_key") or i.get("error") for i in P._node_issues({"p2p": {"action": "dev", "exit_id": "x"}},
+              {"smartroute": {"p2p": {"state": "ok", "mode": "route", "route": "up"}}})]
+    ok(not any("torrent" in (i or "") for i in iss12b), "[12] …and an up route says nothing")
     # [10] the draft keeps the route's target
     spa = spa if spa is not None else open(SPA, encoding="utf-8").read()
     nf = spa[spa.find("const nFields = n =>"):]
@@ -196,6 +214,11 @@ def run_checks(src, spa=None):
     line = nf[nf.find("p2p:"):]
     line = line[:line.find(" : null,")]
     ok("n.p2p.node" in line and "n.p2p.exit_id" in line, "[10] the Settings draft keeps p2p.node and p2p.exit_id")
+    blk = spa[spa.find("const linked = new Set("):]
+    blk = blk[:blk.find("const tgt =")]
+    ok("x.enabled === false ? { refuse:" in blk and "!linked.has(n.id) ? { refuse:" in blk and "nodeStale(n.id) ? { refuse:" in blk,
+       "[13] the picker refuses a switched-off exit, an unlinked node and a node not reporting")
+    ok("Chosen automatically" in spa, "[13] the automatic default is said")
     return fails
 
 

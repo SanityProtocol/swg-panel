@@ -11,7 +11,8 @@
  */
 
 import { T, Trich, Tsplit, plural, srvText, locale } from "./i18n.js";
-import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
+import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";
+import { nodeStale } from "./model.js";   // validate pool links by the same rule as the per-user field
 import {
   BASE, ago, ipChoices, seen, url, fmtBytes, panelNow,
 } from "./util.js";
@@ -2259,7 +2260,7 @@ export function PanelSettingsScreen() {
     // IP of its "Forward to node" rules, which lives beside the list on the node, not on a rule (§4.2).
     default_routing: Array.isArray(n.default_routing) ? normRules(n.default_routing) : null,
     default_routing_exit_ips: { ...(n.default_routing_exit_ips || {}) },
-    // the torrent policy as STORED (null = the computed default) — the WHOLE record: a route's target (`node` / `exit_id`)
+    // the torrent policy as STORED (null = the computed default), the whole record with a route's target (`node` / `exit_id`)
     // dropped here would empty the picker after a save, and the next save of ANY setting on this node would post a route
     // with no target, which the server refuses (measured on swgt, P3 live check)
     p2p: n.p2p && n.p2p.action ? { action: n.p2p.action, ...(n.p2p.node ? { node: n.p2p.node } : {}),
@@ -4658,9 +4659,15 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       const curRec = (v.p2p && v.p2p.action) ? v.p2p : { action: node.p2p_eff || "iface" };
       const cur = p2pVal(curRec), routed = curRec.action === "dev" || curRec.action === "exit";
       const pn = node.p2p_node;
+      // A target that cannot carry anything stays listed (so its reason is visible) but CHOOSING it says why instead — a
+      // switched-off exit, a node with no mesh link, a node that is not reporting (`refuse`, the Dropdown's own contract).
+      const linked = new Set((node.mesh_peers || []).filter(m => m && m.iface).map(m => m.peer));
       const opts = [...P2P_OPTS(),
-        ...exits.filter(x => x && x.id).map(x => ({ value: "dev:" + x.id, label: T("Route through {v1}", { v1: p2pExitName(x) }) })),
-        ...(Store.nodes || []).filter(n => n.id !== node.id).map(n => ({ value: "exit:" + n.id, label: T("Route through node {v1}", { v1: n.name }) }))];
+        ...exits.filter(x => x && x.id).map(x => ({ value: "dev:" + x.id, label: T("Route through {v1}", { v1: p2pExitName(x) }),
+          ...(x.enabled === false ? { refuse: T("This exit is switched off — turn it on under External exits first.") } : {}) })),
+        ...(Store.nodes || []).filter(n => n.id !== node.id).map(n => ({ value: "exit:" + n.id, label: T("Route through node {v1}", { v1: n.name }),
+          ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }) }
+            : nodeStale(n.id) ? { refuse: T("{v1} is not reporting — torrent traffic sent there would not get out.", { v1: n.name }) } : {}) }))];
       // A node that drops P2P other nodes send it: Block, or a route of its own (it routes only its own clients' P2P).
       const tgt = curRec.action === "exit" ? (Store.nodes || []).find(n => n.id === curRec.node) : null;
       const tgtDrops = tgt && ["block", "exit", "dev"].includes(tgt.p2p_eff);
@@ -4672,6 +4679,9 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
             <div class="hint">${routed
               ? T("Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server, and programs running on it, are blocked.", { v1: p2pTarget(curRec, exits) })
               : P2P_HINT()[cur]}</div>
+            ${!(v.p2p && v.p2p.action) ? html`<div class="hint">${cur === "block"
+              ? T("Chosen automatically: every interface on this server blocks torrents. Pick a setting to keep it from changing when an interface does.")
+              : T("Chosen automatically: an interface on this server lets torrents through. Pick a setting to fix the choice.")}</div>` : null}
             ${tgtDrops ? html`<div class="hint warnish">${T("{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.", { v1: tgt.name })}</div>` : null}
             ${pn && pn.state === "degraded" && cur !== "iface" ? html`<div class="hint warnish">${T("This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.")}</div>` : null}
           </div>

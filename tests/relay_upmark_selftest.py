@@ -126,7 +126,7 @@ check("⚠️ …and it does not swallow the relay's own divert rule",
       not (N.SWG_RT_UP_BASE <= N.RELAY_RT <= N.SWG_RT_UP_MAX),
       "RELAY_RT %d inside [%d, %d] would make the signature drift for ever" % (N.RELAY_RT, N.SWG_RT_UP_BASE, N.SWG_RT_UP_MAX))
 check("…nor the relay's divert MARK", not (N.SWG_RT_UP_BASE <= N.RELAY_MARK <= N.SWG_RT_UP_MAX))
-check("…nor the torrent connmark", not (N.SWG_RT_UP_BASE <= N.TORRENT_MARK <= N.SWG_RT_UP_MAX))
+check("…nor the P2P mark bit", not (N.SWG_RT_UP_BASE <= N.P2P_BIT <= N.SWG_RT_UP_MAX))
 check("a table maps to a distinct mark", N._up_mark(7000) != 7000 and N._up_mark(7000) < N.SWG_RT_BASE, N._up_mark(7000))
 check("…and a table outside our band maps to nothing",
       N._up_mark(0) == 0 and N._up_mark(7100) == 0 and N._up_mark(6999) == 0)

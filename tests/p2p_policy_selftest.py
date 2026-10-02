@@ -19,6 +19,11 @@
   [13] route (P3): only a lowered entry in the band routes — none, junk or a table outside 7000-7099 → block (fail closed);
        the routable set is the entry's subnets minus the strict ones; the mark is T|P2P_BIT with `fwmark T|P2P_BIT lookup T`
        at 6880; only entry.via_iface may carry P2P; everything outside the routable set is blocked in prerouting
+  [14] RETROSPECTIVE BUG: a route's table is installed BY THE NODE — reconcile_cascade with nothing but smart.p2p must
+       add `default dev <via> table T` and `fwmark T lookup T` (it was borrowed from other rules' tables; with none, P2P
+       was dropped instead of routed while the node reported "route"); a dead exit withholds the route (fail closed)
+  [15] route state: the table in force has a default route → "up", none → "down" (the card names it)
+  [16] the device name the panel sends is written into nft and ip rules: anything but an interface name → no route
   [10] a node with nothing to do pays no subprocess per sync once it has looked; a new strict subnet still builds
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
@@ -34,7 +39,8 @@ SRC = open(NODED, encoding="utf-8").read()
 PLANTS = {   # name: (old text, planted text) — each re-introduces a defect the checks exist for
     "route-open":   ('    if a == "route":                                          # P3 is not built: an unrunnable route fails CLOSED, never open\n        return "block"\n', ""),
     "local-judged": ('    L.append("    fib daddr type local return")', '    pass'),
-    "reply-judged": ('    L.append("    ct direction reply return")\n    L.append("    fib daddr type local return")', '    L.append("    fib daddr type local return")'),
+    "reply-judged": ('    L.append("    ct direction reply return")\n    L += ["    " + h for h in held]\n    # Traffic TO the node',
+                     '    L += ["    " + h for h in held]\n    # Traffic TO the node'),
     "rule-in-band": ("P2P_RULE_PRI = 6880 ", "P2P_RULE_PRI = 7050 "),
     "porthint":     ('            if "smtp" in cats:     els.append("tcp . 25")\n',
                      '            if "smtp" in cats:     els.append("tcp . 25")\n            if "torrents" in cats: els += ["udp . 6881-6889", "tcp . 6881-6889"]\n'),
@@ -46,6 +52,10 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
                      'P2P_PROBE = "table inet swg_p2p_probe { chain c { meta l4proto udp @ih,0,64 0x0000041727101980 counter } }\\n"'),
     "route-open":   ('        return "route" if _p2p_entry(p2p) else "block"', '        return "route"'),
     "route-strict": ('                    if n.version == 4 and str(n) not in strict:', '                    if n.version == 4:'),
+    "rt-borrowed":  ('    if _pe:\n        arr_exit = arr_exit + [', '    if False:\n        arr_exit = arr_exit + ['),
+    "rt-nostate":   ('"up" if "default" in (run(["ip", "route", "show", "table", str(ent["table"])]).stdout or "") else "down")', '"up")'),
+    "iface-any":    ('and re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", str(e.get("via_iface") or ""))):', 'and e.get("via_iface")):'),
+    "fib-perpkt":   ('    L += ["    " + h for h in held]\n    # Traffic TO the node', '    L.append("    fib daddr type local return")\n    L += ["    " + h for h in held]\n    # Traffic TO the node'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
 }
 
@@ -60,7 +70,7 @@ def load(src):
 class Box:
     """A stand-in for the box: records every command, answers the few reads the code makes."""
     def __init__(self, ih=True, wan="eth0"):
-        self.cmds, self.tables, self.rules, self.ih, self.wan = [], {}, [], ih, wan
+        self.cmds, self.tables, self.rules, self.ih, self.wan, self.tables_rt = [], {}, [], ih, wan, {}
 
     def run(self, args, input_text=None, timeout=20):
         a = list(args); self.cmds.append((a, input_text))
@@ -80,6 +90,8 @@ class Box:
                 rc = 1
         elif a[:3] == ["nft", "delete", "table"]:
             self.tables.pop(a[4], None)
+        elif a[:4] == ["ip", "route", "show", "table"]:
+            out = self.tables_rt.get(a[4], "")
         elif a[:4] == ["ip", "route", "show", "default"]:
             out = "default via 1.2.3.1 dev %s proto static\n" % self.wan
         elif a[:2] == ["ip", "rule"] and a[2] == "show":
@@ -150,8 +162,10 @@ def run_checks(src):
         cls = t.split("chain cls {", 1)[1].split("\n  }", 1)[0].splitlines()
         idx = lambda s: next((i for i, l in enumerate(cls) if s in l), 10 ** 6)
         first_drop = min(i for i, l in enumerate(cls) if "drop" in l)
-        ok(idx("ct direction reply return") < first_drop and idx("fib daddr type local return") < first_drop,
-           "[5] %s: replies and traffic to the node return before any drop" % mode)
+        _lr = idx("fib daddr type local return")
+        ok(idx("ct direction reply return") < first_drop and all("fib daddr type != local" in l or i > _lr or "@held" in l
+                                                                for i, l in enumerate(cls) if "drop" in l),
+           "[5] %s: replies return before any drop, and traffic to the node is never dropped (each early drop asks fib)" % mode)
         ok(idx("@held4") < idx("ct original packets > 4 return") and idx("@held6") < idx("ct original packets > 4 return"), "[5] %s: held flows die before the packet gate" % mode)
         if mode == "direct":
             ok(idx("ip saddr @strict ip saddr @flag") < idx("ct state new ip saddr @flag"), "[5] strict drop precedes the direct mark")
@@ -182,11 +196,9 @@ def run_checks(src):
     ok("6881" not in b.tables.get("swg_mech", "") and "tcp . 25" in b.tables.get("swg_mech", ""), "[8] torrent port-hint retired, smtp kept")
     m._P2P["on"] = True
     def fake(args, input_text=None, timeout=20):
-        if args[:5] == ["nft", "-j", "list", "counters", "table"]:
-            o = {"nftables": [{"counter": {"name": n, "packets": p}} for n, p in (("dht", 3), ("fan_flag", 4), ("dropped", 99))]}
-            return types.SimpleNamespace(returncode=0, stdout=json.dumps(o), stderr="")
-        if args[:4] == ["nft", "-j", "list", "set"]:
-            o = {"nftables": [{"set": {"name": "flag", "elem": [{"elem": {"val": "10.68.0.7", "timeout": 600}}]}}]}
+        if args[:5] == ["nft", "-j", "list", "table", "inet"]:
+            o = {"nftables": [{"counter": {"name": n, "packets": p}} for n, p in (("dht", 3), ("fan_flag", 4), ("dropped", 99))]
+                 + [{"set": {"name": "flag", "elem": [{"elem": {"val": "10.68.0.7", "timeout": 600}}]}}]}
             return types.SimpleNamespace(returncode=0, stdout=json.dumps(o), stderr="")
         return types.SimpleNamespace(returncode=1, stdout="", stderr="")
     m.run = fake
@@ -223,6 +235,61 @@ def run_checks(src):
     ok("ip saddr != @routable ip saddr @flag" in t and "ip saddr @strict ip saddr @flag" in t, "[13] outside routable / strict → dropped")
     ok(any(r.startswith("6880:") and "fwmark %#x" % (7003 | m.P2P_BIT) in r and r.endswith("lookup 7003") for r in b.rules),
        "[13] fwmark T|BIT lookup T at 6880 (%s)" % b.rules)
+
+    # [14] the route's table, through the real reconcile_cascade with everything around it stubbed
+    def recon(entry, dead=False):
+        m = load(src)
+        calls = []
+        def rr(a, input_text=None, timeout=20):
+            calls.append(list(a))
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        m.run = rr
+        m.GEO_DIR = tempfile.mkdtemp()
+        m._devexit_state = lambda dev: "dead" if dead else "up"
+        m._dev_is_ether = lambda dev: False
+        m._ensure_smart_nft = lambda *a, **k: {}
+        for fn in ("_ensure_fwd_iptables", "_ensure_sni_router", "_ensure_smart_xtstring", "reconcile_catk_chain", "_ensure_smart_dnsmasq",
+                   "_dnsmasq_refill", "_ensure_doh_block", "_ensure_mech_block", "_smart_geo_refresh", "_smart_load_cidrs",
+                   "_panel_list_refresh", "_apply_routing_reset", "_smart_domain_refresh", "_ensure_p2p"):
+            setattr(m, fn, (lambda *a, **k: ({}, {})) if fn == "_smart_domain_refresh" else (lambda *a, **k: None))
+        m._cascade_local_routes = lambda cfg, _proc=None: []
+        cfg = {"interfaces": {"wg0": {"conf": "/nonexistent"}}}
+        m._iface_subnet = lambda c, n: {"wg0": "10.9.0.0/24"}.get(n, "")
+        plan = {"devexit": [{"subnet": "10.9.0.0/24", "dev": "wgx9", "table": 7005, "killswitch": True, "scope": "rule",
+                             "egress_ip": "", "gw": ""}]} if entry["via_iface"] == "wgx9" else {}
+        m.reconcile_cascade(cfg, plan, {"entries": [], "p2p": {"action": "route", "entry": entry}})
+        return calls
+    for via in ("wgx9", "swg_q"):
+        c = recon({"table": 7005, "via_iface": via, "subnets": ["10.9.0.0/24"]})
+        ok(["ip", "route", "replace", "default", "dev", via, "table", "7005"] in c,
+           "[14] route via %s with no other rule: the node installs `default dev %s table 7005`" % (via, via))
+        ok(any(x[:7] == ["ip", "rule", "add", "fwmark", "7005", "lookup", "7005"] for x in c), "[14] …and `fwmark 7005 lookup 7005`")
+    c = recon({"table": 7005, "via_iface": "wgx9", "subnets": ["10.9.0.0/24"]}, dead=True)
+    ok(["ip", "route", "replace", "default", "dev", "wgx9", "table", "7005"] not in c,
+       "[14] a DEAD exit withholds the route (the table stays empty → P2P dropped, never sent another way)")
+
+    # [15] route up / down
+    m, b = fresh()
+    E2 = {"table": 7006, "via_iface": "wgx0", "subnets": ["10.68.0.0/24"]}
+    b.tables_rt["7006"] = ""
+    m._ensure_p2p({"action": "route", "entry": E2}, {}, {}, {"changed": 0, "errors": []})
+    ok(m._P2P["route"] == "down", "[15] empty table → route down (%s)" % m._P2P["route"])
+    b.tables_rt["7006"] = "default dev wgx0 scope link\n"
+    m._ensure_p2p({"action": "route", "entry": E2}, {}, {}, {"changed": 0, "errors": []})
+    ok(m._P2P["route"] == "up", "[15] default route present → route up")
+
+    # [16] the device name
+    for bad in ('wgx"; drop', "a" * 16, "", "wg x", "wg/0"):
+        ok(m._p2p_mode({"action": "route", "entry": {"table": 7006, "via_iface": bad}}) == "block", "[16] via_iface %r → block" % bad)
+
+    # [5b] no route lookup per packet
+    t2 = m._p2p_nft("block", [], [], [], True)
+    cls2 = t2.split("chain cls {", 1)[1].split("\n  }", 1)[0].splitlines()
+    gi = next(i for i, l in enumerate(cls2) if "ct original packets > 4 return" in l)
+    ok(not any(l.strip() == "fib daddr type local return" for l in cls2[:gi]), "[5b] no `fib … return` before the packet gate in cls")
+    g2 = t2.split("chain guard {", 1)[1]
+    fl = [l for l in g2.splitlines() if "@flag" in l][0]
+    ok(fl.index("@flag") < fl.index("fib"), "[5b] guard: the flagged-user lookup comes before the route lookup")
 
     # [9] retirement
     m, b = fresh()

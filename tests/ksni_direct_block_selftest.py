@@ -420,7 +420,7 @@ print("\n[9] the Direct mark")
 m = N.SNI_DIRECT_MARK
 check("not zero — the uncategorised count (`ct mark != 0`) skips it, so a Direct-by-name flow is counted once", m != 0, m)
 check("not a table of the exit band, and no other flag", not (N.SWG_RT_BASE <= m <= N.SWG_RT_MAX)
-      and m not in (N.SNI_RESET_MARK, N.SNI_BLOCK_MARK, N.RELAY_MARK, N.TORRENT_MARK), hex(m))
+      and m not in (N.SNI_RESET_MARK, N.SNI_BLOCK_MARK, N.RELAY_MARK, N.P2P_BIT), hex(m))
 check("even (no `fwmark 0x1/0x1` rule of another tool takes it)", m % 2 == 0, hex(m))
 
 print()
