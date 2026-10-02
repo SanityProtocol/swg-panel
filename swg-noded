@@ -6472,7 +6472,6 @@ def _ensure_mech_block(mech, res):
             els = []
             if "smtp" in cats:     els.append("tcp . 25")
             if "quic" in cats:     els.append("udp . 443")
-            if "torrents" in cats: els += ["udp . 6881-6889", "tcp . 6881-6889"]   # FREE port-hint; the sig scan is a later measured tier
             if els:                portsets[S] = sorted(els)
             if "portscan" in cats: meters.append(S)
         # Does this node run the FREE abuse tier at all? Recorded BEFORE the signature gate below, so a
@@ -6485,7 +6484,7 @@ def _ensure_mech_block(mech, res):
             with contextlib.suppress(OSError):
                 os.unlink(os.path.join(GEO_DIR, ".mech.sig"))
             return
-        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "v": 4}, sort_keys=True).encode()).hexdigest()   # v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
+        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "v": 5}, sort_keys=True).encode()).hexdigest()   # v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
         sigf = os.path.join(GEO_DIR, ".mech.sig")
         cur = ""
         with contextlib.suppress(OSError):
@@ -6604,6 +6603,247 @@ def _ensure_torrent_sig(subnets, res):
         with contextlib.suppress(OSError):
             os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
 
+
+
+# ─── P2P policy (docs/P2P-POLICY-PLAN.md, P1) ────────────────────────────────────────────────────────────────────────
+# The torrents mechanism as a NODE-WIDE policy, judged on every path out of the node — not only an interface's own
+# subnet. Phase 0 ran as a standalone table on hel-flux (P2P-GUARD-PLAN §4): signatures for the protocol, a fan-out
+# meter for the encrypted remainder. Measured there: an hour of encrypted Transmission traffic the old SWGP + port-hint
+# could not see, and Steam's relay pings as the one false-positive class (hence 27000-27200 in @portok).
+#
+#   smart.p2p.action  block   P2P dropped on every path (decided in prerouting, so a relayed flow dies too)
+#                     direct  P2P may leave only by the main table's default device(s) — routed there by P2P_BIT
+#                     route   P3; until then treated as block (fail closed)
+#                     absent  today's semantics: only the interfaces whose "torrents" mechanism is on are blocked
+P2P_NFT_TABLE = "swg_p2p"
+P2P_BIT = 0x40000000          # unused elsewhere: the band is 7000-7099 and SNI marks keep 0x999x in their low 16 bits
+P2P_RULE_PRI = 6880           # BELOW the band: a whole-interface forward's `from S lookup T` (pref T) must not outrank it
+_P2P = {"on": False, "mode": "", "state": "", "ih": None, "retired": False, "rule": None, "tbl": None}   # rule/tbl: None = not yet looked
+_P2P_PORTOK = "3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200"   # STUN/TURN/Teams, IPsec, XMPP, Zoom, Meet, Steam
+_P2P_SHAPE = "meta l4proto { tcp, udp } th dport >= 1024 th dport != @portok ip daddr != @priv"
+_P2P_SIGS = (   # (counter, l4, raw-payload match) — exact protocol constants at fixed offsets, one compare each.
+    # A kernel compare is at most 16 bytes, so the handshake matches `\x13BitTorrent prot` — still unique.
+    ("bt_tcp", "tcp", "@ih,0,128 0x13426974546f7272656e742070726f74"),
+    ("bt_utp", "udp", "@ih,160,128 0x13426974546f7272656e742070726f74"),   # the same handshake inside µTP's 20-byte header
+    ("dht",    "udp", "@ih,0,96 { 0x64313a6164323a696432303a, 0x64313a7264323a696432303a }"),   # d1:ad2:id20: / d1:rd2:id20:
+    ("udptrk", "udp", "@ih,0,64 0x0000041727101980"),                     # BEP-15 connect magic
+)
+
+
+def _p2p_mode(p2p):
+    a = (p2p or {}).get("action") if isinstance(p2p, dict) else None
+    if a == "route":                                          # P3 is not built: an unrunnable route fails CLOSED, never open
+        return "block"
+    return a if a in ("block", "direct") else "legacy"
+
+
+def _p2p_ih_ok():
+    """Can this kernel match raw L4 payload (`@ih`: nft >= 1.0.1, kernel >= 5.16)? Asked by LOADING a probe table rather
+    than by reading versions — a backported kernel says yes and a stripped one says no, and only the load knows."""
+    if _P2P["ih"] is None:
+        r = run(["nft", "-f", "-"], input_text="table inet swg_p2p_probe { chain c { meta l4proto udp @ih,0,64 0x0000041727101980 counter } }\n")
+        _P2P["ih"] = r.returncode == 0
+        run(["nft", "delete", "table", "inet", "swg_p2p_probe"])
+    return _P2P["ih"]
+
+
+def _p2p_wan_devs():
+    """The main table's default-route device(s), v4 and v6: the only way out P2P has under `direct`."""
+    devs = set()
+    for fam in (["ip"], ["ip", "-6"]):
+        for ln in (run(fam + ["route", "show", "default"]).stdout or "").splitlines():
+            m = re.search(r"\bdev (\S+)", ln)
+            if m:
+                devs.add(m.group(1))
+    return sorted(devs)
+
+
+def _p2p_rule(on, res):
+    """`fwmark P2P_BIT lookup main` at P2P_RULE_PRI while the policy is direct, absent otherwise. Read from the full
+    listing (`ip rule show pref N` is not in every iproute2) and removed del-until-absent like the band. A node that is not
+    Direct and has confirmed it holds no such rule asks nothing more — no subprocess per sync for a feature it doesn't run."""
+    if not on and _P2P["rule"] is False:
+        return
+    cur = [ln for ln in (run(["ip", "rule", "show"]).stdout or "").splitlines() if ln.startswith("%d:" % P2P_RULE_PRI)]
+    ok = len(cur) == 1 and ("fwmark %#x lookup main" % P2P_BIT) in cur[0]
+    if on and not ok:
+        for _ in range(8):
+            if run(["ip", "rule", "del", "pref", str(P2P_RULE_PRI)]).returncode != 0:
+                break
+        run(["ip", "rule", "add", "fwmark", "%#x" % P2P_BIT, "lookup", "main", "priority", str(P2P_RULE_PRI)])
+        res["changed"] += 1
+    elif not on and cur:
+        for _ in range(8):
+            if run(["ip", "rule", "del", "pref", str(P2P_RULE_PRI)]).returncode != 0:
+                break
+        res["changed"] += 1
+    _P2P["rule"] = bool(on)
+
+
+def _p2p_nft(mode, strict, oif, nofan, ih):
+    """The whole `swg_p2p` table as one atomic script. Two chains:
+      cls    prerouting, mangle + 5 (-145): after swg_smart's marks (-150), before the relay divert (-140). Flags users
+             (signatures + fan-out), routes Direct, and DROPS what is blocked here — before the divert, so a relayed
+             flow's packets die too (TCP early demux hands them to the relay's socket past every later hook).
+      guard  postrouting, srcnat - 10 (90, before NAT): every device but lo — WARP, mesh, client, any added later
+             (P2P-GUARD §4.2) — and the node's own processes (Xray, relay, turn proxies) too. A signature on a device P2P
+             may not use, or a flagged user's high-port flow there, is dropped. Judged HERE because only here is the
+             device known: no "classified flow" memory is needed between the two chains.
+    `legacy` builds cls only, scoped to the strict subnets: exactly today's per-interface semantics.
+
+    ⚠️ Every declared single-key set is `typeof ip saddr|ip daddr|th dport` and the flow memory is a CONCATENATION: the
+    keys measured to read on the host's nft 1.0.2-1.1.3 (tests/nft_host_readable_selftest.py). A `ct id` or `oifname`
+    key is unmeasured — a Docker node writing one could leave the host's own nft segfaulting on `list ruleset` and an
+    uninstall that deletes nothing. The allowed devices are an inline list for the same reason."""
+    allp = mode in ("block", "direct")
+    blk_all = mode == "block"
+    L = ["table inet %s {}" % P2P_NFT_TABLE, "delete table inet %s" % P2P_NFT_TABLE, "table inet %s {" % P2P_NFT_TABLE]
+    L += ["  counter %s {}" % c for c in ("bt_tcp", "bt_utp", "dht", "udptrk", "fan_flag", "dropped", "held")]
+    # A dropped TCP handshake is retransmitted as packets 4, 5, … of a flow conntrack already confirmed at the SYN, which
+    # the packet gate would let through: the flow is held by its 4-tuple until it gives up. (UDP needs none — a dropped
+    # first packet never confirms its conntrack, so every retry is inspected afresh.)
+    L += ["  set held4 { type ipv4_addr . ipv4_addr . inet_service . inet_service; flags timeout; size 65535; }",
+          "  set held6 { type ipv6_addr . ipv6_addr . inet_service . inet_service; flags timeout; size 65535; }",
+          "  set flag { typeof ip saddr; flags timeout; size 65535; }",
+          "  set portok { typeof th dport; flags interval; elements = { %s } }" % _P2P_PORTOK,
+          "  set priv { typeof ip daddr; flags interval; elements = { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, "
+          "169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } }"]
+    if nofan:                                                 # mesh link addresses: an onward-NAT arrival wears one, and flagging
+        L.append("  set nofan { typeof ip saddr; flags interval; elements = { %s } }" % ", ".join(nofan))   # it would cut everyone behind that hop
+    if strict:
+        L.append("  set strict { typeof ip saddr; flags interval; elements = { %s } }" % ", ".join(strict))
+    nf = "ip saddr != @nofan " if nofan else ""
+    # Who is BLOCKED in prerouting: everyone under block; the strict subnets otherwise (none → nothing dropped there).
+    who = "" if blk_all else ("ip saddr @strict " if strict else None)
+    # Where P2P may leave: nowhere under block, the main default device(s) under direct. An empty list is no condition.
+    bad_oif = "" if blk_all or not oif else "oifname != { %s } " % ", ".join('"%s"' % d for d in oif)
+    mark = "meta mark set %#x ct mark set %#x" % (P2P_BIT, P2P_BIT)
+    hold = ["meta nfproto ipv4 meta l4proto tcp add @held4 { ip saddr . ip daddr . tcp sport . tcp dport timeout 2m }",
+            "meta nfproto ipv6 meta l4proto tcp add @held6 { ip6 saddr . ip6 daddr . tcp sport . tcp dport timeout 2m }"]
+    held = ["ip saddr . ip daddr . tcp sport . tcp dport @held4 counter name held drop",
+            "ip6 saddr . ip6 daddr . tcp sport . tcp dport @held6 counter name held drop"]
+
+    # hit: a FORWARDED signature match (cls) — flag the user, then drop if blocked here, else route Direct.
+    L.append("  chain hit {")
+    L.append("    %sadd @flag { ip saddr timeout 10m }" % nf)   # = the fan-out's: one idle DHT ping must not cost an hour of high ports
+    L.append('    limit rate 20/minute log prefix "swg-p2p hit: " level info')
+    if who is not None:
+        L += ["    %s%s" % (who, h) for h in hold]
+        L.append("    %scounter name dropped drop" % who)
+    if mode == "direct":                                      # UDP is caught at packet 1, so THIS flow is routed. TCP is caught
+        L.append("    meta l4proto udp %s" % mark)            # at packet 3, already routed: the guard judges its device
+    L.append("  }")
+
+    L.append("  chain cls {")
+    L.append("    type filter hook prerouting priority mangle + 5; policy accept;")
+    if mode == "direct":                                      # our own restore: kernel/forcedns modes have none, and the smart
+        L.append("    ct direction original ct mark & %#x == %#x meta mark set ct mark" % (P2P_BIT, P2P_BIT))   # chain may re-mark per packet
+    L.append("    ct direction reply return")
+    L.append("    fib daddr type local return")               # traffic TO the node (its resolver, a turn proxy) is not egress
+    L += ["    " + h for h in held]
+    if mode == "legacy":
+        L.append("    meta nfproto ipv6 return")
+        L.append("    ip saddr != @strict return")
+    if who is not None:                                       # a flagged user's high-port flows, new AND established
+        L.append("    %sip saddr @flag %s counter name dropped drop" % (who, _P2P_SHAPE))
+    if mode == "direct":
+        L.append("    ct state new ip saddr @flag %s %s" % (_P2P_SHAPE, mark))
+    L.append("    ct original packets > 4 return")
+    if ih:
+        for c, l4, m in _P2P_SIGS:
+            L.append("    meta l4proto %s %s counter name %s jump hit" % (l4, m, c))
+    L.append("    ct state new %s %s meter p2pfan size 65535 { ip saddr limit rate over 30/minute burst 30 packets } "
+             "add @flag { ip saddr timeout 10m } counter name fan_flag limit rate 6/minute log prefix \"swg-p2p fan: \" level info"
+             % (_P2P_SHAPE, nf))
+    if who is not None:                                       # the packet that just crossed the threshold
+        L.append("    ct state new %sip saddr @flag %s counter name dropped drop" % (who, _P2P_SHAPE))
+    if mode == "direct":
+        L.append("    ct state new ip saddr @flag %s %s" % (_P2P_SHAPE, mark))
+    L.append("  }")
+
+    if allp:
+        L.append("  chain guard {")
+        L.append("    type filter hook postrouting priority srcnat - 10; policy accept;")
+        L.append('    oifname "lo" return')
+        L.append("    ct direction reply return")
+        L += ["    " + h for h in held]
+        L.append("    fib saddr type != local ip saddr @flag %s %scounter name dropped drop" % (_P2P_SHAPE, bad_oif))
+        L.append("    ct original packets > 4 return")
+        if ih:                                                # forwarded hits were counted in cls; the node's own are new here
+            L.append("    meta l4proto { tcp, udp } jump sig")
+        L.append("  }")
+        if ih:
+            L.append("  chain sig {")
+            for c, l4, m in _P2P_SIGS:                        # count the node's own first (forwarded ones were counted in cls)
+                L.append("    fib saddr type local meta l4proto %s %s counter name %s" % (l4, m, c))
+                L.append("    meta l4proto %s %s %sjump gdrop" % (l4, m, bad_oif))
+            L.append("  }")
+            L.append("  chain gdrop {")
+            L += ["    " + h for h in hold]
+            L.append('    limit rate 20/minute log prefix "swg-p2p hit: " level info')
+            L.append("    counter name dropped drop")
+            L.append("  }")
+    L.append("}")
+    return "\n".join(L) + "\n"
+
+
+def _p2p_link_nets(node_cfg):
+    out = set()
+    for ln in _relay_links(node_cfg):
+        with contextlib.suppress(Exception):
+            n = ipaddress.ip_network(_iface_subnet(node_cfg, ln), strict=False)
+            if n.version == 4:
+                out.add(str(n))
+    return sorted(out)
+
+
+def _ensure_p2p(p2p, mech, node_cfg, res):
+    """Reconcile the P2P policy (see the block comment above). Signature-gated like _ensure_mech_block, and the gate asks
+    the property that matters — the table is there AND still drops — not only our own memo (the flushed-in-place lesson,
+    _ensure_mech_block). Never raises; never touches another table; nothing wanted → only ours is deleted."""
+    try:
+        if not _P2P["retired"]:                               # the per-interface SWGP signature chain + its ipset are replaced
+            _ensure_torrent_sig([], res)                      # by this table: torn down once per process (it is idempotent)
+            run(["ipset", "destroy", "swgp_src"])
+            _P2P["retired"] = True
+        mode = _p2p_mode(p2p)
+        strict = []
+        for s, ids in sorted((mech or {}).items()):
+            with contextlib.suppress(Exception):
+                if "torrents" in (ids or []) and ipaddress.ip_network(s, strict=False).version == 4:
+                    strict.append(str(ipaddress.ip_network(s, strict=False)))
+        _P2P["mode"] = mode
+        _p2p_rule(mode == "direct", res)
+        sigf = os.path.join(GEO_DIR, ".p2p.sig")
+        if mode == "legacy" and not strict and _P2P["tbl"] is False:   # nothing wanted, and already confirmed gone
+            return
+        have = run(["nft", "list", "table", "inet", P2P_NFT_TABLE])
+        if mode == "legacy" and not strict:                   # nothing wanted
+            _P2P.update(on=False, state="", tbl=False)
+            if have.returncode == 0:
+                run(["nft", "delete", "table", "inet", P2P_NFT_TABLE]); res["changed"] += 1
+            with contextlib.suppress(OSError):
+                os.unlink(sigf)
+            return
+        ih = _p2p_ih_ok()
+        text = _p2p_nft(mode, strict, _p2p_wan_devs() if mode == "direct" else [], _p2p_link_nets(node_cfg), ih)
+        _P2P.update(on=True, state="ok" if ih else "degraded")
+        sig = hashlib.sha256(text.encode()).hexdigest()
+        cur = ""
+        with contextlib.suppress(OSError):
+            cur = open(sigf).read().strip()
+        if have.returncode == 0 and cur == sig and " drop" in (have.stdout or ""):
+            return
+        _P2P["tbl"] = True
+        r = run(["nft", "-f", "-"], input_text=text)
+        if r.returncode == 0:
+            with contextlib.suppress(OSError):
+                os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
+            res["changed"] += 1
+        else:
+            res["errors"].append("p2p nft load failed: " + (r.stderr or "").strip()[:160])
+    except Exception as e:
+        res["errors"].append("p2p: " + str(e)[:120])
 
 def reconcile_dial_src(desired_by_iface, res, extra=()):
     """Pin the OUTBOUND source IP for each mesh link that set a dial_src — a /32 route to the peer endpoint
@@ -8141,8 +8381,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     if host_engine not in ("sni_user", "sni_kernel") and (smart or {}).get("block_doh"):
         _doh_observe |= set(_subs)
     _ensure_doh_block(sorted(_doh_observe - _doh_strict), sorted(_doh_strict), res)
-    _ensure_mech_block(_mech, res)                            # FREE traffic/abuse L4/rate drops (smtp/quic/torrents-porthint/portscan)
-    _ensure_torrent_sig(sorted({s for s, cats in _mech.items() if "torrents" in (cats or [])}), res)   # Phase 3: bounded signature drop (any-port), where xt_string is capable
+    _ensure_mech_block(_mech, res)                            # FREE traffic/abuse L4/rate drops (smtp/quic/portscan)
+    _ensure_p2p((smart or {}).get("p2p"), _mech, node_cfg, res)   # P2P policy: node-wide, every egress (P2P-POLICY-PLAN P1)
     return res
 
 
@@ -9057,19 +9297,23 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patt
 
 def _block_activity():
     """Per-subnet blocking ACTIVITY, harvested from EXISTING datapath state — NO new counters, no per-packet cost:
-      torrent = iptables SWGP signature chain: the CONNMARK-set rule's per-subnet count (≈ torrent connections caught)
+      torrent = swg_p2p's classified flows (signatures + fan-out flags), node-wide under "*" (the panel sums keys)
       scan    = the port-scan meter's live element count (hosts currently rate-limited for scanning/flooding)
     Reach (distinct blocked destinations) is already in smart_status.sets (the cat_blku_* set element counts), so it
     needs nothing here. Best-effort — any read that fails just omits that signal (never raises). Returns {subnet:{…}}."""
     out = {}
     IP = r"\d+\.\d+\.\d+\.\d+/\d+"
-    with contextlib.suppress(Exception):                          # torrent: iptables always counts; sum the signature-match rule per source subnet
-        for ln in (run(["iptables", "-t", "mangle", "-nvL", "SWGP", "-x"]).stdout or "").splitlines():
-            f = ln.split()
-            if "CONNMARK" in ln and f and f[0].isdigit():
-                subs = [x for x in f if re.match("^" + IP + "$", x)]
-                if subs:
-                    out.setdefault(subs[0], {})["torrent"] = int(f[0])
+    with contextlib.suppress(Exception):                          # torrent: swg_p2p's named counters — every classified flow (signature
+        if _P2P["on"]:                                            # hits + fan-out flags). Node-wide, not per subnet, so under "*":
+            cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")   # the panel only sums
+            n = sum(int(o["counter"].get("packets", 0)) for o in cj.get("nftables", [])
+                    if "counter" in o and o["counter"].get("name") in ("bt_tcp", "bt_utp", "dht", "udptrk", "fan_flag"))
+            out.setdefault("*", {})["torrent"] = n
+            sj = json.loads(run(["nft", "-j", "list", "set", "inet", P2P_NFT_TABLE, "flag"]).stdout or "{}")
+            ips = [e["elem"]["val"] if isinstance(e, dict) else e
+                   for o in sj.get("nftables", []) if "set" in o for e in (o["set"].get("elem") or [])]
+            if ips:
+                out["*"]["torrent_ips"] = [str(i) for i in ips]   # the panel maps IP → peer → user for the "who" bubble
     with contextlib.suppress(Exception):                          # scan: the FLAGGED-scanner set per subnet — only over-rate src IPs
         mech = run(["nft", "list", "table", "inet", "swg_mech"]).stdout or ""   # land there, so it's the REAL scanners (not every active
         for sub, fset in re.findall(r"ip saddr (" + IP + r")[^\n]*?add @(pscf_\S+)", mech):   # source) + their IPs → per-user attribution
@@ -9118,15 +9362,6 @@ def _block_activity():
             pk = re.search(r"counter packets (\d+)", ln) if ("== %#010x" % SNI_BLOCK_MARK) in ln else None
             if pk:
                 out.setdefault("*", {})["blocked"] = out.get("*", {}).get("blocked", 0) + int(pk.group(1))
-    with contextlib.suppress(Exception):                          # torrent SOURCE IPs (who tried torrents) from the swgp_src
-        il = run(["ipset", "list", "swgp_src"]).stdout or ""      # presence set, matched into the subnet they belong to
-        tips = re.findall(r"\d+\.\d+\.\d+\.\d+", il.split("Members:", 1)[-1]) if "Members:" in il else []
-        for ip in tips:
-            with contextlib.suppress(Exception):
-                a = ipaddress.ip_address(ip)
-                for sub in list(out):
-                    if a in ipaddress.ip_network(sub, strict=False):
-                        out[sub].setdefault("torrent_ips", []).append(ip); break
     return out
 
 
@@ -9181,6 +9416,8 @@ def smart_status():
             "dnsmasq": dns_alive, "route_localnet": _route_localnet_ok(),   # false in dns mode ⇒ client DNS blackholed (container)
             "src": 2 if _KSNI_SRC["ok"] else 1,   # 1: per-person rows in the nft chain · 2: Kernel SNI matches their hostnames too
             "arr": 1}                             # runs `smart.arrivals` — the default list for traffic cascaded in (ROUTING-PEERS-MESH-PLAN §4.3)
+    if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only), and the mode in force
+        base["p2p"] = {"state": _P2P["state"], "mode": _P2P["mode"]}
     # §10.5 item 9. `_XTS_MAXLEN` is a fact about xt_string — it refuses a pattern longer than this outright —
     # and it lived ONLY here, so an over-long operand was accepted by the field, stored, shipped, and dropped
     # at the node with a report. The failure ORDERING is right and item 5 is why: the panel must never grow a
@@ -9211,7 +9448,7 @@ def smart_status():
         # here too — gated on the tier actually being configured, so a node with NO blocking at all still pays
         # nothing for the harvest (it shells out to iptables/nft/ipset).
         return {**base, "active": False, "sets": {}, "rules": 0, "resets": 0,
-                **({"block": _block_activity()} if _MECH_ON["subs"] else {})}
+                **({"block": _block_activity()} if (_MECH_ON["subs"] or _P2P["on"]) else {})}
     rules = len(_SMART_MARK_RE.findall(t["out"]))
     resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\d+)", t["out"]))   # SNI first-hit RSTs
     return {**base, "active": rules > 0,                        # a shadow set repeats its claimer's hosts, a src_ set holds devices: neither is a destination
