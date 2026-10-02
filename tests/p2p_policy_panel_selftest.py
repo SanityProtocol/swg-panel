@@ -17,6 +17,8 @@
       subnets}, Q gets the exit records — and a subnet that clashes at Q is LEFT OUT (never routed into a reply mix-up);
       no mesh link → no `_p2p` at all; dev(exit) → rule-scoped devexits on the node's own subnets, never a `from S` rule
   [8] the wire: route + the lowered entry; route that could not be lowered → route with entry None (the node blocks)
+  [10] the Settings draft (js/screen-settings.js nFields) keeps the WHOLE record — a route's node / exit_id — or the picker
+       empties after a save and the next save of anything posts a route with no target (refused): found live on swgt
   [9] the card: a route the node runs as block → "the torrent route is unavailable"; the target gone → pruned to block
 
 Run: python3 tests/p2p_policy_panel_selftest.py        (0 = pass)
@@ -28,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 SRC = open(PANEL, encoding="utf-8").read()
+SPA = os.path.join(ROOT, "js", "screen-settings.js")
 
 PLANTS = {
     "wdtt-ignored":  ('    recs += [ov for ov in (node.get("wdtt") or {}).values() if isinstance(ov, dict)]\n', ""),
@@ -46,6 +49,8 @@ PLANTS = {
     "p3-iface-scope":('            for S in subs:\n                _dx_add(sn, {"subnet": S, "dev": dev_n, "table": T, "killswitch": bool(xks), "scope": "rule",',
                       '            for S in subs:\n                _dx_add(sn, {"subnet": S, "dev": dev_n, "table": T, "killswitch": bool(xks), "scope": "iface",'),
     "p3-no-prune":   ('    prune_p2p_refs(nodes)                                     # …and a torrent route to it becomes Block\n', ''),
+    "spa-action-only": ('    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action, ...(n.p2p.node ? { node: n.p2p.node } : {}),\n                                   ...(n.p2p.exit_id ? { exit_id: n.p2p.exit_id } : {}) } : null,',
+                        '    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action } : null,'),
     "unpublished":   ('                        "p2p_eff": p2p_policy(c),\n', ""),
 }
 
@@ -56,7 +61,7 @@ def load(src):
     return m
 
 
-def run_checks(src):
+def run_checks(src, spa=None):
     fails = []
     def ok(cond, what):
         if not cond:
@@ -184,13 +189,29 @@ def run_checks(src):
     json.dump(fleet(n1p={"action": "exit", "node": "n2"}), open(np_, "w"))   # …and through the real removal path
     P.node_remove(deps, "n2")
     ok(json.load(open(np_))["n1"].get("p2p") == {"action": "block"}, "[9] node_remove prunes the torrent route to it")
+    # [10] the draft keeps the route's target
+    spa = spa if spa is not None else open(SPA, encoding="utf-8").read()
+    nf = spa[spa.find("const nFields = n =>"):]
+    nf = nf[:nf.find("});")]
+    line = nf[nf.find("p2p:"):]
+    line = line[:line.find(" : null,")]
+    ok("n.p2p.node" in line and "n.p2p.exit_id" in line, "[10] the Settings draft keeps p2p.node and p2p.exit_id")
     return fails
 
 
 def main():
     if "--perturb" in sys.argv:
         missed = []
+        spa = open(SPA, encoding="utf-8").read()
         for name, (old, new) in PLANTS.items():
+            if name.startswith("spa-"):
+                if old not in spa:
+                    print("PLANT %-14s anchor missing — fix the plant" % name); missed.append(name); continue
+                f = run_checks(SRC, spa.replace(old, new, 1))
+                print("PLANT %-14s %s" % (name, ("RED  (" + f[0] + ")") if f else "GREEN — NOT CAUGHT"))
+                if not f:
+                    missed.append(name)
+                continue
             if old not in SRC:
                 print("PLANT %-14s anchor missing — fix the plant" % name); missed.append(name); continue
             f = run_checks(SRC.replace(old, new, 1))

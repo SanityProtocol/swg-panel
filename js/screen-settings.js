@@ -2259,7 +2259,11 @@ export function PanelSettingsScreen() {
     // IP of its "Forward to node" rules, which lives beside the list on the node, not on a rule (§4.2).
     default_routing: Array.isArray(n.default_routing) ? normRules(n.default_routing) : null,
     default_routing_exit_ips: { ...(n.default_routing_exit_ips || {}) },
-    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action } : null,   // the torrent policy as STORED (null = the computed default)
+    // the torrent policy as STORED (null = the computed default) — the WHOLE record: a route's target (`node` / `exit_id`)
+    // dropped here would empty the picker after a save, and the next save of ANY setting on this node would post a route
+    // with no target, which the server refuses (measured on swgt, P3 live check)
+    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action, ...(n.p2p.node ? { node: n.p2p.node } : {}),
+                                   ...(n.p2p.exit_id ? { exit_id: n.p2p.exit_id } : {}) } : null,
     endpoint_hosts: [...(n.endpoint_hosts || [])],
     catalog_cats: [...(n.catalog_cats || [])],   // provider-catalog categories opted into on this node (node-lens; separate from the 26 built-ins)
     // ⚠️ REBUILT FROM A KEY LIST ON PURPOSE. /api/state attaches a derived `why_not` to each stored exit, and
