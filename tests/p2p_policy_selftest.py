@@ -13,6 +13,9 @@
   [8] the torrent port-hint is gone from swg_mech; activity reads swg_p2p's counters into "*"
   [11] host-readable keys: only `typeof ip saddr|ip daddr|th dport` and concatenations (nft_host_readable_selftest)
   [9] the old SWGP chain + swgp_src ipset are torn down once per process
+  [12] the @ih capability PROBE is valid nft: every closing brace on its own line (a one-line `{ … } }` is a syntax error
+       on every kernel and silently disabled signatures fleet-wide, 2026-10-02) — and, where `sudo -n nft` exists, the
+       real nft accepts it (`nft -c`); said SKIPPED out loud when it cannot ask
   [10] a node with nothing to do pays no subprocess per sync once it has looked; a new strict subnet still builds
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
@@ -36,6 +39,8 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
                      'if have.returncode == 0 and cur == sig:\n            return\n        _P2P["tbl"] = True'),
     "rule-poll":    ('    if not on and _P2P["rule"] is False:\n        return\n', ''),
     "ctid-key":     ('"  set flag { typeof ip saddr; flags timeout; size 65535; }",', '"  set flag { typeof ip saddr; flags timeout; size 65535; }", "  set p2p_ct { typeof ct id; flags timeout; }",'),
+    "probe-1line":  ('P2P_PROBE = "table inet swg_p2p_probe {\\n  chain c {\\n    meta l4proto udp @ih,0,64 0x0000041727101980 counter\\n  }\\n}\\n"',
+                     'P2P_PROBE = "table inet swg_p2p_probe { chain c { meta l4proto udp @ih,0,64 0x0000041727101980 counter } }\\n"'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
 }
 
@@ -189,6 +194,16 @@ def run_checks(src):
         t = m._p2p_nft(mode, ["10.67.0.0/24"], ["eth0"], ["10.255.0.2/31"], True)
         ks = set(_re.findall(r"\{ typeof ([^;]+);", t))
         ok(ks <= {"ip saddr", "ip daddr", "th dport"} and "ct id" not in t, "[11] %s: only measured typeof keys (%s)" % (mode, sorted(ks)))
+
+    # [12] the probe the node really sends
+    pr = m.P2P_PROBE
+    ok(all(ln.strip() == "}" or "}" not in ln for ln in pr.splitlines()), "[12] the probe puts every closing brace on its own line")
+    import shutil, subprocess as _sp
+    if shutil.which("sudo") and _sp.run(["sudo", "-n", "true"], capture_output=True).returncode == 0:
+        r = _sp.run(["sudo", "-n", "nft", "-c", "-f", "-"], input=pr, capture_output=True, text=True)
+        ok(r.returncode == 0, "[12] the real nft accepts the probe (%s)" % (r.stderr or "").strip()[:80])
+    else:
+        print("  [12] real-nft check SKIPPED — no passwordless sudo here; the static check above still ran")
 
     # [9] retirement
     m, b = fresh()

@@ -6637,11 +6637,18 @@ def _p2p_mode(p2p):
     return a if a in ("block", "direct") else "legacy"
 
 
+# ⚠️ ONE STATEMENT PER LINE. nft wants a newline (or `;`) before a closing brace: the one-line spelling
+# `{ chain c { … counter } }` is a SYNTAX error on every kernel, so it answered "no @ih" everywhere and every node ran
+# fan-out only — msk-main on 6.8 included (measured 2026-10-02, the first live sync after P1). The stubbed selftest
+# and a rig that passed `ih=True` straight in never asked the real nft; tests/p2p_policy_selftest.py [12] now does.
+P2P_PROBE = "table inet swg_p2p_probe {\n  chain c {\n    meta l4proto udp @ih,0,64 0x0000041727101980 counter\n  }\n}\n"
+
+
 def _p2p_ih_ok():
     """Can this kernel match raw L4 payload (`@ih`: nft >= 1.0.1, kernel >= 5.16)? Asked by LOADING a probe table rather
     than by reading versions — a backported kernel says yes and a stripped one says no, and only the load knows."""
     if _P2P["ih"] is None:
-        r = run(["nft", "-f", "-"], input_text="table inet swg_p2p_probe { chain c { meta l4proto udp @ih,0,64 0x0000041727101980 counter } }\n")
+        r = run(["nft", "-f", "-"], input_text=P2P_PROBE)
         _P2P["ih"] = r.returncode == 0
         run(["nft", "delete", "table", "inet", "swg_p2p_probe"])
     return _P2P["ih"]
