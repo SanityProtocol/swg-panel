@@ -1022,8 +1022,11 @@ export const blockCatLive = (mode, providers, c) => (c.sources || []).some(s => 
 // Built on FIRST READ, never at import: modules load before loadLang() resolves, so a T() here would
 // freeze in English whatever the catalog says (see --frozen).
 let _mech_hint = null;
+// Mechanisms the node does not build yet. They stay in the catalog and in any stored block[] (nothing is rewritten), but no
+// screen offers them: a switch that blocks nothing is worse than no switch — and blocking WebRTC would break calls (Meet).
+const MECH_UNBUILT = new Set(["cryptomining", "webrtc"]);
 export const MECH_HINT = () => (_mech_hint || (_mech_hint = {
-  torrents:     T("Drop BitTorrent / P2P — protects this exit IP's reputation. Free port-hint by default; signature scan where the node supports it."),
+  torrents:     T("Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. The server's own Torrents / P2P setting can block it on every way out."),
   smtp:         T("Drop outbound mail on TCP :25 — stops spam being relayed through this exit."),
   portscan:     T("Rate-limit outbound port-scans, brute-force and SYN-floods leaving this interface."),
   cryptomining: T("Drop known cryptomining / Stratum-pool traffic."),
@@ -1149,8 +1152,8 @@ export function blockActiveN(node, value) {
   if (!bc) return ids.length;
   const mode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";
   return ids.filter(id => { const c = (bc.categories || {})[id];
-    return c && c.enabled !== false && (c.kind === "mechanism"
-      || ((c.enabled_nodes || []).includes(node) && blockCatLive(mode, bc.providers, c))); }).length;
+    return c && c.enabled !== false && (c.kind === "mechanism" ? !MECH_UNBUILT.has(id)
+      : ((c.enabled_nodes || []).includes(node) && blockCatLive(mode, bc.providers, c))); }).length;
 }
 
 // Per-interface "Block traffic" (screen ③) — the daily policy surface. Content/IP categories the operator enabled on
@@ -1168,7 +1171,7 @@ export function BlockTraffic({ node, value, onChange }) {
   const list = [...new Set([...(bc.cat_order || []), ...Object.keys(cats)])].map(id => cats[id]).filter(c => c && c.enabled !== false);
   const availOn = c => (c.enabled_nodes || []).includes(node);
   const content = list.filter(c => (c.kind === "content" || c.kind === "ip") && availOn(c));
-  const mech = list.filter(c => c.kind === "mechanism");
+  const mech = list.filter(c => c.kind === "mechanism" && !MECH_UNBUILT.has(c.id));
   const chip = c => { const dis = blockCatDisabled(mode, bc.providers, c);
     const dead = !dis && !blockCatLive(mode, bc.providers, c);   // enforceable in this mode, but none of its lists is switched on / present
     return html`<button type="button" key=${c.id} disabled=${dis}

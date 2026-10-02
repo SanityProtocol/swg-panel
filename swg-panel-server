@@ -7611,6 +7611,13 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
                 issues.append(perr("{v1}: listens on UDP {v2}, outside this node's declared "
                                    "firewall range ({v3}) — clients cannot reach it until the range "
                                    "covers that port, or the interface moves inside it", v1=ifn, v2=_lp, v3=_spec))
+    # A node-wide torrent policy the node does not run: noded older than the policy ignores `smart.p2p` and keeps blocking
+    # only on the interfaces whose switch is on — so "blocked everywhere" would be a claim the datapath does not keep.
+    # ASKED of the node (it reports `p2p` while the policy runs), never inferred from a version; a node that has not
+    # reported smart status at all says nothing either way.
+    if p2p_policy(c) in ("block", "direct") and isinstance(snap.get("smartroute"), dict) and not snap["smartroute"].get("p2p"):
+        issues.append(perr("the torrent policy needs a node update — until then torrents are blocked only on interfaces "
+                           "that have Torrents / P2P switched on"))
     return issues
 
 # A DNS name as an operator may type it: labels of letters/digits/hyphens, at least one dot, or a bare
@@ -12007,6 +12014,28 @@ MECH_CATEGORIES = {
     "webrtc":      ("WebRTC / STUN",               False, "sig+port",    "all"),
 }
 BLOCK_CAT_ORDER = list(BLOCK_CATEGORIES.keys()) + list(MECH_CATEGORIES.keys())
+
+# The node-wide P2P policy (docs/P2P-POLICY-PLAN.md): what happens to torrent traffic on EVERY way out of the node —
+# interfaces, mesh arrivals, the node's own processes — not only an interface's own subnet.
+#   block   dropped everywhere          direct  only out this node's own address (its main default route)
+#   iface   each interface's "Torrents / P2P" switch decides (the per-interface mechanism, as before this policy)
+# Route via an exit or another node is P3. The node is sent block|direct; iface is the absence of a policy there.
+P2P_ACTIONS = ("block", "direct", "iface")
+
+
+def p2p_policy(node):
+    """The node's P2P policy in force. Stored once the operator saves it; until then COMPUTED, never written: block when
+    every interface, WDTT and csqtt server on the node already blocks torrents (the default — so a new node is block, and
+    a pure exit with no user interfaces is too, which is where an abuse complaint lands), else iface — exactly the
+    behaviour the node had before the policy existed. A computed default is not stored so nothing migrates and nothing
+    flips back on a downgrade."""
+    v = node.get("p2p")
+    if isinstance(v, dict) and v.get("action") in P2P_ACTIONS:
+        return v["action"]
+    recs = [ov for ov in (node.get("ifaces") or {}).values() if isinstance(ov, dict) and not ov.get("system")]
+    recs += [ov for ov in (node.get("wdtt") or {}).values() if isinstance(ov, dict)]
+    recs += [ov for ov in (node.get("csqtt") or {}).values() if isinstance(ov, dict)]
+    return "block" if all("torrents" in (r.get("block") or []) for r in recs) else "iface"
 
 
 def _block_list_src(pid, lid):
@@ -20141,6 +20170,11 @@ def api(method, path, qs, body, deps):
                         # clears it (the P2 exit-IP defect, `new-record-field-must-be-published`). null = not a list.
                         "default_routing": c.get("default_routing") if isinstance(c.get("default_routing"), list) else None,
                         "default_routing_exit_ips": dict(c.get("default_routing_exit_ips") or {}),
+                        # the P2P policy: STORED (null = computed default) — published, or the next save of anything posts it back
+                        # empty (`new-record-field-must-be-published`) — the policy IN FORCE, and what the node reports it runs
+                        "p2p": c.get("p2p") if isinstance(c.get("p2p"), dict) else None,
+                        "p2p_eff": p2p_policy(c),
+                        "p2p_node": (snap.get("smartroute") or {}).get("p2p") or None,
                         # whom the list affects, from the last sync's plan (T16) — None until a sync has planned it
                         "default_reach": ((deps.get("cas_reach") or {}).get(nid)
                                           if isinstance(c.get("default_routing"), list) else None),
@@ -24182,6 +24216,14 @@ def api(method, path, qs, body, deps):
                 nodes[nid]["default_routing_exit_ips"] = _xm
             else:
                 nodes[nid].pop("default_routing_exit_ips", None)
+        if "p2p" in body:                       # the node-wide P2P policy; null → back to the computed default (p2p_policy)
+            _pp = body.get("p2p")
+            if _pp is None:
+                nodes[nid].pop("p2p", None)
+            elif isinstance(_pp, dict) and _pp.get("action") in P2P_ACTIONS:
+                nodes[nid]["p2p"] = {"action": _pp["action"]}
+            else:
+                return 400, {"ok": False, "error": "torrent policy must be one of: " + ", ".join(P2P_ACTIONS), "code": "bad_request"}
         # …and nothing else is left pointing at an exit that is gone either — see `prune_exit_refs` and
         # `prune_default_exit`. Unconditional, so a record already in that state heals on the next save of
         # anything rather than waiting for someone to touch the exact field that broke.
@@ -29883,7 +29925,9 @@ class Handler(BaseHTTPRequestHandler):
                                           # domain fill. Only in forcedns mode — kernel needs no DNS, and sni reads the TLS handshake so it
                                           # leaves the client's DNS (incl. DoH) untouched by design.
                                           "block_doh": (node.get("routing_mode") or "kernel") == "forcedns",
-                                          "mech": _blk_mech,   # {subnet: [mechanism ids]} → node builds the FREE L4/rate drops (smtp/quic/torrents-porthint/portscan) + doh
+                                          "mech": _blk_mech,   # {subnet: [mechanism ids]} → node builds the FREE L4/rate drops (smtp/quic/portscan) + doh; "torrents" = strict subnets
+                                          # the node-wide P2P policy; None = iface (the node keeps the per-interface mechanism alone)
+                                          "p2p": ({"action": _p2pa} if (_p2pa := p2p_policy(node)) in ("block", "direct") else None),
                                           "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
                                           "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
                                           "routing_reset_learned": int(node.get("routing_reset_learned") or 0)},   # 'Reset learned IPs' counter → node clears only its learned-IP sets

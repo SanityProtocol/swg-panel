@@ -2259,6 +2259,7 @@ export function PanelSettingsScreen() {
     // IP of its "Forward to node" rules, which lives beside the list on the node, not on a rule (§4.2).
     default_routing: Array.isArray(n.default_routing) ? normRules(n.default_routing) : null,
     default_routing_exit_ips: { ...(n.default_routing_exit_ips || {}) },
+    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action } : null,   // the torrent policy as STORED (null = the computed default)
     endpoint_hosts: [...(n.endpoint_hosts || [])],
     catalog_cats: [...(n.catalog_cats || [])],   // provider-catalog categories opted into on this node (node-lens; separate from the 26 built-ins)
     // ⚠️ REBUILT FROM A KEY LIST ON PURPOSE. /api/state attaches a derived `why_not` to each stored exit, and
@@ -2380,6 +2381,7 @@ export function PanelSettingsScreen() {
         default_egress_ip: e.default_egress_ip || "", panel_ip: e.panel_ip || "", default_exit: e.default_exit || "",
         default_routing: Array.isArray(e.default_routing) ? e.default_routing : null,
         default_routing_exit_ips: e.default_routing_exit_ips || {},
+        p2p: e.p2p || null,
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
         catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {}, exits: e.exits || [] });
@@ -2460,6 +2462,7 @@ export function PanelSettingsScreen() {
       if (!eq(e.default_routing, o.default_routing) && (Array.isArray(e.default_routing) || eq(e.default_exit, o.default_exit)))
         fl.push(Array.isArray(e.default_routing) ? T("default routing rules") : T("default exit"));   // one line for one change
       if (!eq(e.default_routing_exit_ips, o.default_routing_exit_ips)) fl.push(T("default routing exit addresses"));
+      if (!eq(e.p2p, o.p2p)) fl.push(T("torrents → {v1}", { v1: P2P_SHORT()[(e.p2p || {}).action] || "" }));
       if (!eq(e.panel_ip, o.panel_ip)) fl.push(T("panel IP → {v1}", { v1: e.panel_ip || T("val|auto") }));
       if (!eq(e.mesh_egress_ip, o.mesh_egress_ip)) fl.push(T("mesh egress IP → {v1}", { v1: e.mesh_egress_ip || T("val|auto") }));
       if (!eq((e.endpoint_hosts || []).filter(Boolean), (o.endpoint_hosts || []).filter(Boolean))) fl.push(T("other names"));
@@ -2576,7 +2579,7 @@ const sectionLabel = k => ({
     onConfirm: () => removeCatFleet(id) });
   const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
   const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
-  const SECF = { routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips"], exits: ["exits"] };
+  const SECF = { routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
   // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
@@ -4307,12 +4310,25 @@ function DefaultReach({ node }) {
     ${(rc.dup || []).length ? html` ${T("{v1} arrive from two nodes at once and are left to this node's own route.", { v1: rc.dup.join(", ") })}` : null}</div>`;
 }
 
+// The node-wide torrent policy (docs/P2P-POLICY-PLAN.md): what P2P traffic may do on EVERY way out of this node — its
+// interfaces, traffic other nodes send out through it, and programs running on it. Route via an exit or a node is P3.
+const P2P_OPTS = () => [
+  { value: "block", label: T("Block everywhere") },
+  { value: "direct", label: T("Allow, only out this server's own address") },
+  { value: "iface", label: T("Each interface decides") }];
+const P2P_SHORT = () => ({ block: T("blocked"), direct: T("this server's address only"), iface: T("per interface") });
+const P2P_HINT = () => ({
+  block: T("Torrent traffic is dropped on every way out of this server: its interfaces, traffic other nodes send out through it, and programs running on it. Web, calls and games are not affected."),
+  direct: T("Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route."),
+  iface: T("Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked.") });
+
 export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManage, saveExits }) {
   const ips = node.ips || []; const v = vals || {};
   const isList = Array.isArray(v.default_routing);   // the default is a rule list (D2) — its presence is the switch
   // The list's rules start folded: the section opens on its few settings, and the rules are there on a click. Opened by the
   // choice that makes the default a list, so choosing it shows where the rules go.
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [p2pOpen, setP2pOpen] = useState(false);
   // "Custom interface…" is a MODE of this field, not a value it can hold — picking it opens the device
   // field below and the field's answer is what gets stored. Local state, because nothing is decided until
   // a device is named and there is nothing to save in the meantime.
@@ -4622,6 +4638,18 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
         rules=${v.default_routing} exitIps=${v.default_routing_exit_ips || {}}
         onChange=${(rules, xs) => set({ default_routing: rules, default_routing_exit_ips: xs || {} })}/>
       <${DefaultReach} node=${node}/><//></div>` : null}
+    ${(() => {   // shown as the policy IN FORCE: what is stored, or the computed default the server says applies
+      const cur = (v.p2p && v.p2p.action) || node.p2p_eff || "iface";
+      const pn = node.p2p_node;
+      return html`<div class="field">
+        <${Disclosure} title=${T("Filters & abuse")} sumCls="on" open=${p2pOpen} onToggle=${() => setP2pOpen(o => !o)}
+          summary=${T("Torrents / P2P: {v1}", { v1: P2P_SHORT()[cur] })}>
+          <div class="field"><label>${T("Torrents / P2P")}</label>
+            <${Dropdown} value=${cur} onChange=${a => set({ p2p: { action: a } })} options=${P2P_OPTS()}/>
+            <div class="hint">${P2P_HINT()[cur]}</div>
+            ${pn && pn.state === "degraded" && cur !== "iface" ? html`<div class="hint warnish">${T("This server's kernel can't read packet contents (5.16 or newer is needed), so torrents are recognised by their connection pattern only.")}</div>` : null}
+          </div>
+        <//></div>`; })()}
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
       <${NodeIpPick} ips=${ips} value=${v.panel_ip || ""} onChange=${ip => set({ panel_ip: ip })} auto=${T("Auto (default route)")}/></div>
     <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>

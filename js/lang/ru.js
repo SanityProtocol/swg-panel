@@ -4457,8 +4457,28 @@ export const STR = {
   "healthy": "работает",
   "down — host routing degraded": "не работает — домены страдают",
   "OFF — routing stays fresh, no remembered IPs": "ВЫКЛ — маршруты свежие, адреса не запоминаются",
-  "Drop BitTorrent / P2P — protects this exit IP's reputation. Free port-hint by default; signature scan where the node supports it.":
-    "Резать BitTorrent и P2P — бережёт репутацию этого выходного адреса. По умолчанию дёшево, по портам; где нода умеет — по сигнатурам.",
+  "Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. The server's own Torrents / P2P setting can block it on every way out.":
+    "Резать BitTorrent и P2P с этого интерфейса на любом порту — их узнают по протоколу и по характеру соединений. Собственная настройка сервера «Торренты / P2P» может закрыть их на всех выходах.",
+  // the node-wide torrent policy (Settings ▸ node ▸ Network ▸ Filters & abuse)
+  "Torrents / P2P": "Торренты / P2P",
+  "Torrents / P2P: {v1}": "Торренты / P2P: {v1}",
+  "Block everywhere": "Блокировать везде",
+  "Allow, only out this server's own address": "Разрешить, только через собственный адрес сервера",
+  "Each interface decides": "Решает каждый интерфейс",
+  "blocked": "блокируются",
+  "this server's address only": "только через адрес сервера",
+  "per interface": "по интерфейсам",
+  "torrents → {v1}": "торренты → {v1}",
+  "Torrent traffic is dropped on every way out of this server: its interfaces, traffic other nodes send out through it, and programs running on it. Web, calls and games are not affected.":
+    "Торрент-трафик отбрасывается на всех выходах сервера: с его интерфейсов, от других нод, выходящих через него, и от программ на самом сервере. Сайты, звонки и игры не затрагиваются.",
+  "Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.":
+    "Торрент-трафик может выходить только через собственный адрес сервера — никогда через выход или другую ноду. Остальной трафик идёт своим маршрутом.",
+  "Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked.":
+    "Блокируют только интерфейсы, где включено «Торренты / P2P». Трафик других нод, выходящий через этот сервер, и программы на нём не проверяются.",
+  "This server's kernel can't read packet contents (5.16 or newer is needed), so torrents are recognised by their connection pattern only.":
+    "Ядро этого сервера не умеет читать содержимое пакетов (нужно 5.16 или новее), поэтому торренты узнаются только по характеру соединений.",
+  "the torrent policy needs a node update — until then torrents are blocked only on interfaces that have Torrents / P2P switched on":
+    "для политики торрентов нужно обновить ноду — пока торренты блокируются только на интерфейсах, где включено «Торренты / P2P»",
   "Drop outbound mail on TCP :25 — stops spam being relayed through this exit.":
     "Резать исходящую почту на TCP :25 — через этот выход не пойдёт спам.",
   "Rate-limit outbound port-scans, brute-force and SYN-floods leaving this interface.":

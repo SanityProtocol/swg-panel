@@ -82,14 +82,14 @@ def top_keys(blk):
 
 nfields = set(top_keys(block(src, r"const nFields = n => \(\{")))
 secf_blk = block(src, r"const SECF = \{")
-secf = set(re.findall(r'"([a-z_]+)"', secf_blk))
+secf = set(re.findall(r'"([a-z][a-z0-9_]*)"', secf_blk))
 body = set(top_keys(block(src, r"await api\.nodeUpdate\(\{"))) - {"id"}
 diff_blk = block(src, r"const diffList = \(\) => \{")
 if PERTURB:
     _cut = 'if (!eq(e.exits, o.exits)) fl.push(T("external exits"));'
     assert _cut in diff_blk, "perturbation anchor missing — this run would FALSE-PASS"
     diff_blk = diff_blk.replace(_cut, "")
-diffed = set(re.findall(r"\be\.([a-z_]+)", diff_blk))
+diffed = set(re.findall(r"\be\.([a-z][a-z0-9_]*)", diff_blk))
 
 check("nFields was read at all (%d fields)" % len(nfields), len(nfields) >= 10, sorted(nfields))
 check("SECF was read at all", len(secf) >= 10, sorted(secf))
@@ -120,9 +120,9 @@ _ve = _pan.index("\ndef ", _vs)
 _body = _pan[_vs:_ve]
 _out = re.search(r'out = \{"id": eid, "label": lbl.*?\}\n', _body, re.S)
 assert _out, "the validator's exit record literal was not found"
-_srv_keys = set(re.findall(r'"([a-z_]+)":', _out.group(0))) | set(re.findall(r'out\["([a-z_]+)"\]', _body))
+_srv_keys = set(re.findall(r'"([a-z][a-z0-9_]*)":', _out.group(0))) | set(re.findall(r'out\["([a-z][a-z0-9_]*)"\]', _body))
 _nf = block(src, r"exits: \(n\.exits \|\| \[\]\)\.map\(x => \(\{", "{", "}")
-_spa_keys = set(re.findall(r"([a-z_]+):", _nf))
+_spa_keys = set(re.findall(r"([a-z][a-z0-9_]*):", _nf))
 # `key_blob`/`key_restore`/`why_not`/`live`/`profile`/`cfg_sig` are panel-owned or derived — the operator
 # never edits them, so the draft deliberately does not carry them. `cfg_sig` in particular is DERIVED from
 # the rest of the record on every save (`exit_cfg_sig`), so a copy carried up from the browser could only
@@ -156,7 +156,7 @@ def _fn(src, name):
 
 
 _ladder = _fn(psrc, "_apply_egress_mode") + _fn(psrc, "_apply_exit_ips")
-_written = set(re.findall(r'rec\["([a-z_]+)"\]\s*=', _ladder)) | set(re.findall(r'rec\.pop\("([a-z_]+)"', _ladder))
+_written = set(re.findall(r'rec\["([a-z][a-z0-9_]*)"\]\s*=', _ladder)) | set(re.findall(r'rec\.pop\("([a-z][a-z0-9_]*)"', _ladder))
 # ⚠️ THE TYPED LIST IS A FLOOR, AND THE DERIVATION ONLY ADDS TO IT. Replacing the floor WITH the derivation
 # is what the first version of this did, and it silently dropped `egress_ip` — which the ladder does not
 # write (the per-handler code sets it), so deriving from the ladder alone left the one field the SNAT
@@ -179,7 +179,7 @@ for k in sorted(_FLOOR | _written):
 # (`n.<field>`), so a new node field is checked the day it is drafted. P3's `default_routing` is the reason this exists.
 _nf_blk = block(src, r"const nFields = n => \(\{")
 _nf_blk = _nf_blk[:_nf_blk.index("exits: (n.exits")] if "exits: (n.exits" in _nf_blk else _nf_blk   # the exit map reads `x.`, not `n.`
-_reads = set(re.findall(r"\bn\.([a-z_]+)", _nf_blk))
+_reads = set(re.findall(r"\bn\.([a-z][a-z0-9_]*)", _nf_blk))
 _pub = block(psrc, r'out\.append\((?=\{"id": nid, "name": c\.get\("name", nid\), "color")', "(", ")")
 if "--perturb-publish" in sys.argv:
     _cut = '"default_routing": c.get("default_routing")'
