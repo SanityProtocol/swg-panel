@@ -2115,23 +2115,34 @@ def _dev_link_state(dev):
     return "down"
 
 
-def _route_dev_sig(cascade, smart):
-    """Every device a route in the plan leaves by — mesh legs above all — with its state, folded into the reconcile
-    trigger beside `_devexit_sig`. A route through a device that is not up is WITHHELD (`_withheld`), so a device that
-    comes back is a routing change with the plan untouched: without this its route waited for the ROUTING_RECONCILE_EVERY_S
-    sweep, and a torrent route stayed blackholed and reported down for up to a minute (code review #2, 2026-10-03).
-    The state is `_devexit_state`, exactly what `_withheld` reads — link state, plus an imported exit's "dead" verdict —
-    so whatever withholds a route also brings it back. Two sysfs reads per distinct device per sync, no fork."""
-    c, s = cascade or {}, smart or {}
-    devs = {str((e or {}).get("via_iface") or "") for e in (c.get("forward") or []) + (c.get("exit") or [])}
-    devs |= {str(e.get("via_iface") or "") for e in (s.get("entries") or []) if isinstance(e, dict) and e.get("action", "exit") == "exit"}
-    devs |= {str(e.get("via_iface") or "") for e in ((s.get("arrivals") or {}).get("entries") or [])
-             if isinstance(e, dict) and e.get("action") == "exit"}
-    pe = _p2p_entry(s.get("p2p")) if (s.get("p2p") or {}).get("action") == "route" else None
-    if pe:
-        devs.add(pe["via_iface"])
-    devs.discard("")
-    return [(d, _devexit_state(d)) for d in sorted(devs)]
+def _dev_ifindex(dev):
+    """The kernel's index for `dev`, 0 when there is none — one sysfs read, no fork. It is what tells a device deleted
+    and created again under the same name (an exit rebuilt in place) from the one before it: the state reads "up" on
+    both sides, and every route through the old device went with it."""
+    with contextlib.suppress(Exception):
+        with open("/sys/class/net/%s/ifindex" % dev) as f:
+            return int(f.read().strip())
+    return 0
+
+
+def _dev_seen(dev):
+    """What a routing pass judges a device by: its state as `_devexit_state` gives it (link state, plus an imported
+    exit's "dead" verdict) and its index. `_withheld` records it; `_routed_devs_moved` reads it again."""
+    return (_devexit_state(dev), _dev_ifindex(dev))
+
+
+_ROUTED_DEVS = {}   # device -> _dev_seen() as the last routing pass judged it; reconcile_cascade writes, the main loop reads
+
+
+def _routed_devs_moved():
+    """Has a device the last routing pass judged changed since — come up, gone down, been judged dead or alive again, or
+    been created again under its name? A route through a device that is not up is WITHHELD (`_withheld`), and an exit
+    rebuilt in place loses its routes with the old device while reading "up" before and after: both are routing changes
+    with the plan untouched, which waited for the ROUTING_RECONCILE_EVERY_S sweep (code review #3, 2026-10-03).
+    Compared with what the pass JUDGED, not with the last look, so a device that changed while the pass ran is caught on
+    the next sync. Reads only the devices the pass recorded — a few sysfs reads, no fork, nothing on a node without
+    routes — and nothing of the panel's reply, so no reply can make it raise."""
+    return any(_dev_seen(d) != v for d, v in list(_ROUTED_DEVS.items()))
 
 
 def _devexit_sig(cascade):
@@ -7957,6 +7968,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     direct egress mid-gap); the iptables + nft sides are diffed by tag/signature. Runtime state is lost on
     reboot, so this re-applies on the first sync after one. Returns {changed, errors}."""
     res = {"changed": 0, "errors": []}
+    _ROUTED_DEVS.clear()                                      # refilled below with what this pass judges — never a stale device
     plan = plan or {}
     fwd = plan.get("forward") or []
     exit_ = plan.get("exit") or []
@@ -8076,11 +8088,12 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # Judged by `_devexit_state` — the reader every other one uses, so "dead" counts for any device the exit judge knows,
     # not only those this plan lists as device exits — and judged ONCE per pass: seeded from `_dxs`, which already asked,
     # and memoised for the rest (smart entries are per subnet × category: hundreds on a big node, a handful of devices).
-    _lst = {(e.get("dev") or ""): e["state"] for e in _dxs}
+    # With each device's index, and recorded for the trigger (`_routed_devs_moved`), which re-reads exactly these.
+    _lst = {e["dev"]: (e["state"], _dev_ifindex(e["dev"])) for e in _dxs if e.get("dev")}
     def _withheld(dev):
         if dev not in _lst:
-            _lst[dev] = _devexit_state(dev)
-        return dev in _dxnogw or _lst[dev] != "up"
+            _lst[dev] = _dev_seen(dev)
+        return dev in _dxnogw or _lst[dev][0] != "up"
     # ⚠️ …AND EVERY ROUTE KIND, NOT ONLY THE SMART ONES. A whole-interface cascade's `default dev <leg> table T` and an
     # exit record's `S dev <leg> table T` cannot be installed through a down or absent leg either, and signed they churned
     # the band exactly as the smart ones did (code review #2, 2026-10-03). Their RULES stay — `from S` / `to S` and the
@@ -8106,6 +8119,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         arr_exit = arr_exit + [{"subnet": "", "category": "p2p", "action": "exit", "via_iface": _pe["via_iface"],
                                 "table": int(_pe["table"]), "gw": _dxgw.get(_pe["via_iface"], ""),
                                 "_noroute": _withheld(_pe["via_iface"])}]
+    _ROUTED_DEVS.update(_lst)                                 # every device this pass judged (the last `_withheld` is above)
     mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni | sni_kernel — the CONFIGURED host-match mode
     _SMART_MODE["m"] = mode                                     # report the configured mode for the panel's host-layer health
     # Resolve the ACTUAL host-fill engine; degrade kernel-SNI → userspace SNI if xt_string/ipset are missing on this box.
@@ -20377,16 +20391,16 @@ def main():
                 note_drops_resets(reply.get("desired_ifaces"))   # operator asked to re-baseline a drop counter
                 note_mesh_resets(reply.get("desired_ifaces"))    # …or to empty a mesh leg's probe window
                 # Only run the drift-checking routing reconcile when the DESIRED routing changed, an interface's
-                # lifecycle changed this cycle, or the safety window elapsed — not every 5s. (See ROUTING_RECONCILE_EVERY_S.)
+                # lifecycle changed this cycle, a device the last pass judged has changed (`_routed_devs_moved`), or the
+                # safety window elapsed — not every 5s. (See ROUTING_RECONCILE_EVERY_S.)
                 _route_sig = json.dumps([reply.get("desired_ifaces"), reply.get("cascade"),
                                          reply.get("smart"), _def_egress,
                                          _devexit_sig(reply.get("cascade")),
-                                         _route_dev_sig(reply.get("cascade"), reply.get("smart")),   # a leg back up re-installs at once
                                          _NET["sig"], sorted(_NET["refused"]),
                                          reply.get("lan_share"), _SHARE["sig"]], sort_keys=True, default=str)
                 _iface_churn = bool(_awg_loaded or cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
                                     or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"] or cq["changed"])   # a WDTT/csqtt install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
-                if (_route_sig != last_route_sig or _iface_churn
+                if (_route_sig != last_route_sig or _iface_churn or _routed_devs_moved()
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
                     nr = {"changed": 0, "errors": []}
