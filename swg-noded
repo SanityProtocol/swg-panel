@@ -2116,11 +2116,12 @@ def _dev_link_state(dev):
 
 
 def _route_dev_sig(cascade, smart):
-    """Every device a route in the plan leaves by — mesh legs above all — with its link state, folded into the reconcile
-    trigger beside `_devexit_sig`. A route through a down or absent device is WITHHELD (`_withheld`), so a device that
+    """Every device a route in the plan leaves by — mesh legs above all — with its state, folded into the reconcile
+    trigger beside `_devexit_sig`. A route through a device that is not up is WITHHELD (`_withheld`), so a device that
     comes back is a routing change with the plan untouched: without this its route waited for the ROUTING_RECONCILE_EVERY_S
     sweep, and a torrent route stayed blackholed and reported down for up to a minute (code review #2, 2026-10-03).
-    Two sysfs reads per distinct device per sync, no fork; the entries are walked, the devices are few."""
+    The state is `_devexit_state`, exactly what `_withheld` reads — link state, plus an imported exit's "dead" verdict —
+    so whatever withholds a route also brings it back. Two sysfs reads per distinct device per sync, no fork."""
     c, s = cascade or {}, smart or {}
     devs = {str((e or {}).get("via_iface") or "") for e in (c.get("forward") or []) + (c.get("exit") or [])}
     devs |= {str(e.get("via_iface") or "") for e in (s.get("entries") or []) if isinstance(e, dict) and e.get("action", "exit") == "exit"}
@@ -2130,7 +2131,7 @@ def _route_dev_sig(cascade, smart):
     if pe:
         devs.add(pe["via_iface"])
     devs.discard("")
-    return [(d, _dev_link_state(d)) for d in sorted(devs)]
+    return [(d, _devexit_state(d)) for d in sorted(devs)]
 
 
 def _devexit_sig(cascade):

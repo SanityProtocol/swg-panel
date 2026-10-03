@@ -80,6 +80,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "fwd-unmarked": ('    fwd = [dict(e, _noroute=_withheld(e["via_iface"])) for e in fwd]\n', ''),
     "link-reader":  ('            _lst[dev] = _devexit_state(dev)', '            _lst[dev] = _dev_link_state(dev)'),
     "trig-missing": ('                                         _route_dev_sig(reply.get("cascade"), reply.get("smart")),   # a leg back up re-installs at once\n', ''),
+    "trig-linkonly":('    return [(d, _devexit_state(d)) for d in sorted(devs)]', '    return [(d, _dev_link_state(d)) for d in sorted(devs)]'),
     "mech-twice":   ('        for ln in mech.splitlines():                              # ONE rule carries', '        for ln in (run(["nft", "list", "table", "inet", "swg_mech"]).stdout or "").splitlines():   # ONE rule carries'),
     "ips-coupled":  ('                out.setdefault("*", {})["torrent_ips"] = [str(i) for i in ips]', '                out["*"]["torrent_ips"] = [str(i) for i in ips]'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
@@ -363,6 +364,8 @@ def run_checks(src):
     ok([d for d, _ in g1] == ["swg_a", "swg_b", "swg_c", "wgx3"], "[21] every routed device is in the trigger (%s)" % g1)
     links["swg_b"] = "down"
     ok(m1._route_dev_sig(cas, sm) != g1, "[21] …and a leg going down or back up moves it")
+    links["swg_b"] = "up"; m1._EXIT_HEALTH["wgx3"] = {"dead": True}
+    ok(m1._route_dev_sig(cas, sm) != g1, "[21] …and so does an exit judged dead (the trigger reads what `_withheld` reads)")
     rs = src[src.find("_route_sig = json.dumps(["):]
     rs = rs[:rs.find("sort_keys=True")]
     ok("_route_dev_sig(reply.get(\"cascade\"), reply.get(\"smart\"))" in rs, "[21] the main loop's reconcile trigger includes it")
