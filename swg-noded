@@ -2125,13 +2125,19 @@ def _dev_ifindex(dev):
     return 0
 
 
-def _dev_seen(dev):
+def _dev_seen(dev, state=None):
     """What a routing pass judges a device by: its state as `_devexit_state` gives it (link state, plus an imported
-    exit's "dead" verdict) and its index. `_withheld` records it; `_routed_devs_moved` reads it again."""
-    return (_devexit_state(dev), _dev_ifindex(dev))
+    exit's "dead" verdict) and, when it exists, its index — an absent device, a name the link reader refuses included,
+    is ("absent", 0) with no path built from it. `state` is for a caller that has just read it (the device exits'
+    `_dxs`), so every entry of the record is built here, in one shape. `_withheld` records it; `_routed_devs_moved`
+    reads it again."""
+    s = _devexit_state(dev) if state is None else state
+    return (s, _dev_ifindex(dev) if s != "absent" else 0)
 
 
-_ROUTED_DEVS = {}   # device -> _dev_seen() as the last routing pass judged it; reconcile_cascade writes, the main loop reads
+# device -> _dev_seen(): "judged" is what the last COMPLETED routing pass judged — the trigger's reference, committed by
+# the main loop beside `last_route_sig` — and "pending" what the pass in progress judged. A pass that fails is retried.
+_ROUTED = {"judged": {}, "pending": {}}
 
 
 def _routed_devs_moved():
@@ -2140,9 +2146,9 @@ def _routed_devs_moved():
     rebuilt in place loses its routes with the old device while reading "up" before and after: both are routing changes
     with the plan untouched, which waited for the ROUTING_RECONCILE_EVERY_S sweep (code review #3, 2026-10-03).
     Compared with what the pass JUDGED, not with the last look, so a device that changed while the pass ran is caught on
-    the next sync. Reads only the devices the pass recorded — a few sysfs reads, no fork, nothing on a node without
-    routes — and nothing of the panel's reply, so no reply can make it raise."""
-    return any(_dev_seen(d) != v for d, v in list(_ROUTED_DEVS.items()))
+    the next sync — and only once the pass has completed, so a pass that failed is run again. Reads only the devices the
+    pass recorded — a few sysfs reads, no fork, nothing on a node without routes — and nothing of the panel's reply."""
+    return any(_dev_seen(d) != v for d, v in _ROUTED["judged"].items())
 
 
 def _devexit_sig(cascade):
@@ -7968,7 +7974,6 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     direct egress mid-gap); the iptables + nft sides are diffed by tag/signature. Runtime state is lost on
     reboot, so this re-applies on the first sync after one. Returns {changed, errors}."""
     res = {"changed": 0, "errors": []}
-    _ROUTED_DEVS.clear()                                      # refilled below with what this pass judges — never a stale device
     plan = plan or {}
     fwd = plan.get("forward") or []
     exit_ = plan.get("exit") or []
@@ -8088,8 +8093,9 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # Judged by `_devexit_state` — the reader every other one uses, so "dead" counts for any device the exit judge knows,
     # not only those this plan lists as device exits — and judged ONCE per pass: seeded from `_dxs`, which already asked,
     # and memoised for the rest (smart entries are per subnet × category: hundreds on a big node, a handful of devices).
-    # With each device's index, and recorded for the trigger (`_routed_devs_moved`), which re-reads exactly these.
-    _lst = {e["dev"]: (e["state"], _dev_ifindex(e["dev"])) for e in _dxs if e.get("dev")}
+    # With each device's index, and recorded for the trigger (`_routed_devs_moved`), which re-reads exactly these once
+    # the pass has completed (the main loop commits "pending" beside `last_route_sig`).
+    _lst = {e["dev"]: _dev_seen(e["dev"], e["state"]) for e in _dxs if e.get("dev")}
     def _withheld(dev):
         if dev not in _lst:
             _lst[dev] = _dev_seen(dev)
@@ -8119,7 +8125,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         arr_exit = arr_exit + [{"subnet": "", "category": "p2p", "action": "exit", "via_iface": _pe["via_iface"],
                                 "table": int(_pe["table"]), "gw": _dxgw.get(_pe["via_iface"], ""),
                                 "_noroute": _withheld(_pe["via_iface"])}]
-    _ROUTED_DEVS.update(_lst)                                 # every device this pass judged (the last `_withheld` is above)
+    _ROUTED["pending"] = {d: v for d, v in _lst.items() if d}   # every device this pass judged (the last `_withheld` is above)
     mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni | sni_kernel — the CONFIGURED host-match mode
     _SMART_MODE["m"] = mode                                     # report the configured mode for the panel's host-layer health
     # Resolve the ACTUAL host-fill engine; degrade kernel-SNI → userspace SNI if xt_string/ipset are missing on this box.
@@ -20425,6 +20431,7 @@ def main():
                         reconcile_inet_chain(node_cfg, {e.get("dev") for e in
                                                         ((reply.get("cascade") or {}).get("devexit") or [])})
                     last_route_sig = _route_sig; last_route_t = time.time()
+                    _ROUTED["judged"] = _ROUTED["pending"]    # …with what it judged: a pass that raised is retried next sync
                 else:
                     eg = {"changed": 0, "errors": []}; cas = {"changed": 0, "errors": []}   # unchanged routing → skip the ip/iptables/nft drift-check shell-outs
                     nr = {"changed": 0, "errors": []}

@@ -31,10 +31,11 @@
        a way out), is cleared each pass, and every status report corrects "up" by the device itself
   [20] CODE REVIEW #2: whole-interface cascades (fwd) and exit records (exit_) through a down leg are withheld too —
        their rules stay; and a device is judged by `_devexit_state` (a dead tunnel the plan did not list included)
-  [21] CODE REVIEW #2/#3: the trigger re-reads exactly what the last routing pass judged (`_ROUTED_DEVS`): a device back
-       up, an exit's dead verdict cleared, or a device created again under its name (an exit rebuilt in place) runs the
-       pass on the next sync instead of the 60 s sweep; it settles once every device reads as judged, a change while the
-       pass ran is caught, and a pass that judges nothing leaves nothing to re-read
+  [21] CODE REVIEW #2/#3/#4: the trigger re-reads exactly what the last COMPLETED routing pass judged (`_ROUTED`): a
+       device back up, an exit's dead verdict cleared, or a device created again under its name (an exit rebuilt in
+       place) runs the pass on the next sync instead of the 60 s sweep; it settles once every device reads as judged, a
+       change while the pass ran is caught, a pass that fails after judging is retried, a pass that judges nothing
+       leaves nothing to re-read, and a name the link reader refuses is absent with no index
   [22] CODE REVIEW #2: swg_mech is read once per report, and the flagged IPs survive a failed counter read
   [10] a node with nothing to do pays no subprocess per sync once it has looked; a new strict subnet still builds
 
@@ -80,12 +81,17 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "fwd-signed":   ('        if not e.get("_noroute"):                      # a route the rebuild withholds (device not up) is not signed: drift\n            sig.add(f"T|{T}|default|{e[\'via_iface\']}|{str(e.get(\'gw\') or \'\')}")',
                      '        sig.add(f"T|{T}|default|{e[\'via_iface\']}|{str(e.get(\'gw\') or \'\')}")'),
     "fwd-unmarked": ('    fwd = [dict(e, _noroute=_withheld(e["via_iface"])) for e in fwd]\n', ''),
-    "seen-linkonly":('    return (_devexit_state(dev), _dev_ifindex(dev))', '    return (_dev_link_state(dev), _dev_ifindex(dev))'),
-    "no-ifindex":   ('    return (_devexit_state(dev), _dev_ifindex(dev))', '    return (_devexit_state(dev), 0)'),
+    "seen-linkonly":('    s = _devexit_state(dev) if state is None else state', '    s = _dev_link_state(dev) if state is None else state'),
+    "no-ifindex":   ('    return (s, _dev_ifindex(dev) if s != "absent" else 0)', '    return (s, 0)'),
+    "index-unguarded":('    return (s, _dev_ifindex(dev) if s != "absent" else 0)', '    return (s, _dev_ifindex(dev))'),
+    "seed-byhand":  ('    _lst = {e["dev"]: _dev_seen(e["dev"], e["state"]) for e in _dxs if e.get("dev")}',
+                     '    _lst = {e["dev"]: (e["state"], 0) for e in _dxs if e.get("dev")}'),
+    "commit-midpass":('    _ROUTED["pending"] = {d: v for d, v in _lst.items() if d}', '    _ROUTED["judged"] = _ROUTED["pending"] = {d: v for d, v in _lst.items() if d}'),
+    "no-commit":    ('                    _ROUTED["judged"] = _ROUTED["pending"]    # …with what it judged', '                    pass    # …with what it judged'),
     "trig-missing": ('                if (_route_sig != last_route_sig or _iface_churn or _routed_devs_moved()\n',
                      '                if (_route_sig != last_route_sig or _iface_churn\n'),
-    "record-stale": ('    _ROUTED_DEVS.clear()                                      # refilled below', '    pass                                                      # refilled below'),
-    "record-fresh": ('    _ROUTED_DEVS.update(_lst)  ', '    _ROUTED_DEVS.update({d: _dev_seen(d) for d in _lst})  '),
+    "record-stale": ('    _ROUTED["pending"] = {d: v for d, v in _lst.items() if d}', '    _ROUTED["pending"].update({d: v for d, v in _lst.items() if d})'),
+    "record-fresh": ('    _ROUTED["pending"] = {d: v for d, v in _lst.items() if d}', '    _ROUTED["pending"] = {d: _dev_seen(d) for d in _lst if d}'),
     "mech-twice":   ('        for ln in mech.splitlines():                              # ONE rule carries', '        for ln in (run(["nft", "list", "table", "inet", "swg_mech"]).stdout or "").splitlines():   # ONE rule carries'),
     "ips-coupled":  ('                out.setdefault("*", {})["torrent_ips"] = [str(i) for i in ips]', '                out["*"]["torrent_ips"] = [str(i) for i in ips]'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
@@ -366,34 +372,50 @@ def run_checks(src):
     ok(not any(x[:3] == ["ip", "route", "replace"] and "wgx7" in x for x in c),
        "[20] a tunnel the exit judge calls dead is withheld even when the plan lists no devexit for it (one reader)")
 
-    # [21] the trigger re-reads exactly what the last routing pass judged
+    # [21] the trigger re-reads exactly what the last COMPLETED routing pass judged
+    def commit(m):                                    # the main loop's step beside `last_route_sig = _route_sig`
+        m._ROUTED["judged"] = m._ROUTED["pending"]
     st, ix = {"swg_q": "up", "wgx7": "dead", "wgx9": "up"}, {"swg_q": 11, "wgx7": 12, "wgx9": 13}
     P21 = dict(PL, devexit=[{"subnet": "10.9.0.0/24", "dev": "wgx9", "table": 7005, "killswitch": True, "scope": "rule",
                              "egress_ip": "", "gw": ""}])
-    recon({"table": 7005, "via_iface": "wgx9", "subnets": ["10.9.0.0/24"]}, plan=P21, states=st, idx=ix,
-          smart_entries=[{"subnet": "10.9.0.0/24", "category": "x", "action": "exit", "via_iface": "wgx7", "table": 7008}])
+    SM21 = {"entries": [{"subnet": "10.9.0.0/24", "category": "x", "action": "exit", "via_iface": "wgx7", "table": 7008}],
+            "p2p": {"action": "route", "entry": {"table": 7005, "via_iface": "wgx9", "subnets": ["10.9.0.0/24"]}}}
+    CFG = {"interfaces": {"wg0": {"conf": "/nonexistent"}}}
+    recon(SM21["p2p"]["entry"], plan=P21, states=st, idx=ix, smart_entries=SM21["entries"])
     m2 = recon.m
-    ok(set(m2._ROUTED_DEVS) == {"swg_q", "wgx7", "wgx9"},
-       "[21] the pass records every device it judged — cascade/exit leg, a rule's exit, the P2P route's device exit (%s)"
-       % sorted(m2._ROUTED_DEVS))
-    ok(not m2._routed_devs_moved(), "[21] …and nothing reads as moved right after it")
+    ok(set(m2._ROUTED["pending"]) == {"swg_q", "wgx7", "wgx9"} and m2._ROUTED["judged"] == {},
+       "[21] the pass records every device it judged — cascade/exit leg, a rule's exit, the P2P route's device exit — and "
+       "none of it is the trigger's reference until the pass completes (%s)" % sorted(m2._ROUTED["pending"]))
+    commit(m2)
+    ok(not m2._routed_devs_moved(), "[21] …and once committed nothing reads as moved (seed and re-read built alike)")
     st["wgx7"] = "up"
     ok(m2._routed_devs_moved(), "[21] a routing rule's exit whose dead verdict clears moves the trigger (not only the P2P device)")
     st["wgx7"] = "dead"; ix["wgx9"] = 99
     ok(m2._routed_devs_moved(), "[21] …and so does a device created again under its name (rebuilt in place: same state, new index)")
     ix["wgx9"] = 13
     ok(not m2._routed_devs_moved(), "[21] …and it settles once every device reads as judged (never sticky)")
-    m2.reconcile_cascade({"interfaces": {"wg0": {"conf": "/nonexistent"}}}, {}, {"entries": [], "p2p": None})
     st["swg_q"] = "down"
-    ok(not m2._ROUTED_DEVS and not m2._routed_devs_moved(),
+    m2.reconcile_cascade(CFG, P21, SM21)              # judged "down" — then the pass raises before the main loop commits
+    ok(m2._routed_devs_moved(), "[21] a pass that fails after judging leaves the reference as it was: the next sync retries it")
+    commit(m2)
+    ok(not m2._routed_devs_moved(), "[21] …and the pass that completes settles it")
+    m2.reconcile_cascade(CFG, {}, {"entries": [], "p2p": None}); commit(m2)
+    st["swg_q"] = "up"
+    ok(not m2._ROUTED["judged"] and not m2._routed_devs_moved(),
        "[21] a pass that judges nothing leaves nothing to re-read (a device no longer used cannot trigger a pass every sync)")
-    recon(None, plan=PL, states={"swg_q": ["down", "up"]})
-    ok(recon.m._ROUTED_DEVS.get("swg_q", ("",))[0] == "down" and recon.m._routed_devs_moved(),
+    recon(None, plan=PL, states={"swg_q": ["down", "up"]}); commit(recon.m)
+    ok(recon.m._ROUTED["judged"].get("swg_q", ("",))[0] == "down" and recon.m._routed_devs_moved(),
        "[21] the record is what the pass JUDGED: a leg that came up while the pass ran re-runs it on the next sync")
+    m0 = load(src)
+    _lo = os.path.isdir("/sys/class/net/lo")
+    ok(all(m0._dev_seen(n) == ("absent", 0) for n in (None, "", "lo/.", "x" * 16, "..")) and (not _lo or m0._dev_seen("lo")[1] > 0),
+       "[21] a name the link reader refuses is absent with no index — no sysfs path is built from it (lo itself has one)")
     tg = src[src.find("if (_route_sig != last_route_sig"):]
     tg = tg[:tg.find(":\n")]
-    ok("_routed_devs_moved()" in tg and "_route_dev_sig" not in src,
-       "[21] the main loop's trigger asks it, and reads nothing of the reply to do so (the reply walk is gone)")
+    cm = src[src.find("last_route_sig = _route_sig; last_route_t = time.time()"):]
+    ok("_routed_devs_moved()" in tg and "_route_dev_sig" not in src
+       and cm.split("\n")[1].strip().startswith('_ROUTED["judged"] = _ROUTED["pending"]'),
+       "[21] the main loop's trigger asks it (reading nothing of the reply), and commits what the pass judged beside last_route_sig")
 
     # [18] forwarding + loose rp_filter with only a P2P route
     sc = []
