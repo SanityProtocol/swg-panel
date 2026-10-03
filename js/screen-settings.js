@@ -12,6 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
+import { nodeStatusOf } from "./model.js";
 import {
   BASE, ago, ipChoices, seen, url, fmtBytes, panelNow,
 } from "./util.js";
@@ -4327,9 +4328,13 @@ const p2pVal = p => !p || !p.action ? "" : p.action === "dev" ? "dev:" + p.exit_
 const p2pRec = val => val.startsWith("dev:") ? { action: "dev", exit_id: val.slice(4) }
   : val.startsWith("exit:") ? { action: "exit", node: val.slice(5) } : { action: val };
 const p2pNodeName = id => ((Store.nodes || []).find(n => n.id === id) || {}).name || id;
-const p2pTarget = (p, exits, node) => p.action === "dev"
-  ? exitLabel((exits || []).find(x => String(x.id) === String(p.exit_id)) || { id: p.exit_id }, node)   // the exits' own namer
-  : p.action === "exit" ? p2pNodeName(p.node) : "";
+const p2pTarget = (p, exits, node) => {
+  if (p.action === "exit") return p2pNodeName(p.node);
+  if (p.action !== "dev") return "";
+  const x = (exits || []).find(e => String(e.id) === String(p.exit_id));
+  // the exits' own namer — but an exit no longer in the list is named by its id: `exitLabel` of a bare id reads "Custom"
+  return x ? exitLabel(x, node) : String(p.exit_id || "");
+};
 const p2pLabel = (p, exits, node) => !p || !p.action ? "" : (p.action === "dev" || p.action === "exit")
   ? T("via {v1}", { v1: p2pTarget(p, exits, node) }) : (P2P_SHORT()[p.action] || "");
 const P2P_HINT = () => ({
@@ -4675,8 +4680,9 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       // A node that drops P2P other nodes send it: Block, or a route of its own (it routes only its own clients' P2P).
       const tgt = curRec.action === "exit" ? (Store.nodes || []).find(n => n.id === curRec.node) : null;
       const tgtDrops = tgt && ["block", "exit", "dev"].includes(tgt.p2p_eff);
-      const tgtSt = tgt ? (((Store.recon || {}).nodeStatus) || {})[tgt.id] : undefined;   // undefined = not judged yet: say nothing
-      const tgtStale = !tgtDrops && !!tgtSt && tgtSt !== "live";
+      // `nodeStatusOf`: recon's verdict where this browser has judged the node, the SERVER'S where it has not — so a node
+      // that has never reported ("dangling") warns too, and nothing is guessed before the first status pass.
+      const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";
       return html`<div class="field">
         <${Disclosure} title=${T("Filters & abuse")} sumCls="on" open=${p2pOpen} onToggle=${() => setP2pOpen(o => !o)}
           summary=${T("Torrents / P2P: {v1}", { v1: p2pLabel(curRec, exits, node) })}>

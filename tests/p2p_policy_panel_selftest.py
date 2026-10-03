@@ -25,6 +25,8 @@
        is not ready refused with their reason); a node with no mesh link is refused; a node not reporting is a WARNING on
        the chosen target, never a refusal (judged in this browser, before its first status pass too — code review);
        and it says when the policy shown is the automatic default
+  [14] CODE REVIEW #2: "not reporting" is the panel's own verdict (`nodeStatusOf` — the server's "never synced" too), and an
+       exit that is gone from the list is named by its id, never "Custom"
   [9] the card: a route the node runs as block → "the torrent route is unavailable"; the target gone → pruned to block
 
 Run: python3 tests/p2p_policy_panel_selftest.py        (0 = pass)
@@ -64,6 +66,9 @@ PLANTS = {
                       '        ...exits.filter(x => x && x.id).map(x => ({ value: "dev:" + x.id, label: x.label || x.id }))'),
     "spa-stale-refuse": ('        ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : {}) }));',
                          '        ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : nodeStale(n.id) ? { refuse: "x" } : {}) }));'),
+    "spa-inline-stale": ('      const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";',
+                         '      const tgtSt = tgt ? (((Store.recon || {}).nodeStatus) || {})[tgt.id] : undefined;\n      const tgtStale = !tgtDrops && !!tgtSt && tgtSt !== "live";'),
+    "spa-custom-name": ('  return x ? exitLabel(x, node) : String(p.exit_id || "");', '  return exitLabel(x || { id: p.exit_id }, node);'),
     "unpublished":   ('                        "p2p_eff": p2p_policy(c),\n', ""),
 }
 
@@ -226,6 +231,11 @@ def run_checks(src, spa=None):
     ok("!linked.has(n.id) ? { refuse:" in blk, "[13] a node with no mesh link is refused")
     ok("nodeStale" not in blk and "tgtStale" in blk and "refuse: T(\"{v1} is not reporting" not in blk,
        "[13] a node not reporting is a warning on the chosen target, never a refusal")
+    ok('nodeStatusOf(tgt) !== "online"' in blk and "Store.recon" not in blk,
+       "[14] the warning uses nodeStatusOf (the server's verdict where this browser has none), not a copy of the rule")
+    pt = spa[spa.find("const p2pTarget = "):]
+    pt = pt[:pt.find("};")]
+    ok('return x ? exitLabel(x, node) : String(p.exit_id || "")' in pt, "[14] an exit gone from the list is named by its id")
     ok("Chosen automatically" in spa, "[13] the automatic default is said")
     return fails
 

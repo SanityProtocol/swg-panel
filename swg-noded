@@ -2115,6 +2115,24 @@ def _dev_link_state(dev):
     return "down"
 
 
+def _route_dev_sig(cascade, smart):
+    """Every device a route in the plan leaves by — mesh legs above all — with its link state, folded into the reconcile
+    trigger beside `_devexit_sig`. A route through a down or absent device is WITHHELD (`_withheld`), so a device that
+    comes back is a routing change with the plan untouched: without this its route waited for the ROUTING_RECONCILE_EVERY_S
+    sweep, and a torrent route stayed blackholed and reported down for up to a minute (code review #2, 2026-10-03).
+    Two sysfs reads per distinct device per sync, no fork; the entries are walked, the devices are few."""
+    c, s = cascade or {}, smart or {}
+    devs = {str((e or {}).get("via_iface") or "") for e in (c.get("forward") or []) + (c.get("exit") or [])}
+    devs |= {str(e.get("via_iface") or "") for e in (s.get("entries") or []) if isinstance(e, dict) and e.get("action", "exit") == "exit"}
+    devs |= {str(e.get("via_iface") or "") for e in ((s.get("arrivals") or {}).get("entries") or [])
+             if isinstance(e, dict) and e.get("action") == "exit"}
+    pe = _p2p_entry(s.get("p2p")) if (s.get("p2p") or {}).get("action") == "route" else None
+    if pe:
+        devs.add(pe["via_iface"])
+    devs.discard("")
+    return [(d, _dev_link_state(d)) for d in sorted(devs)]
+
+
 def _devexit_sig(cascade):
     """The exit devices' liveness, folded into "has the desired routing changed?" — because now it IS part
     of it. The heavy routing reconcile runs on a plan change, on interface churn, or once every
@@ -4042,7 +4060,8 @@ def _cascade_want_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=(), 
     # covered before device exits reached a NIC.
     for e in fwd:
         T = str(e["table"]); sig.add(f"R|from|{e['subnet']}|{T}")
-        sig.add(f"T|{T}|default|{e['via_iface']}|{str(e.get('gw') or '')}")
+        if not e.get("_noroute"):                      # a route the rebuild withholds (device not up) is not signed: drift
+            sig.add(f"T|{T}|default|{e['via_iface']}|{str(e.get('gw') or '')}")
     # An ARRIVAL exit entry (P3) is reached exactly as a smart one is — fwmark T → table T, `default dev <device>` — and
     # shares its table whenever a local rule names the same exit; a set makes the overlap one token, not two.
     for e in list(smart or []) + list(arr or []):      # smart entry = fwmark T → table T (default via link)
@@ -4055,7 +4074,8 @@ def _cascade_want_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=(), 
     for e in exit_:
         T = str(e["table"]); sig.add(f"R|to|{e['subnet']}|{T}")
         sig.add(f"R|backstop|{e['subnet']}|{e['via_iface']}|{T}")   # the reflection backstop, AHEAD of that rule
-        sig.add(f"T|{T}|{e['subnet']}|{e['via_iface']}|{str(e.get('gw') or '')}")
+        if not e.get("_noroute"):
+            sig.add(f"T|{T}|{e['subnet']}|{e['via_iface']}|{str(e.get('gw') or '')}")
     # ⚠️ ONE UPSTREAM RULE PER LEG THIS NODE CAN SEND OUT OF — `fwd` and `smart` both, because a leg is a
     # leg whichever kind of interface happens to use it, and the whole value of the band is that the
     # upstream may be pointed at a leg the packet's own interface never uses. Not `exit_`: those tables
@@ -8052,12 +8072,20 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # to prevent — the whole band flushed and rebuilt on every pass while, say, a WARP exit's registration had failed
     # (found by the P2P code review, 2026-10-03). Withholding changes nothing in the datapath — the table was empty
     # either way — and the moment the device is up the signature changes and the route goes in.
-    _dxdead = {e["dev"] for e in _dxs if e["state"] == "dead"}
-    _wh, _lst = _dxnogw | _dxdead, {}                         # each device's link state read ONCE per pass (smart entries are per
-    def _withheld(dev):                                       # subnet × category — hundreds on a big node, a handful of devices)
+    # Judged by `_devexit_state` — the reader every other one uses, so "dead" counts for any device the exit judge knows,
+    # not only those this plan lists as device exits — and judged ONCE per pass: seeded from `_dxs`, which already asked,
+    # and memoised for the rest (smart entries are per subnet × category: hundreds on a big node, a handful of devices).
+    _lst = {(e.get("dev") or ""): e["state"] for e in _dxs}
+    def _withheld(dev):
         if dev not in _lst:
-            _lst[dev] = _dev_link_state(dev)
-        return dev in _wh or _lst[dev] != "up"
+            _lst[dev] = _devexit_state(dev)
+        return dev in _dxnogw or _lst[dev] != "up"
+    # ⚠️ …AND EVERY ROUTE KIND, NOT ONLY THE SMART ONES. A whole-interface cascade's `default dev <leg> table T` and an
+    # exit record's `S dev <leg> table T` cannot be installed through a down or absent leg either, and signed they churned
+    # the band exactly as the smart ones did (code review #2, 2026-10-03). Their RULES stay — `from S` / `to S` and the
+    # reflection backstop are what the table is reached by — only the route is withheld, as everywhere else.
+    fwd = [dict(e, _noroute=_withheld(e["via_iface"])) for e in fwd]
+    exit_ = [dict(e, _noroute=_withheld(e["via_iface"])) for e in exit_]
     smart_exit = [dict(e, gw=_dxgw.get(e.get("via_iface"), ""),
                        _noroute=_withheld(e.get("via_iface"))) for e in smart_exit]
     # ARRIVALS (P3, §4.3) — this node's default list for the traffic other nodes cascade out through it. Its exit entries get
@@ -8167,8 +8195,9 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         for e in fwd:                                          # P2 ENTRY: from S → table T (default via link)
             T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
             _gw = str(e.get("gw") or "")                       # "" for every point-to-point link — unchanged
-            run(["ip", "route", "replace", "default"] + (["via", _gw] if _gw else [])
-                + ["dev", dev, "table", T])
+            if not e.get("_noroute"):                          # withheld: its device is not up (see `_withheld`)
+                run(["ip", "route", "replace", "default"] + (["via", _gw] if _gw else [])
+                    + ["dev", dev, "table", T])
             run(["ip", "rule", "add", "from", S, "lookup", T, "priority", T])
             res["changed"] += 1
         for e in _dxguard:                                     # KILL-SWITCH backstop (§5.2 / decision 1)
@@ -8201,7 +8230,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             res["changed"] += 1
         for e in exit_:                                        # EXIT: to S → table T (S via link)
             T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
-            run(["ip", "route", "replace", S, "dev", dev, "table", T])
+            if not e.get("_noroute"):                          # withheld: its leg is not up (see `_withheld`)
+                run(["ip", "route", "replace", S, "dev", dev, "table", T])
             # ⚠️ THE REFLECTION BACKSTOP — added BEFORE the exit rule, at the same priority, so it is looked at first
             # (the kernel keeps same-priority rules in the order they were added, and the live reader below checks it).
             # A packet that arrived OVER this leg addressed to S came from S's own node, which routed it here instead
@@ -9348,13 +9378,17 @@ def _block_activity():
             cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")
             out.setdefault("*", {})["torrent"] = sum(int(o["counter"].get("packets", 0)) for o in cj.get("nftables", [])
                                                      if "counter" in o and o["counter"].get("name") in ("bt_tcp", "bt_utp", "dht", "udptrk", "fan_flag"))
+    with contextlib.suppress(Exception):                          # …and WHO, read on its own: a failed count must not lose the names
+        if _P2P["on"]:
             sj = json.loads(run(["nft", "-j", "list", "set", "inet", P2P_NFT_TABLE, "flag"]).stdout or "{}")
             ips = [e["elem"]["val"] if isinstance(e, dict) else e
                    for o in sj.get("nftables", []) if "set" in o for e in (o["set"].get("elem") or [])]
-            if ips:
-                out["*"]["torrent_ips"] = [str(i) for i in ips]   # the panel maps IP → peer → user for the "who" bubble
+            if ips:                                               # setdefault: the count above may have failed and made no "*"
+                out.setdefault("*", {})["torrent_ips"] = [str(i) for i in ips]   # the panel maps IP → peer → user ("who" bubble)
+    mech = ""                                                     # swg_mech, read ONCE for both uses below (it was read twice a report)
+    with contextlib.suppress(Exception):
+        mech = run(["nft", "list", "table", "inet", "swg_mech"]).stdout or ""
     with contextlib.suppress(Exception):                          # scan: the FLAGGED-scanner set per subnet — only over-rate src IPs
-        mech = run(["nft", "list", "table", "inet", "swg_mech"]).stdout or ""   # land there, so it's the REAL scanners (not every active
         for sub, fset in re.findall(r"ip saddr (" + IP + r")[^\n]*?add @(pscf_\S+)", mech):   # source) + their IPs → per-user attribution
             with contextlib.suppress(Exception):
                 # Bound the read to THIS set's own block. An empty set prints no `elements` line at all, so a
@@ -9368,9 +9402,8 @@ def _block_activity():
                 out.setdefault(sub, {})["scan"] = len(ips)
                 if ips:
                     out[sub]["scan_ips"] = ips                    # source IPs the panel maps → peer → user for the "who" bubble
-    with contextlib.suppress(Exception):                          # mech: packets dropped by the FREE port rules (smtp / quic /
-        mech2 = run(["nft", "list", "table", "inet", "swg_mech"]).stdout or ""   # torrent port-hint). ONE rule carries all of a
-        for ln in mech2.splitlines():                             # subnet's port mechanisms — the set is deliberately collapsed
+    with contextlib.suppress(Exception):                          # mech: packets dropped by the FREE port rules (smtp / quic).
+        for ln in mech.splitlines():                              # ONE rule carries all of a subnet's port mechanisms — the set is deliberately collapsed
             if "@mps_" not in ln or "drop" not in ln:             # into one lookup, so this is a combined "the port rules fired
                 continue                                          # N times" rather than a per-mechanism split.
             sub = re.search(r"ip saddr (" + IP + r")", ln)
@@ -20347,6 +20380,7 @@ def main():
                 _route_sig = json.dumps([reply.get("desired_ifaces"), reply.get("cascade"),
                                          reply.get("smart"), _def_egress,
                                          _devexit_sig(reply.get("cascade")),
+                                         _route_dev_sig(reply.get("cascade"), reply.get("smart")),   # a leg back up re-installs at once
                                          _NET["sig"], sorted(_NET["refused"]),
                                          reply.get("lan_share"), _SHARE["sig"]], sort_keys=True, default=str)
                 _iface_churn = bool(_awg_loaded or cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]

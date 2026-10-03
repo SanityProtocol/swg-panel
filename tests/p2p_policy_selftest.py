@@ -29,6 +29,11 @@
   [18] CODE REVIEW: a node whose only routing is a P2P route still gets forwarding + loose rp_filter on the route's device
   [19] CODE REVIEW: the route state is judged by a `default dev/via` line (a kill-switch table's `prohibit default` is not
        a way out), is cleared each pass, and every status report corrects "up" by the device itself
+  [20] CODE REVIEW #2: whole-interface cascades (fwd) and exit records (exit_) through a down leg are withheld too —
+       their rules stay; and a device is judged by `_devexit_state` (a dead tunnel the plan did not list included)
+  [21] CODE REVIEW #2: the routed devices' link state is in the reconcile trigger (`_route_dev_sig`), so a leg back up
+       re-installs on the next sync instead of the 60 s sweep
+  [22] CODE REVIEW #2: swg_mech is read once per report, and the flagged IPs survive a failed counter read
   [10] a node with nothing to do pays no subprocess per sync once it has looked; a new strict subnet still builds
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
@@ -64,12 +69,19 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "fib-perpkt":   ('    L += ["    " + h for h in held]\n    # Traffic TO the node', '    L.append("    fib daddr type local return")\n    L += ["    " + h for h in held]\n    # Traffic TO the node'),
     "rt-prohibit":  ('            _P2P["route"] = "up" if any(ln.split()[:1] == ["default"] for ln in _rt.splitlines()) else "down"',
                      '            _P2P["route"] = "up" if "default" in _rt else "down"'),
-    "withhold-down":('        return dev in _wh or _lst[dev] != "up"', '        return dev in _wh'),
+    "withhold-down":('        return dev in _dxnogw or _lst[dev] != "up"', '        return dev in _dxnogw'),
     "rp-gate":      ('        if fwd or smart_e or exit_ or arr_exit:', '        if fwd or smart_e or exit_:'),
     "status-stale": ('        if _r == "up" and _devexit_state(', '        if False and _devexit_state('),
     "route-stale":  ('        _P2P.update(route="", route_dev="")', '        pass'),
     "read-table":   ('            cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")',
                      '            cj = json.loads(run(["nft", "-j", "list", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")'),
+    "fwd-signed":   ('        if not e.get("_noroute"):                      # a route the rebuild withholds (device not up) is not signed: drift\n            sig.add(f"T|{T}|default|{e[\'via_iface\']}|{str(e.get(\'gw\') or \'\')}")',
+                     '        sig.add(f"T|{T}|default|{e[\'via_iface\']}|{str(e.get(\'gw\') or \'\')}")'),
+    "fwd-unmarked": ('    fwd = [dict(e, _noroute=_withheld(e["via_iface"])) for e in fwd]\n', ''),
+    "link-reader":  ('            _lst[dev] = _devexit_state(dev)', '            _lst[dev] = _dev_link_state(dev)'),
+    "trig-missing": ('                                         _route_dev_sig(reply.get("cascade"), reply.get("smart")),   # a leg back up re-installs at once\n', ''),
+    "mech-twice":   ('        for ln in mech.splitlines():                              # ONE rule carries', '        for ln in (run(["nft", "list", "table", "inet", "swg_mech"]).stdout or "").splitlines():   # ONE rule carries'),
+    "ips-coupled":  ('                out.setdefault("*", {})["torrent_ips"] = [str(i) for i in ips]', '                out["*"]["torrent_ips"] = [str(i) for i in ips]'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
 }
 
@@ -223,6 +235,17 @@ def run_checks(src):
     act = m._block_activity()
     ok(act.get("*", {}).get("torrent") == 7 and act["*"].get("torrent_ips") == ["10.68.0.7"],
        "[8] activity = sig + fan under *, flagged IPs — by two TARGETED reads, never the whole table (meter + flow sets)")
+    # [22] one swg_mech read; names survive a failed count
+    seen = []
+    def fake2(args, input_text=None, timeout=20):
+        seen.append(list(args))
+        if args[:5] == ["nft", "-j", "list", "counters", "table"]:
+            return types.SimpleNamespace(returncode=0, stdout="{not json", stderr="")
+        return fake(args, input_text, timeout)
+    m.run = fake2
+    act2 = m._block_activity()
+    ok(sum(1 for a in seen if a == ["nft", "list", "table", "inet", "swg_mech"]) == 1, "[22] swg_mech is read once per report")
+    ok((act2.get("*") or {}).get("torrent_ips") == ["10.68.0.7"], "[22] a failed counter read does not lose the flagged IPs")
 
     # [11] keys the host's older nft can read
     import re as _re
@@ -256,10 +279,11 @@ def run_checks(src):
        "[13] fwmark T|BIT lookup T at 6880 (%s)" % b.rules)
 
     # [14] the route's table, through the real reconcile_cascade with everything around it stubbed
-    def recon(entry, dead=False, link="up", smart_entries=(), sysctls=None):
+    def recon(entry, dead=False, link="up", smart_entries=(), sysctls=None, plan=None, states=None):
         m = load(src)
         calls = []
         m._dev_link_state = lambda dev: link if dev in ("wgx9", "swg_q") else "up"
+        _st = dict(states or {})
         if sysctls is not None:
             m._sysctl_ensure = lambda key, val, ok=None: sysctls.append((key, val)) or val
         def rr(a, input_text=None, timeout=20):
@@ -267,7 +291,7 @@ def run_checks(src):
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
         m.run = rr
         m.GEO_DIR = tempfile.mkdtemp()
-        m._devexit_state = lambda dev: "dead" if dead else "up"
+        m._devexit_state = lambda dev: _st[dev] if dev in _st else (("dead" if dead else link) if dev in ("wgx9", "swg_q") else "up")
         m._dev_is_ether = lambda dev: False
         m._ensure_smart_nft = lambda *a, **k: {}
         for fn in ("_ensure_fwd_iptables", "_ensure_sni_router", "_ensure_smart_xtstring", "reconcile_catk_chain", "_ensure_smart_dnsmasq",
@@ -277,8 +301,9 @@ def run_checks(src):
         m._cascade_local_routes = lambda cfg, _proc=None: []
         cfg = {"interfaces": {"wg0": {"conf": "/nonexistent"}}}
         m._iface_subnet = lambda c, n: {"wg0": "10.9.0.0/24"}.get(n, "")
-        plan = {"devexit": [{"subnet": "10.9.0.0/24", "dev": "wgx9", "table": 7005, "killswitch": True, "scope": "rule",
-                             "egress_ip": "", "gw": ""}]} if entry and entry["via_iface"] == "wgx9" else {}
+        if plan is None:
+            plan = {"devexit": [{"subnet": "10.9.0.0/24", "dev": "wgx9", "table": 7005, "killswitch": True, "scope": "rule",
+                                 "egress_ip": "", "gw": ""}]} if entry and entry["via_iface"] == "wgx9" else {}
         m.reconcile_cascade(cfg, plan, {"entries": list(smart_entries), "p2p": {"action": "route", "entry": entry} if entry else None})
         return calls
     for via in ("wgx9", "swg_q"):
@@ -302,6 +327,45 @@ def run_checks(src):
            "[17] a routing rule's smart exit via a %s leg is withheld too (the band no longer churns)" % st)
     c = recon(None, link="up", smart_entries=[{"subnet": "10.9.0.0/24", "category": "x", "action": "exit", "via_iface": "swg_q", "table": 7004}])
     ok(["ip", "route", "replace", "default", "dev", "swg_q", "table", "7004"] in c, "[17] …and installed again the moment it is up")
+
+    # [20] fwd / exit_ through a down leg: route withheld, rules kept
+    PL = {"forward": [{"subnet": "10.9.0.0/24", "via_iface": "swg_q", "table": 7006}],
+          "exit": [{"subnet": "10.40.0.0/24", "via_iface": "swg_q", "table": 7007, "egress_ip": "", "wan_iface": ""}]}
+    for st in ("down", "absent"):
+        c = recon(None, link=st, plan=PL)
+        ok(not any(x[:3] == ["ip", "route", "replace"] and "swg_q" in x for x in c),
+           "[20] fwd + exit_ via a %s leg: no route is attempted" % st)
+        ok(["ip", "rule", "add", "from", "10.9.0.0/24", "lookup", "7006", "priority", "7006"] in c
+           and ["ip", "rule", "add", "to", "10.40.0.0/24", "lookup", "7007", "priority", "7007"] in c,
+           "[20] …and their rules stay (from S / to S)")
+    c = recon(None, link="up", plan=PL)
+    ok(["ip", "route", "replace", "default", "dev", "swg_q", "table", "7006"] in c
+       and ["ip", "route", "replace", "10.40.0.0/24", "dev", "swg_q", "table", "7007"] in c, "[20] …and both installed once the leg is up")
+    m0 = load(src)
+    s1 = m0._cascade_want_sig([dict(PL["forward"][0], _noroute=True)], [dict(PL["exit"][0], _noroute=True)])
+    s2 = m0._cascade_want_sig(PL["forward"], PL["exit"])
+    ok(not any(x.startswith("T|7006|default") or x.startswith("T|7007|10.40") for x in s1)
+       and any(x.startswith("T|7006|default") for x in s2) and any(x.startswith("T|7007|10.40") for x in s2),
+       "[20] the drift signature leaves a withheld fwd/exit route out (and signs it once it is not)")
+    c = recon(None, link="up", states={"wgx7": "dead"},
+              smart_entries=[{"subnet": "10.9.0.0/24", "category": "x", "action": "exit", "via_iface": "wgx7", "table": 7008}])
+    ok(not any(x[:3] == ["ip", "route", "replace"] and "wgx7" in x for x in c),
+       "[20] a tunnel the exit judge calls dead is withheld even when the plan lists no devexit for it (one reader)")
+
+    # [21] the reconcile trigger follows the routed devices
+    m1 = load(src)
+    links = {"swg_a": "up", "swg_b": "up", "wgx3": "up", "swg_c": "up"}
+    m1._dev_link_state = lambda d: links.get(d, "absent")
+    cas = {"forward": [{"via_iface": "swg_a"}], "exit": [{"via_iface": "swg_b"}]}
+    sm = {"entries": [{"action": "exit", "via_iface": "swg_c"}, {"action": "block", "via_iface": "zz"}],
+          "p2p": {"action": "route", "entry": {"table": 7001, "via_iface": "wgx3", "subnets": []}}}
+    g1 = m1._route_dev_sig(cas, sm)
+    ok([d for d, _ in g1] == ["swg_a", "swg_b", "swg_c", "wgx3"], "[21] every routed device is in the trigger (%s)" % g1)
+    links["swg_b"] = "down"
+    ok(m1._route_dev_sig(cas, sm) != g1, "[21] …and a leg going down or back up moves it")
+    rs = src[src.find("_route_sig = json.dumps(["):]
+    rs = rs[:rs.find("sort_keys=True")]
+    ok("_route_dev_sig(reply.get(\"cascade\"), reply.get(\"smart\"))" in rs, "[21] the main loop's reconcile trigger includes it")
 
     # [18] forwarding + loose rp_filter with only a P2P route
     sc = []
