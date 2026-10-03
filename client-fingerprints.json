@@ -2,14 +2,14 @@
  "clients": {
   "csqttapp": {
    "amurcanov/csqtt@main:app/src/main/java/com/csqtt/client/SettingsStore.kt": {
-    "date": "2026-09-02T03:12:00Z",
-    "sha": "446293aa2e873ac5323ef6fd2316d9b81d966c11",
-    "url": "https://github.com/amurcanov/csqtt/commit/446293aa2e873ac5323ef6fd2316d9b81d966c11"
+    "date": "2026-10-03T01:20:28Z",
+    "sha": "71712b07dbabe16fa43f5a248dc69e1ab9f3a270",
+    "url": "https://github.com/amurcanov/csqtt/commit/71712b07dbabe16fa43f5a248dc69e1ab9f3a270"
    },
    "amurcanov/csqtt@main:app/src/main/java/com/csqtt/client/ui/utils/UiUtils.kt": {
-    "date": "2026-08-16T13:36:00Z",
-    "sha": "f56f0ed360de5aeafc29151ba46fd6f1e7e074cf",
-    "url": "https://github.com/amurcanov/csqtt/commit/f56f0ed360de5aeafc29151ba46fd6f1e7e074cf"
+    "date": "2026-10-03T01:20:28Z",
+    "sha": "71712b07dbabe16fa43f5a248dc69e1ab9f3a270",
+    "url": "https://github.com/amurcanov/csqtt/commit/71712b07dbabe16fa43f5a248dc69e1ab9f3a270"
    }
   },
   "freeturn": {
@@ -115,6 +115,6 @@
    }
   }
  },
- "generated_at": 1790936908,
+ "generated_at": 1791021016,
  "schema": 1
 }
