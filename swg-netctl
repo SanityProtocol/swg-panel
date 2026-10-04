@@ -1620,6 +1620,12 @@ def _log_dir_usage(d):
     return used, oldest
 
 
+def log_ns_ok():
+    """True where systemd ships journald's namespace template (without it no unit could carry LogNamespace=)."""
+    return any(os.path.exists(os.path.join(d, "systemd-journald@.service"))
+               for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"))
+
+
 def _log_ns_dir():
     try:
         with open("/etc/machine-id") as f:
@@ -1640,8 +1646,7 @@ def log_budget():
     with contextlib.suppress(OSError):
         with open(LOG_NS_CONF) as f:
             have = f.read()
-    if not any(os.path.exists(os.path.join(d, "systemd-journald@.service"))
-               for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")):
+    if not log_ns_ok():
         err = "this system's journald has no namespaces"
     elif have != want:
         try:
