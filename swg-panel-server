@@ -7509,10 +7509,13 @@ def live_absorb(body, now=None):
                     and isinstance(ln[1], str) and (LIVE_SRC_RE.match(ln[1]) or ln[1] in ("!skip", "!gap"))
                     and isinstance(ln[2], int) and 0 <= ln[2] <= 7 and isinstance(ln[3], str)):
                 good.append([ln[0], ln[1], ln[2], ln[3][:LIVE_TEXT_MAX]])
-        live_add(rec, nid, good)
         cur = body.get("cur")
-        if isinstance(cur, dict) and len(json.dumps(cur)) <= LIVE_CUR_MAX:
+        cur_ok = isinstance(cur, dict) and len(json.dumps(cur)) <= LIVE_CUR_MAX   # before the lines: a raise adds none
+        live_add(rec, nid, good)
+        if cur_ok:
             rec["cur"][nid] = cur
+        elif cur is not None:                              # too big to keep: a restart starts afresh rather than from
+            rec["cur"].pop(nid, None)                      # a stale point (a repeat or a gap no marker would show)
         st = body.get("st")
         if isinstance(st, dict):
             rec["st"][nid] = {k: v for k, v in list(st.items())[:64]
@@ -31071,21 +31074,19 @@ class Handler(BaseHTTPRequestHandler):
         if n is None:
             return
         raw = self.rfile.read(n) if n else b""
-        try:
+        try:                                               # remote input, before any key: never a dropped connection
             if (self.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
                 d = zlib.decompressobj(16 + zlib.MAX_WBITS)
                 raw = d.decompress(raw, LIVE_POST_RAW_MAX)
                 if d.unconsumed_tail:
                     return self._send(413, {"ok": False, "error": "request body too large", "code": "too_large"})
-            body = json.loads(raw or b"{}")
+            body = json.loads(raw or b"{}")              # RecursionError (deep nesting) included
             if not isinstance(body, dict):
                 raise ValueError
-        except (ValueError, zlib.error):
-            return self._send(400, {"ok": False, "error": "invalid body", "code": "bad_request"})
-        try:
-            return self._send(*live_absorb(body))
-        except Exception:                                  # remote input: never a dropped connection
-            return self._send(400, {"ok": False, "error": "invalid body", "code": "bad_request"})
+            code, obj = live_absorb(body)
+        except Exception:
+            code, obj = 400, {"ok": False, "error": "invalid body", "code": "bad_request"}
+        return self._send(code, obj)
 
     def _node_proc_status(self):
         # An installer/converter (its bearer token) flags that the node is about to go down for a

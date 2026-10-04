@@ -8071,23 +8071,25 @@ def _live_plan(srcs, ifaces):
 
 
 def _live_post(rq, lines, cur, st):
-    """→ "ok", "gone" (the panel no longer has this request: stop), "toobig" (413: this batch will never fit) or "fail"
-    (try again at the next interval). `cur` None: the panel keeps the resume point it has (a backlog's earlier part)."""
+    """→ "ok", "gone" (the panel no longer has this request: stop) or "fail" (try again at the next interval). `cur`
+    None: the panel keeps the resume point it has (a backlog's earlier part)."""
     body = {"id": rq["id"], "key": rq["key"], "now": round(time.time(), 3), "lines": lines}
     if cur is not None:
         body["cur"] = cur
     if st is not None:
         body["st"] = st
     code, _r = post_json(rq["url"], rq["panel"]["token"], body, rq["panel"], timeout=15, gz=True)
-    return "ok" if code == 200 else "gone" if code in (403, 404, 410) else "toobig" if code == 413 else "fail"
+    return "ok" if code == 200 else "gone" if code in (403, 404, 410) else "fail"
 
 
 def _live_chunk(pend):
     """How many of the pending lines one post carries: LIVE_POST_BYTES of JSON at most (gzip never makes it bigger than
-    that by much, so it stays under the panel's 1 MiB on the wire and 4 MiB unpacked), and always at least one."""
+    that by much, so it stays under the panel's 1 MiB on the wire and 4 MiB unpacked), and always at least one. Sized
+    from the text, not serialized: a character outside ASCII is escaped as up to 6 bytes."""
     n, size = 0, 0
     for ln in pend:
-        size += len(json.dumps(ln))
+        t = ln[3]
+        size += 48 + len(ln[1]) + (len(t) if t.isascii() else 6 * len(t))
         if n and size > LIVE_POST_BYTES:
             break
         n += 1
@@ -8125,8 +8127,6 @@ def _live_run(rq, ifaces):
                     pend, said = pend[n:], True
                     if pend:
                         last = 0.0                            # a backlog: its next part at once
-                elif r == "toobig" and pend:                  # never retried as it is: counted, and the rest goes on
-                    pend = [[pend[n - 1][0], "!skip", 4, str(_live_skipped(pend[:n]))]] + pend[n:]
     except Exception as e:
         log(LOG_WARNING, "logs: the live reader for %s stopped: %s", rq["id"], e)
     finally:
