@@ -4567,5 +4567,7 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
   .lb-name{grid-area:name}.lb-state{grid-area:state;text-align:right}
   .lb-mb{grid-area:mb}.lb-used{grid-area:used;min-width:120px}
   .lb-holds{grid-area:holds;font-size:12px;color:var(--dim)}
-  .lb-holds:empty{display:none}
+  .lb-holds.none{display:none}
 }
+.lb-holdsl{display:none}
+@media (max-width:640px){.lb-holdsl{display:inline}}

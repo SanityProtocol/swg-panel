@@ -3131,7 +3131,7 @@ const sectionLabel = k => ({
         ${section === "logs" ? html`<${LogBudgetTable} onMb=${(id, v) => id === "" ? setLogMbP(v) : setNV(id, { log_mb: v })}
           rows=${[{ id: "", name: T("Panel"), mb: logMbP, saved: +(ps.log_mb_panel || 100), st: ps.log_panel || null,
                     docker: !!(ps.log_panel || {}).docker, locked: (ps.log_panel || {}).err === "nixos" },
-                  ...(Store.nodes || []).map(n => ({ id: n.id, name: n.name, mb: (nodeEdits[n.id] || nFields(n)).log_mb,
+                  ...[...(Store.nodes || [])].sort((a, b) => Store.byNode(a.id, b.id)).map(n => ({ id: n.id, name: n.name, mb: (nodeEdits[n.id] || nFields(n)).log_mb,
                     saved: +(n.log_mb || 100), st: n.log || null, docker: n.kind === "docker", stale: nodeStale(n.id) }))]}/>` : null}
         ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
@@ -3523,7 +3523,7 @@ function LogBudgetTable({ rows, onMb }) {
         <span role="columnheader">${T("Used")}</span><span role="columnheader">${T("Holds")}</span><span role="columnheader">${T("State")}</span></div>
       ${pageSlice(shown, pg).map(r => {
         const s = logBudgetState(r), st = r.st || {}, bad = logMbBad(r.mb), holds = logHolds(r.st);
-        const pct = st.mb && st.used_mb != null ? Math.min(100, Math.round(100 * st.used_mb / st.mb)) : null;
+        const pct = st.mb && st.used_mb != null && !st.err && !r.locked ? Math.min(100, Math.round(100 * st.used_mb / st.mb)) : null;
         return html`<div class="lb-row" role="row" key=${r.id || "_panel"}>
           <span class="lb-name" role="cell">${r.name}${r.docker ? html`<span class="lb-kind">docker</span>` : null}</span>
           <span class="lb-mb" role="cell"><input type="text" inputmode="numeric" class=${bad ? "bad" : ""} value=${r.mb} disabled=${r.locked}
@@ -3532,7 +3532,8 @@ function LogBudgetTable({ rows, onMb }) {
           <span class="lb-used" role="cell">${pct == null ? html`<span class="faint">—</span>` : html`
             <span class="lb-usedn">${T("{v1} MB", { v1: st.used_mb })}</span>
             <span class=${"lb-meter" + (pct >= 85 ? " full" : "")} aria-hidden="true"><i style=${"width:" + pct + "%"}></i></span>`}</span>
-          <span class="lb-holds" role="cell" title=${holds ? "" : T("Shown once the budget is full")}>${holds || html`<span class="faint">—</span>`}</span>
+          <span class=${"lb-holds" + (holds ? "" : " none")} role="cell" title=${holds ? "" : T("Shown once the budget is full")}>${holds
+            ? html`<span class="lb-holdsl">${T("Holds")} </span>${holds}` : html`<span class="faint">—</span>`}</span>
           <span class=${"lb-state t-" + s.tone} role="cell" title=${s.title}>${s.text}</span>
         </div>`; })}
       ${!shown.length ? html`<div class="hint">${T("No server matches “{q}”.", { q })}</div>` : null}

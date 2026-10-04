@@ -1685,9 +1685,9 @@ export const STR = {
   "Not reporting — it applies the budget when it is back.": "Не на связи — применит лимит, когда вернётся.",
   "Waiting": "Ожидание",
   "The panel's root helper reports within a few seconds of starting.": "Root-помощник панели сообщает данные через несколько секунд после запуска.",
-  "Update the node": "Обновите узел",
+  "Update the node": "Обновите ноду",
   "This node's build is too old to keep a log budget. Update it to apply one.":
-    "Сборка узла слишком старая для лимита логов. Обновите узел, чтобы он применился.",
+    "Сборка ноды слишком старая для лимита логов. Обновите ноду, чтобы он применился.",
   "Not supported": "Не поддерживается",
   "Not reporting — the figures are from its last report.": "Не на связи — цифры из последнего отчёта.",
   "Pending": "Применяется",
@@ -1697,7 +1697,7 @@ export const STR = {
   "Kernel messages (the P2P guard, network devices) and WireGuard interfaces' own start and stop lines stay in the system journal, outside the budget.":
     "Сообщения ядра (защита от P2P, сетевые устройства) и строки запуска и остановки интерфейсов WireGuard остаются в системном журнале, вне лимита.",
   "In docker the budget holds swg's own log files and the containers a node launches; each container's own docker log (10 MB × 3) is not counted.":
-    "В docker лимит распространяется на файлы логов swg и на контейнеры, которые запускает узел; собственный docker-лог каждого контейнера (10 МБ × 3) не учитывается.",
+    "В docker лимит распространяется на файлы логов swg и на контейнеры, которые запускает нода; собственный docker-лог каждого контейнера (10 МБ × 3) не учитывается.",
   "log budget → {v1} MB": "лимит логов → {v1} МБ",
   "Panel log budget → {v1} MB": "Лимит логов панели → {v1} МБ",
   "{v1}: the log budget must be at least {v2} MB": "{v1}: лимит логов должен быть не меньше {v2} МБ",
