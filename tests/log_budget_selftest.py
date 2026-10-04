@@ -41,6 +41,7 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      noretry      netctl leaves the new size file in place when journald does not restart (never retried, reads as applied)
      noderetry    swg-noded leaves the new size file in place when journald does not restart (a restart reads it as applied)
      pid1last     the verify reader takes systemd's own line as the reason
+     pid1all      the verify reader drops every systemd line, the exec failure's reason among them
      uninstkeep   uninstall leaves the journal on disk
 """
 import importlib.machinery, importlib.util, io, json, os, re, shutil, socket, stat, subprocess, sys, tempfile, threading
@@ -83,6 +84,8 @@ PLANTS = {   # (program, anchor, replacement)
                  '''    r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=20)\n    rc, out = r.returncode, ""\n    if rc != 0:'''),
     "noretry": ("netctl", '''            if have is None:\n                os.remove(LOG_NS_CONF)\n            else:\n                with open(LOG_NS_CONF + ".tmp", "w") as f:\n                    f.write(have)\n                os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)\n''', "            pass\n"),
     "noderetry": ("noded", '''                    if not _LOG_BUDGET["conf"]:           # it as applied while journald runs the old size\n                        os.remove(LOG_NS_CONF)\n                    else:\n                        with open(LOG_NS_CONF + ".tmp", "w") as f:\n                            f.write(_LOG_BUDGET["conf"])\n                        os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)\n''', "                    pass\n"),
+    "pid1all": ("noded", '''JOURNAL_SKIP_PID1 = ("grep -vE '\\\\.service: (Failed with result|Main process exited|Scheduled restart job|Deactivated|Consumed)"''',
+                '''JOURNAL_SKIP_PID1 = ("grep -vE '\\\\.service: (.*)"'''),
     "pid1last": ("noded", '''-n 8 --no-pager -o cat 2>/dev/null | " + JOURNAL_SKIP_PID1\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")''',
                  '''-n 8 --no-pager -o cat 2>/dev/null | "\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")'''),
     "uninstkeep": ("uninstall", '''  [ -n "$mid" ] && rmrf "/var/log/journal/$mid.$ns" "/run/log/journal/$mid.$ns"\n''', ""),
@@ -376,7 +379,13 @@ open(sl, "w").write("x" * 500); open(sl + ".1", "w").write("old")
 N.DNSMASQ_LOG = os.path.join(TMP, "dnsmasq.log")
 N._cap_serverlogs()
 check("[5] at Off the supervised logs are emptied and their .1 removed", os.path.getsize(sl) == 0 and not os.path.exists(sl + ".1"))
-N.log_set(N.LOG_INFO); N.NODE_KIND = "baremetal"
+N.log_set(N.LOG_INFO)
+N.LOG_DIR_DOCKER = os.path.join(TMP, "dlog2")
+N._LOG_BUDGET["mb"] = 100; N._log_budget()
+N._LOG_BUDGET["mb"] = 200; N._log_budget()
+check("[5] a docker node reports a new budget in the pass that applies it", (N._LOG_BUDGET["status"] or {}).get("mb") == 200,
+      N._LOG_BUDGET["status"])
+N.log_file(None, 0); N.NODE_KIND = "baremetal"
 check("[5] dnsmasq gets a log file in docker only", 'if NODE_KIND == "docker":' in SRC["noded"]
       and 'conf.append("log-facility=" + DNSMASQ_LOG)' in SRC["noded"])
 
@@ -470,6 +479,11 @@ check("[7] WDTT verify reads the swg-node journal merged with the main one",
 check("[7] …and gives the unit's own reason though systemd's line sorts after it", "cannot assign" in r, r)
 r = N._turn_verify("vk-turn-proxy-x")
 check("[7] turn verify too", "cannot assign" in r, r)
+open(os.path.join(FB, "journalctl"), "w").write(
+    "#!/bin/sh\necho 'swg-wdtt-x.service: Failed at step EXEC spawning /opt/x/server: Exec format error'\n"
+    "echo \"swg-wdtt-x.service: Failed with result 'exit-code'.\"\necho 'Failed to start swg-wdtt-x.service - WDTT.'\n")
+r = N._wdtt_verify("swg-wdtt-x")
+check("[7] an exec failure keeps systemd's line that says why (it is the only reason there is)", "Exec format error" in r, r)
 
 # ── [8] uninstall ────────────────────────────────────────────────────────────────────────────────────────────────────
 print("[8] uninstall")
@@ -518,6 +532,9 @@ check("[9] update.sh writes the panel's drop-ins before it restarts the panel",
 nb = U.index("# ───────────────────────── bare-metal node daemon")
 check("[9] …and swg-noded's before it restarts the node",
       nb < U.index("ensure_log_ns swg-node", nb) < U.index("if run systemctl restart swg-noded", nb))
+check("[9] …each only inside an upgrade that goes ahead (a declined one keeps the old build, which never sizes the journal)",
+      U.index('if should_update "bare-metal swg-panel"', pb) < U.index("ensure_log_ns swg-panel", pb)
+      and U.index('if should_update "bare-metal swg-node"', nb) < U.index("ensure_log_ns swg-node", nb))
 
 shutil.rmtree(TMP, ignore_errors=True)
 print()
