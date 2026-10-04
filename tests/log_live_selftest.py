@@ -43,6 +43,13 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
      syncloop     the reader runs in the sync loop          pumpdrop     docker: swg-sni's lines miss noded's file
      nojournal    update.sh never gives the panel its journal
      noselect     the panel's copy of the reader misses a module it uses (it ran only in swg-noded's copy)
+     pendcount    lines dropped while the panel is away lose an earlier marker's count
+     firstspin    a failing first post is retried every half second, not every interval
+     nochunk      a backlog goes in one post, over the panel's limits
+     panelforever the panel's own reader runs on with no viewer and no node syncing
+     strkey       a key that is not ASCII crashes the log POST
+     deepjson     a deeply nested body drops the connection (RecursionError) instead of a 400
+     curstale     a resume point too big to keep leaves the stale one in place
 """
 import collections, gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile
 import threading, time, urllib.error, urllib.request
@@ -74,8 +81,8 @@ PLANTS = {   # (program, anchor, replacement)
                  '''            if True:\n                rec["sent"].setdefault(nid, now)'''),
     "nodetoken": ("panel", '''        n = self._body_len(cap=LIVE_POST_MAX)\n        if n is None:\n            return\n''',
                   '''        n = self._body_len(cap=LIVE_POST_MAX)\n        if n is None:\n            return\n        self._node_token()\n'''),
-    "nokey": ("panel", '''        if nid == LIVE_PANEL or nid not in rec["nodeset"] or not hmac.compare_digest(key, _live_key(rec, nid)):''',
-              '''        if nid == LIVE_PANEL or nid not in rec["nodeset"]:'''),
+    "nokey": ("panel", '''        if (nid == LIVE_PANEL or nid not in rec["nodeset"]\n                or not hmac.compare_digest(key.encode("utf-8", "replace"), _live_key(rec, nid).encode())):''',
+              '''        if (nid == LIVE_PANEL or nid not in rec["nodeset"]):'''),
     "bomb": ("panel", '''                raw = d.decompress(raw, LIVE_POST_RAW_MAX)''', '''                raw = d.decompress(raw)'''),
     "nolease": ("panel", '''        rec["lease"] = now + LIVE_LEASE\n        buf, seq = rec["buf"], rec["seq"]''',
                 '''        buf, seq = rec["buf"], rec["seq"]'''),
@@ -101,8 +108,8 @@ PLANTS = {   # (program, anchor, replacement)
     "sniunit": ("block", '''        return "sni" if live_text(e.get("MESSAGE")).startswith("swg-sni:") else "noded"''', '''        return "noded"'''),
     "nostop": ("noded", '''        for rid in [k for k in _LIVE if k not in want]:\n            _LIVE.pop(rid)["stop"].set()''',
                '''        for rid in []:\n            _LIVE.pop(rid)["stop"].set()'''),
-    "nofirst": ("noded", '''            if (not said and now - t0 >= LIVE_BACKFILL_S) or (pend and now - last >= rq["iv"]):''',
-                '''            if pend and now - last >= rq["iv"]:'''),
+    "nofirst": ("noded", '''            if (pend or not said) and now - t0 >= LIVE_BACKFILL_S and now - last >= rq["iv"]:''',
+                '''            if pend and now - t0 >= LIVE_BACKFILL_S and now - last >= rq["iv"]:'''),
     "offread": ("noded", '''            st[s] = "off" if off else "ok"\n            units.add("swg-noded.service")''',
                 '''            st[s] = "ok"\n            units.add("swg-noded.service")'''),
     "dockeriface": ("noded", '''            elif kind in ("iface", "kernel", "p2p"):\n                st[s] = "unavailable"''',
@@ -111,6 +118,17 @@ PLANTS = {   # (program, anchor, replacement)
                                  daemon=True, name="swg-logs-" + rid).start()''',
                  '''                _live_run(rq, list((node_cfg.get("interfaces") or {}).keys()))'''),
     "pumpdrop": ("noded", '''            _log_write(prio or LOG_INFO, ln[2:] if prio else ln)''', '''            pass'''),
+    "pendcount": ("noded", '''                pend = [[pend[cut - 1][0], "!skip", 4, str(_live_skipped(pend[:cut]))]] + pend[cut:]''',
+                  '''                pend = [[pend[cut - 1][0], "!skip", 4, str(cut - 1)]] + pend[cut:]'''),
+    "firstspin": ("noded", '''            if (pend or not said) and now - t0 >= LIVE_BACKFILL_S and now - last >= rq["iv"]:''',
+                  '''            if (not said and now - t0 >= LIVE_BACKFILL_S) or (pend and now - last >= rq["iv"]):'''),
+    "nochunk": ("noded", '''        if n and size > LIVE_POST_BYTES:\n            break''', '''        if False:\n            break'''),
+    "panelforever": ("panel", '''        while not rec["stop"].is_set() and time.time() <= rec["lease"]:''', '''        while not rec["stop"].is_set():'''),
+    "strkey": ("panel", '''not hmac.compare_digest(key.encode("utf-8", "replace"), _live_key(rec, nid).encode())''',
+               '''not hmac.compare_digest(key, _live_key(rec, nid))'''),
+    "deepjson": ("panel", '''        except Exception:\n            code, obj = 400, {"ok": False, "error": "invalid body", "code": "bad_request"}''',
+                 '''        except (ValueError, zlib.error):\n            code, obj = 400, {"ok": False, "error": "invalid body", "code": "bad_request"}'''),
+    "curstale": ("panel", '''        elif cur is not None:''', '''        elif False:'''),
     "noselect": ("panel", "import secrets\nimport select\nimport shutil\n", "import secrets\nimport shutil\n"),
     "nojournal": ("update", '''    ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
     ensure_panel_journal
@@ -284,6 +302,11 @@ try:
         check("[2] a gzip bomb (6 MiB unpacked) is refused", c == 413, (c, o, len(bomb)))
         c, o = req(port, "/api/node/logs", raw=b"x" * ((1 << 20) + 10), hdrs={"Content-Encoding": "gzip"})
         check("[2] a body over 1 MiB is refused", c == 413, (c, o))
+        try:
+            c, o = req(port, "/api/node/logs", raw=gzip.compress(b"[" * 200000), hdrs={"Content-Encoding": "gzip"})
+        except Exception as e:
+            c, o = repr(e)[:80], None
+        check("[2] a deeply nested body is a 400, never a dropped connection", c == 400, (c, o))
         # no node token, no api(): in-process, nodes_load counted
         P = load("panel")
         calls = []
@@ -391,6 +414,32 @@ def sec3():
           and v2["nodes"]["c"]["state"] == "noanswer", (st0, v2["nodes"]["c"]))
     v3 = P.live_view(rid2, 0, v2["h"], snaps, seen, 30, now=T[0] + P.LIVE_NOANSWER_S + 1)
     check("[3] the states block is sent only when it changed", "nodes" not in v3 and v3["h"] == v2["h"], list(v3))
+    rid4 = P.live_open(["a"], ["noded"], known)[1]["data"]["id"]
+    try:
+        r1 = P.live_absorb({"id": rid4, "key": "a.é" + "x" * 31, "lines": []})[0]
+        r2 = P.live_absorb({"id": rid4, "key": P._live_key(P._LIVE_REQS[rid4], "a"), "lines": [], "now": float("inf"),
+                            "cur": {"f": {"/var/lib/swg-noded/wdtt/wdtt%d/server.log" % i: [i, i] for i in range(60)}}})[0]
+    except Exception as e:
+        r1 = r2 = repr(e)
+    check("[3] remote input never raises: a key that is not ASCII is 403, an infinite clock is ignored; a docker node's "
+          "long resume point (60 files) is kept",
+          r1 == 403 and r2 == 200 and len(P._LIVE_REQS[rid4]["cur"].get("a", {}).get("f", {})) == 60, (r1, r2))
+    P.live_absorb({"id": rid4, "key": P._live_key(P._LIVE_REQS[rid4], "a"), "lines": [], "cur": {"j": "x" * 9000}})
+    check("[3] a resume point too big to keep drops the stored one (a restart starts afresh, not from a stale point)",
+          "a" not in P._LIVE_REQS[rid4]["cur"], list(P._LIVE_REQS[rid4]["cur"]))
+    for i in list(P._LIVE_REQS):
+        P.live_close(i)
+    lf = os.path.join(TMP, "panel-own.log")
+    open(lf, "w").write("")
+    P.PANEL_LOG_FILE["path"] = lf
+    P.LIVE_LEASE = 1
+    rid5 = P.live_open(["panel"], ["panel"], known)[1]["data"]["id"]
+    time.sleep(0.3)
+    th = [t for t in threading.enumerate() if t.name == "swg-logs-" + rid5]
+    time.sleep(2.5)                                   # nobody polls, nothing syncs: only the reader itself can notice
+    check("[3] the panel's own reader stops at its lease by itself (no poll, no sync), and frees the slot",
+          th and not th[0].is_alive() and rid5 not in P._LIVE_REQS, (th, list(P._LIVE_REQS)))
+    P.PANEL_LOG_FILE["path"] = None
 
 
 guarded("[3]", sec3)
@@ -435,6 +484,18 @@ def sec4():
     out = drain(rd, 0.5)
     check("[4] a renamed file: its last lines, then the new file — nothing lost, nothing repeated",
           [l[3] for l in out] == ["a1", "a2", "b1"], [l[3] for l in out])
+    # a flood at the rotation: more than one read's worth (256 KiB) still unread in the renamed file — its end comes too
+    PF = os.path.join(d, "flood-rot.log")
+    open(PF, "w").close()
+    rdf = N.LiveReader({"noded"}, files=[(PF, N.live_noded_src, "ours")], cap=100000)
+    drain(rdf, 1.2)
+    w(PF, "".join("%s I f%04d %s\n" % (ts(), i, "y" * 90) for i in range(3000)))
+    os.replace(PF, PF + ".1")
+    w(PF, "%s I after\n" % ts())
+    out = drain(rdf, 0.8)
+    rdf.close()
+    check("[4] a flood at the rotation: the renamed file is read to its end (past one read's 256 KiB), then the new one",
+          len(out) == 3001 and out[-1][3] == "after" and out[2999][3].startswith("f2999"), (len(out), out[-1:]))
     rdq = N.LiveReader({"dns"}, files=[(Q, "dns", "syslog")], cap=1000)
     drain(rdq, 1.2)
     stamp = time.strftime("%b %e %H:%M:%S")
@@ -585,6 +646,35 @@ def sec5():
     check("[5] at most 4 readers", len(N._LIVE) == 4, len(N._LIVE))
     N.live_logs_take(None, "https://p/api/node/sync", {"token": "T"}, {"interfaces": {}})
     check("[5] a reply with no `logs` stops them all", not N._LIVE)
+    # the panel away: posts fail, lines pile up past LIVE_PEND_MAX twice, then it answers
+    lf2 = os.path.join(d, "flood.log")
+    open(lf2, "w").close()
+    N._live_plan = lambda srcs, ifaces: ({"files": [(lf2, N.live_noded_src, "ours")]}, {s: "ok" for s in srcs})
+    posts.clear()
+    POSTCODE[0] = 0
+    q = rq(40, lease=30, iv=2, cap=100000)
+    q.update(stop=threading.Event(), exp=time.monotonic() + 30, url="https://p/api/node/logs", panel={"token": "T"}, cur=None)
+    th = threading.Thread(target=N._live_run, args=(q, []), daemon=True)
+    th.start()
+    time.sleep(1.3)
+    for burst in range(2):
+        open(lf2, "a").write("".join("%s I l%d-%d\n" % (ts(), burst, i) for i in range(1500)))
+        time.sleep(1.2)
+    tries = len(posts)
+    POSTCODE[0] = 200
+    time.sleep(2.5)
+    q["stop"].set()
+    th.join(3)
+    ok_posts = posts[tries:]
+    sent = [ln for p_ in ok_posts for ln in p_[1]["lines"]]
+    check("[5] a failing first post is retried every interval (2 s), not every poll", 1 <= tries <= 3, tries)
+    check("[5] lines dropped while the panel is away are counted exactly — an earlier marker's count carried, none lost",
+          N._live_skipped(sent) == 3000 and len([l for l in sent if l[1] == "!skip"]) == 1,
+          (N._live_skipped(sent), len(sent), [l for l in sent if l[1] == "!skip"]))
+    big = [[i, "noded", 6, "x" * 4096] for i in range(2000)]
+    n = N._live_chunk(big)
+    check("[5] a backlog goes in parts under the panel's limits (≤ 900 KiB of JSON a post)",
+          150 < n < 250 and len(json.dumps(big[:n])) <= N.LIVE_POST_BYTES + 5000, n)
     # the source plan
     M = load("noded", {"SWG_NODED_STATE": os.path.join(TMP, "noded-plan")})
     M.NODE_KIND = "baremetal"
