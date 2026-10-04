@@ -12,9 +12,9 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { nodeStatusOf } from "./model.js";
+import { nodeStatusOf, nodeStale } from "./model.js";
 import {
-  BASE, ago, ipChoices, seen, url, fmtBytes, panelNow,
+  BASE, ago, ipChoices, seen, url, fmtBytes, panelNow, panelNowS,
 } from "./util.js";
 import {
   LEAVE_MSG, clearUnsavedGuard, setUnsavedGuard,
@@ -1980,6 +1980,8 @@ export function PanelSettingsScreen() {
   const logForShown = (logEdit && logEdit.for) || logForSaved;
   const logDirty = () => !!logEdit && (logEdit.lvl !== logSaved() || (logEdit.lvl === "debug" && logEdit.for != null));
   const pickLog = v => setLogEdit(v === logSaved() ? null : { lvl: v, for: v === "debug" ? "3600" : null });
+  const [logMbP, setLogMbP] = useState(String(ps.log_mb_panel || 100));   // the panel's disk budget (the table's first row)
+  const logMbPDirty = () => logMbP !== String(ps.log_mb_panel || 100);
   // On unless an operator has switched it off — which closes these networks rather than merely hiding them.
   const [showLans, setShowLans] = useState(ps.show_node_lans !== false);
   const [meshMode, setMeshMode] = useState(ps.mesh_mode || "auto");   // which node pairs get a mesh link (auto | full | demand)
@@ -2264,6 +2266,7 @@ export function PanelSettingsScreen() {
   // changes; the single Save commits the global settings AND one nodeUpdate per changed node.
   const eq = (a, b) => { const c = v => v == null ? "" : Array.isArray(v) ? JSON.stringify([...v].sort()) : typeof v === "object" ? JSON.stringify(Object.keys(v).sort().reduce((o, k) => (o[k] = v[k], o), {})) : String(v); return c(a) === c(b); };
   const nFields = n => ({ routing_mode: n.routing_mode || "kernel", ip_learning: n.ip_learning !== false, endpoint_host: n.endpoint_host || "",
+    log_mb: String(n.log_mb || 100),   // Settings → Logs, the node's disk budget (published by the panel, or a save of anything else posts 100)
     dns_upstream: (n.dns_upstream || []).join(", "),   // Force-DNS resolver's upstream, as typed ("" = the default)
     mesh_subnet: n.mesh_subnet || "", mesh_port: n.mesh_port ? String(n.mesh_port) : "", mesh_prefix: n.mesh_prefix || "",
     default_egress_ip: n.default_egress_ip || "", panel_ip: n.panel_ip || "", mesh_egress_ip: n.mesh_egress_ip || "",
@@ -2376,6 +2379,7 @@ export function PanelSettingsScreen() {
         // Debug keeps the level saved before it as the base, which is what it returns to.
         ...(logDirty() ? { log_level: logEdit.lvl === "debug" ? logBase : logEdit.lvl,
                            log_debug: logEdit.lvl === "debug" ? +logForShown : 0 } : {}),
+        ...(logMbPDirty() ? { log_mb_panel: +logMbP } : {}),
       });
       if (!r.ok) return setMsg({ ok: false, t: srvText(r) || T("Failed to save.") });
       // The level is saved: drop the draft NOW, so a later step that fails cannot leave it dirty and a retry re-send Debug's
@@ -2409,7 +2413,7 @@ export function PanelSettingsScreen() {
         p2p: e.p2p || null,
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
-        catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {}, exits: e.exits || [] });
+        catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {}, exits: e.exits || [], log_mb: +e.log_mb || 100 });
       if (!nr.ok) nerr = srvText(nr) || (T("Couldn't save {v1}", { v1: n.name }));
       else reportDropped(nr);   // what the default list's save could not keep (§5.4) — never swallowed
     }
@@ -2462,6 +2466,7 @@ export function PanelSettingsScreen() {
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
     if (dispDirty()) out.push(T("Display — theme / status timing"));
     if (logDirty()) out.push(T("Logging — {v1}", { v1: logLevelLabel(logShown) }));
+    if (logMbPDirty()) out.push(T("Panel log budget → {v1} MB", { v1: logMbP }));
     if (tzDirty()) out.push(tz ? T("Days are counted in {v1}", { v1: tz }) : T("Days are counted in this server's zone"));
     if (infHist !== (ps.infinite_history !== false)) out.push(infHist ? T("Infinite history — on") : T("Infinite history — off: detail older than 33 days is deleted"));
     if (histRes !== String(ps.history_resolution || 3600)) out.push(T("History resolution → {v1}, from the next day", { v1: histResLabel(+histRes) }));
@@ -2499,6 +2504,7 @@ export function PanelSettingsScreen() {
       // with the edits still on screen. Gated by tests/settings_node_fields_selftest.py.
       if (!eq(e.exits, o.exits)) fl.push(T("external exits"));
       if (!eq(e.mesh_awg, o.mesh_awg)) fl.push(T("mesh AWG params"));
+      if (!eq(e.log_mb, o.log_mb)) fl.push(T("log budget → {v1} MB", { v1: e.log_mb }));
       if (fl.length) out.push(n.name + " — " + fl.join(", "));
     }
     return out;
@@ -2511,6 +2517,9 @@ export function PanelSettingsScreen() {
     const _blk = [selNode].filter(Boolean).map(nid => [nid, Array.isArray((nodeEdits[nid] || {}).default_routing) ? nodeListBlock(nid, nodeEdits[nid].default_routing) : null])
       .find(([, why]) => why);
     if (_blk) { toast(T("{v1}: {v2}", { v1: ((Store.nodes || []).find(n => n.id === _blk[0]) || {}).name || _blk[0], v2: _blk[1] }), "err"); return; }
+    const _lbBad = [logMbPDirty() && logMbBad(logMbP) ? T("Panel") : null,
+      ...(Store.nodes || []).map(n => (nodeEdits[n.id] && !eq(nodeEdits[n.id].log_mb, (orig[n.id] || {}).log_mb) && logMbBad(nodeEdits[n.id].log_mb)) ? n.name : null)].filter(Boolean);
+    if (_lbBad.length) { toast(T("{v1}: the log budget must be at least {v2} MB", { v1: _lbBad.join(", "), v2: LOG_MB_MIN }), "err"); return; }
     const ch = diffList();
     if (!ch.length) { toast(T("No changes to save."), "ok"); return; }
     const rp = needsReprov();
@@ -2620,7 +2629,7 @@ const sectionLabel = k => ({
     onConfirm: () => removeCatFleet(id) });
   const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
   const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
-  const SECF = { routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], exits: ["exits"] };
+  const SECF = { logs: ["log_mb"], routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
   // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
@@ -2637,7 +2646,7 @@ const sectionLabel = k => ({
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :
-    sec === "logs" ? logDirty() :
+    sec === "logs" ? (logDirty() || logMbPDirty()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false) || meshMode !== (ps.mesh_mode || "auto")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
@@ -3119,6 +3128,11 @@ const sectionLabel = k => ({
               : T("Then logging goes back to {v1}.", { v1: logLevelLabel(logBase) })}</div></div>` : null}
           <div class="hint" style="margin-top:12px">${T("Turn proxies, WireGuard interfaces and other third-party services pick up a change the next time they restart.")}</div>
         </div>` : null}
+        ${section === "logs" ? html`<${LogBudgetTable} onMb=${(id, v) => id === "" ? setLogMbP(v) : setNV(id, { log_mb: v })}
+          rows=${[{ id: "", name: T("Panel"), mb: logMbP, saved: +(ps.log_mb_panel || 100), st: ps.log_panel || null,
+                    docker: !!(ps.log_panel || {}).docker, locked: (ps.log_panel || {}).err === "nixos" },
+                  ...(Store.nodes || []).map(n => ({ id: n.id, name: n.name, mb: (nodeEdits[n.id] || nFields(n)).log_mb,
+                    saved: +(n.log_mb || 100), st: n.log || null, docker: n.kind === "docker", stale: nodeStale(n.id) }))]}/>` : null}
         ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">${T("Interface colours")}<span class="grow"></span>
@@ -3468,6 +3482,65 @@ function ReachEveryoneSheet() {
       : html`<div class="hint">${all.length ? T("No interface matches “{q}”.", { q }) : T("No existing interface is set to “Everyone on this node”.")}</div>`}
     <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>
   <//>`;
+}
+
+// Settings → Logs, the disk budget (docs/LOGS-PLAN.md §2, §5): one row for the panel, then one per node — the MB that box's swg
+// journal may hold, and what it last reported. The state reads the REPORT, never the draft: "applied" is the node saying it
+// runs with the saved value. "Holds" is the age of the oldest line kept, shown only once the budget is full (before that it
+// would be a guess); journald trims a file at a time (1/8 of the budget), so full is 85 % and up. Same window at 2 rows or
+// 200: a filter once it pages, 15 rows a page.
+export const LOG_MB_MIN = 16;
+export const logMbBad = v => !/^\d+$/.test(String(v || "")) || +v < LOG_MB_MIN;
+export function logBudgetState(r) {
+  const st = r.st;
+  if (r.locked) return { tone: "faint", text: T("System journal"), title: T("On NixOS the panel has no root helper here, so its lines stay in the system journal and its limits.") };
+  if (!st) return r.stale ? { tone: "faint", text: T("Offline"), title: T("Not reporting — it applies the budget when it is back.") }
+    : r.id === "" ? { tone: "warn", text: T("Waiting"), title: T("The panel's root helper reports within a few seconds of starting.") }
+    : { tone: "warn", text: T("Update the node"), title: T("This node's build is too old to keep a log budget. Update it to apply one.") };
+  if (st.err) return { tone: "bad", text: T("Not supported"), title: st.err };
+  if (r.stale) return { tone: "faint", text: T("Offline"), title: T("Not reporting — the figures are from its last report.") };
+  if (+st.mb !== r.saved) return { tone: "warn", text: T("Pending"), title: r.id === "" ? T("The root helper applies it within 10 seconds.") : T("Applies on the node's next sync.") };
+  return { tone: "ok", text: T("Applied"), title: "" };
+}
+export function logHolds(st) {
+  if (!st || !st.oldest || !st.mb || !(st.used_mb >= st.mb * 0.85)) return "";
+  const h = Math.max(0, (panelNowS() - st.oldest) / 3600);
+  return h < 48 ? T("{v1} h", { v1: Math.round(h) }) : T("{v1} days", { v1: Math.round(h / 24) });
+}
+function LogBudgetTable({ rows, onMb }) {
+  const [q, setQ] = useState(""), [page, setPage] = useState(1);
+  const ql = q.trim().toLowerCase();
+  const shown = ql ? rows.filter(r => r.name.toLowerCase().includes(ql)) : rows;
+  const pg = Math.min(page, Math.max(1, Math.ceil(shown.length / LIST_PAGE)));
+  const anyDocker = rows.some(r => r.docker);
+  return html`<div class="card logbudget">
+    <div class="seclabel" style="margin-top:0">${T("Disk budget")}</div>
+    <p class="hint" style="margin:0">${T("How much disk swg's logs may take on each server. When the budget is full, the oldest lines go first.")}</p>
+    ${rows.length > LIST_PAGE ? html`<input class="reachev-filter" value=${q} data-enter="self" placeholder=${T("Filter by server…")}
+      aria-label=${T("Filter by server…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
+    <div class="lb-table" role="table" aria-label=${T("Disk budget")}>
+      <div class="lb-row lb-head" role="row"><span role="columnheader">${T("Server")}</span><span role="columnheader">${T("Budget")}</span>
+        <span role="columnheader">${T("Used")}</span><span role="columnheader">${T("Holds")}</span><span role="columnheader">${T("State")}</span></div>
+      ${pageSlice(shown, pg).map(r => {
+        const s = logBudgetState(r), st = r.st || {}, bad = logMbBad(r.mb), holds = logHolds(r.st);
+        const pct = st.mb && st.used_mb != null ? Math.min(100, Math.round(100 * st.used_mb / st.mb)) : null;
+        return html`<div class="lb-row" role="row" key=${r.id || "_panel"}>
+          <span class="lb-name" role="cell">${r.name}${r.docker ? html`<span class="lb-kind">docker</span>` : null}</span>
+          <span class="lb-mb" role="cell"><input type="text" inputmode="numeric" class=${bad ? "bad" : ""} value=${r.mb} disabled=${r.locked}
+            aria-label=${T("Budget for {v1}, MB", { v1: r.name })} title=${T("At least {v1} MB", { v1: LOG_MB_MIN })} aria-invalid=${bad ? "true" : "false"} onDblClick=${e => e.target.select()}
+            onInput=${e => onMb(r.id, e.target.value.replace(/[^0-9]/g, "").slice(0, 7))}/><span class="faint">${T("MB")}</span></span>
+          <span class="lb-used" role="cell">${pct == null ? html`<span class="faint">—</span>` : html`
+            <span class="lb-usedn">${T("{v1} MB", { v1: st.used_mb })}</span>
+            <span class=${"lb-meter" + (pct >= 85 ? " full" : "")} aria-hidden="true"><i style=${"width:" + pct + "%"}></i></span>`}</span>
+          <span class="lb-holds" role="cell" title=${holds ? "" : T("Shown once the budget is full")}>${holds || html`<span class="faint">—</span>`}</span>
+          <span class=${"lb-state t-" + s.tone} role="cell" title=${s.title}>${s.text}</span>
+        </div>`; })}
+      ${!shown.length ? html`<div class="hint">${T("No server matches “{q}”.", { q })}</div>` : null}
+    </div>
+    <${ListPager} page=${pg} setPage=${setPage} total=${shown.length}/>
+    <div class="hint" style="margin-top:12px">${T("Kernel messages (the P2P guard, network devices) and WireGuard interfaces' own start and stop lines stay in the system journal, outside the budget.")}</div>
+    ${anyDocker ? html`<div class="hint" style="margin-top:6px">${T("In docker the budget holds swg's own log files and the containers a node launches; each container's own docker log (10 MB × 3) is not counted.")}</div>` : null}
+  </div>`;
 }
 
 export function CustomListSheet({ list, onSave, onClose }) {

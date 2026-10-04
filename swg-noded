@@ -93,6 +93,47 @@ def log_level():
     return LOG_DEBUG if (u == -1 or (u and time.monotonic() < u)) else _LOG["level"]
 
 
+# docker (no journald): every line ALSO goes to a file of our own, the one a reader can find without a docker socket,
+# kept in two files of half the budget each (`path`, `path.1`). Off until log_file() names one.
+_LOG_FILE = {"path": None, "cap": 0, "f": None, "size": 0, "lock": threading.Lock()}
+
+
+def log_file(path, cap):
+    """Also write each line to `path`, timestamped, below `cap` bytes in two files. cap 0 (logging Off) removes both
+    files and writes none; path None stops writing and keeps them. Never raises."""
+    with _LOG_FILE["lock"]:
+        if _LOG_FILE["f"] and (path != _LOG_FILE["path"] or not cap):
+            with contextlib.suppress(OSError):
+                _LOG_FILE["f"].close()
+            _LOG_FILE["f"] = None
+        if path and not cap:
+            for p in (path, path + ".1"):
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+        _LOG_FILE["path"], _LOG_FILE["cap"] = (path, int(cap)) if path and cap else (None, 0)
+
+
+def _log_file_write(data):
+    with _LOG_FILE["lock"]:
+        path = _LOG_FILE["path"]
+        if not path:
+            return
+        try:
+            if _LOG_FILE["f"] is None:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                _LOG_FILE["f"] = open(path, "ab")
+                _LOG_FILE["size"] = _LOG_FILE["f"].tell()
+            _LOG_FILE["f"].write(data)
+            _LOG_FILE["f"].flush()
+            _LOG_FILE["size"] += len(data)
+            if _LOG_FILE["size"] >= _LOG_FILE["cap"] // 2:
+                _LOG_FILE["f"].close()
+                _LOG_FILE["f"] = None
+                os.replace(path, path + ".1")
+        except OSError:
+            _LOG_FILE["f"] = None
+
+
 def _log_write(prio, text):
     pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
     try:
@@ -101,6 +142,9 @@ def _log_write(prio, text):
         out.flush()
     except Exception:
         pass
+    if _LOG_FILE["path"]:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z " + _LOG_TAG.get(prio, "I") + " "
+        _log_file_write("".join(ts + ln + "\n" for ln in text.split("\n")).encode("utf-8", "replace"))
 
 
 def log(prio, msg, *args):
@@ -5946,6 +5990,9 @@ SMART_DNS_MAX_TTL = 60   # seconds a CLIENT may cache an answer we served (see t
                          # the real TTL internally, so the extra queries never reach upstream.
 DNSMASQ_BIN  = "dnsmasq"
 DNSMASQ_CONF = os.path.join(STATE_DIR, "smart-dnsmasq.conf")
+# docker only: dnsmasq logs to syslog, and a container has none — its few lines (start, a reload; never a query) go to
+# this file instead, rotated with the other logs (_cap_serverlogs). dnsmasq opens it O_APPEND, so copy-and-truncate works.
+DNSMASQ_LOG = os.path.join(STATE_DIR, "log", "dnsmasq.log")
 DNSMASQ_PID  = os.path.join(STATE_DIR, "smart-dnsmasq.pid")
 SMARTDNS_NET_TAG = "swg-smartdns-net"                           # RETURN rules letting DNS to a carried network past it (NETWORKS §17)
 SMARTDNS_TAG = "swg-smartdns"                                   # iptables comment tag for the DNS-redirect rules
@@ -6315,6 +6362,10 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, ne
             # commonly hours. dnsmasq keeps the TRUE ttl in its own cache and only clamps what it hands
             # downstream, so this costs re-queries that we answer locally, not upstream traffic.
             "max-ttl=" + str(SMART_DNS_MAX_TTL)]
+    if NODE_KIND == "docker":
+        with contextlib.suppress(OSError):
+            os.makedirs(os.path.dirname(DNSMASQ_LOG), exist_ok=True)
+        conf.append("log-facility=" + DNSMASQ_LOG)
     conf += ["server=" + u for u in (upstream or SMART_DNS_UPSTREAM_DEFAULT)]   # operator's choice, else the default (§4)
     # PER-DOMAIN, not per-category. dnsmasq applies only the FIRST nftset directive that lists a given domain, so a
     # domain shared by several categories (e.g. google.com in BOTH a custom list and the built-in Google set) would
@@ -7094,6 +7145,11 @@ def apply_panel_settings(pan):
         except (TypeError, ValueError):
             _left = 0
         log_set(min(LOG_LEVELS.get(_lg.get("level"), LOG_INFO), LOG_INFO), _left)
+        try:                                                   # the disk budget, MB — absent is the default
+            _LOG_BUDGET["mb"] = max(LOG_MB_MIN, int(_lg.get("mb") or LOG_MB_DEFAULT))
+        except (TypeError, ValueError):
+            _LOG_BUDGET["mb"] = LOG_MB_DEFAULT
+        _LOG_BUDGET["synced"] = True
         if (pan.get("turn_mirror") or "").strip():             # only ADD a turn mirror (preserve any install-time one)
             os.environ["SWG_TURN_MIRROR"] = pan["turn_mirror"].strip()
         ep = str(int(pan.get("geo_epoch") or 0))
@@ -7167,8 +7223,9 @@ def _log_follow(node_cfg):
             _LOG_FOLLOWED["lvl"] = (lvl, _LOG["level"])
         except OSError as e:
             log(LOG_WARNING, "log level: could not write %s: %s", LOG_LEVEL_FILE, e)
+    _log_budget()
     if NODE_KIND == "docker" or not os.path.isdir(LOG_DROPIN_DIR):
-        return                                       # no systemd here: the containers' logs are P1c's
+        return                                       # no systemd here: docker's logs are capped by _log_budget
     cap = log_unit_max(lvl)
     units = list(LOG_DROPIN_UNITS) + sorted("%s-quick@%s.service" % ((ic.get("cmd") or ["awg"])[0], ifn)
                                             for ifn, ic in (node_cfg.get("interfaces") or {}).items()
@@ -7217,6 +7274,194 @@ def _log_follow(node_cfg):
         _LOG_FOLLOWED["err"] = err
     else:
         _LOG_FOLLOWED["units"], _LOG_FOLLOWED["err"] = (cap, units), None
+
+
+
+# ── the disk budget: swg's own journal (docs/LOGS-PLAN.md §2, §18) ───────────────────────────────────────────────────
+# Everything this node runs logs into the journald namespace `swg-node`, capped in MB from Settings → Logs, so swg's lines
+# can neither fill the disk nor evict the box's other logs. Two pieces, each written only when it differs:
+#   · the namespace on the units this process writes — a PREFIX drop-in in the directory the units themselves live in
+#     (/etc/systemd/system, or /run where units cannot persist). Not in the unit text: the drift checks compare that text,
+#     and a changed relay unit restarts every relay. Not under /run on bare metal: these units start at boot before our
+#     first pass and run for weeks, so they would spend every boot outside the budget. Each unit moves at its NEXT start —
+#     a datapath unit is never restarted for this. swg-noded's own unit gets its drop-in from the installers.
+#   · the namespace's size: /run/systemd/journald@swg-node.conf.d/swg.conf. /run, so a reboot or an uninstalled build
+#     leaves nothing; a change restarts that journald, which keeps its clients' streams (P0 T3). An operator's own file
+#     of the same name under /etc outranks it.
+# docker has no journald: our lines also go to files under STATE_DIR/log, and every log this process owns there gets an
+# equal share of the budget (_log_docker_caps).
+LOG_NS = "swg-node"
+LOG_MB_DEFAULT, LOG_MB_MIN = 100, 16
+LOG_NS_CONF = "/run/systemd/journald@%s.conf.d/swg.conf" % LOG_NS
+LOG_NS_DROPIN = "swg-ns.conf"
+LOG_NS_UNITS = ("swg-relay@.service", "vk-turn-proxy-.service", "swg-wdtt-.service", "swg-csqtt-.service")
+LOG_DIR_DOCKER = os.path.join(STATE_DIR, "log")
+LOG_STATUS_EVERY_S = 60
+# mb: the budget the panel sent · ns: journald namespaces work here (None = not asked yet) · conf: the file's content as
+# last written · applied: the MB journald runs with · status: the snapshot's `log` · at: when it was measured
+# · synced: a panel reply has set mb — nothing is written before it, or every restart would write the default and then
+# the real value, restarting journald twice
+_LOG_BUDGET = {"mb": LOG_MB_DEFAULT, "ns": None, "conf": None, "applied": None, "err": None, "status": None, "at": 0.0,
+               "synced": False}
+_JOURNAL_NAME_RE = re.compile(r"^[\w-]+@[0-9a-f]{32}-[0-9a-f]{16}-([0-9a-f]{16})\.journal$")
+
+
+def log_ns_ok():
+    """True where a unit may carry LogNamespace=: a host systemd that ships journald's namespace template. A unit naming a
+    namespace on a box without it fails to start, so nothing is moved there. Asked once."""
+    if _LOG_BUDGET["ns"] is None:
+        _LOG_BUDGET["ns"] = (NODE_KIND != "docker" and os.path.isdir("/run/systemd/system")
+                             and any(os.path.exists(os.path.join(d, "systemd-journald@.service"))
+                                     for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system",
+                                               "/lib/systemd/system")))
+    return _LOG_BUDGET["ns"]
+
+
+def journal_cmd():
+    """journalctl reading a unit's own lines: in the swg-node journal merged with the main one (`+`), where a unit not yet
+    moved — started before its drop-in — still writes."""
+    return "journalctl --namespace=+" + LOG_NS if log_ns_ok() else "journalctl"
+
+
+def _log_ns_dropins():
+    """At start: the namespace on the units this node writes (see above). Only what is missing or different is written,
+    then one daemon-reload; nothing is restarted. Never raises."""
+    if not log_ns_ok():
+        return
+    udir = UNIT_DIR_PERSIST if unit_dir_persists() else UNIT_DIR_RUNTIME
+    want, changed = "[Service]\nLogNamespace=%s\n" % LOG_NS, 0
+    for u in LOG_NS_UNITS:
+        p = os.path.join(udir, u + ".d", LOG_NS_DROPIN)
+        try:
+            with open(p) as f:
+                if f.read() == want:
+                    continue
+        except OSError:
+            pass
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p + ".tmp", "w") as f:
+                f.write(want)
+            os.replace(p + ".tmp", p)
+            changed += 1
+        except OSError as e:
+            log(LOG_WARNING, "log budget: %s not written: %s", p, e)
+    if changed:
+        run(["systemctl", "daemon-reload"])
+        log(LOG_INFO, "log budget: %d kind(s) of unit log into the %s journal from their next start", changed, LOG_NS)
+
+
+def _log_ns_dir():
+    try:
+        with open("/etc/machine-id") as f:
+            return "/var/log/journal/%s.%s" % (f.read().strip(), LOG_NS)
+    except OSError:
+        return None
+
+
+def _log_dir_usage(d, journal):
+    """(bytes on disk, oldest entry's unix time or None) of a log directory, with no subprocess: a listdir and a stat
+    each. In a journal directory the oldest is the head time of the oldest ARCHIVED file, which journald names
+    system@<seqnum id>-<head seqnum>-<head realtime µs, hex>.journal; a damaged one is renamed `….journal~` and skipped,
+    and while only the active system.journal exists there is no oldest (nothing has rotated yet)."""
+    used, oldest = 0, None
+    with contextlib.suppress(OSError):
+        for n in os.listdir(d):
+            with contextlib.suppress(OSError):
+                st = os.stat(os.path.join(d, n))
+                used += st.st_blocks * 512
+            m = _JOURNAL_NAME_RE.match(n) if journal else None
+            if m:
+                t = int(m.group(1), 16) // 1000000
+                oldest = t if oldest is None else min(oldest, t)
+    return used, oldest
+
+
+def _log_docker_caps(mb):
+    """docker: the bytes each log this process owns may take, two files included: noded's own file, dnsmasq's, each
+    supervised WDTT/csqtt server.log and each container it launches (turn, relay), sharing the budget equally. Counted
+    now; a container launched earlier keeps its cap until its next launch. 0 at Off."""
+    if log_level() == LOG_OFF:
+        return 0
+    n = 2 + len(_turn_record_raw()) + len(_RELAY)
+    for root in (WDTT_ROOT, CSQTT_ROOT):
+        with contextlib.suppress(OSError):
+            n += len(os.listdir(root))
+    return max(1 << 20, (mb << 20) // n)
+
+
+def docker_log_opts():
+    """`docker run` options for a container this node launches: its share of the budget in two files, or no log at all
+    at Off. Taken at launch, never compared: a datapath container is not recreated for a log setting."""
+    cap = _log_docker_caps(_LOG_BUDGET["mb"])
+    if not cap:
+        return ["--log-driver", "none"]
+    return ["--log-opt", "max-size=%dk" % max(512, cap // 2048), "--log-opt", "max-file=2"]
+
+
+def _log_budget():
+    """Once per loop, after the level: the namespace's size and storage, and the snapshot's `log` status every
+    LOG_STATUS_EVERY_S. A steady node compares one string and touches nothing. Never raises."""
+    mb, off = _LOG_BUDGET["mb"], log_level() == LOG_OFF
+    now = time.time()
+    if NODE_KIND == "docker":
+        cap = _log_docker_caps(mb)
+        log_file(os.path.join(LOG_DIR_DOCKER, "swg-noded.log"), cap)
+        _LOG_BUDGET["applied"], _LOG_BUDGET["err"] = mb, None
+        if now - _LOG_BUDGET["at"] >= LOG_STATUS_EVERY_S or _LOG_BUDGET["status"] is None:
+            used, _o = _log_dir_usage(LOG_DIR_DOCKER, False)
+            _LOG_BUDGET["status"], _LOG_BUDGET["at"] = {"mb": mb, "used_mb": round(used / 1048576.0, 1)}, now
+        return
+    if not log_ns_ok():
+        _LOG_BUDGET["status"] = {"mb": mb, "err": "this system's journald has no namespaces"}
+        return
+    want = "[Journal]\nStorage=%s\nSystemMaxUse=%dM\nRuntimeMaxUse=%dM\n" % ("none" if off else "persistent", mb, mb)
+    if _LOG_BUDGET["conf"] is None:
+        _LOG_BUDGET["conf"] = ""
+        with contextlib.suppress(OSError):
+            with open(LOG_NS_CONF) as f:
+                _LOG_BUDGET["conf"] = f.read()
+        m = re.search(r"^SystemMaxUse=(\d+)M$", _LOG_BUDGET["conf"], re.M)
+        _LOG_BUDGET["applied"] = int(m.group(1)) if m else None
+    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want:
+        err = None
+        try:
+            os.makedirs(os.path.dirname(LOG_NS_CONF), exist_ok=True)
+            with open(LOG_NS_CONF + ".tmp", "w") as f:
+                f.write(want)
+            os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
+            # try-restart: a journald that is not running reads the file when its first client starts it
+            r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=60)
+            if r.returncode != 0:
+                err = "journald@%s did not restart: %s" % (LOG_NS, (r.stderr or "").strip()[:160])
+        except OSError as e:
+            err = "%s: %s" % (LOG_NS_CONF, e)
+        _LOG_BUDGET["at"] = 0.0                       # report the outcome in this pass
+        if err:
+            if err != _LOG_BUDGET["err"]:
+                log(LOG_WARNING, "log budget: %s — retried on every pass, said once", err)
+            _LOG_BUDGET["err"] = err
+        else:
+            if off:
+                # Storage=none stores nothing new but keeps what is on disk (measured): Off means nothing kept, so the
+                # stopped journald's files go too
+                d = _log_ns_dir()
+                with contextlib.suppress(OSError):
+                    for n in os.listdir(d):
+                        if ".journal" in n:
+                            with contextlib.suppress(OSError):
+                                os.remove(os.path.join(d, n))
+            _LOG_BUDGET["conf"], _LOG_BUDGET["applied"], _LOG_BUDGET["err"] = want, mb, None
+            log(LOG_INFO, "log budget: the %s journal keeps %s", LOG_NS, "nothing (logging is off)" if off else "%d MB" % mb)
+    if now - _LOG_BUDGET["at"] >= LOG_STATUS_EVERY_S or _LOG_BUDGET["status"] is None:
+        used, oldest = _log_dir_usage(_log_ns_dir() or "/nonexistent", True)
+        st = {"mb": _LOG_BUDGET["applied"] if _LOG_BUDGET["applied"] is not None else mb,
+              "used_mb": round(used / 1048576.0, 1)}
+        if oldest:
+            st["oldest"] = oldest
+        if _LOG_BUDGET["err"]:
+            st["err"] = _LOG_BUDGET["err"][:200]
+        _LOG_BUDGET["status"], _LOG_BUDGET["at"] = st, now
 
 
 def _apply_routing_reset(reset_val, res, learned_val=None):
@@ -10735,7 +10980,7 @@ def _relay_supervise_docker(want, quota_pct, res):
         r = run(["docker", "run", "-d", "--name", cn, "--network", "host", "--restart", "unless-stopped",
                  "--cpus", str(cpus), "--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW",
                  "--security-opt", "no-new-privileges", "--label", "swg.relay.spec=" + spec,
-                 "--log-opt", "max-size=10m", "--log-opt", "max-file=3",
+                 *docker_log_opts(),
                  "-v", host_dir + ":" + RELAY_DIR_LOCAL,
                  "--entrypoint", "python3", SWG_TURN_IMAGE, staged,
                  # ⚠️ THE UPSTREAM MARK (derived from the plan's `up_table`), exactly as the systemd unit
@@ -13870,6 +14115,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "net_deps": net_deps(),
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "lans": _node_lans_report(_addrs, _own_tunnel_devs(node_cfg)),
             "smartroute": smart_status(),
+            # the disk budget {mb, used_mb, oldest, err} — measured every LOG_STATUS_EVERY_S, ~60 bytes (_log_budget)
+            **({"log": _LOG_BUDGET["status"]} if _LOG_BUDGET["status"] else {}),
             # Whether the TCP-terminating relay's divert is ARMED RIGHT NOW, and if not, why not — §4 of
             # RELAY-FEATURE-PLAN. "why" is the whole point: a feature that silently disarms itself and
             # reports nothing is indistinguishable from one that was never switched on.
@@ -16250,8 +16497,9 @@ def _dturn_run(tp):   # (re)create the container to match tp; returns the docker
     harden = ["--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges"]
     # Bound the container log. Docker's json-file driver defaults to UNLIMITED, and a fork binary that spins and
     # logs per iteration will fill the host disk — observed at 9.6G from one such server. compose caps the panel's
-    # own services the same way; these are created here, so they must be capped here.
-    logcap = ["--log-opt", "max-size=10m", "--log-opt", "max-file=3"]
+    # own services the same way; these are created here, so they must be capped here — by their share of the node's
+    # budget, or not logged at all at Off (docker_log_opts).
+    logcap = docker_log_opts()
     return run(["docker", "run", "-d", "--name", cn] + net + ["--restart", "unless-stopped"] + harden + logcap +
                ["-v", _turn_bin_host(svc) + ":/turn-server:ro", "--entrypoint", "/turn-server",
                 SWG_TURN_IMAGE] + _dturn_args(tp), timeout=60)
@@ -16636,7 +16884,7 @@ def _tp_from_unit(svc, unit_text):
 # confine it hard — a compromised/malicious fork binary is contained to its sockets, not root-on-the-box. The
 # reinstall (binary swap) runs as root via host_sh OUTSIDE this sandbox, so ProtectSystem=strict doesn't block it.
 # ⚠️ SystemCallFilter=@system-service is the one directive that could refuse an unusual Go syscall → if a proxy
-# fails to start right after a deploy, check `journalctl -u <svc>` for a seccomp kill and this is the first suspect.
+# fails to start right after a deploy, check `swg-logs turn <instance>` for a seccomp kill and this is the first suspect.
 # Existing (pre-P3) units get hardened on their next reinstall/migration, not retroactively.
 _TURN_HARDEN_KEYS = ("NoNewPrivileges", "ProtectSystem", "ProtectHome", "PrivateTmp", "ProtectKernelTunables",
                      "ProtectKernelModules", "ProtectControlGroups", "RestrictAddressFamilies", "RestrictNamespaces",
@@ -16733,7 +16981,7 @@ def _turn_verify(svc):
     soon as the binary is exec'd, so a crash-loop (e.g. a -listen IP not local to the host → bind fails)
     looks like success — this catches it + returns the journal reason so the panel can show it."""
     v = host_sh("sleep 1.5; systemctl is-active " + shlex.quote(svc) + " 2>/dev/null; "
-                "journalctl -u " + shlex.quote(svc) + " -n 5 --no-pager -o cat 2>/dev/null | grep -iE 'error|invalid|fail|bind|address|panic' | tail -1")
+                + journal_cmd() + " -u " + shlex.quote(svc) + " -n 5 --no-pager -o cat 2>/dev/null | grep -iE 'error|invalid|fail|bind|address|panic' | tail -1")
     lines = (v.stdout or "").strip().splitlines()
     if lines and lines[0] == "active":
         return ""
@@ -17519,13 +17767,25 @@ def _cap_serverlogs():
     Here and not in the reconciles: bounding a log is supervision. A reconcile runs only on a valid panel reply, and
     only for the instances that reply names and whose earlier steps did not fail — so a panel outage, an instance
     the panel stopped listing, or a reconcile error that repeats every pass would each have left a running server
-    unbounded. A listdir of two directories and a stat per instance."""
+    unbounded. A listdir of two directories and a stat per instance.
+    Each log's cap is its share of the node's disk budget (_log_docker_caps); dnsmasq's file is one of them. At Off
+    they are emptied every tick, and their `.1` removed."""
     if NODE_KIND != "docker":
         return
+    cap = _log_docker_caps(_LOG_BUDGET["mb"])
+    logs = [DNSMASQ_LOG]
     for root in (WDTT_ROOT, CSQTT_ROOT):
         with contextlib.suppress(OSError):
-            for name in os.listdir(root):
-                _rotate_serverlog(os.path.join(root, name, "server.log"))
+            logs += [os.path.join(root, name, "server.log") for name in os.listdir(root)]
+    for path in logs:
+        if cap:
+            _rotate_serverlog(path, cap // 2)
+            continue
+        with contextlib.suppress(OSError):
+            if os.path.getsize(path):
+                os.truncate(path, 0)
+        with contextlib.suppress(OSError):
+            os.remove(path + ".1")
 
 def _wdtt_docker_start(inst):
     """(Re)launch the WDTT server for this instance as a supervised child. '' on success (alive after a beat) else error."""
@@ -17722,7 +17982,7 @@ def _wdtt_update_binary(inst, ver, ifaces):
 
 def _wdtt_verify(svc):
     v = host_sh("sleep 1.5; systemctl is-active " + shlex.quote(svc) + " 2>/dev/null; "
-                "journalctl -u " + shlex.quote(svc) + " -n 6 --no-pager -o cat 2>/dev/null | "
+                + journal_cmd() + " -u " + shlex.quote(svc) + " -n 6 --no-pager -o cat 2>/dev/null | "
                 "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")
     lines = (v.stdout or "").strip().splitlines()
     if lines and lines[0] == "active":
@@ -19376,7 +19636,7 @@ def _csqtt_verify(iface):
         time.sleep(0.5)
         if (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip() == "active":
             return ""
-    return "service did not become active — " + (log_no_detail() or "check `journalctl -u " + _csqtt_svc(iface) + "`")
+    return "service did not become active — " + (log_no_detail() or "check `swg-logs turn " + iface + "`")
 
 def _csqtt_install(inst):
     _unk = _csqtt_fork_unknown(inst)
@@ -20445,6 +20705,8 @@ def main():
     # TODO-LATER (remove two releases after 1.8.9): every node that ran an older build has started this one by then.
     with contextlib.suppress(OSError):
         os.remove("/var/lib/swg-noded/swg-sni.log")
+    with contextlib.suppress(Exception):
+        _log_ns_dropins()                            # before the first pass: the units this node writes, into swg-node
     last_samples = {}
     last_route_sig = None; last_route_t = 0.0    # gate the heavy routing reconcile (see ROUTING_RECONCILE_EVERY_S)
     last_desired_sig = None                      # what the last completed pass applied — for the reconcile line's level only

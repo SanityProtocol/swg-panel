@@ -149,6 +149,47 @@ def log_level():
     return LOG_DEBUG if (u == -1 or (u and time.monotonic() < u)) else _LOG["level"]
 
 
+# docker (no journald): every line ALSO goes to a file of our own, the one a reader can find without a docker socket,
+# kept in two files of half the budget each (`path`, `path.1`). Off until log_file() names one.
+_LOG_FILE = {"path": None, "cap": 0, "f": None, "size": 0, "lock": threading.Lock()}
+
+
+def log_file(path, cap):
+    """Also write each line to `path`, timestamped, below `cap` bytes in two files. cap 0 (logging Off) removes both
+    files and writes none; path None stops writing and keeps them. Never raises."""
+    with _LOG_FILE["lock"]:
+        if _LOG_FILE["f"] and (path != _LOG_FILE["path"] or not cap):
+            with contextlib.suppress(OSError):
+                _LOG_FILE["f"].close()
+            _LOG_FILE["f"] = None
+        if path and not cap:
+            for p in (path, path + ".1"):
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+        _LOG_FILE["path"], _LOG_FILE["cap"] = (path, int(cap)) if path and cap else (None, 0)
+
+
+def _log_file_write(data):
+    with _LOG_FILE["lock"]:
+        path = _LOG_FILE["path"]
+        if not path:
+            return
+        try:
+            if _LOG_FILE["f"] is None:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                _LOG_FILE["f"] = open(path, "ab")
+                _LOG_FILE["size"] = _LOG_FILE["f"].tell()
+            _LOG_FILE["f"].write(data)
+            _LOG_FILE["f"].flush()
+            _LOG_FILE["size"] += len(data)
+            if _LOG_FILE["size"] >= _LOG_FILE["cap"] // 2:
+                _LOG_FILE["f"].close()
+                _LOG_FILE["f"] = None
+                os.replace(path, path + ".1")
+        except OSError:
+            _LOG_FILE["f"] = None
+
+
 def _log_write(prio, text):
     pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
     try:
@@ -157,6 +198,9 @@ def _log_write(prio, text):
         out.flush()
     except Exception:
         pass
+    if _LOG_FILE["path"]:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z " + _LOG_TAG.get(prio, "I") + " "
+        _log_file_write("".join(ts + ln + "\n" for ln in text.split("\n")).encode("utf-8", "replace"))
 
 
 def log(prio, msg, *args):
@@ -1537,6 +1581,128 @@ def log_dropins():
         log(LOG_NOTICE, "log level: %d unit drop-in(s) changed — each unit takes it at its next start", changed)
 
 
+# ── the panel box's disk budget: the `swg-panel` journal (docs/LOGS-PLAN.md §2, §18) ────────────────────────────────
+# The panel, swg-sub, this helper and swg-update log into the journald namespace `swg-panel` (their drop-ins come from
+# the installers). This helper is its one writer, masters included: /run/systemd/journald@swg-panel.conf.d/swg.conf,
+# written only when it differs — and only a change restarts that journald, which keeps its clients' streams (P0 T3).
+# What it measured goes to status/_log.json for the panel, which cannot read the journals: the same status dir as every
+# answer (a request id is hex, so it cannot be "_log"), kept out of the sweep, rewritten only when it changes.
+LOG_NS = "swg-panel"
+LOG_MB_DEFAULT, LOG_MB_MIN = 100, 16
+LOG_NS_CONF = os.environ.get("SWG_LOG_NS_CONF") or "/run/systemd/journald@%s.conf.d/swg.conf" % LOG_NS
+LOG_STATUS = "_log.json"
+_JOURNAL_NAME_RE = re.compile(r"^[\w-]+@[0-9a-f]{32}-[0-9a-f]{16}-([0-9a-f]{16})\.journal$")
+
+
+def log_budget_mb():
+    """The panel's budget from panel-settings.json (root reads it, as for the level): absent = 100, never below 16."""
+    try:
+        with open(os.path.join(STATE_DIR, "panel-settings.json")) as f:
+            v = json.load(f).get("log_mb_panel")
+        return max(LOG_MB_MIN, int(v)) if v not in (None, "") else LOG_MB_DEFAULT
+    except (OSError, ValueError, TypeError, AttributeError):
+        return LOG_MB_DEFAULT
+
+
+def _log_dir_usage(d):
+    """(bytes on disk, oldest entry's unix time or None): a listdir and a stat each, no subprocess. The oldest is the
+    head time of the oldest ARCHIVED file (system@<id>-<seq>-<realtime µs, hex>.journal); a damaged `….journal~` is
+    skipped, and while only the active file exists there is none."""
+    used, oldest = 0, None
+    with contextlib.suppress(OSError):
+        for n in os.listdir(d):
+            with contextlib.suppress(OSError):
+                used += os.stat(os.path.join(d, n)).st_blocks * 512
+            m = _JOURNAL_NAME_RE.match(n)
+            if m:
+                t = int(m.group(1), 16) // 1000000
+                oldest = t if oldest is None else min(oldest, t)
+    return used, oldest
+
+
+def _log_ns_dir():
+    try:
+        with open("/etc/machine-id") as f:
+            return "/var/log/journal/%s.%s" % (f.read().strip(), LOG_NS)
+    except OSError:
+        return None
+
+
+def log_budget():
+    """Every tick: the namespace's size and storage (Off stores nothing — and removes what was stored, since journald's
+    Storage=none keeps the files it has), then the status for the panel. Never raises; a steady box compares a string
+    and writes nothing."""
+    if DRYRUN:
+        return
+    mb, off = log_budget_mb(), log_level() == LOG_OFF
+    want = "[Journal]\nStorage=%s\nSystemMaxUse=%dM\nRuntimeMaxUse=%dM\n" % ("none" if off else "persistent", mb, mb)
+    have, err = None, None
+    with contextlib.suppress(OSError):
+        with open(LOG_NS_CONF) as f:
+            have = f.read()
+    if not any(os.path.exists(os.path.join(d, "systemd-journald@.service"))
+               for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")):
+        err = "this system's journald has no namespaces"
+    elif have != want:
+        try:
+            os.makedirs(os.path.dirname(LOG_NS_CONF), exist_ok=True)
+            with open(LOG_NS_CONF + ".tmp", "w") as f:
+                f.write(want)
+            os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
+            r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=60)
+            if r.returncode != 0:
+                err = "journald@%s did not restart: %s" % (LOG_NS, (r.stderr or "").strip()[:160])
+            else:
+                have = want
+                if off:
+                    d = _log_ns_dir()
+                    with contextlib.suppress(OSError):
+                        for n in os.listdir(d):
+                            if ".journal" in n:
+                                with contextlib.suppress(OSError):
+                                    os.remove(os.path.join(d, n))
+                log(LOG_NOTICE, "log budget: the %s journal keeps %s", LOG_NS,
+                    "nothing (logging is off)" if off else "%d MB" % mb)
+        except OSError as e:
+            err = "%s: %s" % (LOG_NS_CONF, e)
+    m = re.search(r"^SystemMaxUse=(\d+)M$", have or "", re.M)
+    used, oldest = _log_dir_usage(_log_ns_dir() or "/nonexistent")
+    doc = {"mb": int(m.group(1)) if m else None, "used_mb": round(used / 1048576.0, 1)}
+    if oldest:
+        doc["oldest"] = oldest
+    if err:
+        doc["err"] = err[:200]
+    _write_log_status(doc)
+
+
+def _write_log_status(doc):
+    """status/_log.json, only when its content differs — through the verified status-dir fd, as every answer."""
+    nfd = _open_dir(NETCTL_DIR)
+    sfd = _root_child(nfd, "status", 0o750) if nfd is not None else None
+    try:
+        if sfd is None:
+            return
+        body = json.dumps(doc, sort_keys=True)
+        with contextlib.suppress(OSError, ValueError):
+            fd = os.open(LOG_STATUS, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=sfd)
+            with os.fdopen(fd) as f:
+                if f.read() == body:
+                    return
+        tmp = LOG_STATUS + ".tmp"
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp, dir_fd=sfd)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=sfd)
+        with os.fdopen(fd, "w") as f:
+            f.write(body)
+            with contextlib.suppress(KeyError, OSError):
+                os.fchown(f.fileno(), 0, grp.getgrnam(PANEL_GROUP).gr_gid)
+        os.replace(tmp, LOG_STATUS, src_dir_fd=sfd, dst_dir_fd=sfd)
+    except OSError as e:
+        log(LOG_WARNING, "log budget: status not written: %s", e)
+    finally:
+        _close(sfd, nfd)
+
+
 def process_queue():
     nfd, qfd, sfd, cfd = _netctl_dirs()
     try:
@@ -1551,7 +1717,8 @@ def process_queue():
         # directory. Cleared through the queue fd.
         _sweep(qfd, 0, keep=lambda n: n.endswith(".json") or (n.endswith(".json.tmp") and not _older(qfd, n, 60)))
         if sfd is not None:
-            _sweep(sfd, 3600)    # answers: read within seconds by their waiter, who cannot delete them (status/ is root's)
+            _sweep(sfd, 3600, keep=lambda n: n == LOG_STATUS)   # answers: read within seconds by their waiter, who cannot
+                                                                # delete them (status/ is root's); the budget's status stays
         if cfd is not None:
             _sweep(cfd, 3600)    # a claim a helper killed mid-request left: never run twice, just cleared
         else:
@@ -1609,6 +1776,8 @@ def main(argv):
     if argv[1] == "run":
         with contextlib.suppress(Exception):
             log_dropins()                            # every tick, before the idle return: Debug's expiry lands here
+        with contextlib.suppress(Exception):
+            log_budget()                             # …and the budget, and its status for the panel
         process_queue()
         return 0
     try:

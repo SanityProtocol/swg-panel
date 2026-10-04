@@ -97,6 +97,47 @@ def log_level():
     return LOG_DEBUG if (u == -1 or (u and time.monotonic() < u)) else _LOG["level"]
 
 
+# docker (no journald): every line ALSO goes to a file of our own, the one a reader can find without a docker socket,
+# kept in two files of half the budget each (`path`, `path.1`). Off until log_file() names one.
+_LOG_FILE = {"path": None, "cap": 0, "f": None, "size": 0, "lock": threading.Lock()}
+
+
+def log_file(path, cap):
+    """Also write each line to `path`, timestamped, below `cap` bytes in two files. cap 0 (logging Off) removes both
+    files and writes none; path None stops writing and keeps them. Never raises."""
+    with _LOG_FILE["lock"]:
+        if _LOG_FILE["f"] and (path != _LOG_FILE["path"] or not cap):
+            with contextlib.suppress(OSError):
+                _LOG_FILE["f"].close()
+            _LOG_FILE["f"] = None
+        if path and not cap:
+            for p in (path, path + ".1"):
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+        _LOG_FILE["path"], _LOG_FILE["cap"] = (path, int(cap)) if path and cap else (None, 0)
+
+
+def _log_file_write(data):
+    with _LOG_FILE["lock"]:
+        path = _LOG_FILE["path"]
+        if not path:
+            return
+        try:
+            if _LOG_FILE["f"] is None:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                _LOG_FILE["f"] = open(path, "ab")
+                _LOG_FILE["size"] = _LOG_FILE["f"].tell()
+            _LOG_FILE["f"].write(data)
+            _LOG_FILE["f"].flush()
+            _LOG_FILE["size"] += len(data)
+            if _LOG_FILE["size"] >= _LOG_FILE["cap"] // 2:
+                _LOG_FILE["f"].close()
+                _LOG_FILE["f"] = None
+                os.replace(path, path + ".1")
+        except OSError:
+            _LOG_FILE["f"] = None
+
+
 def _log_write(prio, text):
     pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
     try:
@@ -105,6 +146,9 @@ def _log_write(prio, text):
         out.flush()
     except Exception:
         pass
+    if _LOG_FILE["path"]:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z " + _LOG_TAG.get(prio, "I") + " "
+        _log_file_write("".join(ts + ln + "\n" for ln in text.split("\n")).encode("utf-8", "replace"))
 
 
 def log(prio, msg, *args):
@@ -15184,23 +15228,81 @@ def log_debug_left(ps, now=None):
     return max(0, int(until - (now if now is not None else time.time())))
 
 
-def log_wire(ps, now=None):
-    """The sync reply's `panel.log` = {level, debug_left?}, or None at the defaults (Info, no Debug): omitted then, so a
-    default fleet's reply is byte-identical to one from before levels, and a node reads an absent key as the defaults.
-    `debug_left` is a duration, so the node counts it down on its own clock — clock skew does not matter, and a node
-    cut off from the panel still leaves Debug on time."""
+LOG_MB_DEFAULT, LOG_MB_MIN = 100, 16    # the disk budget per row (the panel, each node): absent = 100, never below 16
+
+
+def log_mb(v):
+    """A stored budget in MB, read defensively: absent or unreadable is the default."""
+    try:
+        return max(LOG_MB_MIN, int(v)) if v not in (None, "") else LOG_MB_DEFAULT
+    except (TypeError, ValueError):
+        return LOG_MB_DEFAULT
+
+
+def log_mb_parse(v):
+    """(MB, error) for an incoming budget: an integer, at least LOG_MB_MIN; blank is the default. The error is a perr()
+    dict, so the browser shows it translated."""
+    if v in (None, ""):
+        return LOG_MB_DEFAULT, None
+    try:
+        mb = int(v)
+    except (TypeError, ValueError):
+        mb = None
+    if mb is None or mb < LOG_MB_MIN or mb > 1 << 20:
+        return None, perr("The log budget must be a whole number of MB, at least {v1}.", v1=LOG_MB_MIN)
+    return mb, None
+
+
+def log_wire(ps, now=None, mb=None):
+    """The sync reply's `panel.log` = {level, debug_left?, mb?}, or None at the defaults (Info, no Debug, 100 MB):
+    omitted then, so a default fleet's reply is byte-identical to one from before levels, and a node reads an absent key
+    as the defaults. `debug_left` is a duration, so the node counts it down on its own clock — clock skew does not
+    matter, and a node cut off from the panel still leaves Debug on time. `mb` is that node's own disk budget."""
     base = (ps or {}).get("log_level")
     base = base if base in LOG_BASE_LEVELS else "info"
     left = log_debug_left(ps, now)
-    if base == "info" and not left:
+    mb = log_mb(mb)
+    if base == "info" and not left and mb == LOG_MB_DEFAULT:
         return None
-    return {"level": base, **({"debug_left": left} if left else {})}
+    return {"level": base, **({"debug_left": left} if left else {}), **({"mb": mb} if mb != LOG_MB_DEFAULT else {})}
+
+
+PANEL_LOG_FILE = {"path": None}    # docker: <state>/log/swg-panel.log, set at start (main)
 
 
 def panel_log_apply(ps):
-    """This process logs at the fleet's level too. Debug's end is the helper's clock, checked per line."""
+    """This process logs at the fleet's level too. Debug's end is the helper's clock, checked per line. In a container
+    (no journald) its lines also go to a file of the panel's budget; Off removes it."""
     base = (ps or {}).get("log_level")
     log_set(LOG_LEVELS.get(base if base in LOG_BASE_LEVELS else "info"), log_debug_left(ps))
+    if PANEL_LOG_FILE["path"]:
+        log_file(PANEL_LOG_FILE["path"], 0 if log_level() == LOG_OFF else log_mb((ps or {}).get("log_mb_panel")) << 20)
+
+
+def panel_log_status(deps):
+    """The Panel row of the budget table: {mb, used_mb, oldest?, err?} as swg-netctl last measured the `swg-panel`
+    journal (it writes netctl/status/_log.json; this process cannot read the journals), or the panel's own files in a
+    container. None while nothing has reported. On NixOS there is no swg-netctl, so the panel logs to the system
+    journal: {"err": "nixos"}."""
+    if PANEL_LOG_FILE["path"]:
+        d = os.path.dirname(PANEL_LOG_FILE["path"])
+        used = 0
+        with contextlib.suppress(OSError):
+            for n in os.listdir(d):
+                with contextlib.suppress(OSError):
+                    used += os.stat(os.path.join(d, n)).st_blocks * 512
+        return {"mb": log_mb((deps.get("panel_settings") or {}).get("log_mb_panel")), "used_mb": round(used / 1048576.0, 1),
+                "docker": True}
+    if PANEL_PLATFORM == "nixos":
+        return {"err": "nixos"}
+    try:
+        with open(os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "netctl", "status", "_log.json")) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    return {k: doc[k] for k in ("mb", "used_mb", "oldest", "err") if isinstance(doc.get(k), (int, float, str))}
 
 
 _DROPPED_CAP = 20      # entries carried back per save; the total is kept whole
@@ -20400,6 +20502,10 @@ def api(method, path, qs, body, deps):
                                   "eligibility": relay_eligibility(c, deps.get("node_snaps") or {}, nid,
                                                                    (deps.get("cas_legs") or {}).get(nid) or ())},
                         "ip_learning": c.get("ip_learning", True),   # keep learned SNI IPs vs stay fresh (default on)
+                        # the disk budget: STORED (published, or the next save of anything else on this node posts the
+                        # default back — `new-record-field-must-be-published`), and what the node last reported
+                        "log_mb": log_mb(c.get("log_mb")),
+                        "log": snap.get("log") if isinstance(snap.get("log"), dict) else None,
                         "catalog_cats": c.get("catalog_cats") or [],          # provider-catalog categories opted into on this node (node-lens)
                         # Every routing rule's category, per interface, from the NODE RECORD — including the
                         # self-contained kinds, so this is ONE answer to "what do this node's rules name".
@@ -20814,6 +20920,7 @@ def api(method, path, qs, body, deps):
                                "mesh_auto_max": MESH_AUTO_FULL_MAX,
                                "time_zone_now": tz_view(),   # the zone days are counted in NOW (a stored one can be lost)
                                "log_debug_left": log_debug_left(panel_settings),   # Debug's time left on THIS clock (-1 = until changed)
+                               "log_panel": panel_log_status(deps),   # the Panel row of the disk budget table
                                "awg31_builtin": AWG31_SET},   # the 3.1 set a blank cell of Settings' 3.1 defaults stands for (their placeholders)
             # ↑ Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
@@ -20979,6 +21086,14 @@ def api(method, path, qs, body, deps):
             cur["log_debug_until"] = _ld if _ld <= 0 else int(time.time()) + _ld
         elif log_debug_left(cur) == 0:
             cur["log_debug_until"] = 0          # a Debug that has run out is cleared by the next save
+        if "log_mb_panel" in incoming:          # the panel's disk budget; stored only when not the default
+            _lmb, _lerr = log_mb_parse(incoming["log_mb_panel"])
+            if _lerr:
+                return 400, {"ok": False, **_lerr, "code": "bad_request"}
+            if _lmb == LOG_MB_DEFAULT:
+                cur.pop("log_mb_panel", None)
+            else:
+                cur["log_mb_panel"] = _lmb
         if "mesh_mode" in incoming:
             _mm = str(incoming.get("mesh_mode") or "auto")
             if _mm not in MESH_MODES:
@@ -24370,6 +24485,14 @@ def api(method, path, qs, body, deps):
             else:   nodes[nid].pop("dns_upstream", None)
         if "ip_learning" in body:               # keep learned SNI IPs (True) vs stay fresh / no remembered IPs (False)
             nodes[nid]["ip_learning"] = bool(body.get("ip_learning"))
+        if "log_mb" in body:                    # this node's disk budget for swg's logs; stored only when not the default
+            _lmb, _lerr = log_mb_parse(body.get("log_mb"))
+            if _lerr:
+                return 400, {"ok": False, **_lerr, "code": "bad_request"}
+            if _lmb == LOG_MB_DEFAULT:
+                nodes[nid].pop("log_mb", None)
+            else:
+                nodes[nid]["log_mb"] = _lmb
         if "exits" in body:                     # the node's exit DEVICES (decision 10: a list from day one)
             _c = nodes[nid]
             _lk = {(l or {}).get("iface") for l in (_c.get("links") or {}).values()}
@@ -30183,7 +30306,7 @@ class Handler(BaseHTTPRequestHandler):
                                                          "at": _gu.get("at") or "04:00"},   # node applies a CHANGED provider list only in this quiet-hour window (new lists apply immediately)
                                           "geo_epoch": _ps.get("geo_epoch") or 0,
                                           # the fleet's log level — absent at the defaults (byte-identical reply)
-                                          **({"log": _lw} if (_lw := log_wire(_ps)) else {})},
+                                          **({"log": _lw} if (_lw := log_wire(_ps, mb=node.get("log_mb"))) else {})},
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):
@@ -32197,6 +32320,8 @@ def main():
     if fleet is None:
         raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
     nodes_path = fleet.get("nodes_path", "/var/lib/swg-panel/nodes.json")
+    if IN_DOCKER:                                  # no journald in here: the panel's lines also go to a capped file
+        PANEL_LOG_FILE["path"] = os.path.join(os.path.dirname(nodes_path) or ".", "log", "swg-panel.log")
     # The fleet's log level before anything below logs — the migrations, repairs and lock retries — so Off holds from
     # this process's first line, as swg-noded's _log_boot does. Read plainly here (the critical-store load with its
     # backups runs later, when deps are built, and applies it again).

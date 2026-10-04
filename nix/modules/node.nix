@@ -783,6 +783,12 @@ in
       # in systemd's search path, so without this the template unit simply does not exist.
       systemd.packages = [ pkgs.amneziawg-tools ];
 
+      # `swg-logs noded -f` — swg's journal by source name (plain `journalctl -u swg-noded` shows only systemd's lines
+      # once the daemon logs into its namespace). Just this one command on PATH, not the whole package.
+      environment.systemPackages = [
+        (pkgs.writeShellScriptBin "swg-logs" ''exec ${cfg.package}/bin/swg-logs "$@"'')
+      ];
+
       systemd.tmpfiles.rules = [
         "d ${cfg.stateDir} 0700 root root -"
         "d ${cfg.confDir} 0700 root root -"
@@ -945,6 +951,13 @@ in
           # unit and leaves the OLD one running — with nothing on screen saying the fix has not
           # taken. An operator hitting the AppArmor refusal is told to restart the daemon; this is why.
           ProtectSystem = true;
+
+          # swg's own journal, held to the budget set in Settings → Logs (docs/LOGS-PLAN.md §2): this unit and what it
+          # runs log into the `swg-node` namespace, whose size swg-noded writes under /run/systemd/journald@swg-node.conf.d
+          # — NixOS ships systemd's journald@ template (checked on the nixos node, systemd 258). The units swg-noded
+          # writes itself get the same namespace from a drop-in it writes beside them. Read with `swg-logs`.
+          # Like any unit setting, it applies when the daemon next starts (see restartIfChanged above).
+          LogNamespace = "swg-node";
         } // lib.optionalAttrs (cfg.tokenFile != null) {
           # The token lands in a per-unit tmpfs the bootstrap reads once through
           # $CREDENTIALS_DIRECTORY, instead of an environment variable the daemon and every

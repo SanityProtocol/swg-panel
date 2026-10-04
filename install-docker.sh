@@ -1873,6 +1873,8 @@ EOF
   ok "one-click address changes wired — the panel restarts swg-sub / rebinds via the host on Save"
 }
 wire_docker_netctl
+if ! $DRYRUN; then docker_host_log_dropins; [ "$DOCKER_LOG_DROPINS_CHANGED" -gt 0 ] && systemctl daemon-reload 2>/dev/null; fi
+true   # the timer units' systemd lines capped (lib/common.sh); never fatal
 
 # ── a convert invalidates a reverse proxy's vhost ──────────────────────────────────────────────────────────
 # The cert dir just moved (/etc/swg-panel → the container's data/etc) and the upstream ports changed. nginx keeps

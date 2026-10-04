@@ -1689,6 +1689,21 @@ ensure_update_unit_docker(){   # HEAL the docker one-click self-update wiring on
   ok "docker one-click self-update wiring healed — the Update button will work now"
 }
 
+ensure_log_ns(){   # <namespace> <unit>... — swg's own journal (lib/common.sh): the drop-ins + swg-logs, BEFORE this update's
+  # restarts, so the units it restarts move now; the oneshots (netctl, update) move at their next tick. Install-if-missing,
+  # like the heal pass: a drop-in already there is left as it is.
+  if $DRYRUN; then echo "    [skip] LogNamespace=$1 drop-ins for: ${*:2} + /usr/local/bin/swg-logs"; return 0; fi
+  swg_log_ns_heal "$@"
+  if [ "$SWG_LOG_NS_CHANGED" -gt 0 ]; then
+    systemctl daemon-reload
+    DID_UPDATE=yes; note "swg's logs: ${*:2} → the $1 journal (read with swg-logs)"
+    ok "swg's logs now go to the $1 journal, held to its budget — \`journalctl -u\` shows only systemd's lines; read them with \`swg-logs\`"
+  fi
+  if [ -f "$SRC/swg-logs" ] && ! cmp -s "$SRC/swg-logs" /usr/local/bin/swg-logs 2>/dev/null; then
+    install -m755 "$SRC/swg-logs" /usr/local/bin/swg-logs
+  fi
+}
+
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   found=1; pan_seen=yes; pold="$(oldver "$PANEL_DIR")"
@@ -1697,6 +1712,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   # would leave the service dead until someone restarted it by hand. Outside should_update on purpose — an
   # already-current box needs the repair just as much, since the bomb goes off at the next reboot.
   ensure_cert_perms
+  ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
   if should_update "bare-metal swg-panel" "$PANEL_DIR"; then
     info "updating bare-metal swg-panel ($PANEL_DIR)"
     for f in swg-panel-server index.html app.css app.js reconcile.js turn-artifacts.js; do
@@ -1785,6 +1801,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   # a version update restarted swg-noded on the old ref and then changed the file under the running daemon.
   NODE_REF_CHANGED=no; _noded_restarted=no
   ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
+  ensure_log_ns swg-node swg-noded.service   # before the restart below: swg-noded moves into its journal with it
   if should_update "bare-metal swg-node" "$NODED_DIR"; then
     info "updating bare-metal swg-node ($AGENT_DIR + $NODED_DIR)"
     [ -d "$AGENT_DIR" ] && [ -f "$SRC/swg-agent" ] && { run cp "$SRC/swg-agent" "$AGENT_DIR/"; run chmod 755 "$AGENT_DIR/swg-agent"; }
@@ -1815,6 +1832,10 @@ fi
 # ───────────────────────── Docker (host / node / master) ─────────────────────────
 if ! $NODE_ONLY && docker_stack_live; then
   found=1; doc_seen=yes
+  if ! $DRYRUN; then   # the host timer units' systemd lines (lib/common.sh) — they start every 10–30 s
+    docker_host_log_dropins
+    [ "$DOCKER_LOG_DROPINS_CHANGED" -gt 0 ] && { systemctl daemon-reload 2>/dev/null || true; note "docker host timers: systemd's start/stop lines no longer logged"; }
+  fi
   # which profile is running? prefer the marker install-docker.sh wrote into .env, else sniff containers
   prof="$(docker_profile)"
   if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi

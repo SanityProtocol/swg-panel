@@ -271,13 +271,14 @@ rm_panel(){
   # every uninstall, so a panel that "comes back as itself" came back on the release channel (1.8.8 qualification, round
   # 6; the Docker path keeps it in its kept .env). Kept, a re-install's unit picks it up again. Deleting the data takes it.
   local _pdd="$SD/swg-panel-server.service.d" _mine=""
-  [ "$PANEL_DATA_DEL" = yes ] || _mine="$(ls -A "$_pdd" 2>/dev/null | grep -vx 'zz-swg-update.conf' | tr '\n' ' ' || true)"
+  [ "$PANEL_DATA_DEL" = yes ] || _mine="$(ls -A "$_pdd" 2>/dev/null | grep -vxE 'zz-swg-update.conf|swg-ns.conf' | tr '\n' ' ' || true)"
   rmrf $SD/swg-panel-server.service $SD/swg-sub.service $SD/swg-sub.service.d \
        $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl \
        /var/lib/swg-netctl
-  if [ -n "$_mine" ]; then rmrf "$_pdd/zz-swg-update.conf"; info "  Kept your own drop-in(s) for the panel — $_pdd: ${_mine% } (a re-install picks them up)"
+  if [ -n "$_mine" ]; then rmrf "$_pdd/zz-swg-update.conf" "$_pdd/swg-ns.conf"; info "  Kept your own drop-in(s) for the panel — $_pdd: ${_mine% } (a re-install picks them up)"
   else rmrf "$_pdd"; fi
-  docker_running swg-panel || rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+  docker_running swg-panel || rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+  rm_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
   rm_updater_if_last bare-gone   # the one-click updater: shared with a docker install, so it goes only with the last of them
   # ⚠️ A DANGLING ENABLEMENT SYMLINK OUTLIVES ITS UNIT FILE, and `systemctl disable` CANNOT clear it: it
   # reads [Install] from the FRAGMENT to learn which symlinks to drop, so once the fragment is gone the link
@@ -594,9 +595,26 @@ capture_adopted(){ local _n
 # SWG_TURN_MIRROR — the proxy for the turn downloads, which matters where GitHub is blocked — went with every such
 # uninstall (1.8.8 qualification, round 8). Ours goes: 10-swg-reach-sweep.conf (a re-install writes it again).
 _node_dropins_away(){ local d="$SD/swg-noded.service.d" mine=""
-  [ "${KEEP_OWN_DROPINS:-no}" = yes ] && mine="$(ls -A "$d" 2>/dev/null | grep -vx '10-swg-reach-sweep.conf' | tr '\n' ' ' || true)"
-  if [ -n "$mine" ]; then rmrf "$d/10-swg-reach-sweep.conf"; info "  Kept your own drop-in(s) for the node — $d: ${mine% } (a re-install picks them up)"
+  [ "${KEEP_OWN_DROPINS:-no}" = yes ] && mine="$(ls -A "$d" 2>/dev/null | grep -vxE '10-swg-reach-sweep.conf|swg-ns.conf' | tr '\n' ' ' || true)"
+  if [ -n "$mine" ]; then rmrf "$d/10-swg-reach-sweep.conf" "$d/swg-ns.conf"; info "  Kept your own drop-in(s) for the node — $d: ${mine% } (a re-install picks them up)"
   else rmrf "$d"; fi; }
+# swg's own journal (docs/LOGS-PLAN.md §2, §18): the namespace drop-ins (ours, under /etc; swg-noded's, beside the units it
+# writes — /etc, or /run where units cannot persist), the size file under /run and the stored lines; swg-logs goes with
+# the last of the two. Its journald is NOT stopped: a unit still running in the namespace (a turn proxy kept by this
+# run) would lose its log stream, and a namespace journald ends by itself once its last client has. TWIN of lib/common.sh's
+# SWG_LOG_NS_DROPIN (this file does not source it).
+rm_log_ns(){   # <namespace> <unit or unit prefix>...
+  local ns="$1" u mid; shift
+  for u in "$@"; do
+    rmrf "$SD/$u.d/swg-ns.conf" "/run/systemd/system/$u.d/swg-ns.conf" "/run/systemd/system/$u.d/swg-log.conf"   # + the level's
+    rmdir_if_empty "$SD/$u.d"; rmdir_if_empty "/run/systemd/system/$u.d"
+  done
+  rmrf "/run/systemd/journald@$ns.conf.d"
+  mid="$(cat /etc/machine-id 2>/dev/null || true)"
+  [ -n "$mid" ] && rmrf "/var/log/journal/$mid.$ns" "/run/log/journal/$mid.$ns"
+  { [ -e "$SD/swg-noded.service" ] || [ -e "$SD/swg-panel-server.service" ]; } || rmrf /usr/local/bin/swg-logs
+  return 0
+}
 rm_node(){
   info "Removing swg-node (bare-metal entry server)"
   node_goodbye   # signal the panel before we tear down the config it needs
@@ -617,7 +635,9 @@ rm_node(){
   if [ -e $SD/swg-noded.service ]; then run systemctl disable --now swg-noded; fi
   docker_running swg-node || rm_smartdns_redirect   # its dnsmasq just went with it — see rm_smartdns_redirect
   run systemctl unmask dnsmasq 2>/dev/null || true   # install masked the distro dnsmasq (node ran its own); restore it
-  rmrf $SD/swg-noded.service; _node_dropins_away; run systemctl daemon-reload
+  rmrf $SD/swg-noded.service; _node_dropins_away
+  rm_log_ns swg-node swg-noded.service swg-relay@.service vk-turn-proxy-.service swg-wdtt-.service swg-csqtt-.service
+  run systemctl daemon-reload
   # An interface TAKEN OVER from somebody else's container came with a promise: their server keeps serving, just
   # from here instead. Uninstalling ends that — we delete the interface further down — and the container it came
   # from is still stopped with restart=no, exactly as the take-over left it. Removing swgPanel then leaves the
@@ -755,7 +775,8 @@ rm_updater_if_last(){
   if { [ "${1:-}" != bare-gone ] && { [ -d /opt/swg-panel ] || [ -f "$SD/swg-panel-server.service" ]; }; } \
      || docker_running swg-panel || docker_running swg-node; then return 0; fi
   for _su in swg-update.timer swg-update.path; do run systemctl disable --now "$_su" 2>/dev/null || true; done
-  rmrf "$SD/swg-update.service" "$SD/swg-update.path" "$SD/swg-update.timer" /usr/local/bin/swg-update \
+  rmrf "$SD/swg-update.service" "$SD/swg-update.service.d/swg-ns.conf" "$SD/swg-update.service.d/swg-log.conf" \
+       "$SD/swg-update.path" "$SD/swg-update.timer" /usr/local/bin/swg-update \
        /usr/local/bin/swg-update.new /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
   run systemctl daemon-reload 2>/dev/null || true
 }

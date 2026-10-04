@@ -109,6 +109,47 @@ def log_level():
     return LOG_DEBUG if (u == -1 or (u and time.monotonic() < u)) else _LOG["level"]
 
 
+# docker (no journald): every line ALSO goes to a file of our own, the one a reader can find without a docker socket,
+# kept in two files of half the budget each (`path`, `path.1`). Off until log_file() names one.
+_LOG_FILE = {"path": None, "cap": 0, "f": None, "size": 0, "lock": threading.Lock()}
+
+
+def log_file(path, cap):
+    """Also write each line to `path`, timestamped, below `cap` bytes in two files. cap 0 (logging Off) removes both
+    files and writes none; path None stops writing and keeps them. Never raises."""
+    with _LOG_FILE["lock"]:
+        if _LOG_FILE["f"] and (path != _LOG_FILE["path"] or not cap):
+            with contextlib.suppress(OSError):
+                _LOG_FILE["f"].close()
+            _LOG_FILE["f"] = None
+        if path and not cap:
+            for p in (path, path + ".1"):
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+        _LOG_FILE["path"], _LOG_FILE["cap"] = (path, int(cap)) if path and cap else (None, 0)
+
+
+def _log_file_write(data):
+    with _LOG_FILE["lock"]:
+        path = _LOG_FILE["path"]
+        if not path:
+            return
+        try:
+            if _LOG_FILE["f"] is None:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                _LOG_FILE["f"] = open(path, "ab")
+                _LOG_FILE["size"] = _LOG_FILE["f"].tell()
+            _LOG_FILE["f"].write(data)
+            _LOG_FILE["f"].flush()
+            _LOG_FILE["size"] += len(data)
+            if _LOG_FILE["size"] >= _LOG_FILE["cap"] // 2:
+                _LOG_FILE["f"].close()
+                _LOG_FILE["f"] = None
+                os.replace(path, path + ".1")
+        except OSError:
+            _LOG_FILE["f"] = None
+
+
 def _log_write(prio, text):
     pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
     try:
@@ -117,6 +158,9 @@ def _log_write(prio, text):
         out.flush()
     except Exception:
         pass
+    if _LOG_FILE["path"]:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z " + _LOG_TAG.get(prio, "I") + " "
+        _log_file_write("".join(ts + ln + "\n" for ln in text.split("\n")).encode("utf-8", "replace"))
 
 
 def log(prio, msg, *args):

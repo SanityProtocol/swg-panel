@@ -1342,6 +1342,9 @@ WantedBy=multi-user.target
 EOF
   # the device-access tables must not outlive a downgrade — see noded_reach_sweep_dropin (lib/common.sh)
   noded_reach_sweep_dropin "$NODED_DIR" | writef "/etc/systemd/system/$NODED_REACH_SWEEP_DROPIN" 644
+  # swg's own journal, held to its budget (lib/common.sh), and the command that reads it
+  if swg_log_ns_ok; then swg_log_ns_text swg-node | writef "/etc/systemd/system/swg-noded.service.d/$SWG_LOG_NS_DROPIN" 644; fi
+  if [ -f "$SRC/swg-logs" ]; then writef /usr/local/bin/swg-logs 755 < "$SRC/swg-logs"; fi
   # A master runs a local node, so it needs the same AppArmor accommodation install-node.sh applies:
   # userspace interfaces (wdtt, csqtt, awg on amneziawg-go) are driven over a UAPI socket in
   # /run/wireguard, which a distribution's wg profile does not permit. No-op without AppArmor.
@@ -1529,6 +1532,8 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+  if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-panel-server.service.d/$SWG_LOG_NS_DROPIN" 644; fi
+  if [ -f "$SRC/swg-logs" ]; then writef /usr/local/bin/swg-logs 755 < "$SRC/swg-logs"; fi   # reads swg's journals (lib/common.sh)
   mk_update_unit                                   # wire one-click host self-update (root, own cgroup)
 }
 
@@ -1579,6 +1584,7 @@ InaccessiblePaths=-${ETC_DIR}/auth -${TLS_DIR} -${STATE_DIR}/subs/vault.json -${
 [Install]
 WantedBy=multi-user.target
 EOF
+  if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-sub.service.d/$SWG_LOG_NS_DROPIN" 644; fi
 }
 
 # swg-netctl: the privileged network/TLS helper. The unprivileged panel can't bind low ports, edit its
@@ -1615,6 +1621,7 @@ Environment=SWG_ETC_DIR=${ETC_DIR}
 # panel issued at runtime expired silently at 90 days. Pin it; do not rely on HOME.
 Environment=LE_WORKING_DIR=${ACME_HOME}
 EOF
+  if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-netctl.service.d/$SWG_LOG_NS_DROPIN" 644; fi
   writef /etc/systemd/system/swg-netctl.path 644 <<EOF
 [Unit]
 Description=watch for swg-netctl requests from the panel
@@ -1668,6 +1675,7 @@ Description=swg-panel one-click self-update (swg programs only)
 Type=oneshot
 ExecStart=/usr/local/bin/swg-update-check
 EOF
+  if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-update.service.d/$SWG_LOG_NS_DROPIN" 644; fi
   writef /etc/systemd/system/swg-update.timer 644 <<EOF
 [Unit]
 Description=poll for a swg one-click update request

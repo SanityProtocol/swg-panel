@@ -1661,6 +1661,47 @@ export const STR = {
   "Then logging goes back to {v1}.": "Затем уровень вернётся к «{v1}».",
   "Turn proxies, WireGuard interfaces and other third-party services pick up a change the next time they restart.":
     "Turn-прокси, интерфейсы WireGuard и другие сторонние службы подхватят изменение при следующем перезапуске.",
+  // Settings → Logs, the disk budget table
+  "Disk budget": "Место на диске",
+  "How much disk swg's logs may take on each server. When the budget is full, the oldest lines go first.":
+    "Сколько места на диске могут занимать логи swg на каждом сервере. Когда лимит заполнен, первыми удаляются самые старые строки.",
+  "At least {v1} MB": "Не меньше {v1} МБ",
+  "Filter by server…": "Фильтр по серверу…",
+  "Server": "Сервер",
+  "Budget": "Лимит",
+  "Used": "Занято",
+  "Holds": "Хранит",
+  "State": "Состояние",
+  "MB": "МБ",
+  "Budget for {v1}, MB": "Лимит для {v1}, МБ",
+  "{v1} MB": "{v1} МБ",
+  "{v1} h": "{v1} ч",
+  "{v1} days": "{v1} дн.",
+  "Shown once the budget is full": "Показывается, когда лимит заполнен",
+  "No server matches “{q}”.": "Нет серверов по запросу «{q}».",
+  "System journal": "Системный журнал",
+  "On NixOS the panel has no root helper here, so its lines stay in the system journal and its limits.":
+    "На NixOS у панели нет root-помощника, поэтому её строки остаются в системном журнале и в его лимитах.",
+  "Not reporting — it applies the budget when it is back.": "Не на связи — применит лимит, когда вернётся.",
+  "Waiting": "Ожидание",
+  "The panel's root helper reports within a few seconds of starting.": "Root-помощник панели сообщает данные через несколько секунд после запуска.",
+  "Update the node": "Обновите узел",
+  "This node's build is too old to keep a log budget. Update it to apply one.":
+    "Сборка узла слишком старая для лимита логов. Обновите узел, чтобы он применился.",
+  "Not supported": "Не поддерживается",
+  "Not reporting — the figures are from its last report.": "Не на связи — цифры из последнего отчёта.",
+  "Pending": "Применяется",
+  "The root helper applies it within 10 seconds.": "Root-помощник применит его в течение 10 секунд.",
+  "Applies on the node's next sync.": "Применится при следующей синхронизации.",
+  "Applied": "Применён",
+  "Kernel messages (the P2P guard, network devices) and WireGuard interfaces' own start and stop lines stay in the system journal, outside the budget.":
+    "Сообщения ядра (защита от P2P, сетевые устройства) и строки запуска и остановки интерфейсов WireGuard остаются в системном журнале, вне лимита.",
+  "In docker the budget holds swg's own log files and the containers a node launches; each container's own docker log (10 MB × 3) is not counted.":
+    "В docker лимит распространяется на файлы логов swg и на контейнеры, которые запускает узел; собственный docker-лог каждого контейнера (10 МБ × 3) не учитывается.",
+  "log budget → {v1} MB": "лимит логов → {v1} МБ",
+  "Panel log budget → {v1} MB": "Лимит логов панели → {v1} МБ",
+  "{v1}: the log budget must be at least {v2} MB": "{v1}: лимит логов должен быть не меньше {v2} МБ",
+  "The log budget must be a whole number of MB, at least {v1}.": "Лимит логов — целое число МБ, не меньше {v1}.",
   "Change the panel username and password — applied on *{v1}*. Changing either takes effect immediately and you'll be asked to sign in again. Changing the password also re-keys your *Encryption Vault* in place, so stored configs and subscription links keep working (no re-issue).":
     "Смена логина и пароля панели — применяется по кнопке *{v1}*. Любое из изменений действует сразу, и вас попросят войти заново. Смена пароля также перевыпускает ключ вашего *хранилища шифрования* на месте, поэтому сохранённые конфиги и ссылки на подписки продолжают работать (перевыпуск не нужен).",
   "required to confirm a change": "нужен для подтверждения изменения",

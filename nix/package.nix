@@ -65,6 +65,7 @@ let
     "swg-agent"          # one peer op, stdin → stdout
     "swg-netctl"         # Access/TLS helper, root-side of the panel's queue
     "swg-passwd"         # `swg-passwd` — reset the panel login
+    "swg-logs"           # `swg-logs` — read swg's journals by source name
   ];
 
   # lib.fileset throws on a path that does not exist, so a shipped file lost to .gitignore or a
@@ -131,6 +132,7 @@ stdenvNoCC.mkDerivation {
     # swg-netctl and swg-passwd resolve nothing relative to themselves, so they are the real files.
     install -Dm755 swg-netctl $out/bin/swg-netctl
     install -Dm755 swg-passwd $out/bin/swg-passwd
+    install -Dm755 swg-logs   $out/bin/swg-logs
 
     # The rest get a wrapper that execs the libexec path, so the interpreter sees THAT path as
     # argv[0]/__file__ and the sibling-file lookups above resolve. See the header.

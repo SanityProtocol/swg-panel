@@ -1,0 +1,63 @@
+#!/bin/bash
+# swg-logs — read swg's logs by source name (docs/LOGS-PLAN.md §8.5).
+#
+# swg writes into two journald namespaces of its own, swg-panel and swg-node, each held to its disk budget
+# (Settings → Logs). Plain `journalctl -u <unit>` then shows only systemd's start/stop lines for a swg unit; this
+# reads the right namespace merged with the main journal (`--namespace=+…`), where a unit not yet moved still writes.
+# Every option after the source goes to journalctl as it is.
+#
+#   swg-logs [source [name]] [journalctl options…]
+#
+#   (none)          everything swg writes on this box
+#   panel           the panel                         sub      the subscription page
+#   netctl          the panel's root helper           update   one-click updates
+#   noded           the node service (and its agent operations, dnsmasq and swg-sni)
+#   sni             swg-sni's lines only              dns      smart DNS (dnsmasq)
+#   relay [iface]   the TCP relay                     turn [name]  turn proxies, WDTT and csqtt
+#   iface [iface]   wg-quick@ / awg-quick@ (they stay in the main journal)
+#   kernel          the kernel log                    p2p      the P2P guard's kernel lines
+#
+#   swg-logs noded -f        swg-logs panel --since today        swg-logs turn wdtt1 --since -1h
+#   swg-logs sni -n 100      swg-logs relay awg0 -p warning      swg-logs iface awg0
+set -u
+
+usage(){ sed -n '2,/^set -u/{/^set -u/d;s/^# \{0,1\}//;p}' "$0"; }
+
+ns_ok(){ local d; for d in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+  [ -e "$d/systemd-journald@.service" ] && return 0; done; return 1; }
+A=()                                                    # journalctl's arguments, built below
+ns(){ ns_ok && A+=("--namespace=+$1"); return 0; }      # without namespaces everything is in the main journal
+
+src="${1:-}"; [ $# -gt 0 ] && shift
+name=""
+case "$src" in relay|turn|iface)                     # these take an optional name before the options
+  case "${1:-}" in ""|-*) ;; *) name="$1"; shift;; esac;;
+esac
+case "$name" in *[!A-Za-z0-9_.@-]*) echo "swg-logs: '$name' is not a unit name" >&2; exit 2;; esac
+n="${name:-*}"
+
+case "$src" in
+  ""|all)
+    have_panel=no; have_node=no
+    systemctl cat swg-panel-server.service >/dev/null 2>&1 && have_panel=yes
+    systemctl cat swg-noded.service >/dev/null 2>&1 && have_node=yes
+    if ! ns_ok; then :
+    elif [ "$have_panel$have_node" = yesyes ]; then A+=('--namespace=*')   # a master: both, and the main journal
+    elif [ "$have_panel" = yes ]; then ns swg-panel
+    else ns swg-node; fi ;;
+  panel)  ns swg-panel; A+=(-u swg-panel-server.service) ;;
+  sub)    ns swg-panel; A+=(-u swg-sub.service) ;;
+  netctl) ns swg-panel; A+=(-u swg-netctl.service) ;;
+  update) ns swg-panel; A+=(-u swg-update.service) ;;
+  noded|node) ns swg-node; A+=(-u swg-noded.service) ;;
+  sni)    ns swg-node; A+=(-u swg-noded.service --grep '^swg-sni:') ;;   # it shares noded's stream
+  dns|dnsmasq) ns swg-node; A+=(-t dnsmasq) ;;
+  relay)  ns swg-node; A+=(-u "swg-relay@$n.service") ;;
+  turn)   ns swg-node; A+=(-u "vk-turn-proxy-$n.service" -u "swg-wdtt-$n.service" -u "swg-csqtt-$n.service") ;;
+  iface)  A+=(-u "wg-quick@$n.service" -u "awg-quick@$n.service") ;;
+  kernel) A+=(-k) ;;
+  p2p)    A+=(-k --grep 'swg-p2p') ;;
+  -h|--help|help) usage; exit 0 ;;
+  *) echo "swg-logs: no source called '$src'" >&2; usage >&2; exit 2 ;;
+esac
+exec journalctl "${A[@]}" "$@"

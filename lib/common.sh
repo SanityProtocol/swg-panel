@@ -2556,3 +2556,47 @@ except ssl.SSLCertVerificationError as e:
 sys.exit(1)
 PY
 }
+
+# ── swg's own journals (docs/LOGS-PLAN.md §2, §18) ──────────────────────────────────────────────────────────────────
+# Every swg unit logs into a journald namespace of its own — swg-panel (the panel, swg-sub, swg-netctl, swg-update) or
+# swg-node (swg-noded and everything it runs) — so the disk budget set in Settings → Logs caps only swg's lines and never
+# evicts the box's other logs. Set by a DROP-IN, never in the unit: update.sh does not rewrite an existing unit (the
+# operator's edits stay), so only a drop-in reaches every box. Written only where systemd ships journald's namespace
+# template — a unit naming a namespace without it fails to start. A unit moves at its next start. The namespaces' sizes
+# are written at runtime under /run (swg-netctl for swg-panel, swg-noded for swg-node); the units swg-noded writes get
+# their drop-in from swg-noded. Read them with swg-logs.
+SWG_LOG_NS_DROPIN=swg-ns.conf
+swg_log_ns_ok(){ local d; for d in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+  [ -e "$d/systemd-journald@.service" ] && return 0; done; return 1; }
+swg_log_ns_text(){ printf '[Service]\nLogNamespace=%s\n' "$1"; }   # <namespace> → the drop-in, on stdout
+# update.sh's form: each <unit> that exists gets its drop-in when it is missing or different. SWG_LOG_NS_CHANGED = how
+# many were written; the caller daemon-reloads before it restarts anything.
+swg_log_ns_heal(){   # <namespace> <unit>...
+  local ns="$1" u d want; shift; SWG_LOG_NS_CHANGED=0
+  swg_log_ns_ok || return 0
+  want="$(swg_log_ns_text "$ns")"
+  for u in "$@"; do
+    [ -f "/etc/systemd/system/$u" ] || continue
+    d="/etc/systemd/system/$u.d"
+    [ "$(cat "$d/$SWG_LOG_NS_DROPIN" 2>/dev/null)" = "$want" ] && continue
+    mkdir -p "$d" && printf '%s\n' "$want" > "$d/$SWG_LOG_NS_DROPIN" && SWG_LOG_NS_CHANGED=$((SWG_LOG_NS_CHANGED + 1))
+  done
+  return 0   # set -e callers (update.sh): a drop-in that could not be written is not worth aborting an update for
+}
+# Docker hosts: their timer units start a oneshot every 10 s (swg-netctl-docker) and 30 s (swg-update), and systemd's
+# Starting/Finished lines about them were most of a box's journal (P0 T1). There is no swg-netctl here to follow the
+# fleet's level, so the drop-in is static: LogLevelMax=notice drops those lines, SyslogLevel=notice keeps the units' own
+# output (rare: a line when they act). swg-update only where no bare-metal panel shares the unit — that panel's
+# swg-netctl writes its level-following drop-in under /run, which a same-named file here would mask.
+docker_host_log_dropins(){   # → 0; DOCKER_LOG_DROPINS_CHANGED = how many were written (the caller daemon-reloads)
+  local u f want; DOCKER_LOG_DROPINS_CHANGED=0
+  want="$(printf '[Service]\nLogLevelMax=notice\nSyslogLevel=notice')"
+  for u in swg-netctl-docker.service swg-update.service; do
+    [ -f "/etc/systemd/system/$u" ] || continue
+    [ "$u" = swg-update.service ] && [ -e /usr/local/bin/swg-netctl ] && continue
+    f="/etc/systemd/system/$u.d/swg-log.conf"
+    [ "$(cat "$f" 2>/dev/null)" = "$want" ] && continue
+    mkdir -p "${f%/*}" && printf '%s\n' "$want" > "$f" && DOCKER_LOG_DROPINS_CHANGED=$((DOCKER_LOG_DROPINS_CHANGED + 1))
+  done
+  return 0
+}
