@@ -8,6 +8,7 @@
  * above any mount.
  */
 
+import { openLogs, NODE_SOURCES } from "./logview.js";   // the node's live logs, from its page
 import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr, panelNowS } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
@@ -321,6 +322,7 @@ export function NodeDetail({ node: rawName }) {
           : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Check status")} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
         <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Node settings")} onClick=${() => openNodeEdit(nrec)}><${Ic} i="gear"/></button>
+        <button class="iconbtn" title=${T("This node's live logs (Settings → Logs)")} onClick=${() => openLogs({ nodes: [nrec.id], src: NODE_SOURCES })}><${Ic} i="doc"/></button>
         ${/* T-20: shown for a DOWN node too, and that is the point. It used to hide exactly when it was
               needed — a node locked out by a rotate is by definition not reporting — leaving "Restore or
               migrate" as the only door, which arms a whole rebuild for a box whose only problem is its

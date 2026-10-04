@@ -1766,6 +1766,8 @@ export const STR = {
   "Paused — {v1} lines held": "Пауза — строк: {v1}",
   "{v1} of the last {v2} lines": "{v1} из последних {v2} строк",
   "Shown full screen — Esc returns it here.": "Открыто во весь экран — Esc вернёт сюда.",
+  "This node's live logs (Settings → Logs)": "Логи этой ноды онлайн (Настройки → Логи)",
+  "These turn proxies' live logs (Settings → Logs)": "Логи этих turn-прокси онлайн (Настройки → Логи)",
   "Panel log budget → {v1} MB": "Лимит логов панели → {v1} МБ",
   "{v1}: the log budget must be at least {v2} MB": "{v1}: лимит логов должен быть не меньше {v2} МБ",
   "The log budget must be a whole number of MB, at least {v1}.": "Лимит логов — целое число МБ, не меньше {v1}.",

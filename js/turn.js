@@ -12,6 +12,7 @@
  * were distributed to ui.js and routing.js first, which is what let this come out with a one-way edge.
  */
 
+import { openLogs, TURN_SOURCES } from "./logview.js";   // a turn proxy's live logs
 import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
 import { esc, portOf, ipOf, ipChoices, ipPickerVal, seen, ago, dur, fmtBytes, isSelfContainedKind } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
@@ -263,7 +264,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
         // you then see. Facts before verbs — it sits left of the gear and the setup button.
         const _u = iface ? [] : (Store.turnUpdates || []).filter(r => r.node === node);
         return _u.length ? html`<button class="btn btn-mini updbtn" title=${T("Deployed servers on this node are behind their newest build — review and update")} onClick=${() => openTurnUpdates(node)}><${Ic} i="download"/> ${plural(_u.length, "update")}</button>` : null;
-      })()}<button class="btn btn-mini ico" title=${T("Turn-proxy settings in Settings → Turn proxies")} onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button>${_canFrontTurn && !(iface && isSelfContainedName(iface)) ? html`<button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? T("Unavailable while the node is down / converting") : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> ${T("Setup new proxy")}</button>` : null}<//>` : null}>
+      })()}<button class="btn btn-mini ico" title=${T("These turn proxies' live logs (Settings → Logs)")} onClick=${() => openLogs({ nodes: [node], src: TURN_SOURCES })}><${Ic} i="doc"/></button><button class="btn btn-mini ico" title=${T("Turn-proxy settings in Settings → Turn proxies")} onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button>${_canFrontTurn && !(iface && isSelfContainedName(iface)) ? html`<button class="btn btn-mini" disabled=${blocked || archNo} title=${blocked ? T("Unavailable while the node is down / converting") : archNo ? archTip : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> ${T("Setup new proxy")}</button>` : null}<//>` : null}>
     ${/* The REASON is not universal, though the symptom is. "No Docker socket was mounted" is the
           bare-metal-installer answer; on a declaratively-managed node it is simply false, and an
           operator sent looking for a socket mount they never made loses an afternoon. Key the reason

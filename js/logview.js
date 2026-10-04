@@ -51,11 +51,14 @@ const panelBare = () => { const lp = (Store.panelSettings || {}).log_panel || {}
 function facetDefaults() {
   const ns = Store.nodes || [];
   return { nodes: [LOG_PANEL, ...(ns.length <= 5 ? ns.map(n => n.id) : [])],
-           src: [...(panelBare() ? PANEL_KINDS : ["panel"]), "noded", "dns", "sni", "relay:*", "turn:*", "iface:*", "p2p"] };
+           src: [...(panelBare() ? PANEL_KINDS : ["panel"]), ...NODE_SOURCES] };
 }
 const nodesOf = () => LV.nodes || facetDefaults().nodes;
 const srcOf = () => LV.src || facetDefaults().src;
 
+// what a node's own page opens the viewer with: everything of that node's, the kernel aside (it is the whole kernel log)
+export const NODE_SOURCES = ["noded", "dns", "sni", "relay:*", "turn:*", "iface:*", "p2p"];
+export const TURN_SOURCES = ["turn:*"];             // a node's turn proxies, WDTT and csqtt — every instance
 /* Open the viewer from elsewhere (the node page, a failing turn proxy): Settings → Logs with these facets. */
 export function openLogs({ nodes, src } = {}) {
   if (nodes) LV.nodes = nodes;
