@@ -11671,6 +11671,20 @@ def reconcile_mesh(nodes, snaps, deps):
         changed = _mesh_retire(nodes, need, deps) or changed
     for nid, n in nodes.items():                                 # 2) re-stage any missing link iface
         snap_ifs = set((((snaps or {}).get(nid) or {}).get("interfaces") or {}))
+        # ⚠️ …AND DROP A CREATE FOR A LINK THIS NODE DOES NOT OWN. A pending `create` for a `swg_*` interface with no
+        # interface record is the panel asking the node to build a mesh link that its `owned_ifaces` says the panel
+        # does not own: the node builds it, `orphan_mesh_links` drops it the same pass, and the request closes only
+        # once the interface is seen — so it repeats every sync, for ever. Seen live on hel-relay (2026-10-04): a
+        # create left from a replaced link held UDP 10000, the current link to msk-shadow on the same port failed
+        # "Address already in use" on every pass, and re-provisioning could not reach it (it cancels the creates of
+        # the links it rebuilds, never one no link names). The node's own rule, from this side: `swg_*`, not owned.
+        # A new link is safe — `_mesh_make_link` writes its interface record together with its create.
+        _cr = n.get("create")
+        if isinstance(_cr, dict):
+            _own = n.get("ifaces") or {}
+            for _ifc in [k for k in _cr if str(k).startswith("swg_") and k not in _own]:
+                _cr.pop(_ifc, None)
+                changed = True
         pending = set(n.get("create") or {})
         for peer, lr in (n.get("links") or {}).items():
             ifc = lr.get("iface")
