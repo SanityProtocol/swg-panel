@@ -50,6 +50,7 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
      strkey       a key that is not ASCII crashes the log POST
      deepjson     a deeply nested body drops the connection (RecursionError) instead of a 400
      curstale     a resume point too big to keep leaves the stale one in place
+     backfillcut  a slow (cold) journal's backfill tail goes through the flood cap and reads as skipped
 """
 import collections, gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile
 import threading, time, urllib.error, urllib.request
@@ -129,6 +130,8 @@ PLANTS = {   # (program, anchor, replacement)
     "deepjson": ("panel", '''        except Exception:\n            code, obj = 400, {"ok": False, "error": "invalid body", "code": "bad_request"}''',
                  '''        except (ValueError, zlib.error):\n            code, obj = 400, {"ok": False, "error": "invalid body", "code": "bad_request"}'''),
     "curstale": ("panel", '''        elif cur is not None:''', '''        elif False:'''),
+    "backfillcut": ("block", '''            if el < LIVE_BACKFILL_S or (self.p is not None and self.jback and el < LIVE_BACKFILL_WAIT):''',
+                    '''            if el < LIVE_BACKFILL_S:'''),
     "noselect": ("panel", "import secrets\nimport select\nimport shutil\n", "import secrets\nimport shutil\n"),
     "nojournal": ("update", '''    ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
     ensure_panel_journal
@@ -558,10 +561,24 @@ def sec4():
                        cur={"j": "bad"}, cap=1000)
     out = drain(rd5, 3.0)
     runs = open(spawns).read().splitlines()
-    check("[4] a cursor journalctl refuses → afresh, with \"!gap\"; a journalctl that ends is not respawned in a loop",
-          out and out[0][1] == "!gap" and [l[3] for l in out[1:3]] == ["j0", "j1"] and len(runs) == 2
-          and "--after-cursor=bad" in runs[0] and "-n" in runs[1], (out[:3], runs))
+    check("[4] a cursor journalctl refuses → \"!gap\", a backfill read (no -f) and the follower after its last line; "
+          "a journalctl that ends is not respawned in a loop",
+          out and out[0][1] == "!gap" and [l[3] for l in out[1:3]] == ["j0", "j1"] and len(runs) == 3
+          and "--after-cursor=bad" in runs[0] and "-n" in runs[1] and "-f" not in runs[1].split()
+          and "--after-cursor=c1" in runs[2] and "-f" in runs[2].split(), (out[:3], runs))
     rd5.close()
+    # a cold journal: the backfill comes in two halves 1.5 s apart — still all backfill, none of it "skipped"
+    fs = os.path.join(d, "slowjournal")
+    open(fs, "w").write("#!/usr/bin/env python3\nimport sys, json, time\n"
+                        "def out(a, b):\n    for i in range(a, b): print(json.dumps({'__CURSOR': 'c%d' % i, '__REALTIME_TIMESTAMP': str(1000 + i),"
+                        " '_SYSTEMD_UNIT': 'swg-noded.service', 'PRIORITY': '6', 'MESSAGE': 'b%d' % i}), flush=True)\n"
+                        "if '-f' in sys.argv: time.sleep(30)\nout(0, 300); time.sleep(1.5); out(300, 600)\n")
+    os.chmod(fs, 0o755)
+    rd8 = N.LiveReader({"noded"}, journal=lambda cur, n: N.live_journal_argv([fs], ["swg-noded.service"], False, cur, n), cap=5)
+    out = drain(rd8, 3.5)
+    rd8.close()
+    check("[4] a slow (cold) journal's backfill is still the backfill: the last 200, none reported skipped",
+          [l[3] for l in out] == ["b%d" % i for i in range(400, 600)], (len(out), out[:1], [l for l in out if l[1] == "!skip"]))
     # a container stream through a fake Engine API socket
     sp = os.path.join(d, "docker.sock")
     srv = socket.socket(socket.AF_UNIX)
@@ -762,10 +779,10 @@ def sec7():
           '[ -f "$f" ] && printf' in SRC["entry"] and SRC["entry"].count("panel_log ") >= 2)
     P = load("panel")
     fj = os.path.join(TMP, "fakejournal-panel")
-    open(fj, "w").write("#!/usr/bin/env python3\nimport json, time\nprint(json.dumps({'__CURSOR': 'p1', '__REALTIME_TIMESTAMP': '5',"
-                        " '_SYSTEMD_UNIT': 'swg-panel-server.service', 'PRIORITY': '6', 'MESSAGE': 'hello'}), flush=True)\ntime.sleep(5)\n")
+    open(fj, "w").write("#!/usr/bin/env python3\nimport json, sys, time\nprint(json.dumps({'__CURSOR': 'p1', '__REALTIME_TIMESTAMP': '5',"
+                        " '_SYSTEMD_UNIT': 'swg-panel-server.service', 'PRIORITY': '6', 'MESSAGE': 'hello'}), flush=True) if '-f' not in sys.argv else time.sleep(5)\n")
     os.chmod(fj, 0o755)
-    rd = P.LiveReader({"panel"}, journal=lambda cur, n: [fj], cap=200)
+    rd = P.LiveReader({"panel"}, journal=lambda cur, n: P.live_journal_argv([fj], ["swg-panel-server.service"], False, cur, n), cap=200)
     try:
         out = drain(rd, 1.4)
     except Exception as e:
