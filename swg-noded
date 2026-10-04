@@ -132,7 +132,7 @@ def _log_file_write(data):
                 _LOG_FILE["f"].close()
                 _LOG_FILE["f"] = None
                 os.replace(path, path + ".1")
-        except OSError:
+        except (OSError, AttributeError, ValueError):   # a nested write (a signal handler) may have rotated it under us
             _LOG_FILE["f"] = None
 
 
@@ -7304,7 +7304,7 @@ LOG_STATUS_EVERY_S = 60
 # · synced: a panel reply has set mb — nothing is written before it, or every restart would write the default and then
 # the real value, restarting journald twice
 _LOG_BUDGET = {"mb": LOG_MB_DEFAULT, "ns": None, "conf": None, "applied": None, "err": None, "status": None, "at": 0.0,
-               "synced": False, "retry_at": 0.0, "share": (None, 0)}
+               "synced": False, "retry_at": 0.0, "retry_want": None, "share": (None, 0)}
 _JOURNAL_NAME_RE = re.compile(r"^[\w-]+@[0-9a-f]{32}-[0-9a-f]{16}-([0-9a-f]{16})\.journal$")
 
 
@@ -7319,9 +7319,9 @@ def log_ns_ok():
     return _LOG_BUDGET["ns"]
 
 
-# A filter stage for a unit's tail: drops systemd's own lines about it — "<unit>.service: …" and the job lines
-# ("Failed to start <description>", "Started …", "Stopped …", "Scheduled restart job …").
-JOURNAL_SKIP_PID1 = "grep -vE '^([^ ]*\\.service: |(Failed to start|Started|Starting|Stopped|Stopping) )' | "
+# A filter stage for a unit's tail: drops systemd's own lines about it that match the reason grep — "<unit>.service: …"
+# and "Failed to start <description>." (not "Started …": a program's own "Starting listener failed" must stay).
+JOURNAL_SKIP_PID1 = "grep -vE '^([^ ]*\\.service: |Failed to start )' | "
 
 
 def journal_cmd():
@@ -7384,25 +7384,33 @@ def _log_dir_usage(d, journal):
     return used, oldest
 
 
-def _log_docker_caps(mb):
+def _supervised_logs():
+    """docker: every WDTT / csqtt server.log this node supervises (one per instance directory)."""
+    out = []
+    for root in (WDTT_ROOT, CSQTT_ROOT):
+        with contextlib.suppress(OSError):
+            out += [os.path.join(root, name, "server.log") for name in os.listdir(root)]
+    return out
+
+
+def _log_docker_caps(mb, fresh=False):
     """docker: the bytes each log this process owns may take, two files included: noded's own file, dnsmasq's, each
     supervised WDTT/csqtt server.log and each container it launches (turn, relay), sharing the budget equally. Counted
     now; a container launched earlier keeps its cap until its next launch. 0 at Off."""
     if log_level() == LOG_OFF:
         return 0
-    if _LOG_BUDGET["share"][0] != _LOOP["n"]:       # counted once per loop: it changes only when an instance does
-        n = 2 + len(_turn_record_raw()) + len(_RELAY)
-        for root in (WDTT_ROOT, CSQTT_ROOT):
-            with contextlib.suppress(OSError):
-                n += len(os.listdir(root))
-        _LOG_BUDGET["share"] = (_LOOP["n"], n)
+    # counted once per loop (it changes only when an instance does) — except at a launch, which counts afresh: the cap a
+    # container is launched with is kept for its life, and an instance added earlier in this loop must be in it
+    if fresh or _LOG_BUDGET["share"][0] != _LOOP["n"]:
+        n = 2 + len(_turn_record_raw()) + len(_RELAY) + len(_supervised_logs())
+        _LOG_BUDGET["share"] = (None if fresh else _LOOP["n"], n)
     return max(1 << 20, (mb << 20) // _LOG_BUDGET["share"][1])
 
 
 def docker_log_opts():
     """`docker run` options for a container this node launches: its share of the budget in two files, or no log at all
     at Off. Taken at launch, never compared: a datapath container is not recreated for a log setting."""
-    cap = _log_docker_caps(_LOG_BUDGET["mb"])
+    cap = _log_docker_caps(_LOG_BUDGET["mb"], fresh=True)
     if not cap:
         return ["--log-driver", "none"]
     return ["--log-opt", "max-size=%dk" % max(512, cap // 2048), "--log-opt", "max-file=2"]
@@ -7419,12 +7427,10 @@ def _log_budget():
         _LOG_BUDGET["applied"], _LOG_BUDGET["err"] = mb, None
         if now - _LOG_BUDGET["at"] >= LOG_STATUS_EVERY_S or _LOG_BUDGET["status"] is None:
             used, _o = _log_dir_usage(LOG_DIR_DOCKER, False)
-            for root in (WDTT_ROOT, CSQTT_ROOT):         # the supervised servers' logs share the budget too
-                with contextlib.suppress(OSError):
-                    for name in os.listdir(root):
-                        for f in ("server.log", "server.log.1"):
-                            with contextlib.suppress(OSError):
-                                used += os.stat(os.path.join(root, name, f)).st_blocks * 512
+            for p in _supervised_logs():                 # the supervised servers' logs share the budget too
+                for f in (p, p + ".1"):
+                    with contextlib.suppress(OSError):
+                        used += os.stat(f).st_blocks * 512
             _LOG_BUDGET["status"], _LOG_BUDGET["at"] = {"mb": mb, "used_mb": round(used / 1048576.0, 1)}, now
         return
     if not log_ns_ok():
@@ -7438,33 +7444,44 @@ def _log_budget():
                 _LOG_BUDGET["conf"] = f.read()
         m = re.search(r"^SystemMaxUse=(\d+)M$", _LOG_BUDGET["conf"], re.M)
         _LOG_BUDGET["applied"] = int(m.group(1)) if m else None
-    # a failed restart is retried once a minute, not every pass: each try can block the sync loop for its timeout
-    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want and now >= _LOG_BUDGET["retry_at"]:
+    # a restart that failed for this same file is tried again once a minute, not every pass: each try can hold the sync
+    # loop for its timeout. A new budget (or Off) is tried at once.
+    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want and (now >= _LOG_BUDGET["retry_at"] or want != _LOG_BUDGET["retry_want"]):
         err = None
         try:
             os.makedirs(os.path.dirname(LOG_NS_CONF), exist_ok=True)
             with open(LOG_NS_CONF + ".tmp", "w") as f:
                 f.write(want)
             os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
+        except OSError as e:
+            err = "%s: %s" % (LOG_NS_CONF, e)
+        if not err:
             # try-restart: a journald that is not running reads the file when its first client starts it
             r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=20)
             if r.returncode != 0:
                 err = "journald@%s did not restart: %s" % (LOG_NS, (r.stderr or "").strip()[:160])
-        except OSError as e:
-            err = "%s: %s" % (LOG_NS_CONF, e)
+                try:                                  # the old file back: left in place, a restarted noded would read
+                    if not _LOG_BUDGET["conf"]:           # it as applied while journald runs the old size
+                        os.remove(LOG_NS_CONF)
+                    else:
+                        with open(LOG_NS_CONF + ".tmp", "w") as f:
+                            f.write(_LOG_BUDGET["conf"])
+                        os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
+                except OSError as e:
+                    err += "; the previous size file could not be put back (%s)" % e
         _LOG_BUDGET["at"] = 0.0                       # report the outcome in this pass
-        _LOG_BUDGET["retry_at"] = now + LOG_STATUS_EVERY_S if err else 0.0
+        _LOG_BUDGET["retry_at"], _LOG_BUDGET["retry_want"] = (now + LOG_STATUS_EVERY_S, want) if err else (0.0, None)
         if err:
             if err != _LOG_BUDGET["err"]:
-                log(LOG_WARNING, "log budget: %s — retried on every pass, said once", err)
+                log(LOG_WARNING, "log budget: %s — tried again once a minute, said once", err)
             _LOG_BUDGET["err"] = err
         else:
             if off:
                 # Storage=none stores nothing new but keeps what is on disk (measured): Off means nothing kept, so the
                 # stopped journald's files go too
                 d = _log_ns_dir()
-                with contextlib.suppress(OSError, TypeError):   # no machine-id: no directory, never the cwd
-                    for n in (os.listdir(d) if d else ()):
+                with contextlib.suppress(OSError):
+                    for n in (os.listdir(d) if d else ()):   # no machine-id: no directory, never the cwd
                         if ".journal" in n:
                             with contextlib.suppress(OSError):
                                 os.remove(os.path.join(d, n))
@@ -17793,11 +17810,7 @@ def _cap_serverlogs():
     if NODE_KIND != "docker":
         return
     cap = _log_docker_caps(_LOG_BUDGET["mb"])
-    logs = [DNSMASQ_LOG]
-    for root in (WDTT_ROOT, CSQTT_ROOT):
-        with contextlib.suppress(OSError):
-            logs += [os.path.join(root, name, "server.log") for name in os.listdir(root)]
-    for path in logs:
+    for path in [DNSMASQ_LOG] + _supervised_logs():
         if cap:
             _rotate_serverlog(path, cap // 2)
             continue

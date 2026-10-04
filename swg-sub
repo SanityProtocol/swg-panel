@@ -148,7 +148,7 @@ def _log_file_write(data):
                 _LOG_FILE["f"].close()
                 _LOG_FILE["f"] = None
                 os.replace(path, path + ".1")
-        except OSError:
+        except (OSError, AttributeError, ValueError):   # a nested write (a signal handler) may have rotated it under us
             _LOG_FILE["f"] = None
 
 

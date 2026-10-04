@@ -188,7 +188,7 @@ def _log_file_write(data):
                 _LOG_FILE["f"].close()
                 _LOG_FILE["f"] = None
                 os.replace(path, path + ".1")
-        except OSError:
+        except (OSError, AttributeError, ValueError):   # a nested write (a signal handler) may have rotated it under us
             _LOG_FILE["f"] = None
 
 
@@ -1636,72 +1636,111 @@ def _log_ns_dir():
         return None
 
 
+LOG_RETRY_S = 60     # a restart that failed is tried again after this, not every tick: each try can take its timeout
+
+
+def _apply_log_conf(want, have, off):
+    """Write the size file and restart journald@swg-panel: (applied, error). A failed restart puts the old file back, so
+    the change still reads as pending and is tried again — left in place it would read as applied while journald runs the
+    old size."""
+    try:
+        os.makedirs(os.path.dirname(LOG_NS_CONF), exist_ok=True)
+        with open(LOG_NS_CONF + ".tmp", "w") as f:
+            f.write(want)
+        os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
+    except OSError as e:
+        return False, "%s: %s" % (LOG_NS_CONF, e)
+    rc, out = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=20)
+    if rc != 0:
+        err = "journald@%s did not restart: %s" % (LOG_NS, out.strip()[:160])
+        try:
+            if have is None:
+                os.remove(LOG_NS_CONF)
+            else:
+                with open(LOG_NS_CONF + ".tmp", "w") as f:
+                    f.write(have)
+                os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
+        except OSError as e:
+            err += "; the previous size file could not be put back (%s)" % e
+        return False, err
+    d = _log_ns_dir() if off else None
+    if d:
+        with contextlib.suppress(OSError):
+            for n in os.listdir(d):
+                if ".journal" in n:
+                    with contextlib.suppress(OSError):
+                        os.remove(os.path.join(d, n))
+    log(LOG_NOTICE, "log budget: the %s journal keeps %s", LOG_NS, "nothing (logging is off)" if off else "%d MB" % mb_of(want))
+    return True, None
+
+
+def mb_of(conf):
+    m = re.search(r"^SystemMaxUse=(\d+)M$", conf or "", re.M)
+    return int(m.group(1)) if m else None
+
+
 def log_budget():
-    """Every tick: the namespace's size and storage (Off stores nothing — and removes what was stored, since journald's
-    Storage=none keeps the files it has), then the status for the panel. Never raises; a steady box compares a string
-    and writes nothing."""
+    """Every tick, after the queue (a journald restart must never hold an Access request): the namespace's size and
+    storage — Off stores nothing, and removes what was stored, since journald's Storage=none keeps the files it has —
+    then the status for the panel. Never raises; a steady box compares a string and writes nothing. This helper starts
+    afresh every tick, so the last status is its memory: what failed, and when to try again."""
     if DRYRUN:
         return
     mb, off = log_budget_mb(), log_level() == LOG_OFF
     want = "[Journal]\nStorage=%s\nSystemMaxUse=%dM\nRuntimeMaxUse=%dM\n" % ("none" if off else "persistent", mb, mb)
-    have, err = None, None
+    have, err, retry = None, None, None
     with contextlib.suppress(OSError):
         with open(LOG_NS_CONF) as f:
             have = f.read()
+    prev = _read_log_status()
     if not log_ns_ok():
         err = "this system's journald has no namespaces"
+    elif have != want and prev.get("err") and prev.get("want") == want and time.time() < (prev.get("retry") or 0):
+        err, retry = prev["err"], prev["retry"]                 # failed for this same size a moment ago: wait
     elif have != want:
-        try:
-            os.makedirs(os.path.dirname(LOG_NS_CONF), exist_ok=True)
-            with open(LOG_NS_CONF + ".tmp", "w") as f:
-                f.write(want)
-            os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
-            rc, out = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=60)
-            if rc != 0:
-                err = "journald@%s did not restart: %s" % (LOG_NS, out.strip()[:160])
-                # put the file back, so the next tick sees the change again and retries — left in place it would read as
-                # applied while journald still runs the old size
-                if have is None:
-                    os.remove(LOG_NS_CONF)
-                else:
-                    with open(LOG_NS_CONF + ".tmp", "w") as f:
-                        f.write(have)
-                    os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
-            else:
-                have = want
-                d = _log_ns_dir() if off else None
-                if d:
-                    with contextlib.suppress(OSError):
-                        for n in os.listdir(d):
-                            if ".journal" in n:
-                                with contextlib.suppress(OSError):
-                                    os.remove(os.path.join(d, n))
-                log(LOG_NOTICE, "log budget: the %s journal keeps %s", LOG_NS,
-                    "nothing (logging is off)" if off else "%d MB" % mb)
-        except OSError as e:
-            err = "%s: %s" % (LOG_NS_CONF, e)
-    if err:
-        try:                                         # this helper starts afresh every tick: the last status is its memory
-            with open(os.path.join(NETCTL_DIR, "status", LOG_STATUS)) as f:
-                said = json.load(f).get("err")
-        except (OSError, ValueError, AttributeError):
-            said = None
-        if said != err[:200]:
-            log(LOG_WARNING, "log budget: %s — retried on every tick, said once", err)
-    m = re.search(r"^SystemMaxUse=(\d+)M$", have or "", re.M)
+        ok, err = _apply_log_conf(want, have, off)
+        if ok:
+            have = want
+        else:
+            retry = int(time.time()) + LOG_RETRY_S
+    if err and prev.get("err") != err[:200]:
+        log(LOG_WARNING, "log budget: %s — tried again once a minute, said once", err)
     used, oldest = _log_dir_usage(_log_ns_dir() or "/nonexistent")
-    doc = {"mb": int(m.group(1)) if m else None, "used_mb": round(used / 1048576.0, 1)}
+    doc = {"mb": mb_of(have), "used_mb": round(used / 1048576.0, 1)}
     if oldest:
         doc["oldest"] = oldest
     if err:
         doc["err"] = err[:200]
+        if retry:
+            doc["want"], doc["retry"] = want, retry
     _write_log_status(doc)
+
+
+def _status_dir():
+    """(netctl dir fd, verified status dir fd) — either may be None. Close with _close."""
+    nfd = _open_dir(NETCTL_DIR)
+    return nfd, (_root_child(nfd, "status", 0o750) if nfd is not None else None)
+
+
+def _read_log_status():
+    """The last status/_log.json, read through the verified status-dir fd without following a symlink; {} if none."""
+    nfd, sfd = _status_dir()
+    try:
+        if sfd is None:
+            return {}
+        fd = os.open(LOG_STATUS, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=sfd)
+        with os.fdopen(fd) as f:
+            doc = json.load(f)
+        return doc if isinstance(doc, dict) else {}
+    except (OSError, ValueError):
+        return {}
+    finally:
+        _close(sfd, nfd)
 
 
 def _write_log_status(doc):
     """status/_log.json, only when its content differs — through the verified status-dir fd, as every answer."""
-    nfd = _open_dir(NETCTL_DIR)
-    sfd = _root_child(nfd, "status", 0o750) if nfd is not None else None
+    nfd, sfd = _status_dir()
     try:
         if sfd is None:
             return
@@ -1799,9 +1838,9 @@ def main(argv):
     if argv[1] == "run":
         with contextlib.suppress(Exception):
             log_dropins()                            # every tick, before the idle return: Debug's expiry lands here
-        with contextlib.suppress(Exception):
-            log_budget()                             # …and the budget, and its status for the panel
         process_queue()
+        with contextlib.suppress(Exception):
+            log_budget()                             # …and the budget, AFTER the queue: a journald restart holds nothing
         return 0
     try:
         msg = dispatch(argv[1], argv[2:])

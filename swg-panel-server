@@ -136,7 +136,7 @@ def _log_file_write(data):
                 _LOG_FILE["f"].close()
                 _LOG_FILE["f"] = None
                 os.replace(path, path + ".1")
-        except OSError:
+        except (OSError, AttributeError, ValueError):   # a nested write (a signal handler) may have rotated it under us
             _LOG_FILE["f"] = None
 
 
@@ -15250,7 +15250,7 @@ def log_mb_parse(v):
         mb = int(v)
     except (TypeError, ValueError):
         mb = None
-    if mb is None or mb < LOG_MB_MIN or mb > 1 << 20:
+    if mb is None or mb < LOG_MB_MIN or mb > 999999:    # the field takes six digits
         return None, perr("The log budget must be a whole number of MB, at least {v1}.", v1=LOG_MB_MIN)
     return mb, None
 
