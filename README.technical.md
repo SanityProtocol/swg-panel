@@ -412,7 +412,7 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 
 ## Operations
 
-- **Logs:** `journalctl -u swg-panel-server -f` (panel), `journalctl -u swg-noded -f` (node). Docker: `docker compose logs -f`.
+- **Logs:** `swg-logs panel -f` (panel), `swg-logs noded -f` (node), `swg-logs turn <name>`, `swg-logs` for everything — swg writes into journals of its own (`swg-panel`, `swg-node`), each held to the disk budget set in Settings → Logs, so plain `journalctl -u swg-noded` shows only systemd's start/stop lines (and on Debian with rsyslog, swg's lines no longer reach /var/log/syslog). Other options go to journalctl. Docker: `docker compose logs -f`.
 - **Rotate a node's token:** Nodes → ⋯ → Rotate token, then re-run the install command (or update the node's `config.json`).
 - **Remove a node:** Nodes → Remove. Stop `swg-noded` on the box itself to take it offline.
 - **Back up:** `users.json` + `nodes.json` (under `/var/lib/swg-panel`) are the whole state — copy the directory somewhere off-box and you can rebuild the panel anywhere.
@@ -537,7 +537,7 @@ Full reference, with a response body for every endpoint: **[API.md](API.md)**.
 
 ## Troubleshooting
 
-- **A node stays "awaiting enroll" / never connects.** It hasn't synced yet. Check `journalctl -u swg-noded -f` on the node: a `fingerprint mismatch` means the pin is wrong; an HTTP `401` means the token is wrong or was rotated; a connection error means the panel URL/port or firewall is off.
+- **A node stays "awaiting enroll" / never connects.** It hasn't synced yet. Check `swg-logs noded -f` on the node: a `fingerprint mismatch` means the pin is wrong; an HTTP `401` means the token is wrong or was rotated; a connection error means the panel URL/port or firewall is off.
 - **A node is "offline."** It synced before but has gone quiet — check the daemon and the node's outbound network.
 - **Peers don't appear on a node.** Confirm the peer is assigned to that node and that its interface matches one the node actually serves. Reads come from the node's latest snapshot, so a freshly added node needs one sync first.
 - **Browser warns about the certificate.** Expected with `selfsigned`. Use a real cert for production, or accept the warning behind a trusted tunnel.
