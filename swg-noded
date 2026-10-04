@@ -7978,6 +7978,7 @@ class LiveReader:
 # stopped, so one restarted after a noded restart resumes with no gap and no repeat. The key is the panel's proof that this
 # node may post into that request: it is not the node token, whose check reads the whole node store (§23.1).
 LIVE_MAX, LIVE_GRACE, LIVE_PEND_MAX = 4, 5, 2000
+LIVE_POST_BYTES = 900 << 10     # JSON one post carries at most (see _live_chunk)
 LIVE_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 LIVE_SRC_RE = re.compile(r"^[a-z0-9]{1,16}(?::(?:\*|[A-Za-z0-9_.@-]{1,64}))?$")
 _LIVE = {}                     # request id -> {stop, exp, src, iv, cap, key, cur, url, panel}
@@ -8070,12 +8071,32 @@ def _live_plan(srcs, ifaces):
 
 
 def _live_post(rq, lines, cur, st):
-    """→ "ok", "gone" (the panel no longer has this request: stop) or "fail" (try again at the next interval)."""
-    body = {"id": rq["id"], "key": rq["key"], "now": round(time.time(), 3), "lines": lines, "cur": cur}
+    """→ "ok", "gone" (the panel no longer has this request: stop), "toobig" (413: this batch will never fit) or "fail"
+    (try again at the next interval). `cur` None: the panel keeps the resume point it has (a backlog's earlier part)."""
+    body = {"id": rq["id"], "key": rq["key"], "now": round(time.time(), 3), "lines": lines}
+    if cur is not None:
+        body["cur"] = cur
     if st is not None:
         body["st"] = st
     code, _r = post_json(rq["url"], rq["panel"]["token"], body, rq["panel"], timeout=15, gz=True)
-    return "ok" if code == 200 else "gone" if code in (403, 404, 410) else "fail"
+    return "ok" if code == 200 else "gone" if code in (403, 404, 410) else "toobig" if code == 413 else "fail"
+
+
+def _live_chunk(pend):
+    """How many of the pending lines one post carries: LIVE_POST_BYTES of JSON at most (gzip never makes it bigger than
+    that by much, so it stays under the panel's 1 MiB on the wire and 4 MiB unpacked), and always at least one."""
+    n, size = 0, 0
+    for ln in pend:
+        size += len(json.dumps(ln))
+        if n and size > LIVE_POST_BYTES:
+            break
+        n += 1
+    return n
+
+
+def _live_skipped(lines):
+    """How many lines `lines` stand for: a line is one, a "!skip" marker the count it carries."""
+    return sum(int(x[3]) if x[1] == "!skip" and str(x[3]).isdigit() else 1 for x in lines)
 
 
 def _live_run(rq, ifaces):
@@ -8086,21 +8107,26 @@ def _live_run(rq, ifaces):
         pend, said, last, t0 = [], False, 0.0, time.monotonic()
         while not rq["stop"].is_set() and time.monotonic() < rq["exp"]:
             pend += rd.poll(0.5)
-            if len(pend) > LIVE_PEND_MAX:                     # the panel is not taking them: the oldest go, counted
-                cut = len(pend) - LIVE_PEND_MAX
-                pend = [[pend[cut][0], "!skip", 4, str(cut)]] + pend[cut + 1:]
+            if len(pend) > LIVE_PEND_MAX:                     # the panel is not taking them: the oldest go, counted — an
+                cut = len(pend) - LIVE_PEND_MAX + 1           # earlier marker among them adds its own count
+                pend = [[pend[cut - 1][0], "!skip", 4, str(_live_skipped(pend[:cut]))]] + pend[cut:]
             now = time.monotonic()
-            if (not said and now - t0 >= LIVE_BACKFILL_S) or (pend and now - last >= rq["iv"]):
+            # the first post goes even with no lines (each source's state); every post, a failing one too, waits `iv`
+            if (pend or not said) and now - t0 >= LIVE_BACKFILL_S and now - last >= rq["iv"]:
                 skip = [ln for ln in pend if ln[1] == "!skip"]
                 if len(skip) > 1:                             # one marker a post, not one a second: 200 flooding nodes
-                    pend = [ln for ln in pend if ln[1] != "!skip"] + [[skip[-1][0], "!skip", 4,
-                                                                       str(sum(int(x[3]) for x in skip))]]
-                r = _live_post(rq, pend, rd.cursor(), None if said else st)
+                    pend = [ln for ln in pend if ln[1] != "!skip"] + [[skip[-1][0], "!skip", 4, str(_live_skipped(skip))]]
+                n = _live_chunk(pend)
+                r = _live_post(rq, pend[:n], rd.cursor() if n == len(pend) else None, None if said else st)
                 last = now
                 if r == "gone":
                     break
                 if r == "ok":
-                    pend, said = [], True
+                    pend, said = pend[n:], True
+                    if pend:
+                        last = 0.0                            # a backlog: its next part at once
+                elif r == "toobig" and pend:                  # never retried as it is: counted, and the rest goes on
+                    pend = [[pend[n - 1][0], "!skip", 4, str(_live_skipped(pend[:n]))]] + pend[n:]
     except Exception as e:
         log(LOG_WARNING, "logs: the live reader for %s stopped: %s", rq["id"], e)
     finally:

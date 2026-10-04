@@ -1750,6 +1750,7 @@ export const STR = {
     "Уже открыто четыре просмотра логов. Закройте один или подождите несколько секунд, пока истечёт просмотр закрытой вкладки.",
   "Logging is off, so nothing is stored to read.": "Логирование выключено, поэтому ничего не сохраняется.",
   "Waiting for lines…": "Ждём строки…",
+  "None of the chosen servers can be watched. Pick again.": "Ни один из выбранных серверов нельзя смотреть. Выберите заново.",
   "Nothing matches the filter.": "Под фильтр ничего не подходит.",
   "Times are this browser's, on the panel's clock": "Время — в часовом поясе браузера, по часам панели",
   "Leave full screen (Esc)": "Свернуть (Esc)",

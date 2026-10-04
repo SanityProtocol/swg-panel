@@ -39,6 +39,7 @@ const LV = {
   levels: { err: true, warn: true, info: true, debug: true }, q: "", wrap: false, full: false, pick: "",
   req: null, seq: 0, h: "", states: {}, iv: 1, err: "", ver: 0,   // the panel's request and what it last said
   lines: [], frozen: null, missed: 0,                 // the merged lines; Paused: the list as it was, and what came since
+  held: {},                                           // a reopen: the newest line each server already has here
   dirty: true, busy: false, timer: null, mounted: 0,
 };
 const _subs = new Set();
@@ -53,7 +54,9 @@ function facetDefaults() {
   return { nodes: [LOG_PANEL, ...(ns.length <= 5 ? ns.map(n => n.id) : [])],
            src: [...(panelBare() ? PANEL_KINDS : ["panel"]), ...NODE_SOURCES] };
 }
-const nodesOf = () => LV.nodes || facetDefaults().nodes;
+// the remembered servers that still exist (a deleted node would only make the panel refuse the request)
+const nodesOf = () => { const have = new Set((Store.nodes || []).map(n => n.id));
+  return (LV.nodes || facetDefaults().nodes).filter(id => id === LOG_PANEL || have.has(id)); };
 const srcOf = () => LV.src || facetDefaults().src;
 
 // what a node's own page opens the viewer with: everything of that node's, the kernel aside (it is the whole kernel log)
@@ -73,7 +76,10 @@ const nodeName = id => id === LOG_PANEL ? T("Panel") : ((Store.nodes || []).find
 function addLines(raw) {
   if (!raw || !raw.length) return;
   const off = id => ((LV.states[id] || {}).off || 0) * 1e6;
-  const add = raw.map(([seq, nid, t, src, prio, text]) => ({ k: t - off(nid), seq, nid, src, prio, text }));
+  // a reopened request backfills again: what each server already has on screen is not added twice
+  const add = raw.map(([seq, nid, t, src, prio, text]) => ({ k: t - off(nid), seq, nid, src, prio, text }))
+    .filter(x => x.src[0] === "!" || !(x.k <= (LV.held[x.nid] || -Infinity)));
+  if (!add.length) return;
   const L = LV.lines;
   let prev = L.length ? L[L.length - 1].k : -Infinity, inOrder = true;
   for (const x of add) { if (x.k < prev) { inOrder = false; break; } prev = x.k; }
@@ -85,13 +91,22 @@ function addLines(raw) {
 
 async function tick() {
   if (LV.busy || !LV.mounted || document.hidden) return;
+  if (LV.err === "refused" && !LV.dirty) return;      // the panel refused these facets: wait for another choice
   LV.busy = true;
   try {
     if (LV.dirty || !LV.req) {
+      // New facets are a new stream. A reopen — the tab back in view, the panel restarted — goes on with the same one:
+      // what is on screen and a Paused view stay, and the backfill's repeats are skipped (addLines).
+      const fresh = LV.dirty;
       const r = await api.post("/api/logs/live", { nodes: nodesOf(), src: srcOf(), ...(LV.req ? { replace: LV.req } : {}) });
       LV.dirty = false;
-      if (!r || !r.ok) { LV.req = null; LV.err = (r && r.code) || "error"; }
-      else { Object.assign(LV, { req: r.data.id, seq: 0, h: "", states: {}, iv: r.data.iv, err: "", lines: [], frozen: null, missed: 0 }); }
+      if (!r || !r.ok) { LV.req = null; LV.err = r && r.code === "bad_request" ? "refused" : (r && r.code) || "error"; }
+      else if (!LV.mounted || document.hidden) api.post("/api/logs/live/close", { id: r.data.id }).catch(() => {});   // left meanwhile
+      else {
+        Object.assign(LV, { req: r.data.id, seq: 0, h: "", states: {}, iv: r.data.iv, err: "" });
+        if (fresh) Object.assign(LV, { lines: [], frozen: null, missed: 0, held: {} });
+        else { LV.held = {}; for (const l of LV.lines) if (l.src[0] !== "!" && !(l.k <= (LV.held[l.nid] || -Infinity))) LV.held[l.nid] = l.k; }
+      }
     } else {
       const r = await api.get("/api/logs/live?id=" + LV.req + "&after=" + LV.seq + "&h=" + LV.h);
       if (!r || !r.ok) { if (r && r.code === "gone") LV.req = null; else LV.err = "error"; }
@@ -372,9 +387,10 @@ export function LogViewer() {
     ? T("Panel and {n}", { n: plural(ids.length - 1, "server") }) : plural(ids.length, "server");
   const empty = !ids.length || !srcs.length ? T("Pick at least one server and one source.")
     : LV.err === "busy" ? T("Four log viewers are open already. Close one, or wait a few seconds for a closed tab's to lapse.")
-    : off ? T("Logging is off, so nothing is stored to read.")
+    : LV.err === "refused" ? T("None of the chosen servers can be watched. Pick again.")
     : !LV.req ? T("Connecting…")
-    : !(LV.frozen || LV.lines).length ? T("Waiting for lines…") : !lines.length ? T("Nothing matches the filter.") : "";
+    : !(LV.frozen || LV.lines).length ? (off ? T("Logging is off, so nothing is stored to read.") : T("Waiting for lines…"))   // Off: the system journal's (interfaces, kernel) still come
+    : !lines.length ? T("Nothing matches the filter.") : "";
   const card = html`<div class=${"card lv" + (LV.full ? " lv-full" : "")} role=${LV.full ? "dialog" : null} aria-modal=${LV.full ? "true" : null} aria-label=${T("Live logs")}>
     <div class="lv-head">
       <div class="seclabel" style="margin:0">${T("Live logs")}</div>

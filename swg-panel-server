@@ -31,6 +31,7 @@ import hmac
 import inspect
 import ipaddress
 import itertools
+import math
 import errno
 import json
 import os
@@ -7358,7 +7359,7 @@ class LiveReader:
 LIVE_REQ_MAX, LIVE_LEASE, LIVE_BUF = 4, 15, 5000
 LIVE_POST_MAX, LIVE_POST_RAW_MAX, LIVE_POST_LINES = 1 << 20, 4 << 20, 2000
 LIVE_RATE = 1000            # lines a second one request takes at most, shared by its nodes (§23.2)
-LIVE_CUR_MAX = 2048         # bytes of a node's resume point
+LIVE_CUR_MAX = 8192         # bytes of a node's resume point (a docker node's file cursors carry their paths)
 LIVE_SKEW_S = 2             # a node clock off by this much or more is corrected in the viewer (§23.7)
 LIVE_NOANSWER_S = 20        # a node that has not posted this long after it was asked: "no answer"
 LIVE_PANEL = "panel"        # the panel's own entry among a request's nodes
@@ -7498,7 +7499,8 @@ def live_absorb(body, now=None):
         if rec is None:
             return 404, {"ok": False, "error": "no such request", "code": "gone"}
         nid = key.split(".", 1)[0] if isinstance(key, str) else ""
-        if nid == LIVE_PANEL or nid not in rec["nodeset"] or not hmac.compare_digest(key, _live_key(rec, nid)):
+        if (nid == LIVE_PANEL or nid not in rec["nodeset"]
+                or not hmac.compare_digest(key.encode("utf-8", "replace"), _live_key(rec, nid).encode())):
             return 403, {"ok": False, "error": "not this request's key", "code": "forbidden"}
         lines = body.get("lines")
         good = []
@@ -7516,7 +7518,7 @@ def live_absorb(body, now=None):
             rec["st"][nid] = {k: v for k, v in list(st.items())[:64]
                               if isinstance(k, str) and LIVE_SRC_RE.match(k) and v in LIVE_STATES}
         tn = body.get("now")
-        if isinstance(tn, (int, float)) and not isinstance(tn, bool):
+        if isinstance(tn, (int, float)) and not isinstance(tn, bool) and math.isfinite(tn):
             off = tn - now
             rec["off"][nid] = int(round(off)) if abs(off) >= LIVE_SKEW_S else 0
         rec["acked"].add(nid)
@@ -7579,11 +7581,14 @@ def _live_panel_run(rec):
         if not want:
             return
         rd = LiveReader(want, cap=rec["cap"], **plan)
-        while not rec["stop"].is_set():
+        # its own lease too: nothing else may come along to expire it (a panel with no node syncing, a viewer gone)
+        while not rec["stop"].is_set() and time.time() <= rec["lease"]:
             lines = rd.poll(0.5)
             if lines:
                 with _LIVE_LOCK:
                     live_add(rec, LIVE_PANEL, lines)
+        with _LIVE_LOCK:
+            _live_expire(time.time())
     except Exception as e:
         log(LOG_WARNING, "logs: the panel's live reader stopped: %s", e)
     finally:
@@ -31077,7 +31082,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except (ValueError, zlib.error):
             return self._send(400, {"ok": False, "error": "invalid body", "code": "bad_request"})
-        return self._send(*live_absorb(body))
+        try:
+            return self._send(*live_absorb(body))
+        except Exception:                                  # remote input: never a dropped connection
+            return self._send(400, {"ok": False, "error": "invalid body", "code": "bad_request"})
 
     def _node_proc_status(self):
         # An installer/converter (its bearer token) flags that the node is about to go down for a

@@ -1704,7 +1704,7 @@ ensure_log_ns(){   # <namespace> <unit>... — swg's own journal (lib/common.sh)
     install -m755 "$SRC/swg-logs" /usr/local/bin/swg-logs || warn "couldn't install /usr/local/bin/swg-logs"
   fi
 }
-log_ns_build(){ grep -qs 'LOG_NS_CONF' "$1"; }
+log_ns_build(){ grep -qs 'LOG_NS_CONF' "$1"; }   # <installed program> — does this build write the namespace's size?
 ensure_panel_journal(){   # the panel reads its own journal (Settings → Logs, the live viewer): its unit's drop-in, when missing
   if $DRYRUN; then echo "    [skip] SupplementaryGroups=systemd-journal drop-in for swg-panel-server"; return 0; fi
   swg_journal_heal
@@ -1713,7 +1713,7 @@ ensure_panel_journal(){   # the panel reads its own journal (Settings → Logs, 
     DID_UPDATE=yes; note "swg-panel-server reads its own journal (Settings → Logs) from its next start"
   fi
   return 0
-}   # <installed program> — does this build write the namespace's size?
+}
 
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
