@@ -38,6 +38,7 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
      latelevel    the panel applies the fleet's level only after its start-up migrations have logged
      dryquiet     a netctl dry run follows the fleet's level (and prints nothing below Info)
      reverifyinfo the 30-minute reverify counts as "the desired routing moved" (its re-assert pass logged at Info)
+     reverifyskip the routing pass is gated on the log line's signature, so the reverify no longer forces a pass
      subfixed     swg-sub logs at Info whatever the fleet's level
      subserve     the panel leaves the level out of swg-sub's serve.json
   [8] swg-sub follows the fleet's level from subs/serve.json (it cannot read panel-settings.json).
@@ -87,6 +88,8 @@ PLANTS = {   # (program, anchor, replacement)
     "latelevel": ("panel", '''        panel_log_apply(load_json(fleet.get("panel_settings_path")''', '''        (lambda *a: None)(load_json(fleet.get("panel_settings_path")'''),
     "reverifyinfo": ("noded", '''                _route_moved = _route_sig != last_desired_sig''',
                      '''                _route_moved = _route_sig != last_route_sig'''),
+    "reverifyskip": ("noded", '''                if (_route_sig != last_route_sig or _iface_churn''',
+                     '''                if (_route_moved or _iface_churn'''),
     "dryquiet": ("netctl", '''    if not DRYRUN:                                   # a dry run''', '''    if True:                                   # a dry run'''),
     "subfixed": ("sub", '''    if not _LOG_SERVE["path"] or time.monotonic()''', '''    if True or time.monotonic()'''),
     "subserve": ("panel", '''           "log": {"level": ps.get("log_level") if ps.get("log_level") in LOG_BASE_LEVELS else "info",''',
@@ -528,6 +531,8 @@ mv = re.search(r"_route_moved = _route_sig != (\w+)", SRC["noded"])
 rv = SRC["noded"][SRC["noded"].find("_force_reverify(); last_route_sig = None"):][:200]
 check("[6] …'moved' is judged against what the last pass APPLIED, which the reverify does not clear",
       bool(mv) and mv.group(1) not in ("last_route_sig",) and mv.group(1) not in rv, mv.group(1) if mv else None)
+check("[6] …and the routing pass is still triggered by last_route_sig, which the reverify clears to force it",
+      "if (_route_sig != last_route_sig or" in SRC["noded"])
 wg = re.findall(r'host_sh\("wg show [^\n]*', SRC["noded"])
 check("[6] reads of a server's device (gone while it is stopped) are probes", wg and all("probe=True" in w for w in wg), wg)
 ap = SRC["noded"][SRC["noded"].find('apply_panel_settings(reply.get("panel"))'):]
