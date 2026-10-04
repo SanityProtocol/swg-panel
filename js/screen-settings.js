@@ -2465,7 +2465,7 @@ export function PanelSettingsScreen() {
     if (glDirty("configs")) out.push(T("Client configs → {v1}", { v1: sc === "off" ? T("val|off") : T("val|encrypted") }));
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
     if (dispDirty()) out.push(T("Display — theme / status timing"));
-    if (logDirty()) out.push(T("Logging — {v1}", { v1: logLevelLabel(logShown) }));
+    if (logDirty()) out.push(logShown === "off" ? T("Logging — off: the stored logs are deleted") : T("Logging — {v1}", { v1: logLevelLabel(logShown) }));
     if (logMbPDirty()) out.push(T("Panel log budget → {v1} MB", { v1: logMbP }));
     if (tzDirty()) out.push(tz ? T("Days are counted in {v1}", { v1: tz }) : T("Days are counted in this server's zone"));
     if (infHist !== (ps.infinite_history !== false)) out.push(infHist ? T("Infinite history — on") : T("Infinite history — off: detail older than 33 days is deleted"));
@@ -3115,7 +3115,7 @@ const sectionLabel = k => ({
               class=${"seg" + (logShown === v ? " on" : "")} onClick=${() => pickLog(v)}>${logLevelLabel(v)}</button>`)}
           </div>
           ${logShown === "off"
-            ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Nothing is stored, and failure details go blank: when something breaks, the panel can't say why.")}</div>`
+            ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Nothing is stored, and the logs kept so far are deleted. Failure details go blank: when something breaks, the panel can't say why.")}</div>`
             : html`<div class="hint">${logLevelHint(logShown)}</div>`}
           ${logShown === "debug" ? html`<div class="field logdebug"><label>${T("Turn off debugging after")}</label>
             <div class="logdebug-row">
@@ -3539,7 +3539,8 @@ function LogBudgetTable({ rows, onMb }) {
       ${!shown.length ? html`<div class="hint">${T("No server matches “{q}”.", { q })}</div>` : null}
     </div>
     <${ListPager} page=${pg} setPage=${setPage} total=${shown.length}/>
-    <div class="hint" style="margin-top:12px">${T("Kernel messages (the P2P guard, network devices) and WireGuard interfaces' own start and stop lines stay in the system journal, outside the budget.")}</div>
+    <div class="hint" style="margin-top:12px">${T("Relays, turn proxies and WDTT / csqtt servers join the budget the next time they restart.")}</div>
+    <div class="hint" style="margin-top:6px">${T("Kernel messages (the P2P guard, network devices) and WireGuard interfaces' own start and stop lines stay in the system journal, outside the budget.")}</div>
     ${anyDocker ? html`<div class="hint" style="margin-top:6px">${T("In docker the budget holds swg's own log files and the containers a node launches; each container's own docker log (10 MB × 3) is not counted.")}</div>` : null}
   </div>`;
 }

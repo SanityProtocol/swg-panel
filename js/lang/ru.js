@@ -1634,6 +1634,7 @@ export const STR = {
   "Logs": "Логи",
   "Logging": "Логирование",
   "Logging — {v1}": "Логирование — {v1}",
+  "Logging — off: the stored logs are deleted": "Логирование — выкл: сохранённые логи удаляются",
   "How much the panel and every node write to their logs. One level for the whole fleet.":
     "Сколько панель и каждая нода пишут в свои логи. Один уровень на весь флот.",
   "Log level": "Уровень логирования",
@@ -1650,8 +1651,8 @@ export const STR = {
     "Плюс каждое изменение состояния: интерфейс поднялся, пир добавлен, маршрут установлен. По умолчанию.",
   "Everything, including each routing pass and every site your users open.":
     "Всё, включая каждый проход маршрутизации и каждый сайт, который открывают ваши пользователи.",
-  "Nothing is stored, and failure details go blank: when something breaks, the panel can't say why.":
-    "Ничего не сохраняется, и подробности сбоев пропадают: если что-то сломается, панель не сможет сказать почему.",
+  "Nothing is stored, and the logs kept so far are deleted. Failure details go blank: when something breaks, the panel can't say why.":
+    "Ничего не сохраняется, а уже сохранённые логи удаляются. Подробности сбоев пропадают: если что-то сломается, панель не сможет сказать почему.",
   "Turn off debugging after": "Выключить отладку через",
   "24 hours": "24 часа",
   "debug|never": "никогда",
@@ -1694,6 +1695,8 @@ export const STR = {
   "The root helper applies it within 10 seconds.": "Root-помощник применит его в течение 10 секунд.",
   "Applies on the node's next sync.": "Применится при следующей синхронизации.",
   "Applied": "Применён",
+  "Relays, turn proxies and WDTT / csqtt servers join the budget the next time they restart.":
+    "Ретрансляторы, turn-прокси и серверы WDTT / csqtt войдут в лимит при своём следующем перезапуске.",
   "Kernel messages (the P2P guard, network devices) and WireGuard interfaces' own start and stop lines stay in the system journal, outside the budget.":
     "Сообщения ядра (защита от P2P, сетевые устройства) и строки запуска и остановки интерфейсов WireGuard остаются в системном журнале, вне лимита.",
   "In docker the budget holds swg's own log files and the containers a node launches; each container's own docker log (10 MB × 3) is not counted.":

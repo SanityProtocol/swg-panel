@@ -737,6 +737,7 @@ apply_full_data_fate(){   # run AFTER teardown, using the decision captured by a
     run cp -a "$DOCKER_DIR/.env" "$_bak/.env"
     [ -d "$DOCKER_DIR/data/node-confs" ] && run cp -a "$DOCKER_DIR/data/node-confs" "$_bak/data/node-confs"
     [ -d "$DOCKER_DIR/data/node" ] && run cp -a "$DOCKER_DIR/data/node" "$_bak/data/node"   # swg-noded state incl. turn-proxy.json → turn-proxies re-create on recovery
+    rmrf "$_bak/data/node/log"   # swg's own log files (the log budget): not identity — size and users' lines only
     run sed -i -E '/^(PANEL_PASSWORD|CF_TOKEN|CF_ORIGIN_TOKEN|ACME_EMAIL)=/d' "$_bak/.env"
     _seal_archive "$_bak"   # the node token + interface keys: root's alone (F90)
     info "  saved a recovery copy (node token + interface keys + turn-proxies) to $(b "$_bak") — re-install and pick it from the recovery list"

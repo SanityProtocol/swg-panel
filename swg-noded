@@ -7148,10 +7148,15 @@ def apply_panel_settings(pan):
             _left = 0
         log_set(min(LOG_LEVELS.get(_lg.get("level"), LOG_INFO), LOG_INFO), _left)
         try:                                                   # the disk budget, MB — absent is the default
-            _LOG_BUDGET["mb"] = max(LOG_MB_MIN, int(_lg.get("mb") or LOG_MB_DEFAULT))
+            _mb = max(LOG_MB_MIN, int(_lg.get("mb") or LOG_MB_DEFAULT))
         except (TypeError, ValueError):
-            _LOG_BUDGET["mb"] = LOG_MB_DEFAULT
-        _LOG_BUDGET["synced"] = True
+            _mb = LOG_MB_DEFAULT
+        if _mb != _LOG_BUDGET["mb"] or not os.path.exists(LOG_BUDGET_FILE):
+            with contextlib.suppress(OSError):                 # kept for the next start (see LOG_BUDGET_FILE)
+                with open(LOG_BUDGET_FILE + ".tmp", "w") as f:
+                    f.write("%d\n" % _mb)
+                os.replace(LOG_BUDGET_FILE + ".tmp", LOG_BUDGET_FILE)
+        _LOG_BUDGET["mb"] = _mb
         if (pan.get("turn_mirror") or "").strip():             # only ADD a turn mirror (preserve any install-time one)
             os.environ["SWG_TURN_MIRROR"] = pan["turn_mirror"].strip()
         ep = str(int(pan.get("geo_epoch") or 0))
@@ -7299,12 +7304,25 @@ LOG_NS_DROPIN = "swg-ns.conf"
 LOG_NS_UNITS = ("swg-relay@.service", "vk-turn-proxy-.service", "swg-wdtt-.service", "swg-csqtt-.service")
 LOG_DIR_DOCKER = os.path.join(STATE_DIR, "log")
 LOG_STATUS_EVERY_S = 60
-# mb: the budget the panel sent · ns: journald namespaces work here (None = not asked yet) · conf: the file's content as
-# last written · applied: the MB journald runs with · status: the snapshot's `log` · at: when it was measured
-# · synced: a panel reply has set mb — nothing is written before it, or every restart would write the default and then
-# the real value, restarting journald twice
-_LOG_BUDGET = {"mb": LOG_MB_DEFAULT, "ns": None, "conf": None, "applied": None, "err": None, "status": None, "at": 0.0,
-               "synced": False, "retry_at": 0.0, "retry_want": None, "share": (None, 0)}
+# The budget the panel last sent, kept across a restart and a reboot (like the level, _log_boot): a node whose panel is
+# unreachable after a reboot still holds its journal to it from the first pass — /run is empty then, and without the size
+# file journald would let the namespace take 10 % of the disk. Written only when it changes.
+LOG_BUDGET_FILE = os.path.join(STATE_DIR, "log-budget")
+
+
+def _log_budget_boot():
+    try:
+        with open(LOG_BUDGET_FILE) as f:
+            return max(LOG_MB_MIN, int(f.read().strip()))
+    except (OSError, ValueError):
+        return LOG_MB_DEFAULT
+
+
+# mb: the budget in force · ns: journald namespaces work here (None = not asked yet) · conf: the file's content as last
+# written · applied: the MB journald runs with · status: the snapshot's `log` · at: when it was measured · retry_at /
+# retry_want: a restart that failed, tried again once a minute for the same file
+_LOG_BUDGET = {"mb": _log_budget_boot(), "ns": None, "conf": None, "applied": None, "err": None, "status": None, "at": 0.0,
+               "retry_at": 0.0, "retry_want": None}
 _JOURNAL_NAME_RE = re.compile(r"^[\w-]+@[0-9a-f]{32}-[0-9a-f]{16}-([0-9a-f]{16})\.journal$")
 
 
@@ -7393,24 +7411,20 @@ def _supervised_logs():
     return out
 
 
-def _log_docker_caps(mb, fresh=False):
+def _log_docker_caps(mb):
     """docker: the bytes each log this process owns may take, two files included: noded's own file, dnsmasq's, each
     supervised WDTT/csqtt server.log and each container it launches (turn, relay), sharing the budget equally. Counted
     now; a container launched earlier keeps its cap until its next launch. 0 at Off."""
     if log_level() == LOG_OFF:
         return 0
-    # counted once per loop (it changes only when an instance does) — except at a launch, which counts afresh: the cap a
-    # container is launched with is kept for its life, and an instance added earlier in this loop must be in it
-    if fresh or _LOG_BUDGET["share"][0] != _LOOP["n"]:
-        n = 2 + len(_turn_record_raw()) + len(_RELAY) + len(_supervised_logs())
-        _LOG_BUDGET["share"] = (None if fresh else _LOOP["n"], n)
-    return max(1 << 20, (mb << 20) // _LOG_BUDGET["share"][1])
+    n = 2 + len(_turn_record_raw()) + len(_RELAY) + len(_supervised_logs())   # ~20 µs: counted afresh at every call
+    return max(1 << 20, (mb << 20) // n)
 
 
 def docker_log_opts():
     """`docker run` options for a container this node launches: its share of the budget in two files, or no log at all
     at Off. Taken at launch, never compared: a datapath container is not recreated for a log setting."""
-    cap = _log_docker_caps(_LOG_BUDGET["mb"], fresh=True)
+    cap = _log_docker_caps(_LOG_BUDGET["mb"])
     if not cap:
         return ["--log-driver", "none"]
     return ["--log-opt", "max-size=%dk" % max(512, cap // 2048), "--log-opt", "max-file=2"]
@@ -7446,7 +7460,7 @@ def _log_budget():
         _LOG_BUDGET["applied"] = int(m.group(1)) if m else None
     # a restart that failed for this same file is tried again once a minute, not every pass: each try can hold the sync
     # loop for its timeout. A new budget (or Off) is tried at once.
-    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want and (now >= _LOG_BUDGET["retry_at"] or want != _LOG_BUDGET["retry_want"]):
+    if _LOG_BUDGET["conf"] != want and (now >= _LOG_BUDGET["retry_at"] or want != _LOG_BUDGET["retry_want"]):
         err = None
         try:
             os.makedirs(os.path.dirname(LOG_NS_CONF), exist_ok=True)
