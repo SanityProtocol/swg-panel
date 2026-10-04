@@ -1689,10 +1689,10 @@ ensure_update_unit_docker(){   # HEAL the docker one-click self-update wiring on
   ok "docker one-click self-update wiring healed — the Update button will work now"
 }
 
-ensure_log_ns(){   # <namespace> <unit>... — swg's own journal (lib/common.sh): the drop-ins + swg-logs, BEFORE this update's
-  # restarts, so the units it restarts move now; the oneshots (netctl, update) move at their next tick. Install-if-missing,
-  # like the heal pass: a drop-in already there is left as it is. Only inside an upgrade that is going ahead: a declined one
-  # keeps the old build, whose writers never size the namespace (journald's defaults, 10 % of the disk).
+ensure_log_ns(){   # <namespace> <unit>... — swg's own journal (lib/common.sh): the drop-ins + swg-logs, written when missing or
+  # different. Called inside an upgrade that goes ahead, BEFORE its restarts (the units it restarts move now; the oneshots,
+  # netctl and update, at their next tick), and from the heal pass only where the build ON DISK sizes the namespace
+  # (log_ns_build): a declined upgrade keeps an old build, whose writers never size it (journald's defaults, 10 % of the disk).
   if $DRYRUN; then echo "    [skip] LogNamespace=$1 drop-ins for: ${*:2} + /usr/local/bin/swg-logs"; return 0; fi
   swg_log_ns_heal "$@"
   if [ "$SWG_LOG_NS_CHANGED" -gt 0 ]; then
@@ -1701,9 +1701,10 @@ ensure_log_ns(){   # <namespace> <unit>... — swg's own journal (lib/common.sh)
     ok "swg's logs now go to the $1 journal, held to its budget — \`journalctl -u\` shows only systemd's lines; read them with \`swg-logs\`"
   fi
   if [ -f "$SRC/swg-logs" ] && ! cmp -s "$SRC/swg-logs" /usr/local/bin/swg-logs 2>/dev/null; then
-    install -m755 "$SRC/swg-logs" /usr/local/bin/swg-logs
+    install -m755 "$SRC/swg-logs" /usr/local/bin/swg-logs || warn "couldn't install /usr/local/bin/swg-logs"
   fi
 }
+log_ns_build(){ grep -qs 'LOG_NS_CONF' "$1"; }   # <installed program> — does this build write the namespace's size?
 
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
@@ -1784,6 +1785,9 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   # NEW SERVICE? add its ensure_<svc> here (and a matching writer in the installer) so update heals it too.
   repark_bare_panel      # a parked panel an older update started beside the docker one → stopped again (+ swg-sub)
   ensure_netctl_helper   # swg-netctl privileged helper (+ queue dirs + trigger units)
+  if log_ns_build /usr/local/bin/swg-netctl; then   # HEAL: swg's own journal on a current box (a unit added since, a lost file)
+    ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
+  fi
   ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
   ensure_acme_renewal    # HEAL: cron + acme.sh's daily renewal entry, the certificate's ONLY renewer (before the client: no cron, no acme.sh)
   ensure_acme_client     # HEAL: the ACME client itself, when TLS_MODE needs it (a convert leaves the state, not the program)
@@ -1821,6 +1825,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     else DID_FAIL=yes; warn "couldn't restart swg-noded — it keeps the old ref until restarted: systemctl restart swg-noded"; fi
   fi
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
+  if log_ns_build "$NODED_DIR/swg-noded"; then ensure_log_ns swg-node swg-noded.service; fi   # HEAL, as for the panel
   ensure_noded_no_nnp    # MIGRATE: retract NoNewPrivileges — it blocked the AppArmor transition wg-quick/awg-quick need
   ensure_noded_reach_sweep "$NODED_DIR"   # HEAL: the drop-in that sweeps the device-access tables when an OLDER swg-noded starts
   ensure_wg_apparmor     # HEAL: let the confined wg CLI reach the UAPI sockets (wdtt / csqtt / awg-userspace)

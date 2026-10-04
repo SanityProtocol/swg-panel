@@ -7338,11 +7338,12 @@ def log_ns_ok():
 
 
 # A filter stage for a unit's tail: drops systemd's own lines that say only THAT it failed ("<unit>: Failed with result",
-# "Main process exited", "Scheduled restart job", "Failed to start <description>"), so the reason sorts last. Its lines
+# "Main/Control process exited", "Unit entered failed state", "Scheduled restart job", "Failed to start <description>"), so
+# the reason sorts last. Its lines
 # that say WHY stay: "Failed at step EXEC … Permission denied", "Failed to set up mount namespacing" — for an exec or setup
 # failure they are the only reason there is. Not "Starting …": a program's own "Starting listener failed" must stay.
-JOURNAL_SKIP_PID1 = ("grep -vE '\\.service: (Failed with result|Main process exited|Scheduled restart job|Deactivated|Consumed)"
-                     "|^Failed to start ' | ")
+JOURNAL_SKIP_PID1 = ("grep -vE '\\.service: (Failed with result|Main process exited|Control process exited|Unit entered failed"
+                     " state|Scheduled restart job)|^Failed to start ' | ")
 
 
 def journal_cmd():
@@ -7452,7 +7453,7 @@ def _log_budget():
             _LOG_BUDGET["status"], _LOG_BUDGET["at"] = {"mb": mb, "used_mb": round(used / 1048576.0, 1)}, now
         return
     if not log_ns_ok():
-        _LOG_BUDGET["status"] = {"mb": mb, "err": "this system's journald has no namespaces"}
+        _LOG_BUDGET["status"] = {"mb": mb, "err": "this system's journald has no namespaces", "unsupported": True}
         return
     want = "[Journal]\nStorage=%s\nSystemMaxUse=%dM\nRuntimeMaxUse=%dM\n" % ("none" if off else "persistent", mb, mb)
     if _LOG_BUDGET["conf"] is None:
@@ -7464,6 +7465,8 @@ def _log_budget():
         _LOG_BUDGET["applied"] = int(m.group(1)) if m else None
     # a restart that failed for this same file is tried again once a minute, not every pass: each try can hold the sync
     # loop for its timeout. A new budget (or Off) is tried at once.
+    if _LOG_BUDGET["conf"] == want and _LOG_BUDGET["err"]:   # back to the size in force: nothing is pending any more
+        _LOG_BUDGET["err"], _LOG_BUDGET["retry_want"], _LOG_BUDGET["at"] = None, None, 0.0
     if _LOG_BUDGET["conf"] != want and (now >= _LOG_BUDGET["retry_at"] or want != _LOG_BUDGET["retry_want"]):
         err = None
         try:
@@ -17032,8 +17035,8 @@ def _turn_verify(svc):
     """Confirm a turn-proxy service is actually running after install/edit. enable/restart returns 0 as
     soon as the binary is exec'd, so a crash-loop (e.g. a -listen IP not local to the host → bind fails)
     looks like success — this catches it + returns the journal reason so the panel can show it."""
-    # systemd's own lines about the unit ("<unit>: Failed with result …") are skipped: they sit in the main journal and the
-    # unit's own in swg-node, so which of the two sorts last varies, and the unit's line is the reason (JOURNAL_SKIP_PID1)
+    # systemd's lines that say only THAT it failed are skipped (JOURNAL_SKIP_PID1): they sit in the main journal and the unit's
+    # own in swg-node, so which sorts last varies; the unit's line, or systemd's own "why" line (an exec failure), is the reason
     v = host_sh("sleep 1.5; systemctl is-active " + shlex.quote(svc) + " 2>/dev/null; "
                 + journal_cmd() + " -u " + shlex.quote(svc) + " -n 8 --no-pager -o cat 2>/dev/null | " + JOURNAL_SKIP_PID1
                 + "grep -iE 'error|invalid|fail|bind|address|panic' | tail -1")

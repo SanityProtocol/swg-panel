@@ -15304,7 +15304,7 @@ def panel_log_status(deps):
         return None
     if not isinstance(doc, dict):
         return None
-    return {k: doc[k] for k in ("mb", "used_mb", "oldest", "err") if isinstance(doc.get(k), (int, float, str))}
+    return {k: doc[k] for k in ("mb", "used_mb", "oldest", "err", "unsupported") if isinstance(doc.get(k), (int, float, str))}
 
 
 _DROPPED_CAP = 20      # entries carried back per save; the total is kept whole

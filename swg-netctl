@@ -1693,7 +1693,8 @@ def log_budget():
         with open(LOG_NS_CONF) as f:
             have = f.read()
     prev = _read_log_status()
-    if not log_ns_ok():
+    unsupported = not log_ns_ok()
+    if unsupported:
         err = "this system's journald has no namespaces"
     elif have != want and prev.get("err") and prev.get("want") == want and time.time() < (prev.get("retry") or 0):
         err, retry = prev["err"], prev["retry"]                 # failed for this same size a moment ago: wait
@@ -1711,6 +1712,8 @@ def log_budget():
         doc["oldest"] = oldest
     if err:
         doc["err"] = err[:200]
+        if unsupported:
+            doc["unsupported"] = True
         if retry:
             doc["want"], doc["retry"] = want, retry
     _write_log_status(doc)
