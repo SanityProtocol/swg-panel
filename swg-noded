@@ -7317,6 +7317,10 @@ def log_ns_ok():
     return _LOG_BUDGET["ns"]
 
 
+# A filter stage for a unit's tail: drops systemd's own lines about it, which all start "<unit>.service: ".
+JOURNAL_SKIP_PID1 = "grep -v '^[^ ]*\\.service: ' | "
+
+
 def journal_cmd():
     """journalctl reading a unit's own lines: in the swg-node journal merged with the main one (`+`), where a unit not yet
     moved — started before its drop-in — still writes."""
@@ -16980,8 +16984,11 @@ def _turn_verify(svc):
     """Confirm a turn-proxy service is actually running after install/edit. enable/restart returns 0 as
     soon as the binary is exec'd, so a crash-loop (e.g. a -listen IP not local to the host → bind fails)
     looks like success — this catches it + returns the journal reason so the panel can show it."""
+    # systemd's own lines about the unit ("<unit>: Failed with result …") are skipped: they sit in the main journal and the
+    # unit's own in swg-node, so which of the two sorts last varies, and the unit's line is the reason (JOURNAL_SKIP_PID1)
     v = host_sh("sleep 1.5; systemctl is-active " + shlex.quote(svc) + " 2>/dev/null; "
-                + journal_cmd() + " -u " + shlex.quote(svc) + " -n 5 --no-pager -o cat 2>/dev/null | grep -iE 'error|invalid|fail|bind|address|panic' | tail -1")
+                + journal_cmd() + " -u " + shlex.quote(svc) + " -n 8 --no-pager -o cat 2>/dev/null | " + JOURNAL_SKIP_PID1
+                + "grep -iE 'error|invalid|fail|bind|address|panic' | tail -1")
     lines = (v.stdout or "").strip().splitlines()
     if lines and lines[0] == "active":
         return ""
@@ -17982,8 +17989,8 @@ def _wdtt_update_binary(inst, ver, ifaces):
 
 def _wdtt_verify(svc):
     v = host_sh("sleep 1.5; systemctl is-active " + shlex.quote(svc) + " 2>/dev/null; "
-                + journal_cmd() + " -u " + shlex.quote(svc) + " -n 6 --no-pager -o cat 2>/dev/null | "
-                "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")
+                + journal_cmd() + " -u " + shlex.quote(svc) + " -n 8 --no-pager -o cat 2>/dev/null | " + JOURNAL_SKIP_PID1
+                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")
     lines = (v.stdout or "").strip().splitlines()
     if lines and lines[0] == "active":
         return ""

@@ -1649,9 +1649,9 @@ def log_budget():
             with open(LOG_NS_CONF + ".tmp", "w") as f:
                 f.write(want)
             os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
-            r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=60)
-            if r.returncode != 0:
-                err = "journald@%s did not restart: %s" % (LOG_NS, (r.stderr or "").strip()[:160])
+            rc, out = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=60)
+            if rc != 0:
+                err = "journald@%s did not restart: %s" % (LOG_NS, out.strip()[:160])
             else:
                 have = want
                 if off:
