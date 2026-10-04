@@ -29,7 +29,7 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      mbdropped    a node's budget never reaches it while the level is at its default
      unpublished  the panel does not publish the node's `log_mb`
      store100     a budget of 100 is stored instead of dropped
-     presync      the node writes its size file before any panel reply (a restart writes the default, then the real one)
+     nopersist    the node forgets its budget at a restart (after a reboot it runs at journald's defaults until the panel answers)
      jdchurn      the node restarts journald on every pass
      offkeeps     Off stores nothing new but keeps what is on disk
      tilde        the oldest-file parser takes a damaged `….journal~`
@@ -70,8 +70,8 @@ PLANTS = {   # (program, anchor, replacement)
     "unpublished": ("panel", '''                        "log_mb": log_mb(c.get("log_mb")),\n''', ""),
     "store100": ("panel", '''            if _lmb == LOG_MB_DEFAULT:\n                nodes[nid].pop("log_mb", None)\n            else:\n                nodes[nid]["log_mb"] = _lmb''',
                  '''            nodes[nid]["log_mb"] = _lmb'''),
-    "presync": ("noded", '''    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want and (now >= _LOG_BUDGET["retry_at"] or want != _LOG_BUDGET["retry_want"]):''', '''    if _LOG_BUDGET["conf"] != want and (now >= _LOG_BUDGET["retry_at"] or want != _LOG_BUDGET["retry_want"]):'''),
-    "jdchurn": ("noded", '''    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want and (now >= _LOG_BUDGET["retry_at"] or want != _LOG_BUDGET["retry_want"]):''', '''    if _LOG_BUDGET["synced"]:'''),
+    "nopersist": ("noded", '''        if _mb != _LOG_BUDGET["mb"] or not os.path.exists(LOG_BUDGET_FILE):''', '''        if False:'''),
+    "jdchurn": ("noded", '''    if _LOG_BUDGET["conf"] != want and (now >= _LOG_BUDGET["retry_at"] or want != _LOG_BUDGET["retry_want"]):''', '''    if now >= _LOG_BUDGET["retry_at"]:'''),
     "offkeeps": ("noded", '''                        if ".journal" in n:\n                            with contextlib.suppress(OSError):\n                                os.remove(os.path.join(d, n))''',
                  '''                        pass'''),
     "tilde": ("noded", r'''-([0-9a-f]{16})\.journal$")''', r'''-([0-9a-f]{16})\.journal~?$")'''),
@@ -253,7 +253,9 @@ def fake_run(args, input_text=None, timeout=20):
 N.run = fake_run
 N.log_set(N.LOG_INFO)
 N._log_budget()
-check("[2] before any panel reply: no size file, no journald restart", not os.path.exists(N.LOG_NS_CONF) and not CALLS, CALLS)
+check("[2] a new node holds its journal to the default from its first pass, before any panel reply",
+      "SystemMaxUse=100M" in open(N.LOG_NS_CONF).read() and len(CALLS) == 1, CALLS)
+CALLS.clear()
 N.apply_panel_settings({"log": {"mb": 48}})
 N._log_budget()
 want = "[Journal]\nStorage=persistent\nSystemMaxUse=48M\nRuntimeMaxUse=48M\n"
@@ -271,6 +273,15 @@ N2._log_budget()
 st0 = N2._LOG_BUDGET["status"] or {}
 N2.apply_panel_settings({"log": {"mb": 48}}); N2._log_budget()
 check("[2] a restarted node reports the budget in force and restarts nothing", not CALLS and st0.get("mb") == 48, (CALLS, st0))
+os.remove(N.LOG_NS_CONF)                                     # a reboot: /run is empty, and the panel is not answering
+N3 = load("noded", {"SWG_NODED_STATE": NSTATE}); quiet(N3)
+N3.LOG_NS_CONF, N3.log_ns_ok, N3._log_ns_dir, N3.NODE_KIND, N3.run = N.LOG_NS_CONF, (lambda: True), (lambda: JD), "baremetal", fake_run
+N3.log_set(N3.LOG_INFO)
+N3._log_budget()
+check("[2] after a reboot with the panel unreachable, the node holds its journal to the budget it was last given",
+      os.path.exists(N.LOG_NS_CONF) and "SystemMaxUse=48M" in open(N.LOG_NS_CONF).read() and len(CALLS) == 1,
+      (CALLS, os.path.exists(N.LOG_NS_CONF) and open(N.LOG_NS_CONF).read()))
+CALLS.clear()
 for v, exp in ((None, 100), (8, 16), ("x", 100)):
     N.apply_panel_settings({"log": {"mb": v}} if v is not None else {})
     check("[2] panel.log.mb %r reads as %d" % (v, exp), N._LOG_BUDGET["mb"] == exp, N._LOG_BUDGET["mb"])
