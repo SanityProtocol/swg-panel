@@ -122,6 +122,7 @@ def upd(have_ref, want_ref, version_moves):
               'col_v(){ printf %%s "$*"; }\noldver(){ cat "$1/VERSION" 2>/dev/null || echo "?"; }\nstamp(){ :; }\n'
               'should_update(){ %s; }\n'
               'ensure_noded_unit(){ :; }; ensure_noded_no_nnp(){ :; }; ensure_noded_reach_sweep(){ :; }; ensure_wg_apparmor(){ :; }\n'
+              'ensure_log_ns(){ :; }\n'
               'ensure_awg_datapath(){ :; }; ensure_awg_pkg_follow(){ :; }; ensure_awg_quick_unit(){ :; }; ensure_awg_back_on_kernel(){ :; }\n'
               'export SWG_REF=%s\n%s\necho "DID_UPDATE=$DID_UPDATE"\n') % (
         noded, agent, src, "return 0" if version_moves else "return 1", want_ref, body)

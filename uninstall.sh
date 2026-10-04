@@ -635,9 +635,9 @@ rm_node(){
   if [ -e $SD/swg-noded.service ]; then run systemctl disable --now swg-noded; fi
   docker_running swg-node || rm_smartdns_redirect   # its dnsmasq just went with it — see rm_smartdns_redirect
   run systemctl unmask dnsmasq 2>/dev/null || true   # install masked the distro dnsmasq (node ran its own); restore it
-  rmrf $SD/swg-noded.service; _node_dropins_away
+  rmrf $SD/swg-noded.service; _node_dropins_away; run systemctl daemon-reload
   rm_log_ns swg-node swg-noded.service swg-relay@.service vk-turn-proxy-.service swg-wdtt-.service swg-csqtt-.service
-  run systemctl daemon-reload
+  run systemctl daemon-reload   # the prefix drop-ins rm_log_ns took off units that may still be loaded
   # An interface TAKEN OVER from somebody else's container came with a promise: their server keeps serving, just
   # from here instead. Uninstalling ends that — we delete the interface further down — and the container it came
   # from is still stopped with restart=no, exactly as the take-over left it. Removing swgPanel then leaves the
