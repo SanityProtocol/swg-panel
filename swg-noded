@@ -297,7 +297,7 @@ def _platform_detect():
     osr = {}
     with contextlib.suppress(Exception):
         if NODE_KIND == "docker":
-            r = host_sh("cat /etc/os-release 2>/dev/null || cat /usr/lib/os-release 2>/dev/null")
+            r = host_sh("cat /etc/os-release 2>/dev/null || cat /usr/lib/os-release 2>/dev/null", probe=True)
             if r.returncode == 0 and (r.stdout or "").strip():
                 osr = _osrel_parse(r.stdout)
         else:
@@ -1309,7 +1309,7 @@ def _read_units_live(svcs):
         return {}
     cmd = "; ".join("printf '@@SWG@@%s\\n' " + shlex.quote(s) + "; cat " + shlex.quote(_turn_unit_path(s)) + " 2>/dev/null"
                     for s in svcs)
-    out = host_sh(cmd).stdout or ""
+    out = host_sh(cmd, probe=True).stdout or ""    # a missing unit file is an answer, not a failure
     res = {}; cur = None; buf = []
     for ln in out.splitlines():
         if ln.startswith("@@SWG@@"):
@@ -16019,7 +16019,7 @@ def _parse_tp(svc, execl):
 def _installed_tp(svc):
     """Re-read a turn unit (after install/edit) so the record carries the real ExecStart, incl. the
     generated wrap key."""
-    unit = host_sh("cat " + shlex.quote(_turn_unit_path(svc)) + " 2>/dev/null").stdout
+    unit = host_sh("cat " + shlex.quote(_turn_unit_path(svc)) + " 2>/dev/null", probe=True).stdout
     return _tp_from_unit(svc, unit)
 
 
@@ -16624,7 +16624,7 @@ def _tp_from_unit(svc, unit_text):
     """Resolve a turn-proxy's config from its unit. EnvironmentFile form → read turn.env; old form → ExecStart."""
     if not _unit_is_envform(unit_text):
         return _parse_tp(svc, _exec_of(unit_text))
-    env = host_sh("cat " + shlex.quote(_turn_env_path(svc)) + " 2>/dev/null").stdout or ""
+    env = host_sh("cat " + shlex.quote(_turn_env_path(svc)) + " 2>/dev/null", probe=True).stdout or ""
     vals = {}
     for ln in env.splitlines():
         k, _, v = ln.partition("="); vals[k.strip()] = v.strip()
@@ -16930,7 +16930,7 @@ def apply_turn(turn, turn_onboard):
                 verr = _turn_verify(svc)
                 fail(svc, verr) if verr else good(svc, "start:" + svc)
                 continue
-            unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null").stdout
+            unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null", probe=True).stdout
             if not unit:
                 fail(svc, "unit not found on the node"); continue
             cur = _tp_from_unit(svc, unit)   # resolves env-file or old baked-ExecStart units
@@ -16970,7 +16970,7 @@ def apply_turn(turn, turn_onboard):
             fail(svc, str(e))
     for sp in (turn_onboard or []):
         try:
-            unit = host_sh("cat " + shlex.quote(sp) + " 2>/dev/null").stdout
+            unit = host_sh("cat " + shlex.quote(sp) + " 2>/dev/null", probe=True).stdout
             if not unit:
                 fail(sp, "unit not found at that path"); continue
             base = os.path.basename(sp)
@@ -17621,7 +17621,7 @@ def _wdtt_server_pub(iface):
             with contextlib.suppress(Exception):
                 return (run(_wgcmd(["wg"]) + ["pubkey"], input_text=pb + "\n").stdout or "").strip()   # _wgcmd(["wg"]) → ["awg"] on docker
         return ""
-    return (host_sh("wg show " + shlex.quote(iface) + " public-key 2>/dev/null").stdout or "").strip()
+    return (host_sh("wg show " + shlex.quote(iface) + " public-key 2>/dev/null", probe=True).stdout or "").strip()
 
 def _wdtt_panel_fetch(fork, dest, want_sha, tag="wdtt"):
     """Fetch a fork's patched WDTT binary from the panel mirror (reuses the turn-binary endpoint keyed by the fork's
@@ -18838,7 +18838,7 @@ def wdtt_snapshot():
         if NODE_KIND == "docker":
             _, hs = _wdtt_uapi(iface)
         else:
-            _wgdump = (host_sh("wg show " + shlex.quote(iface) + " dump 2>/dev/null").stdout or "")
+            _wgdump = (host_sh("wg show " + shlex.quote(iface) + " dump 2>/dev/null", probe=True).stdout or "")
             for _ln in _wgdump.splitlines()[1:]:
                 _f = _ln.split("\t")
                 if len(_f) >= 5:
@@ -20447,6 +20447,7 @@ def main():
         os.remove("/var/lib/swg-noded/swg-sni.log")
     last_samples = {}
     last_route_sig = None; last_route_t = 0.0    # gate the heavy routing reconcile (see ROUTING_RECONCILE_EVERY_S)
+    last_desired_sig = None                      # what the last completed pass applied — for the reconcile line's level only
     last_verify_t = time.time()                  # periodic full re-verify (silent-drift heal, see VERIFY_EVERY_S)
     PANEL_IP_FILE = os.path.join(STATE_DIR, "panel-ip")   # node IP role: source IP to dial the panel (persisted)
     panel_ip = ""; bad_pip = ""                     # bad_pip = a panel_ip that failed to connect → don't keep re-binding it
@@ -20676,7 +20677,9 @@ def main():
                                         sort_keys=True, default=str)
                 _iface_churn = bool(_awg_loaded or cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
                                     or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"] or cq["changed"])   # a WDTT/csqtt install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
-                _route_moved = _route_sig != last_route_sig   # the desired routing changed (not a reverify)
+                # The desired routing changed — compared with what the last COMPLETED pass applied, which the reverify does
+                # not clear (it clears last_route_sig to force a pass). True once per start, for the first application.
+                _route_moved = _route_sig != last_desired_sig
                 if (_route_moved or _iface_churn or _routed_devs_moved()
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
@@ -20701,7 +20704,7 @@ def main():
                         # `_DEVEXIT`, so the chain is built from the same answer the routing was.
                         reconcile_inet_chain(node_cfg, {e.get("dev") for e in
                                                         ((reply.get("cascade") or {}).get("devexit") or [])})
-                    last_route_sig = _route_sig; last_route_t = time.time()
+                    last_route_sig = last_desired_sig = _route_sig; last_route_t = time.time()
                     _ROUTED["judged"] = _ROUTED["pending"]    # …with what it judged: a pass that raised is retried next sync
                 else:
                     eg = {"changed": 0, "errors": []}; cas = {"changed": 0, "errors": []}   # unchanged routing → skip the ip/iptables/nft drift-check shell-outs

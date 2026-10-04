@@ -2378,6 +2378,9 @@ export function PanelSettingsScreen() {
                            log_debug: logEdit.lvl === "debug" ? +logForShown : 0 } : {}),
       });
       if (!r.ok) return setMsg({ ok: false, t: srvText(r) || T("Failed to save.") });
+      // The level is saved: drop the draft NOW, so a later step that fails cannot leave it dirty and a retry re-send Debug's
+      // duration (restarting its clock) — after a poll, so the card shows the saved level rather than flashing the old one.
+      if (logEdit) { await Store.poll(); setLogEdit(null); }
       if (dataDirty() || tzDirty()) trafficInvalidate();   // re-read what the save changed: a zone moves every day's edges
     }
     // interface-key escrow — applied on Save (not on toggle), like every other field. Enabling needs the vault unlocked.
@@ -2439,7 +2442,6 @@ export function PanelSettingsScreen() {
     }
     setMsg(null); setSaved(Date.now() + 4000);   // green "All settings saved" flash in the header
     await Store.poll();
-    setLogEdit(null);   // only now: the poll carries the saved level, so the card does not flash back to the old one
     const fresh = Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)]));
     setNodeEdits(fresh); setOrig(fresh);
     } catch (e) {
