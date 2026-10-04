@@ -11,7 +11,7 @@
  * blocks of 64 lines, only those near the viewport in the DOM, their heights measured (Wrap makes rows uneven).
  */
 
-import { T, plural } from "./i18n.js";
+import { T, plural, fmtNum } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
 import { Ic, Popover, goSettings } from "./ui.js";
 import { downloadConf } from "./crypto.js";
@@ -300,7 +300,7 @@ function Row({ l, q }) {
   if (l.src[0] === "!") return html`<div class="lv-row lv-mark">
     <span class="lv-t" title=${ymd(l.k)}>${hms(l.k)}</span>
     <span class="lv-chip" style=${"--lvc:" + chipOf(l.nid)}>${nodeName(l.nid)}</span>
-    <span class="lv-markt">${l.src === "!skip" ? T("{v1} lines skipped — narrow the sources or raise the filter", { v1: Number(l.text).toLocaleString() })
+    <span class="lv-markt">${l.src === "!skip" ? T("{v1} lines skipped — narrow the sources or raise the filter", { v1: fmtNum(Number(l.text)) })
       : T("Resumed — some lines before this may be missing")}</span>
   </div>`;
   const lv = lvOf(l.prio);
@@ -425,7 +425,7 @@ export function LogViewer() {
         onInput=${e => { LV.q = e.target.value; bump(); }}/></div>
       <span class="grow"></span>
       <button class=${"btn btn-mini" + (paused ? " lv-paused" : "")} onClick=${paused ? resume : pause} title=${paused ? T("Back to the newest lines, following") : T("Hold the list still")}>
-        <${Ic} i=${paused ? "play" : "stop"}/> ${paused ? (LV.missed ? T("Resume · {n} new", { n: LV.missed.toLocaleString() }) : T("Resume")) : T("Pause")}</button>
+        <${Ic} i=${paused ? "play" : "stop"}/> ${paused ? (LV.missed ? T("Resume · {n} new", { n: fmtNum(LV.missed) }) : T("Resume")) : T("Pause")}</button>
       <button class=${"btn btn-mini" + (LV.wrap ? " on" : "")} aria-pressed=${LV.wrap} onClick=${() => { LV.wrap = !LV.wrap; remember(); bump(); }}>${T("Wrap")}</button>
       <button class="btn btn-mini" onClick=${() => { LV.lines = []; LV.frozen = LV.frozen ? [] : null; LV.missed = 0; bump(); }}>${T("Clear")}</button>
       <button class="btn btn-mini" disabled=${!lines.length} onClick=${() => download(lines)} title=${T("The lines shown, as a text file")}><${Ic} i="download"/> ${T("Download")}</button>
@@ -433,8 +433,8 @@ export function LogViewer() {
     ${empty ? html`<div class="lv-empty">${empty}</div>` : html`<${Stream} lines=${lines} follow=${!paused}
       onUserScroll=${atEnd => { if (!atEnd && !LV.frozen) pause(); }}/>`}
     <div class="lv-foot faint">${LV.frozen
-      ? T("Paused — {v1} lines held", { v1: (LV.frozen.length).toLocaleString() })
-      : T("{v1} of the last {v2} lines", { v1: lines.length.toLocaleString(), v2: BUF.toLocaleString() })}</div>
+      ? T("Paused — {v1} lines held", { v1: fmtNum(LV.frozen.length) })
+      : T("{v1} of the last {v2} lines", { v1: fmtNum(lines.length), v2: fmtNum(BUF) })}</div>
   </div>`;
   return LV.full ? html`<${Fragment}><div class="card lv lv-ph"><div class="lv-empty">${T("Shown full screen — Esc returns it here.")}</div></div>${card}<//>` : card;
 }
