@@ -413,6 +413,7 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 ## Operations
 
 - **Logs:** `swg-logs panel -f` (panel), `swg-logs noded -f` (node), `swg-logs turn <name>`, `swg-logs` for everything — swg writes into journals of its own (`swg-panel`, `swg-node`), each held to the disk budget set in Settings → Logs, so plain `journalctl -u swg-noded` shows only systemd's start/stop lines (and on Debian with rsyslog, swg's lines no longer reach /var/log/syslog). Other options go to journalctl. Docker: `docker compose logs -f`.
+- **Live logs in the panel:** Settings → Logs shows any servers' and sources' lines as one stream, merged by time, with level filters, search, Pause and Download; the node page opens it on that node. Nothing is read on a node unless a viewer is open — the node follows its journal only while asked, and stops within ~20 s after.
 - **Rotate a node's token:** Nodes → ⋯ → Rotate token, then re-run the install command (or update the node's `config.json`).
 - **Remove a node:** Nodes → Remove. Stop `swg-noded` on the box itself to take it offline.
 - **Back up:** `users.json` + `nodes.json` (under `/var/lib/swg-panel`) are the whole state — copy the directory somewhere off-box and you can rebuild the panel anywhere.
