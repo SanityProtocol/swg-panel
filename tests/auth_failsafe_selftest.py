@@ -164,8 +164,11 @@ check("[3] …and how to ask for no login on purpose, for a panel that wants non
 print("\n[4] the startup warning is flushed")
 banner = [l for l in src.splitlines() if "swg-panel-server on {scheme}" in l]
 check("[4] the banner line is still where this expects it", len(banner) == 1, banner)
+# Since LOGS P1b the banner goes through log(), whose single writer flushes every line it writes.
+_lw = src[src.find("def _log_write("):src.find("def log(")]
 check("[4] …and it flushes — under systemd stdout is a block-buffered pipe",
-      bool(banner) and "flush=True" in banner[0], banner[0] if banner else "")
+      bool(banner) and ("flush=True" in banner[0] or (banner[0].lstrip().startswith("log(") and "out.flush()" in _lw)),
+      banner[0] if banner else "")
 check("[4] an unusable auth file also prints its own dedicated line",
       "LOGIN IS CLOSED" in src, "no dedicated operator line for the unusable state")
 

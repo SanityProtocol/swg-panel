@@ -180,6 +180,8 @@ def panel_ns(active="active"):
     ns["_netctl_enqueue"] = lambda deps, verb, args: ns["Q"].append((verb, list(args))) or True
     ns["save_critical"] = lambda p, text: ns["SAVED"].append(json.loads(text))
     ns["write_sub_serve"] = lambda deps, base_alt="": None
+    ns.update(log=lambda prio, msg, *a: print((msg % a) if a else msg, flush=True),   # the panel's log helper (LOGS P1b)
+              LOG_ERR=3, LOG_WARNING=4, LOG_NOTICE=5, LOG_INFO=6, LOG_DEBUG=7)
     exec(compile(LIFT, "swg-panel-server(extract)", "exec"), ns)
     return ns
 def record(url, old_port, new_port):

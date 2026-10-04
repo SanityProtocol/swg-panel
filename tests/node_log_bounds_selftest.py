@@ -52,8 +52,10 @@ PLANTS = {   # (file, anchor, replacement)
                " stdout=open(\"/var/lib/swg-noded/swg-sni.log\", \"a\"))"),
     "nodrain": ("sni", "                    atexit.register(_say_drain)\n", ""),
     "sayblock": ("sni", "        if len(_SAY[\"q\"]) >= SAY_MAX:\n",
-                 "        sys.stdout.write(\" \".join(str(p) for p in parts) + \"\\n\"); sys.stdout.flush(); return\n        if len(_SAY[\"q\"]) >= SAY_MAX:\n"),
+                 "        sys.stdout.write(_say_text(prio, fmt, args)); sys.stdout.flush(); return\n        if len(_SAY[\"q\"]) >= SAY_MAX:\n"),
 }
+# swg-sni follows swg-noded's level through this file (LOGS P1b); none here, so it logs at Info whatever the box says.
+os.environ["SWG_LOG_LEVEL_FILE"] = os.path.join(tempfile.mkdtemp(prefix="logbounds-lvl-"), "log-level")
 SRC = {"noded": open(NODED, encoding="utf-8").read(), "sni": open(SNI, encoding="utf-8").read()}
 if PLANT:
     f, a, b = PLANTS[PLANT]
@@ -210,7 +212,7 @@ res = {}
 def burst():
     t0 = time.time()
     for i in range(S.SAY_MAX + 500):
-        S.say("swg-sni: host%d.example → cat" % i, flush=True)
+        S.say(S.LOG_INFO, "swg-sni: host%d.example → cat", i)
     res["t"] = time.time() - t0
 
 
@@ -222,7 +224,7 @@ check("[5] …and the backlog is bounded, the excess counted", len(S._SAY["q"]) 
 S2 = load(SRC["sni"], "swg-sni")
 S2.sys = types.SimpleNamespace(stdout=Raising())
 try:
-    S2.say("swg-sni: x → y")
+    S2.say(S2.LOG_INFO, "swg-sni: x → y")
     time.sleep(0.2)
     ok = True
 except Exception as e:
@@ -231,29 +233,29 @@ check("[5] a stream that raises does not raise into the caller", ok)
 S3 = load(SRC["sni"], "swg-sni")
 buf = io.StringIO()
 S3.sys = types.SimpleNamespace(stdout=buf)
-S3.say("swg-sni: map reload failed:", ValueError("bad"), flush=True)
+S3.say(S3.LOG_ERR, "swg-sni: map reload failed: %s", ValueError("bad"))
 time.sleep(1.3)
-check("[5] lines still reach the stream, joined as print() joins them",
-      "swg-sni: map reload failed: bad\n" in buf.getvalue(), buf.getvalue()[:120])
+check("[5] lines still reach the stream, formatted by the writer, with their level (E outside journald)",
+      "E swg-sni: map reload failed: bad\n" in buf.getvalue(), buf.getvalue()[:120])
 
 S4 = load(SRC["sni"], "swg-sni")
 rfd, wfd = os.pipe()
 S4.sys = types.SimpleNamespace(stdout=os.fdopen(wfd, "w"))   # a real descriptor: the path production takes (os.write)
-S4.say("swg-sni: example.org → blocked (ads)")
+S4.say(S4.LOG_WARNING, "swg-sni: example.org → blocked (ads)")
 time.sleep(1.3)
 os.set_blocking(rfd, False)
 try:
     got = os.read(rfd, 4096)
 except BlockingIOError:
     got = b""
-check("[5] through a real descriptor (os.write, no buffered-writer lock)", got == "swg-sni: example.org → blocked (ads)\n".encode(), got)
+check("[5] through a real descriptor (os.write, no buffered-writer lock)", got == "W swg-sni: example.org → blocked (ads)\n".encode(), got)
 
 SNI_TMP = os.path.join(tempfile.mkdtemp(prefix="logbounds-sni-"), "swg-sni")
 open(SNI_TMP, "w", encoding="utf-8").write(SRC["sni"])
 CHILD = ("import importlib.machinery, importlib.util, sys\n"
          "ld = importlib.machinery.SourceFileLoader('sni', sys.argv[1])\n"
          "m = importlib.util.module_from_spec(importlib.util.spec_from_loader('sni', ld)); ld.exec_module(m)\n"
-         "for i in range(int(sys.argv[2])): m.say('swg-sni: line %d ' % i + 'x' * 90)\n"
+         "for i in range(int(sys.argv[2])): m.say(m.LOG_INFO, 'swg-sni: line %d ' % i + 'x' * 90)\n"
          "raise SystemExit('NFQueue bind failed')\n")
 r = subprocess.run([sys.executable, "-c", CHILD, SNI_TMP, "3"], capture_output=True, timeout=30)
 check("[5] lines queued just before a crash are still written at exit",

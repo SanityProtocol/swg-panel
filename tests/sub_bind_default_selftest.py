@@ -123,6 +123,8 @@ def run_case(sub=None, by=None, unit=None, dropin=None, own=False, queue=True, p
     saved, serve = [], []
     ns["save_critical"] = lambda p, text: saved.append(json.loads(text))
     ns["write_sub_serve"] = lambda deps, base_alt="": serve.append(dict(((deps["panel_settings"].get("access") or {}).get("sub")) or {}))
+    ns.update(log=lambda prio, msg, *a: print((msg % a) if a else msg, flush=True),   # the panel's log helper (LOGS P1b)
+              LOG_ERR=3, LOG_WARNING=4, LOG_NOTICE=5, LOG_INFO=6, LOG_DEBUG=7)
     exec(compile(LIFT, "swg-panel-server(extract)", "exec"), ns)
     ns["SUB_UNIT_FILE"] = os.path.join(d, "swg-sub.service")
     ns["SUB_DROPIN_FILE"] = os.path.join(d, "10-access.conf")

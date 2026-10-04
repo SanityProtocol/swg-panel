@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""Self-test for LOGS-PLAN P1b — log levels: Off · Errors · Warnings · Info · Debug (docs/LOGS-PLAN.md §1, §3, §13).
+
+  [1] The helper (swg-noded's copy): a line above the level is dropped BEFORE it is formatted; `<N>` under journald, a
+      letter elsewhere, on every line of a multi-line message; Off drops errors too; Debug is capped per second and the
+      excess counted; Debug on top of a base level ends by itself; a crash traceback is written at err.
+  [2] The wire, against a real panel: a default fleet's sync reply carries the same `panel` block, byte for byte, as the
+      build before levels (4248d11); a level or a Debug shows up as `panel.log`; Debug's deadline is the panel's, a
+      save that does not touch the card keeps it, and a stored base level is never Debug.
+  [3] The node: an absent key is the defaults; `debug_left` counts down on the node's clock; the level reaches its
+      children through one file, written only when it changes; a restart reads it back with Debug as Info.
+  [4] The units' drop-ins (noded on a node, netctl on the panel box): none at Info, `warning` below it, `emerg` at Off,
+      one daemon-reload per change and none on a steady pass; netctl and update keep `notice` at Info.
+  [5] The P2P guard's nft rules lose their `log` below Info — through the real apply path.
+  [6] The "why it failed" readers say so when the level is why: turn verify, WDTT verify, the agent's unit start, the
+      netctl status tail.
+  [7] swg-sni drops a line above the level before queueing it, and its per-host lines are Debug.
+
+Run: python3 tests/log_levels_selftest.py   (0 = pass)
+  --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
+     eagerfmt     the helper formats a line before deciding to drop it
+     nocap        Debug lines are not capped
+     noomit       the wire carries `log` at the defaults (the reply is no longer byte-identical)
+     nocountdown  the node ignores `debug_left`
+     bootdebug    a restart keeps Debug on with no panel to end it
+     churn        the drop-ins are rewritten (and systemd reloaded) on every pass
+     floor        below Info a unit's cap is `err`, which drops systemd's crash lines
+     timercap     netctl and update lose their `notice` cap at Info
+     p2plog       the P2P rules keep `log` whatever the level
+     nohonest     turn verify gives a bare reason below Info
+     snilevel     swg-sni queues a line above the level
+"""
+import importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time, types
+import urllib.error, urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+PROG = {k: os.path.join(ROOT, f) for k, f in (("noded", "swg-noded"), ("panel", "swg-panel-server"), ("sni", "swg-sni"),
+                                              ("netctl", "swg-netctl"), ("agent", "swg-agent"))}
+REF = "4248d11"                                  # the last build before levels: the byte-identical reference
+PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
+FAILS = []
+TMP = tempfile.mkdtemp(prefix="loglevels-")
+os.environ["SWG_LOG_LEVEL_FILE"] = os.path.join(TMP, "none", "log-level")   # nothing from this box leaks in
+
+
+def check(name, cond, detail=""):
+    print(("  PASS " if cond else "  FAIL ") + name + (("  — " + str(detail)[:300]) if detail and not cond else ""),
+          flush=True)
+    if not cond:
+        FAILS.append(name)
+
+
+PLANTS = {   # (program, anchor, replacement)
+    "eagerfmt": ("noded", '''    if prio > _LOG["level"] and prio > log_level():\n        return\n''',
+                 '''    _pre = (msg % args) if args else str(msg)\n    if prio > _LOG["level"] and prio > log_level():\n        return\n'''),
+    "nocap": ("noded", '''            if _LOG["n"] > LOG_DEBUG_RATE:''', '''            if False:'''),
+    "noomit": ("panel", '''    if base == "info" and not left:\n        return None\n''', ""),
+    "nocountdown": ("noded", '''log_set(min(LOG_LEVELS.get(_lg.get("level"), LOG_INFO), LOG_INFO), _left)''',
+                    '''log_set(min(LOG_LEVELS.get(_lg.get("level"), LOG_INFO), LOG_INFO), 0)'''),
+    "bootdebug": ("noded", '''        log_set(min(v, LOG_INFO))''', '''        log_set(v, -1 if v == LOG_DEBUG else 0)'''),
+    "churn": ("noded", '''        if have == target:\n            continue\n''', ""),
+    "floor": ("noded", '''"warning" if lvl < LOG_INFO else None''', '''"err" if lvl < LOG_INFO else None'''),
+    "timercap": ("netctl", '''base or ("notice" if lvl == LOG_INFO else None)''', '''base'''),
+    "p2plog": ("noded", '''logged=log_level() >= LOG_INFO)''', '''logged=True)'''),
+    "nohonest": ("noded", '''    return "service didn't stay up: " + reason[:150] + (" — " + nd if nd else "")''',
+                 '''    return "service didn't stay up: " + reason[:150]'''),
+    "snilevel": ("sni", '''        if prio > _SAY["level"]:\n            return\n''', ""),
+}
+SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
+if PLANT:
+    f, a, b = PLANTS[PLANT]
+    assert SRC[f].count(a) == 1, "plant anchor not unique/absent — this run would measure nothing: " + PLANT
+    SRC[f] = SRC[f].replace(a, b)
+
+
+def write_prog(key, name=None):
+    p = os.path.join(tempfile.mkdtemp(prefix="loglevels-prog-"), name or os.path.basename(PROG[key]))
+    open(p, "w", encoding="utf-8").write(SRC[key])
+    return p
+
+
+def load(key, env=None):
+    old = {k: os.environ.get(k) for k in (env or {})}
+    os.environ.update(env or {})
+    p = write_prog(key)
+    ld = importlib.machinery.SourceFileLoader("ll_" + key + str(time.monotonic_ns()), p)
+    m = importlib.util.module_from_spec(importlib.util.spec_from_loader(ld.name, ld))
+    try:
+        ld.exec_module(m)
+    except SystemExit:
+        pass
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return m
+
+
+class Buf(io.StringIO):
+    pass
+
+
+def capture(m):
+    """Point the module's log stream at a buffer, outside journald (letters)."""
+    b = Buf()
+    m._LOG_STREAM = b
+    m._LOG_JOURNAL = False
+    return b
+
+
+NSTATE = os.path.join(TMP, "noded-state")
+os.makedirs(NSTATE)
+N = load("noded", {"SWG_NODED_STATE": NSTATE})
+sys.excepthook, threading.excepthook = sys.__excepthook__, threading.__excepthook__   # the module set its own
+
+# ── [1] the helper ──────────────────────────────────────────────────────────────────────────────────────────────────
+print("[1] the helper")
+
+
+class Counted:
+    n = 0
+
+    def __str__(self):
+        Counted.n += 1
+        return "x"
+
+
+b = capture(N)
+N.log_set(N.LOG_INFO)
+N.log(N.LOG_DEBUG, "dbg %s", Counted())
+check("[1] a Debug line at Info is dropped before it is formatted", Counted.n == 0 and b.getvalue() == "", Counted.n)
+N.log(N.LOG_WARNING, "two\nlines %s", Counted())
+check("[1] outside journald: a letter on every line", b.getvalue() == "W two\nW lines x\n", repr(b.getvalue()))
+N._LOG_JOURNAL = True
+b.truncate(0); b.seek(0)
+N.log(N.LOG_ERR, "a\nb")
+check("[1] under journald: `<N>` on every line", b.getvalue() == "<3>a\n<3>b\n", repr(b.getvalue()))
+N._LOG_JOURNAL = False
+b.truncate(0); b.seek(0)
+N.log_set(N.LOG_OFF)
+N.log(N.LOG_ERR, "an error")
+check("[1] Off drops errors too", b.getvalue() == "")
+N.log_set(N.LOG_INFO, 1)
+check("[1] Debug for n seconds on top of the base", N.log_level() == N.LOG_DEBUG)
+time.sleep(1.1)
+check("[1] …and it ends by itself, back to the base", N.log_level() == N.LOG_INFO)
+N.log_set(N.LOG_ERR, -1)
+check("[1] Debug until changed (-1)", N.log_level() == N.LOG_DEBUG)
+while int(time.monotonic() * 10) % 10 > 3:      # start the burst early in a second, so it stays inside one
+    time.sleep(0.02)
+b.truncate(0); b.seek(0)
+for i in range(N.LOG_DEBUG_RATE + 50):
+    N.log(N.LOG_DEBUG, "d%d", i)
+written = b.getvalue().count("\n")
+check("[1] Debug is capped per second", written == N.LOG_DEBUG_RATE, written)
+time.sleep(1.05)
+N.log(N.LOG_INFO, "next")
+check("[1] …and the excess is counted in one line", "50 debug lines not written" in b.getvalue(), b.getvalue()[-200:])
+N.log_set(N.LOG_ERR)
+b.truncate(0); b.seek(0)
+try:
+    raise RuntimeError("boom")
+except RuntimeError:
+    N._log_excepthook(*sys.exc_info())
+check("[1] a crash traceback is written at err, every line", b.getvalue().startswith("E Traceback")
+      and all(ln.startswith("E ") for ln in b.getvalue().splitlines()), b.getvalue()[:200])
+N.log_set(N.LOG_INFO)
+
+# ── [2] the wire, against a real panel ──────────────────────────────────────────────────────────────────────────────
+print("[2] the wire")
+
+
+def start_panel(src_path, tag):
+    d = os.path.join(TMP, "panel-" + tag)
+    state = os.path.join(d, "state"); os.makedirs(state)
+    stats = os.path.join(d, "stats"); os.makedirs(stats)
+    nodes = os.path.join(state, "nodes.json")
+    json.dump({"n1": {"id": "n1", "name": "n1", "links": {}, "ifaces": {}}}, open(nodes, "w"))
+    open(os.path.join(state, "users.json"), "w").write("{}\n")
+    fleet = os.path.join(d, "fleet.json")
+    json.dump({"nodes_path": nodes, "roster_path": os.path.join(state, "users.json"), "stats_dir": stats}, open(fleet, "w"))
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    lg = open(os.path.join(d, "panel.log"), "w+")
+    p = subprocess.Popen([sys.executable, src_path], stdout=lg, stderr=subprocess.STDOUT,
+                         env={**os.environ, "SWG_PANEL_FLEET": fleet, "SWG_PANEL_WEB": ROOT, "SWG_PANEL_HOST": "127.0.0.1",
+                              "SWG_PANEL_PORT": str(port), "SWG_PANEL_AUTH": "", "SWG_PANEL_TLS_CERT": "",
+                              "SWG_PANEL_TLS_KEY": "", "SWG_PANEL_STATE_TTL": "0"})
+    for _ in range(300):
+        try:
+            urllib.request.urlopen("http://127.0.0.1:%d/healthz" % port, timeout=2)
+            break
+        except Exception:
+            if p.poll() is not None:
+                sys.exit("panel exited: " + open(lg.name).read()[-2000:])
+            time.sleep(0.1)
+    return p, port, state
+
+
+def req(port, path, data=None, token=None):
+    r = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path),
+                               data=json.dumps(data).encode() if data is not None else None,
+                               headers={"Content-Type": "application/json",
+                                        **({"Authorization": "Bearer " + token} if token else {})})
+    try:
+        with urllib.request.urlopen(r, timeout=30) as resp:
+            raw, code = resp.read(), resp.status
+    except urllib.error.HTTPError as e:
+        raw, code = e.read(), e.code
+    return code, json.loads(raw or b"{}")
+
+
+def sync(port, tok):
+    snap = {"hostname": "n1", "generated_at": int(time.time()), "noded_version": "t", "interfaces": {}}
+    code, r = req(port, "/api/node/sync", {"snapshot": snap}, tok)
+    assert code == 200, (code, r)
+    return r
+
+
+ref_src = os.path.join(TMP, "ref-swg-panel-server")
+open(ref_src, "wb").write(subprocess.run(["git", "-C", ROOT, "show", REF + ":swg-panel-server"], capture_output=True,
+                                         check=True).stdout)
+procs = []
+try:
+    pr, port_r, _ = start_panel(ref_src, "ref"); procs.append(pr)
+    pn, port_n, state_n = start_panel(write_prog("panel"), "new"); procs.append(pn)
+    tok_r = req(port_r, "/api/nodes/rotate", {"id": "n1"})[1]["data"]["token"]
+    tok_n = req(port_n, "/api/nodes/rotate", {"id": "n1"})[1]["data"]["token"]
+    rr, rn = sync(port_r, tok_r), sync(port_n, tok_n)
+    check("[2] a default fleet: the `panel` block is byte-identical to the build before levels",
+          json.dumps(rr.get("panel")) == json.dumps(rn.get("panel")), (rr.get("panel"), rn.get("panel")))
+    check("[2] …and so is the reply's set of keys", list(rr) == list(rn), (list(rr), list(rn)))
+
+    def setlog(body):
+        return req(port_n, "/api/panel/settings", body)
+
+    c, _r = setlog({"log_level": "debug"})
+    check("[2] Debug is never a stored base level", c == 400, (c, _r))
+    setlog({"log_level": "error"})
+    check("[2] a level reaches the node as panel.log", sync(port_n, tok_n)["panel"].get("log") == {"level": "error"},
+          sync(port_n, tok_n)["panel"].get("log"))
+    setlog({"log_level": "error", "log_debug": 3600})
+    lg = sync(port_n, tok_n)["panel"].get("log") or {}
+    check("[2] Debug for an hour: the base stays, debug_left counts on the panel's clock",
+          lg.get("level") == "error" and 3590 <= (lg.get("debug_left") or 0) <= 3600, lg)
+    until = json.load(open(os.path.join(state_n, "panel-settings.json"))).get("log_debug_until")
+    setlog({"top_talkers": 12})
+    check("[2] a save that does not touch the card keeps Debug's deadline",
+          json.load(open(os.path.join(state_n, "panel-settings.json"))).get("log_debug_until") == until)
+    st = req(port_n, "/api/state")[1]
+    left = ((st.get("data") or st).get("panel_settings") or {}).get("log_debug_left")
+    check("[2] /api/state carries the time left on the panel's clock", isinstance(left, int) and 3590 <= left <= 3600, left)
+    setlog({"log_level": "warning", "log_debug": -1})
+    check("[2] Debug until changed is -1", sync(port_n, tok_n)["panel"].get("log") == {"level": "warning", "debug_left": -1})
+    setlog({"log_level": "info", "log_debug": 0})
+    check("[2] back to the defaults: the key is gone again", "log" not in sync(port_n, tok_n)["panel"])
+    c, _r = setlog({"log_debug": 120})
+    check("[2] a Debug duration that is not offered is refused", c == 400, (c, _r))
+finally:
+    for p in procs:
+        p.terminate()
+        with __import__("contextlib").suppress(Exception):
+            p.wait(5)
+
+P = load("panel")
+sys.excepthook, threading.excepthook = sys.__excepthook__, threading.__excepthook__
+pb = capture(P)
+P.panel_log_apply({"log_level": "off", "log_debug_until": 0})
+P.log(P.LOG_ERR, "panel error")
+check("[2] the panel's own lines follow the level: Off", pb.getvalue() == "" and P.log_level() == P.LOG_OFF, pb.getvalue())
+P.panel_log_apply({"log_level": "error", "log_debug_until": int(time.time()) + 60})
+check("[2] …and Debug on top of a base while its time runs", P.log_level() == P.LOG_DEBUG)
+P.panel_log_apply({"log_level": "warning", "log_debug_until": int(time.time()) - 1})
+check("[2] …and the base once it has passed", P.log_level() == P.LOG_WARNING)
+
+# ── [3] the node ────────────────────────────────────────────────────────────────────────────────────────────────────
+print("[3] the node")
+N.apply_panel_settings({"geo_epoch": 0})
+check("[3] an absent `log` is the defaults", N.log_level() == N.LOG_INFO)
+N.apply_panel_settings({"geo_epoch": 0, "log": {"level": "off"}})
+check("[3] Off", N.log_level() == N.LOG_OFF)
+N.apply_panel_settings({"geo_epoch": 0, "log": {"level": "error", "debug_left": 1}})
+check("[3] debug_left: Debug now…", N.log_level() == N.LOG_DEBUG)
+time.sleep(1.1)
+check("[3] …and the base once the node's own clock has run it out", N.log_level() == N.LOG_ERR)
+N.apply_panel_settings({"geo_epoch": 0, "log": {"level": "debug"}})
+check("[3] a base level of debug from the wire is read as Info", N.log_level() == N.LOG_INFO)
+
+N.NODE_KIND = "docker"                              # [3] is the file only; the drop-ins are [4]
+lf = N.LOG_LEVEL_FILE
+N.log_set(N.LOG_WARNING)
+N._log_follow({})
+check("[3] the children's file holds the level", open(lf).read() == "4\n" and os.environ.get("SWG_LOG_LEVEL") == "4")
+os.utime(lf, (1, 1))
+N._log_follow({})
+check("[3] …written only when it changes", os.stat(lf).st_mtime == 1)
+for v, want in (("7\n", N.LOG_INFO), ("-1\n", N.LOG_OFF), ("3\n", N.LOG_ERR)):
+    open(lf, "w").write(v)
+    N.log_set(N.LOG_INFO)
+    N._log_boot()
+    check("[3] a restart reads the file back (%s → %d), Debug as Info" % (v.strip(), want), N.log_level() == want,
+          N.log_level())
+
+# ── [4] the drop-ins ────────────────────────────────────────────────────────────────────────────────────────────────
+print("[4] drop-ins")
+DD = os.path.join(TMP, "run-systemd-system"); os.makedirs(DD)
+N.LOG_DROPIN_DIR = DD
+N.NODE_KIND = "baremetal"
+RELOADS = []
+_real_run = N.run
+N.run = lambda args, **kw: (RELOADS.append(args) if args[:2] == ["systemctl", "daemon-reload"] else None) or \
+    types.SimpleNamespace(returncode=0, stdout="", stderr="")
+CFG = {"interfaces": {"awg0": {"cmd": ["awg"]}, "wg1": {"cmd": ["wg"]}}}
+
+
+def dropins():
+    out = {}
+    for root, _d, files in os.walk(DD):
+        for f in files:
+            out[os.path.relpath(os.path.join(root, f), DD)] = open(os.path.join(root, f)).read()
+    return out
+
+
+N._LOG_FOLLOWED.update(lvl=None, units=None)
+N.log_set(N.LOG_INFO)
+N._log_follow(CFG)
+check("[4] Info: no drop-in at all, no reload", dropins() == {} and not RELOADS, (dropins(), RELOADS))
+N.log_set(N.LOG_ERR)
+N._log_follow(CFG)
+d = dropins()
+want = {u + ".d/swg-log.conf" for u in N.LOG_DROPIN_UNITS} | {"awg-quick@awg0.service.d/swg-log.conf",
+                                                              "wg-quick@wg1.service.d/swg-log.conf"}
+check("[4] Errors: every unit, prefix drop-ins + one per interface of ours", set(d) == want, sorted(set(d) ^ want))
+check("[4] …capped at warning, never err (systemd's crash lines)",
+      all(v == "[Service]\nLogLevelMax=warning\n" for v in d.values()), set(d.values()))
+check("[4] …and one daemon-reload", len(RELOADS) == 1, RELOADS)
+N._LOG_FOLLOWED["units"] = None                     # as after a restart of noded: the files are already right
+N._log_follow(CFG)
+check("[4] a steady pass rewrites nothing and reloads nothing", len(RELOADS) == 1, RELOADS)
+N.log_set(N.LOG_OFF)
+N._log_follow({"interfaces": {"awg0": {"cmd": ["awg"]}}})
+d = dropins()
+check("[4] Off: emerg; a deleted interface's drop-in goes", all(v.endswith("LogLevelMax=emerg\n") for v in d.values())
+      and "wg-quick@wg1.service.d/swg-log.conf" not in d and len(RELOADS) == 2, (sorted(d), RELOADS))
+os.makedirs(os.path.join(DD, "awg-quick@awg0.service.d"), exist_ok=True)
+open(os.path.join(DD, "awg-quick@awg0.service.d", "operator.conf"), "w").write("[Service]\n")
+N.log_set(N.LOG_DEBUG)
+N._log_follow({"interfaces": {"awg0": {"cmd": ["awg"]}}})
+d = dropins()
+check("[4] Debug: ours removed, an operator's own drop-in beside it kept",
+      d == {"awg-quick@awg0.service.d/operator.conf": "[Service]\n"} and len(RELOADS) == 3, (d, RELOADS))
+N.run = _real_run
+
+NC = load("netctl")
+NC.log_set(NC.LOG_INFO)
+caps = NC.log_unit_caps(NC.LOG_INFO)
+check("[4] netctl at Info: panel and sub uncapped, the timer units at notice",
+      caps == {"swg-panel-server.service": None, "swg-sub.service": None, "swg-netctl.service": "notice",
+               "swg-update.service": "notice"}, caps)
+check("[4] netctl at Debug: nothing capped", set(NC.log_unit_caps(NC.LOG_DEBUG).values()) == {None})
+check("[4] netctl at Errors / Off: warning / emerg everywhere",
+      set(NC.log_unit_caps(NC.LOG_ERR).values()) == {"warning"} and set(NC.log_unit_caps(NC.LOG_OFF).values()) == {"emerg"})
+PS = os.path.join(TMP, "netctl-state"); os.makedirs(PS)
+NC.STATE_DIR = PS
+json.dump({"log_level": "warning", "log_debug_until": int(time.time()) + 600}, open(os.path.join(PS, "panel-settings.json"), "w"))
+NC.log_from_settings()
+check("[4] netctl reads the level from the settings: Debug while its time runs", NC.log_level() == NC.LOG_DEBUG)
+json.dump({"log_level": "warning", "log_debug_until": int(time.time()) - 5}, open(os.path.join(PS, "panel-settings.json"), "w"))
+NC.log_from_settings()
+check("[4] …and the base once it has passed, with nothing written at expiry", NC.log_level() == NC.LOG_WARNING)
+ND = os.path.join(TMP, "netctl-run"); os.makedirs(ND)
+NC.LOG_DROPIN_DIR = ND
+NR = []
+NC.run = lambda argv, **kw: (NR.append(argv), (0, ""))[1]
+NC.log_dropins()
+NC.log_dropins()
+nfiles = sorted(os.listdir(ND))
+check("[4] netctl writes the panel box's four, once, and reloads once",
+      nfiles == sorted(u + ".d" for u in caps) and NR == [["systemctl", "daemon-reload"]], (nfiles, NR))
+
+# ── [5] P2P ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+print("[5] P2P guard")
+NFT = []
+
+
+def fake_run(args, input_text=None, timeout=20):
+    if args[:2] == ["nft", "-f"]:
+        NFT.append(input_text)
+    rc = 1 if args[:3] == ["nft", "list", "table"] else 0
+    return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+
+N.run = fake_run
+N._p2p_ih_ok = lambda: True
+N.GEO_DIR = os.path.join(TMP, "geo"); os.makedirs(N.GEO_DIR)
+for lvl in (N.LOG_INFO, N.LOG_WARNING):
+    N.log_set(lvl)
+    N._P2P.update(tbl=None)
+    with __import__("contextlib").suppress(OSError):
+        os.unlink(os.path.join(N.GEO_DIR, ".p2p.sig"))
+    N._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
+check("[5] the rules are applied", len(NFT) == 2, len(NFT))
+check("[5] at Info the hit lines are logged", len(NFT) == 2 and "log prefix" in NFT[0])
+check("[5] below Info no `log` statement is left", len(NFT) == 2 and "log prefix" not in NFT[1] and " drop" in NFT[1],
+      NFT[1][:300] if len(NFT) == 2 else "")
+N.run = _real_run
+loop = SRC["noded"][SRC["noded"].find("_route_sig = json.dumps("):]
+check("[5] crossing Info re-runs the routing pass (the level is in its signature)",
+      "log_level() >= LOG_INFO" in loop[:loop.find("sort_keys=True")])
+
+# ── [6] honest readers ──────────────────────────────────────────────────────────────────────────────────────────────
+print("[6] why it failed")
+N.host_sh = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout="failed\n", stderr="")
+N.log_set(N.LOG_INFO)
+check("[6] turn verify at Info: the usual reason", "logging" not in N._turn_verify("vk-turn-proxy-x"))
+N.log_set(N.LOG_OFF)
+check("[6] turn verify at Off: says the level is why", "no detail (logging is off)" in N._turn_verify("vk-turn-proxy-x"),
+      N._turn_verify("vk-turn-proxy-x"))
+N.log_set(N.LOG_ERR)
+N.host_sh = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout="failed\nx.service: Failed with result 'exit-code'.\n",
+                                                    stderr="")
+check("[6] …at Errors too, beside systemd's own bare line",
+      N._turn_verify("x").endswith("no detail (logging is set to errors)"), N._turn_verify("x"))
+N.host_sh = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout="failed\n", stderr="")
+check("[6] WDTT verify below Info", "no detail (logging is set to errors)" in N._wdtt_verify("swg-wdtt-x"),
+      N._wdtt_verify("swg-wdtt-x"))
+A = load("agent")
+for env, want in (("-1", "logging is off"), ("4", "logging is set to warnings"), ("6", "")):
+    os.environ["SWG_LOG_LEVEL"] = env
+    got = A._log_no_detail()
+    check("[6] agent unit start at %s" % env, (want in got) if want else got == "", got)
+os.environ.pop("SWG_LOG_LEVEL", None)
+NC.log_set(NC.LOG_OFF)
+# NRestarts before · restart · is-active (down) · NRestarts after · status
+_seq = iter([(0, "0"), (0, ""), (3, "inactive"), (0, "1"), (0, "● swg-sub.service\n   Active: failed")])
+NC.run = lambda argv, **kw: next(_seq)
+NC.DRYRUN = False
+NC.time = types.SimpleNamespace(sleep=lambda s: None, time=time.time, monotonic=time.monotonic)
+try:
+    NC.do_restart("sub")
+    msg = ""
+except NC.Reject as e:
+    msg = str(e)
+check("[6] netctl status tail at Off says why it shows no lines", msg.endswith("no log lines (logging is off)"), msg)
+
+# ── [7] swg-sni ─────────────────────────────────────────────────────────────────────────────────────────────────────
+print("[7] swg-sni")
+lvl_file = os.path.join(TMP, "sni-level")
+open(lvl_file, "w").write("6\n")
+S = load("sni", {"SWG_LOG_LEVEL_FILE": lvl_file})
+S.sys = types.SimpleNamespace(stdout=io.StringIO())   # its writer thread writes there, not into this test's output
+check("[7] it starts at the level in the file", S._SAY["level"] == 6)
+S.say(S.LOG_DEBUG, "swg-sni: %s → %s  (+%s)", "example.org", S._Join(["ads"]), "1.2.3.4")
+check("[7] a Debug line at Info is not even queued", len(S._SAY["q"]) == 0, list(S._SAY["q"]))
+open(lvl_file, "w").write("7\n")
+S._say_level()
+S.say(S.LOG_DEBUG, "swg-sni: %s → %s  (+%s)", "example.org", S._Join(["ads", "trk"]), "1.2.3.4")
+check("[7] at Debug it is, formatted only when written",
+      S._say_text(*S._SAY["q"][0]) == "D swg-sni: example.org → ads, trk  (+1.2.3.4)\n" if S._SAY["q"] else False)
+per_host = re.findall(r'say\((LOG_\w+), "swg-sni: %s → ', SRC["sni"])
+check("[7] both per-host lines are Debug (users' visited hosts stay out of the default level)",
+      per_host == ["LOG_DEBUG", "LOG_DEBUG"], per_host)
+
+print()
+if PLANT:
+    print("PLANT %s: %s" % (PLANT, "caught (RED) ✓" if FAILS else "NOT caught ✗"))
+    sys.exit(0 if FAILS else 1)
+print("FAIL: %d — %s" % (len(FAILS), FAILS) if FAILS else "ALL PASS")
+sys.exit(1 if FAILS else 0)

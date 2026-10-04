@@ -140,7 +140,7 @@ print("\n[3b] ⚠️ …and every arm/disarm is on the record")
 # blackhole-capable divert and wrote nothing anywhere. Detection without a record just moves the same
 # unanswerable question one layer along.
 arm = noded[noded.index("def _relay_note("):noded.index("def _relay_arm(")]
-check("a transition is written to the journal", "print(" in arm and "relay divert" in arm)
+check("a transition is written to the journal", ("print(" in arm or "log(LOG_" in arm) and "relay divert" in arm)
 check("…and says WHY", re.search(r'\(" — " \+ why\) if why else ""', arm) is not None)
 check("…once, not every pass", '_RELAY_ARM.get("noted")' in arm and "if prev == now:" in arm)
 body = noded[noded.index("def _relay_note("):]

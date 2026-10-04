@@ -344,6 +344,9 @@ check("helper: IPv6 matches in any spelling", N._cert_covers_host(V6[0], "[2001:
 check("helper: a DNS certificate still matches by name, and is not an IP's",
       N._cert_covers_host(DNS[0], "panel.example.com") and not N._cert_covers_host(DNS[0], IP))
 
+# The panel's log helper (LOGS P1b) for the extracted functions: the line as print() wrote it, priority aside.
+LOGNS = {"log": lambda prio, msg, *a: print((msg % a) if a else msg, flush=True),
+         "LOG_ERR": 3, "LOG_WARNING": 4, "LOG_NOTICE": 5, "LOG_INFO": 6, "LOG_DEBUG": 7}
 # the panel's twin — extracted by name, so the test does not boot a whole panel
 PSRC = open(PATHS["PANEL"], encoding="utf-8").read()
 _mod = ast.parse(PSRC)
@@ -356,6 +359,7 @@ P = {"os": os, "ssl": ssl, "ipaddress": ipaddress, "contextlib": contextlib, "ti
      "_TLS_LOCK": threading.RLock(), "threading": threading,
      "TLS_STATUS": {}, "_ACME_FOLLOW": {}, "_SHORT_LIVED_S": 10 * 86400, "_renew_status": lambda: {},
      "_ACME_FOLLOW_MODES": ("letsencrypt", "letsencrypt-ip", "cloudflare")}
+P.update(LOGNS)
 exec(compile(_code, "swg-panel-server(extract)", "exec"), P)
 check("panel: an IP certificate covers its address", P["_cert_covers"](NEW[0], IP))
 check("panel: …and not another one", not P["_cert_covers"](NEW[0], "198.51.100.7"))
@@ -456,6 +460,7 @@ _RUNS = []
 KN["_acme_follow"] = lambda: _RUNS.append(1)
 _EARLY = []
 KN["_refresh_tls_status"] = lambda **k: _EARLY.append(KN["_FOLLOW_RUN"].locked())
+KN.update(LOGNS)
 exec(compile(_kcode, "swg-panel-server(extract)", "exec"), KN)
 KN["_FOLLOW_RUN"].acquire()                      # a slow follow is running
 threading.Thread(target=KN["_follow_kick_loop"], daemon=True).start()
@@ -838,6 +843,7 @@ Q = {"json": json, "time": time, "threading": threading, "os": os, "contextlib":
      "_refresh_tls_status": lambda *a, **k: None, "_invalidate_state_cache": lambda: None,
      "_declarative_access_refusal": lambda deps: (409, {"ok": False, "code": "declarative"}),
      "_access_cooldown": lambda: (0, "")}
+Q.update(LOGNS)
 exec(compile(_code2, "swg-panel-server(extract)", "exec"), Q)
 DEPS = {"nodes_path": os.path.join(JOBDIR, "nodes.json")}
 def join_jobs():
@@ -936,6 +942,7 @@ check("even the enqueue failing ENDS the job (every step is inside the try)", Q[
 _wcode = "\n\n".join(ast.get_source_segment(PSRC, n) for n in _mod.body
                      if isinstance(n, ast.FunctionDef) and n.name in ("_renew_await", "_netctl_wait"))
 W = {"os": os, "json": json, "time": time, "contextlib": contextlib, "_RENEW_PICKUP_S": 1, "_RENEW_ANSWER_S": 20}
+W.update(LOGNS)
 exec(compile(_wcode, "swg-panel-server(extract)", "exec"), W)
 WDEPS = {"nodes_path": os.path.join(STATE, "nodes.json")}           # the panel's netctl dir = the helper's STATE_DIR/netctl
 os.makedirs(N.QUEUE_DIR, exist_ok=True)
@@ -1055,6 +1062,7 @@ F = {"os": os, "json": json, "contextlib": contextlib, "Handler": _H, "IN_DOCKER
      "_ACME_FOLLOW": {"state": "current", "owner": "other", "install_path": "/root/cert/ip/fullchain.pem"},
      "MANAGED_CERT": NEW[0], "SUB_CERT_PATH": "/nonexistent/fullchain.pem", "_sub_tls_mode": lambda m: m,
      "_netctl_enqueue": lambda deps, verb, args: "rf"}
+F.update(LOGNS)
 exec(compile(_code4, "swg-panel-server(extract)", "exec"), F)
 for label, reply in (("an 'address change in flight' skip", (True, json.dumps({"state": "skipped", "transient": True}))),
                      ("a helper error", (False, "unknown verb 'sync-acme'"))):
@@ -1079,6 +1087,7 @@ print("panel: the certificate Settings reports")
 _code3 = "\n\n".join(ast.get_source_segment(PSRC, n) for n in _mod.body
                      if isinstance(n, ast.FunctionDef) and n.name in ("_status_cert", "_follow_get"))
 C = {"os": os, "TLS_CERT": "", "MANAGED_CERT": NEW[0], "_ACME_FOLLOW": {}, "_TLS_LOCK": threading.RLock()}
+C.update(LOGNS)
 exec(compile(_code3, "swg-panel-server(extract)", "exec"), C)
 check("no acme follow yet: no certificate is reported", C["_status_cert"]() == "")
 C["_ACME_FOLLOW"].update(owner="ours", front="")
