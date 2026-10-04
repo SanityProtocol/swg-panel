@@ -38,6 +38,7 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      norotate     the docker log file is never rotated
      sweeplog     netctl's status sweep removes the budget's status file
      netctlrc     netctl reads its run() as a CompletedProcess (Off then never removes the files)
+     noretry      netctl leaves the new size file in place when journald does not restart (never retried, reads as applied)
      pid1last     the verify reader takes systemd's own line as the reason
      uninstkeep   uninstall leaves the journal on disk
 """
@@ -68,8 +69,8 @@ PLANTS = {   # (program, anchor, replacement)
     "unpublished": ("panel", '''                        "log_mb": log_mb(c.get("log_mb")),\n''', ""),
     "store100": ("panel", '''            if _lmb == LOG_MB_DEFAULT:\n                nodes[nid].pop("log_mb", None)\n            else:\n                nodes[nid]["log_mb"] = _lmb''',
                  '''            nodes[nid]["log_mb"] = _lmb'''),
-    "presync": ("noded", '''    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want:''', '''    if _LOG_BUDGET["conf"] != want:'''),
-    "jdchurn": ("noded", '''    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want:''', '''    if _LOG_BUDGET["synced"]:'''),
+    "presync": ("noded", '''    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want and now >= _LOG_BUDGET["retry_at"]:''', '''    if _LOG_BUDGET["conf"] != want and now >= _LOG_BUDGET["retry_at"]:'''),
+    "jdchurn": ("noded", '''    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want and now >= _LOG_BUDGET["retry_at"]:''', '''    if _LOG_BUDGET["synced"] and now >= _LOG_BUDGET["retry_at"]:'''),
     "offkeeps": ("noded", '''                        if ".journal" in n:\n                            with contextlib.suppress(OSError):\n                                os.remove(os.path.join(d, n))''',
                  '''                        pass'''),
     "tilde": ("noded", r'''-([0-9a-f]{16})\.journal$")''', r'''-([0-9a-f]{16})\.journal~?$")'''),
@@ -79,6 +80,7 @@ PLANTS = {   # (program, anchor, replacement)
     "sweeplog": ("netctl", '''_sweep(sfd, 3600, keep=lambda n: n == LOG_STATUS)''', '''_sweep(sfd, 3600)'''),
     "netctlrc": ("netctl", '''            rc, out = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=60)\n            if rc != 0:''',
                  '''            r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=60)\n            rc, out = r.returncode, ""\n            if rc != 0:'''),
+    "noretry": ("netctl", '''                if have is None:\n                    os.remove(LOG_NS_CONF)\n                else:\n                    with open(LOG_NS_CONF + ".tmp", "w") as f:\n                        f.write(have)\n                    os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)\n''', "                pass\n"),
     "pid1last": ("noded", '''-n 8 --no-pager -o cat 2>/dev/null | " + JOURNAL_SKIP_PID1\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")''',
                  '''-n 8 --no-pager -o cat 2>/dev/null | "\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")'''),
     "uninstkeep": ("uninstall", '''  [ -n "$mid" ] && rmrf "/var/log/journal/$mid.$ns" "/run/log/journal/$mid.$ns"\n''', ""),
@@ -282,7 +284,13 @@ b = quiet(N)
 for _ in range(3):
     N.apply_panel_settings({"log": {"mb": 64}})
     N._log_budget()
-check("[2] a failing journald restart is said once", b.getvalue().count("did not restart") == 1, b.getvalue())
+check("[2] a failing journald restart is retried once a minute, not every pass (each try can block the loop)",
+      len(CALLS) == 1, CALLS)
+for _ in range(2):
+    N._LOG_BUDGET["retry_at"] = 0.0
+    N._log_budget()
+check("[2] a failing journald restart is said once, however often it is retried",
+      len(CALLS) == 3 and b.getvalue().count("did not restart") == 1, (len(CALLS), b.getvalue()))
 check("[2] …and reported as `err`", "did not restart" in (N._LOG_BUDGET["status"] or {}).get("err", ""), N._LOG_BUDGET["status"])
 RC["rc"] = 0
 
@@ -367,9 +375,12 @@ quiet(M)
 MC = []
 
 
+MRC = {"rc": 0}
+
+
 def mrun(argv, env=None, timeout=None):
     MC.append(list(argv))
-    return 0, ""
+    return MRC["rc"], ("boom" if MRC["rc"] else "")
 
 
 M.run, M.log_ns_ok, M._log_ns_dir = mrun, (lambda: True), (lambda: JP)
@@ -403,6 +414,14 @@ open(os.path.join(PST, "netctl", "queue", "r1.json"), "w").write("{}")
 M.process_queue()
 check("[6] the 1-hour status sweep keeps the budget's status", os.path.exists(SF))
 open(os.path.join(JP, "system.journal"), "wb").write(b"x")
+json.dump({"log_level": "off", "log_mb_panel": 48}, open(os.path.join(PST, "panel-settings.json"), "w"))
+M.log_from_settings(); tick()
+MRC["rc"] = 1; MC.clear()
+json.dump({"log_level": "off", "log_mb_panel": 72}, open(os.path.join(PST, "panel-settings.json"), "w"))
+M.log_from_settings(); tick(); tick()
+check("[6] a failed journald restart is retried on the next tick, never reported as applied",
+      len(MC) == 2 and sf().get("mb") != 72 and "did not restart" in sf().get("err", ""), (MC, sf()))
+MRC["rc"] = 0
 json.dump({"log_level": "off", "log_mb_panel": 48}, open(os.path.join(PST, "panel-settings.json"), "w"))
 M.log_from_settings(); tick()
 check("[6] Off: Storage=none and the stored files removed", "Storage=none" in open(M.LOG_NS_CONF).read() and not os.listdir(JP),
