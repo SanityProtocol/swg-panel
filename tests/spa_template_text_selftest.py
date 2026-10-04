@@ -56,6 +56,7 @@ ALLOWED_CHUNKS = {
         "AmneziaWG", "WireGuard", "WDTT", "CSQTT", "wdtt", "wg", "awg", "WG", "AWG 2.0", "AWG 3.1", "RAW", "VK", "QR",
         "DNS", "MTU", "IP", "AS", "HeaderProtectionKey", "RandomTrailers", "nginx", "Caddy", "amurcanov",
         "swg", "Panel",                                   # the brand, "swgPanel", split for its two colours
+        "docker",                                         # the run-model tag beside a node's name (log budget table)
     },
     "commands, paths and files the operator types or greps": {
         "docker compose up -d", "systemctl status", "journalctl -u", "-e", "dkms status", "modprobe amneziawg",
