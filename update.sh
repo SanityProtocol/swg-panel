@@ -1691,11 +1691,12 @@ ensure_update_unit_docker(){   # HEAL the docker one-click self-update wiring on
 
 ensure_log_ns(){   # <namespace> <unit>... — swg's own journal (lib/common.sh): the drop-ins + swg-logs, BEFORE this update's
   # restarts, so the units it restarts move now; the oneshots (netctl, update) move at their next tick. Install-if-missing,
-  # like the heal pass: a drop-in already there is left as it is.
+  # like the heal pass: a drop-in already there is left as it is. Only inside an upgrade that is going ahead: a declined one
+  # keeps the old build, whose writers never size the namespace (journald's defaults, 10 % of the disk).
   if $DRYRUN; then echo "    [skip] LogNamespace=$1 drop-ins for: ${*:2} + /usr/local/bin/swg-logs"; return 0; fi
   swg_log_ns_heal "$@"
   if [ "$SWG_LOG_NS_CHANGED" -gt 0 ]; then
-    systemctl daemon-reload
+    systemctl daemon-reload || true
     DID_UPDATE=yes; note "swg's logs: ${*:2} → the $1 journal (read with swg-logs)"
     ok "swg's logs now go to the $1 journal, held to its budget — \`journalctl -u\` shows only systemd's lines; read them with \`swg-logs\`"
   fi
@@ -1712,9 +1713,9 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   # would leave the service dead until someone restarted it by hand. Outside should_update on purpose — an
   # already-current box needs the repair just as much, since the bomb goes off at the next reboot.
   ensure_cert_perms
-  ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
   if should_update "bare-metal swg-panel" "$PANEL_DIR"; then
     info "updating bare-metal swg-panel ($PANEL_DIR)"
+    ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
     for f in swg-panel-server index.html app.css app.js reconcile.js turn-artifacts.js; do
       [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$PANEL_DIR/"
     done
@@ -1801,9 +1802,9 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   # a version update restarted swg-noded on the old ref and then changed the file under the running daemon.
   NODE_REF_CHANGED=no; _noded_restarted=no
   ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
-  ensure_log_ns swg-node swg-noded.service   # before the restart below: swg-noded moves into its journal with it
   if should_update "bare-metal swg-node" "$NODED_DIR"; then
     info "updating bare-metal swg-node ($AGENT_DIR + $NODED_DIR)"
+    ensure_log_ns swg-node swg-noded.service   # before the restart below: swg-noded moves into its journal with it
     [ -d "$AGENT_DIR" ] && [ -f "$SRC/swg-agent" ] && { run cp "$SRC/swg-agent" "$AGENT_DIR/"; run chmod 755 "$AGENT_DIR/swg-agent"; }
     if [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-noded" ]; then
       run cp "$SRC/swg-noded" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-noded"

@@ -3497,7 +3497,8 @@ export function logBudgetState(r) {
   if (!st) return r.stale ? { tone: "faint", text: T("Offline"), title: T("Not reporting — it applies the budget when it is back.") }
     : r.id === "" ? { tone: "warn", text: T("Waiting"), title: T("The panel's root helper reports within a few seconds of starting.") }
     : { tone: "warn", text: T("Update the node"), title: T("This node's build is too old to keep a log budget. Update it to apply one.") };
-  if (st.err) return { tone: "bad", text: T("Not supported"), title: st.err };
+  if (st.err) return /no namespaces/.test(st.err) ? { tone: "bad", text: T("Not supported"), title: st.err }
+    : { tone: "bad", text: T("Not applied"), title: st.err };   // a restart that failed: tried again every minute
   if (r.stale) return { tone: "faint", text: T("Offline"), title: T("Not reporting — the figures are from its last report.") };
   if (+st.mb !== r.saved) return { tone: "warn", text: T("Pending"), title: r.id === "" ? T("The root helper applies it within 10 seconds.") : T("Applies on the node's next sync.") };
   return { tone: "ok", text: T("Applied"), title: "" };

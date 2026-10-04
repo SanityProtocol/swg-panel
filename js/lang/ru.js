@@ -1690,6 +1690,7 @@ export const STR = {
   "This node's build is too old to keep a log budget. Update it to apply one.":
     "Сборка ноды слишком старая для лимита логов. Обновите ноду, чтобы он применился.",
   "Not supported": "Не поддерживается",
+  "Not applied": "Не применён",
   "Not reporting — the figures are from its last report.": "Не на связи — цифры из последнего отчёта.",
   "Pending": "Применяется",
   "The root helper applies it within 10 seconds.": "Root-помощник применит его в течение 10 секунд.",

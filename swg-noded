@@ -7337,9 +7337,12 @@ def log_ns_ok():
     return _LOG_BUDGET["ns"]
 
 
-# A filter stage for a unit's tail: drops systemd's own lines about it that match the reason grep — "<unit>.service: …"
-# and "Failed to start <description>." (not "Started …": a program's own "Starting listener failed" must stay).
-JOURNAL_SKIP_PID1 = "grep -vE '^([^ ]*\\.service: |Failed to start )' | "
+# A filter stage for a unit's tail: drops systemd's own lines that say only THAT it failed ("<unit>: Failed with result",
+# "Main process exited", "Scheduled restart job", "Failed to start <description>"), so the reason sorts last. Its lines
+# that say WHY stay: "Failed at step EXEC … Permission denied", "Failed to set up mount namespacing" — for an exec or setup
+# failure they are the only reason there is. Not "Starting …": a program's own "Starting listener failed" must stay.
+JOURNAL_SKIP_PID1 = ("grep -vE '\\.service: (Failed with result|Main process exited|Scheduled restart job|Deactivated|Consumed)"
+                     "|^Failed to start ' | ")
 
 
 def journal_cmd():
@@ -7439,7 +7442,8 @@ def _log_budget():
         cap = _log_docker_caps(mb)
         log_file(os.path.join(LOG_DIR_DOCKER, "swg-noded.log"), cap)
         _LOG_BUDGET["applied"], _LOG_BUDGET["err"] = mb, None
-        if now - _LOG_BUDGET["at"] >= LOG_STATUS_EVERY_S or _LOG_BUDGET["status"] is None:
+        if (now - _LOG_BUDGET["at"] >= LOG_STATUS_EVERY_S or _LOG_BUDGET["status"] is None
+                or _LOG_BUDGET["status"].get("mb") != mb):   # a new budget is reported in the pass that applies it
             used, _o = _log_dir_usage(LOG_DIR_DOCKER, False)
             for p in _supervised_logs():                 # the supervised servers' logs share the budget too
                 for f in (p, p + ".1"):
@@ -18036,7 +18040,7 @@ def _wdtt_verify(svc):
         return ""
     nd = log_no_detail()                     # below Info the unit's own lines were dropped: say so, not "check journal"
     return "wdtt service didn't stay up: " + (lines[-1][:150] + (" — " + nd if nd else "") if len(lines) > 1
-                                              else nd or "check journal")
+                                              else nd or "check `swg-logs turn " + svc[len("swg-wdtt-"):] + "`")
 
 def _wdtt_maxpw_for(wg_addr, cap=4000):
     """Usable hosts in the tunnel subnet, as the password-pool default. Falls back to 200 when there's nothing
@@ -20726,6 +20730,9 @@ def _lock_state_dir():
 
 
 def main():
+    if NODE_KIND == "docker":                       # our own log file from the first line, startup and its errors included
+        with contextlib.suppress(Exception):
+            log_file(os.path.join(LOG_DIR_DOCKER, "swg-noded.log"), _log_docker_caps(_LOG_BUDGET["mb"]))
     _lock_state_dir()
     node_cfg = json.load(open(CONFIG_PATH))
     panel = node_cfg.get("panel") or {}
