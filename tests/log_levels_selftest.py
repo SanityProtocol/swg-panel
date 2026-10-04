@@ -74,7 +74,7 @@ PLANTS = {   # (program, anchor, replacement)
                   '''        if prio > _SAY["level"]:\n            return\n        if _SAY["thread"] is None:                   # BEFORE the level check'''),
     "bootbase": ("noded", '''            v = int(f.read().split()[-1])''', '''            v = int(f.read().split()[0])'''),
     "agentenv": ("noded", '''    payload = {**payload, "log_level": log_level()}\n''', ""),
-    "updatelog": ("netctl", '''        caps["swg-update.service"] += "SyslogLevel=notice\\n"\n''', "        pass\n"),
+    "updatelog": ("netctl", '''        caps["swg-update.service"] += "SyslogLevel=%s\\n" % cap\n''', "        pass\n"),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
 if PLANT:
@@ -372,9 +372,11 @@ check("[4] netctl at Info: only the two timer units, at notice (the panel and sw
 check("[4] …and swg-update's own output is filed at notice, so the cap keeps why an update failed",
       caps.get("swg-update.service") == "LogLevelMax=notice\nSyslogLevel=notice\n", caps)
 check("[4] netctl at Debug: nothing capped", set(NC.log_unit_caps(NC.LOG_DEBUG).values()) == {None})
-check("[4] netctl at Errors / Off: warning / emerg",
-      set(NC.log_unit_caps(NC.LOG_ERR).values()) == {"LogLevelMax=warning\n"}
-      and set(NC.log_unit_caps(NC.LOG_OFF).values()) == {"LogLevelMax=emerg\n"})
+check("[4] netctl at Errors: warning — and swg-update's output filed at warning, so a failed update still shows",
+      NC.log_unit_caps(NC.LOG_ERR) == {"swg-netctl.service": "LogLevelMax=warning\n",
+                                       "swg-update.service": "LogLevelMax=warning\nSyslogLevel=warning\n"},
+      NC.log_unit_caps(NC.LOG_ERR))
+check("[4] netctl at Off: emerg, nothing kept", set(NC.log_unit_caps(NC.LOG_OFF).values()) == {"LogLevelMax=emerg\n"})
 PS = os.path.join(TMP, "netctl-state"); os.makedirs(PS)
 NC.STATE_DIR = PS
 json.dump({"log_level": "warning", "log_debug_until": int(time.time()) + 600}, open(os.path.join(PS, "panel-settings.json"), "w"))

@@ -1484,13 +1484,14 @@ def log_from_settings():
 def log_unit_caps(lvl):
     """{unit: drop-in body or None} at level `lvl`. Off → emerg; below Info → warning (systemd's own crash lines are
     notice/warning, and at `err` a crash would leave none — P0 T1); Debug → none. At Info → notice: every timer run
-    writes systemd's Starting/Finished lines, 62 % of a box's lines (P0 T1). swg-update also gets SyslogLevel=notice
-    there: the one-click update runs INSIDE that unit and prints bare lines, which journald would file at info and
-    the cap drop — exactly the lines that say why an update failed (code review, 2026-10-04)."""
+    writes systemd's Starting/Finished lines, 62 % of a box's lines (P0 T1). swg-update also gets SyslogLevel= its cap
+    (except at Off): the one-click update runs INSIDE that unit and prints bare lines, which journald would file at
+    info and the cap drop — exactly the lines that say why an update failed, which Errors is meant to keep (code
+    review, 2026-10-04). An update is rare and short, so keeping its whole output costs nothing."""
     cap = "emerg" if lvl == LOG_OFF else "warning" if lvl < LOG_INFO else "notice" if lvl == LOG_INFO else None
     caps = {u: ("LogLevelMax=%s\n" % cap) if cap else None for u in LOG_TIMER_UNITS}
-    if cap == "notice":
-        caps["swg-update.service"] += "SyslogLevel=notice\n"
+    if cap and cap != "emerg":
+        caps["swg-update.service"] += "SyslogLevel=%s\n" % cap
     return caps
 
 
