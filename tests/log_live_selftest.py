@@ -42,6 +42,7 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
      offread      at Off the namespace's sources are read   dockeriface  docker offers the interfaces' lines
      syncloop     the reader runs in the sync loop          pumpdrop     docker: swg-sni's lines miss noded's file
      nojournal    update.sh never gives the panel its journal
+     noselect     the panel's copy of the reader misses a module it uses (it ran only in swg-noded's copy)
 """
 import collections, gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile
 import threading, time, urllib.error, urllib.request
@@ -110,6 +111,7 @@ PLANTS = {   # (program, anchor, replacement)
                                  daemon=True, name="swg-logs-" + rid).start()''',
                  '''                _live_run(rq, list((node_cfg.get("interfaces") or {}).keys()))'''),
     "pumpdrop": ("noded", '''            _log_write(prio or LOG_INFO, ln[2:] if prio else ln)''', '''            pass'''),
+    "noselect": ("panel", "import secrets\nimport select\nimport shutil\n", "import secrets\nimport shutil\n"),
     "nojournal": ("update", '''    ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
     ensure_panel_journal
 ''', '''    ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
@@ -669,6 +671,18 @@ def sec7():
     check("[7] docker: the renewal loop's outcome reaches the panel's file, only when that file exists (Off deleted it)",
           '[ -f "$f" ] && printf' in SRC["entry"] and SRC["entry"].count("panel_log ") >= 2)
     P = load("panel")
+    fj = os.path.join(TMP, "fakejournal-panel")
+    open(fj, "w").write("#!/usr/bin/env python3\nimport json, time\nprint(json.dumps({'__CURSOR': 'p1', '__REALTIME_TIMESTAMP': '5',"
+                        " '_SYSTEMD_UNIT': 'swg-panel-server.service', 'PRIORITY': '6', 'MESSAGE': 'hello'}), flush=True)\ntime.sleep(5)\n")
+    os.chmod(fj, 0o755)
+    rd = P.LiveReader({"panel"}, journal=lambda cur, n: [fj], cap=200)
+    try:
+        out = drain(rd, 1.4)
+    except Exception as e:
+        out = [repr(e)]
+    rd.close()
+    check("[7] the panel's own copy of the reader runs: it follows a journal (every module the block uses is imported there)",
+          [l[1:] for l in out] == [["panel", 6, "hello"]], out)
     P.PANEL_LOG_FILE["path"] = "/x/log/swg-panel.log"
     plan, st = P._live_panel_plan(["panel", "sub", "noded"])
     check("[7] a docker panel: its own file; sub is unavailable; a node's source is not the panel's",
