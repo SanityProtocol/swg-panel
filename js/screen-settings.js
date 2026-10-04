@@ -3528,7 +3528,7 @@ function LogBudgetTable({ rows, onMb }) {
           <span class="lb-name" role="cell">${r.name}${r.docker ? html`<span class="lb-kind">docker</span>` : null}</span>
           <span class="lb-mb" role="cell"><input type="text" inputmode="numeric" class=${bad ? "bad" : ""} value=${r.mb} disabled=${r.locked}
             aria-label=${T("Budget for {v1}, MB", { v1: r.name })} title=${T("At least {v1} MB", { v1: LOG_MB_MIN })} aria-invalid=${bad ? "true" : "false"} onDblClick=${e => e.target.select()}
-            onInput=${e => onMb(r.id, e.target.value.replace(/[^0-9]/g, "").slice(0, 7))}/><span class="faint">${T("MB")}</span></span>
+            onInput=${e => onMb(r.id, e.target.value.replace(/[^0-9]/g, "").slice(0, 6))}/><span class="faint">${T("MB")}</span></span>
           <span class="lb-used" role="cell">${pct == null ? html`<span class="faint">—</span>` : html`
             <span class="lb-usedn">${T("{v1} MB", { v1: st.used_mb })}</span>
             <span class=${"lb-meter" + (pct >= 85 ? " full" : "")} aria-hidden="true"><i style=${"width:" + pct + "%"}></i></span>`}</span>

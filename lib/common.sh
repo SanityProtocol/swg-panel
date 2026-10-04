@@ -288,7 +288,7 @@ node_reconfig_block(){
     echo
     printf '    %-13s %s\n' "SWG Agent"    "$(b 'nano /etc/swg-agent/config.json')"
     printf '    %-13s %s\n' "Restart"      "$(b 'systemctl restart swg-noded')"
-    printf '    %-13s %s\n' "Logs"         "$(b 'journalctl -u swg-noded -f')"
+    printf '    %-13s %s\n' "Logs"         "$(b 'swg-logs noded -f')"
   fi
 }
 
@@ -419,7 +419,7 @@ summary_host_block(){   # <method> <converted?yes|no>
   else
     printf '    %-9s%s\n' "Config"  "$(b /etc/swg-panel/)  (change URL/TLS by re-running the installer)"
     printf '    %-9s%s\n' "Restart" "$(b 'systemctl restart swg-panel-server')"
-    printf '    %-9s%s\n' "Logs"    "$(b 'journalctl -u swg-panel-server -f')"
+    printf '    %-9s%s\n' "Logs"    "$(b 'swg-logs panel -f')"
   fi
   summary_sub_block "$m"    # the subscription surface is part of what a panel install delivers — say where it stands
 }
@@ -1129,7 +1129,7 @@ stop_bare_csqtt(){
 # TURN_UNIT_HARDENING). A forwarder only shuffles bytes between two sockets, so confine it hard: a compromised
 # fork binary is contained to its sockets, not root. Injected into the unit's [Service] via $TURN_HARDENING.
 # ⚠️ SystemCallFilter=@system-service is the one that could refuse an odd Go syscall — first suspect if a proxy
-# won't start after install (check `journalctl -u <svc>` for a seccomp kill).
+# won't start after install (check `swg-logs turn <instance>` for a seccomp kill).
 TURN_HARDENING='NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

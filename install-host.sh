@@ -2231,7 +2231,7 @@ if [ "${SWG_DEFER_START:-}" != 1 ] && ! $DRYRUN; then
     _bp="$PORT"
     if panel_owns_port "$_bp"; then
       warn "the panel is running (it holds :$_bp) but did not answer $_pu within ${_pw}s"
-      echo "    What went wrong:  journalctl -u swg-panel-server -n 30"
+      echo "    What went wrong:  swg-logs panel -n 30"
     else
       PANEL_UP=no
       _bw="$(ss -lntpH "sport = :$_bp" 2>/dev/null | grep -oE '"[^"]+"' | sed -n 1p | tr -d '"' || true)"
@@ -2245,7 +2245,7 @@ if [ "${SWG_DEFER_START:-}" != 1 ] && ! $DRYRUN; then
           echo "    Give the panel a free loopback port (re-run with PORT=<free port>)."
         fi
       fi
-      echo "    What went wrong:  journalctl -u swg-panel-server -n 30"
+      echo "    What went wrong:  swg-logs panel -n 30"
     fi
   fi
 fi

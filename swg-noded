@@ -95,7 +95,9 @@ def log_level():
 
 # docker (no journald): every line ALSO goes to a file of our own, the one a reader can find without a docker socket,
 # kept in two files of half the budget each (`path`, `path.1`). Off until log_file() names one.
-_LOG_FILE = {"path": None, "cap": 0, "f": None, "size": 0, "lock": threading.Lock()}
+# The lock is RE-entrant: a signal handler that logs (the panel's SIGHUP reload) runs on the thread it interrupted,
+# which may be inside a write — a plain Lock would deadlock it there.
+_LOG_FILE = {"path": None, "cap": 0, "f": None, "size": 0, "lock": threading.RLock()}
 
 
 def log_file(path, cap):
@@ -7302,7 +7304,7 @@ LOG_STATUS_EVERY_S = 60
 # · synced: a panel reply has set mb — nothing is written before it, or every restart would write the default and then
 # the real value, restarting journald twice
 _LOG_BUDGET = {"mb": LOG_MB_DEFAULT, "ns": None, "conf": None, "applied": None, "err": None, "status": None, "at": 0.0,
-               "synced": False}
+               "synced": False, "retry_at": 0.0, "share": (None, 0)}
 _JOURNAL_NAME_RE = re.compile(r"^[\w-]+@[0-9a-f]{32}-[0-9a-f]{16}-([0-9a-f]{16})\.journal$")
 
 
@@ -7317,8 +7319,9 @@ def log_ns_ok():
     return _LOG_BUDGET["ns"]
 
 
-# A filter stage for a unit's tail: drops systemd's own lines about it, which all start "<unit>.service: ".
-JOURNAL_SKIP_PID1 = "grep -v '^[^ ]*\\.service: ' | "
+# A filter stage for a unit's tail: drops systemd's own lines about it — "<unit>.service: …" and the job lines
+# ("Failed to start <description>", "Started …", "Stopped …", "Scheduled restart job …").
+JOURNAL_SKIP_PID1 = "grep -vE '^([^ ]*\\.service: |(Failed to start|Started|Starting|Stopped|Stopping) )' | "
 
 
 def journal_cmd():
@@ -7387,11 +7390,13 @@ def _log_docker_caps(mb):
     now; a container launched earlier keeps its cap until its next launch. 0 at Off."""
     if log_level() == LOG_OFF:
         return 0
-    n = 2 + len(_turn_record_raw()) + len(_RELAY)
-    for root in (WDTT_ROOT, CSQTT_ROOT):
-        with contextlib.suppress(OSError):
-            n += len(os.listdir(root))
-    return max(1 << 20, (mb << 20) // n)
+    if _LOG_BUDGET["share"][0] != _LOOP["n"]:       # counted once per loop: it changes only when an instance does
+        n = 2 + len(_turn_record_raw()) + len(_RELAY)
+        for root in (WDTT_ROOT, CSQTT_ROOT):
+            with contextlib.suppress(OSError):
+                n += len(os.listdir(root))
+        _LOG_BUDGET["share"] = (_LOOP["n"], n)
+    return max(1 << 20, (mb << 20) // _LOG_BUDGET["share"][1])
 
 
 def docker_log_opts():
@@ -7414,6 +7419,12 @@ def _log_budget():
         _LOG_BUDGET["applied"], _LOG_BUDGET["err"] = mb, None
         if now - _LOG_BUDGET["at"] >= LOG_STATUS_EVERY_S or _LOG_BUDGET["status"] is None:
             used, _o = _log_dir_usage(LOG_DIR_DOCKER, False)
+            for root in (WDTT_ROOT, CSQTT_ROOT):         # the supervised servers' logs share the budget too
+                with contextlib.suppress(OSError):
+                    for name in os.listdir(root):
+                        for f in ("server.log", "server.log.1"):
+                            with contextlib.suppress(OSError):
+                                used += os.stat(os.path.join(root, name, f)).st_blocks * 512
             _LOG_BUDGET["status"], _LOG_BUDGET["at"] = {"mb": mb, "used_mb": round(used / 1048576.0, 1)}, now
         return
     if not log_ns_ok():
@@ -7427,7 +7438,8 @@ def _log_budget():
                 _LOG_BUDGET["conf"] = f.read()
         m = re.search(r"^SystemMaxUse=(\d+)M$", _LOG_BUDGET["conf"], re.M)
         _LOG_BUDGET["applied"] = int(m.group(1)) if m else None
-    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want:
+    # a failed restart is retried once a minute, not every pass: each try can block the sync loop for its timeout
+    if _LOG_BUDGET["synced"] and _LOG_BUDGET["conf"] != want and now >= _LOG_BUDGET["retry_at"]:
         err = None
         try:
             os.makedirs(os.path.dirname(LOG_NS_CONF), exist_ok=True)
@@ -7435,12 +7447,13 @@ def _log_budget():
                 f.write(want)
             os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
             # try-restart: a journald that is not running reads the file when its first client starts it
-            r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=60)
+            r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=20)
             if r.returncode != 0:
                 err = "journald@%s did not restart: %s" % (LOG_NS, (r.stderr or "").strip()[:160])
         except OSError as e:
             err = "%s: %s" % (LOG_NS_CONF, e)
         _LOG_BUDGET["at"] = 0.0                       # report the outcome in this pass
+        _LOG_BUDGET["retry_at"] = now + LOG_STATUS_EVERY_S if err else 0.0
         if err:
             if err != _LOG_BUDGET["err"]:
                 log(LOG_WARNING, "log budget: %s — retried on every pass, said once", err)
@@ -7450,8 +7463,8 @@ def _log_budget():
                 # Storage=none stores nothing new but keeps what is on disk (measured): Off means nothing kept, so the
                 # stopped journald's files go too
                 d = _log_ns_dir()
-                with contextlib.suppress(OSError):
-                    for n in os.listdir(d):
+                with contextlib.suppress(OSError, TypeError):   # no machine-id: no directory, never the cwd
+                    for n in (os.listdir(d) if d else ()):
                         if ".journal" in n:
                             with contextlib.suppress(OSError):
                                 os.remove(os.path.join(d, n))
@@ -17800,7 +17813,7 @@ def _wdtt_docker_start(inst):
     _wdtt_docker_stop(iface)
     if not os.path.exists(binp):
         return "WDTT binary missing at " + binp
-    _rotate_serverlog(cfgdir + "/server.log")
+    _rotate_serverlog(cfgdir + "/server.log", _log_docker_caps(_LOG_BUDGET["mb"]) // 2 or SERVERLOG_MAX)   # its share
     try:
         lf = open(cfgdir + "/server.log", "ab", buffering=0)
         p = subprocess.Popen(_wdtt_argv(inst, binp), stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, close_fds=True)
@@ -19504,7 +19517,7 @@ def _csqtt_docker_start(inst):
     # reported as a seccomp problem.
     # Rotate BEFORE the offset is taken, so _from stays consistent with the file the child appends to (after a
     # rotation the file is empty, so _from is 0 = the start of this attempt).
-    _rotate_serverlog(cfgdir + "/server.log")
+    _rotate_serverlog(cfgdir + "/server.log", _log_docker_caps(_LOG_BUDGET["mb"]) // 2 or SERVERLOG_MAX)   # its share
     _from = 0
     with contextlib.suppress(Exception):
         _from = os.path.getsize(cfgdir + "/server.log")

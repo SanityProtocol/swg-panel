@@ -60,6 +60,15 @@ const html = htm.bind(h);
 
 // `traffic` = this node's client (non-mesh) rx/tx for the SELECTED range — a live rate, or windowed volume
 // when `ranged`. Computed once in Overview (nodeTraffic) so the card agrees with the doughnuts/top-nodes.
+
+// How to read a swg unit's own lines: swg's units log into journals of their own (docs/LOGS-PLAN.md §2), where plain
+// `journalctl -u` shows only systemd's start/stop lines. A NixOS panel has no namespace and no swg-logs.
+const SVC_LOG_SRC = { "swg-panel-server": "panel", "swg-sub": "sub", "swg-netctl": "netctl", "swg-update": "update", "swg-noded": "noded" };
+function svcLogCmd(unit) {
+  const src = SVC_LOG_SRC[String(unit).replace(/\.(service|timer|path)$/, "")];
+  return src && (Store.env || {}).platform !== "nixos" ? "swg-logs " + src + " -e" : "journalctl -u " + unit + " -e";
+}
+
 export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presence }) {
   const live = Store.recon.nodeStatus[n.id] === "live";
   const snap = Store.stats[n.id];
@@ -1133,7 +1142,7 @@ export function ServiceIssueSheet({ issues }) {
         <div class="svc-head"><span class=${"svc-dot " + i.sev}></span><b>${i.label}</b>
           <span class=${"svc-tag " + i.sev}>${i.sev === "critical" ? T("sev|Critical") : T("sev|Warning")}</span></div>
         <div class="svc-msg">${i.msg}.</div>
-        ${i.unit ? html`<div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>journalctl -u ${i.unit} -e</code></div>`
+        ${i.unit ? html`<div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>${svcLogCmd(i.unit)}</code></div>`
           : html`<div class="svc-cmd"><code>dkms status</code> · <code>modprobe amneziawg</code></div>`}
       </div>`)}
       <div class="svc-foot">${certOnly

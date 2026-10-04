@@ -151,7 +151,9 @@ def log_level():
 
 # docker (no journald): every line ALSO goes to a file of our own, the one a reader can find without a docker socket,
 # kept in two files of half the budget each (`path`, `path.1`). Off until log_file() names one.
-_LOG_FILE = {"path": None, "cap": 0, "f": None, "size": 0, "lock": threading.Lock()}
+# The lock is RE-entrant: a signal handler that logs (the panel's SIGHUP reload) runs on the thread it interrupted,
+# which may be inside a write — a plain Lock would deadlock it there.
+_LOG_FILE = {"path": None, "cap": 0, "f": None, "size": 0, "lock": threading.RLock()}
 
 
 def log_file(path, cap):
@@ -1657,10 +1659,18 @@ def log_budget():
             rc, out = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=60)
             if rc != 0:
                 err = "journald@%s did not restart: %s" % (LOG_NS, out.strip()[:160])
+                # put the file back, so the next tick sees the change again and retries — left in place it would read as
+                # applied while journald still runs the old size
+                if have is None:
+                    os.remove(LOG_NS_CONF)
+                else:
+                    with open(LOG_NS_CONF + ".tmp", "w") as f:
+                        f.write(have)
+                    os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)
             else:
                 have = want
-                if off:
-                    d = _log_ns_dir()
+                d = _log_ns_dir() if off else None
+                if d:
                     with contextlib.suppress(OSError):
                         for n in os.listdir(d):
                             if ".journal" in n:
@@ -1670,6 +1680,14 @@ def log_budget():
                     "nothing (logging is off)" if off else "%d MB" % mb)
         except OSError as e:
             err = "%s: %s" % (LOG_NS_CONF, e)
+    if err:
+        try:                                         # this helper starts afresh every tick: the last status is its memory
+            with open(os.path.join(NETCTL_DIR, "status", LOG_STATUS)) as f:
+                said = json.load(f).get("err")
+        except (OSError, ValueError, AttributeError):
+            said = None
+        if said != err[:200]:
+            log(LOG_WARNING, "log budget: %s — retried on every tick, said once", err)
     m = re.search(r"^SystemMaxUse=(\d+)M$", have or "", re.M)
     used, oldest = _log_dir_usage(_log_ns_dir() or "/nonexistent")
     doc = {"mb": int(m.group(1)) if m else None, "used_mb": round(used / 1048576.0, 1)}

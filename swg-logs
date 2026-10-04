@@ -60,4 +60,4 @@ case "$src" in
   -h|--help|help) usage; exit 0 ;;
   *) echo "swg-logs: no source called '$src'" >&2; usage >&2; exit 2 ;;
 esac
-exec journalctl "${A[@]}" "$@"
+exec journalctl ${A[@]+"${A[@]}"} "$@"   # (an empty array under set -u, on bash before 4.4)
