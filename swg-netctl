@@ -54,7 +54,9 @@ import re
 import stat
 import subprocess
 import sys
+import threading
 import time
+import traceback
 
 # ── configuration (env-overridable so the installer / tests can relocate) ─────────
 PANEL_USER = os.environ.get("SWG_PANEL_USER", "swgpanel")
@@ -104,8 +106,92 @@ DOMAIN_RE = re.compile(
 )
 
 
-def log(msg):
-    print("swg-netctl: " + msg, file=sys.stderr, flush=True)
+# ── log levels (docs/LOGS-PLAN.md §1) ────────────────────────────────────────────────────────────────────────────────
+# One level for the whole fleet, chosen in Settings → Logs. Every line carries a syslog priority: under journald the
+# `<N>` prefix, which journald files as PRIORITY; anywhere else (docker) one letter. A line above the level is dropped
+# BEFORE it is formatted — pass the arguments, not a formatted string — so a Debug line costs one comparison at Info.
+# Debug lines are capped at LOG_DEBUG_RATE a second: journald's flood guard counts per unit, and a Debug flood spending
+# this unit's bucket would make journald drop its error lines in the same window (P0 T8).
+# A copy of this block is in each swg program; keep them alike.
+LOG_OFF, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG = -1, 3, 4, 5, 6, 7
+LOG_LEVELS = {"off": LOG_OFF, "error": LOG_ERR, "warning": LOG_WARNING, "info": LOG_INFO, "debug": LOG_DEBUG}
+LOG_DEBUG_RATE = 100
+_LOG_STREAM = "stderr"       # sys.<this>, looked up per line (a redirect_stdout is honoured); swg-netctl: stderr — its
+                               # stdout carries a verb's JSON answer. A stream object here is used as it is.
+# level: the base level · until: Debug until this time.monotonic() (-1 = until changed, 0 = no Debug)
+_LOG = {"level": LOG_INFO, "until": 0, "sec": 0, "n": 0, "dropped": 0}
+
+
+def _log_to_journal():
+    """True when stdout IS the stream systemd connected to the journal — JOURNAL_STREAM names its device:inode. An
+    inherited variable alone is not enough: a child whose stdout was redirected keeps it."""
+    try:
+        dev, ino = (int(x) for x in os.environ.get("JOURNAL_STREAM", "").split(":"))
+        st = os.fstat(getattr(sys, _LOG_STREAM).fileno())
+        return (st.st_dev, st.st_ino) == (dev, ino)
+    except Exception:
+        return False
+
+
+_LOG_JOURNAL = _log_to_journal()
+_LOG_TAG = {LOG_ERR: "E", LOG_WARNING: "W", LOG_NOTICE: "N", LOG_INFO: "I", LOG_DEBUG: "D"}
+
+
+def log_set(level, debug_left=0):
+    """Set the base level, and Debug for `debug_left` seconds on top of it (-1 = until changed, 0 = none)."""
+    _LOG["level"] = level
+    _LOG["until"] = -1 if debug_left == -1 else (time.monotonic() + debug_left if debug_left and debug_left > 0 else 0)
+
+
+def log_level():
+    """The level in force now: Debug while its time runs, else the base level."""
+    u = _LOG["until"]
+    return LOG_DEBUG if (u == -1 or (u and time.monotonic() < u)) else _LOG["level"]
+
+
+def _log_write(prio, text):
+    pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
+    try:
+        out = getattr(sys, _LOG_STREAM) if isinstance(_LOG_STREAM, str) else _LOG_STREAM
+        out.write("".join(pre + ln + "\n" for ln in text.split("\n")))
+        out.flush()
+    except Exception:
+        pass
+
+
+def log(prio, msg, *args):
+    """Write one line (or several: each gets the prefix) at syslog priority `prio`, if the level lets it through.
+    Every line of this helper starts with "swg-netctl: ", as it always has."""
+    if prio > _LOG["level"] and prio > log_level():
+        return
+    if prio == LOG_DEBUG or _LOG["dropped"]:
+        s = int(time.monotonic())
+        if s != _LOG["sec"]:
+            if _LOG["dropped"]:
+                _log_write(LOG_DEBUG, "%d debug lines not written (more than %d a second)" % (_LOG["dropped"], LOG_DEBUG_RATE))
+            _LOG["sec"], _LOG["n"], _LOG["dropped"] = s, 0, 0
+        if prio == LOG_DEBUG:
+            _LOG["n"] += 1
+            if _LOG["n"] > LOG_DEBUG_RATE:
+                _LOG["dropped"] += 1
+                return
+    try:
+        text = (msg % args) if args else str(msg)
+    except Exception:
+        text = "%s %r" % (msg, args)
+    _log_write(prio, "swg-netctl: " + text)
+
+
+def _log_excepthook(et, ev, tb, *_):
+    """An uncaught exception's traceback at `err`. Printed bare, journald would file it at info — and below Info a
+    unit's LogLevelMax would drop exactly the line that explains the crash."""
+    if et is None or issubclass(et, SystemExit):
+        return
+    log(LOG_ERR, "".join(traceback.format_exception(et, ev, tb)).rstrip("\n"))
+
+
+sys.excepthook = _log_excepthook
+threading.excepthook = lambda a: _log_excepthook(a.exc_type, a.exc_value, a.exc_traceback)
 
 
 class Reject(Exception):
@@ -151,8 +237,8 @@ def run(argv, env=None, timeout=None):
     stalls every Access operation behind it (binds, certificates, restarts). On expiry the command's whole
     process group is killed — acme.sh's standalone mode runs its own listener child on :80, which a kill of
     acme.sh alone would leave holding the port — and rc 124 is returned, as timeout(1) does."""
-    log("exec: " + " ".join(argv))
     if DRYRUN:
+        log(LOG_INFO, "exec: " + " ".join(argv))
         return 0, "(dry-run)"
     p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                          start_new_session=timeout is not None)
@@ -164,9 +250,13 @@ def run(argv, env=None, timeout=None):
             os.killpg(p.pid, signal.SIGKILL)
         out, _ = p.communicate()
         rc, out = 124, (out or "") + "\n(stopped: still running after %d s)" % timeout
+    # Logged once it has run: a failed command and its output at notice, so they stay at Info (this unit's own cap is
+    # notice there — see log_dropins), and a command that succeeded at debug.
+    pr = LOG_NOTICE if rc else LOG_DEBUG
+    log(pr, "exec: %s (rc %d)", " ".join(argv), rc)
     if out:
         for line in out.rstrip().splitlines():
-            log("  | " + line)
+            log(pr, "  | %s", line)
     return rc, out or ""
 
 
@@ -272,7 +362,7 @@ def _acme_clear_unusable(domain):
     if d is None or DRYRUN or _acme_entry_usable(d, domain):
         return False
     shutil.rmtree(d, ignore_errors=True)
-    log("cleared a failed acme entry for %s (a domain key with no certificate) — it would have masked "
+    log(LOG_NOTICE, "cleared a failed acme entry for %s (a domain key with no certificate) — it would have masked "
         "every re-issue with \"Domain key exists\"" % domain)
     return True
 
@@ -390,7 +480,7 @@ def do_set_listen(service, ip, port):
             "Environment=%s=%d\n"
             "%s" % (svc["env_host"], ip, svc["env_port"], port, cap))
     if DRYRUN:
-        log("would write %s:\n%s" % (path, body))
+        log(LOG_INFO, "would write %s:\n%s" % (path, body))
     else:
         os.makedirs(dropdir, exist_ok=True)
         tmp = path + ".tmp"
@@ -428,7 +518,7 @@ def do_set_base(service, base):
             "[Service]\n"
             "Environment=SWG_PANEL_BASE=%s\n" % b.strip("/"))
     if DRYRUN:
-        log("would write %s:\n%s" % (path, body))
+        log(LOG_INFO, "would write %s:\n%s" % (path, body))
     else:
         os.makedirs(dropdir, exist_ok=True)
         tmp = path + ".tmp"
@@ -465,7 +555,7 @@ def do_set_cert_env(service, state):
             "Environment=SWG_PANEL_TLS_CERT=%s\n"
             "Environment=SWG_PANEL_TLS_KEY=%s\n" % (cert, key))
     if DRYRUN:
-        log("would write %s:\n%s" % (path, body))
+        log(LOG_INFO, "would write %s:\n%s" % (path, body))
     else:
         os.makedirs(dropdir, exist_ok=True)
         tmp = path + ".tmp"
@@ -494,7 +584,7 @@ def do_set_local_port(service, port):
             "[Service]\n"
             "Environment=SWG_PANEL_LOCAL_PORT=%d\n" % p)
     if DRYRUN:
-        log("would write %s:\n%s" % (path, body))
+        log(LOG_INFO, "would write %s:\n%s" % (path, body))
     else:
         os.makedirs(dropdir, exist_ok=True)
         tmp = path + ".tmp"
@@ -546,8 +636,12 @@ def do_restart(service):
         looped = before >= 0 and after >= 0 and after > before
         if st != 0 or looped:
             _r, detail = run(["systemctl", "--no-pager", "-n", "6", "status", unit])
-            raise Reject("%s did not stay up after restart (the address is likely already in use): %s"
-                         % (unit, (detail or "").strip()[-300:]))
+            # Below Info the unit's own lines are not stored (its LogLevelMax), so the status shows none: say why.
+            _lv = log_level()
+            nd = "" if _lv >= LOG_INFO else " — no log lines (logging is %s)" % (
+                "off" if _lv == LOG_OFF else "set to errors" if _lv == LOG_ERR else "set to warnings")
+            raise Reject("%s did not stay up after restart (the address is likely already in use): %s%s"
+                         % (unit, (detail or "").strip()[-300:], nd))
     return "restarted " + unit
 
 
@@ -579,7 +673,7 @@ def _fix_cert_perms(svc):
 def _issue_selfsigned(svc, domains):
     san = ",".join("DNS:" + d for d in domains)
     if DRYRUN:
-        log("would openssl-selfsign CN=%s SAN=%s -> %s / %s" % (domains[0], san, svc["cert"], svc["key"])); return
+        log(LOG_INFO, "would openssl-selfsign CN=%s SAN=%s -> %s / %s" % (domains[0], san, svc["cert"], svc["key"])); return
     rc, out = run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
                    "-subj", "/CN=" + domains[0], "-addext", "subjectAltName=" + san,
                    "-keyout", svc["key"], "-out", svc["cert"]])
@@ -605,7 +699,7 @@ def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
                          % (rc, domains[0], foreign, out.strip()[-400:]))
         d = _acme_ecc_dir(domains[0])
         _copy_pair(svc, os.path.join(d, "fullchain.cer"), os.path.join(d, "%s.key" % domains[0]), domains[0])
-        log("acme.sh installs %s for another program (%s) — renewed by its own method, copied its certificate, "
+        log(LOG_NOTICE, "acme.sh installs %s for another program (%s) — renewed by its own method, copied its certificate, "
             "left its install target alone" % (domains[0], foreign))
         if reloadcmd:
             _reload_front(service)
@@ -651,7 +745,7 @@ def _issue_cf15(svc, domains, creds):
     if not tok:
         raise Reject("cf15 needs a Cloudflare Origin CA token (set it in Access & TLS or install.conf CF_ORIGIN_TOKEN)")
     if DRYRUN:
-        log("would request a 15-year Cloudflare Origin cert (CN=%s, SAN=%s) -> %s" % (domains[0], ",".join(domains), svc["cert"]))
+        log(LOG_INFO, "would request a 15-year Cloudflare Origin cert (CN=%s, SAN=%s) -> %s" % (domains[0], ",".join(domains), svc["cert"]))
         return
     # generate the key + CSR with output CAPTURED (never routed through run(), which logs — the key is secret)
     key = subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout"],
@@ -666,7 +760,7 @@ def _issue_cf15(svc, domains, creds):
                        "request_type": "origin-ecc", "csr": csr}).encode()
     req = urllib.request.Request("https://api.cloudflare.com/client/v4/certificates", data=body, method="POST",
                                  headers={"Content-Type": "application/json", "Authorization": "Bearer " + tok})
-    log("requesting a Cloudflare Origin cert for %s" % ",".join(domains))
+    log(LOG_NOTICE, "requesting a Cloudflare Origin cert for %s" % ",".join(domains))
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.load(r)
@@ -897,7 +991,7 @@ def do_adopt_cert(service, cert_src, key_src, reload="reload"):
     if left is not None and left < 0:
         raise Reject("that certificate expired %d day(s) ago" % -left)
     if DRYRUN:
-        log("would install %s + %s as the %s certificate" % (cert_src, key_src, service)); return "dry-run"
+        log(LOG_INFO, "would install %s + %s as the %s certificate" % (cert_src, key_src, service)); return "dry-run"
     _place_pair(svc, c, k)
     if reload == "reload":
         with contextlib.suppress(Exception):
@@ -1163,7 +1257,7 @@ def _update_conf(updates):
             out.append("%s=%s" % (k, val))
     body = "\n".join(out).rstrip("\n") + "\n"
     if DRYRUN:
-        log("would write %s:\n%s" % (CONF, body))
+        log(LOG_INFO, "would write %s:\n%s" % (CONF, body))
         return
     os.makedirs(os.path.dirname(CONF), exist_ok=True)
     tmp = CONF + ".tmp"
@@ -1264,7 +1358,7 @@ def _root_child(nfd, name, mode):
             with contextlib.suppress(OSError):
                 # a unique name: two in the same second (a panel re-planting) must not collide and leave it in place
                 os.rename(name, "%s.untrusted.%d.%d" % (name, time.time_ns(), os.getpid()), src_dir_fd=nfd, dst_dir_fd=nfd)
-                log("moved aside a %s/ this helper did not make — it is recreated as root's own" % name)
+                log(LOG_WARNING, "moved aside a %s/ this helper did not make — it is recreated as root's own" % name)
     return None
 
 
@@ -1299,7 +1393,7 @@ def _write_status(rid, status, message, nonce, sfd=None):
         sfd = _root_child(nfd, "status", 0o750) if nfd is not None else None
         _close(nfd)
     if sfd is None:
-        log("answer for [%s] not written: no safe status dir" % rid)
+        log(LOG_ERR, "answer for [%s] not written: no safe status dir" % rid)
         return
     try:
         doc = {"id": rid, "status": status, "message": message,
@@ -1360,6 +1454,75 @@ def _sweep(dir_fd, older_than, keep=lambda n: False):
                     os.unlink(name, dir_fd=dir_fd)
 
 
+# ── the fleet's log level on the panel box (docs/LOGS-PLAN.md §1, §13) ─────────────────────────────────────────────
+# This helper is the one writer of the panel box's LogLevelMax drop-ins, masters included: the panel runs unprivileged
+# and cannot write under /run/systemd, and the local node's swg-noded writes only its own units'. Under /run, so a
+# reboot (or an uninstalled build) leaves nothing behind; the next tick writes them again.
+LOG_DROPIN_DIR = os.environ.get("SWG_LOG_DROPIN_DIR") or "/run/systemd/system"
+LOG_DROPIN_FILE = "swg-log.conf"
+LOG_PANEL_UNITS = ("swg-panel-server.service", "swg-sub.service")
+LOG_TIMER_UNITS = ("swg-netctl.service", "swg-update.service")
+
+
+def log_from_settings():
+    """The fleet's level from panel-settings.json (root reads it directly, as _load_access_tls does): the base level,
+    plus Debug while `log_debug_until` is -1 (until changed) or still ahead. Computed on every run, so Debug's expiry
+    reaches these units within one timer tick with nothing written at expiry."""
+    try:
+        with open(os.path.join(STATE_DIR, "panel-settings.json")) as f:
+            ps = json.load(f)
+        until = int(ps.get("log_debug_until") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return
+    log_set(min(LOG_LEVELS.get(ps.get("log_level"), LOG_INFO), LOG_INFO),
+            -1 if until == -1 else max(0, until - time.time()))
+
+
+def log_unit_caps(lvl):
+    """{unit: LogLevelMax or None} at level `lvl`. panel and sub: Off → emerg; below Info → warning (systemd's own crash
+    lines are notice/warning, and at `err` a crash would leave none — P0 T1); Info and Debug → no cap. netctl and update
+    are timer units, and every run writes systemd's Starting/Finished lines — 62 % of a box's lines (P0 T1) — so they
+    keep `notice` at Info as well, and run uncapped only at Debug, which the operator turns on for a while."""
+    base = "emerg" if lvl == LOG_OFF else "warning" if lvl < LOG_INFO else None
+    caps = {u: base for u in LOG_PANEL_UNITS}
+    caps.update({u: base or ("notice" if lvl == LOG_INFO else None) for u in LOG_TIMER_UNITS})
+    return caps
+
+
+def log_dropins():
+    """Write each unit's drop-in only when its content differs, then one daemon-reload. A unit takes it at its next
+    start: the timer units within seconds, the panel and swg-sub at their next restart. Never raises."""
+    if DRYRUN or not os.path.isdir(LOG_DROPIN_DIR):
+        return
+    changed = 0
+    for unit, cap in log_unit_caps(log_level()).items():
+        path = os.path.join(LOG_DROPIN_DIR, unit + ".d", LOG_DROPIN_FILE)
+        want = ("[Service]\nLogLevelMax=%s\n" % cap) if cap else None
+        try:
+            with open(path) as f:
+                have = f.read()
+        except OSError:
+            have = None
+        if have == want:
+            continue
+        try:
+            if want is None:
+                os.unlink(path)
+                with contextlib.suppress(OSError):
+                    os.rmdir(os.path.dirname(path))      # only if empty: an operator's own drop-in there stays
+            else:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path + ".tmp", "w") as f:
+                    f.write(want)
+                os.replace(path + ".tmp", path)
+            changed += 1
+        except OSError as e:
+            log(LOG_WARNING, "log level: %s not written: %s", path, e)
+    if changed:
+        run(["systemctl", "daemon-reload"])
+        log(LOG_NOTICE, "log level: %d unit drop-in(s) changed — each unit takes it at its next start", changed)
+
+
 def process_queue():
     nfd, qfd, sfd, cfd = _netctl_dirs()
     try:
@@ -1378,7 +1541,7 @@ def process_queue():
         if cfd is not None:
             _sweep(cfd, 3600)    # a claim a helper killed mid-request left: never run twice, just cleared
         else:
-            log("claims unavailable — running requests in place")
+            log(LOG_WARNING, "claims unavailable — running requests in place")
         for name in sorted(os.listdir(qfd)):
             if not name.endswith(".json"):
                 continue
@@ -1396,18 +1559,18 @@ def process_queue():
                 except FileNotFoundError:
                     continue                         # withdrawn by its waiter a moment ago — nothing to run
                 except OSError as e:
-                    log("could not claim [%s] (%s) — running it in place" % (rid, e))
+                    log(LOG_WARNING, "could not claim [%s] (%s) — running it in place" % (rid, e))
             try:
                 req = _read_request(name, where)
                 rid = _safe_rid(str(req.get("id") or rid))
                 msg = dispatch(req.get("verb"), req.get("args") or [])
-                log("ok [%s]: %s" % (rid, msg))
+                log(LOG_NOTICE, "ok [%s]: %s" % (rid, msg))
                 _write_status(rid, "ok", msg, req.get("nonce"), sfd)
             except Reject as e:
-                log("reject [%s]: %s" % (rid, e))
+                log(LOG_WARNING, "reject [%s]: %s" % (rid, e))
                 _write_status(rid, "error", str(e), None, sfd)
             except Exception as e:                  # never let one bad request wedge the queue
-                log("error [%s]: %s" % (rid, e))
+                log(LOG_ERR, "error [%s]: %s" % (rid, e))
                 _write_status(rid, "error", "internal error: %s" % (e,), None, sfd)
             finally:
                 with contextlib.suppress(OSError):
@@ -1427,7 +1590,10 @@ def main(argv):
     if len(argv) < 2:
         print("usage: swg-netctl run | <verb> <args...>", file=sys.stderr)
         return 2
+    log_from_settings()
     if argv[1] == "run":
+        with contextlib.suppress(Exception):
+            log_dropins()                            # every tick, before the idle return: Debug's expiry lands here
         process_queue()
         return 0
     try:

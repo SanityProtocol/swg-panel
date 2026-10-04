@@ -45,6 +45,7 @@ import os
 import re
 import signal
 import ssl
+import sys
 import threading
 import traceback
 import time
@@ -62,6 +63,95 @@ WEB_DIR    = os.path.realpath(os.environ.get("SWG_SUB_WEB", os.path.dirname(os.p
 SUB_TLS_DIR  = os.environ.get("SWG_SUB_TLS_DIR", "/etc/swg-sub/tls")
 DEFAULT_SUB_CERT = os.path.join(SUB_TLS_DIR, "fullchain.pem")
 DEFAULT_SUB_KEY  = os.path.join(SUB_TLS_DIR, "key.pem")
+
+
+# ── log levels (docs/LOGS-PLAN.md §1) ────────────────────────────────────────────────────────────────────────────────
+# One level for the whole fleet, chosen in Settings → Logs. Every line carries a syslog priority: under journald the
+# `<N>` prefix, which journald files as PRIORITY; anywhere else (docker) one letter. A line above the level is dropped
+# BEFORE it is formatted — pass the arguments, not a formatted string — so a Debug line costs one comparison at Info.
+# Debug lines are capped at LOG_DEBUG_RATE a second: journald's flood guard counts per unit, and a Debug flood spending
+# this unit's bucket would make journald drop its error lines in the same window (P0 T8).
+# A copy of this block is in each swg program; keep them alike. swg-sub has no live level: its lines are
+# start and reload lines, and its unit's LogLevelMax (written by swg-netctl) applies at exactly its start.
+LOG_OFF, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG = -1, 3, 4, 5, 6, 7
+LOG_LEVELS = {"off": LOG_OFF, "error": LOG_ERR, "warning": LOG_WARNING, "info": LOG_INFO, "debug": LOG_DEBUG}
+LOG_DEBUG_RATE = 100
+_LOG_STREAM = "stdout"       # sys.<this>, looked up per line (a redirect_stdout is honoured); swg-netctl: stderr — its
+                               # stdout carries a verb's JSON answer. A stream object here is used as it is.
+# level: the base level · until: Debug until this time.monotonic() (-1 = until changed, 0 = no Debug)
+_LOG = {"level": LOG_INFO, "until": 0, "sec": 0, "n": 0, "dropped": 0}
+
+
+def _log_to_journal():
+    """True when stdout IS the stream systemd connected to the journal — JOURNAL_STREAM names its device:inode. An
+    inherited variable alone is not enough: a child whose stdout was redirected keeps it."""
+    try:
+        dev, ino = (int(x) for x in os.environ.get("JOURNAL_STREAM", "").split(":"))
+        st = os.fstat(getattr(sys, _LOG_STREAM).fileno())
+        return (st.st_dev, st.st_ino) == (dev, ino)
+    except Exception:
+        return False
+
+
+_LOG_JOURNAL = _log_to_journal()
+_LOG_TAG = {LOG_ERR: "E", LOG_WARNING: "W", LOG_NOTICE: "N", LOG_INFO: "I", LOG_DEBUG: "D"}
+
+
+def log_set(level, debug_left=0):
+    """Set the base level, and Debug for `debug_left` seconds on top of it (-1 = until changed, 0 = none)."""
+    _LOG["level"] = level
+    _LOG["until"] = -1 if debug_left == -1 else (time.monotonic() + debug_left if debug_left and debug_left > 0 else 0)
+
+
+def log_level():
+    """The level in force now: Debug while its time runs, else the base level."""
+    u = _LOG["until"]
+    return LOG_DEBUG if (u == -1 or (u and time.monotonic() < u)) else _LOG["level"]
+
+
+def _log_write(prio, text):
+    pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
+    try:
+        out = getattr(sys, _LOG_STREAM) if isinstance(_LOG_STREAM, str) else _LOG_STREAM
+        out.write("".join(pre + ln + "\n" for ln in text.split("\n")))
+        out.flush()
+    except Exception:
+        pass
+
+
+def log(prio, msg, *args):
+    """Write one line (or several: each gets the prefix) at syslog priority `prio`, if the level lets it through."""
+    if prio > _LOG["level"] and prio > log_level():
+        return
+    if prio == LOG_DEBUG or _LOG["dropped"]:
+        s = int(time.monotonic())
+        if s != _LOG["sec"]:
+            if _LOG["dropped"]:
+                _log_write(LOG_DEBUG, "%d debug lines not written (more than %d a second)" % (_LOG["dropped"], LOG_DEBUG_RATE))
+            _LOG["sec"], _LOG["n"], _LOG["dropped"] = s, 0, 0
+        if prio == LOG_DEBUG:
+            _LOG["n"] += 1
+            if _LOG["n"] > LOG_DEBUG_RATE:
+                _LOG["dropped"] += 1
+                return
+    try:
+        text = (msg % args) if args else str(msg)
+    except Exception:
+        text = "%s %r" % (msg, args)
+    _log_write(prio, text)
+
+
+def _log_excepthook(et, ev, tb, *_):
+    """An uncaught exception's traceback at `err`. Printed bare, journald would file it at info — and below Info a
+    unit's LogLevelMax would drop exactly the line that explains the crash."""
+    if et is None or issubclass(et, SystemExit):
+        return
+    log(LOG_ERR, "".join(traceback.format_exception(et, ev, tb)).rstrip("\n"))
+
+
+sys.excepthook = _log_excepthook
+threading.excepthook = lambda a: _log_excepthook(a.exc_type, a.exc_value, a.exc_traceback)
+
 
 # A token is one opaque path segment. Kept tight so it can never escape into the
 # filesystem (the blob path re-sanitises again anyway) or collide with our routes.
@@ -826,8 +916,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as _e:
             if not Handler._meta_warned:
                 Handler._meta_warned = True
-                print("sub: link-preview metadata skipped (%s) — the page itself is served unchanged"
-                      % str(_e)[:160], flush=True)
+                log(LOG_WARNING, "sub: link-preview metadata skipped (%s) — the page itself is served unchanged"
+                      % str(_e)[:160])
         self._send(200, data, "text/html; charset=utf-8", cache="no-cache", extra={"Content-Security-Policy": self._CSP})
 
     def _client_ident(self):
@@ -853,7 +943,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._route()
         except Exception:
-            traceback.print_exc()
+            log(LOG_ERR, traceback.format_exc().rstrip("\n"))
             if not getattr(self, "_replied", False):
                 with contextlib.suppress(Exception):     # the peer may be gone; never raise out of the handler
                     self._send(500, "server error\n")
@@ -949,7 +1039,7 @@ def main():
     for _ in range(30):
         if fleet is not None:
             break
-        print(f"swg-sub: waiting for {FLEET_PATH} …", flush=True)
+        log(LOG_INFO, f"swg-sub: waiting for {FLEET_PATH} …")
         time.sleep(2)
         fleet = load_json(FLEET_PATH, None)
     if fleet is None:
@@ -973,7 +1063,7 @@ def main():
     _sv = (state.subscriptions().get("serve") or {})
     if not (cert and key) and _sv.get("tls_mode") not in (None, "", "reverse-proxy") \
             and not (os.environ.get("SWG_SUB_TLS_CERT") and os.environ.get("SWG_SUB_TLS_KEY")):
-        print("swg-sub: direct-TLS (%s) but no certificate yet — waiting for the panel to issue it…" % _sv.get("tls_mode"), flush=True)
+        log(LOG_WARNING, "swg-sub: direct-TLS (%s) but no certificate yet — waiting for the panel to issue it…" % _sv.get("tls_mode"))
         # SURVIVE THE SIGNAL THAT SAYS THE CERT IS READY. The real SIGHUP handler is installed further down,
         # AFTER this wait — so for the whole ~90s window the default action applied and a HUP simply killed
         # the process. And a HUP is exactly what arrives here: the panel issues the certificate and then
@@ -987,9 +1077,9 @@ def main():
             state = State(fleet); Handler.state = state
             host, port, cert, key = _serve_config(state)
             if cert and key:
-                print("swg-sub: certificate ready — serving HTTPS", flush=True); break
+                log(LOG_INFO, "swg-sub: certificate ready — serving HTTPS"); break
         else:
-            print("swg-sub: no certificate after ~90s — serving plain HTTP (front with a TLS proxy / Cloudflare Flexible)", flush=True)
+            log(LOG_WARNING, "swg-sub: no certificate after ~90s — serving plain HTTP (front with a TLS proxy / Cloudflare Flexible)")
     scheme = "http"
     if cert and key:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -1010,10 +1100,9 @@ def main():
             nb, nba = _read_bases()
             if (nb, nba) != (SUB_BASE, SUB_BASE_ALT):
                 SUB_BASE, SUB_BASE_ALT = nb, nba
-                print("swg-sub: reloaded config (SIGHUP) — base %s%s" % (SUB_BASE or "/",
-                      (" (+ old base %s during migration)" % SUB_BASE_ALT) if SUB_BASE_ALT else ""), flush=True)
+                log(LOG_INFO, "swg-sub: reloaded config (SIGHUP) — base %s%s", SUB_BASE or "/", (" (+ old base %s during migration)" % SUB_BASE_ALT) if SUB_BASE_ALT else "")
         except Exception as e:
-            print(f"swg-sub: config reload failed: {e}", flush=True)
+            log(LOG_ERR, f"swg-sub: config reload failed: {e}")
         if getattr(srv, "ssl_ctx", None) is not None:
             # Swap in a FRESH context, not load_cert_chain() over the live one: an SSLContext keeps one cert PER KEY
             # TYPE, so loading a cert of a different key type (an acme renewal that flips ECDSA↔RSA) leaves the OLD
@@ -1022,14 +1111,14 @@ def main():
                 nctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
                 nctx.load_cert_chain(cert, key)
                 srv.ssl_ctx = nctx
-                print("swg-sub: reloaded TLS certificate (SIGHUP)", flush=True)
+                log(LOG_INFO, "swg-sub: reloaded TLS certificate (SIGHUP)")
             except Exception as e:
-                print(f"swg-sub: TLS reload failed (keeping old cert): {e}", flush=True)
+                log(LOG_ERR, f"swg-sub: TLS reload failed (keeping old cert): {e}")
     with contextlib.suppress(ValueError, OSError, AttributeError):
         signal.signal(signal.SIGHUP, _reload)
 
     on = "enabled" if state.enabled() else "disabled (all requests 404 until turned on in the panel)"
-    print(f"swg-sub {VERSION} on {scheme}://{host}:{port}{SUB_BASE or ''} — subscriptions {on}", flush=True)
+    log(LOG_INFO, f"swg-sub {VERSION} on {scheme}://{host}:{port}{SUB_BASE or ''} — subscriptions {on}")
     with contextlib.suppress(KeyboardInterrupt):
         srv.serve_forever()
 

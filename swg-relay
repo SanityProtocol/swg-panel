@@ -19,6 +19,61 @@ ignored one — which is exactly how the pipe fix went two rounds without ever b
 """
 import argparse, array, contextlib, errno, fcntl, json, os, resource, selectors, socket, stat, struct, sys, time
 
+# ── log levels (docs/LOGS-PLAN.md §1) ────────────────────────────────────────────────────────────────────────────────
+# Each line carries a syslog priority: under journald the `<N>` prefix, in docker one letter. The level is swg-noded's,
+# from the file it writes (this unit is not its child, so the default path) — read at start and before each report
+# line, the only line this relay writes on its own schedule. A docker relay does not see the file and stays at Info.
+LOG_OFF, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG = -1, 3, 4, 5, 6, 7
+LOG_LEVEL_FILE = os.environ.get("SWG_LOG_LEVEL_FILE") or "/var/lib/swg-noded/log-level"
+_LOG_TAG = {LOG_ERR: "E", LOG_WARNING: "W", LOG_NOTICE: "N", LOG_INFO: "I", LOG_DEBUG: "D"}
+_LOG = {"level": LOG_INFO}
+
+
+def log_reread():
+    try:
+        with open(LOG_LEVEL_FILE) as f:
+            v = int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        v = LOG_INFO
+    _LOG["level"] = v if -1 <= v <= 7 else LOG_INFO
+
+
+def _log_to_journal():
+    """True when stderr IS the journal stream (JOURNAL_STREAM names its device:inode), not merely inherited."""
+    try:
+        dev, ino = (int(x) for x in os.environ.get("JOURNAL_STREAM", "").split(":"))
+        st = os.fstat(sys.stderr.fileno())
+        return (st.st_dev, st.st_ino) == (dev, ino)
+    except Exception:
+        return False
+
+
+_LOG_JOURNAL = _log_to_journal()
+
+
+def log(prio, msg, *args):
+    if prio > _LOG["level"]:
+        return
+    try:
+        text = (msg % args) if args else str(msg)
+    except Exception:
+        text = "%s %r" % (msg, args)
+    pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
+    with contextlib.suppress(Exception):
+        sys.stderr.write("".join(pre + ln + "\n" for ln in text.split("\n")))
+        sys.stderr.flush()
+
+
+def _log_excepthook(et, ev, tb):
+    """A crash's traceback at `err`: printed bare it is filed as info, which a LogLevelMax below Info drops."""
+    if et is None or issubclass(et, SystemExit):
+        return
+    import traceback
+    log(LOG_ERR, "".join(traceback.format_exception(et, ev, tb)).rstrip("\n"))
+
+
+sys.excepthook = _log_excepthook
+
 IP_TRANSPARENT, SO_MARK, TCP_CONGESTION, TCP_MAXSEG = 19, 36, 13, 2
 F_SETPIPE_SZ, F_GETPIPE_SZ = 1031, 1032
 SPLICE_MOVE, SPLICE_NONBLOCK = 1, 2
@@ -342,7 +397,7 @@ def probe(want_cap, cc):
         try:
             fcntl.fcntl(w, F_SETPIPE_SZ, want_cap)
         except OSError as e:
-            sys.stderr.write("relay: F_SETPIPE_SZ refused: %s\n" % e)
+            log(LOG_WARNING, "relay: F_SETPIPE_SZ refused: %s", e)
         granted = fcntl.fcntl(w, F_GETPIPE_SZ)   # never trust the request: ask the pipe what it holds
     finally:
         os.close(r); os.close(w)
@@ -352,7 +407,7 @@ def probe(want_cap, cc):
         asked_ok = True
         if cc:
             try: s.setsockopt(socket.IPPROTO_TCP, TCP_CONGESTION, cc.encode())
-            except OSError as e: asked_ok = False; sys.stderr.write("relay: TCP_CONGESTION refused: %s\n" % e)
+            except OSError as e: asked_ok = False; log(LOG_WARNING, "relay: TCP_CONGESTION refused: %s", e)
         got_cc = sock_cc(s) or "?"
     finally:
         s.close()
@@ -371,16 +426,14 @@ def probe(want_cap, cc):
             ceiling = "%d" % (int(soft) * 4096 // (granted * 2))
     except ValueError:
         ceiling = "?"
-    sys.stderr.write(
+    log(LOG_INFO if granted >= want_cap else LOG_WARNING,
         "relay: pipe requested=%d granted=%d (%s)  pipe-max-size=%s  pipe-user-pages-soft=%s"
-        " => %s concurrent conns before the kernel stops honouring it\n"
-        % (want_cap, granted, "OK" if granted >= want_cap else "SHORT", _read("/proc/sys/fs/pipe-max-size"),
-           soft, ceiling))
-    sys.stderr.write(
-        "relay: cc requested=%s selected=%s (%s)  system default=%s  available=%s\n"
-        % (cc or "(none)", got_cc, "OK" if (not cc or (asked_ok and got_cc == cc)) else "IGNORED",
-           _read("/proc/sys/net/ipv4/tcp_congestion_control"),
-           _read("/proc/sys/net/ipv4/tcp_available_congestion_control")))
+        " => %s concurrent conns before the kernel stops honouring it",
+        want_cap, granted, "OK" if granted >= want_cap else "SHORT", _read("/proc/sys/fs/pipe-max-size"), soft, ceiling)
+    _cc_ok = not cc or (asked_ok and got_cc == cc)
+    log(LOG_INFO if _cc_ok else LOG_WARNING, "relay: cc requested=%s selected=%s (%s)  system default=%s  available=%s",
+        cc or "(none)", got_cc, "OK" if _cc_ok else "IGNORED", _read("/proc/sys/net/ipv4/tcp_congestion_control"),
+        _read("/proc/sys/net/ipv4/tcp_available_congestion_control"))
     return granted
 
 
@@ -433,6 +486,7 @@ def main():
                          "Lets throughput be measured without arming a divert on a live interface.")
     ap.add_argument("--report", type=int, default=0)
     a = ap.parse_args()
+    log_reread()
 
     fixed = None
     if a.dst:
@@ -448,7 +502,7 @@ def main():
     except OSError as e:
         # Needs CAP_NET_ADMIN. Fatal for a real divert, but --dst mode is a plain proxy and must stay
         # runnable de-privileged — that is the only way to observe the fs.pipe-user-pages-soft cliff.
-        sys.stderr.write("relay: IP_TRANSPARENT unavailable (%s) — TPROXY divert will NOT work\n" % e)
+        log(LOG_ERR, "relay: IP_TRANSPARENT unavailable (%s) — TPROXY divert will NOT work", e)
     # Six fds per connection against a 1024 default is ~170 connections. Ask for the hard limit, the same
     # thing the panel does at startup, and report what we actually got rather than assuming it worked.
     try:
@@ -458,7 +512,7 @@ def main():
             resource.setrlimit(resource.RLIMIT_NOFILE, (_want, _hard))
     except (ValueError, OSError):
         pass
-    sys.stderr.write("relay: fd limit %s\n" % (resource.getrlimit(resource.RLIMIT_NOFILE)[0],))
+    log(LOG_DEBUG, "relay: fd limit %s", resource.getrlimit(resource.RLIMIT_NOFILE)[0])
     srv.bind((a.host, a.port)); srv.listen(1024); srv.setblocking(False)
 
     R = Relay(a.mark, a.cc, a.pipe_size, a.cc_cli, a.bind, a.mss)
@@ -470,11 +524,9 @@ def main():
     if a.status_sock:
         stsock = status_listener(a.status_sock)
         R.sel.register(stsock, selectors.EVENT_READ, STATUS)
-        sys.stderr.write("relay: status socket %s\n" % a.status_sock)
-    sys.stderr.write("relay: listening %s:%d mark=%s cc-up=%s cc-cli=%s dst=%s\n"
-                     % (a.host, a.port, a.mark, a.cc or "(default)", a.cc_cli or "(default)",
-                        a.dst or "(tproxy original)"))
-    sys.stderr.flush()
+        log(LOG_DEBUG, "relay: status socket %s", a.status_sock)
+    log(LOG_INFO, "relay: listening %s:%d mark=%s cc-up=%s cc-cli=%s dst=%s",
+        a.host, a.port, a.mark, a.cc or "(default)", a.cc_cli or "(default)", a.dst or "(tproxy original)")
     last = time.time()
     while True:
         ST["loops"] += 1
@@ -528,8 +580,9 @@ def main():
                     R.reap(key.data)                 # one bad connection must never stop the loop
         if a.report and time.time() - last >= a.report:
             last = time.time()
-            sys.stderr.write("relay: " + " ".join("%s=%s" % kv for kv in sorted(ST.items())) + "\n")
-            sys.stderr.flush()
+            log_reread()                         # the level may have moved since the last report
+            if _LOG["level"] >= LOG_DEBUG:       # a counter dump every few minutes: Debug, and built only then
+                log(LOG_DEBUG, "relay: " + " ".join("%s=%s" % kv for kv in sorted(ST.items())))
 
 
 if __name__ == "__main__":

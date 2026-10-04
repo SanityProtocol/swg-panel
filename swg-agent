@@ -634,7 +634,20 @@ def _bounce(ic, iface, tool, by_unit):
     if p.returncode != 0:
         log = subprocess.run(["journalctl", "-u", unit, "-n", "6", "--no-pager", "-o", "cat"],
                              capture_output=True, text=True).stdout.strip()
-        raise AgentError("up_failed", f"{unit} did not start: {log or p.stderr.strip()}")
+        raise AgentError("up_failed", f"{unit} did not start: {log or p.stderr.strip()}" + _log_no_detail())
+
+
+def _log_no_detail():
+    """Below Info a unit's own lines are dropped by its LogLevelMax (docs/LOGS-PLAN.md §1), so a bare reason is the
+    level's doing: say so. swg-noded hands the level in force down as SWG_LOG_LEVEL (a syslog priority, -1 = Off)."""
+    try:
+        lvl = int(os.environ.get("SWG_LOG_LEVEL", "6"))
+    except ValueError:
+        return ""
+    if lvl >= 6:
+        return ""
+    return " — no detail (logging is off)" if lvl < 0 else \
+        " — no detail (logging is set to %s)" % ("errors" if lvl <= 3 else "warnings")
 
 
 def _awg_recreate(ic, iface, awg, before):

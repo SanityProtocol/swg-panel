@@ -49,8 +49,117 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+
+# ── log levels (docs/LOGS-PLAN.md §1) ────────────────────────────────────────────────────────────────────────────────
+# One level for the whole fleet, chosen in Settings → Logs. Every line carries a syslog priority: under journald the
+# `<N>` prefix, which journald files as PRIORITY; anywhere else (docker) one letter. A line above the level is dropped
+# BEFORE it is formatted — pass the arguments, not a formatted string — so a Debug line costs one comparison at Info.
+# Debug lines are capped at LOG_DEBUG_RATE a second: journald's flood guard counts per unit, and a Debug flood spending
+# this unit's bucket would make journald drop its error lines in the same window (P0 T8).
+# A copy of this block is in each swg program; keep them alike.
+LOG_OFF, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG = -1, 3, 4, 5, 6, 7
+LOG_LEVELS = {"off": LOG_OFF, "error": LOG_ERR, "warning": LOG_WARNING, "info": LOG_INFO, "debug": LOG_DEBUG}
+LOG_DEBUG_RATE = 100
+_LOG_STREAM = "stdout"       # sys.<this>, looked up per line (a redirect_stdout is honoured); swg-netctl: stderr — its
+                               # stdout carries a verb's JSON answer. A stream object here is used as it is.
+# level: the base level · until: Debug until this time.monotonic() (-1 = until changed, 0 = no Debug)
+_LOG = {"level": LOG_INFO, "until": 0, "sec": 0, "n": 0, "dropped": 0}
+
+
+def _log_to_journal():
+    """True when stdout IS the stream systemd connected to the journal — JOURNAL_STREAM names its device:inode. An
+    inherited variable alone is not enough: a child whose stdout was redirected keeps it."""
+    try:
+        dev, ino = (int(x) for x in os.environ.get("JOURNAL_STREAM", "").split(":"))
+        st = os.fstat(getattr(sys, _LOG_STREAM).fileno())
+        return (st.st_dev, st.st_ino) == (dev, ino)
+    except Exception:
+        return False
+
+
+_LOG_JOURNAL = _log_to_journal()
+_LOG_TAG = {LOG_ERR: "E", LOG_WARNING: "W", LOG_NOTICE: "N", LOG_INFO: "I", LOG_DEBUG: "D"}
+
+
+def log_set(level, debug_left=0):
+    """Set the base level, and Debug for `debug_left` seconds on top of it (-1 = until changed, 0 = none)."""
+    _LOG["level"] = level
+    _LOG["until"] = -1 if debug_left == -1 else (time.monotonic() + debug_left if debug_left and debug_left > 0 else 0)
+
+
+def log_level():
+    """The level in force now: Debug while its time runs, else the base level."""
+    u = _LOG["until"]
+    return LOG_DEBUG if (u == -1 or (u and time.monotonic() < u)) else _LOG["level"]
+
+
+def _log_write(prio, text):
+    pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
+    try:
+        out = getattr(sys, _LOG_STREAM) if isinstance(_LOG_STREAM, str) else _LOG_STREAM
+        out.write("".join(pre + ln + "\n" for ln in text.split("\n")))
+        out.flush()
+    except Exception:
+        pass
+
+
+def log(prio, msg, *args):
+    """Write one line (or several: each gets the prefix) at syslog priority `prio`, if the level lets it through."""
+    if prio > _LOG["level"] and prio > log_level():
+        return
+    if prio == LOG_DEBUG or _LOG["dropped"]:
+        s = int(time.monotonic())
+        if s != _LOG["sec"]:
+            if _LOG["dropped"]:
+                _log_write(LOG_DEBUG, "%d debug lines not written (more than %d a second)" % (_LOG["dropped"], LOG_DEBUG_RATE))
+            _LOG["sec"], _LOG["n"], _LOG["dropped"] = s, 0, 0
+        if prio == LOG_DEBUG:
+            _LOG["n"] += 1
+            if _LOG["n"] > LOG_DEBUG_RATE:
+                _LOG["dropped"] += 1
+                return
+    try:
+        text = (msg % args) if args else str(msg)
+    except Exception:
+        text = "%s %r" % (msg, args)
+    _log_write(prio, text)
+
+
+def _log_excepthook(et, ev, tb, *_):
+    """An uncaught exception's traceback at `err`. Printed bare, journald would file it at info — and below Info a
+    unit's LogLevelMax would drop exactly the line that explains the crash."""
+    if et is None or issubclass(et, SystemExit):
+        return
+    log(LOG_ERR, "".join(traceback.format_exception(et, ev, tb)).rstrip("\n"))
+
+
+sys.excepthook = _log_excepthook
+threading.excepthook = lambda a: _log_excepthook(a.exc_type, a.exc_value, a.exc_traceback)
+
+
 CONFIG_PATH = os.environ.get("SWG_AGENT_CONFIG", "/etc/swg-agent/config.json")
 STATE_DIR   = os.environ.get("SWG_NODED_STATE", "/var/lib/swg-noded")
+# The level in force on this node, as one number, for the programs that are not this process: swg-sni (a child — the
+# variable below tells it where) re-reads it every few seconds, swg-relay at start and before each report line, and
+# swg-agent gets it through SWG_LOG_LEVEL. Written only when it changes (_log_follow).
+LOG_LEVEL_FILE = os.path.join(STATE_DIR, "log-level")
+os.environ["SWG_LOG_LEVEL_FILE"] = LOG_LEVEL_FILE
+
+
+def _log_boot():
+    """The level before the first sync: the one the panel last set, read back from that file — so Off holds from this
+    process's first line, not from its first sync. Debug comes back as Info: only the panel starts Debug, and a restart
+    that cannot reach the panel must not leave it on with no clock counting it down."""
+    try:
+        with open(LOG_LEVEL_FILE) as f:
+            v = int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return
+    if v in LOG_LEVELS.values():
+        log_set(min(v, LOG_INFO))
+
+
+_log_boot()
 
 
 def _shared_record(name, legacy, env):
@@ -79,8 +188,7 @@ def _shared_record(name, legacy, env):
         if _l and (not _n or os.path.getmtime(legacy) > os.path.getmtime(new)):
             os.makedirs(STATE_DIR, exist_ok=True)
             shutil.copy2(legacy, new)
-            print("record: %s -> %s (the newer copy; records are shared across run-models now)"
-                  % (legacy, new), flush=True)
+            log(LOG_INFO, "record: %s -> %s (the newer copy; records are shared across run-models now)", legacy, new)
     return new
 
 
@@ -5892,7 +6000,7 @@ def _dnsmasq_refill(res):
         if run(["kill", "-HUP", str(pid)]).returncode != 0:
             res["errors"].append("smart dnsmasq: its sets were emptied and its cache could not be cleared")
             return
-        print("routing: dnsmasq cache cleared — a set it fills was emptied, so cached names fill it again on their next lookup", flush=True)
+        log(LOG_INFO, "routing: dnsmasq cache cleared — a set it fills was emptied, so cached names fill it again on their next lookup")
     _DNSMASQ_SETS_EMPTIED["v"] = False
 
 
@@ -6695,7 +6803,7 @@ def _p2p_rule(want, res):
     _P2P["rule"] = bool(on)
 
 
-def _p2p_nft(mode, strict, oif, nofan, ih, route=None):
+def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
     """The whole `swg_p2p` table as one atomic script. Two chains:
       cls    prerouting, mangle + 5 (-145): after swg_smart's marks (-150), before the relay divert (-140). Flags users
              (signatures + fan-out), routes Direct, and DROPS what is blocked here — before the divert, so a relayed
@@ -6707,6 +6815,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None):
     `legacy` builds cls only, scoped to the strict subnets: exactly today's per-interface semantics.
     `route` = {"mark": T|P2P_BIT, "routable": [subnets]}: only those subnets are routed; every other forwarded P2P flow
     (another node's arrivals among them — so P2P never goes back into the mesh) is blocked here like a strict subnet.
+    `logged`: the hit lines go to the kernel log at Info and Debug; below Info the table is rendered with no `log`
+    statement at all (docs/LOGS-PLAN.md §1) — those lines carry users' addresses, and Off means nothing is kept.
 
     ⚠️ Every declared single-key set is `typeof ip saddr|ip daddr|th dport` and the flow memory is a CONCATENATION: the
     keys measured to read on the host's nft 1.0.2-1.1.3 (tests/nft_host_readable_selftest.py). A `ct id` or `oifname`
@@ -6757,7 +6867,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None):
     # hit: a FORWARDED signature match (cls) — flag the user, then drop if blocked here, else route Direct.
     L.append("  chain hit {")
     L.append("    %sadd @flag { ip saddr timeout 10m }" % nf)   # = the fan-out's: one idle DHT ping must not cost an hour of high ports
-    L.append('    limit rate 20/minute log prefix "swg-p2p hit: " level info')
+    if logged:
+        L.append('    limit rate 20/minute log prefix "swg-p2p hit: " level info')
     for who in whos:
         L += ["    %s%s" % (who, h) for h in hold]
         L.append("    %scounter name dropped drop" % who)
@@ -6787,8 +6898,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None):
         for c, l4, m in _P2P_SIGS:
             L.append("    meta l4proto %s %s counter name %s jump hit" % (l4, m, c))
     L.append("    ct state new %s %s meter p2pfan size 65535 { ip saddr limit rate over 30/minute burst 30 packets } "
-             "add @flag { ip saddr timeout 10m } counter name fan_flag limit rate 6/minute log prefix \"swg-p2p fan: \" level info"
-             % (_P2P_SHAPE, nf))
+             "add @flag { ip saddr timeout 10m } counter name fan_flag%s"
+             % (_P2P_SHAPE, nf, ' limit rate 6/minute log prefix "swg-p2p fan: " level info' if logged else ""))
     for who in whos:                                          # the packet that just crossed the threshold
         L.append("    ct state new %sip saddr @flag %s counter name dropped drop" % (who, _P2P_SHAPE))
     if routes:
@@ -6814,7 +6925,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None):
             L.append("  }")
             L.append("  chain gdrop {")
             L += ["    " + h for h in hold]
-            L.append('    limit rate 20/minute log prefix "swg-p2p hit: " level info')
+            if logged:
+                L.append('    limit rate 20/minute log prefix "swg-p2p hit: " level info')
             L.append("    counter name dropped drop")
             L.append("  }")
     L.append("}")
@@ -6880,7 +6992,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
             _rt = run(["ip", "route", "show", "table", str(ent["table"])]).stdout or ""
             _P2P["route"] = "up" if any(ln.split()[:1] == ["default"] for ln in _rt.splitlines()) else "down"
             _P2P["route_dev"] = ent["via_iface"]
-        text = _p2p_nft(mode, strict, oif, _p2p_link_nets(node_cfg), ih, route)
+        text = _p2p_nft(mode, strict, oif, _p2p_link_nets(node_cfg), ih, route, logged=log_level() >= LOG_INFO)
         _P2P.update(on=True, state="ok" if ih else "degraded")
         sig = hashlib.sha256(text.encode()).hexdigest()
         cur = ""
@@ -6969,6 +7081,15 @@ def apply_panel_settings(pan):
     try:
         if not isinstance(pan, dict):
             return
+        # The fleet's log level: {level, debug_left}, absent at the defaults (Info, no Debug) — so absent IS the
+        # defaults, and a panel from before this key puts a node back on Info. `debug_left` is counted down on THIS
+        # node's clock from each reply, so a node cut off from the panel still leaves Debug on time.
+        _lg = pan.get("log") if isinstance(pan.get("log"), dict) else {}
+        try:
+            _left = int(_lg.get("debug_left") or 0)
+        except (TypeError, ValueError):
+            _left = 0
+        log_set(min(LOG_LEVELS.get(_lg.get("level"), LOG_INFO), LOG_INFO), _left)
         if (pan.get("turn_mirror") or "").strip():             # only ADD a turn mirror (preserve any install-time one)
             os.environ["SWG_TURN_MIRROR"] = pan["turn_mirror"].strip()
         ep = str(int(pan.get("geo_epoch") or 0))
@@ -6987,6 +7108,105 @@ def apply_panel_settings(pan):
                 open(ef, "w").write(ep)
     except Exception:
         pass
+
+
+# ── LogLevelMax for the units this node runs (docs/LOGS-PLAN.md §1, §13) ───────────────────────────────────────────
+# Third-party programs (turn proxies, WDTT/csqtt, wg-quick, and dnsmasq, which logs through swg-noded's own unit) print
+# everything at info, so their level is enforced by journald from a drop-in. A drop-in reaches a unit at its NEXT START
+# (P0 T1b) — a datapath unit is never restarted for a log level.
+# Prefix drop-ins: systemd reads `<prefix>-.service.d/` for every unit named `<prefix>-…`, and `<name>@.service.d/` for
+# every instance (measured on systemd 252 and 255), so a fixed set of files covers a proxy created later from its first
+# start, and there is nothing to enumerate or sweep. wg-quick@/awg-quick@ get one per interface of ours: a template
+# drop-in would reach the operator's own interfaces too.
+# Under /run, so a reboot clears them and an uninstalled or downgraded build cannot leave logging off for ever; this
+# process writes them again on its first pass.
+LOG_DROPIN_DIR = "/run/systemd/system"
+LOG_DROPIN_FILE = "swg-log.conf"
+LOG_DROPIN_UNITS = ("swg-noded.service", "swg-relay@.service", "vk-turn-proxy-.service", "swg-wdtt-.service",
+                    "swg-csqtt-.service")
+_LOG_FOLLOWED = {"lvl": None, "units": None}
+
+
+def log_unit_max(lvl):
+    """The LogLevelMax a unit gets at level `lvl`, or None for no drop-in. Their own lines are all info, so at Info and
+    Debug a cap would filter nothing and no file is written. Below Info the floor is `warning`: systemd's own lines
+    about a crash are notice and warning, and at `err` a crash would leave no line at all (P0 T1). Off is `emerg`,
+    which systemd never writes about a unit."""
+    return "emerg" if lvl == LOG_OFF else "warning" if lvl < LOG_INFO else None
+
+
+def log_no_detail():
+    """What a "why it failed" reader adds when the level is below Info: a unit's own lines are dropped there, so an
+    empty or bare tail is the level's doing, not the unit's. "" at Info and Debug."""
+    lvl = log_level()
+    if lvl >= LOG_INFO:
+        return ""
+    return "no detail (logging is off)" if lvl == LOG_OFF else \
+        "no detail (logging is set to %s)" % ("errors" if lvl == LOG_ERR else "warnings")
+
+
+def _log_follow(node_cfg):
+    """Once per loop: hand the level in force to the children (the file, the agent's variable) and to the units' drop-
+    ins — each only when it changed, so a steady node touches nothing. Debug's expiry needs no event: log_level() turns
+    it back here on the first pass after its time is up."""
+    lvl = log_level()
+    if lvl != _LOG_FOLLOWED["lvl"]:
+        os.environ["SWG_LOG_LEVEL"] = str(lvl)
+        try:
+            with open(LOG_LEVEL_FILE + ".tmp", "w") as f:
+                f.write("%d\n" % lvl)
+            os.replace(LOG_LEVEL_FILE + ".tmp", LOG_LEVEL_FILE)
+            _LOG_FOLLOWED["lvl"] = lvl
+        except OSError as e:
+            log(LOG_WARNING, "log level: could not write %s: %s", LOG_LEVEL_FILE, e)
+    if NODE_KIND == "docker" or not os.path.isdir(LOG_DROPIN_DIR):
+        return                                       # no systemd here: the containers' logs are P1c's
+    cap = log_unit_max(lvl)
+    units = list(LOG_DROPIN_UNITS) + sorted("%s-quick@%s.service" % ((ic.get("cmd") or ["awg"])[0], ifn)
+                                            for ifn, ic in (node_cfg.get("interfaces") or {}).items()
+                                            if isinstance(ic, dict))
+    if (cap, units) == _LOG_FOLLOWED["units"]:
+        return
+    want = ("[Service]\nLogLevelMax=%s\n" % cap) if cap else None
+    paths = {os.path.join(LOG_DROPIN_DIR, u + ".d", LOG_DROPIN_FILE) for u in units}
+    with contextlib.suppress(OSError):              # an interface deleted since: its drop-in goes too
+        for d in os.listdir(LOG_DROPIN_DIR):
+            if re.match(r"^a?wg-quick@.+\.service\.d$", d) and os.path.exists(os.path.join(LOG_DROPIN_DIR, d, LOG_DROPIN_FILE)):
+                paths.add(os.path.join(LOG_DROPIN_DIR, d, LOG_DROPIN_FILE))
+    keep = {os.path.join(LOG_DROPIN_DIR, u + ".d", LOG_DROPIN_FILE) for u in units}
+    changed, err = 0, None
+    for p in sorted(paths):
+        try:
+            with open(p) as f:
+                have = f.read()
+        except OSError:
+            have = None
+        target = want if p in keep else None
+        if have == target:
+            continue
+        try:
+            if target is None:
+                os.unlink(p)
+                with contextlib.suppress(OSError):
+                    os.rmdir(os.path.dirname(p))     # only if empty: an operator's own drop-in there stays
+            else:
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p + ".tmp", "w") as f:
+                    f.write(target)
+                os.replace(p + ".tmp", p)
+            changed += 1
+        except OSError as e:
+            err = "%s: %s" % (p, e)
+    if changed:
+        r = run(["systemctl", "daemon-reload"])
+        if r.returncode != 0:
+            err = err or "daemon-reload: " + (r.stderr or "").strip()[:160]
+        log(LOG_INFO, "log level: %d unit drop-in(s) %s — each unit takes it at its next start",
+            changed, ("set to LogLevelMax=" + cap) if cap else "removed")
+    if err:
+        log(LOG_WARNING, "log level: %s — retried on the next pass", err)
+    else:
+        _LOG_FOLLOWED["units"] = (cap, units)
 
 
 def _apply_routing_reset(reset_val, res, learned_val=None):
@@ -7041,7 +7261,7 @@ def _learned_reset_now(res, why):
         with contextlib.suppress(Exception): p.terminate()
     _SNI_PROC["p"] = None
     res["changed"] += 1
-    print("routing: LEARNED RESET %s — flushed learned ipsets/nft sets (lists kept); re-learning" % why, flush=True)
+    log(LOG_INFO, "routing: LEARNED RESET %s — flushed learned ipsets/nft sets (lists kept); re-learning" % why)
     return True
 
 
@@ -7116,7 +7336,7 @@ def _apply_full_reset(reset_val, res):
     with contextlib.suppress(OSError):
         open(stamp, "w").write(rv)
     res["changed"] += 1
-    print("routing: FULL RESET #%s — wiped sets/chains/ipsets/list-cache; rebuilding + re-pulling" % rv, flush=True)
+    log(LOG_INFO, "routing: FULL RESET #%s — wiped sets/chains/ipsets/list-cache; rebuilding + re-pulling" % rv)
     return True
 
 
@@ -7588,8 +7808,7 @@ def _exit_judge(dev, tr, now=None, reach=None):
             st["ok_since"] = now
         if st["dead"] and now - st["ok_since"] >= EXIT_ALIVE_AFTER_S:
             st.update(dead=False, since=now, why="")
-            print("exit device %s: carrying traffic again for %ds — routing back through it"
-                  % (dev, EXIT_ALIVE_AFTER_S), flush=True)
+            log(LOG_INFO, "exit device %s: carrying traffic again for %ds — routing back through it", dev, EXIT_ALIVE_AFTER_S)
     else:
         st["ok_since"] = None
         if st["fail_since"] is None:
@@ -7599,8 +7818,7 @@ def _exit_judge(dev, tr, now=None, reach=None):
                 and now - st["fail_since"] >= EXIT_DEAD_AFTER_S):
             st.update(dead=True, since=now,
                       why=str((tr or {}).get("err") or "nothing crossed the tunnel").strip()[:200])
-            print("exit device %s: carried nothing for %ds (%s) — treating it as failed"
-                  % (dev, int(now - st["fail_since"]), st["why"]), flush=True)
+            log(LOG_INFO, "exit device %s: carried nothing for %ds (%s) — treating it as failed", dev, int(now - st["fail_since"]), st["why"])
     return st
 
 
@@ -7744,7 +7962,7 @@ def reconcile_exits(desired, res):
                     _opened = json.loads(ivk_unseal(transport_priv(), d["key_blob"]).decode())
                 if isinstance(_opened, dict) and _opened.get("priv"):
                     rec = dict(_opened, provider="warp")
-                    print("exit %s: restored from the operator vault (%s)" % (xid, rec.get("account_type") or "free"), flush=True)
+                    log(LOG_INFO, "exit %s: restored from the operator vault (%s)", xid, rec.get("account_type") or "free")
                     res["changed"] += 1
                 else:
                     # ⚠️ NOT THE LOOP'S `err`. That variable is this exit's own HEALTH, and further down
@@ -7797,7 +8015,7 @@ def reconcile_exits(desired, res):
                     res["errors"].append("exit %s: %s (retry in %ds)" % (xid, err, int(rec["reg_next"] - _now)))
                     continue
                 rec = dict(reg, provider="warp", mtu=1280)   # success clears the backoff counters with it
-                print("exit %s: registered a WARP account (%s)" % (xid, rec.get("account_type")), flush=True)
+                log(LOG_INFO, "exit %s: registered a WARP account (%s)", xid, rec.get("account_type"))
                 res["changed"] += 1
             # 2) a WARP+ licence the operator supplied, applied ONCE per distinct key
             lic = str(d.get("licence") or "").strip()
@@ -7807,9 +8025,9 @@ def reconcile_exits(desired, res):
                 rec["licence_applied"] = lic if not lerr else rec.get("licence_applied", "")
                 err = lerr
                 if lerr:
-                    print("exit %s: WARP+ licence rejected — %s" % (xid, lerr), flush=True)
+                    log(LOG_WARNING, "exit %s: WARP+ licence rejected — %s", xid, lerr)
                 else:
-                    print("exit %s: WARP+ licence applied (%s)" % (xid, acct), flush=True)
+                    log(LOG_INFO, "exit %s: WARP+ licence applied (%s)", xid, acct)
                     res["changed"] += 1
             rec["device"] = dev
             with contextlib.suppress(Exception):
@@ -7845,8 +8063,7 @@ def reconcile_exits(desired, res):
             if _state != "absent":
                 _have_kind = _link_kind(dev)
                 if _have_kind not in ("", _want_kind):
-                    print("exit %s: device is %s but the profile is %s — rebuilding"
-                          % (xid, _have_kind, _want_kind), flush=True)
+                    log(LOG_WARNING, "exit %s: device is %s but the profile is %s — rebuilding", xid, _have_kind, _want_kind)
                     _exit_down(dev, rec)
                     _state = "absent"
                     res["changed"] += 1
@@ -7918,7 +8135,7 @@ def reconcile_exits(desired, res):
                 if p2:
                     with contextlib.suppress(Exception):
                         os.unlink(p2)
-            print("exit %s: removed (device %s)" % (_stem, od or "-"), flush=True)
+            log(LOG_INFO, "exit %s: removed (device %s)", _stem, od or "-")
             res["changed"] += 1
     _EXITS["list"] = out
 
@@ -9380,7 +9597,7 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patt
                                                "--map", SNI_MAP_PATH, "--table", SMART_NFT_TABLE,
                                                "--reset-mark", hex(SNI_RESET_MARK), "--learn-ttl", str(learn_ttl)])
             _SNI_PROC["ttl"] = learn_ttl
-            res["changed"] += 1; print("sni: launched swg-sni (queue %d, learn-ttl %d)" % (SNI_NFQUEUE, learn_ttl), flush=True)
+            res["changed"] += 1; log(LOG_INFO, "sni: launched swg-sni (queue %d, learn-ttl %d)", SNI_NFQUEUE, learn_ttl)
         except Exception as e:
             res["errors"].append("sni launch: " + str(e)[:120])
 
@@ -10195,7 +10412,7 @@ def _relay_note(state, why=""):
     if prev == now:
         return                                # steady state says nothing — only transitions are events
     _RELAY_ARM["noted"] = now
-    print("relay divert %s%s" % (state, (" — " + why) if why else ""), flush=True)
+    log(LOG_INFO, "relay divert %s%s", state, (" — " + why) if why else "")
 
 
 def _relay_unroutable(entries, rules):
@@ -11396,7 +11613,7 @@ def awg_load_request(req, agent, sudo):
     with contextlib.suppress(OSError):              # the result outlives a daemon restart, so the panel still gets it
         with open(AWG_LOAD_STAMP, "w") as f:
             json.dump(dict(_AWG_LOAD["v"], at=int(time.time())), f)
-    print("awg module load #%d: %s %s" % (n, _AWG_LOAD["v"]["code"], json.dumps(_AWG_LOAD["v"]["ifaces"])), flush=True)
+    log(LOG_INFO, "awg module load #%d: %s %s", n, _AWG_LOAD["v"]["code"], json.dumps(_AWG_LOAD["v"]["ifaces"]))
     return _AWG_LOAD["v"]["code"] not in AWG_LOAD_PRECHECK
 
 
@@ -11768,9 +11985,8 @@ def _wdtt_host_procs():
     _WDTT_HOSTPROC["ok"] = ok
     # One line per walk, and a walk is now a rare event. It says how often this actually runs and whether the
     # answer can be trusted — the two things that took a live box and a packet of measurements to establish.
-    print("host-walk: %d server proc(s), %.1fs, %s" % (len(rows), _WDTT_HOSTPROC["walked"] - now,
-                                                       "complete" if ok else "INCOMPLETE (answer not trusted)"),
-          flush=True)
+    log(LOG_DEBUG if ok else LOG_WARNING, "host-walk: %d server proc(s), %.1fs, %s", len(rows),
+        _WDTT_HOSTPROC["walked"] - now, "complete" if ok else "INCOMPLETE (answer not trusted)")
     return rows
 
 
@@ -12673,7 +12889,7 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
             with contextlib.suppress(Exception):
                 run([_ctr_cli(), "update", "--restart=" + (pol or "always"), container], timeout=30)
             return _ctr_err("could not stop {c} — nothing was changed", c=container)
-        print("container-takeover: %s reported no clean stop but is down — continuing" % container, flush=True)
+        log(LOG_WARNING, "container-takeover: %s reported no clean stop but is down — continuing" % container)
 
     def _undo(why):
         with contextlib.suppress(Exception):
@@ -12681,7 +12897,7 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
         with contextlib.suppress(Exception):
             run([_ctr_cli(), "start", container], timeout=90)
         _CTR_IF["at"] = 0.0
-        print("container-takeover: %s failed (%s) — put %s back" % (iface, why, container), flush=True)
+        log(LOG_ERR, "container-takeover: %s failed (%s) — put %s back", iface, why, container)
         return _ctr_err("{why} — {c} was restarted and is serving again, nothing was taken over",
                         why=why, c=container)
 
@@ -12703,8 +12919,7 @@ def container_iface_takeover(container, node_cfg, agent, sudo):
     node_cfg.setdefault("interfaces", {})[iface] = {"cmd": cmd, "conf": conf, "adopted_from": container}
     _adopted_ctr_set(iface, container)     # survives a docker node recreate; the uninstaller reads it
     _CTR_IF["at"] = 0.0
-    print("container-takeover: %s is ours now (from %s, %d peer(s) to import)"
-          % (iface, container, len(r.get("peers") or [])), flush=True)
+    log(LOG_INFO, "container-takeover: %s is ours now (from %s, %d peer(s) to import)", iface, container, len(r.get("peers") or []))
     return {"ok": True, "iface": iface, "container": container, "conf": conf,
             "listen_port": port, "address": addr, "proto": cmd[0],
             "peers": r.get("peers") or [], "named": r.get("named") or 0}
@@ -13406,7 +13621,7 @@ def iface_drops(ifaces, links=()):
         except Exception as e:
             if _IFDROP_ERR.get(ifn) != repr(e):
                 _IFDROP_ERR[ifn] = repr(e)
-                print("iface_drops: %s skipped: %r\n%s" % (ifn, e, traceback.format_exc()), file=sys.stderr, flush=True)
+                log(LOG_ERR, "iface_drops: %s skipped: %r\n%s", ifn, e, traceback.format_exc())
             continue
         if rec is not None:
             out[ifn] = rec
@@ -13608,7 +13823,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 _set_iface_stopped(iface, False)
             ensure_iface_backup(iface, conf_text, cmd)
         except Exception as e:
-            print(f"snapshot: skipping {iface}: {e}", flush=True)
+            log(LOG_WARNING, f"snapshot: skipping {iface}: {e}")
             continue
     _addrs = _node_addrs()                         # one `ip -o addr show`, shared by the three derived views below
     _tps = load_turn_proxies()
@@ -13999,13 +14214,12 @@ def tag_nat_hooks(node_cfg, agent, sudo):
             continue                               # no MASQUERADE in its hooks, or only its own tagged one
         r = run_agent(agent, sudo, {"op": "tag-nat-hooks", "iface": iface})
         if not r.get("ok"):
-            print("nat: could not give %s its own MASQUERADE: %s" % (iface, r.get("error")), flush=True)
+            log(LOG_ERR, "nat: could not give %s its own MASQUERADE: %s", iface, r.get("error"))
             continue
         d = r.get("data") or {}
         if d.get("changed"):
             moved += 1
-            print("nat: %s has its own MASQUERADE now (swg-nat:%s) — in its hooks, and %s" % (
-                iface, iface, "live" if d.get("live") else "from its next bring-up"), flush=True)
+            log(LOG_INFO, "nat: %s has its own MASQUERADE now (swg-nat:%s) — in its hooks, and %s", iface, iface, "live" if d.get("live") else "from its next bring-up")
     return moved
 
 
@@ -14046,7 +14260,7 @@ def reap_orphan_nat(node_cfg):
         if run(["iptables", "-t", "nat", "-D"] + args[1:]).returncode == 0:
             gone.append(name)
     if gone:
-        print("nat: removed the rule of interface(s) that no longer exist here: %s" % ", ".join(sorted(set(gone))), flush=True)
+        log(LOG_INFO, "nat: removed the rule of interface(s) that no longer exist here: %s" % ", ".join(sorted(set(gone))))
     return gone
 
 
@@ -14156,8 +14370,7 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                                 # case slow and visible (`op_quarantined` after three) instead of a churn loop.
                                 _op_fail(kk, err="applied; awaiting confirmation")
                                 res["added"] += 1
-                                print("peer %s on %s: preshared key re-applied from the panel"
-                                      % (pk[:8], iface), flush=True)
+                                log(LOG_INFO, "peer %s on %s: preshared key re-applied from the panel", pk[:8], iface)
                             else:
                                 _op_fail(kk, err=r.get("error"))
                                 res["errors"].append(f"psk {pk[:8]}: {r.get('error')}")
@@ -14225,11 +14438,9 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                         r = run_agent(agent, sudo, {"op": "persist-peer-endpoint", "iface": iface, "public_key": pk,
                                                     "endpoint": want_ep})
                         if r.get("ok"):
-                            print("peer %s on %s: the .conf now names its endpoint %s (it named %s)"
-                                  % (pk[:8], iface, want_ep, conf_ep or "none"), flush=True)
+                            log(LOG_INFO, "peer %s on %s: the .conf now names its endpoint %s (it named %s)", pk[:8], iface, want_ep, conf_ep or "none")
                         else:
-                            print("peer %s on %s: could not write its endpoint into the .conf: %s"
-                                  % (pk[:8], iface, r.get("error")), flush=True)
+                            log(LOG_ERR, "peer %s on %s: could not write its endpoint into the .conf: %s", pk[:8], iface, r.get("error"))
                     _EP_CONF[ek] = want_ep   # once per change, whatever the outcome — never a retry loop on a failing write
                 continue
             akey = "add|" + iface + "|" + pk
@@ -14483,9 +14694,7 @@ def handover_from_previous_runmodel():
     ctrs += [c for c in r_ctrs if c not in ctrs]
     if not (units or ctrs):
         return
-    print("run-model changed (%s/%s -> %s/%s) — handing over %d unit(s), %d container(s) from the previous one"
-          % (prev.get("kind"), prev.get("runtime") or "-", NODE_KIND, NODE_RUNTIME or "-", len(units), len(ctrs)),
-          flush=True)
+    log(LOG_INFO, "run-model changed (%s/%s -> %s/%s) — handing over %d unit(s), %d container(s) from the previous one", prev.get("kind"), prev.get("runtime") or "-", NODE_KIND, NODE_RUNTIME or "-", len(units), len(ctrs))
     stuck = []
     for u in units:
         w = host_sh(sc_disable_now_stop(u), timeout=60)
@@ -14506,10 +14715,10 @@ def handover_from_previous_runmodel():
             + ", ".join(sorted(stuck)[:6])
             + ". They hold the interfaces and ports this one needs. Stop them on the box "
               "(`systemctl disable --now <name>`), then this node takes over on its next sync.")
-        print("handover: could not stop " + ", ".join(sorted(stuck)), flush=True)
+        log(LOG_ERR, "handover: could not stop " + ", ".join(sorted(stuck)))
     else:
         NODE_ERRORS.pop("handover", None)
-        print("handover: the previous run-model's components are stopped", flush=True)
+        log(LOG_INFO, "handover: the previous run-model's components are stopped")
 
 
 def backfill_cmd_markers(node_cfg):
@@ -14540,7 +14749,7 @@ def backfill_cmd_markers(node_cfg):
                 continue
             with open(conf, "w") as f:
                 f.write("#swg:cmd " + tool + "\n" + head)
-            print("conf: stamped %s as %s (so it keeps its protocol wherever it goes)" % (iface, tool), flush=True)
+            log(LOG_INFO, "conf: stamped %s as %s (so it keeps its protocol wherever it goes)", iface, tool)
 
 
 def _handover_fork_dirs():
@@ -14568,7 +14777,7 @@ def _handover_fork_dirs():
             with contextlib.suppress(Exception):
                 os.makedirs(root, exist_ok=True)
                 shutil.copytree(src, dst, symlinks=False, ignore=shutil.ignore_patterns("server", "*.log"))
-                print("handover: carried %s's state from %s into %s" % (iface, src, dst), flush=True)
+                log(LOG_INFO, "handover: carried %s's state from %s into %s", iface, src, dst)
 
 
 def _turn_record_raw():
@@ -14623,10 +14832,10 @@ def _handover_turn():
         err = (_dturn_install(svc, req)[0] if TURN_DOCKER else _turn_install(svc, req))
         if err:
             NODE_ERRORS["turn:" + svc] = ("Rebuilding " + svc + " after the run-model change failed: " + str(err)[:120])
-            print("handover: turn %s could not be rebuilt: %s" % (svc, str(err)[:120]), flush=True)
+            log(LOG_ERR, "handover: turn %s could not be rebuilt: %s", svc, str(err)[:120])
         else:
             NODE_ERRORS.pop("turn:" + svc, None)
-            print("handover: turn %s rebuilt in this run-model's form" % svc, flush=True)
+            log(LOG_INFO, "handover: turn %s rebuilt in this run-model's form" % svc)
 
 
 def sc_disable_now_stop(svc):
@@ -14734,7 +14943,7 @@ def onboard_ifaces(node_cfg, onboard, heal=()):
                     res.setdefault("notes", []).append(
                         f"{iface}: couldn't read {_asked} — adopted from the live interface instead "
                         f"(keys, peers and ports kept; any DNS/Table/PostUp lines in that file are not)")
-                    print(f"onboard: {iface}: {_asked} unreadable — rebuilt from the live device", flush=True)
+                    log(LOG_WARNING, f"onboard: {iface}: {_asked} unreadable — rebuilt from the live device")
             if cmd == ["auto"]:                     # "Existing" gave no protocol — detect it from the conf
                 info = parse_interface_section(open(conf).read())
                 cmd = ["awg"] if any(k in info for k in AWG_KEYS) else ["wg"]
@@ -15078,7 +15287,7 @@ def _learn_candidate(panel, reply):
         if _norm_url(cand) != _norm_url(_SWAP.get("cand") or ""):
             _persist_candidate(cand)
     except Exception as e:
-        print("_learn_candidate:", e, flush=True)
+        log(LOG_WARNING, '_learn_candidate: %s', e)
 
 def _failover_candidate(panel, node_cfg):
     """Our blessed panel address stopped answering while a swap is pending → settle onto the learned candidate if it
@@ -15094,10 +15303,10 @@ def _failover_candidate(panel, node_cfg):
             panel["url"] = cand
             _persist_candidate("")
             _persist_panel_url(node_cfg, cand)
-            print(f"blessed panel address stopped answering — failed over to {cand} (verified same identity)", flush=True)
+            log(LOG_WARNING, f"blessed panel address stopped answering — failed over to {cand} (verified same identity)")
             return cand.rstrip("/") + "/api/node/sync"
     except Exception as e:
-        print("_failover_candidate:", e, flush=True)
+        log(LOG_WARNING, '_failover_candidate: %s', e)
     return None
 
 
@@ -15148,7 +15357,7 @@ def _persist_transfer(cand):
             with contextlib.suppress(OSError):
                 os.unlink(_XFER_PATH)
     except Exception as e:
-        print("_persist_transfer:", e, flush=True)
+        log(LOG_ERR, '_persist_transfer: %s', e)
 
 
 def _learn_transfer(panel, reply):
@@ -15169,7 +15378,7 @@ def _learn_transfer(panel, reply):
            (cand or {}).get("token") != (_XFER["cand"] or {}).get("token"):
             _persist_transfer(cand)
     except Exception as e:
-        print("_learn_transfer:", e, flush=True)
+        log(LOG_WARNING, '_learn_transfer: %s', e)
 
 
 def _promote_transfer(panel, node_cfg):
@@ -15208,7 +15417,7 @@ def _promote_transfer(panel, node_cfg):
     _persist_panel_url(node_cfg, url)
     _persist_panel_auth(panel)
     how = "CA-verified" if posture["verify"] else "pinned to the certificate the previous panel saw"
-    print("transferred to %s (%s) — syncing there from now on" % (url, how), flush=True)
+    log(LOG_INFO, "transferred to %s (%s) — syncing there from now on", url, how)
     return url.rstrip("/") + "/api/node/sync"
 
 
@@ -15241,19 +15450,19 @@ def apply_panel_hints(panel, node_cfg, reply):
             cur_host = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur).hostname
             if _norm_url(p_url) != _norm_url(cur) and not _host_is_internal(cur_host):
                 if not verified:
-                    print(f"panel moved to {p_url}, but this node is unverified — re-point it manually "
-                          f"(set panel.url in {CONFIG_PATH} + restart)", flush=True)
+                    log(LOG_WARNING, f"panel moved to {p_url}, but this node is unverified — re-point it manually "
+                          f"(set panel.url in {CONFIG_PATH} + restart)")
                 elif _verify_panel(p_url, panel.get("token") or "", panel):
                     panel["url"] = p_url
                     _persist_candidate("")   # canonical arrived → the swap is done, drop any candidate
                     _persist_panel_url(node_cfg, p_url)
-                    print(f"panel address changed → re-pointed to {p_url} (verified same identity)", flush=True)
+                    log(LOG_INFO, f"panel address changed → re-pointed to {p_url} (verified same identity)")
                     return p_url.rstrip("/") + "/api/node/sync"
                 else:
-                    print(f"panel says it moved to {p_url}, but that address doesn't present our trusted cert yet "
-                          f"— staying on {cur}", flush=True)
+                    log(LOG_WARNING, f"panel says it moved to {p_url}, but that address doesn't present our trusted cert yet "
+                          f"— staying on {cur}")
     except Exception as e:
-        print("apply_panel_hints:", e, flush=True)
+        log(LOG_WARNING, 'apply_panel_hints: %s', e)
     return None
 
 
@@ -15274,18 +15483,17 @@ def _pin_mismatch_hint(err, panel=None):
     _PIN_HINT["at"] = time.time()
     if err == "tls pin malformed":
         fp = str((panel or {}).get("fingerprint") or "")
-        print("panel TLS: the pin on record for the panel is not a sha256 fingerprint%s, so every sync is refused and "
+        log(LOG_ERR, "panel TLS: the pin on record for the panel is not a sha256 fingerprint%s, so every sync is refused and "
               "nothing is sent — it names no certificate at all. Re-run the node installer on this box at a terminal: it "
               "shows the certificate the panel presents and asks before pinning it. Unattended, give it "
               "TLS_FINGERPRINT=<the panel's sha256>, or TLS_VERIFY=yes for one a public CA vouches for."
-              % ((' ("%s%s")' % (fp[:24], "…" if len(fp) > 24 else "")) if fp else ""), flush=True)
+              % ((' ("%s%s")' % (fp[:24], "…" if len(fp) > 24 else "")) if fp else ""))
         return
-    print("panel TLS: the panel's certificate no longer matches this node's pin, so every sync is refused. If the "
+    log(LOG_ERR, "panel TLS: the panel's certificate no longer matches this node's pin, so every sync is refused. If the "
           "panel's certificate was renewed or replaced on purpose, re-run the node installer on this box at a terminal "
           "and accept the new certificate when it asks (one a public CA vouches for is then verified, not pinned); "
           "unattended it never takes a changed certificate — give it TLS_FINGERPRINT=<the new sha256>, or TLS_VERIFY=yes "
-          "for a CA one. Anything else may be an impersonator.",
-          flush=True)
+          "for a CA one. Anything else may be an impersonator.")
 
 
 _LOCAL_HEAL = {"at": 0.0}
@@ -15332,10 +15540,10 @@ def _heal_local_panel(panel, node_cfg):
                     panel["url"] = probe
                     _persist_candidate("")
                     _persist_panel_url(node_cfg, probe)
-                    print(f"panel not reachable at {cur} — rediscovered it locally at {probe}, re-pointed", flush=True)
+                    log(LOG_WARNING, f"panel not reachable at {cur} — rediscovered it locally at {probe}, re-pointed")
                     return probe.rstrip("/") + "/api/node/sync"
     except Exception as e:
-        print("_heal_local_panel:", e, flush=True)
+        log(LOG_WARNING, '_heal_local_panel: %s', e)
     return None
 
 
@@ -15391,8 +15599,8 @@ def create_ifaces(node_cfg, create, agent, sudo):
             if _stale and os.path.exists(_stale):
                 with contextlib.suppress(OSError):
                     os.unlink(_stale)
-            print("create: %s is recorded here but its device is gone — dropping the stale record and "
-                  "restoring it with its original key" % iface, flush=True)
+            log(LOG_WARNING, "create: %s is recorded here but its device is gone — dropping the stale record and "
+                  "restoring it with its original key" % iface)
             ifaces.pop(iface, None)
             changed = True
         elif iface.startswith("swg_"):
@@ -15409,8 +15617,8 @@ def create_ifaces(node_cfg, create, agent, sudo):
             if _orphconf:
                 with contextlib.suppress(OSError):
                     os.unlink(_orphconf)
-                print("create: %s had a leftover conf and no device — removed it so the link can be "
-                      "created" % iface, flush=True)
+                log(LOG_WARNING, "create: %s had a leftover conf and no device — removed it so the link can be "
+                      "created" % iface)
         cmd = want.get("cmd") or ["awg"]
         # RESTORE of a vanished interface: recreate it with its ORIGINAL server key so no client re-imports.
         # Key source, in order: a sealed_key the browser re-sealed to THIS node's transport key from the operator
@@ -15434,8 +15642,8 @@ def create_ifaces(node_cfg, create, agent, sudo):
         # against one that is UP and unusable, and unrecoverable. The wait is the recoverable half.
         if not priv and want.get("hold_key"):
             _AWAIT_KEY.add(iface)
-            print("create: %s HOLDING — the panel holds its escrowed key; unlock the vault and restore it "
-                  "(minting here would re-key every client)" % iface, flush=True)
+            log(LOG_WARNING, "create: %s HOLDING — the panel holds its escrowed key; unlock the vault and restore it "
+                  "(minting here would re-key every client)" % iface)
             continue
         _AWAIT_KEY.discard(iface)
         r = run_agent(agent, sudo, {"op": "create-iface", "iface": iface, "cmd": cmd,
@@ -15456,7 +15664,7 @@ def create_ifaces(node_cfg, create, agent, sudo):
                     _live = _live_wg_ifaces()
                 if iface in _live:
                     res.setdefault("heal", []).append(iface)
-                    print("create: %s is already live here — adopting it back instead of recreating" % iface, flush=True)
+                    log(LOG_INFO, "create: %s is already live here — adopting it back instead of recreating" % iface)
                     continue
             res["errors"].append(f"{iface}: {r.get('error')}"); continue
         data = r.get("data") or {}
@@ -15475,8 +15683,8 @@ def create_ifaces(node_cfg, create, agent, sudo):
                 _old = read_iface_backup(iface) or {}
                 if _new and _old.get("public_key") and _old.get("public_key") != _new.get("public_key"):
                     write_iface_backup(iface, _new)
-                    print("keys: %s is a new interface — the older key backup under its name (of an interface deleted "
-                          "before) is replaced by its own" % iface, flush=True)
+                    log(LOG_INFO, "keys: %s is a new interface — the older key backup under its name (of an interface deleted "
+                          "before) is replaced by its own" % iface)
             ensure_iface_backup(iface, _ctext, cmd)   # (re)seed the key backup (no-op if it already exists)
         # the agent may have fallen back (e.g. wg→awg on a node with only amneziawg-go) — record the
         # tool it ACTUALLY used, or we'll later run the wrong CLI (`wg show`) and "can't read" it
@@ -15580,7 +15788,7 @@ def delete_ifaces(node_cfg, delete, agent, sudo):
         # keeps a backup that exists (ensure_iface_backup) — and a key restore would then have put the DELETED
         # interface's key back. Only here: an interface lost any other way keeps its backup, which is what restores it.
         if drop_iface_backup(iface):
-            print("keys: %s's key backup removed with it" % iface, flush=True)
+            log(LOG_INFO, "keys: %s's key backup removed with it" % iface)
         changed = True
         res["deleted"].append(iface)
     if changed:
@@ -15659,14 +15867,13 @@ def _probe_unit_dir():
         return
     if "SWGUNITDIR-RO" not in out:                # we could not look — keep today's behaviour
         if w.returncode != 126:                   # 126 already logged its own one-time notice
-            print("units: could not probe %s (rc=%d) — assuming it is writable, which is what this "
-                  "did before there was a probe" % (UNIT_DIR_PERSIST, w.returncode), flush=True)
+            log(LOG_WARNING, "units: could not probe %s (rc=%d) — assuming it is writable, which is what this "
+                  "did before there was a probe", UNIT_DIR_PERSIST, w.returncode)
         return
     host_sh("mkdir -p " + shlex.quote(UNIT_DIR_RUNTIME))
     _UNIT_DIR["dir"], _UNIT_DIR["persist"] = UNIT_DIR_RUNTIME, False
-    print("units: %s is read-only on this host — writing to %s instead. Units there are recreated "
-          "by reconcile after a reboot; interfaces come back from the node's own bootstrap."
-          % (UNIT_DIR_PERSIST, UNIT_DIR_RUNTIME), flush=True)
+    log(LOG_INFO, "units: %s is read-only on this host — writing to %s instead. Units there are recreated "
+          "by reconcile after a reboot; interfaces come back from the node's own bootstrap.", UNIT_DIR_PERSIST, UNIT_DIR_RUNTIME)
 
 
 def turn_unit_dir():
@@ -15739,9 +15946,9 @@ def host_sh(cmd, timeout=90):
     if not _host_sh_available():
         if not _HOST_SH_CAP["warned"]:
             _HOST_SH_CAP["warned"] = True
-            print("host_sh: no docker socket on this node (TURN_MANAGE=manual) — host-side reads, "
+            log(LOG_WARNING, "host_sh: no docker socket on this node (TURN_MANAGE=manual) — host-side reads, "
                   "foreign-server discovery and unit management are unavailable; "
-                  "further attempts are skipped silently", flush=True)
+                  "further attempts are skipped silently")
         class _R:
             returncode = 126; stdout = ""; stderr = "host_sh unavailable: no docker socket mounted"
         return _R()
@@ -15767,12 +15974,12 @@ def host_sh(cmd, timeout=90):
     try:
         r = run(args, timeout=timeout)
     except Exception as e:                              # e.g. 'docker' not found, or a timeout
-        print("host_sh EXC: " + str(e) + " :: " + cmd[:160], flush=True)
+        log(LOG_ERR, "host_sh EXC: " + str(e) + " :: " + cmd[:160])
         class _R:                                       # synthesize a failed result so callers see it
             returncode = 127; stdout = ""; stderr = str(e)
         return _R()
     if r.returncode != 0:
-        print("host_sh rc=" + str(r.returncode) + " :: " + cmd[:160] + " :: " + (r.stderr or r.stdout or "")[:300], flush=True)
+        log(LOG_WARNING, "host_sh rc=" + str(r.returncode) + " :: " + cmd[:160] + " :: " + (r.stderr or r.stdout or "")[:300])
     return r
 
 def _turn_unit_path(svc):
@@ -16289,9 +16496,8 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
             _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc); _TURN_ATTEMPTS.pop(svc, None); NODE_PROGRESS.pop(svc, None)
             return
         # running, but not as it should be → fall through to the recreate path, saying which of the two it is
-        print("swg-noded: turn %s %s — recreating it" %
-              (svc, "is on a stale netns after a node recreate" if not _ns_ok
-                    else "runs an image this node no longer uses (want %s)" % SWG_TURN_IMAGE), flush=True)
+        log(LOG_INFO, "swg-noded: turn %s %s — recreating it", svc, "is on a stale netns after a node recreate" if not _ns_ok
+                    else "runs an image this node no longer uses (want %s)" % SWG_TURN_IMAGE)
     if _TURN_ATTEMPTS.get(svc, 0) >= TURN_MAX_ATTEMPTS and not os.path.exists(_turn_bin_local(svc)):
         _TURN_FAILED.add(svc); _TURN_INSTALLING.discard(svc); NODE_PROGRESS.pop(svc, None)   # given up — "install failed" (a manual Reinstall resets the counter)
         return
@@ -16305,29 +16511,29 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
                 # NON-terminating: keep retrying every pass, but tell the operator WHY it's slow so it doesn't look hung.
                 NODE_PROGRESS[svc] = ("GitHub download failed (attempt %d/%d): %s. Still retrying — please wait for the install to finish."
                                        % (_TURN_ATTEMPTS[svc], TURN_MAX_ATTEMPTS, derr))
-                print("swg-noded: turn %s binary download failed (attempt %d/%d): %s" % (svc, _TURN_ATTEMPTS[svc], TURN_MAX_ATTEMPTS, derr), flush=True)
+                log(LOG_WARNING, "swg-noded: turn %s binary download failed (attempt %d/%d): %s", svc, _TURN_ATTEMPTS[svc], TURN_MAX_ATTEMPTS, derr)
         if not os.path.exists(_turn_bin_local(svc)):   # no binary yet
             if _TURN_ATTEMPTS.get(svc, 0) >= TURN_MAX_ATTEMPTS:   # stop the endless "installing" → mark failed + report it
                 _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
                 NODE_ERRORS[svc] = "binary download failed after %d attempts — Reinstall to retry" % TURN_MAX_ATTEMPTS
-                print("swg-noded: turn %s — gave up after %d download attempts; Reinstall from the panel to retry" % (svc, TURN_MAX_ATTEMPTS), flush=True)
+                log(LOG_ERR, "swg-noded: turn %s — gave up after %d download attempts; Reinstall from the panel to retry", svc, TURN_MAX_ATTEMPTS)
             else:
-                print("swg-noded: turn %s has no binary yet — will retry on the next pass" % svc, flush=True)
+                log(LOG_WARNING, "swg-noded: turn %s has no binary yet — will retry on the next pass" % svc)
             return
         _TURN_ATTEMPTS.pop(svc, None); NODE_ERRORS.pop(svc, None)   # got the binary → clear any prior failure
         NODE_PROGRESS[svc] = "Binary downloaded — starting the container…"
         rr = _dturn_run(tp)
         if rr.returncode != 0:
             _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
-            print("swg-noded: turn %s 'docker run' failed: %s" % (svc, (rr.stderr or rr.stdout or "").strip()[:200]), flush=True)
+            log(LOG_ERR, "swg-noded: turn %s 'docker run' failed: %s", svc, (rr.stderr or rr.stdout or "").strip()[:200])
             return
         verr = _dturn_verify(svc)
         if verr:
             _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
-            print("swg-noded: turn %s started but didn't stay up: %s" % (svc, verr), flush=True)
+            log(LOG_ERR, "swg-noded: turn %s started but didn't stay up: %s", svc, verr)
         else:
             _TURN_FAILED.discard(svc); NODE_PROGRESS.pop(svc, None)
-            print("swg-noded: turn %s container (re)started (%s)" % (svc, _turn_cname(svc)), flush=True)
+            log(LOG_INFO, "swg-noded: turn %s container (re)started (%s)", svc, _turn_cname(svc))
     finally:
         _TURN_INSTALLING.discard(svc)
 
@@ -16338,22 +16544,21 @@ def _dturn_reconcile():   # startup/periodic: ensure every recorded turn-proxy h
     if not tps:
         return
     if not (SWG_TURN_IMAGE and SWG_HOST_NODE_DIR):   # the #1 silent failure — say so loudly
-        print("swg-noded: %d turn-proxy record(s) present but turn-on-docker isn't configured "
-              "(SWG_TURN_IMAGE=%r SWG_HOST_NODE_DIR=%r) — re-install the node with turn management ON"
-              % (len(tps), SWG_TURN_IMAGE, SWG_HOST_NODE_DIR), flush=True)
+        log(LOG_WARNING, "swg-noded: %d turn-proxy record(s) present but turn-on-docker isn't configured "
+              "(SWG_TURN_IMAGE=%r SWG_HOST_NODE_DIR=%r) — re-install the node with turn management ON", len(tps), SWG_TURN_IMAGE, SWG_HOST_NODE_DIR)
         return
     for tp in tps:
         try:
             _dturn_ensure(tp)
         except Exception as e:
-            print("swg-noded: turn reconcile %s failed: %s" % (tp.get("service"), e), flush=True)
+            log(LOG_ERR, "swg-noded: turn reconcile %s failed: %s", tp.get("service"), e)
 
 def _dturn_bg_loop():   # background thread: keep turn-proxy containers up WITHOUT blocking the sync loop, so the
     while True:         # node appears on the panel right away and the cards fill in (installing → up) as each starts
         try:
             _dturn_reconcile()
         except Exception as e:
-            print("swg-noded: turn reconcile error: %s" % e, flush=True)
+            log(LOG_ERR, "swg-noded: turn reconcile error: %s" % e)
         time.sleep(30)
 
 
@@ -16520,7 +16725,8 @@ def _turn_verify(svc):
     if lines and lines[0] == "active":
         return ""
     reason = lines[-1] if len(lines) > 1 else "not running (check the -listen IP is an address on this host)"
-    return "service didn't stay up: " + reason[:150]
+    nd = log_no_detail()                     # below Info the unit's own lines were dropped: say so, not a guess
+    return "service didn't stay up: " + reason[:150] + (" — " + nd if nd else "")
 
 def apply_turn(turn, turn_onboard):
     """Apply panel turn-proxy requests (manage/rotate/delete) + onboard host .service units, then
@@ -16529,14 +16735,14 @@ def apply_turn(turn, turn_onboard):
     if not turn and not turn_onboard:
         return res
     keys = set(turn or {}) | set(turn_onboard or [])
-    print("turn: applying " + str(sorted(keys)) + " manage_on=" + str(TURN_MANAGE_ON)
-          + " kind=" + NODE_KIND, flush=True)
+    log(LOG_INFO, "turn: applying " + str(sorted(keys)) + " manage_on=" + str(TURN_MANAGE_ON)
+          + " kind=" + NODE_KIND)
     def fail(k, m):
         res["errors"].append(k + ": " + m); NODE_ERRORS[k] = m
-        print("turn: FAIL " + k + " -> " + m, flush=True)
+        log(LOG_ERR, "turn: FAIL " + k + " -> " + m)
     def good(k, tag):
         res["done"].append(tag); NODE_ERRORS.pop(k, None)
-        print("turn: ok " + tag, flush=True)
+        log(LOG_INFO, "turn: ok " + tag)
     if not TURN_MANAGE_ON:
         for k in keys:
             fail(k, "turn management off — re-install the docker node with the 'panel' option")
@@ -17508,7 +17714,9 @@ def _wdtt_verify(svc):
     lines = (v.stdout or "").strip().splitlines()
     if lines and lines[0] == "active":
         return ""
-    return "wdtt service didn't stay up: " + (lines[-1] if len(lines) > 1 else "check journal")[:150]
+    nd = log_no_detail()                     # below Info the unit's own lines were dropped: say so, not "check journal"
+    return "wdtt service didn't stay up: " + (lines[-1][:150] + (" — " + nd if nd else "") if len(lines) > 1
+                                              else nd or "check journal")
 
 def _wdtt_maxpw_for(wg_addr, cap=4000):
     """Usable hosts in the tunnel subnet, as the password-pool default. Falls back to 200 when there's nothing
@@ -18190,11 +18398,10 @@ def _turn_sock_bufs(listeners=1):
             if key not in _SOCK_BUF_NOTED:
                 _SOCK_BUF_NOTED.add(key)
                 if new >= want:
-                    print("net.core.%s: %d -> %d (turn-family listeners; applies on their next restart)"
-                          % (key, cur, new), flush=True)
+                    log(LOG_INFO, "net.core.%s: %d -> %d (turn-family listeners; applies on their next restart)", key, cur, new)
                 else:
-                    print("net.core.%s is %d and could not be raised (read-only /proc/sys?) — turn-family DTLS "
-                          "handshakes may fail under load" % (key, cur), flush=True)
+                    log(LOG_WARNING, "net.core.%s is %d and could not be raised (read-only /proc/sys?) — turn-family DTLS "
+                          "handshakes may fail under load", key, cur)
     _turn_sock_persist(want)
 
 
@@ -18219,13 +18426,11 @@ def _turn_sock_persist(want):
     except OSError as e:
         if "persist" not in _SOCK_BUF_NOTED:
             _SOCK_BUF_NOTED.add("persist")
-            print("could not write %s (%s) — the cap holds until this box reboots, then reverts"
-                  % (SOCK_BUF_CONF, e), flush=True)
+            log(LOG_WARNING, "could not write %s (%s) — the cap holds until this box reboots, then reverts", SOCK_BUF_CONF, e)
         return
     if "persist-ok" not in _SOCK_BUF_NOTED:
         _SOCK_BUF_NOTED.add("persist-ok")
-        print("wrote %s (net.core.{r,w}mem_max = %d) so the cap survives a reboot" % (SOCK_BUF_CONF, want),
-              flush=True)
+        log(LOG_INFO, "wrote %s (net.core.{r,w}mem_max = %d) so the cap survives a reboot", SOCK_BUF_CONF, want)
 
 
 def reconcile_wdtt(want, remove=None):
@@ -18860,8 +19065,7 @@ def _swg_release_get(tag, arch, dest, want, what):
             # Say so. A fallback that silently succeeds papers over a broken mirror: the panel could be resolving
             # the wrong URL for months and every node would quietly paper over it by going direct — which is
             # exactly how the csqtt owner-mapping bug stayed invisible. Working is not the same as healthy.
-            print("fetch: %s %s came from GitHub direct — the panel's mirror did not serve it" % (what, tag),
-                  flush=True)
+            log(LOG_WARNING, "fetch: %s %s came from GitHub direct — the panel's mirror did not serve it", what, tag)
             return (True, "")
         err = (r.stderr or "").strip().replace("\n", " ")[:120]
     return (False, "GitHub was unreachable from this node" + ((": " + err) if err else ""))
@@ -19000,8 +19204,8 @@ def _csqtt_clear_stale_tun(iface):
         # Fail SAFE. Deleting the device is only correct once we KNOW no foreign server is on this name; with the
         # scan incomplete this is precisely the branch that pulls a live third party's datapath out from under it.
         # Worst case we skip a cleanup and the instance reports "create TUN device" — recoverable, and loud.
-        print("swg-noded: csqtt " + iface + ": skipping stale-TUN cleanup — the process scan did not complete, "
-              "so a foreign server holding this name would be invisible", flush=True)
+        log(LOG_WARNING, "swg-noded: csqtt " + iface + ": skipping stale-TUN cleanup — the process scan did not complete, "
+              "so a foreign server holding this name would be invisible")
         return
     if any((f.get("iface") or "").strip() == iface
            and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/") for _p, f in procs):
@@ -19111,8 +19315,8 @@ def _csqtt_seccomp_autofix():
     with contextlib.suppress(Exception):
         with open(SECCOMP_MARK, "w") as f:
             f.write(str(int(time.time())) + "\n")
-    print("csqtt: wrote SWG_NODE_SECCOMP=unconfined to " + envf + " — recreating this container so it takes "
-          "effect (csqtt's io_uring dataplane is denied without it)", flush=True)
+    log(LOG_INFO, "csqtt: wrote SWG_NODE_SECCOMP=unconfined to " + envf + " — recreating this container so it takes "
+          "effect (csqtt's io_uring dataplane is denied without it)")
     # Recreating our own container kills this process mid-call: that is the expected end of this function,
     # and the helper runs on the host, so the recreate completes regardless.
     host_sh("cd %s && (docker compose --profile node up -d swg-node || "
@@ -19159,7 +19363,7 @@ def _csqtt_verify(iface):
         time.sleep(0.5)
         if (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null").stdout or "").strip() == "active":
             return ""
-    return "service did not become active — check `journalctl -u " + _csqtt_svc(iface) + "`"
+    return "service did not become active — " + (log_no_detail() or "check `journalctl -u " + _csqtt_svc(iface) + "`")
 
 def _csqtt_install(inst):
     _unk = _csqtt_fork_unknown(inst)
@@ -20036,10 +20240,10 @@ def run_self_update(node_cfg, want):
             argv = base
         subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
-        print(f"self-update started → {want.get('to')}", flush=True)
+        log(LOG_INFO, f"self-update started → {want.get('to')}")
         return True
     except Exception as e:
-        print("self-update failed to start:", e, flush=True)
+        log(LOG_ERR, 'self-update failed to start: %s', e)
         return False
 
 
@@ -20089,9 +20293,9 @@ def report_proc(panel, state, err=None):
     try:
         u = panel["url"].rstrip("/") + "/api/node/proc-status"
         post_json(u, panel["token"], {"state": state, "err": (err or "")[:2000]}, panel)
-        print(f"proc-status → {state}", flush=True)
+        log(LOG_INFO, f"proc-status → {state}")
     except Exception as e:
-        print("proc-status report failed:", e, flush=True)
+        log(LOG_WARNING, 'proc-status report failed: %s', e)
 
 
 # ───────────────────────── main loop ─────────────────────────
@@ -20244,8 +20448,8 @@ def main():
     # later press of Update was ignored until a restart; the panel then called it "never reported a new version" five
     # minutes on (1.8.8 qualification, VM re-run D3). A request without an `at` keeps the old rule: once per process.
     update_fired = ""
-    print(f"swg-noded: panel={panel['url']} interval={interval}s "
-          f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
+    log(LOG_INFO, f"swg-noded: panel={panel['url']} interval={interval}s "
+          f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}")
     # BEFORE the first sync: if a previous run-model left its servers running here, stop them by the names
     # it recorded. No-op on an ordinary restart (same model), which is every start but the one after a switch.
     with contextlib.suppress(Exception):
@@ -20266,11 +20470,13 @@ def main():
         _LOOP["n"] += 1                             # new loop → per-loop caches (nft table render) refresh
         _reap_orphans()                             # PID 1 in a container inherits orphans nothing else collects
         _cap_serverlogs()                           # docker: bound each supervised server's log, panel or no panel
+        with contextlib.suppress(Exception):
+            _log_follow(node_cfg)                   # the level to the children and the units' drop-ins (only on change)
         _relay_plan, _relay_sync_ok = None, False   # the relay watchdog runs below whatever happens in between
         if t0 - last_verify_t >= VERIFY_EVERY_S:    # periodic drift heal: force the next routing pass to re-assert
             _force_reverify(); last_route_sig = None   # (drop sig-markers + un-gate the routing reconcile this cycle)
             last_verify_t = t0
-            print("reverify: re-asserting routing chains against live state", flush=True)
+            log(LOG_DEBUG, "reverify: re-asserting routing chains against live state")
         try:
             report_update_result(panel)             # a declarative rebuild finished while we were restarting — say how it went
             snap = build_snapshot(node_cfg, online_max, last_samples)
@@ -20324,9 +20530,9 @@ def main():
                             with open(_trig, "w") as _f: _f.write(str(int(time.time())) + "\n")
                             try: open(_marker, "w").write(_at)   # remember the request we fired so a recreate-restart won't re-fire it
                             except Exception: pass
-                            update_fired = _at; print(f"update trigger written → {_trig}", flush=True)
+                            update_fired = _at; log(LOG_INFO, f"update trigger written → {_trig}")
                         except Exception as _e:
-                            print("update trigger failed:", _e, flush=True)
+                            log(LOG_ERR, 'update trigger failed: %s', _e)
                             report_proc(panel, "update-failed", f"swg-noded could not write the update trigger {_trig}: {_e}")
                             update_fired = _at   # reported the failure — don't retry the bad write every sync
                     elif NODE_DECLARATIVE:
@@ -20337,7 +20543,7 @@ def main():
                         # Checked BEFORE the docker branch on purpose: a NixOS host running our image is `kind ==
                         # "docker"` for every behavioural purpose (T-P1), and that branch's remedy — a compose
                         # pull on the box — is the wrong answer for it.
-                        print("update requested but this node is managed declaratively", flush=True)
+                        log(LOG_WARNING, "update requested but this node is managed declaratively")
                         report_proc(panel, "update-failed",
                                     "This node is managed declaratively, so an update is a rebuild of its "
                                     "configuration — not something the panel can start. Update the swg input and "
@@ -20347,7 +20553,7 @@ def main():
                     elif NODE_KIND == "docker":
                         # docker node with NO host updater wired: a container can't recreate its own image, so
                         # run_self_update can do nothing. Report a clear failure instead of silently no-op'ing.
-                        print("update requested but no host updater is wired (docker)", flush=True)
+                        log(LOG_WARNING, "update requested but no host updater is wired (docker)")
                         report_proc(panel, "update-failed",
                                     "This docker node has no one-click host updater wired. Re-install it "
                                     "(bootstrap docker node) to enable the panel's Update button, or update on the box: "
@@ -20360,8 +20566,8 @@ def main():
                 # …plus any mesh link left behind by a panel this node used to sync with — see orphan_mesh_links.
                 _orph = orphan_mesh_links(node_cfg, reply.get("owned_ifaces"), reply.get("delete"))
                 if _orph:
-                    print("mesh: dropping link(s) this panel does not claim (its peer node is gone, or "
-                          "this node moved panels): " + ", ".join(_orph), flush=True)
+                    log(LOG_INFO, "mesh: dropping link(s) this panel does not claim (its peer node is gone, or "
+                          "this node moved panels): " + ", ".join(_orph))
                 dl = delete_ifaces(node_cfg, list(reply.get("delete") or []) + _orph, agent, sudo)   # tear down deleted ones
                 apply_panel_settings(reply.get("panel"))      # Panel settings → mirrors / geo TTL / geo refetch
                 _heal = selfheal_ifaces(node_cfg, reply.get("desired_ifaces"),
@@ -20369,8 +20575,8 @@ def main():
                 for _hn in (cr.get("heal") or []):      # a create that found the device already here (see create_ifaces)
                     _heal.setdefault(_hn, {"cmd": ["auto"], "conf": ""})
                 if _heal:
-                    print("self-heal: adopting live interface(s) the panel manages but we hold no conf for: "
-                          + ", ".join(sorted(_heal)), flush=True)
+                    log(LOG_INFO, "self-heal: adopting live interface(s) the panel manages but we hold no conf for: "
+                          + ", ".join(sorted(_heal)))
                 # add panel-requested interfaces first. A name the operator asked to adopt is an adoption even when the
                 # self-heal found it too (an onboard with an endpoint already gives it a record the panel then owns).
                 _obreq = reply.get("onboard") or {}
@@ -20450,7 +20656,9 @@ def main():
                                          reply.get("smart"), _def_egress,
                                          _devexit_sig(reply.get("cascade")),
                                          _NET["sig"], sorted(_NET["refused"]),
-                                         reply.get("lan_share"), _SHARE["sig"]], sort_keys=True, default=str)
+                                         reply.get("lan_share"), _SHARE["sig"],
+                                         log_level() >= LOG_INFO],   # the P2P table's `log` follows the level (§1)
+                                        sort_keys=True, default=str)
                 _iface_churn = bool(_awg_loaded or cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
                                     or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"] or cq["changed"])   # a WDTT/csqtt install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
                 if (_route_sig != last_route_sig or _iface_churn or _routed_devs_moved()
@@ -20529,24 +20737,30 @@ def main():
                     if k not in active:
                         NODE_NOTES.pop(k, None)
                 for e in eg["errors"] + cas["errors"]:
-                    print("egress: " + e, flush=True)
+                    log(LOG_ERR, "egress: " + e)
                 for e in nr["errors"]:
-                    print("networks: " + e, flush=True)
+                    log(LOG_ERR, "networks: " + e)
                 for e in _shr["errors"] + _dar["errors"]:
-                    print(e, flush=True)
+                    log(LOG_ERR, e)
                 for e in xr["errors"]:                  # an imported exit that could not register/come up
-                    print("exit: " + e, flush=True)
+                    log(LOG_ERR, "exit: " + e)
                 if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]
                         or eg["changed"] or eg["errors"] or cas["changed"] or cas["errors"] or nr["changed"]
                         or xr["changed"] or xr["errors"]
                         or ob["added"] or ob["errors"] or cr["created"] or cr["errors"]
                         or dl["deleted"] or dl["errors"] or tp["done"] or tp["errors"]):
-                    print(f"reconcile: +{r['added']} -{r['removed']} ifaces~{ri['changed']} cascade~{cas['changed']} "
-                          f"onboard+{ob['added']} create+{cr['created']} delete-{dl['deleted']} turn={tp['done']} "
-                          f"errors={(r['errors'] + ri['errors'] + ob['errors'] + cr['errors'] + dl['errors'] + tp['errors'] + eg['errors'] + cas['errors'])[:3]}", flush=True)
+                    # Info when something was added, removed, created, deleted or applied; a pass that only re-asserted
+                    # what was already there (ifaces~/cascade~ after a reverify) is Debug — it was most of this log.
+                    _errs = (r['errors'] + ri['errors'] + ob['errors'] + cr['errors'] + dl['errors'] + tp['errors']
+                             + eg['errors'] + cas['errors'])[:3]
+                    log(LOG_ERR if _errs else LOG_INFO if (r["added"] or r["removed"] or ob["added"] or cr["created"]
+                                                           or dl["deleted"] or tp["done"]) else LOG_DEBUG,
+                        "reconcile: +%s -%s ifaces~%s cascade~%s onboard+%s create+%s delete-%s turn=%s errors=%s",
+                        r['added'], r['removed'], ri['changed'], cas['changed'], ob['added'], cr['created'],
+                        dl['deleted'], tp['done'], _errs)
                 interval = reply.get("interval", interval)
             elif status == 0:
-                print("sync error:", reply.get("error"), flush=True)
+                log(LOG_ERR, 'sync error: %s', reply.get("error"))
                 # blessed address unreachable → settle onto a pending-swap candidate if it answers, else (loopback)
                 # rediscover the panel locally. Either one re-points us so a domain/port swap never strands the node.
                 _pin_mismatch_hint(reply.get("error"), panel)
@@ -20557,14 +20771,14 @@ def main():
                 # ⚠️ A BUSY PANEL IS A LIVE PANEL — skip the pass and NOTHING ELSE. The two re-points below exist for an
                 # address that stopped answering; this one answered. Failing over on it could move us, during a pending
                 # address swap, onto a candidate the operator is about to cancel.
-                print("sync skipped: the panel is busy with a long operator action — retrying next pass", flush=True)
+                log(LOG_INFO, "sync skipped: the panel is busy with a long operator action — retrying next pass")
             else:
-                print(f"sync HTTP {status}: {reply.get('error')}", flush=True)
+                log(LOG_ERR, f"sync HTTP {status}: {reply.get('error')}")
                 _nu = _failover_candidate(panel, node_cfg) or _heal_local_panel(panel, node_cfg)
                 if _nu:
                     url = _nu
         except Exception as e:
-            print("loop error:", e, flush=True)
+            log(LOG_ERR, 'loop error: %s', e)
         # ⚠️ OUTSIDE THE SYNC try/except ON PURPOSE, AND ON EVERY LOOP. The whole safety property is that
         # the divert exists only while THIS pass re-proved the relay is serving, so the pass that removes it
         # must run when the sync threw, when the panel answered 401, and when the panel is simply gone —
@@ -20574,11 +20788,11 @@ def main():
             _rr = {"changed": 0, "errors": []}
             reconcile_relay(_relay_plan, _rr, _relay_sync_ok, _relay_links(node_cfg))
             for _e in _rr["errors"]:
-                print("relay: " + _e, flush=True)
+                log(LOG_ERR, "relay: " + _e)
         except Exception as _e:
             # ⚠️ A WATCHDOG THAT FAILED IS NOT A WATCHDOG THAT SAID YES. "Could not check" must land on the
             # safe side, never on the armed side.
-            print("relay: watchdog failed, disarming:", _e, flush=True)
+            log(LOG_ERR, 'relay: watchdog failed, disarming: %s', _e)
             with contextlib.suppress(Exception):
                 _relay_disarm()
                 _RELAY_ARM["sig"] = None

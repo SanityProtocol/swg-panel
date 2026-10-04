@@ -1967,6 +1967,18 @@ export function PanelSettingsScreen() {
   const [topTalk, setTopTalk] = useState(String(ps.top_talkers || 10));
   const [topDest, setTopDest] = useState(String(ps.top_destinations || 10));
   const [warnDays, setWarnDays] = useState(String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days));
+  /* Settings → Logs. The panel stores a base level and Debug's end; the SAVED level is derived on every poll
+     (`log_debug_left` is counted on the panel's clock, so a skewed browser cannot misread it). The draft is null
+     until the operator touches the card, so the card follows the saved state — Debug running out while the screen
+     is open reads as the base level again, not as an unsaved change. `for` is the "turn off after" pick; null keeps
+     a running Debug's clock (re-sending a duration would restart it). */
+  const [logEdit, setLogEdit] = useState(null);
+  const logBase = ps.log_level || "info";       // the level Debug returns to
+  const logSaved = () => (ps.log_debug_left ? "debug" : logBase);
+  const logShown = logEdit ? logEdit.lvl : logSaved();
+  const logForShown = (logEdit && logEdit.for) || (ps.log_debug_left === -1 ? "-1" : ps.log_debug_left > 3600 ? "86400" : "3600");
+  const logDirty = () => !!logEdit && (logEdit.lvl !== logSaved() || (logEdit.lvl === "debug" && logEdit.for != null));
+  const pickLog = v => setLogEdit(v === logSaved() ? null : { lvl: v, for: v === "debug" ? "3600" : null });
   // On unless an operator has switched it off — which closes these networks rather than merely hiding them.
   const [showLans, setShowLans] = useState(ps.show_node_lans !== false);
   const [meshMode, setMeshMode] = useState(ps.mesh_mode || "auto");   // which node pairs get a mesh link (auto | full | demand)
@@ -2359,8 +2371,13 @@ export function PanelSettingsScreen() {
         theme_color: themeColorOut(),
         theme_color_light: themeColorLightOut(),
         vk_link: vkLinkS.trim(),
+        // Only when the card changed: log_debug is a duration, and an unrelated save must not restart Debug's clock.
+        // Debug keeps the level saved before it as the base, which is what it returns to.
+        ...(logDirty() ? { log_level: logEdit.lvl === "debug" ? logBase : logEdit.lvl,
+                           log_debug: logEdit.lvl === "debug" ? +logForShown : 0 } : {}),
       });
       if (!r.ok) return setMsg({ ok: false, t: srvText(r) || T("Failed to save.") });
+      setLogEdit(null);
       if (dataDirty() || tzDirty()) trafficInvalidate();   // re-read what the save changed: a zone moves every day's edges
     }
     // interface-key escrow — applied on Save (not on toggle), like every other field. Enabling needs the vault unlocked.
@@ -2441,6 +2458,7 @@ export function PanelSettingsScreen() {
     if (glDirty("configs")) out.push(T("Client configs → {v1}", { v1: sc === "off" ? T("val|off") : T("val|encrypted") }));
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
     if (dispDirty()) out.push(T("Display — theme / status timing"));
+    if (logDirty()) out.push(T("Logging — {v1}", { v1: logLevelLabel(logShown) }));
     if (tzDirty()) out.push(tz ? T("Days are counted in {v1}", { v1: tz }) : T("Days are counted in this server's zone"));
     if (infHist !== (ps.infinite_history !== false)) out.push(infHist ? T("Infinite history — on") : T("Infinite history — off: detail older than 33 days is deleted"));
     if (histRes !== String(ps.history_resolution || 3600)) out.push(T("History resolution → {v1}, from the next day", { v1: histResLabel(+histRes) }));
@@ -2521,11 +2539,26 @@ export function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: T("Delete custom list"), confirmLabel: T("Delete"), danger: true,
     body: Trich("Delete *{v1}*? It's removed from *every node* it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.", { v1: l.title || T("Untitled list") }),
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Network"], ["exits", "WARP"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Network"], ["exits", "WARP"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"], ["logs", "Logs"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
 /* The fill-in line the panel writes into a plain-text config when no VK link is set. It has to stay
    byte-identical to turn-artifacts.js's copy: the hint below tells the operator which line to look for in
    the generated file, so a TRANSLATED placeholder would describe something that never appears there. */
 const VK_LINK_PLACEHOLDER = "<PASTE VK CALL LINK>";   // i18n-keys: emitted verbatim into generated configs
+
+/* Settings → Logs: the five levels, quietest first (docs/LOGS-PLAN.md §1). Each label and line has a key of its own:
+   "Info" or "Off" elsewhere in the panel is a different word in Russian. */
+const LOG_LEVEL_IDS = ["off", "error", "warning", "info", "debug"];
+const logLevelLabel = v => ({ off: T("log|Off"), error: T("log|Errors"), warning: T("log|Warnings"), info: T("log|Info"),
+  debug: T("log|Debug") }[v] || v);
+const logLevelHint = v => ({
+  error: T("Only failures: something that did not apply, start or sync."),
+  warning: T("Failures, and anything degraded, retrying or falling back."),
+  info: T("Also every change of state: an interface coming up, a peer added, a route installed. The default."),
+  debug: T("Everything, including each routing pass and every site your users open."),
+}[v] || "");
+const logLeftLabel = s => s >= 3600
+  ? T("{v1} h {v2} min", { v1: Math.floor(s / 3600), v2: Math.floor((s % 3600) / 60) })
+  : T("{v1} min", { v1: Math.max(1, Math.ceil(s / 60)) });
 
 /* Display names for SECTIONS. The array above stays the canonical key list (the value is the deep-link and
    the persisted section), so only the LABEL is translated — literal T() calls, same as evItemLabel. */
@@ -2533,7 +2566,7 @@ const sectionLabel = k => ({
   display: T("Display"), security: T("Authentication"), access: T("Panel access"), configs: T("Client configs"),
   subs: T("Subscriptions"), mesh: T("Network"), exits: T("val|WARP"), defaults: T("Interfaces"),
   turn: T("Turn proxies"), routing: T("Routing & Blocking"), geo: T("Geo data providers"),
-  integrations: T("Integrations"),
+  integrations: T("Integrations"), logs: T("Logs"),
 }[k] || k);   // i18n-keys
   // per-node context: the node whose mode/lists/mesh/egress we're editing — defaults to the first node (no "default")
   const [selNode, setSelNode] = useState(() => ((Store.nodes || [])[0] || {}).id || "");
@@ -2601,6 +2634,7 @@ const sectionLabel = k => ({
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :
+    sec === "logs" ? logDirty() :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false) || meshMode !== (ps.mesh_mode || "auto")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
@@ -3061,6 +3095,27 @@ const sectionLabel = k => ({
           <div class="georefresh"><span class="faint" style="font-size:11px">${T("Re-fetch every routed list from its provider now (updates the panel; nodes pull the changes on their schedule)")}</span><button class="btn btn-mini" disabled=${geoUpdating} onClick=${updateAllLists}><span class=${geoUpdating ? "tf-arrow" : ""}><${Ic} i="refresh"/></span> ${geoUpdating ? T("Updating…") : T("Update all lists now")}</button></div>
         </div>` : null}
         ${section === "integrations" ? html`<${IntegrationsSettings}/>` : null}
+        ${section === "logs" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">${T("Logging")}</div>
+          <p class="hint" style="margin:0 0 12px">${T("How much the panel and every node write to their logs. One level for the whole fleet.")}</p>
+          <div class="segrow logseg" role="radiogroup" aria-label=${T("Log level")}>
+            ${LOG_LEVEL_IDS.map(v => html`<button type="button" role="radio" aria-checked=${logShown === v}
+              class=${"seg" + (logShown === v ? " on" : "")} onClick=${() => pickLog(v)}>${logLevelLabel(v)}</button>`)}
+          </div>
+          ${logShown === "off"
+            ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Nothing is stored, and failure details go blank: when something breaks, the panel can't say why.")}</div>`
+            : html`<div class="hint">${logLevelHint(logShown)}</div>`}
+          ${logShown === "debug" ? html`<div class="field logdebug"><label>${T("Turn off debugging after")}</label>
+            <div class="logdebug-row">
+              <${Dropdown} className="logdebug-dd" value=${logForShown} onChange=${v => setLogEdit({ lvl: "debug", for: v })} ariaLabel=${T("Turn off debugging after")}
+                options=${[{ value: "3600", label: T("1 hour") }, { value: "86400", label: T("24 hours") }, { value: "-1", label: T("debug|never") }]}/>
+              ${!logEdit && ps.log_debug_left > 0 ? html`<span class="logdebug-left">${T("{v1} left", { v1: logLeftLabel(ps.log_debug_left) })}</span>` : null}
+            </div>
+            <div class="hint">${logForShown === "-1"
+              ? T("Debug stays on until you pick another level.")
+              : T("Then logging goes back to {v1}.", { v1: logLevelLabel(logBase) })}</div></div>` : null}
+          <div class="hint" style="margin-top:12px">${T("Turn proxies, WireGuard interfaces and other third-party services pick up a change the next time they restart.")}</div>
+        </div>` : null}
         ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">${T("Interface colours")}<span class="grow"></span>

@@ -1626,6 +1626,41 @@ export const STR = {
   "Routing & Blocking": "Маршрутизация",
   "Geo data providers": "Провайдеры гео-данных",
   "Integrations": "Интеграции",
+
+  // ── Settings → Logs (docs/LOGS-PLAN.md §1) ──
+  // «Логи», not «Журналы»: it is the word the operator types into a search and says out loud. The five levels
+  // are plural nouns where English is ("Errors" = what is kept), and their own keys: «Выкл» or «Инфо» elsewhere
+  // in the panel are different words.
+  "Logs": "Логи",
+  "Logging": "Логирование",
+  "Logging — {v1}": "Логирование — {v1}",
+  "How much the panel and every node write to their logs. One level for the whole fleet.":
+    "Сколько панель и каждая нода пишут в свои логи. Один уровень на весь флот.",
+  "Log level": "Уровень логирования",
+  "log|Off": "Выкл",
+  "log|Errors": "Ошибки",
+  "log|Warnings": "Предупреждения",
+  "log|Info": "Инфо",
+  "log|Debug": "Отладка",
+  "Only failures: something that did not apply, start or sync.":
+    "Только сбои: то, что не применилось, не запустилось или не синхронизировалось.",
+  "Failures, and anything degraded, retrying or falling back.":
+    "Сбои, а также всё, что работает с деградацией, повторяет попытку или переключилось на запасной вариант.",
+  "Also every change of state: an interface coming up, a peer added, a route installed. The default.":
+    "Плюс каждое изменение состояния: интерфейс поднялся, пир добавлен, маршрут установлен. По умолчанию.",
+  "Everything, including each routing pass and every site your users open.":
+    "Всё, включая каждый проход маршрутизации и каждый сайт, который открывают ваши пользователи.",
+  "Nothing is stored, and failure details go blank: when something breaks, the panel can't say why.":
+    "Ничего не сохраняется, и подробности сбоев пропадают: если что-то сломается, панель не сможет сказать почему.",
+  "Turn off debugging after": "Выключить отладку через",
+  "24 hours": "24 часа",
+  "debug|never": "никогда",
+  "{v1} left": "осталось {v1}",
+  "{v1} h {v2} min": "{v1} ч {v2} мин",
+  "Debug stays on until you pick another level.": "Отладка останется включённой, пока вы не выберете другой уровень.",
+  "Then logging goes back to {v1}.": "Затем уровень вернётся к «{v1}».",
+  "Turn proxies, WireGuard interfaces and other third-party services pick up a change the next time they restart.":
+    "Turn-прокси, интерфейсы WireGuard и другие сторонние службы подхватят изменение при следующем перезапуске.",
   "Change the panel username and password — applied on *{v1}*. Changing either takes effect immediately and you'll be asked to sign in again. Changing the password also re-keys your *Encryption Vault* in place, so stored configs and subscription links keep working (no re-issue).":
     "Смена логина и пароля панели — применяется по кнопке *{v1}*. Любое из изменений действует сразу, и вас попросят войти заново. Смена пароля также перевыпускает ключ вашего *хранилища шифрования* на месте, поэтому сохранённые конфиги и ссылки на подписки продолжают работать (перевыпуск не нужен).",
   "required to confirm a change": "нужен для подтверждения изменения",

@@ -4530,3 +4530,10 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .tfuse.off .tfbadge{opacity:.55;border-style:dashed;background:none}
 .tfuse-say{font-size:11.5px;color:var(--dim);min-width:0}
 .tfuse.off .tfuse-say{color:var(--partial)}
+/* Settings → Logs: the level row wraps rather than overflowing a phone; the Debug timer sits beside its
+   "time left", which is a reading, not a control. */
+.segrow.logseg{flex-wrap:wrap}
+.logdebug{margin-top:14px}
+.logdebug-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.logdebug-dd{flex:0 1 200px;min-width:0}
+.logdebug-left{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}

@@ -48,9 +48,97 @@ import urllib.request
 import urllib.error
 import http.client                 # T-10: the ONE outbound call this panel makes to another PANEL (a transfer push), where the certificate has to be identified rather than merely trusted — urllib gives no access to the peer cert
 import time
+import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote, quote
+
+
+# ── log levels (docs/LOGS-PLAN.md §1) ────────────────────────────────────────────────────────────────────────────────
+# One level for the whole fleet, chosen in Settings → Logs. Every line carries a syslog priority: under journald the
+# `<N>` prefix, which journald files as PRIORITY; anywhere else (docker) one letter. A line above the level is dropped
+# BEFORE it is formatted — pass the arguments, not a formatted string — so a Debug line costs one comparison at Info.
+# Debug lines are capped at LOG_DEBUG_RATE a second: journald's flood guard counts per unit, and a Debug flood spending
+# this unit's bucket would make journald drop its error lines in the same window (P0 T8).
+# A copy of this block is in each swg program; keep them alike.
+LOG_OFF, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG = -1, 3, 4, 5, 6, 7
+LOG_LEVELS = {"off": LOG_OFF, "error": LOG_ERR, "warning": LOG_WARNING, "info": LOG_INFO, "debug": LOG_DEBUG}
+LOG_DEBUG_RATE = 100
+_LOG_STREAM = "stdout"       # sys.<this>, looked up per line (a redirect_stdout is honoured); swg-netctl: stderr — its
+                               # stdout carries a verb's JSON answer. A stream object here is used as it is.
+# level: the base level · until: Debug until this time.monotonic() (-1 = until changed, 0 = no Debug)
+_LOG = {"level": LOG_INFO, "until": 0, "sec": 0, "n": 0, "dropped": 0}
+
+
+def _log_to_journal():
+    """True when stdout IS the stream systemd connected to the journal — JOURNAL_STREAM names its device:inode. An
+    inherited variable alone is not enough: a child whose stdout was redirected keeps it."""
+    try:
+        dev, ino = (int(x) for x in os.environ.get("JOURNAL_STREAM", "").split(":"))
+        st = os.fstat(getattr(sys, _LOG_STREAM).fileno())
+        return (st.st_dev, st.st_ino) == (dev, ino)
+    except Exception:
+        return False
+
+
+_LOG_JOURNAL = _log_to_journal()
+_LOG_TAG = {LOG_ERR: "E", LOG_WARNING: "W", LOG_NOTICE: "N", LOG_INFO: "I", LOG_DEBUG: "D"}
+
+
+def log_set(level, debug_left=0):
+    """Set the base level, and Debug for `debug_left` seconds on top of it (-1 = until changed, 0 = none)."""
+    _LOG["level"] = level
+    _LOG["until"] = -1 if debug_left == -1 else (time.monotonic() + debug_left if debug_left and debug_left > 0 else 0)
+
+
+def log_level():
+    """The level in force now: Debug while its time runs, else the base level."""
+    u = _LOG["until"]
+    return LOG_DEBUG if (u == -1 or (u and time.monotonic() < u)) else _LOG["level"]
+
+
+def _log_write(prio, text):
+    pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
+    try:
+        out = getattr(sys, _LOG_STREAM) if isinstance(_LOG_STREAM, str) else _LOG_STREAM
+        out.write("".join(pre + ln + "\n" for ln in text.split("\n")))
+        out.flush()
+    except Exception:
+        pass
+
+
+def log(prio, msg, *args):
+    """Write one line (or several: each gets the prefix) at syslog priority `prio`, if the level lets it through."""
+    if prio > _LOG["level"] and prio > log_level():
+        return
+    if prio == LOG_DEBUG or _LOG["dropped"]:
+        s = int(time.monotonic())
+        if s != _LOG["sec"]:
+            if _LOG["dropped"]:
+                _log_write(LOG_DEBUG, "%d debug lines not written (more than %d a second)" % (_LOG["dropped"], LOG_DEBUG_RATE))
+            _LOG["sec"], _LOG["n"], _LOG["dropped"] = s, 0, 0
+        if prio == LOG_DEBUG:
+            _LOG["n"] += 1
+            if _LOG["n"] > LOG_DEBUG_RATE:
+                _LOG["dropped"] += 1
+                return
+    try:
+        text = (msg % args) if args else str(msg)
+    except Exception:
+        text = "%s %r" % (msg, args)
+    _log_write(prio, text)
+
+
+def _log_excepthook(et, ev, tb, *_):
+    """An uncaught exception's traceback at `err`. Printed bare, journald would file it at info — and below Info a
+    unit's LogLevelMax would drop exactly the line that explains the crash."""
+    if et is None or issubclass(et, SystemExit):
+        return
+    log(LOG_ERR, "".join(traceback.format_exception(et, ev, tb)).rstrip("\n"))
+
+
+sys.excepthook = _log_excepthook
+threading.excepthook = lambda a: _log_excepthook(a.exc_type, a.exc_value, a.exc_traceback)
 
 FLEET_PATH = os.environ.get("SWG_PANEL_FLEET", "/etc/swg-panel/fleet.json")
 # Container detection. NOT just a UI hint any more: it also decides whether the internal loopback
@@ -216,19 +304,19 @@ def _refresh_tls_status_locked(quiet):
         if quiet:
             pass
         elif exp <= time.time():
-            print("WARNING: TLS certificate has EXPIRED — nothing renewed it; check ACME/renewal", flush=True)
+            log(LOG_ERR, "WARNING: TLS certificate has EXPIRED — nothing renewed it; check ACME/renewal")
         elif overdue:
-            print("WARNING: TLS certificate has %d hour(s) left of its %d-day life — it should have been renewed "
-                  "by now; check ACME/renewal" % (int((exp - time.time()) // 3600), round(life / 86400)), flush=True)
+            log(LOG_WARNING, "WARNING: TLS certificate has %d hour(s) left of its %d-day life — it should have been renewed "
+                  "by now; check ACME/renewal", int((exp - time.time()) // 3600), round(life / 86400))
         elif not selfsigned and not short and days <= 14:
-            print(f"WARNING: TLS certificate expires in {days} day(s) — check ACME/renewal", flush=True)
+            log(LOG_WARNING, f"WARNING: TLS certificate expires in {days} day(s) — check ACME/renewal")
         _since = new.get("renew_failing_since")
         if _since and time.time() - _since > 86400 and not quiet:
-            print("WARNING: TLS auto-renewal has been failing for %d day(s) — the certificate still has %d, "
-                  "but nothing is renewing it" % (int((time.time() - _since) // 86400), days), flush=True)
+            log(LOG_WARNING, "WARNING: TLS auto-renewal has been failing for %d day(s) — the certificate still has %d, "
+                  "but nothing is renewing it", int((time.time() - _since) // 86400), days)
     except Exception as e:
         with contextlib.suppress(Exception):
-            print(f"TLS status check failed: {e}", flush=True)
+            log(LOG_WARNING, f"TLS status check failed: {e}")
 def _adopt_resync():
     """TLS mode `skip` with a named pair: keep what we SERVE in step with the operator's files.
 
@@ -252,8 +340,7 @@ def _adopt_resync():
         if not _adopt_pending(deps, managed, dom, svc):
             continue
         ok, msg = _place_cert(deps, svc, dom, "reload", timeout=120)
-        print("access: %s certificate re-synced from the operator's files — %s"
-              % (svc, msg if ok else "FAILED, keeping the one already serving: " + str(msg)), flush=True)
+        log(LOG_INFO, "access: %s certificate re-synced from the operator's files — %s", svc, msg if ok else "FAILED, keeping the one already serving: " + str(msg))
 
 
 # A certificate this short-lived is judged by the share of its life left, not by days (see _refresh_tls_status).
@@ -326,7 +413,7 @@ def _acme_follow():
         return                                       # not issued by acme.sh ("" = never saved: install.conf decides)
     ndir = os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "netctl")
     if any(os.path.exists(os.path.join(ndir, "queue", rid + ".json")) for rid in _ACME_FOLLOW_RIDS):
-        print("access: acme.sh follow check skipped — the root helper has not taken the last one yet", flush=True)
+        log(LOG_WARNING, "access: acme.sh follow check skipped — the root helper has not taken the last one yet")
         return
     for rid in _ACME_FOLLOW_RIDS:                    # a request that timed out is answered late: nobody reads that
         with contextlib.suppress(OSError):           # answer, so it is removed here instead of piling up
@@ -347,7 +434,7 @@ def _acme_follow():
         if not ok and msg == "timed out waiting for the root helper":
             # a stalled helper: keep the last report (it is still the best we know) and stop this pass — queueing
             # the next service would only wait another 120 s for the same helper
-            print("access: acme.sh follow check timed out — the root helper is not answering", flush=True)
+            log(LOG_WARNING, "access: acme.sh follow check timed out — the root helper is not answering")
             return
         _ACME_FOLLOW_RIDS.remove(rid)                # answered (and its status file consumed by _netctl_wait)
         try:
@@ -362,14 +449,12 @@ def _acme_follow():
             _follow_set(r)
         st = r.get("state")
         if st == "adopted":
-            print("access: %s certificate taken from acme.sh's renewal%s" % (
-                svc, " — acme.sh installs this entry for another program (%s)" % r.get("install_path")
-                if r.get("owner") == "other" else ""), flush=True)
+            log(LOG_INFO, "access: %s certificate taken from acme.sh's renewal%s", svc, " — acme.sh installs this entry for another program (%s)" % r.get("install_path")
+                if r.get("owner") == "other" else "")
         elif st == "refused":
-            print("access: %s certificate from acme.sh NOT installed, keeping the one serving — %s"
-                  % (svc, r.get("reason")), flush=True)
+            log(LOG_WARNING, "access: %s certificate from acme.sh NOT installed, keeping the one serving — %s", svc, r.get("reason"))
         elif not ok:
-            print("access: %s acme.sh follow check failed — %s" % (svc, msg), flush=True)
+            log(LOG_WARNING, "access: %s acme.sh follow check failed — %s", svc, msg)
 
 
 # The operator's "Renew now" (Settings → Panel access → Certificate). Runs in the background — a standalone HTTP-01
@@ -444,14 +529,14 @@ def _renew_worker(deps):
             state, message, source = "not-installed", str(sync.get("reason") or sync.get("state") or ""), "panel"
         _refresh_tls_status()                        # the certificate it installed, read now rather than in 6 h
     except Exception as e:
-        print("access: Renew now failed: %s" % e, flush=True)
+        log(LOG_ERR, "access: Renew now failed: %s" % e)
     finally:
         with _RENEW_LOCK:
             _RENEW_JOB.update({"state": "done", "result": state, "at": int(time.time()), "message": message[:900],
                                "source": source})
         _invalidate_state_cache()
-    print("access: Renew now → %s%s" % (state, (" — " + message.splitlines()[-1]) if message and state != "renewed"
-                                         else ""), flush=True)
+    log(LOG_INFO, "access: Renew now → %s%s", state, (" — " + message.splitlines()[-1]) if message and state != "renewed"
+                                         else "")
 
 
 def _renew_start(deps):
@@ -2095,13 +2180,12 @@ def load_session_secret(roster_path):
             f.write(s)
         SESSION_KEY_EPHEMERAL = ""
         if why:
-            print("session.key: replaced (%s)" % why, flush=True)
+            log(LOG_INFO, "session.key: replaced (%s)" % why)
     except OSError as e:
         SESSION_KEY_EPHEMERAL = why or e.strerror or str(e)
-        print("session.key: cannot persist the session-signing secret (%s: %s). Sessions are being signed "
+        log(LOG_ERR, "session.key: cannot persist the session-signing secret (%s: %s). Sessions are being signed "
               "with a throwaway secret, so EVERY signed-in operator is signed out each time the panel "
-              "restarts. It is almost always ownership: run  chown -R %s %s"
-              % (p, SESSION_KEY_EPHEMERAL, _proc_user_name(), os.path.dirname(p) or "."), flush=True)
+              "restarts. It is almost always ownership: run  chown -R %s %s", p, SESSION_KEY_EPHEMERAL, _proc_user_name(), os.path.dirname(p) or ".")
     return s
 
 
@@ -2131,9 +2215,8 @@ def rotate_session_secret(roster_path):
         # The in-memory secret rotates either way, so the captured cookie IS dead for this process — but the
         # OLD secret is still on disk, and the next restart would bring it back to life. Never silent.
         SESSION_KEY_EPHEMERAL = e.strerror or str(e)
-        print("session.key: could not write the rotated secret (%s: %s). The old one is still on disk and "
-              "would come back on the next restart. Run  chown -R %s %s"
-              % (p, SESSION_KEY_EPHEMERAL, _proc_user_name(), os.path.dirname(p) or "."), flush=True)
+        log(LOG_ERR, "session.key: could not write the rotated secret (%s: %s). The old one is still on disk and "
+              "would come back on the next restart. Run  chown -R %s %s", p, SESSION_KEY_EPHEMERAL, _proc_user_name(), os.path.dirname(p) or ".")
     return s
 
 
@@ -2316,13 +2399,11 @@ def load_critical(path, default, valid=None):
             if valid is not None and not valid(data):                # parses, but is not this file's shape: the next
                 continue                                             # older backup is tried
             if _perm:
-                sys.stderr.write(
-                    "swg-panel: %s could not be READ (%s) — the file is intact, this process just has no "
+                log(LOG_ERR, "swg-panel: %s could not be READ (%s) — the file is intact, this process just has no "
                     "access to it. Anything written there by another user has been DISCARDED and %s "
-                    "restored in its place. Fix with: chown %s:%s %s && chmod 600 %s\n"
-                    % (path, e, b, _state_owner()[0], _state_owner()[1], path, path))
+                    "restored in its place. Fix with: chown %s:%s %s && chmod 600 %s", path, e, b, _state_owner()[0], _state_owner()[1], path, path)
             else:
-                sys.stderr.write("swg-panel: %s unreadable (%s) — recovered from %s\n" % (path, e, b))
+                log(LOG_WARNING, "swg-panel: %s unreadable (%s) — recovered from %s", path, e, b)
             with contextlib.suppress(Exception):
                 atomic_write(path, json.dumps(data, indent=2) + "\n", mode=0o600)   # promote back → stop limping
             return data
@@ -2352,8 +2433,7 @@ def load_settings_critical(path):
         except Exception:
             continue
         if isinstance(cand, dict) and cand:
-            sys.stderr.write("swg-panel: panel-settings %s — recovered from %s\n"
-                             % ("corrupt" if not primary_ok else "empty", b))
+            log(LOG_WARNING, "swg-panel: panel-settings %s — recovered from %s", "corrupt" if not primary_ok else "empty", b)
             with contextlib.suppress(Exception):
                 atomic_write(path, json.dumps(cand, indent=2) + "\n", mode=0o600)   # promote back → stop losing it
             return cand
@@ -2375,7 +2455,7 @@ def stats_disk_ok(path, min_free_mb=64, min_pct=2):
     now = time.time()
     if now - _DISK_WARN["t"] > 300:
         _DISK_WARN["t"] = now
-        sys.stderr.write("swg-panel: stats volume critically low — pausing snapshot/RRD writes (critical state still saved)\n")
+        log(LOG_ERR, "swg-panel: stats volume critically low — pausing snapshot/RRD writes (critical state still saved)")
     return False
 
 
@@ -2435,10 +2515,9 @@ def roster_load(path):
     _v = r.get("version")
     if isinstance(_v, int) and _v > ROSTER_VERSION:
         if not STATE_FUTURE:
-            print("state: %s was written by a NEWER build (roster schema v%d, this panel understands v%d). "
+            log(LOG_WARNING, "state: %s was written by a NEWER build (roster schema v%d, this panel understands v%d). "
                   "It is being read as-is — every field this build does not know is preserved untouched. If "
-                  "anything reads wrong, run the newer version again rather than saving over it."
-                  % (path, _v, ROSTER_VERSION), flush=True)
+                  "anything reads wrong, run the newer version again rather than saving over it.", path, _v, ROSTER_VERSION)
         STATE_FUTURE.clear()
         STATE_FUTURE.update({"file": os.path.basename(path), "found": _v, "known": ROSTER_VERSION})
     r.setdefault("version", ROSTER_VERSION)
@@ -3997,7 +4076,7 @@ def _ensure_internal_listener():
         return None
     with contextlib.suppress(OSError):
         _INTERNAL_LID = LISTENERS.add("0.0.0.0" if IN_DOCKER else "127.0.0.1", LOCAL_PORT, None, None)   # dedicated STABLE plain-HTTP loopback
-        print("internal loopback endpoint on http://127.0.0.1:%d (co-located nodes)" % LOCAL_PORT, flush=True)
+        log(LOG_INFO, "internal loopback endpoint on http://127.0.0.1:%d (co-located nodes)" % LOCAL_PORT)
         return _INTERNAL_LID
     return None
 
@@ -4019,11 +4098,9 @@ def _ensure_node_listener():
     try:
         _NODE_LID = LISTENERS.add(NODE_HOST, NODE_PORT, cert, key, role="node")
     except OSError as e:
-        print("node door: could not bind %s:%d (%s) — the primary still serves nodes, so nothing is orphaned"
-              % (NODE_HOST, NODE_PORT, e), flush=True)
+        log(LOG_ERR, "node door: could not bind %s:%d (%s) — the primary still serves nodes, so nothing is orphaned", NODE_HOST, NODE_PORT, e)
         return
-    print("node-only door on %s://%s:%d (serves node routes, 404s everything else)"
-          % ("https" if cert else "http", NODE_HOST, NODE_PORT), flush=True)
+    log(LOG_INFO, "node-only door on %s://%s:%d (serves node routes, 404s everything else)", "https" if cert else "http", NODE_HOST, NODE_PORT)
 
 
 def _panel_local_port():
@@ -4310,15 +4387,12 @@ def _reconcile_saved_ahead(deps, blessed_url):
             if rolled:
                 # ⚠️ SAID FOR WHAT IT IS. This rode on the "saved-but-unconfirmed settings" line below, which on a
                 # reverse-proxy install blamed the operator for what an update's fill-if-empty had written (N4).
-                print("access: boot reconcile — the TLS type said %s, but this panel serves %s; it is %s again" % (
-                      "'%s'" % rolled[0] if rolled[0] else "'None' (behind a reverse proxy)",
-                      "HTTPS" if live_https else "plain HTTP (behind a reverse proxy)",
-                      "'%s'" % rolled[1] if rolled[1] else "'None' (reverse proxy)"), flush=True)
+                log(LOG_INFO, "access: boot reconcile — the TLS type said %s, but this panel serves %s; it is %s again", "'%s'" % rolled[0] if rolled[0] else "'None' (behind a reverse proxy)", "HTTPS" if live_https else "plain HTTP (behind a reverse proxy)", "'%s'" % rolled[1] if rolled[1] else "'None' (reverse proxy)")
             if healed:
-                print("access: boot heal — TLS type said self-signed, but the live certificate was issued by a real "
-                      "CA; corrected to '%s'" % healed, flush=True)
+                log(LOG_INFO, "access: boot heal — TLS type said self-signed, but the live certificate was issued by a real "
+                      "CA; corrected to '%s'" % healed)
             if changed:
-                print("access: boot reconcile — rolled saved-but-unconfirmed panel settings back to the live address", flush=True)
+                log(LOG_INFO, "access: boot reconcile — rolled saved-but-unconfirmed panel settings back to the live address")
 
 
 # swg-sub's bind on a bare host: the unit install-host.sh writes — its Environment= is the INSTALLER's bind (SUB_BIND /
@@ -4429,12 +4503,11 @@ def _record_sub_bind(deps, ps, bind, why):
     globals()["_SUB_LIVE_BIND"] = {"host": bind[0], "port": int(bind[1])}
     with contextlib.suppress(Exception):
         write_sub_serve(deps)
-    print("access: the subscription address is %s:%s — %s (Settings showed %s:%s, which no Settings save of this "
-          "release chose)" % (bind[0], bind[1], why, old[0], old[1]), flush=True)
+    log(LOG_INFO, "access: the subscription address is %s:%s — %s (Settings showed %s:%s, which no Settings save of this "
+          "release chose)", bind[0], bind[1], why, old[0], old[1])
     if moved:
-        print("access: the subscription URL named port %s, where swg-sub listened — it names %s now: %s (the links the "
-              "panel hands out follow it; a link handed out before still names %s)" % (old[1], bind[1], moved, old[1]),
-              flush=True)
+        log(LOG_INFO, "access: the subscription URL named port %s, where swg-sub listened — it names %s now: %s (the links the "
+              "panel hands out follow it; a link handed out before still names %s)", old[1], bind[1], moved, old[1])
         with contextlib.suppress(Exception):
             ev_append(deps["roster_path"], "panel", "access", "Moved the subscription URL to swg-sub's port", moved,
                       "%s → %s" % (old[1], bind[1]))
@@ -4466,7 +4539,7 @@ def _flag_sub_url_port(deps, ps, listen_port):
     msg = ("the subscription URL %s names port %s, where nothing on this box listens — swg-sub listens on %s, so the "
            "links the panel hands out reach nothing. Set port %s in Settings → Panel access → Subscription address (where "
            "the links already handed out point), or change the URL" % (url, up, listen_port, up))
-    print("access: " + msg, flush=True)
+    log(LOG_WARNING, "access: " + msg)
     case = "%s|%s|%s" % (url, up, listen_port)
     seen = ""
     with contextlib.suppress(OSError):
@@ -4535,22 +4608,18 @@ def _reconcile_sub_listen_at_boot(deps):
                 why = ("an earlier panel's start wrote it — or it was chosen in Settings under a release before 1.8.8, "
                        "which kept no record of that choice")
                 if running:
-                    print("access: swg-sub was listening on %s:%s — every address, around your reverse proxy — because "
+                    log(LOG_WARNING, "access: swg-sub was listening on %s:%s — every address, around your reverse proxy — because "
                           "%s; it is back on %s:%s, the address it was installed with. To serve subscriptions on every "
-                          "address on purpose, set it again in Settings → Panel access → Subscription address."
-                          % (drop["host"], drop["port"], why, unit["host"], unit["port"]), flush=True)
+                          "address on purpose, set it again in Settings → Panel access → Subscription address.", drop["host"], drop["port"], why, unit["host"], unit["port"])
                 else:
-                    print("access: swg-sub is stopped, and it stays stopped; its address was %s:%s — every address, "
+                    log(LOG_WARNING, "access: swg-sub is stopped, and it stays stopped; its address was %s:%s — every address, "
                           "around your reverse proxy — because %s; it is %s:%s again, the address it was installed with, "
                           "for when it starts. To serve subscriptions on every address on purpose, set it again in "
-                          "Settings → Panel access → Subscription address."
-                          % (drop["host"], drop["port"], why, unit["host"], unit["port"]), flush=True)
+                          "Settings → Panel access → Subscription address.", drop["host"], drop["port"], why, unit["host"], unit["port"])
                 drop = None                           # the unit's bind is the one it runs with now
             else:
-                print("access: swg-sub %s %s:%s, an address no Settings save of this release chose — it could not be put "
-                      "back on %s:%s (no swg-netctl queue); the next start tries again"
-                      % ("listens on" if running else "(stopped) is set to", drop["host"], drop["port"], unit["host"],
-                         unit["port"]), flush=True)
+                log(LOG_WARNING, "access: swg-sub %s %s:%s, an address no Settings save of this release chose — it could not be put "
+                      "back on %s:%s (no swg-netctl queue); the next start tries again", "listens on" if running else "(stopped) is set to", drop["host"], drop["port"], unit["host"], unit["port"])
                 return
         run = drop or unit                            # what systemd hands swg-sub: the drop-in over the unit
         if run and (run["host"], run["port"]) != want:
@@ -4563,12 +4632,10 @@ def _reconcile_sub_listen_at_boot(deps):
         return                                        # already correct — never enqueue a needless restart
     if (_netctl_enqueue(deps, "set-listen", ["sub", want[0], want[1]])
             and (not running or _netctl_enqueue(deps, "restart", ["sub"]))):   # set-listen only persists; the bind moves on restart
-        print("access: boot reconcile — re-applied the subscription bind %s:%s (it %s %s)"
-              % (want[0], want[1], "ran on" if running else "is stopped, and stays stopped; it was set to",
-                 ("%s:%s" % (run["host"], run["port"])) if run else "its unit's default"), flush=True)
+        log(LOG_INFO, "access: boot reconcile — re-applied the subscription bind %s:%s (it %s %s)", want[0], want[1], "ran on" if running else "is stopped, and stays stopped; it was set to", ("%s:%s" % (run["host"], run["port"])) if run else "its unit's default")
     else:                                             # no queue yet (a fresh install's first start): said, not claimed
-        print("access: boot reconcile — the subscription bind %s:%s could not be queued (no swg-netctl queue) — the "
-              "next start tries again" % (want[0], want[1]), flush=True)
+        log(LOG_ERR, "access: boot reconcile — the subscription bind %s:%s could not be queued (no swg-netctl queue) — the "
+              "next start tries again", want[0], want[1])
     _flag_sub_url_port(deps, ps, want[1])
 
 
@@ -5040,7 +5107,7 @@ def migrate_node_ids(nodes_path, roster_path, store_configs, config_dir):
                 changed = True
     if changed:
         roster_save(roster_path, roster)
-    print(f"migrated {len(new_nodes)} node(s) to stable ids", flush=True)
+    log(LOG_INFO, f"migrated {len(new_nodes)} node(s) to stable ids")
 
 
 def migrate_ru_split(nodes_path):
@@ -5071,7 +5138,7 @@ def migrate_ru_split(nodes_path):
     # `hidden_categories` and `enabled_categories` used to be migrated here too. Both are gone (§6.9) — they were
     # stored, validated, shipped and read by nothing — so there is nothing left in them to rewrite.
     if changed:
-        print("migrated 'ru' category → 'ru_net' (ru_blocked is now a separate opt-in list)", flush=True)
+        log(LOG_INFO, "migrated 'ru' category → 'ru_net' (ru_blocked is now a separate opt-in list)")
 
 
 def migrate_tld_rules(nodes_path, panel_settings_path):
@@ -5131,9 +5198,9 @@ def migrate_tld_rules(nodes_path, panel_settings_path):
     ps["tld_migrated"] = {"at": int(time.time()), "count": len(found), "rules": found[:50]}
     save_critical(panel_settings_path, json.dumps(ps, indent=2) + "\n")   # rotating backups (recoverable)
     if found:
-        print("migrated %d legacy TLD rule(s) to zone patterns, left DISABLED so they cannot start routing "
-              "when zones ship: %s" % (len(found), ", ".join(
-                  "%s/%s %s" % (f["node"], f["iface"], " ".join(f["patterns"])) for f in found[:8])), flush=True)
+        log(LOG_INFO, "migrated %d legacy TLD rule(s) to zone patterns, left DISABLED so they cannot start routing "
+              "when zones ship: %s", len(found), ", ".join(
+                  "%s/%s %s" % (f["node"], f["iface"], " ".join(f["patterns"])) for f in found[:8]))
 
 
 def migrate_provider_defaults(nodes_path, panel_settings_path):
@@ -5150,7 +5217,7 @@ def migrate_provider_defaults(nodes_path, panel_settings_path):
     ps["providers"] = prov
     ps["providers_defaulted"] = True
     save_critical(panel_settings_path, json.dumps(ps, indent=2) + "\n")   # rotating backups (recoverable)
-    print("provider defaults: kept %d in-use provider(s) enabled; new providers now default off" % len(inuse), flush=True)
+    log(LOG_INFO, "provider defaults: kept %d in-use provider(s) enabled; new providers now default off" % len(inuse))
 
 
 def migrate_enabled_turn_forks(nodes_path, panel_settings_path, stats_dir):
@@ -5184,7 +5251,7 @@ def migrate_enabled_turn_forks(nodes_path, panel_settings_path, stats_dir):
         return   # nothing deployed beyond the defaults → leave unset so it keeps tracking the built-in default
     raw["enabled_turn_forks"] = sorted(forks)
     save_critical(panel_settings_path, json.dumps(raw, indent=2) + "\n")   # rotating backups (recoverable)
-    print("enabled_turn_forks: seeded from deployed proxies -> %s" % sorted(forks), flush=True)
+    log(LOG_INFO, "enabled_turn_forks: seeded from deployed proxies -> %s" % sorted(forks))
 
 
 def normalize_stats_files(nodes_path, stats_dir):
@@ -5213,7 +5280,7 @@ def normalize_stats_files(nodes_path, stats_dir):
         changed = True
     if changed:
         nodes_save(nodes_path, nodes)
-        print("normalized node stats_file -> stats-<id>.json", flush=True)
+        log(LOG_INFO, "normalized node stats_file -> stats-<id>.json")
 
 
 # ── Phase 4: optional per-request signature (replay resistance + body integrity on top of TLS/pinning) ──
@@ -13873,7 +13940,7 @@ def lists_gc(nodes, panel_settings):
         # for a list that is no longer there.
         for mk in [k for k in list(_LIST_META) if _list_key(*k.rsplit("|", 1)) not in keep]:
             _LIST_META.pop(mk, None)
-        print("lists gc: removed %d unreferenced file(s) from %s" % (removed, LIST_DIR), flush=True)
+        log(LOG_INFO, "lists gc: removed %d unreferenced file(s) from %s", removed, LIST_DIR)
     return removed, ""
 
 
@@ -14451,7 +14518,7 @@ def _list_note_err(cat, tier, e):
     code = getattr(e, "code", None)
     msg = (("HTTP %s" % code) if code else (str(getattr(e, "reason", "") or e) or e.__class__.__name__))[:140]
     if _LIST_ERR.get(cat + "|" + tier) != msg:                 # logged once per new reason — a back-off retry repeats nothing
-        print("list %s (%s): fetch failed: %s" % (cat, tier, msg), flush=True)
+        log(LOG_WARNING, "list %s (%s): fetch failed: %s", cat, tier, msg)
     _LIST_ERR[cat + "|" + tier] = msg
 
 
@@ -15034,6 +15101,11 @@ PANEL_SETTINGS_DEFAULTS = {
     "theme_color": "",        # brand/interface theme colour (DARK mode) replacing the default cyan ("" = default)
     "theme_color_light": "",  # brand/interface theme colour (LIGHT mode) ("" = default)
     "geo_epoch": 0,
+    # Settings → Logs (docs/LOGS-PLAN.md §1): the fleet's ONE level — off|error|warning|info, never debug: Debug is
+    # `log_debug_until` on top of it (0 = no Debug, -1 = until changed, else the time it ends), so the base level IS
+    # "the level before Debug" and nothing has to flip it back at expiry — the level in force is computed on read.
+    "log_level": "info",
+    "log_debug_until": 0,
     # routing-list catalog providers the fleet may use {prov_id: bool}; a missing/unknown provider defaults OFF
     # (the operator enables what they want; Curated presets + custom lists are on by default). Enabling one fetches
     # its catalog. Disabling greys its already-picked categories (retained) + drops them from the node desired set.
@@ -15091,6 +15163,41 @@ def load_panel_settings(path):
     out["access"] = {sk: {**PANEL_SETTINGS_DEFAULTS["access"][sk], **(sa.get(sk) or {})}
                      for sk in PANEL_SETTINGS_DEFAULTS["access"]}
     return out
+
+
+LOG_BASE_LEVELS = ("off", "error", "warning", "info")   # a stored base level; Debug is never one (see the defaults)
+LOG_DEBUG_FOR = (3600, 86400, -1)                      # "Turn off debugging after": 1 hour, 24 hours, never
+
+
+def log_debug_left(ps, now=None):
+    """Seconds of Debug left (-1 = until changed, 0 = none), on this panel's clock. Computed on every read: a time
+    that has passed is simply no Debug, and the next Settings save clears it."""
+    try:
+        until = int((ps or {}).get("log_debug_until") or 0)
+    except (TypeError, ValueError):
+        return 0
+    if until == -1:
+        return -1
+    return max(0, int(until - (now if now is not None else time.time())))
+
+
+def log_wire(ps, now=None):
+    """The sync reply's `panel.log` = {level, debug_left?}, or None at the defaults (Info, no Debug): omitted then, so a
+    default fleet's reply is byte-identical to one from before levels, and a node reads an absent key as the defaults.
+    `debug_left` is a duration, so the node counts it down on its own clock — clock skew does not matter, and a node
+    cut off from the panel still leaves Debug on time."""
+    base = (ps or {}).get("log_level")
+    base = base if base in LOG_BASE_LEVELS else "info"
+    left = log_debug_left(ps, now)
+    if base == "info" and not left:
+        return None
+    return {"level": base, **({"debug_left": left} if left else {})}
+
+
+def panel_log_apply(ps):
+    """This process logs at the fleet's level too. Debug's end is the helper's clock, checked per line."""
+    base = (ps or {}).get("log_level")
+    log_set(LOG_LEVELS.get(base if base in LOG_BASE_LEVELS else "info"), log_debug_left(ps))
 
 
 _DROPPED_CAP = 20      # entries carried back per save; the total is kept whole
@@ -18209,8 +18316,7 @@ def _ring_drop_unwritable(path, make):
         ok = True
     if path not in _hrrd_healed:
         _hrrd_healed.add(path)
-        print("stats: %s was not writable (owned by another user) — recreated%s"
-              % (os.path.basename(path), "" if ok else " FAILED"), flush=True)
+        log(LOG_WARNING, "stats: %s was not writable (owned by another user) — recreated%s", os.path.basename(path), "" if ok else " FAILED")
     return ok
 
 
@@ -18487,7 +18593,7 @@ def hrrd_repair_all(stats_dir):
                     fixed += 1
     with contextlib.suppress(Exception):
         atomic_write(marker, str(int(time.time())), mode=0o644)
-    print("headcount repair: rebuilt peak counts in %d of %d rings" % (fixed, n), flush=True)
+    log(LOG_INFO, "headcount repair: rebuilt peak counts in %d of %d rings", fixed, n)
 
 
 def _rings_dead_after():
@@ -18542,8 +18648,7 @@ def rings_gc(stats_dir):
                 os.unlink(fp)
                 gone += 1; freed += st.st_size
     if gone:
-        print("rings gc: removed %d ring(s) unwritten for over %d days (%.1f MB)"
-              % (gone, _rings_dead_after() // 86400, freed / 1048576.0), flush=True)
+        log(LOG_INFO, "rings gc: removed %d ring(s) unwritten for over %d days (%.1f MB)", gone, _rings_dead_after() // 86400, freed / 1048576.0)
     return gone, freed
 
 
@@ -18846,12 +18951,12 @@ class TrafficLedger:
             self._start(deps, int(time.time() if now is None else now), writer)
         except Exception as e:
             self.on, self.why_off = False, "could not start: %s" % e
-            print("ledger: OFF — %s" % self.why_off, flush=True)
+            log(LOG_WARNING, "ledger: OFF — %s" % self.why_off)
 
     def _start(self, deps, now, writer=True):
         if sys.byteorder != "little" or _larr.array("I").itemsize != 4:
             self.on, self.why_off = False, "the ledger's files are little-endian with 32-bit slots; this host is not"
-            print("ledger: OFF — %s" % self.why_off, flush=True)
+            log(LOG_WARNING, "ledger: OFF — %s" % self.why_off)
             return
         self.roster_path = deps["roster_path"]
         self.dir = os.path.join(os.path.dirname(self.roster_path) or ".", "history")
@@ -18868,7 +18973,7 @@ class TrafficLedger:
             idx = load_critical(self._p("index.json"), None, _ledger_index_ok)   # a corrupt primary: its newest GOOD backup
         except RuntimeError as e:                               # …and with none, the ledger stays off (never a fresh one)
             self.on, self.why_off = False, "index.json is unreadable and no backup is good (%s)" % e
-            print("ledger: OFF — %s" % self.why_off, flush=True)
+            log(LOG_WARNING, "ledger: OFF — %s" % self.why_off)
             return
         if idx is None:                                        # ⚠️ MISSING IS NOT NEW when the history is there: load_critical
             for b in _state_backups(self._p("index.json")):    # takes a missing primary for a first install and restores only
@@ -18878,17 +18983,17 @@ class TrafficLedger:
                     if not _ledger_index_ok(got):              # and a backup that parses but holds no slot table is not good:
                         continue                               # the next older one is tried
                     idx = got
-                    print("ledger: index.json is missing — recovered from %s" % b, flush=True)
+                    log(LOG_WARNING, "ledger: index.json is missing — recovered from %s" % b)
                     self.d_index = True
                     break
             if idx is None and any(f.startswith(("base.bin", "day-", "fine-")) for f in os.listdir(self.dir)):
                 self.on, self.why_off = False, ("index.json is missing but the history it indexes is not — restore it, or "
                                                 "move %s aside to start a new ledger" % self.dir)
-                print("ledger: OFF — %s" % self.why_off, flush=True)
+                log(LOG_WARNING, "ledger: OFF — %s" % self.why_off)
                 return
         if idx is not None and not _ledger_index_ok(idx):
             self.on, self.why_off = False, "index.json does not hold a slot table"
-            print("ledger: OFF — %s" % self.why_off, flush=True)
+            log(LOG_WARNING, "ledger: OFF — %s" % self.why_off)
             return
         self.slots = list((idx or {}).get("slots") or [])
         self.fresh = idx is None                               # a new ledger: its first map fills `imports` (_rebuild)
@@ -18910,7 +19015,7 @@ class TrafficLedger:
             self.why_off = ("index.json holds %d slots but the history it indexes has %d — it is older than those files. "
                             "Put back a newer index.json if one exists; if none does, move %s aside to start a new ledger"
                             % (n, wide, self.dir))             # it indexes: new slots would reuse their numbers, and every
-            print("ledger: OFF — %s" % self.why_off, flush=True)   # earlier day would be counted against the new peers
+            log(LOG_WARNING, "ledger: OFF — %s" % self.why_off)   # earlier day would be counted against the new peers
             return
         if base is not None:
             self.recs, crx, ctx, self.newest, bday, bidx, bstep = base
@@ -18941,7 +19046,7 @@ class TrafficLedger:
         self.on, self.why_off = True, ""
         if writer:
             threading.Thread(target=self._writer, name="ledger-writer", daemon=True).start()
-        print("ledger: on — %s, %d slot(s), %d record(s), %ds buckets" % (self.dir, n, len(self.recs), self.step), flush=True)
+        log(LOG_INFO, "ledger: on — %s, %d slot(s), %d record(s), %ds buckets", self.dir, n, len(self.recs), self.step)
 
     # ── ingest (the hot path: every sync of every node) ───────────────────────────────────────────────────────────
     def ingest(self, nid, snap, now=None, mono=None, seq=None):
@@ -19201,8 +19306,7 @@ class TrafficLedger:
         now = time.time()
         if now - getattr(self, "_ing_said", 0) > 300:
             self._ing_said = now
-            print("ledger: ingest failed — %s (the sync's rings are written; the next snapshot carries the counters)" % e,
-                  flush=True)
+            log(LOG_ERR, "ledger: ingest failed — %s (the sync's rings are written; the next snapshot carries the counters)" % e)
 
     def _err(self, what, e):
         self.diag["write_errors"] += 1
@@ -19210,7 +19314,7 @@ class TrafficLedger:
         now = time.time()
         if now - getattr(self, "_err_said", 0) > 300:          # logged, not a log line every close of a stuck disk
             self._err_said = now
-            print("ledger: %s failed — %s (kept in memory, retried at the next close)" % (what, e), flush=True)
+            log(LOG_ERR, "ledger: %s failed — %s (kept in memory, retried at the next close)", what, e)
 
     def flush(self):
         """One pass of the write order: index.json → day rows → base.bin → fine appends → diag.json. A closed day's
@@ -19368,8 +19472,7 @@ class TrafficLedger:
             self._tails.pop(path, None)
         if gone:
             self._usage = (0.0, None)
-            print("ledger: Infinite history is off — the detail of %d day(s) older than %d days deleted" % (
-                len(gone), LEDGER_KEEP_DAYS), flush=True)
+            log(LOG_INFO, "ledger: Infinite history is off — the detail of %d day(s) older than %d days deleted", len(gone), LEDGER_KEEP_DAYS)
 
     def usage(self, now=None):
         """GET /api/stats-usage — MEASURED: one directory walk over the history, cached LEDGER_USAGE_TTL s. The projection
@@ -19465,7 +19568,7 @@ class TrafficLedger:
             except FileNotFoundError:
                 continue
             except Exception as e:
-                print("ledger: %s unreadable (%s)" % (fn, e), flush=True)
+                log(LOG_ERR, "ledger: %s unreadable (%s)", fn, e)
                 continue
         return None
 
@@ -19487,7 +19590,7 @@ class TrafficLedger:
                 h = f.read(4)
             if h != magic:
                 os.replace(path, "%s.corrupt.%d" % (path, int(time.time())))
-                print("ledger: %s had no valid header — moved aside, a new file starts" % path, flush=True)
+                log(LOG_WARNING, "ledger: %s had no valid header — moved aside, a new file starts" % path)
                 self._tails[path] = 0
                 return 0
             verdict = "ok"
@@ -19502,11 +19605,10 @@ class TrafficLedger:
                 os.replace(path, keep)                         # recovery, and its readable rows go on in a new one
                 atomic_write(path, data[:end])
                 self._rowidx.pop(path, None)
-                print("ledger: %s holds a row that cannot be ours at byte %d — kept as %s; its %d readable byte(s) go on"
-                      % (path, end, keep, end), flush=True)
+                log(LOG_WARNING, "ledger: %s holds a row that cannot be ours at byte %d — kept as %s; its %d readable byte(s) go on", path, end, keep, end)
             elif end < sz:
                 os.truncate(path, end)
-                print("ledger: %s ended in a torn record — cut back to %d bytes" % (path, end), flush=True)
+                log(LOG_WARNING, "ledger: %s ended in a torn record — cut back to %d bytes", path, end)
             self._tails[path] = end
         return end
 
@@ -20708,6 +20810,7 @@ def api(method, path, qs, body, deps):
                                "mesh_effective": mesh_mode_effective(deps, nodes),   # the mode in force (auto resolved here, never in the browser)
                                "mesh_auto_max": MESH_AUTO_FULL_MAX,
                                "time_zone_now": tz_view(),   # the zone days are counted in NOW (a stored one can be lost)
+                               "log_debug_left": log_debug_left(panel_settings),   # Debug's time left on THIS clock (-1 = until changed)
                                "awg31_builtin": AWG31_SET},   # the 3.1 set a blank cell of Settings' 3.1 defaults stands for (their placeholders)
             # ↑ Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
@@ -20856,6 +20959,23 @@ def api(method, path, qs, body, deps):
             cur["history_resolution"] = _hr if _hr in LEDGER_STEPS else LEDGER_STEP_DEFAULT
         if "show_node_lans" in incoming:
             cur["show_node_lans"] = incoming["show_node_lans"] is not False    # default is on; only an explicit false turns it off
+        # Settings → Logs. Sent only when the Logging card changed: `log_debug` is a DURATION, and re-sending it with an
+        # unrelated save would restart a running Debug's clock. The deadline is set by this panel's clock, never the
+        # browser's.
+        if "log_level" in incoming:
+            if incoming["log_level"] not in LOG_BASE_LEVELS:
+                return 400, {"ok": False, "error": "log_level must be off, error, warning or info", "code": "bad_request"}
+            cur["log_level"] = incoming["log_level"]
+        if "log_debug" in incoming:
+            try:
+                _ld = int(incoming["log_debug"] or 0)
+            except (TypeError, ValueError):
+                _ld = None
+            if _ld not in (0,) + LOG_DEBUG_FOR:
+                return 400, {"ok": False, "error": "log_debug must be 0, 3600, 86400 or -1", "code": "bad_request"}
+            cur["log_debug_until"] = _ld if _ld <= 0 else int(time.time()) + _ld
+        elif log_debug_left(cur) == 0:
+            cur["log_debug_until"] = 0          # a Debug that has run out is cleared by the next save
         if "mesh_mode" in incoming:
             _mm = str(incoming.get("mesh_mode") or "auto")
             if _mm not in MESH_MODES:
@@ -21200,6 +21320,7 @@ def api(method, path, qs, body, deps):
         # failed settings write (suppressed below) would have left every node closed on disk under a switch still reading on.
         _lan_sweep = incoming.get("show_node_lans") is False and (deps.get("panel_settings") or {}).get("show_node_lans") is not False
         deps["panel_settings"] = cur
+        panel_log_apply(cur)
         if _tz_new is not None and not tz_apply(_tz_new):
             _TZ_STATE["missing"] = _tz_new       # gone between the check and now — shown as lost, never silently UTC
         LEDGER.configure(cur)                    # the resolution from the next day; Infinite history off → the sweep
@@ -21826,8 +21947,7 @@ def api(method, path, qs, body, deps):
         _console_save(deps, {"mode": "own", "host": pend["host"], "port": pend["port"]})
         _console_status("saved", "the console is served on %s:%d" % (_reach, pend["port"]),
                         host=_reach, port=pend["port"], https=pend.get("https"))
-        print("console: confirmed on %s:%d — the panel's own address serves node routes only"
-              % (_reach, pend["port"]), flush=True)
+        log(LOG_INFO, "console: confirmed on %s:%d — the panel's own address serves node routes only", _reach, pend["port"])
         return 200, {"ok": True, "saved": True}      # `saved` is what mints the session on this origin (see do_POST)
 
     if method == "POST" and path == "/api/access/console-cancel":
@@ -22471,8 +22591,8 @@ def api(method, path, qs, body, deps):
                     drop_sub_blobs(deps, _uid)          # ciphertext under a key nobody can rebuild
             if _dropped:
                 save_sub_escrow(deps, _esc)
-                print("sub vault: NEW encryption key — dropped %d escrow bucket(s) and their stored configs "
-                      "(they were wrapped under the replaced key and can never be read again)" % _dropped, flush=True)
+                log(LOG_INFO, "sub vault: NEW encryption key — dropped %d escrow bucket(s) and their stored configs "
+                      "(they were wrapped under the replaced key and can never be read again)" % _dropped)
         rec["salt"], rec["sk_by_pw"], rec["sk_check"] = salt, sk, chk
         rec["at"] = now()
         # sk_verify: preserve an existing one on a password re-wrap (the SK is unchanged), set it on first create.
@@ -26644,7 +26764,7 @@ def api(method, path, qs, body, deps):
             # ALSO IN THE JOURNAL. The toast is seen by whoever clicked, once; a panel being supported from
             # the outside needs the cause somewhere it can be read later. Only on the operator-driven check,
             # so an unreachable GitHub cannot fill the log an hour at a time.
-            sys.stderr.write("swg-panel: update check failed — %s\n" % _why["error"])
+            log(LOG_WARNING, "swg-panel: update check failed — %s" % _why["error"])
         # ⚠️ AND NOT WHEN GITHUB IS ALREADY KNOWN UNREACHABLE. This resolves a release tag per deployed fork,
         # each one a curl with --max-time 25, so on a box that cannot reach GitHub the click that just proved
         # it would go on to spend another 25s per fork discovering the same thing — a button that hangs for
@@ -28231,7 +28351,7 @@ class Handler(BaseHTTPRequestHandler):
             try:                                         # telemetry, before the lock — see _node_sync_history
                 self._node_sync_history(nid, node, nodes, snap, seq)
             except Exception as e:                       # non-essential: a bug here must not fail the fleet's syncs
-                print("stats: history for %s not recorded: %s" % (nid, e), flush=True)
+                log(LOG_WARNING, "stats: history for %s not recorded: %s", nid, e)
         # ⚠️ A SYNC IS A READ-MODIFY-WRITE of nodes.json (29 saves) and users.json (5), so it takes _api_lock like every
         # operator POST and re-reads under it. It did not: _node_token's copy was loaded before the snapshot body was
         # even read and saved over whatever an operator had written meanwhile (live on swgt 2026-09-18; the rig lost
@@ -29215,7 +29335,7 @@ class Handler(BaseHTTPRequestHandler):
                 if _imported:
                     roster_save(Handler.deps["roster_path"], roster)
             except Exception as _e:
-                print("wdtt adopt-import failed: " + str(_e)[:200], flush=True)
+                log(LOG_ERR, "wdtt adopt-import failed: " + str(_e)[:200])
             for _wifn, _wov in _wstore.items():
                 if _wov.pop("password", None) is not None:   # migration: stop holding the owner password in cleartext
                     _wdtt_dirty = True
@@ -29359,7 +29479,7 @@ class Handler(BaseHTTPRequestHandler):
                 if _cimp:
                     roster_save(Handler.deps["roster_path"], roster)
         except Exception as _e:
-            print("csqtt adopt-import failed: " + str(_e)[:200], flush=True)
+            log(LOG_ERR, "csqtt adopt-import failed: " + str(_e)[:200])
 
         # ── a container take-over came back ────────────────────────────────────────────────────────────────
         # The node has already stopped their container and stood the same server up natively; what is left is
@@ -29374,8 +29494,7 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(_ca, dict) and _ca.get("container") and _seen and _ctr_res_id(_ca) == _seen:
                 _ca = None                     # already consumed — a node re-sending its last result
             if isinstance(_ca, dict) and _ca.get("container") and _req and not _ctr_answers(_ca, _req):
-                print("node %s: ignoring a container take-over result for %r — the pending request is for %r"
-                      % (nid, _ca.get("container"), _req.get("container")), flush=True)
+                log(LOG_WARNING, "node %s: ignoring a container take-over result for %r — the pending request is for %r", nid, _ca.get("container"), _req.get("container"))
                 _ca = None
             if isinstance(_ca, dict) and _ca.get("container") and node.get("adopt_container"):
                 _cn, _cif = str(_ca.get("container")), str(_ca.get("iface") or "")
@@ -29424,7 +29543,7 @@ class Handler(BaseHTTPRequestHandler):
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
         except Exception as _e:
-            print("container adopt-import failed: " + str(_e)[:200], flush=True)
+            log(LOG_ERR, "container adopt-import failed: " + str(_e)[:200])
 
         upd = node.get("update")
         rv = snap.get("noded_version")
@@ -30059,7 +30178,9 @@ class Handler(BaseHTTPRequestHandler):
                                           "geo_ttl_days": (_ps.get("advanced") or {}).get("geo_ttl_days") or 3,
                                           "geo_update": {"every_days": int((_gu.get("every_days") if _gu.get("every_days") is not None else 1)),
                                                          "at": _gu.get("at") or "04:00"},   # node applies a CHANGED provider list only in this quiet-hour window (new lists apply immediately)
-                                          "geo_epoch": _ps.get("geo_epoch") or 0},
+                                          "geo_epoch": _ps.get("geo_epoch") or 0,
+                                          # the fleet's log level — absent at the defaults (byte-identical reply)
+                                          **({"log": _lw} if (_lw := log_wire(_ps)) else {})},
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):
@@ -30537,7 +30658,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self._node_sync()
             except Exception as e:        # never drop the connection (a proxy turns that into a 5xx/520) — a node skips a non-200 pass safely
-                import traceback; traceback.print_exc()
+                log(LOG_ERR, traceback.format_exc().rstrip("\n"))
                 return self._send(500, {"ok": False, "error": str(e), "code": "internal"})
         if path == "/api/node/goodbye":
             return self._node_goodbye()
@@ -30932,9 +31053,8 @@ def _console_revert(deps, pend, reason):
                     back_to=("own" if prev_live else "same"),
                     host=(_console_reach(prev.get("host")) if prev_live else ""),
                     port=(prev.get("port") if prev_live else 0))
-    print("console: %s; the console is served on %s"
-          % (reason, ("%s:%s" % (_console_reach(prev.get("host")), prev.get("port"))) if prev_live
-             else "the panel's own address"), flush=True)
+    log(LOG_INFO, "console: %s; the console is served on %s", reason, ("%s:%s" % (_console_reach(prev.get("host")), prev.get("port"))) if prev_live
+             else "the panel's own address")
 
 
 def _console_timeout(nonce, deps, reason="the new console address wasn't confirmed in time"):
@@ -30964,12 +31084,11 @@ def _ensure_console_listener(deps):
     try:
         lid = LISTENERS.add(bind_host, port, cert, key)               # role="full" — this IS the console
     except OSError as e:
-        print("console door: could not bind %s:%d (%s) — the panel keeps serving the console on its own "
-              "address, so nothing is locked out" % (bind_host, port, e), flush=True)
+        log(LOG_ERR, "console door: could not bind %s:%d (%s) — the panel keeps serving the console on its own "
+              "address, so nothing is locked out", bind_host, port, e)
         return
     _CONSOLE["lid"] = lid          # BIND FIRST, FLIP SECOND — this assignment IS the flip (see _door_ok)
-    print("operator console on %s://%s:%d — the panel's own address now serves node routes only"
-          % ("https" if cert else "http", reach_host, port), flush=True)
+    log(LOG_INFO, "operator console on %s://%s:%d — the panel's own address now serves node routes only", "https" if cert else "http", reach_host, port)
 
 
 _SIGTERM_SEEN = []
@@ -31001,7 +31120,7 @@ def _sighup_reload(_sig, _frm):
     EARLY in main() so a stray SIGHUP during startup (e.g. a cert restore/renewal) is HANDLED, never the default
     action of terminating the process. Safe before any listener is bound (reload_tls is then a no-op)."""
     LISTENERS.reload_tls()
-    print("reloaded TLS certificate (SIGHUP)", flush=True)
+    log(LOG_INFO, "reloaded TLS certificate (SIGHUP)")
     # a new certificate can change who renews it — never wait 6 h to say so. The follow worker also refreshes the
     # status (quietly), so the handler does neither itself: it only sets an Event (see _acme_follow_soon).
     _acme_follow_soon()
@@ -31348,8 +31467,8 @@ def _netctl_enqueue(deps, verb, args):
     # internal caller, a boot reconcile, or a path added later cannot enqueue installation state onto a
     # host that will never honour it and would report success for it.
     if PANEL_DECLARATIVE and verb not in NETCTL_LIFECYCLE_VERBS:
-        print("access: refused '%s' — this panel is managed declaratively; its address, mount base and "
-              "certificate come from its configuration" % verb, flush=True)
+        log(LOG_WARNING, "access: refused '%s' — this panel is managed declaratively; its address, mount base and "
+              "certificate come from its configuration" % verb)
         return None
     qdir = os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "netctl", "queue")
     if not os.path.isdir(qdir):
@@ -31608,7 +31727,7 @@ def _drop_listener_later(lid, grace):
             LISTENERS.remove(lid)
         with _DROP_TIMERS_LOCK:
             _DROP_TIMERS.pop(lid, None)
-        print("access: dropped the old listener after the %ds node-migration grace" % grace, flush=True)
+        log(LOG_INFO, "access: dropped the old listener after the %ds node-migration grace" % grace)
     _cancel_drop(lid)                  # replace any existing drop already scheduled for this listener
     t = threading.Timer(max(1, grace), _drop); t.daemon = True
     with _DROP_TIMERS_LOCK:
@@ -31624,7 +31743,7 @@ def _drop_alt_base_later(grace):
     def _drop():
         if _ALT_BASE == _target:                 # still the base we scheduled (a later swap would have replaced it)
             globals()["_ALT_BASE"] = None         # None (not "") — "" is a valid root alt-base, None means "no swap"
-            print("access: stopped serving the old mount base after the %ds path-migration grace" % grace, flush=True)
+            log(LOG_INFO, "access: stopped serving the old mount base after the %ds path-migration grace" % grace)
     t = threading.Timer(max(1, grace), _drop); t.daemon = True
     t.start()
 
@@ -31853,7 +31972,7 @@ def _reissue_cert_newonly_later(deps, new_domain, old_domain, grace):
         _netctl_enqueue(deps, "clear-backup", ["panel"])
         if old_domain and old_domain != new_domain:
             _netctl_enqueue(deps, "drop-cert", ["panel", old_domain])
-        print("access: cert-only migration grace ended — reissued %s-only cert (dropped %s)" % (new_domain, old_domain), flush=True)
+        log(LOG_INFO, "access: cert-only migration grace ended — reissued %s-only cert (dropped %s)", new_domain, old_domain)
     _cancel_cert_reissue()                                        # replace any prior reissue still scheduled
     t = threading.Timer(max(1, grace), _go); t.daemon = True
     _CERT_REISSUE["timer"] = t; t.start()
@@ -31890,7 +32009,7 @@ def _drop_sub_alt_base_later(deps, grace):
         with contextlib.suppress(Exception):
             write_sub_serve(deps)                        # base only, no base_alt
             _netctl_enqueue(deps, "reload", ["sub"])
-            print("access: sub stopped serving the old mount base after the %ds grace" % grace, flush=True)
+            log(LOG_INFO, "access: sub stopped serving the old mount base after the %ds grace" % grace)
     t = threading.Timer(max(1, grace), _drop); t.daemon = True
     t.start()
 
@@ -32019,9 +32138,9 @@ def _raise_fd_limit():
         want = min(hard, 65536) if hard != resource.RLIM_INFINITY else 65536
         if soft < want:
             resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
-            sys.stderr.write("swg-panel: raised open-file limit %d -> %d\n" % (soft, want))
+            log(LOG_INFO, "swg-panel: raised open-file limit %d -> %d", soft, want)
     except Exception as e:
-        sys.stderr.write("swg-panel: could not raise the open-file limit (%s) — staying at the default\n" % e)
+        log(LOG_WARNING, "swg-panel: could not raise the open-file limit (%s) — staying at the default" % e)
 
 
 _FD_WARNED = {"at": 0.0}
@@ -32050,9 +32169,8 @@ def _fd_watchdog_loop():
                 continue                                   # no /proc (odd container) → nothing to watch
             if soft and n > soft * 0.6 and time.time() - _FD_WARNED["at"] > 600:
                 _FD_WARNED["at"] = time.time()
-                sys.stderr.write("swg-panel: OPEN FILES %d of %d (%d threads) — dumping thread stacks so the "
-                                 "holder is named while it is still happening\n"
-                                 % (n, soft, threading.active_count()))
+                log(LOG_ERR, "swg-panel: OPEN FILES %d of %d (%d threads) — dumping thread stacks so the "
+                                 "holder is named while it is still happening", n, soft, threading.active_count())
                 sys.stderr.flush()
                 if faulthandler:
                     faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
@@ -32131,7 +32249,7 @@ def main():
             except OSError:
                 raise SystemExit(f"refusing to start: {_lp} (state dir {_statedir}) cannot be locked, yet the kernel "
                                  f"reports no holder. Retry; if it persists, something is taking the lock repeatedly.")
-            print("access: the state-dir lock was released while starting — took it on the retry", flush=True)
+            log(LOG_WARNING, "access: the state-dir lock was released while starting — took it on the retry")
         elif _state == "unknown":
             raise SystemExit(f"refusing to start: {_lp} (state dir {_statedir}) is locked and /proc/locks could not be "
                              f"read, so the holder cannot be identified. Refusing rather than taking it: two panels on "
@@ -32190,13 +32308,14 @@ def main():
                     "twofa_path": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "2fa.json"),
                     "sub_dir": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "subs"),
                     "now": lambda: int(time.time())}
+    panel_log_apply(Handler.deps["panel_settings"])   # this process's own lines follow the fleet's level from here on
     # The operator's zone, before any thread reads the clock (tz_apply). A stored zone this server has lost — an image
     # or tzdata change — is reported and left out, never a crash: days fall back to the server's own zone meanwhile.
     _tz0 = str(Handler.deps["panel_settings"].get("time_zone") or "")
     if _tz0 and not tz_apply(_tz0):
         _TZ_STATE["missing"] = _tz0
-        print("swg-panel: time zone %s is not on this server — counting days in the server's own zone until "
-              "another is picked in Settings → Display" % _tz0, flush=True)
+        log(LOG_WARNING, "swg-panel: time zone %s is not on this server — counting days in the server's own zone until "
+              "another is picked in Settings → Display" % _tz0)
     # The traffic ledger — after the zone (its days are local days) and before the listener takes the first sync. A
     # SIGTERM (systemctl stop/restart, update.sh, docker stop) writes its open state first: without it every graceful
     # restart moved the last partial bucket into the next one — and, near midnight, the day's tail into the next day.
@@ -32218,7 +32337,7 @@ def main():
     # BEFORE binding the listener, so the fresh listener never serves the wrong cert (a strict origin check
     # like Cloudflare Full would mark the origin down for even a brief bad-cert window).
     if TLS_CERT and os.path.exists(TLS_CERT + ".applyback"):
-        print("swg-panel-server: found an interrupted cert apply (backup present) — restoring before serving", flush=True)
+        log(LOG_WARNING, "swg-panel-server: found an interrupted cert apply (backup present) — restoring before serving")
         _netctl_wait(Handler.deps, _netctl_enqueue(Handler.deps, "restore-cert", ["panel"]), 20)
     # panel version-change → one "Panel updated" activity event (from→to). Tracked in an isolated
     # marker file so it never rides on the settings dict. First-ever boot just records the baseline.
@@ -32284,7 +32403,7 @@ def main():
                 _ps.setdefault("access", {})["panel"] = _pnl
                 Handler.deps["panel_settings"] = _ps
                 save_critical(Handler.deps.get("panel_settings_path") or "", json.dumps(_ps, indent=2) + "\n")
-                print("access: boot self-heal — saved canonical '%s' not covered by the cert; reconciled to '%s'" % (_saved_dom, _cert_dom), flush=True)
+                log(LOG_INFO, "access: boot self-heal — saved canonical '%s' not covered by the cert; reconciled to '%s'", _saved_dom, _cert_dom)
     _seed_confirmed_url_at_boot(Handler.deps)   # seed _CONFIRMED_URL from the BLESSED confirmed-state file (not raw settings) + reconcile any saved-but-unconfirmed change back to what's live; bootstraps the blessed file on a never-confirmed install
     with contextlib.suppress(Exception):
         _reconcile_sub_listen_at_boot(Handler.deps)   # re-assert the sub's bind if its drop-in went missing (a convert deletes it) — never fatal
@@ -32317,7 +32436,7 @@ def main():
     # that never exits may never flush it — the "[no auth!]" banner was confirmed ABSENT from the journal of
     # a live box that was serving its roster unauthenticated. A warning that cannot reach the journal is not
     # a warning.
-    print(f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}", flush=True)
+    log(LOG_INFO, f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
     if AUTH_UNUSABLE:
         # root:swg 0640 — what mk_auth_file, swg-passwd and update.sh's healer all produce, so the advice
         # here and the repair an update performs say the same thing.
@@ -32327,11 +32446,9 @@ def main():
         # Every installer we ship names this file AND creates it (install-host.sh mk_auth_file, nix authSeed),
         # and docker's no-password path UNSETS the variable rather than leaving an empty file, which is
         # exactly the shape an operator should copy.
-        print("swg-panel-server: %s is unusable (%s) and this process runs as %s, so LOGIN IS CLOSED and "
-              "every request is refused. Node sync, /healthz and the subscription page are unaffected. Fix: %s%s"
-              % (AUTH_FILE, AUTH_UNUSABLE, _proc_user_name(), _auth_fix_line(),
-                 "" if IN_DOCKER else " — or, if this panel is MEANT to have no login, clear SWG_PANEL_AUTH in its unit "
-                                      "(blank means no login by design)."), flush=True)
+        log(LOG_ERR, "swg-panel-server: %s is unusable (%s) and this process runs as %s, so LOGIN IS CLOSED and "
+              "every request is refused. Node sync, /healthz and the subscription page are unaffected. Fix: %s%s", AUTH_FILE, AUTH_UNUSABLE, _proc_user_name(), _auth_fix_line(), "" if IN_DOCKER else " — or, if this panel is MEANT to have no login, clear SWG_PANEL_AUTH in its unit "
+                                      "(blank means no login by design).")
     with contextlib.suppress(KeyboardInterrupt):
         threading.Event().wait()             # the listeners serve in their own threads; block here forever
 
