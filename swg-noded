@@ -15986,8 +15986,9 @@ def host_sh(cmd, timeout=90):
         class _R:                                       # synthesize a failed result so callers see it
             returncode = 127; stdout = ""; stderr = str(e)
         return _R()
-    if r.returncode != 0:
-        log(LOG_WARNING, "host_sh rc=" + str(r.returncode) + " :: " + cmd[:160] + " :: " + (r.stderr or r.stdout or "")[:300])
+    if r.returncode != 0:                               # Debug: a non-zero exit is often the ANSWER (`systemctl is-active`
+        # on a server the operator stopped, asked on every sync), and a caller that meets a real failure reports it itself.
+        log(LOG_DEBUG, "host_sh rc=%s :: %s :: %s", r.returncode, cmd[:160], (r.stderr or r.stdout or "")[:300])
     return r
 
 def _turn_unit_path(svc):

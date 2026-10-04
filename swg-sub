@@ -1031,6 +1031,36 @@ def _serve_config(state):
     return host, port, None, None                              # no usable cert → plain HTTP (front with a proxy)
 
 
+# swg-sub's level is the fleet's, which the panel mirrors into subs/serve.json — this process never reads
+# panel-settings.json. Read from log() itself, at most every LOG_REREAD seconds: swg-sub writes a few lines a day, so
+# nothing polls. Its unit has no LogLevelMax (a cap fixed at its start would outlive the level), so this is the only
+# filter. Until the path is known (the first lines of a start), it logs at Info.
+LOG_REREAD = 5
+_LOG_SERVE = {"path": None, "at": -LOG_REREAD}
+
+
+def _log_follow():
+    if not _LOG_SERVE["path"] or time.monotonic() - _LOG_SERVE["at"] < LOG_REREAD:
+        return
+    _LOG_SERVE["at"] = time.monotonic()
+    lg = (load_json(_LOG_SERVE["path"], {}) or {}).get("log")
+    lg = lg if isinstance(lg, dict) else {}
+    try:
+        until = int(lg.get("debug_until") or 0)
+    except (TypeError, ValueError):
+        until = 0
+    log_set(min(LOG_LEVELS.get(lg.get("level"), LOG_INFO), LOG_INFO),
+            -1 if until == -1 else max(0, until - time.time()))
+
+
+_log_write_lines = log
+
+
+def log(prio, msg, *args):            # noqa: F811 — the shared helper's log(), after following the fleet's level
+    _log_follow()
+    _log_write_lines(prio, msg, *args)
+
+
 def main():
     # Tolerate a cold start where the panel hasn't written fleet.json yet (docker: swg-sub and the
     # panel come up together and share the config volume). Wait a bounded while, then let the process
@@ -1046,6 +1076,7 @@ def main():
         raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
     state = State(fleet)
     Handler.state = state
+    _LOG_SERVE["path"] = os.path.join(state.sub_dir, "serve.json")
 
     global SUB_BASE, SUB_BASE_ALT                            # SWG_SUB_BASE wins (infra), else the panel's serve.base (from the sub public URL path)
     def _read_bases():

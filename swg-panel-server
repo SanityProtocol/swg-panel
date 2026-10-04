@@ -3942,7 +3942,10 @@ def write_sub_serve(deps, base_alt=""):
            # per-node colours (keyed by node id) so the sub renders each server name in its panel colour
            "node_colors": _sub_node_colors(deps),
            # offered UI languages + the default (the page hides its selector when only one is enabled)
-           "languages": subs.get("languages") if isinstance(subs.get("languages"), dict) else {"enabled": ["en"], "default": "en"}}
+           "languages": subs.get("languages") if isinstance(subs.get("languages"), dict) else {"enabled": ["en"], "default": "en"},
+           # the fleet's log level (docs/LOGS-PLAN.md §1): swg-sub follows it from here, as it cannot read panel-settings.json
+           "log": {"level": ps.get("log_level") if ps.get("log_level") in LOG_BASE_LEVELS else "info",
+                   "debug_until": ps.get("log_debug_until") or 0}}
     with contextlib.suppress(Exception):
         os.makedirs(_sub_dir(deps), exist_ok=True)
         atomic_write(_sub_serve_path(deps), json.dumps(out, indent=2) + "\n", mode=0o640)

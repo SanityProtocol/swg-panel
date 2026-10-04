@@ -33,6 +33,10 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
      bootbase     a restart reads the level in force back (Debug over Off comes back as Info)
      agentenv     the agent gets the level only from the environment (sudo strips it)
      updatelog    swg-update's own output is capped away at Info
+     hostshwarn   a host command's non-zero exit is a warning again (a stopped server, asked every sync)
+     subfixed     swg-sub logs at Info whatever the fleet's level
+     subserve     the panel leaves the level out of swg-sub's serve.json
+  [8] swg-sub follows the fleet's level from subs/serve.json (it cannot read panel-settings.json).
 """
 import importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time, types
 import urllib.error, urllib.request
@@ -40,7 +44,7 @@ import urllib.error, urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PROG = {k: os.path.join(ROOT, f) for k, f in (("noded", "swg-noded"), ("panel", "swg-panel-server"), ("sni", "swg-sni"),
-                                              ("netctl", "swg-netctl"), ("agent", "swg-agent"))}
+                                              ("netctl", "swg-netctl"), ("agent", "swg-agent"), ("sub", "swg-sub"))}
 REF = "4248d11"                                  # the last build before levels: the byte-identical reference
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 FAILS = []
@@ -74,6 +78,11 @@ PLANTS = {   # (program, anchor, replacement)
                   '''        if prio > _SAY["level"]:\n            return\n        if _SAY["thread"] is None:                   # BEFORE the level check'''),
     "bootbase": ("noded", '''            v = int(f.read().split()[-1])''', '''            v = int(f.read().split()[0])'''),
     "agentenv": ("noded", '''    payload = {**payload, "log_level": log_level()}\n''', ""),
+    "hostshwarn": ("noded", '''        log(LOG_DEBUG, "host_sh rc=%s :: %s :: %s", r.returncode''',
+                   '''        log(LOG_WARNING, "host_sh rc=%s :: %s :: %s", r.returncode'''),
+    "subfixed": ("sub", '''    if not _LOG_SERVE["path"] or time.monotonic()''', '''    if True or time.monotonic()'''),
+    "subserve": ("panel", '''           "log": {"level": ps.get("log_level") if ps.get("log_level") in LOG_BASE_LEVELS else "info",''',
+                 '''           "_log": {"level": ps.get("log_level") if ps.get("log_level") in LOG_BASE_LEVELS else "info",'''),
     "updatelog": ("netctl", '''        caps["swg-update.service"] += "SyslogLevel=%s\\n" % cap\n''', "        pass\n"),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -248,6 +257,8 @@ try:
     c, _r = setlog({"log_level": "debug"})
     check("[2] Debug is never a stored base level", c == 400, (c, _r))
     setlog({"log_level": "error"})
+    _sv = json.load(open(os.path.join(state_n, "subs", "serve.json")))
+    check("[2] …and swg-sub's serve.json carries it", (_sv.get("log") or {}).get("level") == "error", _sv.get("log"))
     check("[2] a level reaches the node as panel.log", sync(port_n, tok_n)["panel"].get("log") == {"level": "error"},
           sync(port_n, tok_n)["panel"].get("log"))
     setlog({"log_level": "error", "log_debug": 3600})
@@ -427,6 +438,7 @@ check("[5] crossing Info re-runs the routing pass (the level is in its signature
 
 # ── [6] honest readers ──────────────────────────────────────────────────────────────────────────────────────────────
 print("[6] why it failed")
+REAL_HOST_SH = N.host_sh
 N.host_sh = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout="failed\n", stderr="")
 N.log_set(N.LOG_INFO)
 check("[6] turn verify at Info: the usual reason", "logging" not in N._turn_verify("vk-turn-proxy-x"))
@@ -468,6 +480,18 @@ N.run = _real_run
 check("[6] the level reaches the agent in its request (sudo -n strips the environment)",
       SENT and SENT[0].get("log_level") == N.LOG_OFF, SENT)
 
+N.NODE_KIND = "baremetal"
+N.host_sh = REAL_HOST_SH
+hb = capture(N)
+N.log_set(N.LOG_WARNING)
+N.host_sh("exit 3")
+check("[6] a host command's non-zero exit is not a warning (callers report real failures)", hb.getvalue() == "",
+      hb.getvalue())
+N.log_set(N.LOG_DEBUG)
+N.host_sh("exit 3")
+check("[6] …it is Debug", "D host_sh rc=3" in hb.getvalue(), hb.getvalue())
+N.log_set(N.LOG_INFO)
+
 # ── [7] swg-sni ─────────────────────────────────────────────────────────────────────────────────────────────────────
 print("[7] swg-sni")
 lvl_file = os.path.join(TMP, "sni-level")
@@ -492,6 +516,25 @@ check("[7] at Debug it is, formatted only when written",
 per_host = re.findall(r'say\((LOG_\w+), "swg-sni: %s → ', SRC["sni"])
 check("[7] both per-host lines are Debug (users' visited hosts stay out of the default level)",
       per_host == ["LOG_DEBUG", "LOG_DEBUG"], per_host)
+
+# ── [8] swg-sub ─────────────────────────────────────────────────────────────────────────────────────────────────────
+print("[8] swg-sub")
+U = load("sub")
+sys.excepthook, threading.excepthook = sys.__excepthook__, threading.__excepthook__
+ub = capture(U)
+sv = os.path.join(TMP, "serve.json")
+U._LOG_SERVE["path"] = sv
+json.dump({"enabled": True, "log": {"level": "off", "debug_until": 0}}, open(sv, "w"))
+U.log(U.LOG_ERR, "swg-sub: config reload failed: x")
+check("[8] Off in serve.json: swg-sub writes nothing", ub.getvalue() == "", ub.getvalue())
+json.dump({"enabled": True, "log": {"level": "off", "debug_until": int(time.time()) + 60}}, open(sv, "w"))
+U._LOG_SERVE["at"] = -99
+U.log(U.LOG_DEBUG, "swg-sub: dbg")
+check("[8] Debug over Off while its time runs", "D swg-sub: dbg" in ub.getvalue(), ub.getvalue())
+json.dump({"enabled": True}, open(sv, "w"))
+U._LOG_SERVE["at"] = -99
+U.log(U.LOG_INFO, "swg-sub: serving")
+check("[8] a serve.json from before levels: Info", "I swg-sub: serving" in ub.getvalue(), ub.getvalue())
 
 print()
 if PLANT:
