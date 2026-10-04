@@ -6911,11 +6911,14 @@ def net_probe_status(pid, rid=None, now=None):
 # the new lines, oldest first, as [time µs, source, priority, text]; `cur` is where a reader restarted later resumes.
 # A source starting with "!" is a marker the viewer words itself: "!skip" (text = how many lines the flood cap skipped),
 # "!gap" (a resume point could not be used: lines in between may be missing).
-# The first LIVE_BACKFILL_S of a fresh reader is its backfill: kept back, cut to the last LIVE_BACKFILL lines per source,
-# and handed over in one piece, outside the flood cap.
+# A fresh reader's first lines are its backfill: kept back, cut to the last LIVE_BACKFILL lines per source, and handed over
+# in one piece, outside the flood cap. The journal's comes from a journalctl of its own without -f, so its end is known
+# exactly (a cold journal took 1.45 s before its first line on swgt, then gave all of it at once); the follower then
+# starts after its last line — no gap, no repeat. The backfill is held at least LIVE_BACKFILL_S (the files', the
+# containers') and at most LIVE_BACKFILL_WAIT.
 import calendar as _live_cal
 
-LIVE_BACKFILL, LIVE_BACKFILL_MAX, LIVE_BACKFILL_S = 200, 1000, 1.0
+LIVE_BACKFILL, LIVE_BACKFILL_MAX, LIVE_BACKFILL_S, LIVE_BACKFILL_WAIT = 200, 1000, 1.0, 10.0
 LIVE_TEXT_MAX = 4096                 # characters of one line
 LIVE_TAIL_BYTES = 256 << 10          # how far back a file's backfill reads
 LIVE_FIELDS = "MESSAGE,PRIORITY,_SYSTEMD_UNIT,UNIT,SYSLOG_IDENTIFIER,_TRANSPORT,_PID"
@@ -7196,6 +7199,7 @@ class LiveReader:
         cur = cur if isinstance(cur, dict) else {}
         self.want, self.cap, self.jargv, self.sock = set(want), max(1, int(cap)), journal, sock
         self.p, self.jbuf, self.jlines, self.jstart, self.jnext = None, b"", 0, 0.0, 0.0
+        self.jback, self.jgap = False, 0.0                    # jback: the running journalctl is the backfill read
         self.jcur = cur.get("j") if isinstance(cur.get("j"), str) else None
         self.t0, self.bf, self.marks = time.monotonic(), [], []
         self.sec, self.n, self.skip = 0, 0, 0
@@ -7206,15 +7210,17 @@ class LiveReader:
         if any(f.gap for f in self.files):
             self._gap()
         if journal:
-            self._jopen()
+            self._jopen(back=not self.jcur)                   # resuming: no backfill, the follower after the cursor
 
     def _gap(self):
         self.marks.append([int(time.time() * 1000000), "!gap", 4, ""])
 
-    def _jopen(self):
-        self.jlines, self.jstart, self.jbuf = 0, time.monotonic(), b""
+    def _jopen(self, back=False):
+        """The backfill read (`back`: the last n lines, no -f, it ends), or the follower: after the cursor, or from now."""
+        self.jlines, self.jstart, self.jbuf, self.jback = 0, time.monotonic(), b"", back
+        a = self.jargv(None, min(LIVE_BACKFILL * max(1, len(self.want)), LIVE_BACKFILL_MAX)) if back else self.jargv(self.jcur, 0)
         with contextlib.suppress(OSError, ValueError):
-            self.p = subprocess.Popen(self.jargv(self.jcur, min(LIVE_BACKFILL * max(1, len(self.want)), LIVE_BACKFILL_MAX)),
+            self.p = subprocess.Popen([x for x in a if x != "-f"] if back else a,
                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
             os.set_blocking(self.p.stdout.fileno(), False)
 
@@ -7257,13 +7263,16 @@ class LiveReader:
             except (TypeError, ValueError):
                 t, prio = int(time.time() * 1000000), 6
             out.append([t, src, prio, live_text(e.get("MESSAGE"))[:LIVE_TEXT_MAX]])
-        if eof:                                               # journalctl ended. A cursor it cannot seek to fails at once,
-            quick = time.monotonic() - self.jstart < 5        # with nothing read: then afresh, with a marker. Anything
-            self._jclose()                                    # else: again from where it was, at most every 5 s
-            if quick and self.jcur and not self.jlines:
-                self.jcur = None
+        if eof and self.jback:                                # the backfill read is done: follow from its last line, or
+            self._jclose()                                    # from now when there was none
+            self._jopen()
+        elif eof:                                             # the follower ended. A cursor it cannot seek to fails at
+            quick = time.monotonic() - self.jstart < 5        # once, with nothing read: then afresh — a backfill, with a
+            self._jclose()                                    # marker, at most every 5 s. Anything else: again from
+            if quick and self.jcur and not self.jlines and time.monotonic() - self.jgap >= 5:   # where it was, at most
+                self.jcur, self.jgap = None, time.monotonic()                                   # every 5 s
                 self._gap()
-                self._jopen()
+                self._jopen(back=True)
             else:
                 self.jnext = self.jstart + 5
         return out
@@ -7300,7 +7309,8 @@ class LiveReader:
         new.sort(key=lambda x: x[0])
         if self.bf is not None:                               # still the backfill: kept back, then cut per source
             self.bf += new
-            if time.monotonic() - self.t0 < LIVE_BACKFILL_S:
+            el = time.monotonic() - self.t0
+            if el < LIVE_BACKFILL_S or (self.p is not None and self.jback and el < LIVE_BACKFILL_WAIT):
                 return []
             per, keep = {}, []
             for ln in reversed(self.bf):
