@@ -42,6 +42,7 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      noderetry    swg-noded leaves the new size file in place when journald does not restart (a restart reads it as applied)
      pid1last     the verify reader takes systemd's own line as the reason
      pid1all      the verify reader drops every systemd line, the exec failure's reason among them
+     stickyerr    a failed restart's error stays after the budget is put back to the size in force
      uninstkeep   uninstall leaves the journal on disk
 """
 import importlib.machinery, importlib.util, io, json, os, re, shutil, socket, stat, subprocess, sys, tempfile, threading
@@ -84,8 +85,9 @@ PLANTS = {   # (program, anchor, replacement)
                  '''    r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=20)\n    rc, out = r.returncode, ""\n    if rc != 0:'''),
     "noretry": ("netctl", '''            if have is None:\n                os.remove(LOG_NS_CONF)\n            else:\n                with open(LOG_NS_CONF + ".tmp", "w") as f:\n                    f.write(have)\n                os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)\n''', "            pass\n"),
     "noderetry": ("noded", '''                    if not _LOG_BUDGET["conf"]:           # it as applied while journald runs the old size\n                        os.remove(LOG_NS_CONF)\n                    else:\n                        with open(LOG_NS_CONF + ".tmp", "w") as f:\n                            f.write(_LOG_BUDGET["conf"])\n                        os.replace(LOG_NS_CONF + ".tmp", LOG_NS_CONF)\n''', "                    pass\n"),
-    "pid1all": ("noded", '''JOURNAL_SKIP_PID1 = ("grep -vE '\\\\.service: (Failed with result|Main process exited|Scheduled restart job|Deactivated|Consumed)"''',
-                '''JOURNAL_SKIP_PID1 = ("grep -vE '\\\\.service: (.*)"'''),
+    "pid1all": ("noded", '''JOURNAL_SKIP_PID1 = ("grep -vE '\\\\.service: (Failed with result|Main process exited|Control process exited|Unit entered failed"''',
+                '''JOURNAL_SKIP_PID1 = ("grep -vE '\\\\.service: (.*|"'''),
+    "stickyerr": ("noded", '''    if _LOG_BUDGET["conf"] == want and _LOG_BUDGET["err"]:   # back to the size in force: nothing is pending any more\n        _LOG_BUDGET["err"], _LOG_BUDGET["retry_want"], _LOG_BUDGET["at"] = None, None, 0.0\n''', ""),
     "pid1last": ("noded", '''-n 8 --no-pager -o cat 2>/dev/null | " + JOURNAL_SKIP_PID1\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")''',
                  '''-n 8 --no-pager -o cat 2>/dev/null | "\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")'''),
     "uninstkeep": ("uninstall", '''  [ -n "$mid" ] && rmrf "/var/log/journal/$mid.$ns" "/run/log/journal/$mid.$ns"\n''', ""),
@@ -224,9 +226,10 @@ try:
           (ps.get("log_mb_panel"), ps2.get("log_mb_panel")))
     check("[1] the panel row: nothing reported yet is None", state_of(port_n)["panel_settings"].get("log_panel") is None)
     os.makedirs(os.path.join(state_n, "netctl", "status"), exist_ok=True)
-    json.dump({"mb": 100, "used_mb": 12.4, "err": "x", "junk": [1]}, open(os.path.join(state_n, "netctl", "status", "_log.json"), "w"))
-    check("[1] the panel row reads netctl's status file (known keys only)",
-          state_of(port_n)["panel_settings"].get("log_panel") == {"mb": 100, "used_mb": 12.4, "err": "x"},
+    json.dump({"mb": 100, "used_mb": 12.4, "err": "x", "unsupported": True, "junk": [1], "retry": 5},
+              open(os.path.join(state_n, "netctl", "status", "_log.json"), "w"))
+    check("[1] the panel row reads netctl's status file (known keys only, `unsupported` among them)",
+          state_of(port_n)["panel_settings"].get("log_panel") == {"mb": 100, "used_mb": 12.4, "err": "x", "unsupported": True},
           state_of(port_n)["panel_settings"].get("log_panel"))
     px, port_x, _ = start_panel(write_prog("panel"), "nix", {"SWG_PANEL_PLATFORM": "nixos"}); procs.append(px)
     check("[1] a NixOS panel says it has no budget of its own", state_of(port_x)["panel_settings"].get("log_panel") == {"err": "nixos"})
@@ -310,6 +313,9 @@ check("[2] a failing journald restart is said once, however often it is retried"
 check("[2] …and the old size file is back in place, so a restarted node does not read the change as applied",
       "SystemMaxUse=64M" not in open(N.LOG_NS_CONF).read(), open(N.LOG_NS_CONF).read())
 check("[2] …and reported as `err`", "did not restart" in (N._LOG_BUDGET["status"] or {}).get("err", ""), N._LOG_BUDGET["status"])
+N.apply_panel_settings({"log": {"level": "off", "mb": 48}}); N._log_budget()   # exactly the file in force (Off, 48 MB)
+check("[2] back to the size in force after a failure: the error clears (the row no longer reads Not applied)",
+      not (N._LOG_BUDGET["status"] or {}).get("err"), N._LOG_BUDGET["status"])
 RC["rc"] = 0
 
 print("[3] the status")
