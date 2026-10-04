@@ -17254,31 +17254,59 @@ def _wdtt_write_cfgdir(inst, binshared, binp, cfgdir):
 
 SERVERLOG_MAX = 8 << 20     # per supervised server, rotated one deep → at most 2× this on disk
 
-def _rotate_serverlog(path, cap=SERVERLOG_MAX, live=False):
-    """Keep a supervised server's log bounded before it is appended to again.
+def _rotate_serverlog(path, cap=SERVERLOG_MAX):
+    """Keep a supervised server's log bounded: once it reaches `cap`, its last `cap` bytes become `.1` and it is emptied.
 
     server.log is opened "ab" and nothing ever truncated it. A server that crash-loops is relaunched by the
     reconcile every 5s, and one that stays up but spins can log per iteration with no backoff — which is exactly
     how a csqtt on a user's box wrote 9.6G of `[WARN] I/O errors +1` into its docker log and filled the disk.
     Ours is the same shape with no cap at all, so it is the same box-killer waiting on a noisier server.
 
-    Rotate rather than truncate: the tail of the PREVIOUS run is the diagnostic, and the failure paths that read
-    this file back are why it exists. One generation is kept — enough to explain the last failure, bounded enough
-    that it cannot be the thing that fills the disk. os.replace is atomic, so a reader never sees a partial file.
+    Keep a generation rather than only truncating: the tail of the PREVIOUS run is the diagnostic, and the failure
+    paths that read this file back are why it exists. One is kept — enough to explain the last failure, bounded
+    enough that it cannot be the thing that fills the disk.
 
-    `live`: the server is RUNNING and holds the file open. A rename would leave it appending to `.1` for as long as
-    it stays up — so the server that never restarts, the 9.6G case above, was the one this did not bound. Copy the
-    file to `.1` and truncate it in place instead; the server's descriptor is O_APPEND ("ab"), so its next write
-    lands at the new end. Lines written between the copy and the truncate are lost, once per `cap` of output."""
+    Copy-and-truncate, not rename, and called both before a (re)launch and on every loop tick (_cap_serverlogs):
+      · a RUNNING server holds the file open; a rename would leave it appending to `.1` for as long as it stays up,
+        and the server that never restarts — the 9.6G case above — would be the one this did not bound. Its
+        descriptor is O_APPEND ("ab"), so after the truncate its next write lands at the new end;
+      · only the last `cap` bytes are copied, so a log that already filled the disk (written before this cap
+        existed) costs 8 MB to rotate, not a second copy of itself — and the truncate runs even when the copy
+        fails, because a bounded disk outranks the diagnostic;
+      · the copy goes to `.1.tmp` and is renamed over `.1`, so a reader never sees a partial `.1`.
+    Lines written between the copy and the truncate are lost, once per `cap` of output."""
     with contextlib.suppress(Exception):
         if os.path.getsize(path) < cap:
             return
-        if not live:
-            os.replace(path, path + ".1")
-            return
-        shutil.copyfile(path, path + ".1")
-        os.truncate(path, 0)
+        tmp = path + ".1.tmp"
+        try:
+            with open(path, "rb") as src, open(tmp, "wb") as dst:
+                at = max(0, os.fstat(src.fileno()).st_size - cap)
+                src.seek(at)
+                if at:
+                    src.readline()                     # start .1 at a whole line
+                shutil.copyfileobj(src, dst, 1 << 20)
+            os.replace(tmp, path + ".1")
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+        finally:
+            os.truncate(path, 0)
 
+
+def _cap_serverlogs():
+    """docker: bound every supervised WDTT / csqtt server's log, every loop tick — see _rotate_serverlog.
+
+    Here and not in the reconciles: bounding a log is supervision. A reconcile runs only on a valid panel reply, and
+    only for the instances that reply names and whose earlier steps did not fail — so a panel outage, an instance
+    the panel stopped listing, or a reconcile error that repeats every pass would each have left a running server
+    unbounded. A listdir of two directories and a stat per instance."""
+    if NODE_KIND != "docker":
+        return
+    for root in (WDTT_ROOT, CSQTT_ROOT):
+        with contextlib.suppress(OSError):
+            for name in os.listdir(root):
+                _rotate_serverlog(os.path.join(root, name, "server.log"))
 
 def _wdtt_docker_start(inst):
     """(Re)launch the WDTT server for this instance as a supervised child. '' on success (alive after a beat) else error."""
@@ -17299,7 +17327,9 @@ def _wdtt_docker_start(inst):
     if p.poll() is not None:                       # died immediately → surface the log tail
         tail = ""
         with contextlib.suppress(Exception):
-            with open(cfgdir + "/server.log", "rb") as f: tail = f.read()[-240:].decode("utf-8", "replace").replace("\n", " ")
+            with open(cfgdir + "/server.log", "rb") as f:      # the last 240 bytes only: never the whole log into memory
+                f.seek(max(0, os.fstat(f.fileno()).st_size - 240))
+                tail = f.read().decode("utf-8", "replace").replace("\n", " ")
         return ("wdtt exited rc=%s: %s" % (p.returncode, tail.strip()))[:180]
     return ""
 
@@ -18399,8 +18429,6 @@ def reconcile_wdtt(want, remove=None):
                     res["errors"].append(iface + ": " + serr)
                 else:
                     res["changed"] += 1
-            if NODE_KIND == "docker":               # bound the log of a server that stays up (a stat per pass) — see _rotate_serverlog
-                _rotate_serverlog(_wdtt_dir(iface) + "/server.log", live=True)
             inst.pop("_restore_wg_keys", None)   # transient — never persist the restored key material to the record
             have[iface] = inst
         except Exception as e:
@@ -18991,7 +19019,7 @@ def _csqtt_docker_start(inst):
     # blind tail attributes an old error to a new attempt — which is exactly how a bind failure came back
     # reported as a seccomp problem.
     # Rotate BEFORE the offset is taken, so _from stays consistent with the file the child appends to (after a
-    # rotation there is no file, getsize raises, and _from correctly stays 0 = the start of this attempt).
+    # rotation the file is empty, so _from is 0 = the start of this attempt).
     _rotate_serverlog(cfgdir + "/server.log")
     _from = 0
     with contextlib.suppress(Exception):
@@ -19824,8 +19852,6 @@ def reconcile_csqtt(want, remove=None):
                     res["errors"].append(iface + ": " + err)
                 else:
                     res["changed"] += 1
-            if NODE_KIND == "docker":               # bound the log of a server that stays up (a stat per pass) — see _rotate_serverlog
-                _rotate_serverlog(_csqtt_dir(iface) + "/server.log", live=True)
             have[iface] = inst
         except Exception as e:
             res["errors"].append(iface + ": " + str(e))
@@ -20197,7 +20223,10 @@ def main():
     with contextlib.suppress(Exception):
         read_cpu_pct()               # prime the CPU baseline so the first sync reports utilization, not nothing
     os.makedirs(STATE_DIR, exist_ok=True)
-    with contextlib.suppress(OSError):   # what an older build appended swg-sni's output to, unrotated — see _ensure_sni_router
+    # What an older build appended swg-sni's output to, unrotated — see _ensure_sni_router. Here, at start, because it is
+    # the one place every node passes: docker and NixOS nodes never run update.sh.
+    # TODO-LATER (remove two releases after 1.8.9): every node that ran an older build has started this one by then.
+    with contextlib.suppress(OSError):
         os.remove("/var/lib/swg-noded/swg-sni.log")
     last_samples = {}
     last_route_sig = None; last_route_t = 0.0    # gate the heavy routing reconcile (see ROUTING_RECONCILE_EVERY_S)
@@ -20236,6 +20265,7 @@ def main():
         t0 = time.time()
         _LOOP["n"] += 1                             # new loop → per-loop caches (nft table render) refresh
         _reap_orphans()                             # PID 1 in a container inherits orphans nothing else collects
+        _cap_serverlogs()                           # docker: bound each supervised server's log, panel or no panel
         _relay_plan, _relay_sync_ok = None, False   # the relay watchdog runs below whatever happens in between
         if t0 - last_verify_t >= VERIFY_EVERY_S:    # periodic drift heal: force the next routing pass to re-assert
             _force_reverify(); last_route_sig = None   # (drop sig-markers + un-gate the routing reconcile this cycle)

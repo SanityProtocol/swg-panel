@@ -41,6 +41,7 @@ Run:  swg-sni --queue 0 --map /var/lib/swg-noded/sni-map.json --table swg_smart
 Env:  SWG_SNI_QUEUE, SWG_SNI_MAP, SWG_SNI_TABLE (flags win).
 """
 import argparse
+import atexit
 import collections
 import json
 import os
@@ -86,6 +87,95 @@ def _msg(msg_type, res_id, *attrs):
     hdr = struct.pack("=IHHII", total, msg_type, NLM_F_REQUEST, 0, 0)
     return hdr + body
 
+
+
+# ── output ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+# Every line goes through say(), which only queues it; a writer thread does the I/O. Our stdout is swg-noded's own —
+# a journald stream on bare metal, the container's log in docker (docs/LOGS-PLAN.md P1a) — and a stream can block
+# (journald stalled) or fail (a closed pipe). Most lines are printed on the PACKET path: on_packet → _reload, and a
+# newly seen host. A write that blocked there would stall the queue, and fail-open would then pass packets with no
+# verdict — Block-by-name included; one that raised would skip this packet's verdict the same way. Queued, the packet
+# path can neither block nor raise on output. Bounded twice: SAY_MAX lines waiting, SAY_RATE written a second —
+# a burst (a learned set recreated → every address relearned) would otherwise count against swg-noded's journald
+# rate limit, which drops ITS lines too once spent. What does not fit is counted and said in one line.
+SAY_MAX, SAY_RATE = 1000, 100
+_SAY = {"q": collections.deque(), "dropped": 0, "wake": threading.Event(), "thread": None, "lock": threading.Lock()}
+
+
+def _say_write(text):
+    """Write `text` to stdout's file descriptor directly. NOT sys.stdout.write: the buffered writer takes a lock, and a
+    daemon thread holding it while the interpreter shuts down makes Python abort ("could not acquire lock for
+    <stdout> at interpreter shutdown") — measured with this thread on tests/sni_learn_refresh_selftest.py. os.write
+    takes no Python lock. A stdout with no descriptor (a test's stand-in) is written the ordinary way."""
+    out = sys.stdout
+    try:
+        fd = out.fileno()
+    except (AttributeError, OSError, ValueError):     # io.UnsupportedOperation is an OSError and a ValueError
+        out.write(text)
+        out.flush()
+        return
+    data = text.encode("utf-8", "replace")
+    while data:
+        data = data[os.write(fd, data):]
+
+
+def _say_loop():
+    q, wake = _SAY["q"], _SAY["wake"]
+    while True:
+        wake.wait(1.0)
+        wake.clear()
+        n = 0
+        while q and n < SAY_RATE:
+            line = q.popleft()
+            n += 1
+            try:
+                _say_write(line + "\n")
+            except Exception:
+                pass
+        dropped, _SAY["dropped"] = _SAY["dropped"], 0
+        if dropped:
+            try:
+                _say_write("swg-sni: %d lines not written (more than %d a second)\n" % (dropped, SAY_RATE))
+            except Exception:
+                pass
+        if q:
+            time.sleep(1.0)                            # SAY_RATE is a rate: the rest waits for the next second…
+            wake.set()                                 # …and no longer, even if nothing new arrives
+
+
+def _say_drain():
+    """At exit, write what is still queued: the lines just before a crash are the ones that explain it (a failed map
+    reload queued, then NFQueue() raising). Bounded to a second, in a thread of its own, because the stream may be
+    the very thing that is stuck — a stalled journald must not hold the process from exiting. A SIGTERM with the
+    default handler ends the process without this; the queue is normally empty within a second of each line."""
+    def run():
+        q = _SAY["q"]
+        while q:
+            try:
+                _say_write(q.popleft() + "\n")
+            except Exception:
+                return
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(1.0)
+
+
+def say(*parts, **_print_kwargs):
+    """print(), queued: never blocks, never raises. Takes print's arguments (joined by a space; flush= is ignored)."""
+    try:
+        if _SAY["thread"] is None:
+            with _SAY["lock"]:
+                if _SAY["thread"] is None:
+                    _SAY["thread"] = threading.Thread(target=_say_loop, daemon=True)
+                    _SAY["thread"].start()
+                    atexit.register(_say_drain)
+        if len(_SAY["q"]) >= SAY_MAX:
+            _SAY["dropped"] += 1
+            return
+        _SAY["q"].append(" ".join(str(p) for p in parts))
+        _SAY["wake"].set()
+    except Exception:
+        pass
 
 class NFQueue:
     """Minimal NFQUEUE reader over raw netlink. Bind a queue, receive full packets, ACCEPT them."""
@@ -476,9 +566,9 @@ class Classifier:
             try:
                 with open(self.map_path) as f:
                     self.dom2cat = _index(json.load(f))   # {category: [domain, ...]}
-                print(f"swg-sni: loaded {len(self.dom2cat)} domains", flush=True)
+                say(f"swg-sni: loaded {len(self.dom2cat)} domains", flush=True)
             except Exception as e:
-                print("swg-sni: map reload failed:", e, flush=True)
+                say("swg-sni: map reload failed:", e, flush=True)
         pmt = _mtime(self.pat_path)
         if pmt != self.pat_mtime:
             self.pat_mtime = pmt
@@ -489,12 +579,12 @@ class Classifier:
                     with open(self.pat_path) as f:
                         pdata = json.load(f) or {}     # {kind: {category: [operand, ...]}}
                     self.pats = {k: _bucket(k, pdata.get(k)) for k in SNI_KINDS}
-                    print("swg-sni: loaded patterns " +
+                    say("swg-sni: loaded patterns " +
                           ", ".join("%d %s" % (len(v), k) for k, v in self.pats.items()) +
                           (" (ignoring %s)" % ", ".join(sorted(set(pdata) - set(SNI_KINDS)))
                            if set(pdata) - set(SNI_KINDS) else ""), flush=True)
                 except Exception as e:
-                    print("swg-sni: pattern reload failed:", e, flush=True)
+                    say("swg-sni: pattern reload failed:", e, flush=True)
         bmt = _mtime(self.blocks_path) if self.blocks_path else None   # the per-source verdicts — the third input, gated alike
         if bmt != self.blocks_mtime:
             self.blocks_mtime = bmt
@@ -504,10 +594,10 @@ class Classifier:
                     with open(self.blocks_path) as f:
                         data = json.load(f) or {}
                 except Exception as e:
-                    print("swg-sni: blocks reload failed:", e, flush=True)
+                    say("swg-sni: blocks reload failed:", e, flush=True)
             self.bsrc, self.barr, self.bsel, self.nolearn, self.bmark = _blocks_parse(data)
             if bmt is not None:
-                print("swg-sni: loaded blocks for %d sources%s, %d categories not learned"
+                say("swg-sni: loaded blocks for %d sources%s, %d categories not learned"
                       % (len(self.bsrc), " + arrivals" if self.barr else "", len(self.nolearn)), flush=True)
         smt = _mtime(self.sets_path) if self.sets_path else None
         if smt != self.sets_mtime:                     # a learned set RECREATED since we wrote into it is empty: forget what
@@ -518,13 +608,13 @@ class Classifier:
                     with open(self.sets_path) as f:
                         gen = {str(k): float(v) for k, v in (json.load(f) or {}).items()}
                 except Exception as e:
-                    print("swg-sni: sets reload failed:", e, flush=True)
+                    say("swg-sni: sets reload failed:", e, flush=True)
                     gen = dict(self.set_gen)
             gone = {c for c, t in gen.items() if c in self.set_gen and self.set_gen[c] != t}
             if gone:
                 with self._lock:
                     self.seen = {k: v for k, v in self.seen.items() if k[1] not in gone}
-                print("swg-sni: learned sets recreated for %s — their addresses are written again" % ", ".join(sorted(gone)), flush=True)
+                say("swg-sni: learned sets recreated for %s — their addresses are written again" % ", ".join(sorted(gone)), flush=True)
             self.set_gen = gen
 
     def _match(self, host):
@@ -679,7 +769,7 @@ class Classifier:
                     self._blk_dirty = True             # longer than the next mirror is due in (see _flush_loop)
                     self._wake.set()
             if new_host:                               # a line per host, not per connection: trackers are the busiest names
-                print(f"swg-sni: {host} → blocked ({', '.join(map(str, cats))})", flush=True)
+                say(f"swg-sni: {host} → blocked ({', '.join(map(str, cats))})", flush=True)
         first = False                                      # any category learning this dst for the first time earns the RST
         with self._lock:
             idle = not self._pending                       # the flusher sleeps while nothing is queued (see _flush_loop)
@@ -700,7 +790,7 @@ class Classifier:
         if blk:                                             # the block wins over a learn's reset: both refuse this connection,
             return blk                                      # and only this mark reaches the blocked counter (the learn is kept)
         if first:
-            print(f"swg-sni: {host} → {', '.join(map(str, cats))}  (+{dst})", flush=True)
+            say(f"swg-sni: {host} → {', '.join(map(str, cats))}  (+{dst})", flush=True)
             return self.reset_mark                          # FIRST sight of this dst: RST this flow so the client reconnects —
             #                                                 the retry's SYN matches catl_ (added by the flusher) and routes.
         return None                                         # refresh only → the dst already routes, don't disturb the flow
@@ -921,7 +1011,7 @@ class Classifier:
                 with self._lock:
                     for ip in ips:
                         self.seen.pop((ip, cat), None)
-                print("swg-sni: batch add failed for %s (%d ips): %s" % (cat, len(ips), (r.stderr or "").strip()[:120]), flush=True)
+                say("swg-sni: batch add failed for %s (%d ips): %s" % (cat, len(ips), (r.stderr or "").strip()[:120]), flush=True)
 
 
 def main():
@@ -934,7 +1024,7 @@ def main():
     a = ap.parse_args()
     cls = Classifier(a.map, a.table, a.reset_mark, a.learn_ttl)
     q = NFQueue(a.queue)
-    print(f"swg-sni: bound queue {a.queue}, table {a.table}, map {a.map}, reset-mark {a.reset_mark:#x}, learn-ttl {a.learn_ttl}s", flush=True)
+    say(f"swg-sni: bound queue {a.queue}, table {a.table}, map {a.map}, reset-mark {a.reset_mark:#x}, learn-ttl {a.learn_ttl}s", flush=True)
     q.loop(cls.on_packet)
 
 
