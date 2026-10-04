@@ -639,7 +639,8 @@ def _bounce(ic, iface, tool, by_unit):
 
 def _log_no_detail():
     """Below Info a unit's own lines are dropped by its LogLevelMax (docs/LOGS-PLAN.md §1), so a bare reason is the
-    level's doing: say so. swg-noded hands the level in force down as SWG_LOG_LEVEL (a syslog priority, -1 = Off)."""
+    level's doing: say so. swg-noded hands the level in force down in the request (`log_level`, a syslog priority,
+    -1 = Off), which main() puts in SWG_LOG_LEVEL."""
     try:
         lvl = int(os.environ.get("SWG_LOG_LEVEL", "6"))
     except ValueError:
@@ -1956,6 +1957,8 @@ def main():
     except Exception as e:
         respond(False, None, error=f"invalid JSON request: {e}", code="bad_request")
     op = req.get("op")
+    if isinstance(req.get("log_level"), int):        # swg-noded's level (sudo would strip it from the environment)
+        os.environ["SWG_LOG_LEVEL"] = str(req["log_level"])
     try:
         cfg = load_config()
         if op in READ_OPS:

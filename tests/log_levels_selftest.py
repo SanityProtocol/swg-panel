@@ -29,6 +29,10 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
      p2plog       the P2P rules keep `log` whatever the level
      nohonest     turn verify gives a bare reason below Info
      snilevel     swg-sni queues a line above the level
+     snithread    swg-sni starts its writer (the level re-reader) only for a line that passes
+     bootbase     a restart reads the level in force back (Debug over Off comes back as Info)
+     agentenv     the agent gets the level only from the environment (sudo strips it)
+     updatelog    swg-update's own output is capped away at Info
 """
 import importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time, types
 import urllib.error, urllib.request
@@ -61,11 +65,16 @@ PLANTS = {   # (program, anchor, replacement)
     "bootdebug": ("noded", '''        log_set(min(v, LOG_INFO))''', '''        log_set(v, -1 if v == LOG_DEBUG else 0)'''),
     "churn": ("noded", '''        if have == target:\n            continue\n''', ""),
     "floor": ("noded", '''"warning" if lvl < LOG_INFO else None''', '''"err" if lvl < LOG_INFO else None'''),
-    "timercap": ("netctl", '''base or ("notice" if lvl == LOG_INFO else None)''', '''base'''),
+    "timercap": ("netctl", '''"notice" if lvl == LOG_INFO else None''', '''None'''),
     "p2plog": ("noded", '''logged=log_level() >= LOG_INFO)''', '''logged=True)'''),
     "nohonest": ("noded", '''    return "service didn't stay up: " + reason[:150] + (" — " + nd if nd else "")''',
                  '''    return "service didn't stay up: " + reason[:150]'''),
     "snilevel": ("sni", '''        if prio > _SAY["level"]:\n            return\n''', ""),
+    "snithread": ("sni", '''        if _SAY["thread"] is None:                   # BEFORE the level check''',
+                  '''        if prio > _SAY["level"]:\n            return\n        if _SAY["thread"] is None:                   # BEFORE the level check'''),
+    "bootbase": ("noded", '''            v = int(f.read().split()[-1])''', '''            v = int(f.read().split()[0])'''),
+    "agentenv": ("noded", '''    payload = {**payload, "log_level": log_level()}\n''', ""),
+    "updatelog": ("netctl", '''        caps["swg-update.service"] += "SyslogLevel=notice\\n"\n''', "        pass\n"),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
 if PLANT:
@@ -292,15 +301,16 @@ N.NODE_KIND = "docker"                              # [3] is the file only; the 
 lf = N.LOG_LEVEL_FILE
 N.log_set(N.LOG_WARNING)
 N._log_follow({})
-check("[3] the children's file holds the level", open(lf).read() == "4\n" and os.environ.get("SWG_LOG_LEVEL") == "4")
+check("[3] the children's file holds the level in force, then the base", open(lf).read() == "4 4\n"
+      and os.environ.get("SWG_LOG_LEVEL") == "4", open(lf).read())
 os.utime(lf, (1, 1))
 N._log_follow({})
 check("[3] …written only when it changes", os.stat(lf).st_mtime == 1)
-for v, want in (("7\n", N.LOG_INFO), ("-1\n", N.LOG_OFF), ("3\n", N.LOG_ERR)):
+for v, want in (("7\n", N.LOG_INFO), ("-1\n", N.LOG_OFF), ("3\n", N.LOG_ERR), ("7 -1\n", N.LOG_OFF), ("7 4\n", N.LOG_WARNING)):
     open(lf, "w").write(v)
     N.log_set(N.LOG_INFO)
     N._log_boot()
-    check("[3] a restart reads the file back (%s → %d), Debug as Info" % (v.strip(), want), N.log_level() == want,
+    check("[3] a restart reads the base back (%s → %d); Debug never comes back" % (v.strip(), want), N.log_level() == want,
           N.log_level())
 
 # ── [4] the drop-ins ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -332,7 +342,8 @@ N._log_follow(CFG)
 d = dropins()
 want = {u + ".d/swg-log.conf" for u in N.LOG_DROPIN_UNITS} | {"awg-quick@awg0.service.d/swg-log.conf",
                                                               "wg-quick@wg1.service.d/swg-log.conf"}
-check("[4] Errors: every unit, prefix drop-ins + one per interface of ours", set(d) == want, sorted(set(d) ^ want))
+check("[4] Errors: third-party prefix drop-ins + one per interface of ours, none for our own long-running units",
+      set(d) == want and not any(k.startswith(("swg-noded", "swg-relay")) for k in d), sorted(set(d) ^ want))
 check("[4] …capped at warning, never err (systemd's crash lines)",
       all(v == "[Service]\nLogLevelMax=warning\n" for v in d.values()), set(d.values()))
 check("[4] …and one daemon-reload", len(RELOADS) == 1, RELOADS)
@@ -356,12 +367,14 @@ N.run = _real_run
 NC = load("netctl")
 NC.log_set(NC.LOG_INFO)
 caps = NC.log_unit_caps(NC.LOG_INFO)
-check("[4] netctl at Info: panel and sub uncapped, the timer units at notice",
-      caps == {"swg-panel-server.service": None, "swg-sub.service": None, "swg-netctl.service": "notice",
-               "swg-update.service": "notice"}, caps)
+check("[4] netctl at Info: only the two timer units, at notice (the panel and swg-sub filter themselves)",
+      set(caps) == {"swg-netctl.service", "swg-update.service"} and caps["swg-netctl.service"] == "LogLevelMax=notice\n", caps)
+check("[4] …and swg-update's own output is filed at notice, so the cap keeps why an update failed",
+      caps.get("swg-update.service") == "LogLevelMax=notice\nSyslogLevel=notice\n", caps)
 check("[4] netctl at Debug: nothing capped", set(NC.log_unit_caps(NC.LOG_DEBUG).values()) == {None})
-check("[4] netctl at Errors / Off: warning / emerg everywhere",
-      set(NC.log_unit_caps(NC.LOG_ERR).values()) == {"warning"} and set(NC.log_unit_caps(NC.LOG_OFF).values()) == {"emerg"})
+check("[4] netctl at Errors / Off: warning / emerg",
+      set(NC.log_unit_caps(NC.LOG_ERR).values()) == {"LogLevelMax=warning\n"}
+      and set(NC.log_unit_caps(NC.LOG_OFF).values()) == {"LogLevelMax=emerg\n"})
 PS = os.path.join(TMP, "netctl-state"); os.makedirs(PS)
 NC.STATE_DIR = PS
 json.dump({"log_level": "warning", "log_debug_until": int(time.time()) + 600}, open(os.path.join(PS, "panel-settings.json"), "w"))
@@ -377,7 +390,7 @@ NC.run = lambda argv, **kw: (NR.append(argv), (0, ""))[1]
 NC.log_dropins()
 NC.log_dropins()
 nfiles = sorted(os.listdir(ND))
-check("[4] netctl writes the panel box's four, once, and reloads once",
+check("[4] netctl writes the timer units' two, once, and reloads once",
       nfiles == sorted(u + ".d" for u in caps) and NR == [["systemctl", "daemon-reload"]], (nfiles, NR))
 
 # ── [5] P2P ─────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -443,7 +456,15 @@ try:
     msg = ""
 except NC.Reject as e:
     msg = str(e)
-check("[6] netctl status tail at Off says why it shows no lines", msg.endswith("no log lines (logging is off)"), msg)
+check("[6] netctl status tail at Off says why it shows no lines", msg.endswith("no detail (logging is off)"), msg)
+SENT = []
+N.run = lambda args, input_text=None, timeout=20: (SENT.append(json.loads(input_text)),
+                                                    types.SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr=""))[1]
+N.log_set(N.LOG_OFF)
+N.run_agent("/x/swg-agent", True, {"op": "list-peers"})
+N.run = _real_run
+check("[6] the level reaches the agent in its request (sudo -n strips the environment)",
+      SENT and SENT[0].get("log_level") == N.LOG_OFF, SENT)
 
 # ── [7] swg-sni ─────────────────────────────────────────────────────────────────────────────────────────────────────
 print("[7] swg-sni")
@@ -452,6 +473,13 @@ open(lvl_file, "w").write("6\n")
 S = load("sni", {"SWG_LOG_LEVEL_FILE": lvl_file})
 S.sys = types.SimpleNamespace(stdout=io.StringIO())   # its writer thread writes there, not into this test's output
 check("[7] it starts at the level in the file", S._SAY["level"] == 6)
+open(lvl_file, "w").write("4 4\n")
+S0 = load("sni", {"SWG_LOG_LEVEL_FILE": lvl_file})
+S0.sys = types.SimpleNamespace(stdout=io.StringIO())
+S0.say(S0.LOG_INFO, "swg-sni: bound queue …")
+check("[7] started below Info, its first line dropped, the writer that re-reads the level runs anyway",
+      S0._SAY["level"] == 4 and S0._SAY["thread"] is not None and len(S0._SAY["q"]) == 0)
+open(lvl_file, "w").write("6 6\n")
 S.say(S.LOG_DEBUG, "swg-sni: %s → %s  (+%s)", "example.org", S._Join(["ads"]), "1.2.3.4")
 check("[7] a Debug line at Info is not even queued", len(S._SAY["q"]) == 0, list(S._SAY["q"]))
 open(lvl_file, "w").write("7\n")

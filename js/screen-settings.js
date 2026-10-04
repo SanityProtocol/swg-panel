@@ -1976,7 +1976,8 @@ export function PanelSettingsScreen() {
   const logBase = ps.log_level || "info";       // the level Debug returns to
   const logSaved = () => (ps.log_debug_left ? "debug" : logBase);
   const logShown = logEdit ? logEdit.lvl : logSaved();
-  const logForShown = (logEdit && logEdit.for) || (ps.log_debug_left === -1 ? "-1" : ps.log_debug_left > 3600 ? "86400" : "3600");
+  const logForSaved = ps.log_debug_left === -1 ? "-1" : ps.log_debug_left > 3600 ? "86400" : "3600";
+  const logForShown = (logEdit && logEdit.for) || logForSaved;
   const logDirty = () => !!logEdit && (logEdit.lvl !== logSaved() || (logEdit.lvl === "debug" && logEdit.for != null));
   const pickLog = v => setLogEdit(v === logSaved() ? null : { lvl: v, for: v === "debug" ? "3600" : null });
   // On unless an operator has switched it off — which closes these networks rather than merely hiding them.
@@ -3107,7 +3108,7 @@ const sectionLabel = k => ({
             : html`<div class="hint">${logLevelHint(logShown)}</div>`}
           ${logShown === "debug" ? html`<div class="field logdebug"><label>${T("Turn off debugging after")}</label>
             <div class="logdebug-row">
-              <${Dropdown} className="logdebug-dd" value=${logForShown} onChange=${v => setLogEdit({ lvl: "debug", for: v })} ariaLabel=${T("Turn off debugging after")}
+              <${Dropdown} className="logdebug-dd" value=${logForShown} onChange=${v => setLogEdit(logSaved() === "debug" && v === logForSaved ? null : { lvl: "debug", for: v })} ariaLabel=${T("Turn off debugging after")}
                 options=${[{ value: "3600", label: T("1 hour") }, { value: "86400", label: T("24 hours") }, { value: "-1", label: T("debug|never") }]}/>
               ${!logEdit && ps.log_debug_left > 0 ? html`<span class="logdebug-left">${T("{v1} left", { v1: logLeftLabel(ps.log_debug_left) })}</span>` : null}
             </div>

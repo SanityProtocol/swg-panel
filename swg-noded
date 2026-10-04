@@ -147,12 +147,13 @@ os.environ["SWG_LOG_LEVEL_FILE"] = LOG_LEVEL_FILE
 
 
 def _log_boot():
-    """The level before the first sync: the one the panel last set, read back from that file — so Off holds from this
-    process's first line, not from its first sync. Debug comes back as Info: only the panel starts Debug, and a restart
-    that cannot reach the panel must not leave it on with no clock counting it down."""
+    """The level before the first sync: the BASE the panel last set, read back from that file ("<in force> <base>") —
+    so Off holds from this process's first line, not from its first sync, even if Debug was running on top of it. Debug
+    itself does not come back: only the panel starts it, and a restart that cannot reach the panel must not leave it on
+    with no clock counting it down. A file from before the base was written holds one number; Debug there reads as Info."""
     try:
         with open(LOG_LEVEL_FILE) as f:
-            v = int(f.read().split()[0])
+            v = int(f.read().split()[-1])
     except (OSError, ValueError, IndexError):
         return
     if v in LOG_LEVELS.values():
@@ -1203,6 +1204,9 @@ def run_agent(agent, sudo, payload, timeout=20, scope=None):
         # A transient scope of its own: swg-noded's restart (an update pressed meanwhile) kills its whole cgroup, and an
         # op that must finish once begun — the module reload — would die between the unload and the bring-up.
         prefix = ["systemd-run", "--scope", "--quiet", "--collect", "--unit=" + scope] + prefix
+    # The level rides in the request: under `sudo -n`, env_reset strips SWG_LOG_LEVEL (the agent uses it to say a
+    # failure's detail is missing because of the level). An agent from before levels ignores the key.
+    payload = {**payload, "log_level": log_level()}
     try:
         p = run(prefix + [agent], input_text=json.dumps(payload), timeout=timeout)
     except Exception as e:
@@ -7122,9 +7126,11 @@ def apply_panel_settings(pan):
 # process writes them again on its first pass.
 LOG_DROPIN_DIR = "/run/systemd/system"
 LOG_DROPIN_FILE = "swg-log.conf"
-LOG_DROPIN_UNITS = ("swg-noded.service", "swg-relay@.service", "vk-turn-proxy-.service", "swg-wdtt-.service",
-                    "swg-csqtt-.service")
-_LOG_FOLLOWED = {"lvl": None, "units": None}
+# ⚠️ THIRD-PARTY UNITS ONLY. A cap is fixed when a unit starts, so on a long-running unit of ours (swg-noded, swg-relay@)
+# it would outlive the level: a node restarted at Warnings would keep journald dropping its own Info and Debug lines after
+# the operator turned Debug on — the very process being debugged (code review, 2026-10-04). Ours filter themselves.
+LOG_DROPIN_UNITS = ("vk-turn-proxy-.service", "swg-wdtt-.service", "swg-csqtt-.service")
+_LOG_FOLLOWED = {"lvl": None, "units": None, "err": None}
 
 
 def log_unit_max(lvl):
@@ -7150,13 +7156,13 @@ def _log_follow(node_cfg):
     ins — each only when it changed, so a steady node touches nothing. Debug's expiry needs no event: log_level() turns
     it back here on the first pass after its time is up."""
     lvl = log_level()
-    if lvl != _LOG_FOLLOWED["lvl"]:
+    if (lvl, _LOG["level"]) != _LOG_FOLLOWED["lvl"]:
         os.environ["SWG_LOG_LEVEL"] = str(lvl)
-        try:
+        try:                                         # "<in force> <base>": children read the first, _log_boot the second
             with open(LOG_LEVEL_FILE + ".tmp", "w") as f:
-                f.write("%d\n" % lvl)
+                f.write("%d %d\n" % (lvl, _LOG["level"]))
             os.replace(LOG_LEVEL_FILE + ".tmp", LOG_LEVEL_FILE)
-            _LOG_FOLLOWED["lvl"] = lvl
+            _LOG_FOLLOWED["lvl"] = (lvl, _LOG["level"])
         except OSError as e:
             log(LOG_WARNING, "log level: could not write %s: %s", LOG_LEVEL_FILE, e)
     if NODE_KIND == "docker" or not os.path.isdir(LOG_DROPIN_DIR):
@@ -7204,9 +7210,11 @@ def _log_follow(node_cfg):
         log(LOG_INFO, "log level: %d unit drop-in(s) %s — each unit takes it at its next start",
             changed, ("set to LogLevelMax=" + cap) if cap else "removed")
     if err:
-        log(LOG_WARNING, "log level: %s — retried on the next pass", err)
+        if err != _LOG_FOLLOWED["err"]:              # once per distinct failure: retried every pass, said once
+            log(LOG_WARNING, "log level: %s — retried on every pass, said once", err)
+        _LOG_FOLLOWED["err"] = err
     else:
-        _LOG_FOLLOWED["units"] = (cap, units)
+        _LOG_FOLLOWED["units"], _LOG_FOLLOWED["err"] = (cap, units), None
 
 
 def _apply_routing_reset(reset_val, res, learned_val=None):

@@ -32436,7 +32436,8 @@ def main():
     # that never exits may never flush it — the "[no auth!]" banner was confirmed ABSENT from the journal of
     # a live box that was serving its roster unauthenticated. A warning that cannot reach the journal is not
     # a warning.
-    log(LOG_INFO, f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
+    # …and when it carries one of those warnings it IS one: at Info it would be dropped by a fleet set to Warnings.
+    log(LOG_WARNING if auth_note else LOG_INFO, f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
     if AUTH_UNUSABLE:
         # root:swg 0640 — what mk_auth_file, swg-passwd and update.sh's healer all produce, so the advice
         # here and the repair an update performs say the same thing.

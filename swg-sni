@@ -224,14 +224,14 @@ def _say_drain():
 def say(prio, fmt, *args):
     """log(prio, fmt, *args), queued: never blocks, never raises, and never formats a line the level drops."""
     try:
-        if prio > _SAY["level"]:
-            return
-        if _SAY["thread"] is None:
-            with _SAY["lock"]:
+        if _SAY["thread"] is None:                   # BEFORE the level check: the thread is also what re-reads the level,
+            with _SAY["lock"]:                       # so a classifier started below Info must still follow a raise
                 if _SAY["thread"] is None:
                     _SAY["thread"] = threading.Thread(target=_say_loop, daemon=True)
                     _SAY["thread"].start()
                     atexit.register(_say_drain)
+        if prio > _SAY["level"]:
+            return
         if len(_SAY["q"]) >= SAY_MAX:
             _SAY["dropped"] += 1
             return

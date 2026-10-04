@@ -237,8 +237,8 @@ def run(argv, env=None, timeout=None):
     stalls every Access operation behind it (binds, certificates, restarts). On expiry the command's whole
     process group is killed — acme.sh's standalone mode runs its own listener child on :80, which a kill of
     acme.sh alone would leave holding the port — and rc 124 is returned, as timeout(1) does."""
+    log(LOG_INFO if DRYRUN else LOG_DEBUG, "exec: %s", " ".join(argv))   # before: a command that hangs is still named
     if DRYRUN:
-        log(LOG_INFO, "exec: " + " ".join(argv))
         return 0, "(dry-run)"
     p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                          start_new_session=timeout is not None)
@@ -250,10 +250,11 @@ def run(argv, env=None, timeout=None):
             os.killpg(p.pid, signal.SIGKILL)
         out, _ = p.communicate()
         rc, out = 124, (out or "") + "\n(stopped: still running after %d s)" % timeout
-    # Logged once it has run: a failed command and its output at notice, so they stay at Info (this unit's own cap is
-    # notice there — see log_dropins), and a command that succeeded at debug.
+    # A failed command is named again with its output at notice, so both stay at Info (this unit's cap is notice
+    # there — see log_unit_caps); a command that succeeded keeps its output at debug.
     pr = LOG_NOTICE if rc else LOG_DEBUG
-    log(pr, "exec: %s (rc %d)", " ".join(argv), rc)
+    if rc:
+        log(pr, "exec failed (rc %d): %s", rc, " ".join(argv))
     if out:
         for line in out.rstrip().splitlines():
             log(pr, "  | %s", line)
@@ -638,7 +639,7 @@ def do_restart(service):
             _r, detail = run(["systemctl", "--no-pager", "-n", "6", "status", unit])
             # Below Info the unit's own lines are not stored (its LogLevelMax), so the status shows none: say why.
             _lv = log_level()
-            nd = "" if _lv >= LOG_INFO else " — no log lines (logging is %s)" % (
+            nd = "" if _lv >= LOG_INFO else " — no detail (logging is %s)" % (
                 "off" if _lv == LOG_OFF else "set to errors" if _lv == LOG_ERR else "set to warnings")
             raise Reject("%s did not stay up after restart (the address is likely already in use): %s%s"
                          % (unit, (detail or "").strip()[-300:], nd))
@@ -1460,7 +1461,9 @@ def _sweep(dir_fd, older_than, keep=lambda n: False):
 # reboot (or an uninstalled build) leaves nothing behind; the next tick writes them again.
 LOG_DROPIN_DIR = os.environ.get("SWG_LOG_DROPIN_DIR") or "/run/systemd/system"
 LOG_DROPIN_FILE = "swg-log.conf"
-LOG_PANEL_UNITS = ("swg-panel-server.service", "swg-sub.service")
+# Only the two TIMER units. A cap is fixed when a unit starts, and these start every 10–30 s, so it follows the level
+# within seconds. The panel and swg-sub run for weeks and filter their own lines: a cap there would outlive the level
+# and swallow their Debug after a raise (code review, 2026-10-04).
 LOG_TIMER_UNITS = ("swg-netctl.service", "swg-update.service")
 
 
@@ -1479,13 +1482,15 @@ def log_from_settings():
 
 
 def log_unit_caps(lvl):
-    """{unit: LogLevelMax or None} at level `lvl`. panel and sub: Off → emerg; below Info → warning (systemd's own crash
-    lines are notice/warning, and at `err` a crash would leave none — P0 T1); Info and Debug → no cap. netctl and update
-    are timer units, and every run writes systemd's Starting/Finished lines — 62 % of a box's lines (P0 T1) — so they
-    keep `notice` at Info as well, and run uncapped only at Debug, which the operator turns on for a while."""
-    base = "emerg" if lvl == LOG_OFF else "warning" if lvl < LOG_INFO else None
-    caps = {u: base for u in LOG_PANEL_UNITS}
-    caps.update({u: base or ("notice" if lvl == LOG_INFO else None) for u in LOG_TIMER_UNITS})
+    """{unit: drop-in body or None} at level `lvl`. Off → emerg; below Info → warning (systemd's own crash lines are
+    notice/warning, and at `err` a crash would leave none — P0 T1); Debug → none. At Info → notice: every timer run
+    writes systemd's Starting/Finished lines, 62 % of a box's lines (P0 T1). swg-update also gets SyslogLevel=notice
+    there: the one-click update runs INSIDE that unit and prints bare lines, which journald would file at info and
+    the cap drop — exactly the lines that say why an update failed (code review, 2026-10-04)."""
+    cap = "emerg" if lvl == LOG_OFF else "warning" if lvl < LOG_INFO else "notice" if lvl == LOG_INFO else None
+    caps = {u: ("LogLevelMax=%s\n" % cap) if cap else None for u in LOG_TIMER_UNITS}
+    if cap == "notice":
+        caps["swg-update.service"] += "SyslogLevel=notice\n"
     return caps
 
 
@@ -1495,9 +1500,9 @@ def log_dropins():
     if DRYRUN or not os.path.isdir(LOG_DROPIN_DIR):
         return
     changed = 0
-    for unit, cap in log_unit_caps(log_level()).items():
+    for unit, body in log_unit_caps(log_level()).items():
         path = os.path.join(LOG_DROPIN_DIR, unit + ".d", LOG_DROPIN_FILE)
-        want = ("[Service]\nLogLevelMax=%s\n" % cap) if cap else None
+        want = ("[Service]\n" + body) if body else None
         try:
             with open(path) as f:
                 have = f.read()
