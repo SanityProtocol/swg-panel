@@ -33,7 +33,10 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
      bootbase     a restart reads the level in force back (Debug over Off comes back as Info)
      agentenv     the agent gets the level only from the environment (sudo strips it)
      updatelog    swg-update's own output is capped away at Info
-     hostshwarn   a host command's non-zero exit is a warning again (a stopped server, asked every sync)
+     hostshwarn   a probe's non-zero exit is a warning (a stopped server, asked every sync)
+     hostshquiet  a failed host command nobody checks is only Debug
+     latelevel    the panel applies the fleet's level only after its start-up migrations have logged
+     dryquiet     a netctl dry run follows the fleet's level (and prints nothing below Info)
      subfixed     swg-sub logs at Info whatever the fleet's level
      subserve     the panel leaves the level out of swg-sub's serve.json
   [8] swg-sub follows the fleet's level from subs/serve.json (it cannot read panel-settings.json).
@@ -78,8 +81,10 @@ PLANTS = {   # (program, anchor, replacement)
                   '''        if prio > _SAY["level"]:\n            return\n        if _SAY["thread"] is None:                   # BEFORE the level check'''),
     "bootbase": ("noded", '''            v = int(f.read().split()[-1])''', '''            v = int(f.read().split()[0])'''),
     "agentenv": ("noded", '''    payload = {**payload, "log_level": log_level()}\n''', ""),
-    "hostshwarn": ("noded", '''        log(LOG_DEBUG, "host_sh rc=%s :: %s :: %s", r.returncode''',
-                   '''        log(LOG_WARNING, "host_sh rc=%s :: %s :: %s", r.returncode'''),
+    "hostshwarn": ("noded", '''log(LOG_DEBUG if probe else LOG_WARNING, "host_sh rc=%s''', '''log(LOG_WARNING, "host_sh rc=%s'''),
+    "hostshquiet": ("noded", '''log(LOG_DEBUG if probe else LOG_WARNING, "host_sh rc=%s''', '''log(LOG_DEBUG, "host_sh rc=%s'''),
+    "latelevel": ("panel", '''        panel_log_apply(load_json(fleet.get("panel_settings_path")''', '''        (lambda *a: None)(load_json(fleet.get("panel_settings_path")'''),
+    "dryquiet": ("netctl", '''    if not DRYRUN:                                   # a dry run''', '''    if True:                                   # a dry run'''),
     "subfixed": ("sub", '''    if not _LOG_SERVE["path"] or time.monotonic()''', '''    if True or time.monotonic()'''),
     "subserve": ("panel", '''           "log": {"level": ps.get("log_level") if ps.get("log_level") in LOG_BASE_LEVELS else "info",''',
                  '''           "_log": {"level": ps.get("log_level") if ps.get("log_level") in LOG_BASE_LEVELS else "info",'''),
@@ -191,9 +196,11 @@ N.log_set(N.LOG_INFO)
 print("[2] the wire")
 
 
-def start_panel(src_path, tag):
+def start_panel(src_path, tag, settings=None):
     d = os.path.join(TMP, "panel-" + tag)
     state = os.path.join(d, "state"); os.makedirs(state)
+    if settings is not None:
+        json.dump(settings, open(os.path.join(state, "panel-settings.json"), "w"))
     stats = os.path.join(d, "stats"); os.makedirs(stats)
     nodes = os.path.join(state, "nodes.json")
     json.dump({"n1": {"id": "n1", "name": "n1", "links": {}, "ifaces": {}}}, open(nodes, "w"))
@@ -278,6 +285,12 @@ try:
     check("[2] back to the defaults: the key is gone again", "log" not in sync(port_n, tok_n)["panel"])
     c, _r = setlog({"log_debug": 120})
     check("[2] a Debug duration that is not offered is refused", c == 400, (c, _r))
+    # A FRESH state with Off already set: its first start runs the one-time migrations and repairs, which log before
+    # the settings store is loaded — the lines the early apply exists for.
+    po, _po, _so = start_panel(write_prog("panel"), "off", {"log_level": "off", "log_debug_until": 0}); procs.append(po)
+    time.sleep(0.5)
+    out = open(os.path.join(TMP, "panel-off", "panel.log")).read()
+    check("[2] a panel started at Off writes nothing, its start-up migrations and repairs included", out == "", out[:300])
 finally:
     for p in procs:
         p.terminate()
@@ -406,6 +419,14 @@ nfiles = sorted(os.listdir(ND))
 check("[4] netctl writes the timer units' two, once, and reloads once",
       nfiles == sorted(u + ".d" for u in caps) and NR == [["systemctl", "daemon-reload"]], (nfiles, NR))
 
+PSD = os.path.join(TMP, "netctl-dry"); os.makedirs(PSD)
+json.dump({"log_level": "warning"}, open(os.path.join(PSD, "panel-settings.json"), "w"))
+r = subprocess.run([sys.executable, write_prog("netctl"), "set-listen", "sub", "127.0.0.1", "9444"], capture_output=True,
+                   text=True, timeout=60, env={**os.environ, "SWG_NETCTL_DRYRUN": "1", "SWG_STATE_DIR": PSD,
+                                                "SWG_UNIT_DIR": os.path.join(PSD, "units")})
+check("[4] a netctl dry run prints what it would do, whatever the fleet's level", "would write" in r.stderr,
+      (r.returncode, r.stderr[-300:]))
+
 # ── [5] P2P ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("[5] P2P guard")
 NFT = []
@@ -443,15 +464,15 @@ N.host_sh = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout="failed
 N.log_set(N.LOG_INFO)
 check("[6] turn verify at Info: the usual reason", "logging" not in N._turn_verify("vk-turn-proxy-x"))
 N.log_set(N.LOG_OFF)
-check("[6] turn verify at Off: says the level is why", "no detail (logging is off)" in N._turn_verify("vk-turn-proxy-x"),
+check("[6] turn verify at Off: says the level is why", "its own lines are not kept (logging is off)" in N._turn_verify("vk-turn-proxy-x"),
       N._turn_verify("vk-turn-proxy-x"))
 N.log_set(N.LOG_ERR)
 N.host_sh = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout="failed\nx.service: Failed with result 'exit-code'.\n",
                                                     stderr="")
 check("[6] …at Errors too, beside systemd's own bare line",
-      N._turn_verify("x").endswith("no detail (logging is set to errors)"), N._turn_verify("x"))
+      N._turn_verify("x").endswith("its own lines are not kept (logging is set to errors)"), N._turn_verify("x"))
 N.host_sh = lambda cmd, **kw: types.SimpleNamespace(returncode=0, stdout="failed\n", stderr="")
-check("[6] WDTT verify below Info", "no detail (logging is set to errors)" in N._wdtt_verify("swg-wdtt-x"),
+check("[6] WDTT verify below Info", "its own lines are not kept (logging is set to errors)" in N._wdtt_verify("swg-wdtt-x"),
       N._wdtt_verify("swg-wdtt-x"))
 A = load("agent")
 for env, want in (("-1", "logging is off"), ("4", "logging is set to warnings"), ("6", "")):
@@ -470,7 +491,7 @@ try:
     msg = ""
 except NC.Reject as e:
     msg = str(e)
-check("[6] netctl status tail at Off says why it shows no lines", msg.endswith("no detail (logging is off)"), msg)
+check("[6] netctl status tail at Off says why it shows no lines", msg.endswith("its own lines are not kept (logging is off)"), msg)
 SENT = []
 N.run = lambda args, input_text=None, timeout=20: (SENT.append(json.loads(input_text)),
                                                     types.SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr=""))[1]
@@ -484,13 +505,24 @@ N.NODE_KIND = "baremetal"
 N.host_sh = REAL_HOST_SH
 hb = capture(N)
 N.log_set(N.LOG_WARNING)
+N.host_sh("exit 3", probe=True)
+check("[6] a probe's non-zero exit (the answer, asked every sync) is not a warning", hb.getvalue() == "", hb.getvalue())
 N.host_sh("exit 3")
-check("[6] a host command's non-zero exit is not a warning (callers report real failures)", hb.getvalue() == "",
-      hb.getvalue())
+check("[6] …a failed host command that nobody checks is one", "W host_sh rc=3" in hb.getvalue(), hb.getvalue())
 N.log_set(N.LOG_DEBUG)
-N.host_sh("exit 3")
-check("[6] …it is Debug", "D host_sh rc=3" in hb.getvalue(), hb.getvalue())
+hb.truncate(0); hb.seek(0)
+N.host_sh("exit 3", probe=True)
+check("[6] …and the probe's is Debug", "D host_sh rc=3" in hb.getvalue(), hb.getvalue())
 N.log_set(N.LOG_INFO)
+probes = re.findall(r'host_sh\("systemctl is-active [^\n]*', SRC["noded"])
+check("[6] every per-sync `systemctl is-active` probe is marked a probe (the two verifies end in `| tail`, rc 0)",
+      all("probe=True" in p for p in probes if "sleep 1.5" not in p) and len(probes) >= 5, probes)
+rl = SRC["noded"][SRC["noded"].find("_errs = (r['errors']"):]
+rl = rl[:rl.find("reconcile: +%s")]
+check("[6] reconcile summary: an interface re-set, and routing applied for a MOVED desired state, are Info",
+      'ri["changed"]' in rl and "_route_moved and" in rl)
+ap = SRC["noded"][SRC["noded"].find('apply_panel_settings(reply.get("panel"))'):]
+check("[6] a new level is followed in the same pass the sync applied it", ap[:400].count("_log_follow(node_cfg)") == 1)
 
 # ── [7] swg-sni ─────────────────────────────────────────────────────────────────────────────────────────────────────
 print("[7] swg-sni")

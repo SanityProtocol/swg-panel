@@ -647,8 +647,8 @@ def _log_no_detail():
         return ""
     if lvl >= 6:
         return ""
-    return " — no detail (logging is off)" if lvl < 0 else \
-        " — no detail (logging is set to %s)" % ("errors" if lvl <= 3 else "warnings")
+    return " — its own lines are not kept (logging is %s)" % (
+        "off" if lvl < 0 else "set to errors" if lvl <= 3 else "set to warnings")
 
 
 def _awg_recreate(ic, iface, awg, before):

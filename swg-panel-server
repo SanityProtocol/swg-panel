@@ -32197,6 +32197,12 @@ def main():
     if fleet is None:
         raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
     nodes_path = fleet.get("nodes_path", "/var/lib/swg-panel/nodes.json")
+    # The fleet's log level before anything below logs — the migrations, repairs and lock retries — so Off holds from
+    # this process's first line, as swg-noded's _log_boot does. Read plainly here (the critical-store load with its
+    # backups runs later, when deps are built, and applies it again).
+    with contextlib.suppress(Exception):
+        panel_log_apply(load_json(fleet.get("panel_settings_path") or os.path.join(os.path.dirname(nodes_path) or ".",
+                                                                                   "panel-settings.json"), {}) or {})
     # Single-instance-per-state-dir guard: two swg-panel-servers sharing one state dir keep INDEPENDENT in-memory
     # copies of nodes.json and clobber each other's writes → node-token desync → sync 401 → no config propagates.
     # (A stray no-auth :8091 test panel on the live state dir did exactly this.) A dryrun/test panel with its OWN

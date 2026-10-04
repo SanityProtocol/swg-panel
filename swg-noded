@@ -7115,8 +7115,9 @@ def apply_panel_settings(pan):
 
 
 # ── LogLevelMax for the units this node runs (docs/LOGS-PLAN.md §1, §13) ───────────────────────────────────────────
-# Third-party programs (turn proxies, WDTT/csqtt, wg-quick, and dnsmasq, which logs through swg-noded's own unit) print
-# everything at info, so their level is enforced by journald from a drop-in. A drop-in reaches a unit at its NEXT START
+# Third-party programs (turn proxies, WDTT/csqtt, wg-quick) print everything at info, so their level is enforced by
+# journald from a drop-in. (dnsmasq logs through swg-noded's own unit, which gets none — see below — so its few start
+# lines stay below Info; it never logs queries.) A drop-in reaches a unit at its NEXT START
 # (P0 T1b) — a datapath unit is never restarted for a log level.
 # Prefix drop-ins: systemd reads `<prefix>-.service.d/` for every unit named `<prefix>-…`, and `<name>@.service.d/` for
 # every instance (measured on systemd 252 and 255), so a fixed set of files covers a proxy created later from its first
@@ -7142,13 +7143,14 @@ def log_unit_max(lvl):
 
 
 def log_no_detail():
-    """What a "why it failed" reader adds when the level is below Info: a unit's own lines are dropped there, so an
-    empty or bare tail is the level's doing, not the unit's. "" at Info and Debug."""
+    """What a "why it failed" reader adds below Info, where a unit's own lines are dropped by its cap: whatever the
+    tail showed (nothing, systemd's own line, an older start's), the unit's own reason is missing for that reason.
+    Worded to read true either way. "" at Info and Debug. Same words in swg-agent and swg-netctl."""
     lvl = log_level()
     if lvl >= LOG_INFO:
         return ""
-    return "no detail (logging is off)" if lvl == LOG_OFF else \
-        "no detail (logging is set to %s)" % ("errors" if lvl == LOG_ERR else "warnings")
+    return "its own lines are not kept (logging is %s)" % (
+        "off" if lvl == LOG_OFF else "set to errors" if lvl == LOG_ERR else "set to warnings")
 
 
 def _log_follow(node_cfg):
@@ -15942,7 +15944,7 @@ def _host_sh_available():
     return _HOST_SH_CAP["ok"]
 
 
-def host_sh(cmd, timeout=90):
+def host_sh(cmd, timeout=90, probe=False):
     """Run a shell command on the HOST. Bare-metal: directly. Docker: via a one-shot privileged
     --pid=host helper through the mounted docker socket — nsenter into PID 1 so the command runs in
     the host's namespaces (its filesystem + systemd).
@@ -15986,9 +15988,11 @@ def host_sh(cmd, timeout=90):
         class _R:                                       # synthesize a failed result so callers see it
             returncode = 127; stdout = ""; stderr = str(e)
         return _R()
-    if r.returncode != 0:                               # Debug: a non-zero exit is often the ANSWER (`systemctl is-active`
-        # on a server the operator stopped, asked on every sync), and a caller that meets a real failure reports it itself.
-        log(LOG_DEBUG, "host_sh rc=%s :: %s :: %s", r.returncode, cmd[:160], (r.stderr or r.stdout or "")[:300])
+    if r.returncode != 0:
+        # `probe`: the exit code IS the answer (`systemctl is-active` on a server the operator stopped, asked on every
+        # sync), so it is Debug. Anything else is a warning: many callers act on a command and never read its result.
+        log(LOG_DEBUG if probe else LOG_WARNING, "host_sh rc=%s :: %s :: %s", r.returncode, cmd[:160],
+            (r.stderr or r.stdout or "")[:300])
     return r
 
 def _turn_unit_path(svc):
@@ -18632,7 +18636,7 @@ def reconcile_wdtt(want, remove=None):
             # counts as running: it is what a backing-off restart looks like, and starting it again would only
             # reset the backoff this build just added.
             if (NODE_KIND != "docker" and _wdtt_present(iface) and not bool(inst.get("stopped"))
-                    and (host_sh("systemctl is-active " + shlex.quote(_wdtt_svc(iface)) + " 2>/dev/null").stdout or "").strip()
+                    and (host_sh("systemctl is-active " + shlex.quote(_wdtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip()
                         not in ("active", "activating", "reloading")):
                 host_sh(sc_enable_now(_wdtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
@@ -18801,7 +18805,7 @@ def wdtt_snapshot():
         if NODE_KIND == "docker":
             active = "active" if _wdtt_docker_alive(iface) else "inactive"
         else:
-            active = (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null").stdout or "").strip()
+            active = (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null", probe=True).stdout or "").strip()
         _rawinfo = _wdtt_raw(inst)          # (listen, iface, addr) when this instance runs a RAW listener
         _rawon = bool(_rawinfo)
         if inst.get("fork", "amurcanov") == "ildarmaga":
@@ -19312,7 +19316,7 @@ def _csqtt_seccomp_autofix():
             "(applied by swg-noded)")
     # rc 3 = no .env to edit; rc 4 = the operator already has a line of their own, whatever its value.
     r = host_sh("[ -f %s ] || exit 3; grep -q '^SWG_NODE_SECCOMP=' %s && exit 4; printf '%%s\\n' %s >> %s"
-                % (shlex.quote(envf), shlex.quote(envf), shlex.quote(line), shlex.quote(envf)))
+                % (shlex.quote(envf), shlex.quote(envf), shlex.quote(line), shlex.quote(envf)), probe=True)
     if r.returncode == 4:
         return ("csqtt needs the io_uring syscalls, which this container's seccomp profile denies. "
                 "%s already sets SWG_NODE_SECCOMP — csqtt needs the value `unconfined`, then "
@@ -19370,7 +19374,7 @@ def _csqtt_verify(iface):
         return "server did not stay up — see " + _csqtt_dir(iface) + "/server.log"
     for _ in range(8):
         time.sleep(0.5)
-        if (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null").stdout or "").strip() == "active":
+        if (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip() == "active":
             return ""
     return "service did not become active — " + (log_no_detail() or "check `journalctl -u " + _csqtt_svc(iface) + "`")
 
@@ -20052,7 +20056,7 @@ def reconcile_csqtt(want, remove=None):
             # reconcile_wdtt — Restart=on-failure does not come back from a clean stop, and `present` was all
             # reconcile looked at).
             if (NODE_KIND != "docker" and _csqtt_present(iface) and not bool(inst.get("stopped"))
-                    and (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null").stdout or "").strip()
+                    and (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip()
                         not in ("active", "activating", "reloading")):
                 host_sh(sc_enable_now(_csqtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
@@ -20088,7 +20092,7 @@ def csqtt_snapshot():
         # converted master still had the old units running — so the panel was told "active" for servers this node
         # was not running, beside an empty password store it could not read. Two wrong answers that agreed.
         active = ("active" if _csqtt_docker_pid(iface) else "inactive") if NODE_KIND == "docker" else \
-                 (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null").stdout or "").strip()
+                 (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null", probe=True).stdout or "").strip()
         pj = _csqtt_read_store(_csqtt_dir(iface))   # passwords.json (<=2.0.1) or csqtt.db (2.1.5+)
         pwds, devs = {}, {}
         for did, d in (pj.get("devices") or {}).items():
@@ -20579,6 +20583,8 @@ def main():
                           "this node moved panels): " + ", ".join(_orph))
                 dl = delete_ifaces(node_cfg, list(reply.get("delete") or []) + _orph, agent, sudo)   # tear down deleted ones
                 apply_panel_settings(reply.get("panel"))      # Panel settings → mirrors / geo TTL / geo refetch
+                with contextlib.suppress(Exception):
+                    _log_follow(node_cfg)                   # a new level reaches the children and drop-ins in THIS pass
                 _heal = selfheal_ifaces(node_cfg, reply.get("desired_ifaces"),
                                          reply.get("owned_ifaces"))   # panel owns it, it is live here, we lost the conf
                 for _hn in (cr.get("heal") or []):      # a create that found the device already here (see create_ifaces)
@@ -20670,7 +20676,8 @@ def main():
                                         sort_keys=True, default=str)
                 _iface_churn = bool(_awg_loaded or cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
                                     or sp["stopped"] or sa["started"] or ri["changed"] or wd["changed"] or cq["changed"])   # a WDTT/csqtt install/remove/change must trigger the egress reconcile (its subnet MASQUERADE) this cycle, not on the safety window
-                if (_route_sig != last_route_sig or _iface_churn or _routed_devs_moved()
+                _route_moved = _route_sig != last_route_sig   # the desired routing changed (not a reverify)
+                if (_route_moved or _iface_churn or _routed_devs_moved()
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
                     nr = {"changed": 0, "errors": []}
@@ -20758,12 +20765,17 @@ def main():
                         or xr["changed"] or xr["errors"]
                         or ob["added"] or ob["errors"] or cr["created"] or cr["errors"]
                         or dl["deleted"] or dl["errors"] or tp["done"] or tp["errors"]):
-                    # Info when something was added, removed, created, deleted or applied; a pass that only re-asserted
-                    # what was already there (ifaces~/cascade~ after a reverify) is Debug — it was most of this log.
+                    # Info when something changed: a peer or interface added, removed, created, deleted or re-set (a
+                    # port, MTU or AWG edit restarts it), turn work done, or routing applied because the DESIRED routing
+                    # moved. A routing pass that only re-asserted what was there (a reverify, the safety window) is Debug —
+                    # its cascade~/egress counts are re-assertions, and that pair was most of this log.
                     _errs = (r['errors'] + ri['errors'] + ob['errors'] + cr['errors'] + dl['errors'] + tp['errors']
                              + eg['errors'] + cas['errors'])[:3]
                     log(LOG_ERR if _errs else LOG_INFO if (r["added"] or r["removed"] or ob["added"] or cr["created"]
-                                                           or dl["deleted"] or tp["done"]) else LOG_DEBUG,
+                                                           or dl["deleted"] or tp["done"] or ri["changed"]
+                                                           or (_route_moved and (eg["changed"] or cas["changed"]
+                                                                                 or nr["changed"])))
+                    else LOG_DEBUG,
                         "reconcile: +%s -%s ifaces~%s cascade~%s onboard+%s create+%s delete-%s turn=%s errors=%s",
                         r['added'], r['removed'], ri['changed'], cas['changed'], ob['added'], cr['created'],
                         dl['deleted'], tp['done'], _errs)

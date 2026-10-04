@@ -71,8 +71,8 @@ DEFAULT_SUB_KEY  = os.path.join(SUB_TLS_DIR, "key.pem")
 # BEFORE it is formatted — pass the arguments, not a formatted string — so a Debug line costs one comparison at Info.
 # Debug lines are capped at LOG_DEBUG_RATE a second: journald's flood guard counts per unit, and a Debug flood spending
 # this unit's bucket would make journald drop its error lines in the same window (P0 T8).
-# A copy of this block is in each swg program; keep them alike. swg-sub has no live level: its lines are
-# start and reload lines, and its unit's LogLevelMax (written by swg-netctl) applies at exactly its start.
+# A copy of this block is in each swg program; keep them alike. swg-sub sets its level from subs/serve.json (see
+# _log_follow below main's helpers), wrapping log() rather than changing this block.
 LOG_OFF, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG = -1, 3, 4, 5, 6, 7
 LOG_LEVELS = {"off": LOG_OFF, "error": LOG_ERR, "warning": LOG_WARNING, "info": LOG_INFO, "debug": LOG_DEBUG}
 LOG_DEBUG_RATE = 100

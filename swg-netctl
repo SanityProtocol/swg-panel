@@ -638,9 +638,7 @@ def do_restart(service):
         if st != 0 or looped:
             _r, detail = run(["systemctl", "--no-pager", "-n", "6", "status", unit])
             # Below Info the unit's own lines are not stored (its LogLevelMax), so the status shows none: say why.
-            _lv = log_level()
-            nd = "" if _lv >= LOG_INFO else " — no detail (logging is %s)" % (
-                "off" if _lv == LOG_OFF else "set to errors" if _lv == LOG_ERR else "set to warnings")
+            nd = log_no_detail()
             raise Reject("%s did not stay up after restart (the address is likely already in use): %s%s"
                          % (unit, (detail or "").strip()[-300:], nd))
     return "restarted " + unit
@@ -1481,6 +1479,16 @@ def log_from_settings():
             -1 if until == -1 else max(0, until - time.time()))
 
 
+def log_no_detail():
+    """Below Info a unit's own lines are not stored (its LogLevelMax), so a status tail missing them is the level's
+    doing: say so, in words that read true whatever the tail showed. Same words in swg-noded and swg-agent."""
+    lvl = log_level()
+    if lvl >= LOG_INFO:
+        return ""
+    return " — its own lines are not kept (logging is %s)" % (
+        "off" if lvl == LOG_OFF else "set to errors" if lvl == LOG_ERR else "set to warnings")
+
+
 def log_unit_caps(lvl):
     """{unit: drop-in body or None} at level `lvl`. Off → emerg; below Info → warning (systemd's own crash lines are
     notice/warning, and at `err` a crash would leave none — P0 T1); Debug → none. At Info → notice: every timer run
@@ -1496,8 +1504,8 @@ def log_unit_caps(lvl):
 
 
 def log_dropins():
-    """Write each unit's drop-in only when its content differs, then one daemon-reload. A unit takes it at its next
-    start: the timer units within seconds, the panel and swg-sub at their next restart. Never raises."""
+    """Write each timer unit's drop-in only when its content differs, then one daemon-reload. They start every 10–30 s,
+    so a change reaches them at once. Never raises."""
     if DRYRUN or not os.path.isdir(LOG_DROPIN_DIR):
         return
     changed = 0
@@ -1596,7 +1604,8 @@ def main(argv):
     if len(argv) < 2:
         print("usage: swg-netctl run | <verb> <args...>", file=sys.stderr)
         return 2
-    log_from_settings()
+    if not DRYRUN:                                   # a dry run is asked for at a terminal: it always prints
+        log_from_settings()
     if argv[1] == "run":
         with contextlib.suppress(Exception):
             log_dropins()                            # every tick, before the idle return: Debug's expiry lands here

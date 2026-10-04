@@ -2378,7 +2378,6 @@ export function PanelSettingsScreen() {
                            log_debug: logEdit.lvl === "debug" ? +logForShown : 0 } : {}),
       });
       if (!r.ok) return setMsg({ ok: false, t: srvText(r) || T("Failed to save.") });
-      setLogEdit(null);
       if (dataDirty() || tzDirty()) trafficInvalidate();   // re-read what the save changed: a zone moves every day's edges
     }
     // interface-key escrow — applied on Save (not on toggle), like every other field. Enabling needs the vault unlocked.
@@ -2440,6 +2439,7 @@ export function PanelSettingsScreen() {
     }
     setMsg(null); setSaved(Date.now() + 4000);   // green "All settings saved" flash in the header
     await Store.poll();
+    setLogEdit(null);   // only now: the poll carries the saved level, so the card does not flash back to the old one
     const fresh = Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)]));
     setNodeEdits(fresh); setOrig(fresh);
     } catch (e) {
