@@ -9372,11 +9372,13 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patt
         if not exe:
             res["errors"].append("sni: swg-sni not found"); return
         try:
-            log = open("/var/lib/swg-noded/swg-sni.log", "a")
+            # Its output joins OURS (inherited stdout/stderr), so it lands where this daemon's lines land — the journal on
+            # bare metal, the container log in docker — and is bounded by whatever bounds those. It used to be appended to
+            # /var/lib/swg-noded/swg-sni.log, which nothing ever rotated: one line per newly seen host, for the life of the
+            # node (docs/LOGS-PLAN.md §0, P1a). Every line already starts with "swg-sni:", so it stays telling apart.
             _SNI_PROC["p"] = subprocess.Popen([sys.executable, exe, "--queue", str(SNI_NFQUEUE),
                                                "--map", SNI_MAP_PATH, "--table", SMART_NFT_TABLE,
-                                               "--reset-mark", hex(SNI_RESET_MARK), "--learn-ttl", str(learn_ttl)],
-                                              stdout=log, stderr=log)
+                                               "--reset-mark", hex(SNI_RESET_MARK), "--learn-ttl", str(learn_ttl)])
             _SNI_PROC["ttl"] = learn_ttl
             res["changed"] += 1; print("sni: launched swg-sni (queue %d, learn-ttl %d)" % (SNI_NFQUEUE, learn_ttl), flush=True)
         except Exception as e:
@@ -17252,7 +17254,7 @@ def _wdtt_write_cfgdir(inst, binshared, binp, cfgdir):
 
 SERVERLOG_MAX = 8 << 20     # per supervised server, rotated one deep → at most 2× this on disk
 
-def _rotate_serverlog(path, cap=SERVERLOG_MAX):
+def _rotate_serverlog(path, cap=SERVERLOG_MAX, live=False):
     """Keep a supervised server's log bounded before it is appended to again.
 
     server.log is opened "ab" and nothing ever truncated it. A server that crash-loops is relaunched by the
@@ -17262,11 +17264,20 @@ def _rotate_serverlog(path, cap=SERVERLOG_MAX):
 
     Rotate rather than truncate: the tail of the PREVIOUS run is the diagnostic, and the failure paths that read
     this file back are why it exists. One generation is kept — enough to explain the last failure, bounded enough
-    that it cannot be the thing that fills the disk. os.replace is atomic, so a reader never sees a partial file."""
+    that it cannot be the thing that fills the disk. os.replace is atomic, so a reader never sees a partial file.
+
+    `live`: the server is RUNNING and holds the file open. A rename would leave it appending to `.1` for as long as
+    it stays up — so the server that never restarts, the 9.6G case above, was the one this did not bound. Copy the
+    file to `.1` and truncate it in place instead; the server's descriptor is O_APPEND ("ab"), so its next write
+    lands at the new end. Lines written between the copy and the truncate are lost, once per `cap` of output."""
     with contextlib.suppress(Exception):
         if os.path.getsize(path) < cap:
             return
-        os.replace(path, path + ".1")
+        if not live:
+            os.replace(path, path + ".1")
+            return
+        shutil.copyfile(path, path + ".1")
+        os.truncate(path, 0)
 
 
 def _wdtt_docker_start(inst):
@@ -18388,6 +18399,8 @@ def reconcile_wdtt(want, remove=None):
                     res["errors"].append(iface + ": " + serr)
                 else:
                     res["changed"] += 1
+            if NODE_KIND == "docker":               # bound the log of a server that stays up (a stat per pass) — see _rotate_serverlog
+                _rotate_serverlog(_wdtt_dir(iface) + "/server.log", live=True)
             inst.pop("_restore_wg_keys", None)   # transient — never persist the restored key material to the record
             have[iface] = inst
         except Exception as e:
@@ -19811,6 +19824,8 @@ def reconcile_csqtt(want, remove=None):
                     res["errors"].append(iface + ": " + err)
                 else:
                     res["changed"] += 1
+            if NODE_KIND == "docker":               # bound the log of a server that stays up (a stat per pass) — see _rotate_serverlog
+                _rotate_serverlog(_csqtt_dir(iface) + "/server.log", live=True)
             have[iface] = inst
         except Exception as e:
             res["errors"].append(iface + ": " + str(e))
@@ -20182,6 +20197,8 @@ def main():
     with contextlib.suppress(Exception):
         read_cpu_pct()               # prime the CPU baseline so the first sync reports utilization, not nothing
     os.makedirs(STATE_DIR, exist_ok=True)
+    with contextlib.suppress(OSError):   # what an older build appended swg-sni's output to, unrotated — see _ensure_sni_router
+        os.remove("/var/lib/swg-noded/swg-sni.log")
     last_samples = {}
     last_route_sig = None; last_route_t = 0.0    # gate the heavy routing reconcile (see ROUTING_RECONCILE_EVERY_S)
     last_verify_t = time.time()                  # periodic full re-verify (silent-drift heal, see VERIFY_EVERY_S)
