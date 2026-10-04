@@ -21,6 +21,7 @@ HTTPS + Basic-Auth + /wgstats directly. Or bind 127.0.0.1 behind your own nginx.
 import ast
 import base64
 import gzip
+import collections
 import contextlib
 import copy
 import fcntl
@@ -50,6 +51,7 @@ import http.client                 # T-10: the ONE outbound call this panel make
 import time
 import traceback
 import uuid
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote, quote
 
@@ -5448,7 +5450,7 @@ def _twofa_locked():
 # split on, which is precisely the bug class this file has been burned by before.
 NODE_DOOR_GET = frozenset({"/api/node/whoami", "/api/node/list", "/api/node/turn-binary", "/healthz"})
 NODE_DOOR_POST = frozenset({"/api/node/sync", "/api/node/goodbye", "/api/node/proc-status",
-                            "/api/node/rename", "/api/node/transfer", "/api/node/c"})
+                            "/api/node/rename", "/api/node/transfer", "/api/node/logs", "/api/node/c"})
 # Entries that are legitimately in the lists above but are NOT `/api/node/*` literals in the dispatch:
 #   /healthz     real and dispatched, just not under the /api/node/ prefix.
 #   /api/node/c  RESERVED for the encrypted channel; nothing dispatches it yet, so it simply 404s.
@@ -6899,6 +6901,715 @@ def net_probe_status(pid, rid=None, now=None):
             return net_probe_view(recs[0], now) if recs else None
         return [net_probe_view(r, now) for r in sorted(recs, key=lambda r: r["node"])]
 
+
+# ── the live log reader (docs/LOGS-PLAN.md §3, §23) ───────────────────────────────────────────────────────────────────
+# ⚠️ A COPY OF THIS BLOCK IS IN swg-noded AND swg-panel-server, byte for byte (tests/log_live_selftest.py compares them).
+# One LiveReader serves one live request on one box: a journalctl follower for the journal sources, a tail per log file
+# and a stream per container (docker, through the Engine API on its socket — no `docker logs` process). poll() hands back
+# the new lines, oldest first, as [time µs, source, priority, text]; `cur` is where a reader restarted later resumes.
+# A source starting with "!" is a marker the viewer words itself: "!skip" (text = how many lines the flood cap skipped),
+# "!gap" (a resume point could not be used: lines in between may be missing).
+# The first LIVE_BACKFILL_S of a fresh reader is its backfill: kept back, cut to the last LIVE_BACKFILL lines per source,
+# and handed over in one piece, outside the flood cap.
+import calendar as _live_cal
+
+LIVE_BACKFILL, LIVE_BACKFILL_MAX, LIVE_BACKFILL_S = 200, 1000, 1.0
+LIVE_TEXT_MAX = 4096                 # characters of one line
+LIVE_TAIL_BYTES = 256 << 10          # how far back a file's backfill reads
+LIVE_FIELDS = "MESSAGE,PRIORITY,_SYSTEMD_UNIT,UNIT,SYSLOG_IDENTIFIER,_TRANSPORT,_PID"
+_LIVE_UNIT_SRC = {"swg-panel-server": "panel", "swg-sub": "sub", "swg-netctl": "netctl", "swg-update": "update"}
+_LIVE_PANEL_KINDS = ("panel", "sub", "netctl", "update")    # the panel's sources; every other one is a node's
+_LIVE_UNIT_PRE = (("swg-relay@", "relay:"), ("vk-turn-proxy-", "turn:"), ("swg-wdtt-", "turn:"), ("swg-csqtt-", "turn:"),
+                  ("wg-quick@", "iface:"), ("awg-quick@", "iface:"))
+_LIVE_OURS = re.compile(r"^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z ([EWNID]) ?")      # our helper's file lines
+_LIVE_SYSLOG = re.compile(r"^([A-Z][a-z]{2}) +(\d+) (\d\d):(\d\d):(\d\d) (?:[\w.-]+\[\d+\]: )?")   # dnsmasq's log-facility
+_LIVE_STAMP = re.compile(r"^(\d{4})[/-](\d\d)[/-](\d\d)[ T](\d\d):(\d\d):(\d\d)(?:[.,](\d+))?Z? ?")   # a server.log's own
+_LIVE_RFC = re.compile(r"^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,9}))?Z ")      # docker's timestamps=1
+_LIVE_MON = {m: i for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                                          "Dec"), 1)}
+_LIVE_LETTER = {"E": 3, "W": 4, "N": 5, "I": 6, "D": 7}
+
+
+def live_want(src, want):
+    """Is `src` one of the request's sources? `kind:*` stands for every instance of that kind."""
+    return src in want or (":" in src and src.split(":", 1)[0] + ":*" in want)
+
+
+def live_journal_src(e):
+    """The source a journal entry belongs to (docs/LOGS-PLAN.md §4), or None: not one of swg's. systemd's own lines about
+    a unit (PID 1, its UNIT field) are the unit's. swg-sni and dnsmasq write through swg-noded's unit, so they are told
+    apart by their prefix and their identifier."""
+    if e.get("_TRANSPORT") == "kernel":
+        return "p2p" if "swg-p2p" in live_text(e.get("MESSAGE")) else "kernel"
+    u = (e.get("UNIT") if e.get("_PID") == "1" else e.get("_SYSTEMD_UNIT")) or ""
+    if not isinstance(u, str) or not u.endswith(".service"):
+        return None
+    n = u[:-8]
+    if n == "swg-noded":
+        if e.get("SYSLOG_IDENTIFIER") == "dnsmasq":
+            return "dns"
+        return "sni" if live_text(e.get("MESSAGE")).startswith("swg-sni:") else "noded"
+    if n in _LIVE_UNIT_SRC:
+        return _LIVE_UNIT_SRC[n]
+    for pre, kind in _LIVE_UNIT_PRE:
+        if n.startswith(pre) and len(n) > len(pre):
+            return kind + n[len(pre):]
+    return None
+
+
+def live_text(m):
+    """A journal MESSAGE as text: journald hands a field that is not UTF-8 over as a list of byte values."""
+    if isinstance(m, list):
+        with contextlib.suppress(Exception):
+            return bytes(m).decode("utf-8", "replace")
+        return ""
+    return m if isinstance(m, str) else ""
+
+
+def live_journal_argv(base, units, kernel, cursor, n):
+    """journalctl following `units` (their own lines and systemd's about them) and, with `kernel`, the kernel's. Explicit
+    field matches OR-ed with `+`: journalctl's -u, -t and -k would be AND-ed with each other. Resumes after `cursor`, or
+    starts with the last `n` lines."""
+    a = list(base) + ["-f", "--no-pager", "-o", "json", "--output-fields=" + LIVE_FIELDS]
+    a += ["--after-cursor=" + cursor] if cursor else ["-n", str(n)]
+    groups = []
+    if units:
+        groups += [["_SYSTEMD_UNIT=" + u for u in units], ["_PID=1"] + ["UNIT=" + u for u in units]]
+    if kernel:
+        groups.append(["_TRANSPORT=kernel"])
+    for i, g in enumerate(groups):
+        a += (["+"] if i else []) + g
+    return a
+
+
+def _live_utc(y, mo, d, h, mi, s):
+    return _live_cal.timegm((int(y), int(mo), int(d), int(h), int(mi), int(s), 0, 0, 0))
+
+
+def live_parse_line(fmt, raw, last_t):
+    """(time µs, priority, text) of one log file line. "ours": the helper's `<UTC>Z <L> text`; "syslog": dnsmasq's
+    `Mon dd hh:mm:ss name[pid]: text`, in this box's local time and with no year; "plain": a server's own output, its
+    leading stamp read when it has one (local time) — else the line takes the time of the one before it, or now."""
+    if fmt == "ours":
+        m = _LIVE_OURS.match(raw)
+        if m:
+            return _live_utc(*m.groups()[:6]) * 1000000, _LIVE_LETTER[m.group(7)], raw[m.end():]
+    elif fmt == "syslog":
+        m = _LIVE_SYSLOG.match(raw)
+        if m and m.group(1) in _LIVE_MON:
+            now = time.localtime()
+            with contextlib.suppress(OverflowError, ValueError):
+                t = time.mktime((now.tm_year, _LIVE_MON[m.group(1)], int(m.group(2)), int(m.group(3)), int(m.group(4)),
+                                 int(m.group(5)), 0, 0, -1))
+                if t > time.time() + 86400:                   # December's lines read in January
+                    t = time.mktime((now.tm_year - 1, _LIVE_MON[m.group(1)], int(m.group(2)), int(m.group(3)),
+                                     int(m.group(4)), int(m.group(5)), 0, 0, -1))
+                return int(t) * 1000000, 6, raw[m.end():]
+    else:
+        m = _LIVE_STAMP.match(raw)
+        if m:
+            with contextlib.suppress(OverflowError, ValueError):
+                t = time.mktime(tuple(int(x) for x in m.groups()[:6]) + (0, 0, -1))
+                return int(t * 1000000) + int(((m.group(7) or "") + "000000")[:6]), 6, raw[m.end():]
+    return last_t or int(time.time() * 1000000), 6, raw
+
+
+class _LiveFile:
+    """Follow one log file. Our own files rotate by RENAME: the path gets a new inode while the descriptor keeps the old one,
+    which is read to its end first, so nothing is lost or repeated. dnsmasq's and the servers' rotate by COPY-AND-TRUNCATE:
+    the same inode gets shorter, and it is read again from 0 (the lines between the last read and the truncate can be
+    missed, once per rotation, as _rotate_serverlog itself accepts). `src` is a source, or fn(text) → source. `cur` is
+    [inode, offset] of the next unread byte; one that is neither the path's inode nor `.1`'s is a gap."""
+
+    def __init__(self, path, src, fmt, cur):
+        self.path, self.src, self.fmt = path, src, fmt
+        self.f, self.ino, self.buf, self.t, self.out, self.gap = None, None, b"", 0, [], False
+        ino, off = cur if (isinstance(cur, list) and len(cur) == 2
+                           and all(isinstance(x, int) and not isinstance(x, bool) for x in cur)) else (0, -1)
+        if ino and off >= 0:
+            with contextlib.suppress(OSError):
+                st = os.stat(path)
+                if st.st_ino == ino and st.st_size >= off:
+                    self._open(off)
+                    return
+            with contextlib.suppress(OSError):
+                with open(path + ".1", "rb") as f:            # renamed since: the rest of it, then the new file whole
+                    if os.fstat(f.fileno()).st_ino == ino:
+                        f.seek(off)
+                        self._lines(f.read(LIVE_TAIL_BYTES * 4))
+                        self.buf = b""
+                        self._open(0)
+                        return
+            self.gap = True
+        self._open(None)                                      # afresh: the last LIVE_TAIL_BYTES are the backfill, and
+        if self.f is not None and os.fstat(self.f.fileno()).st_size < LIVE_TAIL_BYTES:   # a short file has .1's end before it
+            with contextlib.suppress(OSError):
+                with open(path + ".1", "rb") as f:
+                    size = os.fstat(f.fileno()).st_size
+                    f.seek(max(0, size - LIVE_TAIL_BYTES))
+                    if size > LIVE_TAIL_BYTES:
+                        f.readline()
+                    self._lines(f.read(LIVE_TAIL_BYTES))
+                    self.buf = b""
+
+    def _open(self, off):
+        """Open the path at `off`, or (None) LIVE_TAIL_BYTES before its end, at a line's start."""
+        try:
+            self.f = open(self.path, "rb")
+        except OSError:
+            self.f = self.ino = None
+            return
+        size = os.fstat(self.f.fileno()).st_size
+        self.ino = os.fstat(self.f.fileno()).st_ino
+        if off is None:
+            self.f.seek(max(0, size - LIVE_TAIL_BYTES))
+            if size > LIVE_TAIL_BYTES:
+                self.f.readline()
+        else:
+            self.f.seek(min(off, size))
+
+    def _lines(self, data):
+        self.buf += data
+        *done, self.buf = self.buf.split(b"\n")
+        for raw in done:
+            if raw:
+                t, prio, text = live_parse_line(self.fmt, raw.decode("utf-8", "replace"), self.t)
+                self.t = t
+                self.out.append([t, self.src(text) if callable(self.src) else self.src, prio, text[:LIVE_TEXT_MAX]])
+
+    def read(self):
+        if self.f is None:
+            self._open(0)                                     # absent until now: from its first byte
+        if self.f is not None:
+            with contextlib.suppress(OSError):
+                self._lines(self.f.read(LIVE_TAIL_BYTES))
+                st = os.stat(self.path)
+                moved = st.st_ino != self.ino
+                if moved:                                     # renamed: the old one to its end, then the new from 0
+                    self._lines(self.f.read())
+                    self.f.close()
+                    self.buf = b""
+                    self._open(0)
+                elif st.st_size < self.f.tell():              # truncated in place: again from 0
+                    self.f.seek(0)
+                    self.buf, moved = b"", True
+                if moved and self.f is not None:
+                    self._lines(self.f.read(LIVE_TAIL_BYTES))
+        out, self.out = self.out, []
+        return out
+
+    def cursor(self):
+        with contextlib.suppress(OSError, ValueError):
+            if self.f is not None and self.ino:
+                return [self.ino, self.f.tell() - len(self.buf)]
+        return None
+
+    def close(self):
+        if self.f is not None:
+            with contextlib.suppress(OSError):
+                self.f.close()
+
+
+def live_noded_src(text):
+    """swg-noded's own log file holds swg-sni's lines too (docker: they reach it through noded), each `swg-sni:` first."""
+    return "sni" if text.startswith("swg-sni:") else "noded"
+
+
+class _LiveCtr:
+    """Follow one container's log through the Engine API (HTTP/1.0 on the unix socket: no chunking, the stream ends when
+    the container does). Frames are [stream, 0, 0, 0, size BE32] + payload; each line starts with its RFC 3339 stamp.
+    `cur` is the last line's time in ns: a restart asks from that second and skips what it already had."""
+
+    def __init__(self, sock_path, name, src, cur):
+        self.name, self.src, self.raw, self.buf = name, src, b"", b""
+        self.last = cur if isinstance(cur, int) and cur > 0 else 0
+        self.s, self.head, self.done, self.at = None, True, False, time.monotonic()
+        q = "follow=1&stdout=1&stderr=1&timestamps=1" + (
+            "&since=%d.%09d" % divmod(self.last, 1000000000) if self.last else "&tail=%d" % LIVE_BACKFILL)
+        try:
+            self.s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.s.settimeout(5)
+            self.s.connect(sock_path)
+            self.s.sendall(("GET /containers/%s/logs?%s HTTP/1.0\r\nHost: docker\r\n\r\n" % (name, q)).encode())
+            self.s.setblocking(False)
+        except OSError:
+            self.close()
+            self.done = True
+
+    def fileno(self):
+        return self.s.fileno()
+
+    def read(self):
+        out = []
+        try:
+            while True:
+                d = self.s.recv(65536)
+                if not d:
+                    self.done = True
+                    break
+                self.raw += d
+        except (BlockingIOError, InterruptedError):
+            pass
+        except OSError:
+            self.done = True
+        if self.head:
+            if b"\r\n\r\n" not in self.raw:
+                return out
+            hdr, self.raw = self.raw.split(b"\r\n\r\n", 1)
+            self.head = False
+            if b" 200 " not in hdr.split(b"\r\n", 1)[0]:     # no such container (404), or the daemon refused
+                self.done, self.raw = True, b""
+        while len(self.raw) >= 8 and self.raw[0] in (0, 1, 2) and self.raw[1:4] == b"\0\0\0":
+            n = struct.unpack(">I", self.raw[4:8])[0]
+            if len(self.raw) < 8 + n:
+                break
+            self.buf += self.raw[8:8 + n]
+            self.raw = self.raw[8 + n:]
+        *done, self.buf = self.buf.split(b"\n")
+        for raw in done:
+            s = raw.decode("utf-8", "replace")
+            m = _LIVE_RFC.match(s)
+            if not m:
+                continue
+            ns = _live_utc(*m.groups()[:6]) * 1000000000 + int(((m.group(7) or "") + "000000000")[:9])
+            if ns <= self.last:                               # had it before the restart
+                continue
+            self.last = ns
+            out.append([ns // 1000, self.src, 6, s[m.end():][:LIVE_TEXT_MAX]])
+        return out
+
+    def close(self):
+        if self.s is not None:
+            with contextlib.suppress(OSError):
+                self.s.close()
+            self.s = None
+
+
+class LiveReader:
+    """One live request's lines on this box. `journal` is fn(cursor, n) → journalctl's argv, or None; `files` is
+    [(path, source or fn(text), fmt)]; `ctrs` is [(container, source)], read through `sock`. `want` is the request's
+    sources (any other line is dropped), `cap` its lines a second after the backfill, `cur` what an earlier reader left."""
+
+    def __init__(self, want, journal=None, files=(), ctrs=(), sock=None, cur=None, cap=200):
+        cur = cur if isinstance(cur, dict) else {}
+        self.want, self.cap, self.jargv, self.sock = set(want), max(1, int(cap)), journal, sock
+        self.p, self.jbuf, self.jlines, self.jstart, self.jnext = None, b"", 0, 0.0, 0.0
+        self.jcur = cur.get("j") if isinstance(cur.get("j"), str) else None
+        self.t0, self.bf, self.marks = time.monotonic(), [], []
+        self.sec, self.n, self.skip = 0, 0, 0
+        fc = cur.get("f") if isinstance(cur.get("f"), dict) else {}
+        dc = cur.get("d") if isinstance(cur.get("d"), dict) else {}
+        self.files = [_LiveFile(p, s, fmt, fc.get(p)) for p, s, fmt in files]
+        self.ctrs = [_LiveCtr(sock, c, s, dc.get(c)) for c, s in ctrs] if sock else []
+        if any(f.gap for f in self.files):
+            self._gap()
+        if journal:
+            self._jopen()
+
+    def _gap(self):
+        self.marks.append([int(time.time() * 1000000), "!gap", 4, ""])
+
+    def _jopen(self):
+        self.jlines, self.jstart, self.jbuf = 0, time.monotonic(), b""
+        with contextlib.suppress(OSError, ValueError):
+            self.p = subprocess.Popen(self.jargv(self.jcur, min(LIVE_BACKFILL * max(1, len(self.want)), LIVE_BACKFILL_MAX)),
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+            os.set_blocking(self.p.stdout.fileno(), False)
+
+    def _jread(self):
+        out, eof = [], False
+        if self.p is None:
+            if self.jargv and self.jnext and time.monotonic() >= self.jnext:
+                self.jnext = 0.0
+                self._jopen()
+            return out
+        try:
+            while True:
+                d = os.read(self.p.stdout.fileno(), 65536)
+                if not d:
+                    eof = True
+                    break
+                self.jbuf += d
+        except (BlockingIOError, InterruptedError):
+            pass
+        except (OSError, ValueError):
+            eof = True
+        *done, self.jbuf = self.jbuf.split(b"\n")
+        for raw in done:
+            try:
+                e = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(e, dict):
+                continue
+            self.jlines += 1
+            if isinstance(e.get("__CURSOR"), str):
+                self.jcur = e["__CURSOR"]
+            src = live_journal_src(e)
+            if src == "p2p" and not live_want(src, self.want) and "kernel" in self.want:
+                src = "kernel"                                # a P2P hit is a kernel line too
+            if not src:
+                continue
+            try:
+                t, prio = int(e.get("__REALTIME_TIMESTAMP")), int(e.get("PRIORITY", 6))
+            except (TypeError, ValueError):
+                t, prio = int(time.time() * 1000000), 6
+            out.append([t, src, prio, live_text(e.get("MESSAGE"))[:LIVE_TEXT_MAX]])
+        if eof:                                               # journalctl ended. A cursor it cannot seek to fails at once,
+            quick = time.monotonic() - self.jstart < 5        # with nothing read: then afresh, with a marker. Anything
+            self._jclose()                                    # else: again from where it was, at most every 5 s
+            if quick and self.jcur and not self.jlines:
+                self.jcur = None
+                self._gap()
+                self._jopen()
+            else:
+                self.jnext = self.jstart + 5
+        return out
+
+    def _jclose(self):
+        if self.p is not None:
+            with contextlib.suppress(Exception):
+                self.p.kill()
+            with contextlib.suppress(Exception):
+                self.p.wait(2)
+            with contextlib.suppress(Exception):
+                self.p.stdout.close()
+            self.p = None
+
+    def poll(self, timeout):
+        """Wait up to `timeout` s for new lines; hand back what is ready, oldest first (nothing while the backfill is
+        still being gathered)."""
+        rd = ([self.p.stdout] if self.p is not None else []) + [c for c in self.ctrs if c.s is not None and not c.done]
+        if rd:
+            with contextlib.suppress(OSError, ValueError):
+                select.select(rd, [], [], timeout)
+        else:
+            time.sleep(timeout)
+        new = self._jread()
+        for f in self.files:
+            new += f.read()
+        for i, c in enumerate(self.ctrs):
+            if not c.done:
+                new += c.read()
+            elif time.monotonic() - c.at >= 5:                # the container went (relaunched, recreated): from its last
+                c.close()                                     # line, at most every 5 s
+                self.ctrs[i] = _LiveCtr(self.sock, c.name, c.src, c.last)
+        new = [ln for ln in new if live_want(ln[1], self.want)]
+        new.sort(key=lambda x: x[0])
+        if self.bf is not None:                               # still the backfill: kept back, then cut per source
+            self.bf += new
+            if time.monotonic() - self.t0 < LIVE_BACKFILL_S:
+                return []
+            per, keep = {}, []
+            for ln in reversed(self.bf):
+                per[ln[1]] = per.get(ln[1], 0) + 1
+                if per[ln[1]] <= LIVE_BACKFILL:
+                    keep.append(ln)
+            out, self.marks, self.bf = self.marks + keep[::-1], [], None
+            return out
+        out, self.marks = self.marks, []
+        for ln in new:
+            s = int(time.monotonic())
+            if s != self.sec:
+                if self.skip:
+                    out.append([int(time.time() * 1000000), "!skip", 4, str(self.skip)])
+                self.sec, self.n, self.skip = s, 0, 0
+            self.n += 1
+            if self.n > self.cap:
+                self.skip += 1
+            else:
+                out.append(ln)
+        if self.skip and int(time.monotonic()) != self.sec:
+            out.append([int(time.time() * 1000000), "!skip", 4, str(self.skip)])
+            self.skip = 0
+        return out
+
+    def cursor(self):
+        c, f = {}, {}
+        if self.jcur:
+            c["j"] = self.jcur
+        for x in self.files:
+            xc = x.cursor()
+            if xc:
+                f[x.path] = xc
+        d = {x.name: x.last for x in self.ctrs if x.last}
+        if f:
+            c["f"] = f
+        if d:
+            c["d"] = d
+        return c
+
+    def close(self):
+        self._jclose()
+        for x in self.files + self.ctrs:
+            x.close()
+# ── end of the live log reader ────────────────────────────────────────────────────────────────────────────────────────
+
+
+# ── Logs P2: the live viewer — its requests, the node leg, the panel's own lines (docs/LOGS-PLAN.md §3, §23) ─────────────
+# IN MEMORY ONLY, like a reachability test: a request is a question, not configuration. At most LIVE_REQ_MAX at a time,
+# each {nodes, sources, a lease the viewer's poll renews, the last LIVE_BUF lines}. A panel restart forgets them: the
+# viewer's next poll gets 404 and opens a new one, and the nodes' readers end with their leases.
+# The node leg rides the sync reply (`logs`, only while a request names that node — an idle fleet's reply is unchanged)
+# and the lines come back on POST /api/node/logs, authorized by a key bound to the request and the node (§23.1). Neither
+# that route nor the viewer's routes go through api(), which parses the whole node store on every call, nor take
+# _api_lock: they touch nothing but this store.
+LIVE_REQ_MAX, LIVE_LEASE, LIVE_BUF = 4, 15, 5000
+LIVE_POST_MAX, LIVE_POST_RAW_MAX, LIVE_POST_LINES = 1 << 20, 4 << 20, 2000
+LIVE_RATE = 1000            # lines a second one request takes at most, shared by its nodes (§23.2)
+LIVE_CUR_MAX = 2048         # bytes of a node's resume point
+LIVE_SKEW_S = 2             # a node clock off by this much or more is corrected in the viewer (§23.7)
+LIVE_NOANSWER_S = 20        # a node that has not posted this long after it was asked: "no answer"
+LIVE_PANEL = "panel"        # the panel's own entry among a request's nodes
+LIVE_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+LIVE_SRC_RE = re.compile(r"^[a-z0-9]{1,16}(?::(?:\*|[A-Za-z0-9_.@-]{1,64}))?$")
+LIVE_STATES = ("ok", "absent", "off", "unavailable", "noaccess")
+_LIVE_REQS = {}             # id -> request (live_open)
+_LIVE_LOCK = threading.Lock()
+
+
+def live_iv(n):
+    """Seconds between a node's posts: 1, or one more per 25 nodes, so a 200-node request costs ~25 posts a second."""
+    return max(1, -(-n // 25))
+
+
+def live_cap(n):
+    return min(200, max(5, LIVE_RATE // max(1, n)))
+
+
+def _live_key(rec, nid):
+    return nid + "." + hmac.new(rec["secret"], (rec["id"] + "." + nid).encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _live_expire(now):
+    """Drop the requests whose lease ran out (caller holds _LIVE_LOCK)."""
+    for rid in [k for k, r in _LIVE_REQS.items() if r["lease"] < now]:
+        _LIVE_REQS.pop(rid)["stop"].set()
+
+
+def live_add(rec, nid, lines):
+    """Append a box's lines to a request: [seq, node, time µs, source, priority, text] (caller holds _LIVE_LOCK)."""
+    for t, src, prio, text in lines:
+        rec["seq"] += 1
+        rec["buf"].append([rec["seq"], nid, t, src, prio, text])
+
+
+def live_open(nodes, srcs, known, replace=None, now=None):
+    """Open a request for `nodes` (ids among `known`, and LIVE_PANEL) × `srcs`; `replace` is released in the same call (a
+    change of facets is a new request: the nodes restart their readers with a backfill). → (status, body)."""
+    now = time.time() if now is None else now
+    if not isinstance(nodes, list) or not isinstance(srcs, list):
+        return 400, {"ok": False, "error": "nodes and sources are lists", "code": "bad_request"}
+    srcs = list(dict.fromkeys(s for s in srcs if isinstance(s, str) and LIVE_SRC_RE.match(s)))[:64]
+    nodes = list(dict.fromkeys(n for n in nodes if isinstance(n, str) and (n == LIVE_PANEL or n in known)))[:2000]
+    if not srcs or not nodes:
+        return 400, {"ok": False, "error": "pick at least one server and one source", "code": "bad_request"}
+    with _LIVE_LOCK:
+        _live_expire(now)
+        if isinstance(replace, str) and replace in _LIVE_REQS:
+            _LIVE_REQS.pop(replace)["stop"].set()
+        if len(_LIVE_REQS) >= LIVE_REQ_MAX:
+            return 429, {"ok": False, "error": "%d log viewers are open already" % LIVE_REQ_MAX, "code": "busy"}
+        rid = secrets.token_hex(8)
+        rec = _LIVE_REQS[rid] = {
+            "id": rid, "secret": secrets.token_bytes(16), "nodes": nodes, "nodeset": set(nodes), "src": srcs,
+            "iv": live_iv(len(nodes)), "cap": live_cap(len(nodes)), "lease": now + LIVE_LEASE, "at": now,
+            "seq": 0, "buf": collections.deque(maxlen=LIVE_BUF), "cur": {}, "st": {}, "off": {}, "sent": {},
+            "acked": set(), "stop": threading.Event()}
+    if LIVE_PANEL in rec["nodeset"]:
+        threading.Thread(target=_live_panel_run, args=(rec,), daemon=True, name="swg-logs-" + rid).start()
+    return 200, {"ok": True, "data": {"id": rid, "iv": rec["iv"], "cap": rec["cap"]}}
+
+
+def live_close(rid):
+    with _LIVE_LOCK:
+        rec = _LIVE_REQS.pop(rid, None) if isinstance(rid, str) else None
+    if rec:
+        rec["stop"].set()
+    return 200, {"ok": True}
+
+
+def _live_node_state(rec, nid, snaps, seen, stale_s, now):
+    """What the viewer says about one box of a request: ok (with each source's state) · waiting · noanswer · old (a node
+    from before the viewer: "update the node") · offline."""
+    if nid in rec["acked"]:
+        d = {"state": "ok", "st": rec["st"].get(nid) or {}}
+        if rec["off"].get(nid):
+            d["off"] = rec["off"][nid]
+        return d
+    if nid == LIVE_PANEL:
+        return {"state": "waiting"}
+    snap, ls = snaps.get(nid), seen.get(nid)
+    if not isinstance(snap, dict) or ls is None or now - ls > stale_s:
+        return {"state": "offline"}
+    if not (snap.get("log") or {}).get("live"):
+        return {"state": "old"}
+    sent = rec["sent"].get(nid)
+    return {"state": "noanswer" if sent and now - sent > LIVE_NOANSWER_S else "waiting"}
+
+
+def live_view(rid, after, have, snaps, seen, stale_s, now=None):
+    """A viewer's poll: renews the lease, and hands back the lines after `after` and — when it changed since the copy the
+    viewer `have`s (a checksum) — each box's state. None for an id the panel does not have (the viewer opens a new one)."""
+    now = time.time() if now is None else now
+    with _LIVE_LOCK:
+        _live_expire(now)
+        rec = _LIVE_REQS.get(rid) if isinstance(rid, str) else None
+        if rec is None:
+            return None
+        rec["lease"] = now + LIVE_LEASE
+        buf, seq = rec["buf"], rec["seq"]
+        n = max(0, min(len(buf), seq - after))
+        lines = list(itertools.islice(buf, len(buf) - n, len(buf))) if n else []
+        nodes = {nid: _live_node_state(rec, nid, snaps, seen, stale_s, now) for nid in rec["nodes"]}
+    h = "%08x" % (zlib.crc32(json.dumps(nodes, sort_keys=True).encode()) & 0xffffffff)
+    return {"id": rid, "seq": seq, "lines": lines, "iv": rec["iv"], "h": h, **({} if h == have else {"nodes": nodes})}
+
+
+def live_reply(nid, now=None):
+    """The sync reply's `logs` for one node: every live request naming it, or None — and then no key at all, so an idle
+    fleet's reply is byte-identical to one from before the viewer."""
+    if not _LIVE_REQS:
+        return None
+    now = time.time() if now is None else now
+    out = []
+    with _LIVE_LOCK:
+        _live_expire(now)
+        for rec in _LIVE_REQS.values():
+            if nid in rec["nodeset"]:
+                rec["sent"].setdefault(nid, now)
+                e = {"id": rec["id"], "src": rec["src"], "iv": rec["iv"], "cap": rec["cap"],
+                     "lease": max(1, int(rec["lease"] - now)), "key": _live_key(rec, nid)}
+                if nid in rec["cur"]:
+                    e["cur"] = rec["cur"][nid]
+                out.append(e)
+    return out or None
+
+
+def live_absorb(body, now=None):
+    """A node's POST: its new lines for one request, where to resume, each source's state (first post) and its clock.
+    → (status, body). 404 tells the node the request is gone (its reader stops); 403 a key that is not this request's."""
+    now = time.time() if now is None else now
+    rid, key = body.get("id"), body.get("key")
+    with _LIVE_LOCK:
+        _live_expire(now)
+        rec = _LIVE_REQS.get(rid) if isinstance(rid, str) else None
+        if rec is None:
+            return 404, {"ok": False, "error": "no such request", "code": "gone"}
+        nid = key.split(".", 1)[0] if isinstance(key, str) else ""
+        if nid == LIVE_PANEL or nid not in rec["nodeset"] or not hmac.compare_digest(key, _live_key(rec, nid)):
+            return 403, {"ok": False, "error": "not this request's key", "code": "forbidden"}
+        lines = body.get("lines")
+        good = []
+        for ln in (lines if isinstance(lines, list) else [])[:LIVE_POST_LINES]:
+            if (isinstance(ln, list) and len(ln) == 4 and isinstance(ln[0], int) and not isinstance(ln[0], bool)
+                    and isinstance(ln[1], str) and (LIVE_SRC_RE.match(ln[1]) or ln[1] in ("!skip", "!gap"))
+                    and isinstance(ln[2], int) and 0 <= ln[2] <= 7 and isinstance(ln[3], str)):
+                good.append([ln[0], ln[1], ln[2], ln[3][:LIVE_TEXT_MAX]])
+        live_add(rec, nid, good)
+        cur = body.get("cur")
+        if isinstance(cur, dict) and len(json.dumps(cur)) <= LIVE_CUR_MAX:
+            rec["cur"][nid] = cur
+        st = body.get("st")
+        if isinstance(st, dict):
+            rec["st"][nid] = {k: v for k, v in list(st.items())[:64]
+                              if isinstance(k, str) and LIVE_SRC_RE.match(k) and v in LIVE_STATES}
+        tn = body.get("now")
+        if isinstance(tn, (int, float)) and not isinstance(tn, bool):
+            off = tn - now
+            rec["off"][nid] = int(round(off)) if abs(off) >= LIVE_SKEW_S else 0
+        rec["acked"].add(nid)
+    return 200, {"ok": True}
+
+
+def _live_panel_plan(srcs):
+    """The panel's own sources: its journal (bare metal: the swg-panel namespace merged with the main one; NixOS: the main
+    journal), its own file in a container. The panel reads the journal through the systemd-journal group its unit adds;
+    a panel not restarted since that drop-in cannot yet ("noaccess")."""
+    off = log_level() == LOG_OFF
+    st, units = {}, []
+    for s in srcs:
+        kind = s.split(":", 1)[0]
+        if kind not in _LIVE_PANEL_KINDS:
+            continue                                          # a node's source: not the panel's to answer
+        if PANEL_LOG_FILE["path"]:
+            st[s] = ("off" if off else "ok") if kind == "panel" else "unavailable"
+            continue
+        unit = {"panel": "swg-panel-server", "sub": "swg-sub", "netctl": "swg-netctl", "update": "swg-update"}[kind]
+        if not any(os.path.exists(os.path.join(d, unit + ".service")) for d in
+                   ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")):
+            st[s] = "absent"
+        elif off:
+            st[s] = "off"
+        elif not _live_journal_access():
+            st[s] = "noaccess"
+        else:
+            st[s] = "ok"
+            units.append(unit + ".service")
+    if PANEL_LOG_FILE["path"]:
+        return {"files": [(PANEL_LOG_FILE["path"], "panel", "ours")] if any(v == "ok" for v in st.values()) else []}, st
+    ns = PANEL_PLATFORM != "nixos" and any(os.path.exists(os.path.join(d, "systemd-journald@.service")) for d in
+                                           ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system",
+                                            "/lib/systemd/system"))
+    base = ["journalctl"] + (["--namespace=+swg-panel"] if ns else [])
+    return {"journal": (lambda cur, n: live_journal_argv(base, units, False, cur, n)) if units else None}, st
+
+
+def _live_journal_access():
+    """Can this process read the system's journals: root, or a member of systemd-journal (or adm)."""
+    if os.geteuid() == 0:
+        return True
+    with contextlib.suppress(Exception):
+        import grp
+        want = {g.gr_gid for g in grp.getgrall() if g.gr_name in ("systemd-journal", "adm")}
+        return bool(want & (set(os.getgroups()) | {os.getegid()}))
+    return False
+
+
+def _live_panel_run(rec):
+    """The Panel entry of a request: the panel reads its own lines, in this thread, straight into the request."""
+    rd = None
+    try:
+        plan, st = _live_panel_plan(rec["src"])
+        with _LIVE_LOCK:
+            rec["st"][LIVE_PANEL] = st
+            rec["acked"].add(LIVE_PANEL)
+        want = [s for s, v in st.items() if v == "ok"]
+        if not want:
+            return
+        rd = LiveReader(want, cap=rec["cap"], **plan)
+        while not rec["stop"].is_set():
+            lines = rd.poll(0.5)
+            if lines:
+                with _LIVE_LOCK:
+                    live_add(rec, LIVE_PANEL, lines)
+    except Exception as e:
+        log(LOG_WARNING, "logs: the panel's live reader stopped: %s", e)
+    finally:
+        if rd is not None:
+            rd.close()
+
+
+def live_api_get(qs, deps):
+    """GET /api/logs/live?id=&after=&h= — the viewer's poll (live_view)."""
+    try:
+        after = max(0, int((qs.get("after") or ["0"])[0]))
+    except ValueError:
+        after = 0
+    adv = ((deps.get("panel_settings") or {}).get("advanced") or {})
+    v = live_view((qs.get("id") or [""])[0], after, (qs.get("h") or [""])[0], deps.get("node_snaps") or {},
+                  deps.get("node_seen") or {}, max(5, int((adv.get("node_stale_ms") or 30000) / 1000)))
+    if v is None:
+        return 404, {"ok": False, "error": "no such viewer", "code": "gone"}
+    return 200, {"ok": True, "data": v}
+
+
+def live_api_post(path, body, deps):
+    """POST /api/logs/live {nodes, src, replace?} opens a viewer's request; /api/logs/live/close {id} ends one."""
+    if path == "/api/logs/live/close":
+        return live_close(body.get("id"))
+    known = set(deps.get("node_seen") or {}) | set(deps.get("node_snaps") or {})
+    return live_open(body.get("nodes"), body.get("src"), known, replace=body.get("replace"))
 
 # ── NETWORKS P2 — the private network a node sits on (docs/NETWORKS-PLAN.md D10, §8 P2) ──────────────────────
 # Measured: a client already reaches it, with nothing built. So this is a DISCLOSURE — shown unprompted on the node
@@ -30150,6 +30861,7 @@ class Handler(BaseHTTPRequestHandler):
         # ignore it and behave as before.
         owned_ifaces = sorted((node.get("ifaces") or {}).keys())
         _nprobe = net_probe_reply(nid)
+        _live = live_reply(nid)          # Logs P2: only while a viewer names this node
         # What the node drops even on an add-only interface: the keys the operator retired (rotated, deleted, moved off)
         # and every cut-off peer still on the wire here (cut_off_for_node). Just the retirements when nobody is cut off.
         _remove = {_ifn: list(_pks) for _ifn, _pks in (node.get("retire") or {}).items()}
@@ -30164,6 +30876,8 @@ class Handler(BaseHTTPRequestHandler):
                                 **({} if lan_open(node, Handler.deps.get("panel_settings")) else {"lan_share": False}),
                                 # NETWORKS P4: a reachability test, only while one is waiting for its answer (D1).
                                 **({"net_probe": _nprobe} if _nprobe else {}),
+                                # Logs P2: a live log viewer's requests, only while one names this node (D1).
+                                **({"logs": _live} if _live else {}),
                                 # NETWORKS P5: only while this node carries a restricted network (D1).
                                 **({"net_share": _nshare} if _nshare else {}),
                                 # DEVICE ACCESS: only while some interface here is not at Everyone and the node can enforce it (D1).
@@ -30341,6 +31055,28 @@ class Handler(BaseHTTPRequestHandler):
             ev_append(Handler.deps["roster_path"], "node", nid, "Node uninstalled — kept for re-install",
                       nodes[nid].get("name", nid))
         return self._send(200, {"ok": True, "kept": nid})
+
+    def _node_logs(self):
+        """Logs P2: a node's live lines for a viewer (live_absorb). Authorized by the key the node got in its sync reply for
+        that request — not the node token, whose check parses the whole node store (docs/LOGS-PLAN.md §23.1). gzip, at
+        most LIVE_POST_MAX on the wire and LIVE_POST_RAW_MAX unpacked. No _api_lock, no store, no snapshot: the sync
+        invariant (reconcile only on a 200 carrying `desired`) is not this route's business."""
+        n = self._body_len(cap=LIVE_POST_MAX)
+        if n is None:
+            return
+        raw = self.rfile.read(n) if n else b""
+        try:
+            if (self.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
+                d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                raw = d.decompress(raw, LIVE_POST_RAW_MAX)
+                if d.unconsumed_tail:
+                    return self._send(413, {"ok": False, "error": "request body too large", "code": "too_large"})
+            body = json.loads(raw or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError
+        except (ValueError, zlib.error):
+            return self._send(400, {"ok": False, "error": "invalid body", "code": "bad_request"})
+        return self._send(*live_absorb(body))
 
     def _node_proc_status(self):
         # An installer/converter (its bearer token) flags that the node is about to go down for a
@@ -30764,6 +31500,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             if path == "/api/state":       # the hot poll path — served from the short-TTL memo
                 return self._send_state()
+            if path == "/api/logs/live":   # the log viewer's poll: memory only, never api() (it parses the node store)
+                code, obj = live_api_get(parse_qs(u.query), self.deps)
+                return self._send_state_bytes({"bytes": json.dumps(obj).encode(), "gz": None}) if code == 200 else self._send(code, obj)
             try:
                 code, obj = api("GET", path, parse_qs(u.query), {}, self.deps)
             except Exception as e:
@@ -30792,6 +31531,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._node_goodbye()
         if path == "/api/node/proc-status":
             return self._node_proc_status()
+        if path == "/api/node/logs":       # a live viewer's lines — the request's key, no node token, no lock (live_absorb)
+            return self._node_logs()
         if path == "/api/node/rename":     # node-token auth — installer pushes a box-name change
             return self._node_rename()
         if path == "/api/node/transfer":   # node-token auth — ANOTHER PANEL hands us a node (T-10)
@@ -30869,6 +31610,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except (json.JSONDecodeError, ValueError):
             return self._send(400, {"ok": False, "error": "invalid JSON body", "code": "bad_request"})
+        if path in ("/api/logs/live", "/api/logs/live/close"):   # the log viewer: its own memory store, no lock, no api()
+            return self._send(*live_api_post(path, bodyobj, self.deps))
         try:
             if path in _LOCKLESS_POST:            # read-only, network-bound → never holds the lock (see _LOCKLESS_POST)
                 code, obj = api("POST", path, {}, bodyobj, self.deps)

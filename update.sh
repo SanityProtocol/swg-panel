@@ -1704,7 +1704,16 @@ ensure_log_ns(){   # <namespace> <unit>... — swg's own journal (lib/common.sh)
     install -m755 "$SRC/swg-logs" /usr/local/bin/swg-logs || warn "couldn't install /usr/local/bin/swg-logs"
   fi
 }
-log_ns_build(){ grep -qs 'LOG_NS_CONF' "$1"; }   # <installed program> — does this build write the namespace's size?
+log_ns_build(){ grep -qs 'LOG_NS_CONF' "$1"; }
+ensure_panel_journal(){   # the panel reads its own journal (Settings → Logs, the live viewer): its unit's drop-in, when missing
+  if $DRYRUN; then echo "    [skip] SupplementaryGroups=systemd-journal drop-in for swg-panel-server"; return 0; fi
+  swg_journal_heal
+  if [ "$SWG_JOURNAL_CHANGED" -gt 0 ]; then
+    systemctl daemon-reload || true
+    DID_UPDATE=yes; note "swg-panel-server reads its own journal (Settings → Logs) from its next start"
+  fi
+  return 0
+}   # <installed program> — does this build write the namespace's size?
 
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
@@ -1717,6 +1726,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   if should_update "bare-metal swg-panel" "$PANEL_DIR"; then
     info "updating bare-metal swg-panel ($PANEL_DIR)"
     ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
+    ensure_panel_journal
     for f in swg-panel-server index.html app.css app.js reconcile.js turn-artifacts.js; do
       [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$PANEL_DIR/"
     done
@@ -1788,6 +1798,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   if log_ns_build /usr/local/bin/swg-netctl; then   # HEAL: swg's own journal on a current box (a unit added since, a lost file)
     ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
   fi
+  if grep -qs 'LIVE_PANEL' "$PANEL_DIR/swg-panel-server"; then ensure_panel_journal; fi   # HEAL: a build with the viewer
   ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
   ensure_acme_renewal    # HEAL: cron + acme.sh's daily renewal entry, the certificate's ONLY renewer (before the client: no cron, no acme.sh)
   ensure_acme_client     # HEAL: the ACME client itself, when TLS_MODE needs it (a convert leaves the state, not the program)

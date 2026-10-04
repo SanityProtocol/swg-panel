@@ -271,11 +271,11 @@ rm_panel(){
   # every uninstall, so a panel that "comes back as itself" came back on the release channel (1.8.8 qualification, round
   # 6; the Docker path keeps it in its kept .env). Kept, a re-install's unit picks it up again. Deleting the data takes it.
   local _pdd="$SD/swg-panel-server.service.d" _mine=""
-  [ "$PANEL_DATA_DEL" = yes ] || _mine="$(ls -A "$_pdd" 2>/dev/null | grep -vxE 'zz-swg-update.conf|swg-ns.conf' | tr '\n' ' ' || true)"
+  [ "$PANEL_DATA_DEL" = yes ] || _mine="$(ls -A "$_pdd" 2>/dev/null | grep -vxE 'zz-swg-update.conf|swg-ns.conf|swg-journal.conf' | tr '\n' ' ' || true)"
   rmrf $SD/swg-panel-server.service $SD/swg-sub.service $SD/swg-sub.service.d \
        $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl \
        /var/lib/swg-netctl
-  if [ -n "$_mine" ]; then rmrf "$_pdd/zz-swg-update.conf" "$_pdd/swg-ns.conf"; info "  Kept your own drop-in(s) for the panel — $_pdd: ${_mine% } (a re-install picks them up)"
+  if [ -n "$_mine" ]; then rmrf "$_pdd/zz-swg-update.conf" "$_pdd/swg-ns.conf" "$_pdd/swg-journal.conf"; info "  Kept your own drop-in(s) for the panel — $_pdd: ${_mine% } (a re-install picks them up)"
   else rmrf "$_pdd"; fi
   docker_running swg-panel || rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
   rm_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service

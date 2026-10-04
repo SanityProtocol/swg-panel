@@ -2583,6 +2583,20 @@ swg_log_ns_heal(){   # <namespace> <unit>...
   done
   return 0   # set -e callers (update.sh): a drop-in that could not be written is not worth aborting an update for
 }
+# The panel reads its own journal for Settings → Logs' live viewer (docs/LOGS-PLAN.md §6, §23.6): its unit joins
+# systemd-journal by a drop-in of its own — scoped to the service, gone with it. Only where the group exists: a unit naming
+# a group that does not exist fails to start. Takes effect at the panel's next start.
+SWG_JOURNAL_DROPIN=swg-journal.conf
+swg_journal_text(){ printf '[Service]\nSupplementaryGroups=systemd-journal\n'; }
+swg_journal_heal(){   # → SWG_JOURNAL_CHANGED = 1 when it was written (the caller daemon-reloads)
+  local d=/etc/systemd/system/swg-panel-server.service.d want; SWG_JOURNAL_CHANGED=0
+  getent group systemd-journal >/dev/null 2>&1 || return 0
+  [ -f /etc/systemd/system/swg-panel-server.service ] || return 0
+  want="$(swg_journal_text)"
+  [ "$(cat "$d/$SWG_JOURNAL_DROPIN" 2>/dev/null)" = "$want" ] && return 0
+  mkdir -p "$d" && printf '%s\n' "$want" > "$d/$SWG_JOURNAL_DROPIN" && SWG_JOURNAL_CHANGED=1
+  return 0
+}
 # Docker hosts: their timer units start a oneshot every 10 s (swg-netctl-docker) and 30 s (swg-update), and systemd's
 # Starting/Finished lines about them were most of a box's journal (P0 T1). There is no swg-netctl here to follow the
 # fleet's level, so the drop-in is static: LogLevelMax=notice drops those lines, SyslogLevel=notice keeps the units' own

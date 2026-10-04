@@ -1533,6 +1533,8 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
   if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-panel-server.service.d/$SWG_LOG_NS_DROPIN" 644; fi
+  if getent group systemd-journal >/dev/null 2>&1; then   # the live log viewer reads the panel's own journal
+    swg_journal_text | writef "/etc/systemd/system/swg-panel-server.service.d/$SWG_JOURNAL_DROPIN" 644; fi
   if [ -f "$SRC/swg-logs" ]; then writef /usr/local/bin/swg-logs 755 < "$SRC/swg-logs"; fi   # reads swg's journals (lib/common.sh)
   mk_update_unit                                   # wire one-click host self-update (root, own cgroup)
 }

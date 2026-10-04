@@ -1205,6 +1205,9 @@ in
           # primary group being swg — true there, and an assumption worth not inheriting.
           User = "swgpanel";
           Group = "swg";
+          # Settings → Logs' live viewer: the panel reads its own lines in the system journal (it has no namespace on
+          # NixOS), which takes this group (docs/LOGS-PLAN.md §6, §23.6).
+          SupplementaryGroups = [ "systemd-journal" ];
 
           # Root, so it can write into a directory root owns and read the secret. `+` is what makes
           # it root; without it this would run as swgpanel and could read neither.

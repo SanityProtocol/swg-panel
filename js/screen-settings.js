@@ -49,6 +49,7 @@ import {
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
 } from "./routing.js";
+import { LogViewer } from "./logview.js";   // Settings → Logs, the live viewer (docs/LOGS-PLAN.md §5)
 import { classifyAll } from "./classify.js";   // the one grammar — CustomListSheet accepts what a rule accepts
 import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
 import {
@@ -3133,6 +3134,7 @@ const sectionLabel = k => ({
                     docker: !!(ps.log_panel || {}).docker, locked: (ps.log_panel || {}).err === "nixos" },
                   ...[...(Store.nodes || [])].sort((a, b) => Store.byNode(a.id, b.id)).map(n => ({ id: n.id, name: n.name, mb: (nodeEdits[n.id] || nFields(n)).log_mb,
                     saved: +(n.log_mb || 100), st: n.log || null, docker: n.kind === "docker", stale: nodeStale(n.id) }))]}/>` : null}
+        ${section === "logs" ? html`<${LogViewer}/>` : null}
         ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">${T("Interface colours")}<span class="grow"></span>

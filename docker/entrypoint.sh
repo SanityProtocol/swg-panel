@@ -5,6 +5,13 @@
 set -eu
 
 log() { printf '\033[0;36m[entrypoint]\033[0m %s\n' "$*"; }
+# The renewal loop's outcome also goes to the panel's own log file, as `acme: …` lines, so Settings → Logs shows it under
+# the Panel (docs/LOGS-PLAN.md §23.6) — the container log alone is not where the viewer reads. Only into a file that is
+# there: the panel deletes it at logging Off and writes it from its first line otherwise.
+panel_log(){   # <letter E/W/I> <text>
+  local f=/var/lib/swg-panel/log/swg-panel.log
+  [ -f "$f" ] && printf '%s %s acme: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$f" 2>/dev/null || true
+}
 
 # ─────────────────────── swg-sub certificate (defined up front) ───────────────────────
 # Defined here so the `sub-cert <domain>` RUNTIME subcommand — swg-netctl-docker calls `entrypoint.sh sub-cert
@@ -426,12 +433,14 @@ case "${TLS:-selfsigned}" in
         fi
         if [ "$_bad" = no ]; then
           printf 'ok %s\n' "$(date +%s)" > "$ACME_CFG/.renew-status" 2>/dev/null || true
+          panel_log I "renewal check for $PANEL_DOMAIN ok ($(cert_days_left "$SWG_PANEL_TLS_CERT") day(s) left)"
           sleep 43200
         else
           # keep the FIRST failure time across iterations — "failing since" is the fact worth having
           _since="$(sed -n 's/^failing \([0-9]*\).*/\1/p' "$ACME_CFG/.renew-status" 2>/dev/null | head -1)"
           printf 'failing %s %s\n' "${_since:-$(date +%s)}" "$_why" > "$ACME_CFG/.renew-status" 2>/dev/null || true
-          log "WARNING: TLS auto-renewal failed for $PANEL_DOMAIN — retrying in 1h. last: $_why"; sleep 3600
+          log "WARNING: TLS auto-renewal failed for $PANEL_DOMAIN — retrying in 1h. last: $_why"
+          panel_log W "renewal failed for $PANEL_DOMAIN — retrying in 1h: $_why"; sleep 3600
         fi
       done ) &
     log "TLS auto-renewal enabled (acme.sh --cron every 12h; 1h retry on failure; reload via SIGHUP)" ;;
