@@ -11,12 +11,13 @@ reports what the program would see; each result is compared with the same body r
 answer. A probe is started the way systemd starts the daemons: its path exec'd, the shebang naming the interpreter.
 
   [1] the prologue is the same text in both files
-  [2] the re-exec keeps the PID, argv (spaces, empty args), __file__, sys.path[0] (symlinks too), __main__
+  [2] the re-exec keeps the PID, argv (spaces, empty args), __file__, sys.path[0] (symlinks too), __main__ and the
+      process name (`swg-noded` where the shebang names the interpreter, as on Nix; `python3` behind env)
   [3] anything unusual keeps the old way, byte for byte: interpreter options, SWG_NO_REEXEC, a failed exec
   [4] it cannot loop, and the cwd is never on sys.path while the loader imports
   [5] the panel's server start holds SIGHUP across the exec (an acme reload in that window used to kill it)
   [6] _release_startup_memory gives the compile heap back, and does nothing where it cannot
-  [7] noded's lock message still names another swg-noded — old command line and new
+  [7] noded's lock message names another swg-noded — old command line and new — and nobody else
   [8] the real panel: re-exec'd, serving, under 90 MB, a second one refused by name, SWG_NO_REEXEC serves too
 
 Run: python3 tests/startup_reexec_selftest.py           (0 = pass)
@@ -26,6 +27,7 @@ Run: python3 tests/startup_reexec_selftest.py           (0 = pass)
      --perturb-exec      a failed exec is not caught → RED
      --perturb-sighup    the panel no longer holds SIGHUP across the exec → RED
      --perturb-options   interpreter options no longer keep the old way → RED
+     --perturb-comm      the second load keeps python3's process name → RED
 """
 import ast, json, os, re, shutil, signal, socket, subprocess, sys, tempfile, time
 
@@ -59,13 +61,15 @@ def perturbed(text):
     if MODE == "--perturb-path0":
         text = plant(text, "\"sys.path[:1]=[d]if sys.path[:1]==['']else sys.path[:1];\"", '""')
     if MODE == "--perturb-loop":
-        text = plant(text, "{'_SWG_REEXEC':1}", "{}")
+        text = plant(text, "'_SWG_REEXEC':1,", "")
         text = plant(text, 'if globals().get("_SWG_REEXEC") or _SWG_LOADER in getattr(sys, "orig_argv", ()):',
                      "if False:")
     if MODE == "--perturb-exec":
         text = plant(text, "    except OSError:\n        if held is not None:", "    except ZeroDivisionError:\n        if held is not None:")
     if MODE == "--perturb-sighup":
         text = plant(text, "        signal.signal(signal.SIGHUP, signal.SIG_IGN)\n", "")
+    if MODE == "--perturb-comm":
+        text = plant(text, "                if now != name:\n", "                if False:\n")
     if MODE == "--perturb-options":
         text = plant(text, "        if sys.orig_argv[1:] != sys.argv:\n            return\n", "        pass\n")
         text = plant(text, "            if subprocess._args_from_interpreter_flags():\n                return\n",
@@ -85,6 +89,7 @@ print(_j.dumps({
               sys.flags.ignore_environment, sys.flags.isolated, sys.flags.bytes_warning],
     "warn": sys.warnoptions,
     "unbuf": bool(getattr(sys.stdout, "write_through", False)),
+    "comm": open("/proc/self/comm").read().strip(),
 }))
 '''
 
@@ -132,12 +137,15 @@ def same_as_plain(r, g, probe, plain, strict_argv0=True):
     if r is None or g is None:
         return False, "no result: %r / %r" % (r, g)
     sub = lambda v: json.loads(json.dumps(v).replace(os.path.basename(plain), os.path.basename(probe)))
-    g = sub(g); diffs = []
+    g_comm = g["comm"]; g = sub(g); g["comm"] = g_comm; diffs = []
     for k in ("file", "path0", "name", "main_ok", "flags", "warn", "unbuf"):
         if r[k] != g[k]:
             diffs.append("%s: %r != %r" % (k, r[k], g[k]))
     if r["argv"][1:] != g["argv"][1:]:
         diffs.append("argv[1:]: %r != %r" % (r["argv"][1:], g["argv"][1:]))
+    pb, gb = os.path.basename(probe)[:15], os.path.basename(plain)[:15]     # the kernel keeps 15 characters
+    if r["comm"] != (pb if g["comm"] == gb else g["comm"]):
+        diffs.append("comm: %r (plain run: %r)" % (r["comm"], g["comm"]))
     a0_ok = r["argv"][0] == g["argv"][0] or (not strict_argv0 and r["argv"][0] == r["file"])
     if not a0_ok:
         diffs.append("argv[0]: %r != %r" % (r["argv"][0], g["argv"][0]))
@@ -169,10 +177,19 @@ for prog in SRC:
     r, pid, err = run([probe] + args, cwd="/")
     g, _, _ = run([plain] + args, cwd="/")
     ok, why = same_as_plain(r, g, probe, plain)
-    check("[2] %s: absolute launch — argv (a space, an empty arg, non-ASCII), __file__, sys.path[0], __main__" % prog,
+    check("[2] %s: absolute launch — argv (a space, an empty arg, non-ASCII), __file__, sys.path[0], __main__, "
+          "the process name" % prog,
           ok, why or err)
     check("[2] %s: it re-exec'd, in place (same PID, the loader in its command line)" % prog,
           bool(r) and r["reexec"] and r["loader"] and r["pid"] == pid, (r, pid, err))
+    envp = write(os.path.join(REAL, "envprobe-" + prog), open(probe).read().replace(SHEBANG, "#!/usr/bin/env python3\n", 1))
+    envg = write(os.path.join(REAL, "envplain-" + prog), open(plain).read().replace(SHEBANG, "#!/usr/bin/env python3\n", 1))
+    if os.path.realpath(shutil.which("python3") or "") == os.path.realpath(PY):
+        r, _, err = run([envp, "x"])
+        g, _, _ = run([envg, "x"])
+        ok, why = same_as_plain(r, g, envp, envg)
+        check("[2] %s: behind `#!/usr/bin/env python3` the name stays the interpreter's, as the plain run has it" % prog,
+              ok and r["reexec"] and r["comm"] == g["comm"], why or err)
     r, _, err = run(["./" + os.path.basename(probe), "x"], cwd=REAL)
     g, _, _ = run(["./" + os.path.basename(plain), "x"], cwd=REAL)
     ok, why = same_as_plain(r, g, probe, plain, strict_argv0=False)
@@ -215,7 +232,7 @@ for prog in SRC:
 print("[4] no loop, no cwd on sys.path")
 for prog in SRC:
     if PYV >= (3, 10):
-        lp, _ = make(prog, lambda t: t.replace("{'_SWG_REEXEC':1}", "{}"))
+        lp, _ = make(prog, lambda t: plant(t, "'_SWG_REEXEC':1,", ""))
         r, _, err = run([lp, "x"])
         check("[4] %s: with the globals mark gone, sys.orig_argv alone stops a second exec" % prog,
               bool(r) and r["loader"] and not r["reexec"], (r, err))
@@ -280,9 +297,12 @@ LD = tempfile.mkdtemp(prefix="reexec-lock-")
 LOCKER = ("import fcntl,os,sys,time;fd=os.open(%r,os.O_WRONLY|os.O_CREAT,0o600);fcntl.flock(fd,fcntl.LOCK_EX);"
           "print('ready',flush=True);time.sleep(60)") % os.path.join(LD, ".noded.lock")
 oldform = write(os.path.join(LD, "swg-noded"), "#!" + PY + "\n" + LOCKER.replace(";", "\n") + "\n")
-holders = [("the re-exec's command line", [PY, "-c", LOCKER, "/opt/swg-noded", "/opt/swg-noded/swg-noded"], True),
+LOADER = {"_SWG_LOADER": next(ast.literal_eval(n.value) for n in ast.parse(SRC["swg-noded"]).body
+                              if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_SWG_LOADER")}
+holders = [("the re-exec's command line (the real loader)", [PY, "-c", LOADER["_SWG_LOADER"], LD, "swg-noded", oldform], True),
            ("the plain script run", [PY, oldform], True),
-           ("a stranger", [PY, "-c", LOCKER, "/srv/other-tool"], False)]
+           ("a stranger", [PY, "-c", LOCKER, "/srv/other-tool"], False),
+           ("a stranger whose argument ends in swg-noded", [PY, "-c", LOCKER, "/var/lib/swg-noded"], False)]
 probe_code = r'''
 import importlib.machinery, importlib.util, os, sys
 os.environ["SWG_NODED_STATE"] = sys.argv[1]

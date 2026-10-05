@@ -23,15 +23,16 @@ Config (/etc/swg-agent/config.json), see config.example.json:
 # AST stayed resident for the life of the process (~80 MB of the panel's ~130, ~50 of noded's ~95) and nothing could
 # give it back. Loaded through compile() instead (runpy.run_path), the AST is dropped as soon as the bytecode exists.
 # So a plain script run of this file first replaces itself, in place — same PID, interpreter and environment — with
-#     python3 -c <_SWG_LOADER> <sys.path[0]> <this file> [args…]
+#     python3 -c <_SWG_LOADER> <sys.path[0]> <process name> <this file> [args…]
 # which runs the file again as __main__ with the script run's sys.path[0], argv[0] = this file's path (as __file__)
-# and `_SWG_REEXEC` in its globals, so the second load goes straight on. Anything else — interpreter options,
-# SWG_NO_REEXEC set, not a plain script run, an exec that fails — and this process carries on the old way, unchanged.
+# and `_SWG_REEXEC` in its globals, so the second load goes straight on — after taking back the process name the
+# script run had. Anything else — interpreter options, SWG_NO_REEXEC set, not a plain script run, an exec that
+# fails — and this process carries on the old way, unchanged.
 import os, sys
 
-_SWG_LOADER = ("import sys;d=sys.argv.pop(1);p=sys.argv.pop(1);"
+_SWG_LOADER = ("import sys;d=sys.argv.pop(1);c=sys.argv.pop(1);p=sys.argv.pop(1);"
                "sys.path[:1]=[d]if sys.path[:1]==['']else sys.path[:1];"      # -c put the cwd first: the script's dir
-               "import runpy;runpy.run_path(p,{'_SWG_REEXEC':1},'__main__')")   # goes back BEFORE anything is imported
+               "import runpy;runpy.run_path(p,{'_SWG_REEXEC':1,'_SWG_COMM':c},'__main__')")   # goes back BEFORE any import
 
 
 def _swg_reexec(hold_sighup=False):
@@ -41,7 +42,17 @@ def _swg_reexec(hold_sighup=False):
     if __name__ != "__main__":
         return                                   # loaded as a module (tests, tooling): nothing to do
     if globals().get("_SWG_REEXEC") or _SWG_LOADER in getattr(sys, "orig_argv", ()):
-        return                                   # the second load (two independent marks: it can never loop)
+        name = globals().get("_SWG_COMM")        # the second load (two independent marks: it can never loop) takes back
+        if name:                                 # the script run's process name: `swg-noded` where the shebang names the
+            try:                                 # interpreter itself (Nix), `python3` behind `env` — the exec made it python3
+                with open("/proc/self/comm") as f:
+                    now = f.read().strip()
+                if now != name:
+                    with open("/proc/self/comm", "w") as f:
+                        f.write(name)
+            except Exception:
+                pass
+        return
     if os.environ.get("SWG_NO_REEXEC"):
         return                                   # the operator's switch back to the plain script run
     script = globals().get("__file__")
@@ -60,6 +71,11 @@ def _swg_reexec(hold_sighup=False):
             return
         if getattr(sys.stdout, "write_through", False) and not os.environ.get("PYTHONUNBUFFERED"):
             return
+    try:
+        with open("/proc/self/comm") as f:
+            comm = f.read().strip()
+    except Exception:
+        comm = ""                                # no /proc: the second load keeps the interpreter's name
     held = None
     if hold_sighup:
         # The panel: an ignored signal stays ignored across exec (a handled one does not), so the second parse runs
@@ -69,7 +85,7 @@ def _swg_reexec(hold_sighup=False):
         held = signal.getsignal(signal.SIGHUP)
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
-        os.execv(sys.executable, [sys.executable, "-c", _SWG_LOADER, sys.path[0] if sys.path else "", script]
+        os.execv(sys.executable, [sys.executable, "-c", _SWG_LOADER, sys.path[0] if sys.path else "", comm, script]
                  + sys.argv[1:])
     except OSError:
         if held is not None:
@@ -21796,9 +21812,10 @@ def _lock_state_dir():
     except OSError:
         pid, state = _flock_holder(lp)
         argv = _proc_cmdline(pid) if pid else []
-        base = os.path.basename(argv[0]) if argv else ""
-        if base.startswith("python") and len(argv) > 1:   # `python3 <script>`, or the startup re-exec's `python3 -c <loader> <dir> <script>`
-            base = next((b for b in map(os.path.basename, argv[1:]) if b == "swg-noded"), os.path.basename(argv[1]))
+        args = argv[1:] if argv and os.path.basename(argv[0]).startswith("python") else argv[:1]
+        if _SWG_LOADER in args:                  # the startup re-exec: `python3 -c <loader> <dir> <name> <script> …`
+            args = args[args.index(_SWG_LOADER) + 3:]
+        base = os.path.basename(args[0]) if args else ""
         if base == "swg-noded":
             who = f"another swg-noded (pid {pid})"
         elif argv:
