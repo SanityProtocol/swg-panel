@@ -228,13 +228,9 @@ const tickOf = (n, of) => !n ? "" : n === of ? " on" : " mix";
 
 function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
   // the arrows walk the search box and every tick (heads included); the list is kept inside the window
-  // typing on a tick goes to the search box (when there is one), not to the type-ahead
-  const P = usePopup({ rows: "input,button:not(:disabled)", minBelow: 260, clampW: 300,
-    onType: () => { const i = P.popRef.current && P.popRef.current.querySelector("input"); if (!i) return false; i.focus(); return true; } }),
-    [q, setQ] = useState("");
+  // the search box (in a list over 8) takes the focus at every open and the keys typed on a tick
+  const P = usePopup({ rows: "input,button:not(:disabled)", minBelow: 260, clampW: 300, search: ".lv-mpq input" }), [q, setQ] = useState("");
   useEffect(() => { if (P.open) setQ(""); }, [P.open]);   // every open starts unfiltered (click or keyboard)
-  // the search takes the typing as soon as the list is open (the portal is on the page only after this render)
-  useEffect(() => { if (P.open && P.pos && P.popRef.current) { const i = P.popRef.current.querySelector("input"); if (i) i.focus(); } }, [P.open, !!P.pos]);
   const on = mpOn(dd, sel), all = ddItems(dd), nOn = all.filter(i => on.has(i.id)).length;
   const shown = value || (!all.length ? "—" : nOn === all.length ? T("All") : !nOn ? T("None")
     : nOn === 1 ? all.find(i => on.has(i.id)).label : T("{v1} of {v2}", { v1: fmtNum(nOn), v2: fmtNum(all.length) }));
@@ -253,7 +249,7 @@ function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
   const visAll = vis.flatMap(g => g.items);
   return html`<div class="lv-mp" ref=${P.ref}>
     <button type="button" class=${"lv-facet" + (P.open ? " on" : "")} aria-haspopup="listbox" aria-expanded=${P.open ? "true" : "false"}
-      onKeyDown=${P.onBtnKey} onBlur=${P.onBtnBlur} onClick=${P.toggle}>
+      onKeyDown=${P.onBtnKey} onClick=${P.toggle}>
       ${icon ? html`<${Ic} i=${icon}/>` : null}<span class="lv-fl">${label}</span><span class="lv-fv">${shown}</span><span class="catpick-caret">▾</span></button>
     ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="listbox" aria-multiselectable="true" aria-label=${label} onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur}
         class=${"ddpop lv-mppop" + (P.pos.flip ? " flip" : "")} style=${"left:" + P.pos.left + "px;top:" + P.pos.top + "px;min-width:" + Math.max(280, P.pos.width) + "px;--ddmaxh:" + P.pos.maxh + "px"}>
@@ -273,7 +269,7 @@ function MenuButton({ icon, label, title, items }) {
   const P = usePopup({ rows: "button:not(:disabled)", minBelow: 260 });
   return html`<div class="lv-mp" ref=${P.ref}>
     <button type="button" class=${"btn btn-mini" + (P.open ? " on" : "")} title=${title || ""} aria-haspopup="menu" aria-expanded=${P.open ? "true" : "false"}
-      aria-label=${title || label} onKeyDown=${P.onBtnKey} onBlur=${P.onBtnBlur} onClick=${P.toggle}><${Ic} i=${icon}/>${label ? " " + label : ""} <span class="catpick-caret">▾</span></button>
+      aria-label=${title || label} onKeyDown=${P.onBtnKey} onClick=${P.toggle}><${Ic} i=${icon}/>${label ? " " + label : ""} <span class="catpick-caret">▾</span></button>
     ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="menu" onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur} class=${"ddpop lv-menu" + (P.pos.flip ? " flip" : "")}
         style=${"left:" + Math.max(8, Math.min(P.pos.left + P.pos.width - 300, window.innerWidth - 308)) + "px;top:" + P.pos.top + "px;width:300px;--ddmaxh:" + P.pos.maxh + "px"}>
       ${items.map(it => html`<button type="button" role="menuitem" key=${it.key} class="ddopt lv-menuopt" disabled=${it.disabled}
