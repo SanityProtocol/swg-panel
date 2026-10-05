@@ -28,6 +28,7 @@ reader the node and the panel both run (docs/LOGS-PLAN.md §3, §4, §23).
 
 Run: python3 tests/log_live_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
+     idleparse    with nothing open, a log post's body is still unpacked and parsed (plan §32 #4)
      replyalways  an idle reply carries `logs`              replyall     a request reaches nodes it does not name
      nodetoken    the log POST checks the node token        nokey        any key is accepted
      bomb         the gzip body is unpacked without a limit nolease      the viewer's poll does not renew the lease
@@ -82,6 +83,8 @@ PLANTS = {   # (program, anchor, replacement)
                     '''                                "logs": _live or [],'''),
     "replyall": ("panel", '''            if nid in rec["nodeset"]:\n                rec["sent"].setdefault(nid, now)''',
                  '''            if True:\n                rec["sent"].setdefault(nid, now)'''),
+    "idleparse": ("panel", '''        if not _LIVE_REQS and not _RANGE_REQS:          # nothing open''',
+                  '''        if False:          # nothing open'''),
     "nodetoken": ("panel", '''        n = self._body_len(cap=LIVE_POST_MAX)\n        if n is None:\n            return\n''',
                   '''        n = self._body_len(cap=LIVE_POST_MAX)\n        if n is None:\n            return\n        self._node_token()\n'''),
     "nokey": ("panel", '''        if (nid == LIVE_PANEL or nid not in rec["nodeset"]\n                or not hmac.compare_digest(key.encode("utf-8", "replace"), _live_key(rec, nid).encode())):''',
@@ -281,6 +284,9 @@ def sec1():
     check("[1] a node the request does not name gets no `logs` at all", "logs" not in r2, r2.get("logs"))
     req(port_n, "/api/logs/live/close", {"id": rid})
     check("[1] closed: the key is gone from the reply", "logs" not in sync(port_n, toks[port_n]["n1"]))
+    c, o = req(port_n, "/api/node/logs", raw=gzip.compress(b"not json " * 50000), hdrs={"Content-Encoding": "gzip"})
+    check("[1] nothing open: a log post is refused before its body is unpacked or parsed (404, not the parser's 400)",
+          c == 404 and o.get("code") == "gone", (c, o))
     CTX.update(port=port_n, toks=toks[port_n], state=state_n)
 
 
