@@ -21783,11 +21783,13 @@ def _lock_state_dir():
 
 
 def _release_startup_memory():
-    """Give the startup heap back to the kernel, once, when startup is done.
+    """Give the startup heap back to the kernel, once, after the first sync pass.
 
-    The prologue at the top of this file stops the AST from staying LIVE, but compile()'s scratch memory (~90 MB
-    for this file) is freed into glibc's heap, and glibc keeps it: RSS would stay at the compile peak.
-    malloc_trim(0) returns the free pages. glibc only — musl has no malloc_trim (no-op there, as without ctypes)."""
+    The prologue at the top of this file stops the AST from staying LIVE, but compile()'s scratch memory is freed
+    into glibc's heap, and glibc keeps it — as it keeps what the first pass frees (the first reconcile, list and
+    routing loads). malloc_trim(0) returns the free pages: measured on msk-main 68 → 42 MB after pass 1, and only
+    ~3 MB more at passes 3 and 10, so once is enough. glibc only — musl has no malloc_trim (no-op there, as
+    without ctypes)."""
     try:
         import ctypes
         trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
@@ -21863,7 +21865,6 @@ def main():
     # Per-leg link health. Background because a probe is seconds of wall clock and the sync loop runs every 5s;
     # the snapshot reads the cache, so a slow or hung probe can never delay a sync.
     threading.Thread(target=_mesh_probe_loop, args=(node_cfg,), daemon=True).start()
-    _release_startup_memory()                # startup is done: the compile's scratch heap goes back to the kernel
     while True:
         t0 = time.time()
         _LOOP["n"] += 1                             # new loop → per-loop caches (nft table render) refresh
@@ -22214,6 +22215,8 @@ def main():
         with _TURN_JOBS_LOCK:                       # while an async reinstall/update is in flight, sync fast so the
             _busy = bool(_TURN_JOBS)                 # panel actually SEES the "updating" phase (else a sub-interval
         _iv = 1.0 if _busy else interval            # download finishes entirely between two 5s posts → pending→updated)
+        if _LOOP["n"] == 1:                         # the first pass is the rest of startup (a failed sync still ends here)
+            _release_startup_memory()
         time.sleep(max(0.5, _iv - (time.time() - t0)))
 
 
