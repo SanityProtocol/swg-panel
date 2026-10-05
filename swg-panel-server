@@ -7642,6 +7642,37 @@ def _live_key(rec, nid):
     return nid + "." + hmac.new(rec["secret"], (rec["id"] + "." + nid).encode(), hashlib.sha256).hexdigest()[:32]
 
 
+# A node's log post (live or range) is remote input, checked here once for both stores.
+def _log_post_node(rec, key):
+    """The node this key admits into `rec`, or None (bytes compared: a non-ASCII key cannot raise)."""
+    nid = key.split(".", 1)[0] if isinstance(key, str) else ""
+    ok = nid != LIVE_PANEL and nid in rec["nodeset"] and hmac.compare_digest(key.encode("utf-8", "replace"),
+                                                                            _live_key(rec, nid).encode())
+    return nid if ok else None
+
+
+def _log_post_lines(lines, cap, marks=()):
+    """The well-formed [time µs, source, priority, text] among a post's first `cap` lines, each text cut to LIVE_TEXT_MAX."""
+    return [[ln[0], ln[1], ln[2], ln[3][:LIVE_TEXT_MAX]] for ln in (lines if isinstance(lines, list) else [])[:cap]
+            if isinstance(ln, list) and len(ln) == 4 and isinstance(ln[0], int) and not isinstance(ln[0], bool)
+            and isinstance(ln[1], str) and (LIVE_SRC_RE.match(ln[1]) or ln[1] in marks)
+            and isinstance(ln[2], int) and 0 <= ln[2] <= 7 and isinstance(ln[3], str)]
+
+
+def _log_post_st(st):
+    """Each source's state from a post, or None when it carries none."""
+    return {k: v for k, v in list(st.items())[:64] if isinstance(k, str) and LIVE_SRC_RE.match(k) and v in LIVE_STATES} \
+        if isinstance(st, dict) else None
+
+
+def _log_post_off(tn, now):
+    """How far the node's clock is off, in whole seconds (0 under LIVE_SKEW_S), or None when its `now` is not a time."""
+    if not isinstance(tn, (int, float)) or isinstance(tn, bool) or not math.isfinite(tn):
+        return None
+    off = tn - now
+    return int(round(off)) if abs(off) >= LIVE_SKEW_S else 0
+
+
 def _live_expire(now):
     """Drop the requests whose lease ran out (caller holds _LIVE_LOCK)."""
     for rid in [k for k, r in _LIVE_REQS.items() if r["lease"] < now]:
@@ -7757,17 +7788,10 @@ def live_absorb(body, now=None):
         rec = _LIVE_REQS.get(rid) if isinstance(rid, str) else None
         if rec is None:
             return 404, {"ok": False, "error": "no such request", "code": "gone"}
-        nid = key.split(".", 1)[0] if isinstance(key, str) else ""
-        if (nid == LIVE_PANEL or nid not in rec["nodeset"]
-                or not hmac.compare_digest(key.encode("utf-8", "replace"), _live_key(rec, nid).encode())):
+        nid = _log_post_node(rec, key)
+        if nid is None:
             return 403, {"ok": False, "error": "not this request's key", "code": "forbidden"}
-        lines = body.get("lines")
-        good = []
-        for ln in (lines if isinstance(lines, list) else [])[:LIVE_POST_LINES]:
-            if (isinstance(ln, list) and len(ln) == 4 and isinstance(ln[0], int) and not isinstance(ln[0], bool)
-                    and isinstance(ln[1], str) and (LIVE_SRC_RE.match(ln[1]) or ln[1] in ("!skip", "!gap"))
-                    and isinstance(ln[2], int) and 0 <= ln[2] <= 7 and isinstance(ln[3], str)):
-                good.append([ln[0], ln[1], ln[2], ln[3][:LIVE_TEXT_MAX]])
+        good = _log_post_lines(body.get("lines"), LIVE_POST_LINES, ("!skip", "!gap"))
         cur = body.get("cur")
         cur_ok = isinstance(cur, dict) and len(json.dumps(cur)) <= LIVE_CUR_MAX   # before the lines: a raise adds none
         live_add(rec, nid, good)
@@ -7775,14 +7799,11 @@ def live_absorb(body, now=None):
             rec["cur"][nid] = cur
         elif cur is not None:                              # too big to keep: a restart starts afresh rather than from
             rec["cur"].pop(nid, None)                      # a stale point (a repeat or a gap no marker would show)
-        st = body.get("st")
-        if isinstance(st, dict):
-            rec["st"][nid] = {k: v for k, v in list(st.items())[:64]
-                              if isinstance(k, str) and LIVE_SRC_RE.match(k) and v in LIVE_STATES}
-        tn = body.get("now")
-        if isinstance(tn, (int, float)) and not isinstance(tn, bool) and math.isfinite(tn):
-            off = tn - now
-            rec["off"][nid] = int(round(off)) if abs(off) >= LIVE_SKEW_S else 0
+        st, off = _log_post_st(body.get("st")), _log_post_off(body.get("now"), now)
+        if st is not None:
+            rec["st"][nid] = st
+        if off is not None:
+            rec["off"][nid] = off
         rec["acked"].add(nid)
     return 200, {"ok": True}
 
@@ -8081,21 +8102,17 @@ def range_absorb(body, now=None):
         rec = _RANGE_REQS.get(rid) if isinstance(rid, str) else None
         if rec is None or rec["phase"] != "reading":
             return 404, {"ok": False, "error": "no such request", "code": "gone"}
-        nid = key.split(".", 1)[0] if isinstance(key, str) else ""
-        if (nid == LIVE_PANEL or nid not in rec["nodeset"]
-                or not hmac.compare_digest(key.encode("utf-8", "replace"), _live_key(rec, nid).encode())):
+        nid = _log_post_node(rec, key)
+        if nid is None:
             return 403, {"ok": False, "error": "not this request's key", "code": "forbidden"}
         ns = rec["ns"][nid]
         if ns["state"] in RANGE_FINAL and ns["state"] != "done":
             return 410, {"ok": False, "error": "this server's part is closed", "code": "gone"}
-        tn = body.get("now")
-        if isinstance(tn, (int, float)) and not isinstance(tn, bool) and math.isfinite(tn):
-            off = tn - now
-            ns["off"] = int(round(off)) if abs(off) >= LIVE_SKEW_S else 0
-        st = body.get("st")
-        if isinstance(st, dict):
-            ns["st"] = {k: v for k, v in list(st.items())[:64]
-                        if isinstance(k, str) and LIVE_SRC_RE.match(k) and v in LIVE_STATES}
+        st, off = _log_post_st(body.get("st")), _log_post_off(body.get("now"), now)
+        if off is not None:
+            ns["off"] = off
+        if st is not None:
+            ns["st"] = st
         ns["last"] = now
         seq = body.get("seq")
         if seq is None:                                    # it reads: a progress post (a late one, after its parts
@@ -8108,12 +8125,7 @@ def range_absorb(body, now=None):
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             return 400, {"ok": False, "error": "bad part number", "code": "bad_request"}
     lines = body.get("lines") if isinstance(body.get("lines"), list) else []
-    good = []
-    for ln in lines[:RANGE_PART_LINES]:
-        if (isinstance(ln, list) and len(ln) == 4 and isinstance(ln[0], int) and not isinstance(ln[0], bool)
-                and isinstance(ln[1], str) and LIVE_SRC_RE.match(ln[1])
-                and isinstance(ln[2], int) and 0 <= ln[2] <= 7 and isinstance(ln[3], str)):
-            good.append((ln[0], ln[1], ln[2], ln[3][:LIVE_TEXT_MAX]))
+    good = _log_post_lines(lines, RANGE_PART_LINES)
     done = body.get("done") if isinstance(body.get("done"), dict) else None
     with rec["locks"][nid]:                                # one server's parts in order; a retried part waits here
         with _RANGE_LOCK:
