@@ -724,9 +724,8 @@ try:
         check("[5] a container is read from `since` to `until`, not followed",
               got and "follow" not in got[0] and "since=%d" % (T0 + 40) in got[0] and "until=%d" % (T0 + 161) in got[0], got)
         srv.close()
-        f = N.range_first(lambda s, u, pm: N.range_journal_argv([fj], ["swg-wdtt-w1.service"], False, s, u, pm), T0 + 200,
-                          ["turn:*"])
-        check("[5] the oldest line the journal keeps of these sources (\"keeps lines from …\")", f == T0 * 10 ** 6, f)
+        check("[5] no claim that a server's budget cut the range's start (its first line of a source is not its budget's "
+              "reach: a source younger than the range read as one — plan §32 #2)", not hasattr(N, "range_first"), "")
 
     guarded("[5]", sec5)
 
