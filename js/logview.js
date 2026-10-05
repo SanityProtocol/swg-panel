@@ -419,7 +419,7 @@ async function rangePoll() {
   if (ph === "ready" && !RG.saved) { RG.saved = true; rangeSave(); }
   // polled while reading even in a hidden tab: a long read is what one leaves a tab for, and the panel drops a request
   // nobody polls for two minutes
-  if (RG.id && ph !== "ready" && ph !== "failed") RG.timer = setTimeout(rangePoll, 1500);
+  if (RG.id && ph !== "ready" && ph !== "failed") RG.timer = setTimeout(rangePoll, 1500);   // i18n-keys: the panel's phase ids
   bump();
 }
 function rangeSave() {
@@ -438,9 +438,9 @@ function rangeMakeNow() {
 }
 
 // one server's state as the progress bar files it, and how each reads
-const RCAT = { done: "done", reading: "reading", sending: "reading", waiting: "waiting", failed: "failed", timeout: "failed",
+const RCAT = { done: "done", reading: "reading", sending: "reading", waiting: "waiting", failed: "failed", timeout: "failed",   // i18n-keys: state ids
                offline: "offline", old: "old", noanswer: "noanswer", skipped: "skipped" };
-const RORDER = ["done", "reading", "waiting", "skipped", "noanswer", "old", "offline", "failed"];
+const RORDER = ["done", "reading", "waiting", "skipped", "noanswer", "old", "offline", "failed"];   // i18n-keys: state ids
 function rangeSay(k, v) {
   return ({
     done: [T("range|Done"), T("Read and sent: its part of the range is in the file."), "ok"],
@@ -463,7 +463,7 @@ function rangeGroups(v) {
   const cat = {}, extra = {};
   const add = (o, k, id) => (o[k] = o[k] || []).push(id);
   for (const [id, ns] of Object.entries(v.nodes || {})) {
-    add(cat, RCAT[ns.state] || "waiting", id);
+    add(cat, RCAT[ns.state] || "waiting", id);   // i18n-keys: a state id
     if (ns.cut) add(extra, "cut", id);
     if (ns.first && ns.first > v.since * 1e6 + 60e6) add(extra, "short", id);
     const st = Object.values(ns.st || {});
@@ -519,7 +519,7 @@ function RangePanel() {
     </div>`;
   }
   const g = v ? rangeGroups(v) : { cat: {}, extra: {} };
-  const total = ids.length, done = Object.entries(g.cat).filter(([k]) => k !== "reading" && k !== "waiting").reduce((a, [, l]) => a + l.length, 0);
+  const total = ids.length, done = Object.entries(g.cat).filter(([k]) => k !== "reading" && k !== "waiting").reduce((a, [, l]) => a + l.length, 0);   // i18n-keys: state ids
   const ph = v ? v.phase : "reading";
   const head = ph === "ready" ? T("Ready: {v1} lines, {v2}.", { v1: fmtNum(v.lines), v2: fmtBytes(v.raw) })
     : ph === "failed" ? T("The file could not be made: {v1}", { v1: v.err || "?" })

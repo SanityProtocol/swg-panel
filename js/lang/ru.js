@@ -1775,7 +1775,7 @@ export const STR = {
   "Time range": "Период",
   "15 min": "15 мин",
   "7 days": "7 дней",
-  "From {servers}: {sources}, at {levels}.": "Серверы: {servers}; {sources}; уровни: {levels}.",
+  "From {servers}: {sources}, at {levels}.": "{servers}; {sources}; уровни: {levels}.",
   "The servers, sources and levels chosen above. Each server's share is the 50 MB divided between them; over its share a server gives the newest part.":
     "Серверы, источники и уровни, выбранные выше. 50 МБ делятся между серверами поровну; если строк больше доли, сервер отдаёт самые новые.",
   "Mask keys and tokens": "Скрыть ключи и токены",
@@ -1794,7 +1794,7 @@ export const STR = {
   "Save the file": "Сохранить файл",
   "Not the whole range from every server — the file's first lines say which and why.":
     "Не со всех серверов есть весь период — в начале файла сказано, с каких и почему.",
-  "Kept on the panel for {n} min after each save.": "Файл хранится на панели {n} мин после каждого сохранения.",
+  "Kept on the panel for {n} min after each save.": "Файл хранится {n} мин после каждого сохранения.",
   "Make the file now": "Собрать сейчас",
   "Make the file from the servers that have answered; the rest are left out": "Собрать файл из ответивших серверов; остальные не войдут",
   "range|Done": "Готово",
