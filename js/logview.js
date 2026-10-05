@@ -95,7 +95,7 @@ function addLines(raw) {
   let prev = L.length ? L[L.length - 1].k : -Infinity, inOrder = true;
   for (const x of add) { if (x.k < prev) { inOrder = false; break; } prev = x.k; }
   L.push(...add);
-  if (!inOrder) L.sort((a, b) => a.k - b.k || a.seq - b.seq);   // a late line (a slower node) goes where it belongs
+  if (!inOrder) L.sort((a, b) => a.k - b.k || a.id - b.id);   // a late line (a slower node) goes where it belongs
   if (L.length > BUF) L.splice(0, L.length - BUF);
   if (LV.frozen) LV.missed += add.length;
 }
