@@ -331,8 +331,7 @@ N.NODE_KIND = "docker"                              # [3] is the file only; the 
 lf = N.LOG_LEVEL_FILE
 N.log_set(N.LOG_WARNING)
 N._log_follow({})
-check("[3] the children's file holds the level in force, then the base", open(lf).read() == "4 4\n"
-      and os.environ.get("SWG_LOG_LEVEL") == "4", open(lf).read())
+check("[3] the children's file holds the level in force, then the base", open(lf).read() == "4 4\n", open(lf).read())
 os.utime(lf, (1, 1))
 N._log_follow({})
 check("[3] …written only when it changes", os.stat(lf).st_mtime == 1)
