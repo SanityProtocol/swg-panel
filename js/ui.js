@@ -1088,6 +1088,121 @@ export function StatusTag({ cls, icon, label, msg, title }) {
 // The app-wide on/off switch (34×19). Used for every enable/disable toggle in Settings.
 export const Switch = ({ on, onChange, title, disabled }) => html`<label class=${"swt" + (disabled ? " swt-off" : "")} title=${title || ""}>
   <input type="checkbox" checked=${!!on} disabled=${!!disabled} onChange=${e => onChange(e.target.checked)}/><span class="track"></span><span class="knob"></span></label>`;
+// The mechanics of a list that opens under (or over) its trigger: one hook for every dropdown — the single-choice
+// `Dropdown` below and the log viewer's multi-choice lists and menu — so a fix to one reaches all of them.
+// The caller renders the trigger inside `ref` and the popup (portalled, class `ddpop`) inside `popRef`, and wires
+// `toggle`/`onBtnKey` to the trigger and `onPopKey`/`onPopBlur` to the popup. `rows` is the selector of what the arrows
+// walk; `minBelow` the room under the trigger below which the list opens upward; `clampW` keeps a list this wide
+// inside the window.
+//
+// ⚠️ KEYBOARD IS NOT A NICETY HERE, IT IS THE COST OF LEAVING <select>. A native select gives arrows, Home/End,
+// type-ahead, Enter and Escape for free, and every one of them is lost the moment it is replaced by <button>s — so a
+// control adopted "because it looks designed" would quietly be a downgrade for anyone who does not use a mouse.
+// Focus moves for real (rather than aria-activedescendant) because a row may hold its own control, and a real Tab has
+// to be able to reach it.
+// ⚠️ THE `ddpop` CLASS IS A CONTRACT. A Sheet and a pinned bubble stand aside for Enter and Escape while one is on the
+// page (they test `document.querySelector(".ddpop")`), so every list built on this hook must keep the class.
+export function usePopup({ keep = null, drop = "auto", onClose, disabled = false, rows = ".ddopt:not(:disabled)", minBelow = 240, clampW = 0 } = {}) {
+  const [open, setOpen] = useState(false), [pos, setPos] = useState(null);
+  const ref = useRef(null), popRef = useRef(null);
+  // "was this opened from the keyboard, and at which end" — a mouse open must NOT pull focus into the popup (it would
+  // paint a focus ring nobody asked for); a keyboard open must, or the arrows have nothing to move.
+  const kbd = useRef(null);
+  const typed = useRef({ s: "", t: 0 });
+  // ⚠️ CLOSING IS AN EVENT THE CALLER NEEDS. Anything a row is doing — a delete waiting to be confirmed, say — is state
+  // that belongs to the OPEN popup, and there are six ways it can close (outside click, Escape, Tab, focus leaving,
+  // choosing a row, the trigger again). Watching `open` fall is the one place that catches all of them.
+  const wasOpen = useRef(false);
+  useEffect(() => { if (wasOpen.current && !open && onClose) onClose(); wasOpen.current = open; }, [open]);
+  // ⚠️ `drop:"up"` IS NOT A STYLE CHOICE. A caller that puts an editable form BELOW this control has to be able to say
+  // so: left on auto, the list opens downward whenever there is room and lands squarely on the fields the operator
+  // opened it to edit. Auto everywhere else — the geometry is right far more often than a caller's guess.
+  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
+    const flip = drop === "up" ? true : (below < minBelow && above > below);
+    setPos({ left: Math.round(clampW ? Math.max(8, Math.min(r.left, window.innerWidth - clampW - 8)) : r.left),
+             top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width), flip,
+             maxh: Math.max(180, Math.round(flip ? above : below) - 16) }); };
+  // Back to the trigger on close, which is what a native select does and what keeps a keyboard user from being dumped
+  // on <body> in the middle of a form. Guarded: a choice may unmount this very control.
+  const close = back => { setOpen(false); kbd.current = null;
+    if (back && ref.current) { const b = ref.current.querySelector("button"); if (b) b.focus(); } };
+  const rowEls = () => (popRef.current ? [...popRef.current.querySelectorAll(rows)] : []);
+  const focusAt = el => { if (!el) return; el.focus(); el.scrollIntoView({ block: "nearest" }); };
+  const moveTo = i => { const els = rowEls(); if (els.length) focusAt(els[Math.max(0, Math.min(els.length - 1, i))]); };
+  const moveBy = d => { const els = rowEls(); const i = els.indexOf(document.activeElement);
+    moveTo(i < 0 ? (d > 0 ? 0 : els.length - 1) : i + d); };
+  // Type-ahead, the half of a native select nobody notices until it is gone. A single repeated letter CYCLES through
+  // the rows starting with it (search from the row after the current one); a longer buffer searches from the top, so
+  // "wa" always finds the same row whatever is focused. 700ms to type the next character.
+  const typeAhead = ch => {
+    const now = Date.now();
+    typed.current = { s: (now - typed.current.t < 700 ? typed.current.s : "") + ch.toLowerCase(), t: now };
+    const els = rowEls(), q = typed.current.s;
+    const from = Math.max(0, els.indexOf(document.activeElement));
+    const order = q.length === 1 ? [...els.slice(from + 1), ...els.slice(0, from + 1)] : els;
+    focusAt(order.find(el => (el.textContent || "").trim().toLowerCase().startsWith(q)));
+  };
+  useEffect(() => { if (!open) return; place();
+    // only a scroll that moves the trigger re-places the list — a log stream scrolling under it (it follows new lines
+    // many times a second) does not
+    const onMove = e => { const t = e && e.target;
+      if (t && t !== document && t.contains && ref.current && !t.contains(ref.current)) return; place(); };
+    // ⚠️ `keep` IS A THIRD "INSIDE", AND IT IS A PREDICATE RATHER THAN A REF ON PURPOSE. A caller can put a form beside
+    // the list that belongs to it — editing a row's title while the row is on screen — and without this the first
+    // click into that form counts as clicking away and dismisses the very list the form was opened from. A ref is not
+    // enough either: such a form holds controls whose own popups are PORTALLED to the body, so a click in one is not
+    // `contains`-inside anything the caller can name. Only the caller knows what belongs to it, so the caller answers.
+    const onDoc = e => { const t = e.target;
+      if ((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)) || (keep && keep(t))) return;
+      setOpen(false); };
+    // in the capture phase, and marked: a layer behind the list (the full-screen log viewer) leaves a handled one alone
+    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); close(true); } };
+    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
+    document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey, true);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove);
+      document.removeEventListener("pointerdown", onDoc, true); document.removeEventListener("keydown", onKey, true); };
+    // `drop` is a dependency because the caller changes it WHILE the list is open — the form that must not be covered
+    // appears after the list was opened, so a placement fixed at open time would be the wrong one.
+  }, [open, drop]);
+  // Land on the SELECTED row, not the first one — opening a 40-node list on "Auto" and making the operator arrow down to
+  // what is already chosen is the thing this control exists to be better than.
+  useEffect(() => {
+    if (!open || !pos || !kbd.current) return;
+    const els = rowEls(); const at = kbd.current; kbd.current = null;
+    if (els.length) focusAt(els.find(el => el.classList.contains("sel")) || els[at === "last" ? els.length - 1 : 0]);
+  }, [open, !!pos]);
+  const onPopKey = e => {
+    const k = e.key, t = e.target, inField = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA");
+    if (k === "Escape") { e.preventDefault(); close(true); return; }
+    if (k === "Tab") { setOpen(false); return; }              // let focus carry on out of the popup naturally
+    if (k === "ArrowDown") { e.preventDefault(); moveBy(1); return; }
+    if (k === "ArrowUp") { e.preventDefault(); moveBy(-1); return; }
+    if (inField) return;                                      // a row's own field (or a search box) owns its typing
+    if (k === "Home") { e.preventDefault(); moveTo(0); return; }
+    if (k === "End") { e.preventDefault(); moveTo(1e9); return; }
+    if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && /\S/.test(k)) { e.preventDefault(); typeAhead(k); }
+  };
+  // Focus leaving the popup for somewhere that is neither the popup nor the trigger closes it. `relatedTarget` is null
+  // when focus goes nowhere at all (clicking page chrome), which the pointerdown handler already covers.
+  // ⚠️ `keep` HAS TO BE ASKED HERE TOO, and this is the half that is easy to miss: a caller that owns a form beside the
+  // list gets past the pointerdown check and is then closed by THIS one instead, because clicking a field moves focus
+  // out of the popup. The symptom is identical — the list vanishes on the first click into the form.
+  const onPopBlur = e => { const to = e.relatedTarget;
+    if (to && !((popRef.current && popRef.current.contains(to)) || (ref.current && ref.current.contains(to)) || (keep && keep(to))))
+      setOpen(false); };
+  const onBtnKey = e => {
+    if (disabled || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+    e.preventDefault();
+    const at = e.key === "ArrowUp" ? "last" : "first";
+    if (open) { const els = rowEls(); if (els.length) focusAt(els.find(el => el.classList.contains("sel")) || els[at === "last" ? els.length - 1 : 0]); return; }
+    kbd.current = at; setOpen(true);
+  };
+  // the trigger's click: a keyboard "click" (Enter, Space: detail 0) opens with the focus in the list
+  const toggle = e => { if (disabled) return; const willOpen = !open; kbd.current = willOpen && e && e.detail === 0 ? "first" : null; setOpen(willOpen); };
+  return { open, setOpen, pos, ref, popRef, close, toggle, onBtnKey, onPopKey, onPopBlur };
+}
+
 // Reusable styled dropdown — a drop-in for a native <select> so every dropdown in the app shares one look (the
 // OS-rendered <select> option list can't be styled, hence this). `options` is a flat [{value,label,disabled}] or
 // grouped [{group,items:[…]}]. `short(label)` optionally shortens the CLOSED label (e.g. cut at a comma).
@@ -1102,116 +1217,16 @@ export const Switch = ({ on, onChange, title, disabled }) => html`<label class=$
 //              This is why an option is a <div class="ddrow"> wrapping the <button>: nesting one
 //              interactive element inside another is invalid HTML and the inner one stops receiving
 //              clicks in some browsers, so the row's own control has to be a SIBLING of the option.
-//
-// ⚠️ KEYBOARD IS NOT A NICETY HERE, IT IS THE COST OF LEAVING <select>. A native select gives arrows,
-// Home/End, type-ahead, Enter and Escape for free, and every one of them is lost the moment it is replaced
-// by <button>s — so a control adopted "because it looks designed" would quietly be a downgrade for anyone
-// who does not use a mouse. Focus moves for real (rather than aria-activedescendant) because a row may hold
-// its own control in `extra`, and a real Tab has to be able to reach it.
 export function Dropdown({ value, onChange, options, className, placeholder, disabled, short, ariaLabel, title, onClose, closeRef, keep = null, drop = "auto" }) {
-  const [open, setOpen] = useState(false), [pos, setPos] = useState(null);
-  const ref = useRef(null), popRef = useRef(null);
-  // "was this opened from the keyboard, and at which end" — a mouse open must NOT pull focus into the popup
-  // (it would paint a focus ring nobody asked for); a keyboard open must, or the arrows have nothing to move.
-  const kbd = useRef(null);
-  const typed = useRef({ s: "", t: 0 });
-  // ⚠️ CLOSING IS AN EVENT THE CALLER NEEDS. Anything a row is doing — a delete waiting to be confirmed,
-  // say — is state that belongs to the OPEN popup, and there are six ways it can close (outside click,
-  // Escape, Tab, focus leaving, choosing a row, the trigger again). Watching `open` fall is the one place
-  // that catches all of them; a caller clearing on any single one of them would leave the rest stale.
-  const wasOpen = useRef(false);
-  useEffect(() => { if (wasOpen.current && !open && onClose) onClose(); wasOpen.current = open; }, [open]);
+  const P = usePopup({ keep, drop, onClose, disabled });
   const flat = (options || []).flatMap(o => o.items ? o.items : [o]);
   const cur = flat.find(o => String(o.value) === String(value));
   const curLabel = cur ? (short ? short(cur.label) : cur.label) : (placeholder || "");
-  // ⚠️ `drop:"up"` IS NOT A STYLE CHOICE. A caller that puts an editable form BELOW this control has to be
-  // able to say so: left on auto, the list opens downward whenever there is room and lands squarely on the
-  // fields the operator opened it to edit. Auto everywhere else — the geometry is right far more often than
-  // a caller's guess, and forcing it up where there is nothing above only wastes the room.
-  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
-    const flip = drop === "up" ? true : (below < 240 && above > below);
-    setPos({ left: Math.round(r.left), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width), flip, maxh: Math.max(180, Math.round(flip ? above : below) - 16) }); };
-  // Back to the trigger on close, which is what a native select does and what keeps a keyboard user from
-  // being dumped on <body> in the middle of a form. Guarded: `onChange` may unmount this very control.
-  const close = back => { setOpen(false); kbd.current = null;
-    if (back && ref.current) { const b = ref.current.querySelector(".ddbtn"); if (b) b.focus(); } };
-  // ⚠️ A ROW'S OWN CONTROL CANNOT CLOSE THE POPUP BY ITSELF. It stops propagation (or the click would also
-  // choose the row), and the outside-click handler ignores anything INSIDE the popup — so a control that
-  // opens a sheet left the list sitting on top of it, and one that opens a form below the field left the
-  // form hidden underneath. Handed out the same way `Sheet` hands out its guarded close.
-  // No refocus: whatever the control opened is about to take the focus.
-  if (closeRef) closeRef.current = () => close(false);
-  const optEls = () => (popRef.current ? [...popRef.current.querySelectorAll(".ddopt:not(:disabled)")] : []);
-  const focusAt = el => { if (!el) return; el.focus(); el.scrollIntoView({ block: "nearest" }); };
-  const moveTo = i => { const els = optEls(); if (els.length) focusAt(els[Math.max(0, Math.min(els.length - 1, i))]); };
-  const moveBy = d => { const els = optEls(); const i = els.indexOf(document.activeElement);
-    moveTo(i < 0 ? (d > 0 ? 0 : els.length - 1) : i + d); };
-  // Type-ahead, the half of a native select nobody notices until it is gone. A single repeated letter CYCLES
-  // through the rows starting with it (search from the row after the current one); a longer buffer searches
-  // from the top, so "wa" always finds the same row whatever is focused. 700ms to type the next character.
-  const typeAhead = ch => {
-    const now = Date.now();
-    typed.current = { s: (now - typed.current.t < 700 ? typed.current.s : "") + ch.toLowerCase(), t: now };
-    const els = optEls(), q = typed.current.s;
-    const from = Math.max(0, els.indexOf(document.activeElement));
-    const order = q.length === 1 ? [...els.slice(from + 1), ...els.slice(0, from + 1)] : els;
-    focusAt(order.find(el => (el.textContent || "").trim().toLowerCase().startsWith(q)));
-  };
-  useEffect(() => { if (!open) return; place();
-    const onMove = () => place();
-    // ⚠️ `keep` IS A THIRD "INSIDE", AND IT IS A PREDICATE RATHER THAN A REF ON PURPOSE. A caller can put a
-    // form beside the list that belongs to it — editing a row's title while the row is on screen — and
-    // without this the first click into that form counts as clicking away and dismisses the very list the
-    // form was opened from. A ref is not enough either: such a form holds controls whose own popups are
-    // PORTALLED to the body, so a click in one is not `contains`-inside anything the caller can name. Only
-    // the caller knows what belongs to it, so the caller answers.
-    const onDoc = e => { const t = e.target;
-      if ((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t))
-          || (keep && keep(t))) return;
-      setOpen(false); };
-    const onKey = e => { if (e.key === "Escape") close(true); };
-    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("pointerdown", onDoc, true); document.removeEventListener("keydown", onKey); };
-    // `drop` is a dependency because the caller changes it WHILE the list is open — the form that must not be
-    // covered appears after the list was opened, so a placement fixed at open time would be the wrong one.
-  }, [open, drop]);
-  // Land on the SELECTED row, not the first one — opening a 40-node list on "Auto" and making the operator
-  // arrow down to what is already chosen is the thing this control exists to be better than.
-  useEffect(() => {
-    if (!open || !pos || !kbd.current) return;
-    const els = optEls(); const at = kbd.current; kbd.current = null;
-    if (els.length) focusAt(els.find(el => el.classList.contains("sel")) || els[at === "last" ? els.length - 1 : 0]);
-  }, [open, pos]);
-  const onPopKey = e => {
-    const k = e.key;
-    if (k === "Escape") { e.preventDefault(); close(true); return; }
-    if (k === "Tab") { setOpen(false); return; }              // let focus carry on out of the popup naturally
-    if (k === "ArrowDown") { e.preventDefault(); moveBy(1); return; }
-    if (k === "ArrowUp") { e.preventDefault(); moveBy(-1); return; }
-    if (k === "Home") { e.preventDefault(); moveTo(0); return; }
-    if (k === "End") { e.preventDefault(); moveTo(1e9); return; }
-    const t = e.target;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;   // a row's own field owns its typing
-    if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && /\S/.test(k)) { e.preventDefault(); typeAhead(k); }
-  };
-  // Focus leaving the popup for somewhere that is neither the popup nor the trigger closes it. `relatedTarget`
-  // is null when focus goes nowhere at all (clicking page chrome), which the pointerdown handler already covers.
-  // ⚠️ `keep` HAS TO BE ASKED HERE TOO, and this is the half that is easy to miss: a caller that owns a form
-  // beside the list gets past the pointerdown check and is then closed by THIS one instead, because clicking
-  // a field moves focus out of the popup. The symptom is identical — the list vanishes on the first click
-  // into the form — so it reads as the pointerdown guard not working, and no amount of fixing that helps.
-  const onPopBlur = e => { const to = e.relatedTarget;
-    if (to && !((popRef.current && popRef.current.contains(to)) || (ref.current && ref.current.contains(to))
-                || (keep && keep(to)))) setOpen(false); };
-  const onBtnKey = e => {
-    if (disabled || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
-    e.preventDefault();
-    const at = e.key === "ArrowUp" ? "last" : "first";
-    if (open) { const els = optEls(); if (els.length) focusAt(els.find(el => el.classList.contains("sel")) || els[at === "last" ? els.length - 1 : 0]); return; }
-    kbd.current = at; setOpen(true);
-  };
+  // ⚠️ A ROW'S OWN CONTROL CANNOT CLOSE THE POPUP BY ITSELF. It stops propagation (or the click would also choose the
+  // row), and the outside-click handler ignores anything INSIDE the popup — so a control that opens a sheet left the
+  // list sitting on top of it, and one that opens a form below the field left the form hidden underneath. Handed out
+  // the same way `Sheet` hands out its guarded close. No refocus: whatever the control opened takes the focus.
+  if (closeRef) closeRef.current = () => P.close(false);
   const opt = o => {
     const sel = String(o.value) === String(value);
     const btn = html`<button type="button" role="option" aria-selected=${sel ? "true" : "false"}
@@ -1220,21 +1235,19 @@ export function Dropdown({ value, onChange, options, className, placeholder, dis
       onClick=${() => { if (o.disabled) return;
         // REFUSED, AND SAID SO. The popup stays open on purpose: whatever unblocks the row is in the row.
         if (o.refuse) return toast(o.refuse, "info");
-        onChange(o.value); close(true); }}>${o.label}</button>`;
+        onChange(o.value); P.close(true); }}>${o.label}</button>`;
     // THE WHOLE ROW CARRIES THE SELECTION, not just the label button — a tint that stops short of the
     // row's own control reads as a rendering fault rather than as a selected row.
     return o.extra ? html`<div class=${"ddrow" + (sel ? " sel" : "")}>${btn}<span class="ddx">${o.extra}</span></div>` : btn;
   };
-  return html`<div class=${"dropdown " + (className || "")} ref=${ref}>
-    <button type="button" class=${"ddbtn" + (open ? " on" : "")} disabled=${disabled}
-      aria-haspopup="listbox" aria-expanded=${open ? "true" : "false"} aria-label=${ariaLabel || ""}
-      title=${title || ""}
-      onKeyDown=${onBtnKey}
-      onClick=${e => { if (disabled) return; const willOpen = !open; kbd.current = willOpen && e.detail === 0 ? "first" : null; setOpen(willOpen); }}>
+  return html`<div class=${"dropdown " + (className || "")} ref=${P.ref}>
+    <button type="button" class=${"ddbtn" + (P.open ? " on" : "")} disabled=${disabled}
+      aria-haspopup="listbox" aria-expanded=${P.open ? "true" : "false"} aria-label=${ariaLabel || ""}
+      title=${title || ""} onKeyDown=${P.onBtnKey} onClick=${P.toggle}>
       <span class="ddlbl">${curLabel}</span><span class="catpick-caret">▾</span></button>
-    ${open && pos ? html`<${Portal}><div ref=${popRef} role="listbox" tabindex="-1"
-        onKeyDown=${onPopKey} onfocusout=${onPopBlur}
-        class=${"ddpop" + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + pos.width + "px;--ddmaxh:" + pos.maxh + "px"}>
+    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="listbox" tabindex="-1"
+        onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur}
+        class=${"ddpop" + (P.pos.flip ? " flip" : "")} style=${"left:" + P.pos.left + "px;top:" + P.pos.top + "px;min-width:" + P.pos.width + "px;--ddmaxh:" + P.pos.maxh + "px"}>
       ${(options || []).map(o => o.items
         ? html`<div role="group" aria-label=${o.group}><div class="ddgrp">${o.group}</div>${o.items.map(opt)}</div>`
         : opt(o))}

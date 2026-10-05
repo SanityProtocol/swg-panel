@@ -13,7 +13,7 @@
 
 import { T, plural, fmtNum, locale } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
-import { Ic, Popover, Portal, goSettings } from "./ui.js";
+import { Ic, Popover, Portal, goSettings, usePopup } from "./ui.js";
 import { downloadConf } from "./crypto.js";
 import { fmtBytes } from "./util.js";
 import { h, Fragment } from "preact";
@@ -226,53 +226,9 @@ function mpWrite(dd, sel, on) {
 }
 const tickOf = (n, of) => !n ? "" : n === of ? " on" : " mix";
 
-// The popup's mechanics, as the shared Dropdown has them: portalled, placed under (or over) its trigger, closed by a
-// click outside, Escape (focus back on the trigger) or Tab out.
-function usePop() {
-  const [open, setOpen] = useState(false), [pos, setPos] = useState(null);
-  const ref = useRef(null), popRef = useRef(null), kbd = useRef(false);
-  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom - 12, above = r.top - 12, flip = below < 260 && above > below;
-    setPos({ left: Math.round(Math.min(r.left, window.innerWidth - 300)), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width), flip,
-             maxh: Math.max(200, Math.round(flip ? above : below) - 16) }); };
-  const close = back => { setOpen(false); if (back && ref.current) { const b = ref.current.querySelector("button"); if (b) b.focus(); } };
-  useEffect(() => { if (!open) return; place();
-    // only a scroll that moves the trigger re-places the popup: the stream scrolling under it (it follows new lines
-    // many times a second) does not
-    const onMove = e => { const t = e && e.target; if (t && t !== document && t.contains && ref.current && !t.contains(ref.current)) return; place(); };
-    const onDoc = e => { const t = e.target; if ((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t))) return; setOpen(false); };
-    // in the capture phase, and marked: the full-screen viewer's own Escape (on the same document) leaves this one alone
-    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); close(true); } };
-    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey, true);
-    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove);
-      document.removeEventListener("pointerdown", onDoc, true); document.removeEventListener("keydown", onKey, true); }; }, [open]);
-  // opened from the keyboard (Enter, Space, an arrow on the trigger): focus goes into the list, as in the shared Dropdown
-  useEffect(() => { if (!open || !pos || !kbd.current || !popRef.current) return;
-    const els = [...popRef.current.querySelectorAll("input,button:not(:disabled)")], at = kbd.current; kbd.current = false;
-    const el = at === "last" ? els[els.length - 1] : els[0]; if (el) el.focus(); }, [open, !!pos]);
-  const toggle = e => { kbd.current = !open && e.detail === 0; setOpen(!open); };
-  const onBtnKey = e => { if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return; e.preventDefault();
-    if (!open) { kbd.current = e.key === "ArrowUp" ? "last" : "first"; setOpen(true); } else if (popRef.current) { const el = popRef.current.querySelector("input,button:not(:disabled)"); if (el) el.focus(); } };
-  // focus leaving for somewhere that is neither the list nor its trigger closes it (Shift+Tab out of the search box)
-  const onPopBlur = e => { const to = e.relatedTarget;
-    if (to && !((popRef.current && popRef.current.contains(to)) || (ref.current && ref.current.contains(to)))) setOpen(false); };
-  // arrows walk the rows (and the search box), as in the shared Dropdown; Tab leaves and closes
-  const onPopKey = e => {
-    if (e.key === "Tab") { setOpen(false); return; }
-    const k = e.key, els = popRef.current ? [...popRef.current.querySelectorAll("input,button:not(:disabled)")] : [];
-    if (!els.length || !["ArrowDown", "ArrowUp", "Home", "End"].includes(k)) return;
-    if ((k === "Home" || k === "End") && document.activeElement && document.activeElement.tagName === "INPUT") return;   // the search's own
-    e.preventDefault();
-    const i = els.indexOf(document.activeElement);
-    const j = k === "Home" ? 0 : k === "End" ? els.length - 1 : Math.max(0, Math.min(els.length - 1, i + (k === "ArrowDown" ? 1 : -1)));
-    els[j].focus(); els[j].scrollIntoView({ block: "nearest" });
-  };
-  return { open, setOpen, pos, ref, popRef, onPopKey, onPopBlur, toggle, onBtnKey, close };
-}
-
 function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
-  const P = usePop(), [q, setQ] = useState("");
+  // the arrows walk the search box and every tick (heads included); the list is kept inside the window
+  const P = usePopup({ rows: "input,button:not(:disabled)", minBelow: 260, clampW: 300 }), [q, setQ] = useState("");
   useEffect(() => { if (P.open) setQ(""); }, [P.open]);   // every open starts unfiltered (click or keyboard)
   // the search takes the typing as soon as the list is open (the portal is on the page only after this render)
   useEffect(() => { if (P.open && P.pos && P.popRef.current) { const i = P.popRef.current.querySelector("input"); if (i) i.focus(); } }, [P.open, !!P.pos]);
@@ -311,7 +267,7 @@ function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
 
 // a button with a small menu of actions under it (the bar's Download)
 function MenuButton({ icon, label, title, items }) {
-  const P = usePop();
+  const P = usePopup({ rows: "button:not(:disabled)" });
   return html`<div class="lv-mp" ref=${P.ref}>
     <button type="button" class=${"btn btn-mini" + (P.open ? " on" : "")} title=${title || ""} aria-haspopup="menu" aria-expanded=${P.open ? "true" : "false"}
       aria-label=${title || label} onKeyDown=${P.onBtnKey} onClick=${P.toggle}><${Ic} i=${icon}/>${label ? " " + label : ""} <span class="catpick-caret">▾</span></button>
