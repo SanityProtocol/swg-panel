@@ -39,7 +39,7 @@ const LV = {
   levels: { err: true, warn: true, info: true, debug: true }, q: "", wrap: false, overlay: false,
   live: false,                                        // asked for (Start, the header button, a deep link); off once no viewer is up
   req: null, seq: 0, h: "", states: {}, iv: 1, err: "", ver: 0,   // the panel's request and what it last said
-  lines: [], frozen: null, missed: 0,                 // the merged lines; Paused: the list as it was, and what came since
+  lines: [], frozen: null, missed: 0, uid: 0,         // the merged lines; Paused: the list as it was, and what came since
   held: {},                                           // a reopen: the newest line each server already has here
   // gen counts the facet choices; openGen is the one the open request was made for, streamGen the one the lines on screen
   // are — so a change during an open, or a failed open after a change, is never taken for a mere reopen
@@ -86,7 +86,8 @@ function addLines(raw) {
   if (!raw || !raw.length) return;
   const off = id => ((LV.states[id] || {}).off || 0) * 1e6;
   // a reopened request backfills again: what each server already has on screen is not added twice
-  const add = raw.map(([seq, nid, t, src, prio, text]) => ({ k: t - off(nid), seq, nid, src, prio, text }))
+  // id: the row's key — seq starts again with each request, and a reopen keeps the old lines on screen
+  const add = raw.map(([seq, nid, t, src, prio, text]) => ({ id: ++LV.uid, k: t - off(nid), seq, nid, src, prio, text }))
     .filter(x => x.src[0] === "!" || !(x.k <= (LV.held[x.nid] || -Infinity)));
   for (const r of raw) delete LV.held[r[1]];          // only a server's first batch after a reopen is its backfill
   if (!add.length) return;
@@ -455,7 +456,7 @@ function Stream({ lines, follow, onUserScroll }) {
   };
   const blocks = [];
   for (let i = first; i >= 0 && i <= last; i++) blocks.push(html`<div class="lv-blk" data-i=${i} key=${i}>
-    ${lines.slice(i * BLOCK, (i + 1) * BLOCK).map(l => html`<${Row} key=${l.nid + l.seq} l=${l} q=${q}/>`)}</div>`);
+    ${lines.slice(i * BLOCK, (i + 1) * BLOCK).map(l => html`<${Row} key=${l.id} l=${l} q=${q}/>`)}</div>`);
   // one column width for every row (each row is its own grid): the longest server name and source shown, in characters
   let cw = 4, sw = 4;
   for (const l of lines) { const n = srcShown(l).length; if (n > sw) sw = n; }
