@@ -37,6 +37,7 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
      hostshquiet  a failed host command nobody checks is only Debug
      latelevel    the panel applies the fleet's level only after its start-up migrations have logged
      debugfile    docker: Debug's end back to Off leaves the panel's file on disk
+     nofollow     docker: the panel never starts the loop that checks for Debug's end
      dryquiet     a netctl dry run follows the fleet's level (and prints nothing below Info)
      reverifyinfo the 30-minute reverify counts as "the desired routing moved" (its re-assert pass logged at Info)
      reverifyskip the routing pass is gated on the log line's signature, so the reverify no longer forces a pass
@@ -94,8 +95,9 @@ PLANTS = {   # (program, anchor, replacement)
     "subfixed": ("sub", '''    if not _LOG_SERVE["path"] or time.monotonic()''', '''    if True or time.monotonic()'''),
     "subserve": ("panel", '''           "log": {"level": ps.get("log_level") if ps.get("log_level") in LOG_BASE_LEVELS else "info",''',
                  '''           "_log": {"level": ps.get("log_level") if ps.get("log_level") in LOG_BASE_LEVELS else "info",'''),
-    "debugfile": ("panel", '''        if left > 0:                                  # Debug's end back to Off''',
-                  '''        if False:                                  # Debug's end back to Off'''),
+    "debugfile": ("panel", '''        if _LOG_FILE["path"] and log_level() == LOG_OFF:''', '''        if False:'''),
+    "nofollow": ("panel", '''        threading.Thread(target=_panel_log_follow_loop, name="log-follow", daemon=True).start()''',
+                 '''        pass'''),
     "updatelog": ("netctl", '''        caps["swg-update.service"] += "SyslogLevel=%s\\n" % cap\n''', "        pass\n"),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -318,17 +320,19 @@ check("[2] …and the base once it has passed", P.log_level() == P.LOG_WARNING)
 # docker: Debug on top of Off writes the panel's file; when Debug's time is up the file goes, as a save to Off removes it
 _plf = os.path.join(TMP, "plog", "swg-panel.log")
 P.PANEL_LOG_FILE["path"] = _plf
-P.Handler.deps = {"panel_settings": {"log_level": "off", "log_debug_until": int(time.time()) + 2}}
-P.panel_log_apply(P.Handler.deps["panel_settings"])
+P.panel_log_apply({"log_level": "off", "log_debug_until": int(time.time()) + 2})
 P.log(P.LOG_DEBUG, "panel debug line")
+P.panel_log_follow()                                   # Debug still on: kept
 _had = os.path.exists(_plf)
-for _ in range(50):
-    if not os.path.exists(_plf):
-        break
+while P.log_level() != P.LOG_OFF:
     time.sleep(0.1)
-check("[2] docker: Debug's end back to Off removes the panel's file (review §35 #2)",
-      _had and not os.path.exists(_plf) and P.log_level() == P.LOG_OFF, (_had, os.path.exists(_plf), P.log_level()))
-P.PANEL_LOG_FILE["path"], P.Handler.deps = None, None
+P.panel_log_follow()
+check("[2] docker: Debug's end back to Off removes the panel's file — kept while Debug runs (review §35 #2)",
+      _had and not os.path.exists(_plf), (_had, os.path.exists(_plf)))
+check("[2] …checked by a loop the docker panel starts",
+      re.search(r'if PANEL_LOG_FILE\["path"\]:[^\n]*\n\s+threading\.Thread\(target=_panel_log_follow_loop', SRC["panel"])
+      is not None and "panel_log_follow()" in SRC["panel"][SRC["panel"].index("def _panel_log_follow_loop"):])
+P.PANEL_LOG_FILE["path"] = None
 P.log_file(None, 0)
 
 # ── [3] the node ────────────────────────────────────────────────────────────────────────────────────────────────────
