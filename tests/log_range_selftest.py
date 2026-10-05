@@ -925,7 +925,9 @@ console.log(JSON.stringify(r));
               early == "making" and "written while the made waited".replace("made", "make") in txt, (early, rec["phase"], txt[-200:]))
         # the panel's own read finishing after the make started writes nothing
         P._RANGE_REQS.clear()
-        st, o = P.range_open({"nodes": ["panel"], **RANGE_BODY, "src": ["panel"]}, set())
+        run, P._range_panel_run = P._range_panel_run, lambda rec: None   # not the open's own read: under load it could
+        st, o = P.range_open({"nodes": ["panel"], **RANGE_BODY, "src": ["panel"]}, set())   # finish before "making" below
+        P._range_panel_run = run
         rec2 = P._RANGE_REQS[o["data"]["id"]]
         rec2["phase"] = "making"
         P._live_panel_plan = lambda srcs, rng=False: ({"files": []}, {"panel": "ok"})
