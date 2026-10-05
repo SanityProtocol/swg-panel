@@ -1778,6 +1778,7 @@ export const STR = {
   "Not connected": "Нет связи",
   "Wrap long lines": "Переносить строки",
   "Clear the list": "Очистить список",
+  "Close the logs (Esc)": "Закрыть логи (Esc)",
   "The lines shown": "Показанные строки",
   "{v1} lines, as a text file — at once": "Строк: {v1}, текстовым файлом — сразу",
   "A time range…": "За период…",

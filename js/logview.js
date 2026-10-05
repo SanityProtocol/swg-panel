@@ -37,7 +37,7 @@ const chipOf = id => { let x = 0; for (const c of String(id)) x = (x * 31 + c.ch
 // The viewer's state, kept across re-renders (see the header).
 const LV = {
   nodes: null, src: null,                             // the facets; null = the defaults (see facetDefaults)
-  levels: { err: true, warn: true, info: true, debug: true }, q: "", wrap: false, full: false,
+  levels: { err: true, warn: true, info: true, debug: true }, q: "", wrap: false, full: false, overlay: false,
   req: null, seq: 0, h: "", states: {}, iv: 1, err: "", ver: 0,   // the panel's request and what it last said
   lines: [], frozen: null, missed: 0,                 // the merged lines; Paused: the list as it was, and what came since
   held: {},                                           // a reopen: the newest line each server already has here
@@ -632,8 +632,19 @@ function RangePanel() {
   </div>`;
 }
 
+// ── the header's Logs button: the same viewer, full screen, over any screen ──────────────────────────────────────────
+// Mounted in the app shell, it renders nothing until the button is clicked — and the viewer polls only while mounted,
+// so no request leaves before then. Exit (or Esc) unmounts it, which closes its request at once.
+export function openLogOverlay() { LV.overlay = true; bump(); }
+const closeLogOverlay = () => { LV.overlay = false; bump(); };
+export function LogOverlay() {
+  const [, setV] = useState(0);
+  useEffect(() => { _subs.add(setV); return () => { _subs.delete(setV); }; }, []);
+  return LV.overlay ? html`<${LogViewer} overlay/>` : null;
+}
+
 // ── the viewer ────────────────────────────────────────────────────────────────────────────────────────────────────
-export function LogViewer() {
+export function LogViewer({ overlay } = {}) {
   useStore();
   const [, setV] = useState(0);
   useEffect(() => {
@@ -643,12 +654,15 @@ export function LogViewer() {
     return () => { _subs.delete(setV); LV.mounted--;
       if (!LV.mounted) { clearInterval(LV.timer); document.removeEventListener("visibilitychange", onVisibility); closeReq(); LV.full = false; } };
   }, []);
+  const full = overlay || LV.full;
   useEffect(() => {
-    if (!LV.full) return;
-    const k = e => { if (e.key === "Escape" && !e.defaultPrevented) { LV.full = false; bump(); } };   // a dropdown's Escape is its own
+    if (!full) return;
+    const k = e => { if (e.key === "Escape" && !e.defaultPrevented) { if (overlay) closeLogOverlay(); else { LV.full = false; bump(); } } };   // a dropdown's Escape is its own
     document.addEventListener("keydown", k);
     return () => document.removeEventListener("keydown", k);
-  }, [LV.full]);
+  }, [full]);
+  // the Settings card while the header's overlay is up: one viewer on screen, the card says where it is
+  if (!overlay && LV.overlay) return html`<div class="card lv lv-ph"><div class="lv-empty">${T("Shown full screen — Esc returns it here.")}</div></div>`;
   const lines = shownLines();
   const counts = { err: 0, warn: 0, info: 0, debug: 0 };
   for (const l of (LV.frozen || LV.lines)) if (l.src[0] !== "!") counts[lvOf(l.prio)]++;
@@ -666,16 +680,18 @@ export function LogViewer() {
     : !LV.req ? T("Connecting…")
     : !(LV.frozen || LV.lines).length ? (off ? T("Logging is off, so nothing is stored to read.") : T("Waiting for lines…"))   // Off: the system journal's (interfaces, kernel) still come
     : !lines.length ? T("Nothing matches the filter.") : "";
-  const card = html`<div class=${"card lv" + (LV.full ? " lv-full" : "")} role=${LV.full ? "dialog" : null} aria-modal=${LV.full ? "true" : null} aria-label=${T("Live logs")}>
+  const card = html`<div class=${"card lv" + (full ? " lv-full" : "")} role=${full ? "dialog" : null} aria-modal=${full ? "true" : null} aria-label=${T("Live logs")}>
     <div class="lv-head">
       <div class="seclabel" style="margin:0">${T("Live logs")}</div>
       <span class="lv-tz faint" title=${T("Times are this browser's, on the panel's clock")}>${tzLabel()}</span>
       <span class="grow"></span>
       ${live ? html`<span class=${"lv-live s-" + live[0]} role="status">${live[1]}</span>` : null}
-      <button class="btn btn-mini ico" title=${LV.full ? T("Leave full screen (Esc)") : T("Full screen")} aria-label=${LV.full ? T("Leave full screen (Esc)") : T("Full screen")}
+      ${overlay ? html`<button class="btn btn-mini ico" title=${T("Close the logs (Esc)")} aria-label=${T("Close the logs (Esc)")}
+        ref=${el => el && !el._f && (el._f = 1, setTimeout(() => el.focus(), 0))} onClick=${closeLogOverlay}><${Ic} i="x"/></button>`
+      : html`<button class="btn btn-mini ico" title=${LV.full ? T("Leave full screen (Esc)") : T("Full screen")} aria-label=${LV.full ? T("Leave full screen (Esc)") : T("Full screen")}
         onClick=${() => { LV.full = !LV.full; bump(); }}>${LV.full
           ? html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`
-          : html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`}</button>
+          : html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`}</button>`}
     </div>
     <${Facets}/>
     <${StateChips}/>
@@ -704,5 +720,5 @@ export function LogViewer() {
       ? T("Paused — {v1} lines held", { v1: fmtNum(LV.frozen.length) })
       : T("{v1} of the last {v2} lines", { v1: fmtNum(lines.length), v2: fmtNum(BUF) })}</div>
   </div>`;
-  return LV.full ? html`<${Fragment}><div class="card lv lv-ph"><div class="lv-empty">${T("Shown full screen — Esc returns it here.")}</div></div>${card}<//>` : card;
+  return LV.full && !overlay ? html`<${Fragment}><div class="card lv lv-ph"><div class="lv-empty">${T("Shown full screen — Esc returns it here.")}</div></div>${card}<//>` : card;
 }

@@ -61,6 +61,7 @@ import {
 import {
   AccountScreen, PanelSettingsScreen,
 } from "./js/screen-settings.js";
+import { LogOverlay, openLogOverlay } from "./js/logview.js";   // the header's Logs button: nothing loads until it is clicked
 
 // Fill the Store's callback slots (see js/store.js). These live above the Store in the module graph, so it
 // cannot import them — it calls back into them instead. Each assignment moves into the owning module as the
@@ -384,11 +385,13 @@ function App() {
     const acct = $("#acct-btn"); if (acct) acct.onclick = () => doLogout();   // header logout icon → straight to the confirm
     const tb = $("#theme-btn"); if (tb && !tb._wired) { tb._wired = true; tb.onclick = cycleThemeMode; paintThemeBtn(tb); }   // light/dark/auto switch
     const lb = $("#lang-btn"); if (lb && !lb._wired) { lb._wired = true; lb.onclick = cycleLang; paintLangBtn(lb); }            // EN / RU
+    const lg = $("#logs-btn"); if (lg && !lg._wired) { lg._wired = true; lg.hidden = false; lg.onclick = openLogOverlay; }      // the live logs, full screen, from any screen
     const vl = $("#vaultlock-btn");   // padlock: removed from the header by request — kept (wired to lockVault) but always hidden
     if (vl) { vl.hidden = true; if (!vl._wired) { vl._wired = true; vl.onclick = lockVault; } }
   });
 
   return html`<${Fragment}>
+    ${h(LogOverlay)}
     ${h(OldAddrRibbon)}
     ${h(route.fn, params)}
     ${modalStack}
@@ -567,7 +570,7 @@ function paintChrome() {
   const brand = $(".brand"); if (brand) brand.setAttribute("aria-label", T("nav|Overview"));
   const hint = [["#host-tport", T("How this panel is deployed")], ["#vaultlock-btn", T("Lock encryption key")],
                 ["#lang-btn", T("Language")], ["#theme-btn", T("Theme")],
-                ["#panel-settings-btn", T("Panel settings")], ["#acct-btn", T("Log out")]];
+                ["#logs-btn", T("Logs")], ["#panel-settings-btn", T("Panel settings")], ["#acct-btn", T("Log out")]];
   for (const [sel, label] of hint) {
     const el = $(sel);
     if (!el) continue;
