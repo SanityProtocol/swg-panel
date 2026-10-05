@@ -4580,6 +4580,46 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lv-head{display:flex;align-items:center;gap:10px}
 .lv-tz{font-family:var(--mono);font-size:11px}
 .lv-facets{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+/* the facet dropdowns: the shared Dropdown's popup and headings, a tick per row (several may be on) */
+.lv-mp{position:relative;min-width:0}
+.lv-fsep{width:1px;align-self:stretch;margin:4px 2px;background:var(--line-solid)}
+.lv-facet .catpick-caret{color:var(--dim);font-size:10px;margin-left:2px}
+.lv-mppop{padding:4px 5px 6px}
+.lv-mpq{position:sticky;top:-4px;z-index:1;display:flex;align-items:center;gap:7px;margin:-4px -5px 4px;padding:8px 10px;background:var(--surface-2);border-bottom:1px solid var(--line)}
+.lv-mpq svg{width:14px;height:14px;opacity:.6;flex:none}
+.lv-mpq input{flex:1;min-width:0;border:0;background:none;padding:2px 0;font-size:13px;box-shadow:none}
+.lv-mpq input:focus{outline:none}
+.lv-mprow{display:flex;align-items:center;gap:9px;padding:6px 10px}
+.ddpop [role=group] .lv-mprow{padding-left:16px}
+.lv-mplbl{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.lv-mphint{margin-left:auto;padding-left:12px;color:var(--faint);font-size:11.5px;font-family:var(--mono);flex:none}
+.lv-mprow .lv-chip{max-width:240px}
+.lv-mphead{display:flex;align-items:center;gap:9px;width:100%;padding:9px 10px 5px;border:0;background:none;cursor:pointer;
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--dim);text-align:left;border-radius:6px}
+.lv-mphead:hover{color:var(--ink);background:var(--dd-hover)}
+.lv-mphead.lv-mpall{font-family:var(--sans);font-size:13px;letter-spacing:0;text-transform:none;color:var(--ink);padding:8px 10px;
+  border-bottom:1px solid var(--line);border-radius:6px 6px 0 0;margin-bottom:2px}
+.lv-mpn{margin-left:auto;font-weight:500;color:var(--faint);font-variant-numeric:tabular-nums;letter-spacing:0}
+.lv-mpnone{padding:10px;color:var(--dim);font-size:12.5px}
+.lv-mprow:focus-visible,.lv-mphead:focus-visible,.lv-menuopt:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+/* a tick that reads at a glance: empty, on (filled), some (a bar) — the tri-state of a group */
+.lv-tick{flex:none;width:15px;height:15px;border-radius:4px;border:1.5px solid var(--line-solid);position:relative;background:var(--surface)}
+.lv-tick.on,.lv-tick.mix{border-color:var(--brand);background:var(--brand)}
+.lv-tick.on::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid var(--brand-ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.lv-tick.mix::after{content:"";position:absolute;left:3px;right:3px;top:5.5px;height:2px;border-radius:1px;background:var(--brand-ink)}
+.lv-menuopt{display:flex;flex-direction:column;align-items:flex-start;gap:2px;white-space:normal;padding:8px 10px}
+.lv-menuopt b{font-weight:600}
+.lv-menuopt .lv-mphint{margin:0;padding:0;font-family:var(--sans);font-size:12px;color:var(--dim)}
+.lv-menuopt:disabled{opacity:.5;cursor:not-allowed}
+/* what the stream is doing, in a word */
+.lv-live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim)}
+.lv-live::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--line-solid)}
+.lv-live.s-on{color:var(--online)}.lv-live.s-on::before{background:var(--online);animation:lv-live 2s ease-in-out infinite}
+.lv-live.s-held::before{background:var(--partial)}.lv-live.s-held{color:var(--partial)}
+.lv-live.s-err::before{background:var(--dangling)}.lv-live.s-err{color:var(--dangling)}
+@keyframes lv-live{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.lv-live.s-on::before{animation:none}}
+.lv-rng-title{font-size:13px;font-weight:600}
 .lv-facet{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border:1px solid var(--line-solid);border-radius:var(--r-sm);
   background:var(--surface-2);color:var(--ink);font:inherit;font-size:13px;cursor:pointer;max-width:100%}
 .lv-facet svg{width:14px;height:14px;opacity:.7;flex:none}
@@ -4589,17 +4629,10 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lv-facet.on{border-color:var(--brand);background:var(--dd-sel)}
 .lv-facet:focus-visible,.lv-lvb:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
 .lv-pick{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);padding:10px 12px}
-.lv-pick-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-bottom:8px;border-bottom:1px solid var(--line);margin-bottom:8px}
-.lv-pick-q{flex:1;min-width:160px;padding:5px 9px}
-.lv-pick-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:4px 14px;max-height:232px;overflow:auto}
 .lv-check{display:flex;align-items:center;gap:8px;font-size:13px;min-height:26px;cursor:pointer;min-width:0}
 .lv-check input[type=checkbox]{width:15px;height:15px;flex:0 0 auto;margin:0;padding:0;accent-color:var(--brand);cursor:pointer}
 .lv-check>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lv-check .faint{font-size:11.5px;font-variant-numeric:tabular-nums}
-.lv-pick-src{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px 18px}
-.lv-group{min-width:0}
-.lv-gl{font-weight:600}
-.lv-gi{padding-left:22px;max-height:150px;overflow:auto}
 .lv-chip{display:inline-block;max-width:150px;padding:0 6px;border-radius:5px;font-size:11.5px;font-weight:600;line-height:18px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis;vertical-align:middle;color:var(--lvc);background:color-mix(in srgb,var(--lvc) 14%,transparent)}
 .lv-states{display:flex;flex-wrap:wrap;gap:6px}
@@ -4619,9 +4652,10 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lv-lvb.on::before{opacity:1}
 .lv-lvb .lv-n{font-family:var(--mono);font-size:11px;color:var(--dim)}
 .lv-err{--lvk:var(--dangling)} .lv-warn{--lvk:var(--partial)} .lv-info{--lvk:var(--ready)} .lv-debug{--lvk:var(--unknown)}
-.lv-q{flex:1 1 200px;min-width:160px;max-width:340px}
+.lv-q{flex:1 1 130px;min-width:120px;max-width:340px}
 .lv-q input{padding-top:5px;padding-bottom:5px;font-size:13px}
 .lv-bar .btn-mini.on{border-color:var(--brand);color:var(--brand)}
+.lv-acts{display:flex;align-items:center;gap:8px;margin-left:auto}   /* the bar's buttons wrap as one group, to the right */
 .lv-bar .lv-paused{border-color:var(--partial);color:var(--partial)}
 .lv-stream{height:460px;overflow:auto;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--bg2);font-family:var(--mono);
   font-size:12px;line-height:21px;overscroll-behavior:contain;contain:strict}

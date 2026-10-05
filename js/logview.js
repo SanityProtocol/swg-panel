@@ -13,7 +13,7 @@
 
 import { T, plural, fmtNum, locale } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
-import { Ic, Popover, goSettings } from "./ui.js";
+import { Ic, Popover, Portal, goSettings } from "./ui.js";
 import { downloadConf } from "./crypto.js";
 import { fmtBytes } from "./util.js";
 import { h, Fragment } from "preact";
@@ -37,7 +37,7 @@ const chipOf = id => { let x = 0; for (const c of String(id)) x = (x * 31 + c.ch
 // The viewer's state, kept across re-renders (see the header).
 const LV = {
   nodes: null, src: null,                             // the facets; null = the defaults (see facetDefaults)
-  levels: { err: true, warn: true, info: true, debug: true }, q: "", wrap: false, full: false, pick: "",
+  levels: { err: true, warn: true, info: true, debug: true }, q: "", wrap: false, full: false,
   req: null, seq: 0, h: "", states: {}, iv: 1, err: "", ver: 0,   // the panel's request and what it last said
   lines: [], frozen: null, missed: 0,                 // the merged lines; Paused: the list as it was, and what came since
   held: {},                                           // a reopen: the newest line each server already has here
@@ -65,7 +65,7 @@ const nodesOf = () => { const have = new Set((Store.nodes || []).map(n => n.id))
 const srcOf = () => LV.src || facetDefaults().src;
 
 // what a node's own page opens the viewer with: everything of that node's, the kernel aside (it is the whole kernel log)
-export const NODE_SOURCES = ["noded", "dns", "sni", "relay:*", "turn:*", "iface:*", "p2p"];
+export const NODE_SOURCES = ["noded", "dns", "sni", "relay:*", "mesh:*", "turn:*", "iface:*", "p2p"];
 export const TURN_SOURCES = ["turn:*"];             // a node's turn proxies, WDTT and csqtt — every instance
 /* Open the viewer from elsewhere (the node page, a failing turn proxy): Settings → Logs with these facets. */
 export function openLogs({ nodes, src } = {}) {
@@ -135,34 +135,160 @@ function closeReq() {
 }
 function onVisibility() { if (document.hidden) closeReq(); else tick(); }   // hidden: the nodes stop now, not in 20 s
 
-// ── what the source picker offers: built from what the panel already knows (the node records' last reports) ──────
-function sourceGroups(nodeIds) {
-  const st = Store.stats || {}, inst = { relay: new Set(), turn: new Set(), iface: new Set() };
-  for (const id of nodeIds) {
+// ── what the source pickers offer: built from what the panel already knows (the node records' last reports) ─────────
+// Four lists, by where an operator looks rather than by how the code is built: the Panel's own services; everything of
+// swg on a node (its service, routing, relays, the mesh links to other nodes, the firewall and kernel); the turn
+// proxies by kind; the client interfaces. A list's whole-group choice is a WILDCARD (`relay:*`, `mesh:*`, `turn:*`,
+// `iface:*`) — each node maps it to what it has, so "all" stays one source at 200 nodes and includes what a node starts
+// later. Turn kinds are brands, the same in every language.
+const TURN_KINDS = [["vk", "VK TURN"], ["wdtt", "WDTT"], ["csqtt", "csqtt"]];
+function sourceLists(nodeIds) {
+  const st = Store.stats || {}, nodes = nodeIds.filter(id => id !== LOG_PANEL);
+  const relay = new Set(), ifc = new Set(), mesh = new Map(), turn = { vk: new Set(), wdtt: new Set(), csqtt: new Set() };
+  for (const id of nodes) {
     const s = st[id] || {};
-    for (const n of Object.keys(s.interfaces || {})) inst.iface.add(n);
-    for (const n of Object.keys((s.relay || {}).ifaces || {})) inst.relay.add(n);
-    for (const t of s.turn_proxies || []) if (t && t.service) inst.turn.add(String(t.service).replace(/^vk-turn-proxy-/, ""));
-    for (const w of [...(s.wdtt || []), ...(s.csqtt || [])]) if (w && w.iface) inst.turn.add(w.iface);
+    for (const n of new Set([...Object.keys(s.interfaces || {}), ...Store.ifacesOf(id)])) {
+      const meta = Store.ifaceMeta(id, n) || {};
+      if (n.startsWith("swg_") || Store.ifaceIsSystem(id, n)) {
+        // a mesh link by what it joins, not by its generated name: "msk-main ↔ hel-flux"
+        const pair = meta.link_node ? [Store.nodeName(id) || id, Store.nodeName(meta.link_node) || meta.link_node].sort() : null;
+        if (!mesh.has(n)) mesh.set(n, pair ? pair.join(" ↔ ") : n);
+      } else ifc.add(n);
+    }
+    for (const n of Object.keys((s.relay || {}).ifaces || {})) relay.add(n);
+    for (const t of s.turn_proxies || []) if (t && t.service) turn.vk.add(String(t.service).replace(/^vk-turn-proxy-/, ""));
+    for (const w of s.wdtt || []) if (w && w.iface) turn.wdtt.add(w.iface);
+    for (const c of s.csqtt || []) if (c && c.iface) turn.csqtt.add(c.iface);
   }
-  const sorted = k => [...inst[k]].sort().map(n => ({ id: k + ":" + n, label: n }));
-  const g = [];
-  if (nodeIds.includes(LOG_PANEL)) g.push({ id: "g-panel", label: T("Panel"), items: (panelBare() ? PANEL_KINDS : ["panel"]).map(id => ({ id, label: srcLabel(id) })) });
-  if (nodeIds.some(id => id !== LOG_PANEL)) {
-    g.push({ id: "g-node", label: T("Node service"), items: [{ id: "noded", label: srcLabel("noded") }] });
-    g.push({ id: "g-routing", label: T("Routing"), items: [{ id: "dns", label: srcLabel("dns") }, { id: "sni", label: srcLabel("sni") }] });
-    g.push({ id: "relay", label: T("Relays"), wild: "relay:*", items: sorted("relay") });
-    g.push({ id: "turn", label: T("Turn proxies"), wild: "turn:*", items: sorted("turn") });
-    g.push({ id: "iface", label: T("Interfaces"), wild: "iface:*", items: sorted("iface") });
-    g.push({ id: "g-fw", label: T("Firewall and kernel"), items: [{ id: "p2p", label: srcLabel("p2p") }, { id: "kernel", label: srcLabel("kernel") }] });
+  const items = (kind, set) => [...set].sort().map(n => ({ id: kind + ":" + n, label: n }));
+  const one = id => ({ id, label: srcLabel(id) });
+  const out = {};
+  if (nodeIds.includes(LOG_PANEL)) out.panel = { label: T("Panel"), groups: [{ id: "panel", items: (panelBare() ? PANEL_KINDS : ["panel"]).map(one) }] };
+  if (nodes.length) {
+    out.node = { label: T("Nodes"), groups: [
+      { id: "svc", label: T("Node service"), items: [one("noded")] },
+      { id: "routing", label: T("Routing"), items: [one("dns"), one("sni")] },
+      { id: "relay", label: T("Relays"), wild: "relay:*", items: items("relay", relay) },
+      { id: "mesh", label: T("Mesh links"), wild: "mesh:*", items: [...mesh].sort((a, b) => a[1].localeCompare(b[1])).map(([n, l]) => ({ id: "mesh:" + n, label: l, hint: l === n ? "" : n })) },
+      { id: "fw", label: T("Firewall and kernel"), items: [one("p2p"), { id: "kernel", label: srcLabel("kernel"), hint: T("the whole kernel log") }] },
+    ] };
+    out.turn = { label: T("Turn proxies"), wild: "turn:*", groups: TURN_KINDS.map(([k, l]) => ({ id: k, label: l, items: items("turn", turn[k]) })).filter(g => g.items.length) };
+    out.iface = { label: T("Interfaces"), wild: "iface:*", groups: [{ id: "iface", items: items("iface", ifc) }] };
   }
-  return g;
+  // a whole group (or list) the servers report nothing of yet is still choosable: its wildcard stands in for it
+  for (const dd of Object.values(out)) {
+    dd.groups = dd.groups.map(g => g.wild && !g.items.length ? { ...g, items: [{ id: g.wild, label: T("All of them (none reported yet)") }] } : g);
+    if (dd.wild && !dd.groups.some(g => g.items.length)) dd.groups = [{ id: "all", items: [{ id: dd.wild, label: T("All of them (none reported yet)") }] }];
+  }
+  return out;
 }
 function srcLabel(id) {
   const [k, n] = String(id).split(":");
-  const base = { panel: T("Panel"), sub: T("Subscription page"), netctl: T("Root helper"), update: T("Updates"), noded: "swg-noded",
-                 dns: T("Smart DNS"), sni: T("SNI classifier"), p2p: T("P2P guard"), kernel: T("Kernel") }[k] || k;
+  const base = { panel: T("Panel service"), sub: T("Subscription page"), netctl: T("Root helper"), update: T("Updates"), noded: "swg-noded",
+                 dns: T("Smart DNS"), sni: T("SNI classifier"), p2p: T("P2P guard"), kernel: T("Kernel"), mesh: T("Mesh links") }[k] || k;
   return n == null ? base : n === "*" ? base : n;
+}
+
+// ── a multi-select dropdown: the shared Dropdown's look (one popup, group headings), a tick per row ─────────────────
+// A choice is a SET of ids; a group (or the whole list) that is entirely on is written back as its wildcard (mpWrite).
+const ddItems = dd => dd.groups.flatMap(g => g.items);
+function mpOn(dd, sel) {
+  const on = new Set();
+  for (const g of dd.groups) for (const it of g.items)
+    if (sel.has(it.id) || (g.wild && sel.has(g.wild)) || (dd.wild && sel.has(dd.wild))) on.add(it.id);
+  return on;
+}
+function mpWrite(dd, sel, on) {
+  const mine = new Set([dd.wild, ...dd.groups.flatMap(g => [g.wild, ...g.items.map(i => i.id)])].filter(Boolean));
+  const out = [...sel].filter(x => !mine.has(x)), all = ddItems(dd);
+  if (dd.wild && all.length && all.every(i => on.has(i.id))) return [...out, dd.wild];
+  for (const g of dd.groups) {
+    if (g.wild && g.items.length && g.items.every(i => on.has(i.id))) out.push(g.wild);
+    else out.push(...g.items.filter(i => on.has(i.id)).map(i => i.id));
+  }
+  return [...new Set(out)];
+}
+const tickOf = (n, of) => !n ? "" : n === of ? " on" : " mix";
+
+// The popup's mechanics, as the shared Dropdown has them: portalled, placed under (or over) its trigger, closed by a
+// click outside, Escape (focus back on the trigger) or Tab out.
+function usePop() {
+  const [open, setOpen] = useState(false), [pos, setPos] = useState(null);
+  const ref = useRef(null), popRef = useRef(null);
+  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom - 12, above = r.top - 12, flip = below < 260 && above > below;
+    setPos({ left: Math.round(Math.min(r.left, window.innerWidth - 300)), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width), flip,
+             maxh: Math.max(200, Math.round(flip ? above : below) - 16) }); };
+  const close = back => { setOpen(false); if (back && ref.current) { const b = ref.current.querySelector("button"); if (b) b.focus(); } };
+  useEffect(() => { if (!open) return; place();
+    const onMove = () => place();
+    const onDoc = e => { const t = e.target; if ((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t))) return; setOpen(false); };
+    const onKey = e => { if (e.key === "Escape") close(true); };
+    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
+    document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove);
+      document.removeEventListener("pointerdown", onDoc, true); document.removeEventListener("keydown", onKey); }; }, [open]);
+  // arrows walk the rows (and the search box), as in the shared Dropdown; Tab leaves and closes
+  const onPopKey = e => {
+    if (e.key === "Tab") { setOpen(false); return; }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const els = popRef.current ? [...popRef.current.querySelectorAll("input,button:not(:disabled)")] : [];
+    const i = els.indexOf(document.activeElement), j = Math.max(0, Math.min(els.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)));
+    if (els[j]) { els[j].focus(); els[j].scrollIntoView({ block: "nearest" }); }
+  };
+  return { open, setOpen, pos, ref, popRef, onPopKey, close };
+}
+
+function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
+  const P = usePop(), [q, setQ] = useState("");
+  // the search takes the typing as soon as the list is open (the portal is on the page only after this render)
+  useEffect(() => { if (P.open && P.pos && P.popRef.current) { const i = P.popRef.current.querySelector("input"); if (i) i.focus(); } }, [P.open, !!P.pos]);
+  const on = mpOn(dd, sel), all = ddItems(dd), nOn = all.filter(i => on.has(i.id)).length;
+  const shown = value || (!all.length ? "—" : nOn === all.length ? T("All") : !nOn ? T("None")
+    : nOn === 1 ? all.find(i => on.has(i.id)).label : T("{v1} of {v2}", { v1: fmtNum(nOn), v2: fmtNum(all.length) }));
+  const ql = q.trim().toLowerCase();
+  const hit = i => !ql || i.label.toLowerCase().includes(ql) || i.id.toLowerCase().includes(ql) || (i.hint || "").toLowerCase().includes(ql);
+  const put = ids => onChange(mpWrite(dd, sel, ids));
+  const flip = list => { const s = new Set(on), allOn = list.every(i => s.has(i.id)); list.forEach(i => allOn ? s.delete(i.id) : s.add(i.id)); put(s); };
+  const row = it => html`<button type="button" key=${it.id} role="option" aria-selected=${on.has(it.id) ? "true" : "false"} class="ddopt lv-mprow"
+      onClick=${() => flip([it])}><span class=${"lv-tick" + (on.has(it.id) ? " on" : "")}></span>
+      ${it.chip ? html`<span class="lv-chip" style=${"--lvc:" + chipOf(it.id)}>${it.label}</span>` : html`<span class="lv-mplbl">${it.label}</span>`}
+      ${it.hint ? html`<span class="lv-mphint">${it.hint}</span>` : null}</button>`;
+  const head = (txt, list, cls) => { const n = list.filter(i => on.has(i.id)).length;
+    return html`<button type="button" class=${"lv-mphead" + (cls ? " " + cls : "")} onClick=${() => flip(list)}>
+      <span class=${"lv-tick" + tickOf(n, list.length)}></span><span>${txt}</span><span class="lv-mpn">${fmtNum(n)}/${fmtNum(list.length)}</span></button>`; };
+  const vis = dd.groups.map(g => ({ ...g, items: g.items.filter(hit) })).filter(g => g.items.length);
+  const visAll = vis.flatMap(g => g.items);
+  return html`<div class="lv-mp" ref=${P.ref}>
+    <button type="button" class=${"lv-facet" + (P.open ? " on" : "")} aria-haspopup="listbox" aria-expanded=${P.open ? "true" : "false"}
+      onClick=${() => { if (P.open) P.setOpen(false); else { setQ(""); P.setOpen(true); } }}>
+      ${icon ? html`<${Ic} i=${icon}/>` : null}<span class="lv-fl">${label}</span><span class="lv-fv">${shown}</span><span class="catpick-caret">▾</span></button>
+    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="listbox" aria-multiselectable="true" aria-label=${label} onKeyDown=${P.onPopKey}
+        class=${"ddpop lv-mppop" + (P.pos.flip ? " flip" : "")} style=${"left:" + P.pos.left + "px;top:" + P.pos.top + "px;min-width:" + Math.max(280, P.pos.width) + "px;--ddmaxh:" + P.pos.maxh + "px"}>
+      ${search && all.length > 8 ? html`<div class="lv-mpq"><${Ic} i="search"/><input value=${q} placeholder=${T("Find…")} aria-label=${T("Find…")} data-enter="self"
+        onInput=${e => setQ(e.target.value)}/></div>` : null}
+      ${ql ? (visAll.length ? head(T("All shown"), visAll, "lv-mpall") : html`<div class="lv-mpnone">${T("Nothing matches “{q}”.", { q })}</div>`)
+        : dd.groups.length > 1 || (dd.groups[0] && !dd.groups[0].label) ? head(dd.allLabel || T("All"), all, "lv-mpall") : null}
+      ${vis.map(g => html`<div role="group" key=${g.id} aria-label=${g.label || label}>
+        ${g.label && !ql ? head(g.label, g.items) : g.label ? html`<div class="ddgrp">${g.label}</div>` : null}
+        ${g.items.map(row)}</div>`)}
+    </div><//>` : null}
+  </div>`;
+}
+
+// a button with a small menu of actions under it (the bar's Download)
+function MenuButton({ icon, label, title, items }) {
+  const P = usePop();
+  return html`<div class="lv-mp" ref=${P.ref}>
+    <button type="button" class=${"btn btn-mini" + (P.open ? " on" : "")} title=${title || ""} aria-haspopup="menu" aria-expanded=${P.open ? "true" : "false"}
+      aria-label=${title || label} onClick=${() => P.setOpen(!P.open)}><${Ic} i=${icon}/>${label ? " " + label : ""} <span class="catpick-caret">▾</span></button>
+    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="menu" onKeyDown=${P.onPopKey} class=${"ddpop lv-menu" + (P.pos.flip ? " flip" : "")}
+        style=${"left:" + Math.max(8, Math.min(P.pos.left + P.pos.width - 300, window.innerWidth - 308)) + "px;top:" + P.pos.top + "px;width:300px;--ddmaxh:" + P.pos.maxh + "px"}>
+      ${items.map(it => html`<button type="button" role="menuitem" key=${it.key} class="ddopt lv-menuopt" disabled=${it.disabled}
+        onClick=${() => { P.close(false); it.onClick(); }}><b>${it.label}</b><span class="lv-mphint">${it.hint}</span></button>`)}
+    </div><//>` : null}
+  </div>`;
 }
 
 // ── the facet editors ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -172,52 +298,20 @@ function setFacets(nodes, src) {
   LV.gen++; remember(); bump();
 }
 
-function ServerPicker() {
-  const [q, setQ] = useState("");
-  const sel = new Set(chosenNodes());
+function Facets() {
+  const ids = nodesOf(), srcs = srcOf(), sel = new Set(srcs);
   const all = [...(Store.nodes || [])].sort((a, b) => Store.byNode(a.id, b.id)).map(n => n.id);   // the panel's order, as everywhere
-  const ql = q.trim().toLowerCase();
-  const shown = [LOG_PANEL, ...all].filter(id => !ql || nodeName(id).toLowerCase().includes(ql));
-  const allOn = all.length > 0 && all.every(id => sel.has(id)), someOn = all.some(id => sel.has(id));
-  const toggle = id => { const s = new Set(sel); s.has(id) ? s.delete(id) : s.add(id); setFacets([...s]); };
-  const toggleAll = () => { const s = new Set(sel); all.forEach(id => allOn ? s.delete(id) : s.add(id)); setFacets([...s]); };
-  return html`<div class="lv-pick">
-    <div class="lv-pick-head">
-      <label class="lv-check"><input type="checkbox" checked=${allOn} ref=${el => el && (el.indeterminate = !allOn && someOn)} onChange=${toggleAll}/>
-        <span>${T("All nodes")}</span><span class="faint">${all.length}</span></label>
-      ${all.length > 8 ? html`<input class="lv-pick-q" value=${q} placeholder=${T("Find a server…")} aria-label=${T("Find a server…")} data-enter="self" onInput=${e => setQ(e.target.value)}/>` : null}
-    </div>
-    <div class="lv-pick-list">
-      ${shown.map(id => html`<label class="lv-check" key=${id}><input type="checkbox" checked=${sel.has(id)} onChange=${() => toggle(id)}/>
-        <span class="lv-chip" style=${"--lvc:" + chipOf(id)}>${nodeName(id)}</span></label>`)}
-      ${!shown.length ? html`<div class="hint">${T("No server matches “{q}”.", { q })}</div>` : null}
-    </div>
-  </div>`;
-}
-
-function SourcePicker() {
-  const sel = new Set(srcOf());
-  const groups = sourceGroups(nodesOf());
-  const put = s => setFacets(null, [...s]);
-  return html`<div class="lv-pick lv-pick-src">
-    ${groups.map(g => {
-      const ids = g.items.map(i => i.id);
-      const wildOn = g.wild && sel.has(g.wild);
-      const on = id => wildOn || sel.has(id);
-      const allOn = wildOn || (ids.length > 0 && ids.every(id => sel.has(id)));
-      const someOn = !allOn && ids.some(id => sel.has(id));
-      const toggleGroup = () => { const s = new Set(sel); [...ids, g.wild].filter(Boolean).forEach(id => s.delete(id));
-        if (!allOn) { if (g.wild) s.add(g.wild); else ids.forEach(id => s.add(id)); } put(s); };
-      const toggle = id => { const s = new Set(sel);
-        if (wildOn) { s.delete(g.wild); ids.forEach(x => x !== id && s.add(x)); }
-        else if (s.has(id)) s.delete(id); else { s.add(id); if (g.wild && ids.every(x => s.has(x))) { ids.forEach(x => s.delete(x)); s.add(g.wild); } }
-        put(s); };
-      return html`<div class="lv-group" key=${g.id}>
-        <label class="lv-check lv-gl"><input type="checkbox" checked=${allOn} ref=${el => el && (el.indeterminate = someOn)} onChange=${toggleGroup}/>
-          <span>${g.label}</span>${g.wild && g.items.length ? html`<span class="faint">${g.items.length}</span>` : null}</label>
-        ${g.items.length && (!g.wild || g.items.length > 0) ? html`<div class="lv-gi">${g.items.map(i => html`<label class="lv-check" key=${i.id}>
-          <input type="checkbox" checked=${on(i.id)} onChange=${() => toggle(i.id)}/><span>${i.label}</span></label>`)}</div>` : null}
-      </div>`; })}
+  const servers = { allLabel: T("All servers"), groups: [{ id: "p", items: [{ id: LOG_PANEL, label: T("Panel"), chip: true }] },
+    ...(all.length ? [{ id: "n", label: T("All nodes"), items: all.map(id => ({ id, label: nodeName(id), chip: true })) }] : [])] };
+  const nodeLbl = !ids.length ? T("None") : ids.length === 1 ? nodeName(ids[0]) : ids.includes(LOG_PANEL)
+    ? T("Panel and {n}", { n: plural(ids.length - 1, "server") }) : plural(ids.length, "server");
+  const lists = sourceLists(ids);
+  return html`<div class="lv-facets">
+    <${MultiPick} icon="server" label=${T("Servers")} dd=${servers} sel=${new Set(chosenNodes())} value=${nodeLbl} search
+      onChange=${v => setFacets(v)}/>
+    ${Object.keys(lists).length ? html`<span class="lv-fsep" aria-hidden="true"></span>` : null}
+    ${Object.entries(lists).map(([k, dd]) => html`<${MultiPick} key=${k} label=${dd.label} dd=${dd} sel=${sel} search
+      onChange=${v => setFacets(null, v)}/>`)}
   </div>`;
 }
 
@@ -247,7 +341,7 @@ function stateSummary() {
     let txt, tip, tone;
     if (key.startsWith("unavail:")) {
       const k = key.slice(8);
-      txt = { iface: T("Interfaces: not on docker"), kernel: T("Kernel: not on docker"), p2p: T("P2P guard: not on docker") }[k] || T("Not on docker");
+      txt = { iface: T("Interfaces: not on docker"), mesh: T("Mesh links: not on docker"), kernel: T("Kernel: not on docker"), p2p: T("P2P guard: not on docker") }[k] || T("Not on docker");
       tip = T("A docker node has no host journal to read these from."); tone = "faint";
     } else [txt, tip, tone] = say[key] || [key, "", "faint"];
     out.push({ key, txt, tip, tone, ids: u });
@@ -316,6 +410,10 @@ function Hi({ text, q }) {
   return out;
 }
 
+// a line's source as the stream shows it: a mesh link by the node at its other end, not by its generated name
+const srcShown = l => { if (!l.src.startsWith("mesh:")) return l.src;
+  const peer = (Store.ifaceMeta(l.nid, l.src.slice(5)) || {}).link_node;
+  return peer ? "↔ " + (Store.nodeName(peer) || peer) : l.src; };
 function Row({ l, q }) {
   if (l.src[0] === "!") return html`<div class="lv-row lv-mark">
     <span class="lv-t" title=${ymd(l.k)}>${hms(l.k)}</span>
@@ -327,7 +425,7 @@ function Row({ l, q }) {
   return html`<div class=${"lv-row lv-" + lv}>
     <span class="lv-t" title=${ymd(l.k)}>${hms(l.k)}</span>
     <span class="lv-chip" style=${"--lvc:" + chipOf(l.nid)}>${nodeName(l.nid)}</span>
-    <span class="lv-src">${l.src}</span>
+    <span class="lv-src" title=${l.src}>${srcShown(l)}</span>
     <span class="lv-lv">${LV_TOKEN[lv]}</span>
     <span class="lv-msg"><${Hi} text=${l.text} q=${q}/></span>
   </div>`;
@@ -402,7 +500,7 @@ const levelsOn = () => LEVELS.filter(k => LV.levels[k]);
 function rangeOpen() {
   if (RG.id) return;                                  // a download in progress keeps its panel until it is closed
   if (!RG.from) { const now = Date.now(); RG.from = dtLocal(now - 3600e3); RG.to = dtLocal(now); }
-  RG.open = !RG.open; RG.err = ""; bump();
+  RG.open = true; RG.err = ""; bump();
 }
 function rangeWindow() {
   if (RG.preset !== "custom") return { span: RANGE_SPAN[RG.preset] };
@@ -487,6 +585,7 @@ function RangePanel() {
   if (!RG.id) {
     const can = ids.length && srcOf().length && lv.length;
     return html`<div class="lv-pick lv-rng" role="group" aria-label=${T("Download a time range")}>
+      <div class="lv-rng-title">${T("Download a time range")}</div>
       <div class="lv-rng-row">
         <div class="lv-levels lv-rng-pre" role="group" aria-label=${T("Time range")}>${[...Object.keys(RANGE_SPAN), "custom"].map(k => html`<button type="button" key=${k}
           class=${"lv-lvb" + (RG.preset === k ? " on" : "")} aria-pressed=${RG.preset === k} onClick=${() => { RG.preset = k; RG.err = ""; bump(); }}>${rangeLabel(k)}</button>`)}</div>
@@ -563,8 +662,9 @@ export function LogViewer() {
   const paused = !!LV.frozen;
   const pause = () => { if (!LV.frozen) { LV.frozen = LV.lines.slice(); LV.missed = 0; bump(); } };
   const resume = () => { LV.frozen = null; LV.missed = 0; bump(); };
-  const nodeLbl = ids.length === 1 ? nodeName(ids[0]) : ids.includes(LOG_PANEL) && ids.length > 1
-    ? T("Panel and {n}", { n: plural(ids.length - 1, "server") }) : plural(ids.length, "server");
+  // the head says what the stream is doing, in a word: live, held, or why not
+  const live = !ids.length || !srcs.length ? null : paused ? ["held", T("Paused")] : LV.err ? ["err", T("Not connected")]
+    : LV.req ? ["on", T("Live")] : ["wait", T("Connecting…")];
   const empty = !ids.length || !srcs.length ? T("Pick at least one server and one source.")
     : LV.err === "busy" ? T("Four log viewers are open already. Close one, or wait a few seconds for a closed tab's to lapse.")
     : LV.err === "refused" ? T("None of the chosen servers can be watched. Pick again.")
@@ -576,33 +676,31 @@ export function LogViewer() {
       <div class="seclabel" style="margin:0">${T("Live logs")}</div>
       <span class="lv-tz faint" title=${T("Times are this browser's, on the panel's clock")}>${tzLabel()}</span>
       <span class="grow"></span>
+      ${live ? html`<span class=${"lv-live s-" + live[0]} role="status">${live[1]}</span>` : null}
       <button class="btn btn-mini ico" title=${LV.full ? T("Leave full screen (Esc)") : T("Full screen")} aria-label=${LV.full ? T("Leave full screen (Esc)") : T("Full screen")}
         onClick=${() => { LV.full = !LV.full; bump(); }}>${LV.full
           ? html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`
           : html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`}</button>
     </div>
-    <div class="lv-facets">
-      <button class=${"lv-facet" + (LV.pick === "nodes" ? " on" : "")} aria-expanded=${LV.pick === "nodes"} onClick=${() => { LV.pick = LV.pick === "nodes" ? "" : "nodes"; bump(); }}>
-        <${Ic} i="server"/><span class="lv-fl">${T("Servers")}</span><span class="lv-fv">${nodeLbl}</span></button>
-      <button class=${"lv-facet" + (LV.pick === "src" ? " on" : "")} aria-expanded=${LV.pick === "src"} onClick=${() => { LV.pick = LV.pick === "src" ? "" : "src"; bump(); }}>
-        <${Ic} i="doc"/><span class="lv-fl">${T("Sources")}</span><span class="lv-fv">${plural(srcs.length, "source")}</span></button>
-      <${StateChips}/>
-    </div>
-    ${LV.pick === "nodes" ? html`<${ServerPicker}/>` : LV.pick === "src" ? html`<${SourcePicker}/>` : null}
+    <${Facets}/>
+    <${StateChips}/>
     <div class="lv-bar">
       <div class="lv-levels" role="group" aria-label=${T("Levels shown")}>${LEVELS.map(k => html`<button type="button" key=${k}
         class=${"lv-lvb lv-" + k + (LV.levels[k] ? " on" : "")} aria-pressed=${LV.levels[k]} onClick=${() => { LV.levels[k] = !LV.levels[k]; bump(); }}>
         ${levelLabel(k)} <span class="lv-n">${counts[k]}</span></button>`)}</div>
-      <div class="search lv-q"><${Ic} i="search"/><input value=${LV.q} placeholder=${T("Search the lines…")} aria-label=${T("Search the lines…")} data-enter="self"
+      <div class="search lv-q"><${Ic} i="search"/><input value=${LV.q} placeholder=${T("Search…")} aria-label=${T("Search the lines…")} data-enter="self"
         onInput=${e => { LV.q = e.target.value; bump(); }}/></div>
-      <span class="grow"></span>
+      <div class="lv-acts">
       <button class=${"btn btn-mini" + (paused ? " lv-paused" : "")} onClick=${paused ? resume : pause} title=${paused ? T("Back to the newest lines, following") : T("Hold the list still")}>
         <${Ic} i=${paused ? "play" : "stop"}/> ${paused ? (LV.missed ? T("Resume · {n} new", { n: fmtNum(LV.missed) }) : T("Resume")) : T("Pause")}</button>
-      <button class=${"btn btn-mini" + (LV.wrap ? " on" : "")} aria-pressed=${LV.wrap} onClick=${() => { LV.wrap = !LV.wrap; remember(); bump(); }}>${T("Wrap")}</button>
-      <button class="btn btn-mini" onClick=${() => { LV.lines = []; LV.frozen = LV.frozen ? [] : null; LV.missed = 0; bump(); }}>${T("Clear")}</button>
-      <button class="btn btn-mini" disabled=${!lines.length} onClick=${() => download(lines)} title=${T("The lines shown, as a text file")}><${Ic} i="download"/> ${T("Download")}</button>
-      <button class=${"btn btn-mini" + (RG.open || RG.id ? " on" : "")} aria-expanded=${!!(RG.open || RG.id)} onClick=${rangeOpen}
-        title=${T("Every line of a time range from these servers, as one file")}><${Ic} i="clock"/> ${T("Time range…")}</button>
+      <button class=${"btn btn-mini ico" + (LV.wrap ? " on" : "")} aria-pressed=${LV.wrap} title=${T("Wrap long lines")} aria-label=${T("Wrap long lines")}
+        onClick=${() => { LV.wrap = !LV.wrap; remember(); bump(); }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h13a3 3 0 0 1 0 6h-4m2-2-2 2 2 2M4 18h5"/></svg></button>
+      <button class="btn btn-mini ico" title=${T("Clear the list")} aria-label=${T("Clear the list")}
+        onClick=${() => { LV.lines = []; LV.frozen = LV.frozen ? [] : null; LV.missed = 0; bump(); }}><${Ic} i="trash"/></button>
+      <${MenuButton} icon="download" title=${T("Download")} items=${[
+        { key: "shown", label: T("The lines shown"), hint: T("{v1} lines, as a text file — at once", { v1: fmtNum(lines.length) }), disabled: !lines.length, onClick: () => download(lines) },
+        { key: "range", label: T("A time range…"), hint: T("Every line of a time range from these servers, as one file"), disabled: !!RG.id, onClick: rangeOpen }]}/>
+      </div>
     </div>
     ${RG.open || RG.id ? html`<${RangePanel}/>` : null}
     ${empty ? html`<div class="lv-empty">${empty}</div>` : html`<${Stream} lines=${lines} follow=${!paused}

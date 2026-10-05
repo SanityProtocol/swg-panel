@@ -7545,6 +7545,8 @@ LIVE_TAIL_BYTES = 256 << 10          # how far back a file's backfill reads
 LIVE_FIELDS = "MESSAGE,PRIORITY,_SYSTEMD_UNIT,UNIT,SYSLOG_IDENTIFIER,_TRANSPORT,_PID"
 _LIVE_UNIT_SRC = {"swg-panel-server": "panel", "swg-sub": "sub", "swg-netctl": "netctl", "swg-update": "update"}
 _LIVE_PANEL_KINDS = ("panel", "sub", "netctl", "update")    # the panel's sources; every other one is a node's
+LIVE_MESH_PRE = "swg_"               # a node↔node mesh link's interface: its source is `mesh:<iface>`, not `iface:` (the
+                                     # reserved link prefix — swg-noded's own first test of a mesh link)
 _LIVE_UNIT_PRE = (("swg-relay@", "relay:"), ("vk-turn-proxy-", "turn:"), ("swg-wdtt-", "turn:"), ("swg-csqtt-", "turn:"),
                   ("wg-quick@", "iface:"), ("awg-quick@", "iface:"))
 _LIVE_OURS = re.compile(r"^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z ([EWNID]) ?")      # our helper's file lines
@@ -7579,7 +7581,8 @@ def live_journal_src(e):
         return _LIVE_UNIT_SRC[n]
     for pre, kind in _LIVE_UNIT_PRE:
         if n.startswith(pre) and len(n) > len(pre):
-            return kind + n[len(pre):]
+            name = n[len(pre):]
+            return ("mesh:" if kind == "iface:" and name.startswith(LIVE_MESH_PRE) else kind) + name
     return None
 
 
@@ -8252,6 +8255,8 @@ def _live_plan(srcs, ifaces, rng=False):
                 cs = [(_relay_cname(n), "relay:" + n) for n in sorted(relays) if name in ("*", n)]
                 ctrs += cs
                 st[s] = "ok" if cs else "absent"
+            elif kind == "mesh":                              # the mesh links run inside the node container too
+                st[s] = "unavailable"
             elif kind in ("iface", "kernel", "p2p"):
                 st[s] = "unavailable"
             else:
@@ -8275,8 +8280,9 @@ def _live_plan(srcs, ifaces, rng=False):
                                           "swg-csqtt-%s.service" % name)}
             st[s] = "off" if off and us else "ok" if us else "absent"
             units |= us
-        elif kind == "iface":                                 # the main journal: not stored by swg, so not off at Off
-            ns = [n for n in ifaces if name in ("*", n)]
+        elif kind in ("iface", "mesh"):                       # the main journal: not stored by swg, so not off at Off.
+            mesh = kind == "mesh"                             # `iface:*` is the client interfaces, `mesh:*` the links
+            ns = [n for n in ifaces if n == name or (name == "*" and n.startswith(LIVE_MESH_PRE) == mesh)]
             st[s] = "ok" if ns else "absent"
             units |= {"%s@%s.service" % (q, n) for n in ns for q in ("wg-quick", "awg-quick")}
         elif kind == "kernel":
