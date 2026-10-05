@@ -169,10 +169,10 @@ PLANTS = {   # (program, anchor, replacement)
             return'''),
     "onelock": ("panel", '''    with rec["locks"][nid]:                                # one server's parts in order; a retried part waits here''',
                 '''    with rec["locks"][rec["nodes"][0]]:'''),
-    "droplocked": ("panel", '''                        "now": int(now)})
-    _range_drop_all(gone)''', '''                        "now": int(now)})
-        _range_drop_all(gone)'''),
-    "unitmix": ("panel", '''(0 if seq == 0 else ns.get("used", 0)))''', '''(0 if seq == 0 else ns.get("bytes", 0)))'''),
+    "droplocked": ("panel", '    with _RANGE_LOCK:\n        gone = _range_expire(now)\n    for r in gone:\n        _range_drop(r)',
+        '    with _RANGE_LOCK:\n        gone = _range_expire(now)\n        for r in gone:\n            _range_drop(r)'),
+    "unitmix": ("panel", '        for ln in good:\n            if size + RANGE_LINE_OVER + len(ln[3]) > room:\n                break\n            size += RANGE_LINE_OVER + len(ln[3])',
+        '        for ln in good:\n            if size + RANGE_LINE_OVER + len(ln[3].encode()) > room:\n                break\n            size += RANGE_LINE_OVER + len(ln[3].encode())'),
     "spatotal": ("spa", '''  const total = v ? Object.keys(v.nodes || {}).length : ids.length, done''', '''  const total = ids.length, done'''),
     "spaclose": ("spa", '''  Object.assign(RG, { id: null, v: null, err: "", saved: false, open: false });''',
                  '''  Object.assign(RG, { id: null, v: null, err: "", saved: false });'''),
