@@ -20,7 +20,7 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
      eagerfmt     the helper formats a line before deciding to drop it
      nocap        Debug lines are not capped
-     noomit       the wire carries `log` at the defaults (the reply is no longer byte-identical)
+     (the wire at the defaults is planted by tests/log_budget_selftest.py mbalways)
      nocountdown  the node ignores `debug_left`
      bootdebug    a restart keeps Debug on with no panel to end it
      churn        the drop-ins are rewritten (and systemd reloaded) on every pass
@@ -68,7 +68,6 @@ PLANTS = {   # (program, anchor, replacement)
     "eagerfmt": ("noded", '''    if prio > _LOG["level"] and prio > log_level():\n        return\n''',
                  '''    _pre = (msg % args) if args else str(msg)\n    if prio > _LOG["level"] and prio > log_level():\n        return\n'''),
     "nocap": ("noded", '''            if _LOG["n"] > LOG_DEBUG_RATE:''', '''            if False:'''),
-    "noomit": ("panel", '''    if base == "info" and not left:\n        return None\n''', ""),
     "nocountdown": ("noded", '''log_set(min(LOG_LEVELS.get(_lg.get("level"), LOG_INFO), LOG_INFO), _left)''',
                     '''log_set(min(LOG_LEVELS.get(_lg.get("level"), LOG_INFO), LOG_INFO), 0)'''),
     "bootdebug": ("noded", '''        log_set(min(v, LOG_INFO))''', '''        log_set(v, -1 if v == LOG_DEBUG else 0)'''),

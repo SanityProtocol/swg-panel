@@ -47,9 +47,8 @@ PLANTS = {   # (file, anchor, replacement)
     "nofinally": ("noded", "            os.replace(tmp, path + \".1\")\n        except OSError:\n            with contextlib.suppress(OSError):\n                os.remove(tmp)\n        finally:\n            os.truncate(path, 0)\n",
                   "            os.replace(tmp, path + \".1\")\n            os.truncate(path, 0)\n        except OSError:\n            with contextlib.suppress(OSError):\n                os.remove(tmp)\n"),
     "nowire": ("noded", "        _cap_serverlogs()                           # docker: bound each supervised server's log, panel or no panel\n", ""),
-    "snilog": ("noded", "\"--reset-mark\", hex(SNI_RESET_MARK), \"--learn-ttl\", str(learn_ttl)])",
-               "\"--reset-mark\", hex(SNI_RESET_MARK), \"--learn-ttl\", str(learn_ttl)],"
-               " stdout=open(\"/var/lib/swg-noded/swg-sni.log\", \"a\"))"),
+    "snilog": ("noded", "if _pipe else {}))",
+               "if _pipe else {\"stdout\": open(\"/var/lib/swg-noded/swg-sni.log\", \"a\")}))"),
     "nodrain": ("sni", "                    atexit.register(_say_drain)\n", ""),
     "sayblock": ("sni", "        if len(_SAY[\"q\"]) >= SAY_MAX:\n",
                  "        sys.stdout.write(_say_text(prio, fmt, args)); sys.stdout.flush(); return\n        if len(_SAY[\"q\"]) >= SAY_MAX:\n"),
@@ -257,9 +256,11 @@ CHILD = ("import importlib.machinery, importlib.util, sys\n"
          "m = importlib.util.module_from_spec(importlib.util.spec_from_loader('sni', ld)); ld.exec_module(m)\n"
          "for i in range(int(sys.argv[2])): m.say(m.LOG_INFO, 'swg-sni: line %d ' % i + 'x' * 90)\n"
          "raise SystemExit('NFQueue bind failed')\n")
-r = subprocess.run([sys.executable, "-c", CHILD, SNI_TMP, "3"], capture_output=True, timeout=30)
+# 300: past what the writer thread itself gets out before the exit (100 a second) — 3 lines it often wrote in time,
+# so a missing drain could pass (plan §32 #6)
+r = subprocess.run([sys.executable, "-c", CHILD, SNI_TMP, "300"], capture_output=True, timeout=30)
 check("[5] lines queued just before a crash are still written at exit",
-      all(("swg-sni: line %d " % i).encode() in r.stdout for i in range(3)), r.stdout[:200])
+      all(("swg-sni: line %d " % i).encode() in r.stdout for i in range(300)), r.stdout.count(b"swg-sni: line"))
 rfd2, wfd2 = os.pipe()                                  # a stream nobody reads: 1 000 lines overfill the pipe
 t0 = time.time()
 pc = subprocess.Popen([sys.executable, "-c", CHILD, SNI_TMP, "1000"], stdout=wfd2, stderr=subprocess.DEVNULL)
