@@ -53,6 +53,10 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      onelock      one server's write holds every other server's        droplocked the sync reply deletes files under the lock
      unitmix      the disk guard counts bytes against the node's characters
      spatotal     the progress counts the servers chosen now           spaclose   Close shows the form again
+   the re-check's fixes ([9]):
+     beatslot     a progress post waits for an upload slot (and is refused) dropnowait a close deletes under a writer
+     lateread     a late progress post overwrites a finished server's count  panelrevive the panel's read revives a skipped entry
+     beatgone     a "gone" heartbeat does not stop the read            spaoff     a range tells you to pick a level for the past
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -172,6 +176,22 @@ PLANTS = {   # (program, anchor, replacement)
     "spatotal": ("spa", '''  const total = v ? Object.keys(v.nodes || {}).length : ids.length, done''', '''  const total = ids.length, done'''),
     "spaclose": ("spa", '''  Object.assign(RG, { id: null, v: null, err: "", saved: false, open: false });''',
                  '''  Object.assign(RG, { id: null, v: null, err: "", saved: false });'''),
+    "beatslot": ("panel", '''            if body.get("id") in _RANGE_REQS and "seq" not in body:   # a range's progress: memory only, never refused''',
+                 '''            if False:'''),
+    "dropnowait": ("panel", '''    rec["stop"].set()
+    for lk in (rec.get("locks") or {}).values():
+        with lk:
+            pass''', '''    rec["stop"].set()'''),
+    "lateread": ("panel", '''            if ns["state"] in ("waiting", "reading"):      # began, changes nothing)
+                ns["state"] = "reading"
+                rd = body.get("read")''', '''            if True:
+                rd = body.get("read")'''),
+    "panelrevive": ("panel", '''            if ns["state"] in RANGE_FINAL:                 # "make the file now" came first: it is left out, as said
+                return''', '''            pass'''),
+    "beatgone": ("noded", '''                if _range_post(rq, {"read": read[0]}) == "gone":      # never retried; "gone" stops the read
+                    rq["stop"].set()''', '''                if _range_post(rq, {"read": read[0]}) == "gone":      # never retried; "gone" stops the read
+                    pass'''),
+    "spaoff": ("spa", '''    off: [T("Logging is off"), T("Logging is off, so nothing is stored to read."), "warn"],   // a past range: no level brings it back''', ''''''),
     "spablob": ("spa", '''  a.href = "api/logs/download/" + RG.id; a.download''', '''  downloadConf("", "x", "log"); a.href = "api/logs/download/" + RG.id; a.download'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -438,10 +458,14 @@ try:
         for _ in range(4):
             if P.RANGE_POST_SLOTS.acquire(blocking=False):
                 held.append(1)
+        P.Handler._node_logs(handler({"id": rid2, "key": k, "now": time.time(), "seq": 0, "lines": []}))
+        part = sent[-1]
         P.Handler._node_logs(handler({"id": rid2, "key": k, "now": time.time(), "read": 1}))
+        prog = sent[-1]
         for _ in held:
             P.RANGE_POST_SLOTS.release()
-        check("[2] at most 4 range posts at a time: a 5th is 503 (the node sends it again)", sent[-1][0] == 503, sent[-1])
+        check("[2] at most 4 range parts at a time: a 5th is 503 (the node sends it again)", part[0] == 503, part)
+        check("[9] a progress post never waits for an upload slot (memory only): 200 with every slot busy", prog[0] == 200, prog)
         P._REQ.listener_role = "node"
         check("[2] the download route is closed on a node door (404)", not P._door_ok("GET", "/api/logs/download/" + rid2)
               and not P._door_ok("GET", "/api/logs/range"), "")
@@ -845,7 +869,7 @@ try:
         N2._live_plan = lambda *a, **k: ({"files": []}, {"noded": "ok"})
         N2.range_read = lambda ring, want, lv, s, u, stop, **k: (time.sleep(2.2), 0)[1]
         N2._range_run({"id": "b" * 16, "stop": threading.Event(), "key": "k", "src": ["noded"], "lv": ["info"],
-                       "since": 1, "until": 2, "share": 1 << 20, "iv": 1, "off": 0, "url": "", "panel": {}}, [])
+                       "since": 1, "until": 2, "share": 1 << 20, "iv": 0.5, "off": 0, "url": "", "panel": {}}, [])
         beats = [x for x in posts if "read" in x and "seq" not in x]
         check("[8] a long scan posts its progress on a clock (no false \"failed\" after 2 min)", len(beats) >= 3, posts)
         s = SRC["spa"]
@@ -854,6 +878,53 @@ try:
               and 'Object.assign(RG, { id: null, v: null, err: "", saved: false, open: false });' in s, "")
 
     guarded("[8]", sec8)
+
+    # ── [9] the re-check's fixes ──────────────────────────────────────────────────────────────────────────────────────
+    print("[9] the re-check's fixes")
+
+    def sec9():
+        P = load("panel")
+        P.range_init(os.path.join(TMP, "fix9-spool"))
+        st, o = P.range_open({"nodes": ["n1", "panel"], **RANGE_BODY}, {"n1"})
+        rec = P._RANGE_REQS[o["data"]["id"]]
+        k = P._live_key(rec, "n1")
+        base = rec["since"] * 10 ** 6 + 10 ** 6
+        P.range_absorb({"id": rec["id"], "key": k, "now": time.time(), "seq": 0, "lines": [[base, "noded", 6, "x"]],
+                        "done": {"read": 12345}})
+        P.range_absorb({"id": rec["id"], "key": k, "now": time.time(), "read": 5000})
+        check("[9] a progress post that lands after a server's parts changes nothing",
+              rec["ns"]["n1"]["state"] == "done" and rec["ns"]["n1"]["read"] == 12345, rec["ns"]["n1"])
+        rec["ns"]["panel"]["state"] = "skipped"
+        P._live_panel_plan = lambda srcs, rng=False: ({"files": []}, {"panel": "ok"})
+        P._range_panel_run(rec)
+        check("[9] the panel's own read does not revive an entry \"make the file now\" left out",
+              rec["ns"]["panel"]["state"] == "skipped", rec["ns"]["panel"])
+        # a close while a server's part is being written: the delete waits for it, and nothing stays behind
+        rec["locks"]["n1"].acquire()
+        th = threading.Thread(target=P.range_api_post, args=("/api/logs/range/close", {"id": rec["id"]}, {}))
+        th.start(); time.sleep(0.4)
+        waited = th.is_alive()
+        P._range_spool(rec, "n1", [(base + 1, "noded", 6, "late")], False)
+        rec["locks"]["n1"].release()
+        th.join(10)
+        check("[9] a close waits for a part being written, then deletes everything (nothing created behind it)",
+              waited and not os.path.exists(rec["dir"]) and rec["phase"] == "gone", (waited, os.path.exists(rec["dir"])))
+        N = load("noded")
+        N._range_post = lambda rq, extra: "ok" if "st" in extra else "gone"
+        N._live_plan = lambda *a, **k: ({"files": []}, {"noded": "ok"})
+        stopped = []
+        N.range_read = lambda ring, want, lv, s, u, stop, **k: (stopped.append(stop.wait(5)), 0)[1]
+        N.RANGE_HB_S = 0.3
+        N._range_run({"id": "c" * 16, "stop": threading.Event(), "key": "k", "src": ["noded"], "lv": ["info"],
+                      "since": 1, "until": 2, "share": 1 << 20, "iv": 0.3, "off": 0, "url": "", "panel": {}}, [])
+        check("[9] a heartbeat the panel answers \"gone\" stops the read", stopped == [True], stopped)
+        s = SRC["spa"]
+        i = s.index("function stateSay(range)")
+        body = s[s.index("return range ?", i):s.index("} : s;", i)]
+        check("[9] a range's \"logging is off\" does not tell the operator to pick a level (nothing of the past comes back)",
+              'off: [T("Logging is off"), T("Logging is off, so nothing is stored to read."), "warn"]' in body, body[-300:])
+
+    guarded("[9]", sec9)
 finally:
     for p in procs:
         p.terminate()
