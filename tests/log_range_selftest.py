@@ -68,6 +68,8 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      nofocusin    focus moving on (where a click focuses no button) leaves the list open
      imeesc       Escape ends an IME composition's list too
      keepesc      Escape in a form the list owns leaves the list open
+   the header's Logs button ([12]):
+     overlayeager the viewer is mounted (and polls) before the button is clicked
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -214,6 +216,7 @@ PLANTS = {   # (program, anchor, replacement)
     "imeesc": ("ui", '''    const onKey = e => { if (e.key !== "Escape" || e.isComposing) return; const t = e.target;''',
                '''    const onKey = e => { if (e.key !== "Escape") return; const t = e.target;'''),
     "keepesc": ("ui", ''' else if (keep && keep(t)) close(false); };''', ''' };'''),
+    "overlayeager": ("spa", '''  return LV.overlay ? html`<${LogViewer} overlay/>` : null;''', '''  return html`<${LogViewer} overlay/>`;'''),
     "spablob": ("spa", '''  a.href = "api/logs/download/" + RG.id; a.download''', '''  downloadConf("", "x", "log"); a.href = "api/logs/download/" + RG.id; a.download'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -839,6 +842,12 @@ console.log(JSON.stringify(r));
               'document.addEventListener("focusin", onFocus, true)' in u and "const onFocus = e => { if (!inside(e.target)) shut(); };" in u
               and 'if (e.key !== "Escape" || e.isComposing) return;' in u and "else if (keep && keep(t)) close(false);" in u
               and "if (e.isComposing) return;" in u, "")
+        idx, appjs = open(os.path.join(ROOT, "index.html"), encoding="utf-8").read(), open(os.path.join(ROOT, "app.js"), encoding="utf-8").read()
+        check("[12] the header's Logs button opens the viewer over any screen, and nothing mounts (so nothing is asked) until "
+              "it is clicked; Exit closes it",
+              'id="logs-btn"' in idx and idx.index('id="logs-btn"') < idx.index('id="panel-settings-btn"')
+              and "${h(LogOverlay)}" in appjs and "lg.onclick = openLogOverlay" in appjs
+              and "return LV.overlay ? html`<${LogViewer} overlay/>` : null;" in s and "onClick=${closeLogOverlay}" in s, "")
         check("[7] the source dropdowns: a whole group is written as its wildcard, one item off expands it, other lists untouched",
               r.get("on") == ["turn:a", "turn:b", "turn:w1"] and r.get("offOne") == ["mesh:*", "noded", "turn:a", "turn:w1"]
               and r.get("meshOne") == ["mesh:swg_1", "noded", "turn:*"] and r.get("meshAll") == ["mesh:*", "noded", "turn:*"], r)
