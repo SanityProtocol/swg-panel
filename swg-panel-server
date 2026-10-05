@@ -18,31 +18,65 @@ Standalone: set SWG_PANEL_TLS_CERT/KEY + SWG_PANEL_AUTH and bind 0.0.0.0 to serv
 HTTPS + Basic-Auth + /wgstats directly. Or bind 127.0.0.1 behind your own nginx.
 """
 
-# ── Load through compile(), not the script runner ─────────────────────────────────────────────────────────────
-# CPython keeps a script's parse tree alive until the script finishes, and main() never returns — so this whole
-# file's AST stayed resident for the life of the process (~80 MB of the panel's ~130, ~45 of noded's ~75), live
-# memory no trim can give back. runpy loads the same file through compile(), which drops the AST the moment the
-# bytecode exists. So a run as a script first replaces itself — same PID, same interpreter, same flags — with
-# `python3 -c <runpy> <this file> <args>`, and the second load (marked by `_SWG_RUNPY` in its globals, not an env
-# var a child would inherit) puts argv and sys.path back exactly as a script run sets them. If the exec cannot
-# happen at all, the process carries on as before.
+# ── Run through compile(), not the script runner ──────────────────────────────────────────────────────────────
+# CPython keeps a script's parse tree alive until the script finishes, and main() never returns: this whole file's
+# AST stayed resident for the life of the process (~80 MB of the panel's ~130, ~50 of noded's ~95) and nothing could
+# give it back. Loaded through compile() instead (runpy.run_path), the AST is dropped as soon as the bytecode exists.
+# So a plain script run of this file first replaces itself, in place — same PID, interpreter and environment — with
+#     python3 -c <_SWG_LOADER> <sys.path[0]> <this file> [args…]
+# which runs the file again as __main__ with the script run's sys.path[0], argv[0] = this file's path (as __file__)
+# and `_SWG_REEXEC` in its globals, so the second load goes straight on. Anything else — interpreter options,
+# SWG_NO_REEXEC set, not a plain script run, an exec that fails — and this process carries on the old way, unchanged.
 import os, sys
-if globals().get("_SWG_RUNPY"):
-    del sys.argv[1]                                   # runpy set argv[0] to this file; drop the copy that carried it
-    if sys.path and sys.path[0] == "":                # -c put the cwd first; a script run puts the script's own dir
-        sys.path[0] = os.path.dirname(os.path.realpath(__file__))
-elif __name__ == "__main__" and sys.executable and sys.argv and os.path.isfile(sys.argv[0]) \
-        and os.path.realpath(sys.argv[0]) == os.path.realpath(globals().get("__file__") or ""):
+
+_SWG_LOADER = ("import sys;d=sys.argv.pop(1);p=sys.argv.pop(1);"
+               "sys.path[:1]=[d]if sys.path[:1]==['']else sys.path[:1];"      # -c put the cwd first: the script's dir
+               "import runpy;runpy.run_path(p,{'_SWG_REEXEC':1},'__main__')")   # goes back BEFORE anything is imported
+
+
+def _swg_reexec(hold_sighup=False):
+    """Replace this process with the compile() load above — or return, and the process carries on unchanged.
+    Called at module level, so it checks __name__ itself: the file's only main guard stays the one at its end —
+    the line the test loaders cut the source at."""
+    if __name__ != "__main__":
+        return                                   # loaded as a module (tests, tooling): nothing to do
+    if globals().get("_SWG_REEXEC") or _SWG_LOADER in getattr(sys, "orig_argv", ()):
+        return                                   # the second load (two independent marks: it can never loop)
+    if os.environ.get("SWG_NO_REEXEC"):
+        return                                   # the operator's switch back to the plain script run
+    script = globals().get("__file__")
+    if not (script and sys.executable and sys.argv and os.path.isfile(script)
+            and os.path.realpath(sys.argv[0]) == os.path.realpath(script)):
+        return                                   # not a plain script run (a test loading the module, an exec …)
+    if hasattr(sys, "orig_argv"):                # 3.10+: only when the interpreter was given no options at all
+        if sys.orig_argv[1:] != sys.argv:
+            return
+    else:                                        # 3.7–3.9: none visible in sys.flags, and no -u
+        try:
+            import subprocess
+            if subprocess._args_from_interpreter_flags():
+                return
+        except Exception:
+            return
+        if getattr(sys.stdout, "write_through", False) and not os.environ.get("PYTHONUNBUFFERED"):
+            return
+    held = None
+    if hold_sighup:
+        # The panel: an ignored signal stays ignored across exec (a handled one does not), so the second parse runs
+        # with SIGHUP ignored until main() installs its reload handler — an acme reload landing in that window no
+        # longer kills it. Children started before then inherit the ignore: the panel's are its `--version` probes.
+        import signal
+        held = signal.getsignal(signal.SIGHUP)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
-        import subprocess
-        _flags = subprocess._args_from_interpreter_flags()        # -X / -W / -O … as this process was started
-    except Exception:
-        _flags = []
-    try:
-        os.execv(sys.executable, [sys.executable] + _flags + [
-            "-c", "import runpy,sys;runpy.run_path(sys.argv[1],{'_SWG_RUNPY':1},'__main__')"] + sys.argv)
+        os.execv(sys.executable, [sys.executable, "-c", _SWG_LOADER, sys.path[0] if sys.path else "", script]
+                 + sys.argv[1:])
     except OSError:
-        pass
+        if held is not None:
+            signal.signal(signal.SIGHUP, held)   # the exec failed: back to exactly how this process started
+
+
+_swg_reexec(hold_sighup=len(sys.argv) == 1)   # the server start (no arguments) holds SIGHUP; `passwd` does not
 
 import ast
 import base64
@@ -33899,17 +33933,17 @@ def _fd_watchdog_loop():
 
 
 def _release_startup_memory():
-    """Give the startup heap back to the kernel, once, when startup is done.
+    """Give the startup heap back to the kernel, once, when startup is done (~4 ms).
 
     The prologue at the top of this file stops the AST from staying LIVE, but compile()'s scratch memory (~90 MB
     for this file) is freed into glibc's heap, and glibc keeps it: RSS would stay at the compile peak.
-    malloc_trim(0) returns the free pages. glibc only — musl has no malloc_trim (no-op there, as without ctypes)."""
+    malloc_trim(0) returns the free pages. glibc only — elsewhere (musl, no ctypes) it does nothing."""
     try:
         import ctypes
-        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
-        if trim:
-            trim(0)
-    except Exception:
+        trim = ctypes.CDLL(None).malloc_trim             # AttributeError where libc has none (musl)
+        trim.argtypes, trim.restype = (ctypes.c_size_t,), ctypes.c_int   # int malloc_trim(size_t pad)
+        trim(0)
+    except Exception:                                    # no ctypes, no symbol, a refused load: no trim, nothing else
         pass
 
 
@@ -34000,7 +34034,7 @@ def main():
         else:
             _argv = _proc_cmdline(_pid) if _pid else []
             _base = os.path.basename(_argv[0]) if _argv else ""
-            if _base.startswith("python") and len(_argv) > 1:   # `python3 [flags] [-c <runpy>] <script>`: name the script
+            if _base.startswith("python") and len(_argv) > 1:   # `python3 <script>`, or the startup re-exec's `python3 -c <loader> <dir> <script>`
                 _base = next((b for b in map(os.path.basename, _argv[1:]) if b == "swg-panel-server"),
                              os.path.basename(_argv[1]))
             if _base == "swg-panel-server":
