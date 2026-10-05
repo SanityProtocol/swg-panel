@@ -51,7 +51,7 @@ const STORE_KEY = "swg-logview";
 // A choice remembered before mesh links were a source of their own (v1) meant them by `iface:`: `iface:*` covered them and
 // `iface:swg_…` named one. Rewritten once, so nothing that was coming stops coming — and no choice is left that no list
 // shows and nothing can untick.
-const migrate = src => [...new Set(src.flatMap(x => x === "iface:*" ? ["iface:*", "mesh:*"] : /^iface:swg_/.test(x) ? ["mesh:" + x.slice(6)] : [x]))];
+const migrate = src => [...new Set(src.flatMap(x => x === "iface:*" ? ["iface:*", "mesh:*"] : x.startsWith("iface:swg_") ? ["mesh:" + x.slice(6)] : [x]))];
 try { const s = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); if (s && Array.isArray(s.nodes) && Array.isArray(s.src)) Object.assign(LV, { nodes: s.nodes, src: s.v === 2 ? s.src : migrate(s.src), wrap: !!s.wrap }); } catch (_) { /* private mode */ }
 const remember = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 2, nodes: LV.nodes, src: LV.src, wrap: LV.wrap })); } catch (_) { /* private mode */ } };
 
@@ -74,7 +74,7 @@ export const TURN_SOURCES = ["turn:*"];             // a node's turn proxies, WD
 /* Open the viewer from elsewhere (the node page, a failing turn proxy): Settings → Logs with these facets. */
 export function openLogs({ nodes, src } = {}) {
   if (nodes) LV.nodes = nodes;
-  if (src) LV.src = migrate(src);
+  if (src) LV.src = src;
   LV.gen++; LV.full = false; remember(); bump();
   goSettings("logs");
 }
@@ -153,8 +153,9 @@ const MESH_PRE = "swg_";
 let _lists = { key: null, val: null };
 function sourceListsMemo(nodeIds) {
   const key = nodeIds.join(",");
-  if (_lists.key !== key || _lists.stats !== Store.stats || _lists.describe !== Store.describe || _lists.nodes !== Store.nodes)
-    _lists = { key, stats: Store.stats, describe: Store.describe, nodes: Store.nodes, val: sourceLists(nodeIds) };
+  if (_lists.key !== key || _lists.stats !== Store.stats || _lists.describe !== Store.describe || _lists.nodes !== Store.nodes
+      || _lists.ps !== Store.panelSettings)                 // the Panel list follows the panel's kind (panelBare)
+    _lists = { key, stats: Store.stats, describe: Store.describe, nodes: Store.nodes, ps: Store.panelSettings, val: sourceLists(nodeIds) };
   return _lists.val;
 }
 function sourceLists(nodeIds) {
@@ -247,11 +248,12 @@ function usePop() {
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove);
       document.removeEventListener("pointerdown", onDoc, true); document.removeEventListener("keydown", onKey, true); }; }, [open]);
   // opened from the keyboard (Enter, Space, an arrow on the trigger): focus goes into the list, as in the shared Dropdown
-  useEffect(() => { if (!open || !pos || !kbd.current || !popRef.current) return; kbd.current = false;
-    const el = popRef.current.querySelector("input,button:not(:disabled)"); if (el) el.focus(); }, [open, !!pos]);
+  useEffect(() => { if (!open || !pos || !kbd.current || !popRef.current) return;
+    const els = [...popRef.current.querySelectorAll("input,button:not(:disabled)")], at = kbd.current; kbd.current = false;
+    const el = at === "last" ? els[els.length - 1] : els[0]; if (el) el.focus(); }, [open, !!pos]);
   const toggle = e => { kbd.current = !open && e.detail === 0; setOpen(!open); };
   const onBtnKey = e => { if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return; e.preventDefault();
-    if (!open) { kbd.current = true; setOpen(true); } else if (popRef.current) { const el = popRef.current.querySelector("input,button:not(:disabled)"); if (el) el.focus(); } };
+    if (!open) { kbd.current = e.key === "ArrowUp" ? "last" : "first"; setOpen(true); } else if (popRef.current) { const el = popRef.current.querySelector("input,button:not(:disabled)"); if (el) el.focus(); } };
   // focus leaving for somewhere that is neither the list nor its trigger closes it (Shift+Tab out of the search box)
   const onPopBlur = e => { const to = e.relatedTarget;
     if (to && !((popRef.current && popRef.current.contains(to)) || (ref.current && ref.current.contains(to)))) setOpen(false); };
@@ -271,6 +273,7 @@ function usePop() {
 
 function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
   const P = usePop(), [q, setQ] = useState("");
+  useEffect(() => { if (P.open) setQ(""); }, [P.open]);   // every open starts unfiltered (click or keyboard)
   // the search takes the typing as soon as the list is open (the portal is on the page only after this render)
   useEffect(() => { if (P.open && P.pos && P.popRef.current) { const i = P.popRef.current.querySelector("input"); if (i) i.focus(); } }, [P.open, !!P.pos]);
   const on = mpOn(dd, sel), all = ddItems(dd), nOn = all.filter(i => on.has(i.id)).length;
@@ -291,7 +294,7 @@ function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
   const visAll = vis.flatMap(g => g.items);
   return html`<div class="lv-mp" ref=${P.ref}>
     <button type="button" class=${"lv-facet" + (P.open ? " on" : "")} aria-haspopup="listbox" aria-expanded=${P.open ? "true" : "false"}
-      onKeyDown=${P.onBtnKey} onClick=${e => { if (!P.open) setQ(""); P.toggle(e); }}>
+      onKeyDown=${P.onBtnKey} onClick=${P.toggle}>
       ${icon ? html`<${Ic} i=${icon}/>` : null}<span class="lv-fl">${label}</span><span class="lv-fv">${shown}</span><span class="catpick-caret">▾</span></button>
     ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="listbox" aria-multiselectable="true" aria-label=${label} onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur}
         class=${"ddpop lv-mppop" + (P.pos.flip ? " flip" : "")} style=${"left:" + P.pos.left + "px;top:" + P.pos.top + "px;min-width:" + Math.max(280, P.pos.width) + "px;--ddmaxh:" + P.pos.maxh + "px"}>
@@ -315,7 +318,7 @@ function MenuButton({ icon, label, title, items }) {
     ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="menu" onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur} class=${"ddpop lv-menu" + (P.pos.flip ? " flip" : "")}
         style=${"left:" + Math.max(8, Math.min(P.pos.left + P.pos.width - 300, window.innerWidth - 308)) + "px;top:" + P.pos.top + "px;width:300px;--ddmaxh:" + P.pos.maxh + "px"}>
       ${items.map(it => html`<button type="button" role="menuitem" key=${it.key} class="ddopt lv-menuopt" disabled=${it.disabled}
-        onClick=${() => { P.close(false); it.onClick(); }}><b>${it.label}</b><span class="lv-mphint">${it.hint}</span></button>`)}
+        onClick=${() => { P.close(true); it.onClick(); }}><b>${it.label}</b><span class="lv-mphint">${it.hint}</span></button>`)}
     </div><//>` : null}
   </div>`;
 }
@@ -445,9 +448,13 @@ function Hi({ text, q }) {
 }
 
 // a line's source as the stream shows it: a mesh link by the node at its other end, not by its generated name
+let _shown = { d: null, m: new Map() };
 const srcShown = l => { if (!l.src.startsWith("mesh:")) return l.src;
-  const peer = (Store.ifaceMeta(l.nid, l.src.slice(5)) || {}).link_node;
-  return peer ? "↔ " + (Store.nodeName(peer) || peer) : l.src; };
+  if (_shown.d !== Store.describe) _shown = { d: Store.describe, m: new Map() };      // once per link per poll
+  const k = l.nid + "|" + l.src;
+  if (!_shown.m.has(k)) { const peer = (Store.ifaceMeta(l.nid, l.src.slice(5)) || {}).link_node;
+    _shown.m.set(k, peer ? "↔ " + (Store.nodeName(peer) || peer) : l.src); }
+  return _shown.m.get(k); };
 function Row({ l, q }) {
   if (l.src[0] === "!") return html`<div class="lv-row lv-mark">
     <span class="lv-t" title=${ymd(l.k)}>${hms(l.k)}</span>
@@ -497,7 +504,7 @@ function Stream({ lines, follow, onUserScroll }) {
     ${lines.slice(i * BLOCK, (i + 1) * BLOCK).map(l => html`<${Row} key=${l.nid + l.seq} l=${l} q=${q}/>`)}</div>`);
   // one column width for every row (each row is its own grid): the longest server name and source shown, in characters
   let cw = 4, sw = 4;
-  for (const l of lines) { const n = l.src.startsWith("mesh:") ? srcShown(l).length : l.src.length; if (n > sw) sw = n; }
+  for (const l of lines) { const n = srcShown(l).length; if (n > sw) sw = n; }
   for (const id of nodesOf()) { const n = nodeName(id).length; if (n > cw) cw = n; }
   const cols = "--lv-cw:" + (Math.min(cw, 18) + 2) + "ch;--lv-sw:" + (Math.min(sw, 22) + 1) + "ch";
   return html`<div class=${"lv-stream" + (LV.wrap ? " wrap" : "")} style=${cols} ref=${box} onScroll=${onScroll} role="log" aria-live="off" aria-label=${T("Live logs")}>
