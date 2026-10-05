@@ -98,7 +98,7 @@ PLANTS = {   # (program, anchor, replacement)
               '''        if len(_LIVE_REQS) >= LIVE_REQ_MAX:\n            _LIVE_REQS.pop(next(iter(_LIVE_REQS)))["stop"].set()\n        if False:\n            return 429,'''),
     "bufgrow": ("panel", '''"buf": collections.deque(maxlen=LIVE_BUF)''', '''"buf": collections.deque()'''),
     "capflat": ("panel", '''    return min(200, max(5, LIVE_RATE // max(1, n)))''', '''    return 200'''),
-    "noskew": ("panel", '''            rec["off"][nid] = int(round(off)) if abs(off) >= LIVE_SKEW_S else 0''', '''            rec["off"][nid] = 0'''),
+    "noskew": ("panel", '''    return int(round(off)) if abs(off) >= LIVE_SKEW_S else 0''', '''    return 0'''),
     "nodeh": ("panel", '''**({} if h == have else {"nodes": nodes})}''', '''**{"nodes": nodes}}'''),
     "blockdrift": ("panel", '''LIVE_BACKFILL, LIVE_BACKFILL_MAX, LIVE_BACKFILL_S, LIVE_BACKFILL_WAIT = 200, 1000, 1.0, 10.0''',
                    '''LIVE_BACKFILL, LIVE_BACKFILL_MAX, LIVE_BACKFILL_S, LIVE_BACKFILL_WAIT = 100, 1000, 1.0, 10.0'''),
