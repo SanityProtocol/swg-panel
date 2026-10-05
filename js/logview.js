@@ -48,8 +48,12 @@ const LV = {
 const _subs = new Set();
 const bump = () => { LV.ver++; _subs.forEach(f => f(LV.ver)); };
 const STORE_KEY = "swg-logview";
-try { const s = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); if (s && Array.isArray(s.nodes) && Array.isArray(s.src)) Object.assign(LV, { nodes: s.nodes, src: s.src, wrap: !!s.wrap }); } catch (_) { /* private mode */ }
-const remember = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify({ nodes: LV.nodes, src: LV.src, wrap: LV.wrap })); } catch (_) { /* private mode */ } };
+// A choice remembered before mesh links were a source of their own (v1) meant them by `iface:`: `iface:*` covered them and
+// `iface:swg_…` named one. Rewritten once, so nothing that was coming stops coming — and no choice is left that no list
+// shows and nothing can untick.
+const migrate = src => [...new Set(src.flatMap(x => x === "iface:*" ? ["iface:*", "mesh:*"] : /^iface:swg_/.test(x) ? ["mesh:" + x.slice(6)] : [x]))];
+try { const s = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); if (s && Array.isArray(s.nodes) && Array.isArray(s.src)) Object.assign(LV, { nodes: s.nodes, src: s.v === 2 ? s.src : migrate(s.src), wrap: !!s.wrap }); } catch (_) { /* private mode */ }
+const remember = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 2, nodes: LV.nodes, src: LV.src, wrap: LV.wrap })); } catch (_) { /* private mode */ } };
 
 const panelBare = () => { const lp = (Store.panelSettings || {}).log_panel || {}; return !lp.docker && lp.err !== "nixos"; };
 function facetDefaults() {
@@ -70,7 +74,7 @@ export const TURN_SOURCES = ["turn:*"];             // a node's turn proxies, WD
 /* Open the viewer from elsewhere (the node page, a failing turn proxy): Settings → Logs with these facets. */
 export function openLogs({ nodes, src } = {}) {
   if (nodes) LV.nodes = nodes;
-  if (src) LV.src = src;
+  if (src) LV.src = migrate(src);
   LV.gen++; LV.full = false; remember(); bump();
   goSettings("logs");
 }
@@ -142,6 +146,17 @@ function onVisibility() { if (document.hidden) closeReq(); else tick(); }   // h
 // `iface:*`) — each node maps it to what it has, so "all" stays one source at 200 nodes and includes what a node starts
 // later. Turn kinds are brands, the same in every language.
 const TURN_KINDS = [["vk", "VK TURN"], ["wdtt", "WDTT"], ["csqtt", "csqtt"]];
+const MESH_PRE = "swg_";
+
+// 7. built once per poll, not per render: the closed dropdowns need only their counts, and a stream batch re-renders
+// the viewer many times a second
+let _lists = { key: null, val: null };
+function sourceListsMemo(nodeIds) {
+  const key = nodeIds.join(",");
+  if (_lists.key !== key || _lists.stats !== Store.stats || _lists.describe !== Store.describe || _lists.nodes !== Store.nodes)
+    _lists = { key, stats: Store.stats, describe: Store.describe, nodes: Store.nodes, val: sourceLists(nodeIds) };
+  return _lists.val;
+}
 function sourceLists(nodeIds) {
   const st = Store.stats || {}, nodes = nodeIds.filter(id => id !== LOG_PANEL);
   const relay = new Set(), ifc = new Set(), mesh = new Map(), turn = { vk: new Set(), wdtt: new Set(), csqtt: new Set() };
@@ -149,7 +164,7 @@ function sourceLists(nodeIds) {
     const s = st[id] || {};
     for (const n of new Set([...Object.keys(s.interfaces || {}), ...Store.ifacesOf(id)])) {
       const meta = Store.ifaceMeta(id, n) || {};
-      if (n.startsWith("swg_") || Store.ifaceIsSystem(id, n)) {
+      if (n.startsWith(MESH_PRE)) {                   // the reader's own rule (LIVE_MESH_PRE): a custom prefix stays an interface
         // a mesh link by what it joins, not by its generated name: "msk-main ↔ hel-flux"
         const pair = meta.link_node ? [Store.nodeName(id) || id, Store.nodeName(meta.link_node) || meta.link_node].sort() : null;
         if (!mesh.has(n)) mesh.set(n, pair ? pair.join(" ↔ ") : n);
@@ -214,30 +229,44 @@ const tickOf = (n, of) => !n ? "" : n === of ? " on" : " mix";
 // click outside, Escape (focus back on the trigger) or Tab out.
 function usePop() {
   const [open, setOpen] = useState(false), [pos, setPos] = useState(null);
-  const ref = useRef(null), popRef = useRef(null);
+  const ref = useRef(null), popRef = useRef(null), kbd = useRef(false);
   const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
     const below = window.innerHeight - r.bottom - 12, above = r.top - 12, flip = below < 260 && above > below;
     setPos({ left: Math.round(Math.min(r.left, window.innerWidth - 300)), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width), flip,
              maxh: Math.max(200, Math.round(flip ? above : below) - 16) }); };
   const close = back => { setOpen(false); if (back && ref.current) { const b = ref.current.querySelector("button"); if (b) b.focus(); } };
   useEffect(() => { if (!open) return; place();
-    const onMove = () => place();
+    // only a scroll that moves the trigger re-places the popup: the stream scrolling under it (it follows new lines
+    // many times a second) does not
+    const onMove = e => { const t = e && e.target; if (t && t !== document && t.contains && ref.current && !t.contains(ref.current)) return; place(); };
     const onDoc = e => { const t = e.target; if ((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t))) return; setOpen(false); };
-    const onKey = e => { if (e.key === "Escape") close(true); };
+    // in the capture phase, and marked: the full-screen viewer's own Escape (on the same document) leaves this one alone
+    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); close(true); } };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
-    document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey, true);
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove);
-      document.removeEventListener("pointerdown", onDoc, true); document.removeEventListener("keydown", onKey); }; }, [open]);
+      document.removeEventListener("pointerdown", onDoc, true); document.removeEventListener("keydown", onKey, true); }; }, [open]);
+  // opened from the keyboard (Enter, Space, an arrow on the trigger): focus goes into the list, as in the shared Dropdown
+  useEffect(() => { if (!open || !pos || !kbd.current || !popRef.current) return; kbd.current = false;
+    const el = popRef.current.querySelector("input,button:not(:disabled)"); if (el) el.focus(); }, [open, !!pos]);
+  const toggle = e => { kbd.current = !open && e.detail === 0; setOpen(!open); };
+  const onBtnKey = e => { if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return; e.preventDefault();
+    if (!open) { kbd.current = true; setOpen(true); } else if (popRef.current) { const el = popRef.current.querySelector("input,button:not(:disabled)"); if (el) el.focus(); } };
+  // focus leaving for somewhere that is neither the list nor its trigger closes it (Shift+Tab out of the search box)
+  const onPopBlur = e => { const to = e.relatedTarget;
+    if (to && !((popRef.current && popRef.current.contains(to)) || (ref.current && ref.current.contains(to)))) setOpen(false); };
   // arrows walk the rows (and the search box), as in the shared Dropdown; Tab leaves and closes
   const onPopKey = e => {
     if (e.key === "Tab") { setOpen(false); return; }
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const k = e.key, els = popRef.current ? [...popRef.current.querySelectorAll("input,button:not(:disabled)")] : [];
+    if (!els.length || !["ArrowDown", "ArrowUp", "Home", "End"].includes(k)) return;
+    if ((k === "Home" || k === "End") && document.activeElement && document.activeElement.tagName === "INPUT") return;   // the search's own
     e.preventDefault();
-    const els = popRef.current ? [...popRef.current.querySelectorAll("input,button:not(:disabled)")] : [];
-    const i = els.indexOf(document.activeElement), j = Math.max(0, Math.min(els.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)));
-    if (els[j]) { els[j].focus(); els[j].scrollIntoView({ block: "nearest" }); }
+    const i = els.indexOf(document.activeElement);
+    const j = k === "Home" ? 0 : k === "End" ? els.length - 1 : Math.max(0, Math.min(els.length - 1, i + (k === "ArrowDown" ? 1 : -1)));
+    els[j].focus(); els[j].scrollIntoView({ block: "nearest" });
   };
-  return { open, setOpen, pos, ref, popRef, onPopKey, close };
+  return { open, setOpen, pos, ref, popRef, onPopKey, onPopBlur, toggle, onBtnKey, close };
 }
 
 function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
@@ -262,9 +291,9 @@ function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
   const visAll = vis.flatMap(g => g.items);
   return html`<div class="lv-mp" ref=${P.ref}>
     <button type="button" class=${"lv-facet" + (P.open ? " on" : "")} aria-haspopup="listbox" aria-expanded=${P.open ? "true" : "false"}
-      onClick=${() => { if (P.open) P.setOpen(false); else { setQ(""); P.setOpen(true); } }}>
+      onKeyDown=${P.onBtnKey} onClick=${e => { if (!P.open) setQ(""); P.toggle(e); }}>
       ${icon ? html`<${Ic} i=${icon}/>` : null}<span class="lv-fl">${label}</span><span class="lv-fv">${shown}</span><span class="catpick-caret">▾</span></button>
-    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="listbox" aria-multiselectable="true" aria-label=${label} onKeyDown=${P.onPopKey}
+    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="listbox" aria-multiselectable="true" aria-label=${label} onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur}
         class=${"ddpop lv-mppop" + (P.pos.flip ? " flip" : "")} style=${"left:" + P.pos.left + "px;top:" + P.pos.top + "px;min-width:" + Math.max(280, P.pos.width) + "px;--ddmaxh:" + P.pos.maxh + "px"}>
       ${search && all.length > 8 ? html`<div class="lv-mpq"><${Ic} i="search"/><input value=${q} placeholder=${T("Find…")} aria-label=${T("Find…")} data-enter="self"
         onInput=${e => setQ(e.target.value)}/></div>` : null}
@@ -282,8 +311,8 @@ function MenuButton({ icon, label, title, items }) {
   const P = usePop();
   return html`<div class="lv-mp" ref=${P.ref}>
     <button type="button" class=${"btn btn-mini" + (P.open ? " on" : "")} title=${title || ""} aria-haspopup="menu" aria-expanded=${P.open ? "true" : "false"}
-      aria-label=${title || label} onClick=${() => P.setOpen(!P.open)}><${Ic} i=${icon}/>${label ? " " + label : ""} <span class="catpick-caret">▾</span></button>
-    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="menu" onKeyDown=${P.onPopKey} class=${"ddpop lv-menu" + (P.pos.flip ? " flip" : "")}
+      aria-label=${title || label} onKeyDown=${P.onBtnKey} onClick=${P.toggle}><${Ic} i=${icon}/>${label ? " " + label : ""} <span class="catpick-caret">▾</span></button>
+    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="menu" onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur} class=${"ddpop lv-menu" + (P.pos.flip ? " flip" : "")}
         style=${"left:" + Math.max(8, Math.min(P.pos.left + P.pos.width - 300, window.innerWidth - 308)) + "px;top:" + P.pos.top + "px;width:300px;--ddmaxh:" + P.pos.maxh + "px"}>
       ${items.map(it => html`<button type="button" role="menuitem" key=${it.key} class="ddopt lv-menuopt" disabled=${it.disabled}
         onClick=${() => { P.close(false); it.onClick(); }}><b>${it.label}</b><span class="lv-mphint">${it.hint}</span></button>`)}
@@ -298,14 +327,19 @@ function setFacets(nodes, src) {
   LV.gen++; remember(); bump();
 }
 
+let _servers = { nodes: null, val: null };
+const serversLabel = ids => ids.length === 1 ? nodeName(ids[0]) : ids.includes(LOG_PANEL) && ids.length > 1
+  ? T("Panel and {n}", { n: plural(ids.length - 1, "server") }) : plural(ids.length, "server");
 function Facets() {
   const ids = nodesOf(), srcs = srcOf(), sel = new Set(srcs);
-  const all = [...(Store.nodes || [])].sort((a, b) => Store.byNode(a.id, b.id)).map(n => n.id);   // the panel's order, as everywhere
-  const servers = { allLabel: T("All servers"), groups: [{ id: "p", items: [{ id: LOG_PANEL, label: T("Panel"), chip: true }] },
-    ...(all.length ? [{ id: "n", label: T("All nodes"), items: all.map(id => ({ id, label: nodeName(id), chip: true })) }] : [])] };
-  const nodeLbl = !ids.length ? T("None") : ids.length === 1 ? nodeName(ids[0]) : ids.includes(LOG_PANEL)
-    ? T("Panel and {n}", { n: plural(ids.length - 1, "server") }) : plural(ids.length, "server");
-  const lists = sourceLists(ids);
+  if (_servers.nodes !== Store.nodes) {
+    const all = [...(Store.nodes || [])].sort((a, b) => Store.byNode(a.id, b.id));   // the panel's order, as everywhere
+    _servers = { nodes: Store.nodes, val: { allLabel: T("All servers"), groups: [{ id: "p", items: [{ id: LOG_PANEL, label: T("Panel"), chip: true }] },
+      ...(all.length ? [{ id: "n", label: T("All nodes"), items: all.map(n => ({ id: n.id, label: n.name || n.id, chip: true })) }] : [])] } };
+  }
+  const servers = _servers.val;
+  const nodeLbl = !ids.length ? T("None") : serversLabel(ids);
+  const lists = sourceListsMemo(ids);
   return html`<div class="lv-facets">
     <${MultiPick} icon="server" label=${T("Servers")} dd=${servers} sel=${new Set(chosenNodes())} value=${nodeLbl} search
       onChange=${v => setFacets(v)}/>
@@ -463,7 +497,7 @@ function Stream({ lines, follow, onUserScroll }) {
     ${lines.slice(i * BLOCK, (i + 1) * BLOCK).map(l => html`<${Row} key=${l.nid + l.seq} l=${l} q=${q}/>`)}</div>`);
   // one column width for every row (each row is its own grid): the longest server name and source shown, in characters
   let cw = 4, sw = 4;
-  for (const l of lines) { if (l.src.length > sw) sw = l.src.length; }
+  for (const l of lines) { const n = l.src.startsWith("mesh:") ? srcShown(l).length : l.src.length; if (n > sw) sw = n; }
   for (const id of nodesOf()) { const n = nodeName(id).length; if (n > cw) cw = n; }
   const cols = "--lv-cw:" + (Math.min(cw, 18) + 2) + "ch;--lv-sw:" + (Math.min(sw, 22) + 1) + "ch";
   return html`<div class=${"lv-stream" + (LV.wrap ? " wrap" : "")} style=${cols} ref=${box} onScroll=${onScroll} role="log" aria-live="off" aria-label=${T("Live logs")}>
@@ -575,8 +609,7 @@ function rangeGroups(v) {
 }
 function RangePanel() {
   const v = RG.v, ids = nodesOf(), lv = levelsOn();
-  const nodeLbl = ids.length === 1 ? nodeName(ids[0]) : ids.includes(LOG_PANEL) && ids.length > 1
-    ? T("Panel and {n}", { n: plural(ids.length - 1, "server") }) : plural(ids.length, "server");
+  const nodeLbl = serversLabel(ids);
   const errText = { window: T("Pick a start before the end, at most 31 days apart."),
     busy: T("Two downloads are being made already. Wait for one to finish."),
     gone: T("This download is gone: made files are kept for {n} min. Make it again.", { n: RANGE_KEEP_MIN }),
@@ -650,7 +683,7 @@ export function LogViewer() {
   }, []);
   useEffect(() => {
     if (!LV.full) return;
-    const k = e => { if (e.key === "Escape") { LV.full = false; bump(); } };
+    const k = e => { if (e.key === "Escape" && !e.defaultPrevented) { LV.full = false; bump(); } };   // a dropdown's Escape is its own
     document.addEventListener("keydown", k);
     return () => document.removeEventListener("keydown", k);
   }, [LV.full]);

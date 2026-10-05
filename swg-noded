@@ -8282,7 +8282,8 @@ def _live_plan(srcs, ifaces, rng=False):
             units |= us
         elif kind in ("iface", "mesh"):                       # the main journal: not stored by swg, so not off at Off.
             mesh = kind == "mesh"                             # `iface:*` is the client interfaces, `mesh:*` the links
-            ns = [n for n in ifaces if n == name or (name == "*" and n.startswith(LIVE_MESH_PRE) == mesh)]
+            # by name too: an explicit `iface:swg_…` is no interface (its lines are filed `mesh:`) — "absent", not a silent "ok"
+            ns = [n for n in ifaces if n.startswith(LIVE_MESH_PRE) == mesh and name in ("*", n)]
             st[s] = "ok" if ns else "absent"
             units |= {"%s@%s.service" % (q, n) for n in ns for q in ("wg-quick", "awg-quick")}
         elif kind == "kernel":
