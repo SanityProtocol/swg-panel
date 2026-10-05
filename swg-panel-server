@@ -7891,9 +7891,12 @@ def range_init(state_dir):
 
 
 def _range_drop(rec):
-    """Forget a request and delete everything it put on disk (caller holds _RANGE_LOCK, or the request is no longer in the
-    store)."""
+    """Delete everything a request put on disk — one already out of the store and marked gone (caller does NOT hold
+    _RANGE_LOCK): a part being written when it went is let finish first, so nothing is created behind the delete."""
     rec["stop"].set()
+    for lk in (rec.get("locks") or {}).values():
+        with lk:
+            pass
     with contextlib.suppress(OSError):
         shutil.rmtree(rec["dir"])
     with contextlib.suppress(OSError):
@@ -7927,8 +7930,8 @@ def range_open(body, known, now=None):
     names = body.get("names") if isinstance(body.get("names"), dict) else {}
     names = {n: re.sub(r"\s+", " ", str(names.get(n) or ""))[:64].strip() or n for n in nodes}
     label = body.get("label") if body.get("label") in RANGE_LABELS else "custom"
+    _range_reap(now)
     with _RANGE_LOCK:
-        gone = _range_expire(now)
         busy = sum(1 for r in _RANGE_REQS.values() if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX
         rid = secrets.token_hex(8)
         rec = None if busy else {
@@ -7940,7 +7943,6 @@ def range_open(body, known, now=None):
             "stop": threading.Event()}
         if rec:
             _RANGE_REQS[rid] = rec
-    _range_drop_all(gone)
     if busy:
         return 429, {"ok": False, "error": "%d downloads are being made already" % RANGE_REQ_MAX, "code": "busy"}
     try:
@@ -7961,15 +7963,19 @@ def _range_expire(now):
     out = [_RANGE_REQS.pop(rid) for rid in [k for k, r in _RANGE_REQS.items()
            if (r["phase"] in ("ready", "failed") and now - max(r["made"], r["read"]) > RANGE_KEEP)
            or (r["phase"] in ("reading", "making") and now - r["polled"] > RANGE_ABANDON)]]
-    for r in out:
-        r["stop"].set()
     made = sorted((r["made"], k) for k, r in _RANGE_REQS.items() if r["phase"] in ("ready", "failed"))
     out += [_RANGE_REQS.pop(rid) for _t, rid in made[:max(0, len(made) - RANGE_FILES_MAX)]]
+    for r in out:
+        r["stop"].set()
+        r["phase"] = "gone"                                # a writer that checks after this writes nothing
     return out
 
 
-def _range_drop_all(recs):
-    for r in recs:
+def _range_reap(now):
+    """Expire what is due, and delete it once the store's lock is let go (never disk work under it, on a node's sync)."""
+    with _RANGE_LOCK:
+        gone = _range_expire(now)
+    for r in gone:
         _range_drop(r)
 
 
@@ -8005,8 +8011,8 @@ def range_reply(nid, now=None):
         return None
     now = time.time() if now is None else now
     out = []
+    _range_reap(now)
     with _RANGE_LOCK:
-        gone = _range_expire(now)
         for rec in _RANGE_REQS.values():
             ns = rec["ns"].get(nid)
             if rec["phase"] != "reading" or ns is None or ns["state"] not in ("waiting", "reading", "sending"):
@@ -8015,7 +8021,6 @@ def range_reply(nid, now=None):
             out.append({"id": rec["id"], "key": _live_key(rec, nid), "src": rec["src"], "lv": rec["lv"],
                         "since": rec["since"], "until": rec["until"], "share": rec["share"], "iv": rec["iv"],
                         "now": int(now)})
-    _range_drop_all(gone)
     return out or None
 
 
@@ -8026,7 +8031,6 @@ def _range_spool(rec, nid, lines, first):
                    for t, src, prio, text in lines).encode("utf-8", "replace")
     with open(os.path.join(rec["dir"], nid + ".gz"), "wb" if first else "ab") as f:
         f.write(gzip.compress(data, 6))
-    return len(data)
 
 
 def range_absorb(body, now=None):
@@ -8055,12 +8059,12 @@ def range_absorb(body, now=None):
                         if isinstance(k, str) and LIVE_SRC_RE.match(k) and v in LIVE_STATES}
         ns["last"] = now
         seq = body.get("seq")
-        if seq is None:                                    # it reads: a progress post
-            if ns["state"] == "waiting":
+        if seq is None:                                    # it reads: a progress post (a late one, after its parts
+            if ns["state"] in ("waiting", "reading"):      # began, changes nothing)
                 ns["state"] = "reading"
-            rd = body.get("read")
-            if isinstance(rd, int) and not isinstance(rd, bool):
-                ns["read"] = max(0, rd)
+                rd = body.get("read")
+                if isinstance(rd, int) and not isinstance(rd, bool):
+                    ns["read"] = max(0, rd)
             return 200, {"ok": True}
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             return 400, {"ok": False, "error": "bad part number", "code": "bad_request"}
@@ -8071,7 +8075,6 @@ def range_absorb(body, now=None):
                 and isinstance(ln[1], str) and LIVE_SRC_RE.match(ln[1])
                 and isinstance(ln[2], int) and 0 <= ln[2] <= 7 and isinstance(ln[3], str)):
             good.append((ln[0], ln[1], ln[2], ln[3][:LIVE_TEXT_MAX]))
-    bad = len(lines) - len(good)                           # past the part's cap, or not a line: counted, never silent
     done = body.get("done") if isinstance(body.get("done"), dict) else None
     with rec["locks"][nid]:                                # one server's parts in order; a retried part waits here
         with _RANGE_LOCK:
@@ -8092,19 +8095,18 @@ def range_absorb(body, now=None):
             size += RANGE_LINE_OVER + len(ln[3])
             keep.append(ln)
         try:
-            n = _range_spool(rec, nid, keep, seq == 0)
+            _range_spool(rec, nid, keep, seq == 0)
         except OSError as e:
             with _RANGE_LOCK:
                 ns.update(state="failed", err=str(e)[:200])
             return 410, {"ok": False, "error": "the panel cannot spool it", "code": "gone"}
         with _RANGE_LOCK:
             if seq == 0:                                   # a first part: a new read (noded restarted) starts afresh
-                ns.update(bytes=0, used=0, kept=0, over=0)
+                ns.update(used=0, kept=0, over=0)
             ns["next"] = seq + 1
-            ns["bytes"] = ns.get("bytes", 0) + n
             ns["used"] = ns.get("used", 0) + size
             ns["kept"] = ns.get("kept", 0) + len(keep)
-            ns["over"] = ns.get("over", 0) + len(lines) - len(keep)
+            ns["over"] = ns.get("over", 0) + len(lines) - len(keep)   # past the share, the part's cap, or not a line
             if done is not None:
                 for k in ("read", "cut", "cut_t", "first"):
                     v = done.get(k)
@@ -8122,6 +8124,8 @@ def _range_panel_run(rec):
     try:
         plan, st = _live_panel_plan(rec["src"], rng=True)
         with _RANGE_LOCK:
+            if ns["state"] in RANGE_FINAL:                 # "make the file now" came first: it is left out, as said
+                return
             ns.update(state="reading", st=st, last=time.time())
         want = [s for s, v in st.items() if v == "ok"]
         ring = RangeRing(rec["share"])
@@ -8135,12 +8139,12 @@ def _range_panel_run(rec):
             with _RANGE_LOCK:
                 if rec["stop"].is_set() or rec["phase"] != "reading" or ns["state"] in RANGE_FINAL:
                     return
-            size, kept = 0, 0
+            kept = 0
             for i, part in enumerate(ring.parts() if ring.lines else [[]]):
-                size += _range_spool(rec, LIVE_PANEL, part, i == 0)
+                _range_spool(rec, LIVE_PANEL, part, i == 0)
                 kept += len(part)
             with _RANGE_LOCK:
-                ns.update(state="done", read=n, kept=kept, bytes=size, cut=ring.cut, cut_t=ring.cut_t, first=first,
+                ns.update(state="done", read=n, kept=kept, cut=ring.cut, cut_t=ring.cut_t, first=first,
                           last=time.time())
     except Exception as e:
         log(LOG_WARNING, "logs: the panel's range read stopped: %s", e)
@@ -8309,9 +8313,7 @@ def range_view(rid, deps, now=None):
     now = time.time() if now is None else now
     adv = ((deps.get("panel_settings") or {}).get("advanced") or {})
     stale_s = max(5, int((adv.get("node_stale_ms") or 30000) / 1000))
-    with _RANGE_LOCK:
-        gone = _range_expire(now)
-    _range_drop_all(gone)
+    _range_reap(now)
     with _RANGE_LOCK:
         rec = _RANGE_REQS.get(rid) if isinstance(rid, str) else None
         if rec is None:
@@ -8345,6 +8347,9 @@ def range_api_post(path, body, deps):
     if path == "/api/logs/range/close":
         with _RANGE_LOCK:
             rec = _RANGE_REQS.pop(rid, None) if isinstance(rid, str) else None
+            if rec:
+                rec["stop"].set()
+                rec["phase"] = "gone"                      # a writer that checks after this writes nothing
         if rec:
             _range_drop(rec)
         return 200, {"ok": True}
@@ -8364,9 +8369,7 @@ def range_api_post(path, body, deps):
 
 def range_download(rid):
     """The made file of a request, or None: (path, raw size, gzip size, file name). Counts as a read (RANGE_KEEP)."""
-    with _RANGE_LOCK:
-        gone = _range_expire(time.time())
-    _range_drop_all(gone)
+    _range_reap(time.time())
     with _RANGE_LOCK:
         rec = _RANGE_REQS.get(rid) if isinstance(rid, str) and LIVE_ID_RE.match(rid) else None
         if rec is None or rec["phase"] != "ready":
@@ -31840,7 +31843,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw or b"{}")              # RecursionError (deep nesting) included
             if not isinstance(body, dict):
                 raise ValueError
-            if body.get("id") in _RANGE_REQS:              # a range download's part (Logs P3): to the spool, a few at a time
+            if body.get("id") in _RANGE_REQS and "seq" not in body:   # a range's progress: memory only, never refused
+                code, obj = range_absorb(body)
+            elif body.get("id") in _RANGE_REQS:            # a range download's part (Logs P3): to the spool, a few at a time
                 if not RANGE_POST_SLOTS.acquire(blocking=False):
                     return self._send(503, {"ok": False, "error": "busy — send it again", "code": "busy"})
                 try:

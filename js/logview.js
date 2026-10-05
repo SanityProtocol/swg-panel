@@ -273,6 +273,7 @@ function stateSay(range) {
     skipped: [T("Left out"), T("The file was made before it finished."), "faint"],
     old: [T("Update the node"), T("This node's build is too old for range downloads. Update it to include its logs."), "warn"],
     failed: [T("Failed"), T("It stopped answering while it read, or ran past the 10-minute limit."), "bad"],
+    off: [T("Logging is off"), T("Logging is off, so nothing is stored to read."), "warn"],   // a past range: no level brings it back
     cut: [T("Newest part only"), T("Its share of the 50 MB was full, so the file has the end of its range. Narrow the range or the servers for the rest."), "warn"],
     short: [T("Keeps less"), T("Its log budget no longer holds the start of the range."), "faint"],
   } : s;

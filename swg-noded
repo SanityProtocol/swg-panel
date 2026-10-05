@@ -8446,8 +8446,10 @@ def _range_run(rq, ifaces):
         ring, read, reading = RangeRing(rq["share"]), [0], threading.Event()
 
         def beat():                                   # progress on a clock, not per line: a long scan before `since`
-            while not reading.wait(RANGE_HB_S) and not rq["stop"].is_set():   # yields nothing, and the panel calls a
-                _range_post(rq, {"read": read[0]})    # server silent for 2 min "failed"; once, never retried
+            hb = min(40, max(RANGE_HB_S, rq["iv"]))   # yields nothing, and the panel calls a server silent for 2 min
+            while not reading.wait(hb) and not rq["stop"].is_set():   # "failed". Paced like the posts at scale; once,
+                if _range_post(rq, {"read": read[0]}) == "gone":      # never retried; "gone" stops the read
+                    rq["stop"].set()
         threading.Thread(target=beat, daemon=True, name="swg-range-beat-" + rq["id"]).start()
         try:
             since, end = rq["since"] + rq["off"], rq["until"] + rq["off"]
