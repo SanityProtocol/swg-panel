@@ -70,7 +70,7 @@ import urllib.error, urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PROG = {k: os.path.join(ROOT, f) for k, f in (("noded", "swg-noded"), ("panel", "swg-panel-server"),
-                                              ("spa", "js/logview.js"), ("ru", "js/lang/ru.js"))}
+                                              ("spa", "js/logview.js"), ("ru", "js/lang/ru.js"), ("ui", "js/ui.js"))}
 REF = "ef9c309"                                  # the last build before P3: the byte-identical reference
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 FAILS = []
@@ -202,7 +202,7 @@ PLANTS = {   # (program, anchor, replacement)
                  '''    if (false) out.push(g.wild);'''),
     "mpclobber": ("spa", '''  const out = [...sel].filter(x => !mine.has(x)), all = ddItems(dd);''', '''  const out = [], all = ddItems(dd);'''),
     "nomigrate": ("spa", '''s.v === 2 ? s.src : migrate(s.src)''', '''s.src'''),
-    "popunder": ("spa", '''    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); close(true); } };''',
+    "popunder": ("ui", '''    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); close(true); } };''',
                  '''    const onKey = e => { if (e.key === "Escape") { close(true); } };'''),
     "spablob": ("spa", '''  a.href = "api/logs/download/" + RG.id; a.download''', '''  downloadConf("", "x", "log"); a.href = "api/logs/download/" + RG.id; a.download'''),
 }
@@ -816,9 +816,11 @@ console.log(JSON.stringify(r));
         css = open(os.path.join(ROOT, "app.css"), encoding="utf-8").read()
         check("[10] the dropdowns, the menu and the bubbles open above the full-screen viewer",
               ".lv-mppop,.lv-menu,.lv-stpop{z-index:960}" in css and ".lv-full{position:fixed;inset:0;z-index:950" in css, "")
-        check("[10] Escape in an open dropdown closes it, not the full-screen viewer (capture phase, marked)",
-              'document.addEventListener("keydown", onKey, true)' in s and 'e.key === "Escape" && !e.defaultPrevented' in s
-              and 'if (e.key === "Escape") { e.preventDefault(); close(true); }' in s, "")
+        u = SRC["ui"]
+        check("[10] Escape in an open dropdown closes it, not the full-screen viewer (the shared usePopup: capture phase, "
+              "marked; the viewer and its lists use it)",
+              'document.addEventListener("keydown", onKey, true)' in u and 'if (e.key === "Escape") { e.preventDefault(); close(true); }' in u
+              and 'e.key === "Escape" && !e.defaultPrevented' in s and s.count("usePopup({") == 2 and "function usePop(" not in s, "")
         check("[7] the source dropdowns: a whole group is written as its wildcard, one item off expands it, other lists untouched",
               r.get("on") == ["turn:a", "turn:b", "turn:w1"] and r.get("offOne") == ["mesh:*", "noded", "turn:a", "turn:w1"]
               and r.get("meshOne") == ["mesh:swg_1", "noded", "turn:*"] and r.get("meshAll") == ["mesh:*", "noded", "turn:*"], r)
