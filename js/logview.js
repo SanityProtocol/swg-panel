@@ -318,7 +318,7 @@ function Facets() {
 // ── what the servers said (a few numbers, the names in a bubble — 2 or 200 servers alike) ───────────────────────────
 function stateSummary() {
   const out = [], ids = nodesOf(), S = LV.states || {};
-  const by = {};
+  const by = {}, unav = new Set();
   const add = (key, id) => (by[key] = by[key] || []).push(id);
   for (const id of ids) {
     const s = S[id];
@@ -330,7 +330,7 @@ function stateSummary() {
     for (const [src, v] of Object.entries(st)) {
       if (v === "off") add("off", id);
       else if (v === "noaccess") add("noaccess", id);
-      else if (v === "unavailable") add("unavail:" + src.split(":")[0], id);
+      else if (v === "unavailable") { add("unavail", id); unav.add(src.split(":")[0]); }
     }
     if (s.off) add("skew", id);
   }
@@ -339,10 +339,10 @@ function stateSummary() {
   for (const [key, list] of Object.entries(by)) {
     const u = uniq(list);
     let txt, tip, tone;
-    if (key.startsWith("unavail:")) {
-      const k = key.slice(8);
-      txt = { iface: T("Interfaces: not on docker"), mesh: T("Mesh links: not on docker"), kernel: T("Kernel: not on docker"), p2p: T("P2P guard: not on docker") }[k] || T("Not on docker");
-      tip = T("A docker node has no host journal to read these from."); tone = "faint";
+    if (key === "unavail") {                          // one chip for docker, whatever it lacks: the bubble names the sources
+      const names = { iface: T("Interfaces"), mesh: T("Mesh links"), kernel: T("Kernel"), p2p: T("P2P guard") };
+      txt = T("Not on docker");
+      tip = T("A docker node has no host journal to read these from: {v1}.", { v1: [...unav].map(k => names[k] || k).join(", ") }); tone = "faint";
     } else [txt, tip, tone] = say[key] || [key, "", "faint"];
     out.push({ key, txt, tip, tone, ids: u });
   }
