@@ -70,6 +70,12 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      keepesc      Escape in a form the list owns leaves the list open
    the header's Logs button ([12]):
      overlayeager the viewer is mounted (and polls) before the button is clicked
+   one viewer, asked for ([10], [13]; the whole-feature analysis §32 and the header button's review):
+     lvzabove     the full-screen viewer covers the app's sheets and confirms (z above the modal layer)
+     autostart    opening Settings → Logs streams before "Start live log"
+     deepnav      a deep link navigates to Settings under the viewer instead of opening over its page
+     notrap       Tab walks out of the full-screen viewer into the page hidden under it
+     nofocusback  Exit drops the focus on <body>
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -77,7 +83,8 @@ import urllib.error, urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PROG = {k: os.path.join(ROOT, f) for k, f in (("noded", "swg-noded"), ("panel", "swg-panel-server"),
-                                              ("spa", "js/logview.js"), ("ru", "js/lang/ru.js"), ("ui", "js/ui.js"))}
+                                              ("spa", "js/logview.js"), ("ru", "js/lang/ru.js"), ("ui", "js/ui.js"),
+                                              ("css", "app.css"))}
 REF = "ef9c309"                                  # the last build before P3: the byte-identical reference
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 FAILS = []
@@ -217,6 +224,13 @@ PLANTS = {   # (program, anchor, replacement)
                '''    const onKey = e => { if (e.key !== "Escape") return; const t = e.target;'''),
     "keepesc": ("ui", ''' else if (keep && keep(t)) close(false); };''', ''' };'''),
     "overlayeager": ("spa", '''  return LV.overlay ? html`<${LogViewer} overlay/>` : null;''', '''  return html`<${LogViewer} overlay/>`;'''),
+    "lvzabove": ("css", ".lv-full{position:fixed;inset:0;z-index:49;", ".lv-full{position:fixed;inset:0;z-index:950;"),
+    "autostart": ("spa", "if (LV.busy || !LV.mounted || !LV.live || document.hidden) return;",
+                  "if (LV.busy || !LV.mounted || document.hidden) return;"),
+    "deepnav": ("spa", "  LV.gen++; remember();\n  openLogOverlay();\n", "  LV.gen++; remember();\n  goSettings(\"logs\");\n"),
+    "notrap": ("spa", 'document.addEventListener("keydown", k); document.addEventListener("focusin", f);',
+               'document.addEventListener("keydown", k);'),
+    "nofocusback": ("spa", "if (el) el.focus(); }, 0); };", "}, 0); };"),
     "spablob": ("spa", '''  a.href = "api/logs/download/" + RG.id; a.download''', '''  downloadConf("", "x", "log"); a.href = "api/logs/download/" + RG.id; a.download'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -828,9 +842,14 @@ console.log(JSON.stringify(r));
         check("[10] a choice remembered before mesh links were a source keeps them: iface:* adds mesh:*, iface:swg_… becomes mesh:",
               out.returncode == 0 and json.loads(out.stdout) == ["noded", "iface:*", "mesh:*", "iface:awg0", "mesh:swg_ab"]
               and "s.v === 2 ? s.src : migrate(s.src)" in s, (out.stdout, out.stderr[-200:]))
-        css = open(os.path.join(ROOT, "app.css"), encoding="utf-8").read()
-        check("[10] the dropdowns, the menu and the bubbles open above the full-screen viewer",
-              ".lv-mppop,.lv-menu,.lv-stpop{z-index:960}" in css and ".lv-full{position:fixed;inset:0;z-index:950" in css, "")
+        def z(sel):                                  # the z-index of the rule that starts with this selector
+            m = re.search(r"(?m)^" + re.escape(sel) + r"\{[^}]*?z-index:(\d+)", SRC["css"])
+            return int(m.group(1)) if m else None
+        zs = {k: z(k) for k in (".appbar", ".lv-full", ".overlay", ".ddpop", ".deppop")}
+        check("[10] the full-screen viewer covers the header, sits UNDER the modal layer (a sheet or confirm opened over it "
+              "shows), and its lists and bubbles open over it",
+              None not in zs.values() and zs[".appbar"] < zs[".lv-full"] < zs[".overlay"]
+              and zs[".lv-full"] < zs[".ddpop"] and zs[".lv-full"] < zs[".deppop"], zs)
         u = SRC["ui"]
         u = u[u.index("export function usePopup("):u.index("export function Dropdown(")]   # the hook itself, not a Sheet's own listener
         check("[10] Escape in an open dropdown closes it, not the full-screen viewer (the shared usePopup: capture phase, "
@@ -848,6 +867,16 @@ console.log(JSON.stringify(r));
               'id="logs-btn"' in idx and idx.index('id="logs-btn"') < idx.index('id="panel-settings-btn"')
               and "${h(LogOverlay)}" in appjs and "lg.onclick = openLogOverlay" in appjs
               and "return LV.overlay ? html`<${LogViewer} overlay/>` : null;" in s and "onClick=${closeLogOverlay}" in s, "")
+        tk = s[s.index("async function tick()"):s.index("\n}", s.index("async function tick()"))]
+        ol = s[s.index("export function openLogs("):s.index("\n}", s.index("export function openLogs("))]
+        check("[13] Settings → Logs asks nothing until Start; the header button and a deep link are the ask, and a deep link "
+              "opens over the page it was on (never Settings underneath)",
+              "!LV.live" in tk and "LV.overlay = LV.live = true" in s and "openLogOverlay();" in ol and "goSettings" not in s
+              and 'T("Start live log")' in s, (tk[:160], ol))
+        check("[13] full screen keeps the focus: Tab or a click cannot reach the page under it (a sheet, list or bubble over "
+              "it can), and Exit gives the focus back to what opened it",
+              'document.addEventListener("focusin", f);' in s and 'e.target.closest(".lv-full,.overlay,.ddpop,.deppop' in s
+              and "const el = b && b.isConnected ? b : document.querySelector(\".lv-fs\"); if (el) el.focus();" in s, "")
         check("[7] the source dropdowns: a whole group is written as its wildcard, one item off expands it, other lists untouched",
               r.get("on") == ["turn:a", "turn:b", "turn:w1"] and r.get("offOne") == ["mesh:*", "noded", "turn:a", "turn:w1"]
               and r.get("meshOne") == ["mesh:swg_1", "noded", "turn:*"] and r.get("meshAll") == ["mesh:*", "noded", "turn:*"], r)
