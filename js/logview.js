@@ -229,7 +229,7 @@ const tickOf = (n, of) => !n ? "" : n === of ? " on" : " mix";
 function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
   // the arrows walk the search box and every tick (heads included); the list is kept inside the window
   // the search box (in a list over 8) takes the focus at every open and the keys typed on a tick
-  const P = usePopup({ rows: "input,button:not(:disabled)", minBelow: 260, clampW: 300, search: ".lv-mpq input" }), [q, setQ] = useState("");
+  const P = usePopup({ rows: "input,button:not(:disabled)", minBelow: 260, clampW: 300, search: ".lv-mpq input" }), [q, setQ] = useState("");   // i18n-keys: CSS selectors
   useEffect(() => { if (P.open) setQ(""); }, [P.open]);   // every open starts unfiltered (click or keyboard)
   const on = mpOn(dd, sel), all = ddItems(dd), nOn = all.filter(i => on.has(i.id)).length;
   const shown = value || (!all.length ? "—" : nOn === all.length ? T("All") : !nOn ? T("None")
