@@ -28,8 +28,6 @@ export const LOG_PANEL = "panel";                   // the panel's own entry amo
 const PANEL_KINDS = ["panel", "sub", "netctl", "update"];
 const LEVELS = ["err", "warn", "info", "debug"];
 const levelLabel = k => ({ err: T("log|Errors"), warn: T("log|Warnings"), info: T("log|Info"), debug: T("log|Debug") })[k];
-// a row's level, as journalctl names priorities: a token, not a word, and the same in every language
-const LV_TOKEN = { err: "err", warn: "warn", info: "info", debug: "debug" };
 const lvOf = p => p <= 3 ? "err" : p === 4 ? "warn" : p <= 6 ? "info" : "debug";
 // a node's chip colour: a stable pick from the panel's own status/brand hues, so 200 chips still read apart
 const CHIP = ["--brand", "--online", "--ready", "--pending", "--relay-2", "--smart", "--tport-os", "--partial", "--tport-dock", "--awg3"];
@@ -253,7 +251,7 @@ function MultiPick({ icon, label, dd, sel, onChange, value, search }) {
     <button type="button" class=${"lv-facet" + (P.open ? " on" : "")} aria-haspopup="listbox" aria-expanded=${P.open ? "true" : "false"}
       onKeyDown=${P.onBtnKey} onClick=${P.toggle}>
       ${icon ? html`<${Ic} i=${icon}/>` : null}<span class="lv-fl">${label}</span><span class="lv-fv">${shown}</span><span class="catpick-caret">▾</span></button>
-    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="listbox" aria-multiselectable="true" aria-label=${label} onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur}
+    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="listbox" aria-multiselectable="true" aria-label=${label} onKeyDown=${P.onPopKey}
         class=${"ddpop lv-mppop" + (P.pos.flip ? " flip" : "")} style=${"left:" + P.pos.left + "px;top:" + P.pos.top + "px;min-width:" + Math.max(280, P.pos.width) + "px;--ddmaxh:" + P.pos.maxh + "px"}>
       ${search && all.length > 8 ? html`<div class="lv-mpq"><${Ic} i="search"/><input value=${q} placeholder=${T("Find…")} aria-label=${T("Find…")} data-enter="self"
         onInput=${e => setQ(e.target.value)}/></div>` : null}
@@ -272,7 +270,7 @@ function MenuButton({ icon, label, title, items }) {
   return html`<div class="lv-mp" ref=${P.ref}>
     <button type="button" class=${"btn btn-mini" + (P.open ? " on" : "")} title=${title || ""} aria-haspopup="menu" aria-expanded=${P.open ? "true" : "false"}
       aria-label=${title || label} onKeyDown=${P.onBtnKey} onClick=${P.toggle}><${Ic} i=${icon}/>${label ? " " + label : ""} <span class="catpick-caret">▾</span></button>
-    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="menu" onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur} class=${"ddpop lv-menu" + (P.pos.flip ? " flip" : "")}
+    ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="menu" onKeyDown=${P.onPopKey} class=${"ddpop lv-menu" + (P.pos.flip ? " flip" : "")}
         style=${"left:" + Math.max(8, Math.min(P.pos.left + P.pos.width - 300, window.innerWidth - 308)) + "px;top:" + P.pos.top + "px;width:300px;--ddmaxh:" + P.pos.maxh + "px"}>
       ${items.map(it => html`<button type="button" role="menuitem" key=${it.key} class="ddopt lv-menuopt" disabled=${it.disabled}
         onClick=${() => { P.close(true); it.onClick(); }}><b>${it.label}</b><span class="lv-mphint">${it.hint}</span></button>`)}
@@ -419,12 +417,12 @@ function Row({ l, q }) {
     <span class="lv-markt">${l.src === "!skip" ? T("{v1} lines skipped — narrow the sources or raise the filter", { v1: fmtNum(Number(l.text)) })
       : T("Resumed — some lines before this may be missing")}</span>
   </div>`;
-  const lv = lvOf(l.prio);
+  const lv = lvOf(l.prio);                            // shown as journalctl names a priority: the same in every language
   return html`<div class=${"lv-row lv-" + lv}>
     <span class="lv-t" title=${ymd(l.k)}>${hms(l.k)}</span>
     <span class="lv-chip" style=${"--lvc:" + chipOf(l.nid)}>${nodeName(l.nid)}</span>
     <span class="lv-src" title=${l.src}>${srcShown(l)}</span>
-    <span class="lv-lv">${LV_TOKEN[lv]}</span>
+    <span class="lv-lv">${lv}</span>
     <span class="lv-msg"><${Hi} text=${l.text} q=${q}/></span>
   </div>`;
 }

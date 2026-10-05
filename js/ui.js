@@ -1091,7 +1091,7 @@ export const Switch = ({ on, onChange, title, disabled }) => html`<label class=$
 // The mechanics of a list that opens under (or over) its trigger: one hook for every dropdown — the single-choice
 // `Dropdown` below and the log viewer's multi-choice lists and menu — so a fix to one reaches all of them.
 // The caller renders the trigger inside `ref` and the popup (portalled, class `ddpop`) inside `popRef`, and wires
-// `toggle`/`onBtnKey` to the trigger and `onPopKey`/`onPopBlur` to the popup. `search` is the selector of a list's own
+// `toggle`/`onBtnKey` to the trigger and `onPopKey` to the popup. `search` is the selector of a list's own
 // search box: it takes the focus at every open and the keys typed on a row (instead of the type-ahead). `rows` is the selector of what the arrows
 // walk; `minBelow` the room under the trigger below which the list opens upward; `clampW` keeps a list this wide
 // inside the window.
@@ -1160,7 +1160,8 @@ export function usePopup({ keep = null, drop = "auto", onClose, disabled = false
     // `contains`-inside anything the caller can name. Only the caller knows what belongs to it, so the caller answers.
     const onDoc = e => { if (!inside(e.target)) shut(); };
     // focus moving to anywhere that is not the list's closes it, as a native select does — watched on the document, so
-    // it holds where a click does not focus a button (Safari, macOS Firefox) and no blur ever fires on the trigger
+    // it holds where a click does not focus a button (Safari, macOS Firefox) and no blur ever fires on the trigger. A
+    // `keep` form is the list's too: clicking into its field moves the focus there, and must not close the list.
     const onFocus = e => { if (!inside(e.target)) shut(); };
     // in the capture phase, and marked: a layer behind the list (the full-screen log viewer) leaves a handled one alone.
     // ⚠️ ONLY WHEN THE KEY IS THE LIST'S — pressed in it, on its trigger, or on nothing. A field elsewhere owns its own
@@ -1194,7 +1195,6 @@ export function usePopup({ keep = null, drop = "auto", onClose, disabled = false
   const onPopKey = e => {
     const k = e.key, t = e.target, inField = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA");
     if (e.isComposing) return;                                // an IME composition owns its keys, Escape included
-    if (k === "Escape") { e.preventDefault(); close(true); return; }
     if (k === "Tab") { shut(); return; }              // let focus carry on out of the popup naturally
     if (k === "ArrowDown") { e.preventDefault(); moveBy(1); return; }
     if (k === "ArrowUp") { e.preventDefault(); moveBy(-1); return; }
@@ -1208,12 +1208,6 @@ export function usePopup({ keep = null, drop = "auto", onClose, disabled = false
       if (s) { s.focus(); return; }
       e.preventDefault(); typeAhead(k); }
   };
-  // Focus leaving the popup for somewhere that is neither the popup nor the trigger closes it. `relatedTarget` is null
-  // when focus goes nowhere at all (clicking page chrome), which the pointerdown handler already covers.
-  // ⚠️ `keep` HAS TO BE ASKED HERE TOO, and this is the half that is easy to miss: a caller that owns a form beside the
-  // list gets past the pointerdown check and is then closed by THIS one instead, because clicking a field moves focus
-  // out of the popup. The symptom is identical — the list vanishes on the first click into the form.
-  const onPopBlur = e => { const to = e.relatedTarget; if (to && !inside(to)) shut(); };
   const onBtnKey = e => {
     if (disabled || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
     e.preventDefault();
@@ -1224,7 +1218,7 @@ export function usePopup({ keep = null, drop = "auto", onClose, disabled = false
   // the trigger's click: a keyboard "click" (Enter, Space: detail 0) opens with the focus in the list
   const toggle = e => { if (disabled) return; const willOpen = !open; kbd.current = willOpen && e && e.detail === 0 ? "first" : null;
     if (willOpen) setOpen(true); else shut(); };
-  return { open, setOpen, pos, ref, popRef, close, toggle, onBtnKey, onPopKey, onPopBlur };
+  return { open, setOpen, pos, ref, popRef, close, toggle, onBtnKey, onPopKey };
 }
 
 // Reusable styled dropdown — a drop-in for a native <select> so every dropdown in the app shares one look (the
@@ -1270,7 +1264,7 @@ export function Dropdown({ value, onChange, options, className, placeholder, dis
       title=${title || ""} onKeyDown=${P.onBtnKey} onClick=${P.toggle}>
       <span class="ddlbl">${curLabel}</span><span class="catpick-caret">▾</span></button>
     ${P.open && P.pos ? html`<${Portal}><div ref=${P.popRef} role="listbox" tabindex="-1"
-        onKeyDown=${P.onPopKey} onfocusout=${P.onPopBlur}
+        onKeyDown=${P.onPopKey}
         class=${"ddpop" + (P.pos.flip ? " flip" : "")} style=${"left:" + P.pos.left + "px;top:" + P.pos.top + "px;min-width:" + P.pos.width + "px;--ddmaxh:" + P.pos.maxh + "px"}>
       ${(options || []).map(o => o.items
         ? html`<div role="group" aria-label=${o.group}><div class="ddgrp">${o.group}</div>${o.items.map(opt)}</div>`
