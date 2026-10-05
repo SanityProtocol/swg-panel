@@ -16803,6 +16803,12 @@ def panel_log_apply(ps):
     log_set(LOG_LEVELS.get(base if base in LOG_BASE_LEVELS else "info"), log_debug_left(ps))
     if PANEL_LOG_FILE["path"]:
         log_file(PANEL_LOG_FILE["path"], 0 if log_level() == LOG_OFF else log_mb((ps or {}).get("log_mb_panel")) << 20)
+        left = log_debug_left(ps)
+        if left > 0:                                  # Debug's end back to Off removes the file too: re-applied then,
+            t = threading.Timer(left + 1, lambda: panel_log_apply((getattr(Handler, "deps", None) or {}).get(
+                "panel_settings")))                   # with the settings of THEN (a save since re-applied already)
+            t.daemon = True
+            t.start()
 
 
 def panel_log_status(deps):
