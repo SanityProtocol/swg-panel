@@ -63,6 +63,7 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
    the redesign's review ([10]):
      nomigrate    a remembered iface:* / iface:swg_… is kept as it was (mesh lines silently stop)
      popunder     Escape in a dropdown also leaves full screen
+     popbubble    the shared hook's Escape listens in the bubble phase (the gate read a Sheet's line instead)
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -202,8 +203,9 @@ PLANTS = {   # (program, anchor, replacement)
                  '''    if (false) out.push(g.wild);'''),
     "mpclobber": ("spa", '''  const out = [...sel].filter(x => !mine.has(x)), all = ddItems(dd);''', '''  const out = [], all = ddItems(dd);'''),
     "nomigrate": ("spa", '''s.v === 2 ? s.src : migrate(s.src)''', '''s.src'''),
-    "popunder": ("ui", '''    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); close(true); } };''',
-                 '''    const onKey = e => { if (e.key === "Escape") { close(true); } };'''),
+    "popunder": ("ui", '''      if (ours) { e.preventDefault(); close(true); } };''', '''      if (ours) { close(true); } };'''),
+    "popbubble": ("ui", '''document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey, true);''',
+                  '''document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey);'''),
     "spablob": ("spa", '''  a.href = "api/logs/download/" + RG.id; a.download''', '''  downloadConf("", "x", "log"); a.href = "api/logs/download/" + RG.id; a.download'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -817,9 +819,10 @@ console.log(JSON.stringify(r));
         check("[10] the dropdowns, the menu and the bubbles open above the full-screen viewer",
               ".lv-mppop,.lv-menu,.lv-stpop{z-index:960}" in css and ".lv-full{position:fixed;inset:0;z-index:950" in css, "")
         u = SRC["ui"]
+        u = u[u.index("export function usePopup("):u.index("export function Dropdown(")]   # the hook itself, not a Sheet's own listener
         check("[10] Escape in an open dropdown closes it, not the full-screen viewer (the shared usePopup: capture phase, "
               "marked; the viewer and its lists use it)",
-              'document.addEventListener("keydown", onKey, true)' in u and 'if (e.key === "Escape") { e.preventDefault(); close(true); }' in u
+              'document.addEventListener("keydown", onKey, true)' in u and 'if (ours) { e.preventDefault(); close(true); }' in u
               and 'e.key === "Escape" && !e.defaultPrevented' in s and s.count("usePopup({") == 2 and "function usePop(" not in s, "")
         check("[7] the source dropdowns: a whole group is written as its wildcard, one item off expands it, other lists untouched",
               r.get("on") == ["turn:a", "turn:b", "turn:w1"] and r.get("offOne") == ["mesh:*", "noded", "turn:a", "turn:w1"]
