@@ -18,6 +18,32 @@ Standalone: set SWG_PANEL_TLS_CERT/KEY + SWG_PANEL_AUTH and bind 0.0.0.0 to serv
 HTTPS + Basic-Auth + /wgstats directly. Or bind 127.0.0.1 behind your own nginx.
 """
 
+# ── Load through compile(), not the script runner ─────────────────────────────────────────────────────────────
+# CPython keeps a script's parse tree alive until the script finishes, and main() never returns — so this whole
+# file's AST stayed resident for the life of the process (~80 MB of the panel's ~130, ~45 of noded's ~75), live
+# memory no trim can give back. runpy loads the same file through compile(), which drops the AST the moment the
+# bytecode exists. So a run as a script first replaces itself — same PID, same interpreter, same flags — with
+# `python3 -c <runpy> <this file> <args>`, and the second load (marked by `_SWG_RUNPY` in its globals, not an env
+# var a child would inherit) puts argv and sys.path back exactly as a script run sets them. If the exec cannot
+# happen at all, the process carries on as before.
+import os, sys
+if globals().get("_SWG_RUNPY"):
+    del sys.argv[1]                                   # runpy set argv[0] to this file; drop the copy that carried it
+    if sys.path and sys.path[0] == "":                # -c put the cwd first; a script run puts the script's own dir
+        sys.path[0] = os.path.dirname(os.path.realpath(__file__))
+elif __name__ == "__main__" and sys.executable and sys.argv and os.path.isfile(sys.argv[0]) \
+        and os.path.realpath(sys.argv[0]) == os.path.realpath(globals().get("__file__") or ""):
+    try:
+        import subprocess
+        _flags = subprocess._args_from_interpreter_flags()        # -X / -W / -O … as this process was started
+    except Exception:
+        _flags = []
+    try:
+        os.execv(sys.executable, [sys.executable] + _flags + [
+            "-c", "import runpy,sys;runpy.run_path(sys.argv[1],{'_SWG_RUNPY':1},'__main__')"] + sys.argv)
+    except OSError:
+        pass
+
 import ast
 import base64
 import gzip
@@ -33872,6 +33898,21 @@ def _fd_watchdog_loop():
             pass
 
 
+def _release_startup_memory():
+    """Give the startup heap back to the kernel, once, when startup is done.
+
+    The prologue at the top of this file stops the AST from staying LIVE, but compile()'s scratch memory (~90 MB
+    for this file) is freed into glibc's heap, and glibc keeps it: RSS would stay at the compile peak.
+    malloc_trim(0) returns the free pages. glibc only — musl has no malloc_trim (no-op there, as without ctypes)."""
+    try:
+        import ctypes
+        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if trim:
+            trim(0)
+    except Exception:
+        pass
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "passwd":   # host-side password reset, never starts the server
         return passwd_cmd(sys.argv)
@@ -33959,8 +34000,9 @@ def main():
         else:
             _argv = _proc_cmdline(_pid) if _pid else []
             _base = os.path.basename(_argv[0]) if _argv else ""
-            if _base.startswith("python") and len(_argv) > 1:
-                _base = os.path.basename(_argv[1])
+            if _base.startswith("python") and len(_argv) > 1:   # `python3 [flags] [-c <runpy>] <script>`: name the script
+                _base = next((b for b in map(os.path.basename, _argv[1:]) if b == "swg-panel-server"),
+                             os.path.basename(_argv[1]))
             if _base == "swg-panel-server":
                 _who = f"another swg-panel-server (pid {_pid})"
             elif _argv:
@@ -34152,6 +34194,7 @@ def main():
         log(LOG_ERR, "swg-panel-server: %s is unusable (%s) and this process runs as %s, so LOGIN IS CLOSED and "
               "every request is refused. Node sync, /healthz and the subscription page are unaffected. Fix: %s%s", AUTH_FILE, AUTH_UNUSABLE, _proc_user_name(), _auth_fix_line(), "" if IN_DOCKER else " — or, if this panel is MEANT to have no login, clear SWG_PANEL_AUTH in its unit "
                                       "(blank means no login by design).")
+    _release_startup_memory()                # startup is done: the compile's scratch heap goes back to the kernel
     with contextlib.suppress(KeyboardInterrupt):
         threading.Event().wait()             # the listeners serve in their own threads; block here forever
 
