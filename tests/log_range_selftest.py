@@ -57,6 +57,9 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      beatslot     a progress post waits for an upload slot (and is refused) dropnowait a close deletes under a writer
      lateread     a late progress post overwrites a finished server's count  panelrevive the panel's read revives a skipped entry
      beatgone     a "gone" heartbeat does not stop the read            spaoff     a range tells you to pick a level for the past
+   the source dropdowns ([7]):
+     mpnowild     a whole group is written as its items, not its wildcard (200 nodes: one source becomes hundreds)
+     mpclobber    a choice in one dropdown drops the others' choices
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -192,6 +195,9 @@ PLANTS = {   # (program, anchor, replacement)
                     rq["stop"].set()''', '''                if _range_post(rq, {"read": read[0]}) == "gone":      # never retried; "gone" stops the read
                     pass'''),
     "spaoff": ("spa", '''    off: [T("Logging is off"), T("Logging is off, so nothing is stored to read."), "warn"],   // a past range: no level brings it back''', ''''''),
+    "mpnowild": ("spa", '''    if (g.wild && g.items.length && g.items.every(i => on.has(i.id))) out.push(g.wild);''',
+                 '''    if (false) out.push(g.wild);'''),
+    "mpclobber": ("spa", '''  const out = [...sel].filter(x => !mine.has(x)), all = ddItems(dd);''', '''  const out = [], all = ddItems(dd);'''),
     "spablob": ("spa", '''  a.href = "api/logs/download/" + RG.id; a.download''', '''  downloadConf("", "x", "log"); a.href = "api/logs/download/" + RG.id; a.download'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -779,6 +785,25 @@ try:
         keys = list(dict.fromkeys(re.findall(r'\bT\("((?:[^"\\]|\\.)*)"', s)))
         missing = [k for k in keys if '"%s":' % k not in SRC["ru"]]
         check("[7] every string of the viewer has its Russian", not missing, missing)
+        # the source dropdowns' choice (pure functions, run as they are in the SPA): a whole group or list is written back
+        # as its wildcard, one item off expands it, and another list's choices are never touched
+        fn = "\n".join(s[s.index(a):s.index(b)] for a, b in (("const ddItems =", "const tickOf ="),))
+        js = fn + """
+const dd = { wild: "turn:*", groups: [{ id: "vk", items: [{ id: "turn:a" }, { id: "turn:b" }] }, { id: "w", items: [{ id: "turn:w1" }] }] };
+const node = { groups: [{ id: "svc", items: [{ id: "noded" }] }, { id: "mesh", wild: "mesh:*", items: [{ id: "mesh:swg_1" }, { id: "mesh:swg_2" }] }] };
+const sel = new Set(["noded", "turn:*", "mesh:*"]);
+const r = {};
+r.on = [...mpOn(dd, sel)].sort();
+let on = mpOn(dd, sel); on.delete("turn:b"); r.offOne = mpWrite(dd, sel, on).sort();
+on = mpOn(node, sel); on.delete("mesh:swg_2"); r.meshOne = mpWrite(node, sel, on).sort();
+on = mpOn(node, new Set(["noded", "mesh:swg_1"])); on.add("mesh:swg_2"); r.meshAll = mpWrite(node, new Set(["noded", "mesh:swg_1", "turn:*"]), on).sort();
+console.log(JSON.stringify(r));
+"""
+        out = subprocess.run(["node", "-e", js], capture_output=True, text=True)
+        r = json.loads(out.stdout or "{}") if out.returncode == 0 else {"err": out.stderr[-300:]}
+        check("[7] the source dropdowns: a whole group is written as its wildcard, one item off expands it, other lists untouched",
+              r.get("on") == ["turn:a", "turn:b", "turn:w1"] and r.get("offOne") == ["mesh:*", "noded", "turn:a", "turn:w1"]
+              and r.get("meshOne") == ["mesh:swg_1", "noded", "turn:*"] and r.get("meshAll") == ["mesh:*", "noded", "turn:*"], r)
 
     guarded("[7]", sec7)
     # ── [8] the code review's fixes ───────────────────────────────────────────────────────────────────────────────────

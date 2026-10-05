@@ -42,6 +42,8 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
      offread      at Off the namespace's sources are read   dockeriface  docker offers the interfaces' lines
      syncloop     the reader runs in the sync loop          pumpdrop     docker: swg-sni's lines miss noded's file
      nojournal    update.sh never gives the panel its journal
+     meshiface    a mesh link's lines are filed as an interface's
+     ifacemesh    `iface:*` reads the mesh links too (and `mesh:*` the client interfaces)
      noselect     the panel's copy of the reader misses a module it uses (it ran only in swg-noded's copy)
      pendcount    lines dropped while the panel is away lose an earlier marker's count
      firstspin    a failing first post is retried every half second, not every interval
@@ -107,6 +109,10 @@ PLANTS = {   # (program, anchor, replacement)
     "andjournal": ("block", '''        a += (["+"] if i else []) + g''', '''        a += g'''),
     "respawn": ("block", '''            else:\n                self.jnext = self.jstart + 5''', '''            else:\n                self._jopen()'''),
     "sniunit": ("block", '''        return "sni" if live_text(e.get("MESSAGE")).startswith("swg-sni:") else "noded"''', '''        return "noded"'''),
+    "meshiface": ("block", '''            return ("mesh:" if kind == "iface:" and name.startswith(LIVE_MESH_PRE) else kind) + name''',
+                  '''            return kind + name'''),
+    "ifacemesh": ("noded", '''            ns = [n for n in ifaces if n == name or (name == "*" and n.startswith(LIVE_MESH_PRE) == mesh)]''',
+                  '''            ns = [n for n in ifaces if name in ("*", n)]'''),
     "nostop": ("noded", '''        for rid in [k for k in _LIVE if k not in want]:\n            _LIVE.pop(rid)["stop"].set()''',
                '''        for rid in []:\n            _LIVE.pop(rid)["stop"].set()'''),
     "nofirst": ("noded", '''            if (pend or not said) and now - t0 >= LIVE_BACKFILL_S and now - last >= rq["iv"]:''',
@@ -541,6 +547,8 @@ def sec4():
              (E(_PID="1", _SYSTEMD_UNIT="init.scope", UNIT="swg-relay@awg0.service", MESSAGE="Started"), "relay:awg0"),
              (E(_SYSTEMD_UNIT="swg-wdtt-wdtt1.service"), "turn:wdtt1"), (E(_SYSTEMD_UNIT="vk-turn-proxy-x-1.service"), "turn:x-1"),
              (E(_SYSTEMD_UNIT="awg-quick@awg0.service"), "iface:awg0"), (E(_TRANSPORT="kernel", MESSAGE="swg-p2p IN=x"), "p2p"),
+             (E(_SYSTEMD_UNIT="awg-quick@swg_ab12.service"), "mesh:swg_ab12"),
+             (E(_PID="1", _SYSTEMD_UNIT="init.scope", UNIT="wg-quick@swg_x.service", MESSAGE="Started"), "mesh:swg_x"),
              (E(_TRANSPORT="kernel", MESSAGE=[111, 107]), "kernel"), (E(_SYSTEMD_UNIT="swg-panel-server.service"), "panel"),
              (E(_SYSTEMD_UNIT="sshd.service"), None), (E(_SYSTEMD_UNIT="session-1.scope"), None)]
     bad = [(c, N.live_journal_src(c)) for c, want in cases if N.live_journal_src(c) != want]
@@ -710,6 +718,15 @@ def sec5():
           and {a for a in argv if a.startswith("_SYSTEMD_UNIT=")} == {"_SYSTEMD_UNIT=" + u for u in (
               "swg-noded.service", "swg-relay@awg0.service", "vk-turn-proxy-wdttplus-56000.service", "swg-wdtt-wdtt1.service",
               "wg-quick@awg0.service", "awg-quick@awg0.service")} and "_TRANSPORT=kernel" in argv, (st, argv))
+    plan, st = M._live_plan(["iface:*", "mesh:*"], ["awg0", "swg_ab12"])
+    a1 = {a for a in plan["journal"](None, 5) if a.startswith("_SYSTEMD_UNIT=")}
+    _p, st1 = M._live_plan(["iface:*"], ["awg0", "swg_ab12"])
+    a2 = {a for a in _p["journal"](None, 5) if a.startswith("_SYSTEMD_UNIT=")}
+    _p, st2 = M._live_plan(["mesh:*"], ["awg0"])
+    check("[5] `iface:*` is the client interfaces, `mesh:*` the mesh links (the reserved swg_ prefix); none → \"absent\"",
+          "_SYSTEMD_UNIT=awg-quick@swg_ab12.service" in a1 and "_SYSTEMD_UNIT=awg-quick@awg0.service" in a1
+          and "_SYSTEMD_UNIT=awg-quick@swg_ab12.service" not in a2 and "_SYSTEMD_UNIT=awg-quick@awg0.service" in a2
+          and st2 == {"mesh:*": "absent"}, (a1, a2, st2))
     M.log_set(M.LOG_OFF)
     _p, st = M._live_plan(["noded", "relay:*", "iface:awg0", "kernel", "p2p"], ["awg0"])
     check("[5] at Off the swg journal's sources are \"off\" (nothing stored to read); the main journal's are read",
@@ -717,11 +734,11 @@ def sec5():
     M.log_set(M.LOG_INFO)
     M.NODE_KIND = "docker"
     M._host_sh_available = lambda: False
-    plan, st = M._live_plan(["noded", "sni", "dns", "relay:*", "iface:*", "kernel", "p2p"], ["awg0"])
-    check("[5] docker: noded's file once for noded and sni, dnsmasq's file; no socket → no relay; the interfaces, the kernel "
-          "and the P2P guard are unavailable",
-          st == {"noded": "ok", "sni": "ok", "dns": "ok", "relay:*": "absent", "iface:*": "unavailable", "kernel": "unavailable",
-                 "p2p": "unavailable"} and [f[0] for f in plan["files"]] == [os.path.join(M.LOG_DIR_DOCKER, "swg-noded.log"),
+    plan, st = M._live_plan(["noded", "sni", "dns", "relay:*", "iface:*", "mesh:*", "kernel", "p2p"], ["awg0"])
+    check("[5] docker: noded's file once for noded and sni, dnsmasq's file; no socket → no relay; the interfaces, the mesh "
+          "links, the kernel and the P2P guard are unavailable",
+          st == {"noded": "ok", "sni": "ok", "dns": "ok", "relay:*": "absent", "iface:*": "unavailable", "mesh:*": "unavailable",
+                 "kernel": "unavailable", "p2p": "unavailable"} and [f[0] for f in plan["files"]] == [os.path.join(M.LOG_DIR_DOCKER, "swg-noded.log"),
                                                                               M.DNSMASQ_LOG] and not plan["ctrs"], (st, plan))
     # post_json gz, against a real listener
     got = {}
