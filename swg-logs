@@ -8,7 +8,7 @@
 #
 #   swg-logs [source [name]] [journalctl options…]
 #
-#   (none)          everything swg writes on this box
+#   (none)          swg's journals with the main one: every line on this box, swg's among them
 #   panel           the panel                         sub      the subscription page
 #   netctl          the panel's root helper           update   one-click updates
 #   noded           the node service (and its agent operations, dnsmasq and swg-sni)
