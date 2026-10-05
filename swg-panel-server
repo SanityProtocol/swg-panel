@@ -16803,12 +16803,22 @@ def panel_log_apply(ps):
     log_set(LOG_LEVELS.get(base if base in LOG_BASE_LEVELS else "info"), log_debug_left(ps))
     if PANEL_LOG_FILE["path"]:
         log_file(PANEL_LOG_FILE["path"], 0 if log_level() == LOG_OFF else log_mb((ps or {}).get("log_mb_panel")) << 20)
-        left = log_debug_left(ps)
-        if left > 0:                                  # Debug's end back to Off removes the file too: re-applied then,
-            t = threading.Timer(left + 1, lambda: Handler.deps and panel_log_apply(Handler.deps.get("panel_settings")))
-            # with the settings of THEN (a save since re-applied already); during the start, the start applies them
-            t.daemon = True
-            t.start()
+
+
+def panel_log_follow():
+    """docker: the level in force went to Off (Debug ran out) while the file is still written → it goes, as a save to Off
+    removes it. The helper's clock decides and no settings are read, so a save in between is never undone: under the
+    file's lock, a save's log_file() comes either before (Debug on: nothing done) or after (the file is named again)."""
+    with _LOG_FILE["lock"]:
+        if _LOG_FILE["path"] and log_level() == LOG_OFF:
+            log_file(_LOG_FILE["path"], 0)
+
+
+def _panel_log_follow_loop():
+    while True:                                       # every 30 s, as a node checks its own each pass
+        time.sleep(30)
+        with contextlib.suppress(Exception):
+            panel_log_follow()
 
 
 def panel_log_status(deps):
@@ -34078,6 +34088,8 @@ def main():
                     "sub_dir": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "subs"),
                     "now": lambda: int(time.time())}
     panel_log_apply(Handler.deps["panel_settings"])   # this process's own lines follow the fleet's level from here on
+    if PANEL_LOG_FILE["path"]:                        # docker: Debug's end back to Off removes the file (panel_log_follow)
+        threading.Thread(target=_panel_log_follow_loop, name="log-follow", daemon=True).start()
     range_init(os.path.dirname(Handler.deps["roster_path"]))   # Logs P3: the download spool, emptied at every start
     # The operator's zone, before any thread reads the clock (tz_apply). A stored zone this server has lost — an image
     # or tzdata change — is reported and left out, never a crash: days fall back to the server's own zone meanwhile.
