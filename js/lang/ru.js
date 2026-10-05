@@ -1706,6 +1706,7 @@ export const STR = {
 
   // ── Settings → Logs, the live viewer (docs/LOGS-PLAN.md §5) ──
   "Live logs": "Логи онлайн",
+  "Start live log": "Запустить логи",
   "Servers": "Серверы",
   "Panel and {n}": "Панель и {n}",
   "Node service": "Служба ноды",
@@ -1748,7 +1749,6 @@ export const STR = {
   "None of the chosen servers can be watched. Pick again.": "Ни один из выбранных серверов нельзя смотреть. Выберите заново.",
   "Nothing matches the filter.": "Под фильтр ничего не подходит.",
   "Times are this browser's, on the panel's clock": "Время — в часовом поясе браузера, по часам панели",
-  "Leave full screen (Esc)": "Свернуть (Esc)",
   "Full screen": "Во весь экран",
   "Levels shown": "Уровни",
   "Search the lines…": "Поиск по строкам…",
@@ -1827,8 +1827,8 @@ export const STR = {
     "Его доля из 50 МБ заполнилась, поэтому в файле конец периода. Чтобы получить остальное, сузьте период или список серверов.",
   "Keeps less": "Хранит меньше",
   "Its log budget no longer holds the start of the range.": "В его лимите логов уже нет начала периода.",
-  "This node's live logs (Settings → Logs)": "Логи этой ноды онлайн (Настройки → Логи)",
-  "These turn proxies' live logs (Settings → Logs)": "Логи этих turn-прокси онлайн (Настройки → Логи)",
+  "This node's live logs": "Логи этой ноды онлайн",
+  "These turn proxies' live logs": "Логи этих turn-прокси онлайн",
   "Panel log budget → {v1} MB": "Лимит логов панели → {v1} МБ",
   "{v1}: the log budget must be at least {v2} MB": "{v1}: лимит логов должен быть не меньше {v2} МБ",
   "The log budget must be a whole number of MB, at least {v1}.": "Лимит логов — целое число МБ, не меньше {v1}.",

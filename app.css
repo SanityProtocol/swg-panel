@@ -4585,8 +4585,6 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lv-fsep{width:1px;align-self:stretch;margin:4px 2px;background:var(--line-solid)}
 .lv-facet .catpick-caret{color:var(--dim);font-size:10px;margin-left:2px}
 .lv-mppop{padding:4px 5px 6px}
-/* above the full-screen viewer (.lv-full, 950): its dropdowns, menu and bubbles open over it */
-.lv-mppop,.lv-menu,.lv-stpop{z-index:960}
 .lv-mpq{position:sticky;top:-4px;z-index:1;display:flex;align-items:center;gap:7px;margin:-4px -5px 4px;padding:8px 10px;background:var(--surface-2);border-bottom:1px solid var(--line)}
 .lv-mpq svg{width:14px;height:14px;opacity:.6;flex:none}
 .lv-mpq input{flex:1;min-width:0;border:0;background:none;padding:2px 0;font-size:13px;box-shadow:none}
@@ -4680,7 +4678,10 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lv-empty{height:160px;display:flex;align-items:center;justify-content:center;text-align:center;padding:0 20px;color:var(--dim);font-size:13px;
   border:1px dashed var(--line-solid);border-radius:var(--r-sm)}
 .lv-foot{font-size:11.5px;font-variant-numeric:tabular-nums}
-.lv-full{position:fixed;inset:0;z-index:950;margin:0;border-radius:0;max-width:none;overflow:auto}
+/* over the header (30) and the grids' rail (45), UNDER the modal layer (.overlay, 50): a sheet or confirm opened while the
+   logs are full screen (a vault unlock, an editor from a hash route) shows over them; its lists and bubbles (60–90) too */
+.lv-full{position:fixed;inset:0;z-index:49;margin:0;border-radius:0;max-width:none;overflow:auto}
+:root:has(.lv-full) .dashrail{display:none}   /* the dashboard's rail sits at 60, over a modal on purpose — not over the logs */
 .lv-full .lv-stream{flex:1 1 auto;height:auto;min-height:200px}
 .lv-ph .lv-empty{height:64px}
 /* Logs P3: a time range, downloaded as one file — the bar shows every server's state at once, 2 or 200 alike */

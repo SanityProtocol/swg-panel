@@ -2,9 +2,10 @@
  *
  * LAYER 10: a leaf screen part that only Settings renders. Pick servers (the Panel first) and sources (grouped, a
  * three-state box per group), and see ONE stream, merged and sorted by each line's own time on the panel's clock (a node
- * whose clock is off is corrected, and its chip says by how much). Nothing is pulled from any node while nobody watches:
- * the viewer opens a request on the panel and renews it with every poll (1.5 s, only while this tab is visible); the
- * panel asks the nodes through their sync reply, and they stop by themselves ~20 s after the polls stop.
+ * whose clock is off is corrected, and its chip says by how much). Nothing is pulled from any node until someone asks:
+ * Settings → Logs streams only after "Start live log"; the header button and the deep links ask by being clicked. Then the
+ * viewer opens a request on the panel and renews it with every poll (1.5 s, only while this tab is visible); the panel
+ * asks the nodes through their sync reply, and they stop by themselves ~20 s after the polls stop.
  *
  * Its state is module-level (LV), not component state: the 5 s Store poll re-renders Settings, and a viewer that lost
  * its lines, its facets or its scroll on every re-render would be useless. 5 000 lines at most, rendered as a window —
@@ -13,10 +14,10 @@
 
 import { T, plural, fmtNum, locale } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
-import { Ic, Popover, Portal, goSettings, usePopup } from "./ui.js";
+import { Ic, Popover, Portal, usePopup } from "./ui.js";
 import { downloadConf } from "./crypto.js";
 import { fmtBytes } from "./util.js";
-import { h, Fragment } from "preact";
+import { h } from "preact";
 import { useState, useRef, useEffect, useLayoutEffect } from "preact/hooks";
 import htm from "htm";
 
@@ -37,7 +38,8 @@ const chipOf = id => { let x = 0; for (const c of String(id)) x = (x * 31 + c.ch
 // The viewer's state, kept across re-renders (see the header).
 const LV = {
   nodes: null, src: null,                             // the facets; null = the defaults (see facetDefaults)
-  levels: { err: true, warn: true, info: true, debug: true }, q: "", wrap: false, full: false, overlay: false,
+  levels: { err: true, warn: true, info: true, debug: true }, q: "", wrap: false, overlay: false,
+  live: false,                                        // asked for (Start, the header button, a deep link); off once no viewer is up
   req: null, seq: 0, h: "", states: {}, iv: 1, err: "", ver: 0,   // the panel's request and what it last said
   lines: [], frozen: null, missed: 0,                 // the merged lines; Paused: the list as it was, and what came since
   held: {},                                           // a reopen: the newest line each server already has here
@@ -71,12 +73,12 @@ const srcOf = () => LV.src || facetDefaults().src;
 // what a node's own page opens the viewer with: everything of that node's, the kernel aside (it is the whole kernel log)
 export const NODE_SOURCES = ["noded", "dns", "sni", "relay:*", "mesh:*", "turn:*", "iface:*", "p2p"];
 export const TURN_SOURCES = ["turn:*"];             // a node's turn proxies, WDTT and csqtt — every instance
-/* Open the viewer from elsewhere (the node page, a failing turn proxy): Settings → Logs with these facets. */
+/* Open the viewer from elsewhere (the node page, a failing turn proxy): full screen over that page, with these facets. */
 export function openLogs({ nodes, src } = {}) {
   if (nodes) LV.nodes = nodes;
   if (src) LV.src = src;
-  LV.gen++; LV.full = false; remember(); bump();
-  goSettings("logs");
+  LV.gen++; remember();
+  openLogOverlay();
 }
 
 const nodeName = id => id === LOG_PANEL ? T("Panel") : ((Store.nodes || []).find(n => n.id === id) || {}).name || id;
@@ -100,7 +102,7 @@ function addLines(raw) {
 }
 
 async function tick() {
-  if (LV.busy || !LV.mounted || document.hidden) return;
+  if (LV.busy || !LV.mounted || !LV.live || document.hidden) return;
   // refused (no server of these can be watched — maybe a node not synced yet): said, and asked again every 10 s
   if (LV.err === "refused" && LV.refusedGen === LV.gen && Date.now() - LV.refusedAt < 10000) return;
   LV.busy = true;
@@ -632,11 +634,13 @@ function RangePanel() {
   </div>`;
 }
 
-// ── the header's Logs button: the same viewer, full screen, over any screen ──────────────────────────────────────────
-// Mounted in the app shell, it renders nothing until the button is clicked — and the viewer polls only while mounted,
-// so no request leaves before then. Exit (or Esc) unmounts it, which closes its request at once.
-export function openLogOverlay() { LV.overlay = true; bump(); }
-const closeLogOverlay = () => { LV.overlay = false; bump(); };
+// ── full screen: the header's Logs button, the deep links and the card's full-screen icon ─────────────────────────────
+// The same viewer over any screen, mounted in the app shell only while it is up — the viewer polls only while mounted, so
+// no request leaves before. Exit (or Esc) unmounts it, which closes its request at once, and gives the focus back.
+let _back = null;
+export function openLogOverlay() { if (!LV.overlay) _back = document.activeElement; LV.overlay = LV.live = true; bump(); }
+const closeLogOverlay = () => { LV.overlay = false; bump(); const b = _back; _back = null;
+  setTimeout(() => { const el = b && b.isConnected ? b : document.querySelector(".lv-fs"); if (el) el.focus(); }, 0); };   // the card's icon is drawn anew
 export function LogOverlay() {
   const [, setV] = useState(0);
   useEffect(() => { _subs.add(setV); return () => { _subs.delete(setV); }; }, []);
@@ -652,15 +656,19 @@ export function LogViewer({ overlay } = {}) {
     LV.mounted++;
     if (LV.mounted === 1) { LV.timer = setInterval(tick, POLL_MS); document.addEventListener("visibilitychange", onVisibility); tick(); }
     return () => { _subs.delete(setV); LV.mounted--;
-      if (!LV.mounted) { clearInterval(LV.timer); document.removeEventListener("visibilitychange", onVisibility); closeReq(); LV.full = false; } };
+      if (!LV.mounted) { clearInterval(LV.timer); document.removeEventListener("visibilitychange", onVisibility); closeReq(); LV.live = false; } };
   }, []);
-  const full = overlay || LV.full;
+  const card = useRef(null);
   useEffect(() => {
-    if (!full) return;
-    const k = e => { if (e.key === "Escape" && !e.defaultPrevented) { if (overlay) closeLogOverlay(); else { LV.full = false; bump(); } } };   // a dropdown's Escape is its own
-    document.addEventListener("keydown", k);
-    return () => document.removeEventListener("keydown", k);
-  }, [full]);
+    if (!overlay) return;
+    const k = e => { if (e.key === "Escape" && !e.defaultPrevented) closeLogOverlay(); };   // a dropdown's Escape is its own
+    // the page under it is out of reach: focus that lands there (Tab, a click through) comes back to the viewer — but a
+    // sheet or confirm opened over it (a vault unlock, say), a dropdown's list or a bubble keeps it
+    const f = e => { if (!e.target.closest || e.target.closest(".lv-full,.overlay,.ddpop,.deppop,.qr-overlay,.toasts")) return;
+      const x = card.current && card.current.querySelector(".lv-x"); if (x) x.focus(); };
+    document.addEventListener("keydown", k); document.addEventListener("focusin", f);
+    return () => { document.removeEventListener("keydown", k); document.removeEventListener("focusin", f); };
+  }, []);
   // the Settings card while the header's overlay is up: one viewer on screen, the card says where it is
   if (!overlay && LV.overlay) return html`<div class="card lv lv-ph"><div class="lv-empty">${T("Shown full screen — Esc returns it here.")}</div></div>`;
   const lines = shownLines();
@@ -672,26 +680,25 @@ export function LogViewer({ overlay } = {}) {
   const pause = () => { if (!LV.frozen) { LV.frozen = LV.lines.slice(); LV.missed = 0; bump(); } };
   const resume = () => { LV.frozen = null; LV.missed = 0; bump(); };
   // the head says what the stream is doing, in a word: live, held, or why not
-  const live = !ids.length || !srcs.length ? null : paused ? ["held", T("Paused")] : LV.err ? ["err", T("Not connected")]
+  const live = !ids.length || !srcs.length || !LV.live ? null : paused ? ["held", T("Paused")] : LV.err ? ["err", T("Not connected")]
     : LV.req ? ["on", T("Live")] : ["wait", T("Connecting…")];
   const empty = !ids.length || !srcs.length ? T("Pick at least one server and one source.")
+    : !LV.live ? html`<button class="btn btn-primary" onClick=${() => { LV.live = true; bump(); tick(); }}><${Ic} i="play"/> ${T("Start live log")}</button>`
     : LV.err === "busy" ? T("Four log viewers are open already. Close one, or wait a few seconds for a closed tab's to lapse.")
     : LV.err === "refused" ? T("None of the chosen servers can be watched. Pick again.")
     : !LV.req ? T("Connecting…")
     : !(LV.frozen || LV.lines).length ? (off ? T("Logging is off, so nothing is stored to read.") : T("Waiting for lines…"))   // Off: the system journal's (interfaces, kernel) still come
     : !lines.length ? T("Nothing matches the filter.") : "";
-  const card = html`<div class=${"card lv" + (full ? " lv-full" : "")} role=${full ? "dialog" : null} aria-modal=${full ? "true" : null} aria-label=${T("Live logs")}>
+  const view = html`<div class=${"card lv" + (overlay ? " lv-full" : "")} ref=${card} role=${overlay ? "dialog" : null} aria-modal=${overlay ? "true" : null} aria-label=${T("Live logs")}>
     <div class="lv-head">
       <div class="seclabel" style="margin:0">${T("Live logs")}</div>
       <span class="lv-tz faint" title=${T("Times are this browser's, on the panel's clock")}>${tzLabel()}</span>
       <span class="grow"></span>
       ${live ? html`<span class=${"lv-live s-" + live[0]} role="status">${live[1]}</span>` : null}
-      ${overlay ? html`<button class="btn btn-mini ico" title=${T("Close the logs (Esc)")} aria-label=${T("Close the logs (Esc)")}
+      ${overlay ? html`<button class="btn btn-mini ico lv-x" title=${T("Close the logs (Esc)")} aria-label=${T("Close the logs (Esc)")}
         ref=${el => el && !el._f && (el._f = 1, setTimeout(() => el.focus(), 0))} onClick=${closeLogOverlay}><${Ic} i="x"/></button>`
-      : html`<button class="btn btn-mini ico" title=${LV.full ? T("Leave full screen (Esc)") : T("Full screen")} aria-label=${LV.full ? T("Leave full screen (Esc)") : T("Full screen")}
-        onClick=${() => { LV.full = !LV.full; bump(); }}>${LV.full
-          ? html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`
-          : html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`}</button>`}
+      : html`<button class="btn btn-mini ico lv-fs" title=${T("Full screen")} aria-label=${T("Full screen")} onClick=${openLogOverlay}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>`}
     </div>
     <${Facets}/>
     <${StateChips}/>
@@ -720,5 +727,5 @@ export function LogViewer({ overlay } = {}) {
       ? T("Paused — {v1} lines held", { v1: fmtNum(LV.frozen.length) })
       : T("{v1} of the last {v2} lines", { v1: fmtNum(lines.length), v2: fmtNum(BUF) })}</div>
   </div>`;
-  return LV.full && !overlay ? html`<${Fragment}><div class="card lv lv-ph"><div class="lv-empty">${T("Shown full screen — Esc returns it here.")}</div></div>${card}<//>` : card;
+  return view;
 }
