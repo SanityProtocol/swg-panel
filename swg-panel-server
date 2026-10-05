@@ -31865,6 +31865,8 @@ class Handler(BaseHTTPRequestHandler):
         that request — not the node token, whose check parses the whole node store (docs/LOGS-PLAN.md §23.1). gzip, at
         most LIVE_POST_MAX on the wire and LIVE_POST_RAW_MAX unpacked. No _api_lock, no store, no snapshot: the sync
         invariant (reconcile only on a 200 carrying `desired`) is not this route's business."""
+        if not _LIVE_REQS and not _RANGE_REQS:          # nothing open (nearly always): no remote body is unpacked and
+            return self._send(404, {"ok": False, "error": "no such request", "code": "gone"})   # parsed for nothing
         n = self._body_len(cap=LIVE_POST_MAX)
         if n is None:
             return
