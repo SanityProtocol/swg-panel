@@ -7238,6 +7238,7 @@ def apply_panel_settings(pan):
                     f.write("%d\n" % _mb)
                 os.replace(LOG_BUDGET_FILE + ".tmp", LOG_BUDGET_FILE)
         _LOG_BUDGET["mb"] = _mb
+        _LOG_NS_MOVE["sched"] = pan.get("geo_update") if isinstance(pan.get("geo_update"), dict) else {}
         if (pan.get("turn_mirror") or "").strip():             # only ADD a turn mirror (preserve any install-time one)
             os.environ["SWG_TURN_MIRROR"] = pan["turn_mirror"].strip()
         ep = str(int(pan.get("geo_epoch") or 0))
@@ -7311,6 +7312,7 @@ def _log_follow(node_cfg):
         except OSError as e:
             log(LOG_WARNING, "log level: could not write %s: %s", LOG_LEVEL_FILE, e)
     _log_budget()
+    _log_ns_move()
     if NODE_KIND == "docker" or not os.path.isdir(LOG_DROPIN_DIR):
         return                                       # no systemd here: docker's logs are capped by _log_budget
     cap = log_unit_max(lvl)
@@ -7434,7 +7436,8 @@ def journal_cmd():
 
 def _log_ns_dropins():
     """At start: the namespace on the units this node writes (see above). Only what is missing or different is written,
-    then one daemon-reload; nothing is restarted. Never raises."""
+    then one daemon-reload; nothing is restarted here — a unit already running moves in the update window
+    (_log_ns_move). Never raises."""
     if not log_ns_ok():
         return
     udir = UNIT_DIR_PERSIST if unit_dir_persists() else UNIT_DIR_RUNTIME
@@ -7458,6 +7461,71 @@ def _log_ns_dropins():
     if changed:
         run(["systemctl", "daemon-reload"])
         log(LOG_INFO, "log budget: %d kind(s) of unit log into the %s journal from their next start", changed, LOG_NS)
+
+
+# A running process keeps the journal stream it was started with, so a unit started before its family's drop-in writes
+# the MAIN journal — outside the budget — until its next start, and a turn proxy, WDTT or csqtt server runs for weeks
+# (measured on msk-main 10-05: five servers since 10-02, 23 % of the main journal; nixos the same). They are restarted
+# once, in the operator's update window (panel `geo_update`, the window a changed list waits for): never at the update
+# itself, where it would cut the datapath. sched: the last reply's window · at: the minute clock · day: the window acted in.
+_LOG_NS_MOVE = {"sched": {}, "at": 0.0, "day": None}
+
+
+def _log_ns_unmoved():
+    """The running units of LOG_NS_UNITS' families that started before their family's drop-in was written. Never raises."""
+    out = []
+    if not log_ns_ok():
+        return out
+    udir = UNIT_DIR_PERSIST if unit_dir_persists() else UNIT_DIR_RUNTIME
+    written = {}
+    for fam in LOG_NS_UNITS:
+        with contextlib.suppress(OSError):
+            written[fam[:-len(".service")]] = os.stat(os.path.join(udir, fam + ".d", LOG_NS_DROPIN)).st_mtime
+    if not written:
+        return out
+    with contextlib.suppress(Exception):
+        r = run(["systemctl", "list-units", "--no-legend", "--plain", "--type=service", "--state=active"]
+                + [p + "*.service" for p in written], timeout=15)
+        units = [ln.split()[0] for ln in (r.stdout or "").splitlines() if ln.strip()]
+        if not units:
+            return out
+        r = run(["systemctl", "show", "-p", "Id", "-p", "ActiveEnterTimestampMonotonic"] + units, timeout=15)
+        mono, wall = time.monotonic(), time.time()            # systemd's monotonic clock is CLOCK_MONOTONIC too
+        for blk in (r.stdout or "").split("\n\n"):
+            kv = dict(ln.split("=", 1) for ln in blk.splitlines() if "=" in ln)
+            uid, us = kv.get("Id", ""), kv.get("ActiveEnterTimestampMonotonic", "")
+            fam = next((p for p in written if uid.startswith(p)), None)
+            if fam and us.isdigit() and int(us) > 0:
+                started = wall - (mono - int(us) / 1e6)
+                if started < written[fam] - 1:                # 1 s: a unit started in the pass that wrote it has moved
+                    out.append(uid)
+    return out
+
+
+def _log_ns_move():
+    """Once a minute: inside the update window, restart once the units that still write the main journal. A continuous
+    schedule (lists any time) does not make a datapath restart any time: its window here is daily, at its `at`."""
+    now = time.time()
+    if now - _LOG_NS_MOVE["at"] < LOG_STATUS_EVERY_S:
+        return
+    _LOG_NS_MOVE["at"] = now
+    sched = dict(_LOG_NS_MOVE["sched"] or {})
+    if str(sched.get("every_days", 1)) == "0":
+        sched["every_days"] = 1
+    day = time.strftime("%Y-%m-%d")
+    if _LOG_NS_MOVE["day"] == day or not _in_quiet_window(sched):
+        return
+    units = _log_ns_unmoved()
+    if not units:
+        return
+    _LOG_NS_MOVE["day"] = day                                 # once per window, whatever the outcome
+    r = run(["systemctl", "restart"] + units, timeout=120)
+    if r.returncode == 0:
+        log(LOG_INFO, "log budget: restarted %s in the update window — started before their drop-in, they wrote the "
+            "main journal; now the %s one", " ".join(units), LOG_NS)
+    else:
+        log(LOG_WARNING, "log budget: restarting %s in the update window failed (%s) — tried again in the next window",
+            " ".join(units), (r.stderr or r.stdout or "").strip()[:160])
 
 
 def _log_ns_dir():
@@ -17330,7 +17398,10 @@ def host_sh(cmd, timeout=90, probe=False):
         # comment or a heredoc is unaffected. Kept in its OWN variable so the failure logs below
         # still show the caller's command, not 47 characters of prefix.
         _wrapped = "export PATH=/run/current-system/sw/bin:$PATH\n" + cmd
-        args = ["docker", "run", "--rm", "--privileged", "--pid=host", "--entrypoint", "nsenter",
+        # --network none: nsenter -n puts the command in the HOST's network anyway, and a helper on the default bridge
+        # cost a veth pair per call — created, renamed, attached, torn down — which is what the kernel, networkd, udev
+        # and dockerd logged for every one of them (svo-im 10-05: one helper per ~36 s, ~60 % of its main journal).
+        args = ["docker", "run", "--rm", "--privileged", "--pid=host", "--network", "none", "--entrypoint", "nsenter",
                 HELPER_IMAGE, "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", _wrapped]
     try:
         r = run(args, timeout=timeout)
