@@ -7726,7 +7726,7 @@ def _live_node_state(rec, nid, snaps, seen, stale_s, now):
     from before the viewer: "update the node") · offline — also a node that answered and has stopped syncing since."""
     snap, ls = snaps.get(nid), seen.get(nid)
     if nid != LIVE_PANEL and (not isinstance(snap, dict) or ls is None or now - ls > stale_s):
-        return {"state": "offline"}
+        return {"state": "offline", **({"off": rec["off"][nid]} if rec["off"].get(nid) else {})}   # its lines still placed
     if nid in rec["acked"]:
         d = {"state": "ok", "st": rec["st"].get(nid) or {}}
         if rec["off"].get(nid):
