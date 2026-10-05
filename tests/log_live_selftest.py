@@ -54,6 +54,7 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
      deepjson     a deeply nested body drops the connection (RecursionError) instead of a 400
      curstale     a resume point too big to keep leaves the stale one in place
      ackedstale   a node that answered once reads "ok" for good, even after it stops syncing
+     offlineoff   an answered node that goes offline loses its clock offset (its lines misplaced)
      backfillcut  a slow (cold) journal's backfill tail goes through the flood cap and reads as skipped
 """
 import collections, gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile
@@ -90,6 +91,8 @@ PLANTS = {   # (program, anchor, replacement)
                   '''        n = self._body_len(cap=LIVE_POST_MAX)\n        if n is None:\n            return\n        self._node_token()\n'''),
     "ackedstale": ("panel", '''    if nid != LIVE_PANEL and (not isinstance(snap, dict)''',
                    '''    if nid != LIVE_PANEL and nid not in rec["acked"] and (not isinstance(snap, dict)'''),
+    "offlineoff": ("panel", '''        return {"state": "offline", **({"off": rec["off"][nid]} if rec["off"].get(nid) else {})}''',
+                   '''        return {"state": "offline"}'''),
     "nokey": ("panel", '''        nid = _log_post_node(rec, key)\n        if nid is None:\n            return 403, {"ok": False, "error": "not this request's key", "code": "forbidden"}\n        good =''',
               '''        nid = key.split(".", 1)[0]\n        if nid is None:\n            return 403, {"ok": False, "error": "not this request's key", "code": "forbidden"}\n        good ='''),
     "bomb": ("panel", '''                raw = d.decompress(raw, LIVE_POST_RAW_MAX)''', '''                raw = d.decompress(raw)'''),
@@ -432,9 +435,11 @@ def sec3():
           and v2["nodes"]["c"]["state"] == "noanswer", (st0, v2["nodes"]["c"]))
     v3 = P.live_view(rid2, 0, v2["h"], snaps, seen, 30, now=T[0] + P.LIVE_NOANSWER_S + 1)
     check("[3] the states block is sent only when it changed", "nodes" not in v3 and v3["h"] == v2["h"], list(v3))
+    P.live_absorb({"id": rid2, "key": P._live_key(P._LIVE_REQS[rid2], "a"), "lines": [], "now": T[0] + 95.4}, now=T[0])
     v4 = P.live_view(rid2, 0, "", snaps, dict(seen, a=T[0] - 300), 30, now=T[0] + P.LIVE_NOANSWER_S + 1)
-    check("[3] a node that answered and then stopped syncing reads offline, not ok (review §35 #5)",
-          v4["nodes"]["a"]["state"] == "offline" and v4["nodes"]["panel"]["state"] == "ok", v4["nodes"])
+    check("[3] a node that answered and then stopped syncing reads offline, not ok — its clock offset kept, which places "
+          "the lines it sent (review §35 #5)",
+          v4["nodes"]["a"] == {"state": "offline", "off": 95} and v4["nodes"]["panel"]["state"] == "ok", v4["nodes"])
     rid4 = P.live_open(["a"], ["noded"], known)[1]["data"]["id"]
     try:
         r1 = P.live_absorb({"id": rid4, "key": "a.é" + "x" * 31, "lines": []})[0]
