@@ -60,6 +60,9 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
    the source dropdowns ([7]):
      mpnowild     a whole group is written as its items, not its wildcard (200 nodes: one source becomes hundreds)
      mpclobber    a choice in one dropdown drops the others' choices
+   the redesign's review ([10]):
+     nomigrate    a remembered iface:* / iface:swg_… is kept as it was (mesh lines silently stop)
+     popunder     Escape in a dropdown also leaves full screen
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -198,6 +201,9 @@ PLANTS = {   # (program, anchor, replacement)
     "mpnowild": ("spa", '''    if (g.wild && g.items.length && g.items.every(i => on.has(i.id))) out.push(g.wild);''',
                  '''    if (false) out.push(g.wild);'''),
     "mpclobber": ("spa", '''  const out = [...sel].filter(x => !mine.has(x)), all = ddItems(dd);''', '''  const out = [], all = ddItems(dd);'''),
+    "nomigrate": ("spa", '''s.v === 2 ? s.src : migrate(s.src)''', '''s.src'''),
+    "popunder": ("spa", '''    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); close(true); } };''',
+                 '''    const onKey = e => { if (e.key === "Escape") { close(true); } };'''),
     "spablob": ("spa", '''  a.href = "api/logs/download/" + RG.id; a.download''', '''  downloadConf("", "x", "log"); a.href = "api/logs/download/" + RG.id; a.download'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -801,6 +807,18 @@ console.log(JSON.stringify(r));
 """
         out = subprocess.run(["node", "-e", js], capture_output=True, text=True)
         r = json.loads(out.stdout or "{}") if out.returncode == 0 else {"err": out.stderr[-300:]}
+        mg = s[s.index("const migrate ="):s.index("\n", s.index("const migrate ="))]
+        out = subprocess.run(["node", "-e", mg + '; console.log(JSON.stringify(migrate(["noded", "iface:*", "iface:awg0", "iface:swg_ab"])))'],
+                             capture_output=True, text=True)
+        check("[10] a choice remembered before mesh links were a source keeps them: iface:* adds mesh:*, iface:swg_… becomes mesh:",
+              out.returncode == 0 and json.loads(out.stdout) == ["noded", "iface:*", "mesh:*", "iface:awg0", "mesh:swg_ab"]
+              and "s.v === 2 ? s.src : migrate(s.src)" in s, (out.stdout, out.stderr[-200:]))
+        css = open(os.path.join(ROOT, "app.css"), encoding="utf-8").read()
+        check("[10] the dropdowns, the menu and the bubbles open above the full-screen viewer",
+              ".lv-mppop,.lv-menu,.lv-stpop{z-index:960}" in css and ".lv-full{position:fixed;inset:0;z-index:950" in css, "")
+        check("[10] Escape in an open dropdown closes it, not the full-screen viewer (capture phase, marked)",
+              'document.addEventListener("keydown", onKey, true)' in s and 'e.key === "Escape" && !e.defaultPrevented' in s
+              and 'if (e.key === "Escape") { e.preventDefault(); close(true); }' in s, "")
         check("[7] the source dropdowns: a whole group is written as its wildcard, one item off expands it, other lists untouched",
               r.get("on") == ["turn:a", "turn:b", "turn:w1"] and r.get("offOne") == ["mesh:*", "noded", "turn:a", "turn:w1"]
               and r.get("meshOne") == ["mesh:swg_1", "noded", "turn:*"] and r.get("meshAll") == ["mesh:*", "noded", "turn:*"], r)

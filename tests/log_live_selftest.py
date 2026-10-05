@@ -111,7 +111,7 @@ PLANTS = {   # (program, anchor, replacement)
     "sniunit": ("block", '''        return "sni" if live_text(e.get("MESSAGE")).startswith("swg-sni:") else "noded"''', '''        return "noded"'''),
     "meshiface": ("block", '''            return ("mesh:" if kind == "iface:" and name.startswith(LIVE_MESH_PRE) else kind) + name''',
                   '''            return kind + name'''),
-    "ifacemesh": ("noded", '''            ns = [n for n in ifaces if n == name or (name == "*" and n.startswith(LIVE_MESH_PRE) == mesh)]''',
+    "ifacemesh": ("noded", '''            ns = [n for n in ifaces if n.startswith(LIVE_MESH_PRE) == mesh and name in ("*", n)]''',
                   '''            ns = [n for n in ifaces if name in ("*", n)]'''),
     "nostop": ("noded", '''        for rid in [k for k in _LIVE if k not in want]:\n            _LIVE.pop(rid)["stop"].set()''',
                '''        for rid in []:\n            _LIVE.pop(rid)["stop"].set()'''),
@@ -723,10 +723,11 @@ def sec5():
     _p, st1 = M._live_plan(["iface:*"], ["awg0", "swg_ab12"])
     a2 = {a for a in _p["journal"](None, 5) if a.startswith("_SYSTEMD_UNIT=")}
     _p, st2 = M._live_plan(["mesh:*"], ["awg0"])
-    check("[5] `iface:*` is the client interfaces, `mesh:*` the mesh links (the reserved swg_ prefix); none → \"absent\"",
+    _p, st3 = M._live_plan(["iface:swg_ab12"], ["awg0", "swg_ab12"])
+    check("[5] `iface:*` is the client interfaces, `mesh:*` the mesh links (the reserved swg_ prefix); none, or a link named as an interface → \"absent\"",
           "_SYSTEMD_UNIT=awg-quick@swg_ab12.service" in a1 and "_SYSTEMD_UNIT=awg-quick@awg0.service" in a1
           and "_SYSTEMD_UNIT=awg-quick@swg_ab12.service" not in a2 and "_SYSTEMD_UNIT=awg-quick@awg0.service" in a2
-          and st2 == {"mesh:*": "absent"}, (a1, a2, st2))
+          and st2 == {"mesh:*": "absent"} and st3 == {"iface:swg_ab12": "absent"}, (a1, a2, st2, st3))
     M.log_set(M.LOG_OFF)
     _p, st = M._live_plan(["noded", "relay:*", "iface:awg0", "kernel", "p2p"], ["awg0"])
     check("[5] at Off the swg journal's sources are \"off\" (nothing stored to read); the main journal's are read",
