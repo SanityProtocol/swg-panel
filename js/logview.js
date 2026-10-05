@@ -11,10 +11,11 @@
  * blocks of 64 lines, only those near the viewport in the DOM, their heights measured (Wrap makes rows uneven).
  */
 
-import { T, plural, fmtNum } from "./i18n.js";
+import { T, plural, fmtNum, locale } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
 import { Ic, Popover, goSettings } from "./ui.js";
 import { downloadConf } from "./crypto.js";
+import { fmtBytes } from "./util.js";
 import { h, Fragment } from "preact";
 import { useState, useRef, useEffect, useLayoutEffect } from "preact/hooks";
 import htm from "htm";
@@ -366,6 +367,183 @@ function download(lines) {
   downloadConf(head.concat(body).join("\n") + "\n", "swg-logs-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()), "log");
 }
 
+// ── a time range, downloaded as one file (docs/LOGS-PLAN.md §3, §5, §26) ─────────────────────────────────────────────
+// The viewer's servers, sources and level chips, over a range: the panel asks each server, merges what comes back by time
+// into one file and keeps it RANGE_KEEP_MIN after each download. The browser saves it from a plain link (a 50 MB Blob is
+// what this avoids). RG is module-level for the same reason LV is: the 5 s Store poll re-renders Settings.
+const RANGE_SPAN = { "15m": 900, "1h": 3600, "24h": 86400, "7d": 604800 };
+const RANGE_KEEP_MIN = 10;
+const RG = { open: false, preset: "1h", from: "", to: "", redact: true, id: null, v: null, err: "", busy: false, timer: null,
+             saved: false, name: "" };
+const rangeLabel = k => ({ "15m": T("15 min"), "1h": T("1 hour"), "24h": T("24 hours"), "7d": T("7 days"), custom: T("Custom") })[k];
+const dtLocal = ms => { const d = new Date(ms); return ymd(d.getTime() * 1000) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes()); };
+const dtShow = sec => { const d = new Date(sec * 1000); return d.toLocaleString(locale(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
+const levelsOn = () => LEVELS.filter(k => LV.levels[k]);
+
+function rangeOpen() {
+  if (RG.id) return;                                  // a download in progress keeps its panel until it is closed
+  if (!RG.from) { const now = Date.now(); RG.from = dtLocal(now - 3600e3); RG.to = dtLocal(now); }
+  RG.open = !RG.open; RG.err = ""; bump();
+}
+function rangeWindow() {
+  if (RG.preset !== "custom") return { span: RANGE_SPAN[RG.preset] };
+  const since = Math.floor(new Date(RG.from).getTime() / 1000), until = Math.floor(new Date(RG.to).getTime() / 1000);
+  return isFinite(since) && isFinite(until) && until > since && until - since <= 31 * 86400 ? { since, until } : null;
+}
+async function rangeStart() {
+  const w = rangeWindow();
+  if (!w) { RG.err = "window"; bump(); return; }
+  const ids = nodesOf(), names = {};
+  for (const id of ids) names[id] = nodeName(id);
+  RG.busy = true; RG.err = ""; bump();
+  try {
+    const r = await api.post("/api/logs/range", { nodes: ids, src: srcOf(), lv: levelsOn(), ...w, redact: RG.redact,
+      tz: -new Date().getTimezoneOffset(), names, label: RG.preset });
+    if (r && r.ok) { Object.assign(RG, { id: r.data.id, v: null, saved: false, name: "" }); rangePoll(); }
+    else RG.err = (r && r.code) || "error";
+  } catch (_) { RG.err = "error"; }
+  RG.busy = false; bump();
+}
+async function rangePoll() {
+  clearTimeout(RG.timer);
+  if (!RG.id) return;
+  const id = RG.id;
+  try {
+    const r = await api.get("/api/logs/range?id=" + id);
+    if (RG.id !== id) return;
+    if (r && r.ok) { RG.v = r.data; RG.err = ""; }
+    else if (r && r.code === "gone") { RG.id = null; RG.v = null; RG.err = "gone"; }
+    else RG.err = "error";
+  } catch (_) { RG.err = "error"; }
+  const ph = RG.v && RG.v.phase;
+  if (ph === "ready" && !RG.saved) { RG.saved = true; rangeSave(); }
+  // polled while reading even in a hidden tab: a long read is what one leaves a tab for, and the panel drops a request
+  // nobody polls for two minutes
+  if (RG.id && ph !== "ready" && ph !== "failed") RG.timer = setTimeout(rangePoll, 1500);
+  bump();
+}
+function rangeSave() {
+  const a = document.createElement("a");
+  a.href = "api/logs/download/" + RG.id; a.download = (RG.v && RG.v.name) || "swg-logs.log";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function rangeClose() {
+  clearTimeout(RG.timer);
+  if (RG.id) api.post("/api/logs/range/close", { id: RG.id }).catch(() => {});
+  Object.assign(RG, { id: null, v: null, err: "", saved: false });
+  bump();
+}
+function rangeMakeNow() {
+  if (RG.id) api.post("/api/logs/range/make", { id: RG.id }).then(() => rangePoll()).catch(() => {});
+}
+
+// one server's state as the progress bar files it, and how each reads
+const RCAT = { done: "done", reading: "reading", sending: "reading", waiting: "waiting", failed: "failed", timeout: "failed",
+               offline: "offline", old: "old", noanswer: "noanswer", skipped: "skipped" };
+const RORDER = ["done", "reading", "waiting", "skipped", "noanswer", "old", "offline", "failed"];
+function rangeSay(k, v) {
+  return ({
+    done: [T("range|Done"), T("Read and sent: its part of the range is in the file."), "ok"],
+    reading: [T("Reading"), T("Reading its logs, at low priority. A full log takes a few seconds."), "run"],
+    waiting: [T("Asked"), T("Asked: a server starts within a sync or two."), "faint"],
+    skipped: [T("Left out"), T("The file was made before it finished."), "faint"],
+    noanswer: [T("No answer"), T("Asked, but nothing came back. Check that the server syncs and runs a current build."), "warn"],
+    old: [T("Update the node"), T("This node's build is too old for range downloads. Update it to include its logs."), "warn"],
+    offline: [T("Offline"), T("Not reporting — nothing can be read until it is back."), "faint"],
+    failed: [T("Failed"), T("It stopped answering while it read, or ran past the 10-minute limit."), "bad"],
+    cut: [T("Newest part only"), T("Its share of the 50 MB was full, so the file has the end of its range. Narrow the range or the servers for the rest."), "warn"],
+    short: [T("Keeps less"), T("Its log budget no longer holds the start of the range."), "faint"],
+    off: [T("Logging is off"), T("Logging is off, so nothing is stored to read."), "warn"],
+    noaccess: [T("No access yet"), T("The panel reads its own journal once it restarts after the update that added it to systemd-journal."), "warn"],
+    none: [T("Nothing to read"), T("None of the chosen sources is on these servers."), "faint"],
+    skew: [T("Clock off"), T("These servers' clocks differ from the panel's. Their lines are put on the panel's clock."), "faint"],
+  })[k] || [k, "", "faint"];
+}
+function rangeGroups(v) {
+  const cat = {}, extra = {};
+  const add = (o, k, id) => (o[k] = o[k] || []).push(id);
+  for (const [id, ns] of Object.entries(v.nodes || {})) {
+    add(cat, RCAT[ns.state] || "waiting", id);
+    if (ns.cut) add(extra, "cut", id);
+    if (ns.first && ns.first > v.since * 1e6 + 60e6) add(extra, "short", id);
+    const st = Object.values(ns.st || {});
+    if (st.includes("off")) add(extra, "off", id);
+    if (st.includes("noaccess")) add(extra, "noaccess", id);
+    if (st.length && st.every(x => x === "absent")) add(extra, "none", id);
+    if (ns.off) add(extra, "skew", id);
+  }
+  return { cat, extra };
+}
+function NamesPop({ k, ids, n }) {
+  const [txt, tip, tone] = rangeSay(k);
+  return html`<${Popover} cls="lv-stw" popCls="lv-stpop" trigger=${html`<span class=${"lv-st t-" + tone}>${txt} <b>${fmtNum(n)}</b></span>`}>
+    <div class="lv-stpop-t">${tip}</div>
+    <div class="lv-stpop-n">${ids.slice(0, 24).map(id => html`<span class="lv-chip" style=${"--lvc:" + chipOf(id)}>${nodeName(id)}</span>`)}
+      ${ids.length > 24 ? html`<span class="faint">${T("and {n} more", { n: ids.length - 24 })}</span>` : null}</div>
+  <//>`;
+}
+
+function RangePanel() {
+  const v = RG.v, ids = nodesOf(), lv = levelsOn();
+  const nodeLbl = ids.length === 1 ? nodeName(ids[0]) : ids.includes(LOG_PANEL) && ids.length > 1
+    ? T("Panel and {n}", { n: plural(ids.length - 1, "server") }) : plural(ids.length, "server");
+  const errText = { window: T("Pick a start before the end, at most 31 days apart."),
+    busy: T("Two downloads are being made already. Wait for one to finish."),
+    gone: T("This download is gone: made files are kept for {n} min. Make it again.", { n: RANGE_KEEP_MIN }),
+    bad_request: T("Pick at least one server, one source and one level."),
+    bad_range: T("Pick a start before the end, at most 31 days apart.") }[RG.err] || (RG.err ? T("The panel did not answer. Try again.") : "");
+  if (!RG.id) {
+    const can = ids.length && srcOf().length && lv.length;
+    return html`<div class="lv-pick lv-rng" role="group" aria-label=${T("Download a time range")}>
+      <div class="lv-rng-row">
+        <div class="lv-levels lv-rng-pre" role="group" aria-label=${T("Time range")}>${[...Object.keys(RANGE_SPAN), "custom"].map(k => html`<button type="button" key=${k}
+          class=${"lv-lvb" + (RG.preset === k ? " on" : "")} aria-pressed=${RG.preset === k} onClick=${() => { RG.preset = k; RG.err = ""; bump(); }}>${rangeLabel(k)}</button>`)}</div>
+        ${RG.preset === "custom" ? html`<span class="lv-rng-dts"><label class="lv-rng-dt"><span class="faint">${T("From")}</span>
+            <input type="datetime-local" value=${RG.from} onInput=${e => { RG.from = e.target.value; RG.err = ""; bump(); }}/></label>
+          <label class="lv-rng-dt"><span class="faint">${T("To")}</span>
+            <input type="datetime-local" value=${RG.to} onInput=${e => { RG.to = e.target.value; RG.err = ""; bump(); }}/></label></span>` : null}
+      </div>
+      <div class="lv-rng-what">${T("From {servers}: {sources}, at {levels}.", { servers: nodeLbl, sources: plural(srcOf().length, "source"),
+        levels: lv.map(levelLabel).join(", ") || "—" })} <span class="faint">${T("The servers, sources and levels chosen above. Each server's share is the 50 MB divided between them; over its share a server gives the newest part.")}</span></div>
+      <div class="lv-rng-mask">
+        <label class="lv-check"><input type="checkbox" checked=${RG.redact} onChange=${e => { RG.redact = e.target.checked; bump(); }}/>
+          <span>${T("Mask keys and tokens")}</span></label>
+        <div class="faint lv-rng-note">${T("WireGuard keys, Bearer and API tokens become [key] or [redacted].")}</div>
+      </div>
+      <div class="lv-rng-row lv-rng-foot">
+        ${errText ? html`<span class="lv-rng-err" role="alert">${errText}</span>` : null}
+        <span class="grow"></span>
+        <button class="btn btn-mini" onClick=${() => { RG.open = false; RG.err = ""; bump(); }}>${T("Cancel")}</button>
+        <button class="btn btn-mini btn-primary" disabled=${!can || RG.busy} onClick=${rangeStart}><${Ic} i="download"/> ${T("Make the file")}</button>
+      </div>
+    </div>`;
+  }
+  const g = v ? rangeGroups(v) : { cat: {}, extra: {} };
+  const total = ids.length, done = Object.entries(g.cat).filter(([k]) => k !== "reading" && k !== "waiting").reduce((a, [, l]) => a + l.length, 0);
+  const ph = v ? v.phase : "reading";
+  const head = ph === "ready" ? T("Ready: {v1} lines, {v2}.", { v1: fmtNum(v.lines), v2: fmtBytes(v.raw) })
+    : ph === "failed" ? T("The file could not be made: {v1}", { v1: v.err || "?" })
+    : ph === "making" ? T("Making the file…")
+    : T("Reading {v1}: waiting on {v2} of {v3} servers.", { v1: v ? dtShow(v.since) + " – " + dtShow(v.until) : "…", v2: fmtNum(total - done), v3: fmtNum(total) });
+  const partial = ph === "ready" && (Object.keys(g.cat).some(k => k !== "done") || g.extra.cut || g.extra.short);
+  return html`<div class="lv-pick lv-rng" role="group" aria-label=${T("Download a time range")}>
+    <div class="lv-rng-row"><span class=${"lv-rng-head" + (ph === "failed" ? " bad" : "")} aria-live="polite">${head}</span><span class="grow"></span>
+      ${ph === "ready" ? html`<a class="btn btn-mini btn-primary" href=${"api/logs/download/" + RG.id} download=${v.name}><${Ic} i="download"/> ${T("Save the file")}</a>` : null}</div>
+    <div class="lv-rng-bar" role="img" aria-label=${T("Waiting on {v2} of {v3} servers", { v2: fmtNum(total - done), v3: fmtNum(total) })}>
+      ${RORDER.filter(k => g.cat[k]).map(k => html`<i key=${k} class=${"lv-rng-seg c-" + k} style=${"flex-grow:" + g.cat[k].length}></i>`)}</div>
+    <div class="lv-states">${RORDER.filter(k => g.cat[k]).map(k => html`<${NamesPop} key=${k} k=${k} ids=${g.cat[k]} n=${g.cat[k].length}/>`)}
+      ${Object.entries(g.extra).map(([k, l]) => html`<${NamesPop} key=${"x" + k} k=${k} ids=${l} n=${l.length}/>`)}</div>
+    ${partial ? html`<div class="faint lv-rng-note">${T("Not the whole range from every server — the file's first lines say which and why.")}</div>` : null}
+    <div class="lv-rng-row">
+      ${ph === "ready" ? html`<span class="faint lv-rng-note">${T("Kept on the panel for {n} min after each save.", { n: RANGE_KEEP_MIN })}</span>` : null}
+      <span class="grow"></span>
+      ${ph === "reading" && done < total ? html`<button class="btn btn-mini" disabled=${!done} onClick=${rangeMakeNow}
+        title=${T("Make the file from the servers that have answered; the rest are left out")}>${T("Make the file now")}</button>` : null}
+      <button class="btn btn-mini" onClick=${rangeClose}>${ph === "ready" || ph === "failed" ? T("Close") : T("Cancel")}</button>
+    </div>
+  </div>`;
+}
+
 // ── the viewer ────────────────────────────────────────────────────────────────────────────────────────────────────
 export function LogViewer() {
   useStore();
@@ -429,7 +607,10 @@ export function LogViewer() {
       <button class=${"btn btn-mini" + (LV.wrap ? " on" : "")} aria-pressed=${LV.wrap} onClick=${() => { LV.wrap = !LV.wrap; remember(); bump(); }}>${T("Wrap")}</button>
       <button class="btn btn-mini" onClick=${() => { LV.lines = []; LV.frozen = LV.frozen ? [] : null; LV.missed = 0; bump(); }}>${T("Clear")}</button>
       <button class="btn btn-mini" disabled=${!lines.length} onClick=${() => download(lines)} title=${T("The lines shown, as a text file")}><${Ic} i="download"/> ${T("Download")}</button>
+      <button class=${"btn btn-mini" + (RG.open || RG.id ? " on" : "")} aria-expanded=${!!(RG.open || RG.id)} onClick=${rangeOpen}
+        title=${T("Every line of a time range from these servers, as one file")}><${Ic} i="clock"/> ${T("Time range…")}</button>
     </div>
+    ${RG.open || RG.id ? html`<${RangePanel}/>` : null}
     ${empty ? html`<div class="lv-empty">${empty}</div>` : html`<${Stream} lines=${lines} follow=${!paused}
       onUserScroll=${atEnd => { if (!atEnd && !LV.frozen) pause(); }}/>`}
     <div class="lv-foot faint">${LV.frozen

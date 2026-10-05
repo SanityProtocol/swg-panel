@@ -4647,6 +4647,37 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lv-full{position:fixed;inset:0;z-index:950;margin:0;border-radius:0;max-width:none;overflow:auto}
 .lv-full .lv-stream{flex:1 1 auto;height:auto;min-height:200px}
 .lv-ph .lv-empty{height:64px}
+/* Logs P3: a time range, downloaded as one file — the bar shows every server's state at once, 2 or 200 alike */
+.lv-rng{display:flex;flex-direction:column;gap:10px}
+.lv-rng-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.lv-rng-pre .lv-lvb::before{display:none}
+.lv-rng-pre .lv-lvb.on{color:var(--brand)}
+.lv-rng-mask .lv-rng-note{padding-left:23px}
+.lv-rng-foot{border-top:1px solid var(--line);padding-top:10px}
+.lv-rng-dt{display:inline-flex;align-items:center;gap:6px;font-size:12.5px}
+.lv-rng-dts{display:inline-flex;flex-wrap:wrap;gap:8px 12px}
+.lv-rng .btn-mini.btn-primary{background:var(--brand);color:var(--brand-ink);border-color:var(--brand);font-weight:700}
+.lv-rng .btn-mini.btn-primary:hover{filter:brightness(1.08);color:var(--brand-ink)}
+.lv-rng .btn-mini.btn-primary:disabled{filter:none;opacity:.5}
+.lv-rng-dt input{padding:4px 8px;font-size:13px;width:auto;font-variant-numeric:tabular-nums}
+.lv-rng-what{font-size:13px;line-height:1.5}
+.lv-rng-what .faint{display:block;font-size:12px;max-width:72ch}
+.lv-rng-note{font-size:12px}
+.lv-rng-err{font-size:12.5px;color:var(--dangling)}
+.lv-rng-head{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.lv-rng-head.bad{color:var(--dangling)}
+.lv-rng-bar{display:flex;gap:2px;height:8px;border-radius:4px;overflow:hidden;background:var(--line)}
+.lv-rng-seg{display:block;flex-basis:0;min-width:3px;transition:flex-grow .4s ease}
+.lv-rng-seg.c-done{background:var(--ready)}
+.lv-rng-seg.c-reading{background:var(--brand);animation:lv-rng-pulse 1.6s ease-in-out infinite}
+.lv-rng-seg.c-waiting,.lv-rng-seg.c-skipped,.lv-rng-seg.c-offline{background:var(--line-solid)}
+.lv-rng-seg.c-noanswer,.lv-rng-seg.c-old{background:var(--partial)}
+.lv-rng-seg.c-failed{background:var(--dangling)}
+@keyframes lv-rng-pulse{50%{opacity:.55}}
+.lv-st.t-ok{color:var(--ready);border-color:color-mix(in srgb,var(--ready) 45%,transparent)}
+.lv-st.t-run{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 45%,transparent)}
+.lv-st.t-bad{color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 45%,transparent)}
+@media (prefers-reduced-motion:reduce){.lv-rng-seg{transition:none}.lv-rng-seg.c-reading{animation:none}}
 @media (max-width:640px){
   .lv-row{grid-template-columns:76px minmax(0,auto) minmax(0,1fr);grid-template-areas:"t chip lv" "msg msg msg";row-gap:0;white-space:normal;
     padding-top:2px;padding-bottom:2px}

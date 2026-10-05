@@ -6977,7 +6977,11 @@ def live_journal_argv(base, units, kernel, cursor, n):
     starts with the last `n` lines."""
     a = list(base) + ["-f", "--no-pager", "-o", "json", "--output-fields=" + LIVE_FIELDS]
     a += ["--after-cursor=" + cursor] if cursor else ["-n", str(n)]
-    groups = []
+    return a + live_journal_matches(units, kernel)
+
+
+def live_journal_matches(units, kernel):
+    a, groups = [], []
     if units:
         groups += [["_SYSTEMD_UNIT=" + u for u in units], ["_PID=1"] + ["UNIT=" + u for u in units]]
     if kernel:
@@ -6985,6 +6989,20 @@ def live_journal_argv(base, units, kernel, cursor, n):
     for i, g in enumerate(groups):
         a += (["+"] if i else []) + g
     return a
+
+
+def live_journal_line(e, want):
+    """One journal entry (journalctl -o json) as [time µs, source, priority, text], or None: not one of the sources."""
+    src = live_journal_src(e)
+    if src == "p2p" and not live_want(src, want) and "kernel" in want:
+        src = "kernel"                                        # a P2P hit is a kernel line too
+    if not src:
+        return None
+    try:
+        t, prio = int(e.get("__REALTIME_TIMESTAMP")), int(e.get("PRIORITY", 6))
+    except (TypeError, ValueError):
+        t, prio = int(time.time() * 1000000), 6
+    return [t, src, prio, live_text(e.get("MESSAGE"))[:LIVE_TEXT_MAX]]
 
 
 def _live_utc(y, mo, d, h, mi, s):
@@ -7253,16 +7271,9 @@ class LiveReader:
             self.jlines += 1
             if isinstance(e.get("__CURSOR"), str):
                 self.jcur = e["__CURSOR"]
-            src = live_journal_src(e)
-            if src == "p2p" and not live_want(src, self.want) and "kernel" in self.want:
-                src = "kernel"                                # a P2P hit is a kernel line too
-            if not src:
-                continue
-            try:
-                t, prio = int(e.get("__REALTIME_TIMESTAMP")), int(e.get("PRIORITY", 6))
-            except (TypeError, ValueError):
-                t, prio = int(time.time() * 1000000), 6
-            out.append([t, src, prio, live_text(e.get("MESSAGE"))[:LIVE_TEXT_MAX]])
+            ln = live_journal_line(e, self.want)
+            if ln:
+                out.append(ln)
         if eof and self.jback:                                # the backfill read is done: follow from its last line, or
             self._jclose()                                    # from now when there was none
             self._jopen()
@@ -7355,6 +7366,204 @@ class LiveReader:
         self._jclose()
         for x in self.files + self.ctrs:
             x.close()
+
+
+# A TIME RANGE (Logs P3, docs/LOGS-PLAN.md §26): the same sources, read ONCE between two times — journalctl without -f (its
+# end is the process's exit, never a time window), each file with its `.1` first, each container's log through the Engine
+# API with since/until and no follow. The sources are merged by time on this box, and a RangeRing keeps the NEWEST `share`
+# bytes of them: over its share a server's file starts later, and says so (the operator chose the end of a range, §26).
+import heapq as _range_heapq
+import zlib as _range_zlib
+
+RANGE_SEG_MAX = 512 << 10            # bytes of text one ring segment holds at most
+RANGE_SEGS = 8                       # a share is held in about this many segments; the oldest goes first
+RANGE_LINE_OVER = 64                 # what a line costs in the file beyond its text (time, server, source, level)
+RANGE_LEVELS = {"err": (0, 1, 2, 3), "warn": (4,), "info": (5, 6), "debug": (7,)}   # the viewer's level chips
+
+
+def range_prios(lv):
+    """The priorities the viewer's level chips `lv` keep."""
+    return {p for k in lv if k in RANGE_LEVELS for p in RANGE_LEVELS[k]} if isinstance(lv, list) else set(range(8))
+
+
+class RangeRing:
+    """The newest `share` bytes of a time-ordered stream of lines, held as zlib-compressed segments (logs compress
+    ~8-10x: a 50 MB share costs a few MB here). Past the share the oldest segment goes, counted: `cut` lines, the newest
+    of them at `cut_t`."""
+
+    def __init__(self, share):
+        self.share = max(1, int(share))
+        self.seg = max(4096, min(RANGE_SEG_MAX, self.share // RANGE_SEGS))
+        self.segs, self.cur, self.cur_size, self.size = [], [], 0, 0
+        self.lines, self.cut, self.cut_t = 0, 0, 0
+
+    def add(self, ln):
+        sz = RANGE_LINE_OVER + len(ln[3])
+        self.cur.append(ln)
+        self.cur_size += sz
+        self.size += sz
+        self.lines += 1
+        if self.cur_size >= self.seg:
+            self.seal()
+        while self.size > self.share and self.segs:
+            n, size, last_t, _z = self.segs.pop(0)
+            self.size -= size
+            self.lines -= n
+            self.cut += n
+            self.cut_t = last_t
+
+    def seal(self):
+        if self.cur:
+            self.segs.append((len(self.cur), self.cur_size, self.cur[-1][0],
+                              _range_zlib.compress(json.dumps(self.cur).encode(), 6)))
+            self.cur, self.cur_size = [], 0
+
+    def parts(self):
+        """The kept lines, oldest first, a segment at a time."""
+        self.seal()
+        for _n, _s, _t, z in self.segs:
+            yield json.loads(_range_zlib.decompress(z))
+
+
+def range_journal_argv(base, units, kernel, since, until, pmax):
+    """journalctl reading `units` (and with `kernel`, the kernel's lines) from `since` to `until` (s) once. `pmax` below 7
+    leaves out the priorities above it: journalctl ANDs -p with the OR-ed matches (measured on lg1)."""
+    a = list(base) + ["--no-pager", "-o", "json", "--output-fields=" + LIVE_FIELDS, "--since=@%d" % since,
+                      "--until=@%d" % until] + (["-p", "0..%d" % pmax] if pmax < 7 else [])
+    return a + live_journal_matches(units, kernel)
+
+
+def _range_journal(argv, want, stop):
+    p = None
+    try:
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        for raw in p.stdout:
+            if stop.is_set():
+                return
+            try:
+                e = json.loads(raw)
+            except ValueError:
+                continue
+            ln = live_journal_line(e, want) if isinstance(e, dict) else None
+            if ln:
+                yield ln
+    except OSError:
+        return
+    finally:
+        if p is not None:
+            with contextlib.suppress(Exception):
+                p.kill()
+            with contextlib.suppress(Exception):
+                p.wait(5)
+            with contextlib.suppress(Exception):
+                p.stdout.close()
+
+
+def _range_file(path, src, fmt, since_us, until_us, stop):
+    """A log file's lines in the range: its `.1` first (rotated out, older), then the file."""
+    last = 0
+    for p in (path + ".1", path):
+        try:
+            f = open(p, "rb")
+        except OSError:
+            continue
+        with f:
+            for raw in f:
+                if stop.is_set():
+                    return
+                raw = raw.rstrip(b"\n")
+                if not raw:
+                    continue
+                t, prio, text = live_parse_line(fmt, raw.decode("utf-8", "replace"), last)
+                last = t
+                if since_us <= t < until_us:
+                    yield [t, src(text) if callable(src) else src, prio, text[:LIVE_TEXT_MAX]]
+
+
+def _range_ctr(sock_path, name, src, since_us, until_us, stop):
+    """A container's lines in the range, through the Engine API (HTTP/1.0, no follow: the stream ends at `until`)."""
+    s = None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(30)
+        s.connect(sock_path)
+        s.sendall(("GET /containers/%s/logs?stdout=1&stderr=1&timestamps=1&since=%d&until=%d HTTP/1.0\r\nHost: docker"
+                   "\r\n\r\n" % (name, since_us // 1000000, until_us // 1000000 + 1)).encode())
+        raw, buf, head = b"", b"", True
+        while not stop.is_set():
+            d = s.recv(65536)
+            if not d:
+                break
+            raw += d
+            if head:
+                if b"\r\n\r\n" not in raw:
+                    continue
+                hdr, raw = raw.split(b"\r\n\r\n", 1)
+                head = False
+                if b" 200 " not in hdr.split(b"\r\n", 1)[0]:  # no such container, or the daemon refused
+                    return
+            while len(raw) >= 8 and raw[0] in (0, 1, 2) and raw[1:4] == b"\0\0\0":
+                n = struct.unpack(">I", raw[4:8])[0]
+                if len(raw) < 8 + n:
+                    break
+                buf += raw[8:8 + n]
+                raw = raw[8 + n:]
+            *done, buf = buf.split(b"\n")
+            for ln in done:
+                m = _LIVE_RFC.match(ln.decode("utf-8", "replace"))
+                if m:
+                    t = _live_utc(*m.groups()[:6]) * 1000000 + int(((m.group(7) or "") + "000000")[:6])
+                    if since_us <= t < until_us:
+                        yield [t, src, 6, ln.decode("utf-8", "replace")[m.end():][:LIVE_TEXT_MAX]]
+    except OSError:
+        return
+    finally:
+        if s is not None:
+            with contextlib.suppress(OSError):
+                s.close()
+
+
+def range_read(ring, want, lv, since, until, stop, journal=None, files=(), ctrs=(), sock=None, tick=None):
+    """Read `want`'s lines from `since` to `until` (s, this box's clock) into `ring`, oldest first, keeping the level
+    chips `lv`. `journal` is fn(since, until, pmax) → journalctl's argv; `files` [(path, source or fn(text), fmt)];
+    `ctrs` [(container, source)] through `sock`. `tick(n)` is called every 5 000 lines read. → lines read."""
+    want, prios = set(want), range_prios(lv)
+    su, uu = int(since) * 1000000, int(until) * 1000000
+    gens = []
+    if journal and prios:
+        gens.append(_range_journal(journal(int(since), int(until), max(prios)), want, stop))
+    for p, s, fmt in files:
+        gens.append(_range_file(p, s, fmt, su, uu, stop))
+    for c, s in (ctrs if sock else ()):
+        gens.append(_range_ctr(sock, c, s, su, uu, stop))
+    n = 0
+    try:
+        for ln in _range_heapq.merge(*gens, key=lambda x: x[0]):
+            if stop.is_set():
+                break
+            n += 1
+            if ln[2] in prios and live_want(ln[1], want):
+                ring.add(ln)
+            if tick and n % 5000 == 0:
+                tick(n)
+    finally:
+        for g in gens:
+            g.close()
+    return n
+
+
+def range_first(journal, until, want):
+    """The time (µs) of the oldest line the journal still keeps of these sources, or 0 — what "this server keeps lines
+    from …" says when a range starts before its budget's reach."""
+    if not journal:
+        return 0
+    g = _range_journal(journal(0, int(until), 7), set(want), threading.Event())
+    try:
+        return next(g)[0]
+    except StopIteration:
+        return 0
+    finally:
+        g.close()
 # ── end of the live log reader ────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -7538,7 +7747,7 @@ def live_absorb(body, now=None):
     return 200, {"ok": True}
 
 
-def _live_panel_plan(srcs):
+def _live_panel_plan(srcs, rng=False):
     """The panel's own sources: its journal (bare metal: the swg-panel namespace merged with the main one; NixOS: the main
     journal), its own file in a container. The panel reads the journal through the systemd-journal group its unit adds;
     a panel not restarted since that drop-in cannot yet ("noaccess")."""
@@ -7568,6 +7777,8 @@ def _live_panel_plan(srcs):
                                            ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system",
                                             "/lib/systemd/system"))
     base = ["journalctl"] + (["--namespace=+swg-panel"] if ns else [])
+    if rng:                                                   # a time range (P3): read once, between two times
+        return {"journal": (lambda s, u, pm: range_journal_argv(base, units, False, s, u, pm)) if units else None}, st
     return {"journal": (lambda cur, n: live_journal_argv(base, units, False, cur, n)) if units else None}, st
 
 
@@ -7629,6 +7840,505 @@ def live_api_post(path, body, deps):
         return live_close(body.get("id"))
     known = set(deps.get("node_seen") or {}) | set(deps.get("node_snaps") or {})
     return live_open(body.get("nodes"), body.get("src"), known, replace=body.get("replace"))
+
+# ── Logs P3: a time range, downloaded as one file (docs/LOGS-PLAN.md §3, §5, §6, §26) ─────────────────────────────────────
+# A SIBLING of the live store, not a mode of it: a P2 node starts a live follower for ANY entry under `logs`, so a range
+# rides its own reply key, `logrange`, which a P2 node ignores (the panel says "update the node": its snapshot lacks
+# `log.range`). Memory holds only each request's progress. The lines go to disk as they arrive, a gzip spool per server
+# under <state>/logspool/<id>/, and are merged ONCE — when every server asked is final, or the operator says "make the
+# file now" — into <id>.log.gz: time-ordered on the panel's clock, the §5 header first, redacted as it is written (§6).
+# GET /api/logs/download/<id> sends that file. Each server gets an even share of RANGE_TOTAL and keeps the NEWEST lines
+# of the range that fit (§26.2). Like the viewer's routes these never go through api() nor take _api_lock.
+RANGE_REQ_MAX, RANGE_FILES_MAX = 2, 4
+RANGE_TOTAL = 50 << 20      # bytes of text one download holds at most, shared evenly by the servers asked
+RANGE_LIFE = 600            # s a request may take: then the file is made with what is there
+RANGE_STALL = 120           # s a server may go silent once it said it reads: then "failed"
+RANGE_KEEP = 600            # s a made file stays after its making or its last download
+RANGE_ABANDON = 120         # s with no poll from its viewer: an unfinished request was left (a tab closed) and goes
+RANGE_SPAN_MAX = 31 * 86400
+RANGE_LABELS = ("15m", "1h", "24h", "7d", "custom")
+RANGE_FINAL = ("done", "failed", "timeout", "skipped", "offline", "old", "noanswer")
+RANGE_POST_SLOTS = threading.BoundedSemaphore(4)   # range posts taken at once: 200 servers finishing together queue up
+RANGE_NODE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_RANGE_REQS = {}            # id -> request (range_open)
+_RANGE_LOCK = threading.Lock()
+_RANGE_DIR = {"path": ""}   # <state>/logspool (range_init)
+_RANGE_ESC = str.maketrans({"\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r"})
+_RANGE_UNESC = re.compile(r"\\([\\ntr])")
+# §6, chosen by the operator (§26.7): a 32-byte base64 key exactly — a WireGuard private, public or preshared key, which
+# look alike — a Bearer token, the panel's own API tokens. Our own lines print keys only as their first 8 characters.
+_RANGE_REDACT = ((re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=(?![A-Za-z0-9+/=])"), "[key]", "="),
+                 (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1[redacted]", None),
+                 (re.compile(r"\bswgp_[0-9a-f]{16,}"), "swgp_[redacted]", "swgp_"))
+
+
+def range_redact(text):
+    for rx, rep, need in _RANGE_REDACT:
+        if need is None or need in text:
+            text = rx.sub(rep, text)
+    return text
+
+
+def range_init(state_dir):
+    """Where the spool lives — emptied at every start: a crash or a restart must not leave a download behind."""
+    d = os.path.join(state_dir or ".", "logspool")
+    with contextlib.suppress(OSError):
+        shutil.rmtree(d)
+    with contextlib.suppress(OSError):
+        os.makedirs(d, mode=0o700, exist_ok=True)
+    _RANGE_DIR["path"] = d
+
+
+def _range_drop(rec):
+    """Forget a request and delete everything it put on disk (caller holds _RANGE_LOCK, or the request is no longer in the
+    store)."""
+    rec["stop"].set()
+    with contextlib.suppress(OSError):
+        shutil.rmtree(rec["dir"])
+    with contextlib.suppress(OSError):
+        os.unlink(rec["dir"] + ".log.gz")
+
+
+def range_open(body, known, now=None):
+    """POST /api/logs/range {nodes, src, lv, since + until | span, redact?, tz?, names?, label?} → (status, body). `tz` is
+    the browser's offset in minutes (the file's times), `names` the servers' names as the viewer shows them."""
+    now = time.time() if now is None else now
+    nodes, srcs, lv = body.get("nodes"), body.get("src"), body.get("lv")
+    if not isinstance(nodes, list) or not isinstance(srcs, list) or not isinstance(lv, list):
+        return 400, {"ok": False, "error": "nodes, sources and levels are lists", "code": "bad_request"}
+    srcs = list(dict.fromkeys(s for s in srcs if isinstance(s, str) and LIVE_SRC_RE.match(s)))[:64]
+    # a node the panel has not heard from since it started is still asked, and reads "offline" — not left out unsaid
+    nodes = list(dict.fromkeys(n for n in nodes if isinstance(n, str) and (n == LIVE_PANEL or n in known
+                                                                           or RANGE_NODE_RE.match(n))))[:2000]
+    lv = [k for k in RANGE_LEVELS if k in lv]
+    try:                                                   # a preset is a span back from now on the PANEL's clock
+        until = int(body["until"]) if body.get("span") is None else int(now)
+        since = int(body["since"]) if body.get("span") is None else until - int(body["span"])
+        tz = max(-900, min(900, int(body.get("tz") or 0)))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return 400, {"ok": False, "error": "since and until are times in seconds", "code": "bad_request"}
+    until = min(until, int(now) + 60)
+    if not srcs or not nodes or not lv:
+        return 400, {"ok": False, "error": "pick at least one server, one source and one level", "code": "bad_request"}
+    if not 0 < until - since <= RANGE_SPAN_MAX:
+        return 400, {"ok": False, "error": "the range must end after it starts, and span 31 days at most",
+                     "code": "bad_range"}
+    names = body.get("names") if isinstance(body.get("names"), dict) else {}
+    names = {n: re.sub(r"\s+", " ", str(names.get(n) or ""))[:64].strip() or n for n in nodes}
+    label = body.get("label") if body.get("label") in RANGE_LABELS else "custom"
+    with _RANGE_LOCK:
+        _range_expire(now)
+        if sum(1 for r in _RANGE_REQS.values() if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX:
+            return 429, {"ok": False, "error": "%d downloads are being made already" % RANGE_REQ_MAX, "code": "busy"}
+        rid = secrets.token_hex(8)
+        rec = _RANGE_REQS[rid] = {
+            "id": rid, "secret": secrets.token_bytes(16), "nodes": nodes, "nodeset": set(nodes), "src": srcs, "lv": lv,
+            "since": since, "until": until, "redact": body.get("redact") is not False, "tz": tz, "names": names,
+            "label": label, "share": RANGE_TOTAL // len(nodes), "iv": live_iv(len(nodes)), "at": now, "phase": "reading",
+            "ns": {n: {"state": "waiting"} for n in nodes}, "dir": os.path.join(_RANGE_DIR["path"] or ".", rid),
+            "made": 0.0, "read": 0.0, "polled": now, "wlock": threading.Lock(), "stop": threading.Event()}
+    try:
+        os.makedirs(rec["dir"], mode=0o700)
+    except OSError as e:
+        with _RANGE_LOCK:
+            _RANGE_REQS.pop(rid, None)
+        return 500, {"ok": False, "error": "cannot spool the download: %s" % e, "code": "internal"}
+    if LIVE_PANEL in rec["nodeset"]:
+        threading.Thread(target=_range_panel_run, args=(rec,), daemon=True, name="swg-range-" + rid).start()
+    return 200, {"ok": True, "data": {"id": rid, "share": rec["share"]}}
+
+
+def _range_expire(now):
+    """Made files past RANGE_KEEP go, the oldest made ones past RANGE_FILES_MAX, and an unfinished request nobody polls
+    any more (caller holds _RANGE_LOCK)."""
+    for rid in [k for k, r in _RANGE_REQS.items()
+                if (r["phase"] in ("ready", "failed") and now - max(r["made"], r["read"]) > RANGE_KEEP)
+                or (r["phase"] in ("reading", "making") and now - r["polled"] > RANGE_ABANDON)]:
+        _range_drop(_RANGE_REQS.pop(rid))
+    made = sorted((r["made"], k) for k, r in _RANGE_REQS.items() if r["phase"] in ("ready", "failed"))
+    for _t, rid in made[:max(0, len(made) - RANGE_FILES_MAX)]:
+        _range_drop(_RANGE_REQS.pop(rid))
+
+
+def _range_tick(rec, snaps, seen, stale_s, now):
+    """Move a reading request's servers on by time and by what the panel knows of them; → True when every one is final
+    (caller holds _RANGE_LOCK)."""
+    late = now - rec["at"] > RANGE_LIFE
+    for nid, ns in rec["ns"].items():
+        s = ns["state"]
+        if s in RANGE_FINAL:
+            continue
+        if late:
+            ns["state"] = "timeout"
+        elif nid == LIVE_PANEL:
+            continue
+        elif s == "waiting":
+            snap, ls = snaps.get(nid), seen.get(nid)
+            if not isinstance(snap, dict) or ls is None or now - ls > stale_s:
+                ns["state"] = "offline"
+            elif not (snap.get("log") or {}).get("range"):
+                ns["state"] = "old"
+            elif ns.get("sent") and now - ns["sent"] > LIVE_NOANSWER_S:
+                ns["state"] = "noanswer"
+        elif now - ns.get("last", now) > RANGE_STALL:
+            ns["state"] = "failed"
+    return all(ns["state"] in RANGE_FINAL for ns in rec["ns"].values())
+
+
+def range_reply(nid, now=None):
+    """The sync reply's `logrange` for one node: each range still waiting on it, or None — and then no key at all, so an
+    idle fleet's reply is byte-identical."""
+    if not _RANGE_REQS:
+        return None
+    now = time.time() if now is None else now
+    out = []
+    with _RANGE_LOCK:
+        _range_expire(now)
+        for rec in _RANGE_REQS.values():
+            ns = rec["ns"].get(nid)
+            if rec["phase"] != "reading" or ns is None or ns["state"] not in ("waiting", "reading", "sending"):
+                continue
+            ns.setdefault("sent", now)
+            out.append({"id": rec["id"], "key": _live_key(rec, nid), "src": rec["src"], "lv": rec["lv"],
+                        "since": rec["since"], "until": rec["until"], "share": rec["share"], "iv": rec["iv"],
+                        "now": int(now)})
+    return out or None
+
+
+def _range_spool(rec, nid, lines, first):
+    """Append one part of a server's lines to its spool, a gzip member each (caller holds rec["wlock"]): TSV of time µs,
+    source, priority and the text with its newlines, tabs and backslashes escaped."""
+    data = "".join("%d\t%s\t%d\t%s\n" % (t, src, prio, text.translate(_RANGE_ESC))
+                   for t, src, prio, text in lines).encode("utf-8", "replace")
+    with open(os.path.join(rec["dir"], nid + ".gz"), "wb" if first else "ab") as f:
+        f.write(gzip.compress(data, 6))
+    return len(data)
+
+
+def range_absorb(body, now=None):
+    """A node's POST for a range: {id, key, now, st?, read?} while it reads; {…, seq, lines, done?} with its lines, in
+    order. → (status, body). 404/410 tell the node to stop; 409 that its parts must start again from 0."""
+    now = time.time() if now is None else now
+    rid, key = body.get("id"), body.get("key")
+    with _RANGE_LOCK:
+        rec = _RANGE_REQS.get(rid) if isinstance(rid, str) else None
+        if rec is None or rec["phase"] != "reading":
+            return 404, {"ok": False, "error": "no such request", "code": "gone"}
+        nid = key.split(".", 1)[0] if isinstance(key, str) else ""
+        if (nid == LIVE_PANEL or nid not in rec["nodeset"]
+                or not hmac.compare_digest(key.encode("utf-8", "replace"), _live_key(rec, nid).encode())):
+            return 403, {"ok": False, "error": "not this request's key", "code": "forbidden"}
+        ns = rec["ns"][nid]
+        if ns["state"] in RANGE_FINAL and ns["state"] != "done":
+            return 410, {"ok": False, "error": "this server's part is closed", "code": "gone"}
+        tn = body.get("now")
+        if isinstance(tn, (int, float)) and not isinstance(tn, bool) and math.isfinite(tn):
+            off = tn - now
+            ns["off"] = int(round(off)) if abs(off) >= LIVE_SKEW_S else 0
+        st = body.get("st")
+        if isinstance(st, dict):
+            ns["st"] = {k: v for k, v in list(st.items())[:64]
+                        if isinstance(k, str) and LIVE_SRC_RE.match(k) and v in LIVE_STATES}
+        ns["last"] = now
+        seq = body.get("seq")
+        if seq is None:                                    # it reads: a progress post
+            if ns["state"] == "waiting":
+                ns["state"] = "reading"
+            rd = body.get("read")
+            if isinstance(rd, int) and not isinstance(rd, bool):
+                ns["read"] = max(0, rd)
+            return 200, {"ok": True}
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            return 400, {"ok": False, "error": "bad part number", "code": "bad_request"}
+    lines = body.get("lines")
+    good = []
+    for ln in (lines if isinstance(lines, list) else [])[:LIVE_POST_LINES * 4]:
+        if (isinstance(ln, list) and len(ln) == 4 and isinstance(ln[0], int) and not isinstance(ln[0], bool)
+                and isinstance(ln[1], str) and LIVE_SRC_RE.match(ln[1])
+                and isinstance(ln[2], int) and 0 <= ln[2] <= 7 and isinstance(ln[3], str)):
+            good.append((ln[0], ln[1], ln[2], ln[3][:LIVE_TEXT_MAX]))
+    done = body.get("done") if isinstance(body.get("done"), dict) else None
+    with rec["wlock"]:                                     # one server's parts in order; a retried part waits here
+        with _RANGE_LOCK:
+            want = ns.get("next", 0)
+            if rec["phase"] != "reading":
+                return 404, {"ok": False, "error": "no such request", "code": "gone"}
+            if seq > want:
+                return 409, {"ok": False, "error": "parts must come in order", "code": "order", "next": want}
+            if 0 < seq < want or (seq == 0 and want and ns["state"] == "done"):
+                return 200, {"ok": True, "next": want}     # a repeat (its answer was lost): kept already
+            ns["state"] = "sending"
+            room = max(0, rec["share"] + (rec["share"] >> 2) + (1 << 20) - (0 if seq == 0 else ns.get("bytes", 0)))
+        keep, size = [], 0                                 # the node keeps to its share; this only defends the disk
+        for ln in good:
+            size += RANGE_LINE_OVER + len(ln[3])
+            if size > room:
+                break
+            keep.append(ln)
+        try:
+            n = _range_spool(rec, nid, keep, seq == 0)
+        except OSError as e:
+            with _RANGE_LOCK:
+                ns.update(state="failed", err=str(e)[:200])
+            return 410, {"ok": False, "error": "the panel cannot spool it", "code": "gone"}
+        with _RANGE_LOCK:
+            if seq == 0:                                   # a first part: a new read (noded restarted) starts afresh
+                ns.update(bytes=0, kept=0, over=0)
+            ns["next"] = seq + 1
+            ns["bytes"] = ns.get("bytes", 0) + n
+            ns["kept"] = ns.get("kept", 0) + len(keep)
+            ns["over"] = ns.get("over", 0) + len(good) - len(keep)
+            if done is not None:
+                for k in ("read", "cut", "cut_t", "first"):
+                    v = done.get(k)
+                    if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                        ns[k] = v
+                ns["state"] = "done"
+    return 200, {"ok": True, "next": seq + 1}
+
+
+def _range_panel_run(rec):
+    """The Panel entry of a range: the panel reads its own lines, in this thread, straight into its spool."""
+    ns = rec["ns"][LIVE_PANEL]
+    with contextlib.suppress(Exception):
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)   # this thread only (Linux nices a thread)
+    try:
+        plan, st = _live_panel_plan(rec["src"], rng=True)
+        with _RANGE_LOCK:
+            ns.update(state="reading", st=st, last=time.time())
+        want = [s for s, v in st.items() if v == "ok"]
+        ring = RangeRing(rec["share"])
+
+        def tick(n):
+            with _RANGE_LOCK:
+                ns.update(read=n, last=time.time())
+        n = range_read(ring, want, rec["lv"], rec["since"], rec["until"], rec["stop"], tick=tick, **plan) if want else 0
+        first = range_first(plan.get("journal"), rec["until"], want) if want and ring.cut == 0 else 0
+        if rec["stop"].is_set():
+            return
+        with rec["wlock"]:
+            size, kept = 0, 0
+            for i, part in enumerate(ring.parts() if ring.lines else [[]]):
+                size += _range_spool(rec, LIVE_PANEL, part, i == 0)
+                kept += len(part)
+        with _RANGE_LOCK:
+            ns.update(state="done", read=n, kept=kept, bytes=size, cut=ring.cut, cut_t=ring.cut_t, first=first,
+                      last=time.time())
+    except Exception as e:
+        log(LOG_WARNING, "logs: the panel's range read stopped: %s", e)
+        with _RANGE_LOCK:
+            ns.update(state="failed", err=str(e)[:200])
+
+
+def _range_fmt_t(us, tz):
+    t = us / 1000000 + tz * 60
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t)) + ".%03d" % (int(t * 1000) % 1000)
+
+
+def _range_tz(tz):
+    return ("+" if tz >= 0 else "-") + "%02d:%02d" % divmod(abs(tz), 60)
+
+
+def _range_why(rec, nid, ns):
+    """What the header says about one server whose part is not the whole range, or ""."""
+    tz, out = rec["tz"], []
+    s = ns["state"]
+    why = {"offline": "offline — not reporting, nothing read",
+           "old": "its build has no range download — update the node",
+           "noanswer": "asked, but it did not answer",
+           "failed": "stopped answering while it read" + (" (%s)" % ns["err"] if ns.get("err") else ""),
+           "timeout": "still reading after %d min — left out" % (RANGE_LIFE // 60),
+           "skipped": "the file was made before it finished"}.get(s)
+    if why:
+        out.append(why + (" — %d lines it had sent are in" % ns["kept"] if ns.get("kept") else ""))
+    if ns.get("cut"):
+        out.append("%d earlier lines, up to %s, not in: its share (%.1f MB of %d MB) was full"
+                   % (ns["cut"], _range_fmt_t(ns.get("cut_t", 0), tz)[:19], rec["share"] / 1048576, RANGE_TOTAL >> 20))
+    if ns.get("over"):
+        out.append("%d lines past its share refused by the panel" % ns["over"])
+    if ns.get("first") and ns["first"] > rec["since"] * 1000000 + 60000000:
+        out.append("keeps lines from %s only (its log budget)" % _range_fmt_t(ns["first"], tz)[:16])
+    by = {}
+    for src, v in (ns.get("st") or {}).items():
+        by.setdefault(v, []).append(src)
+    for v, words in (("off", "logging is off, nothing stored"), ("unavailable", "not on a docker node"),
+                     ("absent", "not on this server"), ("noaccess", "the panel cannot read its journal yet")):
+        if by.get(v):
+            out.append(words + ": " + ", ".join(sorted(by[v])))
+    if ns.get("off"):
+        out.append("clock %d s %s — corrected" % (abs(ns["off"]), "ahead" if ns["off"] > 0 else "behind"))
+    return "; ".join(out)
+
+
+def _range_make(rec):
+    """Merge every server's spool, by time on the panel's clock, into one gzip file with the §5 header (one thread)."""
+    try:
+        with contextlib.suppress(Exception):
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+        tz, names = rec["tz"], rec["names"]
+        with _RANGE_LOCK:
+            ns_all = {n: dict(v) for n, v in rec["ns"].items()}
+        z = _range_tz(tz)
+        nw = min(24, max([4] + [len(names.get(n, n)) for n in rec["nodes"]]))
+        word = {"15m": "last 15 min", "1h": "last 1 h", "24h": "last 24 h", "7d": "last 7 days"}.get(rec["label"], "custom")
+        head = ["# swg logs — %s" % word,
+                "# range: %s → %s %s, on the panel's clock" % (_range_fmt_t(rec["since"] * 1000000, tz)[:19],
+                                                                _range_fmt_t(rec["until"] * 1000000, tz)[:19], z),
+                "# made: %s %s by panel %s" % (_range_fmt_t(int(time.time() * 1000000), tz)[:19], z,
+                                               (VERSIONS or {}).get("panel") or "?"),
+                "# servers (%d): %s" % (len(rec["nodes"]), ", ".join(names.get(n, n) for n in rec["nodes"])),
+                "# sources: " + ", ".join(rec["src"]),
+                "# levels: " + ", ".join(rec["lv"]),
+                "# redacted: 32-byte keys (WireGuard private, public, preshared), Bearer tokens, swgp_ API tokens"
+                if rec["redact"] else "# not redacted"]
+        gaps = [(n, _range_why(rec, n, ns_all[n])) for n in rec["nodes"]]
+        gaps = [(n, w) for n, w in gaps if w]
+        head += (["# not the whole range:"] + ["#   %s — %s" % (names.get(n, n), w) for n, w in gaps]) if gaps else \
+            ["# every server's whole range is in"]
+        tmp = rec["dir"] + ".log.gz.part"
+        lines, raw = 0, 0
+        files = []
+        try:
+            for n in rec["nodes"]:
+                p = os.path.join(rec["dir"], n + ".gz")
+                if os.path.exists(p):
+                    files.append((n, gzip.open(p, "rb")))
+
+            def it(nid, f):
+                off = (ns_all[nid].get("off") or 0) * 1000000
+                for b in f:
+                    t, src, prio, text = b.rstrip(b"\n").split(b"\t", 3)
+                    yield int(t) - off, nid, src, prio, text
+            red = rec["redact"]
+            with gzip.open(tmp, "wb", 6) as out:
+                hb = ("\n".join(head) + "\n\n").encode()
+                out.write(hb)
+                raw += len(hb)
+                last_s, stamp = None, ""
+                buf = []
+                for t, nid, src, prio, text in heapq.merge(*(it(n, f) for n, f in files), key=lambda x: x[0]):
+                    if rec["stop"].is_set():
+                        return
+                    s = t // 1000000
+                    if s != last_s:
+                        last_s, stamp = s, time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(s + tz * 60))
+                    msg = text.decode("utf-8", "replace")
+                    if "\\" in msg:
+                        msg = _RANGE_UNESC.sub(lambda m: {"\\": "\\", "n": "\n", "t": "\t", "r": "\r"}[m.group(1)], msg)
+                    if red:
+                        msg = range_redact(msg)
+                    lvl = _range_lv(int(prio))
+                    ln = "%s.%03d %s  %s  %s  %s  %s\n" % (stamp, (t // 1000) % 1000, z, names.get(nid, nid).ljust(nw),
+                                                           src.decode().ljust(12), lvl.ljust(5),
+                                                           msg.replace("\n", "\n    "))
+                    buf.append(ln)
+                    lines += 1
+                    if len(buf) >= 2000:
+                        b = "".join(buf).encode("utf-8", "replace")
+                        out.write(b)
+                        raw += len(b)
+                        buf = []
+                b = "".join(buf).encode("utf-8", "replace")
+                out.write(b)
+                raw += len(b)
+        finally:
+            for _n, f in files:
+                with contextlib.suppress(Exception):
+                    f.close()
+        os.replace(tmp, rec["dir"] + ".log.gz")
+        with contextlib.suppress(OSError):
+            shutil.rmtree(rec["dir"])
+        with _RANGE_LOCK:
+            rec.update(phase="ready", made=time.time(), lines=lines, raw=raw, size=os.path.getsize(rec["dir"] + ".log.gz"))
+    except Exception as e:
+        log(LOG_WARNING, "logs: the range file could not be made: %s", e)
+        with _RANGE_LOCK:
+            rec.update(phase="failed", made=time.time(), err=str(e)[:200])
+        with contextlib.suppress(OSError):
+            os.unlink(rec["dir"] + ".log.gz.part")
+
+
+def _range_lv(prio):
+    return "ERR" if prio <= 3 else "WARN" if prio == 4 else "INFO" if prio <= 6 else "DEBUG"
+
+
+def _range_start_make(rec):
+    """(caller holds _RANGE_LOCK)"""
+    if rec["phase"] == "reading":
+        rec["phase"] = "making"
+        threading.Thread(target=_range_make, args=(rec,), daemon=True, name="swg-range-make-" + rec["id"]).start()
+
+
+def range_file_name(rec):
+    lt = time.gmtime(rec["at"] + rec["tz"] * 60)
+    return "swg-logs-%s-%s.log" % (rec["label"], time.strftime("%Y%m%d-%H%M", lt))
+
+
+def range_view(rid, deps, now=None):
+    """The SPA's poll of one range: its phase, each server's state, and once made, the file. None: no such request."""
+    now = time.time() if now is None else now
+    adv = ((deps.get("panel_settings") or {}).get("advanced") or {})
+    stale_s = max(5, int((adv.get("node_stale_ms") or 30000) / 1000))
+    with _RANGE_LOCK:
+        _range_expire(now)
+        rec = _RANGE_REQS.get(rid) if isinstance(rid, str) else None
+        if rec is None:
+            return None
+        rec["polled"] = now
+        if rec["phase"] == "reading" and _range_tick(rec, deps.get("node_snaps") or {}, deps.get("node_seen") or {},
+                                                     stale_s, now):
+            _range_start_make(rec)
+        nodes = {n: {k: v for k, v in ns.items() if k in ("state", "read", "kept", "cut", "cut_t", "first", "st", "off",
+                                                          "err")} for n, ns in rec["ns"].items()}
+        d = {"id": rid, "phase": rec["phase"], "nodes": nodes, "share": rec["share"], "since": rec["since"],
+             "until": rec["until"], "life": max(0, int(rec["at"] + RANGE_LIFE - now))}
+        if rec["phase"] == "ready":
+            d.update(size=rec["size"], raw=rec["raw"], lines=rec["lines"], name=range_file_name(rec),
+                     keep=max(0, int(max(rec["made"], rec["read"]) + RANGE_KEEP - now)))
+        elif rec["phase"] == "failed":
+            d["err"] = rec.get("err") or ""
+    return d
+
+
+def range_api_get(qs, deps):
+    v = range_view((qs.get("id") or [""])[0], deps)
+    if v is None:
+        return 404, {"ok": False, "error": "no such download", "code": "gone"}
+    return 200, {"ok": True, "data": v}
+
+
+def range_api_post(path, body, deps):
+    """POST /api/logs/range opens one; /api/logs/range/make makes the file now with what is there; /close ends one."""
+    rid = body.get("id")
+    if path == "/api/logs/range/close":
+        with _RANGE_LOCK:
+            rec = _RANGE_REQS.pop(rid, None) if isinstance(rid, str) else None
+        if rec:
+            _range_drop(rec)
+        return 200, {"ok": True}
+    if path == "/api/logs/range/make":
+        with _RANGE_LOCK:
+            rec = _RANGE_REQS.get(rid) if isinstance(rid, str) else None
+            if rec is None:
+                return 404, {"ok": False, "error": "no such download", "code": "gone"}
+            for ns in rec["ns"].values():
+                if ns["state"] not in RANGE_FINAL:
+                    ns["state"] = "skipped"
+            _range_start_make(rec)
+        return 200, {"ok": True}
+    known = set(deps.get("node_seen") or {}) | set(deps.get("node_snaps") or {})
+    return range_open(body, known)
+
+
+def range_download(rid):
+    """The made file of a request, or None: (path, raw size, gzip size, file name). Counts as a read (RANGE_KEEP)."""
+    with _RANGE_LOCK:
+        _range_expire(time.time())
+        rec = _RANGE_REQS.get(rid) if isinstance(rid, str) and LIVE_ID_RE.match(rid) else None
+        if rec is None or rec["phase"] != "ready":
+            return None
+        rec["read"] = time.time()
+        return rec["dir"] + ".log.gz", rec["raw"], rec["size"], range_file_name(rec)
 
 # ── NETWORKS P2 — the private network a node sits on (docs/NETWORKS-PLAN.md D10, §8 P2) ──────────────────────
 # Measured: a client already reaches it, with nothing built. So this is a DISCLOSURE — shown unprompted on the node
@@ -30881,6 +31591,7 @@ class Handler(BaseHTTPRequestHandler):
         owned_ifaces = sorted((node.get("ifaces") or {}).keys())
         _nprobe = net_probe_reply(nid)
         _live = live_reply(nid)          # Logs P2: only while a viewer names this node
+        _lrange = range_reply(nid)       # Logs P3: only while a range download waits on this node
         # What the node drops even on an add-only interface: the keys the operator retired (rotated, deleted, moved off)
         # and every cut-off peer still on the wire here (cut_off_for_node). Just the retirements when nobody is cut off.
         _remove = {_ifn: list(_pks) for _ifn, _pks in (node.get("retire") or {}).items()}
@@ -30897,6 +31608,8 @@ class Handler(BaseHTTPRequestHandler):
                                 **({"net_probe": _nprobe} if _nprobe else {}),
                                 # Logs P2: a live log viewer's requests, only while one names this node (D1).
                                 **({"logs": _live} if _live else {}),
+                                # Logs P3: a range download's request, only while one waits on this node (D1).
+                                **({"logrange": _lrange} if _lrange else {}),
                                 # NETWORKS P5: only while this node carries a restricted network (D1).
                                 **({"net_share": _nshare} if _nshare else {}),
                                 # DEVICE ACCESS: only while some interface here is not at Everyone and the node can enforce it (D1).
@@ -31093,10 +31806,50 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw or b"{}")              # RecursionError (deep nesting) included
             if not isinstance(body, dict):
                 raise ValueError
-            code, obj = live_absorb(body)
+            if body.get("id") in _RANGE_REQS:              # a range download's part (Logs P3): to the spool, a few at a time
+                if not RANGE_POST_SLOTS.acquire(blocking=False):
+                    return self._send(503, {"ok": False, "error": "busy — send it again", "code": "busy"})
+                try:
+                    code, obj = range_absorb(body)
+                finally:
+                    RANGE_POST_SLOTS.release()
+            else:
+                code, obj = live_absorb(body)
         except Exception:
             code, obj = 400, {"ok": False, "error": "invalid body", "code": "bad_request"}
         return self._send(code, obj)
+
+    def _range_file(self, rid):
+        """Logs P3: GET /api/logs/download/<id> — the made file, as an attachment. Sent as it is on disk (gzip) to a
+        browser that takes gzip, which saves the decoded .log; unpacked on the way to one that does not. No HEAD, no
+        Range: the file stays RANGE_KEEP after each download, and a broken one is clicked again."""
+        got = range_download(rid)
+        if got is None:
+            return self._send(404, {"ok": False, "error": "no such download (made files are kept %d min)"
+                                    % (RANGE_KEEP // 60), "code": "gone"})
+        path, raw, size, name = got
+        gz = accepts_gzip(self.headers.get("Accept-Encoding"))
+        try:
+            f = open(path, "rb")
+        except OSError:
+            return self._send(404, {"ok": False, "error": "no such download", "code": "gone"})
+        with f:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="%s"' % name)
+            if gz:
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(size if gz else raw))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            with contextlib.suppress(BrokenPipeError, ConnectionError, OSError, EOFError, zlib.error):
+                if gz:
+                    shutil.copyfileobj(f, self.wfile, 65536)
+                else:
+                    with gzip.GzipFile(fileobj=f) as g:
+                        shutil.copyfileobj(g, self.wfile, 65536)
+                self.wfile.flush()
 
     def _node_proc_status(self):
         # An installer/converter (its bearer token) flags that the node is about to go down for a
@@ -31523,6 +32276,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/logs/live":   # the log viewer's poll: memory only, never api() (it parses the node store)
                 code, obj = live_api_get(parse_qs(u.query), self.deps)
                 return self._send_state_bytes({"bytes": json.dumps(obj).encode(), "gz": None}) if code == 200 else self._send(code, obj)
+            if path == "/api/logs/range":  # a range download's progress: memory only, never api()
+                code, obj = range_api_get(parse_qs(u.query), self.deps)
+                return self._send_state_bytes({"bytes": json.dumps(obj).encode(), "gz": None}) if code == 200 else self._send(code, obj)
+            if path.startswith("/api/logs/download/"):   # the made file, from the spool: never api(), never a Blob
+                return self._range_file(path[len("/api/logs/download/"):])
             try:
                 code, obj = api("GET", path, parse_qs(u.query), {}, self.deps)
             except Exception as e:
@@ -31632,6 +32390,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"ok": False, "error": "invalid JSON body", "code": "bad_request"})
         if path in ("/api/logs/live", "/api/logs/live/close"):   # the log viewer: its own memory store, no lock, no api()
             return self._send(*live_api_post(path, bodyobj, self.deps))
+        if path in ("/api/logs/range", "/api/logs/range/make", "/api/logs/range/close"):   # a range download: the same
+            return self._send(*range_api_post(path, bodyobj, self.deps))
         try:
             if path in _LOCKLESS_POST:            # read-only, network-bound → never holds the lock (see _LOCKLESS_POST)
                 code, obj = api("POST", path, {}, bodyobj, self.deps)
@@ -33208,6 +33968,7 @@ def main():
                     "sub_dir": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "subs"),
                     "now": lambda: int(time.time())}
     panel_log_apply(Handler.deps["panel_settings"])   # this process's own lines follow the fleet's level from here on
+    range_init(os.path.dirname(Handler.deps["roster_path"]))   # Logs P3: the download spool, emptied at every start
     # The operator's zone, before any thread reads the clock (tz_apply). A stored zone this server has lost — an image
     # or tzdata change — is reported and left out, never a crash: days fall back to the server's own zone meanwhile.
     _tz0 = str(Handler.deps["panel_settings"].get("time_zone") or "")

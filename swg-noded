@@ -7598,7 +7598,11 @@ def live_journal_argv(base, units, kernel, cursor, n):
     starts with the last `n` lines."""
     a = list(base) + ["-f", "--no-pager", "-o", "json", "--output-fields=" + LIVE_FIELDS]
     a += ["--after-cursor=" + cursor] if cursor else ["-n", str(n)]
-    groups = []
+    return a + live_journal_matches(units, kernel)
+
+
+def live_journal_matches(units, kernel):
+    a, groups = [], []
     if units:
         groups += [["_SYSTEMD_UNIT=" + u for u in units], ["_PID=1"] + ["UNIT=" + u for u in units]]
     if kernel:
@@ -7606,6 +7610,20 @@ def live_journal_argv(base, units, kernel, cursor, n):
     for i, g in enumerate(groups):
         a += (["+"] if i else []) + g
     return a
+
+
+def live_journal_line(e, want):
+    """One journal entry (journalctl -o json) as [time µs, source, priority, text], or None: not one of the sources."""
+    src = live_journal_src(e)
+    if src == "p2p" and not live_want(src, want) and "kernel" in want:
+        src = "kernel"                                        # a P2P hit is a kernel line too
+    if not src:
+        return None
+    try:
+        t, prio = int(e.get("__REALTIME_TIMESTAMP")), int(e.get("PRIORITY", 6))
+    except (TypeError, ValueError):
+        t, prio = int(time.time() * 1000000), 6
+    return [t, src, prio, live_text(e.get("MESSAGE"))[:LIVE_TEXT_MAX]]
 
 
 def _live_utc(y, mo, d, h, mi, s):
@@ -7874,16 +7892,9 @@ class LiveReader:
             self.jlines += 1
             if isinstance(e.get("__CURSOR"), str):
                 self.jcur = e["__CURSOR"]
-            src = live_journal_src(e)
-            if src == "p2p" and not live_want(src, self.want) and "kernel" in self.want:
-                src = "kernel"                                # a P2P hit is a kernel line too
-            if not src:
-                continue
-            try:
-                t, prio = int(e.get("__REALTIME_TIMESTAMP")), int(e.get("PRIORITY", 6))
-            except (TypeError, ValueError):
-                t, prio = int(time.time() * 1000000), 6
-            out.append([t, src, prio, live_text(e.get("MESSAGE"))[:LIVE_TEXT_MAX]])
+            ln = live_journal_line(e, self.want)
+            if ln:
+                out.append(ln)
         if eof and self.jback:                                # the backfill read is done: follow from its last line, or
             self._jclose()                                    # from now when there was none
             self._jopen()
@@ -7976,6 +7987,204 @@ class LiveReader:
         self._jclose()
         for x in self.files + self.ctrs:
             x.close()
+
+
+# A TIME RANGE (Logs P3, docs/LOGS-PLAN.md §26): the same sources, read ONCE between two times — journalctl without -f (its
+# end is the process's exit, never a time window), each file with its `.1` first, each container's log through the Engine
+# API with since/until and no follow. The sources are merged by time on this box, and a RangeRing keeps the NEWEST `share`
+# bytes of them: over its share a server's file starts later, and says so (the operator chose the end of a range, §26).
+import heapq as _range_heapq
+import zlib as _range_zlib
+
+RANGE_SEG_MAX = 512 << 10            # bytes of text one ring segment holds at most
+RANGE_SEGS = 8                       # a share is held in about this many segments; the oldest goes first
+RANGE_LINE_OVER = 64                 # what a line costs in the file beyond its text (time, server, source, level)
+RANGE_LEVELS = {"err": (0, 1, 2, 3), "warn": (4,), "info": (5, 6), "debug": (7,)}   # the viewer's level chips
+
+
+def range_prios(lv):
+    """The priorities the viewer's level chips `lv` keep."""
+    return {p for k in lv if k in RANGE_LEVELS for p in RANGE_LEVELS[k]} if isinstance(lv, list) else set(range(8))
+
+
+class RangeRing:
+    """The newest `share` bytes of a time-ordered stream of lines, held as zlib-compressed segments (logs compress
+    ~8-10x: a 50 MB share costs a few MB here). Past the share the oldest segment goes, counted: `cut` lines, the newest
+    of them at `cut_t`."""
+
+    def __init__(self, share):
+        self.share = max(1, int(share))
+        self.seg = max(4096, min(RANGE_SEG_MAX, self.share // RANGE_SEGS))
+        self.segs, self.cur, self.cur_size, self.size = [], [], 0, 0
+        self.lines, self.cut, self.cut_t = 0, 0, 0
+
+    def add(self, ln):
+        sz = RANGE_LINE_OVER + len(ln[3])
+        self.cur.append(ln)
+        self.cur_size += sz
+        self.size += sz
+        self.lines += 1
+        if self.cur_size >= self.seg:
+            self.seal()
+        while self.size > self.share and self.segs:
+            n, size, last_t, _z = self.segs.pop(0)
+            self.size -= size
+            self.lines -= n
+            self.cut += n
+            self.cut_t = last_t
+
+    def seal(self):
+        if self.cur:
+            self.segs.append((len(self.cur), self.cur_size, self.cur[-1][0],
+                              _range_zlib.compress(json.dumps(self.cur).encode(), 6)))
+            self.cur, self.cur_size = [], 0
+
+    def parts(self):
+        """The kept lines, oldest first, a segment at a time."""
+        self.seal()
+        for _n, _s, _t, z in self.segs:
+            yield json.loads(_range_zlib.decompress(z))
+
+
+def range_journal_argv(base, units, kernel, since, until, pmax):
+    """journalctl reading `units` (and with `kernel`, the kernel's lines) from `since` to `until` (s) once. `pmax` below 7
+    leaves out the priorities above it: journalctl ANDs -p with the OR-ed matches (measured on lg1)."""
+    a = list(base) + ["--no-pager", "-o", "json", "--output-fields=" + LIVE_FIELDS, "--since=@%d" % since,
+                      "--until=@%d" % until] + (["-p", "0..%d" % pmax] if pmax < 7 else [])
+    return a + live_journal_matches(units, kernel)
+
+
+def _range_journal(argv, want, stop):
+    p = None
+    try:
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        for raw in p.stdout:
+            if stop.is_set():
+                return
+            try:
+                e = json.loads(raw)
+            except ValueError:
+                continue
+            ln = live_journal_line(e, want) if isinstance(e, dict) else None
+            if ln:
+                yield ln
+    except OSError:
+        return
+    finally:
+        if p is not None:
+            with contextlib.suppress(Exception):
+                p.kill()
+            with contextlib.suppress(Exception):
+                p.wait(5)
+            with contextlib.suppress(Exception):
+                p.stdout.close()
+
+
+def _range_file(path, src, fmt, since_us, until_us, stop):
+    """A log file's lines in the range: its `.1` first (rotated out, older), then the file."""
+    last = 0
+    for p in (path + ".1", path):
+        try:
+            f = open(p, "rb")
+        except OSError:
+            continue
+        with f:
+            for raw in f:
+                if stop.is_set():
+                    return
+                raw = raw.rstrip(b"\n")
+                if not raw:
+                    continue
+                t, prio, text = live_parse_line(fmt, raw.decode("utf-8", "replace"), last)
+                last = t
+                if since_us <= t < until_us:
+                    yield [t, src(text) if callable(src) else src, prio, text[:LIVE_TEXT_MAX]]
+
+
+def _range_ctr(sock_path, name, src, since_us, until_us, stop):
+    """A container's lines in the range, through the Engine API (HTTP/1.0, no follow: the stream ends at `until`)."""
+    s = None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(30)
+        s.connect(sock_path)
+        s.sendall(("GET /containers/%s/logs?stdout=1&stderr=1&timestamps=1&since=%d&until=%d HTTP/1.0\r\nHost: docker"
+                   "\r\n\r\n" % (name, since_us // 1000000, until_us // 1000000 + 1)).encode())
+        raw, buf, head = b"", b"", True
+        while not stop.is_set():
+            d = s.recv(65536)
+            if not d:
+                break
+            raw += d
+            if head:
+                if b"\r\n\r\n" not in raw:
+                    continue
+                hdr, raw = raw.split(b"\r\n\r\n", 1)
+                head = False
+                if b" 200 " not in hdr.split(b"\r\n", 1)[0]:  # no such container, or the daemon refused
+                    return
+            while len(raw) >= 8 and raw[0] in (0, 1, 2) and raw[1:4] == b"\0\0\0":
+                n = struct.unpack(">I", raw[4:8])[0]
+                if len(raw) < 8 + n:
+                    break
+                buf += raw[8:8 + n]
+                raw = raw[8 + n:]
+            *done, buf = buf.split(b"\n")
+            for ln in done:
+                m = _LIVE_RFC.match(ln.decode("utf-8", "replace"))
+                if m:
+                    t = _live_utc(*m.groups()[:6]) * 1000000 + int(((m.group(7) or "") + "000000")[:6])
+                    if since_us <= t < until_us:
+                        yield [t, src, 6, ln.decode("utf-8", "replace")[m.end():][:LIVE_TEXT_MAX]]
+    except OSError:
+        return
+    finally:
+        if s is not None:
+            with contextlib.suppress(OSError):
+                s.close()
+
+
+def range_read(ring, want, lv, since, until, stop, journal=None, files=(), ctrs=(), sock=None, tick=None):
+    """Read `want`'s lines from `since` to `until` (s, this box's clock) into `ring`, oldest first, keeping the level
+    chips `lv`. `journal` is fn(since, until, pmax) → journalctl's argv; `files` [(path, source or fn(text), fmt)];
+    `ctrs` [(container, source)] through `sock`. `tick(n)` is called every 5 000 lines read. → lines read."""
+    want, prios = set(want), range_prios(lv)
+    su, uu = int(since) * 1000000, int(until) * 1000000
+    gens = []
+    if journal and prios:
+        gens.append(_range_journal(journal(int(since), int(until), max(prios)), want, stop))
+    for p, s, fmt in files:
+        gens.append(_range_file(p, s, fmt, su, uu, stop))
+    for c, s in (ctrs if sock else ()):
+        gens.append(_range_ctr(sock, c, s, su, uu, stop))
+    n = 0
+    try:
+        for ln in _range_heapq.merge(*gens, key=lambda x: x[0]):
+            if stop.is_set():
+                break
+            n += 1
+            if ln[2] in prios and live_want(ln[1], want):
+                ring.add(ln)
+            if tick and n % 5000 == 0:
+                tick(n)
+    finally:
+        for g in gens:
+            g.close()
+    return n
+
+
+def range_first(journal, until, want):
+    """The time (µs) of the oldest line the journal still keeps of these sources, or 0 — what "this server keeps lines
+    from …" says when a range starts before its budget's reach."""
+    if not journal:
+        return 0
+    g = _range_journal(journal(0, int(until), 7), set(want), threading.Event())
+    try:
+        return next(g)[0]
+    except StopIteration:
+        return 0
+    finally:
+        g.close()
 # ── end of the live log reader ────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -8005,7 +8214,7 @@ def _live_units(prefixes):
     return out
 
 
-def _live_plan(srcs, ifaces):
+def _live_plan(srcs, ifaces, rng=False):
     """What the reader follows for these sources here, and each source's state: ok · absent (not on this node) · off
     (logging is off: nothing is stored to read) · unavailable (not on this kind of node)."""
     off = log_level() == LOG_OFF
@@ -8077,6 +8286,9 @@ def _live_plan(srcs, ifaces):
             st[s] = "absent"
     base = journal_cmd().split()
     us = sorted(units)
+    if rng:                                                   # a time range (P3): read once, between two times
+        return ({"journal": (lambda s, u, pm: range_journal_argv(base, us, kernel, s, u, pm)) if us or kernel else None},
+                st)
     return ({"journal": (lambda cur, n: live_journal_argv(base, us, kernel, cur, n)) if us or kernel else None}, st)
 
 
@@ -8179,6 +8391,122 @@ def live_logs_take(reqs, sync_url, panel, node_cfg):
                 threading.Thread(target=_live_run, args=(rq, list((node_cfg.get("interfaces") or {}).keys())),
                                  daemon=True, name="swg-logs-" + rid).start()
             rq.update(exp=now + lease + LIVE_GRACE, url=url, panel=panel, iv=iv)
+
+
+# ── Logs P3: a range download on this node (docs/LOGS-PLAN.md §26) ────────────────────────────────────────────────────
+# The panel names this node in its sync reply's `logrange` while a download waits on it: [{id, key, src, lv, since, until,
+# share, iv, now}]. Each id gets ONE thread (never the sync loop's time), niced: it says it reads (each source's state),
+# reads the range once into a RangeRing that keeps the newest `share` bytes, posting its progress every RANGE_HB_S, then
+# posts the kept lines oldest first, numbered (`seq`), the last part with `done`. A failed part is sent again with its
+# number; a 409 starts the parts again from 0; 403/404/410, or the id leaving a reply, stops it. The range is on the
+# panel's clock: `now` in the reply says how far this box's clock is off, and the read is shifted by that much.
+RANGE_MAX, RANGE_HB_S, RANGE_RUN_S = 2, 10, 900
+_RANGE = {}                    # request id -> {stop, id, key, src, lv, since, until, share, iv, off, url, panel}
+_RANGE_DONE = {}               # request id -> when its thread ended: a reply built before the panel heard is not a new read
+_RANGE_LOCK = threading.Lock()
+
+
+def _range_post(rq, extra):
+    """→ "ok", "gone" (stop), "order" (the panel wants the parts again from 0) or "fail" (try again)."""
+    body = {"id": rq["id"], "key": rq["key"], "now": round(time.time(), 3), **extra}
+    code, _r = post_json(rq["url"], rq["panel"]["token"], body, rq["panel"], timeout=15, gz=True)
+    return "ok" if code == 200 else "gone" if code in (403, 404, 410) else "order" if code == 409 else "fail"
+
+
+def _range_send(rq, extra, until):
+    """Post until it is taken: "ok", "gone" or "order"; "gone" also when the thread is told to stop or runs out of time."""
+    while not rq["stop"].is_set() and time.monotonic() < until:
+        r = _range_post(rq, extra)
+        if r != "fail":
+            return r
+        rq["stop"].wait(rq["iv"])
+    return "gone"
+
+
+def _range_parts(ring):
+    """The kept lines in parts of at most LIVE_POST_BYTES of JSON (_live_chunk), oldest first — one segment in memory."""
+    for seg in ring.parts():
+        while seg:
+            n = _live_chunk(seg)
+            yield seg[:n]
+            seg = seg[n:]
+
+
+def _range_run(rq, ifaces):
+    until = time.monotonic() + RANGE_RUN_S
+    with contextlib.suppress(Exception):
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)   # this thread only; journalctl inherits it
+    try:
+        plan, st = _live_plan(rq["src"], ifaces, rng=True)
+        want = [s for s in rq["src"] if st.get(s) == "ok"]
+        if _range_send(rq, {"st": st}, until) != "ok":
+            return
+        ring, hb = RangeRing(rq["share"]), [time.monotonic()]
+
+        def tick(n):
+            if time.monotonic() - hb[0] >= RANGE_HB_S:
+                hb[0] = time.monotonic()
+                _range_post(rq, {"read": n})          # progress only: once, never retried
+        since, end = rq["since"] + rq["off"], rq["until"] + rq["off"]
+        n = range_read(ring, want, rq["lv"], since, end, rq["stop"], tick=tick, **plan) if want else 0
+        first = range_first(plan.get("journal"), end, want) if want and not ring.cut else 0
+        done = {"read": n, "cut": ring.cut, "cut_t": ring.cut_t, "first": first}
+        for _try in range(3):                         # a 409: the panel lost the order — every part again from 0
+            if rq["stop"].is_set():
+                return
+            seq, prev, r = 0, None, "ok"
+            for part in _range_parts(ring):
+                if prev is not None:
+                    r = _range_send(rq, {"seq": seq, "lines": prev}, until)
+                    if r != "ok":
+                        break
+                    seq += 1
+                prev = part
+            if r == "ok":
+                r = _range_send(rq, {"seq": seq, "lines": prev or [], "done": done}, until)
+            if r != "order":
+                return
+    except Exception as e:
+        log(LOG_WARNING, "logs: the range read for %s stopped: %s", rq["id"], e)
+    finally:
+        with _RANGE_LOCK:
+            if _RANGE.get(rq["id"]) is rq:
+                _RANGE.pop(rq["id"], None)
+            _RANGE_DONE[rq["id"]] = time.monotonic()
+
+
+def range_logs_take(reqs, sync_url, panel, node_cfg):
+    """A valid sync reply's `logrange`: a thread for each new range, and every one the reply no longer names stopped."""
+    want = {}
+    for r in reqs if isinstance(reqs, list) else []:
+        if (isinstance(r, dict) and isinstance(r.get("id"), str) and LIVE_ID_RE.match(r["id"])
+                and isinstance(r.get("key"), str) and len(r["key"]) <= 128 and isinstance(r.get("src"), list)
+                and isinstance(r.get("lv"), list) and len(want) < RANGE_MAX):
+            want[r["id"]] = r
+    now = time.monotonic()
+    url = sync_url.rsplit("/api/node/sync", 1)[0] + "/api/node/logs"
+    with _RANGE_LOCK:
+        for rid in [k for k in _RANGE if k not in want]:
+            _RANGE.pop(rid)["stop"].set()
+        for rid in [k for k, t in _RANGE_DONE.items() if now - t > RANGE_RUN_S]:
+            del _RANGE_DONE[rid]
+        for rid, r in want.items():
+            if rid in _RANGE or rid in _RANGE_DONE:
+                continue
+            try:
+                since, end, share = int(r["since"]), int(r["until"]), max(4096, min(64 << 20, int(r["share"])))
+                iv, off = min(30, max(1, int(r.get("iv") or 1))), time.time() - float(r["now"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            src = [s for s in r["src"][:64] if isinstance(s, str) and LIVE_SRC_RE.match(s)]
+            if not src or not since < end or not abs(off) < 1e9:  # NaN and infinity fail this too
+                continue
+            rq = _RANGE[rid] = {"id": rid, "stop": threading.Event(), "key": r["key"], "src": src,
+                                "lv": [k for k in r["lv"] if k in RANGE_LEVELS], "since": since, "until": end,
+                                "share": share, "iv": iv, "off": int(round(off)) if abs(off) >= 2 else 0, "url": url,
+                                "panel": panel}
+            threading.Thread(target=_range_run, args=(rq, list((node_cfg.get("interfaces") or {}).keys())),
+                             daemon=True, name="swg-range-" + rid).start()
 
 def _apply_routing_reset(reset_val, res, learned_val=None):
     """Dispatch the operator's reset counters. A full reset already clears the learned sets, so skip the learned
@@ -14852,7 +15180,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "lans": _node_lans_report(_addrs, _own_tunnel_devs(node_cfg)),
             "smartroute": smart_status(),
             # the disk budget {mb, used_mb, oldest, err} — measured every LOG_STATUS_EVERY_S, ~60 bytes (_log_budget)
-            **({"log": dict(_LOG_BUDGET["status"], live=1)} if _LOG_BUDGET["status"] else {}),   # live: reads `logs` (P2)
+            **({"log": dict(_LOG_BUDGET["status"], live=1, range=1)} if _LOG_BUDGET["status"] else {}),   # live: reads `logs` (P2); range: `logrange` (P3)
             # Whether the TCP-terminating relay's divert is ARMED RIGHT NOW, and if not, why not — §4 of
             # RELAY-FEATURE-PLAN. "why" is the whole point: a feature that silently disarms itself and
             # reports nothing is indistinguishable from one that was never switched on.
@@ -21528,6 +21856,8 @@ def main():
                     url = _newurl                                     # dial the new address from the next sync on
                 with contextlib.suppress(Exception):          # Logs P2: a live viewer's readers — threads, started or stopped here
                     live_logs_take(reply.get("logs"), url, panel, node_cfg)
+                with contextlib.suppress(Exception):          # Logs P3: a range download's reads — the same
+                    range_logs_take(reply.get("logrange"), url, panel, node_cfg)
                 ivk_process(reply.get("iface_vault_pub"), reply.get("iface_vault_want"))   # seal interface keys the panel wants for the operator vault (blob rides the next snapshot)
                 with contextlib.suppress(Exception):
                     exit_vault_process(reply.get("iface_vault_pub"), reply.get("exit_vault_want"))   # …and imported-exit keys (same vault, same relay)
