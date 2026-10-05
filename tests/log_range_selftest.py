@@ -64,6 +64,10 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      nomigrate    a remembered iface:* / iface:swg_… is kept as it was (mesh lines silently stop)
      popunder     Escape in a dropdown also leaves full screen
      popbubble    the shared hook's Escape listens in the bubble phase (the gate read a Sheet's line instead)
+   the refactor's re-check ([11]):
+     nofocusin    focus moving on (where a click focuses no button) leaves the list open
+     imeesc       Escape ends an IME composition's list too
+     keepesc      Escape in a form the list owns leaves the list open
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -203,9 +207,13 @@ PLANTS = {   # (program, anchor, replacement)
                  '''    if (false) out.push(g.wild);'''),
     "mpclobber": ("spa", '''  const out = [...sel].filter(x => !mine.has(x)), all = ddItems(dd);''', '''  const out = [], all = ddItems(dd);'''),
     "nomigrate": ("spa", '''s.v === 2 ? s.src : migrate(s.src)''', '''s.src'''),
-    "popunder": ("ui", '''      if (ours) { e.preventDefault(); close(true); } };''', '''      if (ours) { close(true); } };'''),
+    "popunder": ("ui", '''      if (ours) { e.preventDefault(); close(true); } else''', '''      if (ours) { close(true); } else'''),
     "popbubble": ("ui", '''document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey, true);''',
                   '''document.addEventListener("pointerdown", onDoc, true); document.addEventListener("keydown", onKey);'''),
+    "nofocusin": ("ui", '''    document.addEventListener("focusin", onFocus, true);''', ''''''),
+    "imeesc": ("ui", '''    const onKey = e => { if (e.key !== "Escape" || e.isComposing) return; const t = e.target;''',
+               '''    const onKey = e => { if (e.key !== "Escape") return; const t = e.target;'''),
+    "keepesc": ("ui", ''' else if (keep && keep(t)) close(false); };''', ''' };'''),
     "spablob": ("spa", '''  a.href = "api/logs/download/" + RG.id; a.download''', '''  downloadConf("", "x", "log"); a.href = "api/logs/download/" + RG.id; a.download'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -785,6 +793,8 @@ try:
 
     def sec7():
         s = SRC["spa"]
+        u = SRC["ui"]
+        u = u[u.index("export function usePopup("):u.index("export function Dropdown(")]   # the hook itself, not a Sheet's own listener
         i = s.index("function rangeSave()")
         body = s[i:s.index("\n}", i)]
         check("[7] the file is saved from a plain link to the download route, never built as a Blob",
@@ -824,6 +834,11 @@ console.log(JSON.stringify(r));
               "marked; the viewer and its lists use it)",
               'document.addEventListener("keydown", onKey, true)' in u and 'if (ours) { e.preventDefault(); close(true); }' in u
               and 'e.key === "Escape" && !e.defaultPrevented' in s and s.count("usePopup({") == 2 and "function usePop(" not in s, "")
+        check("[11] a list closes when focus moves anywhere not its own (watched on the document: Safari focuses no button); "
+              "an IME composition keeps its Escape; a form the list owns closes it without stealing the focus",
+              'document.addEventListener("focusin", onFocus, true)' in u and "const onFocus = e => { if (!inside(e.target)) shut(); };" in u
+              and 'if (e.key !== "Escape" || e.isComposing) return;' in u and "else if (keep && keep(t)) close(false);" in u
+              and "if (e.isComposing) return;" in u, "")
         check("[7] the source dropdowns: a whole group is written as its wildcard, one item off expands it, other lists untouched",
               r.get("on") == ["turn:a", "turn:b", "turn:w1"] and r.get("offOne") == ["mesh:*", "noded", "turn:a", "turn:w1"]
               and r.get("meshOne") == ["mesh:swg_1", "noded", "turn:*"] and r.get("meshAll") == ["mesh:*", "noded", "turn:*"], r)
