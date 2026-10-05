@@ -107,10 +107,11 @@ PLANTS = {   # (program, anchor, replacement)
     "inlogs": ("panel", '''                                **({"logs": _live} if _live else {}),''',
                '''                                **({"logs": (_live or []) + (_lrange or [])} if _live or _lrange else {}),'''),
     "replydone": ("panel", '''ns["state"] not in ("waiting", "reading", "sending"):''', '''ns["state"] not in ("waiting", "reading", "sending", "done"):'''),
-    "nokey": ("panel", '''        if (nid == LIVE_PANEL or nid not in rec["nodeset"]
-                or not hmac.compare_digest(key.encode("utf-8", "replace"), _live_key(rec, nid).encode())):
+    "nokey": ("panel", '''        nid = _log_post_node(rec, key)
+        if nid is None:
             return 403, {"ok": False, "error": "not this request's key", "code": "forbidden"}
-        ns = rec["ns"][nid]''', '''        if nid not in rec["nodeset"]:
+        ns = rec["ns"][nid]''', '''        nid = key.split(".", 1)[0]
+        if nid not in rec["nodeset"]:
             return 403, {"ok": False, "error": "not this request's key", "code": "forbidden"}
         ns = rec["ns"][nid]'''),
     "noorder": ("panel", '''            if seq > want:
@@ -208,8 +209,8 @@ PLANTS = {   # (program, anchor, replacement)
                 rd = body.get("read")'''),
     "panelrevive": ("panel", '''            if ns["state"] in RANGE_FINAL:                 # "make the file now" came first: it is left out, as said
                 return''', '''            pass'''),
-    "beatgone": ("noded", '''                if _range_post(rq, {"read": read[0]}) == "gone":      # never retried; "gone" stops the read
-                    rq["stop"].set()''', '''                if _range_post(rq, {"read": read[0]}) == "gone":      # never retried; "gone" stops the read
+    "beatgone": ("noded", '''                if _logs_post(rq, {"read": read[0]}) == "gone":      # never retried; "gone" stops the read
+                    rq["stop"].set()''', '''                if _logs_post(rq, {"read": read[0]}) == "gone":      # never retried; "gone" stops the read
                     pass'''),
     "spaoff": ("spa", '''    off: [T("Logging is off"), T("Logging is off, so nothing is stored to read."), "warn"],   // a past range: no level brings it back''', ''''''),
     "mpnowild": ("spa", '''    if (g.wild && g.items.length && g.items.every(i => on.has(i.id))) out.push(g.wild);''',
@@ -791,7 +792,7 @@ try:
                 first[0] = False
                 return "order"
             return "ok"
-        N._range_post = fake_post
+        N._logs_post = fake_post
         N.LIVE_POST_BYTES = 2000                              # small parts: several of them
         rq = {"id": "a" * 16, "stop": threading.Event(), "key": "k", "src": ["noded"], "lv": ["info"], "since": now - 2000,
               "until": now, "share": 1 << 20, "iv": 1, "off": 0, "url": "", "panel": {}}
@@ -965,7 +966,7 @@ console.log(JSON.stringify(r));
         N2 = load("noded")
         posts = []
         N2.RANGE_HB_S = 0.5
-        N2._range_post = lambda rq, extra: (posts.append(extra), "ok")[1]
+        N2._logs_post = lambda rq, extra: (posts.append(extra), "ok")[1]
         N2._live_plan = lambda *a, **k: ({"files": []}, {"noded": "ok"})
         N2.range_read = lambda ring, want, lv, s, u, stop, **k: (time.sleep(2.2), 0)[1]
         N2._range_run({"id": "b" * 16, "stop": threading.Event(), "key": "k", "src": ["noded"], "lv": ["info"],
@@ -1010,7 +1011,7 @@ console.log(JSON.stringify(r));
         check("[9] a close waits for a part being written, then deletes everything (nothing created behind it)",
               waited and not os.path.exists(rec["dir"]) and rec["phase"] == "gone", (waited, os.path.exists(rec["dir"])))
         N = load("noded")
-        N._range_post = lambda rq, extra: "ok" if "st" in extra else "gone"
+        N._logs_post = lambda rq, extra: "ok" if "st" in extra else "gone"
         N._live_plan = lambda *a, **k: ({"files": []}, {"noded": "ok"})
         stopped = []
         N.range_read = lambda ring, want, lv, s, u, stop, **k: (stopped.append(stop.wait(5)), 0)[1]
