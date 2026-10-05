@@ -95,8 +95,8 @@ PLANTS = {   # (program, anchor, replacement)
     "capflat": ("panel", '''    return min(200, max(5, LIVE_RATE // max(1, n)))''', '''    return 200'''),
     "noskew": ("panel", '''            rec["off"][nid] = int(round(off)) if abs(off) >= LIVE_SKEW_S else 0''', '''            rec["off"][nid] = 0'''),
     "nodeh": ("panel", '''**({} if h == have else {"nodes": nodes})}''', '''**{"nodes": nodes}}'''),
-    "blockdrift": ("panel", '''LIVE_BACKFILL, LIVE_BACKFILL_MAX, LIVE_BACKFILL_S = 200, 1000, 1.0''',
-                   '''LIVE_BACKFILL, LIVE_BACKFILL_MAX, LIVE_BACKFILL_S = 100, 1000, 1.0'''),
+    "blockdrift": ("panel", '''LIVE_BACKFILL, LIVE_BACKFILL_MAX, LIVE_BACKFILL_S, LIVE_BACKFILL_WAIT = 200, 1000, 1.0, 10.0''',
+                   '''LIVE_BACKFILL, LIVE_BACKFILL_MAX, LIVE_BACKFILL_S, LIVE_BACKFILL_WAIT = 100, 1000, 1.0, 10.0'''),
     "renamelose": ("block", '''                if moved:                                     # renamed: the old one to its end, then the new from 0
                     self._lines(self.f.read())''', '''                if moved:                                     # renamed: the old one to its end, then the new from 0
                     pass'''),
