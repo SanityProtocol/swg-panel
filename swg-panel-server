@@ -7631,19 +7631,6 @@ def range_read(ring, want, lv, since, until, stop, journal=None, files=(), ctrs=
             g.close()
     return n
 
-
-def range_first(journal, until, want):
-    """The time (µs) of the oldest line the journal still keeps of these sources, or 0 — what "this server keeps lines
-    from …" says when a range starts before its budget's reach."""
-    if not journal:
-        return 0
-    g = _range_journal(journal(0, int(until), 7), set(want), threading.Event())
-    try:
-        return next(g)[0]
-    except StopIteration:
-        return 0
-    finally:
-        g.close()
 # ── end of the live log reader ────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -8187,7 +8174,7 @@ def range_absorb(body, now=None):
             ns["kept"] = ns.get("kept", 0) + len(keep)
             ns["over"] = ns.get("over", 0) + len(lines) - len(keep)   # past the share, the part's cap, or not a line
             if done is not None:
-                for k in ("read", "cut", "cut_t", "first"):
+                for k in ("read", "cut", "cut_t"):
                     v = done.get(k)
                     if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
                         ns[k] = v
@@ -8213,7 +8200,6 @@ def _range_panel_run(rec):
             with _RANGE_LOCK:
                 ns.update(read=n, last=time.time())
         n = range_read(ring, want, rec["lv"], rec["since"], rec["until"], rec["stop"], tick=tick, **plan) if want else 0
-        first = range_first(plan.get("journal"), rec["until"], want) if want and ring.cut == 0 else 0
         with rec["locks"][LIVE_PANEL]:                     # a make waits for this; one started first left it out
             with _RANGE_LOCK:
                 if rec["stop"].is_set() or rec["phase"] != "reading" or ns["state"] in RANGE_FINAL:
@@ -8223,8 +8209,7 @@ def _range_panel_run(rec):
                 _range_spool(rec, LIVE_PANEL, part, i == 0)
                 kept += len(part)
             with _RANGE_LOCK:
-                ns.update(state="done", read=n, kept=kept, cut=ring.cut, cut_t=ring.cut_t, first=first,
-                          last=time.time())
+                ns.update(state="done", read=n, kept=kept, cut=ring.cut, cut_t=ring.cut_t, last=time.time())
     except Exception as e:
         log(LOG_WARNING, "logs: the panel's range read stopped: %s", e)
         with _RANGE_LOCK:
@@ -8258,8 +8243,6 @@ def _range_why(rec, nid, ns):
                    % (ns["cut"], _range_fmt_t(ns.get("cut_t", 0), tz)[:19], rec["share"] / 1048576, RANGE_TOTAL >> 20))
     if ns.get("over"):
         out.append("%d lines refused by the panel (past its share, or not lines)" % ns["over"])
-    if ns.get("first") and ns["first"] > rec["since"] * 1000000 + 60000000:
-        out.append("keeps lines from %s only (its log budget)" % _range_fmt_t(ns["first"], tz)[:16])
     by = {}
     for src, v in (ns.get("st") or {}).items():
         by.setdefault(v, []).append(src)
@@ -8401,7 +8384,7 @@ def range_view(rid, deps, now=None):
         if rec["phase"] == "reading" and _range_tick(rec, deps.get("node_snaps") or {}, deps.get("node_seen") or {},
                                                      stale_s, now):
             _range_start_make(rec)
-        nodes = {n: {k: v for k, v in ns.items() if k in ("state", "read", "kept", "cut", "cut_t", "first", "st", "off",
+        nodes = {n: {k: v for k, v in ns.items() if k in ("state", "read", "kept", "cut", "cut_t", "st", "off",
                                                           "err")} for n, ns in rec["ns"].items()}
         d = {"id": rid, "phase": rec["phase"], "nodes": nodes, "share": rec["share"], "since": rec["since"],
              "until": rec["until"], "life": max(0, int(rec["at"] + RANGE_LIFE - now))}

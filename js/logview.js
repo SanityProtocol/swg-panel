@@ -361,7 +361,6 @@ function stateSay(range) {
     failed: [T("Failed"), T("It stopped answering while it read, or ran past the 10-minute limit."), "bad"],
     off: [T("Logging is off"), T("Logging is off, so nothing is stored to read."), "warn"],   // a past range: no level brings it back
     cut: [T("Newest part only"), T("Its share of the 50 MB was full, so the file has the end of its range. Narrow the range or the servers for the rest."), "warn"],
-    short: [T("Keeps less"), T("Its log budget no longer holds the start of the range."), "faint"],
   } : s;
 }
 // one state as a chip with its count, and the servers' names in a bubble (24 of them, then "and N more")
@@ -560,7 +559,6 @@ function rangeGroups(v) {
   for (const [id, ns] of Object.entries(v.nodes || {})) {
     add(cat, RCAT[ns.state] || "waiting", id);   // i18n-keys: a state id
     if (ns.cut) add(extra, "cut", id);
-    if (ns.first && ns.first > v.since * 1e6 + 60e6) add(extra, "short", id);
     const st = Object.values(ns.st || {});
     if (st.includes("off")) add(extra, "off", id);
     if (st.includes("noaccess")) add(extra, "noaccess", id);
@@ -611,7 +609,7 @@ function RangePanel() {
     : ph === "failed" ? T("The file could not be made: {v1}", { v1: v.err || "?" })
     : ph === "making" ? T("Making the file…")
     : T("Reading {v1}: waiting on {v2} of {v3} servers.", { v1: v ? dtShow(v.since) + " – " + dtShow(v.until) : "…", v2: fmtNum(total - done), v3: fmtNum(total) });
-  const partial = ph === "ready" && (Object.keys(g.cat).some(k => k !== "done") || g.extra.cut || g.extra.short);
+  const partial = ph === "ready" && (Object.keys(g.cat).some(k => k !== "done") || g.extra.cut);
   return html`<div class="lv-pick lv-rng" role="group" aria-label=${T("Download a time range")}>
     <div class="lv-rng-row"><span class=${"lv-rng-head" + (ph === "failed" ? " bad" : "")} aria-live="polite">${head}</span><span class="grow"></span>
       ${ph === "ready" ? html`<a class="btn btn-mini btn-primary" href=${"api/logs/download/" + RG.id} download=${v.name}><${Ic} i="download"/> ${T("Save the file")}</a>` : null}</div>

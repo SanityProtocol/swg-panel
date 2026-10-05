@@ -1825,8 +1825,6 @@ export const STR = {
   "Newest part only": "Только новые строки",
   "Its share of the 50 MB was full, so the file has the end of its range. Narrow the range or the servers for the rest.":
     "Его доля из 50 МБ заполнилась, поэтому в файле конец периода. Чтобы получить остальное, сузьте период или список серверов.",
-  "Keeps less": "Хранит меньше",
-  "Its log budget no longer holds the start of the range.": "В его лимите логов уже нет начала периода.",
   "This node's live logs": "Логи этой ноды онлайн",
   "These turn proxies' live logs": "Логи этих turn-прокси онлайн",
   "Panel log budget → {v1} MB": "Лимит логов панели → {v1} МБ",

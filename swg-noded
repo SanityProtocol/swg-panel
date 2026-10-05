@@ -8252,19 +8252,6 @@ def range_read(ring, want, lv, since, until, stop, journal=None, files=(), ctrs=
             g.close()
     return n
 
-
-def range_first(journal, until, want):
-    """The time (µs) of the oldest line the journal still keeps of these sources, or 0 — what "this server keeps lines
-    from …" says when a range starts before its budget's reach."""
-    if not journal:
-        return 0
-    g = _range_journal(journal(0, int(until), 7), set(want), threading.Event())
-    try:
-        return next(g)[0]
-    except StopIteration:
-        return 0
-    finally:
-        g.close()
 # ── end of the live log reader ────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -8538,10 +8525,9 @@ def _range_run(rq, ifaces):
             since, end = rq["since"] + rq["off"], rq["until"] + rq["off"]
             n = range_read(ring, want, rq["lv"], since, end, rq["stop"], tick=lambda k: read.__setitem__(0, k),
                            **plan) if want else 0
-            first = range_first(plan.get("journal"), end, want) if want and not ring.cut else 0
         finally:
             reading.set()
-        done = {"read": n, "cut": ring.cut, "cut_t": ring.cut_t, "first": first}
+        done = {"read": n, "cut": ring.cut, "cut_t": ring.cut_t}
         for _try in range(3):                         # a 409: the panel lost the order — every part again from 0
             if rq["stop"].is_set():
                 return
