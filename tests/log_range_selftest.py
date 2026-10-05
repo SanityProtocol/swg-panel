@@ -160,8 +160,8 @@ PLANTS = {   # (program, anchor, replacement)
                    '''                if True:
                     yield [t, src(text) if callable(src) else src, prio, text[:LIVE_TEXT_MAX]]'''),
     "levelfilter": ("block", '''            if ln[2] in prios and live_want(ln[1], want):''', '''            if live_want(ln[1], want):'''),
-    "ctrfollow": ("block", '''"GET /containers/%s/logs?stdout=1&stderr=1&timestamps=1&since=%d&until=%d HTTP/1.0\\r\\nHost: docker"''',
-                  '''"GET /containers/%s/logs?follow=1&stdout=1&stderr=1&timestamps=1&since=%d&x=%d HTTP/1.0\\r\\nHost: docker"'''),
+    "ctrfollow": ("block", '''q="stdout=1&stderr=1&timestamps=1&since=%d&until=%d"''',
+                  '''q="follow=1&stdout=1&stderr=1&timestamps=1&since=%d&x=%d"'''),
     "nodedone": ("noded", '''            if rid in _RANGE or rid in _RANGE_DONE:''', '''            if rid in _RANGE:'''),
     "node409": ("noded", '''            if r != "order":
                 return''', '''            return'''),
