@@ -7723,7 +7723,10 @@ def live_close(rid):
 
 def _live_node_state(rec, nid, snaps, seen, stale_s, now):
     """What the viewer says about one box of a request: ok (with each source's state) · waiting · noanswer · old (a node
-    from before the viewer: "update the node") · offline."""
+    from before the viewer: "update the node") · offline — also a node that answered and has stopped syncing since."""
+    snap, ls = snaps.get(nid), seen.get(nid)
+    if nid != LIVE_PANEL and (not isinstance(snap, dict) or ls is None or now - ls > stale_s):
+        return {"state": "offline"}
     if nid in rec["acked"]:
         d = {"state": "ok", "st": rec["st"].get(nid) or {}}
         if rec["off"].get(nid):
@@ -7731,9 +7734,6 @@ def _live_node_state(rec, nid, snaps, seen, stale_s, now):
         return d
     if nid == LIVE_PANEL:
         return {"state": "waiting"}
-    snap, ls = snaps.get(nid), seen.get(nid)
-    if not isinstance(snap, dict) or ls is None or now - ls > stale_s:
-        return {"state": "offline"}
     if not (snap.get("log") or {}).get("live"):
         return {"state": "old"}
     sent = rec["sent"].get(nid)
