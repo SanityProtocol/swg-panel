@@ -1813,8 +1813,6 @@ export const STR = {
     "Его доля из 50 МБ заполнилась, поэтому в файле конец периода. Чтобы получить остальное, сузьте период или список серверов.",
   "Keeps less": "Хранит меньше",
   "Its log budget no longer holds the start of the range.": "В его лимите логов уже нет начала периода.",
-  "These servers' clocks differ from the panel's. Their lines are put on the panel's clock.":
-    "Часы этих серверов расходятся с часами панели. Их строки приведены к часам панели.",
   "This node's live logs (Settings → Logs)": "Логи этой ноды онлайн (Настройки → Логи)",
   "These turn proxies' live logs (Settings → Logs)": "Логи этих turn-прокси онлайн (Настройки → Логи)",
   "Panel log budget → {v1} MB": "Лимит логов панели → {v1} МБ",

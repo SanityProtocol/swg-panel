@@ -7378,6 +7378,7 @@ import zlib as _range_zlib
 RANGE_SEG_MAX = 512 << 10            # bytes of text one ring segment holds at most
 RANGE_SEGS = 8                       # a share is held in about this many segments; the oldest goes first
 RANGE_LINE_OVER = 64                 # what a line costs in the file beyond its text (time, server, source, level)
+RANGE_PART_LINES = 8000              # lines one posted part carries at most (short lines: bytes alone would allow more)
 RANGE_LEVELS = {"err": (0, 1, 2, 3), "warn": (4,), "info": (5, 6), "debug": (7,)}   # the viewer's level chips
 
 
@@ -7927,16 +7928,21 @@ def range_open(body, known, now=None):
     names = {n: re.sub(r"\s+", " ", str(names.get(n) or ""))[:64].strip() or n for n in nodes}
     label = body.get("label") if body.get("label") in RANGE_LABELS else "custom"
     with _RANGE_LOCK:
-        _range_expire(now)
-        if sum(1 for r in _RANGE_REQS.values() if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX:
-            return 429, {"ok": False, "error": "%d downloads are being made already" % RANGE_REQ_MAX, "code": "busy"}
+        gone = _range_expire(now)
+        busy = sum(1 for r in _RANGE_REQS.values() if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX
         rid = secrets.token_hex(8)
-        rec = _RANGE_REQS[rid] = {
+        rec = None if busy else {
             "id": rid, "secret": secrets.token_bytes(16), "nodes": nodes, "nodeset": set(nodes), "src": srcs, "lv": lv,
             "since": since, "until": until, "redact": body.get("redact") is not False, "tz": tz, "names": names,
             "label": label, "share": RANGE_TOTAL // len(nodes), "iv": live_iv(len(nodes)), "at": now, "phase": "reading",
             "ns": {n: {"state": "waiting"} for n in nodes}, "dir": os.path.join(_RANGE_DIR["path"] or ".", rid),
-            "made": 0.0, "read": 0.0, "polled": now, "wlock": threading.Lock(), "stop": threading.Event()}
+            "made": 0.0, "read": 0.0, "polled": now, "locks": {n: threading.Lock() for n in nodes},
+            "stop": threading.Event()}
+        if rec:
+            _RANGE_REQS[rid] = rec
+    _range_drop_all(gone)
+    if busy:
+        return 429, {"ok": False, "error": "%d downloads are being made already" % RANGE_REQ_MAX, "code": "busy"}
     try:
         os.makedirs(rec["dir"], mode=0o700)
     except OSError as e:
@@ -7950,14 +7956,21 @@ def range_open(body, known, now=None):
 
 def _range_expire(now):
     """Made files past RANGE_KEEP go, the oldest made ones past RANGE_FILES_MAX, and an unfinished request nobody polls
-    any more (caller holds _RANGE_LOCK)."""
-    for rid in [k for k, r in _RANGE_REQS.items()
-                if (r["phase"] in ("ready", "failed") and now - max(r["made"], r["read"]) > RANGE_KEEP)
-                or (r["phase"] in ("reading", "making") and now - r["polled"] > RANGE_ABANDON)]:
-        _range_drop(_RANGE_REQS.pop(rid))
+    any more (caller holds _RANGE_LOCK). → the requests taken out: the caller deletes their files (_range_drop) once it
+    has let go of the lock — never disk work under it, on every node's sync."""
+    out = [_RANGE_REQS.pop(rid) for rid in [k for k, r in _RANGE_REQS.items()
+           if (r["phase"] in ("ready", "failed") and now - max(r["made"], r["read"]) > RANGE_KEEP)
+           or (r["phase"] in ("reading", "making") and now - r["polled"] > RANGE_ABANDON)]]
+    for r in out:
+        r["stop"].set()
     made = sorted((r["made"], k) for k, r in _RANGE_REQS.items() if r["phase"] in ("ready", "failed"))
-    for _t, rid in made[:max(0, len(made) - RANGE_FILES_MAX)]:
-        _range_drop(_RANGE_REQS.pop(rid))
+    out += [_RANGE_REQS.pop(rid) for _t, rid in made[:max(0, len(made) - RANGE_FILES_MAX)]]
+    return out
+
+
+def _range_drop_all(recs):
+    for r in recs:
+        _range_drop(r)
 
 
 def _range_tick(rec, snaps, seen, stale_s, now):
@@ -7993,7 +8006,7 @@ def range_reply(nid, now=None):
     now = time.time() if now is None else now
     out = []
     with _RANGE_LOCK:
-        _range_expire(now)
+        gone = _range_expire(now)
         for rec in _RANGE_REQS.values():
             ns = rec["ns"].get(nid)
             if rec["phase"] != "reading" or ns is None or ns["state"] not in ("waiting", "reading", "sending"):
@@ -8002,11 +8015,12 @@ def range_reply(nid, now=None):
             out.append({"id": rec["id"], "key": _live_key(rec, nid), "src": rec["src"], "lv": rec["lv"],
                         "since": rec["since"], "until": rec["until"], "share": rec["share"], "iv": rec["iv"],
                         "now": int(now)})
+    _range_drop_all(gone)
     return out or None
 
 
 def _range_spool(rec, nid, lines, first):
-    """Append one part of a server's lines to its spool, a gzip member each (caller holds rec["wlock"]): TSV of time µs,
+    """Append one part of a server's lines to its spool, a gzip member each (caller holds rec["locks"][nid]): TSV of time µs,
     source, priority and the text with its newlines, tabs and backslashes escaped."""
     data = "".join("%d\t%s\t%d\t%s\n" % (t, src, prio, text.translate(_RANGE_ESC))
                    for t, src, prio, text in lines).encode("utf-8", "replace")
@@ -8050,15 +8064,16 @@ def range_absorb(body, now=None):
             return 200, {"ok": True}
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             return 400, {"ok": False, "error": "bad part number", "code": "bad_request"}
-    lines = body.get("lines")
+    lines = body.get("lines") if isinstance(body.get("lines"), list) else []
     good = []
-    for ln in (lines if isinstance(lines, list) else [])[:LIVE_POST_LINES * 4]:
+    for ln in lines[:RANGE_PART_LINES]:
         if (isinstance(ln, list) and len(ln) == 4 and isinstance(ln[0], int) and not isinstance(ln[0], bool)
                 and isinstance(ln[1], str) and LIVE_SRC_RE.match(ln[1])
                 and isinstance(ln[2], int) and 0 <= ln[2] <= 7 and isinstance(ln[3], str)):
             good.append((ln[0], ln[1], ln[2], ln[3][:LIVE_TEXT_MAX]))
+    bad = len(lines) - len(good)                           # past the part's cap, or not a line: counted, never silent
     done = body.get("done") if isinstance(body.get("done"), dict) else None
-    with rec["wlock"]:                                     # one server's parts in order; a retried part waits here
+    with rec["locks"][nid]:                                # one server's parts in order; a retried part waits here
         with _RANGE_LOCK:
             want = ns.get("next", 0)
             if rec["phase"] != "reading":
@@ -8068,12 +8083,13 @@ def range_absorb(body, now=None):
             if 0 < seq < want or (seq == 0 and want and ns["state"] == "done"):
                 return 200, {"ok": True, "next": want}     # a repeat (its answer was lost): kept already
             ns["state"] = "sending"
-            room = max(0, rec["share"] + (rec["share"] >> 2) + (1 << 20) - (0 if seq == 0 else ns.get("bytes", 0)))
+            # in the node's own units (RangeRing: RANGE_LINE_OVER + characters), so a node within its share is never cut
+            room = max(0, rec["share"] + (rec["share"] >> 2) + (1 << 20) - (0 if seq == 0 else ns.get("used", 0)))
         keep, size = [], 0                                 # the node keeps to its share; this only defends the disk
         for ln in good:
-            size += RANGE_LINE_OVER + len(ln[3])
-            if size > room:
+            if size + RANGE_LINE_OVER + len(ln[3]) > room:
                 break
+            size += RANGE_LINE_OVER + len(ln[3])
             keep.append(ln)
         try:
             n = _range_spool(rec, nid, keep, seq == 0)
@@ -8083,11 +8099,12 @@ def range_absorb(body, now=None):
             return 410, {"ok": False, "error": "the panel cannot spool it", "code": "gone"}
         with _RANGE_LOCK:
             if seq == 0:                                   # a first part: a new read (noded restarted) starts afresh
-                ns.update(bytes=0, kept=0, over=0)
+                ns.update(bytes=0, used=0, kept=0, over=0)
             ns["next"] = seq + 1
             ns["bytes"] = ns.get("bytes", 0) + n
+            ns["used"] = ns.get("used", 0) + size
             ns["kept"] = ns.get("kept", 0) + len(keep)
-            ns["over"] = ns.get("over", 0) + len(good) - len(keep)
+            ns["over"] = ns.get("over", 0) + len(lines) - len(keep)
             if done is not None:
                 for k in ("read", "cut", "cut_t", "first"):
                     v = done.get(k)
@@ -8114,20 +8131,22 @@ def _range_panel_run(rec):
                 ns.update(read=n, last=time.time())
         n = range_read(ring, want, rec["lv"], rec["since"], rec["until"], rec["stop"], tick=tick, **plan) if want else 0
         first = range_first(plan.get("journal"), rec["until"], want) if want and ring.cut == 0 else 0
-        if rec["stop"].is_set():
-            return
-        with rec["wlock"]:
+        with rec["locks"][LIVE_PANEL]:                     # a make waits for this; one started first left it out
+            with _RANGE_LOCK:
+                if rec["stop"].is_set() or rec["phase"] != "reading" or ns["state"] in RANGE_FINAL:
+                    return
             size, kept = 0, 0
             for i, part in enumerate(ring.parts() if ring.lines else [[]]):
                 size += _range_spool(rec, LIVE_PANEL, part, i == 0)
                 kept += len(part)
-        with _RANGE_LOCK:
-            ns.update(state="done", read=n, kept=kept, bytes=size, cut=ring.cut, cut_t=ring.cut_t, first=first,
-                      last=time.time())
+            with _RANGE_LOCK:
+                ns.update(state="done", read=n, kept=kept, bytes=size, cut=ring.cut, cut_t=ring.cut_t, first=first,
+                          last=time.time())
     except Exception as e:
         log(LOG_WARNING, "logs: the panel's range read stopped: %s", e)
         with _RANGE_LOCK:
-            ns.update(state="failed", err=str(e)[:200])
+            if ns["state"] not in RANGE_FINAL:
+                ns.update(state="failed", err=str(e)[:200])
 
 
 def _range_fmt_t(us, tz):
@@ -8155,7 +8174,7 @@ def _range_why(rec, nid, ns):
         out.append("%d earlier lines, up to %s, not in: its share (%.1f MB of %d MB) was full"
                    % (ns["cut"], _range_fmt_t(ns.get("cut_t", 0), tz)[:19], rec["share"] / 1048576, RANGE_TOTAL >> 20))
     if ns.get("over"):
-        out.append("%d lines past its share refused by the panel" % ns["over"])
+        out.append("%d lines refused by the panel (past its share, or not lines)" % ns["over"])
     if ns.get("first") and ns["first"] > rec["since"] * 1000000 + 60000000:
         out.append("keeps lines from %s only (its log budget)" % _range_fmt_t(ns["first"], tz)[:16])
     by = {}
@@ -8176,6 +8195,9 @@ def _range_make(rec):
         with contextlib.suppress(Exception):
             os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
         tz, names = rec["tz"], rec["names"]
+        for lk in rec["locks"].values():                    # a part being written when the phase moved: let it finish
+            with lk:                                        # (every later one sees "making" and is refused)
+                pass
         with _RANGE_LOCK:
             ns_all = {n: dict(v) for n, v in rec["ns"].items()}
         z = _range_tz(tz)
@@ -8218,7 +8240,7 @@ def _range_make(rec):
                 buf = []
                 for t, nid, src, prio, text in heapq.merge(*(it(n, f) for n, f in files), key=lambda x: x[0]):
                     if rec["stop"].is_set():
-                        return
+                        break
                     s = t // 1000000
                     if s != last_s:
                         last_s, stamp = s, time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(s + tz * 60))
@@ -8245,9 +8267,17 @@ def _range_make(rec):
             for _n, f in files:
                 with contextlib.suppress(Exception):
                     f.close()
+        if rec["stop"].is_set():                            # closed or dropped meanwhile: nothing stays behind
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            return
         os.replace(tmp, rec["dir"] + ".log.gz")
         with contextlib.suppress(OSError):
             shutil.rmtree(rec["dir"])
+        if rec["stop"].is_set():                            # dropped between the check and the rename
+            with contextlib.suppress(OSError):
+                os.unlink(rec["dir"] + ".log.gz")
+            return
         with _RANGE_LOCK:
             rec.update(phase="ready", made=time.time(), lines=lines, raw=raw, size=os.path.getsize(rec["dir"] + ".log.gz"))
     except Exception as e:
@@ -8280,7 +8310,9 @@ def range_view(rid, deps, now=None):
     adv = ((deps.get("panel_settings") or {}).get("advanced") or {})
     stale_s = max(5, int((adv.get("node_stale_ms") or 30000) / 1000))
     with _RANGE_LOCK:
-        _range_expire(now)
+        gone = _range_expire(now)
+    _range_drop_all(gone)
+    with _RANGE_LOCK:
         rec = _RANGE_REQS.get(rid) if isinstance(rid, str) else None
         if rec is None:
             return None
@@ -8333,7 +8365,9 @@ def range_api_post(path, body, deps):
 def range_download(rid):
     """The made file of a request, or None: (path, raw size, gzip size, file name). Counts as a read (RANGE_KEEP)."""
     with _RANGE_LOCK:
-        _range_expire(time.time())
+        gone = _range_expire(time.time())
+    _range_drop_all(gone)
+    with _RANGE_LOCK:
         rec = _RANGE_REQS.get(rid) if isinstance(rid, str) and LIVE_ID_RE.match(rid) else None
         if rec is None or rec["phase"] != "ready":
             return None

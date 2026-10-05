@@ -241,16 +241,7 @@ function stateSummary() {
     if (s.off) add("skew", id);
   }
   const uniq = a => [...new Set(a)];
-  const say = {
-    waiting: [T("Starting"), T("Asked: a server starts sending within a sync or two."), "faint"],
-    noanswer: [T("No answer"), T("Asked, but nothing came back. Check that the server syncs and runs a current build."), "warn"],
-    old: [T("Update the node"), T("This node's build is too old for the live viewer. Update it to see its logs."), "warn"],
-    offline: [T("Offline"), T("Not reporting — nothing can be read until it is back."), "faint"],
-    off: [T("Logging is off"), T("Logging is off, so nothing is stored to read. Pick a level above to see lines."), "warn"],
-    noaccess: [T("No access yet"), T("The panel reads its own journal once it restarts after the update that added it to systemd-journal."), "warn"],
-    none: [T("Nothing to read"), T("None of the chosen sources is on these servers."), "faint"],
-    skew: [T("Clock off"), T("These servers' clocks differ from the panel's. Their lines are shown on the panel's clock."), "faint"],
-  };
+  const say = stateSay();
   for (const [key, list] of Object.entries(by)) {
     const u = uniq(list);
     let txt, tip, tone;
@@ -263,16 +254,43 @@ function stateSummary() {
   }
   return out;
 }
+// what a server's state reads as, chip and bubble — the live viewer's, and (stateSay(true)) a range download's
+function stateSay(range) {
+  const s = {
+    waiting: [T("Starting"), T("Asked: a server starts sending within a sync or two."), "faint"],
+    noanswer: [T("No answer"), T("Asked, but nothing came back. Check that the server syncs and runs a current build."), "warn"],
+    old: [T("Update the node"), T("This node's build is too old for the live viewer. Update it to see its logs."), "warn"],
+    offline: [T("Offline"), T("Not reporting — nothing can be read until it is back."), "faint"],
+    off: [T("Logging is off"), T("Logging is off, so nothing is stored to read. Pick a level above to see lines."), "warn"],
+    noaccess: [T("No access yet"), T("The panel reads its own journal once it restarts after the update that added it to systemd-journal."), "warn"],
+    none: [T("Nothing to read"), T("None of the chosen sources is on these servers."), "faint"],
+    skew: [T("Clock off"), T("These servers' clocks differ from the panel's. Their lines are shown on the panel's clock."), "faint"],
+  };
+  return range ? { ...s,
+    done: [T("range|Done"), T("Read and sent: its part of the range is in the file."), "ok"],
+    reading: [T("Reading"), T("Reading its logs, at low priority. A full log takes a few seconds."), "run"],
+    waiting: [T("Asked"), T("Asked: a server starts within a sync or two."), "faint"],
+    skipped: [T("Left out"), T("The file was made before it finished."), "faint"],
+    old: [T("Update the node"), T("This node's build is too old for range downloads. Update it to include its logs."), "warn"],
+    failed: [T("Failed"), T("It stopped answering while it read, or ran past the 10-minute limit."), "bad"],
+    cut: [T("Newest part only"), T("Its share of the 50 MB was full, so the file has the end of its range. Narrow the range or the servers for the rest."), "warn"],
+    short: [T("Keeps less"), T("Its log budget no longer holds the start of the range."), "faint"],
+  } : s;
+}
+// one state as a chip with its count, and the servers' names in a bubble (24 of them, then "and N more")
+function NamesChip({ txt, tip, tone, ids, extra }) {
+  return html`<${Popover} cls="lv-stw" popCls="lv-stpop" trigger=${html`<span class=${"lv-st t-" + tone}>${txt} <b>${fmtNum(ids.length)}</b></span>`}>
+    <div class="lv-stpop-t">${tip}</div>
+    <div class="lv-stpop-n">${ids.slice(0, 24).map(id => html`<span class="lv-chip" style=${"--lvc:" + chipOf(id)}>${nodeName(id)}${extra ? extra(id) : ""}</span>`)}
+      ${ids.length > 24 ? html`<span class="faint">${T("and {n} more", { n: ids.length - 24 })}</span>` : null}</div>
+  <//>`;
+}
 
 function StateChips() {
   const items = stateSummary();
   if (!items.length) return null;
-  return html`<div class="lv-states">${items.map(it => html`<${Popover} key=${it.key} cls="lv-stw" popCls="lv-stpop"
-    trigger=${html`<span class=${"lv-st t-" + it.tone}>${it.txt} <b>${it.ids.length}</b></span>`}>
-    <div class="lv-stpop-t">${it.tip}</div>
-    <div class="lv-stpop-n">${it.ids.slice(0, 24).map(id => html`<span class="lv-chip" style=${"--lvc:" + chipOf(id)}>${nodeName(id)}${it.key === "skew" ? " " + skewText((LV.states[id] || {}).off) : ""}</span>`)}
-      ${it.ids.length > 24 ? html`<span class="faint">${T("and {n} more", { n: it.ids.length - 24 })}</span>` : null}</div>
-  <//>`)}</div>`;
+  return html`<div class="lv-states">${items.map(it => html`<${NamesChip} key=${it.key} txt=${it.txt} tip=${it.tip} tone=${it.tone} ids=${it.ids}
+    extra=${it.key === "skew" ? id => " " + skewText((LV.states[id] || {}).off) : null}/>`)}</div>`;
 }
 const skewText = s => !s ? "" : (s > 0 ? "+" : "−") + (Math.abs(s) >= 120 ? Math.round(Math.abs(s) / 60) + " min" : Math.abs(s) + " s");
 
@@ -430,7 +448,7 @@ function rangeSave() {
 function rangeClose() {
   clearTimeout(RG.timer);
   if (RG.id) api.post("/api/logs/range/close", { id: RG.id }).catch(() => {});
-  Object.assign(RG, { id: null, v: null, err: "", saved: false });
+  Object.assign(RG, { id: null, v: null, err: "", saved: false, open: false });
   bump();
 }
 function rangeMakeNow() {
@@ -441,24 +459,6 @@ function rangeMakeNow() {
 const RCAT = { done: "done", reading: "reading", sending: "reading", waiting: "waiting", failed: "failed", timeout: "failed",   // i18n-keys: state ids
                offline: "offline", old: "old", noanswer: "noanswer", skipped: "skipped" };
 const RORDER = ["done", "reading", "waiting", "skipped", "noanswer", "old", "offline", "failed"];   // i18n-keys: state ids
-function rangeSay(k, v) {
-  return ({
-    done: [T("range|Done"), T("Read and sent: its part of the range is in the file."), "ok"],
-    reading: [T("Reading"), T("Reading its logs, at low priority. A full log takes a few seconds."), "run"],
-    waiting: [T("Asked"), T("Asked: a server starts within a sync or two."), "faint"],
-    skipped: [T("Left out"), T("The file was made before it finished."), "faint"],
-    noanswer: [T("No answer"), T("Asked, but nothing came back. Check that the server syncs and runs a current build."), "warn"],
-    old: [T("Update the node"), T("This node's build is too old for range downloads. Update it to include its logs."), "warn"],
-    offline: [T("Offline"), T("Not reporting — nothing can be read until it is back."), "faint"],
-    failed: [T("Failed"), T("It stopped answering while it read, or ran past the 10-minute limit."), "bad"],
-    cut: [T("Newest part only"), T("Its share of the 50 MB was full, so the file has the end of its range. Narrow the range or the servers for the rest."), "warn"],
-    short: [T("Keeps less"), T("Its log budget no longer holds the start of the range."), "faint"],
-    off: [T("Logging is off"), T("Logging is off, so nothing is stored to read."), "warn"],
-    noaccess: [T("No access yet"), T("The panel reads its own journal once it restarts after the update that added it to systemd-journal."), "warn"],
-    none: [T("Nothing to read"), T("None of the chosen sources is on these servers."), "faint"],
-    skew: [T("Clock off"), T("These servers' clocks differ from the panel's. Their lines are put on the panel's clock."), "faint"],
-  })[k] || [k, "", "faint"];
-}
 function rangeGroups(v) {
   const cat = {}, extra = {};
   const add = (o, k, id) => (o[k] = o[k] || []).push(id);
@@ -474,15 +474,6 @@ function rangeGroups(v) {
   }
   return { cat, extra };
 }
-function NamesPop({ k, ids, n }) {
-  const [txt, tip, tone] = rangeSay(k);
-  return html`<${Popover} cls="lv-stw" popCls="lv-stpop" trigger=${html`<span class=${"lv-st t-" + tone}>${txt} <b>${fmtNum(n)}</b></span>`}>
-    <div class="lv-stpop-t">${tip}</div>
-    <div class="lv-stpop-n">${ids.slice(0, 24).map(id => html`<span class="lv-chip" style=${"--lvc:" + chipOf(id)}>${nodeName(id)}</span>`)}
-      ${ids.length > 24 ? html`<span class="faint">${T("and {n} more", { n: ids.length - 24 })}</span>` : null}</div>
-  <//>`;
-}
-
 function RangePanel() {
   const v = RG.v, ids = nodesOf(), lv = levelsOn();
   const nodeLbl = ids.length === 1 ? nodeName(ids[0]) : ids.includes(LOG_PANEL) && ids.length > 1
@@ -518,8 +509,8 @@ function RangePanel() {
       </div>
     </div>`;
   }
-  const g = v ? rangeGroups(v) : { cat: {}, extra: {} };
-  const total = ids.length, done = Object.entries(g.cat).filter(([k]) => k !== "reading" && k !== "waiting").reduce((a, [, l]) => a + l.length, 0);   // i18n-keys: state ids
+  const g = v ? rangeGroups(v) : { cat: {}, extra: {} }, say = stateSay(true);
+  const total = v ? Object.keys(v.nodes || {}).length : ids.length, done = Object.entries(g.cat).filter(([k]) => k !== "reading" && k !== "waiting").reduce((a, [, l]) => a + l.length, 0);   // i18n-keys: state ids
   const ph = v ? v.phase : "reading";
   const head = ph === "ready" ? T("Ready: {v1} lines, {v2}.", { v1: fmtNum(v.lines), v2: fmtBytes(v.raw) })
     : ph === "failed" ? T("The file could not be made: {v1}", { v1: v.err || "?" })
@@ -531,8 +522,10 @@ function RangePanel() {
       ${ph === "ready" ? html`<a class="btn btn-mini btn-primary" href=${"api/logs/download/" + RG.id} download=${v.name}><${Ic} i="download"/> ${T("Save the file")}</a>` : null}</div>
     <div class="lv-rng-bar" role="img" aria-label=${T("Waiting on {v2} of {v3} servers", { v2: fmtNum(total - done), v3: fmtNum(total) })}>
       ${RORDER.filter(k => g.cat[k]).map(k => html`<i key=${k} class=${"lv-rng-seg c-" + k} style=${"flex-grow:" + g.cat[k].length}></i>`)}</div>
-    <div class="lv-states">${RORDER.filter(k => g.cat[k]).map(k => html`<${NamesPop} key=${k} k=${k} ids=${g.cat[k]} n=${g.cat[k].length}/>`)}
-      ${Object.entries(g.extra).map(([k, l]) => html`<${NamesPop} key=${"x" + k} k=${k} ids=${l} n=${l.length}/>`)}</div>
+    <div class="lv-states">${[...RORDER.filter(k => g.cat[k]).map(k => [k, g.cat[k]]), ...Object.entries(g.extra)].map(([k, l]) => {
+      const [txt, tip, tone] = say[k] || [k, "", "faint"];
+      return html`<${NamesChip} key=${k} txt=${txt} tip=${tip} tone=${tone} ids=${l}
+        extra=${k === "skew" ? id => " " + skewText((v.nodes[id] || {}).off) : null}/>`; })}</div>
     ${partial ? html`<div class="faint lv-rng-note">${T("Not the whole range from every server — the file's first lines say which and why.")}</div>` : null}
     <div class="lv-rng-row">
       ${ph === "ready" ? html`<span class="faint lv-rng-note">${T("Kept on the panel for {n} min after each save.", { n: RANGE_KEEP_MIN })}</span>` : null}

@@ -7999,6 +7999,7 @@ import zlib as _range_zlib
 RANGE_SEG_MAX = 512 << 10            # bytes of text one ring segment holds at most
 RANGE_SEGS = 8                       # a share is held in about this many segments; the oldest goes first
 RANGE_LINE_OVER = 64                 # what a line costs in the file beyond its text (time, server, source, level)
+RANGE_PART_LINES = 8000              # lines one posted part carries at most (short lines: bytes alone would allow more)
 RANGE_LEVELS = {"err": (0, 1, 2, 3), "warn": (4,), "info": (5, 6), "debug": (7,)}   # the viewer's level chips
 
 
@@ -8424,10 +8425,11 @@ def _range_send(rq, extra, until):
 
 
 def _range_parts(ring):
-    """The kept lines in parts of at most LIVE_POST_BYTES of JSON (_live_chunk), oldest first — one segment in memory."""
+    """The kept lines in parts of at most LIVE_POST_BYTES of JSON (_live_chunk) and RANGE_PART_LINES lines, oldest first —
+    one segment in memory."""
     for seg in ring.parts():
         while seg:
-            n = _live_chunk(seg)
+            n = min(_live_chunk(seg), RANGE_PART_LINES)
             yield seg[:n]
             seg = seg[n:]
 
@@ -8441,15 +8443,19 @@ def _range_run(rq, ifaces):
         want = [s for s in rq["src"] if st.get(s) == "ok"]
         if _range_send(rq, {"st": st}, until) != "ok":
             return
-        ring, hb = RangeRing(rq["share"]), [time.monotonic()]
+        ring, read, reading = RangeRing(rq["share"]), [0], threading.Event()
 
-        def tick(n):
-            if time.monotonic() - hb[0] >= RANGE_HB_S:
-                hb[0] = time.monotonic()
-                _range_post(rq, {"read": n})          # progress only: once, never retried
-        since, end = rq["since"] + rq["off"], rq["until"] + rq["off"]
-        n = range_read(ring, want, rq["lv"], since, end, rq["stop"], tick=tick, **plan) if want else 0
-        first = range_first(plan.get("journal"), end, want) if want and not ring.cut else 0
+        def beat():                                   # progress on a clock, not per line: a long scan before `since`
+            while not reading.wait(RANGE_HB_S) and not rq["stop"].is_set():   # yields nothing, and the panel calls a
+                _range_post(rq, {"read": read[0]})    # server silent for 2 min "failed"; once, never retried
+        threading.Thread(target=beat, daemon=True, name="swg-range-beat-" + rq["id"]).start()
+        try:
+            since, end = rq["since"] + rq["off"], rq["until"] + rq["off"]
+            n = range_read(ring, want, rq["lv"], since, end, rq["stop"], tick=lambda k: read.__setitem__(0, k),
+                           **plan) if want else 0
+            first = range_first(plan.get("journal"), end, want) if want and not ring.cut else 0
+        finally:
+            reading.set()
         done = {"read": n, "cut": ring.cut, "cut_t": ring.cut_t, "first": first}
         for _try in range(3):                         # a 409: the panel lost the order — every part again from 0
             if rq["stop"].is_set():
