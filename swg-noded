@@ -264,7 +264,7 @@ CONFIG_PATH = os.environ.get("SWG_AGENT_CONFIG", "/etc/swg-agent/config.json")
 STATE_DIR   = os.environ.get("SWG_NODED_STATE", "/var/lib/swg-noded")
 # The level in force on this node, as one number, for the programs that are not this process: swg-sni (a child — the
 # variable below tells it where) re-reads it every few seconds, swg-relay at start and before each report line, and
-# swg-agent gets it through SWG_LOG_LEVEL. Written only when it changes (_log_follow).
+# swg-agent gets it in each request (run_agent). Written only when it changes (_log_follow).
 LOG_LEVEL_FILE = os.path.join(STATE_DIR, "log-level")
 os.environ["SWG_LOG_LEVEL_FILE"] = LOG_LEVEL_FILE
 
@@ -7298,12 +7298,11 @@ def log_no_detail():
 
 
 def _log_follow(node_cfg):
-    """Once per loop: hand the level in force to the children (the file, the agent's variable) and to the units' drop-
-    ins — each only when it changed, so a steady node touches nothing. Debug's expiry needs no event: log_level() turns
+    """Once per loop: hand the level in force to the children (the file) and to the units' drop-ins — each only when it
+    changed, so a steady node touches nothing. Debug's expiry needs no event: log_level() turns
     it back here on the first pass after its time is up."""
     lvl = log_level()
     if (lvl, _LOG["level"]) != _LOG_FOLLOWED["lvl"]:
-        os.environ["SWG_LOG_LEVEL"] = str(lvl)
         try:                                         # "<in force> <base>": children read the first, _log_boot the second
             with open(LOG_LEVEL_FILE + ".tmp", "w") as f:
                 f.write("%d %d\n" % (lvl, _LOG["level"]))
