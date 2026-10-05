@@ -70,6 +70,7 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      keepesc      Escape in a form the list owns leaves the list open
    the header's Logs button ([12]):
      overlayeager the viewer is mounted (and polls) before the button is clicked
+     rowkey       a row's key is node + seq: a reopen (seq from 1 again) repeats keys still on screen
    one viewer, asked for ([10], [13]; the whole-feature analysis §32 and the header button's review):
      lvzabove     the full-screen viewer covers the app's sheets and confirms (z above the modal layer)
      autostart    opening Settings → Logs streams before "Start live log"
@@ -224,6 +225,7 @@ PLANTS = {   # (program, anchor, replacement)
     "imeesc": ("ui", '''    const onKey = e => { if (e.key !== "Escape" || e.isComposing) return; const t = e.target;''',
                '''    const onKey = e => { if (e.key !== "Escape") return; const t = e.target;'''),
     "keepesc": ("ui", ''' else if (keep && keep(t)) close(false); };''', ''' };'''),
+    "rowkey": ("spa", "<${Row} key=${l.id} l=${l} q=${q}/>", "<${Row} key=${l.nid + l.seq} l=${l} q=${q}/>"),
     "overlayeager": ("spa", '''  return LV.overlay ? html`<${LogViewer} overlay/>` : null;''', '''  return html`<${LogViewer} overlay/>`;'''),
     "lvzabove": ("css", ".lv-full{position:fixed;inset:0;z-index:49;", ".lv-full{position:fixed;inset:0;z-index:950;"),
     "autostart": ("spa", "if (LV.busy || !LV.mounted || !LV.live || document.hidden) return;",
@@ -1024,6 +1026,10 @@ console.log(JSON.stringify(r));
         body = s[s.index("return range ?", i):s.index("} : s;", i)]
         check("[9] a range's \"logging is off\" does not tell the operator to pick a level (nothing of the past comes back)",
               'off: [T("Logging is off"), T("Logging is off, so nothing is stored to read."), "warn"]' in body, body[-300:])
+        add = s[s.index("function addLines(raw)"):s.index("async function tick()")]
+        rows = re.findall(r"<\$\{Row\} key=\$\{([^}]*)\}", s)
+        check("[9] a row's key is the line's own id, not node + seq (seq restarts with each request; a reopen keeps the old "
+              "lines on screen) (review §35 #3)", rows == ["l.id"] and "id: ++LV.uid" in add, (rows, "id: ++LV.uid" in add))
 
     guarded("[9]", sec9)
 finally:
