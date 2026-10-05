@@ -46,6 +46,13 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      node409      a 409 is not answered by starting again        nodenice     the node's read is not niced
      nodeclock    the read is not shifted by the clock offset    nodeflag     the snapshot does not say `log.range`
      nodestop     a range the reply drops reads on               spablob      the SPA builds the file as a Blob
+   the code review's fixes ([8]):
+     nodepartcap  a part of short lines passes the panel's line cap    silentcap  lines past the cap are not counted
+     makerace     the make reads a part still being written            paneltrunc the panel's own read writes after a make
+     nobeat       a long scan posts no progress (read as "failed")     makeleak   a stopped make leaves its .part
+     onelock      one server's write holds every other server's        droplocked the sync reply deletes files under the lock
+     unitmix      the disk guard counts bytes against the node's characters
+     spatotal     the progress counts the servers chosen now           spaclose   Close shows the form again
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -89,15 +96,15 @@ PLANTS = {   # (program, anchor, replacement)
     "norestart": ("panel", '''    with open(os.path.join(rec["dir"], nid + ".gz"), "wb" if first else "ab") as f:''',
                   '''    with open(os.path.join(rec["dir"], nid + ".gz"), "ab") as f:'''),
     "noslots": ("panel", '''                if not RANGE_POST_SLOTS.acquire(blocking=False):''', '''                if not RANGE_POST_SLOTS.acquire(blocking=False) and False:'''),
-    "maxreq": ("panel", '''if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX:''', '''if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX + 9:'''),
+    "maxreq": ("panel", '''if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX\n''', '''if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX + 9\n'''),
     "evenshare": ("panel", '''"label": label, "share": RANGE_TOTAL // len(nodes),''', '''"label": label, "share": RANGE_TOTAL,'''),
     "unknowndrop": ("panel", '''                                                                           or RANGE_NODE_RE.match(n))))[:2000]''',
                     '''                                                                           )))[:2000]'''),
     "nostall": ("panel", '''        elif now - ns.get("last", now) > RANGE_STALL:''', '''        elif False:'''),
     "nolife": ("panel", '''    late = now - rec["at"] > RANGE_LIFE''', '''    late = False'''),
-    "noabandon": ("panel", '''                or (r["phase"] in ("reading", "making") and now - r["polled"] > RANGE_ABANDON)]:''', ''']:'''),
-    "nokeep": ("panel", '''                if (r["phase"] in ("ready", "failed") and now - max(r["made"], r["read"]) > RANGE_KEEP)''',
-               '''                if False'''),
+    "noabandon": ("panel", '''           or (r["phase"] in ("reading", "making") and now - r["polled"] > RANGE_ABANDON)]]''', ''']]'''),
+    "nokeep": ("panel", '''           if (r["phase"] in ("ready", "failed") and now - max(r["made"], r["read"]) > RANGE_KEEP)''',
+               '''           if False'''),
     "nowipe": ("panel", '''    d = os.path.join(state_dir or ".", "logspool")
     with contextlib.suppress(OSError):
         shutil.rmtree(d)''', '''    d = os.path.join(state_dir or ".", "logspool")'''),
@@ -141,6 +148,30 @@ PLANTS = {   # (program, anchor, replacement)
     "nodestop": ("noded", '''        for rid in [k for k in _RANGE if k not in want]:
             _RANGE.pop(rid)["stop"].set()''', '''        for rid in []:
             _RANGE.pop(rid)["stop"].set()'''),
+    "nodepartcap": ("noded", '''            n = min(_live_chunk(seg), RANGE_PART_LINES)''', '''            n = _live_chunk(seg)'''),
+    "silentcap": ("panel", '''            ns["over"] = ns.get("over", 0) + len(lines) - len(keep)''',
+                  '''            ns["over"] = ns.get("over", 0) + len(good) - len(keep)'''),
+    "makerace": ("panel", '''        for lk in rec["locks"].values():                    # a part being written when the phase moved: let it finish
+            with lk:                                        # (every later one sees "making" and is refused)
+                pass''', '''        pass'''),
+    "paneltrunc": ("panel", '''                if rec["stop"].is_set() or rec["phase"] != "reading" or ns["state"] in RANGE_FINAL:
+                    return''', '''                if rec["stop"].is_set():
+                    return'''),
+    "nobeat": ("noded", '''        threading.Thread(target=beat, daemon=True, name="swg-range-beat-" + rq["id"]).start()''', '''        pass'''),
+    "makeleak": ("panel", '''        if rec["stop"].is_set():                            # closed or dropped meanwhile: nothing stays behind
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            return''', '''        if rec["stop"].is_set():                            # closed or dropped meanwhile: nothing stays behind
+            return'''),
+    "onelock": ("panel", '''    with rec["locks"][nid]:                                # one server's parts in order; a retried part waits here''',
+                '''    with rec["locks"][rec["nodes"][0]]:'''),
+    "droplocked": ("panel", '''                        "now": int(now)})
+    _range_drop_all(gone)''', '''                        "now": int(now)})
+        _range_drop_all(gone)'''),
+    "unitmix": ("panel", '''(0 if seq == 0 else ns.get("used", 0)))''', '''(0 if seq == 0 else ns.get("bytes", 0)))'''),
+    "spatotal": ("spa", '''  const total = v ? Object.keys(v.nodes || {}).length : ids.length, done''', '''  const total = ids.length, done'''),
+    "spaclose": ("spa", '''  Object.assign(RG, { id: null, v: null, err: "", saved: false, open: false });''',
+                 '''  Object.assign(RG, { id: null, v: null, err: "", saved: false });'''),
     "spablob": ("spa", '''  a.href = "api/logs/download/" + RG.id; a.download''', '''  downloadConf("", "x", "log"); a.href = "api/logs/download/" + RG.id; a.download'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -726,6 +757,103 @@ try:
         check("[7] every string of the viewer has its Russian", not missing, missing)
 
     guarded("[7]", sec7)
+    # ── [8] the code review's fixes ───────────────────────────────────────────────────────────────────────────────────
+    print("[8] the code review's fixes")
+
+    def sec8():
+        N = load("noded")
+        ring = N.RangeRing(50 << 20)
+        for i in range(30000):                               # 1-character lines: a segment holds ~8 000 of them,
+            ring.add([i, "dns", 6, "q"])                     # and bytes alone would put them all in one part
+        sizes = [len(x) for x in N._range_parts(ring)]
+        check("[8] a part of short lines is capped by lines too (RANGE_PART_LINES), not bytes alone",
+              sizes and max(sizes) <= N.RANGE_PART_LINES and sum(sizes) == 30000, sizes[:4])
+        P = load("panel")
+        P.range_init(os.path.join(TMP, "fix-spool"))
+        st, o = P.range_open({"nodes": ["n1", "n2", "panel"], **RANGE_BODY}, {"n1", "n2"})
+        rec = P._RANGE_REQS[o["data"]["id"]]
+        k1, k2 = P._live_key(rec, "n1"), P._live_key(rec, "n2")
+        base = rec["since"] * 10 ** 6 + 10 ** 6
+        many = [[base + i, "dns", 6, "q"] for i in range(P.RANGE_PART_LINES + 500)]
+        P.range_absorb({"id": rec["id"], "key": k1, "now": time.time(), "seq": 0, "lines": many})
+        check("[8] lines past a part's cap are counted (\"refused\"), never dropped silently",
+              rec["ns"]["n1"].get("over") == 500 and rec["ns"]["n1"].get("kept") == P.RANGE_PART_LINES, rec["ns"]["n1"])
+        # a server's write in progress: another server's part is not held behind it
+        res = []
+        rec["locks"]["n1"].acquire()
+        th = threading.Thread(target=lambda: res.append(P.range_absorb({"id": rec["id"], "key": k2, "now": time.time(),
+                                                                         "seq": 0, "lines": [[base + 7, "noded", 6, "n2 line"]]})))
+        th.start(); th.join(5)
+        check("[8] one server's write never holds another's (a lock per server)", res and res[0][0] == 200, res)
+        # a make started while n1's part is being written waits for it, and has its lines
+        rec["phase"] = "making"
+        mk = threading.Thread(target=P._range_make, args=(rec,))
+        mk.start(); time.sleep(0.4)
+        early = rec["phase"]
+        P._range_spool(rec, "n1", [(base + 9, "noded", 6, "written while the make waited")], False)
+        rec["locks"]["n1"].release()
+        mk.join(20)
+        txt = gzip.open(rec["dir"] + ".log.gz", "rt").read() if rec["phase"] == "ready" else ""
+        check("[8] a make waits for a part being written, and the part is in the file",
+              early == "making" and "written while the made waited".replace("made", "make") in txt, (early, rec["phase"], txt[-200:]))
+        # the panel's own read finishing after the make started writes nothing
+        P._RANGE_REQS.clear()
+        st, o = P.range_open({"nodes": ["panel"], **RANGE_BODY, "src": ["panel"]}, set())
+        rec2 = P._RANGE_REQS[o["data"]["id"]]
+        rec2["phase"] = "making"
+        P._live_panel_plan = lambda srcs, rng=False: ({"files": []}, {"panel": "ok"})
+        P._range_panel_run(rec2)
+        check("[8] the panel's own read, finishing after a make started, writes nothing",
+              not os.path.exists(os.path.join(rec2["dir"], "panel.gz")), os.listdir(rec2["dir"]))
+        # a make stopped (closed) leaves nothing behind
+        st, o = P.range_open({"nodes": ["n1"], **RANGE_BODY}, {"n1"})
+        rec3 = P._RANGE_REQS[o["data"]["id"]]
+        P.range_absorb({"id": rec3["id"], "key": P._live_key(rec3, "n1"), "now": time.time(), "seq": 0,
+                        "lines": [[base + i, "noded", 6, "x"] for i in range(10)], "done": {}})
+        rec3["phase"] = "making"
+        rec3["stop"].set()
+        P._range_make(rec3)
+        left = [f for f in os.listdir(P._RANGE_DIR["path"]) if f.startswith(rec3["id"]) and f != rec3["id"]]
+        check("[8] a make that is stopped leaves no .part and no file", not left, left)
+        # files are deleted outside the store's lock (a sync reply never does disk work under it)
+        P._RANGE_REQS.clear()                                # this section's earlier requests: out of the 2-in-progress count
+        held = []
+        P._range_drop = lambda r, _d=P._range_drop: (held.append(P._RANGE_LOCK.locked()), _d(r))[1]
+        st, o = P.range_open({"nodes": ["n1"], **RANGE_BODY}, {"n1"})
+        P._RANGE_REQS[o["data"]["id"]]["polled"] = time.time() - 300
+        P.range_reply("n1")
+        check("[8] an expired request's files are deleted outside the store's lock", held and not any(held), held)
+        # the disk guard in the node's units: Cyrillic lines just within the share are all kept
+        P._RANGE_REQS.clear()
+        st, o = P.range_open({"nodes": ["n1"], **RANGE_BODY}, {"n1"})
+        rec4 = P._RANGE_REQS[o["data"]["id"]]
+        rec4["share"] = 8 << 20                               # large enough that the guard's 1 MiB slack is not what saves it
+        k = P._live_key(rec4, "n1")
+        text = "строка " * 20
+        per = P.RANGE_LINE_OVER + len(text)
+        n = rec4["share"] // per
+        for seq, i in enumerate(range(0, n, P.RANGE_PART_LINES)):
+            P.range_absorb({"id": rec4["id"], "key": k, "now": time.time(), "seq": seq,
+                            "lines": [[base + j, "noded", 6, text] for j in range(i, min(n, i + P.RANGE_PART_LINES))]})
+        check("[8] the panel's disk guard counts what the node counts: a server within its share loses nothing",
+              not rec4["ns"]["n1"].get("over"), rec4["ns"]["n1"])
+        # the node's progress is on a clock: a long scan that yields nothing still says it is alive
+        N2 = load("noded")
+        posts = []
+        N2.RANGE_HB_S = 0.5
+        N2._range_post = lambda rq, extra: (posts.append(extra), "ok")[1]
+        N2._live_plan = lambda *a, **k: ({"files": []}, {"noded": "ok"})
+        N2.range_read = lambda ring, want, lv, s, u, stop, **k: (time.sleep(2.2), 0)[1]
+        N2._range_run({"id": "b" * 16, "stop": threading.Event(), "key": "k", "src": ["noded"], "lv": ["info"],
+                       "since": 1, "until": 2, "share": 1 << 20, "iv": 1, "off": 0, "url": "", "panel": {}}, [])
+        beats = [x for x in posts if "read" in x and "seq" not in x]
+        check("[8] a long scan posts its progress on a clock (no false \"failed\" after 2 min)", len(beats) >= 3, posts)
+        s = SRC["spa"]
+        check("[8] the SPA: the progress counts the request's own servers; Close collapses the panel",
+              "const total = v ? Object.keys(v.nodes || {}).length : ids.length" in s
+              and 'Object.assign(RG, { id: null, v: null, err: "", saved: false, open: false });' in s, "")
+
+    guarded("[8]", sec8)
 finally:
     for p in procs:
         p.terminate()
