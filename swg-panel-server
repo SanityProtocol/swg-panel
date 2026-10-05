@@ -7220,13 +7220,14 @@ def live_noded_src(text):
 class _LiveCtr:
     """Follow one container's log through the Engine API (HTTP/1.0 on the unix socket: no chunking, the stream ends when
     the container does). Frames are [stream, 0, 0, 0, size BE32] + payload; each line starts with its RFC 3339 stamp.
-    `cur` is the last line's time in ns: a restart asks from that second and skips what it already had."""
+    `cur` is the last line's time in ns: a restart asks from that second and skips what it already had. `q` replaces the
+    follow query (a time range reads once, to `until`)."""
 
-    def __init__(self, sock_path, name, src, cur):
+    def __init__(self, sock_path, name, src, cur, q=None):
         self.name, self.src, self.raw, self.buf = name, src, b"", b""
         self.last = cur if isinstance(cur, int) and cur > 0 else 0
         self.s, self.head, self.done, self.at = None, True, False, time.monotonic()
-        q = "follow=1&stdout=1&stderr=1&timestamps=1" + (
+        q = q or "follow=1&stdout=1&stderr=1&timestamps=1" + (
             "&since=%d.%09d" % divmod(self.last, 1000000000) if self.last else "&tail=%d" % LIVE_BACKFILL)
         try:
             self.s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -7561,46 +7562,18 @@ def _range_file(path, src, fmt, since_us, until_us, stop):
 
 
 def _range_ctr(sock_path, name, src, since_us, until_us, stop):
-    """A container's lines in the range, through the Engine API (HTTP/1.0, no follow: the stream ends at `until`)."""
-    s = None
+    """A container's lines in the range: the live reader's stream without follow (it ends at `until`), read to its end."""
+    c = _LiveCtr(sock_path, name, src, 0, q="stdout=1&stderr=1&timestamps=1&since=%d&until=%d"
+                 % (since_us // 1000000, until_us // 1000000 + 1))
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(30)
-        s.connect(sock_path)
-        s.sendall(("GET /containers/%s/logs?stdout=1&stderr=1&timestamps=1&since=%d&until=%d HTTP/1.0\r\nHost: docker"
-                   "\r\n\r\n" % (name, since_us // 1000000, until_us // 1000000 + 1)).encode())
-        raw, buf, head = b"", b"", True
-        while not stop.is_set():
-            d = s.recv(65536)
-            if not d:
+        while not c.done and not stop.is_set():
+            if not select.select([c], [], [], 30)[0]:         # the daemon went quiet: what came is what there is
                 break
-            raw += d
-            if head:
-                if b"\r\n\r\n" not in raw:
-                    continue
-                hdr, raw = raw.split(b"\r\n\r\n", 1)
-                head = False
-                if b" 200 " not in hdr.split(b"\r\n", 1)[0]:  # no such container, or the daemon refused
-                    return
-            while len(raw) >= 8 and raw[0] in (0, 1, 2) and raw[1:4] == b"\0\0\0":
-                n = struct.unpack(">I", raw[4:8])[0]
-                if len(raw) < 8 + n:
-                    break
-                buf += raw[8:8 + n]
-                raw = raw[8 + n:]
-            *done, buf = buf.split(b"\n")
-            for ln in done:
-                m = _LIVE_RFC.match(ln.decode("utf-8", "replace"))
-                if m:
-                    t = _live_utc(*m.groups()[:6]) * 1000000 + int(((m.group(7) or "") + "000000")[:6])
-                    if since_us <= t < until_us:
-                        yield [t, src, 6, ln.decode("utf-8", "replace")[m.end():][:LIVE_TEXT_MAX]]
-    except OSError:
-        return
+            for ln in c.read():
+                if since_us <= ln[0] < until_us:
+                    yield ln
     finally:
-        if s is not None:
-            with contextlib.suppress(OSError):
-                s.close()
+        c.close()
 
 
 def range_read(ring, want, lv, since, until, stop, journal=None, files=(), ctrs=(), sock=None, tick=None):
