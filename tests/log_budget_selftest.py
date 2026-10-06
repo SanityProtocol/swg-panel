@@ -37,6 +37,12 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      dockeroff    a container launched at Off still logs
      norotate     the docker log file is never rotated
      sweeplog     netctl's status sweep removes the budget's status file
+     headold      nothing rotated yet: the node reports no oldest line (Holds stays blank)
+     ncheadold    …the same in netctl's copy (the panel's row)
+     dockold      docker: the oldest line read from the newer half, not `.1`
+     paneloldest  the docker panel's row reports no oldest line
+     holdsfull    the SPA says how far back only once the budget is full
+     barfull      the used bar changes colour with the fill
      netctlrc     netctl reads its run() as a CompletedProcess (Off then never removes the files)
      noretry      netctl leaves the new size file in place when journald does not restart (never retried, reads as applied)
      noderetry    swg-noded leaves the new size file in place when journald does not restart (a restart reads it as applied)
@@ -45,13 +51,14 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      stickyerr    a failed restart's error stays after the budget is put back to the size in force
      uninstkeep   uninstall leaves the journal on disk
 """
-import importlib.machinery, importlib.util, io, json, os, re, shutil, socket, stat, subprocess, sys, tempfile, threading
+import importlib.machinery, importlib.util, io, json, os, re, shutil, socket, stat, struct, subprocess, sys, tempfile, threading
 import time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PROG = {k: os.path.join(ROOT, f) for k, f in (("noded", "swg-noded"), ("panel", "swg-panel-server"), ("netctl", "swg-netctl"),
-                                              ("uninstall", "uninstall.sh"), ("logs", "swg-logs"), ("update", "update.sh"))}
+                                              ("uninstall", "uninstall.sh"), ("logs", "swg-logs"), ("update", "update.sh"),
+                                              ("spa", "js/screen-settings.js"), ("css", "app.css"))}
 REF = "4248d11"                                  # the last build before levels: the byte-identical reference
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 FAILS = []
@@ -80,6 +87,13 @@ PLANTS = {   # (program, anchor, replacement)
     "unittext": ("noded", '''RELAY_UNIT_TMPL = """[Unit]''', '''RELAY_UNIT_TMPL = """[Service]\nLogNamespace=swg-node\n[Unit]'''),
     "dockeroff": ("noded", '''    if not cap:\n        return ["--log-driver", "none"]\n''', ""),
     "norotate": ("noded", '''            if _LOG_FILE["size"] >= _LOG_FILE["cap"] // 2:''', '''            if False:'''),
+    "headold": ("noded", '''    if journal and oldest is None:\n        oldest = _journal_head(os.path.join(d, "system.journal"))\n''', ""),
+    "ncheadold": ("netctl", '''    if oldest is None:\n        oldest = _journal_head(os.path.join(d, "system.journal"))\n''', ""),
+    "dockold": ("noded", '''    for p in (path + ".1", path):\n        with contextlib.suppress(OSError, ValueError, UnicodeDecodeError):\n            with open(p, "rb") as f:\n                return _live_cal''',
+                '''    for p in (path, path + ".1"):\n        with contextlib.suppress(OSError, ValueError, UnicodeDecodeError):\n            with open(p, "rb") as f:\n                return _live_cal'''),
+    "paneloldest": ("panel", '''        for p in (PANEL_LOG_FILE["path"] + ".1", PANEL_LOG_FILE["path"]):''', '''        for p in ():'''),
+    "holdsfull": ("spa", '''  if (!(st.used_mb >= st.mb * 0.85)) {''', '''  if (!(st.used_mb >= st.mb * 0.85)) return null;\n  if (false) {'''),
+    "barfull": ("css", ".lb-meter i{display:block;height:100%;background:var(--online)", ".lb-meter i{display:block;height:100%;background:var(--brand)"),
     "sweeplog": ("netctl", '''_sweep(sfd, 3600, keep=lambda n: n == LOG_STATUS)''', '''_sweep(sfd, 3600)'''),
     "netctlrc": ("netctl", '''    rc, out = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=20)\n    if rc != 0:''',
                  '''    r = run(["systemctl", "try-restart", "systemd-journald@%s.service" % LOG_NS], timeout=20)\n    rc, out = r.returncode, ""\n    if rc != 0:'''),
@@ -323,7 +337,21 @@ for n in os.listdir(JD):
     os.remove(os.path.join(JD, n))
 open(os.path.join(JD, "system.journal"), "wb").write(b"x" * 100000)
 used, oldest = N._log_dir_usage(JD, True)
-check("[3] only the active file: no oldest", oldest is None and used >= 100000, (used, oldest))
+check("[3] only the active file, not a journal (no signature): no oldest", oldest is None and used >= 100000, (used, oldest))
+
+
+def jhead(path, t):
+    """A journal file whose header says its first entry is at `t` (head_entry_realtime, µs at byte 184)."""
+    h = bytearray(b"LPKSHHRH" + bytes(8192 - 8))
+    struct.pack_into("<Q", h, 184, t * 10**6)
+    open(path, "wb").write(bytes(h))
+
+
+t0 = 1_790_250_000
+jhead(os.path.join(JD, "system.journal"), t0)
+used, oldest = N._log_dir_usage(JD, True)
+check("[3] only the active file (nothing rotated yet): its first entry, from its header (review §35 Holds)", oldest == t0, oldest)
+open(os.path.join(JD, "system.journal"), "wb").write(b"x" * 100000)
 t1, t2 = 1_790_000_000, 1_790_500_000
 for t in (t1, t2):
     open(os.path.join(JD, "system@%s-%016x-%016x.journal" % ("b" * 32, 7, t * 10**6)), "wb").write(b"z" * 1000)
@@ -364,6 +392,17 @@ check("[5] our file: each line timestamped, with its level", lines and re.match(
 check("[5] …rotated into .1 at half the cap: two files, bounded",
       os.path.exists(LF + ".1") and os.path.getsize(LF) <= 2000 + 200 and os.path.getsize(LF + ".1") <= 2000 + 200,
       (os.path.exists(LF + ".1"), os.path.getsize(LF)))
+OD = os.path.join(TMP, "dlog-old"); os.makedirs(OD)
+OL = os.path.join(OD, "swg-noded.log")
+open(OL, "w").write("2026-10-01T08:00:00Z I newer half\n"); open(OL + ".1", "w").write("2026-09-30T07:00:00Z I older half\n")
+T930 = __import__("calendar").timegm((2026, 9, 30, 7, 0, 0))   # the older half's stamp
+check("[5] the oldest line: the first stamp of `.1` (the older half), else of the file; none without a file (review §35 Holds)",
+      N._log_file_oldest(OL) == T930 and N._log_file_oldest(os.path.join(TMP, "nope.log")) is None, N._log_file_oldest(OL))
+PP = load("panel")
+PP.PANEL_LOG_FILE["path"] = OL
+check("[5] the docker panel's row says its oldest line the same way (review §35 Holds)",
+      (PP.panel_log_status({"panel_settings": {}}) or {}).get("oldest") == T930, PP.panel_log_status({"panel_settings": {}}))
+PP.PANEL_LOG_FILE["path"] = None
 N.log_file(LF, 0)
 check("[5] at Off (cap 0) both files are removed and nothing is written",
       not os.path.exists(LF) and not os.path.exists(LF + ".1"), os.listdir(os.path.dirname(LF)))
@@ -403,6 +442,10 @@ M = load("netctl", {"SWG_STATE_DIR": PST, "SWG_PANEL_USER": "nobody-here", "SWG_
                     "SWG_LOG_NS_CONF": os.path.join(TMP, "run", "journald@swg-panel.conf.d", "swg.conf")})
 quiet(M)
 MC = []
+JN = os.path.join(TMP, "journal-netctl"); os.makedirs(JN)
+jhead(os.path.join(JN, "system.journal"), 1_790_260_000)
+check("[6] netctl: only the active file — its first entry from its header (review §35 Holds)",
+      M._log_dir_usage(JN)[1] == 1_790_260_000, M._log_dir_usage(JN))
 
 
 MRC = {"rc": 0}
@@ -465,6 +508,13 @@ check("[6] Off: Storage=none and the stored files removed", "Storage=none" in op
       os.listdir(JP))
 
 # ── [7] the verify readers ───────────────────────────────────────────────────────────────────────────────────────────
+spa, css = SRC["spa"], SRC["css"]
+lh = spa[spa.index("export function logHolds(st)"):spa.index("function LogBudgetTable(")]
+check("[6] the SPA: before the budget is full the Holds cell says since when (the first line's date); once full, N days "
+      "(review §35 Holds)", 'if (!(st.used_mb >= st.mb * 0.85)) {' in lh and 'T("since {v1}"' in lh and "full: true" in lh, lh[:300])
+check("[6] …the used bar stays green at any fill (full is the steady state)",
+      ".lb-meter i{display:block;height:100%;background:var(--online)" in css and ".lb-meter.full" not in css
+      and '"lb-meter" + (' not in spa)
 print("[7] the verify readers")
 FB = os.path.join(TMP, "fakebin"); os.makedirs(FB)
 open(os.path.join(FB, "systemctl"), "w").write("#!/bin/sh\necho failed\n")
