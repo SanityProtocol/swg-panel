@@ -3330,7 +3330,7 @@ const sectionLabel = k => ({
             ? T("This fleet is linked on demand now.")
             : T("Every pair in this fleet is linked now.")}</p>` : html`<div style="height:8px"></div>`}
           <${MeshGenField} label=${T("Default mesh link type")} value=${meshGen} onChange=${setMeshGen}
-            hint=${T("What new links are made as. One link can have a type of its own — on its card under Node connections, on a node's page. Re-provision a node to move its existing links to this default.")}/>
+            hint=${T("What new links are made as. One link can have a type and AWG params of its own — on its card under Node connections, on a node's page. Re-provision a node to move its existing links to this default.")}/>
           ${/* the fleet's default obfuscation for AmneziaWG links, drawn for the default type (none for WG); a link sets its own
                 on its sheet (plan §8 round 13) */""}
           <${MeshAwgParams} title=${T("Default mesh AWG params")} eff=${meshGen} value=${awg} onChange=${setAwg}

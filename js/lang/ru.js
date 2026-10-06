@@ -6804,9 +6804,12 @@ export const STR = {
   "Default mesh link type": "Тип меш-линков по умолчанию",
   "Link type": "Тип линка",
   "set on this link": "задан для линка",
+  "AWG params set on this link": "параметры AWG заданы для линка",
+  "type and AWG params set on this link": "тип и параметры AWG заданы для линка",
   "Saving rebuilds this link on both ends — it drops for a few seconds while they reconnect.": "Сохранение пересоберёт этот линк на обоих концах — он пропадёт на несколько секунд, пока они переподключаются.",
   "This link only, both ends. Default follows the fleet's type in Settings → Mesh.": "Только этот линк, на обоих концах. «По умолчанию» берёт тип флота из «Настройки → Меш».",
-  "What new links are made as. One link can have a type of its own — on its card under Node connections, on a node's page. Re-provision a node to move its existing links to this default.": "Каким создаются новые линки. У отдельного линка может быть свой тип — на его карточке в «Связях ноды» на странице ноды. Чтобы перевести существующие линки ноды на этот тип, пересоздайте их.",
+  "What new links are made as. One link can have a type and AWG params of its own — on its card under Node connections, on a node's page. Re-provision a node to move its existing links to this default.":
+    "Каким создаются новые линки. У отдельного линка могут быть свои тип и параметры AWG — на его карточке в «Связях ноды» на странице ноды. Чтобы перевести существующие линки ноды на этот тип, пересоздайте их.",
   "Default mesh AWG params": "Параметры AWG меша по умолчанию",
   "The AmneziaWG 3.1 values set here are kept for AWG 3.1 links — select AWG 3.1 to see them.": "Заданные здесь значения AmneziaWG 3.1 сохраняются для линков AWG 3.1 — выберите AWG 3.1, чтобы их увидеть.",
   "S and H are drawn fresh; the 3.1 fields take what they inherit (the values shown in them), whose ranges the protocol randomises on its own.": "S и H выбираются заново; поля 3.1 получают то, что наследуют (значения, показанные в них), — их диапазоны протокол и так перебирает случайно.",

@@ -69,6 +69,16 @@ if "--perturb-merge" in sys.argv:     # the template read WHOLE (before the roun
         return (v, om) if (v or om) else P.awg_template((deps.get("panel_settings") or {}).get("mesh_awg"))
     P.mesh_template = _whole
     print("(perturbed: a link's template is read whole, not over the fleet's field by field — [9] must FAIL)")
+if "--perturb-keep" in sys.argv:      # the tree before round 14: a teardown drops the link's own settings with its record
+    _park = P.mesh_link_park
+    def _drop(nodes, who, other):
+        lr = ((nodes.get(who) or {}).get("links") or {}).get(other)
+        if lr:
+            for k in P.MESH_LINK_KEEP:
+                lr.pop(k, None)
+        _park(nodes, who, other)
+    P.mesh_link_park = _drop
+    print("(perturbed: a teardown parks nothing — [10] must FAIL)")
 if "--perturb-link-awg" in sys.argv:  # the tree without a link's own params: the builder never reads them, nothing moves
     P.mesh_link_layer = lambda nodes, a, b: {"mesh_awg": {}}
     P.mesh_link_awg_migrate = lambda nodes: False
@@ -132,18 +142,18 @@ for n in (2, 3, 4, 6):
                 b = run(B, fleet(n, mawg), deps(mtu, panel), seed=n * 7 + mtu)
                 tried += 1
                 # a node's template now lives on the pairs it anchors (round 13): where it sits is the one difference
-                if mawg and (a["n00"].get("mesh_link_awg") != {y: mawg for y in a if y > "n00"} or "mesh_awg" in a["n00"]
-                             or any("mesh_link_awg" in a[x] for x in a if x != "n00")):   # fleet(): n00 holds the template
+                if mawg and (a["n00"].get("mesh_link") != {y: {"awg": mawg} for y in a if y > "n00"} or "mesh_awg" in a["n00"]
+                             or any("mesh_link" in a[x] for x in a if x != "n00")):   # fleet(): n00 holds the template
                     same = False
                     print("    template not moved onto every pair: n=%d" % n)
-                a = {x: {k: v for k, v in r.items() if k not in ("mesh_awg", "mesh_link_awg")} for x, r in a.items()}
-                b = {x: {k: v for k, v in r.items() if k not in ("mesh_awg", "mesh_link_awg")} for x, r in b.items()}
+                a = {x: {k: v for k, v in r.items() if k not in ("mesh_awg", "mesh_link")} for x, r in a.items()}
+                b = {x: {k: v for k, v in r.items() if k not in ("mesh_awg", "mesh_link")} for x, r in b.items()}
                 if json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True):
                     same = False
                     print("    differs: n=%d mtu=%d mesh_awg=%s panel=%s" % (n, mtu, mawg, panel))
 check("%d fleets (empty or full mesh templates): links, interfaces and creates byte-identical to %s; a node's template moved onto "
       "each pair it anchors" % (tried, BASE), same)
-_strip = lambda t: {x: {k: v for k, v in r.items() if k not in ("mesh_awg", "mesh_link_awg")} for x, r in t.items()}   # where it is stored
+_strip = lambda t: {x: {k: v for k, v in r.items() if k not in ("mesh_awg", "mesh_link")} for x, r in t.items()}   # where it is stored
 _pl = [_strip(run(M, fleet(3, {"Jc": "3", "S1": "20", "S4": "90"}), deps(1320), seed=3)) for M in (P, B)]
 check("plant: a PARTIAL node template is the one deliberate difference (the fix in [8])",
       json.dumps(_pl[0], sort_keys=True) != json.dumps(_pl[1], sort_keys=True))
@@ -153,8 +163,8 @@ check("…and the reasons are not even computed for it (mesh_types_in_play is fa
 check("…but are once anything is set: a panel type, a link's own type, a \"-\" in either template",
       P.mesh_types_in_play(deps(1320, {"mesh_awg_gen": "wg"}), _r)
       and P.mesh_types_in_play(deps(1320, {"mesh_awg": {"I1": "-"}}), _r)
-      and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_link_gen": {"zy": "3.1"}}})
-      and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_link_awg": {"zy": {"S3": "-"}}}}))
+      and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_link": {"zy": {"type": "3.1"}}}})
+      and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_link": {"zy": {"awg": {"S3": "-"}}}}}))
 check("…and a malformed panel mesh_awg (a list) is no setting, never an exception in the poll",
       P.mesh_types_in_play(deps(1320, {"mesh_awg": ["-"]}), _r) is False)
 check("…and the 2.0 default is 2.0 (control: a 2.0 link reads as one)",
@@ -267,7 +277,7 @@ check("control: a 2.0 link at the same MTU IS refitted (to ≤ 8)", int(a2["awg_
 # ── [5] a per-LINK type (plan §8 round 12 — a type belongs to the pair, not to a node) ─────────────────────────────────────
 print("[5] a link's own type beats the fleet's default; a node has no type of its own")
 f = fleet(3)
-f["n00"]["mesh_link_gen"] = {"n02": "wg"}          # stored on the pair's anchor (smaller id)
+f["n00"]["mesh_link"] = {"n02": {"type": "wg"}}    # stored on the pair's anchor (smaller id)
 f["n01"]["mesh_awg_gen"] = "wg"                    # a per-node type from an unreleased build: never read
 d = deps(1320, {"mesh_awg_gen": "3.1"})
 sn = {k: gen_snap() for k in f}
@@ -278,7 +288,7 @@ check("n00↔n02 is WG (its own choice); n00↔n01 and n01↔n02 take the fleet'
 check("mesh_link_override reads the pair from either end; mesh_gen_for falls back to the fleet's default",
       (P.mesh_link_override(t, "n02", "n00"), P.mesh_link_override(t, "n00", "n02"), P.mesh_gen_for(d, t, "n01", "n02"),
        P.mesh_gen_for(deps(), t, "n01", "n02")) == ("wg", "wg", "3.1", "2.0"))
-check("mesh_gen_of is the fleet's default only", (P.mesh_gen_of(d, {"mesh_awg_gen": "wg"}), P.mesh_gen_of(deps()),
+check("mesh_gen_of is the fleet's default only", (P.mesh_gen_of(d), P.mesh_gen_of(deps()),
       P.mesh_gen_of(deps(1320, {"mesh_awg_gen": "bogus"}))) == ("3.1", "2.0", "2.0"))
 check("no reason on any card: every link is what it was asked to be", all(P.mesh_gen_reasons(d, t, sn, x) == [] for x in t),
       {x: P.mesh_gen_reasons(d, t, sn, x) for x in t})
@@ -290,7 +300,7 @@ P.reconcile_mesh(t, sn, d)
 check("…and the rebuild comes back under a fresh interface name, still WG",
       "n02" in t["n00"]["links"] and t["n00"]["links"]["n02"]["iface"] not in t["n00"]["delete"]
       and P.mesh_link_gen(t["n00"], t["n00"]["links"]["n02"]) == "wg", t["n00"]["links"].get("n02"))
-check("mesh_types_in_play: a per-link choice anywhere counts", P.mesh_types_in_play(deps(), {"a": {"mesh_link_gen": {"b": "wg"}}})
+check("mesh_types_in_play: a per-link choice anywhere counts", P.mesh_types_in_play(deps(), {"a": {"mesh_link": {"b": {"type": "wg"}}}})
       and not P.mesh_types_in_play(deps(), {"a": {"mesh_awg_gen": "wg"}}))
 
 # ── [6] a mesh template with a field set to none (Part A, A4) ─────────────────────────────────────────────────────────
@@ -361,7 +371,7 @@ for label, f, d in (("node template {Jc, Jmin, Jmax}", fleet(2, {"Jc": "5", "Jmi
                     ("panel template {S1, H1}", fleet(2), deps(1320, {"mesh_awg": {"S1": "20", "H1": "100-115"}}))):
     t = run(P, f, d)
     a, b = links(t)[0][4]["awg_params"], links(t)[0][5]["awg_params"]
-    tv = ((f["n00"].get("mesh_link_awg") or {}).get("n01") or d["panel_settings"].get("mesh_awg") or {"Jc": "5"})   # a node's moved onto its pair
+    tv = (((f["n00"].get("mesh_link") or {}).get("n01") or {}).get("awg") or d["panel_settings"].get("mesh_awg") or {"Jc": "5"})   # a node's moved onto its pair
     check(label + ": every 2.0 field on both ends, the same set", a == b and all(k in a for k in P.AWG_FIELDS[:16]), (sorted(a), a == b))
     check(label + ": the template's own values kept", all(str(a[k]) == v for k, v in tv.items()), {k: a.get(k) for k in tv})
     check(label + ": S4 inside the MTU's room, no awg_exact (nothing omitted)",
@@ -372,7 +382,7 @@ check("at MTU 1420 the drawn S4 is refitted into the room (20)", int(links(t)[0]
 # ── [9] a link's own AWG params (plan §8 round 13 — params belong to the pair, like its type) ───────────────────────────────
 print("[9] a link's own AWG params beat the fleet's; a node's old template moves onto the pairs it anchors")
 OWN = dict(FULLT, Jc="6", S4="30")
-f = fleet(3); f["n00"]["mesh_link_awg"] = {"n02": dict(OWN)}
+f = fleet(3); f["n00"]["mesh_link"] = {"n02": {"awg": dict(OWN)}}
 d = deps(1320, {"mesh_awg": dict(FULLT, Jc="5")})
 t = run(P, f, d)
 pa = {(a, b): la for a, b, la, *_ in links(t)}
@@ -381,7 +391,7 @@ check("n00↔n02 is made from its own params on both ends; n00↔n01 and n01↔n
       gp("n00", "n02") == gp("n02", "n00") and gp("n00", "n02")["Jc"] == "6" and gp("n00", "n01")["Jc"] == "5" and gp("n01", "n02")["Jc"] == "5",
       (gp("n00", "n02").get("Jc"), gp("n00", "n01").get("Jc")))
 FLEET = dict(FULLT, Jc="5", H1="100-115", I1="<r 9>")
-f = fleet(2); f["n00"]["mesh_link_awg"] = {"n01": {"Jc": "6", "Jmin": "60", "Jmax": "90", "I2": "-"}}
+f = fleet(2); f["n00"]["mesh_link"] = {"n01": {"awg": {"Jc": "6", "Jmin": "60", "Jmax": "90", "I2": "-"}}}
 t2 = run(P, f, deps(1320, {"mesh_awg": FLEET}))
 a2, b2 = (t2["n00"]["ifaces"][t2["n00"]["links"]["n01"]["iface"]]["awg_params"],
           t2["n01"]["ifaces"][t2["n01"]["links"]["n00"]["iface"]]["awg_params"])
@@ -399,16 +409,52 @@ t["n01"]["mesh_awg"] = dict(OWN); t["n02"]["mesh_awg"] = {}                # …
 before = json.dumps(t["n01"]["links"], sort_keys=True)
 moved = P.mesh_link_awg_migrate(t)
 check("migration: n01's template moves onto every pair it anchors (n02), leaves the node; n00 anchors n01, so that pair has none",
-      moved and t["n01"].get("mesh_link_awg") == {"n02": OWN} and "mesh_awg" not in t["n01"] and "mesh_link_awg" not in t["n00"], t["n01"])
+      moved and t["n01"].get("mesh_link") == {"n02": {"awg": OWN}} and "mesh_awg" not in t["n01"] and "mesh_link" not in t["n00"], t["n01"])
 check("…an empty template is not touched (a fleet that never used it keeps every byte), and no link is rebuilt by the move",
-      t["n02"].get("mesh_awg") == {} and "mesh_link_awg" not in t["n02"] and json.dumps(t["n01"]["links"], sort_keys=True) == before)
+      t["n02"].get("mesh_awg") == {} and "mesh_link" not in t["n02"] and json.dumps(t["n01"]["links"], sort_keys=True) == before)
 check("…and a second pass moves nothing", P.mesh_link_awg_migrate(t) is False)
-t["n00"]["mesh_link_gen"] = {"n02": "wg"}; t["n00"]["mesh_link_awg"] = {"n02": dict(OWN), "n01": dict(OWN)}
+t["n00"]["mesh_link"] = {"n02": {"type": "wg", "awg": dict(OWN)}, "n01": {"awg": dict(OWN)}}
 P.mesh_unlink_node(t, "n02")
 check("removing a node forgets its pairs' own type and params on their anchors, and keeps the others",
-      "mesh_link_gen" not in t["n00"] and t["n00"]["mesh_link_awg"] == {"n01": OWN} and "mesh_link_awg" not in t["n01"], (t["n00"].get("mesh_link_awg"), t["n01"].get("mesh_link_awg")))
-check("a \"-\" in a link's own params counts as a setting", P.mesh_types_in_play(deps(), {"a": {"mesh_link_awg": {"b": {"I1": "-"}}}})
-      and not P.mesh_types_in_play(deps(), {"a": {"mesh_link_awg": {"b": {"Jc": "5"}}}}))
+      t["n00"]["mesh_link"] == {"n01": {"awg": OWN}} and "mesh_link" not in t["n01"], (t["n00"].get("mesh_link"), t["n01"].get("mesh_link")))
+check("a \"-\" in a link's own params counts as a setting", P.mesh_types_in_play(deps(), {"a": {"mesh_link": {"b": {"awg": {"I1": "-"}}}}})
+      and not P.mesh_types_in_play(deps(), {"a": {"mesh_link": {"b": {"awg": {"Jc": "5"}}}}}))
+
+# ── [10] a rebuild keeps what the operator set on the link (plan §8 round 14) ─────────────────────────────────────────────
+print("[10] a rebuild — a node's re-provision or one link's — keeps each end's relay and dial settings")
+ext = lambda t, a, b: {k: ((t[a].get("links") or {}).get(b) or {}).get(k) for k in P.MESH_LINK_KEEP}
+def seed(t):
+    t["n00"]["links"]["n01"].update(dial_endpoint="203.0.113.9", relay={"mode": "relay"})
+    t["n01"]["links"]["n00"]["dial_src"] = "198.51.100.7"
+want0 = {"relay": {"mode": "relay"}, "dial_endpoint": "203.0.113.9", "dial_src": None}
+want1 = {"relay": None, "dial_endpoint": None, "dial_src": "198.51.100.7"}
+t = run(P, fleet(3), deps(1320)); seed(t); if0 = t["n00"]["links"]["n01"]["iface"]
+P.mesh_reprovision_node(t, "n01"); P.reconcile_mesh(t, {}, deps(1320))
+check("a node re-provision rebuilds the link under a new name and puts both ends' settings back",
+      t["n00"]["links"]["n01"]["iface"] != if0 and ext(t, "n00", "n01") == want0 and ext(t, "n01", "n00") == want1,
+      (ext(t, "n00", "n01"), ext(t, "n01", "n00")))
+check("…and nothing stays parked once the rebuild has them", all("link_keep" not in t[x] for x in t), {x: t[x].get("link_keep") for x in t})
+if0 = t["n00"]["links"]["n01"]["iface"]
+P.mesh_relink_pair(t, "n01", "n00"); P.reconcile_mesh(t, {}, deps(1320))
+check("one link's rebuild (its sheet) does the same", t["n00"]["links"]["n01"]["iface"] != if0
+      and ext(t, "n00", "n01") == want0 and ext(t, "n01", "n00") == want1 and all("link_keep" not in t[x] for x in t))
+t = run(P, fleet(3), deps(1320))
+P.mesh_reprovision_node(t, "n00"); P.reconcile_mesh(t, {}, deps(1320))
+check("a re-provision with nothing set parks nothing (no new key in the store)", all("link_keep" not in t[x] and
+      all(set(lr) & set(P.MESH_LINK_KEEP) == set() for lr in t[x]["links"].values()) for x in t))
+dd = deps(1320, {"mesh_mode": "demand"})
+t = run(P, fleet(2), deps(1320)); seed(t)
+P.mesh_reprovision_node(t, "n00"); P.reconcile_mesh(t, {}, dd)
+check("on demand, a pair needed only by its own dial / relay settings is rebuilt after a re-provision — the parked settings "
+      "count as needing it", "n01" in t["n00"].get("links", {}) and ext(t, "n00", "n01") == want0, t["n00"].get("links"))
+t = run(P, fleet(3), deps(1320)); seed(t)
+P.mesh_link_park(t, "n00", "n01"); P.mesh_link_park(t, "n01", "n00")
+P.mesh_unlink_node(t, "n01")
+check("removing a node forgets what was parked for it", "link_keep" not in t["n00"], t["n00"].get("link_keep"))
+rec = {"name": "x", "links": {"a": {}}, "mesh_link": {"b": {"type": "wg"}}, "link_keep": {"b": {"dial_src": "1.2.3.4"}}, "ifaces": {}}
+clean = P.transfer_strip(rec)[0]
+check("a transfer carries neither the pairs' own settings nor parked ones (keyed by this fleet's ids)",
+      not ({"links", "mesh_link", "link_keep"} & set(clean)), sorted(clean))
 
 print()
 if FAILS:

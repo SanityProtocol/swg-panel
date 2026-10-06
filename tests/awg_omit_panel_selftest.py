@@ -437,7 +437,7 @@ try:
         ps = json.load(open(p.settings_path))
         check("the interface defaults store \"-\" as written", (ps["interface_defaults"].get("awg_params") or {}).get("S3") == "-", ps["interface_defaults"])
         check("the mesh template stores \"-\" as written", (ps.get("mesh_awg") or {}) == {"S4": "20", "I1": "-"}, ps.get("mesh_awg"))
-        lt = lambda: ((p.nodes()["na"].get("mesh_link_awg") or {}).get("nb") or {})   # the pair's own params, on its anchor
+        lt = lambda: (((p.nodes()["na"].get("mesh_link") or {}).get("nb") or {}).get("awg") or {})   # the pair's own params, on its anchor
         code, r = p.req("/api/connection/update", {"node": "nb", "peer": "na", "mesh_awg": {"I2": "-", "Jc": "3", "Jmin": "30", "Jmax": "60"}})
         check("a link's own params store \"-\" (on the pair's anchor, from either end)", code == 200 and lt().get("I2") == "-", (code, r, lt()))
         code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"Jc": "9"}})
@@ -491,7 +491,7 @@ try:
         p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": ""}); p.req("/api/panel/settings", {"mesh_awg": {}})
         code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": {}})
         check("{} clears a link's own params (back to the fleet's), rebuilt", code == 200 and r["data"]["relinked"] is True
-              and "mesh_link_awg" not in p.nodes()["na"], (code, r, p.nodes()["na"].get("mesh_link_awg")))
+              and "mesh_link" not in p.nodes()["na"], (code, r, p.nodes()["na"].get("mesh_link")))
         p.req("/api/panel/settings", {"mesh_awg": {}})
         # a LINK's own type (plan §8 round 12), through the door its sheet uses
         lnk = lambda a, b: (p.nodes()[a].get("links") or {}).get(b) or {}
@@ -500,8 +500,8 @@ try:
         code, r = p.req("/api/connection/update", {"node": "nb", "peer": "na", "mesh_awg_gen": "wg"})
         nn = p.nodes()
         check("a link's type set from either end: stored on the pair's anchor (na), the link rebuilt as WG on both ends",
-              code == 200 and r.get("data", {}).get("relinked") is True and (nn["na"].get("mesh_link_gen") or {}).get("nb") == "wg"
-              and lnk("na", "nb").get("proto") == "wg" and lnk("nb", "na").get("proto") == "wg", (code, r, nn["na"].get("mesh_link_gen")))
+              code == 200 and r.get("data", {}).get("relinked") is True and ((nn["na"].get("mesh_link") or {}).get("nb") or {}).get("type") == "wg"
+              and lnk("na", "nb").get("proto") == "wg" and lnk("nb", "na").get("proto") == "wg", (code, r, nn["na"].get("mesh_link")))
         check("…under a new interface name, the old one staged for deletion on both ends",
               lnk("na", "nb").get("iface") != old_if and old_if in (nn["na"].get("delete") or {}), (old_if, lnk("na", "nb").get("iface")))
         check("…keeping the link's own settings (its dial address)", lnk("nb", "na").get("dial_endpoint") == "203.0.113.9", lnk("nb", "na"))
@@ -513,7 +513,9 @@ try:
         check("the same type again: no rebuild", code == 200 and r.get("data", {}).get("relinked") is False, r)
         code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": ""})
         check("back to the fleet's default: the choice removed, the link rebuilt as AmneziaWG",
-              code == 200 and "mesh_link_gen" not in p.nodes()["na"] and "proto" not in lnk("na", "nb"), (code, r, lnk("na", "nb")))
+              code == 200 and "mesh_link" not in p.nodes()["na"] and "proto" not in lnk("na", "nb"), (code, r, lnk("na", "nb")))
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": ["Jc", "5"]})
+        check("a mesh_awg that is not an object is refused, never a silent clear", code == 400, (code, r))
         code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": "4.0"})
         check("an unknown type is refused", code == 400, (code, r))
         check("no record holds \"-\"", '"-"' not in blob)
