@@ -2134,6 +2134,11 @@ export function NodeCreateSheet() {
   <//>`;
 }
 export const BOOTSTRAP_URL = "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh";
+// The one-liner every screen hands out: `sudo bash -c "$(curl …)" -- <args>`, never `curl … | sudo bash -s <args>`. Under the
+// pipe, sudo-rs (Ubuntu 26.04's sudo) runs the script in the background of the terminal and its first question freezes it
+// (bootstrap.sh _swg_tty_fg; client report 2026-10-06). Handed to `bash -c`, sudo's stdin is the terminal — with sudo-rs
+// and classic sudo alike, root or not. transfer_parse (the panel) reads both shapes, so commands already copied still work.
+export const bootCmd = args => `sudo bash -c "$(curl -fsSL ${BOOTSTRAP_URL})" -- ${args}`;
 
 /* Enrolment for a node whose installation is its configuration's. NOT a command — the installer is
    the wrong shape here twice over: it would write into /opt on a host whose own tooling cannot see
@@ -2257,8 +2262,8 @@ function transferToken(host, token) {
 
 export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint, rebuild }) {
   const host = `${location.origin}${BASE}`;
-  const bare = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s node -key ${token} -host ${host}`;
-  const docker = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s docker node -key ${token} -host ${host}`;
+  const bare = bootCmd(`node -key ${token} -host ${host}`);
+  const docker = bootCmd(`docker node -key ${token} -host ${host}`);
   const nixos = platform === "nixos";
   const fresh = !kind && !nixos;                       // brand-new node → offer BOTH styles as tabs
   /* …and so does a MIGRATION, which is the one moment changing run model is free. The command used to be
@@ -2857,7 +2862,7 @@ export function NodeRemoveSheet({ node }) {
   const nixos = node.platform === "nixos";
   const uninstall = declarative
     ? (nixos ? "services.swg-node.enable = false;   # then: sudo nixos-rebuild switch" : "")   // i18n-keys: generated Nix — file text, copied verbatim
-    : `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s uninstall`;
+    : bootCmd("uninstall");
   const flag = () => { setFlagged(true); mutate({
     key: "node:" + node.id,
     patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) n.removing = true; },

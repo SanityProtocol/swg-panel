@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # bootstrap.sh — fetch swg-panel from GitHub and run the right installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)"
 #       → interactive: pick installation method (bare-metal/docker) + role (master/host/node).
-#   …| sudo bash -s -key NODE_KEY -host https://PANEL    → add a node (a key implies node; asks method).
-#   …| sudo bash -s docker host                          → explicit method + role (skips the prompts).
-#   …| sudo bash -s update                               → update an install in place.
-#   …| sudo bash -s uninstall                            → guided removal.
+#   sudo bash -c "$(curl …)" -- -key NODE_KEY -host https://PANEL   → add a node (a key implies node; asks method).
+#   sudo bash -c "$(curl …)" -- docker host                         → explicit method + role (skips the prompts).
+#   sudo bash -c "$(curl …)" -- update                              → update an install in place.
+#   sudo bash -c "$(curl …)" -- uninstall                           → guided removal.
+#   (Not `curl … | sudo bash -s …`: sudo-rs, Ubuntu 26.04's sudo, runs a piped script in the background of the terminal,
+#   and its first question freezes it — see _swg_tty_fg below. Already root: drop the `sudo`.)
 #
 # Method (bare-metal | docker) × Role (master | host | node) — each is asked only if not already
 # given. A bare role word (host/master/node) means bare-metal; prefix `docker` for the docker path.
@@ -21,6 +23,16 @@
 #
 # Override the source with SWG_REPO / SWG_REF (branch or tag). Anything else is passed through.
 set -euo pipefail
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default). /proc/$$/stat after the command name:
+# state ppid pgrp session tty_nr tpgid. Without /proc: as before.
+_swg_tty_fg(){ local s f IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; [ "${f[2]:-}" = "${f[5]:-}" ]; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+SWG_ARGS=("$@")   # as given — the command the warning below hands back is built from them
 # Survive being launched from a directory that no longer exists — common right after an uninstall
 # removed it (the shell stays "in" the deleted dir, getcwd() fails, and git/curl refuse to run).
 # Step into a guaranteed-present directory before doing anything.
@@ -149,7 +161,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" how="${5:-}" v o rc sc pr i
     # set -e that killed the whole script right here: exit 1, not one word on stdout or stderr. Fall back to
     # stdout the way _pnl above already does, so the refusal below is what speaks instead.
     printf '%s' "$pr" 2>/dev/null >/dev/tty || printf '%s' "$pr"
-    if read -r v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
+    if read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; fi
     # REFUSE before the default is applied. This used to sit AFTER `v="${v:-$d}"`, where it could never fire:
     # $d is always a valid option, so the match loop returned the default and went home. A default that answers
     # itself is not a fallback but a decision — this is the prompt that picks bare-metal vs docker, master vs
@@ -172,7 +184,7 @@ ask_yn(){ local p="$1" d="$2" var="$3" v pr   # ask_yn <prompt> <y|n default> <v
   # answered Y to whatever came first. On a box with an interrupted convert that is "Resume the conversion
   # now" [Y/n], which exec's convert.sh: an unattended re-run would have resumed a conversion nobody asked to
   # resume. There is no flag for these, so the only honest remedy is a terminal.
-  read -r v 2>/dev/null </dev/tty || die "no interactive input for '$p' — run this from a terminal (e.g. ssh -t), so it is not answered for you"
+  read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}" || die "no interactive input for '$p' — run this from a terminal (e.g. ssh -t), so it is not answered for you"
   v="${v:-$d}"
   case "$v" in [Yy]*) printf -v "$var" yes;; *) printf -v "$var" no;; esac; _pnl; }
 
@@ -204,6 +216,18 @@ done
 [ "$METHOD" = bare-metal ] && METHOD=baremetal
 
 [ "$(id -u)" = 0 ] || die "run with sudo (it installs users, units and certs)"
+
+# ⚠️ THE TERMINAL CANNOT BE READ (see _swg_tty_fg above): say so before anything asks, with the command that can — the
+# same arguments in the one form that works under sudo-rs and classic sudo alike (sudo's stdin is the terminal, not a pipe).
+if [ "$SWG_TTY" = /dev/null ] && { : </dev/tty; } 2>/dev/null; then
+  _bs_url="<this bootstrap.sh URL>"
+  [ "$REPO" = https://github.com/SanityProtocol/swg-panel ] && _bs_url="https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh"
+  _bs_cmd="sudo bash -c \"\$(curl -fsSL $_bs_url)\" --"
+  for _a in ${SWG_ARGS[@]+"${SWG_ARGS[@]}"}; do _bs_cmd+=" $(printf '%q' "$_a")"; done
+  warn "this terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults, and one that has none stops the run. To answer them, run instead:"
+  echo "    $_bs_cmd" >&2
+  export SWG_TTY_WARNED=1
+fi
 
 # ── refuse on a declaratively managed host, BEFORE the fetch ──
 # The installers this dispatches to carry the real guard (refuse_on_declarative_host, lib/common.sh)
@@ -659,7 +683,7 @@ PY
     while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); _salv_block "$_i" "$_t" "$_u" "$_s"; done <<EOF2
 $_uniq
 EOF2
-    printf "  Number to re-enroll with (or $(b Enter) to skip and set up a new node — you supply a token, panel → Nodes or -key): "; _pick=""; read -r _pick 2>/dev/null </dev/tty || { _pick=""; echo "(no terminal — skipped)"; }
+    printf "  Number to re-enroll with (or $(b Enter) to skip and set up a new node — you supply a token, panel → Nodes or -key): "; _pick=""; read -r _pick 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _pick=""; echo "(no terminal — skipped)"; }
     if printf '%s' "$_pick" | grep -cE '^[0-9]+$' >/dev/null; then
       _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
       salv_tok="$(printf '%s' "$_line" | cut -f1)"; salv_url="$(printf '%s' "$_line" | cut -f2)"; salv_src="$(printf '%s' "$_line" | cut -f3-)"

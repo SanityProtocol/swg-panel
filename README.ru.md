@@ -165,11 +165,15 @@ swgPanel — это панель управления для запуска со
 настраивает всё, включая HTTPS.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)"
 ```
 
 > **Вы уже `root`?** На многих свежих образах Debian/VPS вход выполняется под root, а `sudo` **не установлен** —
-> просто уберите `sudo` и запустите `… | bash -s`. (То же относится ко всем командам ниже.)
+> просто уберите `sudo` в начале и запустите `bash -c "$(curl …)" …`. (То же относится ко всем командам ниже.)
+
+> **Почему не `curl … | sudo bash`?** В Ubuntu 26.04 `sudo` — это sudo-rs, а он запускает скрипт из конвейера в фоне
+> терминала, и установщик замирает на первом же вопросе. Если передать скрипт в `bash -c`, как выше, это работает с
+> любым `sudo`.
 
 > **На NixOS?** Эта команда намеренно откажется запускаться — она пишет в `/opt`, чего
 > `nixos-rebuild` не видит и не контролирует, и оставила бы установку, которую ваша собственная
@@ -196,13 +200,13 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
    Для **bare-metal**-сервера:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
+   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- node
    ```
 
    Для **Docker**-сервера:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
+   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
    ```
 
 2. Запустите эту команду на новом сервере. Она спрашивает адрес вашей панели и ключ (оба уже подставлены, если
@@ -382,7 +386,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 Запустите это на любом сервере (панель или VPN-сервер) — она сама разберётся, что установлено, и обновит это
 на месте, сохранив все ваши настройки и пользователей:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- update
 ```
 
 **Обновляетесь с 1.8.6?** Интерфейс обычного WireGuard, который вы **восстанавливали** в 1.8.6, вернулся как
@@ -416,7 +420,7 @@ sudo nft delete table inet swg_reach; sudo nft delete table inet swg_share
 - **Пересобираете VPN-сервер?** Запустите на нём помощник восстановления, и он найдёт оставшуюся личность
   сервера, чтобы тот вернулся в вашу панель **без повторной регистрации**:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s recovery
+  sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- recovery
   ```
 - **Машина сервера потеряна безвозвратно?** Когда старой машины действительно больше нет — восстанавливать
   не из чего, — панель может **пересобрать** узел на новом железе из личности, которую хранит *она сама*: те
@@ -434,13 +438,13 @@ sudo nft delete table inet swg_reach; sudo nft delete table inet swg_share
 Чтобы перевести сервер **на bare-metal**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- master
 ```
 
 Чтобы перевести его **на Docker**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker master
 ```
 
 Он полностью готовит новую версию **прежде**, чем удалить старую, поэтому переключение занимает лишь несколько
@@ -453,7 +457,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 turn-прокси) — ничего не удаляется без вашего согласия, и вы можете сохранить данные пользователей/серверов для
 будущей переустановки:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s uninstall
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- uninstall
 ```
 
 ## Несколько вещей, которые стоит знать

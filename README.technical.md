@@ -88,13 +88,13 @@ Four one-liners — each **prompts for whatever it needs**. Choose a method (bar
 **Panel** — asks the role: master (panel + this box is a node) or host (panel only)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s bare-metal
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- bare-metal
 ```
 
 **Node** — asks for the panel URL + the key from Nodes → Add node
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- node
 ```
 
 ### B — Docker
@@ -102,13 +102,13 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 **Panel** — installs Docker if needed, then asks the role (master: panel + this box is a node, auto-enrolled · host: panel only) and a domain + TLS choice (login auto-generated, change it later in the panel)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker
 ```
 
 **Node** — asks for the panel URL + the key from Nodes → Add node
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
 ```
 
 ### C — NixOS (declarative)
@@ -142,7 +142,7 @@ Open the panel URL, log in, and add entry servers from **Nodes → Add node** �
 **Update** any box later, in place (auto-detects what's installed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- update
 ```
 
 ## Installing the panel
@@ -188,10 +188,10 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
 1. **Nodes → Add node** — give it a name, the public IP/host clients dial, and a colour. You get a **one-time enrollment token** and the exact one-liner.
 2. **On the entry server**, paste that one-liner — it fetches the repo and runs the node installer:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
-     | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
+   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" \
+     -- node -key SECURE_NODE_KEY -host https://panel.example.net
    ```
-   It installs the datapath tooling and starts `swg-noded` — it does **not** ask you to configure anything. Interfaces, turn-proxies, WDTT and csqtt servers are all created from the panel. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
+   It installs the datapath tooling and starts `swg-noded` — it does **not** ask you to configure anything. Interfaces, turn-proxies, WDTT and csqtt servers are all created from the panel. Prefer Docker? The panel shows a `… -- docker node -key … -host …` command too.
 3. Within a few seconds the node turns **online** in the Nodes screen.
 
 **Adopting what the box already runs.** The node scans where wg/awg, WDTT and csqtt normally live — not only where *we* install them — and reports each interface or server install the panel did not create. They appear on the node's page as **candidate** cards with **Adopt** / **Ignore**:
@@ -300,13 +300,13 @@ cannot link.
 **Panel** — Step 1 asks the role, exactly like bare-metal: **master** (panel + this box also runs WG/AWG as a co-located node container, auto-enrolled in one pass) or **host** (panel only). `master` is the default.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker
 ```
 
 **Node** — a separate entry server; asks for the panel URL + the key from **Nodes → Add node** (this is how the `host` role's nodes are deployed)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
 ```
 
 Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-user`, `-pass`, `-domain`, `-base`, `-port`, `-tls`, `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`, `-net host|bridge`, `--build` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
@@ -355,13 +355,13 @@ Switch a box's **method** in place: re-run the installer asking for the *other* 
 Run the same one-liner with the other method. **To bare-metal** — a bare role word means bare-metal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- master
 ```
 
 **To Docker** — prefix the role with `docker`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker master
 ```
 
 A convert **keeps everything** — the panel's URL, login, roster, nodes and TLS cert, and (for a `master`) the local node's token, interfaces and turn-proxies. It is **copy-first**: the new method is staged in full *before* the old one is torn down, so the only downtime is the few seconds of the atomic switch — nodes self-heal on their next sync.
@@ -419,11 +419,11 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 - **Remove a node:** Nodes → Remove. Stop `swg-noded` on the box itself to take it offline.
 - **Back up:** `users.json` + `nodes.json` (under `/var/lib/swg-panel`) are the whole state — copy the directory somewhere off-box and you can rebuild the panel anywhere.
 - **Automatic backups + self-repair:** every write to a critical state file (`users.json`, `nodes.json`, `panel-settings.json`) also drops a timestamped copy beside it — `users.json.bak.<epoch>` — and prunes to the **last 8**. On startup the loader validates each primary and, if one is corrupt/empty (bad shutdown, full disk), **automatically restores the newest good backup** — no operator action. So a backup exists after *every change*, not on a schedule. (Off-box copies are still recommended for whole-host loss.)
-- **Update:** `… | sudo bash -s update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. `--dry-run` previews, `-y`/`--yes` takes every available upgrade unprompted, `-f`/`--force` re-applies components already on the latest version. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
+- **Update:** `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. `--dry-run` previews, `-y`/`--yes` takes every available upgrade unprompted, `-f`/`--force` re-applies components already on the latest version. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
 - **Re-install keeps data:** re-running *any* installer on a box detects the existing install and preserves everything (login, cert, roster, nodes, node token, interfaces, turn-proxies), offering current values as defaults — safe after an interrupted run or to change an option. To start clean, uninstall first.
-- **Recover a node's identity:** a re-installed or converted node persists its enrollment identity to `/var/lib/swg-recovery`, so it can rejoin **without re-enrolling**. Open that menu directly with `… | sudo bash -s recovery` (works even on a box that still has a live node — e.g. to reattach a leftover token after a rebuild).
+- **Recover a node's identity:** a re-installed or converted node persists its enrollment identity to `/var/lib/swg-recovery`, so it can rejoin **without re-enrolling**. Open that menu directly with `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- recovery` (works even on a box that still has a live node — e.g. to reattach a leftover token after a rebuild).
 - **Move the panel:** change its host/port and **pinned nodes auto-re-point** on their next sync — as long as the new address still presents their trusted cert — so a panel migration needs no per-node re-enroll.
-- **Uninstall:** `… | sudo bash -s uninstall` (or `./uninstall.sh`). Lists every installed component — the panel, a bare-metal node, the Docker panel and node containers, AmneziaWG, WireGuard, and **each** turn-proxy server — then loops through and asks to uninstall or keep each one. Nothing is removed without a yes; can keep the roster / node store / Docker data dir for a reinstall. `--yes` removes everything, `--dry-run` previews.
+- **Uninstall:** `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- uninstall` (or `./uninstall.sh`). Lists every installed component — the panel, a bare-metal node, the Docker panel and node containers, AmneziaWG, WireGuard, and **each** turn-proxy server — then loops through and asks to uninstall or keep each one. Nothing is removed without a yes; can keep the roster / node store / Docker data dir for a reinstall. `--yes` removes everything, `--dry-run` previews.
 
 ## External API & Integrations
 

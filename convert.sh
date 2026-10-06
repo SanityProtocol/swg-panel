@@ -13,6 +13,19 @@
 # NOTE: bare→docker reads the panel URL/base/TLS from /etc/swg-panel/install.conf — keep that file current
 # (an Access address-migration must update it, or the convert will resurrect the pre-migration address).
 set -euo pipefail
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default). /proc/$$/stat after the command name:
+# state ppid pgrp session tty_nr tpgid. Without /proc: as before.
+_swg_tty_fg(){ local s f IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; [ "${f[2]:-}" = "${f[5]:-}" ]; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+if [ "$SWG_TTY" = /dev/null ] && [ -z "${SWG_TTY_WARNED:-}" ] && { : </dev/tty; } 2>/dev/null; then   # said once per run
+  printf '%s\n' "! This terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults. To answer them, run: sudo bash -c \"\$(curl -fsSL <bootstrap.sh URL>)\" -- <arguments>" >&2
+  export SWG_TTY_WARNED=1
+fi
 SRC="$(cd "$(dirname "$0")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers (dl_turn_bin + validators)
 # Refuse on a declaratively managed host BEFORE anything is written — a bare↔docker conversion laid down here would
@@ -201,7 +214,7 @@ import_bare_conf(){ # <src> <dest> [<conf whose hooks an ADOPTED src takes back>
 }
 
 cyn(){ local a; [ "${ASSUME_YES:-no}" = yes ] && { printf '  %s (Y/n): y\n' "$1"; return 0; }
-  printf '  %s (Y/n): ' "$1"; read -r a 2>/dev/null </dev/tty || { a=y; echo "y  (no terminal — default taken)"; }; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
+  printf '  %s (Y/n): ' "$1"; read -r a 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { a=y; echo "y  (no terminal — default taken)"; }; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
 
 # Lifecycle signalling is handled by lc_init (lib/common.sh): it's armed at the point we tell the panel
 # "converting…", and its EXIT/INT traps then emit converted-* (success) / convert-aborted / convert-failed.

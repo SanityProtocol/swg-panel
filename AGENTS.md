@@ -86,8 +86,8 @@ the panel mints its own local node in the same pass, so no token step exists the
 ## Docker
 
 ```bash
-… | sudo bash -s docker host -pass SECRET -domain panel.example.org
-… | sudo bash -s docker node -key KEY -host https://panel.example.org -endpoint 203.0.113.7
+sudo bash -c "$(curl -fsSL …)" -- docker host -pass SECRET -domain panel.example.org
+sudo bash -c "$(curl -fsSL …)" -- docker node -key KEY -host https://panel.example.org -endpoint 203.0.113.7
 ```
 
 Staged under `/opt/swg-panel-docker` with a `.env` (copy `.env.example`; `PANEL_PASSWORD` is required).
@@ -154,8 +154,8 @@ A node's own health is local: `systemctl is-active swg-noded` (bare-metal / nati
 ## Updating and removing
 
 ```bash
-… | sudo bash -s update      # --dry-run · -y/--yes take every upgrade · -f/--force re-apply
-… | sudo bash -s uninstall   # --dry-run · --yes assume yes per component
+sudo bash -c "$(curl -fsSL …)" -- update      # --dry-run · -y/--yes take every upgrade · -f/--force re-apply
+sudo bash -c "$(curl -fsSL …)" -- uninstall   # --dry-run · --yes assume yes per component
 ```
 
 `update.sh` auto-detects every installed shape (bare-metal or Docker, panel/master/node) and preserves

@@ -1182,9 +1182,11 @@ def _changelog_entries(lang="en", want=""):
 # no command this panel could honestly print for a setup it knows nothing about — while the one below
 # is actively harmful there. The UI shows the reason and no command, rather than a command that would
 # leave an install the host's own tooling cannot see.
+# The script as an ARGUMENT of `bash -c`, not piped in: under `curl … | sudo bash` sudo-rs (Ubuntu 26.04's sudo) runs it in
+# the background of the terminal, where its first question freezes it (bootstrap.sh _swg_tty_fg).
 UPDATE_CMD = os.environ.get("SWG_UPDATE_CMD") or ("" if PANEL_DECLARATIVE else
-    "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh"
-    " | sudo bash -s update -y --no-components")
+    'sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)"'
+    " -- update -y --no-components")
 # Touching this file path-activates a root systemd updater (swg-update.path → swg-update.service),
 # which runs in its OWN cgroup so restarting the panel mid-update doesn't kill it. Set by the installer.
 UPDATE_TRIGGER = os.environ.get("SWG_UPDATE_TRIGGER")
@@ -11503,7 +11505,7 @@ def transfer_parse(text):
         # A COMMAND that is merely incomplete still gets told what is missing. The transfer token made the
         # generic answer tempting, but "neither of the two things" is the wrong answer to "I pasted the
         # command and left half of it behind" — which is the likeliest way to arrive here with one.
-        if "bootstrap.sh" in low or "bash -s" in low:
+        if "bootstrap.sh" in low or "bash -s" in low or "bash -c" in low:
             raise TransferError("that enrolment command carries no -key and -host pair — copy the whole "
                                 "line. Simpler: paste the other panel's Transfer token instead.")
         raise TransferError("that is neither a transfer token nor an enrolment command. On the other "
@@ -11516,7 +11518,9 @@ def transfer_parse(text):
         raise TransferError("the -host in that command isn't a usable address: %r" % host.group(1))
     # `-host` is `location.origin` on the target panel — WHATEVER ADDRESS THE OPERATOR'S BROWSER WAS ON.
     # It parses whether or not this panel can reach it, which is why the caller must then REACH it.
-    kind = "docker" if re.search(r"bash\s+-s\s+docker\s+node\b", t) else "baremetal"
+    # either shape: `… | sudo bash -s docker node …` (every command handed out before 2026-10-07) or `sudo bash -c "$(curl …)"
+    # -- docker node …` (since — the sudo-rs-safe form, js/sheets-crud.js bootCmd)
+    kind = "docker" if re.search(r"(?:\bbash\s+-s|\)\"?\s+--)\s+docker\s+node\b", t) else "baremetal"
     return {"url": "%s://%s%s" % (u.scheme, u.netloc, (u.path or "").rstrip("/")),
             "token": tok.group(1), "kind": kind}
 

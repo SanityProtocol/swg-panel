@@ -7,6 +7,19 @@
 # without a yes. Run as root. --dry-run prints the plan and changes nothing; --yes assumes
 # yes to every component (still asks the destructive sub-questions unless those are preset).
 set -uo pipefail   # not -e: an uninstaller should keep going even if a piece is gone
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default). /proc/$$/stat after the command name:
+# state ppid pgrp session tty_nr tpgid. Without /proc: as before.
+_swg_tty_fg(){ local s f IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; [ "${f[2]:-}" = "${f[5]:-}" ]; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+if [ "$SWG_TTY" = /dev/null ] && [ -z "${SWG_TTY_WARNED:-}" ] && { : </dev/tty; } 2>/dev/null; then   # said once per run
+  printf '%s\n' "! This terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults. To answer them, run: sudo bash -c \"\$(curl -fsSL <bootstrap.sh URL>)\" -- <arguments>" >&2
+  export SWG_TTY_WARNED=1
+fi
 
 DRYRUN=false; ASSUME_YES=false
 for a in "$@"; do case "$a" in --dry-run) DRYRUN=true;; -y|--yes) ASSUME_YES=true;; esac; done
@@ -109,9 +122,9 @@ ask_yn(){ local v p="$1" d="${2:-n}"
   # interface keys + peers it promises to keep (DOCKER_KEEP_CONFS, KNODE) and left the containers it took an
   # interface over from switched off (RESTORE_CTRS) — the exact "no server at all" state that prompt exists
   # to avoid. Normalise it the same way a typed answer is normalised.
-  if ! { true </dev/tty; } 2>/dev/null; then case "$d" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac
+  if ! swg_tty_ok; then case "$d" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac
     echo "$p ${!3}  (no terminal — default taken)"; return; fi
-  read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
+  read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v <"${SWG_TTY:-/dev/tty}" || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; echo; }   # one trailing blank after the prompt
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
 # ⚠️ `--yes` MEANS "YES TO EVERY SWG COMPONENT", NOT "yes to somebody else's data". A component marked
@@ -119,10 +132,10 @@ ask_yn(){ local v p="$1" d="${2:-n}"
 # protection for an interface swg never created — the one thing in this list that is not ours to delete.
 ask_comp(){ local v verb="${3:-Uninstall}" noauto="${4:-}"
   if [ "$noauto" = never-auto ]; then
-    if ! { true </dev/tty; } 2>/dev/null; then info "Kept — this one is never decided unattended. Re-run from a terminal to choose."; return 1; fi
+    if ! swg_tty_ok; then info "Kept — this one is never decided unattended. Re-run from a terminal to choose."; return 1; fi
   elif $ASSUME_YES; then return 0; fi
-  if ! { true </dev/tty; } 2>/dev/null; then return 1; fi   # no usable tty, not --yes => keep
-  read -rp "  $verb $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v </dev/tty || true
+  if ! swg_tty_ok; then return 1; fi   # no usable tty, not --yes => keep
+  read -rp "  $verb $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v <"${SWG_TTY:-/dev/tty}" || true
   case "$v" in [Yy]*) return 0;; *) return 1;; esac; }
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"

@@ -1388,7 +1388,7 @@ export function openUpdateDone(from, to) {
 export function openUpdateModal({ title, side, onConfirm, declarative, cmd, auto }) {
   // `cmd` undefined = "no opinion, use the default"; cmd === "" = "there is no command I can honestly
   // print here", which is not the same thing and must not fall back to the bootstrap one.
-  const full = cmd === undefined ? "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update" : cmd;
+  const full = cmd === undefined ? 'sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- update' : cmd;   // the sudo-rs-safe form (sheets-crud bootCmd)
   const go = async () => { closeModal(); await onConfirm(); };
   openModal(html`<${Sheet} title=${title}
     foot=${declarative && !auto

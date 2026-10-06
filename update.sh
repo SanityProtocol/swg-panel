@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # update.sh — update an existing swg-panel install in place, from the latest GitHub code.
 #
-#   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- update
 #
 # bootstrap.sh fetches the latest repo and runs this from it. It AUTO-DETECTS which
 # components are installed — covering every shape (bare-metal host / master / node,
@@ -25,7 +25,20 @@ esac; done
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # No terminal (the one-click update, an unattended run): debconf has nobody to ask and says so four lines per package
 # it touches. A value already set is left as it is. Same line as install-host.sh / install-node.sh.
-if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default). /proc/$$/stat after the command name:
+# state ppid pgrp session tty_nr tpgid. Without /proc: as before.
+_swg_tty_fg(){ local s f IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; [ "${f[2]:-}" = "${f[5]:-}" ]; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+if [ "$SWG_TTY" = /dev/null ] && [ -z "${SWG_TTY_WARNED:-}" ] && { : </dev/tty; } 2>/dev/null; then   # said once per run
+  printf '%s\n' "! This terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults. To answer them, run: sudo bash -c \"\$(curl -fsSL <bootstrap.sh URL>)\" -- <arguments>" >&2
+  export SWG_TTY_WARNED=1
+fi
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! swg_tty_ok; then export DEBIAN_FRONTEND=noninteractive; fi
 
 # ───────────────────────── one update at a time ─────────────────────────
 # The panel's one-click writes a trigger that a 30s timer turns into ANOTHER run of this script, so an
@@ -152,7 +165,7 @@ ver_line(){ local label="$1" cur="$2"
 confirm(){ # confirm <prompt> -> 0 yes / 1 no.  --yes or no terminal => yes (you ran update on purpose)
   $ASSUME_YES && return 0
   local v
-  if printf '  %s %s: ' "$1" "${C_BL}(Y/n)${RESET}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then
+  if printf '  %s %s: ' "$1" "${C_BL}(Y/n)${RESET}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then
     case "$v" in [Nn]*) return 1;; *) return 0;; esac
   else return 0; fi
 }
@@ -882,6 +895,13 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   fi
   [ "$_tools" = yes ] && [ "$_mod" = yes ] && return 0           # already working → done, silent
   $DRYRUN && return 0
+  # Nothing new to try: the module did not compile on this kernel, and neither the package nor upstream has moved since.
+  # Said in one line — every update used to "heal" it again: minutes of compiling, a broken dpkg, "healed" each time.
+  if [ "$_tools" = yes ] && have amneziawg-go && { awg_fail_get pkg >/dev/null || awg_fail_get src >/dev/null; } \
+     && ! awg_pkg_retry_due && ! awg_src_retry_due; then
+    note "AmneziaWG: userspace datapath — the kernel module does not compile on $(uname -r) yet; tried again when a new kernel or a newer AmneziaWG build arrives"
+    return 0
+  fi
 
   if [ "$_tools" = no ]; then
     info "healing AmneziaWG (its tools are missing on this node — awg interfaces cannot be created or taken over)"
@@ -898,14 +918,15 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
     ensure_awg_headers_follow || true
     awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
-    run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
-    # `apt install` is a NO-OP when the package is present but its module never built (headers were missing
-    # then), so force a build for the RUNNING kernel — an old kernel with newer headers would otherwise build
-    # for the wrong one and modprobe would still fail.
-    run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
-    modprobe amneziawg 2>/dev/null || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null
-                                        run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true
-    run modprobe amneziawg 2>/dev/null || true
+    if awg_ppa_module_install; then   # a module that does not compile on this kernel is given up on, not retried
+      # `apt install` is a NO-OP when the package is present but its module never built (headers were missing
+      # then), so force a build for the RUNNING kernel — an old kernel with newer headers would otherwise build
+      # for the wrong one and modprobe would still fail.
+      run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
+      modprobe amneziawg 2>/dev/null || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null
+                                          run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true
+      run modprobe amneziawg 2>/dev/null || true
+    fi
   elif have apt-get; then
     info "AmneziaWG: building it from source — its packages are published for Ubuntu only, and this is $(awg_os_name)"
     apt_refresh
@@ -922,7 +943,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     note "AmneziaWG: kernel module ready for $(uname -r)"
   elif have awg && have awg-quick && have amneziawg-go; then
     DID_UPDATE=yes; ok "AmneziaWG healed — running the slower USERSPACE datapath (no loadable kernel module)"
-    note "AmneziaWG: userspace (amneziawg-go); $(awg_tools_drive_3x && echo 'install matching linux-headers for the faster kernel module' || awg_tools_old_why)"
+    note "AmneziaWG: userspace (amneziawg-go); $(if awg_fail_get pkg >/dev/null || awg_fail_get src >/dev/null; then echo "the kernel module does not compile on $(uname -r) yet — tried again when a new kernel or a newer AmneziaWG build arrives"; elif awg_tools_drive_3x; then echo 'install matching linux-headers for the faster kernel module'; else awg_tools_old_why; fi)"
   elif have awg && have awg-quick; then
     DID_FAIL=yes; warn "AmneziaWG tools are installed but its kernel module will not load on $(uname -r), and the userspace datapath could not be built — awg interfaces cannot come up"
   else
@@ -1528,7 +1549,7 @@ ensure_panel_unit_warn(){   # DETECT + WARN only — never recreate. The panel u
   warn "swg-panel-server.service is MISSING — the panel is not managed by systemd and won't survive a reboot."
   warn "Its unit carries your TLS cert/key, port, and login, which an update must not guess. Re-run the host"
   warn "installer to restore it with your real settings:"
-  warn "    curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host"
+  warn '    sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- host'
 }
 
 ensure_netctl_docker(){   # HEAL (install-if-missing) the docker address helper on a panel-bearing docker host.

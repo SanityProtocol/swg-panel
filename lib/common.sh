@@ -246,7 +246,7 @@ ask_secret(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v rc
     # 2>/dev/null BEFORE >/dev/tty (and on the read): redirections apply left to right, so the other order printed a
     # raw "/dev/tty: No such device or address" whenever there was no terminal to open.
     printf '  %s%s: ' "$p" "${d:+ [$(col "${C_BLUE:-}" 'keep current')]}" 2>/dev/null >/dev/tty || printf '  %s: ' "$p"
-    if read -rs v 2>/dev/null </dev/tty; then rc=0; printf '\n' 2>/dev/null >/dev/tty || echo   # read -s swallows the newline the operator pressed
+    if read -rs v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then rc=0; printf '\n' 2>/dev/null >/dev/tty || echo   # read -s swallows the newline the operator pressed
     else rc=1; v=""   # …and with no terminal the prompt line ended blank (1.8.8 qualification): say what happens instead
       if [ -n "$d" ]; then echo "(no terminal — the saved one is kept)"; else echo "(no terminal — nothing given)"; fi; fi
     v="${v:-$d}"
@@ -1544,7 +1544,7 @@ guard_second_panel(){
   [ -n "$ans" ] && echo "  Abort, stop the other, or keep both [a/s/k]: $(b "$ans")  (given by SWG_OTHER_PANEL — not asked)"
   if [ -z "$ans" ]; then
     printf '  Abort, stop the other, or keep both [a/s/k]: ' 2>/dev/null >/dev/tty || printf '  Abort, stop the other, or keep both [a/s/k]: '
-    read -r ans 2>/dev/null </dev/tty || { echo; echo "  ✗ no interactive input — run from a terminal (ssh -t), or set SWG_OTHER_PANEL=stop|keep|abort"; exit 1; }
+    read -r ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { echo; echo "  ✗ no interactive input — run from a terminal (ssh -t), or set SWG_OTHER_PANEL=stop|keep|abort"; exit 1; }
   fi
   case "$ans" in
     s|S|stop)
@@ -2085,6 +2085,66 @@ awg_dkms_register_source(){ # clone upstream and register it — ONLY when no am
   return $rc
 }
 
+# ── a kernel module that does not COMPILE is remembered, not retried ──────────────────────────────────────────────────
+# Ubuntu 26.04's kernel 7.0.0-38 (client report 2026-10-06): upstream's module did not build on it at all, and the
+# installer compiled it four or five times per pass — the package's postinst, `dkms autoinstall` twice, a --reinstall,
+# every kernel, then once more from source — every update did all of it again, and the failed amneziawg-dkms was left
+# half-configured, so every later `apt install` on the box ended in a dpkg error. One record per kernel says what did not
+# compile: the package version (pkg) and the upstream commit (src). The next try waits for a new kernel, a newer
+# package, or a newer upstream commit; a kernel the record does not name has no record at all.
+AWG_MOD_FAILED="${SWG_AWG_MOD_FAILED:-/var/lib/swg-noded/awg-module-failed}"
+awg_fail_get(){ # <pkg|src> — what did not compile on THIS kernel; empty (rc 1) when nothing is recorded for it
+  [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_FAILED" 2>/dev/null)" = "$(uname -r)" ] || return 1
+  local v; v="$(sed -n "s/^$1=//p" "$AWG_MOD_FAILED" 2>/dev/null | sed -n 1p)"; [ -n "$v" ] && printf '%s' "$v"; }
+awg_fail_note(){ # <pkg|src> <value> — this kernel's record gains one fact (a record for another kernel is replaced)
+  $DRYRUN && return 0
+  local k old=""; k="$(uname -r)"
+  [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_FAILED" 2>/dev/null)" = "$k" ] && old="$(grep -v -e '^kernel=' -e "^$1=" "$AWG_MOD_FAILED" 2>/dev/null)"
+  mkdir -p "$(dirname "$AWG_MOD_FAILED")" 2>/dev/null || return 0
+  printf 'kernel=%s\n%s%s=%s\n' "$k" "${old:+$old
+}" "$1" "$2" > "$AWG_MOD_FAILED.tmp" 2>/dev/null && mv -f "$AWG_MOD_FAILED.tmp" "$AWG_MOD_FAILED" 2>/dev/null || true; }
+awg_module_head(){ # the commit upstream's kernel module is at now — empty when it cannot be asked (no git, no network)
+  have git || return 0
+  local t=""; have timeout && t="timeout 30"
+  $t env GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/amnezia-vpn/amneziawg-linux-kernel-module HEAD 2>/dev/null | cut -f1 | sed -n 1p; }
+awg_src_retry_due(){ # [<head>] — 0 unless upstream is still the commit that did not compile on THIS kernel (unknown head: not due)
+  local was h; was="$(awg_fail_get src)" || return 0
+  h="${1-$(awg_module_head)}"; [ -n "$h" ] || return 1
+  case "$h" in "$was"*) return 1;; esac; return 0; }
+awg_pkg_retry_due(){ # 0 unless amneziawg-dkms already did not compile on THIS kernel at the version apt would install now
+  local was c; was="$(awg_fail_get pkg)" || return 0
+  c="$(apt-cache policy amneziawg-dkms 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p)"
+  [ -n "$c" ] && [ "$c" != "(none)" ] && [ "$c" != "$was" ]; }
+awg_mod_built(){ modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1; }   # a module file exists for THIS kernel (loadable or not)
+_awg_kbuild(){ printf '%s' "${SWG_LIB_MODULES:-/lib/modules}/$(uname -r)/build"; }   # this kernel's headers (the gates point it elsewhere)
+awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that
+  # — not a missing prerequisite (no headers), and not a module that built but will not load (Secure Boot): the package's
+  # postinst failed, so dpkg holds it half-configured, and there is no module file for this kernel.
+  [ -e "$(_awg_kbuild)" ] && have dpkg-query || return 1
+  case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*|iH*) ;; *) return 1;; esac
+  ! awg_mod_built; }
+awg_dkms_give_up(){ # after that: leave the package manager clean, keep the tools, remember what did not compile
+  local v sha; v="$(dpkg-query -W -f='${Version}' amneziawg-dkms 2>/dev/null)"
+  warn "AmneziaWG: its kernel module does not compile on kernel $(uname -r) (amneziawg-dkms ${v:-?}) — upstream does not support this kernel yet. The package manager is left clean, and awg interfaces use the userspace datapath; an update tries the module again when a new kernel or a newer AmneziaWG build arrives."
+  # Removed, not left half-configured: every later apt run on the box (ours, the operator's, unattended-upgrades) would
+  # end in a dpkg error over it. --no-install-recommends on the tools: a recommends on the module must not reinstall it.
+  run apt-get remove -y amneziawg-dkms amneziawg >/dev/null 2>&1 || run dpkg --remove --force-remove-reinstreq amneziawg-dkms amneziawg >/dev/null 2>&1 || true
+  have awg || run apt-get install -y --no-install-recommends amneziawg-tools >/dev/null 2>&1 || true
+  [ -n "$v" ] && awg_fail_note pkg "$v"
+  sha="$(printf '%s' "$v" | sed -n 's/.*+\([0-9a-f]\{7,40\}\)~.*/\1/p')"   # the PPA builds upstream master and names the commit
+  [ -n "$sha" ] && awg_fail_note src "$sha"
+  return 0; }
+awg_ppa_module_install(){ # the package route's install — once: a compile failure is given up on, never retried. 0 = installed and built
+  if ! awg_pkg_retry_due; then
+    info "AmneziaWG: not rebuilding the kernel module — amneziawg-dkms $(awg_fail_get pkg) did not compile on $(uname -r); awg interfaces use the userspace datapath"
+    have awg || run apt-get install -y --no-install-recommends amneziawg-tools || true
+    return 1
+  fi
+  run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
+  $DRYRUN && return 0
+  if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi
+  return 0; }
+
 awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstream. 0 = tools AND module.
   # Tools first and unconditionally: `awg` + `awg-quick` are what the panel needs to write and bring up a
   # conf, and they build anywhere with a compiler — no distro repo involved. WITH_WGQUICK=yes is what
@@ -2103,7 +2163,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # because its template comes from the distro's own wireguard-tools.
   #
   # This alone does NOT heal a box that already has the tools — see ensure_awg_quick_unit in update.sh.
-  local w built=no; w="$(mktemp -d)"
+  local w built=no _reg=no; w="$(mktemp -d)"
   if ! have awg || ! have awg-quick; then
     info "building AmneziaWG tools from source (the amnezia PPA is Ubuntu-only)…"
     # ca-certificates is NOT optional here: without it every https git clone below fails cert verification.
@@ -2138,6 +2198,11 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # Tools we did not build (they were already here) may be too old for the master module below: it would load now or at
   # the next boot and take every awg interface down. The caller's next rung, userspace, serves them instead.
   [ "$built" = yes ] || awg_tools_drive_3x || { warn "AmneziaWG: $(awg_tools_old_why) — not building it; awg interfaces use the userspace datapath"; rm -rf "$w"; return 1; }
+  local _head; _head="$(awg_module_head)"
+  if ! awg_src_retry_due "$_head"; then
+    info "AmneziaWG: upstream's kernel module is still ${_head:0:7}, which did not compile on $(uname -r) — not building it again"
+    rm -rf "$w"; return 1
+  fi
   info "building the AmneziaWG kernel module for $(uname -r) from source — this can take several minutes on a slow box…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
   ensure_awg_headers_follow >/dev/null 2>&1 || true
@@ -2145,7 +2210,8 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
     # D4: REGISTER WITH DKMS instead of `make install`. Upstream's `install` is modules_install for the build kernel
     # only, so the next kernel upgrade left the box with no module — on every Debian node, headers or not. DKMS
     # rebuilds it when a kernel is installed. A tree the amnezia package already registered is left to its owner.
-    if have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && awg_dkms_register_dir "$w/mod/src" >>"$w/mod.log" 2>&1; then
+    _reg=no; have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && _reg=yes   # registered by THIS run, if it fails
+    if [ "$_reg" = yes ] && awg_dkms_register_dir "$w/mod/src" >>"$w/mod.log" 2>&1; then
       :
     else
       { run make -C "$w/mod/src" && run make -C "$w/mod/src" install; } >>"$w/mod.log" 2>&1 || true
@@ -2157,6 +2223,15 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # userspace datapath") gives no cause. On Ubuntu 26.04's 7.0.0-38 the upstream module does not compile at all.
   local _why; _why="$(grep -m1 -iE 'error|fatal|timed out|could not' "$w/mod.log" 2>/dev/null | cut -c1-200)"
   $DRYRUN || warn "the AmneziaWG kernel module did not build for $(uname -r): ${_why:-no error line in its build log}"
+  # A module that did not COMPILE (headers here, no module file): remember the commit, so no update compiles it again,
+  # and drop the DKMS registration this run made — a tree that cannot build would only fail again on every kernel install.
+  if ! $DRYRUN && [ -e "$(_awg_kbuild)" ] && ! awg_mod_built; then
+    [ -n "$_head" ] && awg_fail_note src "$_head"
+    if [ "${_reg:-no}" = yes ]; then
+      local _v; _v="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$w/mod/src/dkms.conf" 2>/dev/null)"
+      [ -n "$_v" ] && run dkms remove -m amneziawg -v "$_v" --all >/dev/null 2>&1 || true
+    fi
+  fi
   rm -rf "$w"
   return 1
 }
@@ -2508,9 +2583,9 @@ panel_pin_changed(){ local old="$1" new="$2" url="${3:-}" v="" ca=no q _on
     echo "  node's traffic presents a different certificate too, and would receive this node's panel token."
     q="Trust the new certificate? (y/N): "
   fi
-  if { : </dev/tty; } 2>/dev/null; then
+  if { [ "${SWG_TTY:-/dev/tty}" = /dev/tty ] && { : </dev/tty; }; } 2>/dev/null; then
     printf '  %s' "$q" 2>/dev/null >/dev/tty
-    read -r v </dev/tty 2>/dev/null || v=""
+    read -r v <"${SWG_TTY:-/dev/tty}" 2>/dev/null || v=""
     case "$v" in [Yy]*)
       if [ "$ca" = yes ]; then PIN_TO_CA=yes; ok "this node verifies the panel's certificate through its CA from now on — the pin is dropped"
       else ok "re-pinned the panel certificate (sha256 ${new:0:16}…)"; fi

@@ -88,13 +88,13 @@
 **Панель** — спрашивает роль: master (панель + эта машина является узлом) или host (только панель)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s bare-metal
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- bare-metal
 ```
 
 **Узел** — спрашивает URL панели + ключ из Nodes → Add node
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- node
 ```
 
 ### B — Docker
@@ -102,13 +102,13 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 **Панель** — при необходимости устанавливает Docker, затем спрашивает роль (master: панель + эта машина является узлом, заводится автоматически · host: только панель) и домен + выбор TLS (логин генерируется автоматически, поменяете его позже в панели)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker
 ```
 
 **Узел** — спрашивает URL панели + ключ из Nodes → Add node
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
 ```
 
 ### C — NixOS (декларативно)
@@ -142,7 +142,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 **Обновить** любую машину позже, на месте (автоматически определяет, что установлено):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- update
 ```
 
 ## Установка панели
@@ -188,10 +188,10 @@ sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.
 1. **Nodes → Add node** — задайте имя, публичный IP/host, на который подключаются клиенты, и цвет. Вы получите **одноразовый токен enrollment** и точный однострочник.
 2. **На входном сервере** вставьте этот однострочник — он скачивает репозиторий и запускает установщик узла:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
-     | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
+   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" \
+     -- node -key SECURE_NODE_KEY -host https://panel.example.net
    ```
-   Он ставит инструменты датапата и запускает `swg-noded` — и **ничего** не спрашивает про настройку. Интерфейсы, turn-прокси, серверы WDTT и csqtt — всё это создаётся в панели. Предпочитаете Docker? Панель показывает и команду `… bash -s docker node -key … -host …`.
+   Он ставит инструменты датапата и запускает `swg-noded` — и **ничего** не спрашивает про настройку. Интерфейсы, turn-прокси, серверы WDTT и csqtt — всё это создаётся в панели. Предпочитаете Docker? Панель показывает и команду `… -- docker node -key … -host …`.
 3. Через несколько секунд узел становится **online** на экране Nodes.
 
 **Приём того, что на машине уже работает.** Узел смотрит туда, где wg/awg, WDTT и csqtt обычно устанавливают, — не только туда, куда ставим их *мы*, — и сообщает о каждом интерфейсе и установке сервера, которых панель не создавала. На странице узла они появляются карточками-**кандидатами** с кнопками **Принять** / **Игнорировать**:
@@ -302,13 +302,13 @@ prerouting; даты — это таймауты ядра, поэтому дос
 **Панель** — Шаг 1 спрашивает роль, ровно как на bare-metal: **master** (панель + эта машина также запускает WG/AWG как совмещённый контейнер-узел, заводится в один проход) или **host** (только панель). По умолчанию — `master`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker
 ```
 
 **Узел** — отдельный входной сервер; спрашивает URL панели + ключ из **Nodes → Add node** (именно так разворачиваются узлы для роли `host`)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
 ```
 
 Флаги пропускают запросы (команда enroll из панели их использует): `-role master|host`, `-user`, `-pass`, `-domain`, `-base`, `-port`, `-tls`, `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`, `-net host|bridge`, `--build` — например `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
@@ -357,13 +357,13 @@ docker compose --profile node up -d
 Запустите тот же однострочник с другим методом. **В bare-metal** — голое слово-роль означает bare-metal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- master
 ```
 
 **В Docker** — добавьте перед ролью `docker`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker master
 ```
 
 Конверсия **сохраняет всё** — URL панели, логин, ростер, узлы и TLS-сертификат, а для `master` — токен, интерфейсы и turn-proxy локального узла. Она работает по принципу **copy-first**: новый метод полностью разворачивается *до* сноса старого, поэтому единственный простой — несколько секунд атомарного переключения, а узлы самовосстанавливаются при следующей синхронизации.
@@ -421,11 +421,11 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 - **Удаление узла:** Nodes → Remove. Остановите `swg-noded` на самой машине, чтобы вывести её из строя.
 - **Резервное копирование:** `users.json` + `nodes.json` (в `/var/lib/swg-panel`) — это всё состояние: скопируйте каталог куда-нибудь за пределы машины, и вы сможете восстановить панель где угодно.
 - **Автоматические резервные копии + самовосстановление:** каждая запись в критичный файл состояния (`users.json`, `nodes.json`, `panel-settings.json`) также создаёт рядом копию с меткой времени — `users.json.bak.<epoch>` — и оставляет только **последние 8**. При запуске загрузчик проверяет каждый основной файл и, если один из них повреждён/пуст (некорректное завершение, переполнение диска), **автоматически восстанавливает самую свежую исправную копию** — без вмешательства оператора. Таким образом резервная копия появляется после *каждого изменения*, а не по расписанию. (Копии за пределами машины всё равно рекомендуются на случай потери всего хоста.)
-- **Обновление:** `… | sudo bash -s update` (или `./update.sh`). Забирает свежий код, автоматически определяет, что установлено (bare-metal панель/узел и/или Docker), обновляет бинарники/SPA и перезапускает — конфигурация + состояние сохраняются. `--dry-run` показывает план, `-y`/`--yes` берёт все доступные обновления без вопросов, `-f`/`--force` переустанавливает даже компоненты, уже находящиеся на последней версии. Установленная версия штампуется в файл `VERSION` каждого компонента (репозиторий: [`VERSION`](VERSION)).
+- **Обновление:** `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- update` (или `./update.sh`). Забирает свежий код, автоматически определяет, что установлено (bare-metal панель/узел и/или Docker), обновляет бинарники/SPA и перезапускает — конфигурация + состояние сохраняются. `--dry-run` показывает план, `-y`/`--yes` берёт все доступные обновления без вопросов, `-f`/`--force` переустанавливает даже компоненты, уже находящиеся на последней версии. Установленная версия штампуется в файл `VERSION` каждого компонента (репозиторий: [`VERSION`](VERSION)).
 - **Переустановка сохраняет данные:** повторный запуск *любого* установщика на машине обнаруживает существующую установку и сохраняет всё (логин, сертификат, ростер, узлы, токен узла, интерфейсы, turn-proxy), предлагая текущие значения по умолчанию — безопасно после прерванного запуска или для изменения какой-либо опции. Чтобы начать с чистого листа, сначала выполните деинсталляцию.
-- **Восстановление идентичности узла:** переустановленный или сконвертированный узел сохраняет свою идентичность после регистрации в `/var/lib/swg-recovery`, поэтому может снова присоединиться **без повторной регистрации**. Откройте это меню напрямую командой `… | sudo bash -s recovery` (работает даже на машине с уже действующим узлом — например, чтобы заново привязать оставшийся токен после пересборки).
+- **Восстановление идентичности узла:** переустановленный или сконвертированный узел сохраняет свою идентичность после регистрации в `/var/lib/swg-recovery`, поэтому может снова присоединиться **без повторной регистрации**. Откройте это меню напрямую командой `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- recovery` (работает даже на машине с уже действующим узлом — например, чтобы заново привязать оставшийся токен после пересборки).
 - **Перенос панели:** смените её host/port — и **запиненные узлы автоматически перенаправятся** на следующей синхронизации, пока новый адрес предъявляет их доверенный сертификат — так что миграция панели не требует повторной регистрации на каждом узле.
-- **Деинсталляция:** `… | sudo bash -s uninstall` (или `./uninstall.sh`). Перечисляет каждый установленный компонент — панель, bare-metal-узел, контейнеры панели и узла в Docker, AmneziaWG, WireGuard и **каждый** turn-proxy-сервер — затем проходит по ним и спрашивает, удалить или оставить каждый. Ничего не удаляется без «да»; можно сохранить ростер / хранилище узлов / каталог данных Docker для переустановки. `--yes` удаляет всё, `--dry-run` показывает предварительный просмотр.
+- **Деинсталляция:** `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- uninstall` (или `./uninstall.sh`). Перечисляет каждый установленный компонент — панель, bare-metal-узел, контейнеры панели и узла в Docker, AmneziaWG, WireGuard и **каждый** turn-proxy-сервер — затем проходит по ним и спрашивает, удалить или оставить каждый. Ничего не удаляется без «да»; можно сохранить ростер / хранилище узлов / каталог данных Docker для переустановки. `--yes` удаляет всё, `--dry-run` показывает предварительный просмотр.
 
 ## Внешний API и интеграции
 

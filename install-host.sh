@@ -17,7 +17,20 @@ HOST_ENDPOINT_IP="${HOST_ENDPOINT_IP:-}" # public IP clients dial for this box's
 _EP_GIVEN="$HOST_ENDPOINT_IP"            # …as the operator GAVE it, before any default fills it (seeds the panel's node record)
 # No terminal (an unattended install, a convert, curl|bash under CI): debconf has nobody to ask and says so — four
 # lines per package ("This frontend requires a controlling tty"). A value already set is left as it is.
-if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default). /proc/$$/stat after the command name:
+# state ppid pgrp session tty_nr tpgid. Without /proc: as before.
+_swg_tty_fg(){ local s f IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; [ "${f[2]:-}" = "${f[5]:-}" ]; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+if [ "$SWG_TTY" = /dev/null ] && [ -z "${SWG_TTY_WARNED:-}" ] && { : </dev/tty; } 2>/dev/null; then   # said once per run
+  printf '%s\n' "! This terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults. To answer them, run: sudo bash -c \"\$(curl -fsSL <bootstrap.sh URL>)\" -- <arguments>" >&2
+  export SWG_TTY_WARNED=1
+fi
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! swg_tty_ok; then export DEBIAN_FRONTEND=noninteractive; fi
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected; master only)
 WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 
@@ -160,11 +173,11 @@ STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo 
 # ⚠️ A TERMINAL, ASKED QUIETLY FIRST. `read … </dev/tty` with none (an unattended run, `</dev/null`, no controlling
 # terminal) makes bash print a raw "line N: /dev/tty: No such device or address" before the read fails and the
 # default is taken — every prompt below then reads as a crash. Same fall-through, without the noise.
-_tty(){ { : </dev/tty; } 2>/dev/null; }
+_tty(){ swg_tty_ok; }
 ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
-  echo; if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; else _notty "$p" "$d"; fi; printf -v "$3" '%s' "${v:-$d}"; }
+  echo; if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$d"; fi; printf -v "$3" '%s' "${v:-$d}"; }
 ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
-  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi
+  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; _pnl; }
 
 # ── input validators (0 = ok) ──
@@ -241,7 +254,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}"; _pnl; return; }; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
-    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
+    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option
@@ -259,7 +272,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
     warn "ignoring invalid $var='${!var}' ($hint)"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
+    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
@@ -567,8 +580,7 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
     run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
     ensure_awg_headers_follow || true   # D4: headers for the NEXT kernel too, so DKMS builds it when it arrives
     awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
-    run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
-    build_awg_module
+    awg_ppa_module_install && build_awg_module   # a module that does not compile on this kernel is given up on, not retried
   else
     # Not Ubuntu: the PPA publishes nothing for this system, so none of it is tried (no software-properties-common, no
     # add-apt-repository traceback, no "Unable to locate package amneziawg") — straight to the source build below, the
@@ -894,7 +906,7 @@ while :; do
     echo "    Running the panel $(b standalone)? Give it a free port, e.g. $(b "${PANEL_HOST_NOPORT}:8443")."
     echo "    Serving it $(b behind) that web server (the next step offers nginx/caddy)? Then $(bb force) is fine."
     printf '  Enter a different URL, or type %s to keep :%s anyway: ' "$(bb force)" "$_pp"
-    read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }   # said, not a blank line
+    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }   # said, not a blank line
     case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
       force|FORCE) _forced="$_pp";;
       "") :;;
@@ -911,7 +923,7 @@ while :; do
   echo "         certificates won't work. ($(b letsencrypt)/$(b selfsigned) on a directly-reachable port is fine.)"
   echo
   printf '  To keep the port %s type %s, or enter a new URL to change: ' "$URL_PORT" "$(bb proceed)"
-  read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }   # said, not a blank line
+  read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }   # said, not a blank line
   case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
     proceed|"") break;;                                           # keep the current port
     *) if _u="$(answer_to_url "$(printf '%s' "$_url_ans" | tr -d '[:space:]')")"; then PANEL_DOMAIN="$_u"   # adopt it; loop re-parses + re-checks

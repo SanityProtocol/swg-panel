@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # install-docker.sh — one-line Docker installer for swg-panel.
 #
-#   Panel (host):      … | sudo bash -s docker host   -pass SECRET -domain panel.example.net
-#   Node only:         … | sudo bash -s docker node   -key KEY -host https://panel.example.net -endpoint 203.0.113.7
+#   Panel (host):      sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- docker host   -pass SECRET -domain panel.example.net
+#   Node only:         sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- docker node   -key KEY -host https://panel.example.net -endpoint 203.0.113.7
 #
 # `docker host` is the panel entry point: Step 1 asks the role — master or host — exactly
 # like bare-metal (install-host.sh):
@@ -27,6 +27,19 @@
 #   -endpoint <ip>  public IP clients dial   (-> NODE_ENDPOINT)
 #   -iface <name>   node interface name      (-> NODE_IFACE, default awg0)
 set -euo pipefail
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default). /proc/$$/stat after the command name:
+# state ppid pgrp session tty_nr tpgid. Without /proc: as before.
+_swg_tty_fg(){ local s f IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; [ "${f[2]:-}" = "${f[5]:-}" ]; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+if [ "$SWG_TTY" = /dev/null ] && [ -z "${SWG_TTY_WARNED:-}" ] && { : </dev/tty; } 2>/dev/null; then   # said once per run
+  printf '%s\n' "! This terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults. To answer them, run: sudo bash -c \"\$(curl -fsSL <bootstrap.sh URL>)\" -- <arguments>" >&2
+  export SWG_TTY_WARNED=1
+fi
 
 # ───────────────────────── config (env or flags) ─────────────────────────
 # Snapshot which of these the CALLER actually provided, BEFORE any default is applied. The .env import below
@@ -127,16 +140,17 @@ ask_tty(){ local v p="$1" d="${2:-}"   # prompt on the terminal (curl|bash keeps
   # NB: this runs in a $() subshell (ask_yn_tty captures it), so it can only READ _SWG_NL, not set it — hence just
   # a flag-aware LEADING blank; the following step/helper supplies the trailing blank (its own leading, flag clear).
   [ -n "${_SWG_NL:-}" ] || printf '\n' 2>/dev/null >/dev/tty || true
-  if printf '  %s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then printf '%s' "${v:-$d}"
+  if printf '  %s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then printf '%s' "${v:-$d}"
   else printf '%s' "$d"; fi; }
 ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (default when blank / no tty)
   v="$(ask_tty "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N'))" "")"
   case "${v:-$d}" in [Yy]*) printf yes;; *) printf no;; esac; }
 rand_pw(){ head -c12 /dev/urandom | base64 | tr -d '/+=' | cut -c1-16; }
-# Is there a terminal to ask on? `curl | sudo bash` keeps one (/dev/tty); `setsid … </dev/null`, cron and CI do not.
+# Is there a terminal to ask on? `sudo bash -c "$(curl …)"` keeps one (/dev/tty) — `curl | sudo bash` under sudo-rs does not
+# (swg_tty_ok, above); `setsid … </dev/null`, cron and CI do not.
 # ⚠️ Without it every `read … </dev/tty` below printed a raw "line 216: /dev/tty: No such device or address" into an
 # unattended log — the redirection fails before the read runs, so a trailing 2>/dev/null never covered it. Probe once.
-HAVE_TTY=no; { : </dev/tty; } 2>/dev/null && HAVE_TTY=yes
+HAVE_TTY=no; swg_tty_ok && HAVE_TTY=yes
 # the value of KEY in an .env file, as compose reads it: first KEY= line, an unquoted value's inline ` # comment`
 # dropped, surrounding quotes stripped. ⚠️ Reading the raw line fed the comment back in as part of the value: every
 # re-install wrote `CONSOLE_PORT=8445   # …   # …` with one more copy of its comment than the last.
@@ -157,7 +171,7 @@ keyg(){ printf '%s[%s]%s%s'   "$C_GREY"        "$1" "$2" "$RESET"; }   # de-emph
 STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # skip the leading blank when a prompt already printed one
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
 ask(){ local v p="$1" d="${2:-}"; echo
-  if [ "$HAVE_TTY" = yes ]; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; else v=""; _notty "$p" "$d"; fi
+  if [ "$HAVE_TTY" = yes ]; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || v=""; else v=""; _notty "$p" "$d"; fi
   printf -v "$3" '%s' "${v:-$d}"; }
 # no terminal: say which answer was taken for the prompt that could not be shown, so an unattended log still reads
 _notty(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(no terminal — default taken)"; }
@@ -235,7 +249,7 @@ parse_panel_url(){ local u="$1" hostport rest
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}" "$var"; _pnl; return; }; done; fi
   while :; do
-    if [ "$HAVE_TTY" = yes ] && read -rp "  $p [$(bb "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
+    if [ "$HAVE_TTY" = yes ] && read -rp "  $p [$(bb "$d")]: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option (1-indexed menus)
     for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; _pnl; return; }; done
@@ -247,7 +261,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
   if [ -n "${!var:-}" ]; then "$fn" "${!var}" && { [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!var}" "$var"; _pnl; return; }; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if [ "$HAVE_TTY" = yes ] && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
+    if [ "$HAVE_TTY" = yes ] && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
     [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; _pnl; return; }
@@ -648,7 +662,7 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
       echo; warn "port $(col "$C_YEL" ":$_pp") is already in use${_who:+ (by $(col "$C_YEL" "$_who"))} — the panel can't bind it"
       echo "    Give the panel its own port (e.g. $(b "${PANEL_HOST_NOPORT}:8443")), or stop whatever holds it."
       printf '  Enter a different URL, or type %s to publish on :%s anyway: ' "$(bb force)" "$_pp"
-      read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }   # said, not a blank line
+      read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }   # said, not a blank line
       case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
         force|FORCE) _forced="$_pp";;
         "") :;;
@@ -665,7 +679,7 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
     echo "         certificates won't work. ($(b letsencrypt)/$(b selfsigned) on a directly-reachable port is fine.)"
     echo
     printf '  To keep the port %s type %s, or enter a new URL to change: ' "$URL_PORT" "$(bb proceed)"
-    read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }   # said, not a blank line
+    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }   # said, not a blank line
     case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
       proceed|"") break;;                                           # keep the current port
       *) if _u="$(answer_to_url "$(printf '%s' "$_url_ans" | tr -d '[:space:]')")"; then PANEL_DOMAIN="$_u"   # adopt it; loop re-parses
@@ -744,7 +758,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
       echo; warn "letsencrypt needs host port $(col "$C_YEL" ':80') for HTTP-01, but it's in use${_w80:+ (by $(col "$C_YEL" "$_w80"))} — issuance will fail"
       echo "    :80 is fixed by ACME (independent of the panel's port). Pick $(key c 'loudflare') (DNS-01), $(key 15 'years cloudflare'), $(key s 'elfsigned'), or $(key n 'one') — or $(bb force) to keep letsencrypt."
       printf '  Select another certificate, or type %s: ' "$(bb force)"
-      read -r _ans80 2>/dev/null </dev/tty || _ans80=force
+      read -r _ans80 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _ans80=force
       _ans80="$(printf '%s' "$_ans80" | tr -d '[:space:]')"
       [ "$_ans80" = force ] && break
       case " $_opts " in *" $_ans80 "*) TLS="$_ans80";; *) TLS=""; warn "enter one of: $_opts — or 'force'";; esac
