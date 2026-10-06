@@ -4414,7 +4414,9 @@ function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3 }
       ${eff === "3.1" ? html`<div style="margin-top:14px"><${Awg3Grid} value=${v} onKey=${(k, x) => onChange({ ...v, [k]: x })} placeholders=${ph3}
         hpk=${T("val|per link")} rt=${T("val|on")} hpkTip=${T("Each link gets a key of its own.")} rtTip=${T("On for every AmneziaWG 3.1 link.")}
         hint=${T("What AmneziaWG 3.1 links add to the fields above. A blank cell takes the value shown in it — the mesh default, or the 3.1 defaults in Settings → Interfaces; - for no such line.")}/></div>` : null}
-      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => onChange(genAwg())}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => onChange({})}>${T("Clear (auto)")}</button>` : null}</div>
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini"
+        title=${eff === "3.1" ? T("S and H are drawn fresh; the 3.1 fields take Amnezia's 3.1 set, whose ranges the protocol randomises on its own.") : null}
+        onClick=${() => onChange({ ...genAwg(), ...(eff === "3.1" ? Object.fromEntries(AWG3_EDIT_COLS.flat().map(k => [k, String(((Store.panelSettings || {}).awg31_builtin || {})[k] ?? "")]).filter(([, x]) => x)) : {}) })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => onChange({})}>${T("Clear (auto)")}</button>` : null}</div>
     </div></div>`;
 }
 /* A blank 3.1 cell of a mesh template, as background text: the next layer down, field by field — for a node, the panel's mesh

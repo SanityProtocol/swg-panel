@@ -6786,6 +6786,7 @@ export const STR = {
   "mesh link type → {v1}": "тип меш-линков → {v1}",
   "Default mesh link type": "Тип меш-линков по умолчанию",
   "Default mesh AWG params": "Параметры AWG меша по умолчанию",
+  "S and H are drawn fresh; the 3.1 fields take Amnezia's 3.1 set, whose ranges the protocol randomises on its own.": "S и H выбираются заново; поля 3.1 получают набор 3.1 от Amnezia — его диапазоны протокол и так перебирает случайно.",
   "Obfuscation for new AmneziaWG mesh links, unless a node sets its own. Blank = auto (a fresh set per link).": "Маскировка для новых меш-линков AmneziaWG, если нода не задаёт свою. Пусто — авто (свой набор на каждый линк).",
   "(none — WG)": "(нет — WG)",
   "Plain WireGuard links carry no obfuscation, so there is nothing to set here.": "У линков обычного WireGuard нет маскировки, поэтому здесь нечего задавать.",
