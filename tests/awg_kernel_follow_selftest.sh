@@ -147,17 +147,20 @@ check "[8] S1 control — 3.x tools: register_source clones the module" "$(grep 
 reset; : > "$T/warns"; ( PATH="$T/awg2:$PATH"; awg_build_from_source ); r=$?
 check "[8] S2 — 2.0 tools, no loadable module: rc 1, no clone, no dkms/headers install, the reason said" "$([ $r = 1 ] && ! grep -q clone "$T/calls" && ! grep -q 'install .*dkms' "$T/calls" && grep -q 'v1.0.20260618-2) predate AmneziaWG 3' "$T/warns"; echo $?)" "rc=$r $(cat "$T/calls") | $(cat "$T/warns")"
 reset; : > "$T/warns"; ( PATH="$T/awg3:$PATH"; awg_build_from_source ); r=$?
-check "[8] S2 control — 3.x tools: the module is cloned and built" "$(grep -q 'clone .*amneziawg-linux-kernel-module' "$T/calls" && [ ! -s "$T/warns" ]; echo $?)" "rc=$r $(cat "$T/calls") | $(cat "$T/warns")"
+# (not refused: no "not building it" — a build that then fails to load says why in its own line, which is not a refusal)
+check "[8] S2 control — 3.x tools: the module is cloned and built" "$(grep -q 'clone .*amneziawg-linux-kernel-module' "$T/calls" && ! grep -q 'not building it' "$T/warns"; echo $?)" "rc=$r $(cat "$T/calls") | $(cat "$T/warns")"
 # Tools built in THIS run are master, like the module: never probed. Here the fresh build lacks the word (as a parser that
 # one day renames it would) — the module must still be built, or every fresh node would quietly lose its kernel datapath.
 mkdir -p "$T/fresh"; printf '#!/bin/sh\necho "$0 $*" >> "$SBX/calls"; case "$*" in *install*) cp "$SBX/awg2/awg" "$SBX/awg2/awg-quick" "$SBX/fresh/";; esac\n' > "$T/bin/make"; chmod +x "$T/bin/make"
 git_clone_depth1(){ echo "clone $*" >> "$T/calls"; case "$1" in *amneziawg-tools) mkdir -p "$2/src";; *) return 1;; esac; }
 # (`have` sees awg only where this run installs it: the workstation running the test may have a real one in /usr/bin)
 reset; : > "$T/warns"; ( PATH="$T/fresh:$PATH"; have(){ case "$1" in git|make) return 0;; awg|awg-quick) [ -x "$T/fresh/$1" ];; *) command -v "$1" >/dev/null 2>&1;; esac; }; awg_build_from_source ); r=$?
-check "[8] S2 — tools built in this run are not probed: the module is cloned even when their parser lacks the word" "$(grep -q 'clone .*amneziawg-tools' "$T/calls" && grep -q 'clone .*amneziawg-linux-kernel-module' "$T/calls" && [ ! -s "$T/warns" ]; echo $?)" "rc=$r $(cat "$T/calls") | $(cat "$T/warns")"
+check "[8] S2 — tools built in this run are not probed: the module is cloned even when their parser lacks the word" "$(grep -q 'clone .*amneziawg-tools' "$T/calls" && grep -q 'clone .*amneziawg-linux-kernel-module' "$T/calls" && ! grep -q 'not building it' "$T/warns"; echo $?)" "rc=$r $(cat "$T/calls") | $(cat "$T/warns")"
 git_clone_depth1(){ echo "clone $*" >> "$T/calls"; return 1; }
 # …and every caller says the real reason instead of "install matching linux-headers", which cannot help such a box
 check "[8] update.sh gives register_source's rc 3 its own note; the userspace advice and the D3 refusal ask the probe" "$(printf '%s' "$u" | grep -q '3) note "AmneziaWG: $(awg_tools_old_why)' && printf '%s' "$u" | grep -q 'userspace (amneziawg-go); $(awg_tools_drive_3x && echo' && grep -qF 'does not accept its configuration ($(awg_tools_drive_3x && echo '"'"'a module older than the interface needs?'"'"' || echo "$(awg_tools_old_why);' "$ROOT/update.sh"; echo $?)"
 check "[8] the headers line promises a module rebuild only where a DKMS tree exists (none: nothing rebuilds it — measured)" "$(printf '%s' "$u" | grep -q '$(\[ -n "$(dkms status amneziawg 2>/dev/null)" \] && echo " — the module is rebuilt when a new kernel arrives")' && [ "$(printf '%s' "$u" | grep -c 'the module is rebuilt when a new kernel arrives')" = 1 ]; echo $?)"
-check "[8] both installers offer the headers advice only to tools that can drive the module" "$(for f in install-node.sh install-host.sh; do grep -q "have apt-get && awg_tools_drive_3x && printf ' %s' 'Installing matching linux-headers" "$ROOT/$f" || exit 1; done; echo 0)"
+# …and only where this kernel's headers are missing: on a box that has them (Ubuntu 26.04, 7.0.0-38) the module failed for
+# another reason, said by awg_build_from_source, and "install matching linux-headers" was advice that could not help
+check "[8] both installers offer the headers advice only to tools that can drive the module" "$(for f in install-node.sh install-host.sh; do grep -qF "have apt-get && awg_tools_drive_3x && ! [ -e \"/lib/modules/\$(uname -r)/build\" ] && printf ' %s' 'Installing matching linux-headers" "$ROOT/$f" || exit 1; done; echo 0)"
 echo; [ "$FAILS" = 0 ] && echo "GREEN — 0 failed" || echo "RED — $FAILS failed"; [ "$FAILS" = 0 ]
