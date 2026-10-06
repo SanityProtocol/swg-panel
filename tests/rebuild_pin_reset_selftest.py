@@ -132,6 +132,8 @@ nodes[X]["links"][Y]["dial_endpoint"] = "198.51.100.30"   # Y's address, dialled
 nodes[N]["links"][X]["dial_endpoint"] = "198.51.100.11"   # N dials the old box's .11: reset
 nodes[N]["links"][X]["relay"] = {"mode": "relay"}          # N's relay on that leg: kept
 nodes[Y]["links"][X]["dial_src"] = "198.51.100.30"        # Y's own address: kept
+nodes[Y]["links"][X]["dial_endpoint"] = "203.0.113.5"     # X's NAT front, which X never reports: the endpoint rule keeps it
+P.mesh_link_park(nodes, X, Y)                              # X's half to Y torn down earlier: its dial_src .11 is PARKED, not live
 json.dump(nodes, open(deps["nodes_path"], "w"))
 st, r = P.api("GET", "/api/nodes/rebuild/preflight", {"node": [X], "assume": ["198.51.100.10"]}, {}, deps)
 mrows = sorted((a["path"], a.get("from")) for a in ((r.get("data") or {}).get("address") or []) if str(a.get("path", "")).startswith("mesh."))
@@ -141,12 +143,13 @@ st, r = P.api("POST", "/api/nodes/rebuild", {}, {"node": X, "supersede": False, 
 nn = json.load(open(deps["nodes_path"]))
 g = lambda a, b, k: ((nn[a].get("links") or {}).get(b) or {}).get(k)
 check("rebuild 200, links rebuilt", st == 200 and N in (nn[X].get("links") or {}) and Y in (nn[X].get("links") or {}), (st, r.get("error")))
-check("reset: X's dial_src .11 toward Y, N's dial_endpoint .11 toward X",
+check("reset: X's dial_src .11 toward Y (it was parked, not live), N's dial_endpoint .11 toward X",
       g(X, Y, "dial_src") is None and g(N, X, "dial_endpoint") is None, (g(X, Y, "dial_src"), g(N, X, "dial_endpoint")))
-check("kept: X's dial_src .10 (the new box has it), X's dial_endpoint to Y, N's relay, Y's dial_src",
+check("kept: X's dial_src .10 (the new box has it), X's dial_endpoint to Y, N's relay, Y's dial_src, and Y's dial_endpoint "
+      "on X's NAT front (an address X never reported — the endpoint rule, review of f17cc1d)",
       g(X, N, "dial_src") == "198.51.100.10" and g(X, Y, "dial_endpoint") == "198.51.100.30"
-      and g(N, X, "relay") == {"mode": "relay"} and g(Y, X, "dial_src") == "198.51.100.30",
-      (g(X, N, "dial_src"), g(X, Y, "dial_endpoint"), g(N, X, "relay"), g(Y, X, "dial_src")))
+      and g(N, X, "relay") == {"mode": "relay"} and g(Y, X, "dial_src") == "198.51.100.30" and g(Y, X, "dial_endpoint") == "203.0.113.5",
+      (g(X, N, "dial_src"), g(X, Y, "dial_endpoint"), g(N, X, "relay"), g(Y, X, "dial_src"), g(Y, X, "dial_endpoint")))
 check("nothing left parked", all("link_keep" not in nn[k] for k in nn), {k: nn[k].get("link_keep") for k in nn})
 
 shutil.rmtree(TMP, ignore_errors=True)

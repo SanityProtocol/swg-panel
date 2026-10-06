@@ -2058,6 +2058,9 @@ export function RebuildOutcome({ d, preview }) {
     // another server's rules chose to leave THIS node by that address (`pin.<server>.<interface|default>`)
     if (p[0] === "pin" && p.length >= 3)
       return Store.nodeName(p[1]) + " · " + (p[2] === "default" ? T("Default exit") : p[2]) + " · " + T("As address");
+    // a mesh link's own dial setting naming the old box (`mesh.<server>.<peer>.<dial_src|dial_endpoint>`), the link sheet's words
+    if (p[0] === "mesh" && p.length >= 4)
+      return Store.nodeName(p[1]) + " → " + Store.nodeName(p[2]) + " · " + (p[3] === "dial_src" ? T("Dial source IP") : T("Dial endpoint IP"));
     return { default_egress_ip: T("this node") + " " + T("word|egress"),
              panel_ip: T("word|panel source"),
              mesh_egress_ip: T("word|mesh source"),

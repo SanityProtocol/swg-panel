@@ -11355,18 +11355,22 @@ def rebuild_plan(deps, nodes, nid, snaps, seen, assume=None, supersede=None):
                 pin_resets.append({"node": _on, "kind": _k, "iface": _ifn, "from": _v})
     # 5c. …and the mesh links' own dial settings that name the old box (plan §8 round 14): this node's `dial_src` on each of
     #     its links, and each peer's `dial_endpoint` toward it. The re-provision below parks them so a rebuild never resets
-    #     them — right for the same box, wrong for a new one, so they take the same rule: kept only when the new box has
-    #     the address, otherwise back to Auto (dropped from what is parked).
+    #     them — right for the same box, wrong for a new one. `dial_src` is a SOURCE this box must own: the bind rule, as
+    #     its egress and mesh sources take (kept only when the new box has it). A peer's `dial_endpoint` is an ENDPOINT:
+    #     the endpoint rule, as `endpoint_host` takes (a hostname or an address the box never reported — a NAT front — is
+    #     kept; an address the old box had and the new one does not goes). Settings already parked count too.
     dial_resets = []
-    for _peer, _lr in (c.get("links") or {}).items():
-        _v = mesh_link_extras(_lr).get("dial_src", "")
-        if _v and _bind_swap_transform(_v, ctx) != _v:
-            dial_resets.append({"node": nid, "peer": _peer, "key": "dial_src", "from": _v})
+    def _dial(rule, owner, peer, key, lr):
+        _v = mesh_link_extras(lr).get(key, "")
+        if _v and rule(_v, ctx) != _v:
+            dial_resets.append({"node": owner, "peer": peer, "key": key, "from": _v})
+    for _peer in sorted(set(c.get("links") or {}) | set(c.get("link_keep") or {})):
+        _dial(_bind_swap_transform, nid, _peer, "dial_src",
+              ((c.get("link_keep") or {}).get(_peer)) or ((c.get("links") or {}).get(_peer)))
     for _on, _orec in (nodes or {}).items():
         if _on != nid and isinstance(_orec, dict):
-            _v = mesh_link_extras(((_orec.get("links") or {}).get(nid))).get("dial_endpoint", "")
-            if _v and _bind_swap_transform(_v, ctx) != _v:
-                dial_resets.append({"node": _on, "peer": nid, "key": "dial_endpoint", "from": _v})
+            _dial(_host_swap_transform, _on, nid, "dial_endpoint",
+                  ((_orec.get("link_keep") or {}).get(nid)) or ((_orec.get("links") or {}).get(nid)))
     addr_actions = list(addr_actions) + [
         ("pin.%s.%s" % (_p["node"], _p["iface"] or "default"), "reset '%s' -> ''" % _p["from"],
          "an address another server's rules chose to leave this node by — the old box's, so back to Auto")
@@ -11687,8 +11691,10 @@ def transfer_homecoming_keep(nodes, nid, cur, newrec):
     if isinstance(cur.get("mesh_link"), dict) and cur["mesh_link"]:
         newrec["mesh_link"] = cur["mesh_link"]
     kp = {p: v for p, v in (cur.get("link_keep") or {}).items() if p in nodes and p != nid}
-    kp.update({p: mesh_link_extras(lr) for p, lr in (cur.get("links") or {}).items()
-               if p in nodes and p != nid and mesh_link_extras(lr)})
+    for p, lr in (cur.get("links") or {}).items():
+        kv = mesh_link_extras(lr)
+        if kv and p in nodes and p != nid:
+            kp[p] = kv
     if kp:
         newrec["link_keep"] = kp
 
@@ -13372,9 +13378,13 @@ def mesh_link_extras(lr):
     that is not blank (MESH_LINK_KEEP). What mesh_need counts as needing the pair and what a teardown parks: an inert
     `relay: {mode: forward}` (every sheet save writes one) is neither."""
     lr = lr if isinstance(lr, dict) else {}
-    kv = {k: str(lr.get(k) or "").strip() for k in ("dial_endpoint", "dial_src") if str(lr.get(k) or "").strip()}
-    if isinstance(lr.get("relay"), dict) and lr["relay"].get("mode") == "relay":
-        kv["relay"] = lr["relay"]
+    kv = {}
+    for k in MESH_LINK_KEEP:
+        if k == "relay":
+            if isinstance(lr.get("relay"), dict) and lr["relay"].get("mode") == "relay":
+                kv["relay"] = lr["relay"]
+        elif str(lr.get(k) or "").strip():
+            kv[k] = str(lr[k]).strip()
     return kv
 
 
