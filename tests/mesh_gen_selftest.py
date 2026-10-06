@@ -278,6 +278,36 @@ check("3.1 with S4 none in the template (a stored state the save refuses): the l
       P.mesh_gen_reasons(d, t, {"n00": ex(), "n01": ex()}, "n00"))
 check("…and no S4 on it (the omission held, no refit adds one)", "S4" not in lk[4]["awg_params"], lk[4]["awg_params"])
 
+# ── [7] the six 3.1 fields of a 3.1 link, field by field (plan §8 round 11, operator 2026-10-06) ──────────────────────────
+print("[7] a 3.1 link's 3.1 fields: node template, else panel template, else interface 3.1 defaults, else Amnezia's set")
+f = fleet(2)
+f["n00"]["mesh_awg"] = {"ContentPaddingAddition": "20-40"}
+d = deps(1320, {"mesh_awg_gen": "3.1", "mesh_awg": {"RekeyTimeout": "4-8"},
+                "interface_defaults": {"awg3_params": {"KeepaliveTimeout": "6-12", "RekeyTimeout": "2-3"}}})
+t = run(P, f, d, {"n00": gen_snap(), "n01": gen_snap()})
+pa = links(t)[0][4]["awg_params"]
+check("node CPA 20-40, panel RekeyTimeout 4-8 (over the interface default 2-3), interface KeepaliveTimeout 6-12, the rest Amnezia's",
+      pa.get("ContentPaddingAddition") == "20-40" and pa.get("RekeyTimeout") == "4-8" and pa.get("KeepaliveTimeout") == "6-12"
+      and pa.get("RekeyAfterTime") == P.AWG31_SET["RekeyAfterTime"] and P.awg3_check(pa)[1] is None, pa)
+ex2 = lambda: {"datapath": {"awg": {"gen": {"module": "3.1", "tools": "3.1"}, "exact": 1}}}
+f = fleet(2); f["n00"]["mesh_awg"] = {"ContentPaddingAddition": "-"}
+d = deps(1320, {"mesh_awg_gen": "3.1", "interface_defaults": {"awg3_params": {"MaxHandshakeAttempts": "-"}}})
+t = run(P, f, d, {"n00": ex2(), "n01": ex2()})
+lk = links(t)[0]
+check("\"-\" (node CPA, interface MaxHandshakeAttempts) where both ends can hold it: no such line, the link whole",
+      "ContentPaddingAddition" not in lk[4]["awg_params"] and "MaxHandshakeAttempts" not in lk[4]["awg_params"]
+      and lk[4].get("awg_exact") is True and lk[5].get("awg_exact") is True, lk[4])
+f = fleet(2); f["n00"]["mesh_awg"] = {"ContentPaddingAddition": "-"}   # a fresh pair: an existing link is never re-made
+t = run(P, f, d, {"n00": gen_snap(), "n01": gen_snap()})
+lk = links(t)[0]
+check("…and where they cannot: Amnezia's values, no awg_exact", lk[4]["awg_params"].get("ContentPaddingAddition") == P.AWG31_SET["ContentPaddingAddition"]
+      and "awg_exact" not in lk[4], lk[4])
+check("mesh_template_clean keeps the six (value and \"-\") beside the 2.0 fields, and is awg_template_clean without them",
+      P.mesh_template_clean({"Jc": "4", "S3": "-", "RekeyTimeout": " 4-8 ", "KeepaliveTimeout": "-", "HeaderProtectionKey": "x"})[0]
+      == {"Jc": "4", "S3": "-", "RekeyTimeout": "4-8", "KeepaliveTimeout": "-"}
+      and P.mesh_template_clean({"Jc": "4", "I1": "-"})[0] == P.awg_template_clean({"Jc": "4", "I1": "-"}))
+check("…and refuses timings that cross", P.mesh_template_clean({"RekeyAfterTime": "170-180"})[1] is not None)
+
 print()
 if FAILS:
     print("FAILED: %d — %s" % (len(FAILS), "; ".join(FAILS)))

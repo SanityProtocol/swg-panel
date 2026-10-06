@@ -434,6 +434,21 @@ try:
         code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"I2": "-", "Jc": "3", "Jmin": "30", "Jmax": "60"}})
         check("a node's mesh template stores \"-\"", (p.nodes()["nb"].get("mesh_awg") or {}).get("I2") == "-", p.nodes()["nb"].get("mesh_awg"))
         blob = json.dumps({n: {i: r.get("awg_params") for i, r in (v.get("ifaces") or {}).items()} for n, v in p.nodes().items()})
+        # the mesh templates' 3.1 six (plan §8 round 11): kept, checked, and a node's change re-provisions its links
+        code, r = p.req("/api/panel/settings", {"mesh_awg": {"Jc": "4", "Jmin": "40", "Jmax": "70", "RekeyTimeout": "4-8", "ContentPaddingAddition": "-"}})
+        ps = json.load(open(p.settings_path))
+        check("the panel's mesh template keeps its 3.1 fields, \"-\" included", code == 200
+              and ps.get("mesh_awg", {}).get("RekeyTimeout") == "4-8" and ps["mesh_awg"].get("ContentPaddingAddition") == "-", ps.get("mesh_awg"))
+        code, r = p.req("/api/panel/settings", {"mesh_awg": {"RekeyAfterTime": "170-180"}})
+        check("…and refuses 3.1 timings that cross", code == 400 and "RejectAfterTime" in r.get("error", ""), (code, r))
+        g0 = p.nodes()["nb"].get("mesh_gen") or 0
+        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"KeepaliveTimeout": "6-12"}})
+        check("a node's 3.1 field: stored, and its links re-provisioned", code == 200
+              and (p.nodes()["nb"].get("mesh_awg") or {}).get("KeepaliveTimeout") == "6-12" and (p.nodes()["nb"].get("mesh_gen") or 0) == g0 + 1,
+              (code, r, p.nodes()["nb"].get("mesh_awg"), p.nodes()["nb"].get("mesh_gen")))
+        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"KeepaliveTimeout": "6-12"}, "endpoint_host": "nb2.example"})
+        check("…the same template again: no re-provision", code == 200 and (p.nodes()["nb"].get("mesh_gen") or 0) == g0 + 1)
+        p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {}}); p.req("/api/panel/settings", {"mesh_awg": {}})
         check("no record holds \"-\"", '"-"' not in blob)
         check("no create request holds \"-\"", '"-"' not in json.dumps({n: v.get("create") for n, v in p.nodes().items()}))
     finally:

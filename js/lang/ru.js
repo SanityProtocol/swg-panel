@@ -6792,7 +6792,7 @@ export const STR = {
   "val|per link": "у каждого линка свой",
   "Each link gets a key of its own.": "Каждый линк получает собственный ключ.",
   "On for every AmneziaWG 3.1 link.": "Включено для каждого линка AmneziaWG 3.1.",
-  "What AmneziaWG 3.1 links add to the fields above — the 3.1 defaults in Settings → Interfaces, where they are changed.": "Что линки AmneziaWG 3.1 добавляют к полям выше — значения 3.1 по умолчанию из «Настройки → Интерфейсы», там они и меняются.",
+  "What AmneziaWG 3.1 links add to the fields above. A blank cell takes the value shown in it — the mesh default, or the 3.1 defaults in Settings → Interfaces; - for no such line.": "Что линки AmneziaWG 3.1 добавляют к полям выше. Пустая ячейка берёт значение, показанное в ней, — значение меша по умолчанию или значения 3.1 по умолчанию из «Настройки → Интерфейсы»; - — такой строки не будет.",
   "What new links are made as, unless a node below sets its own. Re-provision a node to move its existing links.": "Каким создаются новые линки, если нода ниже не задаёт свой тип. Чтобы перевести существующие линки ноды, пересоздайте их.",
   "No nodes yet — enroll a node to link it to the others.": "Нод пока нет — подключите ноду, чтобы связать её с остальными.",
   "Each link takes its type from one of its two nodes, the same one its AWG params come from; a link the other node decides is listed below. Changing it re-provisions this node's links on Save.": "Каждый линк берёт тип у одной из двух своих нод — той же, от которой берёт параметры AWG; линки, которые определяет другая нода, перечислены ниже. Изменение пересоздаёт линки этой ноды при сохранении.",

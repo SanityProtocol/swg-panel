@@ -12898,6 +12898,49 @@ def awg3_omitted(deps):
     return frozenset(k for k in _AWG3_RANGED if isinstance(a, dict) and str(a.get(k) if a.get(k) is not None else "").strip() == AWG_OMIT)
 
 
+def awg3_template_clean(raw):
+    """The six AmneziaWG 3.1 template fields of `raw` (ContentPaddingAddition and the timings) as a save stores them — (dict,
+    None) or (None, perr): values checked the way an interface's are (awg3_check, over Amnezia's set for whatever is blank, so
+    timings that cross are refused at the save, not by every 3.1 link or interface after it), "-" kept, a blank or "0" no value.
+    Used by the interface defaults' 3.1 six and by the mesh templates (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md §8, round 11)."""
+    a = {k: str(raw[k]).strip() for k in _AWG3_RANGED if isinstance(raw, dict) and raw.get(k) is not None and str(raw[k]).strip()}
+    om = [k for k in a if a[k] == AWG_OMIT]
+    ac, err = awg3_check({**{k: v for k, v in AWG31_SET.items() if k not in om}, **{k: v for k, v in a.items() if k not in om}})
+    if err:
+        return None, err
+    return {k: (AWG_OMIT if k in om else ac[k]) for k in a if k in om or k in ac}, None
+
+
+def mesh_template_clean(raw):
+    """A mesh AWG template as a save stores it — (dict, None) or (None, perr): the 2.0 fields (awg_template_clean) and the six
+    AmneziaWG 3.1 fields an AmneziaWG 3.1 link takes (awg3_template_clean). With no 3.1 field it is awg_template_clean's dict."""
+    d3, err = awg3_template_clean(raw)
+    if err:
+        return None, err
+    return {**awg_template_clean(raw), **d3}, None
+
+
+def mesh_awg3(deps, node):
+    """(values, omitted) — the six AmneziaWG 3.1 fields an AmneziaWG 3.1 link anchored on `node` takes, FIELD BY FIELD: the node's
+    mesh template, else the panel's, else the interface 3.1 defaults (Settings → Interfaces), else Amnezia's set (awg3_full
+    fills that). The first layer that names a field decides it — a value, or "-" for no such line."""
+    vals, om = {}, set()
+    layers = [(node or {}).get("mesh_awg"), (deps.get("panel_settings") or {}).get("mesh_awg")]
+    d3, o3 = awg3_defaults(deps), awg3_omitted(deps)
+    for k in _AWG3_RANGED:
+        for raw in layers:
+            v = str(raw.get(k) if isinstance(raw, dict) and raw.get(k) is not None else "").strip()
+            if v:
+                (om.add(k) if v == AWG_OMIT else vals.__setitem__(k, v))
+                break
+        else:
+            if k in d3:
+                vals[k] = d3[k]
+            elif k in o3:
+                om.add(k)
+    return vals, frozenset(om)
+
+
 def awg3_full(base, reported=None, defaults=None, omit=()):
     """The FULL 3.1 dict for a switch or a 3.1 create (§7.1): what the interface has — the record over the node's report,
     over a fresh generator set for whatever neither holds (a create, or a switch while the node is away) — plus the 3.1
@@ -13241,7 +13284,7 @@ def mesh_gen_reasons(deps, nodes, snaps, nid):
         elif have != "wg":
             # …and a link that holds a field its template sets to none (A4): an end could not hold the omission when it was
             # made — or it was made before the template said so
-            _om = mesh_template(deps, nodes[x])[1]
+            _om = mesh_template(deps, nodes[x])[1] | (mesh_awg3(deps, nodes[x])[1] if have == "3.1" else frozenset())
             _p = ((me.get("ifaces") or {}).get(lr.get("iface")) or {}).get("awg_params") or {}
             _kept = [k for k in AWG_FIELDS if k in _om and k in _p]
             if _kept:
@@ -13533,17 +13576,20 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
     # template's values, without the omitted keys — WHOLE, `awg_exact` on both ends — where both ends can hold an omission.
     # Otherwise the omitted keys keep the generator's values for this link (a mesh link never refuses), and the node card
     # says so (mesh_gen_reasons). With no "-" in the template, today's line above is the whole story.
-    _tv, _tom = mesh_template(deps, nodes[x_nid])
-    _exact = bool(_tom) and all(awg_exact_reported((snaps or {}).get(x)) for x in (a, b))
-    if _tom:
-        awg = {k: str(v) for k, v in {**gen_awg_params(), **_tv}.items() if not (_exact and k in _tom)}
     # …and its TYPE, the X end's choice like its obfuscation (mesh_gen_of). Plain WireGuard is a real `wg` device with no
     # params — never an AmneziaWG one without them, which the agent would obfuscate on its own. AmneziaWG 3.1 only where
     # both ends can run it and the MTU leaves header protection its S4 ≥ 12; otherwise this link is made at 2.0, and the
     # node's mesh card says why (mesh_gen_reasons) — the operator decided a mixed pair falls back rather than refuses.
+    # A 3.1 link's six 3.1 fields come field by field from the mesh templates, then the interface 3.1 defaults (mesh_awg3).
     gen = mesh_gen_of(deps, nodes[x_nid])
-    if gen == "3.1" and mesh_31_refusal(deps, nodes, snaps, a, b, mc["mtu"]) is None:
-        awg = awg3_full(awg, None, awg3_defaults(deps), omit=_tom if _exact else ())
+    _is31 = gen == "3.1" and mesh_31_refusal(deps, nodes, snaps, a, b, mc["mtu"]) is None
+    _tv, _tom = mesh_template(deps, nodes[x_nid])
+    _v3, _om3 = mesh_awg3(deps, nodes[x_nid]) if _is31 else ({}, frozenset())
+    _exact = bool(_tom or _om3) and all(awg_exact_reported((snaps or {}).get(x)) for x in (a, b))
+    if _tom:
+        awg = {k: str(v) for k, v in {**gen_awg_params(), **_tv}.items() if not (_exact and k in _tom)}
+    if _is31:
+        awg = awg3_full(awg, None, _v3, omit=(_tom | _om3) if _exact else ())
         _s4 = str(awg.get("S4") or "")
         if not mesh_s4_fits(_s4, mc["mtu"]) or not _s4.isdigit() or int(_s4) < 12:
             awg["S4"] = str(mesh_s4_draw(mc["mtu"], 12))
@@ -22966,15 +23012,11 @@ def api(method, path, qs, body, deps):
             # not carry the key (an older tab) keeps the stored one; an empty set is stored as nothing.
             _a3 = idf.get("awg3_params")
             if isinstance(_a3, dict):
-                _a3 = {k: str(_a3[k]).strip() for k in _AWG3_RANGED if _a3.get(k) is not None and str(_a3[k]).strip()}
                 # "-" = a 3.1 interface made from these gets no such line: kept as written, checked as absent (a timing
                 # left out counts at WireGuard's default in the crossing check, as on an interface)
-                _om3 = [k for k in _a3 if _a3[k] == AWG_OMIT]
-                _a3c, _e3 = awg3_check({**{k: v for k, v in AWG31_SET.items() if k not in _om3},
-                                        **{k: v for k, v in _a3.items() if k not in _om3}})
+                _a3, _e3 = awg3_template_clean(_a3)
                 if _e3:
                     return 400, {"ok": False, **_e3, "code": "bad_request"}
-                _a3 = {k: (AWG_OMIT if k in _om3 else _a3c[k]) for k in _a3 if k in _om3 or k in _a3c}
             else:
                 _a3 = (cur.get("interface_defaults") or {}).get("awg3_params")
             _bad = awg_template_refusal(idf.get("awg_params"), perr("the interface defaults"))
@@ -23002,7 +23044,10 @@ def api(method, path, qs, body, deps):
             _bad = awg_template_refusal(incoming.get("mesh_awg"), perr("the mesh AWG params"))
             if _bad:
                 return 400, {"ok": False, **_bad, "code": "bad_request"}
-            cur["mesh_awg"] = awg_template_clean(incoming.get("mesh_awg"))
+            _mt, _e3 = mesh_template_clean(incoming.get("mesh_awg"))   # …and the six 3.1 fields an AmneziaWG 3.1 link takes
+            if _e3:
+                return 400, {"ok": False, **_e3, "code": "bad_request"}
+            cur["mesh_awg"] = _mt
         mir = incoming.get("mirrors")
         if isinstance(mir, dict):
             cur["mirrors"] = {"geo": (mir.get("geo") or "").strip(), "turn": (mir.get("turn") or "").strip()}
@@ -26667,12 +26712,15 @@ def api(method, path, qs, body, deps):
             nodes[nid]["mesh_subnet"] = ms
         if "mesh_prefix" in body:
             nodes[nid]["mesh_prefix"] = re.sub(r"[^a-z0-9_]", "", (body.get("mesh_prefix") or "").lower())[:6]
-        _awg_before = awg_template_clean(nodes[nid].get("mesh_awg"))
+        _awg_before = mesh_template_clean(nodes[nid].get("mesh_awg"))[0]
         if "mesh_awg" in body:                  # per-node mesh obfuscation; links this node anchors adopt it (both ends match)
             _bad = awg_template_refusal(body.get("mesh_awg"), nodes[nid].get("name") or nid)
             if _bad:
                 return 400, {"ok": False, **_bad, "code": "bad_request"}
-            nodes[nid]["mesh_awg"] = awg_template_clean(body.get("mesh_awg"))
+            _mt, _e3 = mesh_template_clean(body.get("mesh_awg"))     # …and the six 3.1 fields an AmneziaWG 3.1 link takes
+            if _e3:
+                return 400, {"ok": False, **_e3, "code": "bad_request"}
+            nodes[nid]["mesh_awg"] = _mt
         _gen_before = nodes[nid].get("mesh_awg_gen") or ""
         if "mesh_awg_gen" in body:              # per-node mesh link type ("" = the panel's) — re-provisions like mesh_awg
             _mg = str(body.get("mesh_awg_gen") or "")
@@ -26684,13 +26732,13 @@ def api(method, path, qs, body, deps):
                 nodes[nid].pop("mesh_awg_gen", None)
         # R4 for this node's links: its type over its template — judged when either CHANGES, so a node the panel-wide door
         # let through (it checks every inheriting node) never has an unrelated save refused
-        if awg_template_clean(nodes[nid].get("mesh_awg")) != _awg_before or (nodes[nid].get("mesh_awg_gen") or "") != _gen_before:
+        if mesh_template_clean(nodes[nid].get("mesh_awg"))[0] != _awg_before or (nodes[nid].get("mesh_awg_gen") or "") != _gen_before:
             _bad = mesh_omit_s_refusal(mesh_gen_of(deps, nodes[nid]), mesh_template(deps, nodes[nid])[1],
                                        nodes[nid].get("name") or nid)
             if _bad:
                 return 400, {"ok": False, **_bad, "code": "bad_request"}
         _mesh_after = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")
-        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2] or awg_template_clean(nodes[nid].get("mesh_awg")) != _awg_before \
+        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2] or mesh_template_clean(nodes[nid].get("mesh_awg"))[0] != _awg_before \
                 or (nodes[nid].get("mesh_awg_gen") or "") != _gen_before:
             # subnet / PREFIX / AWG changed → the link is re-addressed / renamed / re-obfuscated: must re-provision (rebuild)
             mesh_reprovision_node(nodes, nid)
