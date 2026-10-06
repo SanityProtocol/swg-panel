@@ -162,8 +162,8 @@ for sid, e in P.TURN_SERVERS.items():
     if e.get("kind") in ("wdtt", "csqtt"):
         check("%s has client_dns" % sid, bool(N._turn_dns({"dns": e.get("client_dns")})), e.get("client_dns"))
 psrc = open(PANEL, encoding="utf-8").read()
-check("wdtt_cfg publishes dns + dns_orig", '"raw_port", "raw_iface", "raw_addr", "exit_id", "reach", "dns", "dns_orig") if k in ov}' in psrc)
-check("csqtt_cfg publishes dns + dns_orig", '"title", "params", "exit_id", "reach", "dns", "dns_orig") if k in ov}' in psrc)
+check("wdtt_cfg publishes dns + dns_orig", '"raw_port", "raw_iface", "raw_addr", "exit_id", "reach", "dns", "dns_orig"' in psrc)
+check("csqtt_cfg publishes dns + dns_orig", '"title", "params", "exit_id", "reach", "dns", "dns_orig"' in psrc)
 
 # ── 9 ─────────────────────────────────────────────────────────────────────────────────────────────────────
 print("9  panel / node / SPA agree")

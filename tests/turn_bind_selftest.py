@@ -20,9 +20,11 @@ panel gave stays what clients dial — in the node's record, and for a vk-turn-p
   [5] docker vk-turn-proxy (host networking): the container is run on the bind, the record keeps the host
   [6] a WDTT/csqtt server whose env an older build wrote with an unbindable host is rewritten once per run (the update
       brings it up) and by an operator's Restart — never a working server, never from a partial record
+  [7] Listen on (`bind_ip`): a pin the box carries is bound whatever the host; one it does not carry is ignored; it is
+      kept in the vk-turn-proxy env, read back, a parameter change for WDTT/csqtt, and binds the RAW listener too
 
 Run: python3 tests/turn_bind_selftest.py         (0 = pass)
-     --perturb   turn_bind hands the host on unchanged again — expects RED in [1]–[6].
+     --perturb   turn_bind hands the host on unchanged again — expects RED in [1]–[7].
 """
 import os, socket, sys, types
 
@@ -143,6 +145,30 @@ check("…and leaves one that is already right byte-identical", open(envp).read(
 open(envp, "w").write("SWG_LISTEN=%s:56000\n" % DDNS)
 N.rebind_env(envp, dict(W, password=""), N._wdtt_env_text)
 check("…never from a partial record (no password)", N._env_listen(envp) == DDNS + ":56000", open(envp).read())
+
+print("\n[7] Listen on (bind_ip): the one address of the box to bind, whatever the host")
+check("a pin the box carries wins over the host", N.turn_bind(DDNS + ":56000", pin="10.66.66.1") == "10.66.66.1:56000",
+      N.turn_bind(DDNS + ":56000", pin="10.66.66.1"))
+check("…even over a host that is on the box", N.turn_bind("192.168.88.10:56000", pin="10.66.66.1") == "10.66.66.1:56000",
+      N.turn_bind("192.168.88.10:56000", pin="10.66.66.1"))
+check("a pin the box no longer carries is ignored → the rule decides", N.turn_bind(DDNS + ":56000", pin="10.9.9.9") == "0.0.0.0:56000",
+      N.turn_bind(DDNS + ":56000", pin="10.9.9.9"))
+t = N._turn_env_text(DDNS + ":56000", "127.0.0.1:51820", "", "10.66.66.1")
+check("vk-turn-proxy env keeps the pin (SWG_PIN) for a Restart/rotation to re-render from",
+      "SWG_LISTEN=10.66.66.1:56000\n" in t and "SWG_DIAL=%s:56000\n" % DDNS in t and "SWG_PIN=10.66.66.1\n" in t, t)
+check("…and only an address goes into it", "SWG_PIN" not in N._turn_env_text(DDNS + ":56000", "c:1", "", "x\nSWG_X=1"))
+N.host_sh = lambda cmd, **k: types.SimpleNamespace(returncode=0, stdout=t, stderr="")
+rb = N._tp_from_unit("vk-turn-proxy-samosvalishe-56000", UNIT)
+check("read-back reports it as bind_ip", rb.get("bind_ip") == "10.66.66.1" and rb.get("listen") == DDNS + ":56000", rb)
+we = N._wdtt_env_text(dict(W, bind_ip="10.66.66.1"))
+check("WDTT env binds the pin", "SWG_LISTEN=10.66.66.1:56000\n" in we, we.splitlines()[:4])
+check("a changed pin is a parameter change (rewrite + restart)", N._wdtt_params_changed(dict(W), dict(W, bind_ip="10.66.66.1")) is True)
+check("csqtt too", N._csqtt_params_changed(dict(C), dict(C, bind_ip="10.66.66.1")) is True)
+check("the WDTT RAW listener binds the pin", (N._wdtt_raw(dict(R, bind_ip="10.66.66.1")) or ("",))[0] == "10.66.66.1:56003",
+      N._wdtt_raw(dict(R, bind_ip="10.66.66.1")))
+tp2 = {"service": "vk-turn-proxy-samosvalishe-56000", "listen": DDNS + ":56000", "connect": "127.0.0.1:51820", "params": "", "bind_ip": "10.66.66.1"}
+a = N._dturn_args(tp2)
+check("docker: the container is run on the pin", a[a.index("-listen") + 1] == "10.66.66.1:56000", a)
 
 socket.getaddrinfo = _real_gai
 print("")
