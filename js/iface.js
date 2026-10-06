@@ -986,8 +986,16 @@ export function awgOmitIssue(d, template) {
 // W1 (A2): RandomTrailers on without ContentPaddingAddition is allowed, and pads every small packet about five times over.
 export const awgW1 = (d, rtOn) => rtOn && awgIsNone((d || {}).ContentPaddingAddition)
   ? T("ContentPaddingAddition is none while RandomTrailers is on — every small packet is padded about five times over.") : "";
-export function Awg3Grid({ value, onKey, hpk, rt, hpkTip, rtTip, hint, placeholders }) {
+export function Awg3Grid({ value, onKey, hpk, rt, hpkTip, rtTip, hint, placeholders, readOnly }) {
   const v = value || {};
+  // read-only (Settings → Mesh: what an AmneziaWG 3.1 link is given, set in Settings → Interfaces): every cell in the fixed-value
+  // style, a field set to none reading none
+  if (readOnly) return html`<div class="awg3-cap">${T("AmneziaWG 3.1")}</div>${hint ? html`<p class="hint awg3-hint">${hint}</p>` : null}<div class="awg-cols awg3-cols">
+    <div class="awg-col"><label class="awg-f"><span>HeaderProtectionKey</span><input class="awg-ro" readonly value=${hpk} title=${hpkTip}/></label>
+      <label class="awg-f"><span>RandomTrailers</span><input class="awg-ro" readonly value=${rt} title=${rtTip}/></label></div>
+    ${AWG3_EDIT_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input readonly
+      class=${awgIsNone(v[k]) ? "awg-ro awg-none" : "awg-ro"} value=${awgIsNone(v[k]) ? T("val|none") : (v[k] == null ? "" : v[k])}/></label>`)}</div>`)}
+  </div>`;
   return html`<div class="awg3-cap">${T("AmneziaWG 3.1")}</div>${hint ? html`<p class="hint awg3-hint">${hint}</p>` : null}<div class="awg-cols awg3-cols">
     <div class="awg-col"><label class="awg-f"><span>HeaderProtectionKey</span><input class="awg-ro" readonly value=${hpk} title=${hpkTip}/></label>
       <label class="awg-f"><span>RandomTrailers</span><input class="awg-ro" readonly value=${rt} title=${rtTip}/></label></div>

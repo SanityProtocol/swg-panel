@@ -1477,6 +1477,8 @@ button.nstat.asbtn:hover{text-decoration:underline}
 /* status pills — ONE shape/size/font for all; only colour differs (busy=cyan, ok=green, warn=yellow, del=red, off=grey) */
 .tg-busy,.tg-ok,.tg-warn,.tg-del,.tg-off,.tg-pending,.tg-convert,.tg-ready{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:1px 8px;font-family:var(--mono);font-size:9.5px;font-weight:700;line-height:1.45;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;border:1px solid transparent}
 .tg-busy{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 32%,transparent)}   /* active work: installing / creating — YELLOW */
+.tg-proto{display:inline-flex;align-items:center;border-radius:99px;padding:1px 7px;font-family:var(--mono);font-size:9.5px;
+  font-weight:700;line-height:1.45;letter-spacing:.04em;white-space:nowrap;background:color-mix(in srgb,var(--c) 15%,transparent);color:var(--c)}   /* a mesh link's type, in its protocol's colour */
 .tg-pending{background:rgba(240,145,60,.13);color:#F0913C;border-color:color-mix(in srgb,#F0913C 30%,transparent)}   /* queued / awaiting the node — ORANGE */
 .tg-convert{background:color-mix(in srgb,var(--pending) 16%,transparent);color:var(--pending);border-color:color-mix(in srgb,var(--pending) 32%,transparent)}   /* converting bare↔docker — PURPLE */
 .tg-ready{background:color-mix(in srgb,var(--ready) 13%,transparent);color:var(--ready);border-color:color-mix(in srgb,var(--ready) 30%,transparent)}   /* just came up — BLUE (5s flash, then no tag) */

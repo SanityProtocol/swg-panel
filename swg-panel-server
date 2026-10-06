@@ -22373,8 +22373,11 @@ def api(method, path, qs, body, deps):
             # reported ifaces), so a card stays put through a re-provision (old iface deleted, new created) and
             # shows "re-provisioning" until the new iface is reported, instead of vanishing or leaking a swg_ card.
             _crt = c.get("create") or {}; _del = c.get("delete") or {}
+            # …and each link's type (mesh_link_gen), only when it is not AmneziaWG 2.0 — absent is 2.0, so a fleet that never
+            # picks a mesh type is published exactly as before
             _mesh_peers = [{"peer": pr, "iface": (lk or {}).get("iface") or "",
-                            "reprovisioning": bool((lk or {}).get("iface") in _crt)}
+                            "reprovisioning": bool((lk or {}).get("iface") in _crt),
+                            **(lambda g: {"type": g} if g != "2.0" else {})(mesh_link_gen(c, lk))}
                            for pr, lk in (c.get("links") or {}).items()]
             # system (mesh-link) ifaces must never appear as a selectable egress NIC / IP — filter them out of
             # the egress-picker inputs by the node's link iface names + the reserved prefix (covers un-updated

@@ -1783,6 +1783,10 @@ export function applyForkColors() {
 // Every operator-tunable colour carries a value PER light/dark mode ({dark,light}); the active mode's value is
 // resolved by pickThemed(). Nothing is hardcoded at the render sites — the wg/awg CSS classes and the --brand
 // property are injected by applyThemeColors() after every poll, exactly like applyForkColors() does for the tags.
+// A mesh link's type ("wg" | "2.0" | "3.1", absent = 2.0) as the operator reads it, and in its protocol's own (tunable)
+// colour — Settings → Mesh and the node page's connection cards say it the same way.
+export const meshGenLabel = g => ({ wg: "WG", "2.0": "AWG 2.0", "3.1": "AWG 3.1" })[g || "2.0"] || g;   // i18n-keys: protocol names, the same in every language
+export const meshGenColor = g => ifaceColor(g === "wg" ? "wg" : g === "3.1" ? "awg3" : "awg");
 export function ifaceColor(type) {
   const t = (type || "").toLowerCase();
   const ov = (Store.panelSettings && Store.panelSettings.iface_colors) || {};

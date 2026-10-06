@@ -22,7 +22,7 @@ import {
   opTag, procTag, procErr, inProc, procFailed, procSuccess, procAborted, isUpdateState, procInClass,
   dismissNodeProc, dismissHostProc, statusLabel, LogBody, logRaw, useReorder, GRIP_SVG,
   orderById, rowSingle, rowDouble, rowNoSelect, RowError, goSettings, ifaceReady, ifaceWasBusy, ifaceFlash, adoptSeen,
-  trackIfaceOps, StoreOffBanner, ifaceColor, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
+  trackIfaceOps, StoreOffBanner, ifaceColor, meshGenColor, meshGenLabel, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
   rate, awgSwitchTag,
 } from "./ui.js";
 import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.js";
@@ -395,6 +395,7 @@ export function NodeDetail({ node: rawName }) {
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("col|Endpoint")}</span><span class="r addr">${(m && m.peer_endpoint) || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Tunnel")}</span><span class="r addr">${(m && m.subnet) || "—"}</span></div>
+            <div class="ifrow"><span class="l">${T("Type")}</span><span class="r"><span class="tg-proto" style=${"--c:" + meshGenColor(mp.type)}>${meshGenLabel(mp.type)}</span></span></div>
             ${(() => {
               // Leg quality, same measurement the mesh bubble shows, on the card that names the link. Latency
               // always (it is the link's defining fact); loss only when it is enough to matter — a "0.0%" row

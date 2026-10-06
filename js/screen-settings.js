@@ -30,7 +30,7 @@ import {
 } from "./turn-catalog.js";
 import {
   ConfirmSheet, Disclosure, Dropdown, ExitDevicePick, ExitEgressPick, Ic, NodeIpPick, Popover, Sheet, Switch, ThemedSwatch, autoGrow, closeModal, copy, footRow,
-  goSettings, ifaceColor, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
+  goSettings, meshGenColor, meshGenLabel, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
   useHostOnNode,
   exitRefusalText,
   ListPager, LIST_PAGE, pageSlice,
@@ -394,8 +394,6 @@ function meshModeLabel(v, max) {
 
 /** The type mesh links are made as (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md B1): AmneziaWG 2.0, 3.1 or plain WireGuard. `inherit`
  *  (the node card) adds the panel's choice as a fourth button, "" in the draft. The server decides what a link can really be. */
-const meshGenLabel = g => ({ wg: "WG", "2.0": "AWG 2.0", "3.1": "AWG 3.1" }[g] || g);   // i18n-keys: protocol names, the same in every language
-const meshGenColor = g => ifaceColor(g === "wg" ? "wg" : g === "3.1" ? "awg3" : "awg");   // the protocol's own (tunable) colour
 function MeshGenField({ value, onChange, inherit, hint, label, after }) {
   const opts = [...(inherit ? [["", T("Default ({v1})", { v1: meshGenLabel(inherit) })]] : []), ...["wg", "2.0", "3.1"].map(g => [g, meshGenLabel(g)])];
   const eff = value || inherit || "2.0";
@@ -3385,6 +3383,10 @@ const sectionLabel = k => ({
             : T("Every pair in this fleet is linked now.")}</p>` : html`<div style="height:8px"></div>`}
           <${MeshGenField} label=${T("Default mesh link type")} value=${meshGen} onChange=${setMeshGen}
             hint=${T("What new links are made as, unless a node below sets its own. Re-provision a node to move its existing links.")}/>
+          ${/* the fleet's default obfuscation for AmneziaWG links — shown whatever the default type, since a node can override
+                to AmneziaWG; the 3.1 readout only while the default is 3.1 */""}
+          <${MeshAwgParams} title=${T("Default mesh AWG params")} eff=${meshGen === "3.1" ? "3.1" : "2.0"} value=${awg} onChange=${setAwg}
+            placeholders=${awgBlankHints()} about=${T("Obfuscation for new AmneziaWG mesh links, unless a node sets its own. Blank = auto (a fresh set per link).")}/>
         </div>
         ${(Store.nodes || []).length ? html`<div class="setnodes" style="margin:16px 0 10px">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         <div class="card">${nodeRec ? html`<${Fragment}>
@@ -4395,6 +4397,28 @@ export function NodeIngressForm({ node, vals, set }) {
 }
 
 // Per-node mesh overrides, edited in Panel settings → System mesh (keyed by node, so it re-inits on badge switch)
+/* The mesh AWG params, in box 1 (the fleet's default) and box 2 (a node's own): a toggle row; the 2.0 grid with `about` under it;
+   for an AmneziaWG 3.1 type, the 3.1 fields its links take — read-only, since they are Settings → Interfaces' 3.1 defaults (a
+   second 3.1 template for mesh was decided against, plan §3 B1); for WG the same row, saying there is nothing to set. */
+function MeshAwgParams({ title, eff, value, onChange, placeholders, about }) {
+  const v = value || {};
+  if (eff === "wg") return html`<div class="field" style="margin-top:6px"><div class="advtoggle" style="cursor:default"><span class="advcaret" style="visibility:hidden">▸</span> ${title}
+      <span class="faint" style="font-weight:400">${T("(none — WG)")}</span></div>
+    <div class="hint">${T("Plain WireGuard links carry no obfuscation, so there is nothing to set here.")}</div></div>`;
+  const isSet = AWG_KEYS.some(k => String(v[k] ?? "").trim() !== "");
+  const ps = Store.panelSettings || {};
+  const a31 = { ...(ps.awg31_builtin || {}), ...((ps.interface_defaults || {}).awg3_params || {}) };
+  return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> ${title}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
+    <div class="field" style="display:none;margin-top:8px">
+      <${AwgGrid} value=${v} onChange=${onChange} placeholders=${placeholders}
+        omit=${T("Type - in a cell for no such line on the links made from these; a blank cell stays automatic.")}/>
+      <div class="hint" style="margin:8px 0 0">${about}</div>
+      ${eff === "3.1" ? html`<div style="margin-top:14px"><${Awg3Grid} readOnly=${true} value=${a31} hpk=${T("val|per link")} rt=${T("val|on")}
+        hpkTip=${T("Each link gets a key of its own.")} rtTip=${T("On for every AmneziaWG 3.1 link.")}
+        hint=${T("What AmneziaWG 3.1 links add to the fields above — the 3.1 defaults in Settings → Interfaces, where they are changed.")}/></div>` : null}
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => onChange(genAwg())}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => onChange({})}>${T("Clear (auto)")}</button>` : null}</div>
+    </div></div>`;
+}
 /* A blank cell of a node's mesh AWG grid, as background text: what its links are made with — the panel's mesh template where
    it sets the field (none where it sets "-"), else what the node's links actually carry (`mesh_awg`, published from one of
    its link records), else nothing: auto, a fresh value per link. */
@@ -4423,18 +4447,9 @@ export function NodeMeshForm({ node, vals, set, gen }) {
     <div class="row2"><div class="field"><label>${T("Mesh subnet")}</label><input value=${v.mesh_subnet || ""} onInput=${e => set({ mesh_subnet: e.target.value })} placeholder=${dSub}/></div>
       <div class="field"><label>${T("Mesh port")}</label><input value=${v.mesh_port || ""} onInput=${e => set({ mesh_port: e.target.value })} placeholder=${dPort}/></div></div>
     <div class="field"><label>${T("Interface name prefix")}</label><input value=${v.mesh_prefix || ""} onInput=${e => set({ mesh_prefix: e.target.value })} placeholder=${dPfx}/></div>
-    ${eff === "wg" ? html`<div class="field"><label>${T("This node's mesh AWG params")}</label>
-      <div class="hint">${T("Its links are plain WireGuard, which carries no AmneziaWG parameters.")}</div></div>` : (() => {
-      const isSet = AWG_KEYS.some(k => String((v.mesh_awg || {})[k] ?? "").trim() !== "");
-      return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> ${T("This node's mesh AWG params")}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
-        <div class="field" style="display:none;margin-top:8px">
-          <${AwgGrid} value=${v.mesh_awg || {}} onChange=${a => set({ mesh_awg: a })} placeholders=${meshAwgHints(node)}
-            omit=${T("Type - in a cell for no such line on the links made from these; a blank cell stays automatic.")}/>
-          <div class="hint" style="margin:8px 0 0">${Trich("Obfuscation for the mesh links that terminate on *{v1}* — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).", { v1: node.name })}</div>
-          ${eff === "3.1" ? html`<div class="hint" style="margin:6px 0 0">${T("Its links are AmneziaWG 3.1: they add the 3.1 fields from Settings → Interfaces and a header-protection key of their own to these.")}</div>` : null}
-          <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: genAwg() })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: {} })}>${T("Clear (auto)")}</button>` : null}</div>
-        </div></div>`;
-    })()}
+    <${MeshAwgParams} title=${T("This node's mesh AWG params")} eff=${eff} value=${v.mesh_awg || {}} onChange=${a => set({ mesh_awg: a })}
+      placeholders=${meshAwgHints(node)}
+      about=${Trich("Obfuscation for the mesh links that terminate on *{v1}* — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).", { v1: node.name })}/>
     ${/* The rebuild these settings trigger, available on its own. Until now it fired only as a SIDE EFFECT of
           changing the subnet / prefix / AWG, gated on the value differing — so a node whose links are stuck
           with settings that are already right had no way to ask for it, short of changing the subnet and
