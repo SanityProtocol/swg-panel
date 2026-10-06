@@ -4541,7 +4541,6 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 /* Settings → Logs, the disk budget table (js/screen-settings.js LogBudgetTable): a row per server — name, its MB, used (with a
    thin meter against the budget), how far back it reaches once full, and the state the server itself reported. On a phone a
    row wraps into two lines: the name and its state, then the numbers. */
-.logbudget{margin-top:14px}
 .lb-table{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);margin-top:12px;overflow:hidden}
 .lb-row{display:grid;grid-template-columns:minmax(0,1fr) 112px 150px 64px 118px;align-items:center;gap:12px;min-height:44px;padding:0 12px;font-size:13px;color:var(--ink)}
 .lb-row+.lb-row{border-top:1px solid var(--line)}

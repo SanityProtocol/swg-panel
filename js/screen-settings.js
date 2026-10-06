@@ -3128,12 +3128,12 @@ const sectionLabel = k => ({
               ? T("Debug stays on until you pick another level.")
               : T("Then logging goes back to {v1}.", { v1: logLevelLabel(logBase) })}</div></div>` : null}
           <div class="hint" style="margin-top:12px">${T("Turn proxies, WireGuard interfaces and other third-party services pick up a change the next time they restart.")}</div>
+          <${LogBudgetTable} onMb=${(id, v) => id === "" ? setLogMbP(v) : setNV(id, { log_mb: v })}
+            rows=${[{ id: "", name: T("Panel"), mb: logMbP, saved: +(ps.log_mb_panel || 100), st: ps.log_panel || null,
+                      docker: !!(ps.log_panel || {}).docker, locked: (ps.log_panel || {}).err === "nixos" },
+                    ...[...(Store.nodes || [])].sort((a, b) => Store.byNode(a.id, b.id)).map(n => ({ id: n.id, name: n.name, mb: (nodeEdits[n.id] || nFields(n)).log_mb,
+                      saved: +(n.log_mb || 100), st: n.log || null, docker: n.kind === "docker", stale: nodeStale(n.id) }))]}/>
         </div>` : null}
-        ${section === "logs" ? html`<${LogBudgetTable} onMb=${(id, v) => id === "" ? setLogMbP(v) : setNV(id, { log_mb: v })}
-          rows=${[{ id: "", name: T("Panel"), mb: logMbP, saved: +(ps.log_mb_panel || 100), st: ps.log_panel || null,
-                    docker: !!(ps.log_panel || {}).docker, locked: (ps.log_panel || {}).err === "nixos" },
-                  ...[...(Store.nodes || [])].sort((a, b) => Store.byNode(a.id, b.id)).map(n => ({ id: n.id, name: n.name, mb: (nodeEdits[n.id] || nFields(n)).log_mb,
-                    saved: +(n.log_mb || 100), st: n.log || null, docker: n.kind === "docker", stale: nodeStale(n.id) }))]}/>` : null}
         ${section === "logs" ? html`<${LogViewer}/>` : null}
         ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
@@ -3516,8 +3516,8 @@ function LogBudgetTable({ rows, onMb }) {
   const shown = ql ? rows.filter(r => r.name.toLowerCase().includes(ql)) : rows;
   const pg = Math.min(page, Math.max(1, Math.ceil(shown.length / LIST_PAGE)));
   const anyDocker = rows.some(r => r.docker);
-  return html`<div class="card logbudget">
-    <div class="seclabel" style="margin-top:0">${T("Disk budget")}</div>
+  return html`<div class="logbudget">
+    <div class="seclabel">${T("Disk budget")}</div>
     <p class="hint" style="margin:0">${T("How much disk swg's logs may take on each server. When the budget is full, the oldest lines go first.")}</p>
     ${rows.length > LIST_PAGE ? html`<input class="reachev-filter" value=${q} data-enter="self" placeholder=${T("Filter by server…")}
       aria-label=${T("Filter by server…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
