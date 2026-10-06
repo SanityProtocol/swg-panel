@@ -1519,6 +1519,37 @@ def _turn_sha256_file(path):
     return h.hexdigest()
 
 _TURN_PRUNE_WARNED = set()                    # snapshot files already said to block the prune (once each per process)
+_TURN_PRUNING = set()                         # owners a background prune is running for (one at a time per owner)
+_TURN_PRUNING_LOCK = threading.Lock()
+_TURN_VER_CUT = 40                            # swg-noded reports a version cut to this many characters (_turn_version)
+
+
+def _turn_age(path):
+    """Seconds since `path` last changed, or None once it is gone (a temp file finishing, a dir pruned under us)."""
+    try:
+        return time.time() - os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _turn_files(path):
+    try:
+        return os.listdir(path)
+    except OSError:
+        return []
+
+
+def _turn_mirrored_at(path):
+    """When the newest finished server binary in a tag dir landed (its mtime — what turn_available_tags orders the
+    rollback menu by), or None: there is none in it (a download's temp file and an empty file are not one)."""
+    at = None
+    for f in _turn_files(path):
+        if f.startswith("server-linux-") and ".dl." not in f:
+            with contextlib.suppress(OSError):
+                st = os.stat(os.path.join(path, f))
+                if st.st_size > 0 and (at is None or st.st_mtime > at):
+                    at = st.st_mtime
+    return at
 
 
 def _turn_bins_needed():
@@ -1527,7 +1558,8 @@ def _turn_bins_needed():
       older than the newest TURN_BINS_KEEP, and a binary the fork deleted upstream would be gone for good;
     - what an operator HOLDS (turn-holds.json: fork:<turn fork> · fork:csqtt · wdtt:<fork>);
     - each of our forks' CURRENT build (what an install pins now).
-    An owner a node reports WITHOUT a version is "*" in its set: nothing of it is pruned but a dir with no binary."""
+    An owner a node reports WITHOUT a version is "*" in its set: nothing of it is pruned but a dir with no binary.
+    Snapshots and holds are written by others: a field of the wrong type is skipped, never fatal."""
     sd = (getattr(Handler, "deps", None) or {}).get("stats_dir")
     if not sd or not os.path.isdir(sd):
         return None
@@ -1536,12 +1568,18 @@ def _turn_bins_needed():
     def add(owner, tag):
         if owner:
             need.setdefault(owner, set()).add(_turn_safe(tag) if tag else "*")
+    def text(x):
+        return x if isinstance(x, str) else ""
+    def rows(snap, key):
+        v = snap.get(key)
+        return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
     for owner, fork in _WDTT_OWNER_FORK.items():
         add(owner, _wdtt_current_version(fork) or None)
     if CSQTT_BUILDS:
         add(CSQTT_MIRROR_OWNER, _csqtt_current_version())
     for k, v in (_turn_holds_load() or {}).items():
-        rest, tag = str(k).partition("|")[2], (v or {}).get("tag") or None
+        rest = str(k).partition("|")[2]
+        tag = (v.get("tag") if isinstance(v, dict) else v) or None
         if rest.startswith("wdtt:"):
             add(wdtt_owner.get(rest[5:]), tag)
         elif rest == "fork:csqtt":
@@ -1556,82 +1594,103 @@ def _turn_bins_needed():
         try:
             with open(os.path.join(sd, n)) as fh:
                 snap = json.load(fh)
+            if not isinstance(snap, dict):
+                raise ValueError("not a JSON object")
         except Exception as e:                # it might name a version: prune nothing — and say so once, or it never ends
             if n not in _TURN_PRUNE_WARNED:
                 _TURN_PRUNE_WARNED.add(n)
                 log(LOG_WARNING, "turn store: not pruned — %s cannot be read (%s)", os.path.join(sd, n), e)
             return None
-        for w in snap.get("wdtt") or []:
-            if isinstance(w, dict):
-                add(wdtt_owner.get(w.get("fork")), w.get("version"))
-        for c in snap.get("csqtt") or []:
-            if isinstance(c, dict):
-                add(CSQTT_MIRROR_OWNER, c.get("version"))
-        for t in snap.get("turn_proxies") or []:
-            if isinstance(t, dict):
-                add(t.get("owner") or turn_fork_owner(turn_fork(t.get("service") or "")), t.get("version"))
+        for w in rows(snap, "wdtt"):
+            add(wdtt_owner.get(text(w.get("fork"))), w.get("version"))
+        for c in rows(snap, "csqtt"):
+            add(CSQTT_MIRROR_OWNER, c.get("version"))
+        for t in rows(snap, "turn_proxies"):
+            add(text(t.get("owner")) or turn_fork_owner(turn_fork(text(t.get("service")))), t.get("version"))
     return need
 
 
 def _turn_bins_prune(owner, need=None):
     """Bound the store — the rollback cache, and for a turn proxy the rollback MENU (turn_available_tags) — without ever
-    removing a version something needs (_turn_bins_needed). Removed: a tag dir with no binary (a failed fetch, an hour
-    old, no download running); a build of OURS no longer advertised (WDTT_BUILDS / CSQTT_BUILDS — no picker offers it);
-    beyond the newest TURN_BINS_KEEP by mtime; in any dir, a download's temp file an hour old (a crash mid-fetch). Not
-    knowing what is needed prunes nothing. `need`: _turn_bins_needed(), computed here when not given."""
+    removing a version something needs (_turn_bins_needed) or the pseudo-tag a node with no version asks under (`wdtt` /
+    `csqtt`: the current build). Removed, an hour old: a dir with no binary (a failed fetch — a needed tag's too, there is
+    nothing in it to keep); a build of OURS no longer advertised (WDTT_BUILDS / CSQTT_BUILDS — no picker offers it; one
+    fetched within the hour is being served). Then, of the dirs holding a binary, the newest TURN_BINS_KEEP by when it
+    landed stay and an unneeded older one goes. A dir a download is writing into is left alone; a download's temp file an
+    hour old goes from any dir (a crash mid-fetch). Not knowing what is needed prunes nothing.
+    `need`: _turn_bins_needed(), computed here when not given."""
     if need is None:
         need = _turn_bins_needed()
     if need is None:
         return
-    keep = need.get(owner) or set()
-    d = os.path.join(TURN_BINS_DIR, _turn_safe(owner))
+    keep = set(need.get(owner) or ())
     if owner in _WDTT_OWNER_FORK:
         advertised = {_turn_safe(v) for v, _ in _wdtt_versions(_WDTT_OWNER_FORK[owner])}
+        keep.add("wdtt")
     elif owner == CSQTT_MIRROR_OWNER:
         advertised = {_turn_safe(v) for v, _ in CSQTT_BUILDS}
+        keep.add("csqtt")
     else:
         advertised = None                     # an upstream fork: what it publishes is not ours to judge
-    now = time.time()
-    with contextlib.suppress(OSError):
-        live = []
-        for t in sorted(os.listdir(d)):
-            p = os.path.join(d, t)
-            if not os.path.isdir(p):
-                continue
-            for f in os.listdir(p):           # a temp file an hour old is a fetch that died with its process (needed dirs too)
-                if ".dl." in f and now - os.path.getmtime(os.path.join(p, f)) > 3600:
-                    with contextlib.suppress(OSError):
-                        os.remove(os.path.join(p, f))
-            if t in keep:
-                continue
-            files = os.listdir(p)
-            if any(".dl." in f for f in files):
-                continue                      # a download is writing into it
-            if not any(f.startswith("server-linux-") and ".dl." not in f and os.path.getsize(os.path.join(p, f)) > 0
-                       for f in files):
-                if now - os.path.getmtime(p) > 3600:
-                    shutil.rmtree(p, ignore_errors=True)
-                    log(LOG_INFO, "turn store: removed %s/%s — no binary in it (a failed fetch)", owner, t)
-                continue
-            if "*" in keep:
-                continue                      # a node runs this fork at a version it did not report
-            if advertised is not None and t not in advertised:
+    cut = [k for k in keep if len(k) == _TURN_VER_CUT]   # a version swg-noded cut short: every tag it begins is needed
+    d = os.path.join(TURN_BINS_DIR, _turn_safe(owner))
+    landed, live = {}, set()                  # landed: dir -> when its binary landed (the ranking) · live: may go by count
+    for t in sorted(_turn_files(d)):
+        p = os.path.join(d, t)
+        if not os.path.isdir(p):
+            continue
+        for f in _turn_files(p):              # a temp file an hour old is a fetch that died with its process (needed dirs too)
+            if ".dl." in f and (_turn_age(os.path.join(p, f)) or 0) > 3600:
+                with contextlib.suppress(OSError):
+                    os.remove(os.path.join(p, f))
+        age, at = _turn_age(p), _turn_mirrored_at(p)
+        if age is None:
+            continue                          # gone under us
+        if at is not None:
+            landed[p] = at
+        if any(".dl." in f for f in _turn_files(p)):
+            continue                          # a download is writing into it
+        if at is None:
+            if age > 3600:
                 shutil.rmtree(p, ignore_errors=True)
+                log(LOG_INFO, "turn store: removed %s/%s — no binary in it (a failed fetch)", owner, t)
+            continue
+        if "*" in keep or t in keep or any(t.startswith(k) for k in cut):
+            continue                          # needed — or a node runs this fork at a version it did not report
+        if advertised is not None and t not in advertised:
+            if age > 3600:
+                shutil.rmtree(p, ignore_errors=True)
+                landed.pop(p, None)
                 log(LOG_INFO, "turn store: removed %s/%s — a build no longer offered, and nothing runs or holds it",
                     owner, t)
-                continue
-            live.append(p)
-        if "*" in keep:
+            continue
+        live.add(p)
+    if "*" in keep:
+        return
+    for p in sorted(landed, key=landed.get, reverse=True)[TURN_BINS_KEEP:]:   # newest first
+        if p in live:
+            shutil.rmtree(p, ignore_errors=True)
+            log(LOG_INFO, "turn store: removed %s/%s — older than the newest %d, and nothing runs or holds it",
+                owner, os.path.basename(p), TURN_BINS_KEEP)
+
+
+def _turn_bins_prune_soon(owner):
+    """After a fetch, prune `owner` on a thread of its own: the request that fetched — often a node waiting for the bytes —
+    never waits on the snapshot parse, and a prune cannot raise into it. One at a time per owner: a fetch that lands while
+    one runs is pruned by the next (its dir is the newest and an hour young — nothing removes it meanwhile)."""
+    with _TURN_PRUNING_LOCK:
+        if owner in _TURN_PRUNING:
             return
-        # the newest TURN_BINS_KEEP by mtime (= when we mirrored it) count every dir still here, the needed ones too; only
-        # an unneeded one past them goes
-        ranked = sorted([os.path.join(d, t) for t in os.listdir(d) if os.path.isdir(os.path.join(d, t))],
-                        key=os.path.getmtime, reverse=True)
-        for p in ranked[TURN_BINS_KEEP:]:
-            if p in live:
-                shutil.rmtree(p, ignore_errors=True)
-                log(LOG_INFO, "turn store: removed %s/%s — older than the newest %d, and nothing runs or holds it",
-                    owner, os.path.basename(p), TURN_BINS_KEEP)
+        _TURN_PRUNING.add(owner)
+    def _run():
+        try:
+            _turn_bins_prune(owner)
+        except Exception as e:
+            log(LOG_WARNING, "turn store: pruning %s stopped (%s) — what it had not reached stays", owner, e)
+        finally:
+            with _TURN_PRUNING_LOCK:
+                _TURN_PRUNING.discard(owner)
+    threading.Thread(target=_run, name="turn-store-prune", daemon=True).start()
 
 
 def _turn_bins_prune_all():
@@ -1644,18 +1703,25 @@ def _turn_bins_prune_all():
     with _TURN_SUMS_LOCK:
         owners |= {k.split("|")[0] for k in _TURN_SUMS}
     by_dir = {_turn_safe(o): o for o in owners if o and "/" in o}
-    with contextlib.suppress(OSError):
-        for dn in sorted(os.listdir(TURN_BINS_DIR)):
-            if dn in by_dir:
+    for dn in sorted(_turn_files(TURN_BINS_DIR)):
+        if dn in by_dir:
+            try:
                 _turn_bins_prune(by_dir[dn], need)
+            except Exception as e:
+                log(LOG_WARNING, "turn store: pruning %s stopped (%s) — what it had not reached stays", by_dir[dn], e)
 
-def turn_sum(owner, tag, arch):
+
+def turn_sum(owner, tag, arch, need_file=False):
     """sha256 of a fork's release binary at a PINNED tag — fetched once, the BYTES KEPT in the mirror store, the
     hash cached + persisted. "" if the panel can't fetch/hash it (only successes are cached, so a transient failure
     retries). The on-disk mirrored file is the SOURCE OF TRUTH: it is exactly what the node pulls (_node_turn_binary
     streams it), so whenever it's present we hash IT and refresh the cache to match. A cached sum could otherwise
     drift from the file (a racing re-fetch overwrote the bytes) — and a drifted pin makes the node reject the CORRECT
-    binary with a checksum mismatch, silently breaking rollback/update."""
+    binary with a checksum mismatch, silently breaking rollback/update.
+    `need_file`: the caller serves the bytes (_node_turn_binary). A binary the store pruned keeps its remembered hash —
+    enough to build a pin — so without this it was answered with the hash alone and served as a 404, forever: the
+    mirror never fetched it again. With it the binary is fetched again, and the file is the truth again, as above: a
+    release whose bytes changed since it was pinned is said, and the pin follows the file."""
     if not owner or "/" not in owner or not tag or arch not in TURN_ARCHES:
         return ""
     key = owner + "|" + tag + "|" + arch
@@ -1683,13 +1749,15 @@ def turn_sum(owner, tag, arch):
                         with contextlib.suppress(Exception):
                             atomic_write(TURN_SUMS_PATH, json.dumps(_TURN_SUMS) + "\n", mode=0o600)
                 return _fsha
-    with _TURN_SUMS_LOCK:                 # file pruned but the sum is remembered → still lets a pin build (node re-fetches, mirror re-hashes on serve)
-        if key in _TURN_SUMS:
-            return _TURN_SUMS[key]
+    with _TURN_SUMS_LOCK:                 # file pruned but the sum is remembered → still lets a pin build
+        cached = _TURN_SUMS.get(key)
+    if cached and not need_file:
+        return cached
     with _TURN_SUM_SEM:
         with _TURN_SUMS_LOCK:             # re-check: a peer may have filled it while we queued on the semaphore
-            if key in _TURN_SUMS:
-                return _TURN_SUMS[key]
+            cached = _TURN_SUMS.get(key)
+        if cached and not need_file:
+            return cached
         sha = ""
         if os.path.isfile(dest) and os.path.getsize(dest) > 0:   # a peer just mirrored it → hash from disk
             with contextlib.suppress(OSError):
@@ -1699,6 +1767,8 @@ def turn_sum(owner, tag, arch):
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
             except OSError:
                 return ""
+            with contextlib.suppress(OSError):   # a dir a failed fetch left an hour ago is "no binary, old" to the prune
+                os.utime(os.path.dirname(dest), None)   # until curl writes its temp file — make it fresh first
             tmp = dest + ".dl." + str(os.getpid())
             try:
                 r = subprocess.run(["curl", "-4", "-fsSL", "--connect-timeout", "15", "--max-time", "180",
@@ -1707,18 +1777,22 @@ def turn_sum(owner, tag, arch):
                 if r.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
                     sha = _turn_sha256_file(tmp)
                     os.replace(tmp, dest)   # KEEP the bytes — the mirror store (node pulls from here; rollback cache)
+                    if cached and sha != cached:   # fetched again (it was pruned) — and the release's bytes changed
+                        log(LOG_WARNING, "turn store: %s %s %s fetched again, and its sha256 is not the one it was pinned "
+                            "with — the pin follows the file (a node pinned to the old one is refused it until then)",
+                            owner, tag, arch)
             except Exception:
                 sha = ""
             finally:
                 with contextlib.suppress(OSError):
                     os.remove(tmp)
-        if sha:                           # cache successes only — a transient fetch failure must not pin "unverifiable" forever
+        if sha and sha != cached:         # cache successes only — a transient fetch failure must not pin "unverifiable" forever
             with _TURN_SUMS_LOCK:
                 _TURN_SUMS[key] = sha
                 with contextlib.suppress(Exception):
                     atomic_write(TURN_SUMS_PATH, json.dumps(_TURN_SUMS) + "\n", mode=0o600)
     if sha:
-        _turn_bins_prune(owner)           # outside the semaphore: reading every snapshot must not hold a download slot
+        _turn_bins_prune_soon(owner)      # in the background: never on this request, never holding a download slot
     return sha
 
 def _node_arch(deps, nid):
@@ -32576,7 +32650,7 @@ class Handler(BaseHTTPRequestHandler):
         arch = (q.get("arch") or [""])[0].strip()
         if not _OWNER_RE.match(owner) or not tag or "/" in tag or ".." in tag or arch not in TURN_ARCHES:
             return self._send(400, {"error": "bad owner/tag/arch"})
-        sha = turn_sum(owner, tag, arch)               # ensures it's mirrored (fetch-on-miss) + returns the hash
+        sha = turn_sum(owner, tag, arch, need_file=True)   # ensures it's mirrored (fetch-on-miss, a pruned one too) + its hash
         dest = _turn_store_path(owner, tag, arch)
         if not sha or not os.path.isfile(dest):
             return self._send(404, {"error": "binary unavailable"})
