@@ -7519,10 +7519,12 @@ def _log_ns_move():
     if not units:
         return
     _LOG_NS_MOVE["day"] = day                                 # once per window, whatever the outcome
-    r = run(["systemctl", "restart"] + units, timeout=120)
+    # --no-block: queued, not waited for. These units stop with the default 90 s timeout, and a server that ignores
+    # SIGTERM would hold the sync loop that long; one that does not come back is still unmoved in the next window.
+    r = run(["systemctl", "restart", "--no-block"] + units, timeout=30)
     if r.returncode == 0:
-        log(LOG_INFO, "log budget: restarted %s in the update window — started before their drop-in, they wrote the "
-            "main journal; now the %s one", " ".join(units), LOG_NS)
+        log(LOG_INFO, "log budget: restarting %s in the update window — started before their drop-in, they wrote the "
+            "main journal; from now on the %s one", " ".join(units), LOG_NS)
     else:
         log(LOG_WARNING, "log budget: restarting %s in the update window failed (%s) — tried again in the next window",
             " ".join(units), (r.stderr or r.stdout or "").strip()[:160])
@@ -13122,11 +13124,13 @@ WDTT_CFG_DIRS = ("/etc/wdtt", "/opt/wdtt", "/var/lib/wdtt", "/usr/local/etc/wdtt
 # at all (ildarmaga compiles wgIfaceName = "wdtt0", alongside a hardcoded 10.66.66.1/24 and :2860 admin surface),
 # which is also why only one upstream server can run per host.
 WDTT_DEFAULT_IFACE = "wdtt0"
-_WDTT_HOSTPROC = {"at": 0.0, "walked": 0.0, "rows": [], "ok": True}   # docker: cached HOST /proc walk.
+_WDTT_HOSTPROC = {"at": 0.0, "walked": 0.0, "rows": [], "ok": True, "cfg": None}   # docker: cached HOST /proc walk.
                                             # "ok" = the walk COMPLETED. An empty rows list means "nothing is
                                             # running" only when ok; otherwise it means "we could not look".
                                             # "at" is the CACHE clock a flush resets; "walked" is when a walk
                                             # last actually ran, which nothing resets — see _WDTT_HOST_FLOOR.
+                                            # "cfg": the WDTT_CFG_DIRS holding a wg-keys.dat, from the same walk
+                                            # (None until one completes; a failed walk keeps the last answer).
 _WDTT_CFGPROBE = {}                          # docker: cfgdir -> (ts, {...}) cached host-side file probe
 _WDTT_HOST_TTL = 120                         # each host probe is a privileged one-shot container — never per-5s.
                                             # This is DISCOVERY: it changes when a human installs or starts a
@@ -13389,13 +13393,23 @@ def _wdtt_host_procs():
         # which then had to be carried back over the hop and thrown away downstream.
         cmd = ("for p in /proc/[0-9]*; do c=$p/cmdline; [ -r \"$c\" ] || continue; "
                "case \"$(head -c 200 \"$c\" | tr '\\0' ' ')\" in *wdtt*|*csqtt*) "
-               "printf '%s ' \"${p#/proc/}\"; base64 -w0 < \"$c\"; echo ;; esac; done")
+               "printf '%s ' \"${p#/proc/}\"; base64 -w0 < \"$c\"; echo ;; esac; done; "
+               # …and, in the same container, which WDTT config dirs hold an identity: wdtt_dormant probed each
+               # of them with a helper of its own, four privileged containers per TTL on every docker node for
+               # directories that almost never exist (svo-im 10-05: 8 of 13 helpers in 4 min). `; :` keeps the
+               # status at 0 — a missing dir is an answer, not a failure.
+               "for d in " + " ".join(shlex.quote(d) for d in WDTT_CFG_DIRS)
+               + "; do [ -f \"$d/wg-keys.dat\" ] && echo \"CFG $d\"; done; :")
         _r = host_sh(cmd, timeout=30)
         # rc 124 is run()'s timeout. This hop DOES fail in the field — a box seen forking ~500 helpers per pass
         # under load logged nothing but `host_sh rc=124` — and an empty answer from a failed walk is
         # indistinguishable from a healthy "nothing there" unless we record which one it was.
         ok = (_r.returncode == 0)
+        cfg = set()
         for ln in (_r.stdout or "").splitlines():
+            if ln.startswith("CFG "):
+                cfg.add(ln[4:].strip())
+                continue
             pid, _, b64 = ln.strip().partition(" ")
             if not pid.isdigit() or not b64:
                 continue
@@ -13410,6 +13424,8 @@ def _wdtt_host_procs():
     _WDTT_HOSTPROC["walked"] = time.time()
     _WDTT_HOSTPROC["rows"] = rows
     _WDTT_HOSTPROC["ok"] = ok
+    if ok:
+        _WDTT_HOSTPROC["cfg"] = cfg
     # One line per walk, and a walk is now a rare event. It says how often this actually runs and whether the
     # answer can be trusted — the two things that took a live box and a packet of measurements to establish.
     log(LOG_DEBUG if ok else LOG_WARNING, "host-walk: %d server proc(s), %.1fs, %s", len(rows),
@@ -13741,7 +13757,11 @@ def wdtt_dormant():
     Report-only — nothing is started, moved or touched."""
     live = _wdtt_live_cfgdirs()
     out = []
-    for d in WDTT_CFG_DIRS:
+    dirs = WDTT_CFG_DIRS
+    if NODE_KIND == "docker":                  # the host walk says which hold an identity — see _wdtt_host_procs
+        _wdtt_host_procs()
+        dirs = [d for d in WDTT_CFG_DIRS if d in (_WDTT_HOSTPROC.get("cfg") or ())]
+    for d in dirs:
         with contextlib.suppress(Exception):
             # Host-aware, like every other foreign lookup: a foreign install lives on the HOST, so on a docker
             # node os.path.isfile() here answered "no" for every one of them. A RUNNING foreign server was still

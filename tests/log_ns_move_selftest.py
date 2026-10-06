@@ -19,7 +19,7 @@ network of its own.
   [4] host_sh on a docker node: --network none, still nsenter -n into PID 1
 
 Run: python3 tests/log_ns_move_selftest.py        (0 = pass)
-     --plant nowindow|everypass|order|continuous|bridge    the defect it names, planted → RED
+     --plant nowindow|everypass|order|continuous|bridge|block    the defect it names, planted → RED
 """
 import datetime, importlib.machinery, importlib.util, io, os, subprocess, sys, tempfile, threading, time
 
@@ -34,6 +34,7 @@ PLANTS = {
     "order":      ("                if started < written[fam] - 1:", "                if started > written[fam] - 1:"),
     "continuous": ("    if str(sched.get(\"every_days\", 1)) == \"0\":\n        sched[\"every_days\"] = 1\n", ""),
     "bridge":     ("\"--pid=host\", \"--network\", \"none\", \"--entrypoint\"", "\"--pid=host\", \"--entrypoint\""),
+    "block":      ("[\"systemctl\", \"restart\", \"--no-block\"] + units", "[\"systemctl\", \"restart\", \"\"] + units"),
 }
 FAILS = []
 def check(name, ok, detail=""):
@@ -117,8 +118,9 @@ N._LOG_NS_MOVE["day"] = None
 check("[2] outside the window: nothing restarted", move({"every_days": 1, "at": hhmm(120)}) == [])
 r = move({"every_days": 1, "at": hhmm(-10)})
 check("[2] inside the window: ONE restart of exactly the unmoved units",
-      r == [["systemctl", "restart", "swg-wdtt-wdtt1.service", "swg-csqtt-csqtt1.service", "vk-turn-proxy-x-1.service"]]
-      or (len(r) == 1 and sorted(r[0][2:]) == ["swg-csqtt-csqtt1.service", "swg-wdtt-wdtt1.service", "vk-turn-proxy-x-1.service"]), r)
+      len(r) == 1 and sorted(r[0][3:]) == ["swg-csqtt-csqtt1.service", "swg-wdtt-wdtt1.service", "vk-turn-proxy-x-1.service"], r)
+check("[2] …queued (--no-block), never waited for: a server ignoring SIGTERM would hold the sync loop 90 s",
+      bool(r) and r[0][2] == "--no-block", r)
 check("[2] …and once per window: the next minute restarts nothing", move({"every_days": 1, "at": hhmm(-10)}) == [])
 N._LOG_NS_MOVE["day"] = None; RC["restart"] = 1
 move({"every_days": 1, "at": hhmm(-10)})
