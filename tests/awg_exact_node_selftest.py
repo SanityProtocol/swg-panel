@@ -148,6 +148,8 @@ try:
     check("…no live `awg set`", not any(c[:2] == ["awg", "set"] for c in CMDS), CMDS)
     check("…the conf is the set: S3, I1, H1 gone, the rest kept", not any(k in after for k in ("S3", "I1", "H1"))
           and all(after.get(k) == v for k, v in want.items()), after)
+    check("a range spelling of an unset H (`H2 = 2-2`, `2 - 2`) reads as gone, a real band does not",
+          A.awg_gone("H2", "2-2") and A.awg_gone("H2", "2 - 2") and not A.awg_gone("H2", "2000-2009") and not A.awg_gone("S3", "72"))
     out, err = set_iface(BASE, want, exact=True, reads=conf({**want, "S3": "72", "H1": "1"}))
     check("a device that comes up still holding S3 → awg_gen_refused naming it", err is not None
           and err.code == "awg_gen_refused" and "S3" in err.msg, err and err.msg)

@@ -61,7 +61,10 @@ def awg_gone(k, v):
     (2026-10-06): a key the conf no longer has comes back as `= 0` (Jc…S4 and the 3.x numbers), `= off`, H1–H4 at their
     WireGuard message types 1–4, and an I line not at all; a 2.0 kernel prints none of them. The removed-key readback of
     _awg_recreate (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A4)."""
-    s = "" if v is None else str(v).strip()
+    s = re.sub(r"\s+", "", "" if v is None else str(v))
+    m = re.fullmatch(r"(\d+)-(\d+)", s)
+    if m and m.group(1) == m.group(2):
+        s = m.group(1)                    # a range `a-a` is `a` (_awg3_norm's rule) — a datapath may print an unset H that way
     return s in ("", "0") or s.lower() == "off" or (k in ("H1", "H2", "H3", "H4") and s == k[1])
 
 
@@ -756,14 +759,14 @@ def op_set_iface(cfg, req):
         awg = None
     if isinstance(awg, dict) and awg:
         awg = {k: str(awg[k]) for k in AWG_KEYS if k in awg and str(awg.get(k, "")) != "" and not awg3_unset(k, awg[k])}
-        cur3 = {k: v for k, v in parse_interface_section(before or "").items() if k in AWG3_KEYS and not awg3_unset(k, v)}
+        _was = parse_interface_section(before or "")       # parsed once: the 3.x keys, the removal test, the recreate's check
+        cur3 = {k: v for k, v in _was.items() if k in AWG3_KEYS and not awg3_unset(k, v)}
         if awg and cur3 and not req.get("awg_params_exact"):
             # A set that does not say it is WHOLE never drops a 3.x key the conf has: an older panel knows none, and its
             # 2.0-only edit must not switch a 3.1 interface back (plan §7.8). The panel says so when it switches back.
             awg = {**{k: v for k, v in cur3.items() if k not in awg}, **awg}
         # A key the panel's WHOLE set leaves out is a removal, and only a recreate takes one off the device (F4).
-        gone = req.get("awg_params_exact") and any(
-            k in parse_interface_section(before or "") and k not in awg for k in AWG_KEYS if k not in AWG3_KEYS)
+        gone = req.get("awg_params_exact") and any(k in _was and k not in awg for k in AWG_KEYS if k not in AWG3_KEYS)
         if awg and before is not None and (cur3 or any(k in awg for k in AWG3_KEYS) or gone):
             out["awg_params"] = _awg_recreate(ic, iface, awg, before)
         elif awg:

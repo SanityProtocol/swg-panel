@@ -13212,7 +13212,7 @@ def mesh_types_in_play(deps, nodes):
     reasons computed (mesh_gen_reasons walks every link: ~1.5 ms a poll at 30 nodes). The cost of the gate: once every
     setting is back to its default, a link still made at another type is not listed (the settings no longer ask for one)."""
     ps = deps.get("panel_settings") or {}
-    if ps.get("mesh_awg_gen") or AWG_OMIT in (ps.get("mesh_awg") or {}).values():
+    if ps.get("mesh_awg_gen") or (isinstance(ps.get("mesh_awg"), dict) and AWG_OMIT in ps["mesh_awg"].values()):
         return True
     return any(isinstance(n, dict) and (n.get("mesh_awg_gen") or AWG_OMIT in ((n.get("mesh_awg") or {}).values()
                                                                              if isinstance(n.get("mesh_awg"), dict) else ()))
@@ -23100,11 +23100,15 @@ def api(method, path, qs, body, deps):
                 cur.pop("mesh_awg_gen", None)
             else:
                 cur["mesh_awg_gen"] = _mg
-        if "mesh_awg" in incoming or "mesh_awg_gen" in incoming:   # R4: a 3.1 mesh type cannot build from an omitted S
-            _bad = mesh_omit_s_refusal(cur.get("mesh_awg_gen") or "2.0", awg_template(cur.get("mesh_awg"))[1],
-                                       perr("the mesh link type"))
-            if _bad:
-                return 400, {"ok": False, **_bad, "code": "bad_request"}
+        if "mesh_awg" in incoming or "mesh_awg_gen" in incoming:   # R4: a 3.1 mesh type cannot build from an omitted S —
+            # the panel's own template, and every node that would take the panel's type over a template of its own
+            _deps4 = dict(deps, panel_settings=cur)
+            for _n4 in [None] + [n for n in nodes_load(deps["nodes_path"]).values() if isinstance(n, dict)]:
+                _bad = (mesh_omit_s_refusal(cur.get("mesh_awg_gen") or "2.0", awg_template(cur.get("mesh_awg"))[1],
+                                            perr("the mesh link type")) if _n4 is None else
+                        mesh_omit_s_refusal(mesh_gen_of(_deps4, _n4), mesh_template(_deps4, _n4)[1], _n4.get("name") or "?"))
+                if _bad:
+                    return 400, {"ok": False, **_bad, "code": "bad_request"}
         rsv = incoming.get("reserved")
         if isinstance(rsv, dict):
             base = dict(cur.get("reserved") or PANEL_SETTINGS_DEFAULTS["reserved"])
@@ -26675,7 +26679,9 @@ def api(method, path, qs, body, deps):
                 nodes[nid]["mesh_awg_gen"] = _mg
             else:
                 nodes[nid].pop("mesh_awg_gen", None)
-        if "mesh_awg" in body or "mesh_awg_gen" in body:   # R4 for this node's links: its type over its template
+        # R4 for this node's links: its type over its template — judged when either CHANGES, so a node the panel-wide door
+        # let through (it checks every inheriting node) never has an unrelated save refused
+        if awg_template_clean(nodes[nid].get("mesh_awg")) != _awg_before or (nodes[nid].get("mesh_awg_gen") or "") != _gen_before:
             _bad = mesh_omit_s_refusal(mesh_gen_of(deps, nodes[nid]), mesh_template(deps, nodes[nid])[1],
                                        nodes[nid].get("name") or nid)
             if _bad:
@@ -27026,7 +27032,9 @@ def api(method, path, qs, body, deps):
                         _rec_u = {**{k: str(v) for k, v in _ra_u.items() if k not in AWG3_FIELDS or _was3}, **_rec_u}
                     _m = {**_rec_u, **clean}
                     _m = {k: str(_m[k]).strip() for k in AWG_FIELDS if k in _m and k not in _om}
-                    _bad = awg_rules(_m, iface, gen3=_was3)
+                    # the rules guard an OMISSION: a save that removes nothing is judged as any other save is — a whole
+                    # set blessed from a foreign conf that breaks one (Jc alone, S2 = S1 + 56) keeps every other edit
+                    _bad = awg_rules(_m, iface, gen3=_was3) if _om else None
                     if _bad:
                         return 400, {"ok": False, **_bad, "code": "bad_request"}
                     ov["awg_params"] = _m
@@ -27073,10 +27081,14 @@ def api(method, path, qs, body, deps):
                         return 400, {"ok": False, **_bad, "code": "bad_request"}
             else:
                 _a2 = {k: v for k, v in (ov.get("awg_params") or {}).items() if k not in AWG3_FIELDS}
+                if not _a2 and ov.get("awg_exact"):      # every 2.0 field set to none: 2.0 would be plain WireGuard (R1)
+                    return 400, {"ok": False, **awg_rules({}, iface), "code": "bad_request"}
                 if _a2:
                     ov["awg_params"] = _a2
                 else:
                     ov.pop("awg_params", None)
+        if not ov.get("awg_params"):
+            ov.pop("awg_exact", None)               # no set left to be whole (an `awg_params: {}` body)
         if ("awg_params" in body or _gen) and any(k in (ov.get("awg_params") or {}) for k in AWG3_FIELDS):
             _a3, _e3 = awg3_check(ov["awg_params"])
             if _e3:
@@ -27310,7 +27322,8 @@ def api(method, path, qs, body, deps):
         # under the defaults, minus the omitted keys — stores it WHOLE and sends it marked so (still fresh per interface). Only
         # then: with no "-" in the defaults this is today's create, byte for byte. A recreate keeps its own record (above).
         _exact = bool(_awgprev) and bool(_prev_ov.get("awg_exact"))
-        _omit = frozenset() if _awgprev else (_awgom | (awg3_omitted(deps) if body.get("awg_gen") == "3.1" else frozenset()))
+        _omit = frozenset() if _awgprev else (_awgom | (awg3_omitted(deps) if body.get("awg_gen") == "3.1" and cmd == ["awg"]
+                                                        else frozenset()))
         if _omit:
             _no = awg_exact_refusal((deps.get("node_snaps") or {}).get(nid), nodes[nid].get("name") or nid)
             if _no:
@@ -27334,10 +27347,6 @@ def api(method, path, qs, body, deps):
                 frozenset(k for k in AWG_FIELDS if k not in AWG3_FIELDS and k not in _awgput) if _exact else ())))
             if _e3:
                 return 400, {"ok": False, **_e3, "code": "bad_request"}
-            if _omit:          # R4 — a 3.1 set built from defaults that set an S to none cannot have header protection
-                _bad = awg_rules(_awgput, perr("the interface defaults"))
-                if _bad:
-                    return 400, {"ok": False, **_bad, "code": "bad_request"}
             _bl = turn_awg3_blockers(deps, nodes, nid, {req.get("listen_port")})   # a proxy left on this port by an older interface
             if _bl:
                 return 409, {"ok": False, **turn_awg3_refusal(_bl, iface), "code": "turn_awg3", "turn_proxies": _bl}
@@ -27346,7 +27355,7 @@ def api(method, path, qs, body, deps):
         if any(k in _awgput for k in AWG3_FIELDS) and not awg_gen_reported((deps.get("node_snaps") or {}).get(nid)):
             return 400, {"ok": False, **perr("{v1}: this node does not report its AmneziaWG version — update it",
                                              v1=nodes[nid].get("name") or nid), "code": "bad_request"}
-        if _exact and not _awgprev:
+        if _exact and not _awgprev:   # R1–R5 on the set the defaults made (R4: a 3.1 set from defaults that omit an S)
             _bad = awg_rules(_awgput, perr("the interface defaults"))
             if _bad:
                 return 400, {"ok": False, **_bad, "code": "bad_request"}
@@ -27363,6 +27372,8 @@ def api(method, path, qs, body, deps):
             ov["awg_params"] = dict(_awgput)
             if _exact:
                 ov["awg_exact"] = True
+        elif cmd != ["awg"]:
+            ov.pop("awg_exact", None)               # a recreate as plain WireGuard: no AmneziaWG set to be whole
         if (body.get("endpoint_host") or "").strip():
             ov["endpoint_host"] = body["endpoint_host"].strip()
         if _mtu:

@@ -125,6 +125,8 @@ check("…but are once anything is set: a panel type, a node type, a \"-\" in ei
       and P.mesh_types_in_play(deps(1320, {"mesh_awg": {"I1": "-"}}), _r)
       and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_awg_gen": "3.1"}})
       and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_awg": {"S3": "-"}}}))
+check("…and a malformed panel mesh_awg (a list) is no setting, never an exception in the poll",
+      P.mesh_types_in_play(deps(1320, {"mesh_awg": ["-"]}), _r) is False)
 check("…and the 2.0 default is 2.0 (control: a 2.0 link reads as one)",
       all(P.mesh_link_gen(_r[a], la) == "2.0" for a, b, la, *_ in links(_r)))
 

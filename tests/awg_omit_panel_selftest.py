@@ -301,8 +301,8 @@ try:
         check("R3 Jc alone → refused", code == 400 and "Jc, Jmin and Jmax" in r.get("error", ""), (code, r))
         code, r = upd({"Jc": "-", "Jmin": "-", "Jmax": "-"})
         check("R3 all three → accepted", code == 200 and not any(k in (p.ov("na", "awg0").get("awg_params") or {}) for k in ("Jc", "Jmin", "Jmax")), (code, r))
-        code, r = upd({"S2": "84", "S1": "28"})
-        check("R5 S2 = S1 + 56 → refused", code == 400 and "S1 + 56" in r.get("error", ""), (code, r))
+        code, r = upd({"S2": "84", "S1": "28", "I5": "-"})
+        check("R5 S2 = S1 + 56 in a save that removes a field → refused", code == 400 and "S1 + 56" in r.get("error", ""), (code, r))
         H = "ZPx7sT8PpJ3aUVTMYCWgSVhdLbq0uVpO6hZe3mO2yJ0="
         S31 = {"HeaderProtectionKey": H, "RandomTrailers": "1", "ContentPaddingAddition": "10-100"}
         p.put("na", "awg9", {"awg_params": {**BASE20, **S31}, "awg_exact": True})
@@ -320,6 +320,33 @@ try:
         check("template: every field none → refused", code == 400 and "every AmneziaWG field is none" in r.get("error", ""), (code, r))
         code, r = p.req("/api/panel/settings", {"mesh_awg": {"S1": "-"}, "mesh_awg_gen": "3.1"})
         check("mesh R4: type 3.1 with S1 none → refused", code == 400 and "S1" in r.get("error", ""), (code, r))
+        # review fixes: an inheriting node's own template is judged at the panel-wide door, and the node door only on a change
+        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"S3": "-"}, "mesh_awg_gen": ""})
+        code2, r2 = p.req("/api/panel/settings", {"mesh_awg": {}, "mesh_awg_gen": "3.1"})
+        check("panel-wide type 3.1 while a node that inherits it omits S3 in its own template → refused, naming the node",
+              code == 200 and code2 == 400 and "nb" in r2.get("error", "") and "S3" in r2.get("error", ""), (code, r, code2, r2))
+        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"S3": "-"}, "mesh_awg_gen": "", "endpoint_host": "nb.example"})
+        check("…and that node's unrelated save (the SPA sends both mesh fields) still goes through", code == 200, (code, r))
+        p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {}})
+        p.put("na", "awg8", {"awg_params": {"Jc": "4", "S1": "28", "S2": "84"}, "awg_exact": True})   # a foreign conf: Jc alone, S2 = S1 + 56
+        p.sync("na", {"awg8": {"Jc": "4", "S1": "28", "S2": "84"}})
+        code, r = p.req("/api/iface/update", {"node": "na", "iface": "awg8", "dns": "9.9.9.9",
+                                              "awg_params": {"Jc": "4", "S1": "28", "S2": "84"}})
+        check("a whole set blessed from a foreign conf that breaks the rules keeps every edit that removes nothing", code == 200, (code, r))
+        p.put("na", "awg9b", {"awg_params": {"HeaderProtectionKey": H, "RandomTrailers": "1"}, "awg_exact": True})
+        p.sync("na", {"awg9b": {"HeaderProtectionKey": H, "RandomTrailers": "1"}})
+        code, r = p.req("/api/iface/update", {"node": "na", "iface": "awg9b", "awg_gen": "2.0"})
+        check("a 2.0 switch that would leave a whole set with no field → refused (R1), the record kept",
+              code == 400 and "WireGuard" in r.get("error", "") and p.ov("na", "awg9b").get("awg_exact") is True, (code, r))
+        code, r = p.req("/api/iface/update", {"node": "na", "iface": "awg8", "awg_params": {}})
+        check("an awg_params: {} body clears the set — and the flag with it", code == 200 and "awg_exact" not in p.ov("na", "awg8")
+              and "awg_params" not in p.ov("na", "awg8"), p.ov("na", "awg8"))
+        p.req("/api/panel/settings", {"interface_defaults": {**DEFAULTS, "awg3_params": {"ContentPaddingAddition": "-"}}})
+        code, r = p.req("/api/iface/create", {"node": "nold", "iface": "wg9", "subnet": "10.69.0.0/24", "listen_port": 51835,
+                                              "protocol": "wg", "awg_gen": "3.1"})
+        check("a WireGuard create asked for 3.1 gets the plain-WireGuard refusal, not the node-capability one",
+              code == 400 and "plain WireGuard" in r.get("error", ""), (code, r))
+        p.req("/api/panel/settings", {"interface_defaults": DEFAULTS})
 
         SECTION[0] = "[4]"
         print("\n[4] the wire")

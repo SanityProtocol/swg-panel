@@ -2322,7 +2322,7 @@ export function PanelSettingsScreen() {
                                         dial_src: x.dial_src || "",
                                         profile: x.profile || null, profile_text: "" } : {}) })),
     mesh_awg: (n.mesh_awg_set && Object.keys(n.mesh_awg_set).length) ? { ...n.mesh_awg_set } : {},   // per-node mesh obfuscation override ({} = inherit/auto)
-    mesh_awg_gen: n.mesh_awg_gen || "" });   // per-node mesh link type ("" = the panel's)   // per-node mesh obfuscation override ({} = inherit/auto)
+    mesh_awg_gen: n.mesh_awg_gen || "" });   // per-node mesh link type ("" = the panel's)
   const [nodeEdits, setNodeEdits] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [orig, setOrig] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [gridKeep, setGridKeep] = useState([]);   // provider-list rows kept visible after toggling to 0/N nodes (until × removes them)

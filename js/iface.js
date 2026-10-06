@@ -1829,7 +1829,9 @@ export function EditIfaceSheet({ node, iface }) {
   const _awgTrim = src => AWG_ORDER.reduce((o, k) => { const v = String((src || {})[k] == null ? "" : (src || {})[k]).trim(); if (v) o[k] = v; return o; }, {});
   const edited = JSON.stringify(_ifBody) !== JSON.stringify(_ifOrig)
     || JSON.stringify([...blk].sort()) !== JSON.stringify([...(meta.block || [])].sort())
-    || (isAwg && JSON.stringify(_awgTrim(awg)) !== JSON.stringify(_awgTrim(meta.awg_params))) || genChanged;
+    // …a cell typed into, not one cleared: the update keeps what a body leaves out (it merges), so a blank cell changes nothing
+    // and must not light Save — "-" is how a line is removed, and the line under the grid says so
+    || (isAwg && Object.entries(_awgTrim(awg)).some(([k, v]) => v !== (_awgTrim(meta.awg_params)[k] || ""))) || genChanged;
   const ifaceDirty = notup || edited;
   // ⚠️ WHAT WAS CHANGED BY A CLICK COUNTS AS A CHANGE TO LOSE. The sheet's own guard sees typed fields only (input/change), so the
   // AmneziaWG version switch, the access level, the exit and its routing rules, the filter chips — all clicks — closed on
