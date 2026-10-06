@@ -2813,6 +2813,7 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .dpsw.awgsw button.on.sw-awg3{background:color-mix(in srgb,var(--awg3) 20%,transparent);color:var(--awg3)}
 .dpsw.awgsw button.on.sw-proto{background:color-mix(in srgb,var(--c) 20%,transparent);color:var(--c)}   /* the mesh link type: each in its protocol's colour */
 .field.awggen .hint{max-width:62ch}
+.field.awggen.meshgen .hint{max-width:none}   /* the mesh link type's hints run the box's full width */
 /* …the 3.1 keys as a fifth group under the 2.0 grid (Edit sheet, and Settings' defaults — Awg3Grid) and as their own row on the interface page. The key names are
    long, so a label may wrap rather than push its column wider. */
 .awg3-cap{margin:14px 0 7px;padding-top:10px;border-top:1px dashed var(--line-solid);font-family:var(--mono);font-size:9px;

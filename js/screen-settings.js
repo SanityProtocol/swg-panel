@@ -394,18 +394,18 @@ function meshModeLabel(v, max) {
 
 /** The type mesh links are made as (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md B1): AmneziaWG 2.0, 3.1 or plain WireGuard. `inherit`
  *  (the node card) adds the panel's choice as a fourth button, "" in the draft. The server decides what a link can really be. */
-const meshGenLabel = g => g === "wg" ? T("WireGuard") : g;
+const meshGenLabel = g => ({ wg: "WG", "2.0": "AWG 2.0", "3.1": "AWG 3.1" }[g] || g);   // i18n-keys: protocol names, the same in every language
 const meshGenColor = g => ifaceColor(g === "wg" ? "wg" : g === "3.1" ? "awg3" : "awg");   // the protocol's own (tunable) colour
-function MeshGenField({ value, onChange, inherit, hint, label }) {
-  const opts = [...(inherit ? [["", T("Default ({v1})", { v1: meshGenLabel(inherit) })]] : []), ["2.0", "2.0"], ["3.1", "3.1"], ["wg", T("WireGuard")]];
+function MeshGenField({ value, onChange, inherit, hint, label, after }) {
+  const opts = [...(inherit ? [["", T("Default ({v1})", { v1: meshGenLabel(inherit) })]] : []), ...["wg", "2.0", "3.1"].map(g => [g, meshGenLabel(g)])];
   const eff = value || inherit || "2.0";
   label = label || T("Mesh link type");
-  return html`<div class="field awggen"><label>${label}</label>
+  return html`<div class="field awggen meshgen"><label>${label}</label>
     <div class="dpsw awgsw" role="radiogroup" aria-label=${label}>${opts.map(([g, l]) => html`<button type="button" role="radio" key=${g || "inherit"}
       aria-checked=${value === g} class=${(value === g ? "on " : "") + "sw-proto"} style=${"--c:" + meshGenColor(g || inherit || "2.0")}
       onClick=${() => onChange(g)}>${l}</button>`)}</div>
     <div class="hint">${hint}${eff === "3.1" ? " " + T("A pair where either node cannot run AmneziaWG 3.1 is linked at 2.0, and its node says why.") : ""}${
-      eff === "wg" ? " " + T("No obfuscation — DPI can block it across borders.") : ""}</div>
+      eff === "wg" ? " " + T("No obfuscation — DPI can block it across borders.") : ""}</div>${after || null}
   </div>`;
 }
 
@@ -4395,6 +4395,14 @@ export function NodeIngressForm({ node, vals, set }) {
 }
 
 // Per-node mesh overrides, edited in Panel settings → System mesh (keyed by node, so it re-inits on badge switch)
+/* A blank cell of a node's mesh AWG grid, as background text: what its links are made with — the panel's mesh template where
+   it sets the field (none where it sets "-"), else what the node's links actually carry (`mesh_awg`, published from one of
+   its link records), else nothing: auto, a fresh value per link. */
+function meshAwgHints(node) {
+  const pt = (Store.panelSettings || {}).mesh_awg || {}, live = (node && node.mesh_awg) || {};
+  return Object.fromEntries(AWG_KEYS.map(k => [k, awgIsNone(pt[k]) ? T("val|none")
+    : String(pt[k] ?? "").trim() || String(live[k] ?? "").trim()]));
+}
 // `gen` is the fleet's default mesh link type as the Mesh section's draft holds it, so "Default (…)" follows box 1 before a Save.
 export function NodeMeshForm({ node, vals, set, gen }) {
   const rsv = (Store.panelSettings || {}).reserved || {};
@@ -4407,11 +4415,11 @@ export function NodeMeshForm({ node, vals, set, gen }) {
     <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>
       <${NodeIpPick} ips=${node.ips || []} value=${v.mesh_egress_ip || ""} onChange=${ip => set({ mesh_egress_ip: ip })} auto=${T("Auto (default route)")}/>
       <div class="hint">${T("Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.")}</div></div>
+    ${/* …and under it, the links that are not the type asked for, and why — derived by the panel from the link records on every poll */""}
     <${MeshGenField} value=${v.mesh_awg_gen || ""} onChange=${g => set({ mesh_awg_gen: g })} inherit=${inherit}
-      hint=${T("Each link takes its type from one of its two nodes, the same one its AWG params come from; a link the other node decides is listed below. Changing it re-provisions this node's links on Save.")}/>
-    ${/* The links that are not the type asked for, and why — the panel derives it from the link records on every poll. */""}
-    ${(node.mesh_gen_reasons || []).length ? html`<div class="hint" style="margin:-4px 0 12px">${(node.mesh_gen_reasons || []).map(r => html`<div key=${r.iface}>
-      ${T("Link to {v1} ({v2}) is {v3}: {v4}", { v1: r.peer, v2: r.iface, v3: meshGenLabel(r.type), v4: srvText(r.msg) })}</div>`)}</div>` : null}
+      hint=${T("Each link takes its type from one of its two nodes, the same one its AWG params come from; a link the other node decides is listed below. Changing it re-provisions this node's links on Save.")}
+      after=${(node.mesh_gen_reasons || []).map(r => html`<div class="hint warnish" key=${r.iface}>
+        ${T("Link to {v1} ({v2}) is {v3}: {v4}", { v1: r.peer, v2: r.iface, v3: meshGenLabel(r.type), v4: srvText(r.msg) })}</div>`)}/>
     <div class="row2"><div class="field"><label>${T("Mesh subnet")}</label><input value=${v.mesh_subnet || ""} onInput=${e => set({ mesh_subnet: e.target.value })} placeholder=${dSub}/></div>
       <div class="field"><label>${T("Mesh port")}</label><input value=${v.mesh_port || ""} onInput=${e => set({ mesh_port: e.target.value })} placeholder=${dPort}/></div></div>
     <div class="field"><label>${T("Interface name prefix")}</label><input value=${v.mesh_prefix || ""} onInput=${e => set({ mesh_prefix: e.target.value })} placeholder=${dPfx}/></div>
@@ -4419,8 +4427,8 @@ export function NodeMeshForm({ node, vals, set, gen }) {
       <div class="hint">${T("Its links are plain WireGuard, which carries no AmneziaWG parameters.")}</div></div>` : (() => {
       const isSet = AWG_KEYS.some(k => String((v.mesh_awg || {})[k] ?? "").trim() !== "");
       return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> ${T("This node's mesh AWG params")}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
-        <div style="display:none;margin-top:8px">
-          <${AwgGrid} value=${v.mesh_awg || {}} onChange=${a => set({ mesh_awg: a })}
+        <div class="field" style="display:none;margin-top:8px">
+          <${AwgGrid} value=${v.mesh_awg || {}} onChange=${a => set({ mesh_awg: a })} placeholders=${meshAwgHints(node)}
             omit=${T("Type - in a cell for no such line on the links made from these; a blank cell stays automatic.")}/>
           <div class="hint" style="margin:8px 0 0">${Trich("Obfuscation for the mesh links that terminate on *{v1}* — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).", { v1: node.name })}</div>
           ${eff === "3.1" ? html`<div class="hint" style="margin:6px 0 0">${T("Its links are AmneziaWG 3.1: they add the 3.1 fields from Settings → Interfaces and a header-protection key of their own to these.")}</div>` : null}
