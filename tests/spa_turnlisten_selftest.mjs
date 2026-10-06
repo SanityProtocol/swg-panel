@@ -75,10 +75,12 @@ check("a stale reported endpoint is NOT pre-selected", got !== DEAD, got);
 check("…and the address the node actually reports is used instead", got === LIVE, got);
 
 console.log("\n[3] a bridge node still defaults to its public endpoint");
-// Its reported addresses are container-private, so the picker filters them out: nothing can corroborate.
+// Its reported addresses are container-private, so the picker filters them out: nothing can corroborate. The form
+// says it is a bridge node (the 4th argument) — without that, "no public IPv4 of its own" reads as a box behind NAT,
+// which starts on All addresses (tests/turn_dial_host_selftest.mjs [5]).
 check("nothing to corroborate with is not evidence against",
-      listenHostInit(LIVE, choices(LIVE, []), ["172.17.0.2"]) === LIVE,
-      listenHostInit(LIVE, choices(LIVE, []), ["172.17.0.2"]));
+      listenHostInit(LIVE, choices(LIVE, []), ["172.17.0.2"], true) === LIVE,
+      listenHostInit(LIVE, choices(LIVE, []), ["172.17.0.2"], true));
 
 console.log("\n[4] a node that has reported nothing changes nothing");
 check("no reported addresses → the endpoint is still offered",
