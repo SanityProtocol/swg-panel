@@ -22347,7 +22347,7 @@ def api(method, path, qs, body, deps):
         out = []
         _ros = roster if roster is not None else roster_load(roster_path)
         _refmap = _ghost_refs(_ros)   # {node:{iface:[pid]}} — walked once; /api/state passes its already-loaded roster to avoid a 2nd disk read
-        _mg_on = mesh_types_in_play(Handler.deps, nodes)   # once: a fleet that never picks a mesh type walks no link for it
+        _mg_on = mesh_types_in_play(deps, nodes)   # once: a fleet that never picks a mesh type walks no link for it
         # operator-set order (POST /api/order): `pos` ascending, unordered nodes after, by created
         for nid, c in sorted(nodes.items(), key=lambda kv: (kv[1].get("pos", 1 << 30), kv[1].get("created", 0), kv[0])):
             snap = snaps.get(nid) or {}
@@ -22452,7 +22452,7 @@ def api(method, path, qs, body, deps):
                         # type, with why — both only when there is something to say, so a fleet that never picks one is as before
                         **({"mesh_awg_gen": c["mesh_awg_gen"]} if c.get("mesh_awg_gen") else {}),
                         **(lambda r: {"mesh_gen_reasons": r} if r else {})(
-                            mesh_gen_reasons(Handler.deps, nodes, Handler.deps.get("node_snaps") or {}, nid) if _mg_on else []),
+                            mesh_gen_reasons(deps, nodes, deps.get("node_snaps") or {}, nid) if _mg_on else []),
                         "mesh_peers": _mesh_peers,
                         "iface_order": c.get("iface_order") or [],   # operator drag-order overlays (POST /api/order)
                         "turn_order": c.get("turn_order") or [],
