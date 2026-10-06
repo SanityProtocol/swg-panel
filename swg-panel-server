@@ -1518,6 +1518,9 @@ def _turn_sha256_file(path):
             h.update(chunk)
     return h.hexdigest()
 
+_TURN_PRUNE_WARNED = set()                    # snapshot files already said to block the prune (once each per process)
+
+
 def _turn_bins_needed():
     """{owner: set(tag)} the store keeps whatever its age, or None when that cannot be known (then nothing is pruned).
     - what a node RUNS: every snapshot on disk, a silent node's last one included — a held or rolled-back version can be
@@ -1553,8 +1556,11 @@ def _turn_bins_needed():
         try:
             with open(os.path.join(sd, n)) as fh:
                 snap = json.load(fh)
-        except Exception:
-            return None                       # a snapshot we cannot read might name a version: prune nothing
+        except Exception as e:                # it might name a version: prune nothing — and say so once, or it never ends
+            if n not in _TURN_PRUNE_WARNED:
+                _TURN_PRUNE_WARNED.add(n)
+                log(LOG_WARNING, "turn store: not pruned — %s cannot be read (%s)", os.path.join(sd, n), e)
+            return None
         for w in snap.get("wdtt") or []:
             if isinstance(w, dict):
                 add(wdtt_owner.get(w.get("fork")), w.get("version"))
@@ -1567,12 +1573,13 @@ def _turn_bins_needed():
     return need
 
 
-def _turn_bins_prune(owner, need=False):
+def _turn_bins_prune(owner, need=None):
     """Bound the store — the rollback cache, and for a turn proxy the rollback MENU (turn_available_tags) — without ever
     removing a version something needs (_turn_bins_needed). Removed: a tag dir with no binary (a failed fetch, an hour
     old, no download running); a build of OURS no longer advertised (WDTT_BUILDS / CSQTT_BUILDS — no picker offers it);
-    beyond the newest TURN_BINS_KEEP by mtime. Not knowing what is needed prunes nothing."""
-    if need is False:
+    beyond the newest TURN_BINS_KEEP by mtime; in any dir, a download's temp file an hour old (a crash mid-fetch). Not
+    knowing what is needed prunes nothing. `need`: _turn_bins_needed(), computed here when not given."""
+    if need is None:
         need = _turn_bins_needed()
     if need is None:
         return
@@ -1589,10 +1596,16 @@ def _turn_bins_prune(owner, need=False):
         live = []
         for t in sorted(os.listdir(d)):
             p = os.path.join(d, t)
-            if not os.path.isdir(p) or t in keep:
+            if not os.path.isdir(p):
+                continue
+            for f in os.listdir(p):           # a temp file an hour old is a fetch that died with its process (needed dirs too)
+                if ".dl." in f and now - os.path.getmtime(os.path.join(p, f)) > 3600:
+                    with contextlib.suppress(OSError):
+                        os.remove(os.path.join(p, f))
+            if t in keep:
                 continue
             files = os.listdir(p)
-            if any(".dl." in f and now - os.path.getmtime(os.path.join(p, f)) < 3600 for f in files):
+            if any(".dl." in f for f in files):
                 continue                      # a download is writing into it
             if not any(f.startswith("server-linux-") and ".dl." not in f and os.path.getsize(os.path.join(p, f)) > 0
                        for f in files):
@@ -1704,8 +1717,9 @@ def turn_sum(owner, tag, arch):
                 _TURN_SUMS[key] = sha
                 with contextlib.suppress(Exception):
                     atomic_write(TURN_SUMS_PATH, json.dumps(_TURN_SUMS) + "\n", mode=0o600)
-            _turn_bins_prune(owner)
-        return sha
+    if sha:
+        _turn_bins_prune(owner)           # outside the semaphore: reading every snapshot must not hold a download slot
+    return sha
 
 def _node_arch(deps, nid):
     """The install-target node's arch, from its snapshot → so turn_pin fetches ONLY that arch. [arch] or None

@@ -11,14 +11,16 @@ a failed fetch's empty dir took a slot, and a build of ours no longer advertised
       no stats dir or an unreadable snapshot → None
   [2] an upstream fork: newest KEEP stay, and an older held / in-use one stays too; only an unneeded one past them goes
   [3] a fork of ours: a build no longer advertised goes — unless a node still runs it; advertised builds stay
-  [4] a dir with no binary: an hour old → goes; fresh → stays; a download writing into it (even an old dir) → stays
+  [4] a dir with no binary: an hour old → goes; fresh → stays; a download writing into it (even an old dir) → stays;
+      a download's temp file an hour old goes from any dir, a needed one included (the dir and its binary stay)
   [5] a fork a node runs at an unreported version: only no-binary dirs go
   [6] not knowing what is needed (no stats dir) prunes NOTHING, not even a no-binary dir
   [7] _turn_bins_prune_all: every known fork's dir; a dir no known owner maps to is left alone
-  [8] wiring: a fetch still prunes its fork; startup prunes once, in the background
+  [8] wiring: a fetch still prunes its fork, outside the download semaphore; startup prunes once, in the background
+  [9] a snapshot that cannot be read blocks the prune — and says so, once
 
 Run: python3 tests/turn_store_prune_selftest.py        (0 = pass)
-     --plant noinuse|noholds|noinfo|noretire|busy|unknown    the defect it names, planted → RED
+     --plant noinuse|noholds|noinfo|noretire|busy|unknown|staledl|silent|insem    the defect it names, planted → RED
 """
 import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, threading, time
 
@@ -28,11 +30,14 @@ PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 PLANTS = {
     "noinuse":  ("        for w in snap.get(\"wdtt\") or []:\n", "        for w in ():\n"),
     "noholds":  ("    for k, v in (_turn_holds_load() or {}).items():\n        rest, tag", "    for k, v in {}.items():\n        rest, tag"),
-    "noinfo":   ("    if need is False:\n        need = _turn_bins_needed()\n    if need is None:\n        return\n",
-                 "    if need is False:\n        need = _turn_bins_needed()\n    if need is None:\n        need = {}\n"),
+    "noinfo":   ("    if need is None:\n        need = _turn_bins_needed()\n    if need is None:\n        return\n",
+                 "    if need is None:\n        need = _turn_bins_needed()\n    if need is None:\n        need = {}\n"),
     "noretire": ("    if owner in _WDTT_OWNER_FORK:\n        advertised = {", "    if False:\n        advertised = {"),
-    "busy":     ("            if any(\".dl.\" in f and now - os.path.getmtime(os.path.join(p, f)) < 3600 for f in files):\n                continue",
-                 "            if False:\n                continue"),
+    "busy":     ("            if any(\".dl.\" in f for f in files):\n                continue", "            if False:\n                continue"),
+    "staledl":  ("                if \".dl.\" in f and now - os.path.getmtime(os.path.join(p, f)) > 3600:", "                if False:"),
+    "silent":   ("                log(LOG_WARNING, \"turn store: not pruned — %s cannot be read (%s)\", os.path.join(sd, n), e)\n", "                pass\n"),
+    "insem":    ("    if sha:\n        _turn_bins_prune(owner)           # outside the semaphore",
+                 "        if sha:\n            _turn_bins_prune(owner)       # outside the semaphore"),
     "unknown":  ("            if dn in by_dir:\n                _turn_bins_prune(by_dir[dn], need)",
                  "            _turn_bins_prune(by_dir.get(dn, dn.replace(\"_\", \"/\", 1)), need)"),
 }
@@ -128,6 +133,13 @@ got = present(CS)
 check("[4] an hour-old dir with no binary goes", "2.1.5" not in got, got)
 check("[4] a fresh one stays", "9.9.9" in got, got)
 check("[4] one a download is writing into stays, old as the dir is", "8.8.8" in got, got)
+cur = P._csqtt_current_version()
+stale = os.path.join(STORE, P._turn_safe(CS), cur, "server-linux-amd64.dl.777")
+open(stale, "wb").write(b"half a binary"); os.utime(stale, (NOW - 7200, NOW - 7200))
+P._turn_bins_prune(CS)
+check("[4] a download's temp file an hour old goes — even from the current (needed) build's dir",
+      not os.path.exists(stale), os.listdir(os.path.dirname(stale)))
+check("[4] …and that dir and its binary stay", os.path.isfile(os.path.join(STORE, P._turn_safe(CS), cur, "server-linux-amd64")))
 
 print("[5] a fork run at an unreported version")
 XO = "WINGS-N/vk-turn-proxy"
@@ -157,10 +169,20 @@ check("[7] every known fork is pruned (the upstream fork's stale no-binary dir i
 check("[7] a dir no known owner maps to is left alone", os.path.isdir(os.path.join(STORE, "nobody_knows", "v0")))
 
 print("[8] wiring")
-check("[8] a successful fetch still prunes its fork", "            _turn_bins_prune(owner)\n        return sha" in src)
+_ts = src[src.index("def turn_sum("):src.index("def _node_arch(")]
+check("[8] a successful fetch still prunes its fork — after the download semaphore is released",
+      "\n    if sha:\n        _turn_bins_prune(owner)" in _ts and _ts.index("\n    if sha:\n        _turn_bins_prune(owner)") > _ts.index("    with _TURN_SUM_SEM:"))
 check("[8] startup prunes once, in the background, after a delay",
       "threading.Thread(target=_turn_store_prune_soon, name=\"turn-store-prune\", daemon=True).start()" in src
       and "time.sleep(60)" in src[src.index("def _turn_store_prune_soon"):][:200])
+
+print("[9] a snapshot that cannot be read")
+torn = os.path.join(SD, "stats-torn2.json"); open(torn, "w").write("{half")
+LOG.clear()
+P._turn_bins_needed(); P._turn_bins_needed()
+said = [l for l in LOG if "not pruned" in l]
+check("[9] the prune is skipped and that is said — once, naming the file", len(said) == 1 and "stats-torn2.json" in said[0], LOG)
+os.remove(torn)
 
 shutil.rmtree(TMP, ignore_errors=True)
 print()
