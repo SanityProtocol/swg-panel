@@ -131,9 +131,11 @@ check("…the retired copies stay gone (panel AWG_PARAM_KEYS, noded _AWG_CONF_KE
       not re.search(r"^AWG_PARAM_KEYS\s*=", src("swg-panel-server"), re.M)
       and not re.search(r"^_AWG_CONF_KEYS\s*=", src("swg-noded"), re.M)
       and not re.search(r"^AWG_PARAM_KEYS\s*=", src("swg-sub"), re.M))
-check("…and js/screen-settings.js derives its 2.0 set from AWG_ORDER instead of holding a copy",
+check("…and js/iface.js derives its 2.0 set from AWG_ORDER instead of holding a copy (moved from screen-settings.js, plan §8 "
+      "round 13), and screen-settings.js holds no copy of its own",
       bool(re.search(r"^export const AWG_KEYS = AWG_ORDER\.slice\(0, AWG_ORDER\.indexOf\(\"HeaderProtectionKey\"\)\);$",
-                     src("js/screen-settings.js"), re.M)))
+                     src("js/iface.js"), re.M))
+      and not re.search(r"^(export )?const AWG_KEYS\s*=", src("js/screen-settings.js"), re.M))
 
 print()
 if PERTURB_AWG is not None:

@@ -12879,12 +12879,15 @@ def awg_template_refusal(raw, where, gen3=False):
 
 
 def mesh_template(deps, node):
-    """The mesh AWG template a link is made from — (values, omitted): its own (`node` is the link's layer, mesh_link_layer)
-    when it set one (a value or a "-"), else the panel's."""
+    """The mesh AWG template a link is made from — (values, omitted), FIELD BY FIELD: its own (`node` is the link's layer,
+    mesh_link_layer) where it names a field (a value or a "-"), else the panel's — what the link sheet's blank cells show as
+    background text (code review of round 13: a link that set only Jc took the generator's H and I over the fleet's)."""
+    pv, pom = awg_template((deps.get("panel_settings") or {}).get("mesh_awg"))
     v, om = awg_template((node or {}).get("mesh_awg"))
-    if v or om:
-        return v, om
-    return awg_template((deps.get("panel_settings") or {}).get("mesh_awg"))
+    if not (v or om):
+        return pv, pom
+    return ({k: (v[k] if k in v else pv[k]) for k in AWG_FIELDS if k in v or (k in pv and k not in om)},
+            frozenset(om | (pom - set(v))))
 
 
 def mesh_omit_s_refusal(gen, om, where):
@@ -13678,6 +13681,8 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
     _is31 = gen == "3.1" and mesh_31_refusal(deps, nodes, snaps, a, b, mc["mtu"]) is None
     _tv, _tom = mesh_template(deps, _ly)
     _v3, _om3 = mesh_awg3(deps, _ly) if _is31 else ({}, frozenset())
+    if _ly["mesh_awg"] and _tv and not _tom:
+        awg = dict(_tv)                          # the link's own fields over the fleet's, field by field (mesh_template)
     _exact = bool(_tom or _om3) and all(awg_exact_reported((snaps or {}).get(x)) for x in (a, b))
     if _tom:
         awg = {k: str(v) for k, v in {**gen_awg_params(), **_tv}.items() if not (_exact and k in _tom)}
@@ -27053,8 +27058,13 @@ def api(method, path, qs, body, deps):
             if _e3:
                 return 400, {"ok": False, **_e3, "code": "bad_request"}
         if (_g1, _t1) != (_g0, _t0):
-            _bad = (mesh_omit_s_refusal(_g1 or mesh_gen_of(deps), awg_template(_t1)[1], mesh_pair_name(nodes, nid, peer))
-                    or mesh_awg3_refusal(deps, {"mesh_awg": _t1}))   # R4, and 3.1 timings that would cross once resolved
+            # judged against what the link is BUILT from (its template over the fleet's, mesh_template); the 3.1 timings for a
+            # 3.1 link, or when its 3.1 fields are what changed — a Jc edit, or a link leaving 3.1, never waits on 3.1 values
+            # that something below made cross (code review of round 13)
+            _eff, _lyr = _g1 or mesh_gen_of(deps), {"mesh_awg": _t1}
+            _31 = lambda t: {k: v for k, v in (t or {}).items() if k in _AWG3_RANGED}
+            _bad = (mesh_omit_s_refusal(_eff, mesh_template(deps, _lyr)[1], mesh_pair_name(nodes, nid, peer))
+                    or (mesh_awg3_refusal(deps, _lyr) if _eff == "3.1" or _31(_t1) != _31(_t0) else None))
             if _bad:
                 return 400, {"ok": False, **_bad, "code": "bad_request"}
             for _key, _val in (("mesh_link_gen", _g1), ("mesh_link_awg", _t1)):
@@ -27074,8 +27084,10 @@ def api(method, path, qs, body, deps):
                 if _nlr is not None:
                     _nlr.update(_kv)
             if _g1 != _g0:
+                _both = _t1 != _t0
                 ev_append(roster_path, "node", nid, "Re-provisioned mesh link", mesh_pair_name(nodes, nid, peer),
-                          "type → %s" % (_g1 or "default"), detail_key="type → {v1}",
+                          "type → %s%s" % (_g1 or "default", ", AWG params changed" if _both else ""),
+                          detail_key="type → {v1}, AWG params changed" if _both else "type → {v1}",
                           detail_vars={"v1": _g1 if _g1 else perr("val|default")})
             else:
                 ev_append(roster_path, "node", nid, "Re-provisioned mesh link", mesh_pair_name(nodes, nid, peer),

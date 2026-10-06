@@ -464,7 +464,31 @@ try:
               code == 400 and "RejectAfterTime" in r.get("error", ""), (code, r))
         code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": {"Jmin": "-"}})
         check("…and a link's params that break R3 → refused", code == 400 and "Jc, Jmin and Jmax" in r.get("error", ""), (code, r))
+        # code review of round 13: the 3.1 timings are judged only for a 3.1 link — leaving 3.1 never waits on them
         p.req("/api/panel/settings", {"interface_defaults": DEFAULTS})
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": {"RekeyAfterTime": "100-120"}})
+        check("(setup) a link's RekeyAfterTime that fits", code == 200, (code, r))
+        code, r = p.req("/api/panel/settings", {"interface_defaults": {**DEFAULTS, "awg3_params": {"RekeyAfterTime": "60-80", "RejectAfterTime": "110-180"}}})
+        check("(setup) defaults that fit alone, but cross the link's own RekeyAfterTime", code == 200, (code, r))
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": "wg"})
+        check("a link whose 3.1 timings cross (after the defaults below changed) can still be switched to WG", code == 200, (code, r))
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": "3.1"})
+        check("…but not to 3.1", code == 400 and "RejectAfterTime" in r.get("error", ""), (code, r))
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": {"RekeyAfterTime": "100-120", "Jc": "7", "Jmin": "50", "Jmax": "80"}})
+        check("…and a Jc edit on it is not held up by those 3.1 values either", code == 200, (code, r))
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": "", "mesh_awg": {"Jc": "5", "Jmin": "50", "Jmax": "80"}})
+        _d = p.req("/api/events?limit=5")[1].get("data")
+        evs = [e for e in (_d if isinstance(_d, list) else (_d or {}).get("events", [])) if e.get("verb") == "Re-provisioned mesh link"]
+        check("a save that changes the type AND the params says both in its event", code == 200 and evs
+              and "AWG params changed" in (evs[0].get("detail") or ""), (code, r, evs[:1]))
+        # …and R4 is judged against what the link is BUILT from: its template over the fleet's
+        p.req("/api/panel/settings", {"interface_defaults": DEFAULTS, "mesh_awg": {"S1": "-"}})
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": "3.1", "mesh_awg": {"Jc": "5", "Jmin": "50", "Jmax": "80"}})
+        check("type 3.1 on a link whose own params are fine but which inherits S1 = none from the fleet → refused (code review)",
+              code == 400 and "S1" in r.get("error", ""), (code, r))
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": "3.1", "mesh_awg": {"S1": "30"}})
+        check("…and accepted once the link gives S1 a value of its own", code == 200, (code, r))
+        p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": ""}); p.req("/api/panel/settings", {"mesh_awg": {}})
         code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": {}})
         check("{} clears a link's own params (back to the fleet's), rebuilt", code == 200 and r["data"]["relinked"] is True
               and "mesh_link_awg" not in p.nodes()["na"], (code, r, p.nodes()["na"].get("mesh_link_awg")))

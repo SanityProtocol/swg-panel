@@ -57,8 +57,8 @@ import {
   turnForkPlatforms, turnUpdateTarget, turnUpdating,
 } from "./turn.js";
 import {
-  IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS, awgIsNone, awgOmitIssue, AWG_COLS, MeshGenField,
-  AWG_KEYS, genAwg, awgBlankHints, AwgGrid, MeshAwgParams, mesh3Hints, meshAwgHints,
+  IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS, MeshGenField,
+  AWG_KEYS, genAwg, awgBlankHints, AwgGrid, MeshAwgParams, mesh3Hints,
 } from "./iface.js";
 export { AWG_KEYS, genAwg, awgBlankHints, AwgGrid };   // their home moved to iface.js (the link sheet draws them too); kept here for importers
 import { statsUsage, trafficInvalidate } from "./traffic.js";

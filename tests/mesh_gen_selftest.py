@@ -63,6 +63,12 @@ B = load(_base_src, "swgpanel_base")
 if "--perturb" in sys.argv:          # the tree without the setting: every link is 2.0 whatever is chosen
     P.mesh_gen_for = lambda deps, nodes, a, b: "2.0"
     print("(perturbed: mesh_gen_for ignores every type setting — this run must FAIL)")
+if "--perturb-merge" in sys.argv:     # the template read WHOLE (before the round-13 review): a link's own set beats the fleet's entirely
+    def _whole(deps, node):
+        v, om = P.awg_template((node or {}).get("mesh_awg"))
+        return (v, om) if (v or om) else P.awg_template((deps.get("panel_settings") or {}).get("mesh_awg"))
+    P.mesh_template = _whole
+    print("(perturbed: a link's template is read whole, not over the fleet's field by field — [9] must FAIL)")
 if "--perturb-link-awg" in sys.argv:  # the tree without a link's own params: the builder never reads them, nothing moves
     P.mesh_link_layer = lambda nodes, a, b: {"mesh_awg": {}}
     P.mesh_link_awg_migrate = lambda nodes: False
@@ -374,6 +380,19 @@ gp = lambda a, b: t[a]["ifaces"][t[a]["links"][b]["iface"]]["awg_params"]
 check("n00↔n02 is made from its own params on both ends; n00↔n01 and n01↔n02 from the fleet's",
       gp("n00", "n02") == gp("n02", "n00") and gp("n00", "n02")["Jc"] == "6" and gp("n00", "n01")["Jc"] == "5" and gp("n01", "n02")["Jc"] == "5",
       (gp("n00", "n02").get("Jc"), gp("n00", "n01").get("Jc")))
+FLEET = dict(FULLT, Jc="5", H1="100-115", I1="<r 9>")
+f = fleet(2); f["n00"]["mesh_link_awg"] = {"n01": {"Jc": "6", "Jmin": "60", "Jmax": "90", "I2": "-"}}
+t2 = run(P, f, deps(1320, {"mesh_awg": FLEET}))
+a2, b2 = (t2["n00"]["ifaces"][t2["n00"]["links"]["n01"]["iface"]]["awg_params"],
+          t2["n01"]["ifaces"][t2["n01"]["links"]["n00"]["iface"]]["awg_params"])
+check("a link that sets only some fields takes the FLEET's for the rest, field by field — H1 and I1 the fleet's, not the "
+      "generator's (code review of round 13: the sheet shows them as the blank cells' background text)",
+      a2 == b2 and a2["Jc"] == "6" and a2["H1"] == "100-115" and a2["I1"] == "<r 9>" and a2["S1"] == FLEET["S1"], a2)
+check("…and its own \"-\" stands over the fleet's value (I2 omitted: no exact capability here, so the generator's value is kept "
+      "and the card says so)", P.mesh_template(deps(1320, {"mesh_awg": FLEET}), P.mesh_link_layer(t2, "n00", "n01"))[1] == {"I2"})
+check("mesh_template: a fleet \"-\" a link gives a value is no longer omitted; a fleet \"-\" it leaves blank still is",
+      P.mesh_template(deps(1320, {"mesh_awg": {"S3": "-", "I1": "-"}}), {"mesh_awg": {"S3": "40"}})
+      == ({"S3": "40"}, frozenset({"I1"})))
 check("mesh_link_awg_set reads the pair from either end", P.mesh_link_awg_set(t, "n02", "n00") == OWN and P.mesh_link_awg_set(t, "n01", "n02") == {})
 f = fleet(3); t = run(P, f, deps(1320))                                    # an existing fleet…
 t["n01"]["mesh_awg"] = dict(OWN); t["n02"]["mesh_awg"] = {}                # …with a node template from before round 13, and an empty one
