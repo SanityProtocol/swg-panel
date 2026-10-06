@@ -57,7 +57,7 @@ import {
   turnForkPlatforms, turnUpdateTarget, turnUpdating,
 } from "./turn.js";
 import {
-  IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS,
+  IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS, awgIsNone, awgOmitIssue, AWG_COLS,
 } from "./iface.js";
 import { statsUsage, trafficInvalidate } from "./traffic.js";
 import { h, Fragment } from "preact";
@@ -476,14 +476,18 @@ export function awgBlankHints() {
   for (const k of AWG_KEYS) out[k] = /^[SH][1-4]$/.test(k) ? T("blank = random") : String(g[k]);
   return out;
 }
-// labelled grid of the 12 AWG fields — read-only display (node settings) or editable (panel settings).
-export function AwgGrid({ value, onChange, readOnly, placeholders }) {
+// labelled grid of the 12 AWG fields — read-only display (node settings) or editable (panel settings). A template: `omit` is
+// the line under it — what "-" means there (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A7) — replaced by the rule a typed "-" breaks.
+export function AwgGrid({ value, onChange, readOnly, placeholders, omit }) {
   const v = value || {};
+  const issue = !readOnly && omit ? awgOmitIssue(v, true) : "";
   // J / S / H / I as columns, fields stacked — same layout as the interface AWG display
-  return html`<div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span>${readOnly
-    ? html`<span class="awg-val">${v[k] != null && v[k] !== "" ? v[k] : "—"}</span>`
-    : html`<input value=${v[k] ?? ""} placeholder=${(placeholders || {})[k] || ""}
-        onInput=${e => onChange({ ...v, [k]: e.target.value })} spellcheck="false"/>`}</label>`)}</div>`)}</div>`;
+  return html`<div class="awg-cols">${AWG_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span>${readOnly
+    ? (awgIsNone(v[k]) ? html`<span class="awg-val awg-none">${T("val|none")}</span>`
+      : html`<span class="awg-val">${v[k] != null && v[k] !== "" ? v[k] : "—"}</span>`)
+    : html`<input value=${v[k] ?? ""} placeholder=${(placeholders || {})[k] || ""} class=${awgIsNone(v[k]) ? "awg-none" : null}
+        onInput=${e => onChange({ ...v, [k]: e.target.value })} spellcheck="false"/>`}</label>`)}</div>`)}</div>${omit
+    ? html`<p class=${"hint awg-omit-hint" + (issue ? " err" : "")}>${issue || omit}</p>` : null}`;
 }
 
 // Add / edit an outbound webhook (Settings → Integrations). Immediate-persist via a dedicated endpoint —
@@ -3205,7 +3209,8 @@ const sectionLabel = k => ({
               summary=${AWG_KEYS.some(k => String(awgDef[k] ?? "").trim() !== "") || Object.keys(awg3Trim(awg3Def)).length ? T("settings|customised") : T("settings|built-in")}
               open=${awgOpen} onToggle=${() => setAwgOpen(o => !o)}>
               <p class="hint" style="margin:0 0 10px">${T("Given to every new AmneziaWG interface. Leave a cell blank to keep what the node does today — S and H are rolled fresh for each interface, so two interfaces never look alike. WireGuard interfaces ignore all of it.")}</p>
-              <${AwgGrid} value=${awgDef} onChange=${setAwgDef} placeholders=${awgBlankHints()}/>
+              <${AwgGrid} value=${awgDef} onChange=${setAwgDef} placeholders=${awgBlankHints()}
+                omit=${T("Type - in a cell for no such line on the interfaces made from these; a blank cell stays automatic.")}/>
               <${Awg3Grid} value=${awg3Def} onKey=${(k, v) => setAwg3Def(o => ({ ...o, [k]: v }))} hpk=${T("val|per interface")} rt=${T("val|on")}
                 hpkTip=${T("Each interface gets a key of its own — one key shared by every interface would protect nothing.")}
                 rtTip=${T("On for every AmneziaWG 3.1 interface the panel sets up.")}
@@ -4391,11 +4396,13 @@ export function NodeMeshForm({ node, vals, set }) {
       const isSet = AWG_KEYS.some(k => String((v.mesh_awg || {})[k] ?? "").trim() !== "");
       return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> ${T("This node's mesh AWG params")}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
         <div style="display:none;margin-top:8px">
-          <${AwgGrid} value=${v.mesh_awg || {}} onChange=${a => set({ mesh_awg: a })}/>
+          <${AwgGrid} value=${v.mesh_awg || {}} onChange=${a => set({ mesh_awg: a })}
+            omit=${T("Type - in a cell for no such line on the links made from these; a blank cell stays automatic.")}/>
           <div class="hint" style="margin:8px 0 0">${Trich("Obfuscation for the mesh links that terminate on *{v1}* — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).", { v1: node.name })}</div>
           <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: genAwg() })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: {} })}>${T("Clear (auto)")}</button>` : null}</div>
         </div></div>`;
     })()}
+    <div style="height:12px"></div>
     <${MeshGenField} value=${v.mesh_awg_gen || ""} onChange=${g => set({ mesh_awg_gen: g })}
       inherit=${(Store.panelSettings || {}).mesh_awg_gen || "2.0"} hint=${T("Each link takes its type from one of its two nodes, the same one its AWG params come from; a link the other node decides is listed below. Changing it re-provisions this node's links on Save.")}/>
     ${/* The links that are not the type asked for, and why — the panel derives it from the link records on every poll. */""}

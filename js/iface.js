@@ -647,7 +647,10 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
   // address, H* under DNS, and I* (+ anything else) under MTU. The 3.x keys are not "anything else" — HeaderProtectionKey
   // is no H column entry — they have their own row below (Awg3Row, docs/AWG3-PLAN.md §7.5).
   const ap = (meta && meta.awg_params) || (missIf && missIf.awg_params) || {};
-  const awgGrp = pred => Object.entries(ap).filter(([k]) => pred(k) && !AWG3_KEYS.includes(k)).map(([k, v]) => k + "=" + v);
+  // …and where the record is the whole set (`awg_exact`), a 2.0 field it lacks is NONE — said, faintly, in its column
+  const apNone = meta && meta.awg_exact ? AWG_ORDER.filter(k => !AWG3_KEYS.includes(k) && ap[k] == null) : [];
+  const awgGrp = pred => [...Object.entries(ap).filter(([k]) => pred(k) && !AWG3_KEYS.includes(k)).map(([k, v]) => k + "=" + v),
+    ...apNone.filter(pred).map(k => html`<span class="awg-none-v">${k}=${T("val|none")}</span>`)];
   const awgCols = [awgGrp(k => k[0] === "J"), awgGrp(k => k[0] === "S"), awgGrp(k => k[0] === "H"), awgGrp(k => !"JSH".includes(k[0]))];
   const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
   // one {peer,target} row per peer on this interface, fed to the shared PeerGrid
@@ -967,14 +970,30 @@ function Awg3Row({ ap }) {
 // read-only inputs so they sit in the same box as their neighbours, and `hpkTip` / `rtTip` say why — and the six the panel
 // checks are cells. `placeholders` only where given: Preact writes a null placeholder as placeholder="".
 export const AWG3_EDIT_COLS = [["ContentPaddingAddition", "MaxHandshakeAttempts"], ["RekeyAfterTime", "RekeyTimeout"], ["RejectAfterTime", "KeepaliveTimeout"]];   // i18n-keys: conf key names, as the conf spells them
+// An AmneziaWG field set to none (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A7): "-" typed in a cell — no such line. Stored as "-" in
+// the templates (Settings), sent as "-" by the Edit sheet (the panel removes the key). The panel checks the rules; these mirror
+// the two an operator meets while typing, for the line under the grid (its sentence, not a second rule set).
+export const awgIsNone = v => String(v == null ? "" : v).trim() === "-";
+// The 2.0 grid's four columns (J / S / H / I), drawn by the Edit sheet and by Settings' templates.
+export const AWG_COLS = [["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]];   // i18n-keys: conf key names, as the conf spells them
+export function awgOmitIssue(d, template) {
+  const n = AWG_COLS[0].filter(k => awgIsNone((d || {})[k])).length;
+  if (n && n < 3) return T("Jc, Jmin and Jmax go together — set all three to -, or none of them.");
+  if (template && AWG_ORDER.slice(0, AWG_ORDER.indexOf("HeaderProtectionKey")).every(k => awgIsNone((d || {})[k])))
+    return T("Every field is - — leave at least one, or use WireGuard interfaces.");
+  return "";
+}
+// W1 (A2): RandomTrailers on without ContentPaddingAddition is allowed, and pads every small packet about five times over.
+export const awgW1 = (d, rtOn) => rtOn && awgIsNone((d || {}).ContentPaddingAddition)
+  ? T("ContentPaddingAddition is none while RandomTrailers is on — every small packet is padded about five times over.") : "";
 export function Awg3Grid({ value, onKey, hpk, rt, hpkTip, rtTip, hint, placeholders }) {
   const v = value || {};
   return html`<div class="awg3-cap">${T("AmneziaWG 3.1")}</div>${hint ? html`<p class="hint awg3-hint">${hint}</p>` : null}<div class="awg-cols awg3-cols">
     <div class="awg-col"><label class="awg-f"><span>HeaderProtectionKey</span><input class="awg-ro" readonly value=${hpk} title=${hpkTip}/></label>
       <label class="awg-f"><span>RandomTrailers</span><input class="awg-ro" readonly value=${rt} title=${rtTip}/></label></div>
     ${AWG3_EDIT_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${v[k] == null ? "" : v[k]}
-      ...${placeholders ? { placeholder: placeholders[k] || "" } : {}} onInput=${e => onKey(k, e.target.value)}/></label>`)}</div>`)}
-  </div>`;
+      class=${awgIsNone(v[k]) ? "awg-none" : null} ...${placeholders ? { placeholder: placeholders[k] || "" } : {}} onInput=${e => onKey(k, e.target.value)}/></label>`)}</div>`)}
+  </div>${awgW1(v, !!rt && rt !== "—") ? html`<p class="hint warnish awg-omit-hint">${awgW1(v, true)}</p>` : null}`;
 }
 // Is an S1–S4 in this AWG dict one the panel re-draws on a switch to 3.1 — set and under 12, or not a number (awg3_full)?
 // One test for the switch window and the Edit sheet's 3.1 cells, so the two never say different things about the same values.
@@ -1790,9 +1809,13 @@ export function EditIfaceSheet({ node, iface }) {
     if (genChanged) return pushModal(html`<${AwgSwitchSheet} node=${node} iface=${iface} to=${gen} commit=${() => doSave(true)} sent=${awg}/>`);
     const portChanged = port.trim() !== String(meta.desired_port || meta.listen_port || "");
     const epChanged = host.trim() !== epHost;
-    if (portChanged || epChanged) {           // client-breaking → confirm first (the editor stays open behind it)
+    // …and a line taken off (a cell set to "-") breaks every client the same way (A7) — named in the same window
+    const awgRm = isAwg ? AWG_ORDER.filter(k => awgIsNone(awg[k]) && (meta.awg_params || {})[k] != null) : [];
+    if (portChanged || epChanged || awgRm.length) {           // client-breaking → confirm first (the editor stays open behind it)
       const what = portChanged && epChanged ? T("endpoint and listen port") : portChanged ? T("listen port") : "endpoint";
-      pushModal(html`<${ConfirmSheet} title=${T("Change {what}?", { what })} confirmLabel=${T("Apply change")} warn=${true}
+      const title = !awgRm.length ? T("Change {what}?", { what }) : (portChanged || epChanged)
+        ? T("Change {what} and remove {v1}?", { what, v1: awgRm.join(", ") }) : T("Remove {v1}?", { v1: awgRm.join(", ") });
+      pushModal(html`<${ConfirmSheet} title=${title} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This reconfigures the interface on the node. Existing peers will NOT be able to connect using their old configs — you'll need to re-issue and re-distribute the QR codes. The interface's keys and peers are kept.")}
         note=${html`<${SubAutoNote}/>`}
         onConfirm=${() => { doSave(); }}/>`);
@@ -1919,7 +1942,10 @@ export function EditIfaceSheet({ node, iface }) {
       <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder=${T("https://8.8.8.8/dns-query, 1.1.1.1")}/><div class="hint">${T("Comma-separated")}</div></div>
       ${isAwg ? html`<div class="field"><label>${T("AmneziaWG parameters")}</label>
         <div class="hint" style="margin:0 0 8px">${T("Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.")}</div>
-        <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div>
+        <div class="awg-cols">${AWG_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]}
+          class=${awgIsNone(awg[k]) ? "awg-none" : null} ...${meta.awg_exact && (meta.awg_params || {})[k] == null ? { placeholder: T("val|none") } : {}}
+          onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div>
+        <p class=${"hint awg-omit-hint" + (awgOmitIssue(awg) ? " err" : "")}>${awgOmitIssue(awg) || T("Type - in a cell to remove that line — every device re-imports, as with any change here.")}</p>
         ${/* The 3.1 set as a fifth group — while the sheet says 3.1, the moment the switch is flipped too (setGen fills it), so
               one Save switches with the values wanted. HeaderProtectionKey and RandomTrailers
               change only through the switch (an editable key was a one-keystroke way to cut every client with no window), so

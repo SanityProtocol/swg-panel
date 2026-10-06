@@ -1207,7 +1207,10 @@ export function rerenderConf(text, node, iface) {
   const awg = meta.awg_params || {};
   const lineRe = k => new RegExp("^([ \\t]*" + k + "[ \\t]*=).*$", "m");
   if (!Object.keys(awg).length) return out;   // no AWG dict to render from (a report without one): leave the block as it is
-  if (!AWG_ORDER.slice(AWG3_FROM).some(k => awg[k] != null || lineRe(k).test(out))) {
+  // …and a 2.0 line the config has while the interface no longer does (a field set to none, docs/AWG-OMIT-AND-MESH-GEN-PLAN.md
+  // A6) takes the same whole-block rebuild below: refreshing only the lines the meta has kept the removed one for ever.
+  if (!AWG_ORDER.slice(AWG3_FROM).some(k => awg[k] != null || lineRe(k).test(out))
+      && !AWG_ORDER.slice(0, AWG3_FROM).some(k => awg[k] == null && lineRe(k).test(out))) {
     for (const k of AWG_ORDER) {
       if (awg[k] == null) continue;
       const re = lineRe(k);

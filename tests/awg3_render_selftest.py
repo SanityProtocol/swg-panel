@@ -289,7 +289,10 @@ try:
           R2["31-nodict"] == C31 and R2["31-nokey"] == C31, [l for l in lines(C31) if l not in lines(R2["31-nodict"])][:4])
     check("2.0 on 2.0: Jc and the Endpoint refreshed, nothing else moved (the refresh it always was)",
           R2["jc"] == C20.replace("Jc = 4", "Jc = 7").replace(O["endpoint"], "198.51.100.9:443"), R2["jc"])
-    check("2.0 on 2.0: a line the interface no longer has is kept, as it always was", R2["noI5"] == C20)
+    # Flipped by docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A6 (F7): a line the interface no longer has is a field set to none (or one
+    # an older edit dropped) — the config is rebuilt from the meta, so the line goes and nothing else moves.
+    check("2.0 on 2.0: a line the interface no longer has is dropped (A6), the rest of the config as it was",
+          R2["noI5"] == "\n".join(l for l in C20.split("\n") if not l.startswith("I5 ")), [l for l in lines(R2["noI5"]) if l not in lines(C20)] or lines(R2["noI5"]))
 
     SECTION[0] = "[4]"
     print("\n[4] the Edit-peer / settings Save round trip keeps the generation")
