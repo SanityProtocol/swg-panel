@@ -1930,9 +1930,13 @@ host_bindable_ips(){
 # HTTP/1.1 retry turns it back into a working clone. Ubuntu 24.04 (git 2.43 / nghttp2 1.59) never sees it.
 # Costs nothing where HTTP/2 works: the retry is only ever reached after a failure.
 git_clone_depth1(){ # <url> <dest> [<tag or branch>]
-  run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 ${3:+--branch "$3"} "$1" "$2" && return 0
+  # A throttled link gives up instead of crawling: git aborts a transfer under 10 KB/s for 30 s, and the whole clone is
+  # capped at 5 minutes where `timeout` exists. Measured on a home box in Russia (client report 2026-10-06): GitHub at a
+  # crawl, and this clone — whose output goes to a log — left the installer silent for longer than anyone waits.
+  local _to=""; have timeout && _to="timeout 300"
+  run env GIT_TERMINAL_PROMPT=0 $_to git -c http.lowSpeedLimit=10240 -c http.lowSpeedTime=30 clone --depth=1 ${3:+--branch "$3"} "$1" "$2" && return 0
   rm -rf "${2:?}"
-  run env GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth=1 ${3:+--branch "$3"} "$1" "$2"
+  run env GIT_TERMINAL_PROMPT=0 $_to git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=10240 -c http.lowSpeedTime=30 clone --depth=1 ${3:+--branch "$3"} "$1" "$2"
 }
 
 # ── the amnezia PPA serves Ubuntu, and only Ubuntu ──────────────────────────────────────────────────────────────────
@@ -2134,7 +2138,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # Tools we did not build (they were already here) may be too old for the master module below: it would load now or at
   # the next boot and take every awg interface down. The caller's next rung, userspace, serves them instead.
   [ "$built" = yes ] || awg_tools_drive_3x || { warn "AmneziaWG: $(awg_tools_old_why) — not building it; awg interfaces use the userspace datapath"; rm -rf "$w"; return 1; }
-  info "building the AmneziaWG kernel module for $(uname -r)…"
+  info "building the AmneziaWG kernel module for $(uname -r) from source — this can take several minutes on a slow box…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
   ensure_awg_headers_follow >/dev/null 2>&1 || true
   if git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/mod.log" 2>&1; then
@@ -2148,8 +2152,13 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
     fi
   fi
   run depmod -a >/dev/null 2>&1 || true
+  if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
+  # Say why, like the tools build above: the log is deleted with the work dir, and the caller's next line ("the SLOWER
+  # userspace datapath") gives no cause. On Ubuntu 26.04's 7.0.0-38 the upstream module does not compile at all.
+  local _why; _why="$(grep -m1 -iE 'error|fatal|timed out|could not' "$w/mod.log" 2>/dev/null | cut -c1-200)"
+  $DRYRUN || warn "the AmneziaWG kernel module did not build for $(uname -r): ${_why:-no error line in its build log}"
   rm -rf "$w"
-  modprobe amneziawg 2>/dev/null || return 1
+  return 1
 }
 
 # ── AppArmor accommodation for the node's WireGuard tools ───────────────────────────────────────
@@ -2353,10 +2362,15 @@ awg_go_pinned(){ # fetch the pinned amneziawg-go, verify its sha256, install it.
   $DRYRUN && { echo "    [skip] fetch + verify $url"; return 0; }
   have curl && have sha256sum || return 1
   tmp="$(mktemp)"
+  # Said out loud, and given up on fast: this download used to run silently with up to four 180 s attempts, and on a home
+  # box whose link to GitHub crawls (client report 2026-10-06, Russia) the installer sat quiet for minutes right after the
+  # last question — which read as "hangs at the TLS check". A transfer under 20 KB/s for 20 s now aborts (and is retried
+  # twice); a slow-but-moving one still has 180 s.
+  info "downloading the AmneziaWG userspace fallback (amneziawg-go $AWG_GO_TAG) from GitHub — up to a few minutes on a slow link…"
   # GitHub, then the operator's proxy mirrors (SWG_TURN_MIRROR, as for the turn binaries). A mirror is SAFE here, which it
   # is not for those: whatever it serves must match the pin.
   for u in "$url" $(for m in ${SWG_TURN_MIRROR:-}; do printf '%s ' "${m%/}/$url"; done); do
-    if curl -fsSL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 3 "$u" -o "$tmp" \
+    if curl -fsSL --connect-timeout 15 --max-time 180 --speed-limit 20480 --speed-time 20 --retry 2 --retry-delay 3 "$u" -o "$tmp" \
        && printf '%s  %s\n' "$sha" "$tmp" | sha256sum -c - >/dev/null 2>&1; then
       install -m 0755 "$tmp" /usr/local/bin/amneziawg-go || { rm -f "$tmp"; return 1; }   # a verified file that did not land is not "installed"
       rm -f "$tmp"; return 0

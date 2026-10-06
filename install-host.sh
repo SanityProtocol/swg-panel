@@ -526,6 +526,15 @@ $json
 EOF
 }
 
+ensure_wg_tools_once(){ # ensure_wg_tools, once per run per tool: the answer cannot change within one, and the AmneziaWG chain
+  # can download and compile for minutes. The install steps asked twice (Datapath tooling, then "for future interface
+  # creation"), so a download that failed or crawled the first time was simply repeated (client report 2026-10-06).
+  local _v="_WGT_RC_$1" _rc
+  if [ -n "${!_v:-}" ]; then return "${!_v}"; fi
+  ensure_wg_tools "$1" && _rc=0 || _rc=$?
+  printf -v "$_v" '%s' "$_rc"
+  return "$_rc"
+}
 ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent, non-fatal -> 0/1).
   # Success = the CLI is present AND its kernel module actually LOADS. The module part matters: `apt install
   # amneziawg` puts the `awg` tool on disk but the datapath is a DKMS module that must COMPILE against the running
@@ -576,7 +585,7 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # back to userspace so the node can still serve AmneziaWG — awg-quick picks it up by itself.
   if ensure_awg_userspace; then
     warn "AmneziaWG will run on the SLOWER userspace datapath — no loadable kernel module on $(uname -r).$(
-      have apt-get && awg_tools_drive_3x && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
+      have apt-get && awg_tools_drive_3x && ! [ -e "/lib/modules/$(uname -r)/build" ] && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
     return 0
   fi
   return 1
@@ -652,7 +661,7 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
   for name in "${SPEC_ORDER[@]}"; do
     cmd="${SPEC_CMD[$name]}"; proto="${SPEC_PROTO[$name]}"; port="${SPEC_PORT[$name]}"; subnet="${SPEC_SUBNET[$name]}"
     addr="${SPEC_ADDR[$name]}"; wan="${SPEC_WAN[$name]}"; ep="${SPEC_EP[$name]}"; dir="${SPEC_DIR[$name]}"; conf="$dir/$name.conf"
-    if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
+    if ! ensure_wg_tools_once "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
     # gateway plumbing: forward + masquerade the tunnel subnet out the WAN (bound to iface lifecycle)
     up="$(nat_hook_up "${subnet}" "${wan}")"   # reap-then-add: one copy whatever was there (lib/common.sh)
     down="$(nat_hook_down "${subnet}" "${wan}")"
@@ -1089,8 +1098,8 @@ if [ "$HOST_HAS_WG" = yes ]; then
   # surface in the panel as adoption candidates on the node's page, where each is classified WG / AWG / WDTT,
   # adopted as it stands, or ignored (ignored ones are listed under Settings -> Interfaces).
   ensure_smart_tools || true                    # nftables (smart routing, every mode) + dnsmasq (Force-DNS host tier)
-  ensure_wg_tools awg || true                   # AmneziaWG tools + DKMS kernel module (the default interface type)
-  ensure_wg_tools wg  || true                   # plain WireGuard tools too — either type works when created later
+  ensure_wg_tools_once awg || true              # AmneziaWG tools + DKMS kernel module (the default interface type)
+  ensure_wg_tools_once wg  || true              # plain WireGuard tools too — either type works when created later
   choose_ifaces                                 # non-interactive: detect + display + auto-adopt everything found
 fi
 

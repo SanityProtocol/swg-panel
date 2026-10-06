@@ -205,6 +205,15 @@ detect_wg(){ # every CONVENTIONAL wg/awg location, not just the ones we install 
     for f in "$d"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
   done
 }
+ensure_wg_tools_once(){ # ensure_wg_tools, once per run per tool: the answer cannot change within one, and the AmneziaWG chain
+  # can download and compile for minutes. The install steps asked twice (Datapath tooling, then "for future interface
+  # creation"), so a download that failed or crawled the first time was simply repeated (client report 2026-10-06).
+  local _v="_WGT_RC_$1" _rc
+  if [ -n "${!_v:-}" ]; then return "${!_v}"; fi
+  ensure_wg_tools "$1" && _rc=0 || _rc=$?
+  printf -v "$_v" '%s' "$_rc"
+  return "$_rc"
+}
 ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent, non-fatal -> 0/1).
   # Success = the CLI is present AND its kernel module LOADS. `apt install amneziawg` installs the `awg` tool but the
   # datapath is a DKMS module that must COMPILE against the running kernel (needs dkms + linux-headers-$(uname -r));
@@ -253,7 +262,7 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # back to userspace so the node can still serve AmneziaWG — awg-quick picks it up by itself.
   if ensure_awg_userspace; then
     warn "AmneziaWG will run on the SLOWER userspace datapath — no loadable kernel module on $(uname -r).$(
-      have apt-get && awg_tools_drive_3x && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
+      have apt-get && awg_tools_drive_3x && ! [ -e "/lib/modules/$(uname -r)/build" ] && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
     return 0
   fi
   return 1
@@ -333,7 +342,7 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
   for name in "${SPEC_ORDER[@]}"; do
     cmd="${SPEC_CMD[$name]}"; proto="${SPEC_PROTO[$name]}"; port="${SPEC_PORT[$name]}"; subnet="${SPEC_SUBNET[$name]}"
     addr="${SPEC_ADDR[$name]}"; wan="${SPEC_WAN[$name]}"; ep="${SPEC_EP[$name]}"; dir="${SPEC_DIR[$name]}"; conf="$dir/$name.conf"
-    if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
+    if ! ensure_wg_tools_once "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
     up="$(nat_hook_up "${subnet}" "${wan}")"   # reap-then-add: one copy whatever was there (lib/common.sh)
     down="$(nat_hook_down "${subnet}" "${wan}")"
     printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
@@ -519,7 +528,7 @@ apply_node_switch(){
   info "Bringing up the node's interfaces (starting each one — this can take a moment for many)…"
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -z "$n" ] && continue
     ip link show "$n" >/dev/null 2>&1 && continue          # already up → leave it
-    _c="${IF_CMD[$n]:-awg}"; ensure_wg_tools "$_c" || continue
+    _c="${IF_CMD[$n]:-awg}"; ensure_wg_tools_once "$_c" || continue
     if [ "$_c" = awg ]; then bringup awg-quick "$n" && { run systemctl enable --quiet "awg-quick@$n" || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"
     else                     bringup wg-quick  "$n" && { run systemctl enable --quiet "wg-quick@$n"  || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"; fi
   done
@@ -936,8 +945,8 @@ echo
 # convert migrated (auto). The panel's Orphans screen classifies each interface (WG / AWG / WDTT) or leaves it
 # unmanaged; new ones are created there.
 ensure_smart_tools || true            # nftables (smart routing) + dnsmasq (Force-DNS host tier)
-ensure_wg_tools awg || true           # AmneziaWG tools + DKMS kernel module (default interface type)
-ensure_wg_tools wg  || true           # plain WireGuard tools too — either type works when created later
+ensure_wg_tools_once awg || true      # AmneziaWG tools + DKMS kernel module (default interface type)
+ensure_wg_tools_once wg  || true      # plain WireGuard tools too — either type works when created later
 choose_ifaces                         # detect + display + auto-adopt everything found (convert: incl. migrated confs)
 migrate_docker_turns                  # docker→bare convert: carry existing turn-proxies (auto, no prompt)
 write_turn_record                     # record carried turns for the panel (fresh install: writes an empty set)
@@ -964,8 +973,8 @@ mkdir -p "$PREFIX/var/lib/swg-noded" "$PREFIX/var/log/swg-agent" "$PREFIX/etc/sw
 # Pre-install wg + awg tools regardless of what interfaces (if any) are configured now — so creating
 # an interface later from the panel "just works" (the sandboxed agent can't apt-install at runtime).
 info "Installing WireGuard + AmneziaWG tools (for future interface creation)"
-ensure_wg_tools wg  || warn "wireguard tools not installed — wg interface creation will need them"
-ensure_wg_tools awg || warn "amneziawg tools not installed (the amnezia ppa is Ubuntu-only) — awg interface creation will need them"
+ensure_wg_tools_once wg  || warn "wireguard tools not installed — wg interface creation will need them"
+ensure_wg_tools_once awg || warn "amneziawg tools not installed (the amnezia ppa is Ubuntu-only) — awg interface creation will need them"
 ensure_smart_tools  # nftables + dnsmasq for Phase-3 smart routing (domain tier); harmless if already present
 
 # ───────────────────────── config.json (pull-only HTTPS) ─────────────────────────
