@@ -119,6 +119,12 @@ for n in (2, 3, 4, 6):
 check("%d fleets: nodes byte-identical to %s" % (tried, BASE), same)
 _r = run(P, fleet(4), deps())
 check("…and no node has a reasons list", all(P.mesh_gen_reasons(deps(), _r, {}, nid) == [] for nid in _r))
+check("…and the reasons are not even computed for it (mesh_types_in_play is false)", not P.mesh_types_in_play(deps(), _r))
+check("…but are once anything is set: a panel type, a node type, a \"-\" in either template",
+      P.mesh_types_in_play(deps(1320, {"mesh_awg_gen": "wg"}), _r)
+      and P.mesh_types_in_play(deps(1320, {"mesh_awg": {"I1": "-"}}), _r)
+      and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_awg_gen": "3.1"}})
+      and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_awg": {"S3": "-"}}}))
 check("…and the 2.0 default is 2.0 (control: a 2.0 link reads as one)",
       all(P.mesh_link_gen(_r[a], la) == "2.0" for a, b, la, *_ in links(_r)))
 
@@ -243,6 +249,32 @@ check("n02 (override 2.0) is told which links the other end decides",
 check("mesh_gen_of: node override > panel > 2.0",
       (P.mesh_gen_of(d, {"mesh_awg_gen": "wg"}), P.mesh_gen_of(d, {}), P.mesh_gen_of(deps(), {}),
        P.mesh_gen_of(deps(1320, {"mesh_awg_gen": "bogus"}), {"mesh_awg_gen": "x"})) == ("wg", "3.1", "2.0", "2.0"))
+
+# ── [6] a mesh template with a field set to none (Part A, A4) ─────────────────────────────────────────────────────────
+print("[6] a mesh template with \"-\": whole and exact where both ends can hold it, generated values otherwise")
+ex = lambda: {"datapath": {"awg": {"gen": {"module": "3.1", "tools": "3.1"}, "exact": 1}}}
+d = deps(1320, {"mesh_awg": {"I1": "-", "I2": "-", "Jc": "5", "Jmin": "50", "Jmax": "80"}})
+t = run(P, fleet(3), d, {"n00": ex(), "n01": ex(), "n02": {}})
+L = {(a, b): (ia, ib) for a, b, _, _, ia, ib, _, _ in links(t)}
+ia, ib = L[("n00", "n01")]
+check("both ends exact-capable: no I1/I2, the template's Jc, generator S/H — the same whole set on both ends",
+      ia.get("awg_params") == ib.get("awg_params") and "I1" not in ia["awg_params"] and "I2" not in ia["awg_params"]
+      and ia["awg_params"].get("Jc") == "5" and "S1" in ia["awg_params"] and "H4" in ia["awg_params"], ia)
+check("…and awg_exact on both link records", ia.get("awg_exact") is True and ib.get("awg_exact") is True)
+ia, ib = L[("n00", "n02")]
+check("one end cannot hold an omission: I1/I2 keep the generator's values, no awg_exact",
+      "I1" in ia["awg_params"] and "I2" in ia["awg_params"] and "awg_exact" not in ia, ia)
+r = P.mesh_gen_reasons(d, t, {"n00": ex(), "n01": ex(), "n02": {}}, "n02")
+check("…and n02's card says why, naming the keys and the node", len(r) == 2 and all("I1, I2" in x["msg"]["error"]
+      and "node2" in x["msg"]["error"] for x in r), r)
+check("n00↔n01 is not on any card", all(x["peer"] != "node1" for x in P.mesh_gen_reasons(d, t, {"n00": ex(), "n01": ex(), "n02": {}}, "n00")))
+d = deps(1320, {"mesh_awg": {"S4": "-"}, "mesh_awg_gen": "3.1"})
+t = run(P, fleet(2), d, {"n00": ex(), "n01": ex()})
+lk = links(t)[0]
+check("3.1 with S4 none in the template (a stored state the save refuses): the link falls back to 2.0, with the reason",
+      P.mesh_link_gen(t["n00"], lk[2]) == "2.0" and any("S4" in x["msg"]["error"] for x in P.mesh_gen_reasons(d, t, {"n00": ex(), "n01": ex()}, "n00")),
+      P.mesh_gen_reasons(d, t, {"n00": ex(), "n01": ex()}, "n00"))
+check("…and no S4 on it (the omission held, no refit adds one)", "S4" not in lk[4]["awg_params"], lk[4]["awg_params"])
 
 print()
 if FAILS:

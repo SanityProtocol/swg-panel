@@ -171,6 +171,15 @@ for k in sorted(_FLOOR | _written):
     check("the interface meta publishes %s" % k, ('ifc["%s"]' % k) in psrc, k)
     check("both self-contained kinds publish %s" % k, ('"%s"' % k) in wd and ('"%s"' % k) in cs, k)
 
+# ── the AmneziaWG "whole set" flag (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A3): a record field the update, create and bless
+# paths write, which only the interface meta can hand the browser — WDTT/csqtt records hold no AWG dict. Without it the
+# read-only grid could not tell "none" from "the node's own value", and the field would be written once and lost.
+_awg_written = set(re.findall(r'ov\["(awg_exact)"\]\s*=', psrc))
+check("awg_exact is written by the panel (the save, the create, the bless)", len(re.findall(r'ov\["awg_exact"\]\s*=', psrc)) >= 3,
+      len(re.findall(r'ov\["awg_exact"\]\s*=', psrc)))
+for k in sorted(_awg_written):
+    check("the interface meta publishes %s" % k, ('ifc["%s"]' % k) in psrc, k)
+
 # ── the server half for a NODE-level field: /api/state must PUBLISH what nFields reads ─────────────────────
 # ⚠️ THE SAME write-once-then-lost SHAPE, ONE LEVEL UP. `nFields` rebuilds the node draft from the record /api/state
 # serves; a field the node-update handler stores and the node publisher does not send reads as absent, the draft holds

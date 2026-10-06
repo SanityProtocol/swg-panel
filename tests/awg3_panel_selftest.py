@@ -54,18 +54,19 @@ PLANTS = {   # name: (section it must redden, anchor, replacement)
                           "        if False:\n"),
     "cookies": ("[11]", "if k in AWG_FIELDS and k != \"DisableCookies\" and v is not None", "if k in AWG_FIELDS and v is not None"),
     "zero": ("[12]", "            if out[k] == \"0\":\n                out.pop(k)", "            if False:\n                out.pop(k)"),
-    "redraw": ("[3]", "    if any(not d.get(k, \"\").isdigit() or int(d[k]) < 12 for k in (\"S1\", \"S2\", \"S3\", \"S4\")):\n",
+    "redraw": ("[3]", "    if any(not d.get(k, \"\").isdigit() or int(d[k]) < 12 for k in _ss):\n",
                "    if False:\n"),
     "s12": ("[4]", "        if low:\n            return None, perr(\"{v1} must be 12 or more while header protection is on\", v1=\", \".join(low))\n",
             ""),
     "timing": ("[5]", "        if tot > lo:\n", "        if False:\n"),
     "hpk-once": ("[6]", "    d.setdefault(\"HeaderProtectionKey\", base64.b64encode(os.urandom(32)).decode())\n",
                  "    d[\"HeaderProtectionKey\"] = base64.b64encode(os.urandom(32)).decode()\n"),
-    "full": ("[7]", "    for k, v in {**AWG31_SET, **{k: v for k, v in (defaults or {}).items() if k in _AWG3_RANGED}}.items():\n        d.setdefault(k, v)\n",
+    "full": ("[7]", "    for k, v in {**AWG31_SET, **{k: v for k, v in (defaults or {}).items() if k in _AWG3_RANGED}}.items():\n        if k not in omit:\n            d.setdefault(k, v)\n",
              "    d = {k: v for k, v in d.items() if k in AWG3_FIELDS}\n    for k, v in AWG31_SET.items():\n        d.setdefault(k, v)\n"),
     "presence": ("[8]", "                elif not extra and all(str(ra.get(k)) == str(want[k]) for k in want):\n",
                  "                elif all(str(ra.get(k)) == str(want[k]) for k in want):\n"),
-    "exact": ("[8]", "                        d[\"awg_params_exact\"] = True\n", "                        pass\n"),
+    "exact": ("[8]", "                        # `awg_exact` record, whose every key the node must neither keep nor invent.\n                        d[\"awg_params_exact\"] = True\n",
+              "                        # `awg_exact` record, whose every key the node must neither keep nor invent.\n                        pass\n"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else None
 
@@ -243,8 +244,15 @@ try:
     code, r = update("n31", "awg4", awg_params={**FULL31, "S4": "11"})
     check("400 naming S4", code == 400 and "S4" in (r.get("error") or ""), (code, r))
     check("…the record keeps S4 = 33", ov("n31", "awg4")["awg_params"].get("S4") == "33", ov("n31", "awg4").get("awg_params"))
+    # The control is a 2.0 INTERFACE. It used to be a 2.0-only body on this 3.1 one, saved because the update REPLACED the
+    # record and silently dropped its 3.x keys; since the update merges (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A3) a body keeps
+    # what it does not carry, so that body is refused like the one above — the switch to 2.0 is `awg_gen`.
     code, r = update("n31", "awg4", awg_params={**BASE20, "S4": "11"})
-    check("control: the same S4 = 11 on a 2.0 set is saved as before", code == 200, (code, r))
+    check("a 2.0-only body on the 3.1 interface keeps its 3.x keys (merge), so S4 = 11 is refused there too",
+          code == 400 and ov("n31", "awg4")["awg_params"].get("HeaderProtectionKey") == HPK, (code, r))
+    put_record("n31", "awg4b", {"awg_params": dict(BASE20)})
+    code, r = update("n31", "awg4b", awg_params={**BASE20, "S4": "11"})
+    check("control: the same S4 = 11 on a 2.0 interface is saved as before", code == 200, (code, r))
 
     SECTION[0] = "[5]"
     print("\n[5] RekeyAfterTime 170-180 against RejectAfterTime 150-180 is refused, naming both")
