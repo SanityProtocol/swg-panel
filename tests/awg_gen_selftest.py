@@ -35,6 +35,7 @@ Run: python3 tests/awg_gen_selftest.py      (0 = pass)
      --perturb-fwd      the flag is not passed to the agent          → RED in [8]
      --perturb-zero     `= 0` / `= off` lines count as 3.x keys      → RED in [9]
      --perturb-hold     a refused recreate is retried on the backoff → RED in [10]
+     --perturb-sig      the cache ignores a new module/tools on disk → RED in [4]
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -55,6 +56,7 @@ PLANTS = {
     "--perturb-zero": ("[9]", "    return k in AWG3_KEYS and k != \"HeaderProtectionKey\" and str(v).strip().lower() in (\"0\", \"off\")\n",
                        "    return False\n"),
     "--perturb-hold": ("[10]", "                _OP_BACKOFF[akey][1] = float(\"inf\")\n", "                pass\n"),
+    "--perturb-sig": ("[4]", " and _AWG_GEN.get(\"sig\") == sig:", ":"),
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
 
@@ -123,9 +125,13 @@ SECTION[0] = "[4]"
 print("\n[4] the report rides every snapshot and is cached")
 calls = []
 N._awg_module_gen = lambda: calls.append(1) or "3.1"
+_sig = {"v": "a"}
+N._awg_gen_sig = lambda: _sig["v"]
 N._AWG_GEN.update(at=0.0, v=None)
 r1 = N.awg_gen_report(now=1000.0); r2 = N.awg_gen_report(now=1200.0); r3 = N.awg_gen_report(now=1400.0)
 check("probed once in 300 s, again after", len(calls) == 2 and r1 == r2 == r3, calls)
+_sig["v"] = "b"; N.awg_gen_report(now=1410.0)
+check("…and AT ONCE when what it reads changed on disk (an update installed a module: modules.dep rewritten)", len(calls) == 3, calls)
 check("the report has exactly module / fallback / tools / disk (the module installed, AWG31-LOAD-PLAN D2)",
       set(r1) == {"module", "fallback", "tools", "disk"}, r1)
 check("a docker node (no health report) still carries gen", set(N._with_awg_gen({})) == {"awg"}

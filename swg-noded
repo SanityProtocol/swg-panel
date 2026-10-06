@@ -12951,10 +12951,28 @@ def _bin_gen(path, k31, k30):
         return "3.1" if m.find(k31) >= 0 else ("3.0" if m.find(k30) >= 0 else "2.0")
 
 
+def _awg_gen_sig():
+    """What the report is read from, cheaply: the module loaded now, the kernel's modules.dep (a DKMS install runs depmod,
+    so a new module on disk rewrites it), and the awg tools binary. A change drops the cached report AT ONCE — after an
+    update installed AmneziaWG 3.1, the panel offers "Load now" on the next sync, not up to five minutes later (found
+    on the 1.8.9 VM pass: the update said "load it now from the panel" and the panel offered nothing yet)."""
+    sig = []
+    with contextlib.suppress(OSError):
+        sig.append(open("/sys/module/amneziawg/version").read().strip())
+    for p in ("/lib/modules/%s/modules.dep" % os.uname().release, shutil.which("awg") or ""):
+        try:
+            st = os.stat(p)
+            sig.append("%s:%d:%d" % (p, st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append(p + ":-")
+    return "|".join(sig)
+
+
 def awg_gen_report(now=None):
-    """{"module", "fallback", "tools"} — see above. Each part that cannot be read is None, never a guess."""
+    """{"module", "fallback", "tools", "disk"} — see above. Each part that cannot be read is None, never a guess."""
     now = now or time.monotonic()
-    if _AWG_GEN["v"] is not None and now - _AWG_GEN["at"] < _AWG_GEN_TTL:
+    sig = _awg_gen_sig()
+    if _AWG_GEN["v"] is not None and now - _AWG_GEN["at"] < _AWG_GEN_TTL and _AWG_GEN.get("sig") == sig:
         return dict(_AWG_GEN["v"])
     g = {"module": _awg_module_gen(), "fallback": None, "tools": None, "disk": _awg_disk_gen()}
     with contextlib.suppress(Exception):
@@ -12964,7 +12982,7 @@ def awg_gen_report(now=None):
         g["fallback"] = _bin_gen(go, b"random_trailers", b"header_protection")
     with contextlib.suppress(Exception):
         g["tools"] = _bin_gen(shutil.which("awg"), b"RandomTrailers", b"HeaderProtectionKey")
-    _AWG_GEN.update(at=now, v=g)
+    _AWG_GEN.update(at=now, v=g, sig=sig)
     return dict(g)
 
 
