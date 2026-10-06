@@ -108,6 +108,10 @@ for k, v in OSR.items():
     open(os.path.join(T, k), "w").write(v)
 C = SRC["COMMON"]
 LIB = fn(C, "awg_ppa_suite") + fn(C, "awg_os_name") + fn(C, "awg_ppa_add")
+# the package route's install (a module that does not compile is given up on, not retried — its record kept in T)
+LIB += ('AWG_MOD_FAILED=%s/awg-module-failed\n' % T) + "".join(fn(C, n) for n in (
+    "awg_fail_get", "awg_fail_note", "awg_pkg_retry_due", "awg_mod_built", "awg_dkms_compile_failed", "awg_dkms_give_up",
+    "awg_ppa_module_install"))
 
 def bash(script, env=None):
     r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + script], capture_output=True, text=True, env=dict(os.environ, **(env or {})), timeout=60)

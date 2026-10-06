@@ -131,6 +131,9 @@ check "[7] no bare call, under set -e, of a function that returns non-zero on no
 g8="$(grab awg_tools_drive_3x; grab awg_tools_old_why; grab awg_dkms_register_source; grab awg_build_from_source)"
 [ "${1:-}" = "--perturb" ] && { _b="$g8"; g8="$(printf '%s\n' "$g8" | grep -v 'awg_tools_drive_3x || return 3\|awg_tools_drive_3x || { warn')"; _planted "$_b" "$g8" "both 3.x gates"; }   # perturbation: both gates gone
 eval "$g8"
+# the record of a module that did not compile (lib/common.sh awg_fail_*): kept in T; upstream's head never asked (no network)
+eval "$(grab awg_fail_get; grab awg_fail_note; grab awg_src_retry_due; grab awg_mod_built)"; AWG_MOD_FAILED="$T/awg-module-failed"
+awg_module_head(){ :; }
 for g in 2 3; do mkdir -p "$T/awg$g"
   printf '#!/bin/sh\n# %s\necho "amneziawg-tools v%s - https://amnezia.org"\n' "$([ $g = 3 ] && echo 'HeaderProtectionKey RandomTrailers' || echo 'Jc Jmin H1 I1')" "$([ $g = 3 ] && echo 3.1.20260812 || echo 1.0.20260618-2)" > "$T/awg$g/awg"
   printf '#!/bin/sh\n' > "$T/awg$g/awg-quick"; chmod +x "$T/awg$g/awg" "$T/awg$g/awg-quick"; done
@@ -158,7 +161,7 @@ reset; : > "$T/warns"; ( PATH="$T/fresh:$PATH"; have(){ case "$1" in git|make) r
 check "[8] S2 — tools built in this run are not probed: the module is cloned even when their parser lacks the word" "$(grep -q 'clone .*amneziawg-tools' "$T/calls" && grep -q 'clone .*amneziawg-linux-kernel-module' "$T/calls" && ! grep -q 'not building it' "$T/warns"; echo $?)" "rc=$r $(cat "$T/calls") | $(cat "$T/warns")"
 git_clone_depth1(){ echo "clone $*" >> "$T/calls"; return 1; }
 # …and every caller says the real reason instead of "install matching linux-headers", which cannot help such a box
-check "[8] update.sh gives register_source's rc 3 its own note; the userspace advice and the D3 refusal ask the probe" "$(printf '%s' "$u" | grep -q '3) note "AmneziaWG: $(awg_tools_old_why)' && printf '%s' "$u" | grep -q 'userspace (amneziawg-go); $(awg_tools_drive_3x && echo' && grep -qF 'does not accept its configuration ($(awg_tools_drive_3x && echo '"'"'a module older than the interface needs?'"'"' || echo "$(awg_tools_old_why);' "$ROOT/update.sh"; echo $?)"
+check "[8] update.sh gives register_source's rc 3 its own note; the userspace advice and the D3 refusal ask the probe" "$(printf '%s' "$u" | grep -q '3) note "AmneziaWG: $(awg_tools_old_why)' && printf '%s' "$u" | grep -q 'userspace (amneziawg-go); $(if awg_fail_get pkg' && printf '%s' "$u" | grep -qF "elif awg_tools_drive_3x; then echo 'install matching linux-headers" && grep -qF 'does not accept its configuration ($(awg_tools_drive_3x && echo '"'"'a module older than the interface needs?'"'"' || echo "$(awg_tools_old_why);' "$ROOT/update.sh"; echo $?)"
 check "[8] the headers line promises a module rebuild only where a DKMS tree exists (none: nothing rebuilds it — measured)" "$(printf '%s' "$u" | grep -q '$(\[ -n "$(dkms status amneziawg 2>/dev/null)" \] && echo " — the module is rebuilt when a new kernel arrives")' && [ "$(printf '%s' "$u" | grep -c 'the module is rebuilt when a new kernel arrives')" = 1 ]; echo $?)"
 # …and only where this kernel's headers are missing: on a box that has them (Ubuntu 26.04, 7.0.0-38) the module failed for
 # another reason, said by awg_build_from_source, and "install matching linux-headers" was advice that could not help

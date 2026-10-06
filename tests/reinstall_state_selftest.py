@@ -22,7 +22,12 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
 rd = lambda f: open(os.path.join(ROOT, f), encoding="utf-8").read()
 H, N, UP, C = rd("install-host.sh"), rd("install-node.sh"), rd("update.sh"), rd("lib/common.sh")
-DEB = "if [ -z \"${DEBIAN_FRONTEND:-}\" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi\n"
+DEB = "if [ -z \"${DEBIAN_FRONTEND:-}\" ] && ! swg_tty_ok; then export DEBIAN_FRONTEND=noninteractive; fi\n"
+# …run as the script has it: the terminal snippet it stands on (SWG_TTY / swg_tty_ok — a terminal that cannot be READ,
+# such as sudo-rs's background, counts as none; tests/tty_background_selftest.py) through this line
+def deb_block(src):
+    a = src.index("_swg_tty_fg(){"); b = src.index(DEB) + len(DEB)
+    return src[a:b]
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -81,7 +86,7 @@ check("installed_sum over nothing installed prints nothing and never fails (a fi
 
 print("\n[2] no terminal → DEBIAN_FRONTEND=noninteractive, never over a value already set")
 for label, src in (("install-host.sh", H), ("install-node.sh", N), ("update.sh", UP)):
-    line = DEB if DEB in src else ":\n"
+    line = deb_block(src) if DEB in src else ":\n"
     for preset, want in (("", "noninteractive"), ("readline", "readline")):
         env = dict(os.environ); env.pop("DEBIAN_FRONTEND", None)
         if preset:

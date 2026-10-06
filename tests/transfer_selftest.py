@@ -49,6 +49,19 @@ check("the docker one-liner is recognised as docker, and a mount base survives",
       g["kind"] == "docker" and g["url"] == "https://p.example.org/swg", g)
 g = S.transfer_parse("curl -fsSL %s | sudo bash -s node -key ABCDEFGHIJKLMNOP1234 -host p.example.org" % BOOT)
 check("a bare host is read as https — never as an unencrypted push", g["url"] == "https://p.example.org", g)
+# the sudo-rs-safe shape every screen hands out since 2026-10-07 (js/sheets-crud.js bootCmd): the script as an argument of
+# `bash -c`, so sudo's stdin is the terminal. Both shapes are pasted for a long while yet, and both must read the same.
+g = S.transfer_parse('sudo bash -c "$(curl -fsSL %s)" -- node -key ABCDEFGHIJKLMNOP1234 -host https://p.example.org:8443' % BOOT)
+check("the bash -c one-liner yields url + token, bare-metal",
+      g == {"url": "https://p.example.org:8443", "token": "ABCDEFGHIJKLMNOP1234", "kind": "baremetal"}, g)
+g = S.transfer_parse('sudo bash -c "$(curl -fsSL %s)" -- docker node -key ABCDEFGHIJKLMNOP1234 -host https://p.example.org/swg' % BOOT)
+check("the bash -c docker one-liner is recognised as docker", g["kind"] == "docker" and g["url"] == "https://p.example.org/swg", g)
+ok_, why_ = (lambda t: (False, str(t)))("")
+try:
+    S.transfer_parse('sudo bash -c "$(curl -fsSL %s)" -- node -host https://p.example.org' % BOOT)
+except Exception as e:
+    why_ = str(e)
+check("a bash -c one-liner missing its key is told so, not 'neither'", "-key" in why_, why_)
 
 
 # ── the TRANSFER TOKEN: the shape the Transfer window actually asks for ───────────────────────
