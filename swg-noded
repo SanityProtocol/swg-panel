@@ -7541,8 +7541,8 @@ def _log_ns_dir():
 def _log_dir_usage(d, journal):
     """(bytes on disk, oldest entry's unix time or None) of a log directory, with no subprocess: a listdir and a stat
     each. In a journal directory the oldest is the head time of the oldest ARCHIVED file, which journald names
-    system@<seqnum id>-<head seqnum>-<head realtime µs, hex>.journal; a damaged one is renamed `….journal~` and skipped,
-    and while only the active system.journal exists there is no oldest (nothing has rotated yet)."""
+    system@<seqnum id>-<head seqnum>-<head realtime µs, hex>.journal; a damaged one is renamed `….journal~` and skipped.
+    While only the active system.journal exists (nothing has rotated yet), it is that file's head time, from its header."""
     used, oldest = 0, None
     with contextlib.suppress(OSError):
         for n in os.listdir(d):
@@ -7553,7 +7553,29 @@ def _log_dir_usage(d, journal):
             if m:
                 t = int(m.group(1), 16) // 1000000
                 oldest = t if oldest is None else min(oldest, t)
+    if journal and oldest is None:
+        oldest = _journal_head(os.path.join(d, "system.journal"))
     return used, oldest
+
+
+def _journal_head(path):
+    """A journal file's first entry, in unix seconds, from its header (head_entry_realtime, µs at byte 184), or None."""
+    with contextlib.suppress(OSError, struct.error):
+        with open(path, "rb") as f:
+            h = f.read(192)
+        if h[:8] == b"LPKSHHRH":
+            return struct.unpack_from("<Q", h, 184)[0] // 1000000 or None
+    return None
+
+
+def _log_file_oldest(path):
+    """docker: the time of our own log's first line (`path.1` first: the older half), or None. The helper stamps each
+    line YYYY-MM-DDTHH:MM:SSZ."""
+    for p in (path + ".1", path):
+        with contextlib.suppress(OSError, ValueError, UnicodeDecodeError):
+            with open(p, "rb") as f:
+                return _live_cal.timegm(time.strptime(f.read(20).decode(), "%Y-%m-%dT%H:%M:%SZ"))
+    return None
 
 
 def _supervised_logs():
@@ -7600,7 +7622,11 @@ def _log_budget():
                 for f in (p, p + ".1"):
                     with contextlib.suppress(OSError):
                         used += os.stat(f).st_blocks * 512
-            _LOG_BUDGET["status"], _LOG_BUDGET["at"] = {"mb": mb, "used_mb": round(used / 1048576.0, 1)}, now
+            st = {"mb": mb, "used_mb": round(used / 1048576.0, 1)}
+            oldest = _log_file_oldest(os.path.join(LOG_DIR_DOCKER, "swg-noded.log"))
+            if oldest:
+                st["oldest"] = oldest
+            _LOG_BUDGET["status"], _LOG_BUDGET["at"] = st, now
         return
     if not log_ns_ok():
         _LOG_BUDGET["status"] = {"mb": mb, "err": "this system's journald has no namespaces", "unsupported": True}

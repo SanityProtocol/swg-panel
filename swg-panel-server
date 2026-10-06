@@ -16833,8 +16833,14 @@ def panel_log_status(deps):
             for n in os.listdir(d):
                 with contextlib.suppress(OSError):
                     used += os.stat(os.path.join(d, n)).st_blocks * 512
-        return {"mb": log_mb((deps.get("panel_settings") or {}).get("log_mb_panel")), "used_mb": round(used / 1048576.0, 1),
-                "docker": True}
+        out = {"mb": log_mb((deps.get("panel_settings") or {}).get("log_mb_panel")), "used_mb": round(used / 1048576.0, 1),
+               "docker": True}
+        for p in (PANEL_LOG_FILE["path"] + ".1", PANEL_LOG_FILE["path"]):   # its first line: `.1` is the older half
+            with contextlib.suppress(OSError, ValueError, UnicodeDecodeError):
+                with open(p, "rb") as f:
+                    out["oldest"] = _live_cal.timegm(time.strptime(f.read(20).decode(), "%Y-%m-%dT%H:%M:%SZ"))
+                break
+        return out
     if PANEL_PLATFORM == "nixos":
         return {"err": "nixos"}
     try:
