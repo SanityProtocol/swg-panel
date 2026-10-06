@@ -4640,7 +4640,7 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lv-st b{font-variant-numeric:tabular-nums}
 .lv-st.t-warn{color:var(--partial);border-color:color-mix(in srgb,var(--partial) 45%,transparent)}
 .lv-st.t-faint{color:var(--dim)}
-.lv-stpop{max-width:340px}
+.deppop.lv-stpop{max-width:340px;padding:10px 12px;line-height:1.5}   /* a text bubble: .deppop's 5px is for lists */
 .lv-stpop-t{font-size:12.5px;margin-bottom:8px;color:var(--ink-2)}
 .lv-stpop-n{display:flex;flex-wrap:wrap;gap:4px}
 .lv-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
