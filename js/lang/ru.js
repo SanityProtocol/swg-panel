@@ -6049,6 +6049,7 @@ export const STR = {
   "mesh_mode must be auto, full or demand": "mesh_mode: auto, full или demand",
   "mesh_awg_gen must be 2.0, 3.1 or wg": "mesh_awg_gen: 2.0, 3.1 или wg",
   "mesh_awg_gen must be 2.0, 3.1, wg or blank": "mesh_awg_gen: 2.0, 3.1, wg или пусто",
+  "an AmneziaWG interface needs at least one AmneziaWG parameter — create a WireGuard interface instead": "интерфейсу AmneziaWG нужен хотя бы один параметр AmneziaWG — создайте вместо него интерфейс WireGuard",
   "mesh subnet must be an IPv4 range of /31 or larger (or blank)": "подсеть меша — диапазон IPv4 размером /31 или шире (или пусто)",
   "{v1} holds too few mesh links for this node ({v2} fit, {v3} needed) — choose a larger subnet, or leave it blank to use the panel's": "В подсети {v1} слишком мало места для меш-линков этой ноды (помещается: {v2}, нужно: {v3}) — выберите подсеть шире или оставьте поле пустым, чтобы взять подсеть панели",
   "mtu must be 576–9200": "MTU — от 576 до 9200",

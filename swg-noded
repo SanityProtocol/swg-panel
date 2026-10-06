@@ -12989,7 +12989,10 @@ def awg_gen_report(now=None):
 def _with_awg_gen(dp):
     """node_datapath_health's report plus `awg.gen`, on every kind of node — a docker node reports no health, and gen too."""
     dp = dict(dp or {})
-    dp["awg"] = dict(dp.get("awg") or {}, gen=awg_gen_report(), **({"load": dict(_AWG_LOAD["v"])} if _AWG_LOAD["v"] else {}))
+    # `exact`: this node creates a whole set as it is and takes a key the set leaves out off the device — what lets a panel
+    # store an AmneziaWG field as "none" (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A4). Its panel refuses an omission without it.
+    dp["awg"] = dict(dp.get("awg") or {}, gen=awg_gen_report(), exact=1,
+                     **({"load": dict(_AWG_LOAD["v"])} if _AWG_LOAD["v"] else {}))
     return dp
 
 
@@ -15636,10 +15639,11 @@ def reconcile_ifaces(node_cfg, desired_ifaces, agent, sudo):
             cur_awg = current_awg(node_cfg, iface) or {}
             want_s = {k: str(v) for k, v in awg.items()}
             if (any(str(cur_awg.get(k)) != v for k, v in want_s.items())
-                    # …or the conf still holds a 3.x key the panel dropped — a switch back to 2.0 (docs/AWG3-PLAN.md §7.3),
-                    # which the compare above never sees. Only when the panel says its set is the whole truth: an older
-                    # panel knows no 3.x key, and its 2.0-only set must never strip one from a foreign 3.x interface.
-                    or (want.get("awg_params_exact") and any(k in cur_awg and k not in want_s for k in AWG3_KEYS))):
+                    # …or the conf still holds a key the panel dropped — a switch back to 2.0 (docs/AWG3-PLAN.md §7.3), or a
+                    # field set to none (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A4) — which the compare above never sees. Only when
+                    # the panel says its set is the whole truth: an older panel knows no 3.x key, and its 2.0-only set must
+                    # never strip one from a foreign 3.x interface.
+                    or (want.get("awg_params_exact") and any(k in cur_awg and k not in want_s for k in AWG_KEYS))):
                 refused = awg_gen_refusal(iface, awg)
                 if not refused:
                     payload["awg_params"] = awg
@@ -17160,6 +17164,9 @@ def create_ifaces(node_cfg, create, agent, sudo):
                                     "address": want.get("address"),   # explicit addr (mesh /31 ends)
                                     "private_key": priv,               # blank => agent genkeys a new one
                                     "awg_params": want.get("awg_params"),   # restore: original obfuscation (else agent randomizes)
+                                    # …and when the panel says that set is WHOLE, the agent writes it as it is and invents
+                                    # none of what it leaves out (an omitted field, or a take-over's older-AWG set)
+                                    **({"awg_params_exact": True} if want.get("awg_params_exact") else {}),
                                     "mtu": want.get("mtu")})
         if not r.get("ok"):
             # THE NAME IS TAKEN BY A DEVICE THAT IS ALREADY HERE. That is not a failure to report and retry

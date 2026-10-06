@@ -49,8 +49,8 @@ PLANTS = {
     "--perturb-create": ("[6]", "        _no3 = awg_gen_refusal(iface, (want or {}).get(\"awg_params\"))   # an AmneziaWG 3 set this node cannot bring up\n",
                          "        _no3 = \"\"\n"),
     "--perturb-map": ("[2]", '("3.1" if v == 3 and m >= 34 else', '("3.1" if v == 3 and m >= 32 else'),
-    "--perturb-exact": ("[8]", "or (want.get(\"awg_params_exact\") and any(k in cur_awg and k not in want_s for k in AWG3_KEYS))):",
-                        "or any(k in cur_awg and k not in want_s for k in AWG3_KEYS)):"),
+    "--perturb-exact": ("[8]", "or (want.get(\"awg_params_exact\") and any(k in cur_awg and k not in want_s for k in AWG_KEYS))):",
+                        "or any(k in cur_awg and k not in want_s for k in AWG_KEYS)):"),
     "--perturb-fwd": ("[8]", "                    if want.get(\"awg_params_exact\"):\n                        payload[\"awg_params_exact\"] = True",
                       "                    if False:\n                        payload[\"awg_params_exact\"] = True"),
     "--perturb-zero": ("[9]", "    return k in AWG3_KEYS and k != \"HeaderProtectionKey\" and str(v).strip().lower() in (\"0\", \"off\")\n",
@@ -134,11 +134,12 @@ _sig["v"] = "b"; N.awg_gen_report(now=1410.0)
 check("…and AT ONCE when what it reads changed on disk (an update installed a module: modules.dep rewritten)", len(calls) == 3, calls)
 check("the report has exactly module / fallback / tools / disk (the module installed, AWG31-LOAD-PLAN D2)",
       set(r1) == {"module", "fallback", "tools", "disk"}, r1)
-check("a docker node (no health report) still carries gen", set(N._with_awg_gen({})) == {"awg"}
-      and set(N._with_awg_gen({})["awg"]) == {"gen"})
+check("a docker node (no health report) still carries gen — and `exact` (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A4)",
+      set(N._with_awg_gen({})) == {"awg"} and set(N._with_awg_gen({})["awg"]) == {"gen", "exact"}
+      and N._with_awg_gen({})["awg"]["exact"] == 1)
 _h = {"awg": {"needed": True, "ok": False, "fallback": True, "userspace": ["awg0"]}}
-check("…and a bare-metal node's health report is kept as it was, gen beside it",
-      {k: v for k, v in N._with_awg_gen(_h)["awg"].items() if k != "gen"} == _h["awg"])
+check("…and a bare-metal node's health report is kept as it was, gen and exact beside it",
+      {k: v for k, v in N._with_awg_gen(_h)["awg"].items() if k not in ("gen", "exact")} == _h["awg"])
 
 SECTION[0] = "[5]"
 print("\n[5] what a dict needs, and why a node refuses it")
