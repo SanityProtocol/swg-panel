@@ -4542,7 +4542,7 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
    thin meter against the budget), how far back it reaches once full, and the state the server itself reported. On a phone a
    row wraps into two lines: the name and its state, then the numbers. */
 .lb-table{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);margin-top:12px;overflow:hidden}
-.lb-row{display:grid;grid-template-columns:minmax(0,1fr) 112px 150px 64px 118px;align-items:center;gap:12px;min-height:44px;padding:0 12px;font-size:13px;color:var(--ink)}
+.lb-row{display:grid;grid-template-columns:minmax(0,1fr) 112px 150px 96px 118px;align-items:center;gap:12px;min-height:44px;padding:0 12px;font-size:13px;color:var(--ink)}
 .lb-row+.lb-row{border-top:1px solid var(--line)}
 .lb-head{min-height:32px;font-size:11.5px;color:var(--dim);font-weight:600}
 .lb-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -4554,6 +4554,7 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lb-meter i{display:block;height:100%;background:var(--brand);border-radius:2px}
 .lb-meter.full i{background:var(--online)}
 .lb-holds{font-variant-numeric:tabular-nums}
+.lb-holds.since{color:var(--dim)}
 .lb-state{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lb-state.t-ok{color:var(--online)}
 .lb-state.t-warn{color:var(--pending)}

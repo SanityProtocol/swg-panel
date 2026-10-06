@@ -3505,10 +3505,16 @@ export function logBudgetState(r) {
   if (+st.mb !== r.saved) return { tone: "warn", text: T("Pending"), title: r.id === "" ? T("The root helper applies it within 10 seconds.") : T("Applies on the node's next sync.") };
   return { tone: "ok", text: T("Applied"), title: "" };
 }
+// How far back a server's logs reach: once its budget is full (the oldest lines go to make room) "N days"; before that
+// nothing has gone yet, so "since <its first line's date>"
 export function logHolds(st) {
-  if (!st || !st.oldest || !st.mb || !(st.used_mb >= st.mb * 0.85)) return "";
+  if (!st || !st.oldest || !st.mb) return null;
+  if (!(st.used_mb >= st.mb * 0.85)) {
+    let d = ""; try { d = new Date(st.oldest * 1000).toLocaleDateString(locale(), { month: "short", day: "numeric" }); } catch (_) {}
+    return { full: false, text: T("since {v1}", { v1: d }) };
+  }
   const h = Math.max(0, (panelNowS() - st.oldest) / 3600);
-  return h < 48 ? T("{v1} h", { v1: Math.round(h) }) : T("{v1} days", { v1: Math.round(h / 24) });
+  return { full: true, text: h < 48 ? T("{v1} h", { v1: Math.round(h) }) : T("{v1} days", { v1: Math.round(h / 24) }) };
 }
 function LogBudgetTable({ rows, onMb }) {
   const [q, setQ] = useState(""), [page, setPage] = useState(1);
@@ -3535,8 +3541,9 @@ function LogBudgetTable({ rows, onMb }) {
           <span class="lb-used" role="cell">${pct == null ? html`<span class="faint">—</span>` : html`
             <span class="lb-usedn">${T("{v1} MB", { v1: st.used_mb })}</span>
             <span class=${"lb-meter" + (pct >= 85 ? " full" : "")} aria-hidden="true"><i style=${"width:" + pct + "%"}></i></span>`}</span>
-          <span class=${"lb-holds" + (holds ? "" : " none")} role="cell" title=${holds ? "" : T("Shown once the budget is full")}>${holds
-            ? html`<span class="lb-holdsl">${T("Holds")} </span>${holds}` : html`<span class="faint">—</span>`}</span>
+          <span class=${"lb-holds" + (holds ? (holds.full ? "" : " since") : " none")} role="cell"
+            title=${holds && !holds.full ? T("Nothing has been removed yet: every line since then is kept") : ""}>${holds
+            ? html`<span class="lb-holdsl">${T("Holds")} </span>${holds.text}` : html`<span class="faint">—</span>`}</span>
           <span class=${"lb-state t-" + s.tone} role="cell" title=${s.title}>${s.text}</span>
         </div>`; })}
       ${!shown.length ? html`<div class="hint">${T("No server matches “{q}”.", { q })}</div>` : null}

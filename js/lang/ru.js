@@ -1678,7 +1678,7 @@ export const STR = {
   "{v1} MB": "{v1} МБ",
   "{v1} h": "{v1} ч",
   "{v1} days": "{v1} дн.",
-  "Shown once the budget is full": "Показывается, когда лимит заполнен",
+  "Nothing has been removed yet: every line since then is kept": "Пока ничего не удалено: хранятся все строки с этой даты",
   "No server matches “{q}”.": "Нет серверов по запросу «{q}».",
   "System journal": "Системный журнал",
   "On NixOS the panel has no root helper here, so its lines stay in the system journal and its limits.":
