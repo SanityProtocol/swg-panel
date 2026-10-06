@@ -188,7 +188,7 @@ def script(p, plant=None):
     mawg = {"S3": "-"} if plant == "mesh-omit" else {}
     out.append(p.req("/api/panel/settings", {"interface_defaults": idf, "mesh_awg": mawg, "mesh_mode": "auto",
                                              "mesh_awg_gen": "2.0"}))
-    out.append(p.req("/api/nodes/update", {"id": "na", "mesh_awg": {}, "mesh_awg_gen": "", "mesh_subnet": "", "mesh_port": "",
+    out.append(p.req("/api/nodes/update", {"id": "na", "mesh_subnet": "", "mesh_port": "",   # what the SPA's node save sends
                                            "mesh_prefix": ""}))
     p.sync("na", {}); p.sync("nb", {})
     out.append(p.req("/api/iface/create", {"node": "na", "iface": "awg0", "subnet": "10.60.0.0/24", "listen_port": 51820}))
@@ -323,15 +323,17 @@ try:
         # review fixes: an inheriting node's own template is judged at the panel-wide door, and the node door only on a change
         # the panel door judges ITS OWN template, and only when it changes: a node in conflict (it inherits 3.1 over an S set
         # to none) gets its links at 2.0 with the reason (mesh_gen_selftest), and never blocks a Settings save (code review 2)
-        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"S3": "-"}, "mesh_awg_gen": ""})
+        code, r = p.req("/api/connection/update", {"node": "nb", "peer": "na", "mesh_awg": {"S3": "-"}})
         code2, r2 = p.req("/api/panel/settings", {"mesh_awg": {}, "mesh_awg_gen": "3.1"})
-        check("panel-wide type 3.1 while a node that inherits it omits S3: accepted (that node's links fall back, said on its card)",
+        check("panel-wide type 3.1 while a link that inherits it omits S3: accepted (that link falls back, said on its card)",
               code == 200 and code2 == 200, (code, r, code2, r2))
         code, r = p.req("/api/panel/settings", {"mesh_awg": {}, "mesh_awg_gen": "3.1", "top_talkers": 12})
-        check("…and an unrelated Settings save with that node still in conflict goes through", code == 200, (code, r))
-        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"S3": "-"}, "mesh_awg_gen": "", "endpoint_host": "nb.example"})
-        check("…and so does that node's unrelated save (the SPA sends both mesh fields)", code == 200, (code, r))
-        p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {}}); p.req("/api/panel/settings", {"mesh_awg_gen": "2.0"})
+        check("…and an unrelated Settings save with that link still in conflict goes through", code == 200, (code, r))
+        code, r = p.req("/api/connection/update", {"node": "nb", "peer": "na", "dial_endpoint": ""})
+        check("…and so does that link's unrelated save", code == 200 and r["data"]["relinked"] is False, (code, r))
+        code, r = p.req("/api/connection/update", {"node": "nb", "peer": "na", "mesh_awg_gen": "3.1"})
+        check("…but choosing 3.1 for that link itself → refused (R4 at the link door)", code == 400 and "S3" in r.get("error", ""), (code, r))
+        p.req("/api/connection/update", {"node": "nb", "peer": "na", "mesh_awg": {}}); p.req("/api/panel/settings", {"mesh_awg_gen": "2.0"})
         p.put("na", "awg8", {"awg_params": {"Jc": "4", "S1": "28", "S2": "84"}, "awg_exact": True})   # a foreign conf: Jc alone, S2 = S1 + 56
         p.sync("na", {"awg8": {"Jc": "4", "S1": "28", "S2": "84"}})
         code, r = p.req("/api/iface/update", {"node": "na", "iface": "awg8", "dns": "9.9.9.9",
@@ -435,8 +437,12 @@ try:
         ps = json.load(open(p.settings_path))
         check("the interface defaults store \"-\" as written", (ps["interface_defaults"].get("awg_params") or {}).get("S3") == "-", ps["interface_defaults"])
         check("the mesh template stores \"-\" as written", (ps.get("mesh_awg") or {}) == {"S4": "20", "I1": "-"}, ps.get("mesh_awg"))
-        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"I2": "-", "Jc": "3", "Jmin": "30", "Jmax": "60"}})
-        check("a node's mesh template stores \"-\"", (p.nodes()["nb"].get("mesh_awg") or {}).get("I2") == "-", p.nodes()["nb"].get("mesh_awg"))
+        lt = lambda: ((p.nodes()["na"].get("mesh_link_awg") or {}).get("nb") or {})   # the pair's own params, on its anchor
+        code, r = p.req("/api/connection/update", {"node": "nb", "peer": "na", "mesh_awg": {"I2": "-", "Jc": "3", "Jmin": "30", "Jmax": "60"}})
+        check("a link's own params store \"-\" (on the pair's anchor, from either end)", code == 200 and lt().get("I2") == "-", (code, r, lt()))
+        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"Jc": "9"}})
+        check("a node's own mesh_awg is no longer a setting: ignored, nothing stored", code == 200 and "mesh_awg" not in p.nodes()["nb"],
+              p.nodes()["nb"].get("mesh_awg"))
         blob = json.dumps({n: {i: r.get("awg_params") for i, r in (v.get("ifaces") or {}).items()} for n, v in p.nodes().items()})
         # the mesh templates' 3.1 six (plan §8 round 11): kept, checked, and a node's change re-provisions its links
         code, r = p.req("/api/panel/settings", {"mesh_awg": {"Jc": "4", "Jmin": "40", "Jmax": "70", "RekeyTimeout": "4-8", "ContentPaddingAddition": "-"}})
@@ -445,19 +451,24 @@ try:
               and ps.get("mesh_awg", {}).get("RekeyTimeout") == "4-8" and ps["mesh_awg"].get("ContentPaddingAddition") == "-", ps.get("mesh_awg"))
         code, r = p.req("/api/panel/settings", {"mesh_awg": {"RekeyAfterTime": "170-180"}})
         check("…and refuses 3.1 timings that cross", code == 400 and "RejectAfterTime" in r.get("error", ""), (code, r))
-        g0 = p.nodes()["nb"].get("mesh_gen") or 0
-        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"KeepaliveTimeout": "6-12"}})
-        check("a node's 3.1 field: stored, and its links re-provisioned", code == 200
-              and (p.nodes()["nb"].get("mesh_awg") or {}).get("KeepaliveTimeout") == "6-12" and (p.nodes()["nb"].get("mesh_gen") or 0) == g0 + 1,
-              (code, r, p.nodes()["nb"].get("mesh_awg"), p.nodes()["nb"].get("mesh_gen")))
-        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"KeepaliveTimeout": "6-12"}, "endpoint_host": "nb2.example"})
-        check("…the same template again: no re-provision", code == 200 and (p.nodes()["nb"].get("mesh_gen") or 0) == g0 + 1)
+        if0 = ((p.nodes()["na"].get("links") or {}).get("nb") or {}).get("iface")
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": {"KeepaliveTimeout": "6-12"}})
+        check("a link's 3.1 field: stored, and that link rebuilt under a new name", code == 200 and r["data"]["relinked"] is True
+              and lt().get("KeepaliveTimeout") == "6-12" and ((p.nodes()["na"].get("links") or {}).get("nb") or {}).get("iface") != if0,
+              (code, r, lt()))
+        code, r = p.req("/api/connection/update", {"node": "nb", "peer": "na", "mesh_awg": {"KeepaliveTimeout": " 6-12 "}})
+        check("…the same params again (from the other end, spaced): no rebuild", code == 200 and r["data"]["relinked"] is False, (code, r))
         p.req("/api/panel/settings", {"interface_defaults": {**DEFAULTS, "awg3_params": {"RekeyAfterTime": "60-80", "RejectAfterTime": "110-180"}}})
-        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"RekeyAfterTime": "100-128"}})
-        check("a node's 3.1 field that passes alone but crosses with the interface defaults below it → refused (code review 1)",
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": {"RekeyAfterTime": "100-128"}})
+        check("a link's 3.1 field that passes alone but crosses with the interface defaults below it → refused (code review 1)",
               code == 400 and "RejectAfterTime" in r.get("error", ""), (code, r))
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": {"Jmin": "-"}})
+        check("…and a link's params that break R3 → refused", code == 400 and "Jc, Jmin and Jmax" in r.get("error", ""), (code, r))
         p.req("/api/panel/settings", {"interface_defaults": DEFAULTS})
-        p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {}}); p.req("/api/panel/settings", {"mesh_awg": {}})
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": {}})
+        check("{} clears a link's own params (back to the fleet's), rebuilt", code == 200 and r["data"]["relinked"] is True
+              and "mesh_link_awg" not in p.nodes()["na"], (code, r, p.nodes()["na"].get("mesh_link_awg")))
+        p.req("/api/panel/settings", {"mesh_awg": {}})
         # a LINK's own type (plan §8 round 12), through the door its sheet uses
         lnk = lambda a, b: (p.nodes()[a].get("links") or {}).get(b) or {}
         old_if = lnk("na", "nb").get("iface")

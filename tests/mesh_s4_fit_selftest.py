@@ -111,12 +111,12 @@ for _ in range(300):
     (x, _y), = s4s(nodes).values()
     seen_big = seen_big or int(x) > 20
 check("control: at MTU 1320 the generator is untouched (some S4 > 20 appear)", seen_big)
-nodes = {"a": {"name": "A", "mesh_awg": {"S4": "50", "S1": "60"}}, "b": {"name": "B"}}
+nodes = {"a": {"name": "A", "mesh_link_awg": {"b": {"S4": "50", "S1": "60"}}}, "b": {"name": "B"}}
 P.reconcile_mesh(nodes, {}, deps(1420))
 (x, y), = s4s(nodes).values()
-check("a node's mesh_awg with S4 50 still yields a fitting LINK at MTU 1420", int(x) <= 20 and x == y, (x, y))
-check("…and the operator's stored mesh_awg is not rewritten", nodes["a"]["mesh_awg"] == {"S4": "50", "S1": "60"},
-      nodes["a"]["mesh_awg"])
+check("a link's own params with S4 50 still yield a fitting LINK at MTU 1420", int(x) <= 20 and x == y, (x, y))
+check("…and the operator's stored params are not rewritten", nodes["a"]["mesh_link_awg"] == {"b": {"S4": "50", "S1": "60"}},
+      nodes["a"].get("mesh_link_awg"))
 
 print("[mesh S4] existing links are refitted — the swgt fleet (mesh_mtu 1420)")
 swgt = {("msk", "nixos"): 93, ("msk", "svo"): 47, ("hel", "msk"): 31, ("nixos", "svo"): 44, ("hel", "nixos"): 55,

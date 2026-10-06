@@ -12867,8 +12867,8 @@ def awg_template_refusal(raw, where, gen3=False):
 
 
 def mesh_template(deps, node):
-    """The mesh AWG template a link anchored on `node` is made from — (values, omitted): its own mesh_awg when it set one
-    (a value or a "-"), else the panel's."""
+    """The mesh AWG template a link is made from — (values, omitted): its own (`node` is the link's layer, mesh_link_layer)
+    when it set one (a value or a "-"), else the panel's."""
     v, om = awg_template((node or {}).get("mesh_awg"))
     if v or om:
         return v, om
@@ -13245,6 +13245,43 @@ def mesh_gen_for(deps, nodes, a, b):
     return mesh_link_override(nodes, a, b) or mesh_gen_of(deps)
 
 
+def mesh_pair_name(nodes, a, b):
+    """"msk-main ↔ svo-im" — a link as messages name it, smaller id first."""
+    x, y = (a, b) if a < b else (b, a)
+    return "%s ↔ %s" % ((nodes.get(x) or {}).get("name") or x, (nodes.get(y) or {}).get("name") or y)
+
+
+def mesh_link_awg_set(nodes, a, b):
+    """The AWG template chosen for the pair a↔b on its own ({} = the fleet's) — stored on the pair's anchor, like its type."""
+    x, y = (a, b) if a < b else (b, a)
+    t = ((nodes.get(x) or {}).get("mesh_link_awg") or {}).get(y)
+    return t if isinstance(t, dict) else {}
+
+
+def mesh_link_layer(nodes, a, b):
+    """The pair's own template as the layer the template readers take (mesh_template, mesh_awg3, mesh_awg3_refusal): it
+    stands where a node's mesh_awg stood before a link's params were set on the link (plan §8 round 13)."""
+    return {"mesh_awg": mesh_link_awg_set(nodes, a, b)}
+
+
+def mesh_link_awg_migrate(nodes):
+    """Once per node: a node's own mesh AWG template (the per-node grid, before round 13) moves onto every pair it anchors —
+    each node with a larger id, linked yet or not (demand mode links pairs later), exactly the pairs it shaped — and leaves
+    the node. A node that never set one (`{}` or absent) is not touched, so a fleet that never used it keeps every byte.
+    Returns whether anything moved (the caller saves)."""
+    moved = False
+    for nid, n in nodes.items():
+        t = n.get("mesh_awg") if isinstance(n, dict) else None
+        if not (isinstance(t, dict) and t):
+            continue
+        for peer in sorted(nodes):
+            if peer > nid:
+                n.setdefault("mesh_link_awg", {}).setdefault(peer, dict(t))
+        n.pop("mesh_awg", None)
+        moved = True
+    return moved
+
+
 def mesh_relink_pair(nodes, a, b):
     """Tear down the ONE link a↔b on both ends so the next reconcile_mesh rebuilds it — under a fresh link id (the anchor's
     mesh_gen moves on, as mesh_reprovision_node does, so the new interfaces never share a name with the ones being deleted)
@@ -13286,12 +13323,12 @@ def mesh_31_refusal(deps, nodes, snaps, a, b, mtu):
     if (mesh_s4_room(mtu) or 0) < 12:
         return perr("the mesh MTU ({v1}) is too high for AmneziaWG 3.1 — header protection needs a link MTU of 1428 or less",
                     v1=mtu)
-    _t3 = mesh_awg3_refusal(deps, nodes.get(min(a, b)))
+    _t3 = mesh_awg3_refusal(deps, mesh_link_layer(nodes, a, b))
     if _t3:                                   # the timings its layers resolve to cross: never a link that drops data
         return _t3
-    _om = mesh_template(deps, nodes.get(min(a, b)))[1]
+    _om = mesh_template(deps, mesh_link_layer(nodes, a, b))[1]
     if any(k in _om for k in ("S1", "S2", "S3", "S4")) and all(awg_exact_reported((snaps or {}).get(x)) for x in (a, b)):
-        return mesh_omit_s_refusal("3.1", _om, (nodes.get(min(a, b)) or {}).get("name") or min(a, b))   # the save refuses it too
+        return mesh_omit_s_refusal("3.1", _om, mesh_pair_name(nodes, a, b))   # the save refuses it too
     return None
 
 
@@ -13302,8 +13339,8 @@ def mesh_types_in_play(deps, nodes):
     ps = deps.get("panel_settings") or {}
     if ps.get("mesh_awg_gen") or (isinstance(ps.get("mesh_awg"), dict) and AWG_OMIT in ps["mesh_awg"].values()):
         return True
-    return any(isinstance(n, dict) and (n.get("mesh_link_gen") or AWG_OMIT in ((n.get("mesh_awg") or {}).values()
-                                                                             if isinstance(n.get("mesh_awg"), dict) else ()))
+    return any(isinstance(n, dict) and (n.get("mesh_link_gen") or any(
+        isinstance(t, dict) and AWG_OMIT in t.values() for t in (n.get("mesh_link_awg") or {}).values()))
                for n in nodes.values())
 
 
@@ -13326,7 +13363,8 @@ def mesh_gen_reasons(deps, nodes, snaps, nid):
         elif have != "wg":
             # …and a link that holds a field its template sets to none (A4): an end could not hold the omission when it was
             # made — or it was made before the template said so
-            _om = mesh_template(deps, nodes[x])[1] | (mesh_awg3(deps, nodes[x])[1] if have == "3.1" else frozenset())
+            _ly = mesh_link_layer(nodes, nid, peer)
+            _om = mesh_template(deps, _ly)[1] | (mesh_awg3(deps, _ly)[1] if have == "3.1" else frozenset())
             _p = ((me.get("ifaces") or {}).get(lr.get("iface")) or {}).get("awg_params") or {}
             _kept = [k for k in AWG_FIELDS if k in _om and k in _p]
             if _kept:
@@ -13611,9 +13649,10 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
     if sub is None:
         return False
     hosts = list(sub)                            # /31 → [.0, .1]
-    # the link's obfuscation = the X-end node's per-node mesh AWG if it set one, else the panel default / a fresh set.
-    # both ends share it (the handshake requires matching params); editing a node's AWG re-provisions the links it anchors.
-    psk = gen_psk(); awg = dict(sanitize_awg_params(nodes[x_nid].get("mesh_awg")) or link_awg_params(deps))
+    # the link's obfuscation = its own params if set on its sheet, else the panel default / a fresh set. Both ends share it
+    # (the handshake requires matching params); changing a link's params rebuilds that link.
+    _ly = mesh_link_layer(nodes, a, b)           # this link's own params, set on its sheet (plan §8 round 13)
+    psk = gen_psk(); awg = dict(sanitize_awg_params(_ly["mesh_awg"]) or link_awg_params(deps))
     # A template with a field set to none (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A4): the link's set is the generator under the
     # template's values, without the omitted keys — WHOLE, `awg_exact` on both ends — where both ends can hold an omission.
     # Otherwise the omitted keys keep the generator's values for this link (a mesh link never refuses), and the node card
@@ -13625,8 +13664,8 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
     # A 3.1 link's six 3.1 fields come field by field from the mesh templates, then the interface 3.1 defaults (mesh_awg3).
     gen = mesh_gen_for(deps, nodes, a, b)
     _is31 = gen == "3.1" and mesh_31_refusal(deps, nodes, snaps, a, b, mc["mtu"]) is None
-    _tv, _tom = mesh_template(deps, nodes[x_nid])
-    _v3, _om3 = mesh_awg3(deps, nodes[x_nid]) if _is31 else ({}, frozenset())
+    _tv, _tom = mesh_template(deps, _ly)
+    _v3, _om3 = mesh_awg3(deps, _ly) if _is31 else ({}, frozenset())
     _exact = bool(_tom or _om3) and all(awg_exact_reported((snaps or {}).get(x)) for x in (a, b))
     if _tom:
         awg = {k: str(v) for k, v in {**gen_awg_params(), **_tv}.items() if not (_exact and k in _tom)}
@@ -13794,7 +13833,7 @@ def reconcile_mesh(nodes, snaps, deps):
          creating (covers a lost/replaced conf after convert/re-install).
     Returns True if it changed anything (so the caller persists)."""
     mc = mesh_cfg(deps)
-    changed = False
+    changed = mesh_link_awg_migrate(nodes)          # a per-node mesh AWG template moves onto its links, once (round 13)
     ids = list(nodes.keys())
     alloc, unplaced, need = _MeshAlloc(nodes), {}, None
     mode = mesh_mode_effective(deps, nodes)
@@ -20046,6 +20085,11 @@ def mesh_unlink_node(nodes, nid):
     for oid, other in nodes.items():
         if oid == nid:
             continue
+        for _key in ("mesh_link_gen", "mesh_link_awg"):    # the pair's own type / params, held by its anchor
+            if nid in (other.get(_key) or {}):
+                other[_key].pop(nid)
+                if not other[_key]:
+                    other.pop(_key)
         lr = (other.get("links") or {}).get(nid)
         if not lr:
             continue
@@ -22473,7 +22517,8 @@ def api(method, path, qs, body, deps):
             _mesh_peers = [{"peer": pr, "iface": (lk or {}).get("iface") or "",
                             "reprovisioning": bool((lk or {}).get("iface") in _crt),
                             **(lambda g: {"type": g} if g != "2.0" else {})(mesh_link_gen(c, lk)),
-                            **(lambda g: {"type_set": g} if g else {})(mesh_link_override(nodes, nid, pr))}
+                            **(lambda g: {"type_set": g} if g else {})(mesh_link_override(nodes, nid, pr)),
+                            **(lambda t: {"awg_set": t} if t else {})(mesh_link_awg_set(nodes, nid, pr))}   # its own params
                            for pr, lk in (c.get("links") or {}).items()]
             # system (mesh-link) ifaces must never appear as a selectable egress NIC / IP — filter them out of
             # the egress-picker inputs by the node's link iface names + the reserved prefix (covers un-updated
@@ -22546,7 +22591,7 @@ def api(method, path, qs, body, deps):
                                                   for k in ("node", "via") if e.get(k)})
                                        for e in (Handler.deps.get("cas_clash") or {}).get(nid) or ()])
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
-                        "transport": "https", "mesh_awg": _mawg, "mesh_awg_set": c.get("mesh_awg") or {},   # actual (live) vs the per-node override the UI edits
+                        "transport": "https", "mesh_awg": _mawg,   # actual (live); a link's own params ride on its mesh_peers row
                         # the mesh link type: this node's override (absent = the panel's), and its links that are not that
                         # type, with why — both only when there is something to say, so a fleet that never picks one is as before
                         **(lambda r: {"mesh_gen_reasons": r} if r else {})(
@@ -26762,30 +26807,12 @@ def api(method, path, qs, body, deps):
             nodes[nid]["mesh_subnet"] = ms
         if "mesh_prefix" in body:
             nodes[nid]["mesh_prefix"] = re.sub(r"[^a-z0-9_]", "", (body.get("mesh_prefix") or "").lower())[:6]
-        _awg_before = mesh_template_clean(nodes[nid].get("mesh_awg"))[0]
-        if "mesh_awg" in body:                  # per-node mesh obfuscation; links this node anchors adopt it (both ends match)
-            _bad = awg_template_refusal(body.get("mesh_awg"), nodes[nid].get("name") or nid)
-            if _bad:
-                return 400, {"ok": False, **_bad, "code": "bad_request"}
-            _mt, _e3 = mesh_template_clean(body.get("mesh_awg"))     # …and the six 3.1 fields an AmneziaWG 3.1 link takes
-            if _e3:
-                return 400, {"ok": False, **_e3, "code": "bad_request"}
-            nodes[nid]["mesh_awg"] = _mt
+        # A node has no mesh type or AWG params of its own: both belong to a link, set on its sheet (/api/connection/update;
+        # plan §8 rounds 12–13). A `mesh_awg` here is ignored; one already stored moves onto its links (mesh_link_awg_migrate).
         nodes[nid].pop("mesh_awg_gen", None)   # the per-node type of an unreleased build (plan §8 round 12): dead, dropped as we pass
-        # R4 for this node's links: its type over its template — judged when either CHANGES, so a node the panel-wide door
-        # let through (it checks every inheriting node) never has an unrelated save refused
-        _awg_after = mesh_template_clean(nodes[nid].get("mesh_awg"))[0]
-        if _awg_after != _awg_before and mesh_awg3_refusal(deps, nodes[nid]):   # the timings its links would resolve to cross
-            return 400, {"ok": False, **mesh_awg3_refusal(deps, nodes[nid]), "code": "bad_request"}
-        if _awg_after != _awg_before:
-            # …against every type a link this node anchors can be made as (its own choice, else the fleet's)
-            _g4 = "3.1" if any(mesh_gen_for(deps, nodes, nid, p) == "3.1" for p in nodes if p > nid) else "2.0"
-            _bad = mesh_omit_s_refusal(_g4, mesh_template(deps, nodes[nid])[1], nodes[nid].get("name") or nid)
-            if _bad:
-                return 400, {"ok": False, **_bad, "code": "bad_request"}
         _mesh_after = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")
-        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2] or _awg_after != _awg_before:
-            # subnet / PREFIX / AWG changed → the link is re-addressed / renamed / re-obfuscated: must re-provision (rebuild)
+        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2]:
+            # subnet / PREFIX changed → the link is re-addressed / renamed: must re-provision (rebuild)
             mesh_reprovision_node(nodes, nid)
             reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)   # rebuild its links with the new config
             ev_append(roster_path, "node", nid, "Re-provisioned mesh links", nodes[nid].get("name", nid))
@@ -26995,35 +27022,58 @@ def api(method, path, qs, body, deps):
             if not (5 <= q <= RELAY_QUOTA_MAX):
                 return 400, {"ok": False, **perr("relay_quota_pct must be between {v1} and {v2}", v1="5", v2=str(RELAY_QUOTA_MAX)), "code": "bad_request"}
             nodes[nid].setdefault("relay", {})["quota_pct"] = q
-        _relinked = False
-        if "mesh_awg_gen" in body:     # this LINK's type ("" = the fleet's default); a change rebuilds the link on both ends
-            _mg = str(body.get("mesh_awg_gen") or "")
-            if _mg and _mg not in MESH_AWG_GENS:
+        # This LINK's type ("" = the fleet's default) and AWG params ({} = the fleet's), stored on the pair's anchor; a change
+        # to either rebuilds the link on both ends, once (plan §8 rounds 12–13). Both are judged together before anything is
+        # stored, so a type and a template that cannot go together are refused whichever of them changed.
+        _x, _y = (nid, peer) if nid < peer else (peer, nid)
+        _g0, _t0 = mesh_link_override(nodes, nid, peer), mesh_template_clean(mesh_link_awg_set(nodes, nid, peer))[0] or {}
+        _g1, _t1 = _g0, _t0
+        if "mesh_awg_gen" in body:
+            _g1 = str(body.get("mesh_awg_gen") or "")
+            if _g1 and _g1 not in MESH_AWG_GENS:
                 return 400, {"ok": False, "error": "mesh_awg_gen must be 2.0, 3.1, wg or blank", "code": "bad_request"}
-            if _mg != mesh_link_override(nodes, nid, peer):
-                _x, _y = (nid, peer) if nid < peer else (peer, nid)
-                _m = nodes[_x].setdefault("mesh_link_gen", {})
-                if _mg:
-                    _m[_y] = _mg
+        if "mesh_awg" in body:
+            _where = mesh_pair_name(nodes, nid, peer)
+            _bad = awg_template_refusal(body.get("mesh_awg") or {}, _where)
+            if _bad:
+                return 400, {"ok": False, **_bad, "code": "bad_request"}
+            _t1, _e3 = mesh_template_clean(body.get("mesh_awg") or {})   # the 2.0 fields and the six a 3.1 link takes
+            if _e3:
+                return 400, {"ok": False, **_e3, "code": "bad_request"}
+        if (_g1, _t1) != (_g0, _t0):
+            _bad = (mesh_omit_s_refusal(_g1 or mesh_gen_of(deps), awg_template(_t1)[1], mesh_pair_name(nodes, nid, peer))
+                    or mesh_awg3_refusal(deps, {"mesh_awg": _t1}))   # R4, and 3.1 timings that would cross once resolved
+            if _bad:
+                return 400, {"ok": False, **_bad, "code": "bad_request"}
+            for _key, _val in (("mesh_link_gen", _g1), ("mesh_link_awg", _t1)):
+                _m = nodes[_x].setdefault(_key, {})
+                if _val:
+                    _m[_y] = _val
                 else:
                     _m.pop(_y, None)
                 if not _m:
-                    nodes[_x].pop("mesh_link_gen", None)
-                _keep = mesh_relink_pair(nodes, nid, peer)
-                reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)
-                for _who, _kv in _keep.items():            # the link's own settings, carried over to the rebuilt records
-                    _nlr = (nodes[_who].get("links") or {}).get(peer if _who == nid else nid)
-                    if _nlr is not None:
-                        _nlr.update(_kv)
-                ev_append(roster_path, "node", nid, "Re-provisioned mesh link",
-                          "%s ↔ %s" % (nodes[nid].get("name", nid), nodes[peer].get("name", peer)),
-                          "type → %s" % (_mg or "default"), detail_key="type → {v1}",
-                          detail_vars={"v1": _mg if _mg else perr("val|default")})
-                _relinked = True
+                    nodes[_x].pop(_key, None)
+        _relinked = False
+        if (_g1, _t1) != (_g0, _t0):
+            _keep = mesh_relink_pair(nodes, nid, peer)
+            reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)
+            for _who, _kv in _keep.items():            # the link's own settings, carried over to the rebuilt records
+                _nlr = (nodes[_who].get("links") or {}).get(peer if _who == nid else nid)
+                if _nlr is not None:
+                    _nlr.update(_kv)
+            if _g1 != _g0:
+                ev_append(roster_path, "node", nid, "Re-provisioned mesh link", mesh_pair_name(nodes, nid, peer),
+                          "type → %s" % (_g1 or "default"), detail_key="type → {v1}",
+                          detail_vars={"v1": _g1 if _g1 else perr("val|default")})
+            else:
+                ev_append(roster_path, "node", nid, "Re-provisioned mesh link", mesh_pair_name(nodes, nid, peer),
+                          "AWG params changed", detail_key="AWG params changed")
+            _relinked = True
         nodes_save(deps["nodes_path"], nodes)
         _lr = (nodes[nid].get("links") or {}).get(peer) or {}
         return 200, {"ok": True, "data": {"node": nid, "peer": peer, "relinked": _relinked,
                                           "mesh_awg_gen": mesh_link_override(nodes, nid, peer),
+                                          "mesh_awg": mesh_link_awg_set(nodes, nid, peer),
                                           "dial_src": _lr.get("dial_src", ""),
                                           "dial_endpoint": _lr.get("dial_endpoint", ""),
                                           "relay": _lr.get("relay") or {},

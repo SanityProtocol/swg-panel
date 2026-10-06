@@ -4369,14 +4369,14 @@ export const STR = {
   "How many rows the Overview's ranked lists show (1–50).":
     "Сколько строк показывать в рейтингах на «Обзоре» (1–50).",
   "All settings saved": "Все настройки сохранены",
-  "Overrides for *{v1}* — blank inherits the default. Changing the subnet, prefix, or AWG re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config).":
-    "Параметры для *{v1}* — пустое поле берёт значение по умолчанию. Смена подсети, префикса или параметров AWG пересоберёт подключения этой ноды при сохранении (она ненадолго выпадет из сети, пока соседи переподключаются).",
+  "Overrides for *{v1}* — blank inherits the default. Changing the subnet or prefix re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config). A link's type and AWG params are set on its card under Node connections.":
+    "Параметры для *{v1}* — пустое поле берёт значение по умолчанию. Смена подсети или префикса пересоберёт подключения этой ноды при сохранении (она ненадолго выпадет из сети, пока соседи переподключаются с новыми настройками). Тип линка и его параметры AWG задаются на его карточке в «Соединениях нод».",
   "Ingress address": "Адрес входа",
   "— what peers and clients dial to reach this node": "— по нему к этой ноде подключаются и пиры, и клиенты",
   "Hostname or IP — e.g. node.example.com": "Имя хоста или IP — например node.example.com",
   "(auto)": "(авто)",
-  "Obfuscation for the mesh links that terminate on *{v1}* — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).":
-    "Маскировка для связей сети, которые приходят на *{v1}* — каждая подключающаяся нода примет её и переподключится при сохранении. Пусто — авто (свой набор на связь).",
+  "Both ends of this link use these. A blank cell takes the fleet's default in Settings → Mesh, else a fresh value when the link is rebuilt.":
+    "Их используют оба конца этого линка. Пустое поле берёт значение флота по умолчанию из «Настройки → Меш», а без него — новое значение при пересборке линка.",
   "Configure a panel login first.": "Сначала настройте вход в панель.",
   "Sign-in requires a code from your authenticator app. Keep your recovery codes somewhere safe in case you lose the device.":
     "Для входа нужен код из приложения-аутентификатора. Сохраните запасные коды в надёжном месте на случай потери устройства.",
@@ -4874,7 +4874,6 @@ export const STR = {
   "Days are counted in {v1}": "Сутки считаются по поясу {v1}",
   "Days are counted in this server's zone": "Сутки считаются по поясу этого сервера",
   "System mesh defaults": "Умолчания системной сети",
-  "mesh AWG params": "параметры AWG сети",
   "Geo lists will refresh on each node's next sync.": "Гео-списки обновятся при следующей синхронизации нод.",
   "Couldn't save the list.": "Не удалось сохранить список.",
   "Content filters": "Фильтры содержимого",
@@ -5891,6 +5890,7 @@ export const STR = {
   "Re-provisioned mesh links": "Связи сети пересобраны",
   "Re-provisioned mesh link": "Меш-линк пересобран",
   "type → {v1}": "тип → {v1}",
+  "AWG params changed": "параметры AWG изменены",
   // activity verbs for the rebuild adapter (ev_append writes English; the browser looks the sentence up)
   "Rebuild armed": "Пересборка подготовлена",
   "Rolled back to the superseded box": "Откат на прежнюю машину",
@@ -6268,7 +6268,8 @@ export const STR = {
   "subscription server": "сервер подписок",
   "catalog categories": "категории каталога",
   "never updated": "не обновлялся",
-  "This node's mesh AWG params": "Параметры AWG сети этой ноды",
+  "This link's AWG params":
+    "Параметры AWG этого линка",
   "rotate failed": "смена не прошла",
   "app default": "по умолчанию",
   "check failed": "не проверилось",
@@ -6801,7 +6802,8 @@ export const STR = {
   "Default mesh AWG params": "Параметры AWG меша по умолчанию",
   "The AmneziaWG 3.1 values set here are kept for AWG 3.1 links — select AWG 3.1 to see them.": "Заданные здесь значения AmneziaWG 3.1 сохраняются для линков AWG 3.1 — выберите AWG 3.1, чтобы их увидеть.",
   "S and H are drawn fresh; the 3.1 fields take what they inherit (the values shown in them), whose ranges the protocol randomises on its own.": "S и H выбираются заново; поля 3.1 получают то, что наследуют (значения, показанные в них), — их диапазоны протокол и так перебирает случайно.",
-  "Obfuscation for new AmneziaWG mesh links, unless a node sets its own. Blank = auto (a fresh set per link).": "Маскировка для новых меш-линков AmneziaWG, если нода не задаёт свою. Пусто — авто (свой набор на каждый линк).",
+  "Obfuscation for new AmneziaWG mesh links, unless a link sets its own on its card. Blank = auto (a fresh set per link).":
+    "Маскировка для новых меш-линков AmneziaWG, если линк не задаёт свою на своей карточке. Пусто — авто (свой набор на каждый линк).",
   "val|per link": "у каждого линка свой",
   "Each link gets a key of its own.": "Каждый линк получает собственный ключ.",
   "On for every AmneziaWG 3.1 link.": "Включено для каждого линка AmneziaWG 3.1.",

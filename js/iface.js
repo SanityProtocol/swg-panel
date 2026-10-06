@@ -1499,6 +1499,90 @@ export function openIfaceEditor(node, iface) {
   if (k === "wdtt") return openEditWdtt(node, iface);
   return openEditIface(node, iface);
 }
+// The 2.0 set — what Settings edits: the interface defaults and mesh_awg stay AmneziaWG 2.0 (docs/AWG3-PLAN.md D-default,
+// D-mesh). Derived from AWG_ORDER, the SPA's one list, instead of a second copy of it.
+export const AWG_KEYS = AWG_ORDER.slice(0, AWG_ORDER.indexOf("HeaderProtectionKey"));
+// client-side AmneziaWG obfuscation generator — mirrors the panel's gen_awg_params (for the "Generate" button)
+export function genAwg() {
+  const r = n => Math.floor(Math.random() * n), w = 15;
+  let s1 = 15 + r(135), s2 = 15 + r(135);
+  while (s2 === s1 || s2 === s1 + 56) s2 = 15 + r(135);
+  const b = [5, 1e9, 2e9, 3e9].map(base => base + r(9e8));
+  return { Jc: 4, Jmin: 40, Jmax: 70, S1: s1, S2: s2, S3: 15 + r(85), S4: 15 + r(85),
+    H1: `${b[0]}-${b[0] + w}`, H2: `${b[1]}-${b[1] + w}`, H3: `${b[2]}-${b[2] + w}`, H4: `${b[3]}-${b[3] + w}`,
+    I1: "<b 0xc000000001><r 64><t>", I2: "<r 24><t>", I3: "<r 32>",
+    I4: "<b 0xc000000001><r 32><t>", I5: "<t><r 48>" };
+}
+/* Placeholder text for an EMPTY cell — what that field becomes when a new interface is created. Derived from
+   genAwg() so the shown constants can never drift from the ones we actually emit. S1-S4 and H1-H4 are the
+   exception: the node rolls those fresh FOR EACH interface, which is a property worth keeping — two
+   interfaces never share a fingerprint, so a censor who learns one server's headers does not thereby
+   recognise the rest. Hence "blank = random" rather than a value. */
+export function awgBlankHints() {
+  const g = genAwg();
+  const out = {};
+  for (const k of AWG_KEYS) out[k] = /^[SH][1-4]$/.test(k) ? T("blank = random") : String(g[k]);
+  return out;
+}
+// labelled grid of the 12 AWG fields — read-only display (node settings) or editable (panel settings). A template: `omit` is
+// the line under it — what "-" means there (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A7) — replaced by the rule a typed "-" breaks.
+export function AwgGrid({ value, onChange, readOnly, placeholders, omit }) {
+  const v = value || {};
+  const issue = !readOnly && omit ? awgOmitIssue(v, true) : "";
+  // J / S / H / I as columns, fields stacked — same layout as the interface AWG display
+  return html`<div class="awg-cols">${AWG_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span>${readOnly
+    ? (awgIsNone(v[k]) ? html`<span class="awg-val awg-none">${T("val|none")}</span>`
+      : html`<span class="awg-val">${v[k] != null && v[k] !== "" ? v[k] : "—"}</span>`)
+    : html`<input value=${v[k] ?? ""} placeholder=${(placeholders || {})[k] || ""} class=${awgIsNone(v[k]) ? "awg-none" : null}
+        onInput=${e => onChange({ ...v, [k]: e.target.value })} spellcheck="false"/>`}</label>`)}</div>`)}</div>${omit
+    ? html`<p class=${"hint awg-omit-hint" + (issue ? " err" : "")}>${issue || omit}</p>` : null}`;
+}
+
+/* The mesh AWG params, in Settings → Mesh (the fleet's default) and on a link's sheet (its own), drawn for the TYPE selected there (`eff`, the
+   draft — so it follows the switch before a Save): WG — no block at all; AWG 2.0 — the 2.0 grid; AWG 3.1 — the 2.0 grid and the
+   six 3.1 fields a 3.1 link takes (plan §8 round 11; a blank cell takes the next layer down, shown as its background text,
+   `ph3`). Values the template holds for fields the type does not use are kept, and one line says so (operator, 2026-10-06:
+   show only what the selected type uses). Generate MERGES: it draws the 2.0 set and, for 3.1, fills the 3.1 cells with what
+   they inherit — it never drops a field it does not draw. */
+export function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3 }) {
+  const v = value || {};
+  const set2 = AWG_KEYS.some(k => String(v[k] ?? "").trim() !== ""), set3 = AWG3_EDIT_COLS.flat().some(k => String(v[k] ?? "").trim() !== "");
+  const show3 = eff === "3.1";
+  // what this template still holds that the selected type does not use — kept, and said, never silently in effect
+  const keptLine = eff === "2.0" && set3
+    ? html`<div class="hint">${T("The AmneziaWG 3.1 values set here are kept for AWG 3.1 links — select AWG 3.1 to see them.")}</div>` : null;
+  if (eff === "wg") return null;                 // plain WireGuard has nothing to set: no block at all (operator, 2026-10-06)
+  const isSet = set2 || (show3 && set3);
+  return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> ${title}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
+    <div class="field" style="display:none;margin-top:8px">
+      <${AwgGrid} value=${v} onChange=${onChange} placeholders=${placeholders}
+        omit=${T("Type - in a cell for no such line on the links made from these; a blank cell stays automatic.")}/>
+      <div class="hint" style="margin:8px 0 0">${about}</div>${keptLine}
+      ${show3 ? html`<div style="margin-top:14px"><${Awg3Grid} value=${v} onKey=${(k, x) => onChange({ ...v, [k]: x })} placeholders=${ph3}
+        hpk=${T("val|per link")} rt=${T("val|on")} hpkTip=${T("Each link gets a key of its own.")} rtTip=${T("On for every AmneziaWG 3.1 link.")}
+        hint=${T("What AmneziaWG 3.1 links add to the fields above. A blank cell takes the value shown in it — the mesh default, or the 3.1 defaults in Settings → Interfaces; - for no such line.")}/></div>` : null}
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini"
+        title=${show3 ? T("S and H are drawn fresh; the 3.1 fields take what they inherit (the values shown in them), whose ranges the protocol randomises on its own.") : null}
+        onClick=${() => onChange({ ...v, ...genAwg(), ...(show3 ? Object.fromEntries(AWG3_EDIT_COLS.flat()
+          .filter(k => String(v[k] ?? "").trim() === "" && String((ph3 || {})[k] ?? "").trim())
+          .map(k => [k, ph3[k] === T("val|none") ? "-" : String(ph3[k])])) : {}) })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => onChange(Object.fromEntries(Object.entries(v)
+          .filter(([k]) => !AWG_KEYS.includes(k) && !(show3 && AWG3_EDIT_COLS.flat().includes(k)))))}>${T("Clear (auto)")}</button>` : null}</div>
+    </div></div>`;
+}
+/* A blank 3.1 cell of a mesh template, as background text: the next layer down, field by field — for a node, the panel's mesh
+   template; then the interface 3.1 defaults; then Amnezia's set (the panel's mesh_awg3 walks the same layers). */
+export function mesh3Hints(fromPanel) {
+  const ps = Store.panelSettings || {}, pm = fromPanel ? (ps.mesh_awg || {}) : {}, d = (ps.interface_defaults || {}).awg3_params || {};
+  const one = k => [pm[k], d[k], (ps.awg31_builtin || {})[k]].map(x => String(x ?? "").trim()).find(Boolean) || "";
+  return Object.fromEntries(AWG3_EDIT_COLS.flat().map(k => [k, awgIsNone(one(k)) ? T("val|none") : one(k)]));
+}
+/* A blank cell of a link's mesh AWG grid, as background text: what it is made with — the panel's mesh template where it sets
+   the field (none where it sets "-"), else what the link actually carries (`live`, its record's params), else nothing: auto. */
+export function meshAwgHints(live) {
+  const pt = (Store.panelSettings || {}).mesh_awg || {}; live = live || {};
+  return Object.fromEntries(AWG_KEYS.map(k => [k, awgIsNone(pt[k]) ? T("val|none")
+    : String(pt[k] ?? "").trim() || String(live[k] ?? "").trim()]));
+}
 /** A mesh link type switch (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md B1, §8 round 12): AmneziaWG 2.0, 3.1 or plain WireGuard — the
  *  fleet's default in Settings → Mesh, and one link's own on its connection sheet, where `inherit` (the default) adds a
  *  "Default (…)" button, "" in the draft. Each type in its protocol's own colour. The server decides what a link can be. */
@@ -1541,6 +1625,15 @@ export function ConnectionEditSheet({ node, iface }) {
   const [typePick, setTypePick] = useState(null);
   const typeSet = typePick === null ? typeSet0 : typePick;
   const typeDflt = (Store.panelSettings || {}).mesh_awg_gen || "2.0";
+  // …and its own AWG params (plan §8 round 13): {} = the fleet's default. Same follow-until-touched rule.
+  const awgSet0 = ((nrec.mesh_peers || []).find(p => p.peer === peer) || {}).awg_set || {};
+  const [awgPick, setAwgPick] = useState(null);
+  const awgSet = awgPick === null ? awgSet0 : awgPick;
+  const tplKey = o => JSON.stringify(Object.entries(o || {}).map(([k, x]) => [k, String(x ?? "").trim()]).filter(([, x]) => x).sort());
+  const awgChanged = tplKey(awgSet) !== tplKey(awgSet0);
+  const relink = typeSet !== typeSet0 || awgChanged;             // either rebuilds the link on both ends
+  const live = meta.awg_params || {};                            // what the link carries now: a blank cell's background text
+  const ph3 = (() => { const h = mesh3Hints(true); return Object.fromEntries(AWG3_EDIT_COLS.flat().map(k => [k, String(live[k] ?? "").trim() || h[k]])); })();
   const quota = quotaPick === null ? quota0 : quotaPick;
   const setRelayOn = setRelayPick, setQuota = setQuotaPick;
   const nodeDown = nodeStale(node) || inProc(nrec.proc_status);   // node not reporting / mid re-install → can't apply a dial change
@@ -1555,7 +1648,8 @@ export function ConnectionEditSheet({ node, iface }) {
       patch: () => {},
       call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp,
                                          relay_mode: relayOn ? "relay" : "forward", relay_quota_pct: Number(quota) || 50,
-                                         ...(typeSet !== typeSet0 ? { mesh_awg_gen: typeSet } : {}) }),   // only a change rebuilds the link
+                                         ...(typeSet !== typeSet0 ? { mesh_awg_gen: typeSet } : {}),   // only a change rebuilds the link
+                                         ...(awgChanged ? { mesh_awg: Object.fromEntries(JSON.parse(tplKey(awgSet))) } : {}) }),
     });
   };
   // ⚠️ 90, not 100. The relay is a single event loop, so one core is its structural ceiling anyway; what
@@ -1564,7 +1658,7 @@ export function ConnectionEditSheet({ node, iface }) {
   const QUOTA_MAX = 90;
   const quotaErr = (() => { const q = Number(quota); return (!Number.isInteger(q) || q < 5 || q > QUOTA_MAX) ? T("CPU cap must be between {v1} and {v2}", { v1: "5", v2: String(QUOTA_MAX) }) : ""; })();
   const connDirty = dialSrc !== (meta.dial_src || "") || dialEp !== (meta.dial_endpoint || "")
-    || relayOn !== relayOn0 || quota !== quota0 || typeSet !== typeSet0;   // enable Save only when something actually changed
+    || relayOn !== relayOn0 || quota !== quota0 || relink;   // enable Save only when something actually changed
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
   const allMeta = Store.describe[node] || {};
   const carried = Object.keys(allMeta).filter(k => !allMeta[k].system
@@ -1615,9 +1709,12 @@ export function ConnectionEditSheet({ node, iface }) {
     </div>
     <div style="margin-top:12px"><${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.meshSeries(node, peer, r).then(x => x && x.ok ? x.data : {})}/></div>
     <div style="margin-top:16px"><${MeshGenField} label=${T("Link type")} value=${typeSet} onChange=${setTypePick} inherit=${typeDflt}
-      hint=${typeSet !== typeSet0 ? T("Saving rebuilds this link on both ends — it drops for a few seconds while they reconnect.")
+      hint=${relink ? T("Saving rebuilds this link on both ends — it drops for a few seconds while they reconnect.")
         : T("This link only, both ends. Default follows the fleet's type in Settings → Mesh.")}
-      after=${(nrec.mesh_gen_reasons || []).filter(r => r.iface === iface).map(r => html`<div class="hint warnish" key=${r.iface}>${srvText(r.msg)}</div>`)}/></div>
+      after=${(nrec.mesh_gen_reasons || []).filter(r => r.iface === iface).map(r => html`<div class="hint warnish" key=${r.iface}>${srvText(r.msg)}</div>`)}/>
+      <${MeshAwgParams} title=${T("This link's AWG params")} eff=${typeSet || typeDflt} value=${awgSet} onChange=${setAwgPick}
+        placeholders=${meshAwgHints(live)} ph3=${ph3}
+        about=${T("Both ends of this link use these. A blank cell takes the fleet's default in Settings → Mesh, else a fresh value when the link is rebuilt.")}/></div>
     <div class="row2" style="margin-top:14px">
       <div class="field"><label>${T("Dial source IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— {node}'s IP", { node: Store.nodeName(node) })}</span></label>
         <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto=${T("Auto (default route)")}/></div>
