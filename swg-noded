@@ -13049,6 +13049,22 @@ def awg_load_request(req, agent, sudo):
         with open(AWG_LOAD_STAMP) as f:
             st = json.load(f) or {}
         if str(st.get("id") or st.get("n") or "") == pid:
+            # Taken already. Without a result yet, this daemon was restarted while the op ran on in its own scope: the
+            # agent writes its outcome when it ends — maybe after this daemon started — so it is looked for on EVERY pass,
+            # not only at start (measured: restarted at +5 s, the op ended at +11 s, and the panel waited for "lost").
+            if "code" not in st and (not _AWG_LOAD["v"] or _AWG_LOAD["v"].get("id") != pid):
+                rec = {}
+                with contextlib.suppress(Exception):
+                    with open(AWG_LOAD_RESULT) as f:
+                        rec = json.load(f) or {}
+                if isinstance(rec, dict) and rec.get("id") == pid:
+                    _AWG_LOAD["v"] = _awg_load_result(rec, n, pid)
+                    _AWG_GEN["v"] = None
+                    with contextlib.suppress(OSError):
+                        with open(AWG_LOAD_STAMP, "w") as f:
+                            json.dump(dict(_AWG_LOAD["v"], at=int(time.time())), f)
+                    print("awg module load #%d: %s (finished while swg-noded restarted)" % (n, _AWG_LOAD["v"]["code"]), flush=True)
+                    return True                 # its interfaces were bounced: the routing reconcile follows
             return False
     except (OSError, ValueError, TypeError, AttributeError):
         pass

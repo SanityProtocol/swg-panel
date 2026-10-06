@@ -23,7 +23,7 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
        the agent after swg-noded restarted is picked up at the next start
 
 Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | timeout | procscan | noscope | key31 | record
-                                                    | churn | pid   (exit 0 when caught)
+                                                    | churn | pid | latepickup   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
@@ -42,6 +42,8 @@ PLANTS = {
     "record": ("[10]", "noded", "        return False\n    with contextlib.suppress(OSError):\n        os.remove(AWG_LOAD_RESULT)",
                "        pass\n    with contextlib.suppress(OSError):\n        os.remove(AWG_LOAD_RESULT)"),
     "churn": ("[10]", "noded", "    return _AWG_LOAD[\"v\"][\"code\"] not in AWG_LOAD_PRECHECK", "    return bool(r.get(\"ok\"))"),
+    "latepickup": ("[9]", "noded", "                if isinstance(rec, dict) and rec.get(\"id\") == pid:\n                    _AWG_LOAD[\"v\"] = _awg_load_result(rec, n, pid)\n                    _AWG_GEN",
+                   "                if False:\n                    _AWG_LOAD[\"v\"] = _awg_load_result(rec, n, pid)\n                    _AWG_GEN"),
     "pid": ("[10]", "noded", "        if str(st.get(\"id\") or st.get(\"n\") or \"\") == pid:", "        if str(st.get(\"n\") or \"\") == str(n):"),
 }
 FAILS, SECTION = [], [""]
@@ -270,6 +272,17 @@ json.dump({"result": "done", "was": "1.0.20251009", "loaded": "3.1.20260812", "i
 N3 = load(paths["noded"], "noded_load3")
 check("a result the agent wrote after swg-noded restarted is picked up at the next start",
       (N3._AWG_LOAD["v"] or {}).get("id") == "11:5" and (N3._AWG_LOAD["v"] or {}).get("code") == "done", N3._AWG_LOAD)
+# …and the case the VM pass found: the daemon restarted WHILE the op still ran — no result at its start, the file appears later
+json.dump({"n": 12, "id": "12:5", "at": 1}, open(N.AWG_LOAD_STAMP, "w"))
+os.remove(N.AWG_LOAD_RESULT)
+N4 = load(paths["noded"], "noded_load4")
+N4.run_agent = lambda *a, **k: (_ for _ in ()).throw(AssertionError("the same press must not run again"))
+check("restarted mid-op: nothing to report yet, and the press is not run again", N4.awg_load_request({"n": 12, "age": 30, "id": "12:5"}, "agent", False) is False
+      and not N4._AWG_LOAD["v"], N4._AWG_LOAD)
+json.dump({"result": "done", "was": "1.0.20251009", "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel"}, "id": "12:5"}, open(N.AWG_LOAD_RESULT, "w"))
+check("…the op ends later: the next pass adopts its result (and counts the bounce as churn)",
+      N4.awg_load_request({"n": 12, "age": 40, "id": "12:5"}, "agent", False) is True and (N4._AWG_LOAD["v"] or {}).get("code") == "done", N4._AWG_LOAD)
+check("…once: the pass after that has nothing new", N4.awg_load_request({"n": 12, "age": 45, "id": "12:5"}, "agent", False) is False)
 for ver, want in (("1.0.20251009", "2.0"), ("3.1.20260812", "3.1"), ("3.0.20260731", "3.0"), ("", None), ("garbage", None)):
     N2.run = lambda args, **kw: subprocess.CompletedProcess(args, 0, ver, "")
     check("modinfo %r → %r" % (ver, want), N2._awg_disk_gen() == want, N2._awg_disk_gen())
