@@ -3388,8 +3388,7 @@ const sectionLabel = k => ({
             hint=${T("What new links are made as, unless a node below sets its own. Re-provision a node to move its existing links.")}/>
           ${/* the fleet's default obfuscation for AmneziaWG links — shown whatever the default type, since a node can override
                 to AmneziaWG; the 3.1 readout only while the default is 3.1 */""}
-          <${MeshAwgParams} title=${T("Default mesh AWG params")} eff=${meshGen === "3.1" ? "3.1" : "2.0"} value=${awg} onChange=${setAwg}
-            show3=${(Store.nodes || []).some(n => ((nodeEdits[n.id] || {}).mesh_awg_gen || n.mesh_awg_gen) === "3.1")}
+          <${MeshAwgParams} title=${T("Default mesh AWG params")} eff=${meshGen} value=${awg} onChange=${setAwg}
             placeholders=${awgBlankHints()} ph3=${mesh3Hints(false)} about=${T("Obfuscation for new AmneziaWG mesh links, unless a node sets its own. Blank = auto (a fresh set per link).")}/>
         </div>
         ${(Store.nodes || []).length ? html`<div class="setnodes" style="margin:16px 0 10px">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
@@ -4401,24 +4400,30 @@ export function NodeIngressForm({ node, vals, set }) {
 }
 
 // Per-node mesh overrides, edited in Settings → Mesh, box 2 (keyed by node, so it re-inits on badge switch)
-/* The mesh AWG params, in box 1 (the fleet's default) and box 2 (a node's own): a toggle row; the 2.0 grid with `about` under it;
-   the six AmneziaWG 3.1 fields a 3.1 link takes (plan §8 round 11 — editable; a blank cell takes the next layer down, shown as
-   its background text, `ph3`) whenever 3.1 is in play here (`show3`) or the template already holds one — a field in effect is
-   never hidden; for WG the same row, saying there is nothing to set. Generate MERGES: it draws the 2.0 set and, where the 3.1
-   cells are shown, fills them with what they inherit — it never drops a field it does not draw. */
-function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3, show3 }) {
+/* The mesh AWG params, in box 1 (the fleet's default) and box 2 (a node's own), drawn for the TYPE selected there (`eff`, the
+   draft — so it follows the switch before a Save): WG — nothing to set; AWG 2.0 — the 2.0 grid; AWG 3.1 — the 2.0 grid and the
+   six 3.1 fields a 3.1 link takes (plan §8 round 11; a blank cell takes the next layer down, shown as its background text,
+   `ph3`). Values the template holds for fields the type does not use are kept, and one line says so (operator, 2026-10-06:
+   show only what the selected type uses). Generate MERGES: it draws the 2.0 set and, for 3.1, fills the 3.1 cells with what
+   they inherit — it never drops a field it does not draw. */
+function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3 }) {
   const v = value || {};
-  const has3 = AWG3_EDIT_COLS.flat().some(k => String(v[k] ?? "").trim() !== "");
-  show3 = show3 || eff === "3.1" || has3;
-  if (eff === "wg" && !has3) return html`<div class="field" style="margin-top:6px"><div class="advtoggle" style="cursor:default"><span class="advcaret" style="visibility:hidden">▸</span> ${title}
+  const set2 = AWG_KEYS.some(k => String(v[k] ?? "").trim() !== ""), set3 = AWG3_EDIT_COLS.flat().some(k => String(v[k] ?? "").trim() !== "");
+  const show3 = eff === "3.1";
+  // what this template still holds that the selected type does not use — kept, and said, never silently in effect
+  const kept = eff === "wg" ? (set2 || set3) : (eff === "2.0" && set3);
+  const keptLine = kept ? html`<div class="hint">${eff === "wg"
+    ? T("The AmneziaWG values set here are kept for links of another type — select AWG 2.0 or AWG 3.1 to see them.")
+    : T("The AmneziaWG 3.1 values set here are kept for AWG 3.1 links — select AWG 3.1 to see them.")}</div>` : null;
+  if (eff === "wg") return html`<div class="field" style="margin-top:6px"><div class="advtoggle" style="cursor:default"><span class="advcaret" style="visibility:hidden">▸</span> ${title}
       <span class="faint" style="font-weight:400">${T("(none — WG)")}</span></div>
-    <div class="hint">${T("Plain WireGuard links carry no obfuscation, so there is nothing to set here.")}</div></div>`;
-  const isSet = [...AWG_KEYS, ...AWG3_EDIT_COLS.flat()].some(k => String(v[k] ?? "").trim() !== "");
+    <div class="hint">${T("Plain WireGuard links carry no obfuscation, so there is nothing to set here.")}</div>${keptLine}</div>`;
+  const isSet = set2 || (show3 && set3);
   return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> ${title}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
     <div class="field" style="display:none;margin-top:8px">
       <${AwgGrid} value=${v} onChange=${onChange} placeholders=${placeholders}
         omit=${T("Type - in a cell for no such line on the links made from these; a blank cell stays automatic.")}/>
-      <div class="hint" style="margin:8px 0 0">${about}</div>
+      <div class="hint" style="margin:8px 0 0">${about}</div>${keptLine}
       ${show3 ? html`<div style="margin-top:14px"><${Awg3Grid} value=${v} onKey=${(k, x) => onChange({ ...v, [k]: x })} placeholders=${ph3}
         hpk=${T("val|per link")} rt=${T("val|on")} hpkTip=${T("Each link gets a key of its own.")} rtTip=${T("On for every AmneziaWG 3.1 link.")}
         hint=${T("What AmneziaWG 3.1 links add to the fields above. A blank cell takes the value shown in it — the mesh default, or the 3.1 defaults in Settings → Interfaces; - for no such line.")}/></div>` : null}
@@ -4426,7 +4431,8 @@ function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3, 
         title=${show3 ? T("S and H are drawn fresh; the 3.1 fields take what they inherit (the values shown in them), whose ranges the protocol randomises on its own.") : null}
         onClick=${() => onChange({ ...v, ...genAwg(), ...(show3 ? Object.fromEntries(AWG3_EDIT_COLS.flat()
           .filter(k => String(v[k] ?? "").trim() === "" && String((ph3 || {})[k] ?? "").trim())
-          .map(k => [k, ph3[k] === T("val|none") ? "-" : String(ph3[k])])) : {}) })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => onChange({})}>${T("Clear (auto)")}</button>` : null}</div>
+          .map(k => [k, ph3[k] === T("val|none") ? "-" : String(ph3[k])])) : {}) })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => onChange(Object.fromEntries(Object.entries(v)
+          .filter(([k]) => !AWG_KEYS.includes(k) && !(show3 && AWG3_EDIT_COLS.flat().includes(k)))))}>${T("Clear (auto)")}</button>` : null}</div>
     </div></div>`;
 }
 /* A blank 3.1 cell of a mesh template, as background text: the next layer down, field by field — for a node, the panel's mesh
