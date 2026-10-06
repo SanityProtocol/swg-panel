@@ -16,6 +16,7 @@ REAL `api()` handler on a temp fleet — no text matching.
 Run: python3 tests/rebuild_pin_reset_selftest.py     (0 = pass)
      --perturb        the handler applies nothing (the preview still lists them)        → RED
      --perturb-plan   the plan does not look at other servers' pins                     → RED
+     --perturb-dial   the rebuild keeps every parked mesh dial setting (plan §8 round 14)  → RED [4]
 """
 import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
 
@@ -25,7 +26,10 @@ PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-serv
 PLANTS = {
     "--perturb": ('''            if isinstance(_m, dict) and str(_m.get(nid) or "") == _p["from"]:
                 _m.pop(nid, None)''', '''            pass'''),
-    "--perturb-plan": ('''            if _v and _bind_swap_transform(_v, ctx) != _v:''', '''            if False:'''),
+    "--perturb-plan": ('''            if _v and _bind_swap_transform(_v, ctx) != _v:
+                pin_resets.append''', '''            if False:
+                pin_resets.append'''),
+    "--perturb-dial": ('''                mesh_link_unpark(nodes, _d["node"], _d["peer"], _d["key"])''', '''                pass'''),
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
 
@@ -117,6 +121,33 @@ check("wg0 and the WDTT server pinned 198.51.100.10 — the new box has it, so i
       after["wg0"] == {X: "198.51.100.10", Y: "198.51.100.30"} and after["wdtt1"] == {X: "198.51.100.10"}, after)
 check("wg1 and the default list pinned 198.51.100.11 — the new box does not, so back to Auto",
       after["wg1"] == {} and after["default"] == {Y: "198.51.100.30"}, after)
+
+print("\n[4] a mesh link's dial settings naming the OLD box go back to Auto; every other one survives the rebuild (plan §8 round 14)")
+deps = fixture("c")
+nodes = json.load(open(deps["nodes_path"]))
+P.reconcile_mesh(nodes, deps["node_snaps"], deps)
+nodes[X]["links"][N]["dial_src"] = "198.51.100.10"        # X's own address — the new box has it (assume below): kept
+nodes[X]["links"][Y]["dial_src"] = "198.51.100.11"        # X's own address the new box will NOT have: reset
+nodes[X]["links"][Y]["dial_endpoint"] = "198.51.100.30"   # Y's address, dialled from X: not the old box's, kept
+nodes[N]["links"][X]["dial_endpoint"] = "198.51.100.11"   # N dials the old box's .11: reset
+nodes[N]["links"][X]["relay"] = {"mode": "relay"}          # N's relay on that leg: kept
+nodes[Y]["links"][X]["dial_src"] = "198.51.100.30"        # Y's own address: kept
+json.dump(nodes, open(deps["nodes_path"], "w"))
+st, r = P.api("GET", "/api/nodes/rebuild/preflight", {"node": [X], "assume": ["198.51.100.10"]}, {}, deps)
+mrows = sorted((a["path"], a.get("from")) for a in ((r.get("data") or {}).get("address") or []) if str(a.get("path", "")).startswith("mesh."))
+check("the preview lists the two dial settings on the old box's .11, and only those",
+      mrows == sorted([("mesh.%s.%s.dial_src" % (X, Y), "198.51.100.11"), ("mesh.%s.%s.dial_endpoint" % (N, X), "198.51.100.11")]), mrows)
+st, r = P.api("POST", "/api/nodes/rebuild", {}, {"node": X, "supersede": False, "assume": "198.51.100.10"}, deps)
+nn = json.load(open(deps["nodes_path"]))
+g = lambda a, b, k: ((nn[a].get("links") or {}).get(b) or {}).get(k)
+check("rebuild 200, links rebuilt", st == 200 and N in (nn[X].get("links") or {}) and Y in (nn[X].get("links") or {}), (st, r.get("error")))
+check("reset: X's dial_src .11 toward Y, N's dial_endpoint .11 toward X",
+      g(X, Y, "dial_src") is None and g(N, X, "dial_endpoint") is None, (g(X, Y, "dial_src"), g(N, X, "dial_endpoint")))
+check("kept: X's dial_src .10 (the new box has it), X's dial_endpoint to Y, N's relay, Y's dial_src",
+      g(X, N, "dial_src") == "198.51.100.10" and g(X, Y, "dial_endpoint") == "198.51.100.30"
+      and g(N, X, "relay") == {"mode": "relay"} and g(Y, X, "dial_src") == "198.51.100.30",
+      (g(X, N, "dial_src"), g(X, Y, "dial_endpoint"), g(N, X, "relay"), g(Y, X, "dial_src")))
+check("nothing left parked", all("link_keep" not in nn[k] for k in nn), {k: nn[k].get("link_keep") for k in nn})
 
 shutil.rmtree(TMP, ignore_errors=True)
 print()

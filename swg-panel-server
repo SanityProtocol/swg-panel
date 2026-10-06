@@ -11353,15 +11353,32 @@ def rebuild_plan(deps, nodes, nid, snaps, seen, assume=None, supersede=None):
             _v = str((_m or {}).get(nid) or "") if isinstance(_m, dict) else ""
             if _v and _bind_swap_transform(_v, ctx) != _v:
                 pin_resets.append({"node": _on, "kind": _k, "iface": _ifn, "from": _v})
+    # 5c. …and the mesh links' own dial settings that name the old box (plan §8 round 14): this node's `dial_src` on each of
+    #     its links, and each peer's `dial_endpoint` toward it. The re-provision below parks them so a rebuild never resets
+    #     them — right for the same box, wrong for a new one, so they take the same rule: kept only when the new box has
+    #     the address, otherwise back to Auto (dropped from what is parked).
+    dial_resets = []
+    for _peer, _lr in (c.get("links") or {}).items():
+        _v = mesh_link_extras(_lr).get("dial_src", "")
+        if _v and _bind_swap_transform(_v, ctx) != _v:
+            dial_resets.append({"node": nid, "peer": _peer, "key": "dial_src", "from": _v})
+    for _on, _orec in (nodes or {}).items():
+        if _on != nid and isinstance(_orec, dict):
+            _v = mesh_link_extras(((_orec.get("links") or {}).get(nid))).get("dial_endpoint", "")
+            if _v and _bind_swap_transform(_v, ctx) != _v:
+                dial_resets.append({"node": _on, "peer": nid, "key": "dial_endpoint", "from": _v})
     addr_actions = list(addr_actions) + [
         ("pin.%s.%s" % (_p["node"], _p["iface"] or "default"), "reset '%s' -> ''" % _p["from"],
          "an address another server's rules chose to leave this node by — the old box's, so back to Auto")
-        for _p in pin_resets]
+        for _p in pin_resets] + [
+        ("mesh.%s.%s.%s" % (_d["node"], _d["peer"], _d["key"]), "reset '%s' -> ''" % _d["from"],
+         "a mesh link's dial setting naming the old box's address — back to Auto")
+        for _d in dial_resets]
 
     # 6. whether a rollback point will EXIST afterwards — which is not the same question as whether THIS
     #    arming creates one. A marker kept from an earlier migration is still a rollback point, and the
     #    sheet's "no rollback point was kept" warning would be a lie if it ignored one.
-    return {"record": newrec, "requests": requests, "pin_resets": pin_resets,
+    return {"record": newrec, "requests": requests, "pin_resets": pin_resets, "dial_resets": dial_resets,
             "armed": armed, "unrestorable": unrestorable,
             "needs_vault": need_vault, "no_escrow": no_escrow,
             "orphan_escrow": orphan_escrow, "incomplete": incomplete,
@@ -11661,6 +11678,19 @@ def transfer_strip(record):
         if isinstance(_ov, dict) and _ov.get("system"):
             clean["ifaces"].pop(_ifn, None)
     return clean, sorted(stripped, key=lambda x: (x["kind"], x["iface"]))
+
+
+def transfer_homecoming_keep(nodes, nid, cur, newrec):
+    """A node coming HOME keeps what this panel set on its links (plan §8 round 14): the pairs it anchors (`mesh_link`, this
+    fleet's ids — the bundle never carries them) and its own halves' relay / dial settings, parked for the re-provision that
+    follows as the peers' halves are by it. Same box, so the addresses still hold."""
+    if isinstance(cur.get("mesh_link"), dict) and cur["mesh_link"]:
+        newrec["mesh_link"] = cur["mesh_link"]
+    kp = {p: v for p, v in (cur.get("link_keep") or {}).items() if p in nodes and p != nid}
+    kp.update({p: mesh_link_extras(lr) for p, lr in (cur.get("links") or {}).items()
+               if p in nodes and p != nid and mesh_link_extras(lr)})
+    if kp:
+        newrec["link_keep"] = kp
 
 
 def transfer_plan(deps, nodes, nid, snaps, seen, roster):
@@ -13318,6 +13348,14 @@ def mesh_link_awg_migrate(nodes):
     Returns whether anything moved (the caller saves)."""
     moved = False
     for nid, n in nodes.items():
+        # the two maps an unreleased dev build (689290a..8039a06) stored the same choices in — folded once
+        for _old, _key in (("mesh_link_gen", "type"), ("mesh_link_awg", "awg")):
+            if isinstance(n, dict) and _old in n:
+                for peer, v in ((n.pop(_old) or {}) if isinstance(n.get(_old), dict) else {}).items():
+                    if peer > nid and v and not mesh_link_cfg(nodes, nid, peer).get(_key):
+                        mesh_link_cfg_put(nodes, nid, peer, **{_key: v})
+                n.pop(_old, None)
+                moved = True
         t = n.get("mesh_awg") if isinstance(n, dict) else None
         if not (isinstance(t, dict) and t):
             continue
@@ -13329,22 +13367,47 @@ def mesh_link_awg_migrate(nodes):
     return moved
 
 
-def mesh_link_park(nodes, who, other):
-    """Tear down `who`'s half of its link to `other`: cancel a pending create, stage the interface's delete, drop its
-    override and the link record — PARKING the operator's own settings on it (MESH_LINK_KEEP) in `link_keep[other]`, which
-    the next _mesh_make_link of the pair puts back and mesh_need counts, so a rebuild never resets them."""
+def mesh_link_extras(lr):
+    """The operator's settings on one end's link record that DO something — relay mode "relay", a dial address or source
+    that is not blank (MESH_LINK_KEEP). What mesh_need counts as needing the pair and what a teardown parks: an inert
+    `relay: {mode: forward}` (every sheet save writes one) is neither."""
+    lr = lr if isinstance(lr, dict) else {}
+    kv = {k: str(lr.get(k) or "").strip() for k in ("dial_endpoint", "dial_src") if str(lr.get(k) or "").strip()}
+    if isinstance(lr.get("relay"), dict) and lr["relay"].get("mode") == "relay":
+        kv["relay"] = lr["relay"]
+    return kv
+
+
+def mesh_link_park(nodes, who, other, park=True, now=None):
+    """Tear down `who`'s half of its link to `other` — THE one teardown (a re-provision, one link's rebuild, retirement,
+    a node's removal): cancel a pending create, stage the interface's delete, drop its override and the link record. With
+    `park`, the operator's own settings on it (mesh_link_extras) go to `link_keep[other]` first, which the next
+    _mesh_make_link of the pair puts back and mesh_need counts, so a rebuild never resets them — never for a peer no
+    longer in the store (nothing would ever consume it)."""
     n = nodes.get(who) or {}
     lr = (n.get("links") or {}).get(other)
-    if not lr:
+    if lr is None:
         return
-    kv = {k: lr[k] for k in MESH_LINK_KEEP if lr.get(k)}
+    kv = mesh_link_extras(lr) if park and other in nodes else {}
     if kv:
         n.setdefault("link_keep", {})[other] = kv
-    if lr.get("iface"):
-        (n.get("create") or {}).pop(lr["iface"], None)
-        n.setdefault("delete", {})[lr["iface"]] = {"at": int(time.time())}
-        (n.get("ifaces") or {}).pop(lr["iface"], None)
+    ifc = (lr if isinstance(lr, dict) else {}).get("iface")
+    if ifc:
+        (n.get("create") or {}).pop(ifc, None)
+        n.setdefault("delete", {})[ifc] = {"at": int(now or time.time())}
+        (n.get("ifaces") or {}).pop(ifc, None)
     n["links"].pop(other, None)
+
+
+def mesh_link_unpark(nodes, who, other, *keys):
+    """Drop `keys` from what is parked on `who` for `other` (the rebuild's address reset); an emptied entry and map go."""
+    kp = (nodes.get(who) or {}).get("link_keep") or {}
+    for k in keys:
+        (kp.get(other) or {}).pop(k, None)
+    if other in kp and not kp[other]:
+        kp.pop(other)
+    if "link_keep" in (nodes.get(who) or {}) and not kp:
+        nodes[who].pop("link_keep")
 
 
 def mesh_relink_pair(nodes, a, b):
@@ -13743,7 +13806,8 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
         mine, theirs = (hosts[0], hosts[1]) if nid == x_nid else (hosts[1], hosts[0])
         port = _alloc_port(_used_ports(nodes, snaps, nid), nmc["port_base"])
         _stale = ((n.get("links") or {}).get(peer) or {}).get("subnet")   # a half-link's leftover record, replaced below
-        _kv = (n.get("link_keep") or {}).pop(peer, None) or {}      # this end's own settings, parked by the teardown
+        # this end's own settings: parked by the teardown, else on the half-link record replaced below
+        _kv = (n.get("link_keep") or {}).pop(peer, None) or mesh_link_extras((n.get("links") or {}).get(peer))
         if "link_keep" in n and not n["link_keep"]:
             n.pop("link_keep")
         n.setdefault("links", {})[peer] = {
@@ -13751,7 +13815,7 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
             "address": str(mine), "peer_address": str(theirs),
             "listen_port": port, "psk": psk, "role": "x" if nid == x_nid else "y",
             **({"proto": "wg"} if awg is None else {}),       # absent = AmneziaWG; the re-stage reads it (reconcile_mesh)
-            **{k: v for k, v in _kv.items() if k in MESH_LINK_KEEP}}
+            **_kv}
         n.setdefault("create", {})[iface] = {
             "cmd": ["wg"] if awg is None else ["awg"], "subnet": str(sub), "address": f"{mine}/31",
             "listen_port": port, "mtu": nmc["mtu"], "table": "off"}   # Table=off: cascade manages routing, no /0 hijack
@@ -13830,9 +13894,7 @@ def mesh_need(nodes, deps):
                 if isinstance(r, dict) and rule_on(r) and r.get("action") == "exit":
                     want(nid, str(r.get("node") or ""))
         for peer, lr in (n.get("links") or {}).items():
-            lr = lr if isinstance(lr, dict) else {}
-            if ((((lr.get("relay") or {}).get("mode") or "forward") == "relay")
-                    or str(lr.get("dial_endpoint") or "").strip() or str(lr.get("dial_src") or "").strip()):
+            if mesh_link_extras(lr):
                 want(nid, peer)
         for peer in (n.get("link_keep") or {}):    # …and the same settings parked by a teardown, until the rebuild returns them
             want(nid, peer)
@@ -13858,17 +13920,8 @@ def _mesh_retire(nodes, need, deps):
             continue
         _MESH_IDLE.pop(p, None)
         a, b = tuple(p)
-        for x, y in ((a, b), (b, a)):
-            n = nodes.get(x)
-            lr = ((n or {}).get("links") or {}).get(y)
-            if lr is None:
-                continue
-            ifc = (lr or {}).get("iface")
-            if ifc:
-                (n.get("create") or {}).pop(ifc, None)
-                n.setdefault("delete", {})[ifc] = {"at": int(now_)}
-                (n.get("ifaces") or {}).pop(ifc, None)
-            n["links"].pop(y, None)
+        for x, y in ((a, b), (b, a)):    # retired, not rebuilt: nothing to park (an unneeded pair has no settings that act)
+            mesh_link_park(nodes, x, y, park=False, now=now_)
         gone.append(p)
     if gone:
         names = sorted(" ↔ ".join(sorted(str((nodes.get(x) or {}).get("name") or x) for x in p)) for p in gone)
@@ -20147,14 +20200,7 @@ def mesh_unlink_node(nodes, nid):
                 other[_key].pop(nid)
                 if not other[_key]:
                     other.pop(_key)
-        lr = (other.get("links") or {}).get(nid)
-        if not lr:
-            continue
-        iface = lr.get("iface")
-        if iface:
-            other.setdefault("delete", {})[iface] = {"at": int(time.time())}
-            (other.get("ifaces") or {}).pop(iface, None)
-        other["links"].pop(nid, None)
+        mesh_link_park(nodes, oid, nid, park=False)   # …its pending create cancelled too (it never was before)
 
 
 # ───────────────── node health history (RRD-style binary ring) ─────────────────
@@ -27085,7 +27131,7 @@ def api(method, path, qs, body, deps):
             if _g1 and _g1 not in MESH_AWG_GENS:
                 return 400, {"ok": False, "error": "mesh_awg_gen must be 2.0, 3.1, wg or blank", "code": "bad_request"}
         if "mesh_awg" in body:
-            if not isinstance(body.get("mesh_awg") or {}, dict):   # a list or a string is no template — never a silent clear
+            if body["mesh_awg"] is not None and not isinstance(body["mesh_awg"], dict):   # [], "" or a list is no template — never a silent clear
                 return 400, {"ok": False, "error": "mesh_awg must be an object", "code": "bad_request"}
             _where = mesh_pair_name(nodes, nid, peer)
             _bad = awg_template_refusal(body.get("mesh_awg") or {}, _where)
@@ -29493,6 +29539,8 @@ def api(method, path, qs, body, deps):
         meshed = 0
         if len(nodes) > 1:
             mesh_reprovision_node(nodes, nid)
+            for _d in plan.get("dial_resets") or ():      # parked by the re-provision; the old box's addresses go (5c)
+                mesh_link_unpark(nodes, _d["node"], _d["peer"], _d["key"])
             reconcile_mesh(nodes, snaps, deps)
             meshed = len(c.get("links") or {})
         # 5b. the pins other servers hold on the old box's addresses — exactly the ones the plan listed, back to Auto
@@ -33062,6 +33110,8 @@ class Handler(BaseHTTPRequestHandler):
             # teardown all along; the transfer path simply never called it.
             if a_nid != nid:
                 mesh_unlink_node(nodes, nid)
+            else:
+                transfer_homecoming_keep(nodes, nid, cur, newrec)
             nodes.pop(nid, None)
             nodes[a_nid] = newrec
 

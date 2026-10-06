@@ -514,8 +514,8 @@ try:
         code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": ""})
         check("back to the fleet's default: the choice removed, the link rebuilt as AmneziaWG",
               code == 200 and "mesh_link" not in p.nodes()["na"] and "proto" not in lnk("na", "nb"), (code, r, lnk("na", "nb")))
-        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": ["Jc", "5"]})
-        check("a mesh_awg that is not an object is refused, never a silent clear", code == 400, (code, r))
+        _codes = [p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg": v})[0] for v in (["Jc", "5"], [], "", 0, False)]
+        check("a mesh_awg that is not an object (a list, [], \"\", 0, false) is refused, never a silent clear", _codes == [400] * 5, _codes)
         code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": "4.0"})
         check("an unknown type is refused", code == 400, (code, r))
         check("no record holds \"-\"", '"-"' not in blob)

@@ -71,12 +71,12 @@ if "--perturb-merge" in sys.argv:     # the template read WHOLE (before the roun
     print("(perturbed: a link's template is read whole, not over the fleet's field by field — [9] must FAIL)")
 if "--perturb-keep" in sys.argv:      # the tree before round 14: a teardown drops the link's own settings with its record
     _park = P.mesh_link_park
-    def _drop(nodes, who, other):
+    def _drop(nodes, who, other, **kw):
         lr = ((nodes.get(who) or {}).get("links") or {}).get(other)
         if lr:
             for k in P.MESH_LINK_KEEP:
                 lr.pop(k, None)
-        _park(nodes, who, other)
+        _park(nodes, who, other, **kw)
     P.mesh_link_park = _drop
     print("(perturbed: a teardown parks nothing — [10] must FAIL)")
 if "--perturb-link-awg" in sys.argv:  # the tree without a link's own params: the builder never reads them, nothing moves
@@ -292,7 +292,7 @@ check("mesh_gen_of is the fleet's default only", (P.mesh_gen_of(d), P.mesh_gen_o
       P.mesh_gen_of(deps(1320, {"mesh_awg_gen": "bogus"}))) == ("3.1", "2.0", "2.0"))
 check("no reason on any card: every link is what it was asked to be", all(P.mesh_gen_reasons(d, t, sn, x) == [] for x in t),
       {x: P.mesh_gen_reasons(d, t, sn, x) for x in t})
-keep = P.mesh_relink_pair(t, "n02", "n00")
+P.mesh_relink_pair(t, "n02", "n00")
 check("mesh_relink_pair tears the ONE link down on both ends (create cancelled, delete staged), the others untouched",
       "n02" not in t["n00"]["links"] and "n00" not in t["n02"]["links"] and "n01" in t["n00"]["links"]
       and len(t["n00"].get("delete") or {}) == 1 and len(t["n02"].get("delete") or {}) == 1, (t["n00"].get("delete"), t["n02"].get("delete")))
@@ -451,6 +451,35 @@ t = run(P, fleet(3), deps(1320)); seed(t)
 P.mesh_link_park(t, "n00", "n01"); P.mesh_link_park(t, "n01", "n00")
 P.mesh_unlink_node(t, "n01")
 check("removing a node forgets what was parked for it", "link_keep" not in t["n00"], t["n00"].get("link_keep"))
+# code review of round 14
+t = run(P, fleet(2), deps(1320)); t["n00"]["links"]["n01"]["relay"] = {"mode": "forward"}   # what every sheet save writes
+P.mesh_reprovision_node(t, "n00"); P.reconcile_mesh(t, {}, dd)
+check("an inert relay {mode: forward} is neither parked nor needing the pair: on demand that link is not rebuilt",
+      "n01" not in t["n00"].get("links", {}) and all("link_keep" not in t[x] for x in t), (t["n00"].get("links"), t["n00"].get("link_keep")))
+t = run(P, fleet(2), deps(1320)); t["n00"]["links"]["ghost"] = {"iface": "swg_dead", "dial_src": "198.51.100.7"}
+P.mesh_reprovision_node(t, "n00")
+check("a half-link to a node no longer in the store is torn down but nothing is parked for it",
+      "ghost" not in t["n00"]["links"] and "ghost" not in (t["n00"].get("link_keep") or {}), t["n00"].get("link_keep"))
+t = run(P, fleet(2), deps(1320)); seed(t)
+P.mesh_link_park(t, "n00", "n01", park=False)              # n00's half gone, n01 still holds its half, with its settings
+P.reconcile_mesh(t, {}, deps(1320))
+check("a half-link's leftover record is replaced keeping its own settings", ext(t, "n01", "n00") == want1, ext(t, "n01", "n00"))
+t = run(P, fleet(3), deps(1320)); ifc = t["n00"]["links"]["n02"]["iface"]; t["n00"].setdefault("create", {})[ifc] = {"cmd": ["awg"]}
+P.mesh_unlink_node(t, "n02")
+check("removing a node also cancels a survivor's pending create for the link to it (no create + delete left staged)",
+      ifc not in (t["n00"].get("create") or {}) and ifc in (t["n00"].get("delete") or {}))
+t = run(P, fleet(3), deps(1320))
+t["n00"]["mesh_link_gen"] = {"n01": "wg"}; t["n00"]["mesh_link_awg"] = {"n01": dict(OWN), "n02": dict(OWN)}
+P.mesh_link_awg_migrate(t)
+check("the two maps of the unreleased dev build fold into mesh_link, once", t["n00"].get("mesh_link") ==
+      {"n01": {"type": "wg", "awg": OWN}, "n02": {"awg": OWN}} and "mesh_link_gen" not in t["n00"] and "mesh_link_awg" not in t["n00"],
+      t["n00"].get("mesh_link"))
+t = run(P, fleet(3), deps(1320)); seed(t); t["n00"]["mesh_link"] = {"n02": {"type": "wg"}}
+cur = json.loads(json.dumps(t["n00"])); newrec = {"name": "node0"}
+P.transfer_homecoming_keep(t, "n00", cur, newrec)
+check("a node coming home keeps this panel's pair settings it anchors and parks its own halves' relay / dial",
+      newrec.get("mesh_link") == {"n02": {"type": "wg"}} and newrec.get("link_keep") == {"n01": {"dial_endpoint": "203.0.113.9", "relay": {"mode": "relay"}}},
+      newrec)
 rec = {"name": "x", "links": {"a": {}}, "mesh_link": {"b": {"type": "wg"}}, "link_keep": {"b": {"dial_src": "1.2.3.4"}}, "ifaces": {}}
 clean = P.transfer_strip(rec)[0]
 check("a transfer carries neither the pairs' own settings nor parked ones (keyed by this fleet's ids)",
