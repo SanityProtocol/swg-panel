@@ -4551,8 +4551,7 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lb-mb input{width:64px;padding:5px 8px;text-align:right;font-variant-numeric:tabular-nums}
 .lb-used{display:flex;flex-direction:column;gap:4px;font-variant-numeric:tabular-nums}
 .lb-meter{display:block;height:3px;border-radius:2px;background:var(--line);overflow:hidden;width:100%}
-.lb-meter i{display:block;height:100%;background:var(--brand);border-radius:2px}
-.lb-meter.full i{background:var(--online)}
+.lb-meter i{display:block;height:100%;background:var(--online);border-radius:2px}   /* full is the steady state: old lines make room */
 .lb-holds{font-variant-numeric:tabular-nums}
 .lb-holds.since{color:var(--dim)}
 .lb-state{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

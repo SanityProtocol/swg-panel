@@ -3540,7 +3540,7 @@ function LogBudgetTable({ rows, onMb }) {
             onInput=${e => onMb(r.id, e.target.value.replace(/[^0-9]/g, "").slice(0, 6))}/><span class="faint">${T("MB")}</span></span>
           <span class="lb-used" role="cell">${pct == null ? html`<span class="faint">—</span>` : html`
             <span class="lb-usedn">${T("{v1} MB", { v1: st.used_mb })}</span>
-            <span class=${"lb-meter" + (pct >= 85 ? " full" : "")} aria-hidden="true"><i style=${"width:" + pct + "%"}></i></span>`}</span>
+            <span class="lb-meter" aria-hidden="true"><i style=${"width:" + pct + "%"}></i></span>`}</span>
           <span class=${"lb-holds" + (holds ? (holds.full ? "" : " since") : " none")} role="cell"
             title=${holds && !holds.full ? T("Nothing has been removed yet: every line since then is kept") : ""}>${holds
             ? html`<span class="lb-holdsl">${T("Holds")} </span>${holds.text}` : html`<span class="faint">—</span>`}</span>
