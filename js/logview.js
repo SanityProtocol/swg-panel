@@ -37,7 +37,7 @@ const chipOf = id => { let x = 0; for (const c of String(id)) x = (x * 31 + c.ch
 const LV = {
   nodes: null, src: null,                             // the facets; null = the defaults (see facetDefaults)
   levels: { err: true, warn: true, info: true, debug: true }, q: "", wrap: false, overlay: false,
-  live: false,                                        // asked for (Start, the header button, a deep link); off once no viewer is up
+  live: false, card: false,                           // asked for (Start, the header button, a deep link); off once no viewer is up
   req: null, seq: 0, h: "", states: {}, iv: 1, err: "", ver: 0,   // the panel's request and what it last said
   lines: [], frozen: null, missed: 0, uid: 0,         // the merged lines; Paused: the list as it was, and what came since
   held: {},                                           // a reopen: the newest line each server already has here
@@ -635,7 +635,9 @@ function RangePanel() {
 // The same viewer over any screen, mounted in the app shell only while it is up — the viewer polls only while mounted, so
 // no request leaves before. Exit (or Esc) unmounts it, which closes its request at once, and gives the focus back.
 let _back = null;
-export function openLogOverlay() { if (!LV.overlay) _back = document.activeElement; LV.overlay = LV.live = true; bump(); }
+// card: opened from the Settings card's icon — Exit only leaves full screen (the card streams on); else Exit stops it
+const showOverlay = card => { if (!LV.overlay) _back = document.activeElement; LV.overlay = LV.live = true; LV.card = card; bump(); };
+export const openLogOverlay = () => showOverlay(false);
 const closeLogOverlay = () => { LV.overlay = false; bump(); const b = _back; _back = null;
   setTimeout(() => { const el = b && b.isConnected ? b : document.querySelector(".lv-fs"); if (el) el.focus(); }, 0); };   // the card's icon is drawn anew
 export function LogOverlay() {
@@ -692,9 +694,12 @@ export function LogViewer({ overlay } = {}) {
       <span class="lv-tz faint" title=${T("Times are this browser's, on the panel's clock")}>${tzLabel()}</span>
       <span class="grow"></span>
       ${live ? html`<span class=${"lv-live s-" + live[0]} role="status">${live[1]}</span>` : null}
-      ${overlay ? html`<button class="btn btn-mini ico lv-x" title=${T("Close the logs (Esc)")} aria-label=${T("Close the logs (Esc)")}
-        ref=${el => el && !el._f && (el._f = 1, setTimeout(() => el.focus(), 0))} onClick=${closeLogOverlay}><${Ic} i="x"/></button>`
-      : html`<button class="btn btn-mini ico lv-fs" title=${T("Full screen")} aria-label=${T("Full screen")} onClick=${openLogOverlay}>
+      ${overlay ? html`<button class=${"btn btn-mini ico lv-x" + (LV.card ? "" : " warn")} title=${LV.card ? T("Leave full screen (Esc)") : T("Stop live log (Esc)")}
+        aria-label=${LV.card ? T("Leave full screen (Esc)") : T("Stop live log (Esc)")}
+        ref=${el => el && !el._f && (el._f = 1, setTimeout(() => el.focus(), 0))} onClick=${closeLogOverlay}>${LV.card
+          ? html`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`
+          : html`<${Ic} i="stop"/>`}</button>`
+      : html`<button class="btn btn-mini ico lv-fs" title=${T("Full screen")} aria-label=${T("Full screen")} onClick=${() => showOverlay(true)}>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>`}
     </div>
     <${Facets}/>
