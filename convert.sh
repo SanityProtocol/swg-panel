@@ -98,7 +98,7 @@ turn_row(){ local fw; fw="$(fwd_iface_for "${3:-}")"; printf '    %s%s%s %s → 
 # turn_unit_lc <unit-path> — echo "<listen>\t<connect>" for a host turn-proxy systemd unit (turn.env, else ExecStart)
 turn_unit_lc(){ local u="$1" svc inst envf exe lis="" con=""
   svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
-  if [ -f "$envf" ]; then lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; fi
+  if [ -f "$envf" ]; then lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" | sed -n 1p)"; [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; fi   # SWG_DIAL: the dialled host, when it differs from the bind
   if [ -z "$lis" ]; then exe="$(sed -n 's/^ExecStart=//p' "$u" | sed -n 1p)"
     lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"; con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"; fi
   printf '%s\t%s\n' "$lis" "$con"; }
@@ -210,7 +210,8 @@ cyn(){ local a; [ "${ASSUME_YES:-no}" = yes ] && { printf '  %s (Y/n): y\n' "$1"
 
 # install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
 turn_install_host(){
-  local svc="$1" owner="$2" lis="$3" con="$4" params="$5" inst dir bin arch url
+  local svc="$1" owner="$2" lis="$3" con="$4" params="$5" pin="${6:-}" inst dir bin arch url
+  case "$pin" in *[!0-9.]*|"") pin="";; esac   # Listen on: an IPv4 address or nothing
   local ok=1 ver fork fdir sbin mk
   inst="${svc#vk-turn-proxy-}"; fork="${inst%-*}"
   fdir="/opt/vk-turn-proxy/.bin/$fork"; sbin="$fdir/server"   # ONE binary per fork — shared by every instance
@@ -232,9 +233,12 @@ turn_install_host(){
   printf '%s\n' "$owner" > "$fdir/repo.txt"; chmod 644 "$fdir/repo.txt" 2>/dev/null || true
   ver=unknown; [ "$ok" = 1 ] && ver="$(curl -fsS -o /dev/null -w '%{redirect_url}' --connect-timeout 15 --max-time 30 "$url" 2>/dev/null | sed -nE 's#.*/releases/download/([^/]+)/.*#\1#p')"
   printf '%s\n' "${ver:-unknown}" > "$fdir/version.txt"; chmod 644 "$fdir/version.txt" 2>/dev/null || true
+  # SWG_LISTEN is what the proxy BINDS; written as the dialled host (bash cannot decide a bind) — swg-noded's
+  # heal_turn_binds re-renders it on the node's first sync when that host is not on this box, or a pin is set.
   cat > "$dir/turn.env" <<EOF
 SWG_LISTEN=${lis}
-SWG_CONNECT=${con}
+${pin:+SWG_PIN=${pin}
+}SWG_CONNECT=${con}
 SWG_PARAMS=${params}
 EOF
   cat > "/etc/systemd/system/$svc.service" <<EOF
@@ -304,22 +308,23 @@ import json, sys
 try: d = json.load(open(sys.argv[1])); tps = d.get("turn_proxies") or []
 except Exception: tps = []
 for t in (tps if isinstance(tps, list) else []):
-    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), (t.get("params") or "")]))
+    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), t.get("bind_ip") or "-", (t.get("params") or "")]))
 PY
 )"
   [ -n "$list" ] || return 0
   echo; info "Turn-proxy services to migrate (host systemd units written now; brought up at the switch):"; echo
-  while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && turn_row "$svc" "$lis" "$con"; done <<EOF
+  # pin before params, "-" when none: tab is IFS whitespace, so an empty field would collapse and shift params into it
+  while IFS="$(printf '\t')" read -r svc owner lis con pin params; do [ -n "$svc" ] && turn_row "$svc" "$lis" "$con"; done <<EOF
 $list
 EOF
   echo
   cyn "Transfer these turn-proxies into the bare-metal node?" || { info "  leaving them on docker — they stop at the switch; you can add fresh ones in the next step"; return 0; }
   # Write each host unit NOW, enabled but NOT started, WHILE the docker turn containers still hold the listen
   # ports — install-node starts them after the switch frees the ports.
-  while IFS="$(printf '\t')" read -r svc owner lis con params; do
+  while IFS="$(printf '\t')" read -r svc owner lis con pin params; do
     [ -n "$svc" ] || continue
     [ -n "$owner" ] || { warn "  $svc: no fork in the record — skipping"; continue; }
-    if TURN_DEFER_START=1 turn_install_host "$svc" "$owner" "$lis" "$con" "$params"; then
+    if TURN_DEFER_START=1 turn_install_host "$svc" "$owner" "$lis" "$con" "$params" "${pin#-}"; then
       sub "prepared $(b "$svc") → host systemd (starts at the switch)"; MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"
     else
       warn "  $svc: binary download failed — its unit + settings were kept, so it shows on the panel as failed; open it and press Reinstall (no re-entry needed)"
@@ -343,12 +348,14 @@ turn_to_docker(){
   cyn "Transfer these turn-proxies into the docker node?" || { info "  left the host turn-proxies running"; return 0; }
   mkdir -p "$(dirname "$rec")"
   for u in $units; do
-    svc="$(basename "$u" .service)"
+    svc="$(basename "$u" .service)"; pin=""   # per unit: a legacy one has none, and must not inherit the last one's
     exe="$(sed -n 's/^ExecStart=//p' "$u" | sed -n 1p)"
     case "$exe" in
       *'${SWG_'*)   # EnvironmentFile form — read listen/connect/params out of turn.env
         envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" | sed -n 1p)"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
+        lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" 2>/dev/null | sed -n 1p)"   # SWG_DIAL = what clients dial when it differs from the bind (swg-noded turn_bind); SWG_LISTEN is what it binds
+        [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
+        pin="$(sed -n 's/^SWG_PIN=//p' "$envf" 2>/dev/null | sed -n 1p)"   # Listen on — carried into the container record
         con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | sed -n 1p)"
         params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | sed -n 1p)" ;;
       *)            # legacy baked-ExecStart form
@@ -357,15 +364,15 @@ turn_to_docker(){
         params="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}[^ ]*[[:space:]]*\(.*\)$/\1/p')" ;;
     esac
     owner="$(sed -n 's/.*vk-turn-proxy (\([^)]*\)).*/\1/p' "$u" | sed -n 1p)"
-    python3 - "$rec" "$svc" "$owner" "$lis" "$con" "$params" <<'PY' || true
+    python3 - "$rec" "$svc" "$owner" "$lis" "$con" "$params" "${pin:-}" <<'PY' || true
 import json, sys, re
-p, svc, owner, lis, con, params = sys.argv[1:7]
+p, svc, owner, lis, con, params, pin = sys.argv[1:8]
 try: d = json.load(open(p)); tps = d.get("turn_proxies") if isinstance(d, dict) else None; tps = tps if isinstance(tps, list) else []
 except Exception: tps = []
 tps = [t for t in tps if t.get("service") != svc]
 m = re.search(r"-wrap-key[ =]+(\S+)", params or "")
 tps.append({"service": svc, "listen": lis, "connect": con, "params": (params or "").strip(),
-            "wrap_key": (m.group(1) if m else ""), "owner": owner})
+            "wrap_key": (m.group(1) if m else ""), "owner": owner, **({"bind_ip": pin} if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", pin or "") else {})})
 json.dump({"turn_proxies": tps}, open(p, "w"))
 PY
     MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"   # staged only — torn down at the switch (below)

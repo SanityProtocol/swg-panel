@@ -595,7 +595,8 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
     case "$exe" in
       *'${SWG_'*)   # EnvironmentFile form — read listen/connect/params out of turn.env
         envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" 2>/dev/null | sed -n 1p)"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
+        lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" 2>/dev/null | sed -n 1p)"   # SWG_DIAL = what clients dial when it differs from the bind (swg-noded turn_bind); SWG_LISTEN is what it binds
+        [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
         con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | sed -n 1p)"
         params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | sed -n 1p)"
         wk="$(printf '%s\n' "$params" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')"
@@ -612,8 +613,9 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
 turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }   # turn_latest_tag <owner/repo>
   curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
-install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
-  local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst fdir sbin
+install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags> [<Listen on ip>]
+  local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" pin="${6:-}" arch dir bin svc url ver port inst fdir sbin
+  case "$pin" in *[!0-9.]*|"") pin="";; esac   # an IPv4 address or nothing (swg-noded checks it is on the box)
   case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
   # detect-and-REFUSE: the forks publish server-linux-amd64/arm64 only. Never fall back to amd64 on an unknown arch —
   # that fetched a wrong x86-64 binary → 404 / "Exec format error". Skip the turn-proxy with a clear message instead.
@@ -638,9 +640,12 @@ install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> 
   printf '%s\n' "$owner"          | writef "$fdir/repo.txt" 644
   printf '%s\n' "${ver:-unknown}" | writef "$fdir/version.txt" 644
   # listen/connect/params live in turn.env so a panel edit only rewrites it + restarts (no daemon-reload)
+  # SWG_LISTEN is what the proxy BINDS. Written here as the dialled host (bash cannot decide a bind): swg-noded's
+  # heal_turn_binds re-renders it on its first sync when that host is not on this box, or a Listen on (SWG_PIN) is set.
   writef "$dir/turn.env" 600 <<EOF
 SWG_LISTEN=${listen}
-SWG_CONNECT=${connect}
+${pin:+SWG_PIN=${pin}
+}SWG_CONNECT=${connect}
 SWG_PARAMS=${extra}
 EOF
   writef "/etc/systemd/system/$svc.service" 600 <<EOF
@@ -683,20 +688,21 @@ import json, sys
 try: d=json.load(open(sys.argv[1])); tps=d.get("turn_proxies") or []
 except Exception: tps=[]
 for t in (tps if isinstance(tps,list) else []):
-    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), (t.get("params") or "")]))
+    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), t.get("bind_ip") or "-", (t.get("params") or "")]))
 PY
 )"
   [ -n "$list" ] || return 0
   echo; info "Turn-proxies to migrate from the docker node:"; echo
-  while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "${lis:-?}" "${con:-?}"; done <<EOF
+  # pin before params, "-" when none: tab is IFS whitespace, so an empty field would collapse and shift params into it
+  while IFS="$(printf '\t')" read -r svc owner lis con pin params; do [ -n "$svc" ] && printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "${lis:-?}" "${con:-?}"; done <<EOF
 $list
 EOF
   echo
   # Approach B: auto-carry — always migrate the existing turn-proxies (no prompt). New ones are created from the panel.
-  while IFS="$(printf '\t')" read -r svc owner lis con params; do
+  while IFS="$(printf '\t')" read -r svc owner lis con pin params; do
     [ -n "$svc" ] && [ -n "$owner" ] || continue
     fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"
-    TURN_DEFER_START=1 install_turn_binary "$fork" "$owner" "$lis" "$con" "$params"
+    TURN_DEFER_START=1 install_turn_binary "$fork" "$owner" "$lis" "$con" "$params" "${pin#-}"
   done <<EOF
 $list
 EOF

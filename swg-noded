@@ -2653,7 +2653,23 @@ def _local_v4():
     return _LOCAL_V4["set"]
 
 
-def turn_bind(listen, resolve=True, pin=""):
+def _host_on_box(host, mine, resolve=True):
+    """The address of this box `host` lands on; "" when it lands elsewhere; None when that cannot be told right now — a
+    name that does not resolve (DNS not up yet at boot, an outage). An IPv4 literal answers itself; resolve=False makes
+    any name "elsewhere" without a lookup."""
+    if _IPV4_RE.match(host):
+        return host if host in mine else ""
+    if not resolve:
+        return ""
+    try:
+        cands = sorted({a[4][0] for a in socket.getaddrinfo(host, None, socket.AF_INET)})
+    except (OSError, UnicodeError):
+        return None
+    here = [c for c in cands if c in mine]
+    return here[0] if here else ""
+
+
+def turn_bind(listen, resolve=True, pin="", prev=""):
     """The `host:port` a turn-family server (WDTT, csqtt, vk-turn-proxy) actually binds, for the `listen` it is given.
 
     The panel's `listen` is what clients DIAL. A host that lands on this box is bound — an IP of the box, or a name that
@@ -2661,10 +2677,12 @@ def turn_bind(listen, resolve=True, pin=""):
     addresses is what keeps replies leaving from the address the client dialled. Anything else cannot be bound: a DDNS
     name resolving to the router in front of a box behind NAT, a public IP the box does not carry (cloud 1:1 NAT). Passing
     one on was a crash loop (`bind: cannot assign requested address`), so the server listens on every address on the
-    same port instead — how the upstream servers run by default. So does a name that does not resolve: this is decided
-    when an env file is written or a server launched, never per sync, so a DNS outage cannot make it flap. `resolve=False`
-    skips the lookup (a name then binds every address). An IPv6 literal, a wildcard, or a box whose addresses cannot be
-    read: as given, which is what every node did before.
+    same port instead — how the upstream servers run by default. Decided when an env file is written or a server launched,
+    never per sync. A name that does not resolve RIGHT NOW is not one that resolves elsewhere: it keeps `prev`, what the
+    server binds today (its env file, its container record), so a box that boots before its DNS is up does not move a
+    server whose name lands on it onto every address; with nothing to keep (a new server) it binds every address.
+    `resolve=False` skips the lookup (a name then binds every address). An IPv6 literal, a wildcard, or a box whose
+    addresses cannot be read: as given, which is what every node did before.
 
     `pin` is the operator's "Listen on" (`bind_ip`): one IPv4 address of this box to bind whatever the host is — on a box
     with several addresses behind NAT, the one the router forwards to, so replies leave from it. A pin the box does not
@@ -2682,14 +2700,11 @@ def turn_bind(listen, resolve=True, pin=""):
     pin = str(pin or "").strip()
     if pin and _IPV4_RE.match(pin) and pin in mine:
         return pin + ":" + port
-    if _IPV4_RE.match(host):
-        return s if host in mine else "0.0.0.0:" + port
-    cands = []
-    if resolve:
-        with contextlib.suppress(OSError, UnicodeError):
-            cands = sorted({a[4][0] for a in socket.getaddrinfo(host, None, socket.AF_INET)})
-    here = [c for c in cands if c in mine]
-    return (here[0] + ":" + port) if here else "0.0.0.0:" + port
+    ip = _host_on_box(host, mine, resolve)
+    if ip is None:                                     # not known now: keep what it binds today
+        p = str(prev or "").strip()
+        return p if p and p.rsplit(":", 1)[-1] == port else "0.0.0.0:" + port
+    return (ip + ":" + port) if ip else "0.0.0.0:" + port
 
 
 _BIND_HEALED = set()
@@ -2701,9 +2716,17 @@ def bind_heal_due(key, envpath, listen):
     restarted for this (its host lands on the box), and the lookup is made once per instance per run, never per sync."""
     if key in _BIND_HEALED:
         return False
-    _BIND_HEALED.add(key)
     have = _env_listen(envpath)
-    return bool(have) and have == listen and not listen.startswith("0.0.0.0:") and turn_bind(listen).startswith("0.0.0.0:")
+    host = listen.rsplit(":", 1)[0] if ":" in listen else ""
+    mine = _local_v4()
+    if not have or have != listen or not host or host in ("0.0.0.0", "::", "[::]", "*") or host.startswith("[") or mine is None:
+        _BIND_HEALED.add(key)                          # nothing to heal (or nothing to judge with)
+        return False
+    ip = _host_on_box(host, mine)
+    if ip is None:
+        return False                                   # its name does not resolve right now: ask again next sync, not marked
+    _BIND_HEALED.add(key)
+    return ip == ""
 
 
 def rebind_env(envpath, inst, render):
@@ -2714,11 +2737,70 @@ def rebind_env(envpath, inst, render):
     if not (inst.get("iface") and inst.get("listen") and inst.get("password") and os.path.exists(envpath)):
         return
     with contextlib.suppress(Exception):
-        if _env_listen(envpath) != turn_bind(inst["listen"], pin=inst.get("bind_ip")):
+        _now = _env_listen(envpath)
+        if _now != turn_bind(inst["listen"], pin=inst.get("bind_ip"), prev=_now):
             text = render(inst)                               # render FIRST: opening for write empties the file
             with open(envpath + ".tmp", "w") as f:
                 f.write(text)
             os.replace(envpath + ".tmp", envpath)
+
+
+_TURN_BIND_HEALED = set()
+
+def heal_turn_binds():
+    """Once per swg-noded run per bare-metal vk-turn-proxy — the twin of bind_heal_due. A turn.env that binds a host this
+    box does not carry, written by a build before turn_bind or by an installer / convert.sh (bash, which cannot decide a
+    bind and writes the dialled host), is re-rendered through turn_bind and the proxy restarted: the update brings a
+    crash-looping proxy up, not its next edit. Never a proxy whose host lands on the box, never a stopped one, and a name
+    that does not resolve right now is asked about again next sync rather than judged."""
+    if TURN_DOCKER or not TURN_MANAGE_ON:
+        return
+    try:
+        with open(TURN_RECORD) as f:
+            rec = (json.load(f) or {}).get("turn_proxies") or []
+    except Exception:
+        return
+    mine = _local_v4()
+    if mine is None:
+        return
+    for t in rec:
+        svc = str((t or {}).get("service") or "")
+        if not svc or svc in _TURN_BIND_HEALED:
+            continue
+        listen = str(t.get("listen") or "")
+        host, port = (listen.rsplit(":", 1) + [""])[:2] if ":" in listen else ("", "")
+        pin = str(t.get("bind_ip") or "")
+        if t.get("stopped") or not host:
+            _TURN_BIND_HEALED.add(svc)                 # stopped, or nothing to decide
+            continue
+        if pin and _IPV4_RE.match(pin) and pin in mine:
+            # a Listen on an installer / convert.sh carried over but could not apply (bash writes the dialled host)
+            _TURN_BIND_HEALED.add(svc)
+            if t.get("bind") == pin + ":" + port:
+                continue
+        else:
+            if (t.get("bind") and t.get("bind") != listen) or host in ("0.0.0.0", "::", "[::]", "*") or host.startswith("["):
+                _TURN_BIND_HEALED.add(svc)             # already decided by turn_bind, or nothing to decide
+                continue
+            ip = _host_on_box(host, mine)
+            if ip is None:
+                continue                               # not known now: ask again next sync
+            _TURN_BIND_HEALED.add(svc)
+            if ip:
+                continue                               # lands on the box: it binds fine as it is
+        unit = host_sh("cat " + shlex.quote(_turn_unit_path(svc)) + " 2>/dev/null", probe=True).stdout or ""
+        if not _unit_is_envform(unit):
+            continue                                   # a baked ExecStart is migrated by the next edit, as before
+        cur = _tp_from_unit(svc, unit)
+        if not cur.get("listen") or (cur.get("bind") != cur.get("listen") and not cur.get("bind_ip")):
+            continue
+        envp = _turn_env_path(svc)
+        text = _turn_env_text(cur["listen"], cur.get("connect", ""), cur.get("params", ""), cur.get("bind_ip", ""), cur.get("bind", ""))
+        nb = (text.split("\n", 1)[0].split("=", 1) + [""])[1]          # the SWG_LISTEN it now binds
+        w = host_sh("cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + text + "SWGENV\nsystemctl restart " + shlex.quote(svc))
+        _turn_loop_forget(svc)
+        log(LOG_NOTICE, "turn: %s bound %s — now binds %s" % (svc, cur.get("bind", ""), nb)
+            if w.returncode == 0 else "turn: %s could not be moved off %s: %s" % (svc, cur.get("bind", ""), (w.stderr or "").strip()[:120]))
 
 
 def _env_listen(path):
@@ -17679,7 +17761,7 @@ def _dturn_args(tp):
         # interfaces on the same port and let docker publish it (compose ports:). connect stays 127.0.0.1 (our netns).
         listen = "0.0.0.0:" + listen.rsplit(":", 1)[1]
     else:
-        listen = turn_bind(listen, pin=tp.get("bind_ip"))   # host networking: Listen on, else what lands on the box, else every address
+        listen = turn_bind(listen, pin=tp.get("bind_ip"), prev=tp.get("bind"))   # host networking: Listen on, else what lands on the box, else every address
     tp["bind"] = listen                                # reported with the proxy (the record keeps what clients dial)
     args = ["-listen", listen, "-connect", tp.get("connect", "")]
     p = (tp.get("params") or "").strip()
@@ -18230,13 +18312,13 @@ def _turn_input_safe(*vals):
     return all(not _TURN_CTRL_RE.search(v or "") for v in vals)
 
 
-def _turn_env_text(listen, connect, params, pin=""):
+def _turn_env_text(listen, connect, params, pin="", prev=""):
     # The unit's ExecStart reads ${SWG_LISTEN}, so that is the BIND (turn_bind). The address clients dial goes beside it
     # as SWG_DIAL only when the two differ, and the operator's "Listen on" as SWG_PIN only when set (a Restart or a key
     # rotation re-renders this file from what it holds) — so a file whose host lands on this box stays byte-identical.
     pin = str(pin or "").strip()
     pin = pin if _IPV4_RE.match(pin) else ""            # only an address goes into the file (the panel checks it too)
-    bind = turn_bind(listen, pin=pin)
+    bind = turn_bind(listen, pin=pin, prev=prev)
     return "SWG_LISTEN=%s\n%s%sSWG_CONNECT=%s\nSWG_PARAMS=%s\n" % (
         bind, ("SWG_DIAL=%s\n" % listen) if bind != listen else "", ("SWG_PIN=%s\n" % pin) if pin else "",
         connect, (params or "").strip())
@@ -18579,7 +18661,7 @@ def apply_turn(turn, turn_onboard):
                 params = _params_set_wrapkey(params, secrets.token_hex(32))
             # restart: no config change — just rewrite turn.env (unchanged) + restart below
             envp = _turn_env_path(svc)
-            env_here = "cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, params, pin) + "SWGENV\n"
+            env_here = "cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, params, pin, cur.get("bind", "")) + "SWGENV\n"
             if _unit_is_envform(unit):       # fast path: rewrite turn.env + restart, NO daemon-reload (the spike)
                 w = host_sh(env_here + "systemctl restart " + shlex.quote(svc))
             else:                            # one-time migrate: move the baked ExecStart onto the EnvironmentFile
@@ -18987,7 +19069,8 @@ def _wdtt_env_text(inst):
     _rawflags = ("-listen-raw %s -raw-iface %s -raw-addr %s" % _raw) if _raw else ""
     return ("SWG_IFACE=%s\nSWG_WGADDR=%s\nSWG_LISTEN=%s\nSWG_WGPORT=%s\nSWG_CFGDIR=%s\nSWG_DESIRED=%s\n"
             "SWG_PASSWORD=%s\nSWG_MAXPW=%s\nSWG_RAWFLAGS=%s\nSWG_PARAMS=%s\n" % (
-                inst["iface"], inst["wg_addr"], turn_bind(inst["listen"], pin=inst.get("bind_ip")), inst.get("wg_port") or 56001, cfgdir,
+                inst["iface"], inst["wg_addr"], turn_bind(inst["listen"], pin=inst.get("bind_ip"), prev=_env_listen(cfgdir + "/wdtt.env")),
+                inst.get("wg_port") or 56001, cfgdir,
                 cfgdir + "/desired.json", inst.get("password") or "",
                 inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or ""), _rawflags,
                 _wdtt_params_eff(inst)))   # `-dns` + operator extra ExecStart flags (systemd splits on whitespace → argv, never a shell)
@@ -19046,7 +19129,8 @@ def _wdtt_pidfile(iface): return _wdtt_dir(iface) + "/server.pid"
 def _wdtt_argv(inst, binp):
     """The exact server invocation (mirror of _wdtt_unit_text's ExecStart) as an argv list, for a direct Popen."""
     iface = inst["iface"]; cfgdir = _wdtt_dir(iface); fork = _wdtt_fork(inst)
-    a = [binp, "-iface", iface, "-wg-addr", inst["wg_addr"], "-listen", turn_bind(inst["listen"], pin=inst.get("bind_ip")),
+    a = [binp, "-iface", iface, "-wg-addr", inst["wg_addr"],
+         "-listen", turn_bind(inst["listen"], pin=inst.get("bind_ip"), prev=_env_listen(cfgdir + "/wdtt.env")),
          "-wg-port", str(inst.get("wg_port") or 56001), "-config-dir", cfgdir,
          "-desired", cfgdir + "/desired.json", "-no-nat", "-password", inst.get("password") or ""]
     # Password-pool size. Prefer what is configured (adoption carries the foreign server's own value across, so
@@ -20640,7 +20724,8 @@ def _csqtt_env_text(inst):
     cfgdir = _csqtt_dir(inst["iface"])
     return ("SWG_LISTEN=%s\nSWG_WEBPORT=%s\nSWG_CFGDIR=%s\nSWG_DESIRED=%s\nSWG_IFACE=%s\nSWG_TUNADDR=%s\n"
             "SWG_PASSWORD=%s\nSWG_WEBPASS=%s\nSWG_MAXPW=%s\nSWG_PARAMS=%s\n" % (
-                turn_bind(inst["listen"], pin=inst.get("bind_ip")), inst.get("web_port") or _csqtt_webport(inst["listen"]), cfgdir,
+                turn_bind(inst["listen"], pin=inst.get("bind_ip"), prev=_env_listen(cfgdir + "/csqtt.env")),
+                inst.get("web_port") or _csqtt_webport(inst["listen"]), cfgdir,
                 cfgdir + "/desired.json", inst["iface"], inst["tun_addr"],
                 inst.get("password") or "", inst.get("web_pass") or "",
                 inst.get("max_passwords") or 500, (inst.get("params") or "").strip())
@@ -20829,7 +20914,8 @@ def _csqtt_pidfile(iface): return _csqtt_dir(iface) + "/server.pid"
 def _csqtt_argv(inst, binp):
     """The exact server invocation (mirror of _csqtt_unit_text's ExecStart) as an argv list, for a direct Popen."""
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface)
-    a = [binp, "--listen", turn_bind(inst.get("listen") or "", pin=inst.get("bind_ip")), "--config-dir", cfgdir,
+    a = [binp, "--listen", turn_bind(inst.get("listen") or "", pin=inst.get("bind_ip"), prev=_env_listen(cfgdir + "/csqtt.env")),
+         "--config-dir", cfgdir,
          "--password", inst.get("password") or "", "--no-web",
          "--iface", iface, "--tun-addr", inst.get("tun_addr") or "",
          "--desired", cfgdir + "/desired.json", "--no-nat",
@@ -22292,6 +22378,8 @@ def main():
                     with contextlib.suppress(Exception):
                         _turn_sock_bufs(_n_listen)
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
+                with contextlib.suppress(Exception):
+                    heal_turn_binds()                  # once per run per proxy: an env binding a host this box lacks
                 wd = reconcile_wdtt(reply.get("wdtt"), reply.get("wdtt_remove"))   # install/desired.json+SIGHUP; removals ONLY from the explicit list
                 # Take over a wg/awg server from another container (Amnezia). One-shot and operator-driven:
                 # it stops somebody else's container, so it runs only while the panel is asking for it, and the

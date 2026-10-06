@@ -78,8 +78,10 @@ export function listenHostInit(epIp, ips, nodeIps, bridge) {
    behind NAT, an IP the box does not carry) the server listens on every address, as the upstream servers do by default
    (swg-noded turn_bind). A node older than that binds what was typed, and the server crash-loops. What the field says:
      wild    the address itself is the wildcard (an older setup) — clients dial `fallback`
-     any     not on this box → every address; `multi` = the box has several IPv4 addresses, so a reply can leave from one
-             clients did not dial, and the VK relay (which accepts only the address it was told) drops it
+     any     not on this box → every address; `multi` = the interface of its default route carries several IPv4
+             addresses, so a reply (sent from that route's source) can leave from one clients did not dial, and the VK
+             relay (which accepts only the address it was told) drops it. Addresses on other interfaces — a Tailscale or
+             libvirt bridge, a second NIC — never carry replies to the internet, so they do not count
      old     not on this box, and the node binds it as typed → the bind fails
      stale   the node could listen on every address, but this server still binds the host as typed (set up before it
              could) — Restart service rewrites it
@@ -104,8 +106,17 @@ export function useListenState(node, host, saved, bound, pin) {
   if (nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge") return { bridge: true };
   if (!nrec.turn_bind_any) return { old: true };
   if (b && !_WILD.includes(b)) return { stale: true };   // it still binds the host as typed, and the host is not here
-  return { any: true, multi: (nrec.ips || []).filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip)).length > 1 };
+  return { any: true, multi: wanV4(nrec).length > 1 };
 }
+
+// The IPv4 addresses on the node's default-route interface (`wan_iface`, `ip_ifaces` from its report). A node that does
+// not report them (an older build) is judged by all its IPv4 addresses, as before.
+const wanV4 = nrec => {
+  const pairs = nrec.ip_ifaces || [];
+  if (nrec.wan_iface && pairs.length)
+    return pairs.filter(p => p && p.iface === nrec.wan_iface && /^\d+\.\d+\.\d+\.\d+$/.test(p.ip || "")).map(p => p.ip);
+  return (nrec.ips || []).filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip));
+};
 
 // The host a wildcard listener's links fall back to — the same fallback the link builders take. A WDTT/csqtt link: the
 // node's ingress address, then its reported public IP (js/peer-ui.js wdttArtInput). A vk-turn-proxy link (`fwdIface`
@@ -156,8 +167,9 @@ export function ListenOnField({ node, value, onChange }) {
   const v4 = (nrec.ips || []).filter(_v4);
   if ((nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge") || !nrec.turn_bind_any) return null;
   if (v4.length < 2 && !value) return null;
+  const nicOf = ip => ((nrec.ip_ifaces || []).find(p => p && p.ip === ip) || {}).iface || "";   // which card it sits on
   const opts = [{ value: "", label: T("val|Auto") },
-    ...v4.map(ip => ({ value: ip, label: ip + (isPrivIp(ip) ? " · " + T("private") : "") })),
+    ...v4.map(ip => ({ value: ip, label: [ip, nicOf(ip), isPrivIp(ip) ? T("private") : ""].filter(Boolean).join(" · ") })),
     ...(value && !v4.includes(value) ? [{ value, label: value + " · " + T("not on this node") }] : [])];
   return html`<div class="field"><label>${T("Listen on")}</label>
     <${Dropdown} value=${value || ""} onChange=${onChange} options=${opts} ariaLabel=${T("Listen on")}/>

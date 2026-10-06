@@ -446,7 +446,8 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
     case "$exe" in
       *'${SWG_'*)   # EnvironmentFile form — read listen/connect/params out of turn.env
         envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" 2>/dev/null | sed -n 1p)"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
+        lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" 2>/dev/null | sed -n 1p)"   # SWG_DIAL = what clients dial when it differs from the bind (swg-noded turn_bind); SWG_LISTEN is what it binds
+        [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
         con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | sed -n 1p)"
         params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | sed -n 1p)"
         wk="$(printf '%s\n' "$params" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
