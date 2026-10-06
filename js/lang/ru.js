@@ -2354,7 +2354,11 @@ export const STR = {
   "The node reads the unit's ExecStart (listen, forwards-to, wrap key) on its next sync and it shows up here.":
     "Нода прочитает ExecStart юнита (прослушивание, куда ведёт, ключ обёртки) на следующей синхронизации, и он появится здесь.",
   "Service unit path": "Путь к юниту службы",
-  "An address on this server — the proxy binds to it": "Адрес на этом сервере — прокси к нему привязывается",
+  "Listen address": "Адрес прослушивания",
+  "All addresses (0.0.0.0)": "Все адреса (0.0.0.0)",
+  "Clients dial `{v1}`": "Клиенты подключаются к `{v1}`",
+  "Clients dial the node's ingress address, which isn't set — set it in {v1}.":
+    "Клиенты подключаются к адресу входа ноды, а он не задан — задайте его в {v1}.",
 
   // WDTT server
   "WDTT server requested — the node installs it on its next sync. Add users from Peers.":
@@ -2382,8 +2386,8 @@ export const STR = {
   "Apply change": "Применить",
   "Change {what}?": "Изменить {what}?",
   "saving…": "сохраняю…",
-  "Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.":
-    "Смена эндпоинта или порта перезаписывает ExecStart юнита на ноде и перезапускает его — ссылки всех пользователей перевыпускаются.",
+  "Changing the listen address or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.":
+    "Смена адреса прослушивания или порта перезаписывает ExecStart юнита на ноде и перезапускает его — ссылки всех пользователей перевыпускаются.",
   "— self-contained (its own userspace-WireGuard)": "— самодостаточен (свой WireGuard в userspace)",
   "Egress, routing & filters": "Выход, маршрутизация и фильтры",
   "Edit interface": "Изменить интерфейс",
@@ -3633,8 +3637,8 @@ export const STR = {
     "С этого IP нода выходит в интернет по умолчанию. Он применяется там, где свой IP выхода не задан — к любому интерфейсу этой ноды и к трафику, пришедшему с других нод. Если у интерфейса задан свой IP выхода, используется он. Трафик, который уходит в интернет через другую ноду, это не затрагивает.",
   "Panel egress connection IP": "IP для связи с панелью",
   "— source to reach the panel": "— источник для доступа к панели",
-  "This doesn't resolve to an address on this node. The proxy *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.": "Это имя не разрешается в адрес этого узла. Прокси *привязывается* к нему, поэтому оно должно указывать на эту машину, иначе он падает с `bind: cannot assign requested address`.",
-  "This doesn't resolve to an address on this node. The server *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.": "Это имя не разрешается в адрес этого узла. Сервер *привязывается* к нему, поэтому оно должно указывать на эту машину, иначе он падает с `bind: cannot assign requested address`.",
+  "This doesn't resolve to an address on this node. The listener binds to it, so it would fail with `bind: cannot assign requested address`. Behind NAT? Choose *All addresses*: clients then dial the node's ingress address ({v1}). Forward this UDP port to the box on your router.":
+    "Это имя не разрешается в адрес этой ноды. Слушатель привязывается к нему, поэтому упадёт с `bind: cannot assign requested address`. Нода за NAT? Выберите *Все адреса* — тогда клиенты подключаются к адресу входа ноды ({v1}). И пробросьте этот UDP-порт на машину в роутере.",
   "Transfer token": "Токен переноса",
   "— to move an existing node here": "— чтобы перенести сюда узел",
   "Carries this panel's address and this token together. On the panel that has the node now: its Transfer window, and paste this — nothing is installed.": "Содержит адрес этой панели и этот токен вместе. На панели, где сейчас узел, откройте «Перенос» и вставьте это — ничего не устанавливается.",
@@ -5290,7 +5294,6 @@ export const STR = {
   // ── csqtt (amurcanov's Rust rewrite of WDTT — self-contained raw-TUN VK-turn server) ──
   "csqtt needs a /24 tunnel subnet, e.g. 10.66.67.0/24.": "csqtt нужна подсеть туннеля /24, например 10.66.67.0/24.",
   "Max passwords must be a number.": "Максимум паролей должен быть числом.",
-  "What clients dial (over the VK relay)": "Куда звонят клиенты (через реле VK)",
   "UDP DTLS listen (outside)": "Приём UDP DTLS (снаружи)",
   "Max users": "Максимум пользователей",
   "Cap on simultaneous access passwords · blank = 500": "Предел одновременных паролей доступа · пусто = 500",

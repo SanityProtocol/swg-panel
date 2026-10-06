@@ -613,6 +613,32 @@ def _bind_ip_of(listen):
     return host.strip("[]")
 
 
+_TURN_PRIV_NETS = [ipaddress.ip_network(n) for n in
+                   ("10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")]
+
+
+def _turn_dial_host(listen, *fallbacks):
+    """The host a WDTT/csqtt client dials: the instance's own bind when it is a specific public address, else the
+    first non-empty fallback (the node's ingress address, then its reported public IP).
+
+    A wildcard bind answers on every address, and a private one is never what the VK relay can reach — the box sits
+    behind NAT and its router forwards the port — so neither can stand in the link. A private bind stays the last
+    resort, so a node with nothing better keeps the link it had. Twin of js/util.js turnDialHost (the IPv4 private
+    ranges are its isPrivIp, on purpose) and swg-panel-server _fp_dial_host."""
+    host = _bind_ip_of(listen)
+    try:
+        a = ipaddress.ip_address(host)
+        priv = a.version == 4 and any(a in n for n in _TURN_PRIV_NETS)
+    except ValueError:
+        priv = False                       # a hostname, or nothing
+    if host and not priv:
+        return host
+    for f in fallbacks:
+        if f:
+            return f
+    return host
+
+
 def token_lookup(users, token):
     """Raw token → user_id via constant-time sha256 match; None if unknown or disabled."""
     if not token:
@@ -765,8 +791,8 @@ def read_data(state, token):
                     "wdtt": {"password": p.get("wdtt_password") or "",
                              "fork": inst.get("fork") or "amurcanov",   # which WDTT fork → resolve the right per-OS client + encoder
 
-                             "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
-                                               or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
+                             "endpoint_host": _turn_dial_host(inst.get("listen"), node_cfg.get("endpoint_host"),
+                                                              (describe.get(t.get("node")) or {}).get("pub_host")),
                              "dtls_port": dtls, "wg_port": str(inst.get("wg_port") or 56001), "tun_port": "9000",
                              "raw_port": str(inst.get("raw_port") or ""),   # RAW-IP mode, when this server accepts it
                              "vk_hash": (p.get("vk_hash") or "").strip()},
@@ -785,8 +811,8 @@ def read_data(state, token):
                     "node_name": node_cfg.get("name") or t.get("node"),
                     "type": "csqtt",
                     "csqtt": {"password": p.get("csqtt_password") or "",
-                              "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
-                                                or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
+                              "endpoint_host": _turn_dial_host(inst.get("listen"), node_cfg.get("endpoint_host"),
+                                                               (describe.get(t.get("node")) or {}).get("pub_host")),
                               "port": port,
                               "vk_hash": (p.get("vk_hash") or "").strip()},
                     "primary": _role_of(t),

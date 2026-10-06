@@ -1325,10 +1325,13 @@ export function CapList({ items, cap = 6, row }) {
 // dropdown of a node's known IPs + a trailing free-text "Custom IP / Host…". Shared by the interface
 // endpoint field and the turn-proxy listen-IP field so they look/behave identically. Parent owns the
 // sel/custom state; resolve the chosen value with ipPickerVal(sel, custom).
-export function IpPicker({ ips, sel, setSel, custom, setCustom, placeholder }) {
+// `any` = this is an address the box BINDS (a turn-family listener), so it also offers the wildcard: the right choice
+// on a box behind NAT, whose only address is private and is filtered out of this list.
+export function IpPicker({ ips, sel, setSel, custom, setCustom, placeholder, any }) {
   return html`<${Fragment}>
     <${Dropdown} value=${sel} onChange=${v => setSel(v)} options=${[
-      ...(ips || []).filter(ip => !isPrivIp(ip)).map(ip => ({ value: ip, label: ip })),
+      ...(any ? [{ value: "0.0.0.0", label: T("All addresses (0.0.0.0)") }] : []),
+      ...(ips || []).filter(ip => !isPrivIp(ip) && !(any && ip === "0.0.0.0")).map(ip => ({ value: ip, label: ip })),
       { value: "__custom__", label: T("Custom IP / Host…") }]}/>
     ${sel === "__custom__" ? html`<input style="margin-top:6px" value=${custom} onInput=${e => setCustom(e.target.value)} placeholder=${placeholder || "203.0.113.7"} autocomplete="off"/>` : null}
   <//>`;

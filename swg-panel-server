@@ -10118,6 +10118,28 @@ def _fp_bind_host(listen):
     return "" if host in ("", "0.0.0.0", "::", "[::]", "*") else host
 
 
+_FP_PRIV_NETS = [ipaddress.ip_network(n) for n in
+                 ("10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")]
+
+
+def _fp_dial_host(listen, *fallbacks):
+    """The host a wdtt/csqtt client dials — the instance's bind when it is a specific public address, else the
+    first non-empty fallback, with a private bind as the last resort. Byte-for-byte swg-sub's _turn_dial_host,
+    where the rule is documented (a wildcard answers everywhere; a private bind is a box behind NAT)."""
+    host = _fp_bind_host(listen)
+    try:
+        a = ipaddress.ip_address(host)
+        priv = a.version == 4 and any(a in n for n in _FP_PRIV_NETS)
+    except ValueError:
+        priv = False
+    if host and not priv:
+        return host
+    for f in fallbacks:
+        if f:
+            return f
+    return host
+
+
 def _fp_render_for_node(deps, nodes, nid, roster, snaps):
     """`render`: every non-secret value that reaches a client config or link for peers deployed on `nid`,
     keyed user -> peer -> deployment.
@@ -10162,7 +10184,7 @@ def _fp_render_for_node(deps, nodes, nid, roster, snaps):
                 _h, dtls = _hostport_split(inst.get("listen"))
                 d = {"kind": "wdtt",
                      "fork": inst.get("fork") or "amurcanov",
-                     "endpoint_host": _fp_bind_host(inst.get("listen")) or node_cfg.get("endpoint_host") or pub_host,
+                     "endpoint_host": _fp_dial_host(inst.get("listen"), node_cfg.get("endpoint_host"), pub_host),
                      "dtls_port": dtls or 56000,
                      "wg_port": inst.get("wg_port") or 56001,
                      "raw_port": inst.get("raw_port") or "",
@@ -10172,7 +10194,7 @@ def _fp_render_for_node(deps, nodes, nid, roster, snaps):
                 inst = ((node_cfg.get("csqtt") or {}).get(iface)) or {}
                 _h, port = _hostport_split(inst.get("listen"))
                 d = {"kind": "csqtt",
-                     "endpoint_host": _fp_bind_host(inst.get("listen")) or node_cfg.get("endpoint_host") or pub_host,
+                     "endpoint_host": _fp_dial_host(inst.get("listen"), node_cfg.get("endpoint_host"), pub_host),
                      "port": port or 46000,
                      "password": _fp_secret("csqtt_password", p.get("csqtt_password")),
                      **_fp_vk(p, u, fallback_vk)}

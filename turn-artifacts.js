@@ -478,7 +478,30 @@
     { hint: "Import the {v1} core (client-android-arm64 from the {v1} releases) into the VK TURN Proxy app, then scan the QR (Profiles → Import) or paste the VKTGZ: text — the VK call link + endpoint ride inside." },
   ];
 
+  // The address a client dials for this proxy. `tp.listen` is the BIND as the node reports it: a specific public
+  // address is the one that answers, so it stays. A wildcard (0.0.0.0) or a private address (a box behind NAT, its
+  // router forwarding the port) is never reachable from the VK relay, so the host comes from the interface's own
+  // Endpoint instead — the same host its plain WireGuard config carries (interface override → the node's ingress
+  // address → its reported IP, resolved by whoever built baseConf), with the proxy's port. With no usable Endpoint the
+  // bind is left as it is. Twin of js/util.js turnDialHost.
+  var DIAL_WILD = ["", "0.0.0.0", "::", "[::]", "*"];
+  var DIAL_PRIV = /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
+  function dialListen(tp, baseConf) {
+    var l = String((tp && tp.listen) || ""), i = l.lastIndexOf(":");
+    if (i < 0) return tp;
+    var h = l.slice(0, i);
+    if (DIAL_WILD.indexOf(h) < 0 && !(/^\d+\.\d+\.\d+\.\d+$/.test(h) && DIAL_PRIV.test(h))) return tp;   // a literal only: `10.0.0.5.nip.io` is a name
+    var ep = (String(baseConf || "").match(/^[ \t]*Endpoint[ \t]*=[ \t]*(\S+)/m) || [])[1] || "";
+    var j = ep.lastIndexOf(":"), eh = j >= 0 ? ep.slice(0, j) : ep;
+    if (DIAL_WILD.indexOf(eh) >= 0) return tp;
+    var o = {};
+    for (var k in tp) if (Object.prototype.hasOwnProperty.call(tp, k)) o[k] = tp[k];
+    o.listen = eh + ":" + l.slice(i + 1);
+    return o;
+  }
+
   function artifact(baseConf, tp, vkLink, cs, vkLinks, asClient) {
+    tp = dialListen(tp, baseConf);
     var fork = label(tp.service);
     var enc = asClient || nativeEncoder(fork);            // which client app's encoder to run
     cs = cs || {};                                        // client (app) settings for THIS client (admin-chosen; defaults applied per reader)
