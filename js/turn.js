@@ -83,16 +83,18 @@ export function listenHostInit(epIp, ips, nodeIps, bridge) {
      old     not on this box, and the node binds it as typed → the bind fails
      stale   the node could listen on every address, but this server still binds the host as typed (set up before it
              could) — Restart service rewrites it
+   A "Listen on" address (`pin`, ListenOnField) that the node carries overrides all of it: the server binds exactly that one.
      bridge  not on this box on a bridge node, where the listener binds the wildcard inside its container anyway
      {}      on this box, or not known yet — nothing beyond the field's own hint
    For the SAVED host the node's own report answers (`bound`, what it binds); an edit not saved yet is predicted with the
    panel's DNS (useHostOnNode, checked against the node's reported addresses). */
 const _WILD = ["0.0.0.0", "::", "[::]", "*"];
-export function useListenState(node, host, saved, bound) {
+export function useListenState(node, host, saved, bound, pin) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const h = String(host || "").trim();
   const pred = useHostOnNode(_WILD.includes(h) ? "" : h, nrec.ips || []);   // a hook: called on every render, before any return
   if (!h) return {};
+  if (pin && nrec.turn_bind_any && (nrec.ips || []).includes(pin)) return {};   // Listen on: bound to exactly that address
   if (_WILD.includes(h)) return { wild: true };
   // The node's report beats the panel's DNS: bound to every address → `any`; bound to an address of its own that is not
   // the host itself → it resolved a name to the box, nothing to say; bound to the host as typed → judged like an edit.
@@ -139,8 +141,29 @@ export function ListenNotice({ st }) {
   if (st.bridge) return html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>${Trich("Bridge node: the proxy binds `0.0.0.0` inside the container and this port is published, so enter the node's *public* IP/host (what clients dial) here.")}</span></div>`;
   if (st.old) return html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("Not an address of this node, and this node's version binds it as typed, so the server would fail with `bind: cannot assign requested address`. Update the node, or enter one of its own addresses.")}</span></div>`;
   if (st.stale) return html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This server still binds the address as typed — it was set up before this node could listen on all addresses — so it cannot start. *Restart service* to apply it.")}</span></div>`;
-  if (st.any && st.multi) return html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${T("This node has several IPv4 addresses. Listening on all of them, a reply can leave from one clients didn't dial, and the VK relay drops it. To listen on one address only, enter that address.")}</span></div>`;
+  if (st.any && st.multi) return html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This node has several IPv4 addresses. Listening on all of them, a reply can leave from one clients didn't dial, and the VK relay drops it. Pick the address to listen on under *Listen on* — behind NAT, the one your router forwards this port to.")}</span></div>`;
   return null;
+}
+
+// "Listen on" (`bind_ip`): the one address of this node a turn server binds, whatever clients dial. Offered only where it
+// matters — a node with several IPv4 addresses, private ones included (behind NAT the LAN address the router forwards to
+// is exactly the one to pick) — and never on a bridge node (its listener binds the wildcard inside the container) or a
+// node too old to honour it. Auto = the node decides (useListenState). An address the node no longer reports stays
+// selectable, marked, so a stale choice is visible rather than silently shown as Auto.
+const _v4 = ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip || "");
+export function ListenOnField({ node, value, onChange }) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const v4 = (nrec.ips || []).filter(_v4);
+  if ((nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge") || !nrec.turn_bind_any) return null;
+  if (v4.length < 2 && !value) return null;
+  const opts = [{ value: "", label: T("val|Auto") },
+    ...v4.map(ip => ({ value: ip, label: ip + (isPrivIp(ip) ? " · " + T("private") : "") })),
+    ...(value && !v4.includes(value) ? [{ value, label: value + " · " + T("not on this node") }] : [])];
+  return html`<div class="field"><label>${T("Listen on")}</label>
+    <${Dropdown} value=${value || ""} onChange=${onChange} options=${opts} ariaLabel=${T("Listen on")}/>
+    <div class="hint">${value
+      ? T("Only this address — replies leave from it. Clients still dial the endpoint above.")
+      : T("The endpoint's own address when it is on this node, otherwise all addresses.")}</div></div>`;
 }
 
 
@@ -537,7 +560,8 @@ export function TurnManageSheet({ node, tp }) {
   const isCustom = fwd === "__custom__";
   const lhost = ipPickerVal(lsel, lcustom);
   // Where it listens for that host — the node's own answer for the saved one (tp.bind), a prediction for an edit.
-  const lst = useListenState(node, lhost, lh, tp.bind);
+  const [pin, setPin] = useState(tp.bind_ip || "");   // Listen on ("" = Auto)
+  const lst = useListenState(node, lhost, lh, tp.bind, pin);
   const installed = tp.version || "";
   const installing = !!tp.installing;
   const failed = !!tp.failed;
@@ -565,7 +589,7 @@ export function TurnManageSheet({ node, tp }) {
     const newListen = lhost + ":" + lport.trim();
     // title-only change → OPTIMISTIC: a cosmetic panel-side label, so close immediately + save in the background
     // (no status, no node round-trip, the proxy keeps running). Other field changes go the proper pending route.
-    const titleOnly = newListen === (tp.listen || "") && connect === (tp.connect || "") && params.trim() === origParams.trim();
+    const titleOnly = newListen === (tp.listen || "") && connect === (tp.connect || "") && params.trim() === origParams.trim() && pin === (tp.bind_ip || "");
     if (titleOnly) {
       const titleChanged = title.trim() !== (tp.title || "");
       closeModal();
@@ -577,7 +601,8 @@ export function TurnManageSheet({ node, tp }) {
       return;
     }
     setBusy(true); setMsg({ k: "work", t: T("saving…") });
-    const body = { node, service: svc, listen: newListen, connect, params: params.trim(), title: title.trim() };
+    const body = { node, service: svc, listen: newListen, connect, params: params.trim(), title: title.trim(),
+                   ...(pin !== (tp.bind_ip || "") ? { bind_ip: pin } : {}) };
     const r = await api.turnManage(body);
     if (!r.ok) return fail(srvText(r) || T("Request failed."));
     closeModal(); await Store.poll();
@@ -592,6 +617,7 @@ export function TurnManageSheet({ node, tp }) {
   const turnDirty = (lhost + ":" + lport.trim()) !== (tp.listen || "")
     || _mConnect !== (tp.connect || "")
     || params.trim() !== origParams.trim()
+    || pin !== (tp.bind_ip || "")
     || title.trim() !== (tp.title || "");
   return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: turnFork(svc) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`} width=${664} headExtra=${html`<${ProxyDropsHeader} node=${node} svc=${svc}/><${TurnIpsHeader} node=${node} svc=${svc}/>`}
     foot=${html`<${Fragment}>
@@ -625,6 +651,7 @@ export function TurnManageSheet({ node, tp }) {
         <${ListenHint} st=${lst} fallback=${turnDialFallback(node, isCustom ? fwdByPort(allIfaces, custom) : fwd)}/></div>
       <div class="field"><label>${T("Listen port")}</label><input class=${tperr ? "bad" : ""} value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/>${tperr ? html`<div class="hint err">${tperr}</div>` : null}</div>
     </div>
+    <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
     <${ListenNotice} st=${lst}/>
     <div class="field"><label>${T("Forwards to")}</label>
       <${Dropdown} className="selwrap" value=${fwd} onChange=${v => setFwd(v)} ariaLabel=${T("Forward to")}
@@ -1708,7 +1735,8 @@ export function SetupTurnSheet({ node, forwardIface }) {
   const isCustom = fwd === "__custom__";
   const f = turnForkList().find(x => x.id === fork) || FORKS[0] || turnForkList()[0];
   const lhost = ipPickerVal(lsel, lcustom);
-  const lst = useListenState(node, lhost);   // a new listener: predicted (useListenState checks the node's reported addresses)
+  const [pin, setPin] = useState("");   // Listen on ("" = Auto)
+  const lst = useListenState(node, lhost, "", "", pin);   // a new listener: predicted (useListenState checks the node's reported addresses)
   // WDTT (kind:"wdtt") owns its OWN built-in userspace-WG interface, so there's no Forwards-to. The internals
   // (iface / subnet / internal WG port) are auto-assigned to avoid collisions with this node's existing wdtt
   // instances + interfaces, and stay advanced-editable. Listen IP/port above are the PUBLIC DTLS endpoint.
@@ -1745,8 +1773,8 @@ export function SetupTurnSheet({ node, forwardIface }) {
     }
     if (!lhost) return fail(T("Listen IP is required."));
     if (!/^\d+$/.test(lport.trim())) return fail(T("Listen port must be a number."));
-    if (isCsqtt) return csqttSaveRef.current ? csqttSaveRef.current(lhost, lport.trim()) : fail(T("csqtt fields aren't ready yet."));
-    if (isWdtt) return wdttSaveRef.current ? wdttSaveRef.current(lhost, lport.trim()) : fail(T("WDTT fields aren't ready yet."));
+    if (isCsqtt) return csqttSaveRef.current ? csqttSaveRef.current(lhost, lport.trim(), pin) : fail(T("csqtt fields aren't ready yet."));
+    if (isWdtt) return wdttSaveRef.current ? wdttSaveRef.current(lhost, lport.trim(), pin) : fail(T("WDTT fields aren't ready yet."));
     let connect;
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail(T("Forwards-to must be host:port.")); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
@@ -1759,7 +1787,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
     Store.turnNew[_tkey] = { listen: lhost + ":" + lport.trim(), connect, title: title.trim(), at: Date.now() };
     closeModal(); Store.apply();
     const r = await api.turnInstall({ node, fork: f.id, owner: f.owner, wrap_flags: f.wrap,
-      listen: lhost + ":" + lport.trim(), connect, title: title.trim(), params: params.trim() });
+      listen: lhost + ":" + lport.trim(), connect, title: title.trim(), params: params.trim(), ...(pin ? { bind_ip: pin } : {}) });
     if (!r || !r.ok) { delete Store.turnNew[_tkey]; Store.apply(); return toast(srvText(r) || T("Turn-proxy install failed."), "err"); }
     const _real = (r.data && r.data.service) || svc;
     if (_real !== svc) { Store.turnNew[node + "|" + _real] = Store.turnNew[_tkey]; delete Store.turnNew[_tkey]; }
@@ -1794,6 +1822,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
           <${ListenHint} st=${lst} fallback=${turnDialFallback(node, isSelfContained ? undefined : (isCustom ? fwdByPort(allIfaces, custom) : fwd))}/></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${tsperr ? "bad" : ""} value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/>${tsperr ? html`<div class="hint err">${tsperr}</div>` : null}</div>
       </div>
+      <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
       <${ListenNotice} st=${lst}/>
       ${isCsqtt ? html`<${CsqttInstanceBody} node=${node} snap=${snap} saveRef=${csqttSaveRef} setBusy=${setBusy} setMsg=${setMsg} fail=${fail}/>`
        : isWdtt ? html`<${WdttInstanceBody} node=${node} snap=${snap} saveRef=${wdttSaveRef} setBusy=${setBusy} setMsg=${setMsg} fail=${fail}/>` : html`<${Fragment}>
@@ -1842,7 +1871,7 @@ export function WdttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail })
   const [wgPort, setWgPort] = useState(nextWgPort);
   const [adv, setAdv] = useState(false);
   const wgperr = portErrMsg(node, wgPort, []);   // live internal-WG-port collision check (new interface → no own port)
-  saveRef.current = async (lhost, lport) => {
+  saveRef.current = async (lhost, lport, pin) => {
     const _ne = turnIfaceNameError(node, iface, "wdtt"); if (_ne) return fail(_ne);
     if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail(T("Subnet must be an IPv4 CIDR (e.g. 10.66.66.1/24)."));
     if (!/^\d+$/.test(String(wgPort).trim())) return fail(T("Internal WG port must be a number."));
@@ -1850,7 +1879,7 @@ export function WdttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail })
     if (lport && String(lport).trim() === String(wgPort).trim()) return fail(T("The DTLS listen port and internal WG port must differ."));
     setBusy(true); setMsg({ k: "work", t: T("creating WDTT server… (the node installs it on its next sync)") });
     const r = await api.wdttSet({ node, iface: iface.trim(), wg_addr: subnet.trim(),
-      listen: lhost + ":" + lport, wg_port: parseInt(String(wgPort).trim(), 10), max_passwords: 200, stopped: false });
+      listen: lhost + ":" + lport, wg_port: parseInt(String(wgPort).trim(), 10), max_passwords: 200, stopped: false, ...(pin ? { bind_ip: pin } : {}) });
     if (!r.ok) return fail(srvText(r) || T("Request failed."));
     closeModal(); Store.apply(); await Store.poll();
     toast(T("WDTT server requested — the node installs it on its next sync. Add users from Peers."), "ok");
@@ -2032,7 +2061,9 @@ export function WdttManageSheet({ node, w: w0 }) {
   const [hostCustom, setHostCustom] = useState(initHost && !ips.includes(initHost) ? initHost : "");
   // What clients dial; the node binds it when it lands on the box, else every address. The saved host is answered
   // by the node's own report (w.bind), an edit by a prediction checked against the node's reported addresses.
-  const lst = useListenState(node, ipPickerVal(hostSel, hostCustom), lhost, w.bind);
+  const pinCur = cfg.bind_ip || w.bind_ip || "";
+  const [pin, setPin] = useState(pinCur);   // Listen on ("" = Auto)
+  const lst = useListenState(node, ipPickerVal(hostSel, hostCustom), lhost, w.bind, pin);
   const [port, setPort] = useState(lport || "");
   const [msg, setMsg] = useState(null);
   // RAW-IP mode — a SECOND listener on the same server, capability-gated (qWDTT + ildarmaga) and off unless
@@ -2062,7 +2093,8 @@ export function WdttManageSheet({ node, w: w0 }) {
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
   const rawWant = !!(rawOn && rawCapable);
   const rawDirty = rawWant !== !!rawCur;
-  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty;
+  const pinDirty = pin !== pinCur;   // a new bind, same links: no re-issue to confirm
+  const anyDirty = endpointDirty || titleDirty || paramsDirty || rawDirty || wgDirty || pinDirty;
   // live DTLS-port check: must differ from this instance's own internal WG port, and not collide with any other
   // port on the node (its own DTLS/WG ports don't count). Blocks Save so a clash never becomes a node "FAILED TO APPLY".
   const wperr = (port.trim() && Number(port) === Number(wgPort)) ? T("The DTLS port and the internal WG port must differ.")
@@ -2076,7 +2108,7 @@ export function WdttManageSheet({ node, w: w0 }) {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], bind_ip: pin, ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed"));
         reportDropped(r);   // §5.4
         const mv = ((r.data || {}).raw_moved || "");
@@ -2098,7 +2130,7 @@ export function WdttManageSheet({ node, w: w0 }) {
         body=${Trich("*{holder}* offers RAW-IP on this address today. The app dials one fixed port for every server, so an address can only run one raw listener — turning it on here turns it off on *{holder}*. Its users keep their links and fall back to WireGuard mode. Servers on this node's other IPs are untouched.", { holder: rawHolder })} onConfirm=${doSave}/>`);
       return;
     }
-    if (paramsDirty || rawDirty || wgDirty) { doSave(); return; }   // extra ExecStart flags / RAW listener → the node rewrites the unit + restarts
+    if (paramsDirty || rawDirty || wgDirty || pinDirty) { doSave(); return; }   // extra ExecStart flags / RAW listener / Listen on → the node rewrites the unit + restarts
     // title-only → a cosmetic panel-side label (no node restart, like a turn-proxy title): store + close immediately
     closeModal();
     pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
@@ -2128,6 +2160,7 @@ export function WdttManageSheet({ node, w: w0 }) {
         <div class="field"><label>${T("Endpoint host / IP")}</label><${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/><${ListenHint} st=${lst} fallback=${turnDialFallback(node)}/></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${wperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="56000"/>${wperr ? html`<div class="hint err">${wperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>
       </div>
+      <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
       <${ListenNotice} st=${lst}/>
       <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint ro-note" title=${T("— self-contained (its own userspace-WireGuard)")}>${T("— self-contained (its own userspace-WireGuard)")}</span><button class="btn btn-mini" disabled=${blocked || awaiting} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
       ${/* RAW-IP lives INSIDE Server parameters — it is an advanced server capability, not a first-class control.
@@ -2335,11 +2368,11 @@ export function CsqttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }
   const [iface, setIface] = useState(nextIface);
   const [subnet, setSubnet] = useState(nextSubnet);
   const [adv, setAdv] = useState(false);
-  saveRef.current = async (lhost, lport) => {
+  saveRef.current = async (lhost, lport, pin) => {
     const _ne = turnIfaceNameError(node, iface, "csqtt"); if (_ne) return fail(_ne);
     if (!/^\d{1,3}(\.\d{1,3}){3}\/24$/.test(subnet.trim())) return fail(T("Subnet must be an IPv4 /24 CIDR (e.g. 10.66.67.1/24)."));
     setBusy(true); setMsg({ k: "work", t: T("creating csqtt server… (the node installs it on its next sync)") });
-    const r = await api.csqttSet({ node, iface: iface.trim(), tun_addr: subnet.trim(), listen: lhost + ":" + lport, max_passwords: 500, stopped: false });
+    const r = await api.csqttSet({ node, iface: iface.trim(), tun_addr: subnet.trim(), listen: lhost + ":" + lport, max_passwords: 500, stopped: false, ...(pin ? { bind_ip: pin } : {}) });
     if (!r.ok) return fail(srvText(r) || T("Request failed."));
     closeModal(); Store.apply(); await Store.poll();
     toast(T("csqtt server requested — the node installs it on its next sync. Add users from Peers."), "ok");
@@ -2416,20 +2449,23 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const initHost = lhost || "";
   const [hostSel, setHostSel] = useState(initHost ? (ips.includes(initHost) ? initHost : "__custom__") : (ips[0] || "__custom__"));
   const [hostCustom, setHostCustom] = useState(initHost && !ips.includes(initHost) ? initHost : "");
-  const lst = useListenState(node, ipPickerVal(hostSel, hostCustom), lhost, c.bind);   // see WdttManageSheet
+  const pinCur = cfg.bind_ip || c.bind_ip || "";
+  const [pin, setPin] = useState(pinCur);   // Listen on ("" = Auto)
+  const lst = useListenState(node, ipPickerVal(hostSel, hostCustom), lhost, c.bind, pin);   // see WdttManageSheet
   const [port, setPort] = useState(lport || "");
   const [msg, setMsg] = useState(null);
   const newListen = (ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0") + ":" + (port.trim() || "46000");
   const endpointDirty = !!oldListen && newListen !== oldListen;
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
-  const anyDirty = endpointDirty || titleDirty || paramsDirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
+  const pinDirty = pin !== pinCur;
+  const anyDirty = endpointDirty || titleDirty || paramsDirty || pinDirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
   const wperr = portErrMsg(node, port, [lport]);
   const doSave = () => {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
+    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], bind_ip: pin, ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
@@ -2440,7 +2476,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
       return;
     }
-    if (paramsDirty) { doSave(); return; }
+    if (paramsDirty || pinDirty) { doSave(); return; }
     closeModal(); pushOptTitle("c|" + node + "|" + iface, title.trim());
     api.csqttSet({ node, iface, listen: oldListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
       .then(r => { if (r && r.ok) { Store.poll(); reportDropped(r); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });   // §5.4: a title-only save re-posts the routing block, so it can drop too
@@ -2462,6 +2498,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
       <div class="field"><label>${T("Endpoint host / IP")}</label><${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/><${ListenHint} st=${lst} fallback=${turnDialFallback(node)}/></div>
       <div class="field"><label>${T("Listen port")}</label><input class=${wperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="46000"/>${wperr ? html`<div class="hint err">${wperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>
     </div>
+    <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
     <${ListenNotice} st=${lst}/>
     <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>

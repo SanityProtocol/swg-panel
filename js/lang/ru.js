@@ -3641,8 +3641,15 @@ export const STR = {
     "Это не адрес этой ноды, а её версия привязывается к адресу как есть, поэтому сервер упадёт с `bind: cannot assign requested address`. Обновите ноду или укажите один из её собственных адресов.",
   "This server still binds the address as typed — it was set up before this node could listen on all addresses — so it cannot start. *Restart service* to apply it.":
     "Этот сервер всё ещё привязывается к адресу как есть — его настроили раньше, чем нода научилась слушать на всех адресах, — поэтому он не может запуститься. Нажмите *Перезапустить*, чтобы применить.",
-  "This node has several IPv4 addresses. Listening on all of them, a reply can leave from one clients didn't dial, and the VK relay drops it. To listen on one address only, enter that address.":
-    "У этой ноды несколько IPv4-адресов. Когда сервер слушает на всех, ответ может уйти с адреса, к которому клиенты не подключались, и реле VK его отбросит. Чтобы слушать только на одном адресе, укажите этот адрес.",
+  "This node has several IPv4 addresses. Listening on all of them, a reply can leave from one clients didn't dial, and the VK relay drops it. Pick the address to listen on under *Listen on* — behind NAT, the one your router forwards this port to.":
+    "У этой ноды несколько IPv4-адресов. Когда сервер слушает на всех, ответ может уйти с адреса, к которому клиенты не подключались, и реле VK его отбросит. Выберите адрес в поле *Слушать на* — за NAT тот, на который роутер пробрасывает этот порт.",
+  "Listen on": "Слушать на",
+  "private": "частный",
+  "not on this node": "нет на этой ноде",
+  "Only this address — replies leave from it. Clients still dial the endpoint above.":
+    "Только этот адрес — ответы уходят с него. Клиенты по-прежнему подключаются к эндпоинту выше.",
+  "The endpoint's own address when it is on this node, otherwise all addresses.":
+    "Адрес эндпоинта, если он есть на этой ноде, иначе все адреса.",
   "Transfer token": "Токен переноса",
   "— to move an existing node here": "— чтобы перенести сюда узел",
   "Carries this panel's address and this token together. On the panel that has the node now: its Transfer window, and paste this — nothing is installed.": "Содержит адрес этой панели и этот токен вместе. На панели, где сейчас узел, откройте «Перенос» и вставьте это — ничего не устанавливается.",

@@ -31,7 +31,7 @@ import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, DropsFigur
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
-         enabledTurnForks, useListenState, ListenHint, ListenNotice, turnDialFallback } from "./turn.js";
+         enabledTurnForks, useListenState, ListenHint, ListenNotice, ListenOnField, turnDialFallback } from "./turn.js";
 import { PeerGrid, NodeRail } from "./grids.js";
 import { openCreatePeer } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -1195,8 +1195,10 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const _preEp = pre && pre.endpoint;
   const [hostSel, setHostSel] = useState(_preEp ? (ips.includes(_preEp) ? _preEp : "__custom__") : (ips[0] || "__custom__"));
   const [hostCustom, setHostCustom] = useState(_preEp && !ips.includes(_preEp) ? _preEp : "");
-  // A WDTT/csqtt server listens for that host: on it when it lands on the box, else on every address (useListenState).
-  const lst = useListenState(node, (isWdtt || isCsqtt) ? ipPickerVal(hostSel, hostCustom) : "");
+  // A WDTT/csqtt server listens for that host: on it when it lands on the box, else on every address (useListenState) —
+  // or on the one address picked under Listen on.
+  const [pin, setPin] = useState("");
+  const lst = useListenState(node, (isWdtt || isCsqtt) ? ipPickerVal(hostSel, hostCustom) : "", "", "", pin);
   const pickProto = p => {   // switching base re-suggests the name only if the field is still an untouched suggestion
     const untouched = iface === sugAwg || iface === sugWg || iface === sugWdtt || iface === sugCsqtt || !iface.trim();
     if (p !== "existing" && untouched) setIface(p === "wg" ? sugWg : p === "wdtt" ? sugWdtt : p === "csqtt" ? sugCsqtt : sugAwg);
@@ -1277,7 +1279,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       // The form takes the SUBNET (10.8.0.0/24) like wg/awg; the server lives on the first host (.1) — derive it here.
       const _dtlsHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.wdttSet({ node, iface: nm, wg_addr: subnetServerAddr(subnet.trim()), listen: _dtlsHost + ":" + (port.trim() || "56000"),
-        wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
+        wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...(pin ? { bind_ip: pin } : {}), ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
     } else if (isCsqtt) {
       // csqtt interface: ONE record — writes the same /api/csqtt/set the Turn-proxies card edits. Raw-TUN, so no
       // internal WG port and no fork; takes the SUBNET like wg/awg (server .1 derived), a UDP DTLS listen, a pw cap.
@@ -1287,7 +1289,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
       const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.csqttSet({ node, iface: nm, tun_addr: subnetServerAddr(subnet.trim()), listen: _lHost + ":" + (port.trim() || "46000"),
-        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...egressBody(eg) });
+        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...(pin ? { bind_ip: pin } : {}), ...egressBody(eg) });
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail(T("Interface name is required (no spaces or /)."));
@@ -1390,6 +1392,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
           <${ListenHint} st=${lst} hint=${T("What clients dial (over the VK relay)")} fallback=${turnDialFallback(node)}/></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="46000"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">${T("UDP DTLS listen (outside)")}</div>`}</div>
       </div>
+      <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
       <${ListenNotice} st=${lst}/>
       <div class="row2">
         <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${cfork} onChange=${v => setCfork(v)} options=${forkOpts(_csqttForks)} ariaLabel=${T("Server fork")}/><div class="hint">${T("Which csqtt server implements this instance")}</div></div>
@@ -1403,6 +1406,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
           <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
           <${ListenHint} st=${lst} fallback=${turnDialFallback(node)}/></div>
       </div>
+      <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
       <${ListenNotice} st=${lst}/>
       <div class="row2">
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>

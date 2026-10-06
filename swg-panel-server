@@ -3331,6 +3331,18 @@ def no_ctrl(s):                                   # no newline/control chars (he
     return not _CTRL_RE.search(s or "")
 def strip_ctrl(s):                                # drop control chars from a cosmetic free-text field (title/name)
     return _CTRL_RE.sub("", s or "")
+def bind_ip_ok(v):
+    """A turn server's "Listen on" (`bind_ip`): "" (Auto — swg-noded turn_bind decides) or one IPv4 literal. The node
+    binds it only if the box carries it, so this checks the shape, not the box."""
+    v = str(v or "").strip()
+    if not v:
+        return True
+    try:
+        return ipaddress.ip_address(v).version == 4 and v == str(ipaddress.ip_address(v))
+    except ValueError:
+        return False
+
+
 def valid_hostport(s):
     """host:port — host an IP or a safe hostname, port 1-65535, no shell metacharacters."""
     if not s or _CTRL_RE.search(s):
@@ -22901,7 +22913,7 @@ def api(method, path, qs, body, deps):
                         "wdtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("wg_addr", "listen", "fork", "wg_port", "max_passwords",
                                                                    "stopped", "block", "egress_mode", "egress_node",
                                                                    "egress_ip", "wan_iface", "routing", "routing_exit_ips", "title", "params",
-                                                                   "raw_port", "raw_iface", "raw_addr", "exit_id", "reach", "dns", "dns_orig") if k in ov}
+                                                                   "raw_port", "raw_iface", "raw_addr", "exit_id", "reach", "dns", "dns_orig", "bind_ip") if k in ov}
                                      for ifn, ov in _w.items()},
                         # …and the CIPHERTEXT of a WDTT escrow this panel cannot vouch for, so the browser —
                         # the only holder of the vault private key — can settle what the panel never can.
@@ -22918,7 +22930,7 @@ def api(method, path, qs, body, deps):
                         # routing / filters. Config fields only — never the owner password / minted access passwords.
                         "csqtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
-                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns", "dns_orig") if k in ov}
+                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns", "dns_orig", "bind_ip") if k in ov}
                                       for ifn, ov in _c.items()},
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
@@ -27831,6 +27843,8 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "listen and connect must be ip:port", "code": "bad_request"}
         if not no_ctrl(wrap_flags) or not no_ctrl(body.get("params") or "") or not no_ctrl(body.get("title") or ""):
             return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
+        if not bind_ip_ok(body.get("bind_ip")):
+            return 400, {"ok": False, "error": "Listen on must be an IPv4 address of this node, or Auto", "code": "bad_request"}
         rc = reserved_conflict(deps, nodes, nodes[nid], port=listen.rsplit(":", 1)[1])
         if rc:
             return 400, {"ok": False, "error": rc, "code": "bad_request"}
@@ -27847,6 +27861,8 @@ def api(method, path, qs, body, deps):
                 "wrap_flags": wrap_flags, "title": (body.get("title") or "").strip(), "at": now()}
         if "params" in body:   # explicit ExecStart tail from the create form (the node uses it verbatim, incl. its wrap key)
             ireq["params"] = body.get("params") or ""
+        if (body.get("bind_ip") or "").strip():   # Listen on: the one address to bind (else the node decides)
+            ireq["bind_ip"] = body["bind_ip"].strip()
         ireq["pin"] = turn_pin(owner, _node_arch(deps, nid))   # checksum gate: fetch+hash THIS node's-arch binary (bounded+bg) so the pin rides the FIRST sync delivery
         nodes[nid].setdefault("turn", {})[svc] = ireq
         nodes_save(deps["nodes_path"], nodes)
@@ -27886,6 +27902,10 @@ def api(method, path, qs, body, deps):
                 if not no_ctrl(body.get("title") or ""):
                     return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
                 req["title"] = (body.get("title") or "").strip()
+            if "bind_ip" in body:                        # Listen on: an address of the box, or "" = Auto
+                if not bind_ip_ok(body.get("bind_ip")):
+                    return 400, {"ok": False, "error": "Listen on must be an IPv4 address of this node, or Auto", "code": "bad_request"}
+                req["bind_ip"] = (body.get("bind_ip") or "").strip()
             verb = "Editing turn-proxy"
         elif path.endswith("/rotate"):
             req = {"action": "rotate", "at": now()}; verb = "Rotating turn-proxy key"
@@ -27959,6 +27979,13 @@ def api(method, path, qs, body, deps):
                 if not no_ctrl(v):
                     return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
                 inst[k] = v
+        if "bind_ip" in body:                            # Listen on: an address of the box, or "" = Auto (the node decides)
+            if not bind_ip_ok(body.get("bind_ip")):
+                return 400, {"ok": False, "error": "Listen on must be an IPv4 address of this node, or Auto", "code": "bad_request"}
+            if (body.get("bind_ip") or "").strip():
+                inst["bind_ip"] = body["bind_ip"].strip()
+            else:
+                inst.pop("bind_ip", None)
         # A fork with no PUBLISHED build cannot be installed: the node fetches its binary from this panel's
         # mirror, so the install fails on the node with "binary unavailable" and the operator is left with a
         # server that never existed. Refuse at creation, where the reason can still be acted on. (An instance
@@ -28300,6 +28327,13 @@ def api(method, path, qs, body, deps):
                 if not no_ctrl(v):
                     return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
                 inst[k] = v
+        if "bind_ip" in body:                            # Listen on: an address of the box, or "" = Auto (the node decides)
+            if not bind_ip_ok(body.get("bind_ip")):
+                return 400, {"ok": False, "error": "Listen on must be an IPv4 address of this node, or Auto", "code": "bad_request"}
+            if (body.get("bind_ip") or "").strip():
+                inst["bind_ip"] = body["bind_ip"].strip()
+            else:
+                inst.pop("bind_ip", None)
         if inst.get("fork") and (TURN_SERVERS.get(inst["fork"]) or {}).get("kind") != "csqtt":
             return 400, {"ok": False, "error": "unknown csqtt fork", "code": "bad_request"}
         if inst.get("tun_addr") and not (_WDTT_CIDR_RE.match(inst["tun_addr"]) and inst["tun_addr"].endswith("/24")):
@@ -31635,7 +31669,7 @@ class Handler(BaseHTTPRequestHandler):
                     continue      # an older node — describing it partially is what restarts it
                 _inst = {"iface": _tifn}
                 for _k in ("fork", "listen", _addr, "wg_port", "web_port", "max_passwords", "params",
-                           "raw_port", "raw_iface", "raw_addr"):
+                           "raw_port", "raw_iface", "raw_addr", "bind_ip"):
                     if _rep.get(_k):
                         _inst[_k] = _rep[_k]
                 # client DNS: compared by the node's _*_params_changed like params, so a mirror without it would

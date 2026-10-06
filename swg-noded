@@ -1696,7 +1696,7 @@ def load_turn_proxies():
             if not u:
                 continue
             live = _tp_from_unit(t["service"], u)
-            for k in ("listen", "connect", "wrap_key", "params", "bind"):
+            for k in ("listen", "connect", "wrap_key", "params", "bind", "bind_ip"):
                 if live.get(k) is not None and t.get(k) != live.get(k):
                     t[k] = live.get(k); changed = True
         _TURN_READ["at"] = nowt
@@ -2653,7 +2653,7 @@ def _local_v4():
     return _LOCAL_V4["set"]
 
 
-def turn_bind(listen, resolve=True):
+def turn_bind(listen, resolve=True, pin=""):
     """The `host:port` a turn-family server (WDTT, csqtt, vk-turn-proxy) actually binds, for the `listen` it is given.
 
     The panel's `listen` is what clients DIAL. A host that lands on this box is bound — an IP of the box, or a name that
@@ -2664,7 +2664,11 @@ def turn_bind(listen, resolve=True):
     same port instead — how the upstream servers run by default. So does a name that does not resolve: this is decided
     when an env file is written or a server launched, never per sync, so a DNS outage cannot make it flap. `resolve=False`
     skips the lookup (a name then binds every address). An IPv6 literal, a wildcard, or a box whose addresses cannot be
-    read: as given, which is what every node did before."""
+    read: as given, which is what every node did before.
+
+    `pin` is the operator's "Listen on" (`bind_ip`): one IPv4 address of this box to bind whatever the host is — on a box
+    with several addresses behind NAT, the one the router forwards to, so replies leave from it. A pin the box does not
+    carry (an address that moved away) is ignored, and the rule above decides."""
     s = str(listen or "").strip()
     i = s.rfind(":")
     if i <= 0:
@@ -2675,6 +2679,9 @@ def turn_bind(listen, resolve=True):
     mine = _local_v4()
     if mine is None:
         return s
+    pin = str(pin or "").strip()
+    if pin and _IPV4_RE.match(pin) and pin in mine:
+        return pin + ":" + port
     if _IPV4_RE.match(host):
         return s if host in mine else "0.0.0.0:" + port
     cands = []
@@ -2707,7 +2714,7 @@ def rebind_env(envpath, inst, render):
     if not (inst.get("iface") and inst.get("listen") and inst.get("password") and os.path.exists(envpath)):
         return
     with contextlib.suppress(Exception):
-        if _env_listen(envpath) != turn_bind(inst["listen"]):
+        if _env_listen(envpath) != turn_bind(inst["listen"], pin=inst.get("bind_ip")):
             text = render(inst)                               # render FIRST: opening for write empties the file
             with open(envpath + ".tmp", "w") as f:
                 f.write(text)
@@ -16436,7 +16443,8 @@ def _handover_turn():
                 "This node changed run-model and " + svc + " did not come across — its record does not say "
                 "which fork it runs, so it cannot be rebuilt here. Re-create it from the panel.")
             continue
-        req = {"owner": owner, "listen": t["listen"], "connect": t["connect"], "params": t.get("params") or ""}
+        req = {"owner": owner, "listen": t["listen"], "connect": t["connect"], "params": t.get("params") or "",
+               "bind_ip": t.get("bind_ip") or ""}
         err = (_dturn_install(svc, req)[0] if TURN_DOCKER else _turn_install(svc, req))
         if err:
             NODE_ERRORS["turn:" + svc] = ("Rebuilding " + svc + " after the run-model change failed: " + str(err)[:120])
@@ -17671,7 +17679,7 @@ def _dturn_args(tp):
         # interfaces on the same port and let docker publish it (compose ports:). connect stays 127.0.0.1 (our netns).
         listen = "0.0.0.0:" + listen.rsplit(":", 1)[1]
     else:
-        listen = turn_bind(listen)                     # host networking: bind what lands on the box, else every address
+        listen = turn_bind(listen, pin=tp.get("bind_ip"))   # host networking: Listen on, else what lands on the box, else every address
     tp["bind"] = listen                                # reported with the proxy (the record keeps what clients dial)
     args = ["-listen", listen, "-connect", tp.get("connect", "")]
     p = (tp.get("params") or "").strip()
@@ -18045,6 +18053,7 @@ def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
           "wrap_key": _params_wrapkey(params), "params": params, "owner": owner}
     _ti = (req.get("title") or "").strip()
     if _ti: tp["title"] = _ti          # optional display label, kept on the record
+    if (req.get("bind_ip") or "").strip(): tp["bind_ip"] = req["bind_ip"].strip()   # Listen on
     r = _dturn_run(tp)
     if r.returncode != 0: return (r.stderr or "container start failed").strip()[:160], None
     verr = _dturn_verify(svc)
@@ -18221,12 +18230,16 @@ def _turn_input_safe(*vals):
     return all(not _TURN_CTRL_RE.search(v or "") for v in vals)
 
 
-def _turn_env_text(listen, connect, params):
+def _turn_env_text(listen, connect, params, pin=""):
     # The unit's ExecStart reads ${SWG_LISTEN}, so that is the BIND (turn_bind). The address clients dial goes beside it
-    # as SWG_DIAL only when the two differ, so a file whose host lands on this box stays byte-identical.
-    bind = turn_bind(listen)
-    return "SWG_LISTEN=%s\n%sSWG_CONNECT=%s\nSWG_PARAMS=%s\n" % (
-        bind, ("SWG_DIAL=%s\n" % listen) if bind != listen else "", connect, (params or "").strip())
+    # as SWG_DIAL only when the two differ, and the operator's "Listen on" as SWG_PIN only when set (a Restart or a key
+    # rotation re-renders this file from what it holds) — so a file whose host lands on this box stays byte-identical.
+    pin = str(pin or "").strip()
+    pin = pin if _IPV4_RE.match(pin) else ""            # only an address goes into the file (the panel checks it too)
+    bind = turn_bind(listen, pin=pin)
+    return "SWG_LISTEN=%s\n%s%sSWG_CONNECT=%s\nSWG_PARAMS=%s\n" % (
+        bind, ("SWG_DIAL=%s\n" % listen) if bind != listen else "", ("SWG_PIN=%s\n" % pin) if pin else "",
+        connect, (params or "").strip())
 def _exec_bin(execl):
     try: return shlex.split(execl)[0]
     except Exception: return (execl.split() or [""])[0]
@@ -18242,7 +18255,8 @@ def _tp_from_unit(svc, unit_text):
         k, _, v = ln.partition("="); vals[k.strip()] = v.strip()
     params = vals.get("SWG_PARAMS", "")
     return {"service": svc, "listen": vals.get("SWG_DIAL") or vals.get("SWG_LISTEN", ""), "connect": vals.get("SWG_CONNECT", ""),
-            "wrap_key": _params_wrapkey(params), "params": params, "bind": vals.get("SWG_LISTEN", "")}
+            "wrap_key": _params_wrapkey(params), "params": params, "bind": vals.get("SWG_LISTEN", ""),
+            "bind_ip": vals.get("SWG_PIN", "")}
 
 # Axis-2 P3: systemd sandbox for the turn-proxy unit. A turn proxy only shuffles bytes between two sockets, so
 # confine it hard — a compromised/malicious fork binary is contained to its sockets, not root-on-the-box. The
@@ -18290,7 +18304,7 @@ def _turn_install(svc, req):
     wrap_flags = (req.get("wrap_flags") or "").strip()
     if "/" not in owner or ":" not in listen or ":" not in connect:
         return "bad install request"
-    if not _turn_input_safe(owner, listen, connect, wrap_flags, req.get("params")):
+    if not _turn_input_safe(owner, listen, connect, wrap_flags, req.get("params"), req.get("bind_ip")):
         return "refused: control characters in turn parameters"
     inst = svc[len("vk-turn-proxy-"):] if svc.startswith("vk-turn-proxy-") else svc
     fork = _turn_fork(svc)
@@ -18332,7 +18346,7 @@ def _turn_install(svc, req):
            + " && ln -sfn " + shlex.quote("../.bin/" + fork + "/server") + " " + shlex.quote(binp)
            + " && printf %s " + shlex.quote(owner) + " > " + shlex.quote(fdir + "/repo.txt")
            + ((" && printf %s " + shlex.quote(tag) + " > " + shlex.quote(fdir + "/version.txt")) if tag else "")
-           + " && cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, extra) + "SWGENV\n"
+           + " && cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, extra, req.get("bind_ip")) + "SWGENV\n"
            + "cat > " + shlex.quote(_turn_unit_path(svc)) + " <<'SWGEOF'\n" + unit + "SWGEOF\n"
            + "systemctl daemon-reload && " + sc_enable_now(svc) + " >/dev/null 2>&1")
     w = host_sh(cmd, timeout=210)
@@ -18449,6 +18463,9 @@ def apply_turn(turn, turn_onboard):
                 if act == "manage":
                     if req.get("listen"):  tp["listen"] = req["listen"].strip()
                     if req.get("connect"): tp["connect"] = req["connect"].strip()
+                    if "bind_ip" in req:
+                        if (req.get("bind_ip") or "").strip(): tp["bind_ip"] = req["bind_ip"].strip()
+                        else: tp.pop("bind_ip", None)
                     if "params" in req:    tp["params"] = (req.get("params") or "").strip(); tp["wrap_key"] = _params_wrapkey(tp["params"])
                     if "title" in req:     tp["title"] = (req.get("title") or "").strip()
                 elif act == "rotate":
@@ -18550,17 +18567,19 @@ def apply_turn(turn, turn_onboard):
                 fail(svc, "unit not found on the node"); continue
             cur = _tp_from_unit(svc, unit)   # resolves env-file or old baked-ExecStart units
             listen, connect, params = cur.get("listen", ""), cur.get("connect", ""), cur.get("params", "")
+            pin = cur.get("bind_ip", "")
             if act == "manage":
                 if req.get("listen"):  listen = req["listen"].strip()
                 if req.get("connect"): connect = req["connect"].strip()
                 if "params" in req:    params = (req.get("params") or "").strip()
-                if not _turn_input_safe(listen, connect, params):   # belt on the node vs a compromised/MITM panel
+                if "bind_ip" in req:   pin = (req.get("bind_ip") or "").strip()
+                if not _turn_input_safe(listen, connect, params, pin):   # belt on the node vs a compromised/MITM panel
                     fail(svc, "refused: control characters in turn parameters"); continue
             elif act == "rotate":
                 params = _params_set_wrapkey(params, secrets.token_hex(32))
             # restart: no config change — just rewrite turn.env (unchanged) + restart below
             envp = _turn_env_path(svc)
-            env_here = "cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, params) + "SWGENV\n"
+            env_here = "cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, params, pin) + "SWGENV\n"
             if _unit_is_envform(unit):       # fast path: rewrite turn.env + restart, NO daemon-reload (the spike)
                 w = host_sh(env_here + "systemctl restart " + shlex.quote(svc))
             else:                            # one-time migrate: move the baked ExecStart onto the EnvironmentFile
@@ -18575,6 +18594,7 @@ def apply_turn(turn, turn_onboard):
             _ti = _ti.strip() if isinstance(_ti, str) else (rec.get(svc) or {}).get("title", "")
             rec[svc] = {"service": svc, "listen": listen, "connect": connect,
                         "wrap_key": _params_wrapkey(params), "params": params}   # reflect even if it won't start
+            if pin: rec[svc]["bind_ip"] = pin
             if _ti: rec[svc]["title"] = _ti
             changed = True
             verr = _turn_verify(svc)
@@ -18744,6 +18764,9 @@ def _wdtt_raw(inst):
     # multi-IP node able to run several. Falls back to the wildcard for a wildcard-bound instance.
     lip = str((inst or {}).get("listen") or "")
     lip = lip.rsplit(":", 1)[0].strip() if ":" in lip else ""
+    _pin = str((inst or {}).get("bind_ip") or "").strip()
+    if _pin and _IPV4_RE.match(_pin):
+        lip = _pin                                  # Listen on: the RAW listener binds the same address (checked below)
     if not _IPV4_RE.match(lip or ""):
         lip = "0.0.0.0"
     else:
@@ -18917,7 +18940,7 @@ def _wdtt_valid(inst):
         return False
     strs = [inst.get("iface"), inst.get("wg_addr"), inst.get("listen"), str(inst.get("wg_port") or ""),
             inst.get("password") or "", inst.get("params") or "",
-            inst.get("raw_iface") or "", inst.get("raw_addr") or "", str(inst.get("raw_port") or "")]
+            inst.get("raw_iface") or "", inst.get("raw_addr") or "", str(inst.get("raw_port") or ""), inst.get("bind_ip") or ""]
     for pw, e in (inst.get("passwords") or {}).items():
         strs.append(pw)
         if isinstance(e, dict):
@@ -18964,7 +18987,7 @@ def _wdtt_env_text(inst):
     _rawflags = ("-listen-raw %s -raw-iface %s -raw-addr %s" % _raw) if _raw else ""
     return ("SWG_IFACE=%s\nSWG_WGADDR=%s\nSWG_LISTEN=%s\nSWG_WGPORT=%s\nSWG_CFGDIR=%s\nSWG_DESIRED=%s\n"
             "SWG_PASSWORD=%s\nSWG_MAXPW=%s\nSWG_RAWFLAGS=%s\nSWG_PARAMS=%s\n" % (
-                inst["iface"], inst["wg_addr"], turn_bind(inst["listen"]), inst.get("wg_port") or 56001, cfgdir,
+                inst["iface"], inst["wg_addr"], turn_bind(inst["listen"], pin=inst.get("bind_ip")), inst.get("wg_port") or 56001, cfgdir,
                 cfgdir + "/desired.json", inst.get("password") or "",
                 inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or ""), _rawflags,
                 _wdtt_params_eff(inst)))   # `-dns` + operator extra ExecStart flags (systemd splits on whitespace → argv, never a shell)
@@ -19023,7 +19046,7 @@ def _wdtt_pidfile(iface): return _wdtt_dir(iface) + "/server.pid"
 def _wdtt_argv(inst, binp):
     """The exact server invocation (mirror of _wdtt_unit_text's ExecStart) as an argv list, for a direct Popen."""
     iface = inst["iface"]; cfgdir = _wdtt_dir(iface); fork = _wdtt_fork(inst)
-    a = [binp, "-iface", iface, "-wg-addr", inst["wg_addr"], "-listen", turn_bind(inst["listen"]),
+    a = [binp, "-iface", iface, "-wg-addr", inst["wg_addr"], "-listen", turn_bind(inst["listen"], pin=inst.get("bind_ip")),
          "-wg-port", str(inst.get("wg_port") or 56001), "-config-dir", cfgdir,
          "-desired", cfgdir + "/desired.json", "-no-nat", "-password", inst.get("password") or ""]
     # Password-pool size. Prefer what is configured (adoption carries the foreign server's own value across, so
@@ -19719,6 +19742,7 @@ def _wdtt_params_changed(prev, inst):
     password store between the two forks' formats (passwords.json ↔ panel.db), which we don't risk on a live
     server. So a same-fork config change only ever restarts the SAME binary."""
     return ((prev.get("listen") or "") != (inst.get("listen") or "")
+            or (prev.get("bind_ip") or "") != (inst.get("bind_ip") or "")   # Listen on moved → rewrite + restart on the new address
             or (prev.get("wg_addr") or "") != (inst.get("wg_addr") or "")   # subnet change → rewrite unit + restart (server reassigns client IPs on reconnect)
             or str(prev.get("wg_port") or 56001) != str(inst.get("wg_port") or 56001)
             or (str(prev.get("max_passwords") or _wdtt_maxpw_for(prev.get("wg_addr") or ""))
@@ -20498,6 +20522,7 @@ def wdtt_snapshot():
         _own = _turn_own_dns(_wdtt_dir(iface)) if _wdtt_fork(inst) == "wdttplus" else OWN_DNS_UNKNOWN
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "bind": _env_listen(_wdtt_dir(iface) + "/wdtt.env"),   # what the server binds (turn_bind) — "" unknown
+                    "bind_ip": inst.get("bind_ip", ""),   # the operator's Listen on, so a panel mirroring this record keeps it
                     "wg_addr": inst.get("wg_addr", ""), "wg_port": inst.get("wg_port", ""),
                     "server_pub": srvpub, "stopped": bool(inst.get("stopped")), "fork": inst.get("fork", "amurcanov"),
                     "raw_port": (inst.get("raw_port") or "") if _rawon else "",   # RAW listener (empty = off)
@@ -20615,7 +20640,7 @@ def _csqtt_env_text(inst):
     cfgdir = _csqtt_dir(inst["iface"])
     return ("SWG_LISTEN=%s\nSWG_WEBPORT=%s\nSWG_CFGDIR=%s\nSWG_DESIRED=%s\nSWG_IFACE=%s\nSWG_TUNADDR=%s\n"
             "SWG_PASSWORD=%s\nSWG_WEBPASS=%s\nSWG_MAXPW=%s\nSWG_PARAMS=%s\n" % (
-                turn_bind(inst["listen"]), inst.get("web_port") or _csqtt_webport(inst["listen"]), cfgdir,
+                turn_bind(inst["listen"], pin=inst.get("bind_ip")), inst.get("web_port") or _csqtt_webport(inst["listen"]), cfgdir,
                 cfgdir + "/desired.json", inst["iface"], inst["tun_addr"],
                 inst.get("password") or "", inst.get("web_pass") or "",
                 inst.get("max_passwords") or 500, (inst.get("params") or "").strip())
@@ -20804,7 +20829,7 @@ def _csqtt_pidfile(iface): return _csqtt_dir(iface) + "/server.pid"
 def _csqtt_argv(inst, binp):
     """The exact server invocation (mirror of _csqtt_unit_text's ExecStart) as an argv list, for a direct Popen."""
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface)
-    a = [binp, "--listen", turn_bind(inst.get("listen") or ""), "--config-dir", cfgdir,
+    a = [binp, "--listen", turn_bind(inst.get("listen") or "", pin=inst.get("bind_ip")), "--config-dir", cfgdir,
          "--password", inst.get("password") or "", "--no-web",
          "--iface", iface, "--tun-addr", inst.get("tun_addr") or "",
          "--desired", cfgdir + "/desired.json", "--no-nat",
@@ -21060,6 +21085,7 @@ def _csqtt_desired_changed(iface, passwords):
 
 def _csqtt_params_changed(prev, inst):
     return ((prev.get("listen") or "") != (inst.get("listen") or "")
+            or (prev.get("bind_ip") or "") != (inst.get("bind_ip") or "")   # Listen on moved
             or (prev.get("tun_addr") or "") != (inst.get("tun_addr") or "")
             or str(prev.get("max_passwords") or 500) != str(inst.get("max_passwords") or 500)
             or (prev.get("params") or "").strip() != (inst.get("params") or "").strip()
@@ -21746,6 +21772,7 @@ def csqtt_snapshot():
         _own = _turn_own_dns(_csqtt_dir(iface))   # what csqtt itself remembers (its DB)
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "bind": _env_listen(_csqtt_dir(iface) + "/csqtt.env"),   # what the server binds (turn_bind) — "" unknown
+                    "bind_ip": inst.get("bind_ip", ""),   # the operator's Listen on, so a panel mirroring this record keeps it
                     "tun_addr": inst.get("tun_addr", ""), "web_port": inst.get("web_port", ""),
                     "stopped": bool(inst.get("stopped")), "kind": "csqtt",
                     # WHICH fork this instance is. The WDTT snapshot has always carried it and csqtt's did not, so
