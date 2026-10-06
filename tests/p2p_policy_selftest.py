@@ -37,6 +37,9 @@
        change while the pass ran is caught, a pass that fails after judging is retried, a pass that judges nothing
        leaves nothing to re-read, and a name the link reader refuses is absent with no index
   [22] CODE REVIEW #2: swg_mech is read once per report, and the flagged IPs survive a failed counter read
+  [23] the fan-out counts DESTINATIONS, not connections (msk-shadow 2026-10-05: a router's VLESS to two servers was
+       flagged four times): every mode declares `fanseen` and only a (source, destination) pair not met in the last
+       minute reaches the meter; and the real nft accepts every mode's whole table where `sudo -n nft` exists
   [10] a node with nothing to do pays no subprocess per sync once it has looked; a new strict subnet still builds
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
@@ -92,6 +95,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
                      '                if (_route_sig != last_route_sig or _iface_churn\n'),
     "record-stale": ('    _ROUTED["pending"] = {d: v for d, v in _lst.items() if d}', '    _ROUTED["pending"].update({d: v for d, v in _lst.items() if d})'),
     "record-fresh": ('    _ROUTED["pending"] = {d: v for d, v in _lst.items() if d}', '    _ROUTED["pending"] = {d: _dev_seen(d) for d in _lst if d}'),
+    "fan-connections":('ip saddr . ip daddr != @fanseen add @fanseen { ip saddr . ip daddr timeout 1m } "\n             "meter p2pfan', '"\n             "meter p2pfan'),
     "mech-twice":   ('        for ln in mech.splitlines():                              # ONE rule carries', '        for ln in (run(["nft", "list", "table", "inet", "swg_mech"]).stdout or "").splitlines():   # ONE rule carries'),
     "ips-coupled":  ('                out.setdefault("*", {})["torrent_ips"] = [str(i) for i in ips]', '                out["*"]["torrent_ips"] = [str(i) for i in ips]'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
@@ -416,6 +420,26 @@ def run_checks(src):
     ok("_routed_devs_moved()" in tg and "_route_dev_sig" not in src
        and cm.split("\n")[1].strip().startswith('_ROUTED["judged"] = _ROUTED["pending"]'),
        "[21] the main loop's trigger asks it (reading nothing of the reply), and commits what the pass judged beside last_route_sig")
+
+    # [23] the fan-out counts destinations, not connections
+    m23 = load(src)
+    FAN = "ip saddr . ip daddr != @fanseen add @fanseen { ip saddr . ip daddr timeout 1m } meter p2pfan"
+    _route = {"entry": {"table": 7005, "via_iface": "swg_q", "subnets": ["10.9.0.0/24"]}, "routable": ["10.9.0.0/24"]}
+    tabs = {"block": m23._p2p_nft("block", ["10.67.0.0/24"], ["eth0"], ["10.255.0.2/31"], True),
+            "direct": m23._p2p_nft("direct", ["10.67.0.0/24"], ["eth0"], [], True),
+            "legacy": m23._p2p_nft("legacy", ["10.67.0.0/24"], [], [], True),
+            "route": m23._p2p_nft("route", ["10.67.0.0/24"], ["eth0"], [], True, route=_route),
+            "no @ih": m23._p2p_nft("block", [], [], [], False)}
+    for k, tb in tabs.items():
+        ok("set fanseen { type ipv4_addr . ipv4_addr; flags timeout;" in tb and FAN in tb and tb.count("meter p2pfan") == 1,
+           "[23] %s: the meter only sees a destination this source has not met in the last minute" % k)
+    import subprocess as _sp23
+    if _sp23.run(["sudo", "-n", "nft", "--version"], capture_output=True).returncode == 0:
+        for k, tb in tabs.items():
+            r = _sp23.run(["sudo", "-n", "nft", "-c", "-f", "-"], input=tb, capture_output=True, text=True)
+            ok(r.returncode == 0, "[23] the real nft accepts the whole %s table (%s)" % (k, (r.stderr or "").strip()[:160]))
+    else:
+        print("  SKIPPED [23] real-nft check — no `sudo -n nft` here")
 
     # [18] forwarding + loose rp_filter with only a P2P route
     sc = []

@@ -6971,6 +6971,7 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
     L += ["  set held4 { type ipv4_addr . ipv4_addr . inet_service . inet_service; flags timeout; size 65535; }",
           "  set held6 { type ipv6_addr . ipv6_addr . inet_service . inet_service; flags timeout; size 65535; }",
           "  set flag { typeof ip saddr; flags timeout; size 65535; }",
+          "  set fanseen { type ipv4_addr . ipv4_addr; flags timeout; size 65535; }",   # (source, destination) met this minute
           "  set portok { typeof th dport; flags interval; elements = { %s } }" % _P2P_PORTOK,
           "  set priv { typeof ip daddr; flags interval; elements = { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, "
           "169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } }"]
@@ -7035,7 +7036,16 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
     if ih:
         for c, l4, m in _P2P_SIGS:
             L.append("    meta l4proto %s %s counter name %s jump hit" % (l4, m, c))
-    L.append("    ct state new %s %s meter p2pfan size 65535 { ip saddr limit rate over 30/minute burst 30 packets } "
+    # ⚠️ THE FAN-OUT COUNTS DESTINATIONS, NOT CONNECTIONS. A swarm is many different peers; what it counted was new flows,
+    # so a client opening many connections to ONE server tripped it — measured on msk-shadow (2026-10-05): a household
+    # router's VLESS on 7443/65443 to two servers was flagged four times, and each flag cut its high-port flows for ten
+    # minutes. A destination this source already met in the last minute is not counted again (`add` does not refresh
+    # the timeout, so a pair counts once per minute). Strictly fewer flags than before — every new pair is a new flow —
+    # and still a swarm: the torrent the same node caught met 117 different peers. Destinations, not ports: a
+    # port-hopping proxy (Hysteria2) hits many ports of one server. A flagged source never reaches this rule (its
+    # packets were dropped above), so it cannot fill the set; a full set stops counting rather than flagging.
+    L.append("    ct state new %s %s ip saddr . ip daddr != @fanseen add @fanseen { ip saddr . ip daddr timeout 1m } "
+             "meter p2pfan size 65535 { ip saddr limit rate over 30/minute burst 30 packets } "
              "add @flag { ip saddr timeout 10m } counter name fan_flag%s"
              % (_P2P_SHAPE, nf, ' limit rate 6/minute log prefix "swg-p2p fan: " level info' if logged else ""))
     for who in whos:                                          # the packet that just crossed the threshold
