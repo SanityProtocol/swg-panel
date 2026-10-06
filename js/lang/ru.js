@@ -6777,7 +6777,7 @@ export const STR = {
   "RekeyAfterTime + RekeyTimeout + KeepaliveTimeout (up to {v1} s) must not exceed RejectAfterTime ({v2} s at least) — the node would drop data a client still sends": "RekeyAfterTime + RekeyTimeout + KeepaliveTimeout (до {v1} с) не должны превышать RejectAfterTime (не меньше {v2} с) — иначе нода будет отбрасывать данные, которые клиент ещё отправляет",
   "awg_gen must be \"2.0\" or \"3.1\"": "awg_gen должен быть \"2.0\" или \"3.1\"",
   "{v1} cannot run AmneziaWG 3.1 while a turn proxy whose app carries AmneziaWG 2.0 only points at its port: {v2}. Point it at a 2.0 interface, or delete it, and try again once the node has applied that": "{v1} не может работать на AmneziaWG 3.1, пока на его порт указывает turn-прокси, приложение которого понимает только AmneziaWG 2.0: {v2}. Направьте его на интерфейс 2.0 или удалите и повторите, когда нода это применит",
-  "{v1} is a mesh link — its type comes from the mesh settings (Settings → Network), and a re-provision rebuilds it": "{v1} — меш-линк: его тип задаётся в настройках меша (Настройки → Сеть), а пересоздание перестраивает линк",
+  "{v1} is a mesh link — its type comes from the mesh settings (Settings → Mesh), and a re-provision rebuilds it": "{v1} — меш-линк: его тип задаётся в настройках меша (Настройки → Меш), а пересоздание перестраивает линк",
   // the mesh link type (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md Part B)
   "Mesh link type": "Тип меш-линков",
   "A pair where either node cannot run AmneziaWG 3.1 is linked at 2.0, and its node says why.": "Пара, где хотя бы одна нода не умеет AmneziaWG 3.1, связывается на 2.0, и нода объясняет почему.",

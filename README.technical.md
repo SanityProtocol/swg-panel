@@ -269,7 +269,7 @@ cascade is one instance, `<iface>`, and each peer node a smart-routing interface
 destination the kernel routes into a mesh link, and a watchdog removes it whenever the relay cannot be proven to be
 accepting what it is handed. Every relay on a node shares one CPU-capped slice.
 
-**Mesh links.** **Settings → Network → Mesh links** decides which node pairs get a link. A **full mesh** links every
+**Mesh links.** **Settings → Mesh → Mesh links** decides which node pairs get a link. A **full mesh** links every
 pair: every leg is measured and a newly chosen forward target works at once, and each node carries one AmneziaWG
 interface, one `/31` and one UDP port per other node. **On demand** links only the pairs a forward or a smart rule's
 exit routes over (plus a link the operator configured — relay, dial address), creates a link in the same sync that

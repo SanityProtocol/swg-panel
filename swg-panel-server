@@ -27107,7 +27107,7 @@ def api(method, path, qs, body, deps):
         if _gen:
             if ov.get("system"):
                 return 400, {"ok": False, **perr("{v1} is a mesh link — its type comes from the mesh settings (Settings → "
-                                                 "Network), and a re-provision rebuilds it", v1=iface), "code": "bad_request"}
+                                                 "Mesh), and a re-provision rebuilds it", v1=iface), "code": "bad_request"}
             # EITHER way: an older node can neither apply a 3.x key nor take one away (its agent keeps what it does not
             # know), so a switch back there would read as synced while the device kept the key (§7.8).
             if not awg_gen_reported((deps.get("node_snaps") or {}).get(nid)):
