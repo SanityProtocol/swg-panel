@@ -72,6 +72,7 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      overlayeager the viewer is mounted (and polls) before the button is clicked
      rowkey       a row's key is node + seq: a reopen (seq from 1 again) repeats keys still on screen
      tieseq       lines at the same time are ordered by seq, which restarts with each request
+     cardstop     the Settings card's full screen offers Stop, not "leave full screen" (the card streams on)
    one viewer, asked for ([10], [13]; the whole-feature analysis §32 and the header button's review):
      lvzabove     the full-screen viewer covers the app's sheets and confirms (z above the modal layer)
      autostart    opening Settings → Logs streams before "Start live log"
@@ -228,6 +229,7 @@ PLANTS = {   # (program, anchor, replacement)
     "keepesc": ("ui", ''' else if (keep && keep(t)) close(false); };''', ''' };'''),
     "rowkey": ("spa", "<${Row} key=${l.id} l=${l} q=${q}/>", "<${Row} key=${l.nid + l.seq} l=${l} q=${q}/>"),
     "tieseq": ("spa", "a.k - b.k || a.id - b.id", "a.k - b.k || a.seq - b.seq"),
+    "cardstop": ("spa", "onClick=${() => showOverlay(true)}>", "onClick=${openLogOverlay}>"),
     "overlayeager": ("spa", '''  return LV.overlay ? html`<${LogViewer} overlay/>` : null;''', '''  return html`<${LogViewer} overlay/>`;'''),
     "lvzabove": ("css", ".lv-full{position:fixed;inset:0;z-index:49;", ".lv-full{position:fixed;inset:0;z-index:950;"),
     "autostart": ("spa", "if (LV.busy || !LV.mounted || !LV.live || document.hidden) return;",
@@ -1035,6 +1037,12 @@ console.log(JSON.stringify(r));
         check("[9] a row's key is the line's own id, not node + seq (seq restarts with each request; a reopen keeps the old "
               "lines on screen) — and a tie in time keeps arrival order by it (review §35 #3)",
               rows == ["l.id"] and "id: ++LV.uid" in add and "a.k - b.k || a.id - b.id" in add, (rows, add[-600:]))
+        ov = s[s.index("const showOverlay = card =>"):s.index("export function LogOverlay()")]
+        hd = s[s.index('<div class="lv-head">'):s.index("<${Facets}/>")]
+        check("[9] full screen from the Settings card leaves full screen (the card streams on); from the header or a deep link "
+              "it stops the live log (red on hover)", "export const openLogOverlay = () => showOverlay(false);" in ov
+              and "onClick=${() => showOverlay(true)}" in hd and '(LV.card ? "" : " warn")' in hd
+              and 'LV.card ? T("Leave full screen (Esc)") : T("Stop live log (Esc)")' in hd, hd[:400])
 
     guarded("[9]", sec9)
 finally:
