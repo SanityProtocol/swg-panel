@@ -47,7 +47,14 @@ def load(path, name):
 
 
 TMP = tempfile.mkdtemp(prefix="meshgen.")
-P = load(SERVER, "swgpanel_new")
+_SRV = SERVER
+if "--perturb-partial" in sys.argv:   # the tree before the partial-template fix: the elif never runs
+    _src = open(SERVER).read()
+    _anchor = "    elif _tv and any(k not in _tv for k in AWG_FIELDS if k not in AWG3_FIELDS):\n"
+    assert _src.count(_anchor) == 1, "plant anchor missing — this run would measure nothing"
+    _SRV = os.path.join(TMP, "swg-panel-server.perturbed"); open(_SRV, "w").write(_src.replace(_anchor, "    elif False:\n"))
+    print("(perturbed: a partial mesh template is not filled — [8] must FAIL)")
+P = load(_SRV, "swgpanel_new")
 _base_src = os.path.join(TMP, "swg-panel-server.base")
 open(_base_src, "w").write(subprocess.run(["git", "-C", ROOT, "show", BASE + ":swg-panel-server"], capture_output=True,
                                           text=True, check=True).stdout)
@@ -106,17 +113,21 @@ def run(M, nodes, d, snaps=None, seed=1):
 # ── [0] byte-identical with no type set ─────────────────────────────────────────────────────────────────────────────────
 print("[0] no type set ⇒ the same nodes as the tree before (%s)" % BASE)
 same, tried = True, 0
+FULLT = {k: str(v) for k, v in P.gen_awg_params().items()}                          # a full template ("Generate a set")
 for n in (2, 3, 4, 6):
     for mtu in (1320, 1420):
-        for mawg in (None, {"Jc": "3", "S1": "20", "S4": "90"}):
-            for panel in ({}, {"mesh_awg": {"Jc": "5", "Jmin": "50", "Jmax": "80"}}):
+        for mawg in (None, dict(FULLT, S4="90")):
+            for panel in ({}, {"mesh_awg": dict(FULLT, Jc="5")}):
                 a = run(P, fleet(n, mawg), deps(mtu, panel), seed=n * 7 + mtu)
                 b = run(B, fleet(n, mawg), deps(mtu, panel), seed=n * 7 + mtu)
                 tried += 1
                 if json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True):
                     same = False
                     print("    differs: n=%d mtu=%d mesh_awg=%s panel=%s" % (n, mtu, mawg, panel))
-check("%d fleets: nodes byte-identical to %s" % (tried, BASE), same)
+check("%d fleets (empty or full mesh templates): nodes byte-identical to %s" % (tried, BASE), same)
+_pl = [run(P, fleet(3, {"Jc": "3", "S1": "20", "S4": "90"}), deps(1320), seed=3), run(B, fleet(3, {"Jc": "3", "S1": "20", "S4": "90"}), deps(1320), seed=3)]
+check("plant: a PARTIAL node template is the one deliberate difference (the fix in [8])",
+      json.dumps(_pl[0], sort_keys=True) != json.dumps(_pl[1], sort_keys=True))
 _r = run(P, fleet(4), deps())
 check("…and no node has a reasons list", all(P.mesh_gen_reasons(deps(), _r, {}, nid) == [] for nid in _r))
 check("…and the reasons are not even computed for it (mesh_types_in_play is false)", not P.mesh_types_in_play(deps(), _r))
@@ -313,6 +324,20 @@ t = run(P, f, d, {"n00": gen_snap(), "n01": gen_snap()})
 r = P.mesh_gen_reasons(d, t, {"n00": gen_snap(), "n01": gen_snap()}, "n00")
 check("timings that cross only once the layers resolve: the link is made at 2.0, never one that drops data, and the card says why",
       P.mesh_link_gen(t["n00"], t["n00"]["links"]["n01"]) == "2.0" and len(r) == 1 and "RejectAfterTime" in r[0]["msg"]["error"], r)
+
+# ── [8] a mesh template that sets SOME fields (repro .campaign/rigs/mesh-partial-template-repro.py) ─────────────────────
+print("[8] a partial mesh template: both ends get ONE whole set — the template's fields, the generator's for the rest")
+for label, f, d in (("node template {Jc, Jmin, Jmax}", fleet(2, {"Jc": "5", "Jmin": "50", "Jmax": "80"}), deps(1320)),
+                    ("panel template {S1, H1}", fleet(2), deps(1320, {"mesh_awg": {"S1": "20", "H1": "100-115"}}))):
+    t = run(P, f, d)
+    a, b = links(t)[0][4]["awg_params"], links(t)[0][5]["awg_params"]
+    tv = (f["n00"].get("mesh_awg") or d["panel_settings"].get("mesh_awg"))
+    check(label + ": every 2.0 field on both ends, the same set", a == b and all(k in a for k in P.AWG_FIELDS[:16]), (sorted(a), a == b))
+    check(label + ": the template's own values kept", all(str(a[k]) == v for k, v in tv.items()), {k: a.get(k) for k in tv})
+    check(label + ": S4 inside the MTU's room, no awg_exact (nothing omitted)",
+          P.mesh_s4_fits(a.get("S4"), 1320) and "awg_exact" not in links(t)[0][4])
+t = run(P, fleet(2, {"Jc": "5", "Jmin": "50", "Jmax": "80"}), deps(1420))
+check("at MTU 1420 the drawn S4 is refitted into the room (20)", int(links(t)[0][4]["awg_params"]["S4"]) <= 20, links(t)[0][4]["awg_params"]["S4"])
 
 print()
 if FAILS:

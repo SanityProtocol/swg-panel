@@ -13621,6 +13621,13 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
     _exact = bool(_tom or _om3) and all(awg_exact_reported((snaps or {}).get(x)) for x in (a, b))
     if _tom:
         awg = {k: str(v) for k, v in {**gen_awg_params(), **_tv}.items() if not (_exact and k in _tom)}
+    elif _tv and any(k not in _tv for k in AWG_FIELDS if k not in AWG3_FIELDS):
+        # A template that sets SOME fields (Jc alone, say) is not the link's whole set: the create carries no params, so each
+        # end's agent rolled its own S/H, and the sync pushed only the template's fields — the two ends never matched, and the
+        # push then rewrote both confs to just those fields, so after a restart the link came up with no S, H or I at all
+        # (repro .campaign/rigs/mesh-partial-template-repro.py, 2026-10-06). The rest comes from the generator, once, for both
+        # ends — what "Blank = auto" under the grid always promised. A full or an empty template never reaches this line.
+        awg = {k: str(v) for k, v in {**gen_awg_params(), **_tv}.items()}
     if _is31:
         awg = awg3_full(awg, None, _v3, omit=(_tom | _om3) if _exact else ())
         _s4 = str(awg.get("S4") or "")
