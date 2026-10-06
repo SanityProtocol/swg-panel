@@ -4401,7 +4401,7 @@ export function NodeIngressForm({ node, vals, set }) {
 
 // Per-node mesh overrides, edited in Settings → Mesh, box 2 (keyed by node, so it re-inits on badge switch)
 /* The mesh AWG params, in box 1 (the fleet's default) and box 2 (a node's own), drawn for the TYPE selected there (`eff`, the
-   draft — so it follows the switch before a Save): WG — nothing to set; AWG 2.0 — the 2.0 grid; AWG 3.1 — the 2.0 grid and the
+   draft — so it follows the switch before a Save): WG — no block at all; AWG 2.0 — the 2.0 grid; AWG 3.1 — the 2.0 grid and the
    six 3.1 fields a 3.1 link takes (plan §8 round 11; a blank cell takes the next layer down, shown as its background text,
    `ph3`). Values the template holds for fields the type does not use are kept, and one line says so (operator, 2026-10-06:
    show only what the selected type uses). Generate MERGES: it draws the 2.0 set and, for 3.1, fills the 3.1 cells with what
@@ -4411,13 +4411,9 @@ function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3 }
   const set2 = AWG_KEYS.some(k => String(v[k] ?? "").trim() !== ""), set3 = AWG3_EDIT_COLS.flat().some(k => String(v[k] ?? "").trim() !== "");
   const show3 = eff === "3.1";
   // what this template still holds that the selected type does not use — kept, and said, never silently in effect
-  const kept = eff === "wg" ? (set2 || set3) : (eff === "2.0" && set3);
-  const keptLine = kept ? html`<div class="hint">${eff === "wg"
-    ? T("The AmneziaWG values set here are kept for links of another type — select AWG 2.0 or AWG 3.1 to see them.")
-    : T("The AmneziaWG 3.1 values set here are kept for AWG 3.1 links — select AWG 3.1 to see them.")}</div>` : null;
-  if (eff === "wg") return html`<div class="field" style="margin-top:6px"><div class="advtoggle" style="cursor:default"><span class="advcaret" style="visibility:hidden">▸</span> ${title}
-      <span class="faint" style="font-weight:400">${T("(none — WG)")}</span></div>
-    <div class="hint">${T("Plain WireGuard links carry no obfuscation, so there is nothing to set here.")}</div>${keptLine}</div>`;
+  const keptLine = eff === "2.0" && set3
+    ? html`<div class="hint">${T("The AmneziaWG 3.1 values set here are kept for AWG 3.1 links — select AWG 3.1 to see them.")}</div>` : null;
+  if (eff === "wg") return null;                 // plain WireGuard has nothing to set: no block at all (operator, 2026-10-06)
   const isSet = set2 || (show3 && set3);
   return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> ${title}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
     <div class="field" style="display:none;margin-top:8px">
