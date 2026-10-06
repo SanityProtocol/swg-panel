@@ -12920,6 +12920,14 @@ def mesh_template_clean(raw):
     return {**awg_template_clean(raw), **d3}, None
 
 
+def mesh_awg3_refusal(deps, node):
+    """Why the AmneziaWG 3.1 fields a 3.1 link anchored on `node` would take (mesh_awg3, field by field over every layer) cannot
+    run together — awg3_check's perr (timings that cross) — or None. Each template is checked alone at its save, but a link
+    fills its blanks from the layers below, so only the resolved set can say whether its timings cross."""
+    v3, om3 = mesh_awg3(deps, node)
+    return awg3_check({**{k: v for k, v in AWG31_SET.items() if k not in om3}, **v3})[1]
+
+
 def mesh_awg3(deps, node):
     """(values, omitted) — the six AmneziaWG 3.1 fields an AmneziaWG 3.1 link anchored on `node` takes, FIELD BY FIELD: the node's
     mesh template, else the panel's, else the interface 3.1 defaults (Settings → Interfaces), else Amnezia's set (awg3_full
@@ -13244,6 +13252,9 @@ def mesh_31_refusal(deps, nodes, snaps, a, b, mtu):
     if (mesh_s4_room(mtu) or 0) < 12:
         return perr("the mesh MTU ({v1}) is too high for AmneziaWG 3.1 — header protection needs a link MTU of 1428 or less",
                     v1=mtu)
+    _t3 = mesh_awg3_refusal(deps, nodes.get(min(a, b)))
+    if _t3:                                   # the timings its layers resolve to cross: never a link that drops data
+        return _t3
     _om = mesh_template(deps, nodes.get(min(a, b)))[1]
     if any(k in _om for k in ("S1", "S2", "S3", "S4")) and all(awg_exact_reported((snaps or {}).get(x)) for x in (a, b)):
         return mesh_omit_s_refusal("3.1", _om, (nodes.get(min(a, b)) or {}).get("name") or min(a, b))   # the save refuses it too
@@ -23148,15 +23159,15 @@ def api(method, path, qs, body, deps):
                 cur.pop("mesh_awg_gen", None)
             else:
                 cur["mesh_awg_gen"] = _mg
-        if "mesh_awg" in incoming or "mesh_awg_gen" in incoming:   # R4: a 3.1 mesh type cannot build from an omitted S —
-            # the panel's own template, and every node that would take the panel's type over a template of its own
-            _deps4 = dict(deps, panel_settings=cur)
-            for _n4 in [None] + [n for n in nodes_load(deps["nodes_path"]).values() if isinstance(n, dict)]:
-                _bad = (mesh_omit_s_refusal(cur.get("mesh_awg_gen") or "2.0", awg_template(cur.get("mesh_awg"))[1],
-                                            perr("the mesh link type")) if _n4 is None else
-                        mesh_omit_s_refusal(mesh_gen_of(_deps4, _n4), mesh_template(_deps4, _n4)[1], _n4.get("name") or "?"))
-                if _bad:
-                    return 400, {"ok": False, **_bad, "code": "bad_request"}
+        _ps0 = deps.get("panel_settings") or {}
+        if (cur.get("mesh_awg"), cur.get("mesh_awg_gen")) != (_ps0.get("mesh_awg"), _ps0.get("mesh_awg_gen")):
+            # Judged when the panel's own mesh template or type CHANGES, and on the panel's own template only — a node that
+            # inherits a 3.1 type over a template that omits an S, or whose timings cross, gets its links at 2.0 with the
+            # reason on its card (mesh_31_refusal), so no unrelated Settings save is ever refused over a node's state.
+            _bad = mesh_omit_s_refusal(cur.get("mesh_awg_gen") or "2.0", awg_template(cur.get("mesh_awg"))[1],
+                                       perr("the mesh link type")) or mesh_awg3_refusal(dict(deps, panel_settings=cur), {})
+            if _bad:
+                return 400, {"ok": False, **_bad, "code": "bad_request"}
         rsv = incoming.get("reserved")
         if isinstance(rsv, dict):
             base = dict(cur.get("reserved") or PANEL_SETTINGS_DEFAULTS["reserved"])
@@ -26732,13 +26743,16 @@ def api(method, path, qs, body, deps):
                 nodes[nid].pop("mesh_awg_gen", None)
         # R4 for this node's links: its type over its template — judged when either CHANGES, so a node the panel-wide door
         # let through (it checks every inheriting node) never has an unrelated save refused
-        if mesh_template_clean(nodes[nid].get("mesh_awg"))[0] != _awg_before or (nodes[nid].get("mesh_awg_gen") or "") != _gen_before:
+        _awg_after = mesh_template_clean(nodes[nid].get("mesh_awg"))[0]
+        if _awg_after != _awg_before and mesh_awg3_refusal(deps, nodes[nid]):   # the timings its links would resolve to cross
+            return 400, {"ok": False, **mesh_awg3_refusal(deps, nodes[nid]), "code": "bad_request"}
+        if _awg_after != _awg_before or (nodes[nid].get("mesh_awg_gen") or "") != _gen_before:
             _bad = mesh_omit_s_refusal(mesh_gen_of(deps, nodes[nid]), mesh_template(deps, nodes[nid])[1],
                                        nodes[nid].get("name") or nid)
             if _bad:
                 return 400, {"ok": False, **_bad, "code": "bad_request"}
         _mesh_after = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")
-        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2] or mesh_template_clean(nodes[nid].get("mesh_awg"))[0] != _awg_before \
+        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2] or _awg_after != _awg_before \
                 or (nodes[nid].get("mesh_awg_gen") or "") != _gen_before:
             # subnet / PREFIX / AWG changed → the link is re-addressed / renamed / re-obfuscated: must re-provision (rebuild)
             mesh_reprovision_node(nodes, nid)

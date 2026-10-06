@@ -2267,6 +2267,9 @@ export function PanelSettingsScreen() {
   const [awg, setAwg] = useState(ps.mesh_awg || {});
   const [showAwg, setShowAwg] = useState(false);
   const awgSet = [...AWG_KEYS, ...AWG3_EDIT_COLS.flat()].some(k => String(awg[k] ?? "").trim() !== "");   // …the mesh template's 3.1 six too
+  // the template as the panel stores it — trimmed strings, blanks gone — so a draft holding Generate's numbers, or a key order of
+  // its own, does not read as a change after the save that stored it
+  const meshTpl = o => Object.fromEntries(Object.entries(o || {}).map(([k, x]) => [k, String(x ?? "").trim()]).filter(([, x]) => x));
   const [showAdv, setShowAdv] = useState(false);
   const [msg, setMsg] = useState(null);
   // subscriptions section state — enable + languages ride the global save; the vault ceremony uses /api/sub/*.
@@ -2498,7 +2501,7 @@ export function PanelSettingsScreen() {
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
     if (meshMode !== (ps.mesh_mode || "auto")) out.push(T("Mesh links — {v1}", { v1: meshModeLabel(meshMode, ps.mesh_auto_max) }));
     if (meshGen !== (ps.mesh_awg_gen || "2.0")) out.push(T("Mesh link type → {v1}, for new links", { v1: meshGenLabel(meshGen) }));
-    if (glDirty("links") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}))) out.push(T("System mesh defaults"));
+    if (glDirty("links") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || !eq(meshTpl(awgSet ? awg : {}), meshTpl(ps.mesh_awg)))) out.push(T("System mesh defaults"));
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
       // The LABEL, not the slug. This line is the last thing an operator reads before applying, and it
@@ -2673,7 +2676,7 @@ const sectionLabel = k => ({
     sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :
     sec === "logs" ? (logDirty() || logMbPDirty()) :
     sec === "mesh" ? showLans !== (ps.show_node_lans !== false) :
-    sec === "links" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || meshMode !== (ps.mesh_mode || "auto") || meshGen !== (ps.mesh_awg_gen || "2.0")) : false;
+    sec === "links" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || !eq(meshTpl(awgSet ? awg : {}), meshTpl(ps.mesh_awg)) || meshMode !== (ps.mesh_mode || "auto") || meshGen !== (ps.mesh_awg_gen || "2.0")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
   const anyDirty = SECTIONS.some(([s]) => secDirty(s));
@@ -3386,6 +3389,7 @@ const sectionLabel = k => ({
           ${/* the fleet's default obfuscation for AmneziaWG links — shown whatever the default type, since a node can override
                 to AmneziaWG; the 3.1 readout only while the default is 3.1 */""}
           <${MeshAwgParams} title=${T("Default mesh AWG params")} eff=${meshGen === "3.1" ? "3.1" : "2.0"} value=${awg} onChange=${setAwg}
+            show3=${(Store.nodes || []).some(n => ((nodeEdits[n.id] || {}).mesh_awg_gen || n.mesh_awg_gen) === "3.1")}
             placeholders=${awgBlankHints()} ph3=${mesh3Hints(false)} about=${T("Obfuscation for new AmneziaWG mesh links, unless a node sets its own. Blank = auto (a fresh set per link).")}/>
         </div>
         ${(Store.nodes || []).length ? html`<div class="setnodes" style="margin:16px 0 10px">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
@@ -3444,7 +3448,7 @@ const sectionLabel = k => ({
                   rebaseDefault(selNode, fresh);
                 }}/>`)}/>
           <//>`
-            : html`<p class="hint" style="margin:0">${T("No nodes yet — enroll a node to configure how it is reached, how it exits, and how it links.")}</p>`}
+            : html`<p class="hint" style="margin:0">${T("No nodes yet — enroll a node to configure how it is reached and how it exits.")}</p>`}
           ${/* FLEET-WIDE, deliberately OUTSIDE the node picker above: "which of my nodes sit on a private network"
                 has no answer on a per-node page — it means opening every node in turn. Reported, never configured:
                 a node discloses the private addresses it holds on devices it does not run as its own tunnels. */""}
@@ -4396,13 +4400,17 @@ export function NodeIngressForm({ node, vals, set }) {
   </div>`;
 }
 
-// Per-node mesh overrides, edited in Panel settings → System mesh (keyed by node, so it re-inits on badge switch)
+// Per-node mesh overrides, edited in Settings → Mesh, box 2 (keyed by node, so it re-inits on badge switch)
 /* The mesh AWG params, in box 1 (the fleet's default) and box 2 (a node's own): a toggle row; the 2.0 grid with `about` under it;
-   for an AmneziaWG 3.1 type, the 3.1 fields its links take — read-only, since they are Settings → Interfaces' 3.1 defaults (a
-   second 3.1 template for mesh was decided against, plan §3 B1); for WG the same row, saying there is nothing to set. */
-function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3 }) {
+   the six AmneziaWG 3.1 fields a 3.1 link takes (plan §8 round 11 — editable; a blank cell takes the next layer down, shown as
+   its background text, `ph3`) whenever 3.1 is in play here (`show3`) or the template already holds one — a field in effect is
+   never hidden; for WG the same row, saying there is nothing to set. Generate MERGES: it draws the 2.0 set and, where the 3.1
+   cells are shown, fills them with what they inherit — it never drops a field it does not draw. */
+function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3, show3 }) {
   const v = value || {};
-  if (eff === "wg") return html`<div class="field" style="margin-top:6px"><div class="advtoggle" style="cursor:default"><span class="advcaret" style="visibility:hidden">▸</span> ${title}
+  const has3 = AWG3_EDIT_COLS.flat().some(k => String(v[k] ?? "").trim() !== "");
+  show3 = show3 || eff === "3.1" || has3;
+  if (eff === "wg" && !has3) return html`<div class="field" style="margin-top:6px"><div class="advtoggle" style="cursor:default"><span class="advcaret" style="visibility:hidden">▸</span> ${title}
       <span class="faint" style="font-weight:400">${T("(none — WG)")}</span></div>
     <div class="hint">${T("Plain WireGuard links carry no obfuscation, so there is nothing to set here.")}</div></div>`;
   const isSet = [...AWG_KEYS, ...AWG3_EDIT_COLS.flat()].some(k => String(v[k] ?? "").trim() !== "");
@@ -4411,12 +4419,14 @@ function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3 }
       <${AwgGrid} value=${v} onChange=${onChange} placeholders=${placeholders}
         omit=${T("Type - in a cell for no such line on the links made from these; a blank cell stays automatic.")}/>
       <div class="hint" style="margin:8px 0 0">${about}</div>
-      ${eff === "3.1" ? html`<div style="margin-top:14px"><${Awg3Grid} value=${v} onKey=${(k, x) => onChange({ ...v, [k]: x })} placeholders=${ph3}
+      ${show3 ? html`<div style="margin-top:14px"><${Awg3Grid} value=${v} onKey=${(k, x) => onChange({ ...v, [k]: x })} placeholders=${ph3}
         hpk=${T("val|per link")} rt=${T("val|on")} hpkTip=${T("Each link gets a key of its own.")} rtTip=${T("On for every AmneziaWG 3.1 link.")}
         hint=${T("What AmneziaWG 3.1 links add to the fields above. A blank cell takes the value shown in it — the mesh default, or the 3.1 defaults in Settings → Interfaces; - for no such line.")}/></div>` : null}
       <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini"
-        title=${eff === "3.1" ? T("S and H are drawn fresh; the 3.1 fields take Amnezia's 3.1 set, whose ranges the protocol randomises on its own.") : null}
-        onClick=${() => onChange({ ...genAwg(), ...(eff === "3.1" ? Object.fromEntries(AWG3_EDIT_COLS.flat().map(k => [k, String(((Store.panelSettings || {}).awg31_builtin || {})[k] ?? "")]).filter(([, x]) => x)) : {}) })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => onChange({})}>${T("Clear (auto)")}</button>` : null}</div>
+        title=${show3 ? T("S and H are drawn fresh; the 3.1 fields take what they inherit (the values shown in them), whose ranges the protocol randomises on its own.") : null}
+        onClick=${() => onChange({ ...v, ...genAwg(), ...(show3 ? Object.fromEntries(AWG3_EDIT_COLS.flat()
+          .filter(k => String(v[k] ?? "").trim() === "" && String((ph3 || {})[k] ?? "").trim())
+          .map(k => [k, ph3[k] === T("val|none") ? "-" : String(ph3[k])])) : {}) })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => onChange({})}>${T("Clear (auto)")}</button>` : null}</div>
     </div></div>`;
 }
 /* A blank 3.1 cell of a mesh template, as background text: the next layer down, field by field — for a node, the panel's mesh

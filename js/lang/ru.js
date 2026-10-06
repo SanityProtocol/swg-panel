@@ -5757,8 +5757,8 @@ export const STR = {
     "Как пиры, клиенты и ссылки turn-прокси попадают на *{v1}*.",
   "This is the host in every client config and turn-proxy link for this node. Prefer a hostname: moving the box then costs one DNS change, and nothing a client already holds has to be re-issued.":
     "Это тот хост, который попадает в каждый клиентский конфиг и в каждую ссылку turn-прокси этой ноды. Лучше указать имя хоста: тогда переезд машины стоит одной записи DNS, и ничего из того, что уже есть у клиентов, переиздавать не придётся.",
-  "No nodes yet — enroll a node to configure how it is reached, how it exits, and how it links.":
-    "Нод пока нет — заведите ноду, чтобы настроить вход, выход и связи.",
+  "No nodes yet — enroll a node to configure how it is reached and how it exits.":
+    "Нод пока нет — заведите ноду, чтобы настроить вход и выход.",
   "Listen (local)":
     "Слушает (локально)",
   "Mesh links":
@@ -6786,7 +6786,7 @@ export const STR = {
   "mesh link type → {v1}": "тип меш-линков → {v1}",
   "Default mesh link type": "Тип меш-линков по умолчанию",
   "Default mesh AWG params": "Параметры AWG меша по умолчанию",
-  "S and H are drawn fresh; the 3.1 fields take Amnezia's 3.1 set, whose ranges the protocol randomises on its own.": "S и H выбираются заново; поля 3.1 получают набор 3.1 от Amnezia — его диапазоны протокол и так перебирает случайно.",
+  "S and H are drawn fresh; the 3.1 fields take what they inherit (the values shown in them), whose ranges the protocol randomises on its own.": "S и H выбираются заново; поля 3.1 получают то, что наследуют (значения, показанные в них), — их диапазоны протокол и так перебирает случайно.",
   "Obfuscation for new AmneziaWG mesh links, unless a node sets its own. Blank = auto (a fresh set per link).": "Маскировка для новых меш-линков AmneziaWG, если нода не задаёт свою. Пусто — авто (свой набор на каждый линк).",
   "(none — WG)": "(нет — WG)",
   "Plain WireGuard links carry no obfuscation, so there is nothing to set here.": "У линков обычного WireGuard нет маскировки, поэтому здесь нечего задавать.",

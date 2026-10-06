@@ -321,13 +321,17 @@ try:
         code, r = p.req("/api/panel/settings", {"mesh_awg": {"S1": "-"}, "mesh_awg_gen": "3.1"})
         check("mesh R4: type 3.1 with S1 none → refused", code == 400 and "S1" in r.get("error", ""), (code, r))
         # review fixes: an inheriting node's own template is judged at the panel-wide door, and the node door only on a change
+        # the panel door judges ITS OWN template, and only when it changes: a node in conflict (it inherits 3.1 over an S set
+        # to none) gets its links at 2.0 with the reason (mesh_gen_selftest), and never blocks a Settings save (code review 2)
         code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"S3": "-"}, "mesh_awg_gen": ""})
         code2, r2 = p.req("/api/panel/settings", {"mesh_awg": {}, "mesh_awg_gen": "3.1"})
-        check("panel-wide type 3.1 while a node that inherits it omits S3 in its own template → refused, naming the node",
-              code == 200 and code2 == 400 and "nb" in r2.get("error", "") and "S3" in r2.get("error", ""), (code, r, code2, r2))
+        check("panel-wide type 3.1 while a node that inherits it omits S3: accepted (that node's links fall back, said on its card)",
+              code == 200 and code2 == 200, (code, r, code2, r2))
+        code, r = p.req("/api/panel/settings", {"mesh_awg": {}, "mesh_awg_gen": "3.1", "top_talkers": 12})
+        check("…and an unrelated Settings save with that node still in conflict goes through", code == 200, (code, r))
         code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"S3": "-"}, "mesh_awg_gen": "", "endpoint_host": "nb.example"})
-        check("…and that node's unrelated save (the SPA sends both mesh fields) still goes through", code == 200, (code, r))
-        p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {}})
+        check("…and so does that node's unrelated save (the SPA sends both mesh fields)", code == 200, (code, r))
+        p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {}}); p.req("/api/panel/settings", {"mesh_awg_gen": "2.0"})
         p.put("na", "awg8", {"awg_params": {"Jc": "4", "S1": "28", "S2": "84"}, "awg_exact": True})   # a foreign conf: Jc alone, S2 = S1 + 56
         p.sync("na", {"awg8": {"Jc": "4", "S1": "28", "S2": "84"}})
         code, r = p.req("/api/iface/update", {"node": "na", "iface": "awg8", "dns": "9.9.9.9",
@@ -448,6 +452,11 @@ try:
               (code, r, p.nodes()["nb"].get("mesh_awg"), p.nodes()["nb"].get("mesh_gen")))
         code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"KeepaliveTimeout": "6-12"}, "endpoint_host": "nb2.example"})
         check("…the same template again: no re-provision", code == 200 and (p.nodes()["nb"].get("mesh_gen") or 0) == g0 + 1)
+        p.req("/api/panel/settings", {"interface_defaults": {**DEFAULTS, "awg3_params": {"RekeyAfterTime": "60-80", "RejectAfterTime": "110-180"}}})
+        code, r = p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {"RekeyAfterTime": "100-128"}})
+        check("a node's 3.1 field that passes alone but crosses with the interface defaults below it → refused (code review 1)",
+              code == 400 and "RejectAfterTime" in r.get("error", ""), (code, r))
+        p.req("/api/panel/settings", {"interface_defaults": DEFAULTS})
         p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {}}); p.req("/api/panel/settings", {"mesh_awg": {}})
         check("no record holds \"-\"", '"-"' not in blob)
         check("no create request holds \"-\"", '"-"' not in json.dumps({n: v.get("create") for n, v in p.nodes().items()}))

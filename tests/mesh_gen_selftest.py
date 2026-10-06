@@ -307,6 +307,12 @@ check("mesh_template_clean keeps the six (value and \"-\") beside the 2.0 fields
       == {"Jc": "4", "S3": "-", "RekeyTimeout": "4-8", "KeepaliveTimeout": "-"}
       and P.mesh_template_clean({"Jc": "4", "I1": "-"})[0] == P.awg_template_clean({"Jc": "4", "I1": "-"}))
 check("…and refuses timings that cross", P.mesh_template_clean({"RekeyAfterTime": "170-180"})[1] is not None)
+f = fleet(2); f["n00"]["mesh_awg"] = {"RekeyAfterTime": "100-128"}           # passes alone (128 + 7 + 15 ≤ 150) …
+d = deps(1320, {"mesh_awg_gen": "3.1", "interface_defaults": {"awg3_params": {"RejectAfterTime": "110-180"}}})   # … crosses here
+t = run(P, f, d, {"n00": gen_snap(), "n01": gen_snap()})
+r = P.mesh_gen_reasons(d, t, {"n00": gen_snap(), "n01": gen_snap()}, "n00")
+check("timings that cross only once the layers resolve: the link is made at 2.0, never one that drops data, and the card says why",
+      P.mesh_link_gen(t["n00"], t["n00"]["links"]["n01"]) == "2.0" and len(r) == 1 and "RejectAfterTime" in r[0]["msg"]["error"], r)
 
 print()
 if FAILS:
