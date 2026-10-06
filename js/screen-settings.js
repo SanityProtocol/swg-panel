@@ -392,6 +392,20 @@ function meshModeLabel(v, max) {
     : (max ? T("Auto — a full mesh up to {v1} nodes, on demand above", { v1: max }) : T("Auto"));
 }
 
+/** The type mesh links are made as (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md B1): AmneziaWG 2.0, 3.1 or plain WireGuard. `inherit`
+ *  (the node card) adds the panel's choice as a fourth button, "" in the draft. The server decides what a link can really be. */
+const meshGenLabel = g => g === "wg" ? T("WireGuard") : g;
+function MeshGenField({ value, onChange, inherit, hint }) {
+  const opts = [...(inherit ? [["", T("Default ({v1})", { v1: meshGenLabel(inherit) })]] : []), ["2.0", "2.0"], ["3.1", "3.1"], ["wg", T("WireGuard")]];
+  const eff = value || inherit || "2.0";
+  return html`<div class="field awggen"><label>${T("Mesh link type")}</label>
+    <div class="dpsw awgsw" role="radiogroup" aria-label=${T("Mesh link type")}>${opts.map(([g, l]) => html`<button type="button" role="radio" key=${g || "inherit"}
+      aria-checked=${value === g} class=${(value === g ? "on" : "") + (g === "3.1" ? " sw-awg3" : "")} onClick=${() => onChange(g)}>${l}</button>`)}</div>
+    <div class="hint">${hint}${eff === "3.1" ? " " + T("A pair where either node cannot run AmneziaWG 3.1 is linked at 2.0, and its node says why.") : ""}${
+      eff === "wg" ? " " + T("No obfuscation — DPI can block it across borders.") : ""}</div>
+  </div>`;
+}
+
 export function AccountScreen() {
   const [user, setUser] = useState("");
   const [cur, setCur] = useState(""); const [np, setNp] = useState(""); const [np2, setNp2] = useState("");
@@ -1985,6 +1999,7 @@ export function PanelSettingsScreen() {
   const logMbPDirty = () => logMbP !== String(ps.log_mb_panel || 100);
   // On unless an operator has switched it off — which closes these networks rather than merely hiding them.
   const [showLans, setShowLans] = useState(ps.show_node_lans !== false);
+  const [meshGen, setMeshGen] = useState(ps.mesh_awg_gen || "2.0");   // the type new mesh links are made as (2.0 | 3.1 | wg)
   const [meshMode, setMeshMode] = useState(ps.mesh_mode || "auto");   // which node pairs get a mesh link (auto | full | demand)
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: customTargets(l) })));
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
@@ -2302,7 +2317,8 @@ export function PanelSettingsScreen() {
       ...(x.producer === "imported" ? { provider: x.provider || "warp", licence: x.licence || "",
                                         dial_src: x.dial_src || "",
                                         profile: x.profile || null, profile_text: "" } : {}) })),
-    mesh_awg: (n.mesh_awg_set && Object.keys(n.mesh_awg_set).length) ? { ...n.mesh_awg_set } : {} });   // per-node mesh obfuscation override ({} = inherit/auto)
+    mesh_awg: (n.mesh_awg_set && Object.keys(n.mesh_awg_set).length) ? { ...n.mesh_awg_set } : {},   // per-node mesh obfuscation override ({} = inherit/auto)
+    mesh_awg_gen: n.mesh_awg_gen || "" });   // per-node mesh link type ("" = the panel's)   // per-node mesh obfuscation override ({} = inherit/auto)
   const [nodeEdits, setNodeEdits] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [orig, setOrig] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [gridKeep, setGridKeep] = useState([]);   // provider-list rows kept visible after toggling to 0/N nodes (until × removes them)
@@ -2363,6 +2379,7 @@ export function PanelSettingsScreen() {
         expiry_warn_days: Math.max(0, Math.min(365, parseInt(warnDays) || 3)),
         show_node_lans: showLans,
         mesh_mode: meshMode,
+        mesh_awg_gen: meshGen,
         reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
         mesh_awg: awgSet ? awg : {},
         advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
@@ -2414,7 +2431,7 @@ export function PanelSettingsScreen() {
         p2p: e.p2p || null,
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
-        catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {}, exits: e.exits || [], log_mb: +e.log_mb || 100 });
+        catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {}, mesh_awg_gen: e.mesh_awg_gen || "", exits: e.exits || [], log_mb: +e.log_mb || 100 });
       if (!nr.ok) nerr = srvText(nr) || (T("Couldn't save {v1}", { v1: n.name }));
       else reportDropped(nr);   // what the default list's save could not keep (§5.4) — never swallowed
     }
@@ -2475,6 +2492,7 @@ export function PanelSettingsScreen() {
     // "mesh defaults" for a disclosure toggle that is not one.
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
     if (meshMode !== (ps.mesh_mode || "auto")) out.push(T("Mesh links — {v1}", { v1: meshModeLabel(meshMode, ps.mesh_auto_max) }));
+    if (meshGen !== (ps.mesh_awg_gen || "2.0")) out.push(T("Mesh link type → {v1}, for new links", { v1: meshGenLabel(meshGen) }));
     if (glDirty("mesh") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}))) out.push(T("System mesh defaults"));
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
@@ -2505,12 +2523,13 @@ export function PanelSettingsScreen() {
       // with the edits still on screen. Gated by tests/settings_node_fields_selftest.py.
       if (!eq(e.exits, o.exits)) fl.push(T("external exits"));
       if (!eq(e.mesh_awg, o.mesh_awg)) fl.push(T("mesh AWG params"));
+      if (!eq(e.mesh_awg_gen, o.mesh_awg_gen)) fl.push(T("mesh link type → {v1}", { v1: e.mesh_awg_gen ? meshGenLabel(e.mesh_awg_gen) : T("val|default") }));
       if (!eq(e.log_mb, o.log_mb)) fl.push(T("log budget → {v1} MB", { v1: e.log_mb }));
       if (fl.length) out.push(n.name + " — " + fl.join(", "));
     }
     return out;
   };
-  const needsReprov = () => (Store.nodes || []).some(n => { const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}; return !eq(e.mesh_subnet, o.mesh_subnet) || !eq(e.mesh_prefix, o.mesh_prefix) || !eq(e.mesh_awg, o.mesh_awg); });
+  const needsReprov = () => (Store.nodes || []).some(n => { const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}; return !eq(e.mesh_subnet, o.mesh_subnet) || !eq(e.mesh_prefix, o.mesh_prefix) || !eq(e.mesh_awg, o.mesh_awg) || !eq(e.mesh_awg_gen, o.mesh_awg_gen); });
   const confirmSave = () => {
     // a node's default list with something the rules cannot carry yet (a half-typed badge, an empty row) — say which,
     // rather than save the list without it
@@ -2630,7 +2649,7 @@ const sectionLabel = k => ({
     onConfirm: () => removeCatFleet(id) });
   const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
   const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
-  const SECF = { logs: ["log_mb"], routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], exits: ["exits"] };
+  const SECF = { logs: ["log_mb"], routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "mesh_awg_gen", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
   // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
@@ -2648,7 +2667,7 @@ const sectionLabel = k => ({
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :
     sec === "logs" ? (logDirty() || logMbPDirty()) :
-    sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false) || meshMode !== (ps.mesh_mode || "auto")) : false;
+    sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false) || meshMode !== (ps.mesh_mode || "auto") || meshGen !== (ps.mesh_awg_gen || "2.0")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
   const anyDirty = SECTIONS.some(([s]) => secDirty(s));
@@ -3406,6 +3425,7 @@ const sectionLabel = k => ({
           ${meshMode === "auto" && (ps.mesh_mode || "auto") === "auto" && ps.mesh_effective ? html`<p class="hint" style="margin:0 0 14px">${ps.mesh_effective === "demand"
             ? T("This fleet is linked on demand now.")
             : T("Every pair in this fleet is linked now.")}</p>` : html`<div style="height:8px"></div>`}
+          <${MeshGenField} value=${meshGen} onChange=${setMeshGen} hint=${T("Applies to new links — re-provision a node to move its links.")}/>
           ${/* FLEET-WIDE, deliberately OUTSIDE the node picker above: "which of my nodes sit on a private network"
                 has no answer on a per-node page — it means opening every node in turn. Reported, never configured:
                 a node discloses the private addresses it holds on devices it does not run as its own tunnels. */""}
@@ -4376,6 +4396,11 @@ export function NodeMeshForm({ node, vals, set }) {
           <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: genAwg() })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: {} })}>${T("Clear (auto)")}</button>` : null}</div>
         </div></div>`;
     })()}
+    <${MeshGenField} value=${v.mesh_awg_gen || ""} onChange=${g => set({ mesh_awg_gen: g })}
+      inherit=${(Store.panelSettings || {}).mesh_awg_gen || "2.0"} hint=${T("Each link takes its type from one of its two nodes, the same one its AWG params come from; a link the other node decides is listed below. Changing it re-provisions this node's links on Save.")}/>
+    ${/* The links that are not the type asked for, and why — the panel derives it from the link records on every poll. */""}
+    ${(node.mesh_gen_reasons || []).length ? html`<div class="hint" style="margin:-4px 0 0">${(node.mesh_gen_reasons || []).map(r => html`<div key=${r.iface}>
+      ${T("Link to {v1} ({v2}) is {v3}: {v4}", { v1: r.peer, v2: r.iface, v3: meshGenLabel(r.type), v4: srvText(r.msg) })}</div>`)}</div>` : null}
     ${/* The rebuild these settings trigger, available on its own. Until now it fired only as a SIDE EFFECT of
           changing the subnet / prefix / AWG, gated on the value differing — so a node whose links are stuck
           with settings that are already right had no way to ask for it, short of changing the subnet and

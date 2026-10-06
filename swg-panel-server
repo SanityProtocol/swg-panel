@@ -12976,6 +12976,67 @@ def link_awg_params(deps):
     return pa or gen_awg_params()
 
 
+# ── A mesh link's type: AmneziaWG 2.0 (the default), AmneziaWG 3.1, or plain WireGuard (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md
+# Part B). Chosen panel-wide (`panel_settings.mesh_awg_gen`) with a per-node override (`nodes[nid].mesh_awg_gen`), stored only
+# when it is not 2.0, read by the X end of a link — the one whose pool and obfuscation the link takes. New links only: a
+# link keeps what it was made with until the node is re-provisioned (a per-node change does that for its links).
+MESH_AWG_GENS = ("2.0", "3.1", "wg")
+
+
+def mesh_gen_of(deps, node):
+    """The type a NEW link anchored on `node` is made as: its own override, else the panel's, else "2.0"."""
+    g = str((node or {}).get("mesh_awg_gen") or "")
+    if g in MESH_AWG_GENS:
+        return g
+    g = str((deps.get("panel_settings") or {}).get("mesh_awg_gen") or "")
+    return g if g in MESH_AWG_GENS else "2.0"
+
+
+def mesh_link_gen(node, lr):
+    """What an existing link IS on `node`'s end: "wg" by its record's `proto` (never from missing params — a re-stage
+    setdefaults a params-less record, and a lost record would silently read as plain WireGuard), "3.1" when its params hold
+    a HeaderProtectionKey, else "2.0"."""
+    if (lr or {}).get("proto") == "wg":
+        return "wg"
+    p = (((node or {}).get("ifaces") or {}).get((lr or {}).get("iface")) or {}).get("awg_params") or {}
+    return "3.1" if str(p.get("HeaderProtectionKey") or "").strip() else "2.0"
+
+
+def mesh_31_refusal(deps, nodes, snaps, a, b, mtu):
+    """Why the link a↔b cannot be made at AmneziaWG 3.1 — a perr — or None. Both ends must run 3.1 (awg_gen_refusal), and
+    header protection wants S1–S4 ≥ 12, so the link's S4 room (mesh_s4_room) must hold 12."""
+    for nid in (a, b):
+        why = awg_gen_refusal((snaps or {}).get(nid), (nodes.get(nid) or {}).get("name") or nid)
+        if why:
+            return why
+    if (mesh_s4_room(mtu) or 0) < 12:
+        return perr("the mesh MTU ({v1}) is too high for AmneziaWG 3.1 — header protection needs a link MTU of 1428 or less",
+                    v1=mtu)
+    return None
+
+
+def mesh_gen_reasons(deps, nodes, snaps, nid):
+    """The node's links that are not the type the mesh settings ask for, and why — [{peer, iface, type, want, msg}], the
+    list its mesh card renders. Derived on every read from the link records against the settings (nothing stored): a
+    3.1 link built at 2.0 says what stopped it; any other mismatch is a link made before the setting changed."""
+    me = nodes.get(nid) or {}
+    mtu = mesh_cfg(deps)["mtu"]
+    out = []
+    for peer, lr in sorted((me.get("links") or {}).items()):
+        if peer not in nodes or not isinstance(lr, dict):
+            continue
+        x = min(nid, peer); xname = (nodes.get(x) or {}).get("name") or x
+        want, have = mesh_gen_of(deps, nodes[x]), mesh_link_gen(me, lr)
+        row = {"peer": (nodes.get(peer) or {}).get("name") or peer, "iface": lr.get("iface") or "", "type": have, "want": want}
+        if want != have:
+            why = mesh_31_refusal(deps, nodes, snaps, nid, peer, mtu) if (want, have) == ("3.1", "2.0") else None
+            out.append(dict(row, msg=why or perr("made before the mesh type changed — re-provision {v1} to rebuild it", v1=xname)))
+        elif x != nid and me.get("mesh_awg_gen") in MESH_AWG_GENS and me["mesh_awg_gen"] != have:
+            # …and a link this node's own override does not reach: its type is the other end's choice, like its params
+            out.append(dict(row, want=me["mesh_awg_gen"], msg=perr("its type is set by {v1}, the other end of this link", v1=xname)))
+    return out
+
+
 # ── A mesh link's S4 must fit its MTU ──────────────────────────────────────────────────────────────────────────────
 # S4 is padding in front of EVERY data packet, so a full-size packet leaves as `mtu + 60 + S4` bytes (IPv4 20 + UDP 8 +
 # WireGuard data header 16 + auth tag 16, plus S4), and over a 1500-byte path anything larger goes out as two fragments.
@@ -13005,10 +13066,12 @@ def mesh_s4_fits(s4, mtu):
         return True
 
 
-def mesh_s4_draw(mtu):
-    """A fresh S4 inside the room, from 15 up like the generators (the whole room when it is smaller than 15)."""
+def mesh_s4_draw(mtu, floor=0):
+    """A fresh S4 inside the room, from 15 up like the generators (the whole room when it is smaller than 15) — and never
+    under `floor`: 12 on an AmneziaWG 3.1 link, whose header protection refuses less (a caller checks the room holds it)."""
     room = mesh_s4_room(mtu) or 0
-    return random.randint(min(15, room), room)
+    lo = max(floor, min(15, room))
+    return random.randint(lo, max(lo, room))
 
 
 def _link_iface_name(node, link_id, prefix="swg_"):
@@ -13249,7 +13312,19 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
     # the link's obfuscation = the X-end node's per-node mesh AWG if it set one, else the panel default / a fresh set.
     # both ends share it (the handshake requires matching params); editing a node's AWG re-provisions the links it anchors.
     psk = gen_psk(); awg = dict(sanitize_awg_params(nodes[x_nid].get("mesh_awg")) or link_awg_params(deps))
-    if not mesh_s4_fits(awg.get("S4"), mc["mtu"]):   # the LINK is fitted; the operator's stored mesh_awg is never rewritten
+    # …and its TYPE, the X end's choice like its obfuscation (mesh_gen_of). Plain WireGuard is a real `wg` device with no
+    # params — never an AmneziaWG one without them, which the agent would obfuscate on its own. AmneziaWG 3.1 only where
+    # both ends can run it and the MTU leaves header protection its S4 ≥ 12; otherwise this link is made at 2.0, and the
+    # node's mesh card says why (mesh_gen_reasons) — the operator decided a mixed pair falls back rather than refuses.
+    gen = mesh_gen_of(deps, nodes[x_nid])
+    if gen == "3.1" and mesh_31_refusal(deps, nodes, snaps, a, b, mc["mtu"]) is None:
+        awg = awg3_full(awg, None, awg3_defaults(deps))
+        _s4 = str(awg.get("S4") or "")
+        if not mesh_s4_fits(_s4, mc["mtu"]) or not _s4.isdigit() or int(_s4) < 12:
+            awg["S4"] = str(mesh_s4_draw(mc["mtu"], 12))
+    elif gen == "wg":
+        awg = None
+    elif not mesh_s4_fits(awg.get("S4"), mc["mtu"]):   # the LINK is fitted; the operator's stored mesh_awg is never rewritten
         awg["S4"] = mesh_s4_draw(mc["mtu"])
     for nid, peer in ((a, b), (b, a)):
         n = nodes[nid]
@@ -13261,11 +13336,13 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
         n.setdefault("links", {})[peer] = {
             "iface": iface, "link_id": link_id, "subnet": str(sub),
             "address": str(mine), "peer_address": str(theirs),
-            "listen_port": port, "psk": psk, "role": "x" if nid == x_nid else "y"}
+            "listen_port": port, "psk": psk, "role": "x" if nid == x_nid else "y",
+            **({"proto": "wg"} if awg is None else {})}       # absent = AmneziaWG; the re-stage reads it (reconcile_mesh)
         n.setdefault("create", {})[iface] = {
-            "cmd": ["awg"], "subnet": str(sub), "address": f"{mine}/31",
+            "cmd": ["wg"] if awg is None else ["awg"], "subnet": str(sub), "address": f"{mine}/31",
             "listen_port": port, "mtu": nmc["mtu"], "table": "off"}   # Table=off: cascade manages routing, no /0 hijack
-        n.setdefault("ifaces", {})[iface] = {"awg_params": dict(awg), "system": True, "link_node": peer}
+        n.setdefault("ifaces", {})[iface] = {**({} if awg is None else {"awg_params": dict(awg)}), "system": True,
+                                             "link_node": peer}
         if _stale and _stale != str(sub):
             alloc.release(_stale)
     if log:
@@ -13462,7 +13539,7 @@ def reconcile_mesh(nodes, snaps, deps):
             if isinstance(_ov, dict) and int(_ov.get("mtu") or 0) != int(mc["mtu"]):
                 _ov["mtu"] = int(mc["mtu"]); changed = True
             if ifc and ifc not in snap_ifs and ifc not in pending:
-                n.setdefault("create", {})[ifc] = {"cmd": ["awg"], "subnet": lr["subnet"],
+                n.setdefault("create", {})[ifc] = {"cmd": ["wg"] if lr.get("proto") == "wg" else ["awg"], "subnet": lr["subnet"],
                     "address": lr["address"] + "/31", "listen_port": lr["listen_port"], "mtu": mc["mtu"], "table": "off"}
                 ov = n.setdefault("ifaces", {}).setdefault(ifc, {})
                 ov.setdefault("system", True); ov.setdefault("link_node", peer)
@@ -13487,8 +13564,13 @@ def reconcile_mesh(nodes, snaps, deps):
                 continue                                         # a link still being made: _mesh_make_link fitted it
             if all(mesh_s4_fits(p.get("S4"), mc["mtu"]) for p in ends):
                 continue
+            # An AmneziaWG 3.1 link keeps S4 ≥ 12 (header protection refuses less, and the node would roll the edit back on
+            # every pass). Where a raised MTU leaves no room for 12 it is left as it is — it fragments, but it stays up.
+            _floor = 12 if any(str(p.get("HeaderProtectionKey") or "").strip() for p in ends) else 0
+            if _floor and (mesh_s4_room(mc["mtu"]) or 0) < _floor:
+                continue
             old = "/".join(sorted({str(p.get("S4")) for p in ends}))
-            s4 = mesh_s4_draw(mc["mtu"])
+            s4 = mesh_s4_draw(mc["mtu"], _floor)
             for p in ends:
                 p["S4"] = s4
             ev_append(deps["roster_path"], "node", a, "Fitted mesh link padding to its MTU (live)",
@@ -22140,6 +22222,11 @@ def api(method, path, qs, body, deps):
                                        for e in (Handler.deps.get("cas_clash") or {}).get(nid) or ()])
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https", "mesh_awg": _mawg, "mesh_awg_set": c.get("mesh_awg") or {},   # actual (live) vs the per-node override the UI edits
+                        # the mesh link type: this node's override (absent = the panel's), and its links that are not that
+                        # type, with why — both only when there is something to say, so a fleet that never picks one is as before
+                        **({"mesh_awg_gen": c["mesh_awg_gen"]} if c.get("mesh_awg_gen") else {}),
+                        **(lambda r: {"mesh_gen_reasons": r} if r else {})(
+                            mesh_gen_reasons(Handler.deps, nodes, Handler.deps.get("node_snaps") or {}, nid)),
                         "mesh_peers": _mesh_peers,
                         "iface_order": c.get("iface_order") or [],   # operator drag-order overlays (POST /api/order)
                         "turn_order": c.get("turn_order") or [],
@@ -22769,6 +22856,14 @@ def api(method, path, qs, body, deps):
             if _mm not in MESH_MODES:
                 return 400, {"ok": False, "error": "mesh_mode must be auto, full or demand", "code": "bad_request"}
             cur["mesh_mode"] = _mm
+        if "mesh_awg_gen" in incoming:   # the type NEW mesh links are made as (mesh_gen_of) — stored only when it is not 2.0
+            _mg = str(incoming.get("mesh_awg_gen") or "2.0")
+            if _mg not in MESH_AWG_GENS:
+                return 400, {"ok": False, "error": "mesh_awg_gen must be 2.0, 3.1 or wg", "code": "bad_request"}
+            if _mg == "2.0":
+                cur.pop("mesh_awg_gen", None)
+            else:
+                cur["mesh_awg_gen"] = _mg
         rsv = incoming.get("reserved")
         if isinstance(rsv, dict):
             base = dict(cur.get("reserved") or PANEL_SETTINGS_DEFAULTS["reserved"])
@@ -26327,8 +26422,18 @@ def api(method, path, qs, body, deps):
         _awg_before = sanitize_awg_params(nodes[nid].get("mesh_awg"))
         if "mesh_awg" in body:                  # per-node mesh obfuscation; links this node anchors adopt it (both ends match)
             nodes[nid]["mesh_awg"] = sanitize_awg_params(body.get("mesh_awg"))
+        _gen_before = nodes[nid].get("mesh_awg_gen") or ""
+        if "mesh_awg_gen" in body:              # per-node mesh link type ("" = the panel's) — re-provisions like mesh_awg
+            _mg = str(body.get("mesh_awg_gen") or "")
+            if _mg and _mg not in MESH_AWG_GENS:
+                return 400, {"ok": False, "error": "mesh_awg_gen must be 2.0, 3.1, wg or blank", "code": "bad_request"}
+            if _mg:
+                nodes[nid]["mesh_awg_gen"] = _mg
+            else:
+                nodes[nid].pop("mesh_awg_gen", None)
         _mesh_after = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")
-        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2] or sanitize_awg_params(nodes[nid].get("mesh_awg")) != _awg_before:
+        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2] or sanitize_awg_params(nodes[nid].get("mesh_awg")) != _awg_before \
+                or (nodes[nid].get("mesh_awg_gen") or "") != _gen_before:
             # subnet / PREFIX / AWG changed → the link is re-addressed / renamed / re-obfuscated: must re-provision (rebuild)
             mesh_reprovision_node(nodes, nid)
             reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)   # rebuild its links with the new config
@@ -26661,8 +26766,8 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "awg_gen must be \"2.0\" or \"3.1\"", "code": "bad_request"}
         if _gen:
             if ov.get("system"):
-                return 400, {"ok": False, **perr("{v1} is a mesh link — mesh links stay AmneziaWG 2.0", v1=iface),
-                             "code": "bad_request"}
+                return 400, {"ok": False, **perr("{v1} is a mesh link — its type comes from the mesh settings (Settings → "
+                                                 "Network), and a re-provision rebuilds it", v1=iface), "code": "bad_request"}
             # EITHER way: an older node can neither apply a 3.x key nor take one away (its agent keeps what it does not
             # know), so a switch back there would read as synced while the device kept the key (§7.8).
             if not awg_gen_reported((deps.get("node_snaps") or {}).get(nid)):
