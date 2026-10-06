@@ -395,7 +395,7 @@ export function NodeDetail({ node: rawName }) {
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("col|Endpoint")}</span><span class="r addr">${(m && m.peer_endpoint) || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Tunnel")}</span><span class="r addr">${(m && m.subnet) || "—"}</span></div>
-            <div class="ifrow"><span class="l">${T("Type")}</span><span class="r"><span class="tg-proto" style=${"--c:" + meshGenColor(mp.type)}>${meshGenLabel(mp.type)}</span></span></div>
+            <div class="ifrow"><span class="l">${T("Type")}</span><span class="r">${mp.type_set ? html`<span class="faint" style="margin-right:6px">${T("set on this link")}</span>` : null}<span class="tg-proto" style=${"--c:" + meshGenColor(mp.type)}>${meshGenLabel(mp.type)}</span></span></div>
             ${(() => {
               // Leg quality, same measurement the mesh bubble shows, on the card that names the link. Latency
               // always (it is the link's defining fact); loss only when it is enough to matter — a "0.0%" row

@@ -61,8 +61,8 @@ open(_base_src, "w").write(subprocess.run(["git", "-C", ROOT, "show", BASE + ":s
 B = load(_base_src, "swgpanel_base")
 
 if "--perturb" in sys.argv:          # the tree without the setting: every link is 2.0 whatever is chosen
-    P.mesh_gen_of = lambda deps, node: "2.0"
-    print("(perturbed: mesh_gen_of ignores the setting — this run must FAIL)")
+    P.mesh_gen_for = lambda deps, nodes, a, b: "2.0"
+    print("(perturbed: mesh_gen_for ignores every type setting — this run must FAIL)")
 
 # Deterministic keys in both trees: gen_psk and the HeaderProtectionKey read os.urandom.
 _ctr = [0]
@@ -131,10 +131,10 @@ check("plant: a PARTIAL node template is the one deliberate difference (the fix 
 _r = run(P, fleet(4), deps())
 check("…and no node has a reasons list", all(P.mesh_gen_reasons(deps(), _r, {}, nid) == [] for nid in _r))
 check("…and the reasons are not even computed for it (mesh_types_in_play is false)", not P.mesh_types_in_play(deps(), _r))
-check("…but are once anything is set: a panel type, a node type, a \"-\" in either template",
+check("…but are once anything is set: a panel type, a link's own type, a \"-\" in either template",
       P.mesh_types_in_play(deps(1320, {"mesh_awg_gen": "wg"}), _r)
       and P.mesh_types_in_play(deps(1320, {"mesh_awg": {"I1": "-"}}), _r)
-      and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_awg_gen": "3.1"}})
+      and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_link_gen": {"zy": "3.1"}}})
       and P.mesh_types_in_play(deps(), {**_r, "zz": {"mesh_awg": {"S3": "-"}}}))
 check("…and a malformed panel mesh_awg (a list) is no setting, never an exception in the poll",
       P.mesh_types_in_play(deps(1320, {"mesh_awg": ["-"]}), _r) is False)
@@ -245,23 +245,34 @@ for nid in t2:
 P.reconcile_mesh(t2, {nid: {"interfaces": {lr["iface"]: {} for lr in n["links"].values()}} for nid, n in t2.items()}, deps(1432))
 check("control: a 2.0 link at the same MTU IS refitted (to ≤ 8)", int(a2["awg_params"]["S4"]) <= 8, a2["awg_params"]["S4"])
 
-# ── [5] per-node override ───────────────────────────────────────────────────────────────────────────────────────────────
-print("[5] the per-node override, decided by the X end")
+# ── [5] a per-LINK type (plan §8 round 12 — a type belongs to the pair, not to a node) ─────────────────────────────────────
+print("[5] a link's own type beats the fleet's default; a node has no type of its own")
 f = fleet(3)
-f["n00"]["mesh_awg_gen"] = "wg"
+f["n00"]["mesh_link_gen"] = {"n02": "wg"}          # stored on the pair's anchor (smaller id)
+f["n01"]["mesh_awg_gen"] = "wg"                    # a per-node type from an unreleased build: never read
 d = deps(1320, {"mesh_awg_gen": "3.1"})
 sn = {k: gen_snap() for k in f}
 t = run(P, f, d, sn)
 gens = {(a, b): P.mesh_link_gen(t[a], la) for a, b, la, *_ in links(t)}
-check("n00's override (wg) decides its links; n01↔n02 take the panel's 3.1",
-      gens == {("n00", "n01"): "wg", ("n00", "n02"): "wg", ("n01", "n02"): "3.1"}, gens)
-t["n02"]["mesh_awg_gen"] = "2.0"
-r = P.mesh_gen_reasons(d, t, sn, "n02")
-check("n02 (override 2.0) is told which links the other end decides",
-      sorted(x["peer"] for x in r) == ["node0", "node1"] and all("other end" in x["msg"]["error"] for x in r), r)
-check("mesh_gen_of: node override > panel > 2.0",
-      (P.mesh_gen_of(d, {"mesh_awg_gen": "wg"}), P.mesh_gen_of(d, {}), P.mesh_gen_of(deps(), {}),
-       P.mesh_gen_of(deps(1320, {"mesh_awg_gen": "bogus"}), {"mesh_awg_gen": "x"})) == ("wg", "3.1", "2.0", "2.0"))
+check("n00↔n02 is WG (its own choice); n00↔n01 and n01↔n02 take the fleet's 3.1 (n01's per-node type ignored)",
+      gens == {("n00", "n01"): "3.1", ("n00", "n02"): "wg", ("n01", "n02"): "3.1"}, gens)
+check("mesh_link_override reads the pair from either end; mesh_gen_for falls back to the fleet's default",
+      (P.mesh_link_override(t, "n02", "n00"), P.mesh_link_override(t, "n00", "n02"), P.mesh_gen_for(d, t, "n01", "n02"),
+       P.mesh_gen_for(deps(), t, "n01", "n02")) == ("wg", "wg", "3.1", "2.0"))
+check("mesh_gen_of is the fleet's default only", (P.mesh_gen_of(d, {"mesh_awg_gen": "wg"}), P.mesh_gen_of(deps()),
+      P.mesh_gen_of(deps(1320, {"mesh_awg_gen": "bogus"}))) == ("3.1", "2.0", "2.0"))
+check("no reason on any card: every link is what it was asked to be", all(P.mesh_gen_reasons(d, t, sn, x) == [] for x in t),
+      {x: P.mesh_gen_reasons(d, t, sn, x) for x in t})
+keep = P.mesh_relink_pair(t, "n02", "n00")
+check("mesh_relink_pair tears the ONE link down on both ends (create cancelled, delete staged), the others untouched",
+      "n02" not in t["n00"]["links"] and "n00" not in t["n02"]["links"] and "n01" in t["n00"]["links"]
+      and len(t["n00"].get("delete") or {}) == 1 and len(t["n02"].get("delete") or {}) == 1, (t["n00"].get("delete"), t["n02"].get("delete")))
+P.reconcile_mesh(t, sn, d)
+check("…and the rebuild comes back under a fresh interface name, still WG",
+      "n02" in t["n00"]["links"] and t["n00"]["links"]["n02"]["iface"] not in t["n00"]["delete"]
+      and P.mesh_link_gen(t["n00"], t["n00"]["links"]["n02"]) == "wg", t["n00"]["links"].get("n02"))
+check("mesh_types_in_play: a per-link choice anywhere counts", P.mesh_types_in_play(deps(), {"a": {"mesh_link_gen": {"b": "wg"}}})
+      and not P.mesh_types_in_play(deps(), {"a": {"mesh_awg_gen": "wg"}}))
 
 # ── [6] a mesh template with a field set to none (Part A, A4) ─────────────────────────────────────────────────────────
 print("[6] a mesh template with \"-\": whole and exact where both ends can hold it, generated values otherwise")
@@ -337,7 +348,7 @@ for label, f, d in (("node template {Jc, Jmin, Jmax}", fleet(2, {"Jc": "5", "Jmi
     check(label + ": S4 inside the MTU's room, no awg_exact (nothing omitted)",
           P.mesh_s4_fits(a.get("S4"), 1320) and "awg_exact" not in links(t)[0][4])
 t = run(P, fleet(2, {"Jc": "5", "Jmin": "50", "Jmax": "80"}), deps(1420))
-check("at MTU 1420 the drawn S4 is refitted into the room (20)", int(links(t)[0][4]["awg_params"]["S4"]) <= 20, links(t)[0][4]["awg_params"]["S4"])
+check("at MTU 1420 the drawn S4 is refitted into the room (20)", int(links(t)[0][4]["awg_params"].get("S4", 999)) <= 20, links(t)[0][4]["awg_params"].get("S4"))
 
 print()
 if FAILS:

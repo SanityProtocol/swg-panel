@@ -74,7 +74,7 @@ subscription and no one else sitting in the middle of your traffic.
 - **Leave an AmneziaWG field out, and pick the mesh's protocol.** Type `-` in any AmneziaWG cell — an interface's
   or the defaults' — and that line is not written at all (a blank cell stays automatic); the servers need this
   update to hold one. Links between your servers are AmneziaWG 2.0 by default, or 3.1 or plain WireGuard, for the
-  whole fleet or per server; a pair where one server cannot run 3.1 is linked at 2.0, and its server says why.
+  whole fleet or for one link; a pair where one server cannot run 3.1 is linked at 2.0, and its server says why.
 - **Filter out the junk.** Block ads, trackers, malware, adult content, gambling and more — per server, from
   curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
   which user is behind the torrents and port-scans it flags.

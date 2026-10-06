@@ -21,7 +21,7 @@ import {
   cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg, candDialPort, turnIfaceNameError, awgDict3, awgGen, awg3Cls, awg3Tip, tip3, awg31No,
 } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkOpts, forkLabel } from "./turn-catalog.js";
-import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag } from "./ui.js";
+import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag, meshGenLabel, meshGenColor } from "./ui.js";
 import { RangedHistory, IfaceThroughput, lossColorMesh } from "./charts.js";
 import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCached, subFeatureOn } from "./crypto.js";
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle,
@@ -1505,6 +1505,22 @@ export function openIfaceEditor(node, iface) {
   if (k === "wdtt") return openEditWdtt(node, iface);
   return openEditIface(node, iface);
 }
+/** A mesh link type switch (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md B1, §8 round 12): AmneziaWG 2.0, 3.1 or plain WireGuard — the
+ *  fleet's default in Settings → Mesh, and one link's own on its connection sheet, where `inherit` (the default) adds a
+ *  "Default (…)" button, "" in the draft. Each type in its protocol's own colour. The server decides what a link can be. */
+export function MeshGenField({ value, onChange, inherit, hint, label, after }) {
+  const opts = [...(inherit ? [["", T("Default ({v1})", { v1: meshGenLabel(inherit) })]] : []), ...["wg", "2.0", "3.1"].map(g => [g, meshGenLabel(g)])];
+  const eff = value || inherit || "2.0";
+  label = label || T("Mesh link type");
+  return html`<div class="field awggen meshgen"><label>${label}</label>
+    <div class="dpsw awgsw" role="radiogroup" aria-label=${label}>${opts.map(([g, l]) => html`<button type="button" role="radio" key=${g || "inherit"}
+      aria-checked=${value === g} class=${(value === g ? "on " : "") + "sw-proto"} style=${"--c:" + meshGenColor(g || inherit || "2.0")}
+      onClick=${() => onChange(g)}>${l}</button>`)}</div>
+    <div class="hint">${hint}${eff === "3.1" ? " " + T("A pair where either node cannot run AmneziaWG 3.1 is linked at 2.0, and its node says why.") : ""}${
+      eff === "wg" ? " " + T("No obfuscation — DPI can block it across borders.") : ""}</div>${after || null}
+  </div>`;
+}
+
 export function openConnectionEdit(node, iface) { openModal(html`<${ConnectionEditSheet} node=${node} iface=${iface}/>`); }
 // A node↔node mesh link (system interface). Mesh-managed (no create/delete/egress here) — mostly status;
 // the only operator knob is whether this link can carry forwarded user traffic (reserved for Phase 2).
@@ -1526,6 +1542,11 @@ export function ConnectionEditSheet({ node, iface }) {
   const [relayPick, setRelayPick] = useState(null);
   const [quotaPick, setQuotaPick] = useState(null);
   const relayOn = relayPick === null ? relayOn0 : relayPick;
+  // This LINK's own type (plan §8 round 12): "" = the fleet's default. Followed from the server until touched, like the relay.
+  const typeSet0 = ((nrec.mesh_peers || []).find(p => p.peer === peer) || {}).type_set || "";
+  const [typePick, setTypePick] = useState(null);
+  const typeSet = typePick === null ? typeSet0 : typePick;
+  const typeDflt = (Store.panelSettings || {}).mesh_awg_gen || "2.0";
   const quota = quotaPick === null ? quota0 : quotaPick;
   const setRelayOn = setRelayPick, setQuota = setQuotaPick;
   const nodeDown = nodeStale(node) || inProc(nrec.proc_status);   // node not reporting / mid re-install → can't apply a dial change
@@ -1539,7 +1560,8 @@ export function ConnectionEditSheet({ node, iface }) {
       key: "conn:" + node + "|" + peer,
       patch: () => {},
       call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp,
-                                         relay_mode: relayOn ? "relay" : "forward", relay_quota_pct: Number(quota) || 50 }),
+                                         relay_mode: relayOn ? "relay" : "forward", relay_quota_pct: Number(quota) || 50,
+                                         ...(typeSet !== typeSet0 ? { mesh_awg_gen: typeSet } : {}) }),   // only a change rebuilds the link
     });
   };
   // ⚠️ 90, not 100. The relay is a single event loop, so one core is its structural ceiling anyway; what
@@ -1548,7 +1570,7 @@ export function ConnectionEditSheet({ node, iface }) {
   const QUOTA_MAX = 90;
   const quotaErr = (() => { const q = Number(quota); return (!Number.isInteger(q) || q < 5 || q > QUOTA_MAX) ? T("CPU cap must be between {v1} and {v2}", { v1: "5", v2: String(QUOTA_MAX) }) : ""; })();
   const connDirty = dialSrc !== (meta.dial_src || "") || dialEp !== (meta.dial_endpoint || "")
-    || relayOn !== relayOn0 || quota !== quota0;   // enable Save only when something actually changed
+    || relayOn !== relayOn0 || quota !== quota0 || typeSet !== typeSet0;   // enable Save only when something actually changed
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
   const allMeta = Store.describe[node] || {};
   const carried = Object.keys(allMeta).filter(k => !allMeta[k].system
@@ -1598,6 +1620,10 @@ export function ConnectionEditSheet({ node, iface }) {
       </div>
     </div>
     <div style="margin-top:12px"><${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.meshSeries(node, peer, r).then(x => x && x.ok ? x.data : {})}/></div>
+    <div style="margin-top:16px"><${MeshGenField} label=${T("Link type")} value=${typeSet} onChange=${setTypePick} inherit=${typeDflt}
+      hint=${typeSet !== typeSet0 ? T("Saving rebuilds this link on both ends — it drops for a few seconds while they reconnect.")
+        : T("This link only, both ends. Default follows the fleet's type in Settings → Mesh.")}
+      after=${(nrec.mesh_gen_reasons || []).filter(r => r.iface === iface).map(r => html`<div class="hint warnish" key=${r.iface}>${srvText(r.msg)}</div>`)}/></div>
     <div class="row2" style="margin-top:14px">
       <div class="field"><label>${T("Dial source IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— {node}'s IP", { node: Store.nodeName(node) })}</span></label>
         <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto=${T("Auto (default route)")}/></div>

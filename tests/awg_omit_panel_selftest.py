@@ -458,6 +458,29 @@ try:
               code == 400 and "RejectAfterTime" in r.get("error", ""), (code, r))
         p.req("/api/panel/settings", {"interface_defaults": DEFAULTS})
         p.req("/api/nodes/update", {"id": "nb", "mesh_awg": {}}); p.req("/api/panel/settings", {"mesh_awg": {}})
+        # a LINK's own type (plan §8 round 12), through the door its sheet uses
+        lnk = lambda a, b: (p.nodes()[a].get("links") or {}).get(b) or {}
+        old_if = lnk("na", "nb").get("iface")
+        p.req("/api/connection/update", {"node": "nb", "peer": "na", "dial_endpoint": "203.0.113.9"})
+        code, r = p.req("/api/connection/update", {"node": "nb", "peer": "na", "mesh_awg_gen": "wg"})
+        nn = p.nodes()
+        check("a link's type set from either end: stored on the pair's anchor (na), the link rebuilt as WG on both ends",
+              code == 200 and r.get("data", {}).get("relinked") is True and (nn["na"].get("mesh_link_gen") or {}).get("nb") == "wg"
+              and lnk("na", "nb").get("proto") == "wg" and lnk("nb", "na").get("proto") == "wg", (code, r, nn["na"].get("mesh_link_gen")))
+        check("…under a new interface name, the old one staged for deletion on both ends",
+              lnk("na", "nb").get("iface") != old_if and old_if in (nn["na"].get("delete") or {}), (old_if, lnk("na", "nb").get("iface")))
+        check("…keeping the link's own settings (its dial address)", lnk("nb", "na").get("dial_endpoint") == "203.0.113.9", lnk("nb", "na"))
+        code, st = p.req("/api/state")
+        mp = next((x for x in st["data"]["nodes"] if x["id"] == "nb"), {}).get("mesh_peers") or []
+        check("/api/state names the link's type and its own choice", any(x.get("peer") == "na" and x.get("type") == "wg"
+              and x.get("type_set") == "wg" for x in mp), mp)
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": "wg"})
+        check("the same type again: no rebuild", code == 200 and r.get("data", {}).get("relinked") is False, r)
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": ""})
+        check("back to the fleet's default: the choice removed, the link rebuilt as AmneziaWG",
+              code == 200 and "mesh_link_gen" not in p.nodes()["na"] and "proto" not in lnk("na", "nb"), (code, r, lnk("na", "nb")))
+        code, r = p.req("/api/connection/update", {"node": "na", "peer": "nb", "mesh_awg_gen": "4.0"})
+        check("an unknown type is refused", code == 400, (code, r))
         check("no record holds \"-\"", '"-"' not in blob)
         check("no create request holds \"-\"", '"-"' not in json.dumps({n: v.get("create") for n, v in p.nodes().items()}))
     finally:

@@ -30,7 +30,7 @@ import {
 } from "./turn-catalog.js";
 import {
   ConfirmSheet, Disclosure, Dropdown, ExitDevicePick, ExitEgressPick, Ic, NodeIpPick, Popover, Sheet, Switch, ThemedSwatch, autoGrow, closeModal, copy, footRow,
-  goSettings, meshGenColor, meshGenLabel, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
+  goSettings, meshGenLabel, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
   useHostOnNode,
   exitRefusalText,
   ListPager, LIST_PAGE, pageSlice,
@@ -57,7 +57,7 @@ import {
   turnForkPlatforms, turnUpdateTarget, turnUpdating,
 } from "./turn.js";
 import {
-  IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS, awgIsNone, awgOmitIssue, AWG_COLS,
+  IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS, awgIsNone, awgOmitIssue, AWG_COLS, MeshGenField,
 } from "./iface.js";
 import { statsUsage, trafficInvalidate } from "./traffic.js";
 import { h, Fragment } from "preact";
@@ -390,21 +390,6 @@ function VkPoolEditor() {
 function meshModeLabel(v, max) {
   return v === "full" ? T("Full mesh") : v === "demand" ? T("On demand")
     : (max ? T("Auto — a full mesh up to {v1} nodes, on demand above", { v1: max }) : T("Auto"));
-}
-
-/** The type mesh links are made as (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md B1): AmneziaWG 2.0, 3.1 or plain WireGuard. `inherit`
- *  (the node card) adds the panel's choice as a fourth button, "" in the draft. The server decides what a link can really be. */
-function MeshGenField({ value, onChange, inherit, hint, label, after }) {
-  const opts = [...(inherit ? [["", T("Default ({v1})", { v1: meshGenLabel(inherit) })]] : []), ...["wg", "2.0", "3.1"].map(g => [g, meshGenLabel(g)])];
-  const eff = value || inherit || "2.0";
-  label = label || T("Mesh link type");
-  return html`<div class="field awggen meshgen"><label>${label}</label>
-    <div class="dpsw awgsw" role="radiogroup" aria-label=${label}>${opts.map(([g, l]) => html`<button type="button" role="radio" key=${g || "inherit"}
-      aria-checked=${value === g} class=${(value === g ? "on " : "") + "sw-proto"} style=${"--c:" + meshGenColor(g || inherit || "2.0")}
-      onClick=${() => onChange(g)}>${l}</button>`)}</div>
-    <div class="hint">${hint}${eff === "3.1" ? " " + T("A pair where either node cannot run AmneziaWG 3.1 is linked at 2.0, and its node says why.") : ""}${
-      eff === "wg" ? " " + T("No obfuscation — DPI can block it across borders.") : ""}</div>${after || null}
-  </div>`;
 }
 
 export function AccountScreen() {
@@ -2325,8 +2310,7 @@ export function PanelSettingsScreen() {
       ...(x.producer === "imported" ? { provider: x.provider || "warp", licence: x.licence || "",
                                         dial_src: x.dial_src || "",
                                         profile: x.profile || null, profile_text: "" } : {}) })),
-    mesh_awg: (n.mesh_awg_set && Object.keys(n.mesh_awg_set).length) ? { ...n.mesh_awg_set } : {},   // per-node mesh obfuscation override ({} = inherit/auto)
-    mesh_awg_gen: n.mesh_awg_gen || "" });   // per-node mesh link type ("" = the panel's)
+    mesh_awg: (n.mesh_awg_set && Object.keys(n.mesh_awg_set).length) ? { ...n.mesh_awg_set } : {} });   // per-node mesh obfuscation override ({} = inherit/auto)
   const [nodeEdits, setNodeEdits] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [orig, setOrig] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [gridKeep, setGridKeep] = useState([]);   // provider-list rows kept visible after toggling to 0/N nodes (until × removes them)
@@ -2439,7 +2423,7 @@ export function PanelSettingsScreen() {
         p2p: e.p2p || null,
         mesh_egress_ip: e.mesh_egress_ip || "",
         endpoint_hosts: (e.endpoint_hosts || []).map(h => (h || "").trim()).filter(Boolean),
-        catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {}, mesh_awg_gen: e.mesh_awg_gen || "", exits: e.exits || [], log_mb: +e.log_mb || 100 });
+        catalog_cats: e.catalog_cats || [], mesh_awg: e.mesh_awg || {}, exits: e.exits || [], log_mb: +e.log_mb || 100 });
       if (!nr.ok) nerr = srvText(nr) || (T("Couldn't save {v1}", { v1: n.name }));
       else reportDropped(nr);   // what the default list's save could not keep (§5.4) — never swallowed
     }
@@ -2531,13 +2515,12 @@ export function PanelSettingsScreen() {
       // with the edits still on screen. Gated by tests/settings_node_fields_selftest.py.
       if (!eq(e.exits, o.exits)) fl.push(T("external exits"));
       if (!eq(e.mesh_awg, o.mesh_awg)) fl.push(T("mesh AWG params"));
-      if (!eq(e.mesh_awg_gen, o.mesh_awg_gen)) fl.push(T("mesh link type → {v1}", { v1: e.mesh_awg_gen ? meshGenLabel(e.mesh_awg_gen) : T("val|default") }));
       if (!eq(e.log_mb, o.log_mb)) fl.push(T("log budget → {v1} MB", { v1: e.log_mb }));
       if (fl.length) out.push(n.name + " — " + fl.join(", "));
     }
     return out;
   };
-  const needsReprov = () => (Store.nodes || []).some(n => { const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}; return !eq(e.mesh_subnet, o.mesh_subnet) || !eq(e.mesh_prefix, o.mesh_prefix) || !eq(e.mesh_awg, o.mesh_awg) || !eq(e.mesh_awg_gen, o.mesh_awg_gen); });
+  const needsReprov = () => (Store.nodes || []).some(n => { const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}; return !eq(e.mesh_subnet, o.mesh_subnet) || !eq(e.mesh_prefix, o.mesh_prefix) || !eq(e.mesh_awg, o.mesh_awg); });
   const confirmSave = () => {
     // a node's default list with something the rules cannot carry yet (a half-typed badge, an empty row) — say which,
     // rather than save the list without it
@@ -2657,7 +2640,7 @@ const sectionLabel = k => ({
     onConfirm: () => removeCatFleet(id) });
   const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
   const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
-  const SECF = { logs: ["log_mb"], routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "default_egress_ip", "panel_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], links: ["mesh_egress_ip", "mesh_awg_gen", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg"], exits: ["exits"] };
+  const SECF = { logs: ["log_mb"], routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "default_egress_ip", "panel_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], links: ["mesh_egress_ip", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
   // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
@@ -3385,7 +3368,7 @@ const sectionLabel = k => ({
             ? T("This fleet is linked on demand now.")
             : T("Every pair in this fleet is linked now.")}</p>` : html`<div style="height:8px"></div>`}
           <${MeshGenField} label=${T("Default mesh link type")} value=${meshGen} onChange=${setMeshGen}
-            hint=${T("What new links are made as, unless a node below sets its own. Re-provision a node to move its existing links.")}/>
+            hint=${T("What new links are made as. One link can have a type of its own — on its card under Node connections, on a node's page. Re-provision a node to move its existing links to this default.")}/>
           ${/* the fleet's default obfuscation for AmneziaWG links — shown whatever the default type, since a node can override
                 to AmneziaWG; the 3.1 readout only while the default is 3.1 */""}
           <${MeshAwgParams} title=${T("Default mesh AWG params")} eff=${meshGen} value=${awg} onChange=${setAwg}
@@ -4446,23 +4429,23 @@ function meshAwgHints(node) {
   return Object.fromEntries(AWG_KEYS.map(k => [k, awgIsNone(pt[k]) ? T("val|none")
     : String(pt[k] ?? "").trim() || String(live[k] ?? "").trim()]));
 }
-// `gen` is the fleet's default mesh link type as the Mesh section's draft holds it, so "Default (…)" follows box 1 before a Save.
+// `gen` is the fleet's default mesh link type as the Mesh section's draft holds it. A node has no type of its own — a type belongs
+// to a link (plan §8 round 12): the AWG grid shows what this node's links can use — the default, and any link's own choice.
 export function NodeMeshForm({ node, vals, set, gen }) {
   const rsv = (Store.panelSettings || {}).reserved || {};
   const dSub = rsv.mesh_subnet || "10.255.0.0/16", dPort = String(rsv.mesh_port_base || 9999), dPfx = rsv.iface_prefix || "swg_";
   const v = vals || {};
-  const inherit = gen || (Store.panelSettings || {}).mesh_awg_gen || "2.0";
-  const eff = v.mesh_awg_gen || inherit;          // the type this node's links are made as — what its AWG params are for
+  const dflt = gen || (Store.panelSettings || {}).mesh_awg_gen || "2.0";
+  const types = new Set([dflt, ...(node.mesh_peers || []).map(p => p.type_set).filter(Boolean)]);
+  const eff = types.has("3.1") ? "3.1" : types.has("2.0") ? "2.0" : "wg";   // what this node's links can use: its AWG fields' scope
   return html`<div>
     <p class="hint" style="margin:0 0 12px">${Trich("Overrides for *{v1}* — blank inherits the default. Changing the subnet, prefix, or AWG re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config).", { v1: node.name })}</p>
     <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>
       <${NodeIpPick} ips=${node.ips || []} value=${v.mesh_egress_ip || ""} onChange=${ip => set({ mesh_egress_ip: ip })} auto=${T("Auto (default route)")}/>
       <div class="hint">${T("Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.")}</div></div>
-    ${/* …and under it, the links that are not the type asked for, and why — derived by the panel from the link records on every poll */""}
-    <${MeshGenField} value=${v.mesh_awg_gen || ""} onChange=${g => set({ mesh_awg_gen: g })} inherit=${inherit}
-      hint=${T("Each link takes its type from one of its two nodes, the same one its AWG params come from; a link the other node decides is listed below. Changing it re-provisions this node's links on Save.")}
-      after=${(node.mesh_gen_reasons || []).map(r => html`<div class="hint warnish" key=${r.iface}>
-        ${T("Link to {v1} ({v2}) is {v3}: {v4}", { v1: r.peer, v2: r.iface, v3: meshGenLabel(r.type), v4: srvText(r.msg) })}</div>`)}/>
+    ${/* the links that are not the type asked for, and why — derived by the panel from the link records on every poll */""}
+    ${(node.mesh_gen_reasons || []).length ? html`<div class="field">${(node.mesh_gen_reasons || []).map(r => html`<div class="hint warnish" key=${r.iface}>
+      ${T("Link to {v1} ({v2}) is {v3}: {v4}", { v1: r.peer, v2: r.iface, v3: meshGenLabel(r.type), v4: srvText(r.msg) })}</div>`)}</div>` : null}
     <div class="row2"><div class="field"><label>${T("Mesh subnet")}</label><input value=${v.mesh_subnet || ""} onInput=${e => set({ mesh_subnet: e.target.value })} placeholder=${dSub}/></div>
       <div class="field"><label>${T("Mesh port")}</label><input value=${v.mesh_port || ""} onInput=${e => set({ mesh_port: e.target.value })} placeholder=${dPort}/></div></div>
     <div class="field"><label>${T("Interface name prefix")}</label><input value=${v.mesh_prefix || ""} onInput=${e => set({ mesh_prefix: e.target.value })} placeholder=${dPfx}/></div>
