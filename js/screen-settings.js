@@ -30,7 +30,7 @@ import {
 } from "./turn-catalog.js";
 import {
   ConfirmSheet, Disclosure, Dropdown, ExitDevicePick, ExitEgressPick, Ic, NodeIpPick, Popover, Sheet, Switch, ThemedSwatch, autoGrow, closeModal, copy, footRow,
-  goSettings, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
+  goSettings, ifaceColor, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
   useHostOnNode,
   exitRefusalText,
   ListPager, LIST_PAGE, pageSlice,
@@ -395,12 +395,15 @@ function meshModeLabel(v, max) {
 /** The type mesh links are made as (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md B1): AmneziaWG 2.0, 3.1 or plain WireGuard. `inherit`
  *  (the node card) adds the panel's choice as a fourth button, "" in the draft. The server decides what a link can really be. */
 const meshGenLabel = g => g === "wg" ? T("WireGuard") : g;
-function MeshGenField({ value, onChange, inherit, hint }) {
+const meshGenColor = g => ifaceColor(g === "wg" ? "wg" : g === "3.1" ? "awg3" : "awg");   // the protocol's own (tunable) colour
+function MeshGenField({ value, onChange, inherit, hint, label }) {
   const opts = [...(inherit ? [["", T("Default ({v1})", { v1: meshGenLabel(inherit) })]] : []), ["2.0", "2.0"], ["3.1", "3.1"], ["wg", T("WireGuard")]];
   const eff = value || inherit || "2.0";
-  return html`<div class="field awggen"><label>${T("Mesh link type")}</label>
-    <div class="dpsw awgsw" role="radiogroup" aria-label=${T("Mesh link type")}>${opts.map(([g, l]) => html`<button type="button" role="radio" key=${g || "inherit"}
-      aria-checked=${value === g} class=${(value === g ? "on" : "") + (g === "3.1" ? " sw-awg3" : "")} onClick=${() => onChange(g)}>${l}</button>`)}</div>
+  label = label || T("Mesh link type");
+  return html`<div class="field awggen"><label>${label}</label>
+    <div class="dpsw awgsw" role="radiogroup" aria-label=${label}>${opts.map(([g, l]) => html`<button type="button" role="radio" key=${g || "inherit"}
+      aria-checked=${value === g} class=${(value === g ? "on " : "") + "sw-proto"} style=${"--c:" + meshGenColor(g || inherit || "2.0")}
+      onClick=${() => onChange(g)}>${l}</button>`)}</div>
     <div class="hint">${hint}${eff === "3.1" ? " " + T("A pair where either node cannot run AmneziaWG 3.1 is linked at 2.0, and its node says why.") : ""}${
       eff === "wg" ? " " + T("No obfuscation — DPI can block it across borders.") : ""}</div>
   </div>`;
@@ -2497,7 +2500,7 @@ export function PanelSettingsScreen() {
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
     if (meshMode !== (ps.mesh_mode || "auto")) out.push(T("Mesh links — {v1}", { v1: meshModeLabel(meshMode, ps.mesh_auto_max) }));
     if (meshGen !== (ps.mesh_awg_gen || "2.0")) out.push(T("Mesh link type → {v1}, for new links", { v1: meshGenLabel(meshGen) }));
-    if (glDirty("mesh") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}))) out.push(T("System mesh defaults"));
+    if (glDirty("links") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}))) out.push(T("System mesh defaults"));
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
       // The LABEL, not the slug. This line is the last thing an operator reads before applying, and it
@@ -2575,7 +2578,7 @@ export function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: T("Delete custom list"), confirmLabel: T("Delete"), danger: true,
     body: Trich("Delete *{v1}*? It's removed from *every node* it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.", { v1: l.title || T("Untitled list") }),
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Network"], ["exits", "WARP"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"], ["logs", "Logs"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Network"], ["links", "Mesh"], ["exits", "WARP"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"], ["logs", "Logs"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
 /* The fill-in line the panel writes into a plain-text config when no VK link is set. It has to stay
    byte-identical to turn-artifacts.js's copy: the hint below tells the operator which line to look for in
    the generated file, so a TRANSLATED placeholder would describe something that never appears there. */
@@ -2600,13 +2603,13 @@ const logLeftLabel = s => s >= 3600
    the persisted section), so only the LABEL is translated — literal T() calls, same as evItemLabel. */
 const sectionLabel = k => ({
   display: T("Display"), security: T("Authentication"), access: T("Panel access"), configs: T("Client configs"),
-  subs: T("Subscriptions"), mesh: T("Network"), exits: T("val|WARP"), defaults: T("Interfaces"),
+  subs: T("Subscriptions"), mesh: T("Network"), links: T("Mesh"), exits: T("val|WARP"), defaults: T("Interfaces"),
   turn: T("Turn proxies"), routing: T("Routing & Blocking"), geo: T("Geo data providers"),
   integrations: T("Integrations"), logs: T("Logs"),
 }[k] || k);   // i18n-keys
   // per-node context: the node whose mode/lists/mesh/egress we're editing — defaults to the first node (no "default")
   const [selNode, setSelNode] = useState(() => ((Store.nodes || [])[0] || {}).id || "");
-  const perNodeSection = section === "routing" || section === "mesh" || section === "exits";
+  const perNodeSection = section === "routing" || section === "mesh" || section === "links" || section === "exits";
   const nodeRec = (Store.nodes || []).find(n => n.id === selNode);
   const nodeMode = nv(selNode, "routing_mode") || "kernel";       // DRAFT mode being edited (drives the mode card + tabs)
   const setMode = m => setNV(selNode, { routing_mode: m });
@@ -2653,7 +2656,7 @@ const sectionLabel = k => ({
     onConfirm: () => removeCatFleet(id) });
   const catSaved = id => fleetNodes.some(n => ((orig[n.id] || {}).catalog_cats || []).includes(id));   // present in the last-SAVED fleet state → removing it is a real change (confirm); a draft-only add this session isn't
   const removeCatRow = id => catSaved(id) ? confirmRemoveCat(id) : removeCatFleet(id);   // × removes a just-added (unsaved) list with no prompt; only saved lists confirm
-  const SECF = { logs: ["log_mb"], routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg", "mesh_awg_gen", "default_egress_ip", "panel_ip", "mesh_egress_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], exits: ["exits"] };
+  const SECF = { logs: ["log_mb"], routing: ["routing_mode", "ip_learning", "dns_upstream", "catalog_cats"], mesh: ["endpoint_host", "endpoint_hosts", "default_egress_ip", "panel_ip", "default_exit", "default_routing", "default_routing_exit_ips", "p2p"], links: ["mesh_egress_ip", "mesh_awg_gen", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg"], exits: ["exits"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: customTargets(l).trim() })));
   // Display is two lines in the confirm list: the zone has a consequence of its own (the charts re-time), so it is named.
@@ -2671,7 +2674,8 @@ const sectionLabel = k => ({
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :
     sec === "logs" ? (logDirty() || logMbPDirty()) :
-    sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || showLans !== (ps.show_node_lans !== false) || meshMode !== (ps.mesh_mode || "auto") || meshGen !== (ps.mesh_awg_gen || "2.0")) : false;
+    sec === "mesh" ? showLans !== (ps.show_node_lans !== false) :
+    sec === "links" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {}) || meshMode !== (ps.mesh_mode || "auto") || meshGen !== (ps.mesh_awg_gen || "2.0")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
   const anyDirty = SECTIONS.some(([s]) => secDirty(s));
@@ -2692,7 +2696,7 @@ const sectionLabel = k => ({
     <div class="setbody">
       <nav class="setrail">${SECTIONS.map(([id]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${sectionLabel(id)}${secDirty(id) ? html`<span class="dirtydot"></span>` : null}</button>`)}</nav>
       <div class="setpane">
-        ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
+        ${perNodeSection && section !== "links" && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
           ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel;
             const resetBtn = html`<${Popover} hoverOnly cls="rmode-resetwrap" popCls="rmode-reset-pop"
@@ -3365,6 +3369,28 @@ const sectionLabel = k => ({
           <//>`
             : html`<p class="hint" style="margin:0">${T("No nodes yet — enroll a node to give it a way out that isn't its own address.")}</p>`}
         </div>` : null}
+        ${/* Settings → Mesh: what the whole fleet's links are (box 1), then the node picker, then one node's links (box 2).
+              The picker sits BETWEEN them on purpose — box 1 does not depend on the node chosen. */""}
+        ${section === "links" ? html`<${Fragment}><div class="card">
+          ${/* Which node pairs get a link. The threshold and the mode in force come from the server (`mesh_auto_max`,
+                `mesh_effective`) — the browser never decides which side of the line a fleet is on. */""}
+          <div class="seclabel" style="margin-top:0">${T("Mesh links")}</div>
+          <p class="hint" style="margin:0 0 8px">${T("A full mesh links every pair of nodes: every leg is measured and a new forward target works at once, but each node carries one link per other node. On demand links only the pairs a forward or a smart rule routes over, and removes a link nothing has used for an hour.")}</p>
+          <div class="field" style="max-width:460px;margin-bottom:6px"><${Dropdown} value=${meshMode} onChange=${v => setMeshMode(v)} options=${
+            ["auto", "full", "demand"].map(v => ({ value: v, label: meshModeLabel(v, ps.mesh_auto_max) }))}/></div>
+          ${/* What auto is doing NOW — so only while the dropdown shows the SAVED mode: `mesh_effective` is the server's answer
+                for what is saved, and read against an unsaved pick it would describe a mode the operator is leaving. */""}
+          ${meshMode === "auto" && (ps.mesh_mode || "auto") === "auto" && ps.mesh_effective ? html`<p class="hint" style="margin:0 0 14px">${ps.mesh_effective === "demand"
+            ? T("This fleet is linked on demand now.")
+            : T("Every pair in this fleet is linked now.")}</p>` : html`<div style="height:8px"></div>`}
+          <${MeshGenField} label=${T("Default mesh link type")} value=${meshGen} onChange=${setMeshGen}
+            hint=${T("What new links are made as, unless a node below sets its own. Re-provision a node to move its existing links.")}/>
+        </div>
+        ${(Store.nodes || []).length ? html`<div class="setnodes" style="margin:16px 0 10px">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
+        <div class="card">${nodeRec ? html`<${Fragment}>
+            <div class="seclabel" style="margin-top:0">${T("{v1} — mesh", { v1: nodeRec.name })}</div>
+            <${NodeMeshForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)} gen=${meshGen}/><//>`
+          : html`<p class="hint" style="margin:0">${T("No nodes yet — enroll a node to link it to the others.")}</p>`}</div><//>` : null}
         ${section === "mesh" ? html`<div class="card">
           ${nodeRec ? html`<${Fragment}>
             ${/* T-25: THREE sections, not two. The ingress address lived under "mesh" and its own hint
@@ -3415,22 +3441,8 @@ const sectionLabel = k => ({
                   setOrig(o => ({ ...o, [selNode]: { ...(o[selNode] || {}), exits: nFields((Store.nodes || []).find(n => n.id === selNode) || {}).exits } }));
                   rebaseDefault(selNode, fresh);
                 }}/>`)}/>
-            <div class="seclabel">${T("{v1} — mesh", { v1: nodeRec.name })}</div>
-            <${NodeMeshForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
           <//>`
             : html`<p class="hint" style="margin:0">${T("No nodes yet — enroll a node to configure how it is reached, how it exits, and how it links.")}</p>`}
-          ${/* FLEET-WIDE too: which node pairs get a link. The threshold and the mode in force come from the server
-                (`mesh_auto_max`, `mesh_effective`) — the browser never decides which side of the line a fleet is on. */""}
-          <div class="seclabel">${T("Mesh links")}</div>
-          <p class="hint" style="margin:0 0 8px">${T("A full mesh links every pair of nodes: every leg is measured and a new forward target works at once, but each node carries one link per other node. On demand links only the pairs a forward or a smart rule routes over, and removes a link nothing has used for an hour.")}</p>
-          <div class="field" style="max-width:460px;margin-bottom:6px"><${Dropdown} value=${meshMode} onChange=${v => setMeshMode(v)} options=${
-            ["auto", "full", "demand"].map(v => ({ value: v, label: meshModeLabel(v, ps.mesh_auto_max) }))}/></div>
-          ${/* What auto is doing NOW — so only while the dropdown shows the SAVED mode: `mesh_effective` is the server's answer
-                for what is saved, and read against an unsaved pick it would describe a mode the operator is leaving. */""}
-          ${meshMode === "auto" && (ps.mesh_mode || "auto") === "auto" && ps.mesh_effective ? html`<p class="hint" style="margin:0 0 14px">${ps.mesh_effective === "demand"
-            ? T("This fleet is linked on demand now.")
-            : T("Every pair in this fleet is linked now.")}</p>` : html`<div style="height:8px"></div>`}
-          <${MeshGenField} value=${meshGen} onChange=${setMeshGen} hint=${T("Applies to new links — re-provision a node to move its links.")}/>
           ${/* FLEET-WIDE, deliberately OUTSIDE the node picker above: "which of my nodes sit on a private network"
                 has no answer on a per-node page — it means opening every node in turn. Reported, never configured:
                 a node discloses the private addresses it holds on devices it does not run as its own tunnels. */""}
@@ -4383,31 +4395,38 @@ export function NodeIngressForm({ node, vals, set }) {
 }
 
 // Per-node mesh overrides, edited in Panel settings → System mesh (keyed by node, so it re-inits on badge switch)
-export function NodeMeshForm({ node, vals, set }) {
+// `gen` is the fleet's default mesh link type as the Mesh section's draft holds it, so "Default (…)" follows box 1 before a Save.
+export function NodeMeshForm({ node, vals, set, gen }) {
   const rsv = (Store.panelSettings || {}).reserved || {};
   const dSub = rsv.mesh_subnet || "10.255.0.0/16", dPort = String(rsv.mesh_port_base || 9999), dPfx = rsv.iface_prefix || "swg_";
   const v = vals || {};
+  const inherit = gen || (Store.panelSettings || {}).mesh_awg_gen || "2.0";
+  const eff = v.mesh_awg_gen || inherit;          // the type this node's links are made as — what its AWG params are for
   return html`<div>
     <p class="hint" style="margin:0 0 12px">${Trich("Overrides for *{v1}* — blank inherits the default. Changing the subnet, prefix, or AWG re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config).", { v1: node.name })}</p>
+    <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>
+      <${NodeIpPick} ips=${node.ips || []} value=${v.mesh_egress_ip || ""} onChange=${ip => set({ mesh_egress_ip: ip })} auto=${T("Auto (default route)")}/>
+      <div class="hint">${T("Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.")}</div></div>
+    <${MeshGenField} value=${v.mesh_awg_gen || ""} onChange=${g => set({ mesh_awg_gen: g })} inherit=${inherit}
+      hint=${T("Each link takes its type from one of its two nodes, the same one its AWG params come from; a link the other node decides is listed below. Changing it re-provisions this node's links on Save.")}/>
+    ${/* The links that are not the type asked for, and why — the panel derives it from the link records on every poll. */""}
+    ${(node.mesh_gen_reasons || []).length ? html`<div class="hint" style="margin:-4px 0 12px">${(node.mesh_gen_reasons || []).map(r => html`<div key=${r.iface}>
+      ${T("Link to {v1} ({v2}) is {v3}: {v4}", { v1: r.peer, v2: r.iface, v3: meshGenLabel(r.type), v4: srvText(r.msg) })}</div>`)}</div>` : null}
     <div class="row2"><div class="field"><label>${T("Mesh subnet")}</label><input value=${v.mesh_subnet || ""} onInput=${e => set({ mesh_subnet: e.target.value })} placeholder=${dSub}/></div>
       <div class="field"><label>${T("Mesh port")}</label><input value=${v.mesh_port || ""} onInput=${e => set({ mesh_port: e.target.value })} placeholder=${dPort}/></div></div>
     <div class="field"><label>${T("Interface name prefix")}</label><input value=${v.mesh_prefix || ""} onInput=${e => set({ mesh_prefix: e.target.value })} placeholder=${dPfx}/></div>
-    ${(() => {
+    ${eff === "wg" ? html`<div class="field"><label>${T("This node's mesh AWG params")}</label>
+      <div class="hint">${T("Its links are plain WireGuard, which carries no AmneziaWG parameters.")}</div></div>` : (() => {
       const isSet = AWG_KEYS.some(k => String((v.mesh_awg || {})[k] ?? "").trim() !== "");
       return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> ${T("This node's mesh AWG params")}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
         <div style="display:none;margin-top:8px">
           <${AwgGrid} value=${v.mesh_awg || {}} onChange=${a => set({ mesh_awg: a })}
             omit=${T("Type - in a cell for no such line on the links made from these; a blank cell stays automatic.")}/>
           <div class="hint" style="margin:8px 0 0">${Trich("Obfuscation for the mesh links that terminate on *{v1}* — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).", { v1: node.name })}</div>
+          ${eff === "3.1" ? html`<div class="hint" style="margin:6px 0 0">${T("Its links are AmneziaWG 3.1: they add the 3.1 fields from Settings → Interfaces and a header-protection key of their own to these.")}</div>` : null}
           <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: genAwg() })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: {} })}>${T("Clear (auto)")}</button>` : null}</div>
         </div></div>`;
     })()}
-    <div style="height:12px"></div>
-    <${MeshGenField} value=${v.mesh_awg_gen || ""} onChange=${g => set({ mesh_awg_gen: g })}
-      inherit=${(Store.panelSettings || {}).mesh_awg_gen || "2.0"} hint=${T("Each link takes its type from one of its two nodes, the same one its AWG params come from; a link the other node decides is listed below. Changing it re-provisions this node's links on Save.")}/>
-    ${/* The links that are not the type asked for, and why — the panel derives it from the link records on every poll. */""}
-    ${(node.mesh_gen_reasons || []).length ? html`<div class="hint" style="margin:-4px 0 0">${(node.mesh_gen_reasons || []).map(r => html`<div key=${r.iface}>
-      ${T("Link to {v1} ({v2}) is {v3}: {v4}", { v1: r.peer, v2: r.iface, v3: meshGenLabel(r.type), v4: srvText(r.msg) })}</div>`)}</div>` : null}
     ${/* The rebuild these settings trigger, available on its own. Until now it fired only as a SIDE EFFECT of
           changing the subnet / prefix / AWG, gated on the value differing — so a node whose links are stuck
           with settings that are already right had no way to ask for it, short of changing the subnet and
@@ -4876,9 +4895,6 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
         <//></div>`; })()}
     <div class="field"><label>${T("Panel egress connection IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to reach the panel")}</span></label>
       <${NodeIpPick} ips=${ips} value=${v.panel_ip || ""} onChange=${ip => set({ panel_ip: ip })} auto=${T("Auto (default route)")}/></div>
-    <div class="field"><label>${T("Mesh egress IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— source to dial other nodes")}</span></label>
-      <${NodeIpPick} ips=${ips} value=${v.mesh_egress_ip || ""} onChange=${ip => set({ mesh_egress_ip: ip })} auto=${T("Auto (default route)")}/>
-      <div class="hint">${T("Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.")}</div></div>
   </div>`;
 }
 
