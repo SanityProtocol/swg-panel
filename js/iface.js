@@ -31,7 +31,7 @@ import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, DropsFigur
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
-         enabledTurnForks, listenHostInit, ListenHint, ListenNotice, turnDialFallback } from "./turn.js";
+         enabledTurnForks, useListenState, ListenHint, ListenNotice, turnDialFallback } from "./turn.js";
 import { PeerGrid, NodeRail } from "./grids.js";
 import { openCreatePeer } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -1195,14 +1195,8 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const _preEp = pre && pre.endpoint;
   const [hostSel, setHostSel] = useState(_preEp ? (ips.includes(_preEp) ? _preEp : "__custom__") : (ips[0] || "__custom__"));
   const [hostCustom, setHostCustom] = useState(_preEp && !ips.includes(_preEp) ? _preEp : "");
-  // A WDTT/csqtt listen is an address the box BINDS, not the Endpoint text a wg/awg config carries — so it has its own
-  // state. Same default as the endpoint, except on a box behind NAT (no public IPv4 of its own), where the only name
-  // clients can dial resolves to the router and cannot be bound: there it starts on All addresses (listenHostInit).
-  const _natBind = !_preEp && listenHostInit("", ips, nrec.ips, isBridge) === "0.0.0.0";
-  const [bindSel, setBindSel] = useState(_natBind ? "0.0.0.0" : _preEp ? (ips.includes(_preEp) ? _preEp : "__custom__") : (ips[0] || "__custom__"));
-  const [bindCustom, setBindCustom] = useState(_preEp && !ips.includes(_preEp) ? _preEp : "");
-  const bindHost = ipPickerVal(bindSel, bindCustom);
-  const bindOnNode = useHostOnNode(bindHost, nrec.ips || []);
+  // A WDTT/csqtt server listens for that host: on it when it lands on the box, else on every address (useListenState).
+  const lst = useListenState(node, (isWdtt || isCsqtt) ? ipPickerVal(hostSel, hostCustom) : "");
   const pickProto = p => {   // switching base re-suggests the name only if the field is still an untouched suggestion
     const untouched = iface === sugAwg || iface === sugWg || iface === sugWdtt || iface === sugCsqtt || !iface.trim();
     if (p !== "existing" && untouched) setIface(p === "wg" ? sugWg : p === "wdtt" ? sugWdtt : p === "csqtt" ? sugCsqtt : sugAwg);
@@ -1281,7 +1275,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       // Endpoint host/IP + Listen port = the turn-proxy (DTLS) side → compose the WDTT server's -listen from them
       // (blank host → 0.0.0.0, all interfaces). The interface side binds 127.0.0.1:<internal wg port>, not shown.
       // The form takes the SUBNET (10.8.0.0/24) like wg/awg; the server lives on the first host (.1) — derive it here.
-      const _dtlsHost = bindHost.trim() || "0.0.0.0";
+      const _dtlsHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.wdttSet({ node, iface: nm, wg_addr: subnetServerAddr(subnet.trim()), listen: _dtlsHost + ":" + (port.trim() || "56000"),
         wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
     } else if (isCsqtt) {
@@ -1291,7 +1285,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       const _ne = turnIfaceNameError(node, nm, "csqtt"); if (_ne) return fail(_ne);
       if (!/\/24$/.test(subnet.trim())) return fail(T("csqtt needs a /24 tunnel subnet, e.g. 10.66.67.0/24."));
       if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
-      const _lHost = bindHost.trim() || "0.0.0.0";
+      const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.csqttSet({ node, iface: nm, tun_addr: subnetServerAddr(subnet.trim()), listen: _lHost + ":" + (port.trim() || "46000"),
         fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...egressBody(eg) });
     } else {
@@ -1313,7 +1307,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
     const _newName = existing ? (conf.trim().split("/").pop() || "").replace(/\.conf$/i, "") : iface.trim();
     if (_newName) Store.ifaceNew[node + "|" + _newName] = existing
       ? { type: null, at: Date.now() }
-      : { type: proto, subnet: subnet.trim(), port: port.trim(), endpoint: (isWdtt || isCsqtt) ? bindHost : ipPickerVal(hostSel, hostCustom), at: Date.now(),
+      : { type: proto, subnet: subnet.trim(), port: port.trim(), endpoint: ipPickerVal(hostSel, hostCustom), at: Date.now(),
           ...(proto === "awg" && gen === "3.1" ? { gen: "3.1" } : {}) };
     if (ghost && !existing) Store.ghostRekey[node + "|" + _newName] = { peers: ghost.peers || [], at: Date.now() };   // phase 2: rekey these once the fresh iface is live
     closeModal(); Store.apply(); await Store.poll();
@@ -1391,12 +1385,12 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/>${pperr ? html`<div class="hint err">${pperr}</div>` : null}</div>
       </div>` : null}
       ${isCsqtt ? html`<div class="row2">
-        <div class="field"><label>${T("Listen address")}</label>
-          <${IpPicker} any ips=${ips} sel=${bindSel} setSel=${setBindSel} custom=${bindCustom} setCustom=${setBindCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
-          <${ListenHint} host=${bindHost} port=${port || "46000"} fallback=${turnDialFallback(node)}/></div>
+        <div class="field"><label>${T("Endpoint host / IP")}</label>
+          <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
+          <${ListenHint} st=${lst} hint=${T("What clients dial (over the VK relay)")} fallback=${turnDialFallback(node)}/></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="46000"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">${T("UDP DTLS listen (outside)")}</div>`}</div>
       </div>
-      ${bindOnNode === "bad" ? html`<${ListenNotice}/>` : null}
+      <${ListenNotice} st=${lst}/>
       <div class="row2">
         <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${cfork} onChange=${v => setCfork(v)} options=${forkOpts(_csqttForks)} ariaLabel=${T("Server fork")}/><div class="hint">${T("Which csqtt server implements this instance")}</div></div>
         <div class="field"><label>${T("Max users")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${maxPw} onInput=${e => setMaxPw(e.target.value)} placeholder="500"/><div class="hint">${T("Cap on simultaneous access passwords · blank = 500")}</div></div>
@@ -1405,11 +1399,11 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       ${isWdtt ? html`<div class="row2">
         <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} ariaLabel=${T("Server fork")}
           options=${forkOpts(_wdttForks, f => _forkBuildable(f) ? "" : T("no build published yet"))}/><div class="hint">${T("Which WDTT server implements this instance")}</div></div>
-        <div class="field"><label>${T("Listen address")}</label>
-          <${IpPicker} any ips=${ips} sel=${bindSel} setSel=${setBindSel} custom=${bindCustom} setCustom=${setBindCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
-          <${ListenHint} host=${bindHost} port=${port || "56000"} fallback=${turnDialFallback(node)}/></div>
+        <div class="field"><label>${T("Endpoint host / IP")}</label>
+          <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
+          <${ListenHint} st=${lst} fallback=${turnDialFallback(node)}/></div>
       </div>
-      ${bindOnNode === "bad" ? html`<${ListenNotice}/>` : null}
+      <${ListenNotice} st=${lst}/>
       <div class="row2">
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>
         <div class="field"><label>${T("Internal WG port")}</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : html`<div class="hint">${T("Loopback userspace-WG port (server-internal)")}</div>`}</div>

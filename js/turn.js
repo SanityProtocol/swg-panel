@@ -14,7 +14,7 @@
 
 import { openLogs, TURN_SOURCES } from "./logview.js";   // a turn proxy's live logs
 import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
-import { esc, portOf, ipOf, ipChoices, ipPickerVal, seen, ago, dur, fmtBytes, isSelfContainedKind, isPrivIp, turnDialHost } from "./util.js";
+import { esc, portOf, ipOf, ipChoices, ipPickerVal, seen, ago, dur, fmtBytes, isSelfContainedKind, isPrivIp } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
@@ -58,23 +58,56 @@ export function randWrapKey() { const a = new Uint8Array(32); crypto.getRandomVa
 // container-private and filtered out of the picker, so nothing there could ever corroborate, and that
 // absence must not be read as "the endpoint is wrong".
 //
-// A box whose reported addresses hold no public IPv4 at all sits behind NAT (a home server, a cloud 1:1 NAT): none
-// of its addresses is what a client dials, and the name that is (a DDNS host) resolves to the router, which the box
-// cannot bind. There the default is the wildcard, and clients dial the node's ingress address (turnDialHost). A bridge
-// node is exempt: its addresses are container-private by construction and say nothing about NAT.
+// A box whose reported addresses hold no public IPv4 at all sits behind NAT (a home server, a cloud 1:1 NAT): none of its
+// own addresses is one a client can dial, so the default is the first public host offered — the node's ingress address
+// (a DDNS name, say), which the node then listens on every address for (useListenState). A bridge node is exempt: its
+// addresses are container-private by construction and say nothing about NAT.
 export function listenHostInit(epIp, ips, nodeIps, bridge) {
   const have = (nodeIps || []).filter(Boolean);
-  if (have.length && !bridge && !have.some(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip) && !isPrivIp(ip))) return "0.0.0.0";
+  if (have.length && !bridge && !have.some(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip) && !isPrivIp(ip)))
+    return (ips || []).find(ip => !have.includes(ip) && !isPrivIp(ip)) || (ips || [])[0] || "__custom__";
   const own = (ips || []).filter(ip => have.includes(ip));
   if (epIp && (have.includes(epIp) || !own.length)) return epIp;
   if (own.length) return own[0];
   return (ips || [])[0] || "__custom__";
 }
 
-// The host a link falls back to when a listener's own bind cannot stand in it (a wildcard, a private address) — the
-// same fallback the link builders take. A WDTT/csqtt link: the node's ingress address, then its reported public IP
-// (js/peer-ui.js wdttArtInput, the same pick). A vk-turn-proxy link (`fwdIface` given): the Endpoint of the interface
-// it forwards to, which is what turn-artifacts.js dialListen reads out of that interface's config.
+/* ── WHERE A TURN LISTENER LISTENS ────────────────────────────────────────────────────────────────────────────────────
+   The "Endpoint host / IP" of a WDTT, csqtt or vk-turn-proxy server is what clients DIAL — any of the node's names, any
+   host. The node binds it when it lands on the box; otherwise (a DDNS name resolving to the router in front of a box
+   behind NAT, an IP the box does not carry) the server listens on every address, as the upstream servers do by default
+   (swg-noded turn_bind). A node older than that binds what was typed, and the server crash-loops. What the field says:
+     wild    the address itself is the wildcard (an older setup) — clients dial `fallback`
+     any     not on this box → every address; `multi` = the box has several IPv4 addresses, so a reply can leave from one
+             clients did not dial, and the VK relay (which accepts only the address it was told) drops it
+     old     not on this box, and the node binds it as typed → the bind fails
+     stale   the node could listen on every address, but this server still binds the host as typed (set up before it
+             could) — Restart service rewrites it
+     bridge  not on this box on a bridge node, where the listener binds the wildcard inside its container anyway
+     {}      on this box, or not known yet — nothing beyond the field's own hint
+   For the SAVED host the node's own report answers (`bound`, what it binds); an edit not saved yet is predicted with the
+   panel's DNS (useHostOnNode, checked against the node's reported addresses). */
+const _WILD = ["0.0.0.0", "::", "[::]", "*"];
+export function useListenState(node, host, saved, bound) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const h = String(host || "").trim();
+  const pred = useHostOnNode(_WILD.includes(h) ? "" : h, nrec.ips || []);   // a hook: called on every render, before any return
+  if (!h) return {};
+  if (_WILD.includes(h)) return { wild: true };
+  // The node's report beats the panel's DNS: bound to every address → `any`; bound to an address of its own that is not
+  // the host itself → it resolved a name to the box, nothing to say; bound to the host as typed → judged like an edit.
+  const b = bound && h === String(saved || "").trim() ? ipOf(bound) : "";
+  if (b && !_WILD.includes(b) && b !== h.replace(/^\[|\]$/g, "")) return {};
+  if (!(_WILD.includes(b) && b) && pred !== "bad") return {};
+  if (nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge") return { bridge: true };
+  if (!nrec.turn_bind_any) return { old: true };
+  if (b && !_WILD.includes(b)) return { stale: true };   // it still binds the host as typed, and the host is not here
+  return { any: true, multi: (nrec.ips || []).filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip)).length > 1 };
+}
+
+// The host a wildcard listener's links fall back to — the same fallback the link builders take. A WDTT/csqtt link: the
+// node's ingress address, then its reported public IP (js/peer-ui.js wdttArtInput). A vk-turn-proxy link (`fwdIface`
+// given): the Endpoint of the interface it forwards to, which turn-artifacts.js dialListen reads out of its config.
 export function turnDialFallback(node, fwdIface) {
   if (fwdIface !== undefined) {
     const ep = String((((Store.describe || {})[node] || {})[fwdIface] || {}).endpoint || "");
@@ -86,29 +119,28 @@ export function turnDialFallback(node, fwdIface) {
   return (nrec.endpoint_host || "").trim() || pub;
 }
 
-// A custom Forwards-to (`127.0.0.1:<port>`) is still an interface of this node when the port is one: the peers it
-// carries are that interface's, and so is the Endpoint their link falls back to. "" when none — never undefined,
-// which turnDialFallback reads as "not a vk-turn-proxy".
+// A custom Forwards-to (`127.0.0.1:<port>`) is still an interface of this node when the port is one, and so is the
+// Endpoint its links fall back to. "" when none — never undefined, which turnDialFallback reads as "not a vk-turn-proxy".
 const fwdByPort = (list, hp) => ((list || []).find(i => i.port && i.port === portOf(hp)) || {}).name || "";
 
 const _toIngress = () => html`<button class="linkbtn" onClick=${() => goSettings("mesh")}>${T("Panel settings → Network")}</button>`;
 
-// The hint under a turn-family listen field: what its clients will actually dial, so the bind and the link stop being
-// one guess. With nothing to fall back to, it says where the missing piece is set.
-export function ListenHint({ host, port, fallback }) {
-  const h = turnDialHost(host, fallback);
-  if (!h) return html`<div class="hint">${Trich("Clients dial the node's ingress address, which isn't set — set it in {v1}.", { v1: _toIngress() })}</div>`;
-  const shown = (h.includes(":") && h[0] !== "[" ? "[" + h + "]" : h) + ":" + (String(port || "").trim() || "…");
-  return html`<div class="hint">${Trich("Clients dial `{v1}`", { v1: shown })}</div>`;
+// The hint under the field: the field's own (what clients dial), or where the server listens when that is not the host.
+export function ListenHint({ st, hint, fallback }) {
+  if (st.wild) return html`<div class="hint">${fallback
+    ? Trich("Listens on all addresses (0.0.0.0); clients dial `{v1}`.", { v1: fallback })
+    : Trich("Listens on all addresses (0.0.0.0), and clients have no host to dial — set the node's ingress address in {v1}.", { v1: _toIngress() })}</div>`;
+  if (st.any) return html`<div class="hint">${T("Not an address of this node, so it listens on all addresses (0.0.0.0).")}</div>`;
+  return html`<div class="hint">${hint || T("What clients dial")}</div>`;
 }
 
-// The notice under a listen field whose host does not land on this box (useHostOnNode "bad"). On a bridge node that is
-// expected — the listener binds the wildcard inside its container. Anywhere else the bind would fail, and the usual
-// reason is a box behind NAT given its public name: say what to do about that, not only what will break.
-export function ListenNotice({ bridge }) {
-  return bridge
-    ? html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>${Trich("Bridge node: the proxy binds `0.0.0.0` inside the container and this port is published, so enter the node's *public* IP/host (what clients dial) here.")}</span></div>`
-    : html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This doesn't resolve to an address on this node. The listener binds to it, so it would fail with `bind: cannot assign requested address`. Behind NAT? Choose *All addresses*: clients then dial the node's ingress address ({v1}). Forward this UDP port to the box on your router.", { v1: _toIngress() })}</span></div>`;
+// The notice below the field's row, for the two cases that need more than a hint.
+export function ListenNotice({ st }) {
+  if (st.bridge) return html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>${Trich("Bridge node: the proxy binds `0.0.0.0` inside the container and this port is published, so enter the node's *public* IP/host (what clients dial) here.")}</span></div>`;
+  if (st.old) return html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("Not an address of this node, and this node's version binds it as typed, so the server would fail with `bind: cannot assign requested address`. Update the node, or enter one of its own addresses.")}</span></div>`;
+  if (st.stale) return html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This server still binds the address as typed — it was set up before this node could listen on all addresses — so it cannot start. *Restart service* to apply it.")}</span></div>`;
+  if (st.any && st.multi) return html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${T("This node has several IPv4 addresses. Listening on all of them, a reply can leave from one clients didn't dial, and the VK relay drops it. To listen on one address only, enter that address.")}</span></div>`;
+  return null;
 }
 
 
@@ -474,7 +506,7 @@ export function TurnManageSheet({ node, tp }) {
   // 0.0.0.0 inside the netns, so binding "the public IP" works there despite it not being a local container address.
   const epIp = (() => { for (const b of Object.values(snap.interfaces || {})) { const ep = (b.meta || {}).endpoint || ""; if (ep) return ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep; } return ""; })();
   const ips = ipChoices(nrec, epIp);
-  const lInit = (ips.includes(lh) || lh === "0.0.0.0") ? lh : "__custom__";
+  const lInit = ips.includes(lh) ? lh : "__custom__";
   const [lsel, setLsel] = useState(lInit);
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? lh : "");
   const [lport, setLport] = useState(lp);
@@ -504,10 +536,8 @@ export function TurnManageSheet({ node, tp }) {
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
   const lhost = ipPickerVal(lsel, lcustom);
-  // ⚠️ Checked against the node's REPORTED addresses, not against `ips`. `ipChoices` builds `ips` from the
-  // candidate under test (the reported endpoint goes in first), so validating against it was circular and
-  // could only ever answer "ok" — the guard existed and could never fire.
-  const hostOnNode = useHostOnNode(lhost, (nrec || {}).ips || []);
+  // Where it listens for that host — the node's own answer for the saved one (tp.bind), a prediction for an edit.
+  const lst = useListenState(node, lhost, lh, tp.bind);
   const installed = tp.version || "";
   const installing = !!tp.installing;
   const failed = !!tp.failed;
@@ -590,12 +620,12 @@ export function TurnManageSheet({ node, tp }) {
     </div>
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${turnFork(svc)} autocomplete="off"/></div>
     <div class="row2">
-      <div class="field"><label>${T("Listen address")}</label>
-        <${IpPicker} any ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder="203.0.113.7"/>
-        <${ListenHint} host=${lhost} port=${lport} fallback=${turnDialFallback(node, isCustom ? fwdByPort(allIfaces, custom) : fwd)}/></div>
+      <div class="field"><label>${T("Endpoint host / IP")}</label>
+        <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
+        <${ListenHint} st=${lst} fallback=${turnDialFallback(node, isCustom ? fwdByPort(allIfaces, custom) : fwd)}/></div>
       <div class="field"><label>${T("Listen port")}</label><input class=${tperr ? "bad" : ""} value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/>${tperr ? html`<div class="hint err">${tperr}</div>` : null}</div>
     </div>
-    ${lhost && hostOnNode === "bad" ? html`<${ListenNotice} bridge=${isBridge}/>` : null}
+    <${ListenNotice} st=${lst}/>
     <div class="field"><label>${T("Forwards to")}</label>
       <${Dropdown} className="selwrap" value=${fwd} onChange=${v => setFwd(v)} ariaLabel=${T("Forward to")}
         options=${[...ifaces.map(i => ({ value: i.name, label: i.name + " · 127.0.0.1:" + i.port })),
@@ -1678,10 +1708,7 @@ export function SetupTurnSheet({ node, forwardIface }) {
   const isCustom = fwd === "__custom__";
   const f = turnForkList().find(x => x.id === fork) || FORKS[0] || turnForkList()[0];
   const lhost = ipPickerVal(lsel, lcustom);
-  // ⚠️ Checked against the node's REPORTED addresses, not against `ips`. `ipChoices` builds `ips` from the
-  // candidate under test (the reported endpoint goes in first), so validating against it was circular and
-  // could only ever answer "ok" — the guard existed and could never fire.
-  const hostOnNode = useHostOnNode(lhost, (nrec || {}).ips || []);
+  const lst = useListenState(node, lhost);   // a new listener: predicted (useListenState checks the node's reported addresses)
   // WDTT (kind:"wdtt") owns its OWN built-in userspace-WG interface, so there's no Forwards-to. The internals
   // (iface / subnet / internal WG port) are auto-assigned to avoid collisions with this node's existing wdtt
   // instances + interfaces, and stay advanced-editable. Listen IP/port above are the PUBLIC DTLS endpoint.
@@ -1762,12 +1789,12 @@ export function SetupTurnSheet({ node, forwardIface }) {
           <div class="hint">${FORKS.length ? f.owner : T("No forks enabled — turn them on in Panel settings → Turn proxies.")}</div></div>
       </div>
       <div class="row2">
-        <div class="field"><label>${T("Listen address")}</label>
-          <${IpPicker} any ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder="203.0.113.7"/>
-          <${ListenHint} host=${lhost} port=${lport} fallback=${turnDialFallback(node, isSelfContained ? undefined : (isCustom ? fwdByPort(allIfaces, custom) : fwd))}/></div>
+        <div class="field"><label>${T("Endpoint host / IP")}</label>
+          <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
+          <${ListenHint} st=${lst} fallback=${turnDialFallback(node, isSelfContained ? undefined : (isCustom ? fwdByPort(allIfaces, custom) : fwd))}/></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${tsperr ? "bad" : ""} value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/>${tsperr ? html`<div class="hint err">${tsperr}</div>` : null}</div>
       </div>
-      ${lhost && hostOnNode === "bad" ? html`<${ListenNotice} bridge=${isBridge}/>` : null}
+      <${ListenNotice} st=${lst}/>
       ${isCsqtt ? html`<${CsqttInstanceBody} node=${node} snap=${snap} saveRef=${csqttSaveRef} setBusy=${setBusy} setMsg=${setMsg} fail=${fail}/>`
        : isWdtt ? html`<${WdttInstanceBody} node=${node} snap=${snap} saveRef=${wdttSaveRef} setBusy=${setBusy} setMsg=${setMsg} fail=${fail}/>` : html`<${Fragment}>
       <div class="field"><label>${T("Forwards to")}</label>
@@ -1999,15 +2026,13 @@ export function WdttManageSheet({ node, w: w0 }) {
   // ⚠️ `0.0.0.0` is a REAL stored value, not "unset". Discarding it here made the editor open on the
   // node's own IP while the record held the wildcard — so a form that looked untouched would, on Save,
   // silently re-pin the bind to an address §1.5 had deliberately reset after a migration. It selects
-  // All addresses, which is what the record actually says.
+  // Custom with the wildcard in the field, which is what the record actually says.
   const initHost = lhost || "";
-  const _listed = h => ips.includes(h) || h === "0.0.0.0";   // the wildcard is offered as "All addresses"
-  const [hostSel, setHostSel] = useState(initHost ? (_listed(initHost) ? initHost : "__custom__") : (ips[0] || "__custom__"));
-  const [hostCustom, setHostCustom] = useState(initHost && !_listed(initHost) ? initHost : "");
-  // The address the server BINDS — a name pointing at the box a migrated instance had just left made it die on every
-  // start. Checked against the node's REPORTED addresses: `ips` holds the ingress host itself, so testing against it
-  // could pass a name only because it was offered.
-  const hostOnNode = useHostOnNode(ipPickerVal(hostSel, hostCustom), (nrec || {}).ips || []);
+  const [hostSel, setHostSel] = useState(initHost ? (ips.includes(initHost) ? initHost : "__custom__") : (ips[0] || "__custom__"));
+  const [hostCustom, setHostCustom] = useState(initHost && !ips.includes(initHost) ? initHost : "");
+  // What clients dial; the node binds it when it lands on the box, else every address. The saved host is answered
+  // by the node's own report (w.bind), an edit by a prediction checked against the node's reported addresses.
+  const lst = useListenState(node, ipPickerVal(hostSel, hostCustom), lhost, w.bind);
   const [port, setPort] = useState(lport || "");
   const [msg, setMsg] = useState(null);
   // RAW-IP mode — a SECOND listener on the same server, capability-gated (qWDTT + ildarmaga) and off unless
@@ -2097,13 +2122,13 @@ export function WdttManageSheet({ node, w: w0 }) {
       </div></span></div>`
     : html`<${Fragment}>
       <${IfaceThroughput} node=${node} iface=${iface}/>
-      <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the listen address or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
+      <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
       <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
       <div class="row2">
-        <div class="field"><label>${T("Listen address")}</label><${IpPicker} any ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/><${ListenHint} host=${ipPickerVal(hostSel, hostCustom)} port=${port} fallback=${turnDialFallback(node)}/></div>
+        <div class="field"><label>${T("Endpoint host / IP")}</label><${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/><${ListenHint} st=${lst} fallback=${turnDialFallback(node)}/></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${wperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="56000"/>${wperr ? html`<div class="hint err">${wperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>
       </div>
-      ${hostOnNode === "bad" ? html`<${ListenNotice}/>` : null}
+      <${ListenNotice} st=${lst}/>
       <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · 127.0.0.1:${wgPort}</span> <span class="faint ro-note" title=${T("— self-contained (its own userspace-WireGuard)")}>${T("— self-contained (its own userspace-WireGuard)")}</span><button class="btn btn-mini" disabled=${blocked || awaiting} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditWdttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
       ${/* RAW-IP lives INSIDE Server parameters — it is an advanced server capability, not a first-class control.
             When it's on the accordion says so in its header, because the setting is otherwise invisible until opened. */ null}
@@ -2387,15 +2412,11 @@ export function CsqttManageSheet({ node, c: c0 }) {
   // ⚠️ `0.0.0.0` is a REAL stored value, not "unset". Discarding it here made the editor open on the
   // node's own IP while the record held the wildcard — so a form that looked untouched would, on Save,
   // silently re-pin the bind to an address §1.5 had deliberately reset after a migration. It selects
-  // All addresses, which is what the record actually says.
+  // Custom with the wildcard in the field, which is what the record actually says.
   const initHost = lhost || "";
-  const _listed = h => ips.includes(h) || h === "0.0.0.0";   // the wildcard is offered as "All addresses"
-  const [hostSel, setHostSel] = useState(initHost ? (_listed(initHost) ? initHost : "__custom__") : (ips[0] || "__custom__"));
-  const [hostCustom, setHostCustom] = useState(initHost && !_listed(initHost) ? initHost : "");
-  // The address the server BINDS — a name pointing at the box a migrated instance had just left made it die on every
-  // start. Checked against the node's REPORTED addresses: `ips` holds the ingress host itself, so testing against it
-  // could pass a name only because it was offered.
-  const hostOnNode = useHostOnNode(ipPickerVal(hostSel, hostCustom), (nrec || {}).ips || []);
+  const [hostSel, setHostSel] = useState(initHost ? (ips.includes(initHost) ? initHost : "__custom__") : (ips[0] || "__custom__"));
+  const [hostCustom, setHostCustom] = useState(initHost && !ips.includes(initHost) ? initHost : "");
+  const lst = useListenState(node, ipPickerVal(hostSel, hostCustom), lhost, c.bind);   // see WdttManageSheet
   const [port, setPort] = useState(lport || "");
   const [msg, setMsg] = useState(null);
   const newListen = (ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0") + ":" + (port.trim() || "46000");
@@ -2435,13 +2456,13 @@ export function CsqttManageSheet({ node, c: c0 }) {
           : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this csqtt server on the node"))}<//>`}
       <//>`, onCancel: closeModal, disabled: !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
     <${IfaceThroughput} node=${node} iface=${iface}/>
-    <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the listen address or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
+    <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
     <div class="row2">
-      <div class="field"><label>${T("Listen address")}</label><${IpPicker} any ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/><${ListenHint} host=${ipPickerVal(hostSel, hostCustom)} port=${port} fallback=${turnDialFallback(node)}/></div>
+      <div class="field"><label>${T("Endpoint host / IP")}</label><${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/><${ListenHint} st=${lst} fallback=${turnDialFallback(node)}/></div>
       <div class="field"><label>${T("Listen port")}</label><input class=${wperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="46000"/>${wperr ? html`<div class="hint err">${wperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>
     </div>
-    ${hostOnNode === "bad" ? html`<${ListenNotice}/>` : null}
+    <${ListenNotice} st=${lst}/>
     <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
       <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this csqtt server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.")}</p>

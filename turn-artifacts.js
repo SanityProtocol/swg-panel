@@ -478,19 +478,15 @@
     { hint: "Import the {v1} core (client-android-arm64 from the {v1} releases) into the VK TURN Proxy app, then scan the QR (Profiles → Import) or paste the VKTGZ: text — the VK call link + endpoint ride inside." },
   ];
 
-  // The address a client dials for this proxy. `tp.listen` is the BIND as the node reports it: a specific public
-  // address is the one that answers, so it stays. A wildcard (0.0.0.0) or a private address (a box behind NAT, its
-  // router forwarding the port) is never reachable from the VK relay, so the host comes from the interface's own
-  // Endpoint instead — the same host its plain WireGuard config carries (interface override → the node's ingress
-  // address → its reported IP, resolved by whoever built baseConf), with the proxy's port. With no usable Endpoint the
-  // bind is left as it is. Twin of js/util.js turnDialHost.
+  // The address a client dials for this proxy is `tp.listen` — what the operator entered, which the node binds when it
+  // lands on the box and otherwise listens on every address for. A WILDCARD there (a proxy set up on 0.0.0.0) names no
+  // host at all, so the host comes from the interface's own Endpoint instead — the one its plain WireGuard config
+  // carries (interface override → the node's ingress address → its reported IP), with the proxy's port. With no usable
+  // Endpoint the listen is left as it is.
   var DIAL_WILD = ["", "0.0.0.0", "::", "[::]", "*"];
-  var DIAL_PRIV = /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
   function dialListen(tp, baseConf) {
     var l = String((tp && tp.listen) || ""), i = l.lastIndexOf(":");
-    if (i < 0) return tp;
-    var h = l.slice(0, i);
-    if (DIAL_WILD.indexOf(h) < 0 && !(/^\d+\.\d+\.\d+\.\d+$/.test(h) && DIAL_PRIV.test(h))) return tp;   // a literal only: `10.0.0.5.nip.io` is a name
+    if (i < 0 || DIAL_WILD.indexOf(l.slice(0, i)) < 0) return tp;
     var ep = (String(baseConf || "").match(/^[ \t]*Endpoint[ \t]*=[ \t]*(\S+)/m) || [])[1] || "";
     var j = ep.lastIndexOf(":"), eh = j >= 0 ? ep.slice(0, j) : ep;
     if (DIAL_WILD.indexOf(eh) >= 0) return tp;

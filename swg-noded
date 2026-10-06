@@ -1696,8 +1696,8 @@ def load_turn_proxies():
             if not u:
                 continue
             live = _tp_from_unit(t["service"], u)
-            for k in ("listen", "connect", "wrap_key", "params"):
-                if t.get(k) != live.get(k):
+            for k in ("listen", "connect", "wrap_key", "params", "bind"):
+                if live.get(k) is not None and t.get(k) != live.get(k):
                     t[k] = live.get(k); changed = True
         _TURN_READ["at"] = nowt
         if changed:
@@ -2638,6 +2638,90 @@ def _local_addrs():
             itf = ipaddress.ip_interface(p[3])
             out.append((p[1], str(itf.ip), str(itf.network)))
     return out
+
+
+_LOCAL_V4 = {"at": -1e9, "set": None}
+
+def _local_v4():
+    """The IPv4 addresses on this box, as a set — cached 30 s, since a turn server's bind is decided per launch and
+    per env write, never per sync. None when `ip` could not be read."""
+    now = time.monotonic()
+    if now - _LOCAL_V4["at"] > 30:
+        la = _local_addrs()
+        _LOCAL_V4["set"] = None if la is None else {ip for _d, ip, _n in la}
+        _LOCAL_V4["at"] = now
+    return _LOCAL_V4["set"]
+
+
+def turn_bind(listen, resolve=True):
+    """The `host:port` a turn-family server (WDTT, csqtt, vk-turn-proxy) actually binds, for the `listen` it is given.
+
+    The panel's `listen` is what clients DIAL. A host that lands on this box is bound — an IP of the box, or a name that
+    resolves to one (as that IP: csqtt parses a socket address and cannot take a name) — which on a box with several
+    addresses is what keeps replies leaving from the address the client dialled. Anything else cannot be bound: a DDNS
+    name resolving to the router in front of a box behind NAT, a public IP the box does not carry (cloud 1:1 NAT). Passing
+    one on was a crash loop (`bind: cannot assign requested address`), so the server listens on every address on the
+    same port instead — how the upstream servers run by default. So does a name that does not resolve: this is decided
+    when an env file is written or a server launched, never per sync, so a DNS outage cannot make it flap. `resolve=False`
+    skips the lookup (a name then binds every address). An IPv6 literal, a wildcard, or a box whose addresses cannot be
+    read: as given, which is what every node did before."""
+    s = str(listen or "").strip()
+    i = s.rfind(":")
+    if i <= 0:
+        return s
+    host, port = s[:i], s[i + 1:]
+    if host in ("0.0.0.0", "::", "[::]", "*") or host.startswith("["):
+        return s
+    mine = _local_v4()
+    if mine is None:
+        return s
+    if _IPV4_RE.match(host):
+        return s if host in mine else "0.0.0.0:" + port
+    cands = []
+    if resolve:
+        with contextlib.suppress(OSError, UnicodeError):
+            cands = sorted({a[4][0] for a in socket.getaddrinfo(host, None, socket.AF_INET)})
+    here = [c for c in cands if c in mine]
+    return (here[0] + ":" + port) if here else "0.0.0.0:" + port
+
+
+_BIND_HEALED = set()
+
+def bind_heal_due(key, envpath, listen):
+    """True ONCE per swg-noded run for a WDTT/csqtt server whose env file, written by a build before turn_bind, still
+    binds a host this box does not carry — the server that crash-looped on a DDNS name. Its caller rewrites the env
+    (and restarts it), so the update itself brings it up rather than its next edit. A server that works is never
+    restarted for this (its host lands on the box), and the lookup is made once per instance per run, never per sync."""
+    if key in _BIND_HEALED:
+        return False
+    _BIND_HEALED.add(key)
+    have = _env_listen(envpath)
+    return bool(have) and have == listen and not listen.startswith("0.0.0.0:") and turn_bind(listen).startswith("0.0.0.0:")
+
+
+def rebind_env(envpath, inst, render):
+    """Before an operator's Restart of a bare-metal WDTT/csqtt server: rewrite its env when what it binds is not what
+    turn_bind answers now (a server set up before turn_bind, or one whose host moved on or off this box). Restart is
+    otherwise a plain `systemctl restart` that would bring it back on the same unbindable host. Only from a complete
+    record, like the update path: a partial one would write a blank password into the file the server starts from."""
+    if not (inst.get("iface") and inst.get("listen") and inst.get("password") and os.path.exists(envpath)):
+        return
+    with contextlib.suppress(Exception):
+        if _env_listen(envpath) != turn_bind(inst["listen"]):
+            text = render(inst)                               # render FIRST: opening for write empties the file
+            with open(envpath + ".tmp", "w") as f:
+                f.write(text)
+            os.replace(envpath + ".tmp", envpath)
+
+
+def _env_listen(path):
+    """SWG_LISTEN out of a turn-family env file — what the server binds — or "" when it cannot be read."""
+    with contextlib.suppress(OSError):
+        with open(path) as f:
+            for ln in f:
+                if ln.startswith("SWG_LISTEN="):
+                    return ln.split("=", 1)[1].strip()
+    return ""
 
 
 def network_route_refusal(prefix, local=(), gateways=(), panel=(), resolvers=(), resolvers_known=True):
@@ -15360,6 +15444,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "turn_capable": _turn_arch_ok(),   # false ONLY when this box's arch has no server-linux-<arch> build → panel greys out "Setup proxy" (never blocks on uncertainty)
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
+            "turn_bind_any": True,   # a turn listener whose host is not on this box binds every address (turn_bind), not a crash loop
             "update_auto": update_auto(),   # can the panel's Update button do anything here? (see update_auto)
             # Informational, NOT failures: an adoption that succeeded but not from the source the operator named.
             # cmd_errors is the wrong channel for it (it renders as a failure and is cleared on success).
@@ -17585,6 +17670,9 @@ def _dturn_args(tp):
         # the stored listen binds the node's public IP, which isn't assignable inside our container netns — bind all
         # interfaces on the same port and let docker publish it (compose ports:). connect stays 127.0.0.1 (our netns).
         listen = "0.0.0.0:" + listen.rsplit(":", 1)[1]
+    else:
+        listen = turn_bind(listen)                     # host networking: bind what lands on the box, else every address
+    tp["bind"] = listen                                # reported with the proxy (the record keeps what clients dial)
     args = ["-listen", listen, "-connect", tp.get("connect", "")]
     p = (tp.get("params") or "").strip()
     if p:
@@ -18134,7 +18222,11 @@ def _turn_input_safe(*vals):
 
 
 def _turn_env_text(listen, connect, params):
-    return "SWG_LISTEN=%s\nSWG_CONNECT=%s\nSWG_PARAMS=%s\n" % (listen, connect, (params or "").strip())
+    # The unit's ExecStart reads ${SWG_LISTEN}, so that is the BIND (turn_bind). The address clients dial goes beside it
+    # as SWG_DIAL only when the two differ, so a file whose host lands on this box stays byte-identical.
+    bind = turn_bind(listen)
+    return "SWG_LISTEN=%s\n%sSWG_CONNECT=%s\nSWG_PARAMS=%s\n" % (
+        bind, ("SWG_DIAL=%s\n" % listen) if bind != listen else "", connect, (params or "").strip())
 def _exec_bin(execl):
     try: return shlex.split(execl)[0]
     except Exception: return (execl.split() or [""])[0]
@@ -18149,8 +18241,8 @@ def _tp_from_unit(svc, unit_text):
     for ln in env.splitlines():
         k, _, v = ln.partition("="); vals[k.strip()] = v.strip()
     params = vals.get("SWG_PARAMS", "")
-    return {"service": svc, "listen": vals.get("SWG_LISTEN", ""), "connect": vals.get("SWG_CONNECT", ""),
-            "wrap_key": _params_wrapkey(params), "params": params}
+    return {"service": svc, "listen": vals.get("SWG_DIAL") or vals.get("SWG_LISTEN", ""), "connect": vals.get("SWG_CONNECT", ""),
+            "wrap_key": _params_wrapkey(params), "params": params, "bind": vals.get("SWG_LISTEN", "")}
 
 # Axis-2 P3: systemd sandbox for the turn-proxy unit. A turn proxy only shuffles bytes between two sockets, so
 # confine it hard — a compromised/malicious fork binary is contained to its sockets, not root-on-the-box. The
@@ -18654,6 +18746,8 @@ def _wdtt_raw(inst):
     lip = lip.rsplit(":", 1)[0].strip() if ":" in lip else ""
     if not _IPV4_RE.match(lip or ""):
         lip = "0.0.0.0"
+    else:
+        lip = turn_bind(lip + ":0", resolve=False).rsplit(":", 1)[0]   # an IP this box does not carry cannot be bound
     return (lip + ":" + port, ifn, addr)
 
 def _turn_dns(inst):
@@ -18870,7 +18964,7 @@ def _wdtt_env_text(inst):
     _rawflags = ("-listen-raw %s -raw-iface %s -raw-addr %s" % _raw) if _raw else ""
     return ("SWG_IFACE=%s\nSWG_WGADDR=%s\nSWG_LISTEN=%s\nSWG_WGPORT=%s\nSWG_CFGDIR=%s\nSWG_DESIRED=%s\n"
             "SWG_PASSWORD=%s\nSWG_MAXPW=%s\nSWG_RAWFLAGS=%s\nSWG_PARAMS=%s\n" % (
-                inst["iface"], inst["wg_addr"], inst["listen"], inst.get("wg_port") or 56001, cfgdir,
+                inst["iface"], inst["wg_addr"], turn_bind(inst["listen"]), inst.get("wg_port") or 56001, cfgdir,
                 cfgdir + "/desired.json", inst.get("password") or "",
                 inst.get("max_passwords") or _wdtt_maxpw_for(inst.get("wg_addr") or ""), _rawflags,
                 _wdtt_params_eff(inst)))   # `-dns` + operator extra ExecStart flags (systemd splits on whitespace → argv, never a shell)
@@ -18929,7 +19023,7 @@ def _wdtt_pidfile(iface): return _wdtt_dir(iface) + "/server.pid"
 def _wdtt_argv(inst, binp):
     """The exact server invocation (mirror of _wdtt_unit_text's ExecStart) as an argv list, for a direct Popen."""
     iface = inst["iface"]; cfgdir = _wdtt_dir(iface); fork = _wdtt_fork(inst)
-    a = [binp, "-iface", iface, "-wg-addr", inst["wg_addr"], "-listen", inst["listen"],
+    a = [binp, "-iface", iface, "-wg-addr", inst["wg_addr"], "-listen", turn_bind(inst["listen"]),
          "-wg-port", str(inst.get("wg_port") or 56001), "-config-dir", cfgdir,
          "-desired", cfgdir + "/desired.json", "-no-nat", "-password", inst.get("password") or ""]
     # Password-pool size. Prefer what is configured (adoption carries the foreign server's own value across, so
@@ -20136,7 +20230,8 @@ def reconcile_wdtt(want, remove=None):
                     else:
                         res["changed"] += 1
                 elif (_drifted or _wdtt_params_changed(prev, inst)   # listen/wg-addr/wg-port/max changed → rewrite unit + restart (identity kept)
-                      or (not inst.get("stopped") and _wdtt_env_drifted(iface, inst, prev))):   # a stopped one takes it at its next start
+                      or (not inst.get("stopped") and _wdtt_env_drifted(iface, inst, prev))   # a stopped one takes it at its next start
+                      or (not inst.get("stopped") and bind_heal_due("wdtt:" + iface, _wdtt_dir(iface) + "/wdtt.env", inst.get("listen") or ""))):
                     # subnet MOVED → drop stale device-IP bindings first. Requires a previous subnet to have moved
                     # FROM: with no prior record (the first sync after an adopt, or a lost node record) every param
                     # reads as "changed", and resetting there threw away the device bindings — client IPs and the
@@ -20158,6 +20253,7 @@ def reconcile_wdtt(want, remove=None):
                 if NODE_KIND == "docker":
                     _wdtt_docker_start(inst)
                 else:
+                    rebind_env(_wdtt_dir(iface) + "/wdtt.env", inst, _wdtt_env_text)
                     host_sh("systemctl restart " + shlex.quote(_wdtt_svc(iface)) + " >/dev/null 2>&1")   # operator-requested bounce (nonce acted on once)
                 res["changed"] += 1
             # bare-metal: the same supervision, for the case systemd cannot cover. Restart=on-failure brings a
@@ -20401,6 +20497,7 @@ def wdtt_snapshot():
         # what a wdttplus server itself remembers (_turn_own_dns); the flag-only forks store nothing to report
         _own = _turn_own_dns(_wdtt_dir(iface)) if _wdtt_fork(inst) == "wdttplus" else OWN_DNS_UNKNOWN
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
+                    "bind": _env_listen(_wdtt_dir(iface) + "/wdtt.env"),   # what the server binds (turn_bind) — "" unknown
                     "wg_addr": inst.get("wg_addr", ""), "wg_port": inst.get("wg_port", ""),
                     "server_pub": srvpub, "stopped": bool(inst.get("stopped")), "fork": inst.get("fork", "amurcanov"),
                     "raw_port": (inst.get("raw_port") or "") if _rawon else "",   # RAW listener (empty = off)
@@ -20518,7 +20615,7 @@ def _csqtt_env_text(inst):
     cfgdir = _csqtt_dir(inst["iface"])
     return ("SWG_LISTEN=%s\nSWG_WEBPORT=%s\nSWG_CFGDIR=%s\nSWG_DESIRED=%s\nSWG_IFACE=%s\nSWG_TUNADDR=%s\n"
             "SWG_PASSWORD=%s\nSWG_WEBPASS=%s\nSWG_MAXPW=%s\nSWG_PARAMS=%s\n" % (
-                inst["listen"], inst.get("web_port") or _csqtt_webport(inst["listen"]), cfgdir,
+                turn_bind(inst["listen"]), inst.get("web_port") or _csqtt_webport(inst["listen"]), cfgdir,
                 cfgdir + "/desired.json", inst["iface"], inst["tun_addr"],
                 inst.get("password") or "", inst.get("web_pass") or "",
                 inst.get("max_passwords") or 500, (inst.get("params") or "").strip())
@@ -20707,7 +20804,7 @@ def _csqtt_pidfile(iface): return _csqtt_dir(iface) + "/server.pid"
 def _csqtt_argv(inst, binp):
     """The exact server invocation (mirror of _csqtt_unit_text's ExecStart) as an argv list, for a direct Popen."""
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface)
-    a = [binp, "--listen", inst.get("listen") or "", "--config-dir", cfgdir,
+    a = [binp, "--listen", turn_bind(inst.get("listen") or ""), "--config-dir", cfgdir,
          "--password", inst.get("password") or "", "--no-web",
          "--iface", iface, "--tun-addr", inst.get("tun_addr") or "",
          "--desired", cfgdir + "/desired.json", "--no-nat",
@@ -21560,7 +21657,8 @@ def reconcile_csqtt(want, remove=None):
                 # broken. Compare the rendered text and rewrite only on a real difference: this restarts the server,
                 # so it must not fire on every sync.
                 if (_csqtt_unit_drifted(iface, inst) or _csqtt_params_changed(prev, inst)
-                        or (not inst.get("stopped") and _csqtt_env_drifted(iface, inst))):
+                        or (not inst.get("stopped") and _csqtt_env_drifted(iface, inst))
+                        or (not inst.get("stopped") and bind_heal_due("csqtt:" + iface, _csqtt_dir(iface) + "/csqtt.env", inst.get("listen") or ""))):
                     err = _csqtt_reconfigure(inst)
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
@@ -21581,6 +21679,7 @@ def reconcile_csqtt(want, remove=None):
                 if NODE_KIND == "docker":
                     _csqtt_docker_start(inst)
                 else:
+                    rebind_env(_csqtt_dir(iface) + "/csqtt.env", inst, _csqtt_env_text)
                     host_sh("systemctl restart " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
             # bare-metal: start a present instance the panel wants running that is not (see the same block in
@@ -21646,6 +21745,7 @@ def csqtt_snapshot():
         _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # TUN aggregate throughput (same reader as a wg iface)
         _own = _turn_own_dns(_csqtt_dir(iface))   # what csqtt itself remembers (its DB)
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
+                    "bind": _env_listen(_csqtt_dir(iface) + "/csqtt.env"),   # what the server binds (turn_bind) — "" unknown
                     "tun_addr": inst.get("tun_addr", ""), "web_port": inst.get("web_port", ""),
                     "stopped": bool(inst.get("stopped")), "kind": "csqtt",
                     # WHICH fork this instance is. The WDTT snapshot has always carried it and csqtt's did not, so

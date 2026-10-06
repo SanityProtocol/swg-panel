@@ -220,18 +220,3 @@ export function dur(sec) {
 // RFC1918 / loopback / link-local / CGNAT — kept selectable (valid behind cloud 1:1 NAT or on a private
 // interconnect) but tagged "(private)" so an operator knows it isn't a public address.
 export const isPrivIp = ip => /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip || "");
-
-// The host a turn-family client (WDTT, csqtt, vk-turn-proxy) dials for a server bound to `bind`. A specific
-// public bind is the only address that answers on a box with several, so it wins. A wildcard answers on all of
-// them, and a private one is never what the VK relay can reach — the box sits behind NAT and its router forwards
-// the port — so there the node's endpoint host takes over: `fallback`, which the caller resolves (the node's
-// ingress address, then its reported public IP; for a vk-turn-proxy, its interface's Endpoint). A private bind
-// stays the last resort, so a node with nothing better keeps the link it had. Twins: turn-artifacts.js
-// dialListen, swg-sub _turn_dial_host, swg-panel-server _fp_dial_host.
-const _WILD = ["", "0.0.0.0", "::", "[::]", "*"];
-export const turnDialHost = (bind, fallback) => {
-  const h = String(bind || "").trim();
-  const priv = /^\d+\.\d+\.\d+\.\d+$/.test(h) && isPrivIp(h);   // a literal only — `10.0.0.5.nip.io` is a name
-  if (!_WILD.includes(h) && !priv) return h;
-  return String(fallback || "").trim() || (_WILD.includes(h) ? "" : h);
-};

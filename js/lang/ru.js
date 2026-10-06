@@ -2354,11 +2354,11 @@ export const STR = {
   "The node reads the unit's ExecStart (listen, forwards-to, wrap key) on its next sync and it shows up here.":
     "Нода прочитает ExecStart юнита (прослушивание, куда ведёт, ключ обёртки) на следующей синхронизации, и он появится здесь.",
   "Service unit path": "Путь к юниту службы",
-  "Listen address": "Адрес прослушивания",
-  "All addresses (0.0.0.0)": "Все адреса (0.0.0.0)",
-  "Clients dial `{v1}`": "Клиенты подключаются к `{v1}`",
-  "Clients dial the node's ingress address, which isn't set — set it in {v1}.":
-    "Клиенты подключаются к адресу входа ноды, а он не задан — задайте его в {v1}.",
+  "What clients dial (over the VK relay)": "Куда звонят клиенты (через реле VK)",
+  "Listens on all addresses (0.0.0.0); clients dial `{v1}`.": "Слушает на всех адресах (0.0.0.0); клиенты подключаются к `{v1}`.",
+  "Listens on all addresses (0.0.0.0), and clients have no host to dial — set the node's ingress address in {v1}.":
+    "Слушает на всех адресах (0.0.0.0), а клиентам некуда подключаться — задайте адрес входа ноды в {v1}.",
+  "Not an address of this node, so it listens on all addresses (0.0.0.0).": "Это не адрес этой ноды, поэтому сервер слушает на всех адресах (0.0.0.0).",
 
   // WDTT server
   "WDTT server requested — the node installs it on its next sync. Add users from Peers.":
@@ -2386,8 +2386,8 @@ export const STR = {
   "Apply change": "Применить",
   "Change {what}?": "Изменить {what}?",
   "saving…": "сохраняю…",
-  "Changing the listen address or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.":
-    "Смена адреса прослушивания или порта перезаписывает ExecStart юнита на ноде и перезапускает его — ссылки всех пользователей перевыпускаются.",
+  "Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.":
+    "Смена эндпоинта или порта перезаписывает ExecStart юнита на ноде и перезапускает его — ссылки всех пользователей перевыпускаются.",
   "— self-contained (its own userspace-WireGuard)": "— самодостаточен (свой WireGuard в userspace)",
   "Egress, routing & filters": "Выход, маршрутизация и фильтры",
   "Edit interface": "Изменить интерфейс",
@@ -3637,8 +3637,12 @@ export const STR = {
     "С этого IP нода выходит в интернет по умолчанию. Он применяется там, где свой IP выхода не задан — к любому интерфейсу этой ноды и к трафику, пришедшему с других нод. Если у интерфейса задан свой IP выхода, используется он. Трафик, который уходит в интернет через другую ноду, это не затрагивает.",
   "Panel egress connection IP": "IP для связи с панелью",
   "— source to reach the panel": "— источник для доступа к панели",
-  "This doesn't resolve to an address on this node. The listener binds to it, so it would fail with `bind: cannot assign requested address`. Behind NAT? Choose *All addresses*: clients then dial the node's ingress address ({v1}). Forward this UDP port to the box on your router.":
-    "Это имя не разрешается в адрес этой ноды. Слушатель привязывается к нему, поэтому упадёт с `bind: cannot assign requested address`. Нода за NAT? Выберите *Все адреса* — тогда клиенты подключаются к адресу входа ноды ({v1}). И пробросьте этот UDP-порт на машину в роутере.",
+  "Not an address of this node, and this node's version binds it as typed, so the server would fail with `bind: cannot assign requested address`. Update the node, or enter one of its own addresses.":
+    "Это не адрес этой ноды, а её версия привязывается к адресу как есть, поэтому сервер упадёт с `bind: cannot assign requested address`. Обновите ноду или укажите один из её собственных адресов.",
+  "This server still binds the address as typed — it was set up before this node could listen on all addresses — so it cannot start. *Restart service* to apply it.":
+    "Этот сервер всё ещё привязывается к адресу как есть — его настроили раньше, чем нода научилась слушать на всех адресах, — поэтому он не может запуститься. Нажмите *Перезапустить*, чтобы применить.",
+  "This node has several IPv4 addresses. Listening on all of them, a reply can leave from one clients didn't dial, and the VK relay drops it. To listen on one address only, enter that address.":
+    "У этой ноды несколько IPv4-адресов. Когда сервер слушает на всех, ответ может уйти с адреса, к которому клиенты не подключались, и реле VK его отбросит. Чтобы слушать только на одном адресе, укажите этот адрес.",
   "Transfer token": "Токен переноса",
   "— to move an existing node here": "— чтобы перенести сюда узел",
   "Carries this panel's address and this token together. On the panel that has the node now: its Transfer window, and paste this — nothing is installed.": "Содержит адрес этой панели и этот токен вместе. На панели, где сейчас узел, откройте «Перенос» и вставьте это — ничего не устанавливается.",
