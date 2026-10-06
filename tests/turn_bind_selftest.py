@@ -62,7 +62,9 @@ _real_gai = socket.getaddrinfo
 def fake_gai(host, *a, **k):
     if host in DNS:
         return [(socket.AF_INET, socket.SOCK_DGRAM, 17, "", (ip, 0)) for ip in DNS[host]]
-    raise socket.gaierror("no such name")
+    if host.startswith("gone."):
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")      # NXDOMAIN: definite
+    raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")   # DNS not up: temporary
 N.socket.getaddrinfo = fake_gai
 DDNS = "abcd1234.sn.mynetname.net"
 
@@ -180,11 +182,17 @@ check("it keeps what the server binds today (DNS not up at boot)", N.turn_bind("
 check("a new server (nothing to keep) binds every address", N.turn_bind("nowhere.invalid:56000", prev="") == "0.0.0.0:56000")
 check("a kept bind on another port is not reused", N.turn_bind("nowhere.invalid:56000", prev="192.168.88.10:57000") == "0.0.0.0:56000")
 check("a name that DOES resolve elsewhere is not kept", N.turn_bind(DDNS + ":56000", prev="192.168.88.10:56000") == "0.0.0.0:56000")
+check("a kept bind the box no longer carries is not reused (DHCP change, cleared pin)",
+      N.turn_bind("nowhere.invalid:56000", prev="10.9.9.9:56000") == "0.0.0.0:56000", N.turn_bind("nowhere.invalid:56000", prev="10.9.9.9:56000"))
+check("a name that does not exist (NXDOMAIN) is a definite answer: every address, nothing kept",
+      N.turn_bind("gone.example:56000", prev="192.168.88.10:56000") == "0.0.0.0:56000", N.turn_bind("gone.example:56000", prev="192.168.88.10:56000"))
 open(envp, "w").write("SWG_LISTEN=nowhere.invalid:56000\n")
 check("heal: not judged while the name does not resolve…", N.bind_heal_due("wdtt:dns", envp, "nowhere.invalid:56000") is False)
 DNS["nowhere.invalid"] = ["203.0.113.99"]
+check("…not asked again on the next sync (5-minute backoff, not a lookup per pass)", N.bind_heal_due("wdtt:dns", envp, "nowhere.invalid:56000") is False)
+N._BIND_RETRY.clear()                                   # five minutes later
 check("…and judged once it does (not marked in between)", N.bind_heal_due("wdtt:dns", envp, "nowhere.invalid:56000") is True)
-del DNS["nowhere.invalid"]
+del DNS["nowhere.invalid"]; N._RESOLVED.clear()        # the outage begins (and the 60 s answer cache has aged out)
 open(envp, "w").write("SWG_LISTEN=192.168.88.10:56000\n")
 N.rebind_env(envp, dict(W, listen="nowhere.invalid:56000"), N._wdtt_env_text)
 check("Restart during a DNS outage leaves a working env alone", N._env_listen(envp) == "192.168.88.10:56000", open(envp).read())
@@ -195,10 +203,15 @@ rec = os.path.join(d, "turn-proxy.json")
 N.TURN_RECORD = rec; N.TURN_DOCKER = False; N.TURN_MANAGE_ON = True
 ENVS = {"vk-turn-proxy-samosvalishe-56000": "SWG_LISTEN=%s:56000\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n" % DDNS,
         "vk-turn-proxy-samosvalishe-57000": "SWG_LISTEN=192.168.88.10:57000\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n",
-        "vk-turn-proxy-samosvalishe-58000": "SWG_LISTEN=192.168.88.10:58000\nSWG_PIN=10.66.66.1\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n"}
+        "vk-turn-proxy-samosvalishe-58000": "SWG_LISTEN=192.168.88.10:58000\nSWG_PIN=10.66.66.1\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n",
+        "vk-turn-proxy-samosvalishe-60000": "SWG_LISTEN=%s:60000\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n" % DDNS,
+        "vk-turn-proxy-samosvalishe-61000": "SWG_LISTEN=10.66.66.1:61000\nSWG_PIN=10.66.66.1\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n"}
 CMDS = []
+INACTIVE = {"vk-turn-proxy-samosvalishe-60000"}
 def fake_host_sh(cmd, **k):
     CMDS.append(cmd)
+    if cmd.startswith("systemctl is-active"):
+        return types.SimpleNamespace(returncode=0, stdout="inactive\n" if any(x in cmd for x in INACTIVE) else "activating\n", stderr="")
     for svc, env in ENVS.items():
         if "cat " in cmd and svc in cmd and ".service" in cmd:
             return types.SimpleNamespace(returncode=0, stdout=UNIT, stderr="")
@@ -217,7 +230,9 @@ _json.dump({"turn_proxies": [
     {"service": "vk-turn-proxy-samosvalishe-56000", "listen": DDNS + ":56000", "bind": DDNS + ":56000"},
     {"service": "vk-turn-proxy-samosvalishe-57000", "listen": "192.168.88.10:57000", "bind": "192.168.88.10:57000"},
     {"service": "vk-turn-proxy-samosvalishe-58000", "listen": "192.168.88.10:58000", "bind": "192.168.88.10:58000", "bind_ip": "10.66.66.1"},
-    {"service": "vk-turn-proxy-samosvalishe-59000", "listen": DDNS + ":59000", "bind": DDNS + ":59000", "stopped": True}]}, open(rec, "w"))
+    {"service": "vk-turn-proxy-samosvalishe-59000", "listen": DDNS + ":59000", "bind": DDNS + ":59000", "stopped": True},
+    {"service": "vk-turn-proxy-samosvalishe-60000", "listen": DDNS + ":60000", "bind": DDNS + ":60000"},       # stopped by hand: no flag
+    {"service": "vk-turn-proxy-samosvalishe-61000", "listen": "192.168.88.10:61000", "bind_ip": "10.66.66.1"}]}, open(rec, "w"))   # stale record
 N.heal_turn_binds()
 w = [c for c in CMDS if "<<'SWGENV'" in c]
 check("the DDNS-bound proxy is re-rendered onto 0.0.0.0 and restarted",
@@ -225,6 +240,8 @@ check("the DDNS-bound proxy is re-rendered onto 0.0.0.0 and restarted",
 check("one whose host is on the box is left alone", not any("samosvalishe-57000" in c for c in w), w)
 check("a carried Listen on is applied", any("samosvalishe-58000" in c and "SWG_LISTEN=10.66.66.1:58000" in c and "SWG_PIN=10.66.66.1" in c for c in w), w)
 check("a stopped one is left alone", not any("59000" in c for c in CMDS), CMDS)
+check("one stopped by hand (inactive, no flag in the record) is not started by a restart", not any("samosvalishe-60000" in c for c in w), w)
+check("a render that would not change the bind does not restart (stale record, env already right)", not any("samosvalishe-61000" in c for c in w), w)
 n = len(CMDS); N.heal_turn_binds()
 check("once per run: a second sync does nothing", len(CMDS) == n, CMDS[n:])
 N._tp_from_unit = _orig_tp

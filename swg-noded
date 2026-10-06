@@ -2653,18 +2653,45 @@ def _local_v4():
     return _LOCAL_V4["set"]
 
 
+_BIND_WILD = ("0.0.0.0", "::", "[::]", "*")
+
+def _bind_split(listen):
+    """(host, port, decidable) of a turn listener's `host:port`. Not decidable — passed on as it is, never judged: no
+    port, a wildcard (already every address), or an IPv6 literal (only IPv4 is judged; the VK relay dials IPv4)."""
+    s = str(listen or "").strip()
+    i = s.rfind(":")
+    if i <= 0:
+        return "", "", False
+    host, port = s[:i], s[i + 1:]
+    return host, port, not (host in _BIND_WILD or host.startswith("["))
+
+
+_RESOLVED = {}   # name -> (monotonic, sorted IPv4 list): a DEFINITE answer, kept 60 s
+
 def _host_on_box(host, mine, resolve=True):
     """The address of this box `host` lands on; "" when it lands elsewhere; None when that cannot be told right now — a
-    name that does not resolve (DNS not up yet at boot, an outage). An IPv4 literal answers itself; resolve=False makes
-    any name "elsewhere" without a lookup."""
+    temporary resolver failure (DNS not up yet at boot, an outage). A name that does not exist (NXDOMAIN, no A record)
+    is a definite answer: elsewhere. An IPv4 literal answers itself; resolve=False makes any name "elsewhere" without a
+    lookup. A definite answer is kept 60 s, so the decision and the render that follows it (bind_heal_due → the env
+    write; heal_turn_binds) read ONE answer — a second lookup that failed used to re-render the old file unchanged."""
     if _IPV4_RE.match(host):
         return host if host in mine else ""
     if not resolve:
         return ""
-    try:
-        cands = sorted({a[4][0] for a in socket.getaddrinfo(host, None, socket.AF_INET)})
-    except (OSError, UnicodeError):
-        return None
+    now = time.monotonic()
+    hit = _RESOLVED.get(host)
+    if hit and now - hit[0] < 60:
+        cands = hit[1]
+    else:
+        try:
+            cands = sorted({a[4][0] for a in socket.getaddrinfo(host, None, socket.AF_INET)})
+        except socket.gaierror as e:
+            if e.errno not in (socket.EAI_NONAME, getattr(socket, "EAI_NODATA", -5)):
+                return None                            # temporary: ask again later
+            cands = []                                 # the name has no IPv4 address: definitely not this box
+        except (OSError, UnicodeError):
+            return None
+        _RESOLVED[host] = (now, cands)
     here = [c for c in cands if c in mine]
     return here[0] if here else ""
 
@@ -2684,15 +2711,14 @@ def turn_bind(listen, resolve=True, pin="", prev=""):
     `resolve=False` skips the lookup (a name then binds every address). An IPv6 literal, a wildcard, or a box whose
     addresses cannot be read: as given, which is what every node did before.
 
+    A kept `prev` must still be bindable — an address the box carries (a DHCP change, a cleared pin) or the wildcard.
+
     `pin` is the operator's "Listen on" (`bind_ip`): one IPv4 address of this box to bind whatever the host is — on a box
     with several addresses behind NAT, the one the router forwards to, so replies leave from it. A pin the box does not
     carry (an address that moved away) is ignored, and the rule above decides."""
     s = str(listen or "").strip()
-    i = s.rfind(":")
-    if i <= 0:
-        return s
-    host, port = s[:i], s[i + 1:]
-    if host in ("0.0.0.0", "::", "[::]", "*") or host.startswith("["):
+    host, port, decidable = _bind_split(s)
+    if not decidable:
         return s
     mine = _local_v4()
     if mine is None:
@@ -2701,30 +2727,40 @@ def turn_bind(listen, resolve=True, pin="", prev=""):
     if pin and _IPV4_RE.match(pin) and pin in mine:
         return pin + ":" + port
     ip = _host_on_box(host, mine, resolve)
-    if ip is None:                                     # not known now: keep what it binds today
-        p = str(prev or "").strip()
-        return p if p and p.rsplit(":", 1)[-1] == port else "0.0.0.0:" + port
+    if ip is None:                                     # not known now: keep what it binds today — if it still can
+        ph, pp, _ = _bind_split(prev)
+        return (ph + ":" + port) if pp == port and (ph in mine or ph == "0.0.0.0") else "0.0.0.0:" + port
     return (ip + ":" + port) if ip else "0.0.0.0:" + port
 
 
 _BIND_HEALED = set()
+_BIND_RETRY = {}   # key -> monotonic time before which an undecided name is not looked up again
+
+def _bind_ask_now(key):
+    return time.monotonic() >= _BIND_RETRY.get(key, 0)
+
+def _bind_ask_later(key):
+    """A name that does not resolve RIGHT NOW is asked about again in 5 minutes, not every sync: a resolver that times
+    out instead of refusing would otherwise hold up the sync loop once per instance per pass."""
+    _BIND_RETRY[key] = time.monotonic() + 300
 
 def bind_heal_due(key, envpath, listen):
     """True ONCE per swg-noded run for a WDTT/csqtt server whose env file, written by a build before turn_bind, still
     binds a host this box does not carry — the server that crash-looped on a DDNS name. Its caller rewrites the env
     (and restarts it), so the update itself brings it up rather than its next edit. A server that works is never
     restarted for this (its host lands on the box), and the lookup is made once per instance per run, never per sync."""
-    if key in _BIND_HEALED:
+    if key in _BIND_HEALED or not _bind_ask_now(key):
         return False
     have = _env_listen(envpath)
-    host = listen.rsplit(":", 1)[0] if ":" in listen else ""
+    host, _port, decidable = _bind_split(listen)
     mine = _local_v4()
-    if not have or have != listen or not host or host in ("0.0.0.0", "::", "[::]", "*") or host.startswith("[") or mine is None:
+    if not have or have != listen or not decidable or mine is None:
         _BIND_HEALED.add(key)                          # nothing to heal (or nothing to judge with)
         return False
     ip = _host_on_box(host, mine)
     if ip is None:
-        return False                                   # its name does not resolve right now: ask again next sync, not marked
+        _bind_ask_later(key)                           # its name does not resolve right now: asked again in 5 min, not marked
+        return False
     _BIND_HEALED.add(key)
     return ip == ""
 
@@ -2746,15 +2782,24 @@ def rebind_env(envpath, inst, render):
 
 
 _TURN_BIND_HEALED = set()
+_TURN_HEAL_SEEN = {"mtime": None, "pending": True}
 
 def heal_turn_binds():
     """Once per swg-noded run per bare-metal vk-turn-proxy — the twin of bind_heal_due. A turn.env that binds a host this
     box does not carry, written by a build before turn_bind or by an installer / convert.sh (bash, which cannot decide a
     bind and writes the dialled host), is re-rendered through turn_bind and the proxy restarted: the update brings a
-    crash-looping proxy up, not its next edit. Never a proxy whose host lands on the box, never a stopped one, and a name
-    that does not resolve right now is asked about again next sync rather than judged."""
+    crash-looping proxy up, not its next edit. A Listen on such a writer carried but could not apply is applied the same
+    way. Never a proxy whose host lands on the box, never one that is stopped (inactive — a panel Stop or a hand
+    `systemctl stop`; the record's flag alone is not kept by every writer), never a render that would not change what it
+    binds, and a name that does not resolve right now is asked about again in 5 minutes rather than judged."""
     if TURN_DOCKER or not TURN_MANAGE_ON:
         return
+    try:
+        mt = os.stat(TURN_RECORD).st_mtime
+    except OSError:
+        return
+    if _TURN_HEAL_SEEN.get("mtime") == mt and not _TURN_HEAL_SEEN.get("pending"):
+        return                                         # the record has not changed and nothing was left undecided
     try:
         with open(TURN_RECORD) as f:
             rec = (json.load(f) or {}).get("turn_proxies") or []
@@ -2763,28 +2808,32 @@ def heal_turn_binds():
     mine = _local_v4()
     if mine is None:
         return
+    pending = False
     for t in rec:
         svc = str((t or {}).get("service") or "")
         if not svc or svc in _TURN_BIND_HEALED:
             continue
+        if not _bind_ask_now(svc):
+            pending = True
+            continue
         listen = str(t.get("listen") or "")
-        host, port = (listen.rsplit(":", 1) + [""])[:2] if ":" in listen else ("", "")
+        host, port, decidable = _bind_split(listen)
         pin = str(t.get("bind_ip") or "")
         if t.get("stopped") or not host:
             _TURN_BIND_HEALED.add(svc)                 # stopped, or nothing to decide
             continue
         if pin and _IPV4_RE.match(pin) and pin in mine:
-            # a Listen on an installer / convert.sh carried over but could not apply (bash writes the dialled host)
-            _TURN_BIND_HEALED.add(svc)
+            _TURN_BIND_HEALED.add(svc)                 # a Listen on a writer carried over but could not apply
             if t.get("bind") == pin + ":" + port:
                 continue
         else:
-            if (t.get("bind") and t.get("bind") != listen) or host in ("0.0.0.0", "::", "[::]", "*") or host.startswith("["):
+            if (t.get("bind") and t.get("bind") != listen) or not decidable:
                 _TURN_BIND_HEALED.add(svc)             # already decided by turn_bind, or nothing to decide
                 continue
             ip = _host_on_box(host, mine)
             if ip is None:
-                continue                               # not known now: ask again next sync
+                _bind_ask_later(svc); pending = True   # not known now: asked again in 5 min
+                continue
             _TURN_BIND_HEALED.add(svc)
             if ip:
                 continue                               # lands on the box: it binds fine as it is
@@ -2792,15 +2841,19 @@ def heal_turn_binds():
         if not _unit_is_envform(unit):
             continue                                   # a baked ExecStart is migrated by the next edit, as before
         cur = _tp_from_unit(svc, unit)
-        if not cur.get("listen") or (cur.get("bind") != cur.get("listen") and not cur.get("bind_ip")):
+        if not cur.get("listen"):
             continue
-        envp = _turn_env_path(svc)
         text = _turn_env_text(cur["listen"], cur.get("connect", ""), cur.get("params", ""), cur.get("bind_ip", ""), cur.get("bind", ""))
-        nb = (text.split("\n", 1)[0].split("=", 1) + [""])[1]          # the SWG_LISTEN it now binds
-        w = host_sh("cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + text + "SWGENV\nsystemctl restart " + shlex.quote(svc))
+        nb = (text.split("\n", 1)[0].split("=", 1) + [""])[1]          # the SWG_LISTEN it would now bind
+        if nb == cur.get("bind"):
+            continue                                   # nothing would change: no restart
+        if (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null", probe=True).stdout or "").strip() == "inactive":
+            continue                                   # deliberately down — its next start takes the next edit
+        w = host_sh("cat > " + shlex.quote(_turn_env_path(svc)) + " <<'SWGENV'\n" + text + "SWGENV\nsystemctl restart " + shlex.quote(svc))
         _turn_loop_forget(svc)
         log(LOG_NOTICE, "turn: %s bound %s — now binds %s" % (svc, cur.get("bind", ""), nb)
             if w.returncode == 0 else "turn: %s could not be moved off %s: %s" % (svc, cur.get("bind", ""), (w.stderr or "").strip()[:120]))
+    _TURN_HEAL_SEEN.update(mtime=mt, pending=pending)
 
 
 def _env_listen(path):
@@ -18661,7 +18714,9 @@ def apply_turn(turn, turn_onboard):
                 params = _params_set_wrapkey(params, secrets.token_hex(32))
             # restart: no config change — just rewrite turn.env (unchanged) + restart below
             envp = _turn_env_path(svc)
-            env_here = "cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, params, pin, cur.get("bind", "")) + "SWGENV\n"
+            # keep today's bind through a DNS outage — unless this edit moves the Listen on, which is the operator deciding it
+            _keep = "" if (act == "manage" and "bind_ip" in req and pin != cur.get("bind_ip", "")) else cur.get("bind", "")
+            env_here = "cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, params, pin, _keep) + "SWGENV\n"
             if _unit_is_envform(unit):       # fast path: rewrite turn.env + restart, NO daemon-reload (the spike)
                 w = host_sh(env_here + "systemctl restart " + shlex.quote(svc))
             else:                            # one-time migrate: move the baked ExecStart onto the EnvironmentFile

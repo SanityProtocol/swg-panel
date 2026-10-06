@@ -109,13 +109,13 @@ export function useListenState(node, host, saved, bound, pin) {
   return { any: true, multi: wanV4(nrec).length > 1 };
 }
 
-// The IPv4 addresses on the node's default-route interface (`wan_iface`, `ip_ifaces` from its report). A node that does
-// not report them (an older build) is judged by all its IPv4 addresses, as before.
+// The IPv4 addresses on the node's default-route interface (`wan_iface`, `ip_ifaces` from its report). Judged by all its
+// IPv4 addresses instead, as before, when it does not report them (an older build) or none sit on that interface — a
+// default route through a tunnel (WARP), which the panel filters out of `ip_ifaces`, must not hide the warning.
 const wanV4 = nrec => {
-  const pairs = nrec.ip_ifaces || [];
-  if (nrec.wan_iface && pairs.length)
-    return pairs.filter(p => p && p.iface === nrec.wan_iface && /^\d+\.\d+\.\d+\.\d+$/.test(p.ip || "")).map(p => p.ip);
-  return (nrec.ips || []).filter(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip));
+  const v4 = ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip || "");
+  const onWan = nrec.wan_iface ? (nrec.ip_ifaces || []).filter(p => p && p.iface === nrec.wan_iface && v4(p.ip)).map(p => p.ip) : [];
+  return onWan.length ? onWan : (nrec.ips || []).filter(v4);
 };
 
 // The host a wildcard listener's links fall back to — the same fallback the link builders take. A WDTT/csqtt link: the
