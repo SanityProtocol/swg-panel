@@ -282,7 +282,7 @@ def dk(now, kind="bare", dpkg=True):
          mock.patch.object(N.shutil, "which", lambda b: "/usr/bin/dpkg" if dpkg and b == "dpkg" else None):
         return N.dpkg_health(now)
 def fresh(age):
-    t = time.time() - age; os.utime(N.DPKG_STATUS, (t, t)); os.utime(N.DPKG_UPDATES, (t, t)); N._DPKG.update(mtime=None, at=0.0, v=None); AUD["n"] = 0
+    t = time.time() - age; os.utime(N.DPKG_STATUS, (t, t)); os.utime(N.DPKG_UPDATES, (t, t)); N._DPKG.update(mtime=None, at=0.0, v=None, peek=0.0); AUD["n"] = 0
 now = time.time()
 fresh(3600)
 v = dk(now)
@@ -297,10 +297,10 @@ check("…cached: the next sync does not run dpkg again", AUD["n"] == 0 or AUD["
 fresh(120)
 check("dpkg wrote two minutes ago (maybe still running) → not judged: nothing yet, and dpkg not asked",
       dk(now) == {"pending": [], "interrupted": False} and AUD["n"] == 0, AUD)
-fresh(3600); dk(now); t = time.time() - 60; os.utime(N.DPKG_STATUS, (t, t)); AUD["out"] = ""
+fresh(3600); dk(now); t = time.time() - 60; os.utime(N.DPKG_STATUS, (t, t)); AUD["rc"] = 2   # mid-run: no readable answer
 check("…an apt run starts after a settled answer → the last settled answer stands meanwhile",
       dk(now)["pending"] == ["amneziawg-dkms", "linux-headers-7.0.0-38-generic", "amneziawg-tools"])
-t = time.time() - 3600; os.utime(N.DPKG_STATUS, (t, t)); AUD["rc"] = 0
+t = time.time() - 3600; os.utime(N.DPKG_STATUS, (t, t)); AUD.update(rc=0, out="")
 check("…dpkg writes again and settles clean → nothing pending", dk(now) == {"pending": [], "interrupted": False})
 fresh(3600); AUD.update(out=AUDIT, rc=1); open(N.PROC_LOCKS, "w").write("1: POSIX  ADVISORY  WRITE 4242 %s 0 EOF\n" % LOCKID)
 check("status untouched for an hour but dpkg HOLDS its lock (a long postinst) → not judged, dpkg not asked",
@@ -316,6 +316,17 @@ os.remove(D + "/updates/0003")
 fresh(3600); AUD.update(out=AUDIT, rc=1); dk(now); t = time.time() - 3600 + 5; os.utime(N.DPKG_STATUS, (t, t)); AUD["rc"] = 2
 check("an answer that cannot be read (rc 2) keeps the last one", dk(now)["pending"][:1] == ["amneziawg-dkms"])
 fresh(3600)
+fresh(3600); AUD.update(out=AUDIT, rc=1); dk(now)
+t = time.time() - 30; os.utime(N.DPKG_STATUS, (t, t)); AUD.update(out="", rc=0)
+check("the operator fixes it (`dpkg --configure -a` writes status) → cleared at once, not after ten more minutes",
+      dk(now) == {"pending": [], "interrupted": False}, N._DPKG)
+fresh(3600); AUD.update(out=AUDIT, rc=1); dk(now); t = time.time() - 30; os.utime(N.DPKG_STATUS, (t, t)); AUD["n"] = 0
+v1 = dk(now); v2 = dk(now + 10)
+check("…but a peek that still finds work keeps the issue (no flapping mid-run), at most one peek a minute",
+      v1["pending"][:1] == ["amneziawg-dkms"] and v2 == v1 and AUD["n"] == 1, (v1, AUD["n"]))
+check("…and nothing is peeked while no issue is shown (a healthy box is not audited mid-run)",
+      (lambda: (fresh(3600), AUD.update(out="", rc=0), dk(now), os.utime(N.DPKG_STATUS, (time.time() - 30,) * 2),
+                AUD.__setitem__("n", 0), dk(now), AUD["n"])[-1])() == 0)
 check("a container (its packages are the image's) → None", dk(now, kind="docker") is None)
 check("no dpkg (NixOS, a non-Debian box) → None", dk(now, dpkg=False) is None)
 check("the snapshot carries it only where there is an answer",
