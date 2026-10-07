@@ -40,7 +40,7 @@ def grab_all(*names):
 T = tempfile.mkdtemp(prefix="awgfail-")
 os.makedirs(T + "/bin"); os.makedirs(T + "/mods/7.0.0-38-generic/build")
 KV = "1.0.0-0~202609140848+4569c4c~ubuntu26.04.1"
-FUNCS = grab_all("awg_fail_get", "awg_fail_note", "awg_module_head", "awg_src_retry_due", "awg_pkg_retry_due", "awg_mod_built",
+FUNCS = grab_all("awg_fail_get", "awg_fail_note", "awg_module_head", "awg_src_retry_due", "awg_pkg_retry_due", "awg_nothing_new", "awg_mod_built",
                  "_awg_kbuild", "awg_dkms_compile_failed", "awg_dkms_give_up", "awg_ppa_module_install")
 def sh(body, kernel="7.0.0-38-generic", status="iF ", cand=KV, built=False, extra_env=None):
     stubs = ('have(){ command -v "$1" >/dev/null 2>&1; }\nDRYRUN=false\ninfo(){ echo "INFO $*"; }\nwarn(){ echo "WARN $*"; }\n'
@@ -84,6 +84,19 @@ check("upstream cannot be asked (empty head) → not a reason to compile", "WAIT
 reset()
 check("nothing recorded → due", "DUE" in sh('awg_src_retry_due 4569c4c6 && echo DUE || echo WAIT').stdout)
 
+print("\n[3b] awg_nothing_new — asked over the kinds that HAVE a record (code review: both were required)")
+reset()
+check("no record at all → something to try", "TRY" in sh('awg_nothing_new && echo NOTHING || echo TRY').stdout)
+sh('awg_fail_note src 4569c4c')
+check("a source build's record only (src), upstream unmoved → nothing new", "NOTHING" in sh('awg_module_head(){ echo 4569c4c6ff; }; awg_nothing_new && echo NOTHING || echo TRY').stdout)
+check("…upstream moved → something to try", "TRY" in sh('awg_module_head(){ echo b72bb7a6; }; awg_nothing_new && echo NOTHING || echo TRY').stdout)
+reset(); sh('awg_fail_note pkg %s' % KV)
+check("a package record only (pkg), same candidate → nothing new", "NOTHING" in sh('awg_nothing_new && echo NOTHING || echo TRY').stdout)
+check("…a newer candidate → something to try", "TRY" in sh('awg_nothing_new && echo NOTHING || echo TRY', cand=KV.replace("0848", "0999")).stdout)
+reset()
+r = sh('set -e; awg_fail_note src OLD; awg_fail_note src NEW; echo "SURVIVED src=$(awg_fail_get src)"')
+check("awg_fail_note under set -e, nothing else left in the record (grep -v exits 1) — the run survives", "SURVIVED src=NEW" in r.stdout, r.stdout + r.stderr)
+
 print("\n[4] awg_ppa_module_install, driven")
 reset()
 r = sh('awg_ppa_module_install && echo RC0 || echo RC1')
@@ -117,10 +130,16 @@ r = build("4569c4c6aaaabbbb"); c = calls()
 check("upstream still at the commit that did not compile → no clone, no compile", "kernel-module" not in c and "not building it again" in r.stdout, r.stdout + c)
 r = build("b72bb7a6cccc"); c = calls()
 check("upstream moved on → it is cloned and built", "CLONE https://github.com/amnezia-vpn/amneziawg-linux-kernel-module" in c, r.stdout + c)
+rec = open(T + "/awg-module-failed").read() if os.path.exists(T + "/awg-module-failed") else ""
+check("a clone that failed (a slow link cut it off) is NOT recorded as a commit that does not compile",
+      "src=b72bb7a6cccc" not in rec, rec)
 
 print("\n[6] update.sh")
-check("the heal answers in one line when nothing new can be tried", "&& ! awg_pkg_retry_due && ! awg_src_retry_due; then" in UP
-      and "the kernel module does not compile on $(uname -r) yet; tried again when a new kernel or a newer AmneziaWG build arrives" in UP)
+check("the heal answers in one line when nothing new can be tried",
+      "the kernel module does not compile on $(uname -r) yet; tried again when a new kernel or a newer AmneziaWG build arrives" in UP)
+check("the heal's one-line answer asks awg_nothing_new", "have amneziawg-go && awg_nothing_new; then" in UP)
+check("the package follow never re-tries a version that did not compile here, and gives a failed upgrade up",
+      "awg_pkg_retry_due || return 0   # this very version already did not compile" in UP and "if awg_dkms_compile_failed; then\n      awg_dkms_give_up; DID_UPDATE=yes" in UP)
 check("its package route goes through awg_ppa_module_install (no install that leaves dpkg broken)", "if awg_ppa_module_install; then" in UP
       and "run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools" not in UP)
 for f in ("install-host.sh", "install-node.sh"):

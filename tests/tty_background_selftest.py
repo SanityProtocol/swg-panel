@@ -112,6 +112,21 @@ check("[4] …and does not stop", not stopped, out[-300:])
 out, stopped = run_in_pty(BS, background=False)
 check("[4] CONTROL: in the foreground it says nothing of the kind", "this terminal cannot be read" not in out, out[:300])
 
+out, stopped = run_in_pty("cd %s && SWG_REF=dev PATH=%s:$PATH bash bootstrap.sh node -key K" % (ROOT, D), background=True)
+check("[4] a ref other than main rides inside the handed-back command (sudo drops SWG_REF; the dev bootstrap must not install main)",
+      'sudo bash -c "SWG_REF=dev; $(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/dev/bootstrap.sh)" -- node -key K' in out, out[:600])
+
+print("== [4b] no prompt left hanging where the terminal cannot be read (code review)")
+dsrc = open(os.path.join(ROOT, "install-docker.sh"), encoding="utf-8").read()
+a = dsrc.index("ask_tty(){"); b = dsrc.index("\nask_yn_tty(){", a)
+out, stopped = run_in_pty(snippet(dsrc) + dsrc[a:b] + '\nv="$(ask_tty "Domain" "panel.example")"; echo "GOT=[$v]"', background=True)
+check("[4b] install-docker ask_tty: the default is said as taken, and returned — no bare prompt", "(no terminal — default taken)" in out
+      and "GOT=[panel.example]" in out and not stopped, out)
+usrc = open(os.path.join(ROOT, "update.sh"), encoding="utf-8").read()
+a = usrc.index("confirm(){"); b = usrc.index("\n}\n", a) + 3
+out, stopped = run_in_pty(snippet(usrc) + "ASSUME_YES=false; C_BL=; RESET=\n" + usrc[a:b] + '\nconfirm "Update the panel?" && echo YES || echo NO', background=True)
+check("[4b] update.sh confirm: yes, with no prompt printed", "YES" in out and "Update the panel?" not in out and not stopped, out)
+
 print("== [5] one snippet, seven copies (each script decides before lib/common.sh is loaded) — never drifting apart")
 snips = {f: snippet(open(os.path.join(ROOT, f), encoding="utf-8").read()) for f in SCRIPTS}
 ref = snips["bootstrap.sh"]
@@ -136,6 +151,11 @@ check("[6] CONTROL: the same cut WITHOUT the group runs the first half (and the 
       "RAN-SOMETHING" in r.stdout, (r.stdout + r.stderr)[-300:])
 check("[6] …and the whole script is one group: opened before `set -euo pipefail`, closed on its last line",
       "\n{\nset -euo pipefail\n" in bs and bs.rstrip("\n").splitlines()[-1].startswith("}"), bs[-200:])
+
+print("== [7] bootstrap.sh stays far under the kernel's per-argument limit (it is ONE argv string in `bash -c \"$(curl …)\"`)")
+size = len(bs.encode("utf-8"))
+check("[7] %d bytes < 96 KiB (MAX_ARG_STRLEN is 128 KiB: past it every handed-out command fails 'Argument list too long')" % size,
+      size < 96 * 1024, size)
 
 print("")
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
