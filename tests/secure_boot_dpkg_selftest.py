@@ -89,6 +89,7 @@ check("CONTROL: an UNSIGNED module refused → no (there is no key to enrol for 
 
 print("\n[1b] awg_mok_key names the certificate that SIGNED the module (modinfo's sig_key = its serial), not a guess")
 import shutil as _sh
+colons = ""
 if _sh.which("openssl"):
     for n in ("a", "b"):
         subprocess.run(["openssl", "req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=key-" + n,
@@ -150,6 +151,8 @@ U = rd("update.sh")
 check("update.sh: the heal stops at a refused key — the note, userspace, one closing line",
       'if [ "$_tools" = yes ] && awg_mod_key_rejected; then\n    awg_key_refused_note' in U
       and U.index("awg_mod_key_rejected; then\n    awg_key_refused_note") < U.index('info "healing the AmneziaWG kernel module'))
+check("update.sh: Secure Boot is asked BEFORE 'nothing new to try' (an old compile record would give the wrong reason)",
+      U.index('if [ "$_tools" = yes ] && awg_mod_key_rejected; then') < U.index('have amneziawg-go && awg_nothing_new; then'))
 check("update.sh: the package route's retry skips the --reinstall for a refused key",
       "modprobe amneziawg 2>/dev/null || awg_mod_key_rejected || { run apt-get install --reinstall -y amneziawg-dkms" in U)
 check("update.sh: the closing userspace line names Secure Boot when it was recorded",
@@ -167,14 +170,35 @@ N = load("swgnoded", os.path.join(ROOT, "swg-noded"))
 P = load("swgpanel", os.path.join(ROOT, "swg-panel-server"))
 KR = os.uname().release
 
-print("\n[6] swg-noded: why the module does not load")
-S = tempfile.mkdtemp(prefix="sbstate-"); N.STATE_DIR = S; N._boot_id = lambda: "boot-1"
+print("\n[6] swg-noded: why the module does not load — the KERNEL is asked (once per boot and module file), the record kept in step")
+S = tempfile.mkdtemp(prefix="sbstate-"); N.STATE_DIR = S
+BOOTS = {"id": "boot-1"}; N._boot_id = lambda: BOOTS["id"]
+DEPS = {"stamp": "dep-1"}; N._modules_dep_stamp = lambda: DEPS["stamp"]
+KK = {"signer": "host Secure Boot Module Signature key", "err": "modprobe: ERROR: could not insert 'amneziawg': Key was rejected by service",
+      "rc": 1, "sigkey": "", "probes": 0}
+def krun(args, timeout=20, **k):
+    if args[:3] == ["modinfo", "-F", "signer"]:
+        return subprocess.CompletedProcess(args, 0, KK["signer"] + "\n", "")
+    if args[:3] == ["modinfo", "-F", "sig_key"]:
+        return subprocess.CompletedProcess(args, 0, KK["sigkey"] + "\n", "")
+    if args[:1] == ["modprobe"]:
+        KK["probes"] += 1
+        return subprocess.CompletedProcess(args, KK["rc"], "", KK["err"] if KK["rc"] else "")
+    return subprocess.CompletedProcess(args, 1, "", "")
+N.run = krun
 def rec(name, text):
     for f in ("awg-module-refused", "awg-module-failed"):
         if os.path.exists(os.path.join(S, f)):
             os.remove(os.path.join(S, f))
     if name:
         open(os.path.join(S, name), "w").write(text)
+def readrec():
+    p = os.path.join(S, "awg-module-refused")
+    return open(p).read() if os.path.exists(p) else None
+def fresh(**kw):
+    N._AWG_KEY.update(k=None, v=False); KK.update(signer="host Secure Boot Module Signature key", rc=1, probes=0,
+                                                  err="modprobe: ERROR: could not insert 'amneziawg': Key was rejected by service")
+    KK.update(kw)
 def health(modules="", built=False, fallback=True, tun=("awg0",)):
     ifaces = {"awg0": {"meta": {"tool": "awg"}}}
     exists = {"/usr/bin/awg"} | {"/sys/class/net/%s/tun_flags" % i for i in tun}
@@ -189,38 +213,63 @@ def health(modules="", built=False, fallback=True, tun=("awg0",)):
          mock.patch("os.access", lambda p, m: fallback and p == "/usr/local/bin/amneziawg-go"), mock.patch("os.listdir", flistdir), \
          mock.patch.object(N, "NODE_KIND", "bare"):
         return (N.node_datapath_health(ifaces) or {}).get("awg") or {}
-rec("awg-module-refused", "kernel=%s\nboot=boot-1\nmok=/var/lib/dkms/mok.pub\n" % KR)
+rec("awg-module-refused", "kernel=%s\nboot=boot-0\nmok=/var/lib/dkms/mok.pub\n" % KR); fresh()
 a = health(built=True)
-check("built, refused (recorded for this kernel), interfaces on the fallback → why=key + the key", a.get("ok") is False
+check("built, the kernel refuses its key, interfaces on the fallback → why=key + the installer's key", a.get("ok") is False
       and a.get("why") == "key" and a.get("mok") == "/var/lib/dkms/mok.pub", a)
-a = health(built=True, fallback=False, tun=())
-check("…and with NO fallback and nothing on userspace yet → still not ok (built alone read as healthy, nothing came up)",
+check("…the record is refreshed for THIS boot (the panel's host check reads it), its key kept",
+      readrec() == "kernel=%s\nboot=boot-1\nmok=/var/lib/dkms/mok.pub\n" % KR, readrec())
+health(built=True); health(built=True)
+check("…asked ONCE: later syncs in the same boot do not run modprobe again", KK["probes"] == 1, KK["probes"])
+BOOTS["id"] = "boot-2"; health(built=True)
+check("…a reboot asks again (the code review's case: enrolled or not, the old record no longer says)", KK["probes"] == 2, KK["probes"])
+DEPS["stamp"] = "dep-2"; health(built=True)
+check("…and so does a new module file (DKMS rebuilt it)", KK["probes"] == 3, KK["probes"])
+fresh(); a = health(built=True, fallback=False, tun=())
+check("refused with NO fallback and nothing on userspace yet → not ok (built alone read as healthy, nothing came up)",
       a.get("ok") is False and a.get("why") == "key" and a.get("fallback") is False, a)
-rec("awg-module-refused", "kernel=%s\nboot=boot-0\nmok=/var/lib/dkms/mok.pub\n" % KR)
-check("a refusal from an EARLIER boot (the key may be enrolled since — that takes a reboot) → no why, built = ok again",
-      "why" not in health(built=True, tun=()) and health(built=True, tun=()).get("ok") is True, health(built=True, tun=()))
-rec("awg-module-refused", "kernel=%s\nboot=boot-1\nmok=/var/lib/dkms/mok.pub; rm -rf /\n" % KR)
-check("a key path that is not a plain path is dropped (why stays)", health(built=True).get("why") == "key" and "mok" not in health(built=True))
-rec("awg-module-refused", "kernel=5.15.0-1-generic\nboot=boot-1\nmok=/var/lib/dkms/mok.pub\n")
-check("a record for another kernel → no why (never a guess)", "why" not in health(built=True), health(built=True))
-rec("awg-module-failed", "kernel=%s\npkg=1.0.0\n" % KR)
-check("no module file + the compile record → why=compile", health(built=False).get("why") == "compile", health(built=False))
-check("the compile record, but a module file exists now → no why", "why" not in health(built=True), health(built=True))
-rec("awg-module-refused", "kernel=%s\nboot=boot-1\nmok=/var/lib/dkms/mok.pub\n" % KR)
-check("CONTROL: the module is loaded → ok, and no why", "why" not in health(modules="amneziawg 1 0 - Live\n", tun=()) and
-      health(modules="amneziawg 1 0 - Live\n", tun=()).get("ok") is True)
-rec("", "")
-check("CONTROL: no record at all → no why", "why" not in health(built=False))
+fresh(rc=0); rec("awg-module-refused", "kernel=%s\nboot=boot-2\nmok=/var/lib/dkms/mok.pub\n" % KR); a = health(built=True, tun=())
+check("after enrolment the modprobe succeeds → no why, ok, and the record is removed", "why" not in a and a.get("ok") is True
+      and readrec() is None, (a, readrec()))
+fresh(signer=""); a = health(built=True)
+check("an UNSIGNED module the kernel refuses → not a key refusal (no key to enrol), and modprobe is not even asked",
+      a.get("why") != "key" and KK["probes"] == 0, (a, KK["probes"]))
+fresh(err="modprobe: ERROR: could not insert 'amneziawg': Exec format error"); a = health(built=True)
+check("another refusal (a build for another ABI) → not a key refusal", a.get("why") != "key", a)
+fresh(); rec("awg-module-refused", "kernel=%s\nboot=boot-0\nmok=/var/lib/dkms/mok.pub; rm -rf /\n" % KR)
+a = health(built=True)
+check("a key path that is not a plain path is dropped (why stays)", a.get("why") == "key" and "mok" not in a, a)
+if _sh.which("openssl"):
+    fresh(sigkey=colons); rec("", ""); N.AWG_MOK_CANDIDATES = (T + "/a.der", T + "/b.der"); N.run = lambda args, timeout=20, **k: (
+        subprocess.run(args, capture_output=True, text=True) if args[:1] == ["openssl"] else krun(args, timeout))
+    a = health(built=True)
+    check("no installer record → swg-noded names the certificate that signed the module itself (matched by serial)",
+          a.get("mok") == T + "/b.der", a)
+    N.run = krun
+fresh(); rec("awg-module-failed", "kernel=%s\npkg=1.0.0\n" % KR)
+check("no module file + the compile record → why=compile, and modprobe is not asked", health(built=False).get("why") == "compile"
+      and KK["probes"] == 0, health(built=False))
+fresh(rc=0)
+check("the compile record, but a module file exists now (and loads) → no why", "why" not in health(built=True), health(built=True))
+fresh()
+check("CONTROL: the module is loaded → ok, no why, and the kernel is not asked", "why" not in health(modules="amneziawg 1 0 - Live\n", tun=())
+      and health(modules="amneziawg 1 0 - Live\n", tun=()).get("ok") is True and KK["probes"] == 0)
+rec("", ""); fresh()
+check("CONTROL: no module file and no record → no why", "why" not in health(built=False))
 
 print("\n[7] swg-noded: dpkg's unfinished work")
 D = tempfile.mkdtemp(prefix="sbdpkg-db-"); os.makedirs(D + "/updates")
 N.DPKG_STATUS = D + "/status"; N.DPKG_UPDATES = D + "/updates"; open(N.DPKG_STATUS, "w").write("x")
+open(D + "/lock", "w").write(""); N.DPKG_LOCKS = (D + "/lock",); N.PROC_LOCKS = D + "/proc-locks"; open(N.PROC_LOCKS, "w").write("")
+_st = os.stat(D + "/lock"); LOCKID = "%02x:%02x:%d" % (os.major(_st.st_dev), os.minor(_st.st_dev), _st.st_ino)
 AUDIT = ("The following packages are only half configured, probably due to problems\nconfiguring them the first time.  The "
          "configuration should be retried using\ndpkg --configure <package> or the configure menu option in dselect:\n"
          " amneziawg-dkms       AmneziaWG kernel module\n linux-headers-7.0.0-38-generic Linux kernel headers\n"
          " evil;rm            not a package name\n"
          "The following packages are missing the md5sums control file in the database, they need to be reinstalled:\n"
          " vendor-agent         an old third-party package\n"
+         "The following packages have been triggered, but the trigger processing has not yet been done.  Trigger\n"
+         " man-db               on-line manual pager\n"
          "The following packages have been unpacked but not yet configured.  They must be configured using\n"
          "dpkg --configure or the configure menu option in dselect for them to work:\n"
          " amneziawg-tools      AmneziaWG tools\n")
@@ -233,13 +282,14 @@ def dk(now, kind="bare", dpkg=True):
          mock.patch.object(N.shutil, "which", lambda b: "/usr/bin/dpkg" if dpkg and b == "dpkg" else None):
         return N.dpkg_health(now)
 def fresh(age):
-    t = time.time() - age; os.utime(N.DPKG_STATUS, (t, t)); N._DPKG.update(mtime=None, at=0.0, v=None); AUD["n"] = 0
+    t = time.time() - age; os.utime(N.DPKG_STATUS, (t, t)); os.utime(N.DPKG_UPDATES, (t, t)); N._DPKG.update(mtime=None, at=0.0, v=None); AUD["n"] = 0
 now = time.time()
 fresh(3600)
 v = dk(now)
 check("settled for an hour → the packages in states that stop apt, by name (a malformed line dropped)",
       v == {"pending": ["amneziawg-dkms", "linux-headers-7.0.0-38-generic", "amneziawg-tools"], "interrupted": False}, v)
 check("…not a package only missing its md5sums (harmless — apt runs fine for years with it)", "vendor-agent" not in v["pending"], v)
+check("…not a package with triggers pending (apt processes them itself on its next run)", "man-db" not in v["pending"], v)
 check("…asked in the C locale (the headers are read; a Russian box would answer in Russian)", AUD.get("args") == ["dpkg", "--audit"]
       and (AUD.get("env") or {}).get("LC_ALL") == "C", (AUD.get("args"), (AUD.get("env") or {}).get("LC_ALL")))
 dk(now + 60)
@@ -252,7 +302,15 @@ check("…an apt run starts after a settled answer → the last settled answer s
       dk(now)["pending"] == ["amneziawg-dkms", "linux-headers-7.0.0-38-generic", "amneziawg-tools"])
 t = time.time() - 3600; os.utime(N.DPKG_STATUS, (t, t)); AUD["rc"] = 0
 check("…dpkg writes again and settles clean → nothing pending", dk(now) == {"pending": [], "interrupted": False})
-fresh(3600); AUD.update(out="", rc=0); open(D + "/updates/0003", "w").write("x")
+fresh(3600); AUD.update(out=AUDIT, rc=1); open(N.PROC_LOCKS, "w").write("1: POSIX  ADVISORY  WRITE 4242 %s 0 EOF\n" % LOCKID)
+check("status untouched for an hour but dpkg HOLDS its lock (a long postinst) → not judged, dpkg not asked",
+      dk(now) == {"pending": [], "interrupted": False} and AUD["n"] == 0, AUD)
+open(N.PROC_LOCKS, "w").write("1: POSIX  ADVISORY  WRITE 4242 00:00:1 0 EOF\n")
+check("CONTROL: another file's lock → judged", dk(now)["pending"][:1] == ["amneziawg-dkms"])
+open(N.PROC_LOCKS, "w").write("")
+fresh(3600); t = time.time() - 60; os.utime(N.DPKG_UPDATES, (t, t))
+check("its journal moved a minute ago (status itself untouched) → not judged", dk(now) == {"pending": [], "interrupted": False} and AUD["n"] == 0)
+fresh(3600); AUD.update(out="", rc=0); open(D + "/updates/0003", "w").write("x"); t = time.time() - 3600; os.utime(N.DPKG_UPDATES, (t, t))
 check("a run cut off mid-way (its journal in updates/) → interrupted", dk(now) == {"pending": [], "interrupted": True})
 os.remove(D + "/updates/0003")
 fresh(3600); AUD.update(out=AUDIT, rc=1); dk(now); t = time.time() - 3600 + 5; os.utime(N.DPKG_STATUS, (t, t)); AUD["rc"] = 2
@@ -272,8 +330,9 @@ i = issues(dps(fallback=True, why="key", mok="/var/lib/shim-signed/mok/MOK.der")
 check("Secure Boot, fallback → the steps with the node's key, no 'update the node'", len(i) == 1 and "Secure Boot refuses" in i[0]
       and "sudo mokutil --import /var/lib/shim-signed/mok/MOK.der" in i[0] and "slower fallback" in i[0] and "update the node" not in i[0], i)
 i = issues(dps(fallback=False, why="key", mok="/x; reboot"))
-check("Secure Boot, no fallback → can't come up; a bad key path → both distros' keys named, none guessed", "can't come up" in i[0]
-      and "--import /var/lib/shim-signed/mok/MOK.der (Ubuntu) or /var/lib/dkms/mok.pub (Debian)," in i[0] and "/x;" not in i[0], i)
+check("Secure Boot, no fallback → can't come up; a bad key path → a sentence of its own naming both distros' keys (no English fragment spliced into a translated one)",
+      "can't come up" in i[0] and "/var/lib/shim-signed/mok/MOK.der on Ubuntu, /var/lib/dkms/mok.pub on Debian" in i[0] and "/x;" not in i[0]
+      and P._node_issues({"id": "n", "name": "n"}, dps(fallback=False, why="key"))[0].get("error_vars") in (None, {}), i)
 i = issues(dps(fallback=True, why="compile"))
 check("does not compile → waits for a new kernel or build, no 'update the node to rebuild'", "does not compile" in i[0]
       and "rebuild" not in i[0], i)
@@ -288,15 +347,17 @@ check("dpkg: nothing pending, or no report, or a malformed one → silent",
       issues({"dpkg": {"pending": [], "interrupted": False}}) == [] and issues({}) == [] and issues({"dpkg": "x"}) == []
       and issues({"dpkg": {"pending": "amneziawg-dkms"}}) == [])
 PS = rd("swg-panel-server")
-check("'repair node' is not offered when the node recorded why", '_awg_datapath(snap).get("needed") and not _awg_datapath(snap).get("why")\n' in PS)
+check("'repair node' is not offered for Secure Boot — and still is for a module that does not compile (an update retries when something moved)",
+      '_awg_datapath(snap).get("needed") and _awg_datapath(snap).get("why") != "key"\n' in PS)
 ru = rd("js/lang/ru.js")
 keys = re.findall(r'(?:perr\(|if _dp\.get\("fallback"\) else\s+)("(?:AmneziaWG: Secure|AmneziaWG\'s kernel module does not|the package manager on|a package manager run)[^"]*")', PS)
+keys += re.findall(r'T\(("An update cannot fix this — the key[^"]*")\)', rd("js/screen-overview.js"))
 VS = rd("js/views.js")
 vkeys = re.findall(r'T\(("(?:AmneziaWG runs on the slower fallback datapath — its kernel module does not|the AmneziaWG kernel module does not compile|Secure Boot refuses the AmneziaWG)[^"]*")', VS)
 vkeys += ['"awg interfaces run on the slower fallback datapath"', '"awg interfaces can’t come up"']
 check("the master's notice uses the two short halves as T() keys", all(("T(" + k + ")") in VS for k in vkeys[-2:]))
 keys += vkeys
-check("every new sentence (%d) has its Russian line" % len(keys), len(keys) == 11 and all(("  " + k + ":") in ru for k in keys),
+check("every new sentence (%d) has its Russian line" % len(keys), len(keys) == 15 and all(("  " + k + ":") in ru for k in keys),
       [k[:60] for k in keys if ("  " + k + ":") not in ru] or len(keys))
 
 print("\n[9] the master's own host")
@@ -312,7 +373,16 @@ with mock.patch.dict(os.environ, {"SWG_NODED_STATE": P2}):
     ref = P._host_awg_record("awg-module-refused")
 check("the Secure Boot record for this kernel is read, with this boot's id beside it", bool(ref) and ref.get("boot") == P._host_boot_id() != "", ref)
 check("…and host_datapath_health turns a BUILT module refused in this boot into not-ok, why=key (+ the key)",
-      'if built and _ref and _ref.get("boot") and _ref.get("boot") == _host_boot_id():\n                out["awg"].update(ok=False, why="key"' in PS)
+      '_key = bool(built and _ref and _ref.get("boot") and _ref.get("boot") == _host_boot_id())' in PS
+      and '"ok": bool(loaded or (built and not _key))' in PS)
+VS, OV, SN, AP = rd("js/views.js"), rd("js/screen-overview.js"), rd("js/screen-nodes.js"), rd("app.js")
+check("master: the Secure Boot issue is marked as one no update repairs", '"secureboot", dp.mok' in VS and "}), false);" in VS)
+check("master: the Fix button counts, and opens, only what an update repairs", "serviceIssues().filter(i => i.fix !== false).length" in AP
+      and "issues=${serviceIssues().filter(i => i.fix !== false)}" in AP)
+check("master: its hover bubble and the 'can be repaired' toast count only those too",
+      "serviceIssues().filter(i => i.fix !== false); if (!iss.length)" in SN and "serviceIssues().some(i => i.fix !== false)" in SN)
+check("master: the issue sheet offers no 'Run update' for it, and says why", "const noUpdate = list.every(i => i.id === \"subcert\" || i.fix === false);" in OV
+      and "${noUpdate ? null" in OV and "An update cannot fix this" in OV)
 check("the master's notice gives the steps for it", 'if (dp.why === "key") add("awg"' in rd("js/views.js"))
 check("…and host_datapath_health reports why=compile from it",
       'if not out["awg"]["ok"] and _host_awg_record("awg-module-failed"):\n                out["awg"]["why"] = "compile"' in PS)
