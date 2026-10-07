@@ -13147,7 +13147,8 @@ DPKG_SETTLE = 600
 DPKG_RECHECK = 1800
 # Only what apt cannot get past by itself. Not the trigger states: apt processes pending triggers on its next run.
 DPKG_BLOCKING = ("half configured", "half installed", "unpacked but not yet configured", "in a mess")
-_DPKG = {"mtime": None, "at": 0.0, "v": None}
+DPKG_PEEK = 60
+_DPKG = {"mtime": None, "at": 0.0, "v": None, "peek": 0.0}
 
 
 def _dpkg_busy():
@@ -13180,10 +13181,28 @@ def dpkg_health(now=None):
     if _DPKG["v"] is not None and mt == _DPKG["mtime"] and now - _DPKG["at"] < DPKG_RECHECK:
         return dict(_DPKG["v"])
     if now - mt < DPKG_SETTLE or _dpkg_busy():     # dpkg ran in the last ten minutes, or holds its lock now
+        # The wait is for RAISING an issue, never for clearing one: the operator's own `dpkg --configure -a` writes
+        # `status` and would otherwise leave the fixed issue up for ten more minutes. While one is shown, a peek at most
+        # every DPKG_PEEK seconds clears it the moment dpkg is clean — a clean audit is true even mid-run.
+        last = _DPKG["v"]
+        if last and (last["pending"] or last["interrupted"]) and now - _DPKG["peek"] >= DPKG_PEEK:
+            _DPKG["peek"] = now
+            v = _dpkg_audit()
+            if v is not None and not v["pending"] and not v["interrupted"]:
+                _DPKG.update(mtime=mt, at=now, v=v)
         return dict(_DPKG["v"] or {"pending": [], "interrupted": False})
+    v = _dpkg_audit()
+    if v is None:                                  # no answer: the last one stands
+        return dict(_DPKG["v"]) if _DPKG["v"] is not None else None
+    _DPKG.update(mtime=mt, at=now, v=v)
+    return dict(_DPKG["v"])
+
+
+def _dpkg_audit():
+    """One read of dpkg's unfinished work — {"pending", "interrupted"}, or None when dpkg gave no answer."""
     r = run(["dpkg", "--audit"], timeout=15, env=dict(os.environ, LC_ALL="C"))   # C: its section headers are what is read below
     if r.returncode not in (0, 1):                 # 1: it found something (newer dpkg); anything else: no answer
-        return dict(_DPKG["v"]) if _DPKG["v"] is not None else None
+        return None
     pend, take = [], False
     for ln in (r.stdout or "").splitlines():
         if ln.startswith("The following packages"):
@@ -13199,8 +13218,7 @@ def dpkg_health(now=None):
     intr = False
     with contextlib.suppress(OSError):
         intr = any(n.isdigit() for n in os.listdir(DPKG_UPDATES))
-    _DPKG.update(mtime=mt, at=now, v={"pending": pend[:20], "interrupted": intr})
-    return dict(_DPKG["v"])
+    return {"pending": pend[:20], "interrupted": intr}
 
 
 def _dpkg_part():
