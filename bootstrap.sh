@@ -227,7 +227,10 @@ done
 if [ "$SWG_TTY" = /dev/null ] && { : </dev/tty; } 2>/dev/null; then
   _bs_url="<this bootstrap.sh URL>"
   [ "$REPO" = https://github.com/SanityProtocol/swg-panel ] && _bs_url="https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh"
-  _bs_cmd="sudo bash -c \"\$(curl -fsSL $_bs_url)\" --"
+  # A ref other than main rides INSIDE the script string: sudo resets the environment, so SWG_REF in front of it would be
+  # dropped, and the URL does not reach the script either — the dev bootstrap would install main (see _ref_from_url).
+  _bs_pre=""; [ -n "${REF:-}" ] && [ "${REF:-}" != main ] && _bs_pre="SWG_REF=$(printf '%q' "$REF"); "
+  _bs_cmd="sudo bash -c \"$_bs_pre\$(curl -fsSL $_bs_url)\" --"
   for _a in ${SWG_ARGS[@]+"${SWG_ARGS[@]}"}; do _bs_cmd+=" $(printf '%q' "$_a")"; done
   warn "this terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults, and one that has none stops the run. To answer them, run instead:"
   echo "    $_bs_cmd" >&2

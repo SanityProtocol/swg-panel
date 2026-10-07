@@ -38,7 +38,7 @@ import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
 import { IgnoredIfacesCard, openOnboardIface, openEditIface, openConnectionEdit, OrphanRow,
          AdoptIfaceSheet, AdoptDormantWdttSheet, AdoptCsqttSheet } from "./iface.js";
 import { openNodeCreate, openNodeEdit, openNodeRemove, openNodeRecover, openNodeRotate, openNodeRollback, openNodeTransferWatch,
-         openNodeMigrate, openNodeTransfer, unflagNode } from "./sheets-crud.js";
+         openNodeMigrate, openNodeTransfer, unflagNode, bootCmd } from "./sheets-crud.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, openRecreateRekey } from "./peer-actions.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
@@ -1388,7 +1388,7 @@ export function openUpdateDone(from, to) {
 export function openUpdateModal({ title, side, onConfirm, declarative, cmd, auto }) {
   // `cmd` undefined = "no opinion, use the default"; cmd === "" = "there is no command I can honestly
   // print here", which is not the same thing and must not fall back to the bootstrap one.
-  const full = cmd === undefined ? 'sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- update' : cmd;   // the sudo-rs-safe form (sheets-crud bootCmd)
+  const full = cmd === undefined ? bootCmd("update") : cmd;   // the sudo-rs-safe one-liner, built in one place
   const go = async () => { closeModal(); await onConfirm(); };
   openModal(html`<${Sheet} title=${title}
     foot=${declarative && !auto

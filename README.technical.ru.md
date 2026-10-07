@@ -311,7 +311,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
 ```
 
-Флаги пропускают запросы (команда enroll из панели их использует): `-role master|host`, `-user`, `-pass`, `-domain`, `-base`, `-port`, `-tls`, `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`, `-net host|bridge`, `--build` — например `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
+Флаги пропускают запросы (команда enroll из панели их использует): `-role master|host`, `-user`, `-pass`, `-domain`, `-base`, `-port`, `-tls`, `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`, `-net host|bridge`, `--build` — например `… -- docker node -key NODE_KEY -host https://panel.example.net`.
 
 **Или вручную** — один compose-файл, три профиля по именам ролей. Профили `host` и `master` поднимают `swg-panel` **и** `swg-sub` (тот же образ, порт `8444`, простаивает, пока вы не включите подписки); `node` и `master` поднимают `swg-node`.
 

@@ -140,8 +140,10 @@ ask_tty(){ local v p="$1" d="${2:-}"   # prompt on the terminal (curl|bash keeps
   # NB: this runs in a $() subshell (ask_yn_tty captures it), so it can only READ _SWG_NL, not set it — hence just
   # a flag-aware LEADING blank; the following step/helper supplies the trailing blank (its own leading, flag clear).
   [ -n "${_SWG_NL:-}" ] || printf '\n' 2>/dev/null >/dev/tty || true
-  if printf '  %s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then printf '%s' "${v:-$d}"
-  else printf '%s' "$d"; fi; }
+  # A terminal that cannot be READ (swg_tty_ok — sudo-rs's background) prints no prompt it will not answer: the line says
+  # the default was taken, on the terminal like the prompt would have been, and the value goes back as before.
+  if swg_tty_ok && printf '  %s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then printf '%s' "${v:-$d}"
+  else printf '  %s: %s  (no terminal — default taken)\n' "$p" "${d:-(blank)}" 2>/dev/null >/dev/tty || true; printf '%s' "$d"; fi; }
 ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (default when blank / no tty)
   v="$(ask_tty "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N'))" "")"
   case "${v:-$d}" in [Yy]*) printf yes;; *) printf no;; esac; }

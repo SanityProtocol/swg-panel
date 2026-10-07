@@ -2100,7 +2100,7 @@ awg_fail_get(){ # <pkg|src> — what did not compile on THIS kernel; empty (rc 1
 awg_fail_note(){ # <pkg|src> <value> — this kernel's record gains one fact (a record for another kernel is replaced)
   $DRYRUN && return 0
   local k old=""; k="$(uname -r)"
-  [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_FAILED" 2>/dev/null)" = "$k" ] && old="$(grep -v -e '^kernel=' -e "^$1=" "$AWG_MOD_FAILED" 2>/dev/null)"
+  [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_FAILED" 2>/dev/null)" = "$k" ] && old="$(grep -v -e '^kernel=' -e "^$1=" "$AWG_MOD_FAILED" 2>/dev/null || true)"
   mkdir -p "$(dirname "$AWG_MOD_FAILED")" 2>/dev/null || return 0
   printf 'kernel=%s\n%s%s=%s\n' "$k" "${old:+$old
 }" "$1" "$2" > "$AWG_MOD_FAILED.tmp" 2>/dev/null && mv -f "$AWG_MOD_FAILED.tmp" "$AWG_MOD_FAILED" 2>/dev/null || true; }
@@ -2116,6 +2116,13 @@ awg_pkg_retry_due(){ # 0 unless amneziawg-dkms already did not compile on THIS k
   local was c; was="$(awg_fail_get pkg)" || return 0
   c="$(apt-cache policy amneziawg-dkms 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p)"
   [ -n "$c" ] && [ "$c" != "(none)" ] && [ "$c" != "$was" ]; }
+awg_nothing_new(){ # 0 = something did not compile on THIS kernel, and no recorded route has moved since (pkg / upstream)
+  # Asked over the kinds that HAVE a record: a source build records only src, a PPA version without a commit only pkg —
+  # requiring both made the "nothing new" answer unreachable there, and every update "healed" it again.
+  local any=no
+  if awg_fail_get pkg >/dev/null; then any=yes; awg_pkg_retry_due && return 1; fi
+  if awg_fail_get src >/dev/null; then any=yes; awg_src_retry_due && return 1; fi
+  [ "$any" = yes ]; }
 awg_mod_built(){ modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1; }   # a module file exists for THIS kernel (loadable or not)
 _awg_kbuild(){ printf '%s' "${SWG_LIB_MODULES:-/lib/modules}/$(uname -r)/build"; }   # this kernel's headers (the gates point it elsewhere)
 awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that
@@ -2244,7 +2251,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # because its template comes from the distro's own wireguard-tools.
   #
   # This alone does NOT heal a box that already has the tools — see ensure_awg_quick_unit in update.sh.
-  local w built=no _reg=no; w="$(mktemp -d)"
+  local w built=no _reg=no _cloned=no; w="$(mktemp -d)"
   if ! have awg || ! have awg-quick; then
     info "building AmneziaWG tools from source (the amnezia PPA is Ubuntu-only)…"
     # ca-certificates is NOT optional here: without it every https git clone below fails cert verification.
@@ -2288,6 +2295,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
   ensure_awg_headers_follow >/dev/null 2>&1 || true
   if git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/mod.log" 2>&1; then
+    _cloned=yes
     awg_compat_patch "$w/mod/src" >>"$w/mod.log" 2>&1 || true   # PR #218, until upstream ships it
     # D4: REGISTER WITH DKMS instead of `make install`. Upstream's `install` is modules_install for the build kernel
     # only, so the next kernel upgrade left the box with no module — on every Debian node, headers or not. DKMS
@@ -2305,9 +2313,11 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # userspace datapath") gives no cause. On Ubuntu 26.04's 7.0.0-38 the upstream module does not compile at all.
   local _why; _why="$(grep -m1 -iE 'error|fatal|timed out|could not' "$w/mod.log" 2>/dev/null | cut -c1-200)"
   $DRYRUN || warn "the AmneziaWG kernel module did not build for $(uname -r): ${_why:-no error line in its build log}"
-  # A module that did not COMPILE (headers here, no module file): remember the commit, so no update compiles it again,
-  # and drop the DKMS registration this run made — a tree that cannot build would only fail again on every kernel install.
-  if ! $DRYRUN && [ -e "$(_awg_kbuild)" ] && ! awg_mod_built; then
+  # A module that did not COMPILE — cloned, headers here, the compiler's own `error:` in the log, no module file: remember
+  # the commit, so no update compiles it again, and drop the DKMS registration this run made (a tree that cannot build
+  # would only fail again on every kernel install). A clone a slow link cut off, or a missing tool, is NOT that, and is
+  # tried again next time.
+  if ! $DRYRUN && [ "$_cloned" = yes ] && [ -e "$(_awg_kbuild)" ] && ! awg_mod_built && grep -q ': error: ' "$w/mod.log" 2>/dev/null; then
     [ -n "$_head" ] && awg_fail_note src "$_head"
     if [ "${_reg:-no}" = yes ]; then
       local _v; _v="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$w/mod/src/dkms.conf" 2>/dev/null)"

@@ -309,7 +309,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
 ```
 
-Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-user`, `-pass`, `-domain`, `-base`, `-port`, `-tls`, `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`, `-net host|bridge`, `--build` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
+Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-user`, `-pass`, `-domain`, `-base`, `-port`, `-tls`, `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`, `-net host|bridge`, `--build` — e.g. `… -- docker node -key NODE_KEY -host https://panel.example.net`.
 
 **Or by hand** — one compose file, three profiles named after the roles. The `host` and `master` profiles bring up `swg-panel` **and** `swg-sub` (same image, port `8444`, idle until you enable subscriptions); `node` and `master` bring up `swg-node`.
 

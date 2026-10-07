@@ -165,6 +165,7 @@ ver_line(){ local label="$1" cur="$2"
 confirm(){ # confirm <prompt> -> 0 yes / 1 no.  --yes or no terminal => yes (you ran update on purpose)
   $ASSUME_YES && return 0
   local v
+  swg_tty_ok || return 0   # cannot be read (no terminal, or sudo-rs's background): yes, as said — no prompt left hanging
   if printf '  %s %s: ' "$1" "${C_BL}(Y/n)${RESET}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then
     case "$v" in [Nn]*) return 1;; *) return 0;; esac
   else return 0; fi
@@ -903,8 +904,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   $DRYRUN && return 0
   # Nothing new to try: the module did not compile on this kernel, and neither the package nor upstream has moved since.
   # Said in one line — every update used to "heal" it again: minutes of compiling, a broken dpkg, "healed" each time.
-  if [ "$_tools" = yes ] && have amneziawg-go && { awg_fail_get pkg >/dev/null || awg_fail_get src >/dev/null; } \
-     && ! awg_pkg_retry_due && ! awg_src_retry_due; then
+  if [ "$_tools" = yes ] && have amneziawg-go && awg_nothing_new; then
     note "AmneziaWG: userspace datapath — the kernel module does not compile on $(uname -r) yet; tried again when a new kernel or a newer AmneziaWG build arrives"
     return 0
   fi
@@ -1017,6 +1017,7 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
   [ "$APT_DONE" = yes ] || awg_src_refresh || true
   cand="$(pkg_candidate amneziawg-dkms)" || cand=""
   { [ -n "$cand" ] && [ "$cand" != "(none)" ] && dpkg --compare-versions "$cand" gt "$cur"; } || return 0
+  awg_pkg_retry_due || return 0   # this very version already did not compile on this kernel — not again
   # Held on purpose (`apt-mark hold`) → the operator's call: said once per update, never an error every update.
   case " $(apt-mark showhold 2>/dev/null | tr '\n' ' ') " in *" amneziawg-dkms "*|*" amneziawg-tools "*|*" amneziawg "*)
     ok "AmneziaWG packages: $cand is available, but they are held (apt-mark hold) — left as they are"; return 0 ;; esac
@@ -1036,6 +1037,13 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
   # so the next kernel builds too.
   if ! run env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=180 --only-upgrade $pk >/dev/null 2>&1 \
      && ! { awg_compat_patch_installed && awg_dpkg_recover; }; then
+    # Its module does not compile here even with the fix: leave dpkg clean and remember this version (the same give-up
+    # the install route takes) — not a half-configured package that ends every later apt run, compiled again each update.
+    if awg_dkms_compile_failed; then
+      awg_dkms_give_up; DID_UPDATE=yes
+      note "AmneziaWG: $cand does not compile on $(uname -r) — removed, userspace datapath; tried again with a newer build or kernel"
+      return 0
+    fi
     note "AmneziaWG: the package upgrade did not go through — tried again on the next update"
     warn "AmneziaWG: the amnezia packages could not be upgraded ($cur → $cand) — tried again on the next update"
     return 0
