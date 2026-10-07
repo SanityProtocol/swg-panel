@@ -55,15 +55,16 @@ def grab_text(path, name):
 T = tempfile.mkdtemp(prefix="sbdpkg-")
 open(T + "/mok.pub", "w").write("key")
 KERN = "7.0.0-38-generic"
-LIB = grab("lib/common.sh", "awg_mod_built", "awg_mod_key_rejected", "awg_mok_key", "awg_key_refused_here", "awg_key_refused_note")
+LIB = grab("lib/common.sh", "awg_mod_built", "awg_mod_key_rejected", "awg_mok_key", "_awg_boot_id", "awg_key_refused_here", "awg_key_refused_note")
 STUBS = ('DRYRUN=false\ninfo(){ echo "INFO $*"; }\nwarn(){ echo "WARN $*"; }\nnote(){ echo "NOTE $*"; }\n'
          'run(){ echo "RUN $*" >> "$T/calls"; }\n'
          'uname(){ [ "$1" = -r ] && echo %s || command uname "$@"; }\n'
-         'AWG_MOD_REFUSED="$T/awg-module-refused"; AWG_MOD_FAILED="$T/awg-module-failed"; SWG_DKMS_MOK="$T/mok.pub"\n') % KERN
-def sh(body, modinfo="return 0", modprobe_err="", modprobe_rc=1):
+         'AWG_MOD_REFUSED="$T/awg-module-refused"; AWG_MOD_FAILED="$T/awg-module-failed"; SWG_MOK_CANDIDATES="${SWG_MOK_CANDIDATES:-$T/mok.pub}"\n') % KERN
+SIGNED = 'case "$*" in *signer*) echo "host Secure Boot Module Signature key";; *sig_key*) echo "${SIGKEY:-}";; esac; return 0'
+def sh(body, modinfo=SIGNED, modprobe_err="", modprobe_rc=1, env=None):
     mp = 'modprobe(){ [ -n "%s" ] && echo "%s" >&2; return %d; }\n' % (modprobe_err, modprobe_err, modprobe_rc)
     return subprocess.run(["bash", "-c", STUBS + "modinfo(){ %s; }\n" % modinfo + mp + LIB + body],
-                          capture_output=True, text=True, env=dict(os.environ, T=T))
+                          capture_output=True, text=True, env=dict(os.environ, T=T, **(env or {})))
 def calls():
     p = T + "/calls"
     s = open(p).read() if os.path.exists(p) else ""
@@ -84,6 +85,25 @@ check("'Required key not available' (lockdown) → yes", "YES" in sh(Q, modprobe
 check("CONTROL: another refusal (a build for another ABI) → no", "NO" in sh(Q, modprobe_err=EXEC).stdout)
 check("CONTROL: the module loads → no", "NO" in sh(Q, modprobe_rc=0).stdout)
 check("CONTROL: no module file for this kernel → no (that is a compile question)", "NO" in sh(Q, modinfo="return 1", modprobe_err=KEY).stdout)
+check("CONTROL: an UNSIGNED module refused → no (there is no key to enrol for it)", "NO" in sh(Q, modinfo="return 0", modprobe_err=NOKEY).stdout)
+
+print("\n[1b] awg_mok_key names the certificate that SIGNED the module (modinfo's sig_key = its serial), not a guess")
+import shutil as _sh
+if _sh.which("openssl"):
+    for n in ("a", "b"):
+        subprocess.run(["openssl", "req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=key-" + n,
+                        "-keyout", "%s/%s.key" % (T, n), "-outform", "DER", "-out", "%s/%s.der" % (T, n)], capture_output=True, check=True)
+    ser = subprocess.run(["openssl", "x509", "-inform", "DER", "-in", T + "/b.der", "-noout", "-serial"], capture_output=True, text=True).stdout.split("=")[1].strip()
+    colons = ":".join(ser[i:i + 2] for i in range(0, len(ser), 2)).lower()      # how modinfo prints it
+    cand = {"SWG_MOK_CANDIDATES": "%s/a.der %s/b.der" % (T, T)}
+    r = sh('have(){ command -v "$1" >/dev/null 2>&1; }; awg_mok_key', env=dict(cand, SIGKEY=colons))
+    check("two keys on the box, the module signed by the SECOND → the second is named", r.stdout == T + "/b.der", r.stdout + r.stderr)
+    r = sh('have(){ command -v "$1" >/dev/null 2>&1; }; awg_mok_key && echo " FOUND" || echo NONE', env=dict(cand, SIGKEY="00:11:22"))
+    check("signed by neither → none named (the message says 'the DKMS signing key', never a wrong path)", "NONE" in r.stdout, r.stdout)
+    r = sh('have(){ command -v "$1" >/dev/null 2>&1; }; awg_mok_key', env=dict(cand, SIGKEY=""))
+    check("no sig_key to match → the first that exists", r.stdout == T + "/a.der", r.stdout)
+else:
+    print("  SKIP no openssl on this box")
 
 print("\n[2] awg_key_refused_note")
 reset()
@@ -91,7 +111,8 @@ r = sh('awg_key_refused_note; awg_key_refused_here && echo HERE')
 rec = open(T + "/awg-module-refused").read() if os.path.exists(T + "/awg-module-refused") else ""
 check("the warning gives the enrolment steps with the key DKMS signs with", "sudo mokutil --import %s/mok.pub" % T in r.stdout
       and "Enroll MOK" in r.stdout and "rebuilding the module would not help" in r.stdout, r.stdout)
-check("the record: this kernel, and the key", rec == "kernel=%s\nmok=%s/mok.pub\n" % (KERN, T), repr(rec))
+BOOT = open("/proc/sys/kernel/random/boot_id").read().strip()
+check("the record: this kernel, this boot, and the key", rec == "kernel=%s\nboot=%s\nmok=%s/mok.pub\n" % (KERN, BOOT, T), repr(rec))
 check("awg_key_refused_here reads it back for this kernel", "HERE" in r.stdout, r.stdout)
 r = subprocess.run(["bash", "-c", STUBS.replace(KERN, "7.0.0-40-generic") + LIB + 'awg_key_refused_here && echo HERE || echo NOT'],
                    capture_output=True, text=True, env=dict(os.environ, T=T))
@@ -147,7 +168,7 @@ P = load("swgpanel", os.path.join(ROOT, "swg-panel-server"))
 KR = os.uname().release
 
 print("\n[6] swg-noded: why the module does not load")
-S = tempfile.mkdtemp(prefix="sbstate-"); N.STATE_DIR = S
+S = tempfile.mkdtemp(prefix="sbstate-"); N.STATE_DIR = S; N._boot_id = lambda: "boot-1"
 def rec(name, text):
     for f in ("awg-module-refused", "awg-module-failed"):
         if os.path.exists(os.path.join(S, f)):
@@ -168,18 +189,24 @@ def health(modules="", built=False, fallback=True, tun=("awg0",)):
          mock.patch("os.access", lambda p, m: fallback and p == "/usr/local/bin/amneziawg-go"), mock.patch("os.listdir", flistdir), \
          mock.patch.object(N, "NODE_KIND", "bare"):
         return (N.node_datapath_health(ifaces) or {}).get("awg") or {}
-rec("awg-module-refused", "kernel=%s\nmok=/var/lib/dkms/mok.pub\n" % KR)
+rec("awg-module-refused", "kernel=%s\nboot=boot-1\nmok=/var/lib/dkms/mok.pub\n" % KR)
 a = health(built=True)
 check("built, refused (recorded for this kernel), interfaces on the fallback → why=key + the key", a.get("ok") is False
       and a.get("why") == "key" and a.get("mok") == "/var/lib/dkms/mok.pub", a)
-rec("awg-module-refused", "kernel=%s\nmok=/var/lib/dkms/mok.pub; rm -rf /\n" % KR)
+a = health(built=True, fallback=False, tun=())
+check("…and with NO fallback and nothing on userspace yet → still not ok (built alone read as healthy, nothing came up)",
+      a.get("ok") is False and a.get("why") == "key" and a.get("fallback") is False, a)
+rec("awg-module-refused", "kernel=%s\nboot=boot-0\nmok=/var/lib/dkms/mok.pub\n" % KR)
+check("a refusal from an EARLIER boot (the key may be enrolled since — that takes a reboot) → no why, built = ok again",
+      "why" not in health(built=True, tun=()) and health(built=True, tun=()).get("ok") is True, health(built=True, tun=()))
+rec("awg-module-refused", "kernel=%s\nboot=boot-1\nmok=/var/lib/dkms/mok.pub; rm -rf /\n" % KR)
 check("a key path that is not a plain path is dropped (why stays)", health(built=True).get("why") == "key" and "mok" not in health(built=True))
-rec("awg-module-refused", "kernel=5.15.0-1-generic\nmok=/var/lib/dkms/mok.pub\n")
+rec("awg-module-refused", "kernel=5.15.0-1-generic\nboot=boot-1\nmok=/var/lib/dkms/mok.pub\n")
 check("a record for another kernel → no why (never a guess)", "why" not in health(built=True), health(built=True))
 rec("awg-module-failed", "kernel=%s\npkg=1.0.0\n" % KR)
 check("no module file + the compile record → why=compile", health(built=False).get("why") == "compile", health(built=False))
 check("the compile record, but a module file exists now → no why", "why" not in health(built=True), health(built=True))
-rec("awg-module-refused", "kernel=%s\nmok=/var/lib/dkms/mok.pub\n" % KR)
+rec("awg-module-refused", "kernel=%s\nboot=boot-1\nmok=/var/lib/dkms/mok.pub\n" % KR)
 check("CONTROL: the module is loaded → ok, and no why", "why" not in health(modules="amneziawg 1 0 - Live\n", tun=()) and
       health(modules="amneziawg 1 0 - Live\n", tun=()).get("ok") is True)
 rec("", "")
@@ -264,8 +291,12 @@ PS = rd("swg-panel-server")
 check("'repair node' is not offered when the node recorded why", '_awg_datapath(snap).get("needed") and not _awg_datapath(snap).get("why")\n' in PS)
 ru = rd("js/lang/ru.js")
 keys = re.findall(r'(?:perr\(|if _dp\.get\("fallback"\) else\s+)("(?:AmneziaWG: Secure|AmneziaWG\'s kernel module does not|the package manager on|a package manager run)[^"]*")', PS)
-keys += re.findall(r'T\(("(?:AmneziaWG runs on the slower fallback datapath — its kernel module does not|the AmneziaWG kernel module does not compile)[^"]*")\)', rd("js/views.js"))
-check("every new sentence (%d) has its Russian line" % len(keys), len(keys) == 8 and all(("  " + k + ":") in ru for k in keys),
+VS = rd("js/views.js")
+vkeys = re.findall(r'T\(("(?:AmneziaWG runs on the slower fallback datapath — its kernel module does not|the AmneziaWG kernel module does not compile|Secure Boot refuses the AmneziaWG)[^"]*")', VS)
+vkeys += ['"awg interfaces run on the slower fallback datapath"', '"awg interfaces can’t come up"']
+check("the master's notice uses the two short halves as T() keys", all(("T(" + k + ")") in VS for k in vkeys[-2:]))
+keys += vkeys
+check("every new sentence (%d) has its Russian line" % len(keys), len(keys) == 11 and all(("  " + k + ":") in ru for k in keys),
       [k[:60] for k in keys if ("  " + k + ":") not in ru] or len(keys))
 
 print("\n[9] the master's own host")
@@ -276,6 +307,13 @@ with mock.patch.dict(os.environ, {"SWG_NODED_STATE": P2}):
     open(P2 + "/awg-module-failed", "w").write("kernel=4.19.0\nsrc=abc\n")
     other = P._host_awg_record("awg-module-failed")
 check("the compile record for this kernel is read; another kernel's is not", bool(got) and other is None, (got, other))
+with mock.patch.dict(os.environ, {"SWG_NODED_STATE": P2}):
+    open(P2 + "/awg-module-refused", "w").write("kernel=%s\nboot=%s\nmok=/var/lib/shim-signed/mok/MOK.der\n" % (KR, P._host_boot_id()))
+    ref = P._host_awg_record("awg-module-refused")
+check("the Secure Boot record for this kernel is read, with this boot's id beside it", bool(ref) and ref.get("boot") == P._host_boot_id() != "", ref)
+check("…and host_datapath_health turns a BUILT module refused in this boot into not-ok, why=key (+ the key)",
+      'if built and _ref and _ref.get("boot") and _ref.get("boot") == _host_boot_id():\n                out["awg"].update(ok=False, why="key"' in PS)
+check("the master's notice gives the steps for it", 'if (dp.why === "key") add("awg"' in rd("js/views.js"))
 check("…and host_datapath_health reports why=compile from it",
       'if not out["awg"]["ok"] and _host_awg_record("awg-module-failed"):\n                out["awg"]["why"] = "compile"' in PS)
 check("the master's notice words it without 'running Update rebuilds it'", 'if (dp.why === "compile") add("awg"' in rd("js/views.js"))
