@@ -16,6 +16,8 @@ copy of that snippet in a real pseudo-terminal, in both positions:
   [3] no question in any script reads /dev/tty directly any more (they read "${SWG_TTY:-/dev/tty}")
   [4] bootstrap.sh in the background warns before anything asks, and hands back the same arguments as
       `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- …`, the form that works under sudo-rs and classic sudo alike
+  [5] the snippet is byte-identical in all seven scripts (each needs it before lib/common.sh is loaded)
+  [6] bootstrap.sh is one brace group: a download cut off mid-way is a syntax error that runs nothing, in either form
 
 Run: python3 tests/tty_background_selftest.py      (0 = pass)
 """
@@ -109,6 +111,31 @@ check("[4] …and hands back the same arguments in the form sudo-rs can run",
 check("[4] …and does not stop", not stopped, out[-300:])
 out, stopped = run_in_pty(BS, background=False)
 check("[4] CONTROL: in the foreground it says nothing of the kind", "this terminal cannot be read" not in out, out[:300])
+
+print("== [5] one snippet, seven copies (each script decides before lib/common.sh is loaded) — never drifting apart")
+snips = {f: snippet(open(os.path.join(ROOT, f), encoding="utf-8").read()) for f in SCRIPTS}
+ref = snips["bootstrap.sh"]
+for f, sn in snips.items():
+    check("%s: byte-identical to bootstrap.sh's" % f, sn == ref, f)
+
+print("== [6] a download cut off mid-way runs nothing (bootstrap.sh is one brace group)")
+import subprocess
+bs = open(os.path.join(ROOT, "bootstrap.sh"), encoding="utf-8").read()
+# Cut at a clean TOP-LEVEL line boundary (the root check), so that WITHOUT the group every command before it would run and
+# then the probe — a mid-line cut would be a syntax error with or without the guard, and prove nothing.
+cut = bs[: bs.index('[ "$(id -u)" = 0 ] || die "run with sudo')]
+probe = "\necho RAN-SOMETHING\n"
+r = subprocess.run(["bash", "-c", cut + probe, "--", "node"], capture_output=True, text=True, timeout=30)
+check("[6] `bash -c \"$(curl …)\"` of a truncated script: a syntax error, and not one command run",
+      "syntax error" in r.stderr and "RAN-SOMETHING" not in r.stdout and r.stdout.strip() == "", (r.stdout + r.stderr)[-300:])
+r = subprocess.run(["bash", "-s", "--", "node"], input=cut + probe, capture_output=True, text=True, timeout=30)
+check("[6] `curl … | bash` of a truncated script: the same", "syntax error" in r.stderr and r.stdout.strip() == "", (r.stdout + r.stderr)[-300:])
+unguarded = cut.replace("\n{\nset -euo pipefail\n", "\nset -euo pipefail\n", 1)
+r = subprocess.run(["bash", "-c", unguarded + probe, "--", "node"], capture_output=True, text=True, timeout=30)
+check("[6] CONTROL: the same cut WITHOUT the group runs the first half (and the probe) — what the group prevents",
+      "RAN-SOMETHING" in r.stdout, (r.stdout + r.stderr)[-300:])
+check("[6] …and the whole script is one group: opened before `set -euo pipefail`, closed on its last line",
+      "\n{\nset -euo pipefail\n" in bs and bs.rstrip("\n").splitlines()[-1].startswith("}"), bs[-200:])
 
 print("")
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))

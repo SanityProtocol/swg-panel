@@ -22,6 +22,11 @@
 #                       OTHER method's install: convert it, keep + re-install it as it is, or stop. Unattended runs.
 #
 # Override the source with SWG_REPO / SWG_REF (branch or tag). Anything else is passed through.
+
+# ⚠️ THE WHOLE SCRIPT IS ONE BRACE GROUP, closed on the last line. bash parses a group completely before it runs any of
+# it, so a download cut off mid-way — `bash -c "$(curl …)"` or `curl … | bash`, either way — is a syntax error that runs
+# NOTHING, instead of the first half of an installer.
+{
 set -euo pipefail
 # ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
 # script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
@@ -738,3 +743,4 @@ case "$METHOD-$ROLE" in
 esac
 info "running $SCRIPT"
 run_script "$SCRIPT" ${PASS[@]+"${PASS[@]}"}
+}   # the end of the brace group opened at the top: reaching this line is how bash knows the download is whole
