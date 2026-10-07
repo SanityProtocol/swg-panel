@@ -2080,6 +2080,7 @@ awg_dkms_register_source(){ # clone upstream and register it — ONLY when no am
   $DRYRUN && { echo "    [skip] register amneziawg with DKMS from source"; return 0; }
   local w rc=1; w="$(mktemp -d)"
   git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/log" 2>&1 \
+    && { awg_compat_patch "$w/mod/src" >>"$w/log" 2>&1 || true; } \
     && awg_dkms_register_dir "$w/mod/src" >>"$w/log" 2>&1 && rc=0
   rm -rf "$w"
   return $rc
@@ -2142,8 +2143,88 @@ awg_ppa_module_install(){ # the package route's install — once: a compile fail
   fi
   run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
   $DRYRUN && return 0
+  # its postinst built from the source as shipped; fixed now (PR #218), the half-configured package builds again
+  if awg_compat_patch_installed; then awg_dpkg_recover || true; fi
   if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi
   return 0; }
+
+# ── upstream PR #218, applied to the module's source until upstream ships it ─────────────────────────────────────────────
+# amneziawg-linux-kernel-module picks the old (struct socket *) or new (struct sock *) setup_udp_tunnel_sock /
+# udp_tunnel_sock_release by kernel VERSION — "below 7.1.5 is old". Ubuntu backported the new signature into 7.0.0-38
+# under an unchanged version, so the module stopped compiling there (#259) — and on an ordinary kernel upgrade the failed
+# DKMS build left linux-headers / linux-generic unconfigured: apt broken for the whole box (bivlked/amneziawg-installer
+# #325). PR #218 (open, unmerged) asks the compiler which signature the kernel DECLARES instead of guessing from the
+# number. Applied only where the exact version-gated block is present, never twice; once upstream changes that block
+# this does nothing. tests/awg_compat_patch_selftest.py builds it against Ubuntu 26.04 (7.0.0-38 and an older 7.0),
+# 24.04 and Debian headers and asserts the choice matches each kernel's declaration.
+AWG_COMPAT_MARK="swg-panel: udp_tunnel signature detection (amneziawg-linux-kernel-module PR #218)"
+awg_compat_patch(){ # <module source dir — holds compat/compat.h> → 0 patched now · 2 already patched · 1 not applicable
+  local f="$1/compat/compat.h"
+  [ -f "$f" ] || return 1
+  grep -qF "$AWG_COMPAT_MARK" "$f" 2>/dev/null && return 2
+  have python3 || return 1
+  if $DRYRUN; then echo "    [skip] patch $f (udp_tunnel signature detection)"; return 0; fi
+  SWG_MARK="$AWG_COMPAT_MARK" python3 - "$f" <<'PY'
+import os, sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+old = ("#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)\n"
+       "#include <net/udp_tunnel.h>\n"
+       "#define setup_udp_tunnel_sock(net, sk, sock_cfg) setup_udp_tunnel_sock(net, sk->sk_socket, sock_cfg)\n"
+       "#define udp_tunnel_sock_release(sk) udp_tunnel_sock_release(sk->sk_socket)\n"
+       "#endif\n")
+if s.count(old) != 1:
+    sys.exit(1)
+new = ("/* " + os.environ["SWG_MARK"] + ".\n"
+       " * The kernel's own declaration decides, not LINUX_VERSION_CODE: distros backport the struct sock * form early\n"
+       " * under an unchanged version (Ubuntu 7.0.0-38). Exactly one branch matches; the other folds away. */\n"
+       "#include <net/udp_tunnel.h>\n"
+       "\n"
+       "static inline void __compat_udp_tunnel_sock_release(struct sock *sk)\n"
+       "{\n"
+       "\tif (__builtin_types_compatible_p(typeof(&udp_tunnel_sock_release), void (*)(struct sock *)))\n"
+       "\t\t((void (*)(struct sock *))udp_tunnel_sock_release)(sk);\n"
+       "\telse\n"
+       "\t\t((void (*)(struct socket *))udp_tunnel_sock_release)(sk->sk_socket);\n"
+       "}\n"
+       "\n"
+       "static inline void __compat_setup_udp_tunnel_sock(struct net *net, struct sock *sk,\n"
+       "\t\t\t\t\t\t    struct udp_tunnel_sock_cfg *cfg)\n"
+       "{\n"
+       "\tif (__builtin_types_compatible_p(typeof(&setup_udp_tunnel_sock),\n"
+       "\t\t\t\t\t  void (*)(struct net *, struct sock *, struct udp_tunnel_sock_cfg *)))\n"
+       "\t\t((void (*)(struct net *, struct sock *, struct udp_tunnel_sock_cfg *))setup_udp_tunnel_sock)(net, sk, cfg);\n"
+       "\telse\n"
+       "\t\t((void (*)(struct net *, struct socket *, struct udp_tunnel_sock_cfg *))setup_udp_tunnel_sock)(net, sk->sk_socket, cfg);\n"
+       "}\n"
+       "\n"
+       "#define udp_tunnel_sock_release(sk) __compat_udp_tunnel_sock_release(sk)\n"
+       "#define setup_udp_tunnel_sock(net, sk, cfg) __compat_setup_udp_tunnel_sock(net, sk, cfg)\n")
+tmp = p + ".swg-tmp"
+open(tmp, "w", encoding="utf-8").write(s.replace(old, new))
+os.replace(tmp, p)
+PY
+}
+awg_compat_patch_installed(){ # the source DKMS builds from (/usr/src/amneziawg-*), fixed where it needs it. 0 = fixed in THIS run
+  # Run whether or not today's kernel builds: the box at risk is the one whose module builds NOW and whose NEXT kernel
+  # backports the new API — its kernel upgrade is where the failed DKMS hook would leave apt broken.
+  local d now=1 rc
+  for d in "${SWG_USR_SRC:-/usr/src}"/amneziawg-*/; do
+    [ -f "${d}compat/compat.h" ] || continue
+    rc=0; awg_compat_patch "${d%/}" || rc=$?
+    [ "$rc" = 0 ] || continue
+    now=0; info "AmneziaWG: the module source now asks the kernel which udp_tunnel API it declares (upstream PR #218 — Ubuntu's 7.0.0-38 backports the new one) — ${d%/}"
+  done
+  return $now; }
+awg_dpkg_recover(){ # finish a dpkg run an AmneziaWG build failure left pending (amneziawg-dkms, or the kernel headers whose DKMS
+  # hook stopped) — called right after the source was fixed, so the DKMS build it re-runs now compiles. 0 = nothing pending now
+  have dpkg || return 0
+  [ -n "$(dpkg --audit 2>/dev/null)" ] || return 0
+  info "AmneziaWG: finishing the package configuration a failed module build left pending (dpkg --configure -a)…"
+  run env DEBIAN_FRONTEND=noninteractive dpkg --configure -a >/dev/null 2>&1 || true
+  [ -z "$(dpkg --audit 2>/dev/null)" ] && return 0
+  warn "AmneziaWG: some packages are still not configured — see \`dpkg --audit\`"
+  return 1; }
 
 awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstream. 0 = tools AND module.
   # Tools first and unconditionally: `awg` + `awg-quick` are what the panel needs to write and bring up a
@@ -2207,6 +2288,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
   ensure_awg_headers_follow >/dev/null 2>&1 || true
   if git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/mod.log" 2>&1; then
+    awg_compat_patch "$w/mod/src" >>"$w/mod.log" 2>&1 || true   # PR #218, until upstream ships it
     # D4: REGISTER WITH DKMS instead of `make install`. Upstream's `install` is modules_install for the build kernel
     # only, so the next kernel upgrade left the box with no module — on every Debian node, headers or not. DKMS
     # rebuilds it when a kernel is installed. A tree the amnezia package already registered is left to its owner.

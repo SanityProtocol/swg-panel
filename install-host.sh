@@ -566,7 +566,10 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # or not — awg-quick needs it on disk the day a reboot lands on a kernel with no module. Only the pinned download
   # here; a Go build for a box whose module works is not worth its cost (ensure_awg_userspace keeps that rung).
   awg_go_needs_install && { awg_go_pinned || warn "AmneziaWG: the pinned userspace fallback could not be fetched — awg interfaces depend on the kernel module alone until an update installs it"; }   # missing, or one of our earlier pinned builds
-  if have awg && modprobe amneziawg 2>/dev/null; then return 0; fi     # already fully working (tool + loadable module)
+  if have awg && modprobe amneziawg 2>/dev/null; then                 # already fully working (tool + loadable module) —
+    $DRYRUN || awg_compat_patch_installed >/dev/null || true          # …its source fixed for the NEXT kernel (PR #218)
+    return 0
+  fi
   # graceful degrade on a non-apt distro (Fedora/RHEL/Arch/Alpine): tell the operator what to install by hand rather
   # than silently limp on with no datapath. The apt paths below stay for Debian/Ubuntu.
   $DRYRUN || have apt-get || { warn "AmneziaWG not installed — no apt-get on this system; install dkms, linux-headers-$(uname -r) and amneziawg-dkms with your package manager, then re-run"; return 1; }

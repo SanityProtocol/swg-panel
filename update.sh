@@ -863,6 +863,12 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   [ "$HAVE_BNODE" = yes ] || return 0
   local _tools=no _mod=no _hf=0 _rs=0
   have awg && have awg-quick && _tools=yes
+  # The module source fixed for kernels that backport the new udp_tunnel API (PR #218, lib/common.sh) — on every update, so
+  # a box whose module builds today does not break apt at its next kernel; and one it already broke (an Ubuntu 26.04 box
+  # upgraded onto 7.0.0-38: linux-headers left unconfigured by the failed DKMS hook) is finished here.
+  if ! $DRYRUN && awg_compat_patch_installed; then
+    DID_UPDATE=yes; awg_dpkg_recover || true
+  fi
   { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes
   # D1: the pinned userspace fallback, install-if-missing, BEFORE the "already working" return — that return is exactly
   # how a box whose module works never got one, and a reboot onto a kernel without a module then took every awg
@@ -1025,11 +1031,16 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
   fi
   pk="amneziawg-dkms amneziawg-tools"; [ -n "$(pkg_installed amneziawg)" ] && pk="$pk amneziawg"
   # shellcheck disable=SC2086   # $pk is a word list
-  if ! run env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=180 --only-upgrade $pk >/dev/null 2>&1; then
+  # The new package ships its source as upstream has it: its own build for this kernel can fail before PR #218's fix is on
+  # it (Ubuntu 7.0.0-38). So the source is fixed and dpkg finished BEFORE the upgrade is judged — and either way after it,
+  # so the next kernel builds too.
+  if ! run env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=180 --only-upgrade $pk >/dev/null 2>&1 \
+     && ! { awg_compat_patch_installed && awg_dpkg_recover; }; then
     note "AmneziaWG: the package upgrade did not go through — tried again on the next update"
     warn "AmneziaWG: the amnezia packages could not be upgraded ($cur → $cand) — tried again on the next update"
     return 0
   fi
+  awg_compat_patch_installed >/dev/null || true
   DID_UPDATE=yes; note "AmneziaWG packages: $cur → $cand"
   disk="$(modinfo -F version amneziawg 2>/dev/null)" || disk=""; loaded="$(cat /sys/module/amneziawg/version 2>/dev/null)" || loaded=""
   if [ -z "$loaded" ] || [ "$disk" = "$loaded" ]; then ok "AmneziaWG packages updated (kernel module $disk)"; return 0; fi
