@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""Self-test — a module Secure Boot refuses is said with its steps and not rebuilt; dpkg's unfinished work reaches the panel.
+
+Secure Boot (follow-up to the client report 2026-10-06): DKMS signs the AmneziaWG module with its own key, and the kernel
+loads it only once that key is enrolled at the console. Until then `modprobe` answers "Key was rejected by service", the
+module counts as BUILT (so no compile-failure record), and every heal rebuilt it twice — a --reinstall, then a source
+build — to the same refusal, while the panel said "update the node to rebuild the module".
+
+dpkg: a failed DKMS hook leaves packages half-configured and every later apt run on the box fails; the client's box sat
+like that with nothing on the panel saying so.
+
+  [1] awg_mod_key_rejected: both kernel answers ("Key was rejected", "Required key not available") → yes; any other
+      refusal, a module that loads, or no module file → no
+  [2] awg_key_refused_note: the warning names `mokutil --import <the key DKMS signs with>`, and the record holds this
+      kernel and that key
+  [3] awg_build_from_source, driven: a module refused for its key → no clone, no compile, the note; CONTROL: a plain
+      "not loadable" still builds
+  [4] build_awg_module (install-node AND install-host), driven: refused for its key → no --reinstall
+  [5] the installers and update.sh go straight to userspace with the note, and update's closing line names Secure Boot
+  [6] swg-noded node_datapath_health, driven: `why` = "key" (+ the key's path) or "compile" — only from a record for THIS
+      kernel, never a guess; a bad path is dropped; a loaded module reports no `why`
+  [7] swg-noded dpkg_health, driven: names parsed from `dpkg --audit` (C locale), only from the sections that stop apt —
+      not "missing the md5sums file", which many boxes carry harmlessly; an apt run in the last ten minutes is not judged
+      (the last settled answer stands); cached until dpkg writes again; an interrupted run's journal; a container and a
+      box without dpkg report nothing; an unreadable answer keeps the last one
+  [8] the panel: the Secure Boot and compile sentences (no "update the node" promise), the dpkg sentences (at most six
+      names, only package-shaped ones), "repair node" not offered when the node recorded why — and every sentence has
+      its Russian line
+  [9] the master's own host check reads the compile record the same way
+
+Run: python3 tests/secure_boot_dpkg_selftest.py      (0 = pass)
+"""
+import builtins, importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile, time
+from unittest import mock
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+rd = lambda f: open(os.path.join(ROOT, f), encoding="utf-8").read()
+FAILS = []
+def check(name, cond, detail=""):
+    print(("  PASS " if cond else "  FAIL ") + name + (("  — " + str(detail)[:500]) if detail and not cond else ""))
+    if not cond:
+        FAILS.append(name)
+def grab(path, *names):
+    """Functions as bash itself defines them: the file sourced (definitions only), then `declare -f`."""
+    r = subprocess.run(["bash", "-c", 'source "$1" >/dev/null 2>&1; declare -f "${@:2}"', "_", os.path.join(ROOT, path)] + list(names),
+                       capture_output=True, text=True)
+    assert all((n + " ()") in r.stdout for n in names), "could not read %s from %s: %s" % (names, path, r.stderr[-300:])
+    return r.stdout + "\n"
+def grab_text(path, name):
+    """One function by its text (for scripts that run on source): from `name(){` to the first line that is just `}`."""
+    s = rd(path); a = s.index("\n" + name + "(){") + 1; b = s.index("\n}\n", a) + 3
+    return s[a:b]
+
+T = tempfile.mkdtemp(prefix="sbdpkg-")
+open(T + "/mok.pub", "w").write("key")
+KERN = "7.0.0-38-generic"
+LIB = grab("lib/common.sh", "awg_mod_built", "awg_mod_key_rejected", "awg_mok_key", "awg_key_refused_here", "awg_key_refused_note")
+STUBS = ('DRYRUN=false\ninfo(){ echo "INFO $*"; }\nwarn(){ echo "WARN $*"; }\nnote(){ echo "NOTE $*"; }\n'
+         'run(){ echo "RUN $*" >> "$T/calls"; }\n'
+         'uname(){ [ "$1" = -r ] && echo %s || command uname "$@"; }\n'
+         'AWG_MOD_REFUSED="$T/awg-module-refused"; AWG_MOD_FAILED="$T/awg-module-failed"; SWG_DKMS_MOK="$T/mok.pub"\n') % KERN
+def sh(body, modinfo="return 0", modprobe_err="", modprobe_rc=1):
+    mp = 'modprobe(){ [ -n "%s" ] && echo "%s" >&2; return %d; }\n' % (modprobe_err, modprobe_err, modprobe_rc)
+    return subprocess.run(["bash", "-c", STUBS + "modinfo(){ %s; }\n" % modinfo + mp + LIB + body],
+                          capture_output=True, text=True, env=dict(os.environ, T=T))
+def calls():
+    p = T + "/calls"
+    s = open(p).read() if os.path.exists(p) else ""
+    open(p, "w").close()
+    return s
+def reset():
+    for f in ("awg-module-refused", "awg-module-failed", "calls"):
+        if os.path.exists(T + "/" + f):
+            os.remove(T + "/" + f)
+KEY = "modprobe: ERROR: could not insert 'amneziawg': Key was rejected by service"
+NOKEY = "modprobe: ERROR: could not insert 'amneziawg': Required key not available"
+EXEC = "modprobe: ERROR: could not insert 'amneziawg': Exec format error"
+Q = 'awg_mod_key_rejected && echo YES || echo NO'
+
+print("[1] awg_mod_key_rejected")
+check("'Key was rejected by service' → yes", "YES" in sh(Q, modprobe_err=KEY).stdout)
+check("'Required key not available' (lockdown) → yes", "YES" in sh(Q, modprobe_err=NOKEY).stdout)
+check("CONTROL: another refusal (a build for another ABI) → no", "NO" in sh(Q, modprobe_err=EXEC).stdout)
+check("CONTROL: the module loads → no", "NO" in sh(Q, modprobe_rc=0).stdout)
+check("CONTROL: no module file for this kernel → no (that is a compile question)", "NO" in sh(Q, modinfo="return 1", modprobe_err=KEY).stdout)
+
+print("\n[2] awg_key_refused_note")
+reset()
+r = sh('awg_key_refused_note; awg_key_refused_here && echo HERE')
+rec = open(T + "/awg-module-refused").read() if os.path.exists(T + "/awg-module-refused") else ""
+check("the warning gives the enrolment steps with the key DKMS signs with", "sudo mokutil --import %s/mok.pub" % T in r.stdout
+      and "Enroll MOK" in r.stdout and "rebuilding the module would not help" in r.stdout, r.stdout)
+check("the record: this kernel, and the key", rec == "kernel=%s\nmok=%s/mok.pub\n" % (KERN, T), repr(rec))
+check("awg_key_refused_here reads it back for this kernel", "HERE" in r.stdout, r.stdout)
+r = subprocess.run(["bash", "-c", STUBS.replace(KERN, "7.0.0-40-generic") + LIB + 'awg_key_refused_here && echo HERE || echo NOT'],
+                   capture_output=True, text=True, env=dict(os.environ, T=T))
+check("…and not for another kernel", "NOT" in r.stdout, r.stdout + r.stderr)
+
+print("\n[3] awg_build_from_source, driven")
+SRC = grab("lib/common.sh", "awg_build_from_source", "awg_fail_get", "awg_fail_note", "awg_src_retry_due", "_awg_kbuild")
+def build(modprobe_err):
+    body = ('awg_tools_drive_3x(){ return 0; }\nawg_tools_old_why(){ :; }\ndepmod(){ :; }\nensure_awg_headers_follow(){ :; }\n'
+            'have(){ case "$1" in git|make|awg|awg-quick|dkms|modprobe) return 0;; *) command -v "$1" >/dev/null 2>&1;; esac; }\n'
+            'dkms(){ :; }\ngit_clone_depth1(){ echo "CLONE $1" >> "$T/calls"; return 1; }\nawg_module_head(){ echo b72bb7a; }\n'
+            'SWG_LIB_MODULES="$T/mods"\n') + SRC + 'awg_build_from_source && echo RC0 || echo RC1\n'
+    return sh(body, modprobe_err=modprobe_err)
+reset(); r = build(KEY); c = calls()
+check("refused for its key → no clone, no compile, rc 1, the steps said", "kernel-module" not in c and "RC1" in r.stdout
+      and "mokutil --import" in r.stdout, r.stdout + c)
+reset(); r = build(EXEC); c = calls()
+check("CONTROL: another refusal → it is cloned and built", "CLONE https://github.com/amnezia-vpn/amneziawg-linux-kernel-module" in c, r.stdout + c)
+
+print("\n[4] build_awg_module, driven")
+for f in ("install-node.sh", "install-host.sh"):
+    fn = grab_text(f, "build_awg_module")
+    for err, name, want in ((KEY, "refused for its key", False), (EXEC, "CONTROL: another refusal", True)):
+        reset()
+        r = sh('awg_dkms_build_all_kernels(){ :; }\n' + fn + 'build_awg_module; echo DONE', modprobe_err=err); c = calls()
+        check("%s: %s → %s" % (f, name, "a --reinstall" if want else "no --reinstall"), ("--reinstall" in c) == want and "DONE" in r.stdout, c + r.stderr)
+
+print("\n[5] the routes that would rebuild go to userspace instead")
+for f in ("install-node.sh", "install-host.sh"):
+    s = rd(f)
+    check("%s: refused for its key → the note, then userspace, before any source build" % f,
+          "  if have awg && awg_mod_key_rejected; then\n    awg_key_refused_note\n    ensure_awg_userspace && return 0" in s
+          and s.index("awg_mod_key_rejected; then\n    awg_key_refused_note") < s.index("  awg_build_from_source && {"))
+U = rd("update.sh")
+check("update.sh: the heal stops at a refused key — the note, userspace, one closing line",
+      'if [ "$_tools" = yes ] && awg_mod_key_rejected; then\n    awg_key_refused_note' in U
+      and U.index("awg_mod_key_rejected; then\n    awg_key_refused_note") < U.index('info "healing the AmneziaWG kernel module'))
+check("update.sh: the package route's retry skips the --reinstall for a refused key",
+      "modprobe amneziawg 2>/dev/null || awg_mod_key_rejected || { run apt-get install --reinstall -y amneziawg-dkms" in U)
+check("update.sh: the closing userspace line names Secure Boot when it was recorded",
+      'userspace (amneziawg-go); $(if awg_key_refused_here; then echo "Secure Boot refuses the kernel module' in U)
+
+def load(name, path):
+    l = importlib.machinery.SourceFileLoader(name, path)
+    m = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, l))
+    try:
+        l.exec_module(m)
+    except SystemExit:
+        pass
+    return m
+N = load("swgnoded", os.path.join(ROOT, "swg-noded"))
+P = load("swgpanel", os.path.join(ROOT, "swg-panel-server"))
+KR = os.uname().release
+
+print("\n[6] swg-noded: why the module does not load")
+S = tempfile.mkdtemp(prefix="sbstate-"); N.STATE_DIR = S
+def rec(name, text):
+    for f in ("awg-module-refused", "awg-module-failed"):
+        if os.path.exists(os.path.join(S, f)):
+            os.remove(os.path.join(S, f))
+    if name:
+        open(os.path.join(S, name), "w").write(text)
+def health(modules="", built=False, fallback=True, tun=("awg0",)):
+    ifaces = {"awg0": {"meta": {"tool": "awg"}}}
+    exists = {"/usr/bin/awg"} | {"/sys/class/net/%s/tun_flags" % i for i in tun}
+    real_open = builtins.open
+    def fopen(p, *a, **k):
+        return io.StringIO(modules) if p == "/proc/modules" else real_open(p, *a, **k)
+    def flistdir(d):
+        if built and d == "/lib/modules/%s/updates/dkms" % KR:
+            return ["amneziawg.ko.zst"]
+        raise FileNotFoundError(d)
+    with mock.patch("builtins.open", fopen), mock.patch("os.path.exists", lambda p: p in exists), \
+         mock.patch("os.access", lambda p, m: fallback and p == "/usr/local/bin/amneziawg-go"), mock.patch("os.listdir", flistdir), \
+         mock.patch.object(N, "NODE_KIND", "bare"):
+        return (N.node_datapath_health(ifaces) or {}).get("awg") or {}
+rec("awg-module-refused", "kernel=%s\nmok=/var/lib/dkms/mok.pub\n" % KR)
+a = health(built=True)
+check("built, refused (recorded for this kernel), interfaces on the fallback → why=key + the key", a.get("ok") is False
+      and a.get("why") == "key" and a.get("mok") == "/var/lib/dkms/mok.pub", a)
+rec("awg-module-refused", "kernel=%s\nmok=/var/lib/dkms/mok.pub; rm -rf /\n" % KR)
+check("a key path that is not a plain path is dropped (why stays)", health(built=True).get("why") == "key" and "mok" not in health(built=True))
+rec("awg-module-refused", "kernel=5.15.0-1-generic\nmok=/var/lib/dkms/mok.pub\n")
+check("a record for another kernel → no why (never a guess)", "why" not in health(built=True), health(built=True))
+rec("awg-module-failed", "kernel=%s\npkg=1.0.0\n" % KR)
+check("no module file + the compile record → why=compile", health(built=False).get("why") == "compile", health(built=False))
+check("the compile record, but a module file exists now → no why", "why" not in health(built=True), health(built=True))
+rec("awg-module-refused", "kernel=%s\nmok=/var/lib/dkms/mok.pub\n" % KR)
+check("CONTROL: the module is loaded → ok, and no why", "why" not in health(modules="amneziawg 1 0 - Live\n", tun=()) and
+      health(modules="amneziawg 1 0 - Live\n", tun=()).get("ok") is True)
+rec("", "")
+check("CONTROL: no record at all → no why", "why" not in health(built=False))
+
+print("\n[7] swg-noded: dpkg's unfinished work")
+D = tempfile.mkdtemp(prefix="sbdpkg-db-"); os.makedirs(D + "/updates")
+N.DPKG_STATUS = D + "/status"; N.DPKG_UPDATES = D + "/updates"; open(N.DPKG_STATUS, "w").write("x")
+AUDIT = ("The following packages are only half configured, probably due to problems\nconfiguring them the first time.  The "
+         "configuration should be retried using\ndpkg --configure <package> or the configure menu option in dselect:\n"
+         " amneziawg-dkms       AmneziaWG kernel module\n linux-headers-7.0.0-38-generic Linux kernel headers\n"
+         " evil;rm            not a package name\n"
+         "The following packages are missing the md5sums control file in the database, they need to be reinstalled:\n"
+         " vendor-agent         an old third-party package\n"
+         "The following packages have been unpacked but not yet configured.  They must be configured using\n"
+         "dpkg --configure or the configure menu option in dselect for them to work:\n"
+         " amneziawg-tools      AmneziaWG tools\n")
+AUD = {"out": AUDIT, "rc": 1, "n": 0}
+def fake_run(args, timeout=20, env=None, **k):
+    AUD["n"] += 1; AUD["args"] = list(args); AUD["env"] = env
+    return subprocess.CompletedProcess(args, AUD["rc"], AUD["out"], "")
+def dk(now, kind="bare", dpkg=True):
+    with mock.patch.object(N, "run", fake_run), mock.patch.object(N, "NODE_KIND", kind), \
+         mock.patch.object(N.shutil, "which", lambda b: "/usr/bin/dpkg" if dpkg and b == "dpkg" else None):
+        return N.dpkg_health(now)
+def fresh(age):
+    t = time.time() - age; os.utime(N.DPKG_STATUS, (t, t)); N._DPKG.update(mtime=None, at=0.0, v=None); AUD["n"] = 0
+now = time.time()
+fresh(3600)
+v = dk(now)
+check("settled for an hour → the packages in states that stop apt, by name (a malformed line dropped)",
+      v == {"pending": ["amneziawg-dkms", "linux-headers-7.0.0-38-generic", "amneziawg-tools"], "interrupted": False}, v)
+check("…not a package only missing its md5sums (harmless — apt runs fine for years with it)", "vendor-agent" not in v["pending"], v)
+check("…asked in the C locale (the headers are read; a Russian box would answer in Russian)", AUD.get("args") == ["dpkg", "--audit"]
+      and (AUD.get("env") or {}).get("LC_ALL") == "C", (AUD.get("args"), (AUD.get("env") or {}).get("LC_ALL")))
+dk(now + 60)
+check("…cached: the next sync does not run dpkg again", AUD["n"] == 0 or AUD["n"] == 1, AUD["n"])
+fresh(120)
+check("dpkg wrote two minutes ago (maybe still running) → not judged: nothing yet, and dpkg not asked",
+      dk(now) == {"pending": [], "interrupted": False} and AUD["n"] == 0, AUD)
+fresh(3600); dk(now); t = time.time() - 60; os.utime(N.DPKG_STATUS, (t, t)); AUD["out"] = ""
+check("…an apt run starts after a settled answer → the last settled answer stands meanwhile",
+      dk(now)["pending"] == ["amneziawg-dkms", "linux-headers-7.0.0-38-generic", "amneziawg-tools"])
+t = time.time() - 3600; os.utime(N.DPKG_STATUS, (t, t)); AUD["rc"] = 0
+check("…dpkg writes again and settles clean → nothing pending", dk(now) == {"pending": [], "interrupted": False})
+fresh(3600); AUD.update(out="", rc=0); open(D + "/updates/0003", "w").write("x")
+check("a run cut off mid-way (its journal in updates/) → interrupted", dk(now) == {"pending": [], "interrupted": True})
+os.remove(D + "/updates/0003")
+fresh(3600); AUD.update(out=AUDIT, rc=1); dk(now); t = time.time() - 3600 + 5; os.utime(N.DPKG_STATUS, (t, t)); AUD["rc"] = 2
+check("an answer that cannot be read (rc 2) keeps the last one", dk(now)["pending"][:1] == ["amneziawg-dkms"])
+fresh(3600)
+check("a container (its packages are the image's) → None", dk(now, kind="docker") is None)
+check("no dpkg (NixOS, a non-Debian box) → None", dk(now, dpkg=False) is None)
+check("the snapshot carries it only where there is an answer",
+      '            **_dpkg_part(),\n' in rd("swg-noded") and 'return {"dpkg": d} if d is not None else {}' in rd("swg-noded"))
+
+print("\n[8] the panel")
+def issues(snap):
+    return [i["error"] for i in P._node_issues({"id": "n1", "name": "n1"}, snap)]
+def dps(**awg):
+    return {"datapath": {"awg": dict(needed=True, ok=False, **awg)}}
+i = issues(dps(fallback=True, why="key", mok="/var/lib/shim-signed/mok/MOK.der"))
+check("Secure Boot, fallback → the steps with the node's key, no 'update the node'", len(i) == 1 and "Secure Boot refuses" in i[0]
+      and "sudo mokutil --import /var/lib/shim-signed/mok/MOK.der" in i[0] and "slower fallback" in i[0] and "update the node" not in i[0], i)
+i = issues(dps(fallback=False, why="key", mok="/x; reboot"))
+check("Secure Boot, no fallback → can't come up; a bad key path → both distros' keys named, none guessed", "can't come up" in i[0]
+      and "--import /var/lib/shim-signed/mok/MOK.der (Ubuntu) or /var/lib/dkms/mok.pub (Debian)," in i[0] and "/x;" not in i[0], i)
+i = issues(dps(fallback=True, why="compile"))
+check("does not compile → waits for a new kernel or build, no 'update the node to rebuild'", "does not compile" in i[0]
+      and "rebuild" not in i[0], i)
+check("CONTROL: no why → the old 'update the node to rebuild' sentence", "update the node to rebuild" in issues(dps(fallback=True))[0])
+i = issues({"dpkg": {"pending": ["amneziawg-dkms", "bad name!", "linux-headers-7.0.0-38-generic"], "interrupted": False}})
+check("dpkg: the package-shaped names, and the command", len(i) == 1 and "(amneziawg-dkms, linux-headers-7.0.0-38-generic)" in i[0]
+      and "sudo dpkg --configure -a" in i[0], i)
+i = issues({"dpkg": {"pending": ["p%d" % n for n in range(9)]}})
+check("dpkg: at most six names, then +N", "(p0, p1, p2, p3, p4, p5 +3)" in i[0], i)
+check("dpkg: only an interrupted run → its own sentence", "was interrupted" in issues({"dpkg": {"pending": [], "interrupted": True}})[0])
+check("dpkg: nothing pending, or no report, or a malformed one → silent",
+      issues({"dpkg": {"pending": [], "interrupted": False}}) == [] and issues({}) == [] and issues({"dpkg": "x"}) == []
+      and issues({"dpkg": {"pending": "amneziawg-dkms"}}) == [])
+PS = rd("swg-panel-server")
+check("'repair node' is not offered when the node recorded why", '_awg_datapath(snap).get("needed") and not _awg_datapath(snap).get("why")\n' in PS)
+ru = rd("js/lang/ru.js")
+keys = re.findall(r'(?:perr\(|if _dp\.get\("fallback"\) else\s+)("(?:AmneziaWG: Secure|AmneziaWG\'s kernel module does not|the package manager on|a package manager run)[^"]*")', PS)
+keys += re.findall(r'T\(("(?:AmneziaWG runs on the slower fallback datapath — its kernel module does not|the AmneziaWG kernel module does not compile)[^"]*")\)', rd("js/views.js"))
+check("every new sentence (%d) has its Russian line" % len(keys), len(keys) == 8 and all(("  " + k + ":") in ru for k in keys),
+      [k[:60] for k in keys if ("  " + k + ":") not in ru] or len(keys))
+
+print("\n[9] the master's own host")
+P2 = tempfile.mkdtemp(prefix="sbhost-")
+open(P2 + "/awg-module-failed", "w").write("kernel=%s\nsrc=abc\n" % KR)
+with mock.patch.dict(os.environ, {"SWG_NODED_STATE": P2}):
+    got = P._host_awg_record("awg-module-failed")
+    open(P2 + "/awg-module-failed", "w").write("kernel=4.19.0\nsrc=abc\n")
+    other = P._host_awg_record("awg-module-failed")
+check("the compile record for this kernel is read; another kernel's is not", bool(got) and other is None, (got, other))
+check("…and host_datapath_health reports why=compile from it",
+      'if not out["awg"]["ok"] and _host_awg_record("awg-module-failed"):\n                out["awg"]["why"] = "compile"' in PS)
+check("the master's notice words it without 'running Update rebuilds it'", 'if (dp.why === "compile") add("awg"' in rd("js/views.js"))
+
+print("\n%s — %d failed" % ("RED" if FAILS else "GREEN", len(FAILS)))
+sys.exit(1 if FAILS else 0)

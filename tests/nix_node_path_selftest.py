@@ -60,7 +60,10 @@ PROVIDES = {
 SYSTEMD_APPENDED = {"coreutils", "findutils", "gnugrep", "gnused", "systemd"}
 # Named, not assumed: commands the native unit does not carry, each with the reason it is outside this gate. `docker` is NOT
 # here any more — [7] proves every use of it docker-only instead of excusing the name.
-EXCLUDED = {}
+EXCLUDED = {
+    "dpkg": "dpkg_health asks a box's OWN package manager, only where shutil.which finds it — NixOS has none, and that "
+            "absence is the answer (no `dpkg` key in the snapshot); a container is skipped before it is asked",
+}
 # Functions no native node reaches, each with the reason. [7] accepts a `docker` literal inside one of these.
 DOCKER_ONLY_FUNCS = {
     "_relay_docker_running": "called only by _relay_supervise_docker",
@@ -129,6 +132,7 @@ IMAGE_EXCLUDED = {
     "modinfo": "the host's modules are not in the image — _awg_disk_gen returns None in a container without calling it",
     "systemctl": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",
     "systemd-run": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",
+    "dpkg": "dpkg_health returns None on a docker node before it asks — the image's packages are not the box's",
 }
 df = open(DOCKERFILE).read()
 final = df[df.rindex("\nFROM "):]                   # the runtime stage only — the build stage's packages never ship

@@ -32,6 +32,10 @@ fn="$(grep -E '^(pkg_installed|pkg_candidate)\(\)\{.*\}' "$ROOT/update.sh"     #
 printf '%s\n' "$fn" | grep -q '^ensure_awg_pkg_follow' || { echo "  FAIL ensure_awg_pkg_follow not found in update.sh"; exit 1; }
 fn="${fn//\/etc\/apt\/sources.list.d/$T/sld}"; fn="${fn//\/sys\/module\/amneziawg\/version/$T/loaded}"; fn="${fn//\/sys\/module\/amneziawg/$T/sysmod}"
 fn="${fn//\/lib\/modules/$T/libmod}"; fn="${fn//\/proc\//$T/proc/}"
+# The give-up record it asks (lib/common.sh, as bash defines it) — real, against a record in the sandbox; the compat fix, the
+# dpkg recovery and the give-up itself are stubs that leave a trace (each is driven in its own gate).
+libfn="$(bash -c 'source "$1" >/dev/null 2>&1; declare -f awg_fail_get awg_pkg_retry_due' _ "$ROOT/lib/common.sh")"
+printf '%s\n' "$libfn" | grep -q '^awg_pkg_retry_due ()' || { echo "  FAIL awg_pkg_retry_due not found in lib/common.sh"; exit 1; }
 _planted(){ [ "$1" != "$2" ] || { echo "  STALE PERTURBATION — $3: its anchor is missing, nothing was planted, this run would FALSE-PASS"; exit 3; }; }
 if [ "${1:-}" = "--perturb" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/in amneziawg-tools:\*) ;; \*) return 0 ;; esac/in *) ;; esac/')"; _planted "$_b" "$fn" "the tools-ownership check"
@@ -62,6 +66,10 @@ HAVE_BNODE=yes; DRYRUN=false; APT_DONE=\${APT_DONE:-no}; DID_UPDATE=no; DID_FAIL
 have(){ [ "\${HIDE_LSNS:-}" = 1 ] && [ "\$1" = lsns ] && return 1; command -v "\$1" >/dev/null 2>&1; }; run(){ "\$@"; }
 ok(){ echo "OK \$*"; }; warn(){ echo "WARN \$*"; }; note(){ echo "NOTE \$*"; }
 $fn
+$libfn
+AWG_MOD_FAILED="\$SBX/awg-module-failed"
+awg_compat_patch_installed(){ return 1; }; awg_dpkg_recover(){ return 0; }
+awg_dkms_compile_failed(){ [ -e "\$SBX/compile-failed" ]; }; awg_dkms_give_up(){ echo "GIVE-UP" >> "\$SBX/calls"; }
 AWG_PKG_ROUTE=no; ensure_awg_pkg_follow; echo "DID_UPDATE=\$DID_UPDATE DID_FAIL=\$DID_FAIL ROUTE=\$AWG_PKG_ROUTE"; echo "AFTER: the update goes on"
 EOF
 case_(){   # case_ <name> : a fresh sandbox — 1.0 installed and loaded, 3.1 in the PPA, awg owned by amneziawg-tools
@@ -153,6 +161,20 @@ check "…and when modinfo finds no module either" "$(printf '%s' "$out" | grep 
 echo; echo "[15] no lsns"
 case_ c15; : > "$SBX/kdevs"; out="$(HIDE_LSNS=1 go)"   # the host's own lsns sits in /usr/bin on the test PATH
 check "containers cannot be seen → not unloaded" "$(grep -q 'modprobe -r' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+
+echo; echo "[16] a version that already did not compile on this kernel (the give-up record) — not tried again"
+case_ c16; printf 'kernel=6.8.0-test\npkg=%s\n' "$(cat "$SBX/cand")" > "$SBX/awg-module-failed"; out="$(go)"
+check "the candidate the record names → nothing upgraded" "$(grep -q 'install' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+case_ c16b; printf 'kernel=6.8.0-test\npkg=1.0.0-0~202601011111+000000~ubuntu24.04.1\n' > "$SBX/awg-module-failed"; out="$(go)"
+check "CONTROL: a newer candidate than the one recorded → upgraded" "$(grep -q 'install -y' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+case_ c16c; printf 'kernel=6.8.0-other\npkg=%s\n' "$(cat "$SBX/cand")" > "$SBX/awg-module-failed"; out="$(go)"
+check "CONTROL: a record for another kernel → upgraded" "$(grep -q 'install -y' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+
+echo; echo "[17] the upgrade fails because its module does not compile here — given up on, not left half-configured"
+case_ c17; touch "$SBX/apt-fail" "$SBX/compile-failed"; out="$(go)"
+check "given up (dpkg left clean, the version recorded) and counted as an update, not a failure" "$(grep -q 'GIVE-UP' "$SBX/calls" && printf '%s' "$out" | grep -q 'DID_UPDATE=yes DID_FAIL=no' && printf '%s' "$out" | grep -q 'does not compile on' && echo 0 || echo 1)" "$out $(cat "$SBX/calls")"
+case_ c17b; touch "$SBX/apt-fail"; out="$(go)"
+check "CONTROL: a failure that is not a compile failure → not given up, said as tried again next time" "$(grep -q 'GIVE-UP' "$SBX/calls" && echo 1 || { printf '%s' "$out" | grep -q 'tried again on the next update' && echo 0 || echo 1; })" "$out"
 
 echo
 if [ "${1:-}" = "--perturb" ]; then [ "$FAILS" -gt 0 ] && { echo "perturb: RED as it must be ($FAILS)"; exit 0; } || { echo "perturb: NOT CAUGHT"; exit 1; }; fi
