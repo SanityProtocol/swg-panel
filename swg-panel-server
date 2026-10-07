@@ -909,6 +909,9 @@ def _host_awg_record(name):
     return d if d.get("kernel") == os.uname().release else None
 
 
+_MOK_PATH_RE = re.compile(r"^/[\w./+-]{1,200}$")   # a key path a node or the installer's record names — a plain path or nothing
+
+
 def _host_boot_id():
     try:
         with open("/proc/sys/kernel/random/boot_id") as f:
@@ -960,15 +963,17 @@ def host_datapath_health(ttl=20):
                             built = True; break
                     except Exception:
                         continue
-            out["awg"] = {"needed": True, "ok": bool(loaded or built), "updating": upd}
+            # `why` — what the installer and swg-noded recorded (the panel, unprivileged, cannot ask the kernel): Secure Boot
+            # refused the built module in THIS boot — swg-noded re-asks after every boot and keeps the record in step — or
+            # it does not compile on this kernel.
+            _ref = None if loaded else _host_awg_record("awg-module-refused")
+            _key = bool(built and _ref and _ref.get("boot") and _ref.get("boot") == _host_boot_id())
+            out["awg"] = {"needed": True, "ok": bool(loaded or (built and not _key)), "updating": upd}
             if not out["awg"]["ok"]:   # D2: degraded (a fallback runs the interfaces) vs down — the SPA words the two apart
                 out["awg"]["fallback"] = any(os.access(p, os.X_OK) for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go"))
-            # `why` — what the installer recorded (lib/common.sh), as swg-noded reads it: Secure Boot refused the built module
-            # in THIS boot (then it is not ok, built or not), or it does not compile on this kernel.
-            _ref = None if loaded else _host_awg_record("awg-module-refused")
-            if built and _ref and _ref.get("boot") and _ref.get("boot") == _host_boot_id():
-                out["awg"].update(ok=False, why="key", fallback=any(os.access(p, os.X_OK) for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go")))
-                if re.match(r"^/[\w./+-]{1,200}$", _ref.get("mok") or ""):
+            if _key:
+                out["awg"]["why"] = "key"
+                if _MOK_PATH_RE.match(_ref.get("mok") or ""):
                     out["awg"]["mok"] = _ref["mok"]
             elif not out["awg"]["ok"] and _host_awg_record("awg-module-failed"):
                 out["awg"]["why"] = "compile"
@@ -9280,10 +9285,12 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
         # a node without one (or too old to say — no `fallback` key) keeps the "can't come up" sentence.
         # `why` (the installer's record, via the node): no update fixes these two, so neither sentence promises one —
         # Secure Boot wants the module's key enrolled at the console; a module that does not compile waits for upstream.
-        _mok = _dp.get("mok") if isinstance(_dp.get("mok"), str) else ""
-        # the node's word, when it is a plain path; else both distros' keys by name — never one guessed
-        _mok = _mok if re.match(r"^/[\w./+-]{1,200}$", _mok) else "/var/lib/shim-signed/mok/MOK.der (Ubuntu) or /var/lib/dkms/mok.pub (Debian)"
-        if _dp.get("why") == "key":
+        _mok = _dp.get("mok") if isinstance(_dp.get("mok"), str) and _MOK_PATH_RE.match(_dp.get("mok")) else ""   # the node's word
+        if _dp.get("why") == "key" and not _mok:   # the node could not name the certificate — both distros' are named in the sentence
+            issues.append(perr("AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces run on the slower fallback datapath. Enrol the key DKMS signed it with once on the node — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der on Ubuntu, /var/lib/dkms/mok.pub on Debian — then reboot and pick “Enroll MOK” at the console"
+                               if _dp.get("fallback") else
+                               "AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces can't come up. Enrol the key DKMS signed it with once on the node — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der on Ubuntu, /var/lib/dkms/mok.pub on Debian — then reboot and pick “Enroll MOK” at the console"))
+        elif _dp.get("why") == "key":
             issues.append(perr("AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces run on the slower fallback datapath. Enrol the key once on the node: sudo mokutil --import {v1}, reboot, and pick “Enroll MOK” at the console"
                                if _dp.get("fallback") else
                                "AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces can't come up. Enrol the key once on the node: sudo mokutil --import {v1}, reboot, and pick “Enroll MOK” at the console", v1=_mok))
@@ -23039,9 +23046,10 @@ def api(method, path, qs, body, deps):
                         # a node self-update can REPAIR: bare-metal → rebuild the awg DKMS module; docker → `compose pull && up`
                         # recreates a crashed container / userspace datapath. True when there's such an issue AND the node is up.
                         "repairable": bool(
-                            # …not when the node recorded WHY the module does not load (Secure Boot, a kernel it does not
-                            # compile on): an update fixes neither, and a "repair node" button would promise it does
-                            _awg_datapath(snap).get("needed") and not _awg_datapath(snap).get("why")
+                            # …not when Secure Boot refuses the module: no update can enrol its key, and a "repair node"
+                            # button would promise one does. A module that does not compile keeps it — an update retries
+                            # as soon as a newer build or kernel is there, and says "nothing new" in a line when not.
+                            _awg_datapath(snap).get("needed") and _awg_datapath(snap).get("why") != "key"
                             and (not _awg_datapath(snap).get("ok") or _awg_datapath(snap).get("userspace"))
                             or ((snap.get("kind") or c.get("kind")) == "docker"
                                 and (any((e or {}).get("down") for e in (snap.get("interfaces") or {}).values())

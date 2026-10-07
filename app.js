@@ -333,7 +333,7 @@ function App() {
       let body;
       const _hl = esc((hostUpdRepairing && ({ updating: T("repairing"), updated: T("repaired"), "update-failed": T("repair failed") }[Store.hostProc]))
                       || procLabel(Store.hostProc) || "");   // a Fix/re-run reads as "repairing…" / "repaired", not "updating"
-      const _healN = serviceIssues().length;   // self-healable issues (missing/broken swg units + AmneziaWG datapath) → the updater repairs them
+      const _healN = serviceIssues().filter(i => i.fix !== false).length;   // self-healable issues (not Secure Boot's: no update enrols a key) (missing/broken swg units + AmneziaWG datapath) → the updater repairs them
       // ⚠️ THE CHECK BUTTON IS "Check status", NOT "check for updates" — it calls checkUpdate() AND
       // Store.poll(), so it re-reads service issues as well as the version, and it toasts about the
       // repairable ones. It was the LAST branch of this chain, so it vanished the moment the panel went
@@ -375,7 +375,7 @@ function App() {
       slot.innerHTML = body;
       const b = $("#host-upd"); if (b) { b.onclick = updateHost; hostHoverBubble(b, updBubbleHtml, updateHost); }   // version + date + changelog on hover; the bubble's own Update button runs the SAME action (on touch the anchor is underneath it)
       const rp = $("#host-repair"); if (rp) rp.onclick = updateHost;   // up-to-date → still allow a re-run/repair (heals the datapath even with no new version)
-      const fx = $("#host-fix"); if (fx) { fx.onclick = () => openModal(html`<${ServiceIssueSheet} issues=${serviceIssues()}/>`); hostHoverBubble(fx, fixBubbleHtml); }   // the issue(s) on hover; click = review + run the repair
+      const fx = $("#host-fix"); if (fx) { fx.onclick = () => openModal(html`<${ServiceIssueSheet} issues=${serviceIssues().filter(i => i.fix !== false)}/>`); hostHoverBubble(fx, fixBubbleHtml); }   // the issue(s) on hover; click = review + run the repair
       const tu = $("#turn-upd"); if (tu) { tu.onclick = openTurnUpdates; hostHoverBubble(tu, turnUpdBubbleHtml, openTurnUpdates); }   // forks + versions on hover; the bubble's own foot is the action (and reachable on touch, where the anchor is underneath it)
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
       const hx = $("#hostproc-x"); if (hx) hx.onclick = e => { e.stopPropagation(); dismissHostProc(); };

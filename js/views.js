@@ -1537,7 +1537,9 @@ export function serviceIssues() {
   // docker→bare-metal convert, where swg-sub was down for seconds and the alert then outlived the cause by
   // hours. An operation in flight already has its own status surface; this one only adds noise to it.
   if (inProc(Store.hostProc)) return [];
-  const out = [], add = (id, sev, kind, msg) => out.push({ id, sev, kind, msg, label: SVC_LABEL[id], unit: SVC_UNIT[id] });
+  // `fix: false` — an issue the updater cannot repair (Secure Boot wants a key enrolled at the console): still shown and still
+  // alerted, but never counted on the Fix button, toasted as repairable, or offered "Run update" (ServiceIssueSheet).
+  const out = [], add = (id, sev, kind, msg, fix = true) => out.push({ id, sev, kind, msg, fix, label: SVC_LABEL[id], unit: SVC_UNIT[id] });
   // EVERY check below this point reads Store.panelServices, which is a bare-metal systemd probe — a docker
   // panel reports {} and none of them can say anything. The CERTIFICATE check is the exception: it has its own
   // source (Store.subCert, from the panel's own view of the cert file) and is just as true in a container. It
@@ -1573,9 +1575,11 @@ export function serviceIssues() {
   // raising CRITICAL then invites a SECOND update on top of the first — which is exactly what one operator did.
   // With the userspace fallback on the box the interfaces are UP, just slower — a warning, not a critical "can't come up".
   if (dp && dp.needed && !dp.ok && !dp.updating) {
-    if (dp.why === "key") add("awg", dp.fallback ? "warn" : "critical", "secureboot", T("Secure Boot refuses the AmneziaWG kernel module — its signing key is not enrolled ({v1}). Enrol it once: sudo mokutil --import {v2}, reboot, and pick “Enroll MOK” at the console", {
-      v1: dp.fallback ? T("awg interfaces run on the slower fallback datapath") : T("awg interfaces can’t come up"),
-      v2: dp.mok || "/var/lib/shim-signed/mok/MOK.der (Ubuntu) or /var/lib/dkms/mok.pub (Debian)" }));
+    if (dp.why === "key") add("awg", dp.fallback ? "warn" : "critical", "secureboot", dp.mok
+      ? T("Secure Boot refuses the AmneziaWG kernel module — its signing key is not enrolled ({v1}). Enrol it once: sudo mokutil --import {v2}, reboot, and pick “Enroll MOK” at the console", {
+          v1: dp.fallback ? T("awg interfaces run on the slower fallback datapath") : T("awg interfaces can’t come up"), v2: dp.mok })
+      : T("Secure Boot refuses the AmneziaWG kernel module — its signing key is not enrolled ({v1}). Enrol the key DKMS signed it with once — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der on Ubuntu, /var/lib/dkms/mok.pub on Debian — then reboot and pick “Enroll MOK” at the console", {
+          v1: dp.fallback ? T("awg interfaces run on the slower fallback datapath") : T("awg interfaces can’t come up") }), false);
     else if (dp.why === "compile") add("awg", dp.fallback ? "warn" : "critical", "compile", dp.fallback
       ? T("AmneziaWG runs on the slower fallback datapath — its kernel module does not compile on this kernel yet; an update tries again when a new kernel or a newer AmneziaWG build arrives")
       : T("the AmneziaWG kernel module does not compile on this kernel yet — awg interfaces can’t come up; an update tries again when a new kernel or a newer AmneziaWG build arrives"));

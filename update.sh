@@ -902,17 +902,18 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   fi
   [ "$_tools" = yes ] && [ "$_mod" = yes ] && return 0           # already working → done, silent
   $DRYRUN && return 0
-  # Nothing new to try: the module did not compile on this kernel, and neither the package nor upstream has moved since.
-  # Said in one line — every update used to "heal" it again: minutes of compiling, a broken dpkg, "healed" each time.
-  if [ "$_tools" = yes ] && have amneziawg-go && awg_nothing_new; then
-    note "AmneziaWG: userspace datapath — the kernel module does not compile on $(uname -r) yet; tried again when a new kernel or a newer AmneziaWG build arrives"
-    return 0
-  fi
   # Built, and refused for its signing key (Secure Boot): the steps, and the userspace datapath — no rebuild changes that.
+  # Asked FIRST: an old "did not compile" record beside a module that now builds would answer with the wrong reason.
   if [ "$_tools" = yes ] && awg_mod_key_rejected; then
     awg_key_refused_note
     have amneziawg-go || { ensure_awg_userspace && DID_UPDATE=yes; } || true
     note "AmneziaWG: userspace datapath — Secure Boot refuses the kernel module until its signing key is enrolled (sudo mokutil --import $(awg_mok_key || echo '<the DKMS key>'), then reboot)"
+    return 0
+  fi
+  # Nothing new to try: the module did not compile on this kernel, and neither the package nor upstream has moved since.
+  # Said in one line — every update used to "heal" it again: minutes of compiling, a broken dpkg, "healed" each time.
+  if [ "$_tools" = yes ] && have amneziawg-go && awg_nothing_new; then
+    note "AmneziaWG: userspace datapath — the kernel module does not compile on $(uname -r) yet; tried again when a new kernel or a newer AmneziaWG build arrives"
     return 0
   fi
 

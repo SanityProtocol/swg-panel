@@ -1459,7 +1459,7 @@ export async function checkForUpdate(e, nodeId) {
       if (!(n && n.outdated)) { Store.nodeUpdFlash = { id: nodeId, until: Date.now() + 5000 }; Store.apply(); setTimeout(() => Store.apply(), 5100); }
     }
     else if (r.data && r.data.panel_outdated) toast(T("Update available — v{ver}", { ver: r.data.latest_remote }), "ok");
-    else if (serviceIssues().length) toast(T("{v1} can be repaired — click “Fix”", { v1: plural(serviceIssues().length, "issue") }), "ok");   // up to date, but self-heals are pending
+    else if (serviceIssues().some(i => i.fix !== false)) toast(T("{v1} can be repaired — click “Fix”", { v1: plural(serviceIssues().filter(i => i.fix !== false).length, "issue") }), "ok");   // up to date, but self-heals are pending
     else { Store.updFlash = Date.now() + 15000; Store.apply(); setTimeout(() => Store.apply(), 15100); }   // panel up to date + healthy → T("up to date") pill (clickable to re-run/repair) for 15s
   } finally { if (btn) btn.classList.remove("checking"); if (!nodeId) { Store.hostChecking = false; Store.apply(); } }
 }
@@ -1667,7 +1667,7 @@ export function updBubbleHtml(repaint) {
     action: { label: T("Update now"), title: T("Update this server") } });
 }
 export function fixBubbleHtml() {
-  const iss = serviceIssues(); if (!iss.length) return "";
+  const iss = serviceIssues().filter(i => i.fix !== false); if (!iss.length) return "";   // only what the repair repairs
   const head = `<div class="hub-h">${T("{v1} to fix", { v1: plural(iss.length, "issue") })}</div>`;
   const body = iss.map(i => `<div class="hub-row"><span class="hub-dot ${i.sev}"></span><span><b>${esc(i.label)}</b> — ${esc(i.msg)}</span></div>`).join("");
   return head + body + `<div class="hub-foot">${esc(T("Click to review & run the repair."))}</div>`;

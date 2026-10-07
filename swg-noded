@@ -13053,15 +13053,81 @@ def _boot_id():
         return ""
 
 
+AWG_REFUSED = "awg-module-refused"
+AWG_MOK_CANDIDATES = ("/var/lib/shim-signed/mok/MOK.der", "/var/lib/dkms/mok.pub")   # Ubuntu's shim MOK, Debian's dkms key
+_MOK_PATH_RE = re.compile(r"^/[\w./+-]{1,200}$")
+_AWG_KEY = {"k": None, "v": False}
+
+
+def _modules_dep_stamp():
+    """Changes when a module is installed for the running kernel (DKMS runs depmod) — a new module file is a new question."""
+    try:
+        st = os.stat("/lib/modules/%s/modules.dep" % os.uname().release)
+        return "%d:%d" % (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return ""
+
+
+def _awg_mok_match():
+    """The certificate that signed this kernel's module — modinfo's sig_key is its serial (measured on swgt: Ubuntu signs
+    with shim-signed's MOK.der). "" when none of the candidates did, or there is nothing to match with."""
+    want = re.sub(r"[^0-9A-F]", "", run(["modinfo", "-F", "sig_key", "amneziawg"]).stdout.upper()).lstrip("0")
+    if not want:
+        return ""
+    for c in AWG_MOK_CANDIDATES:
+        if not os.path.isfile(c):
+            continue
+        for form in (["-inform", "DER"], []):
+            m = re.search(r"serial=([0-9A-Fa-f]+)", run(["openssl", "x509"] + form + ["-in", c, "-noout", "-serial"]).stdout)
+            if m:
+                if m.group(1).upper().lstrip("0") == want:
+                    return c
+                break
+    return ""
+
+
+def _awg_refused_record(refused, boot):
+    """Keep the installer's record in step with the kernel's answer — the panel's own host check reads it (it cannot ask the
+    kernel itself, unprivileged): written for THIS boot when refused, removed when not."""
+    p = os.path.join(STATE_DIR, AWG_REFUSED)
+    if not refused:
+        with contextlib.suppress(OSError):
+            os.remove(p)
+        return
+    mok = (_awg_record(AWG_REFUSED) or {}).get("mok") or ""
+    mok = mok if _MOK_PATH_RE.match(mok) else _awg_mok_match()
+    with contextlib.suppress(OSError):
+        with open(p + ".tmp", "w") as f:
+            f.write("kernel=%s\nboot=%s\nmok=%s\n" % (os.uname().release, boot, mok))
+        os.replace(p + ".tmp", p)
+
+
+def _awg_key_refused():
+    """Does the kernel refuse this kernel's built, SIGNED AmneziaWG module for its signing key (Secure Boot, the key not
+    enrolled)? Asked of the kernel itself — one `modprobe` per boot and module file, never per sync. The installer's record
+    alone went stale on the next reboot, enrolled or not, and the panel then fell back to "update to rebuild" (code review).
+    A modprobe that succeeds simply loads the module, as the first awg interface would. An unsigned module is not this:
+    there is no key to enrol for it."""
+    k = (_boot_id(), _modules_dep_stamp())
+    if _AWG_KEY["k"] == k:
+        return _AWG_KEY["v"]
+    v = False
+    if run(["modinfo", "-F", "signer", "amneziawg"]).stdout.strip():
+        r = run(["modprobe", "amneziawg"], timeout=30)
+        v = r.returncode != 0 and any(s in (r.stderr or "") for s in ("Key was rejected", "Required key not available"))
+    _AWG_KEY.update(k=k, v=v)
+    _awg_refused_record(v, k[0])
+    return v
+
+
 def _awg_unloadable_why(built):
-    """(why, mok) — why the AmneziaWG module does not load, from what the installer recorded; (None, "") when it recorded
-    nothing for this kernel. Never a guess: a record for another kernel, one that no longer matches (a module file now
-    exists where it "did not compile"), or a refusal from an EARLIER BOOT (enrolling the key takes a reboot) is no answer."""
+    """(why, mok) for a module that is NOT loaded — "key": built, and the kernel refuses its key (asked of the kernel, see
+    _awg_key_refused; mok = the certificate to enrol, "" when unknown); "compile": no module file, and the installer recorded
+    that it does not compile on this kernel. (None, "") otherwise — never a guess."""
     if built:
-        r = _awg_record("awg-module-refused")
-        if r and r.get("boot") and r.get("boot") == _boot_id():
-            mok = r.get("mok") or ""
-            return "key", (mok if re.match(r"^/[\w./+-]{1,200}$", mok) else "")
+        if _awg_key_refused():
+            mok = (_awg_record(AWG_REFUSED) or {}).get("mok") or ""
+            return "key", (mok if _MOK_PATH_RE.match(mok) else "")
     elif _awg_record("awg-module-failed"):
         return "compile", ""
     return None, ""
@@ -13075,10 +13141,29 @@ def _awg_unloadable_why(built):
 # box's own to ask: a container (its packages are the image's), NixOS, a non-Debian system.
 DPKG_STATUS = "/var/lib/dpkg/status"
 DPKG_UPDATES = "/var/lib/dpkg/updates"
+DPKG_LOCKS = ("/var/lib/dpkg/lock", "/var/lib/dpkg/lock-frontend")
+PROC_LOCKS = "/proc/locks"
 DPKG_SETTLE = 600
 DPKG_RECHECK = 1800
-DPKG_BLOCKING = ("half configured", "half installed", "unpacked but not yet configured", "in a mess", "triggers", "triggered")
+# Only what apt cannot get past by itself. Not the trigger states: apt processes pending triggers on its next run.
+DPKG_BLOCKING = ("half configured", "half installed", "unpacked but not yet configured", "in a mess")
 _DPKG = {"mtime": None, "at": 0.0, "v": None}
+
+
+def _dpkg_busy():
+    """Is a dpkg/apt run holding dpkg's locks RIGHT NOW? Read from /proc/locks — never by taking a lock, which would make an
+    apt run starting in that instant fail on it. A long postinst (a DKMS build for every kernel on a slow box) can leave
+    `status` unwritten for more than DPKG_SETTLE while dpkg is busy; its lock is held all along (code review)."""
+    ids = set()
+    for p in DPKG_LOCKS:
+        with contextlib.suppress(OSError):
+            st = os.stat(p)
+            ids.add("%02x:%02x:%d" % (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino))
+    try:
+        with open(PROC_LOCKS) as f:
+            return bool(ids) and any(x in ids for ln in f for x in ln.split())
+    except OSError:
+        return False
 
 
 def dpkg_health(now=None):
@@ -13089,10 +13174,12 @@ def dpkg_health(now=None):
         mt = os.stat(DPKG_STATUS).st_mtime
     except OSError:
         return None
+    with contextlib.suppress(OSError):
+        mt = max(mt, os.stat(DPKG_UPDATES).st_mtime)   # its journal moves between checkpoints of `status`
     now = now or time.time()
     if _DPKG["v"] is not None and mt == _DPKG["mtime"] and now - _DPKG["at"] < DPKG_RECHECK:
         return dict(_DPKG["v"])
-    if now - mt < DPKG_SETTLE:                     # dpkg ran in the last ten minutes — maybe it still is
+    if now - mt < DPKG_SETTLE or _dpkg_busy():     # dpkg ran in the last ten minutes, or holds its lock now
         return dict(_DPKG["v"] or {"pending": [], "interrupted": False})
     r = run(["dpkg", "--audit"], timeout=15, env=dict(os.environ, LC_ALL="C"))   # C: its section headers are what is read below
     if r.returncode not in (0, 1):                 # 1: it found something (newer dpkg); anything else: no answer
@@ -13173,8 +13260,8 @@ def node_datapath_health(interfaces=None):
             # on the fallback while it is unloaded: that first `ip link add` already happened, and the kernel refused the
             # module (Secure Boot with an unsigned build, a build for another ABI). Calling that "ok" put up "update the node
             # to move it back to the kernel module" — a promise no update can keep, since the move needs a module that loads.
-            # Nor when the installer saw Secure Boot refuse it in this boot: with no fallback there are no userspace
-            # interfaces to tell by, and "built" alone read as healthy while no awg interface could come up.
+            # Nor when the kernel refuses it for its key (Secure Boot): with no fallback there are no userspace interfaces to
+            # tell by, and "built" alone read as healthy while no awg interface could come up.
             why, mok = (None, "") if loaded else _awg_unloadable_why(built)
             ent = {"needed": True, "ok": bool(loaded or (built and not us and why != "key"))}
             # `fallback`, only while not ok — is there a userspace datapath awg-quick falls back to? Without it "no module"

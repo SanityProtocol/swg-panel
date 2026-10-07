@@ -1121,6 +1121,7 @@ export function ServiceIssueSheet({ issues }) {
   // the generic remedy here meant the operator ran it, saw it succeed, and still had a dead subscription page
   // (Cloudflare 525) with the same alert waiting. Give this issue the remedy that matches it.
   const certOnly = list.every(i => i.id === "subcert");
+  const noUpdate = list.every(i => i.id === "subcert" || i.fix === false);   // nothing here that "Run update" repairs
   const reissue = async () => {
     try { await api.post("/api/access/apply-sub", {}); toast(T("Issuing the subscription certificate…"), "ok"); }
     catch (e) { toast((e && e.message) || T("Failed"), "err"); }
@@ -1133,7 +1134,7 @@ export function ServiceIssueSheet({ issues }) {
         <span class="grow"></span>
         ${list.some(i => i.id === "subcert")
           ? html`<button class="btn btn-primary" onClick=${reissue}>${T("Reissue certificate")}</button>` : null}
-        ${certOnly ? null
+        ${noUpdate ? null
           : html`<button class=${"btn " + (list.some(i => i.id === "subcert") ? "btn-ghost" : "btn-primary")}
                     onClick=${() => { closeModal(); updateHost(); }}>${T("Run update")}</button>`}
       <//>`}>
@@ -1143,10 +1144,12 @@ export function ServiceIssueSheet({ issues }) {
           <span class=${"svc-tag " + i.sev}>${i.sev === "critical" ? T("sev|Critical") : T("sev|Warning")}</span></div>
         <div class="svc-msg">${i.msg}.</div>
         ${i.unit ? html`<div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>${svcLogCmd(i.unit)}</code></div>`
+          : i.fix === false ? html`<div class="svc-cmd"><code>mokutil --sb-state</code> · <code>modprobe amneziawg</code></div>`
           : html`<div class="svc-cmd"><code>dkms status</code> · <code>modprobe amneziawg</code></div>`}
       </div>`)}
       <div class="svc-foot">${certOnly
         ? T("The subscription service is installed — what is missing is its certificate, which only a reissue can create. “Run update” cannot fix this one.")
+        : noUpdate ? T("An update cannot fix this — the key has to be enrolled once at the box's console, after a reboot. Until then awg interfaces stay on the userspace datapath, if it is installed.")
         : T("“Run update” reinstalls anything missing and re-enables the service — the same repair the Update button runs. A service that keeps crashing needs the logs above.")}</div>
     </div>
   <//>`;
