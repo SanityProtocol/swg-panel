@@ -2127,24 +2127,41 @@ awg_nothing_new(){ # 0 = something did not compile on THIS kernel, and no record
 # With Secure Boot on, DKMS signs the module with its own key (MOK), and the kernel loads it only once that key is enrolled
 # in the firmware — a step at the box's console, after a reboot. Until then `modprobe` answers "Key was rejected by
 # service", the module counts as BUILT, and every heal rebuilt it (a --reinstall, then a source build) to the same refusal.
-# Said once with the steps, and recorded per kernel, so swg-noded can tell the panel why instead of "update to rebuild".
+# Said once with the steps, and recorded for this kernel AND this boot, so swg-noded can tell the panel why instead of
+# "update to rebuild". The boot is part of it: enrolling the key takes a reboot, so the record goes stale by itself the moment
+# it could have stopped being true — no step has to remember to delete it.
 AWG_MOD_REFUSED="${SWG_AWG_MOD_REFUSED:-/var/lib/swg-noded/awg-module-refused}"
-awg_mod_key_rejected(){ # 0 = a module for THIS kernel exists, and the kernel refuses it for its signing key
+awg_mod_key_rejected(){ # 0 = a SIGNED module for THIS kernel exists, and the kernel refuses its signing key
   awg_mod_built || return 1
+  # An unsigned module is refused too ("Required key not available" on some kernels) — but there is no key to enrol for it,
+  # so it is not this case, and its advice would be wrong.
+  [ -n "$(modinfo -k "$(uname -r)" -F signer amneziawg 2>/dev/null)" ] || return 1
   local e; e="$(modprobe amneziawg 2>&1 >/dev/null)" && return 1
   case "$e" in *"Key was rejected"*|*"Required key not available"*) return 0;; esac
   return 1; }
-awg_mok_key(){ # the key DKMS signs modules with — the one to enrol. Ubuntu's dkms signs with shim-signed's MOK (measured on
-  # 24.04: MOK.der there, no mok.pub); Debian's dkms with its own mok.pub. Ubuntu's first: a box may hold both.
-  local k; for k in "${SWG_DKMS_MOK:-/var/lib/shim-signed/mok/MOK.der}" /var/lib/dkms/mok.pub; do
-    [ -f "$k" ] && { printf '%s' "$k"; return 0; }; done; return 1; }
-awg_key_refused_here(){ [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_REFUSED" 2>/dev/null)" = "$(uname -r)" ]; }   # recorded for THIS kernel
-awg_key_refused_note(){ # say it with the steps, and record it for swg-noded (kernel + the key's path)
+awg_mok_key(){ # the certificate that signed THIS kernel's module — the one to enrol. Matched, not guessed: modinfo's sig_key
+  # is the signing certificate's serial (measured on swgt: Ubuntu's dkms signs with shim-signed's MOK.der although its
+  # framework.conf still shows dkms's own mok.pub defaults). Without openssl or a sig_key: the first that exists.
+  local want k s
+  want="$(modinfo -k "$(uname -r)" -F sig_key amneziawg 2>/dev/null | tr -d ':[:space:]' | tr 'a-f' 'A-F' | sed 's/^0*//')"
+  for k in ${SWG_MOK_CANDIDATES:-/var/lib/shim-signed/mok/MOK.der /var/lib/dkms/mok.pub}; do   # (no spaces in these paths)
+    [ -f "$k" ] || continue
+    { [ -n "$want" ] && have openssl; } || { printf '%s' "$k"; return 0; }
+    s="$( { openssl x509 -inform DER -in "$k" -noout -serial 2>/dev/null || openssl x509 -in "$k" -noout -serial 2>/dev/null; } \
+          | sed -n 's/^serial=//p' | tr 'a-f' 'A-F' | sed 's/^0*//')"
+    [ -n "$s" ] && [ "$s" = "$want" ] && { printf '%s' "$k"; return 0; }
+  done
+  return 1; }
+_awg_boot_id(){ cat /proc/sys/kernel/random/boot_id 2>/dev/null; }
+awg_key_refused_here(){ # recorded for THIS kernel, in THIS boot
+  [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_REFUSED" 2>/dev/null)" = "$(uname -r)" ] \
+    && [ "$(sed -n 's/^boot=//p' "$AWG_MOD_REFUSED" 2>/dev/null)" = "$(_awg_boot_id)" ]; }
+awg_key_refused_note(){ # say it with the steps, and record it for swg-noded (kernel, boot, the key's path)
   local k; k="$(awg_mok_key)" || k=""
   warn "AmneziaWG: Secure Boot is on, and the kernel refuses the module DKMS built for $(uname -r) — its signing key is not enrolled. Enrol it once: sudo mokutil --import ${k:-<the DKMS signing key>} (choose a one-time password), reboot, and pick “Enroll MOK” on the blue screen at the console. Until then awg interfaces run on the slower userspace datapath; rebuilding the module would not help."
   $DRYRUN && return 0
   mkdir -p "$(dirname "$AWG_MOD_REFUSED")" 2>/dev/null || return 0
-  printf 'kernel=%s\nmok=%s\n' "$(uname -r)" "$k" > "$AWG_MOD_REFUSED.tmp" 2>/dev/null && mv -f "$AWG_MOD_REFUSED.tmp" "$AWG_MOD_REFUSED" 2>/dev/null || true; }
+  printf 'kernel=%s\nboot=%s\nmok=%s\n' "$(uname -r)" "$(_awg_boot_id)" "$k" > "$AWG_MOD_REFUSED.tmp" 2>/dev/null && mv -f "$AWG_MOD_REFUSED.tmp" "$AWG_MOD_REFUSED" 2>/dev/null || true; }
 awg_mod_built(){ modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1; }   # a module file exists for THIS kernel (loadable or not)
 _awg_kbuild(){ printf '%s' "${SWG_LIB_MODULES:-/lib/modules}/$(uname -r)/build"; }   # this kernel's headers (the gates point it elsewhere)
 awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that

@@ -1573,7 +1573,10 @@ export function serviceIssues() {
   // raising CRITICAL then invites a SECOND update on top of the first — which is exactly what one operator did.
   // With the userspace fallback on the box the interfaces are UP, just slower — a warning, not a critical "can't come up".
   if (dp && dp.needed && !dp.ok && !dp.updating) {
-    if (dp.why === "compile") add("awg", dp.fallback ? "warn" : "critical", "compile", dp.fallback
+    if (dp.why === "key") add("awg", dp.fallback ? "warn" : "critical", "secureboot", T("Secure Boot refuses the AmneziaWG kernel module — its signing key is not enrolled ({v1}). Enrol it once: sudo mokutil --import {v2}, reboot, and pick “Enroll MOK” at the console", {
+      v1: dp.fallback ? T("awg interfaces run on the slower fallback datapath") : T("awg interfaces can’t come up"),
+      v2: dp.mok || "/var/lib/shim-signed/mok/MOK.der (Ubuntu) or /var/lib/dkms/mok.pub (Debian)" }));
+    else if (dp.why === "compile") add("awg", dp.fallback ? "warn" : "critical", "compile", dp.fallback
       ? T("AmneziaWG runs on the slower fallback datapath — its kernel module does not compile on this kernel yet; an update tries again when a new kernel or a newer AmneziaWG build arrives")
       : T("the AmneziaWG kernel module does not compile on this kernel yet — awg interfaces can’t come up; an update tries again when a new kernel or a newer AmneziaWG build arrives"));
     else if (dp.fallback) add("awg", "warn", "fallback", T("AmneziaWG runs on the slower fallback datapath — its kernel module isn’t built or loaded; running Update rebuilds it"));

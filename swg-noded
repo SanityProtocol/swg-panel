@@ -13045,13 +13045,21 @@ def _awg_record(name):
     return d if d.get("kernel") == os.uname().release else None
 
 
+def _boot_id():
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def _awg_unloadable_why(built):
     """(why, mok) — why the AmneziaWG module does not load, from what the installer recorded; (None, "") when it recorded
-    nothing for this kernel. Never a guess: a record for another kernel, or one that no longer matches (a module file
-    now exists where it "did not compile"), is no answer."""
+    nothing for this kernel. Never a guess: a record for another kernel, one that no longer matches (a module file now
+    exists where it "did not compile"), or a refusal from an EARLIER BOOT (enrolling the key takes a reboot) is no answer."""
     if built:
         r = _awg_record("awg-module-refused")
-        if r:
+        if r and r.get("boot") and r.get("boot") == _boot_id():
             mok = r.get("mok") or ""
             return "key", (mok if re.match(r"^/[\w./+-]{1,200}$", mok) else "")
     elif _awg_record("awg-module-failed"):
@@ -13165,7 +13173,10 @@ def node_datapath_health(interfaces=None):
             # on the fallback while it is unloaded: that first `ip link add` already happened, and the kernel refused the
             # module (Secure Boot with an unsigned build, a build for another ABI). Calling that "ok" put up "update the node
             # to move it back to the kernel module" — a promise no update can keep, since the move needs a module that loads.
-            ent = {"needed": True, "ok": bool(loaded or (built and not us))}
+            # Nor when the installer saw Secure Boot refuse it in this boot: with no fallback there are no userspace
+            # interfaces to tell by, and "built" alone read as healthy while no awg interface could come up.
+            why, mok = (None, "") if loaded else _awg_unloadable_why(built)
+            ent = {"needed": True, "ok": bool(loaded or (built and not us and why != "key"))}
             # `fallback`, only while not ok — is there a userspace datapath awg-quick falls back to? Without it "no module"
             # and "no module AND nothing to fall back to" read the same, and only the second means awg interfaces cannot come
             # up. Interfaces already running on it are proof enough; otherwise the binary where awg-quick looks for it.
@@ -13175,7 +13186,6 @@ def node_datapath_health(interfaces=None):
                 # `why`, only when the installer recorded it for THIS kernel: "key" (built, refused by Secure Boot — `mok`
                 # is the key to enrol) or "compile" (does not compile here yet). Either way an update cannot fix it, and
                 # the panel says so instead of "update the node to rebuild the module".
-                why, mok = _awg_unloadable_why(built or loaded)
                 if why:
                     ent["why"] = why
                     if mok:

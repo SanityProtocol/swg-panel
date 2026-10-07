@@ -909,6 +909,14 @@ def _host_awg_record(name):
     return d if d.get("kernel") == os.uname().release else None
 
 
+def _host_boot_id():
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def host_datapath_health(ttl=20):
     """This host's kernel-datapath health for the self-heal check — right now: is the AmneziaWG kernel module
     LOADABLE when a local node actually uses awg? A broken/absent DKMS module (the "Unknown device type" class)
@@ -955,9 +963,14 @@ def host_datapath_health(ttl=20):
             out["awg"] = {"needed": True, "ok": bool(loaded or built), "updating": upd}
             if not out["awg"]["ok"]:   # D2: degraded (a fallback runs the interfaces) vs down — the SPA words the two apart
                 out["awg"]["fallback"] = any(os.access(p, os.X_OK) for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go"))
-            # `why` — what the installer recorded for this kernel (lib/common.sh): a module that does not compile here. The
-            # Secure Boot case cannot reach this branch (its module is BUILT, so ok), and the master's node page carries it.
-            if not out["awg"]["ok"] and _host_awg_record("awg-module-failed"):
+            # `why` — what the installer recorded (lib/common.sh), as swg-noded reads it: Secure Boot refused the built module
+            # in THIS boot (then it is not ok, built or not), or it does not compile on this kernel.
+            _ref = None if loaded else _host_awg_record("awg-module-refused")
+            if built and _ref and _ref.get("boot") and _ref.get("boot") == _host_boot_id():
+                out["awg"].update(ok=False, why="key", fallback=any(os.access(p, os.X_OK) for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go")))
+                if re.match(r"^/[\w./+-]{1,200}$", _ref.get("mok") or ""):
+                    out["awg"]["mok"] = _ref["mok"]
+            elif not out["awg"]["ok"] and _host_awg_record("awg-module-failed"):
                 out["awg"]["why"] = "compile"
     except Exception:
         return _DATAPATH_SVC["data"]                     # probe failed → keep last good; never break /api/state
