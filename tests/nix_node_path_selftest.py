@@ -133,6 +133,7 @@ IMAGE_EXCLUDED = {
     "systemctl": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",
     "systemd-run": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",
     "dpkg": "dpkg_health returns None on a docker node before it asks — the image's packages are not the box's",
+    "openssl": "only _awg_mok_match (the Secure Boot key) — node_datapath_health returns {} on a docker node before it",
 }
 df = open(DOCKERFILE).read()
 final = df[df.rindex("\nFROM "):]                   # the runtime stage only — the build stage's packages never ship

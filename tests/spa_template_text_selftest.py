@@ -59,7 +59,7 @@ ALLOWED_CHUNKS = {
         "docker",                                         # the run-model tag beside a node's name (log budget table)
     },
     "commands, paths and files the operator types or greps": {
-        "docker compose up -d", "systemctl status", "dkms status", "modprobe amneziawg",
+        "docker compose up -d", "systemctl status", "dkms status", "modprobe amneziawg", "mokutil --sb-state",
         "swg-passwd", "swg-noded", "swg-node → ports:", "wg-keys.dat", "https://vk.ru/call/join/…",
         "ssh_user", "server_ip", "GET", "/metrics", "/api/v1/health", "/api/v1/servers", "/api/v1/servers/{id}/peers",
         "/api/v1/peers", "/api/v1/summary",
