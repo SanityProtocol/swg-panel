@@ -269,6 +269,13 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   fi
   $DRYRUN && return 0
   have awg && modprobe amneziawg 2>/dev/null && return 0
+  # Built, and refused for its signing key (Secure Boot): the steps, once, and straight to userspace — a source build
+  # would compile the same module to the same refusal.
+  if have awg && awg_mod_key_rejected; then
+    awg_key_refused_note
+    ensure_awg_userspace && return 0
+    return 1
+  fi
   # The apt path did not get us there — Debian (the PPA is Ubuntu-only), a non-apt distro, or a kernel with
   # no matching headers. Do NOT stop at a warning: build from source, which is the only route to the KERNEL
   # datapath off Ubuntu and is what we want wherever it is possible.
@@ -289,6 +296,7 @@ build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
   awg_dkms_build_all_kernels   # D4: every installed kernel with headers — an installed-but-not-booted kernel included
   modprobe amneziawg 2>/dev/null && return 0
+  awg_mod_key_rejected && return 1   # built, refused for its key (Secure Boot) — a reinstall would only build it again
   run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || true
   run modprobe amneziawg 2>/dev/null || true

@@ -1573,7 +1573,10 @@ export function serviceIssues() {
   // raising CRITICAL then invites a SECOND update on top of the first — which is exactly what one operator did.
   // With the userspace fallback on the box the interfaces are UP, just slower — a warning, not a critical "can't come up".
   if (dp && dp.needed && !dp.ok && !dp.updating) {
-    if (dp.fallback) add("awg", "warn", "fallback", T("AmneziaWG runs on the slower fallback datapath — its kernel module isn’t built or loaded; running Update rebuilds it"));
+    if (dp.why === "compile") add("awg", dp.fallback ? "warn" : "critical", "compile", dp.fallback
+      ? T("AmneziaWG runs on the slower fallback datapath — its kernel module does not compile on this kernel yet; an update tries again when a new kernel or a newer AmneziaWG build arrives")
+      : T("the AmneziaWG kernel module does not compile on this kernel yet — awg interfaces can’t come up; an update tries again when a new kernel or a newer AmneziaWG build arrives"));
+    else if (dp.fallback) add("awg", "warn", "fallback", T("AmneziaWG runs on the slower fallback datapath — its kernel module isn’t built or loaded; running Update rebuilds it"));
     else add("awg", "critical", "module", T("the AmneziaWG kernel module isn’t built or loaded — awg interfaces can’t come up; running Update rebuilds it"));
   }
   out.sort((a, b) => (b.sev === "critical") - (a.sev === "critical"));

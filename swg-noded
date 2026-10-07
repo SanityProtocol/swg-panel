@@ -1145,7 +1145,7 @@ _RUN_INFLIGHT = 0
 _RUN_LOCK = threading.Lock()
 
 
-def run(args, input_text=None, timeout=20):
+def run(args, input_text=None, timeout=20, env=None):
     # Fail-safe: a MISSING binary (e.g. `nft` on a node/image without nftables) must never crash a caller —
     # return a non-zero result like a normal command failure so callers handle it (smart routing then no-ops
     # instead of taking down the sync loop). Same for a timeout.
@@ -1153,7 +1153,7 @@ def run(args, input_text=None, timeout=20):
     with _RUN_LOCK:
         _RUN_INFLIGHT += 1
     try:
-        return subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout, env=env)
     except (FileNotFoundError, PermissionError) as e:
         return subprocess.CompletedProcess(args, 127, "", str(e))
     except subprocess.TimeoutExpired:
@@ -13035,6 +13035,84 @@ def sample_catk():
     return dict(_CATK["rate"])
 
 
+def _awg_record(name):
+    """One of the installer's per-kernel AmneziaWG records (lib/common.sh) as a dict — None unless it names THIS kernel."""
+    try:
+        with open(os.path.join(STATE_DIR, name)) as f:
+            d = dict(ln.rstrip("\n").split("=", 1) for ln in f if "=" in ln)
+    except (OSError, ValueError):
+        return None
+    return d if d.get("kernel") == os.uname().release else None
+
+
+def _awg_unloadable_why(built):
+    """(why, mok) — why the AmneziaWG module does not load, from what the installer recorded; (None, "") when it recorded
+    nothing for this kernel. Never a guess: a record for another kernel, or one that no longer matches (a module file
+    now exists where it "did not compile"), is no answer."""
+    if built:
+        r = _awg_record("awg-module-refused")
+        if r:
+            mok = r.get("mok") or ""
+            return "key", (mok if re.match(r"^/[\w./+-]{1,200}$", mok) else "")
+    elif _awg_record("awg-module-failed"):
+        return "compile", ""
+    return None, ""
+
+
+# ── the package manager's unfinished work — what an AmneziaWG build failure left on a client's box, unseen ──────────────
+# A failed DKMS hook leaves packages half-configured, and from then on every apt run on the box ends in an error — the
+# operator's, unattended-upgrades', our updater's. Nothing on the panel said so (client box, 2026-10-06). `dpkg --audit`
+# names them, read-only. Only once dpkg has been QUIET for DPKG_SETTLE: an apt run in progress holds packages half-done
+# for minutes, and that is not a fault — the last settled answer stands meanwhile. None where there is no dpkg of the
+# box's own to ask: a container (its packages are the image's), NixOS, a non-Debian system.
+DPKG_STATUS = "/var/lib/dpkg/status"
+DPKG_UPDATES = "/var/lib/dpkg/updates"
+DPKG_SETTLE = 600
+DPKG_RECHECK = 1800
+DPKG_BLOCKING = ("half configured", "half installed", "unpacked but not yet configured", "in a mess", "triggers", "triggered")
+_DPKG = {"mtime": None, "at": 0.0, "v": None}
+
+
+def dpkg_health(now=None):
+    """{"pending": [package…], "interrupted": bool} — see above; None when this node has no dpkg of its own."""
+    if NODE_KIND == "docker" or not shutil.which("dpkg"):
+        return None
+    try:
+        mt = os.stat(DPKG_STATUS).st_mtime
+    except OSError:
+        return None
+    now = now or time.time()
+    if _DPKG["v"] is not None and mt == _DPKG["mtime"] and now - _DPKG["at"] < DPKG_RECHECK:
+        return dict(_DPKG["v"])
+    if now - mt < DPKG_SETTLE:                     # dpkg ran in the last ten minutes — maybe it still is
+        return dict(_DPKG["v"] or {"pending": [], "interrupted": False})
+    r = run(["dpkg", "--audit"], timeout=15, env=dict(os.environ, LC_ALL="C"))   # C: its section headers are what is read below
+    if r.returncode not in (0, 1):                 # 1: it found something (newer dpkg); anything else: no answer
+        return dict(_DPKG["v"]) if _DPKG["v"] is not None else None
+    pend, take = [], False
+    for ln in (r.stdout or "").splitlines():
+        if ln.startswith("The following packages"):
+            # Only the states that stop apt — it tries to finish them on every run and fails each time. Not "missing the
+            # md5sums / list control file" or an architecture note: many boxes carry those for years, and apt runs fine.
+            take = any(w in ln for w in DPKG_BLOCKING)
+            continue
+        m = re.match(r"^ ([a-z0-9][a-z0-9+.:-]{0,100})\s", ln)
+        if take and m and m.group(1) not in pend:
+            pend.append(m.group(1))
+    # A dpkg run cut off mid-way (power, OOM, a closed ssh) leaves its journal in updates/ — every later run refuses
+    # with "dpkg was interrupted" until `dpkg --configure -a` replays it. `--audit` reads the database and can miss it.
+    intr = False
+    with contextlib.suppress(OSError):
+        intr = any(n.isdigit() for n in os.listdir(DPKG_UPDATES))
+    _DPKG.update(mtime=mt, at=now, v={"pending": pend[:20], "interrupted": intr})
+    return dict(_DPKG["v"])
+
+
+def _dpkg_part():
+    d = dpkg_health()
+    return {"dpkg": d} if d is not None else {}
+
+
 def node_datapath_health(interfaces=None):
     """This node's kernel-datapath health for the panel's self-heal check: is the AmneziaWG kernel module loadable
     when the node uses awg? Mirrors the panel's host_datapath_health. Nothing to report for a docker node —
@@ -13094,6 +13172,14 @@ def node_datapath_health(interfaces=None):
             if not ent["ok"]:
                 ent["fallback"] = bool(us) or bool(shutil.which("amneziawg-go")) or any(
                     os.access(p, os.X_OK) for p in ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go"))
+                # `why`, only when the installer recorded it for THIS kernel: "key" (built, refused by Secure Boot — `mok`
+                # is the key to enrol) or "compile" (does not compile here yet). Either way an update cannot fix it, and
+                # the panel says so instead of "update the node to rebuild the module".
+                why, mok = _awg_unloadable_why(built or loaded)
+                if why:
+                    ent["why"] = why
+                    if mok:
+                        ent["mok"] = mok
             if us:
                 ent["userspace"] = us
             out["awg"] = ent
@@ -15623,6 +15709,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             # Source-address validation, same shape. Only meaningful once a cascade/exit entry exists — an
             # asymmetric route is what strict rp_filter drops the return half of.
             "rp_filter": {"needed": bool(_RPF["needed"]), "bad": list(_RPF["bad"])},
+            # The package manager's unfinished work (dpkg_health) — absent where the node has no dpkg of its own.
+            **_dpkg_part(),
             "datapath": _with_awg_gen(node_datapath_health(interfaces)),   # kernel datapath health (awg module loadable?) → panel node-repair "Fix" (bare-metal); awg.gen on every node
             # Per-leg loss/RTT for every mesh link (see MESH_PROBE_EVERY_S). Handshake says the link is UP;
             # this says whether it is any GOOD, which is the question a cascade actually depends on.

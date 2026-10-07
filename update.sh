@@ -908,6 +908,13 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     note "AmneziaWG: userspace datapath — the kernel module does not compile on $(uname -r) yet; tried again when a new kernel or a newer AmneziaWG build arrives"
     return 0
   fi
+  # Built, and refused for its signing key (Secure Boot): the steps, and the userspace datapath — no rebuild changes that.
+  if [ "$_tools" = yes ] && awg_mod_key_rejected; then
+    awg_key_refused_note
+    have amneziawg-go || { ensure_awg_userspace && DID_UPDATE=yes; } || true
+    note "AmneziaWG: userspace datapath — Secure Boot refuses the kernel module until its signing key is enrolled (sudo mokutil --import $(awg_mok_key || echo '<the DKMS key>'), then reboot)"
+    return 0
+  fi
 
   if [ "$_tools" = no ]; then
     info "healing AmneziaWG (its tools are missing on this node — awg interfaces cannot be created or taken over)"
@@ -929,7 +936,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
       # then), so force a build for the RUNNING kernel — an old kernel with newer headers would otherwise build
       # for the wrong one and modprobe would still fail.
       run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
-      modprobe amneziawg 2>/dev/null || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null
+      modprobe amneziawg 2>/dev/null || awg_mod_key_rejected || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null
                                           run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true
       run modprobe amneziawg 2>/dev/null || true
     fi
@@ -949,7 +956,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     note "AmneziaWG: kernel module ready for $(uname -r)"
   elif have awg && have awg-quick && have amneziawg-go; then
     DID_UPDATE=yes; ok "AmneziaWG healed — running the slower USERSPACE datapath (no loadable kernel module)"
-    note "AmneziaWG: userspace (amneziawg-go); $(if awg_fail_get pkg >/dev/null || awg_fail_get src >/dev/null; then echo "the kernel module does not compile on $(uname -r) yet — tried again when a new kernel or a newer AmneziaWG build arrives"; elif awg_tools_drive_3x; then echo 'install matching linux-headers for the faster kernel module'; else awg_tools_old_why; fi)"
+    note "AmneziaWG: userspace (amneziawg-go); $(if awg_key_refused_here; then echo "Secure Boot refuses the kernel module until its signing key is enrolled — see the steps above"; elif awg_fail_get pkg >/dev/null || awg_fail_get src >/dev/null; then echo "the kernel module does not compile on $(uname -r) yet — tried again when a new kernel or a newer AmneziaWG build arrives"; elif awg_tools_drive_3x; then echo 'install matching linux-headers for the faster kernel module'; else awg_tools_old_why; fi)"
   elif have awg && have awg-quick; then
     DID_FAIL=yes; warn "AmneziaWG tools are installed but its kernel module will not load on $(uname -r), and the userspace datapath could not be built — awg interfaces cannot come up"
   else

@@ -2123,6 +2123,28 @@ awg_nothing_new(){ # 0 = something did not compile on THIS kernel, and no record
   if awg_fail_get pkg >/dev/null; then any=yes; awg_pkg_retry_due && return 1; fi
   if awg_fail_get src >/dev/null; then any=yes; awg_src_retry_due && return 1; fi
   [ "$any" = yes ]; }
+# ── a module the kernel REFUSES for its signature (Secure Boot) — no rebuild helps ─────────────────────────────────────
+# With Secure Boot on, DKMS signs the module with its own key (MOK), and the kernel loads it only once that key is enrolled
+# in the firmware — a step at the box's console, after a reboot. Until then `modprobe` answers "Key was rejected by
+# service", the module counts as BUILT, and every heal rebuilt it (a --reinstall, then a source build) to the same refusal.
+# Said once with the steps, and recorded per kernel, so swg-noded can tell the panel why instead of "update to rebuild".
+AWG_MOD_REFUSED="${SWG_AWG_MOD_REFUSED:-/var/lib/swg-noded/awg-module-refused}"
+awg_mod_key_rejected(){ # 0 = a module for THIS kernel exists, and the kernel refuses it for its signing key
+  awg_mod_built || return 1
+  local e; e="$(modprobe amneziawg 2>&1 >/dev/null)" && return 1
+  case "$e" in *"Key was rejected"*|*"Required key not available"*) return 0;; esac
+  return 1; }
+awg_mok_key(){ # the key DKMS signs modules with — the one to enrol. Ubuntu's dkms signs with shim-signed's MOK (measured on
+  # 24.04: MOK.der there, no mok.pub); Debian's dkms with its own mok.pub. Ubuntu's first: a box may hold both.
+  local k; for k in "${SWG_DKMS_MOK:-/var/lib/shim-signed/mok/MOK.der}" /var/lib/dkms/mok.pub; do
+    [ -f "$k" ] && { printf '%s' "$k"; return 0; }; done; return 1; }
+awg_key_refused_here(){ [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_REFUSED" 2>/dev/null)" = "$(uname -r)" ]; }   # recorded for THIS kernel
+awg_key_refused_note(){ # say it with the steps, and record it for swg-noded (kernel + the key's path)
+  local k; k="$(awg_mok_key)" || k=""
+  warn "AmneziaWG: Secure Boot is on, and the kernel refuses the module DKMS built for $(uname -r) — its signing key is not enrolled. Enrol it once: sudo mokutil --import ${k:-<the DKMS signing key>} (choose a one-time password), reboot, and pick “Enroll MOK” on the blue screen at the console. Until then awg interfaces run on the slower userspace datapath; rebuilding the module would not help."
+  $DRYRUN && return 0
+  mkdir -p "$(dirname "$AWG_MOD_REFUSED")" 2>/dev/null || return 0
+  printf 'kernel=%s\nmok=%s\n' "$(uname -r)" "$k" > "$AWG_MOD_REFUSED.tmp" 2>/dev/null && mv -f "$AWG_MOD_REFUSED.tmp" "$AWG_MOD_REFUSED" 2>/dev/null || true; }
 awg_mod_built(){ modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1; }   # a module file exists for THIS kernel (loadable or not)
 _awg_kbuild(){ printf '%s' "${SWG_LIB_MODULES:-/lib/modules}/$(uname -r)/build"; }   # this kernel's headers (the gates point it elsewhere)
 awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that
@@ -2286,6 +2308,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # Tools we did not build (they were already here) may be too old for the master module below: it would load now or at
   # the next boot and take every awg interface down. The caller's next rung, userspace, serves them instead.
   [ "$built" = yes ] || awg_tools_drive_3x || { warn "AmneziaWG: $(awg_tools_old_why) — not building it; awg interfaces use the userspace datapath"; rm -rf "$w"; return 1; }
+  if awg_mod_key_rejected; then awg_key_refused_note; rm -rf "$w"; return 1; fi   # built, refused for its key: a rebuild changes nothing
   local _head; _head="$(awg_module_head)"
   if ! awg_src_retry_due "$_head"; then
     info "AmneziaWG: upstream's kernel module is still ${_head:0:7}, which did not compile on $(uname -r) — not building it again"
@@ -2311,6 +2334,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
   # Say why, like the tools build above: the log is deleted with the work dir, and the caller's next line ("the SLOWER
   # userspace datapath") gives no cause. On Ubuntu 26.04's 7.0.0-38 the upstream module does not compile at all.
+  if ! $DRYRUN && awg_mod_key_rejected; then awg_key_refused_note; rm -rf "$w"; return 1; fi   # it built — the kernel refuses its key
   local _why; _why="$(grep -m1 -iE 'error|fatal|timed out|could not' "$w/mod.log" 2>/dev/null | cut -c1-200)"
   $DRYRUN || warn "the AmneziaWG kernel module did not build for $(uname -r): ${_why:-no error line in its build log}"
   # A module that did not COMPILE — cloned, headers here, the compiler's own `error:` in the log, no module file: remember
