@@ -1445,7 +1445,7 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
     return html`<div class="fvp-node" key=${nid}>
       <div class="fvp-head">
         <span class="fvp-dot" style=${"background:" + (Store.nodeColor(nodeOf(nid)) || "var(--ink)")}></span>
-        <b class="fvp-nm">${Store.nodeName(nodeOf(nid))}</b>${csqtt && csqttLinesOn() ? html` <span class="faint">csqtt ${running[nid].line}</span>` : null}
+        <b class="fvp-nm">${Store.nodeName(nodeOf(nid))}</b>${csqtt && (csqttLinesOn() || running[nid].line !== CSQTT_DEFAULT_LINE) ? html` <span class="faint">csqtt ${running[nid].line}</span>` : null}
         <span class="fvp-ver">${T("Installed")} <span class="mono">${inst}</span>${running[nid].ids.length > 1 ? html` · <span class="faint">${plural(running[nid].ids.length, "server")}</span>` : ""}</span>
         ${held ? html`<span class="tg" style=${"color:var(--" + (mismatch ? "dangling" : "warn") + ");background:color-mix(in srgb,var(--" + (mismatch ? "dangling" : "warn") + ") 16%,transparent)"}>${T("held · {v1}", { v1: held })}</span>` : null}
       </div>
@@ -2372,8 +2372,9 @@ export const CSQTT_COLOR = "#F97316";
 
 // ── csqtt VERSIONS (docs/CSQTT-LINES-PLAN.md) — which csqtt a server runs (2.1, 2.5 …), switchable both ways while
 //    its users stay. Not the build row in "Version, rollback & server defaults": that picks a build WITHIN a version.
-//    The panel offers the versions (Store.csqttLines); with one on offer there is no control anywhere. A node says
-//    which it can run (snap.csqtt_lines) — an older one can run only 2.1, and the panel refuses the rest there.
+//    The panel offers the versions (Store.csqttLines); with one on offer there is no control anywhere — unless a server
+//    already runs another one, which stays visible. A node says which it can run (snap.csqtt_lines) — an older one can
+//    run only 2.1, and the panel refuses the rest there.
 export const CSQTT_DEFAULT_LINE = "2.1";
 export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;
 export const csqttLinesOn = () => (Store.csqttLines || []).length > 1;
@@ -2384,18 +2385,23 @@ const csqttLineNote = l => l === CSQTT_DEFAULT_LINE ? T("Stable. Every client ap
 const csqttLineIos = l => l === CSQTT_DEFAULT_LINE;
 // The switch as the node reports it: `want` = what the panel asked, `run` = what the server runs, `failed` = why the
 // node put it back (it reverts a version that will not start, and waits for a Restart or a new build to try again).
+// `blocked` = asked for a version this node cannot run (a record carried to an older node): it never moves until the
+// node is updated, and "switching" would say otherwise for ever.
 export function csqttSwitchState(node, iface) {
   const cfg = (((Store.nodes || []).find(n => n.id === node) || {}).csqtt_cfg || {})[iface] || {};
   const c = ((Store.stats[node] || {}).csqtt || []).filter(Boolean).find(x => x.iface === iface) || {};
   const want = csqttLineOf(cfg), run = c.line || CSQTT_DEFAULT_LINE;
   const failed = c.line_failed && c.line_failed.line === want ? c.line_failed : null;
-  return { want, run, failed, switching: want !== run && !failed && !!c.iface };
+  const moving = want !== run && !failed && !!c.iface;
+  const blocked = moving && !csqttNodeLines(node).includes(want);
+  return { want, run, failed, blocked, switching: moving && !blocked };
 }
 export function CsqttVersionField({ node, value, onChange }) {
-  if (!csqttLinesOn()) return null;
+  if (!csqttLinesOn() && value === CSQTT_DEFAULT_LINE) return null;
   const can = csqttNodeLines(node);
-  const opts = (Store.csqttLines || []).map(l => ({ value: l.id, label: "csqtt " + l.id,
-    ...(l.id !== value && !can.includes(l.id) ? { refuse: T("Update this node to run csqtt {v1}.", { v1: l.id }) } : {}) }));
+  const ids = (Store.csqttLines || []).includes(value) ? (Store.csqttLines || []) : [...(Store.csqttLines || []), value];
+  const opts = ids.map(id => ({ value: id, label: "csqtt " + id,
+    ...(id !== value && !can.includes(id) ? { refuse: T("Update this node to run csqtt {v1}.", { v1: id }) } : {}) }));
   const old = !can.some(l => l !== CSQTT_DEFAULT_LINE);
   return html`<div class="field"><label>${T("Version")}</label>
     <${Dropdown} value=${value} onChange=${onChange} options=${opts} ariaLabel=${T("Version")}/>
@@ -2469,6 +2475,7 @@ export function CsqttCard({ node, c, reorder }) {
     : _opTag ? _opTag
     : sw.switching ? html`<${StatusTag} cls="tg tg-pending" icon="clock" label=${T("tag|switching")} title=${T("Moving to csqtt {v1} on the node's next sync", { v1: sw.want })}/>`
     : sw.failed ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|switch failed")} title=${T("Switch to csqtt {v1} failed", { v1: sw.want })} msg=${sw.failed.why || ""}/>`
+    : sw.blocked ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|update node")} title=${T("This node can't run csqtt {v1} — update the node", { v1: sw.want })}/>`
     : active ? null
     : cstopped ? html`<span class="tg-off" title=${T("Stopped from the panel — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
     : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("Installing / starting on the node")}/>`;
@@ -2484,7 +2491,7 @@ export function CsqttCard({ node, c, reorder }) {
     </div>
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">${T("CSQTT fork")}</span><span class="r">amurcanov</span></div>
-      ${csqttLinesOn() ? html`<div class="ifrow"><span class="l">${T("Version")}</span><span class="r">csqtt ${sw.run}</span></div>` : null}
+      ${csqttLinesOn() || sw.run !== CSQTT_DEFAULT_LINE ? html`<div class="ifrow"><span class="l">${T("Version")}</span><span class="r">csqtt ${sw.run}</span></div>` : null}
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
       <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r"><a class="tg tg-csqtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(c.iface)} onClick=${e => e.stopPropagation()}>${c.iface}</a></span></div>
     </div></div>`;
@@ -2570,6 +2577,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
     <${ListenNotice} st=${lst}/>
     <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
+    ${sw.blocked && !lineDirty ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node can't run csqtt {v1}, so the server stays on {v2}. Update the node, or pick {v2}.", { v1: sw.want, v2: sw.run })}</span></div>` : null}
     ${sw.failed && !lineDirty ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Switching to csqtt {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.", { v1: sw.want, v2: sw.failed.why || T("it did not start"), v3: sw.run })}</span></div>` : null}
     <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>

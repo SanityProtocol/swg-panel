@@ -2017,15 +2017,15 @@ export function PanelSettingsScreen() {
   // (docs/CSQTT-LINES-PLAN.md) has its own build, latest and hold: it updates from the header badge and the fork's
   // "Version, rollback" panel, and must not read here as a 2.1 server behind 2.1's newest build.
   const csqttOtherLine = w => !!(w && w.kind === "csqtt" && w.line && w.line !== "2.1");
-  const forkVersions = fid => { const v = new Set();
+  const forkVersions = (fid, all) => { const v = new Set();
     for (const snap of Object.values(Store.stats || {})) {
       for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version);
-      for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) if (w && w.fork === fid && !csqttOtherLine(w)) v.add(w.version || "installed");   // i18n-keys
+      for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) if (w && w.fork === fid && (all || !csqttOtherLine(w))) v.add(w.version || "installed");   // i18n-keys
     }
     return [...v]; };
   // per-NODE view of a fork for the hover bubble: one row per node carrying its version + whether it's mid-update
   // (a shared per-fork binary → one version/node; updating if ANY of its instances is installing or Update-clicked).
-  const forkNodeStates = fid => {
+  const forkNodeStates = (fid, all) => {
     const m = {};   // nodeId -> {version, installing (real, clears when done), updatePending (Update-clicked, 120s hint)}
     for (const [nid, snap] of Object.entries(Store.stats || {})) {
       for (const tp of (snap.turn_proxies || [])) {
@@ -2038,7 +2038,7 @@ export function PanelSettingsScreen() {
         m[nid] = cur;
       }
       for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) {   // self-contained kinds (keyed by fork, usually no version string)
-        if (!w || w.fork !== fid || csqttOtherLine(w)) continue;
+        if (!w || w.fork !== fid || (!all && csqttOtherLine(w))) continue;
         const cur = m[nid] || { version: "", installing: false, updatePending: false };
         cur.version = w.version || cur.version || "installed";   // i18n-keys
         if (w.active && w.active !== "active") cur.installing = true;   // starting / awaiting restore
@@ -2924,9 +2924,11 @@ const sectionLabel = k => ({
                 : html`<${Fragment}><span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}<//>`}
             </span>
             ${(() => {
-              const v = forkVersions(f.id); const col = fcol;
+              // a fleet whose csqtt servers ALL run another version is not "not yet used": show those (no update check is offered for them here)
+              const _all = !forkVersions(f.id).length;
+              const v = forkVersions(f.id, _all); const col = fcol;
               if (!v.length) return html`<span class="tf-ver none">${T("not yet used")}</span>`;
-              const nodes = forkNodeStates(f.id); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
+              const nodes = forkNodeStates(f.id, _all); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
               // per-node effective version: a hold shows "Held on <held>", else the running version. The row collapses
               // to ONE label when every node agrees, or "N versions" (detail in the hover bubble) when they differ.
               const perNode = nodes.map(n => { const held = (Store.turnHolds[n.node] || {})[f.id] || ""; return { ...n, held, eff: held || n.version || "" }; });

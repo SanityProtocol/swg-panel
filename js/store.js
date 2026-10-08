@@ -327,7 +327,7 @@ export const Store = {
     this.datapath = d.datapath || {};              // THIS host's kernel datapath health (awg module loadable?) → healable "Fix" issue
     this.turnCatalog = d.turn_catalog || this.turnCatalog || null;   // single-source turn fork/client catalog (server-owned); turnForks() falls back to TURN_FORKS_FALLBACK when absent (mixed-version safe)
     this.turnHolds = d.turn_holds || this.turnHolds || {};   // {node: {fork: held_version}} → fork-row "held" flag
-    this.csqttLines = d.csqtt_lines || this.csqttLines || [];   // [{id, current}] csqtt versions on offer (docs/CSQTT-LINES-PLAN.md) — one entry = no Version control anywhere
+    this.csqttLines = d.csqtt_lines || this.csqttLines || [];   // ["2.1", "2.5"] csqtt versions on offer (docs/CSQTT-LINES-PLAN.md) — one entry = no Version control (unless a server runs another)
     this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
     this.panelMigrateRevertable = !!d.panel_migrate_revertable;   // a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move" (server auto-clears at grace end)
     this.panelMigratePrev = d.panel_migrate_prev || null;         // the OLD address to cancel back to (only while revertable)
