@@ -77,9 +77,9 @@ subscription and no one else sitting in the middle of your traffic.
   whole fleet or for one link; a pair where one server cannot run 3.1 is linked at 2.0, and its server says why.
 - **Disguise the handshake.** On an AmneziaWG interface, *Edit interface* → *Advanced settings* has **Disguise as**:
   Off, a QUIC (HTTP/3) packet or a DNS query, drawn fresh each time you pick one, sent before every handshake in
-  place of the fixed set every install shipped. Devices keep working when you change it — each side sends its own —
-  and pick up the new disguise when they next re-import. The panel shows the size and monthly cost of what it sends,
-  and refuses a line some app could not read.
+  place of the built-in set every install uses by default (one pick brings it back). Devices keep working when you
+  change it — each side sends its own — and pick up the new disguise when they next re-import. The panel shows the
+  size and monthly cost of what it sends, and refuses a line some app could not read.
 - **Filter out the junk.** Block ads, trackers, malware, adult content, gambling and more — per server, from
   curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
   which user is behind the torrents and port-scans it flags.
