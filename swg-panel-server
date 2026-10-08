@@ -12955,6 +12955,78 @@ def awg_rules(d, where="", gen3=None):
     return None
 
 
+# ── I1–I5: can every app read this line? (docs/AWG-MIMICRY-PLAN.md F7, F9) ─────────────────────────────────────────────
+# An app that cannot read one line refuses the WHOLE config, and a node whose live `awg set` fails keeps the line in its
+# conf and fails the interface's next start. Measured at setconf on swgt 2026-10-08 (amneziawg-go 0.2.15, 3.1.20260828 and
+# the pinned 0.0.20250522): a random part over 1000 bytes (0.2.15), two <t> in one packet (0.2.15), <c> (3.x and the pinned
+# build) and odd-length hex (3.x and the pinned build) are refused somewhere; spaces between tags, <r 0> and upper-case hex
+# are read by all. Twin of js/mimic.js mimicCheck (tests/awg_i_check_selftest.py holds the two to one verdict per line).
+AWG_I_KEYS = ("I1", "I2", "I3", "I4", "I5")
+AWG_I_TAG_MAX, AWG_I_LINE_MAX = 1000, 4096
+_AWG_I_TAG = re.compile(r"<([a-z]+)(?: ([^<>]*))?>")
+
+
+def awg_i_check(v):
+    """One I line → (ok, bytes, why, tag): `bytes` it puts on the wire, or why an app refuses it — "ctl" a control
+    character (a line break), "long" over 4096 characters, "tag" a tag no app reads, "c" a <c>, "big" a random part over
+    1000 bytes, "t2" <t> twice. Blank and "-" are no packet."""
+    s = "" if v is None else str(v)
+    if re.search(r"[\x00-\x1f\x7f]", s):
+        return False, 0, "ctl", ""
+    s = s.strip()
+    if s in ("", AWG_OMIT):
+        return True, 0, "", ""
+    if len(s) > AWG_I_LINE_MAX:
+        return False, 0, "long", ""
+    n = t = 0
+    rest = s
+    while True:
+        rest = rest.lstrip()
+        if not rest:
+            return True, n, "", ""
+        m = _AWG_I_TAG.match(rest)
+        if not m:
+            mm = re.match(r"<[^>]*>?", rest)
+            return False, 0, "tag", mm.group(0) if mm else rest[:16]
+        name, arg = m.group(1), m.group(2)
+        rest = rest[m.end():]
+        if name == "c":
+            return False, 0, "c", m.group(0)
+        if name == "t" and arg is None:
+            t += 1
+            if t > 1:
+                return False, 0, "t2", m.group(0)
+            n += 4
+            continue
+        if name == "b" and arg is not None and re.fullmatch(r"0x(?:[0-9a-fA-F]{2})+", arg):
+            n += (len(arg) - 2) // 2
+            continue
+        if name in ("r", "rc", "rd") and arg is not None and re.fullmatch(r"[0-9]+", arg):
+            if int(arg) > AWG_I_TAG_MAX:
+                return False, 0, "big", m.group(0)
+            n += int(arg)
+            continue
+        return False, 0, "tag", m.group(0)
+
+
+def awg_i_refusal(key, v):
+    """The perr refusing I line `key` = `v`, in the Edit sheet's own words (js/iface.js mimicWhy) — or None."""
+    ok, _n, why, tag = awg_i_check(v)
+    if ok:
+        return None
+    if why == "big":
+        return perr("{v1}: a random part is at most 1000 bytes — split it, like <r 1000><r 214>.", v1=key)
+    if why == "c":
+        return perr("{v1}: <c> is gone from AmneziaWG 3.x, and apps refuse the whole config.", v1=key)
+    if why == "t2":
+        return perr("{v1}: <t> appears twice — once per packet at most.", v1=key)
+    if why == "ctl":
+        return perr("{v1}: holds a line break or another control character.", v1=key)
+    if why == "long":
+        return perr("{v1}: longer than 4096 characters.", v1=key)
+    return perr("{v1}: apps cannot read {v2} — use <b 0x…>, <r N>, <rc N>, <rd N> or <t>.", v1=key, v2=tag)
+
+
 # The AmneziaWG 3.1 set an interface switched — or created — at 3.1 gets (D-scope, docs/AWG3-PLAN.md §6, §7.1): Amnezia's
 # own 3.1 server defaults minus DisableCookies, which removes the handshake-flood defence (§1.4). ContentPaddingAddition is
 # not optional: RandomTrailers without it pads every small packet ~5× (§2.4). The HeaderProtectionKey is born per interface.
@@ -27359,6 +27431,14 @@ def api(method, path, qs, body, deps):
                 _snap_u = (deps.get("node_snaps") or {}).get(nid) or {}
                 _rep_u = (((_snap_u.get("interfaces") or {}).get(iface) or {}).get("meta") or {})
                 _rec_u = dict(ov.get("awg_params") or {})
+                # An I line this save CHANGES must be one every app reads (F7, F9). A line the interface already has — in
+                # its record or as the node reports it — is re-sent by every Edit-sheet save and never blocks one.
+                _rep_ap = _rep_u.get("awg_params") if isinstance(_rep_u.get("awg_params"), dict) else {}
+                for _k in AWG_I_KEYS:
+                    if _k in clean and clean[_k] not in (str(_rec_u.get(_k, "")).strip(), str(_rep_ap.get(_k, "")).strip()):
+                        _ib = awg_i_refusal(_k, clean[_k])
+                        if _ib:
+                            return 400, {"ok": False, **_ib, "code": "bad_request"}
                 _was3 = any(k in _rec_u for k in AWG3_FIELDS)
                 if _om or ov.get("awg_exact"):
                     if _om:
