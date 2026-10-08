@@ -18,7 +18,7 @@
  * The browser half (the sheet fed by a real panel's /api/state) is checked against a running panel — logic only here.
  *
  * Run: node tests/spa_mimic_selftest.mjs
- *      --perturb r1001|c|t2|nl|big|cap   plants a defect in js/mimic.js (a preset that breaks an app, or a validator that
+ *      --perturb r1001|c|t2|nl|big|cap|ascii|huge   plants a defect in js/mimic.js (a preset that breaks an app, or a validator that
  *      lets one through) and expects RED.
  */
 import fs from "node:fs";
@@ -35,6 +35,8 @@ const PLANTS = {
   nl: ["${DNS_TAIL}>`", "${DNS_TAIL}>\n`"],                                    // a line break in the conf
   big: ["QUIC_MIN = 1200, QUIC_MAX = 1232", "QUIC_MIN = 1500, QUIC_MAX = 1500"], // a 1500-byte I1
   cap: ["if (+arg > MIMIC_TAG_MAX)", "if (false)"],                           // the validator lets <r 1001> through
+  ascii: ["const AWG_BAD_CHAR = /[^\\x20-\\x7e]/;", "const AWG_BAD_CHAR = /[\\x00-\\x1f\\x7f]/;"],   // Unicode line breaks let through
+  huge: ["return bytes > MIMIC_UDP_MAX ?", "return false ?"],                 // no ceiling on a packet
 };
 if (MODE && !PLANTS[MODE]) { console.log("unknown perturbation " + MODE); process.exit(2); }
 let M, made = null;
@@ -140,7 +142,16 @@ red("<rd 5000>", "big", "<rd 5000>");
 red("<c><r 3>", "c", "a <c>");
 red("<t><r 4><t>", "t2", "two <t>");
 red("<r 3>\n<r 4>", "ctl", "a line break");
-red("<r 3>\t", "ctl", "a tab");
+red("<r 3>\t<r 4>", "ctl", "a tab between tags");
+red("<r 3>\u2028<r 4>", "ctl", "a Unicode line separator");
+red("<r 3>\u0085<r 4>", "ctl", "U+0085 (Python splits on it)");
+red("\ufeff<r 3>", "ctl", "a leading BOM");
+red("<r 3>\u00a0<r 4>", "ctl", "a non-breaking space");
+red("<r 1000>".repeat(70), "huge", "a 70,000-byte packet");
+check("a trailing tab is trimmed, as the panel trims what it stores", mimicCheck("<r 3>\t").ok && mimicCheck("<r 3>\t").bytes === 3);
+check("exactly 65,507 bytes is read", mimicCheck("<r 1000>".repeat(65) + "<r 507>").ok);
+check("any other field: printable ASCII only (S1 with a line separator refused, a padded value fine)",
+      !M.awgFieldCheck("S1", "28\u2028x").ok && M.awgFieldCheck("S1", " 28 ").ok && !M.awgFieldCheck("I1", "<c>").ok);
 red("<r " + "9".repeat(5000) + ">", "long", "a line over 4096 characters");
 red("<x 3>", "tag", "an unknown tag");
 red("<b 0xabc>", "tag", "<b> with an odd number of hex digits");
@@ -239,7 +250,13 @@ const i = src.indexOf("export function EditIfaceSheet("), body = src.slice(i, sr
 check("removing an I line never opens the 'clients break' window", /const awgRm = [^\n]*!MIMIC_KEYS\.includes\(k\)/.test(body));
 check("a bad changed line holds Save, and says why", /disabled=\$\{busy [^}]*!!mimErr/.test(body) && /title=\$\{iperr \|\| egressSaveBlock\(eg, emode\) \|\| mimErr/.test(body));
 check("the picker sits in the sheet with the record's lines and the form's port", /<\$\{MimicPick\} eff=\$\{mimEff\} was=\$\{mimWas\} port=\$\{port\}/.test(body));
-check("only a CHANGED line is checked (a stored one never blocks an unrelated edit)", /MIMIC_KEYS\.filter\(k => mimEff\[k\] !== mimWas\[k\]\)/.test(body));
+check("every CHANGED field is checked, I lines and the rest (a stored value never blocks an unrelated edit)",
+      /const mimBad = isAwg \? AWG_ORDER\.filter\(k => \{ const d = [^\n]*d !== _apT\(k\)/.test(body) && /awgFieldCheck\(k, awg\[k\]\)/.test(body));
+check("a \"-\" on a node without datapath.awg.exact holds Save, in the panel's own sentence",
+      /\.exact !== 1\)\s*\? T\("\{v1\} cannot hold an empty AmneziaWG field yet/.test(body));
+check("…and before the node has reported a set for an interface whose record is not whole",
+      /!meta\.awg_exact && !Object\.keys\([^\n]*awg_params\) \|\| \{\}\)\.length/.test(body) && /wait for the node to report this interface/.test(body));
+check("…which reaches Save through mimErr", /const mimErr = mimBad \? mimicWhy\(mimBad\[0\], mimBad\[1\]\) : omitNo;/.test(body));
 check("the Advanced summary names the disguise", /awgTail \+ " · " \+ MIMIC_TAIL\[mimicOf\(mimEff\)\]\(\)/.test(body));
 check("F8: the false 'must re-import after a change' line is gone", !body.includes('"Pushed to the node\'s interface and rendered into configs/QRs. Existing clients must re-import after a change."'));
 

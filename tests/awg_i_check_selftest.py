@@ -19,12 +19,14 @@ it again on /api/iface/update (awg_i_check), so an API caller or an older cached
       refused, a stored bad line re-sent with an unrelated change is saved, and all three save sites pass the stored one
 
 Run: python3 tests/awg_i_check_selftest.py      (0 = pass; needs node)
-     --perturb cap|nocheck|resent|tplcheck|ctl   plants one regression in a copy of swg-panel-server and expects RED:
+     --perturb cap|nocheck|resent|tplcheck|ctl|ascii|huge   plants one regression in a copy of swg-panel-server and expects RED:
         cap      the 1000-byte cap gone from awg_i_check          → [1] [3]
         nocheck  the check gone from /api/iface/update             → [3]
         resent   a line the node reports counts as a change        → [3]
         tplcheck the check gone from the template saves            → [4]
         ctl      control characters allowed in fields other than I → [3] [4]
+        ascii    the character rule back to C0 controls only       → [1] [3]
+        huge     no ceiling on a packet's size                     → [1]
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -34,11 +36,12 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else None
 PLANTS = {
     "cap": ["            if int(arg) > AWG_I_TAG_MAX:", "            if False:"],
+    "ascii": ['_AWG_BAD_CHAR = re.compile(r"[^\\x20-\\x7e]")', '_AWG_BAD_CHAR = re.compile(r"[\\x00-\\x1f\\x7f]")'],
+    "huge": ['return (False, 0, "huge", "") if n > AWG_I_UDP_MAX else (True, n, "", "")', 'return (True, n, "", "")'],
     "nocheck": ["                        _ib = awg_value_refusal(_k, clean[_k])", "                        _ib = None"],
     "tplcheck": ["            _b = awg_value_refusal(k, v)\n            if _b:\n                return _b",
                  "            _b = None\n            if _b:\n                return _b"],
-    "ctl": ["    if re.search(r\"[\\x00-\\x1f\\x7f]\", \"\" if v is None else str(v)):\n        return perr(",
-            "    if False:\n        return perr("],
+    "ctl": ["    if _AWG_BAD_CHAR.search(_awg_trim(v)):\n        return perr(", "    if False:\n        return perr("],
     "resent": ["clean[_k] not in (str(_rec_u.get(_k, \"\")).strip(), str(_rep_ap.get(_k, \"\")).strip())",
                "clean[_k] != str(_rec_u.get(_k, \"\")).strip()"],
 }
@@ -68,7 +71,11 @@ _l.exec_module(P)
 print("[1] one verdict per line, in both languages")
 CORPUS = ["", "-", " - ", "<r 3><r 4>", "<r 3> <r 4>", " <r 3>", "<r 0>", "<b 0xABCD>", "<b 0xabc>", "<b abc>", "<b 0x>",
           "<r 1000>", "<r 1001>", "<rc 1001>", "<rd 5000>", "<t><t>", "<t><r 4><t>", "<rc 5><rd 5>", "<c>", "<c><r 3>",
-          "<r 3>\n<r 4>", "<r 3>\t", "<x 3>", "<r 3", "junk<r 3>", "<r -3>", "<r 3 >", "<t 1>",
+          "<r 3>\n<r 4>", "<r 3>\t", "<r 3>\t<r 4>", "<x 3>",
+          # code review 2026-10-08: Unicode line breaks the node's splitlines() splits on, Unicode spaces the two languages
+          # trimmed differently, a BOM pasted from an editor, the UDP ceiling
+          "<r 3>\u2028<r 4>", "<r 3>\u2029", "<r 3>\x85<r 4>", "\x85<r 3>", "<r 3>\ufeff<r 4>", "\ufeff<r 3>", "<r 3>\u00a0<r 4>",
+          "<r 3>\u3000", "<r 3>\x1c<r 4>", " <r 3> ", "<r 1000>" * 70, "<r 1000>" * 65 + "<r 507>", "<r 1000>" * 65 + "<r 508>", "<r 3", "junk<r 3>", "<r -3>", "<r 3 >", "<t 1>",
           "<r " + "9" * 5000 + ">", "<b 0xc000000001><r 64><t>", "<r 24><t>", "<t><r 48>", "<r 1000><r 500>",
           "<b 0xc10000000108><r 8><b 0x000044be><r 1000><r 214>",
           "<r 2><b 0x010000010000000000010377777706676f6f676c6503636f6d00000100010000291000000000000000>"]
@@ -95,7 +102,13 @@ check("what every build reads is read: spaces between tags, <r 0>, upper-case he
       v["<r 3> <r 4>"][:2] == (True, 7) and v["<r 0>"][:2] == (True, 0) and v["<b 0xABCD>"][:2] == (True, 2))
 check("what some build refuses is refused: <r 1001>, two <t>, <c>, odd hex",
       [v[x][2] for x in ("<r 1001>", "<t><t>", "<c>", "<b 0xabc>")] == ["big", "t2", "c", "tag"])
-check("a line break and a tab are refused", v["<r 3>\n<r 4>"][2] == "ctl" and v["<r 3>\t"][2] == "ctl")
+check("a line break and an inner tab are refused; a trailing tab is trimmed, as sanitize trims what it stores",
+      v["<r 3>\n<r 4>"][2] == "ctl" and v["<r 3>\t<r 4>"][2] == "ctl" and v["<r 3>\t"][:2] == (True, 3))
+check("Unicode line breaks, spaces and a BOM are refused, wherever they sit",
+      all(v[x][2] == "ctl" for x in ("<r 3>\u2028<r 4>", "<r 3>\u2029", "<r 3>\x85<r 4>", "\x85<r 3>", "<r 3>\ufeff<r 4>",
+                                     "\ufeff<r 3>", "<r 3>\u00a0<r 4>", "<r 3>\u3000", "<r 3>\x1c<r 4>")))
+check("a packet over 65,507 bytes is refused; exactly 65,507 is read",
+      v["<r 1000>" * 70][2] == "huge" and v["<r 1000>" * 65 + "<r 508>"][2] == "huge" and v["<r 1000>" * 65 + "<r 507>"][:2] == (True, 65507))
 check("the P0 strings: QUIC 1232 bytes, DNS 43", v[CORPUS[-2]][:2] == (True, 1232) and v[CORPUS[-1]][:2] == (True, 43))
 
 # ── [2] ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -106,8 +119,8 @@ ui_keys = set(re.findall(r'T\("(\{v1\}:[^"]*)"', mw))
 srv = open(SERVER, encoding="utf-8").read()
 fr = srv[srv.index("def awg_i_refusal"):srv.index("# The AmneziaWG 3.1 set an interface switched")]
 srv_keys = set(re.findall(r'perr\("(\{v1\}:[^"]*)"', fr))
-check("six sentences on each side", len(ui_keys) == 6 and len(srv_keys) == 6, (len(ui_keys), len(srv_keys)))
-check("…and they are the same six", ui_keys == srv_keys, ui_keys ^ srv_keys)
+check("seven sentences on each side", len(ui_keys) == 7 and len(srv_keys) == 7, (len(ui_keys), len(srv_keys)))
+check("…and they are the same seven", ui_keys == srv_keys, ui_keys ^ srv_keys)
 ru = open(os.path.join(ROOT, "js", "lang", "ru.js"), encoding="utf-8").read()
 check("each has its Russian", all(('"%s":' % k) in ru for k in srv_keys), [k for k in srv_keys if ('"%s":' % k) not in ru])
 
@@ -195,6 +208,12 @@ try:
     check("a line break in S1 (not an I line) → 400, S1 named", c == 400 and (r.get("error") or "").startswith("S1:")
           and "line break" in (r.get("error") or ""), (c, r.get("error")))
     check("…and the record untouched", rec("awg0") == before, rec("awg0"))
+    c, r = upd("awg0", {**before, "H1": "103509605-103509620\u2028PostUp = id"})
+    check("a Unicode line separator in H1 → 400, H1 named (the node's splitlines() would split there)",
+          c == 400 and (r.get("error") or "").startswith("H1:"), (c, r.get("error")))
+    c, r = upd("awg0", {**before, "S2": "94\t"})
+    check("a trailing tab is trimmed, not refused", c == 200 and rec("awg0").get("S2") == "94", (c, r.get("error"), rec("awg0").get("S2")))
+    before = dict(rec("awg0"))
     c, r = upd("awg0", {**before, "I1": "-"})
     check("\"-\" still removes a line", c == 200 and "I1" not in rec("awg0"), (c, r.get("error")))
     c, r = upd("awg1", {**BASE, **BUILTIN, "I3": REC_BAD}, mtu="1300")
