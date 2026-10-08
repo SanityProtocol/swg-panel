@@ -12,8 +12,8 @@ and every command that could delete a link is refused by a guard (the test fails
                  server on 2.1 running untouched (same pid)          (G3)
   [3] revert     a 2.5 build that writes the store and dies 2 s after starting passes today's _csqtt_verify — the
                  stable verify catches it, the server is back on 2.1 with 2.1's store, and the result is memoed (G4)
-  [4] resume     a noded that died between the repoint and the verify resumes without overwriting 2.1's copy with
-                 the store 2.5 left (G8)
+  [4] rollback   a switch a noded crash cut (its `.switching` marker left) is ROLLED BACK onto 2.1's store copy —
+                 never resumed — and the still-wanted switch runs again, whole, on the next pass (G8)
   [5] reconfigure a param change on a 2.5 server relinks the 2.5 slot, not 2.1's (G6)
   [6] absent     a request with no `line` keeps a 2.5 server on 2.5 and does not apply a 2.1 `ver` to it (G7)
   [7] memo       a switch that would not run is not retried every sync; the operator's Restart retries it, and a
@@ -24,19 +24,22 @@ and every command that could delete a link is refused by a guard (the test fails
   [10] copyfail  a store copy that fails (a full disk) never leaves the server stopped: it runs on 2.1 again, the
                  failure is memoed
   code review (2026-10-08):
-  [11] crash     a noded that died between repoint and record save (real switch, real processes): a request for the
-                 OLD line undoes the switch onto 2.1's own store copy (not the store 2.5 rewrote); a request for the
-                 new line runs the cut switch's verify, and a 2.5 that dies is reverted and memoed
+  [11] markorder a cut switch the panel wants undone lands on 2.1's store copy; a crash INSIDE the copy leaves no
+                 marker (copy, then mark, then relink), so no pass ever rolls back onto an older copy
   [12] onepass   two servers asking for a switch in one pass: one switches, the other waits a sync
   [13] restart   a Restart that retries a failed switch restarts the server once, not twice
   [14] curver    while a switch is memoed, the line the server RUNS still takes the panel's `cur_ver`
   [15] nover     a versionless fetch never lands in another line's slot (it would be 2.1's build)
   [16] ifaces    a server not installed yet is not "running" any line, so a build swap does not restart it
+  review of the fixes (2026-10-08):
+  [17] fetchswitched  a switch whose fetch failed restarted nothing: Restart still restarts, cur_ver still applies
+  [18] unknowncur     a request for a line this node does not know keeps the running line's cur_ver
+  [19] runver         while a switch waits, the record's ver is the running line's build (what a self-heal fetches)
 
 Run: python3 tests/csqtt_lines_node_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
-                       reconfigure [5] · absent [6] · stable [3] · resume [4] · memo [7] · build [8] · sibling [9] ·
-                       copyfail [10] · crash [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16]
+                       reconfigure [5] · absent [6] · stable [3] · rollback [4] · memo [7] · build [8] · sibling [9] ·
+                       copyfail [10] · markorder [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16] · fetchswitched [17] · unknowncur [18] · runver [19]
 """
 import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
 
@@ -50,14 +53,17 @@ PLANTS = {   # name: (section, anchor, replacement)
     "absent": ("[6]", "            if not _line:\n                _line = _cur\n", "            if not _line:\n                _line = CSQTT_DEFAULT_LINE\n"),
     "stable": (("[3]", "[11]"), "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify_stable(iface)\n",
                "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify(iface)\n"),
-    "resume": (("[4]", "[11]"), "    if not resumed:\n        try:\n            _csqtt_store_copy(cfgdir, frm)\n", "    if True:\n        try:\n            _csqtt_store_copy(cfgdir, frm)\n"),
-    "memo": (("[7]", "[14]"), "                inst[\"line_failed\"] = _lf\n", "                pass\n"),
+    "rollback": (("[4]", "[11]"), "                if _cut:\n                    # A switch away from", "                if False:\n                    # A switch away from"),
+    "memo": (("[7]", "[14]", "[19]"), "                inst[\"line_failed\"] = _lf\n", "                pass\n"),
     "sibling": ("[9]", "        others = [i for i in siblings if i != iface]\n", "        others = []\n"),
-    "copyfail": ("[10]", "            _csqtt_start_one(dict(inst, line=frm)) if not inst.get(\"stopped\") else None\n", "            pass\n"),
-    "crash": ("[11]", "            _cur = _csqtt_running_line(iface) or _rec or CSQTT_DEFAULT_LINE", "            _cur = _rec or _csqtt_running_line(iface) or CSQTT_DEFAULT_LINE"),
-    "onepass": ("[12]", "                if _line != _cur and not inst.get(\"line_failed\") and _sw_pass[0]:", "                if False:"),
+    "copyfail": ("[10]", "        _csqtt_start_one(dict(inst, line=frm)) if not inst.get(\"stopped\") else None\n", "        pass\n"),
+    "markorder": ("[11]", "        _csqtt_store_copy(cfgdir, frm)\n        _csqtt_cut_mark(iface, frm)\n", "        _csqtt_cut_mark(iface, frm)\n        _csqtt_store_copy(cfgdir, frm)\n"),
+    "fetchswitched": ("[17]", "                    _sw_pass[0] = _switched = (not err) or _memo", "                    _sw_pass[0] = _switched = True"),
+    "unknowncur": ("[18]", "                inst[\"ver\"] = (inst.get(\"cur_ver\") or \"\").strip()   # the panel's build for what runs, or none", "                inst.pop(\"ver\", None)"),
+    "runver": ("[19]", "                if inst.get(\"line\") == _cur:\n", "                if False:\n"),
+    "onepass": ("[12]", "                elif _line != _cur and not inst.get(\"line_failed\") and _sw_pass[0]:", "                elif False:"),
     "restart": ("[13]", "and not inst.get(\"stopped\") and not _switched:\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)", "and not inst.get(\"stopped\"):\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)"),
-    "curver": ("[14]", "                _run_ver = _want_ver if _line == _cur else (inst.get(\"cur_ver\") or \"\").strip()", "                _run_ver = _want_ver if _line == _cur else \"\""),
+    "curver": (("[14]", "[17]", "[19]"), "                _run_ver = _want_ver if _line == _cur else (inst.get(\"cur_ver\") or \"\").strip()", "                _run_ver = _want_ver if _line == _cur else \"\""),
     "nover": ("[15]", "    if not ver and line != CSQTT_DEFAULT_LINE:\n", "    if False:\n"),
     "ifaces": ("[16]", "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]"),
     "build": (("[8]", "[16]"), "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return list(want or {})"),   # one function, two sections
@@ -103,7 +109,7 @@ def _guard(cmd, *a, **k):
     class R: returncode, stdout, stderr = 0, "", ""
     return R()
 N.host_sh = _guard
-GOOD = "#!/bin/sh\nexec sleep 300\n"
+GOOD = "#!/bin/sh\ntrap '' HUP\nexec sleep 300\n"   # a real csqtt reloads desired.json on SIGHUP — it does not die of it
 DIES = "#!/bin/sh\necho MIGRATED-BY-2.5 > \"$1/csqtt.db\"\nsleep 2\nexit 1\n"
 BUILD = {"2.1": GOOD, "2.5": GOOD}
 FETCHES = []
@@ -172,16 +178,24 @@ try:
     check("the sibling was never touched", pid("csqttsib") == sib_pid)
     BUILD["2.5"] = GOOD
 
-    section("[4] resume after a crash between repoint and verify")
+    section("[4] a switch a crash cut is rolled back, then runs again whole")
     N._csqtt_docker_stop("lo")
     inst = lay("lo", "2.1", "A")
-    N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1")            # what the crashed pass had copied
+    json.dump({"lo": dict(inst)}, open(N.CSQTT_RECORD, "w"))
     fake_fetch({"ver": "2.1.9-3"}, N._csqtt_bin_shared("2.5"), "2.5")
-    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))
+    N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1"); N._csqtt_cut_mark("lo", "2.1")   # the cut pass: copy, mark, relink —
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))      # — then 2.5 ran and rewrote the store
     open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("MIGRATED-BY-2.5\n")
-    err, memo = N._csqtt_switch_line(dict(inst), "2.1", "2.5", "2.1.9-3")
-    check("the resumed switch completes", err == "", err)
-    check("2.1's copy is still the store 2.1 left", bak("lo", "2.1") == "A", bak("lo", "2.1"))
+    w4 = {"lo": {"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24", "passwords": {"pw1": {}}, "line": "2.5", "ver": "2.1.9-3"}}
+    N.reconcile_csqtt(w4)
+    check("the cut switch is rolled back to 2.1", N._csqtt_running_line("lo") == "2.1", os.readlink(N._csqtt_dir("lo") + "/server"))
+    check("…onto 2.1's own store copy, not the one 2.5 rewrote", db("lo") == "A", db("lo"))
+    check("…the marker is gone and the server runs", not os.path.exists(N._csqtt_cut_path("lo")) and bool(pid("lo")),
+          (os.path.exists(N._csqtt_cut_path("lo")), pid("lo"), (N._csqtt_load().get("lo") or {}).get("stopped")))
+    N.reconcile_csqtt(w4)
+    check("the next pass runs the still-wanted switch, whole", N._csqtt_running_line("lo") == "2.5" and not os.path.exists(N._csqtt_cut_path("lo")),
+          os.readlink(N._csqtt_dir("lo") + "/server"))
+    check("…with a fresh copy of 2.1's store behind it", bak("lo", "2.1") == "A", bak("lo", "2.1"))
 
     section("[5] reconfigure keeps the line")
     i25 = dict(inst, line="2.5", params="--x")
@@ -271,30 +285,36 @@ try:
     N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.1", ver="2.1.9-4", tun_addr="10.66.68.1/24")})
     check("one update, on line 2.5, restarting only the 2.5 server", UPDATES == [("2.5.0-2", ("lo",), "2.5")], UPDATES)
 
-    section("[11] a crash between repoint and record save — the REAL switch, real processes")
+    section("[11] a cut switch the panel now wants undone; the marker always has a fresh copy behind it")
     N._csqtt_switch_line, N._csqtt_update_binary = real_switch, real_update
-    def crashed_mid_switch(build25, ver25):
-        """2.1 committed, its store copied, the link moved to 2.5, 2.5 ran and rewrote the store — then noded died."""
-        N._csqtt_docker_stop("lo")
-        BUILD["2.5"] = build25
-        fake_fetch({"ver": ver25}, N._csqtt_bin_shared("2.5"), "2.5")
-        lay("lo", "2.1", "A")
-        N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1")
-        N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))
-        open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("MIGRATED-BY-2.5\n")
-        record(lo=dict(rec_lo, line="2.1"))
-    crashed_mid_switch(GOOD, "2.5.0-2")
+    N._csqtt_docker_stop("lo")
+    BUILD["2.5"] = GOOD
+    lay("lo", "2.1", "A")
+    N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1"); N._csqtt_cut_mark("lo", "2.1")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))
+    open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("MIGRATED-BY-2.5\n")
+    record(lo=dict(rec_lo, line="2.1"))
     N.reconcile_csqtt({"lo": want("lo", line="2.1", ver="2.1.9-4")})
     r11 = N._csqtt_load().get("lo") or {}
-    check("asked for the old line: the server is back on 2.1", N._csqtt_running_line("lo") == "2.1", os.readlink(N._csqtt_dir("lo") + "/server"))
-    check("…on 2.1's own store copy, not the one 2.5 rewrote", db("lo") == "A", db("lo"))
-    check("…running, committed 2.1, nothing memoed", bool(pid("lo")) and r11.get("line") == "2.1" and not r11.get("line_failed"), r11)
-    crashed_mid_switch(DIES, "2.5.0-7")
-    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-7")})
-    r11 = N._csqtt_load().get("lo") or {}
-    check("asked for the new line: the cut switch's verify runs — a 2.5 that dies is reverted to 2.1", N._csqtt_running_line("lo") == "2.1", os.readlink(N._csqtt_dir("lo") + "/server"))
-    check("…onto 2.1's store copy, memoed, committed 2.1", db("lo") == "A" and (r11.get("line_failed") or {}).get("line") == "2.5" and r11.get("line") == "2.1", (db("lo"), r11))
-    BUILD["2.5"] = GOOD
+    check("asked for 2.1: back on 2.1, on 2.1's store copy", N._csqtt_running_line("lo") == "2.1" and db("lo") == "A", (os.readlink(N._csqtt_dir("lo") + "/server"), db("lo")))
+    check("…committed 2.1, nothing memoed, running", r11.get("line") == "2.1" and not r11.get("line_failed") and bool(pid("lo")), r11)
+    # a crash INSIDE the copy: no marker may exist yet, or the next pass would roll back onto an older copy
+    N._csqtt_docker_stop("lo")
+    inst11 = lay("lo", "2.1", "STALE"); N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1")   # an old copy from some earlier switch
+    open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("LIVE\n")
+    class Crash(BaseException):
+        pass
+    real_copy = N._csqtt_store_copy
+    def crash_copy(*a): raise Crash()
+    N._csqtt_store_copy = crash_copy
+    try:
+        N._csqtt_switch_line(dict(inst11), "2.1", "2.5", "2.1.9-3")
+    except Crash:
+        pass
+    N._csqtt_store_copy = real_copy
+    record(lo=dict(rec_lo, line="2.1"))
+    N.reconcile_csqtt({"lo": want("lo", line="2.1", ver="2.1.9-4")})
+    check("a crash inside the copy leaves no marker — the live store is untouched", db("lo") == "LIVE", db("lo"))
     N._csqtt_switch_line, N._csqtt_update_binary = rec_switch, rec_update
 
     section("[12] one switch per pass")
@@ -341,6 +361,35 @@ try:
     N._csqtt_panel_fetch = real_pf
     check("refused, naming the line", "named no csqtt 2.5" in (e15 or ""), e15)
     check("…and the mirror's 2.1 build did not land in the 2.5 slot", not os.path.exists(N._csqtt_bin_shared("2.5") + ".probe"))
+
+    section("[17] a switch whose fetch fails restarted nothing")
+    N._csqtt_docker_stop("lo"); lay("lo", "2.1", "A"); N._csqtt_write_ver("2.1.9-3", "2.1")
+    record(lo=dict(rec_lo, line="2.1", restart=1))
+    STARTS = []
+    real_start = N._csqtt_docker_start
+    N._csqtt_docker_start = lambda inst: (STARTS.append(inst.get("iface")), real_start(inst))[1]
+    SWITCH_RESULT[0] = ("the panel's mirror had no build", False)
+    del UPDATES[:], SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4", restart=2)})
+    N._csqtt_docker_start = real_start
+    check("the switch was tried", len(SWITCHES) == 1, SWITCHES)
+    check("…so the operator's Restart still restarts it", STARTS.count("lo") == 1, STARTS)
+    check("…and the 2.1 it runs still takes cur_ver", UPDATES == [("2.1.9-4", ("lo",), "2.1")], UPDATES)
+    SWITCH_RESULT[0] = ("", False)
+
+    section("[18] a line the node does not know keeps cur_ver for what runs")
+    N._csqtt_write_ver("2.1.9-3", "2.1")
+    record(lo=dict(rec_lo, line="2.1"))
+    del UPDATES[:], SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.6", ver="2.6.0-1", cur_ver="2.1.9-4")})
+    check("no switch", SWITCHES == [], SWITCHES)
+    check("the 2.1 it runs takes cur_ver", UPDATES == [("2.1.9-4", ("lo",), "2.1")], UPDATES)
+
+    section("[19] while a switch waits, the record names the RUNNING line's build")
+    record(lo=dict(rec_lo, line="2.1", line_failed={"line": "2.5", "ver": "2.5.0-2", "why": "x"}))
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4")})
+    r19 = N._csqtt_load().get("lo") or {}
+    check("its ver is 2.1's build (a self-heal fetch into the 2.1 slot names it)", r19.get("ver") == "2.1.9-4" and r19.get("line") == "2.1", r19)
 
     section("[16] a server not installed yet runs no line")
     check("_csqtt_ifaces leaves it out", N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5") == [], N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5"))

@@ -58,7 +58,7 @@ PLANTS = {
                     "        _vl = (_csqtt_line_of(_vi) if _vi"),
     "runline": (("[11]", "[12]"), "        _vl = (_csqtt_run_line(((deps.get(\"node_snaps\") or {}).get(nid)), iface, ((nodes[nid].get(\"csqtt\")) or {}).get(iface))",
                 "        _vl = (_csqtt_line_of(((nodes[nid].get(\"csqtt\")) or {}).get(iface))"),
-    "curver": ("[11]", "            if _row and _run != _line and _run in CSQTT_LINES:", "            if False:"),
+    "curver": ("[11]", "            if _run and _run != _line and _run in CSQTT_LINES:", "            if False:"),
     "refuseoff": ("[12]", "        if _vl not in CSQTT_LINES:\n            # a server on a line", "        if False:\n            # a server on a line"),
     "mirror": (("[8]", "[10]"), "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
 }
