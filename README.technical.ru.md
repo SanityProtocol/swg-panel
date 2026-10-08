@@ -285,7 +285,7 @@ prerouting; даты — это таймауты ядра, поэтому дос
 
 ## Подписки и контроль доступа
 
-**Подписки (`swg-sub`)** — отдельная, публичная, **read-only** поверхность, которая отдаёт каждому пользователю личную страницу по адресу `https://sub.<domain>/<token>#<unlock-key>` с его конфигом и QR для **каждого** узла, где он есть: **WireGuard**, **AmneziaWG** и каждый назначенный ему **TURN-прокси-форк** (WINGS-N, samosvalishe, Moroka8, cacggghp, …), плюс поле VK-call-ссылки для FreeTurn, бейджи протокола/реле, светлая/тёмная тема, RU/EN и копирование / скачивание / отправка. **Выключено по умолчанию** — включается в **Settings → Subscriptions**.
+**Подписки (`swg-sub`)** — отдельная, публичная, **read-only** поверхность, которая отдаёт каждому пользователю личную страницу по адресу `https://sub.<domain>/<token>#<unlock-key>` с его конфигом и QR для **каждого** узла, где он есть: **WireGuard**, **AmneziaWG** и каждый назначенный ему **TURN-прокси-форк** (WINGS-N, hackdiaz-dev, Moroka8, cacggghp, …), плюс поле VK-call-ссылки для FreeTurn, бейджи протокола/реле, светлая/тёмная тема, RU/EN и копирование / скачивание / отправка. **Выключено по умолчанию** — включается в **Settings → Subscriptions**.
 
 - **Хранение ключей.** Персональный **ключ расшифровки живёт в `#fragment` ссылки** — никогда не отправляется на сервер. Панель хранит только **шифротекст** (зашифрованные блобы конфигов) плюс публичную карту токенов (`subs/users.json` = `{token_sha}`); обёрнутые SK ключи расшифровки лежат в отдельном `subs/escrow.json`, который эта поверхность прочитать не может. Компрометация публичной страницы даёт только шифротекст, никогда — приватный ключ (поэтому от хранения `store_configs` в открытом виде отказались).
 - **Изоляция.** `swg-sub` — отдельный процесс/контейнер под выделенным малопривилегированным пользователем: монтирует состояние панели `:ro` и **маскирует** каждый секрет, который не должен открывать (`auth`, `panel-settings.json`, `subs/vault.json`, `subs/escrow.json`, приватный ключ TLS) через `/dev/null` + `tmpfs`. Никакого кода логина, записи или узла.
@@ -561,7 +561,7 @@ swgPanel использует несколько прекрасных проек
 
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — оригинал
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe](https://github.com/samosvalishe/free-turn-proxy)
+- [hackdiaz-dev](https://github.com/hackdiaz-dev/free-turn-proxy) (ранее samosvalishe)
 - [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
 - [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)

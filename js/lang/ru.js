@@ -6496,8 +6496,8 @@ export const STR = {
     "Отсканируйте QR или откройте ссылку wdtt:// в WDTT-Plus.",
   "Scan the QR or open the wdtt:// link in the WDTT app (Android) or PWDTT (desktop).":
     "Отсканируйте QR или откройте ссылку wdtt:// в приложении WDTT (Android) или PWDTT (десктоп).",
-  "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.":
-    "Отсканируйте QR приложением FreeTurn (samosvalishe/turn-proxy-android) или вставьте ссылку freeturn:// — она несёт ссылку на звонок VK и всю конфигурацию.",
+  "Scan the QR with the FreeTurn app (hackdiaz-dev/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.":
+    "Отсканируйте QR приложением FreeTurn (hackdiaz-dev/turn-proxy-android) или вставьте ссылку freeturn:// — она несёт ссылку на звонок VK и всю конфигурацию.",
   "Scan the QR with the WINGS V app, or paste the wingsv:// link (Settings → import from link).":
     "Отсканируйте QR приложением WINGS V или вставьте ссылку wingsv:// (Настройки → импорт из ссылки).",
   "This server needs a separate client binary. Scan the QR or import .conf into WireGuard/AmneziaWG, then run the client alongside it:":

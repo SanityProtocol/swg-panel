@@ -26,7 +26,7 @@ import {
   Store, api, bus, useStore,
 } from "./store.js";
 import {
-  forkSupportsAwg, turnColor, turnFork, turnForkList, turnForksVisible,
+  forkSupportsAwg, turnColor, turnFork, turnForkList, turnForksVisible, forkLabel,
 } from "./turn-catalog.js";
 import {
   ConfirmSheet, Disclosure, Dropdown, ExitDevicePick, ExitEgressPick, Ic, NodeIpPick, Popover, Sheet, Switch, ThemedSwatch, autoGrow, closeModal, copy, footRow,
@@ -2958,8 +2958,8 @@ const sectionLabel = k => ({
                   : p.disabled
                   ? html`<span class="tf-plbub-l"><span class="tf-plbub-app">${T("No {v1} app for {v2} yet", { v1: f.label, v2: p.label })}</span></span>`
                   : html`<${Fragment}><span class="tf-plbub-l">
-                      <span class="tf-plbub-app">${p.name}<span class="tf-plbub-by"> ${Trich("by {v1}", { v1: html`<span class="tf-plbub-who" style=${"color:" + (p.color || turnColor(p.author))}>${p.author}</span>` })}</span></span>
-                      ${p.coreFork ? html`<span class="tf-plbub-core">${Trich("with {v1} core", { v1: html`<span style=${"color:" + turnColor(p.coreFork)}>${p.coreFork}</span>` })}</span>` : null}
+                      <span class="tf-plbub-app">${p.name}<span class="tf-plbub-by"> ${Trich("by {v1}", { v1: html`<span class="tf-plbub-who" style=${"color:" + (p.color || turnColor(p.author))}>${forkLabel(p.author)}</span>` })}</span></span>
+                      ${p.coreFork ? html`<span class="tf-plbub-core">${Trich("with {v1} core", { v1: html`<span style=${"color:" + turnColor(p.coreFork)}>${forkLabel(p.coreFork)}</span>` })}</span>` : null}
                     </span>
                     <span class=${"tf-plbub-obf" + (p.obfLabel ? "" : " plain")}>${p.obfLabel || T("tag|plain")}</span><//>`}
               </span></span>`)}</span>

@@ -166,6 +166,8 @@
   var FORK_ORDER_FALLBACK = ["cacggghp", "WINGS-N", "samosvalishe", "Moroka8", "anton48"];
   function turnServers() { return (_lastData && _lastData.turn_catalog && _lastData.turn_catalog.servers) || null; }
   function turnServer(f) { var s = turnServers() || []; for (var i = 0; i < s.length; i++) if (s[i].id === f) return s[i]; return null; }
+  // A fork's shown name is its catalog label, never the internal id (they differ where a fork changed hands: samosvalishe → hackdiaz-dev).
+  function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }
   function forkRank(f) { var s = turnServers(); if (s && s.length) { for (var i = 0; i < s.length; i++) if (s[i].id === f) return i; return s.length; } var j = FORK_ORDER_FALLBACK.indexOf(f); return j < 0 ? FORK_ORDER_FALLBACK.length : j; }
   // WireGuard-only forks (the client can't front AmneziaWG) — from the catalog server's `protocols` (no "awg"); so
   // such a fork isn't offered for an AWG peer. The fallback mirrors the panel's old TURN_WG_ONLY.
@@ -1148,7 +1150,7 @@
       var col = forkColor(a.fork), owner = ((turnServer(a.fork) || {}).owner) || "";
       var dl = (a.fork === "samosvalishe" && c.dlAppUrl) ? c.dlAppUrl : ("https://github.com/" + owner + "/releases");
       var lnk = el("a", "ph-dl cli-auth-dl"); lnk.href = dl; lnk.style.color = col;
-      lnk.textContent = t("cliDownBy").replace("{author}", a.fork);
+      lnk.textContent = t("cliDownBy").replace("{author}", forkLabel(a.fork));
       lnk.onclick = function (e) { e.preventDefault(); _openUrl(dl); };
       links.appendChild(lnk);
     });
@@ -1247,7 +1249,7 @@
   }
   // The badge's "by <author>" tail. One string in the catalog, not " by " glued on in three cells: those three were
   // English on a Russian page (since 07774a7), because a literal cannot follow the language selector.
-  function tagBy(author) { return el("span", "scell-tag-by", t("by").replace("{author}", author)); }
+  function tagBy(author) { return el("span", "scell-tag-by", t("by").replace("{author}", forkLabel(author))); }
   // A chevron arrow as an inline SVG (built via the DOM so the strict CSP is happy). dir: l/r/u/d.
   function chevronEl(dir) {
     var NS = "http://www.w3.org/2000/svg";
@@ -1926,7 +1928,7 @@
       // app badge: a branded/resolved app name → "{fork} · {app}"; otherwise just "{fork} app". Every fork now resolves
       // to a client for the visitor's OS (cacggghp → VK TURN Proxy on mobile, CLI on desktop), so there's no "no app" case.
       var appInfo = appName ? { badge: appName, kind: "app", app: appName }
-                  : { badge: t("forkApp").replace("{fork}", forkId), kind: "fork", fork: forkId };
+                  : { badge: t("forkApp").replace("{fork}", forkLabel(forkId)), kind: "fork", fork: forkId };
       // badge = just the fork when it echoes its own id (a generic fork like Moroka8 with no app name); "fork · App"
       // when there's a real app name (WINGS V/DeX, FreeTurn, VK TURN Proxy, CLI client)
       var hasAppName = appName && appName !== forkId;
@@ -1936,12 +1938,12 @@
       var appFork = (art && typeof SWGTurn.encoderFork === "function" && SWGTurn.encoderFork(art.enc)) || forkId;
       var appColor = forkColor(appFork);
       // Enlarged-QR caption (peer.title · …): a turn cell names the APP; the main-screen caption keeps the server name.
-      ctrl.zoomTail = hasAppName ? appName : forkId;
+      ctrl.zoomTail = hasAppName ? appName : forkLabel(forkId);
       // Badge = "<server used> · <app>": the server chip in the used fork's colour, the app chip in its native fork's.
       var tag = el("span", "scell-tag");
       // Two relays of the SAME fork on one deployment would otherwise render as two identical badges, leaving
       // the reader to guess which is which. The port is the one thing that always separates them.
-      var srvName = it.dupFork ? (forkId + " :" + String(tp.listen || "").split(":").pop()) : forkId;
+      var srvName = it.dupFork ? (forkLabel(forkId) + " :" + String(tp.listen || "").split(":").pop()) : forkLabel(forkId);
       var srvChip = el("span", null, srvName); srvChip.style.color = fc; tag.appendChild(srvChip);
       if (hasAppName) {
         tag.appendChild(el("span", "scell-tag-sep", " · "));

@@ -18243,7 +18243,14 @@ def _turn_panel_fetch(owner, tag, arch, dest, want):
         return False
     return True
 
+# A fork repo that moved: samosvalishe deleted samosvalishe/free-turn-proxy (2026-10) and hackdiaz-dev carries it on
+# (same releases, asset names and flags). A proxy installed before the move remembers the old repo (repo.txt, its
+# record), so every GitHub fetch goes through here; the panel's own requests already name the new one.
+_TURN_REPO_MOVED = {"samosvalishe/free-turn-proxy": "hackdiaz-dev/free-turn-proxy"}
+def _turn_owner_now(owner):
+    return _TURN_REPO_MOVED.get(owner, owner)
 def _dturn_download(svc, owner, pin=None):
+    owner = _turn_owner_now(owner)
     arch = _turn_arch()
     if not _turn_arch_ok():                               # no server-linux-<arch> build exists → refuse cleanly (never fetch a wrong-arch binary)
         return "no turn-proxy build for this architecture (" + os.uname().machine + ") — forks publish amd64/arm64 only"
@@ -18279,6 +18286,7 @@ def _dturn_force_download(svc, owner, pin=None):
     """Reinstall/update: fetch the fork binary FRESH and atomically swap it in — WITHOUT ever unlinking the live
     shared file. A container bind-mounts this path (…:/turn-server); if it's momentarily missing when docker
     (re)creates a container, docker creates a *directory* there and everything breaks. So: temp + os.replace only."""
+    owner = _turn_owner_now(owner)
     arch = _turn_arch()
     if not _turn_arch_ok():                               # reinstall/update on an unrunnable arch → refuse cleanly
         return "no turn-proxy build for this architecture (" + os.uname().machine + ") — forks publish amd64/arm64 only"
@@ -18489,6 +18497,7 @@ def _turn_write_version(svc, tag):
         pass
 def _turn_resolve_tag(owner):
     """Latest release tag, read from the 302 of releases/latest/download (no API → no rate limit)."""
+    owner = _turn_owner_now(owner)
     if not owner:
         return ""
     arch = _turn_arch()
@@ -18763,7 +18772,7 @@ def _unit_to_envform(unit_text, svc, binp):
 def _turn_install(svc, req):
     """Install a new turn-proxy: download the fork's prebuilt binary, write the systemd unit, enable
     it. Mirrors the installer's install_turn_binary (server-linux-<arch>). '' on success, else error."""
-    owner = (req.get("owner") or "").strip()
+    owner = _turn_owner_now((req.get("owner") or "").strip())
     listen = (req.get("listen") or "").strip()
     connect = (req.get("connect") or "").strip()
     wrap_flags = (req.get("wrap_flags") or "").strip()
@@ -18978,6 +18987,7 @@ def apply_turn(turn, turn_onboard):
                         if owner: break
                 if not owner:
                     fail(svc, "no owner repo for reinstall"); continue
+                owner = _turn_owner_now(owner)
                 arch = _turn_arch()
                 fork = _turn_fork(svc)
                 pin_tag, want = _turn_pin(req.get("pin"))                     # panel checksum gate: pin tag + expected sha256

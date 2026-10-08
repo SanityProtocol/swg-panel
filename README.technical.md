@@ -283,7 +283,7 @@ cannot link.
 
 ## Subscriptions & access control
 
-**Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, samosvalishe, Moroka8, cacggghp, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **WDTT** peers appear in the same turn group with their import link (or QR, for the apps that scan one) and a per-OS **get the app** row resolved from the client you set as that fork's default. **Off by default** — enable it in **Settings → Subscriptions**.
+**Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, hackdiaz-dev, Moroka8, cacggghp, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **WDTT** peers appear in the same turn group with their import link (or QR, for the apps that scan one) and a per-OS **get the app** row resolved from the client you set as that fork's default. **Off by default** — enable it in **Settings → Subscriptions**.
 
 - **Key custody.** The per-user **unlock key rides in the URL `#fragment`** — never sent to the server. The panel stores only **ciphertext** (encrypted config blobs) plus a public token map (`subs/users.json` = `{token_sha}`); the SK-wrapped unlock keys sit in a separate `subs/escrow.json` the sub surface can't read. A compromise of the internet-facing page yields only ciphertext, never a private key (this is why plaintext `store_configs` was dropped).
 - **Isolation.** `swg-sub` is its own process/container running as a dedicated low-privilege user: it mounts panel state `:ro` and **masks** every secret it must never open (`auth`, `panel-settings.json`, `subs/vault.json`, `subs/escrow.json`, the TLS key) with `/dev/null` + `tmpfs`. No login, write, or node code.
@@ -559,7 +559,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe](https://github.com/samosvalishe/free-turn-proxy)
+- [hackdiaz-dev](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe)
 - [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
 - [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)

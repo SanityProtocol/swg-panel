@@ -193,7 +193,7 @@ export function ListenOnField({ node, value, onChange }) {
 // hover bubble body for a set of forwarding proxies: one line each — fork badge (own colour) + title.
 export function turnListRows(list) {
   return list.map(tp => { const f = turnFork(tp.service); return html`<div class=${"turnlist-row" + (turnDown(tp) ? " muted" : "")}>
-    <span class="tg tg-turn" style=${"--tfc:" + turnColor(f)}>${f}</span>${tp.title ? html`<span class="turnlist-ttl">${tp.title}</span>` : null}</div>`; });
+    <span class="tg tg-turn" style=${"--tfc:" + turnColor(f)}>${forkLabel(f)}</span>${tp.title ? html`<span class="turnlist-ttl">${tp.title}</span>` : null}</div>`; });
 }
 // each turn badge on an interface card gets a hover-only bubble listing its proxies; clicks fall through to
 // the card link (hoverOnly). ≤3 forwarding proxies → one fork-coloured chip per fork; >3 → collapse to one
@@ -302,7 +302,7 @@ export function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }
       : down ? html`<${StatusTag} cls="tg-busy del" label="down" msg=${err || T("service is not running on the node")} title=${T("Service down on the node")}/>`
       : (!fronted ? html`<span class="tg tg-warn" title=${T("Forwards to a port with no managed interface behind it — likely a misconfiguration.")}>${T("tag|unbound")}</span>` : null)}</div>
     <div class="ifcard-rows">
-      <div class="ifrow"><span class="l">${T("Turn-proxy fork")}</span><span class="r">${turnFork(tp.service)}</span></div>
+      <div class="ifrow"><span class="l">${T("Turn-proxy fork")}</span><span class="r">${forkLabel(turnFork(tp.service))}</span></div>
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${tp.listen || "—"}</span></div>
       ${(() => {
         // The proxy's OWN losses. It has no interface, so nothing else on this page can show them: these
@@ -364,7 +364,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
     return html`<div class="ifcard tp down" key=${"new:" + svc}>
       <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(svc)}>${T("val|turn")}</span><span class="ifname">${d.title || turnFork(svc)}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[svc]}/><${StatusTag} cls="tg-pending" icon="clock" label="pending" title=${T("Assigned — waiting for the node to pick it up and install it")}/><button class="xbtn" title=${T("Cancel this request")} onClick=${() => { delete Store.turnNew[node + "|" + svc]; cancelTurn(node, { service: svc }); }}><${Ic} i="x"/></button></div>
       <div class="ifcard-rows">
-        <div class="ifrow"><span class="l">${T("Turn-proxy fork")}</span><span class="r">${turnFork(svc)}</span></div>
+        <div class="ifrow"><span class="l">${T("Turn-proxy fork")}</span><span class="r">${forkLabel(turnFork(svc))}</span></div>
         <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${d.listen || "—"}</span></div>
         <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + awg3Cls(node, fronted)} ...${awg3Tip(node, fronted)} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
       </div></div>`; };
@@ -425,7 +425,7 @@ const _forkTag = svc => {
     const label = forkLabel(fork);
     return html`<span class="tg tg-turn" style=${"--tfc:" + (turnColor(fork) || WDTT_COLOR)}>${label}</span>`;
   }
-  return html`<span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(svc))}>${turnFork(svc)}</span>`;
+  return html`<span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(svc))}>${forkLabel(turnFork(svc))}</span>`;
 };
 const _lastSeen = last => last ? T("{v1} ago", { v1: seen(Math.max(0, Math.floor(Date.now() / 1000) - last)) }) : "—";
 
@@ -1022,8 +1022,8 @@ export function turnForkPlatforms(f) {
 export function ClientEntryLabel({ e }) {
   /* "<name> by <author> with <core> core" is ONE sentence, not five spans: Russian puts the author in
      the instrumental and the core clause elsewhere, and neither is expressible once it arrives in pieces. */
-  const _auth = html`<span class="ce-auth" style=${"color:" + e.color}>${e.author}</span>`;
-  const _core = html`<span class="ce-auth" style=${"color:" + turnColor(e.coreFork)}>${e.coreFork}</span>`;
+  const _auth = html`<span class="ce-auth" style=${"color:" + e.color}>${forkLabel(e.author)}</span>`;
+  const _core = html`<span class="ce-auth" style=${"color:" + turnColor(e.coreFork)}>${forkLabel(e.coreFork)}</span>`;
   return html`<span class="ce-name"><b>${e.name}</b> ${e.coreFork
     ? Trich("by {v1} with {v2} core", { v1: _auth, v2: _core })
     : Trich("by {v1}", { v1: _auth })}</span>`;
@@ -1111,8 +1111,8 @@ export function useTurnClients(fork, commitRef, initialOs) {
 // "<app> by <author> [with <core> core]" — same colouring as the dropdown row (name plain, author + core tinted)
 export function clientAppLabel(e) {
   if (!e) return "";
-  const _a = html`<span style=${"color:" + e.color}>${e.author}</span>`;
-  const _c = html`<span style=${"color:" + turnColor(e.coreFork)}>${e.coreFork}</span>`;
+  const _a = html`<span style=${"color:" + e.color}>${forkLabel(e.author)}</span>`;
+  const _c = html`<span style=${"color:" + turnColor(e.coreFork)}>${forkLabel(e.coreFork)}</span>`;
   return html`<b>${e.name}</b> ${e.coreFork
     ? Trich("by {v1} with {v2} core", { v1: _a, v2: _c })
     : Trich("by {v1}", { v1: _a })}`;
@@ -1141,12 +1141,12 @@ export function TurnAppsPicker({ ctl, offered }) {
           <span class="osapp-ic"><${Ic} i=${_OS_ICON[o]}/></span>
           <span class="osapp-col">
             ${oe && oe.none ? html`<span class="osapp-name osapp-dim">${label}</span><span class="osapp-auth osapp-dim">${T("not offered")}</span>`
-                 : oe ? html`<span class="osapp-name">${oe.name}</span><span class="osapp-auth"><span style=${"color:" + oe.color}>${oe.author}</span>${oe.coreFork && oe.coreFork !== oe.author ? html`<span class="ce-by"> · </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span>` : null}</span>`
+                 : oe ? html`<span class="osapp-name">${oe.name}</span><span class="osapp-auth"><span style=${"color:" + oe.color}>${forkLabel(oe.author)}</span>${oe.coreFork && oe.coreFork !== oe.author ? html`<span class="ce-by"> · </span><span style=${"color:" + turnColor(oe.coreFork)}>${forkLabel(oe.coreFork)}</span>` : null}</span>`
                  : html`<span class="osapp-name osapp-dim">${label}</span><span class="osapp-auth osapp-dim">${T("no client")}</span>`}
           </span>
           ${many ? html`<span class="osapp-car">▾</span>` : null}
           ${oe && oe.none ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>${T("Not offered")}</b><span class="ce-by">${T(" — {os} users get no card for this server", { os: label })}</span></span></span>`
-            : oe ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>${oe.name}</b>${oe.coreFork ? html`<span class="ce-by"> ${T("val|with")} </span><span style=${"color:" + turnColor(oe.coreFork)}>${oe.coreFork}</span><span class="ce-by"> ${T("val|core")}</span>` : html`<span class="ce-by"> ${Trich("by {v1}", { v1: html`<span style=${"color:" + oe.color}>${oe.author}</span>` })}</span>`}${offered ? html`<span class="ce-by">${T(" offered to {v1} users", { v1: label })}</span>` : null}</span><${ClientEntryBadges} e=${oe}/></span>` : null}
+            : oe ? html`<span class="osapp-bub"><span class="osapp-bub-txt"><b>${oe.name}</b>${oe.coreFork ? html`<span class="ce-by"> ${T("val|with")} </span><span style=${"color:" + turnColor(oe.coreFork)}>${forkLabel(oe.coreFork)}</span><span class="ce-by"> ${T("val|core")}</span>` : html`<span class="ce-by"> ${Trich("by {v1}", { v1: html`<span style=${"color:" + oe.color}>${forkLabel(oe.author)}</span>` })}</span>`}${offered ? html`<span class="ce-by">${T(" offered to {v1} users", { v1: label })}</span>` : null}</span><${ClientEntryBadges} e=${oe}/></span>` : null}
         </button>`;
       })}
     </div>

@@ -14600,13 +14600,13 @@ TURN_CLIENTS = {
                                                                                                    "windows": {"name": "WINGS DeX", "github": "https://github.com/WINGS-N/WINGSV_DeX/releases"},
                                                                                                    "linux":   {"name": "WINGS DeX", "github": "https://github.com/WINGS-N/WINGSV_DeX/releases"}}},
     "vkturnproxy": {"name": "VK TURN Proxy",  "encoder": "anton48",  "scheme": "vkturnproxy://", "qr": False, "platforms": {"ios": {"github": "https://github.com/anton48/vk-turn-proxy-ios/releases", "appstore": "https://testflight.apple.com/join/ANm6cmDv", "autostart": True}}},   # iOS has no App Store listing; the app installs via TestFlight (the .ipa in Releases needs self-signing → advanced only)
-    "freeturn":    {"name": "FreeTurn",       "encoder": "freeturn", "scheme": "freeturn://",    "platforms": {"android": {"github": "https://github.com/samosvalishe/turn-proxy-android/releases", "autostart": True}}},
+    "freeturn":    {"name": "FreeTurn",       "encoder": "freeturn", "scheme": "freeturn://",    "platforms": {"android": {"github": "https://github.com/hackdiaz-dev/turn-proxy-android/releases", "autostart": True}}},
     "mysorez":     {"name": "VK TURN Proxy",  "encoder": "vktgz",    "scheme": None,             "platforms": {"android": {"github": "https://github.com/MYSOREZ/vk-turn-proxy-android/releases"}}},
-    "sidecar":     {"name": "Sidecar",         "encoder": "sidecar",  "scheme": None,             "platforms": {   # the Go CLI ("sidecar" = a helper binary run beside WireGuard): samosvalishe/free-turn-proxy ships client-<os>-<arch>; flags match the shared vk-turn-proxy family, so it drives cacggghp/Moroka8 relays too (per-author builds offered)
-                       "linux":   {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"},
-                       "windows": {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"},
-                       "macos":   {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"},
-                       "android": {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"}}},   # client-android-arm64 → run it under Termux (the sub shows Termux steps)
+    "sidecar":     {"name": "Sidecar",         "encoder": "sidecar",  "scheme": None,             "platforms": {   # the Go CLI ("sidecar" = a helper binary run beside WireGuard): hackdiaz-dev/free-turn-proxy ships client-<os>-<arch>; flags match the shared vk-turn-proxy family, so it drives cacggghp/Moroka8 relays too (per-author builds offered)
+                       "linux":   {"github": "https://github.com/hackdiaz-dev/free-turn-proxy/releases"},
+                       "windows": {"github": "https://github.com/hackdiaz-dev/free-turn-proxy/releases"},
+                       "macos":   {"github": "https://github.com/hackdiaz-dev/free-turn-proxy/releases"},
+                       "android": {"github": "https://github.com/hackdiaz-dev/free-turn-proxy/releases"}}},   # client-android-arm64 → run it under Termux (the sub shows Termux steps)
     # ── WDTT-family clients (kind:"wdtt" forks). The SERVERS (amurcanov/ildarmaga) are wire-identical; the DIVERGENCE
     # lives in the CLIENTS' link schemes, so each carries its own `encoder` (turn-artifacts.js wdttArtifact branch):
     #   colon `wdtt://ip:dtls:wg:tun:password:vkhash` (6-field — amurcanov app, PWDTT/luminescq, iOS WDTT mode)
@@ -14752,7 +14752,7 @@ TURN_SERVERS = {
     # then "поддержка amneziawg 3.1" (v3.3.0) and "собственный iface для awg" (v3.3.2). ⚠️ This is a capability claim about
     # SOMEBODY ELSE'S binary, and there is no per-fork version gate yet ([[client-version-compat-matrix]] is designed, not
     # built) — so an operator still running < 3.2.0 is offered AWG interfaces this list now says it can carry.
-    "samosvalishe": {"label": "samosvalishe", "owner": "samosvalishe/free-turn-proxy",   "wrap": "-obf-profile rtpopus", "keyflag": "-obf-key",  "protocols": ["wg", "awg"], "color": {"dark": "#E0A85F", "light": "#C07A1E"}, "clients": ["freeturn", "mysorez", "vkturnproxy", "sidecar"],   "reload": "restart",
+    "samosvalishe": {"label": "hackdiaz-dev", "owner": "hackdiaz-dev/free-turn-proxy",   "wrap": "-obf-profile rtpopus", "keyflag": "-obf-key",  "protocols": ["wg", "awg"], "color": {"dark": "#E0A85F", "light": "#C07A1E"}, "clients": ["freeturn", "mysorez", "vkturnproxy", "sidecar"],   "reload": "restart",
                      "settings": [{"key": "obf_profile", "flag": "-obf-profile", "type": "enum", "values": ["none", "rtpopus", "rtpopus2", "rtpopus3"], "default": "rtpopus", "label": "Obfuscation profile", "help": "rtpopus* dress the traffic as an RTP/Opus call; none = plain. Must match the FreeTurn client."},
                                   {"key": "obf_key", "flag": "-obf-key", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Obfuscation key", "help": "64 hex chars — must match the FreeTurn client."}],
                      "client_settings": [{"key": "n", "type": "int", "default": "", "label": "Streams", "help": "Parallel TURN streams (-n). Blank = the app's default (10)."},
@@ -14961,8 +14961,8 @@ _TURN_CLI_AUTHORS = {
 _CLIENT_SOURCES = {
     "wingsv":      [{"owner": "WINGS-N", "repo": "WINGSV_DeX", "branch": "main", "path": "external/wingsv-proto/wingsv.proto", "message": "Turn"}],
     "vkturnproxy": [{"owner": "anton48", "repo": "vk-turn-proxy-ios", "branch": "main", "path": "quick_link.py"}],
-    "freeturn":    [{"owner": "samosvalishe", "repo": "free-turn-proxy", "branch": "master", "path": "docs/uri.md"},
-                    {"owner": "samosvalishe", "repo": "free-turn-proxy", "branch": "master", "path": "docs/flags.md"}],
+    "freeturn":    [{"owner": "hackdiaz-dev", "repo": "free-turn-proxy", "branch": "master", "path": "docs/uri.md"},
+                    {"owner": "hackdiaz-dev", "repo": "free-turn-proxy", "branch": "master", "path": "docs/flags.md"}],
     "mysorez":     [{"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/models/Configs.kt"},
                     {"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/data/AppPreferences.kt"}],
     "sidecar":     [{"owner": "Moroka8", "repo": "vk-turn-proxy", "branch": "main", "path": "pkg/clientcore/main.go"}],
@@ -15080,7 +15080,7 @@ _CLIENT_VALUE_SOURCES = {
         "obfProfile": {"src": ("anton48", "vk-turn-proxy-ios", "main", "quick_link.py"), "kind": "pytuple", "marker": "obfProfile", "passthrough": True},
     },
     "freeturn": {
-        "dns": {"src": ("samosvalishe", "free-turn-proxy", "master", "docs/flags.md"), "kind": "mdpipe", "marker": "-dns-mode", "passthrough": True},
+        "dns": {"src": ("hackdiaz-dev", "free-turn-proxy", "master", "docs/flags.md"), "kind": "mdpipe", "marker": "-dns-mode", "passthrough": True},
     },
 }
 _VALUE_SENTINELS = {"auto", ""}     # our UI omit-conventions, never real app values → excluded from the value diff
@@ -20408,7 +20408,7 @@ def turn_fork(service):   # fork id baked into a service name (vk-turn-proxy-<fo
 def turn_fork_owner(fork):   # owner/repo for a fork — from the catalog; unknown forks fall back to <fork>/vk-turn-proxy
     s = TURN_SERVERS.get(fork)
     if s: return s["owner"]
-    return "samosvalishe/free-turn-proxy" if fork == "samosvalishe" else (fork + "/vk-turn-proxy")
+    return "hackdiaz-dev/free-turn-proxy" if fork == "samosvalishe" else (fork + "/vk-turn-proxy")
 def _ip_of(hp):   # "ip:port" → ip ("" if none)
     hp = hp or ""; return hp.rsplit(":", 1)[0] if ":" in hp else hp
 def _port_of(hp):   # "ip:port" → port str ("" if none)

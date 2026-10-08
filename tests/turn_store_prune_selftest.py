@@ -90,7 +90,7 @@ P.Handler.deps = {"stats_dir": SD}
 NOW = time.time()
 WP = "Ivan4537/WDTT-Plus"                                   # a fork of OURS (WDTT_BUILDS["wdttplus"])
 CS = P.CSQTT_MIRROR_OWNER                                   # ours too (CSQTT_BUILDS)
-UP = "samosvalishe/free-turn-proxy"                         # an UPSTREAM fork
+UP = "hackdiaz-dev/free-turn-proxy"                         # an UPSTREAM fork
 ADV = [v for v, _ in P._wdtt_versions("wdttplus")]          # its advertised builds, newest first (the module's own list)
 
 def ago(path, hours):

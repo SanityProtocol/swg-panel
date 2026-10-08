@@ -2338,6 +2338,8 @@ TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
 turn_check_one(){   # <key> <dir/ holding server+version.txt+repo.txt> <fork|inst>
   local key="$1" d="$2" mode="$3" owner cur latest arch url u svc any=no restart_ok=yes
   owner="$(cat "${d}repo.txt" 2>/dev/null || echo '?')"; cur="$(cat "${d}version.txt" 2>/dev/null || echo '?')"
+  # samosvalishe deleted its repo (2026-10); hackdiaz-dev carries free-turn-proxy on — same releases and assets.
+  [ "$owner" = "samosvalishe/free-turn-proxy" ] && { owner="hackdiaz-dev/free-turn-proxy"; $DRYRUN || printf %s "$owner" > "${d}repo.txt" 2>/dev/null || true; }
   if $DRYRUN; then latest="v0.0.0-latest"
   else sub "checking turn-proxy $(col_l "$key") ($owner) for a newer release on GitHub…"   # network call — say so (and cap it) so it never looks hung
     latest="$(curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$owner/releases/latest" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)"; fi

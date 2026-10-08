@@ -415,7 +415,7 @@
   var CLIENT_META = {
     wingsv:   { app: "WINGS V",        platform: "Android", author: "WINGS-N" },
     anton48:  { app: "VK TURN Proxy",  platform: "iOS",     author: "anton48" },
-    freeturn: { app: "FreeTurn",       platform: "Android", author: "samosvalishe" },
+    freeturn: { app: "FreeTurn",       platform: "Android", author: "hackdiaz-dev" },
     vktgz:    { app: "VK TURN Proxy",  platform: "Android", author: "MYSOREZ" }
   };
   // A server name may be a TEMPLATE. The sheet that sets it is per (fork, OS), so one literal string names every
@@ -593,7 +593,7 @@
       // carries the proxy endpoint, the rtpopus obfuscation key, and the whole WG config.
       return { fork: fork, app: "FreeTurn", label: clientLabel(fork, "freeturn"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
         vk: true, vkLinks: vkList, vkEmbedded: true,   // the freeturn:// link CARRIES the call link in `vk` (verified on a live relay), so the sub must not ask the reader to paste it too
-        hint: "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.",
+        hint: "Scan the QR with the FreeTurn app (hackdiaz-dev/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.",
         text: freeturnLink(tp, baseConf, vkList, cs, fork) };
     }
     // sidecar forks (cacggghp / Moroka8 / unknown): WG dials the local client on :9000

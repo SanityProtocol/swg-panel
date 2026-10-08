@@ -399,6 +399,7 @@ migrate_baremetal_turns(){
       params="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}[^ ]*[[:space:]]*\(.*\)$/\1/p')"
     fi
     owner="$(sed -n 's/.*vk-turn-proxy (\([^)]*\)).*/\1/p' "$u" | sed -n 1p)"
+    [ "$owner" = "samosvalishe/free-turn-proxy" ] && owner="hackdiaz-dev/free-turn-proxy"   # repo deleted 2026-10; hackdiaz-dev carries it on
     fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"
     install_turn_binary "$fork" "$owner" "$lis" "$con" "$params"     # writes the docker turn RECORD (no host unit)
     MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"          # tear the bare unit down at the atomic switch

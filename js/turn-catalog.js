@@ -26,7 +26,7 @@ export const TURN_FORKS_FALLBACK = [
   { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#5FB0E0", colorL: "#2C7EC0", protocols: ["wg", "awg"], hidden: true },
   { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0", colorL: "#9B4FC7", protocols: ["wg", "awg"] },
   { id: "MYSOREZ", label: "MYSOREZ", owner: "MYSOREZ/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#4FC7B4", colorL: "#12897A", protocols: ["wg", "awg"] },
-  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/free-turn-proxy", wrap: "-obf-profile rtpopus", keyflag: "-obf-key", color: "#E0A85F", colorL: "#C07A1E", protocols: ["wg"] },
+  { id: "samosvalishe", label: "hackdiaz-dev", owner: "hackdiaz-dev/free-turn-proxy", wrap: "-obf-profile rtpopus", keyflag: "-obf-key", color: "#E0A85F", colorL: "#C07A1E", protocols: ["wg"] },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F", colorL: "#8E8420", protocols: ["wg"] },
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A", colorL: "#C24468", protocols: ["wg", "awg"] },
 ];

@@ -1296,7 +1296,7 @@ export function clientHandoff(cl, cid, qr, os) {
 export function artLabel(a) {
   const m = (typeof SWGTurn !== "undefined" && SWGTurn.clientMeta) ? SWGTurn.clientMeta(a.enc) : null;
   if (!m) return T(a.label || "");
-  return T("{v1} via {v2} ({v3}) by {v4}", { v1: a.fork, v2: m.app, v3: m.platform + (a.labelMode || ""), v4: m.author });
+  return T("{v1} via {v2} ({v3}) by {v4}", { v1: forkLabel(a.fork), v2: m.app, v3: m.platform + (a.labelMode || ""), v4: forkLabel(m.author) });
 }
 export function wdttArtInput(peer, t) {
   const rb = ((Store.stats[t.node] || {}).wdtt || []).find(w => w && w.iface === t.iface) || {};
