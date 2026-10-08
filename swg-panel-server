@@ -1526,13 +1526,14 @@ _csqtt_standin(os.environ.get("SWG_CSQTT_STANDIN", ""))
 def _csqtt_line_of(rec):                      # an instance record's line (absent / unknown = 2.1: every pre-lines server)
     l = str((rec or {}).get("line") or "").strip()
     return l if l in CSQTT_LINES else CSQTT_DEFAULT_LINE
+def _csqtt_row(snap, iface):                  # this server's row in a node report, or None
+    return next((c for c in ((snap or {}).get("csqtt") or []) if isinstance(c, dict) and c.get("iface") == iface), None)
 def _csqtt_run_line(snap, iface, rec):
     """The line a server RUNS — its node's report (the symlink), else its record, else 2.1. The update rows and the
     fork Version panel are built from the report, so every hold and build list is resolved the same way: during a
     pending or failed switch the record names the line ASKED for, and a hold set by it would land on the wrong binary.
     Raw — it can be a line this panel does not offer."""
-    row = next((c for c in ((snap or {}).get("csqtt") or []) if isinstance(c, dict) and c.get("iface") == iface), None)
-    return str((row or {}).get("line") or (rec or {}).get("line") or CSQTT_DEFAULT_LINE)
+    return str((_csqtt_row(snap, iface) or {}).get("line") or (rec or {}).get("line") or CSQTT_DEFAULT_LINE)
 def _csqtt_hold_svc(line):                    # turn-holds key: 2.1 keeps the one it always had
     return "fork:csqtt" if line == CSQTT_DEFAULT_LINE else "fork:csqtt@" + line
 def _csqtt_current_version(line=CSQTT_DEFAULT_LINE):
@@ -9128,7 +9129,7 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
             merged["line"] = _line
             # While a switch is pending or failed (memoed), the server still RUNS another line: name that line's build
             # too, or it gets no updates or rollbacks until the operator resolves the switch.
-            _row = next((c for c in ((snap or {}).get("csqtt") or []) if isinstance(c, dict) and c.get("iface") == iface), None)
+            _row = _csqtt_row(snap, iface)
             _run = str(_row.get("line") or CSQTT_DEFAULT_LINE) if _row else ""
             if _run and _run != _line and _run in CSQTT_LINES:
                 _rv = _turn_hold_get(node_id, _csqtt_hold_svc(_run)) or _csqtt_current_version(_run)

@@ -21601,7 +21601,7 @@ def _csqtt_verify_stable(iface):
     if not os.path.isdir("/sys/class/net/" + iface):
         return "the server is running but never brought up its tunnel " + iface
     return ""
-def _csqtt_switch_line(inst, frm, to, ver, siblings=()):
+def _csqtt_switch_line(inst, frm, to, ver, siblings=(), stopped=()):
     """Move one instance from line `frm` to line `to`. Returns (err, memo): ("", False) switched; (err, False) not
     switched and nothing changed (a fetch that may work next sync); (err, True) the new line would not run, the
     instance is back on `frm` with `frm`'s store, and the node must not retry this (line, build) on its own.
@@ -21620,8 +21620,7 @@ def _csqtt_switch_line(inst, frm, to, ver, siblings=()):
         others = [i for i in siblings if i != iface]
         # _csqtt_update_binary verifies the server it is handed: hand it a RUNNING sibling, so a sibling that does not
         # come back on the new build is what gets reported — not this server (still up on `frm`), nor a stopped one.
-        _recs = _csqtt_load()
-        _vfy = next((i for i in others if not (_recs.get(i) or {}).get("stopped")), others[0] if others else "")
+        _vfy = next((i for i in others if i not in stopped), others[0] if others else "")   # `stopped`: THIS pass's flags
         e = (_csqtt_update_binary(dict(inst, iface=_vfy), ver, others, to) if others and os.path.exists(tgt)
              else _csqtt_fetch_bin(dict(inst, ver=ver), tgt, to))
         if e or not os.path.exists(tgt):
@@ -21638,8 +21637,8 @@ def _csqtt_switch_line(inst, frm, to, ver, siblings=()):
     except Exception as e:
         # Never leave it STOPPED: the server is still on `frm` (the relink is the last step), so start it there.
         # Memoed — a full disk would otherwise stop and start it on every sync; Restart retries once it is fixed.
-        _csqtt_relink(binp, _csqtt_bin_shared(frm)) if os.path.islink(binp) else None
-        _csqtt_cut_clear(iface)
+        # (no relink: the repoint is the last step and atomic, so the link is still on `frm` here)
+        with contextlib.suppress(Exception): _csqtt_cut_clear(iface)
         _csqtt_start_one(dict(inst, line=frm)) if not inst.get("stopped") else None
         return ("couldn't copy the store before switching (" + str(e)[:120] + ")", True)
     if inst.get("stopped"):
@@ -22336,9 +22335,15 @@ def reconcile_csqtt(want, remove=None):
             if _au:
                 _csqtt_serve_adopted(inst)
             if not _csqtt_present(iface):
-                _csqtt_cut_clear(iface)               # nothing runs here, so a marker left by a cut switch means nothing
-                if not inst.get("line_failed"):
+                if _cut:
+                    # A cut switch whose unit or binary is gone too (a reboot that lost /run, a wiped /opt): roll the
+                    # STORE back all the same, and re-install the line it was leaving — the switch reruns whole later.
+                    _csqtt_store_restore(_csqtt_dir(iface), _cut)
+                    _csqtt_cut_clear(iface)
+                elif not inst.get("line_failed"):
                     inst["line"] = _line              # nothing runs yet, so there is nothing to switch: install the wanted line
+                if inst["line"] != _line:
+                    inst["ver"] = (inst.get("cur_ver") or "").strip()   # installing what ran: that line's build, never the asked one
                 err = _csqtt_install(inst)
                 if err:
                     res["errors"].append(iface + ": " + err); have[iface] = inst; continue
@@ -22360,7 +22365,6 @@ def reconcile_csqtt(want, remove=None):
                     # "resumed": what ran meanwhile was never verified, and a store it may have half-migrated must not
                     # be what `_cut` starts on. A still-wanted switch runs again, whole, on a later pass.
                     _sw_pass[0] = _switched = True
-                    inst.pop("line_failed", None)
                     err = _csqtt_abort_switch(inst, _cut)
                     log(LOG_WARNING, "csqtt %s: a switch away from %s was cut by a restart — rolled back", iface, _cut)
                     if err:
@@ -22373,10 +22377,14 @@ def reconcile_csqtt(want, remove=None):
                     # A LINE SWITCH (§4.2): this one instance moves; the wanted build rides along, so no build
                     # update follows. A fetch that failed changed nothing and is simply retried next sync; a line
                     # that would not RUN is reverted by the switch itself and memoed, so it is not retried every sync.
-                    err, _memo = _csqtt_switch_line(inst, _cur, _line, _want_ver, _csqtt_ifaces(want, _line))
+                    err, _memo = _csqtt_switch_line(inst, _cur, _line, _want_ver, _csqtt_ifaces(want, _line),
+                                                    {i for i, r in want.items() if (r or {}).get("stopped")})
                     # `_switched` = the server WAS restarted (switched, or reverted). A fetch that failed restarted
                     # nothing: a Restart stamp must still restart it, and its own line's build still applies.
-                    _sw_pass[0] = _switched = (not err) or _memo
+                    # The pass budget is spent either way: ten servers asked onto a build nobody can fetch would
+                    # otherwise each walk the mirror, GitHub and every operator mirror in the same pass.
+                    _sw_pass[0] = True
+                    _switched = (not err) or _memo
                     if not err:
                         inst["line"] = _line; inst.pop("line_failed", None)
                         log(LOG_INFO, "csqtt %s: switched %s → %s (%s)", iface, _cur, _line, _want_ver)
@@ -22500,7 +22508,7 @@ def csqtt_snapshot():
                         "ip": _dev.get("ip", ""), "online": online, "rx_speed": _rs, "tx_speed": _ts}
         _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # TUN aggregate throughput (same reader as a wg iface)
         _own = _turn_own_dns(_csqtt_dir(iface))   # what csqtt itself remembers (its DB)
-        _rl = _csqtt_running_line(iface) or _csqtt_line_of(inst)
+        _rl = _csqtt_cut_line(iface) or _csqtt_running_line(iface) or _csqtt_line_of(inst)   # a cut switch is being rolled back to its marker's line
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "bind": _env_listen(_csqtt_dir(iface) + "/csqtt.env"),   # what the server binds (turn_bind) — "" unknown
                     "bind_ip": inst.get("bind_ip", ""),   # the operator's Listen on, so a panel mirroring this record keeps it
