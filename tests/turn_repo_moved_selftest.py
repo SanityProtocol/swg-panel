@@ -6,10 +6,10 @@ programs fetch from what they remember: swg-noded, update.sh and install-node.sh
 what it writes back must name the new one, so the old name heals away.
 
   [1] swg-noded: the old repo maps to the new one; any other repo, and none, is left as it is
-  [2] swg-noded _turn_resolve_tag asks the NEW repo for the latest tag
-  [3] swg-noded _dturn_download (docker, a missing binary) asks the panel mirror for the new repo
-  [4] swg-noded _dturn_force_download (docker reinstall) asks the panel mirror for the new repo
-  [5] swg-noded _turn_install (bare) downloads from the new repo and writes it to repo.txt and the unit; the old name is gone
+  [2] swg-noded's fetch helpers: _turn_resolve_tag asks the NEW repo for the latest tag, _turn_dl_urls builds from it
+  [3] swg-noded _dturn_download (docker, a missing binary) asks the panel mirror — keyed by repo — and GitHub for the new repo
+  [4] swg-noded _dturn_force_download (docker reinstall) the same
+  [5] swg-noded _turn_install (bare) the same, and writes the new repo to repo.txt and the unit; the old name is gone
   [6] update.sh asks GitHub about the new repo and rewrites repo.txt to it; control: another fork's repo is untouched
   [7] install-node.sh (docker → bare conversion) downloads from the new repo
 
@@ -63,34 +63,48 @@ N._turn_resolve_tag(OLD)
 urls = [a for c in ran for a in c if isinstance(a, str) and a.startswith("https://")]
 check("[2] _turn_resolve_tag asks the new repo", urls and all(NEW in u for u in urls), urls)
 
-asked = []
+import urllib.parse
+Q_NEW, Q_OLD = urllib.parse.quote(NEW, safe=""), urllib.parse.quote(OLD, safe="")
+check("[2] _turn_dl_urls builds every GitHub URL from the new repo",
+      all(NEW in u and OLD not in u for u in N._turn_dl_urls(OLD, "amd64", "v4.0.1")), N._turn_dl_urls(OLD, "amd64", "v4.0.1"))
+
+# The network is the only stub: the panel mirror (by repo, like GitHub) misses, so each path also falls through to
+# GitHub — and both must name the new repo. The fetch helpers themselves run for real.
+mirror, gh = [], []
+N._TURN_PANEL = {"url": "https://panel.test", "token": "t"}
+N._panel_get = lambda url, token, panel, timeout=None: (mirror.append(url), (404, b"", None))[1]
+def run(cmd, timeout=None, **k):
+    gh.extend(a for a in cmd if isinstance(a, str) and a.startswith("https://"))
+    if "-o" in cmd:
+        dest = cmd[cmd.index("-o") + 1]
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        open(dest, "w").close()
+    return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+N.run = run
 N._turn_arch_ok = lambda: True
 N._turn_arch = lambda: "amd64"
 N._turn_bin_local = lambda svc: os.path.join(T, "bin", svc, "server")
 N._turn_bin_local_legacy = lambda svc: os.path.join(T, "legacy", svc, "server")
 N._turn_ver_path = lambda svc: os.path.join(T, "ver", svc)
 N._turn_write_version = lambda svc, tag: None
-N._turn_resolve_tag = lambda owner: "v4.0.1"
-def mirror(owner, tag, arch, dest, want):   # the panel mirror has it: the file lands where it was asked for
-    asked.append(owner)
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    open(dest, "w").close()
-    return True
-N._turn_panel_fetch = mirror
-err = N._dturn_download("vk-turn-proxy-samosvalishe-56100", OLD)
-check("[3] _dturn_download asks the panel mirror for the new repo", not err and asked == [NEW], (err, asked))
-del asked[:]
-err = N._dturn_force_download("vk-turn-proxy-samosvalishe-56101", OLD)
-check("[4] _dturn_force_download asks the panel mirror for the new repo", not err and asked == [NEW], (err, asked))
+PIN = {"tag": "v4.0.1"}
+def asks(what):
+    ok = (len(mirror) == 1 and "owner=" + Q_NEW + "&" in mirror[0] and gh and all(NEW in u for u in gh)
+          and not any(Q_OLD in u for u in mirror) and not any(OLD in u for u in gh))
+    check(what, ok, (mirror, gh))
+    del mirror[:], gh[:]
+err = N._dturn_download("vk-turn-proxy-samosvalishe-56100", OLD, PIN)
+asks("[3] _dturn_download asks the panel mirror, then GitHub, for the new repo" + ("" if not err else " — " + err))
+err = N._dturn_force_download("vk-turn-proxy-samosvalishe-56101", OLD, PIN)
+asks("[4] _dturn_force_download asks the panel mirror, then GitHub, for the new repo" + ("" if not err else " — " + err))
 
-del asked[:]
 sh = []
 N.host_sh = lambda cmd, timeout=None: (sh.append(cmd), types.SimpleNamespace(returncode=1, stdout="", stderr="stub"))[1]
-N._turn_panel_fetch = lambda owner, tag, arch, dest, want: (asked.append(owner), False)[1]
 N._turn_install("vk-turn-proxy-samosvalishe-56102", {"owner": OLD, "listen": "0.0.0.0:56102", "connect": "127.0.0.1:51820",
-                                                     "params": "-obf-profile rtpopus -obf-key " + "a" * 64})
+                                                     "params": "-obf-profile rtpopus -obf-key " + "a" * 64, "pin": PIN})
 cmd = next((c for c in sh if "/releases/" in c), "")   # the install script (an earlier call probes the unit dir)
-check("[5] _turn_install downloads from the new repo", "github.com/" + NEW + "/releases/" in cmd and asked == [NEW], (asked, cmd[:200]))
+check("[5] _turn_install asks the panel mirror and GitHub for the new repo",
+      "github.com/" + NEW + "/releases/" in cmd and len(mirror) == 1 and "owner=" + Q_NEW + "&" in mirror[0], (mirror, cmd[:200]))
 check("[5] …writes the new repo to repo.txt and the unit, and the old name is nowhere",
       ("printf %s " + NEW + " > ") in cmd and "vk-turn-proxy (" + NEW + ")" in cmd and OLD not in cmd, cmd[:300])
 
