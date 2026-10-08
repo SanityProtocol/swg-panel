@@ -13027,6 +13027,16 @@ def awg_i_refusal(key, v):
     return perr("{v1}: apps cannot read {v2} — use <b 0x…>, <r N>, <rc N>, <rd N> or <t>.", v1=key, v2=tag)
 
 
+def awg_value_refusal(key, v):
+    """Any AmneziaWG field: an I line must be one every app reads (awg_i_refusal); every other field must hold no control
+    character — a line break in S1 or H1 would put a line of its own into the server conf and every client config."""
+    if key in AWG_I_KEYS:
+        return awg_i_refusal(key, v)
+    if re.search(r"[\x00-\x1f\x7f]", "" if v is None else str(v)):
+        return perr("{v1}: holds a line break or another control character.", v1=key)
+    return None
+
+
 # The AmneziaWG 3.1 set an interface switched — or created — at 3.1 gets (D-scope, docs/AWG3-PLAN.md §6, §7.1): Amnezia's
 # own 3.1 server defaults minus DisableCookies, which removes the handshake-flood defence (§1.4). ContentPaddingAddition is
 # not optional: RandomTrailers without it pads every small packet ~5× (§2.4). The HeaderProtectionKey is born per interface.
@@ -13036,11 +13046,19 @@ _AWG3_RANGED = ("ContentPaddingAddition", "RekeyAfterTime", "RekeyTimeout", "Rej
                 "MaxHandshakeAttempts")
 
 
-def awg_template_refusal(raw, where, gen3=False):
+def awg_template_refusal(raw, where, gen3=False, was=None):
     """The rules a TEMPLATE with "-" must keep — a perr, or None. R3: Jc, Jmin and Jmax are all three none or none of them
     (a blank one is auto, which is a value). R1: not every 2.0 field none — every interface made from it would be plain
-    WireGuard by another name, and every create refused (awg_rules); a WireGuard interface is the way to that."""
+    WireGuard by another name, and every create refused (awg_rules); a WireGuard interface is the way to that.
+    And a value this save CHANGES from `was` (the stored template) must be one every app and conf reads (awg_value_refusal):
+    every interface or mesh link made from the template would carry it. A stored value never blocks an unrelated save."""
     vals, om = awg_template(raw, gen3)
+    _was = awg_template(was, gen3)[0]
+    for k, v in vals.items():
+        if v != _was.get(k):
+            _b = awg_value_refusal(k, v)
+            if _b:
+                return _b
     trio = [k in om for k in ("Jc", "Jmin", "Jmax")]
     if any(trio) and not all(trio):
         return perr("{v1}: Jc, Jmin and Jmax go together — set all three, or all three to none", v1=where)
@@ -23361,7 +23379,8 @@ def api(method, path, qs, body, deps):
                     return 400, {"ok": False, **_e3, "code": "bad_request"}
             else:
                 _a3 = (cur.get("interface_defaults") or {}).get("awg3_params")
-            _bad = awg_template_refusal(idf.get("awg_params"), perr("the interface defaults"))
+            _bad = awg_template_refusal(idf.get("awg_params"), perr("the interface defaults"),
+                                        was=(cur.get("interface_defaults") or {}).get("awg_params"))
             if _bad:
                 return 400, {"ok": False, **_bad, "code": "bad_request"}
             cur["interface_defaults"] = {
@@ -23383,7 +23402,7 @@ def api(method, path, qs, body, deps):
             if _a3:
                 cur["interface_defaults"]["awg3_params"] = _a3
         if "mesh_awg" in incoming:   # default AmneziaWG obfuscation for new mesh links ({} = auto per link; "-" = no such line)
-            _bad = awg_template_refusal(incoming.get("mesh_awg"), perr("the mesh AWG params"))
+            _bad = awg_template_refusal(incoming.get("mesh_awg"), perr("the mesh AWG params"), was=cur.get("mesh_awg"))
             if _bad:
                 return 400, {"ok": False, **_bad, "code": "bad_request"}
             _mt, _e3 = mesh_template_clean(incoming.get("mesh_awg"))   # …and the six 3.1 fields an AmneziaWG 3.1 link takes
@@ -27282,7 +27301,7 @@ def api(method, path, qs, body, deps):
             if body["mesh_awg"] is not None and not isinstance(body["mesh_awg"], dict):   # [], "" or a list is no template — never a silent clear
                 return 400, {"ok": False, "error": "mesh_awg must be an object", "code": "bad_request"}
             _where = mesh_pair_name(nodes, nid, peer)
-            _bad = awg_template_refusal(body.get("mesh_awg") or {}, _where)
+            _bad = awg_template_refusal(body.get("mesh_awg") or {}, _where, was=_t0)
             if _bad:
                 return 400, {"ok": False, **_bad, "code": "bad_request"}
             _t1, _e3 = mesh_template_clean(body.get("mesh_awg") or {})   # the 2.0 fields and the six a 3.1 link takes
@@ -27431,12 +27450,13 @@ def api(method, path, qs, body, deps):
                 _snap_u = (deps.get("node_snaps") or {}).get(nid) or {}
                 _rep_u = (((_snap_u.get("interfaces") or {}).get(iface) or {}).get("meta") or {})
                 _rec_u = dict(ov.get("awg_params") or {})
-                # An I line this save CHANGES must be one every app reads (F7, F9). A line the interface already has — in
-                # its record or as the node reports it — is re-sent by every Edit-sheet save and never blocks one.
+                # A value this save CHANGES must be one every app and conf reads (F7, F9): an I line in the grammar every
+                # amneziawg-go build reads, any other field free of control characters. A value the interface already has
+                # — in its record or as the node reports it — is re-sent by every Edit-sheet save and never blocks one.
                 _rep_ap = _rep_u.get("awg_params") if isinstance(_rep_u.get("awg_params"), dict) else {}
-                for _k in AWG_I_KEYS:
-                    if _k in clean and clean[_k] not in (str(_rec_u.get(_k, "")).strip(), str(_rep_ap.get(_k, "")).strip()):
-                        _ib = awg_i_refusal(_k, clean[_k])
+                for _k in clean:
+                    if clean[_k] not in (str(_rec_u.get(_k, "")).strip(), str(_rep_ap.get(_k, "")).strip()):
+                        _ib = awg_value_refusal(_k, clean[_k])
                         if _ib:
                             return 400, {"ok": False, **_ib, "code": "bad_request"}
                 _was3 = any(k in _rec_u for k in AWG3_FIELDS)
