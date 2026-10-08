@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Self-test — csqtt version LINES, the node's half (docs/CSQTT-LINES-PLAN.md §4.2, gates G3–G8).
+
+swg-noded is loaded as a module with its csqtt roots in a temp dir and run in its docker shape, where a server is a
+supervised CHILD PROCESS — so a "binary" here is a shell script that really runs, really dies, and really writes the
+store. Nothing reaches systemd, the network or a real TUN: the one interface the stable-verify needs to see is `lo`,
+and every command that could delete a link is refused by a guard (the test fails rather than touch it).
+
+  [1] slots      2.1 keeps the path every node already has; another line gets its own dir; a line is a path
+                 component, so "../x" and an unknown line are refused
+  [2] switch     2.1 → 2.5 repoints only this server's symlink, copies 2.1's store first, and leaves a sibling
+                 server on 2.1 running untouched (same pid)          (G3)
+  [3] revert     a 2.5 build that writes the store and dies 2 s after starting passes today's _csqtt_verify — the
+                 stable verify catches it, the server is back on 2.1 with 2.1's store, and the result is memoed (G4)
+  [4] resume     a noded that died between the repoint and the verify resumes without overwriting 2.1's copy with
+                 the store 2.5 left (G8)
+  [5] reconfigure a param change on a 2.5 server relinks the 2.5 slot, not 2.1's (G6)
+  [6] absent     a request with no `line` keeps a 2.5 server on 2.5 and does not apply a 2.1 `ver` to it (G7)
+  [7] memo       a switch that would not run is not retried every sync; the operator's Restart retries it, and a
+                 request back to the running line clears it
+  [8] build      a build update on 2.5 restarts only the 2.5 servers (G5)
+
+Run: python3 tests/csqtt_lines_node_selftest.py   (0 = pass)
+     --perturb <name>  plants one regression and expects RED on its section:
+                       reconfigure [5] · absent [6] · stable [3] · resume [4] · memo [7] · build [8]
+"""
+import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
+
+PLANTS = {   # name: (section, anchor, replacement)
+    "reconfigure": ("[5]", "    line = _csqtt_line_of(inst)\n    binshared = _csqtt_bin_shared(line)\n    if not os.path.exists(binshared):        # same-arch",
+                    "    line = _csqtt_line_of(inst)\n    binshared = _csqtt_bin_shared()\n    if not os.path.exists(binshared):        # same-arch"),
+    "absent": ("[6]", "            if not _line:\n                _line = _cur\n", "            if not _line:\n                _line = CSQTT_DEFAULT_LINE\n"),
+    "stable": ("[3]", "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify_stable(iface)\n",
+               "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify(iface)\n"),
+    "resume": ("[4]", "    if not resumed:\n        _csqtt_store_copy(cfgdir, frm)\n", "    if True:\n        _csqtt_store_copy(cfgdir, frm)\n"),
+    "memo": ("[7]", "                inst[\"line_failed\"] = _lf\n", "                pass\n"),
+    "build": ("[8]", "    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]",
+              "    return list((want or {}).keys())"),
+}
+MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
+SECTION = [""]
+FAILS = []
+def section(s):
+    SECTION[0] = s; print(s, flush=True)
+def check(name, cond, detail=""):
+    print(("  PASS " if cond else "  FAIL ") + name + (("  — " + str(detail)[:300]) if detail and not cond else ""), flush=True)
+    if not cond:
+        FAILS.append((SECTION[0], name))
+
+TMP = tempfile.mkdtemp(prefix="csqtt-lines-node-")
+src = open(NODED, encoding="utf-8").read()
+if MODE:
+    _sec, old, new = PLANTS[MODE]
+    assert src.count(old) == 1, "plant anchor for %s matched %d times — this run would measure nothing" % (MODE, src.count(old))
+    src = src.replace(old, new)
+p = os.path.join(TMP, "swg-noded"); open(p, "w", encoding="utf-8").write(src)
+os.environ["SWG_NO_REEXEC"] = "1"
+ld = importlib.machinery.SourceFileLoader("swgnoded_csqtt_lines", p)
+N = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgnoded_csqtt_lines", ld))
+try:
+    ld.exec_module(N)
+except SystemExit:
+    pass
+
+# ── the sandbox ────────────────────────────────────────────────────────────────────────────────────────────────
+N.NODE_KIND = "docker"
+N.CSQTT_ROOT = os.path.join(TMP, "csqtt"); N.CSQTT_BIN_DIR = N.CSQTT_ROOT + "/.bin"
+N.CSQTT_RECORD = os.path.join(TMP, "csqtt.json")
+N._turn_arch = lambda: "amd64"
+N._csqtt_clear_stale_tun = lambda iface: None
+N._csqtt_argv = lambda inst, binp: [binp, N._csqtt_dir(inst["iface"])]
+N._csqtt_adopted_users = lambda *a, **k: {}
+N._csqtt_env_drifted = lambda *a, **k: False
+N.bind_heal_due = lambda *a, **k: False
+def _guard(cmd, *a, **k):
+    if "link" in str(cmd) and "del" in str(cmd):
+        raise AssertionError("the test reached a link delete: " + str(cmd))
+    class R: returncode, stdout, stderr = 0, "", ""
+    return R()
+N.host_sh = _guard
+GOOD = "#!/bin/sh\nexec sleep 300\n"
+DIES = "#!/bin/sh\necho MIGRATED-BY-2.5 > \"$1/csqtt.db\"\nsleep 2\nexit 1\n"
+BUILD = {"2.1": GOOD, "2.5": GOOD}
+FETCHES = []
+def fake_fetch(inst, dest, line="2.1"):
+    FETCHES.append((line, inst.get("ver")))
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    open(dest, "w").write(BUILD[line]); os.chmod(dest, 0o755)
+    N._csqtt_write_ver(inst.get("ver") or "", line)
+    return ""
+N._csqtt_fetch_bin = fake_fetch
+
+def lay(iface, line, store="A"):
+    """A running instance of ours on `line`, its store holding `store`."""
+    d = N._csqtt_dir(iface); os.makedirs(d, exist_ok=True)
+    slot = N._csqtt_bin_shared(line)
+    if not os.path.exists(slot):
+        fake_fetch({"ver": "v" + line}, slot, line)
+    N._csqtt_relink(d + "/server", slot)
+    open(d + "/csqtt.db", "w").write(store + "\n")
+    inst = {"iface": iface, "listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24", "line": line, "panel_managed": True,
+            "pw_seen": True, "passwords": {"pw1": {}}, "password": "owner", "web_pass": "w"}
+    N._csqtt_docker_start(inst)
+    return inst
+def db(iface):
+    return open(N._csqtt_dir(iface) + "/csqtt.db").read().strip()
+def bak(iface, line):
+    f = N._csqtt_store_bak(N._csqtt_dir(iface), line) + "/csqtt.db"
+    return open(f).read().strip() if os.path.exists(f) else None
+def pid(iface):
+    return N._csqtt_docker_pid(iface)
+
+try:
+    section("[1] slots")
+    a = N._csqtt_bin_shared("2.1"); b = N._csqtt_bin_shared("2.5")
+    check("2.1 keeps the legacy path .bin/<arch>/csqtt-server", a == N.CSQTT_BIN_DIR + "/amd64/csqtt-server", a)
+    check("2.5 gets .bin/<arch>/2.5/csqtt-server", b == N.CSQTT_BIN_DIR + "/amd64/2.5/csqtt-server", b)
+    check("a line that is not a dotted version is refused", not N._csqtt_line_ok("../x") and not N._csqtt_line_ok("2.5/..") and not N._csqtt_line_ok(""))
+    check("a well-formed line this node does not know is refused", not N._csqtt_line_ok("9.9"))
+    check("an absent line reads as 2.1", N._csqtt_line_of({}) == "2.1" and N._csqtt_line_of({"line": "../x"}) == "2.1")
+
+    section("[2] switch 2.1 → 2.5")
+    inst = lay("lo", "2.1", "A")
+    sib = lay("csqttsib", "2.1", "S")
+    sib_pid = pid("csqttsib")
+    err, memo = N._csqtt_switch_line(dict(inst), "2.1", "2.5", "2.1.9-3")
+    check("the switch reports success", err == "" and memo is False, err)
+    check("this server now runs the 2.5 slot", N._csqtt_running_line("lo") == "2.5", os.readlink(N._csqtt_dir("lo") + "/server"))
+    check("2.5's slot is stamped with the build the panel named", N._csqtt_installed_ver("2.5") == "2.1.9-3", N._csqtt_installed_ver("2.5"))
+    check("2.1's store was copied before the repoint", bak("lo", "2.1") == "A", bak("lo", "2.1"))
+    check("the sibling server on 2.1 still runs, same pid", pid("csqttsib") == sib_pid and sib_pid, (sib_pid, pid("csqttsib")))
+    check("the sibling still points at 2.1", N._csqtt_running_line("csqttsib") == "2.1")
+
+    section("[3] revert — a 2.5 that writes the store and dies 2 s in")
+    N._csqtt_docker_stop("lo")
+    inst = lay("lo", "2.1", "A")
+    shutil.rmtree(os.path.dirname(N._csqtt_bin_shared("2.5")), ignore_errors=True)
+    BUILD["2.5"] = DIES
+    t0 = time.time()
+    err, memo = N._csqtt_switch_line(dict(inst), "2.1", "2.5", "2.5.0-1")
+    check("the switch fails and says it is memoed", bool(err) and memo is True, (err, memo))
+    check("…and names an exit, not a timeout", "exited" in err or "did not stay up" in err, err)
+    check("the server is back on the 2.1 slot", N._csqtt_running_line("lo") == "2.1")
+    check("2.1's store is back — not the one 2.5 wrote", db("lo") == "A", db("lo"))
+    check("the server runs again on 2.1", bool(pid("lo")))
+    check("the sibling was never touched", pid("csqttsib") == sib_pid)
+    BUILD["2.5"] = GOOD
+
+    section("[4] resume after a crash between repoint and verify")
+    N._csqtt_docker_stop("lo")
+    inst = lay("lo", "2.1", "A")
+    N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1")            # what the crashed pass had copied
+    fake_fetch({"ver": "2.1.9-3"}, N._csqtt_bin_shared("2.5"), "2.5")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))
+    open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("MIGRATED-BY-2.5\n")
+    err, memo = N._csqtt_switch_line(dict(inst), "2.1", "2.5", "2.1.9-3")
+    check("the resumed switch completes", err == "", err)
+    check("2.1's copy is still the store 2.1 left", bak("lo", "2.1") == "A", bak("lo", "2.1"))
+
+    section("[5] reconfigure keeps the line")
+    i25 = dict(inst, line="2.5", params="--x")
+    N._csqtt_reconfigure(i25)
+    check("the symlink still points at the 2.5 slot", N._csqtt_running_line("lo") == "2.5", os.readlink(N._csqtt_dir("lo") + "/server"))
+
+    # ── the reconcile ─────────────────────────────────────────────────────────────────────────────────────────
+    SWITCHES, UPDATES = [], []
+    real_switch, real_update = N._csqtt_switch_line, N._csqtt_update_binary
+    def rec_switch(inst, frm, to, ver):
+        SWITCHES.append((inst["iface"], frm, to, ver)); return SWITCH_RESULT[0]
+    def rec_update(inst, ver, ifaces, line="2.1"):
+        UPDATES.append((ver, tuple(sorted(ifaces)), line)); N._csqtt_write_ver(ver, line); return ""
+    N._csqtt_switch_line = rec_switch; N._csqtt_update_binary = rec_update
+    SWITCH_RESULT = [("", False)]
+    def record(**insts):
+        json.dump(insts, open(N.CSQTT_RECORD, "w"))
+    def want(iface, **kw):
+        base = {"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24", "passwords": {"pw1": {}}}
+        base.update(kw); return base
+    rec_lo = dict(inst, line="2.5")
+    rec_lo.pop("params", None)
+
+    section("[6] a request with no line")
+    record(lo=rec_lo)
+    N._csqtt_write_ver("2.1.9-3", "2.5")
+    del SWITCHES[:], UPDATES[:]
+    N.reconcile_csqtt({"lo": want("lo", ver="2.1.9-4")})
+    check("no switch is attempted", SWITCHES == [], SWITCHES)
+    check("the 2.1 ver is not applied to the 2.5 server", UPDATES == [], UPDATES)
+    check("the record keeps line 2.5", (N._csqtt_load().get("lo") or {}).get("line") == "2.5", N._csqtt_load().get("lo"))
+
+    section("[7] a failed switch is memoed")
+    rec21 = dict(rec_lo, line="2.1"); N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))
+    record(lo=rec21)
+    SWITCH_RESULT[0] = ("the server exited", True)
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-1")})
+    r1 = N._csqtt_load().get("lo") or {}
+    check("the first sync tries the switch", len(SWITCHES) == 1, SWITCHES)
+    check("…records line_failed and stays committed on 2.1", (r1.get("line_failed") or {}).get("line") == "2.5" and r1.get("line") == "2.1", r1)
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-1")})
+    check("the next sync does not retry the same build", len(SWITCHES) == 1, SWITCHES)
+    snaprow = next((c for c in N.csqtt_snapshot() if c.get("iface") == "lo"), {})
+    check("the snapshot reports what runs (2.1) and why the switch failed", snaprow.get("line") == "2.1" and (snaprow.get("line_failed") or {}).get("line") == "2.5", snaprow)
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2")})
+    check("a new build is tried", len(SWITCHES) == 2, SWITCHES)
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", restart=12345)})
+    check("the operator's Restart retries the same build", len(SWITCHES) == 3, SWITCHES)
+    N.reconcile_csqtt({"lo": want("lo", line="2.1", ver="2.1.9-4", restart=12345)})
+    check("a request back to the running line clears line_failed", not (N._csqtt_load().get("lo") or {}).get("line_failed"), N._csqtt_load().get("lo"))
+    SWITCH_RESULT[0] = ("", False)
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", restart=12345)})
+    check("a switch that works commits line 2.5", (N._csqtt_load().get("lo") or {}).get("line") == "2.5", N._csqtt_load().get("lo"))
+
+    section("[8] a build update stays inside its line")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))
+    record(lo=dict(rec_lo, line="2.5"), csqttsib=dict(sib, line="2.1"))
+    N._csqtt_write_ver("2.5.0-1", "2.5"); N._csqtt_write_ver("2.1.9-4", "2.1")
+    del UPDATES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.1", ver="2.1.9-4", tun_addr="10.66.68.1/24")})
+    check("one update, on line 2.5, restarting only the 2.5 server", UPDATES == [("2.5.0-2", ("lo",), "2.5")], UPDATES)
+finally:
+    for i in ("lo", "csqttsib"):
+        try: N._csqtt_docker_stop(i)
+        except Exception: pass
+    shutil.rmtree(TMP, ignore_errors=True)
+
+if MODE:
+    sec = PLANTS[MODE][0]
+    hit = [n for s, n in FAILS if s.startswith(sec)]
+    print("\nperturb %s: %s" % (MODE, ("RED on " + sec + " as expected") if hit else ("NOT caught by " + sec)))
+    sys.exit(0 if hit else 1)
+print("\n" + ("ALL PASS" if not FAILS else "%d FAIL: %s" % (len(FAILS), FAILS)))
+sys.exit(1 if FAILS else 0)
