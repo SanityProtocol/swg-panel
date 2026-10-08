@@ -27,12 +27,13 @@ line made of a build that is already published — and the node's side played by
   [11] running   during a pending/failed switch (record 2.5, the node runs 2.1) the version endpoints act on the line
                  the server RUNS — the one its update row and Version row show — and the reply names that line's
                  build as `cur_ver` so it keeps getting updates
-  [12] offline   a hold for a server on a line this panel does not offer is refused (it would land on 2.1's key)
+  [12] offline   a hold for a server on a line this panel does not offer is refused, saying why (no build of that
+                 line is listed here); no 2.1 hold results
 
 Run: python3 tests/csqtt_lines_panel_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8] ·
-                       override [9] · unoffered [10] · runline [11] · curver [11] · refuseoff [12]
+                       override [9] · unoffered [10] · runline / runline-get / curver [11] · refuseoff [12]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -45,7 +46,7 @@ PLANTS = {
     "g1": ("[1]", "        elif _line != CSQTT_DEFAULT_LINE:\n            _cver = \"\"", "        elif False:\n            _cver = \"\""),
     "refuse": ("[3]", "                if _ln not in (_lsnap.get(\"csqtt_lines\") or []):", "                if False:"),
     "publish": ("[4]", "\"dns_orig\", \"bind_ip\", \"line\") if k in ov}", "\"dns_orig\", \"bind_ip\") if k in ov}"),
-    "holdkey": ("[5]", "    return \"fork:csqtt\" if line == CSQTT_DEFAULT_LINE else \"fork:csqtt@\" + line",
+    "holdkey": (("[5]", "[11]"), "    return \"fork:csqtt\" if line == CSQTT_DEFAULT_LINE else \"fork:csqtt@\" + line",
                 "    return \"fork:csqtt\""),
     "split": ("[6]", "                if _cl and _cl != CSQTT_DEFAULT_LINE:\n                    _cf += \"@\" + _cl\n",
               "                pass\n"),
@@ -53,11 +54,13 @@ PLANTS = {
                "    for _cl in [CSQTT_DEFAULT_LINE]:          # every line's current build"),
     "override": ("[9]", "and line not in CSQTT_LINES and builds:", "and builds:"),
     "unoffered": ("[10]", "        if _line not in CSQTT_LINES:\n", "        if False:\n"),
-    "runline": ("[11]", "        _vl = (_csqtt_run_line(((deps.get(\"node_snaps\") or {}).get(nid)), iface, ((nodes[nid].get(\"csqtt\")) or {}).get(iface))",
+    "runline-get": ("[11]", "        _vl = (_csqtt_run_line(((deps.get(\"node_snaps\") or {}).get(nid)), _qi, _vi) if _vi",
+                    "        _vl = (_csqtt_line_of(_vi) if _vi"),
+    "runline": (("[11]", "[12]"), "        _vl = (_csqtt_run_line(((deps.get(\"node_snaps\") or {}).get(nid)), iface, ((nodes[nid].get(\"csqtt\")) or {}).get(iface))",
                 "        _vl = (_csqtt_line_of(((nodes[nid].get(\"csqtt\")) or {}).get(iface))"),
     "curver": ("[11]", "            if _row and _run != _line and _run in CSQTT_LINES:", "            if False:"),
     "refuseoff": ("[12]", "        if _vl not in CSQTT_LINES:\n            # a server on a line", "        if False:\n            # a server on a line"),
-    "mirror": ("[8]", "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
+    "mirror": (("[8]", "[10]"), "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
 SECTION = [""]
@@ -274,7 +277,8 @@ try:
     check("…and names the build of the 2.1 it runs as cur_ver", c5.get("cur_ver") == "2.1.9-4", c5)
     code, v = req("/api/csqtt/versions?node=nnew&iface=csqtt5")
     check("its rollback picker is 2.1's (what runs)", (v.get("data") or {}).get("line") == "2.1", v)
-    req("/api/csqtt/version", {"node": "nnew", "iface": "csqtt2", "ver": "2.1.9-3"})       # a 2.1 hold on this node
+    code, r = req("/api/csqtt/version", {"node": "nnew", "iface": "csqtt2", "ver": "2.1.9-3"})   # a 2.1 hold on this node
+    check("(setup) a 2.1 hold is set on the node", code == 200 and "nnew|fork:csqtt" in json.load(open(os.path.join(state, "turn-holds.json"))), (code, r))
     code, r = req("/api/csqtt/version", {"node": "nnew", "iface": "csqtt5", "ver": ""})     # Update from its (2.1) row
     holds = json.load(open(os.path.join(state, "turn-holds.json")))
     check("Update from its row releases the 2.1 hold", code == 200 and "nnew|fork:csqtt" not in holds, (code, holds))
@@ -292,9 +296,11 @@ finally:
     shutil.rmtree(TMP, ignore_errors=True)
 
 if MODE:
-    sec = PLANTS[MODE][0]
-    hit = [n for s, n in FAILS if s.startswith(sec)]
-    print("\nperturb %s: %s" % (MODE, ("RED on " + sec + " as expected") if hit else ("NOT caught by " + sec)))
-    sys.exit(0 if hit else 1)
+    secs = PLANTS[MODE][0] if isinstance(PLANTS[MODE][0], tuple) else (PLANTS[MODE][0],)
+    hit = [n for s, n in FAILS if s.startswith(secs)]
+    stray = sorted({s.split(" ")[0] for s, n in FAILS if not s.startswith(secs)})
+    print("\nperturb %s: %s" % (MODE, ("NOT caught by " + "/".join(secs)) if not hit
+          else ("ALSO red outside its section(s): " + ", ".join(stray)) if stray else ("RED on " + "/".join(secs) + " as expected")))
+    sys.exit(0 if hit and not stray else 1)
 print("\n" + ("ALL PASS" if not FAILS else "%d FAIL: %s" % (len(FAILS), FAILS)))
 sys.exit(1 if FAILS else 0)

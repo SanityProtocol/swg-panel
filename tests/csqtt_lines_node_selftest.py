@@ -24,8 +24,9 @@ and every command that could delete a link is refused by a guard (the test fails
   [10] copyfail  a store copy that fails (a full disk) never leaves the server stopped: it runs on 2.1 again, the
                  failure is memoed
   code review (2026-10-08):
-  [11] crash     a noded that died between repoint and record save: a request for the OLD line switches back from
-                 what really runs (the symlink), and a request for the new line resumes the switch's verify
+  [11] crash     a noded that died between repoint and record save (real switch, real processes): a request for the
+                 OLD line undoes the switch onto 2.1's own store copy (not the store 2.5 rewrote); a request for the
+                 new line runs the cut switch's verify, and a 2.5 that dies is reverted and memoed
   [12] onepass   two servers asking for a switch in one pass: one switches, the other waits a sync
   [13] restart   a Restart that retries a failed switch restarts the server once, not twice
   [14] curver    while a switch is memoed, the line the server RUNS still takes the panel's `cur_ver`
@@ -47,10 +48,10 @@ PLANTS = {   # name: (section, anchor, replacement)
     "reconfigure": ("[5]", "    line = _csqtt_line_of(inst)\n    binshared = _csqtt_bin_shared(line)\n    if not os.path.exists(binshared):        # same-arch",
                     "    line = _csqtt_line_of(inst)\n    binshared = _csqtt_bin_shared()\n    if not os.path.exists(binshared):        # same-arch"),
     "absent": ("[6]", "            if not _line:\n                _line = _cur\n", "            if not _line:\n                _line = CSQTT_DEFAULT_LINE\n"),
-    "stable": ("[3]", "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify_stable(iface)\n",
+    "stable": (("[3]", "[11]"), "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify_stable(iface)\n",
                "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify(iface)\n"),
-    "resume": ("[4]", "    if not resumed:\n        try:\n            _csqtt_store_copy(cfgdir, frm)\n", "    if True:\n        try:\n            _csqtt_store_copy(cfgdir, frm)\n"),
-    "memo": ("[7]", "                inst[\"line_failed\"] = _lf\n", "                pass\n"),
+    "resume": (("[4]", "[11]"), "    if not resumed:\n        try:\n            _csqtt_store_copy(cfgdir, frm)\n", "    if True:\n        try:\n            _csqtt_store_copy(cfgdir, frm)\n"),
+    "memo": (("[7]", "[14]"), "                inst[\"line_failed\"] = _lf\n", "                pass\n"),
     "sibling": ("[9]", "        others = [i for i in siblings if i != iface]\n", "        others = []\n"),
     "copyfail": ("[10]", "            _csqtt_start_one(dict(inst, line=frm)) if not inst.get(\"stopped\") else None\n", "            pass\n"),
     "crash": ("[11]", "            _cur = _csqtt_running_line(iface) or _rec or CSQTT_DEFAULT_LINE", "            _cur = _rec or _csqtt_running_line(iface) or CSQTT_DEFAULT_LINE"),
@@ -59,7 +60,7 @@ PLANTS = {   # name: (section, anchor, replacement)
     "curver": ("[14]", "                _run_ver = _want_ver if _line == _cur else (inst.get(\"cur_ver\") or \"\").strip()", "                _run_ver = _want_ver if _line == _cur else \"\""),
     "nover": ("[15]", "    if not ver and line != CSQTT_DEFAULT_LINE:\n", "    if False:\n"),
     "ifaces": ("[16]", "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]"),
-    "build": ("[8]", "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return list(want or {})"),
+    "build": (("[8]", "[16]"), "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return list(want or {})"),   # one function, two sections
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
 SECTION = [""]
@@ -270,27 +271,48 @@ try:
     N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.1", ver="2.1.9-4", tun_addr="10.66.68.1/24")})
     check("one update, on line 2.5, restarting only the 2.5 server", UPDATES == [("2.5.0-2", ("lo",), "2.5")], UPDATES)
 
-    section("[11] a crash between repoint and record save")
-    SWITCH_RESULT[0] = ("", False)
-    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))   # the link moved…
-    record(lo=dict(rec_lo, line="2.1"))                                             # …the record did not
-    del SWITCHES[:]
+    section("[11] a crash between repoint and record save — the REAL switch, real processes")
+    N._csqtt_switch_line, N._csqtt_update_binary = real_switch, real_update
+    def crashed_mid_switch(build25, ver25):
+        """2.1 committed, its store copied, the link moved to 2.5, 2.5 ran and rewrote the store — then noded died."""
+        N._csqtt_docker_stop("lo")
+        BUILD["2.5"] = build25
+        fake_fetch({"ver": ver25}, N._csqtt_bin_shared("2.5"), "2.5")
+        lay("lo", "2.1", "A")
+        N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1")
+        N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))
+        open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("MIGRATED-BY-2.5\n")
+        record(lo=dict(rec_lo, line="2.1"))
+    crashed_mid_switch(GOOD, "2.5.0-2")
     N.reconcile_csqtt({"lo": want("lo", line="2.1", ver="2.1.9-4")})
-    check("asked for the old line: it switches back FROM what runs (2.5 → 2.1)", SWITCHES[:1] == [("lo", "2.5", "2.1", "2.1.9-4")], SWITCHES)
-    record(lo=dict(rec_lo, line="2.1"))
-    del SWITCHES[:]
-    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2")})
-    check("asked for the new line: the cut switch is resumed (2.1 → 2.5, verify)", SWITCHES[:1] == [("lo", "2.1", "2.5", "2.5.0-2")], SWITCHES)
+    r11 = N._csqtt_load().get("lo") or {}
+    check("asked for the old line: the server is back on 2.1", N._csqtt_running_line("lo") == "2.1", os.readlink(N._csqtt_dir("lo") + "/server"))
+    check("…on 2.1's own store copy, not the one 2.5 rewrote", db("lo") == "A", db("lo"))
+    check("…running, committed 2.1, nothing memoed", bool(pid("lo")) and r11.get("line") == "2.1" and not r11.get("line_failed"), r11)
+    crashed_mid_switch(DIES, "2.5.0-7")
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-7")})
+    r11 = N._csqtt_load().get("lo") or {}
+    check("asked for the new line: the cut switch's verify runs — a 2.5 that dies is reverted to 2.1", N._csqtt_running_line("lo") == "2.1", os.readlink(N._csqtt_dir("lo") + "/server"))
+    check("…onto 2.1's store copy, memoed, committed 2.1", db("lo") == "A" and (r11.get("line_failed") or {}).get("line") == "2.5" and r11.get("line") == "2.1", (db("lo"), r11))
+    BUILD["2.5"] = GOOD
+    N._csqtt_switch_line, N._csqtt_update_binary = rec_switch, rec_update
 
     section("[12] one switch per pass")
     N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))
     N._csqtt_relink(N._csqtt_dir("csqttsib") + "/server", N._csqtt_bin_shared("2.1"))
     record(lo=dict(rec_lo, line="2.1"), csqttsib=dict(sib, line="2.1"))
+    SWITCH_RESULT[0] = ("", False)
     del SWITCHES[:]
     N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.5", ver="2.5.0-2", tun_addr="10.66.68.1/24")})
-    check("two asked, one switched this pass", len(SWITCHES) == 1, SWITCHES)
+    check("two asked, one switched this pass", [x[0] for x in SWITCHES] == ["lo"], SWITCHES)
+    r12 = N._csqtt_load().get("csqttsib") or {}
+    check("the one that waits keeps 2.1, with no failure memoed", r12.get("line") == "2.1" and not r12.get("line_failed"), r12)
+    del SWITCHES[:]
+    N.reconcile_csqtt({"csqttsib": want("csqttsib", line="2.5", ver="2.5.0-2", tun_addr="10.66.68.1/24")})
+    check("…and switches on the next pass", [x[0] for x in SWITCHES] == ["csqttsib"], SWITCHES)
 
     section("[13] a Restart that retries a failed switch restarts once")
+    N._csqtt_docker_stop("lo"); lay("lo", "2.1", "A")       # alive, so supervision has nothing to relaunch
     STARTS = []
     real_start = N._csqtt_docker_start
     N._csqtt_docker_start = lambda inst: (STARTS.append(inst.get("iface")), real_start(inst))[1]
@@ -313,9 +335,12 @@ try:
 
     section("[15] a versionless fetch into another line's slot")
     N._turn_arch_ok = lambda: True
+    real_pf = N._csqtt_panel_fetch
+    N._csqtt_panel_fetch = lambda dest, sha, tag="csqtt": (open(dest, "w").write("2.1.9-4 binary"), True)[1]   # a mirror that serves its "csqtt" (2.1) build
     e15 = REAL_FETCH({"ver": ""}, N._csqtt_bin_shared("2.5") + ".probe", "2.5")
+    N._csqtt_panel_fetch = real_pf
     check("refused, naming the line", "named no csqtt 2.5" in (e15 or ""), e15)
-    check("…and nothing landed", not os.path.exists(N._csqtt_bin_shared("2.5") + ".probe"))
+    check("…and the mirror's 2.1 build did not land in the 2.5 slot", not os.path.exists(N._csqtt_bin_shared("2.5") + ".probe"))
 
     section("[16] a server not installed yet runs no line")
     check("_csqtt_ifaces leaves it out", N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5") == [], N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5"))
@@ -326,9 +351,11 @@ finally:
     shutil.rmtree(TMP, ignore_errors=True)
 
 if MODE:
-    sec = PLANTS[MODE][0]
-    hit = [n for s, n in FAILS if s.startswith(sec)]
-    print("\nperturb %s: %s" % (MODE, ("RED on " + sec + " as expected") if hit else ("NOT caught by " + sec)))
-    sys.exit(0 if hit else 1)
+    secs = PLANTS[MODE][0] if isinstance(PLANTS[MODE][0], tuple) else (PLANTS[MODE][0],)
+    hit = [n for s, n in FAILS if s.startswith(secs)]
+    stray = sorted({s.split(" ")[0] for s, n in FAILS if not s.startswith(secs)})
+    print("\nperturb %s: %s" % (MODE, ("NOT caught by " + "/".join(secs)) if not hit
+          else ("ALSO red outside its section(s): " + ", ".join(stray)) if stray else ("RED on " + "/".join(secs) + " as expected")))
+    sys.exit(0 if hit and not stray else 1)
 print("\n" + ("ALL PASS" if not FAILS else "%d FAIL: %s" % (len(FAILS), FAILS)))
 sys.exit(1 if FAILS else 0)
