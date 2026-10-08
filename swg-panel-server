@@ -1505,17 +1505,41 @@ def _wdtt_current_version(fork):
 # The 2.1.5 work elsewhere STAYS and is deliberately not reverted: swg-noded reads either store shape
 # (passwords.json <=2.0.1, SQLite csqtt.db from 2.1.5), so a node adopting a hand-placed 2.1.5 already works.
 CSQTT_BUILDS = [("2.1.9-4", "csqtt-2.1.9-4"), ("2.1.9-3", "csqtt-2.1.9-3"), ("2.1.9-2", "csqtt-2.1.9-2"), ("2.1.9", "csqtt-2.1.9"), ("2.0.1", "csqtt-2.0.1")]
-def _csqtt_current_version():
-    return CSQTT_BUILDS[0][0] if CSQTT_BUILDS else ""
+# LINES (docs/CSQTT-LINES-PLAN.md): a csqtt server runs one line and can be switched between lines, both ways,
+# keeping its users — a separate thing from the build list above, which is the 2.1 line's. Display order; each
+# line's builds newest first. The CSQTT_BUILDS rule holds per line: a line is listed only once a build of it is
+# PUBLISHED, because every entry is a promise the node can fetch it.
+#   SWG_CSQTT_STANDIN="2.5=2.1.9-3" lists a STAND-IN line made of builds that already exist, so the whole switch
+#   path can be run before the real release (test panels only). Unset — the default — there is one line, and the
+#   panel, every node reply and the SPA are exactly what they were before lines.
+CSQTT_DEFAULT_LINE = "2.1"
+CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS}
+def _csqtt_standin(spec):
+    line, _, vers = (spec or "").partition("=")
+    line = line.strip()
+    known = dict(CSQTT_BUILDS)
+    builds = [(v.strip(), known[v.strip()]) for v in vers.split(",") if v.strip() in known]
+    if re.match(r"^[0-9]{1,3}\.[0-9]{1,3}$", line) and line != CSQTT_DEFAULT_LINE and builds:
+        CSQTT_LINES[line] = builds
+_csqtt_standin(os.environ.get("SWG_CSQTT_STANDIN", ""))
+def _csqtt_line_of(rec):                      # an instance record's line (absent / unknown = 2.1: every pre-lines server)
+    l = str((rec or {}).get("line") or "").strip()
+    return l if l in CSQTT_LINES else CSQTT_DEFAULT_LINE
+def _csqtt_hold_svc(line):                    # turn-holds key: 2.1 keeps the one it always had
+    return "fork:csqtt" if line == CSQTT_DEFAULT_LINE else "fork:csqtt@" + line
+def _csqtt_current_version(line=CSQTT_DEFAULT_LINE):
+    b = CSQTT_LINES.get(line) or []
+    return b[0][0] if b else ""
 CSQTT_MIRROR_OWNER = "amurcanov/csqtt"        # the mirror KEY the node asks under — NOT where the binary lives
-def _csqtt_tag_for(ver):                      # our release tag for an author version ("" / "csqtt" -> current build)
+def _csqtt_tag_for(ver):                      # our release tag for an author version ("" / "csqtt" -> current 2.1 build), any line
     if not CSQTT_BUILDS:
         return ""
     if not ver or ver == "csqtt":
         return CSQTT_BUILDS[0][1]
-    for v, tag in CSQTT_BUILDS:
-        if v == ver:
-            return tag
+    for builds in CSQTT_LINES.values():
+        for v, tag in builds:
+            if v == ver:
+                return tag
     return ""
 def _wdtt_tag_for(fork, ver):                 # our release tag for a specific author version ("" / "wdtt" -> current)
     vs = _wdtt_versions(fork)
@@ -1609,14 +1633,15 @@ def _turn_bins_needed():
         return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
     for owner, fork in _WDTT_OWNER_FORK.items():
         add(owner, _wdtt_current_version(fork) or None)
-    if CSQTT_BUILDS:
-        add(CSQTT_MIRROR_OWNER, _csqtt_current_version())
+    for _cl in CSQTT_LINES:                   # every line's current build — 2.1's alone would let the prune take 2.5's
+        if CSQTT_LINES[_cl]:
+            add(CSQTT_MIRROR_OWNER, _csqtt_current_version(_cl))
     for k, v in (_turn_holds_load() or {}).items():
         rest = str(k).partition("|")[2]
         tag = (v.get("tag") if isinstance(v, dict) else v) or None
         if rest.startswith("wdtt:"):
             add(wdtt_owner.get(rest[5:]), tag)
-        elif rest == "fork:csqtt":
+        elif rest == "fork:csqtt" or rest.startswith("fork:csqtt@"):
             add(CSQTT_MIRROR_OWNER, tag)
         elif rest.startswith("fork:"):
             add(turn_fork_owner(rest[5:]), tag)
@@ -1662,7 +1687,7 @@ def _turn_bins_prune(owner, need=None):
         advertised = {_turn_safe(v) for v, _ in _wdtt_versions(_WDTT_OWNER_FORK[owner])}
         keep.add("wdtt")
     elif owner == CSQTT_MIRROR_OWNER:
-        advertised = {_turn_safe(v) for v, _ in CSQTT_BUILDS}
+        advertised = {_turn_safe(v) for _b in CSQTT_LINES.values() for v, _ in _b}   # every line's: CSQTT_BUILDS is 2.1's alone
         keep.add("csqtt")
     else:
         advertised = None                     # an upstream fork: what it publishes is not ours to judge
@@ -1991,7 +2016,15 @@ def _turn_deployed(deps):
             # that away, and would have merged two different servers into one row and offered BOTH amurcanov's
             # build. Absent on an older snapshot = the single known fork, the same assumption the node makes.
             if isinstance(c, dict) and c.get("iface"):
-                out.append(((c.get("fork") or "").strip() or "csqtt", "csqtt", nid, c["iface"], str(c.get("version") or "").strip()))
+                # …and WHICH LINE (docs/CSQTT-LINES-PLAN.md): a line is its own update unit — its own binary, its
+                # own latest, its own hold — so a 2.5 server is never "behind" 2.1's newest build. 2.1 keeps the
+                # bare id it always had; another line is "<fork>@<line>", an id that stays inside the panel
+                # (turn_updates_view hands the SPA the fork and the line apart).
+                _cf = (c.get("fork") or "").strip() or "csqtt"
+                _cl = str(c.get("line") or "").strip()
+                if _cl and _cl != CSQTT_DEFAULT_LINE:
+                    _cf += "@" + _cl
+                out.append((_cf, "csqtt", nid, c["iface"], str(c.get("version") or "").strip()))
         for w in (snap.get("wdtt") or []):
             if isinstance(w, dict) and w.get("iface") and w.get("fork"):
                 out.append((w["fork"], "wdtt", nid, w["iface"], str(w.get("version") or "").strip()))
@@ -2007,8 +2040,8 @@ def _turn_latest_for(fork):
     disagree about whether something is behind."""
     if fork in WDTT_BUILDS:
         return _wdtt_current_version(fork)
-    if fork == "csqtt":
-        return _csqtt_current_version()
+    if fork == "csqtt" or fork.startswith("csqtt@"):
+        return _csqtt_current_version(fork.partition("@")[2] or CSQTT_DEFAULT_LINE)
     owner = turn_fork_owner(fork)
     return _resolve_turn_tag(owner) if owner and "/" in owner else ""
 
@@ -2063,10 +2096,11 @@ def turn_updates_view(deps):
             continue
         if _turn_hold_get(nid, _turn_hold_key(kind, fork)):
             continue
-        r = rows.setdefault((fork, nid), {"fork": fork, "kind": kind, "node": nid,
-                                          "installed": inst, "latest": lt, "ids": []})
+        _fk, _, _ln = fork.partition("@")   # a csqtt line's internal id → the fork and the line, apart (the SPA labels the fork)
+        r = rows.setdefault((fork, nid), {"fork": _fk, "kind": kind, "node": nid,
+                                          "installed": inst, "latest": lt, "ids": [], **({"line": _ln} if _ln else {})})
         r["ids"].append(ident)
-    return sorted(rows.values(), key=lambda r: (r["fork"], r["node"]))
+    return sorted(rows.values(), key=lambda r: (r["fork"], r.get("line", ""), r["node"]))
 
 
 def _remote_version_loop():
@@ -9055,20 +9089,33 @@ def desired_csqtt_for_node(roster, nodes, node_id, fallback_vk=""):
     return out
 
 
-def _csqtt_reply(roster, nodes, node_id, fallback_vk=""):
+def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
     """reply["csqtt"] for one node: each instance's config FROM THE NODE STORE + its password set DERIVED FROM
-    THE ROSTER (passwords are roster-owned). The owner --password/--web-pass are node-owned → never shipped."""
+    THE ROSTER (passwords are roster-owned). The owner --password/--web-pass are node-owned → never shipped.
+
+    LINES (docs/CSQTT-LINES-PLAN.md): `snap` is THIS sync's snapshot, so the capability below is never stale. A node
+    that advertises `csqtt_lines` gets each instance's `line` and that line's build as `ver`. ⚠️ G1 — a node that
+    does not is an older noded, which compares `ver` with ONE node-wide stamp and swaps the binary under EVERY csqtt
+    server on the box: it gets exactly today's reply for a 2.1 server, and no `ver` at all for any other line
+    (a record only an un-updated or downgraded node can be holding), so nothing there moves."""
     insts = ((nodes.get(node_id) or {}).get("csqtt")) or {}
     if not insts:
         return {}
     derived = desired_csqtt_for_node(roster, nodes, node_id, fallback_vk)
+    _lines_ok = isinstance((snap or {}).get("csqtt_lines"), list)
     out = {}
     for iface, inst in insts.items():
         merged = dict(inst or {}); merged["iface"] = iface
         merged.pop("password", None); merged.pop("web_pass", None)   # node-owned secrets
         merged.pop("reach", None)                                    # planned into `dev_reach`, never shipped here (§10.8 Round 9)
         merged["passwords"] = derived.get(iface) or {}               # authoritative: roster-derived
-        _cver = _turn_hold_get(node_id, "fork:csqtt") or _csqtt_current_version()   # normalised key — _turn_holds_migrate rewrites a bare "<nid>|csqtt" to "fork:csqtt" at startup, so the bare form never survives a restart
+        _line = _csqtt_line_of(inst)
+        merged.pop("line", None)
+        _cver = _turn_hold_get(node_id, _csqtt_hold_svc(_line)) or _csqtt_current_version(_line)   # normalised key — _turn_holds_migrate rewrites a bare "<nid>|csqtt" to "fork:csqtt" at startup, so the bare form never survives a restart
+        if _lines_ok:
+            merged["line"] = _line
+        elif _line != CSQTT_DEFAULT_LINE:
+            _cver = ""                                               # G1: never a non-2.1 build to a node that cannot keep it to one server
         if _cver:
             merged["ver"] = _cver
         out[iface] = merged
@@ -23194,7 +23241,7 @@ def api(method, path, qs, body, deps):
                         # routing / filters. Config fields only — never the owner password / minted access passwords.
                         "csqtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
-                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns", "dns_orig", "bind_ip") if k in ov}
+                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns", "dns_orig", "bind_ip", "line") if k in ov}
                                       for ifn, ov in _c.items()},
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
@@ -23335,6 +23382,9 @@ def api(method, path, qs, body, deps):
 
             "turn_catalog": turn_catalog_view(),         # single-source turn fork/client catalog (SPA reads this instead of a hardcoded TURN_FORKS)
             "turn_holds": _turn_holds_view(),            # {node: {fork: held_version}} → fork-row "held" flag (per node+fork rollback holds)
+            # csqtt LINES this panel offers, display order (docs/CSQTT-LINES-PLAN.md). One entry = no Version control
+            # anywhere in the SPA; a non-2.1 line's holds sit under "csqtt@<line>" in turn_holds above.
+            "csqtt_lines": [{"id": _l, "current": _csqtt_current_version(_l)} for _l in CSQTT_LINES],
             "turn_updates": turn_updates_view(deps),      # deployed turn-family servers behind their newest build, one row per (fork, node) — the header badge reads this as a READY FACT, the way panel_outdated is, instead of the SPA fanning out a network check per fork on every click
             "catalog_gen": catalog_gen(),                 # moves whenever the held catalog index changes → the SPA refetches it exactly then
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
@@ -28607,6 +28657,22 @@ def api(method, path, qs, body, deps):
                 inst.pop("bind_ip", None)
         if inst.get("fork") and (TURN_SERVERS.get(inst["fork"]) or {}).get("kind") != "csqtt":
             return 400, {"ok": False, "error": "unknown csqtt fork", "code": "bad_request"}
+        # The csqtt LINE this server runs (docs/CSQTT-LINES-PLAN.md) — a switch, both ways, keeping its users. Only a
+        # line this panel lists, and a non-2.1 line only on a node that says it can run it: an older noded would
+        # put that line's build under every csqtt server on the box (see _csqtt_reply, G1).
+        _line_from = _csqtt_line_of(inst)
+        if "line" in body:
+            _ln = str(body.get("line") or "").strip() or CSQTT_DEFAULT_LINE
+            if _ln not in CSQTT_LINES:
+                return 400, {"ok": False, **perr("csqtt {v1} isn't a version this panel offers", v1=_ln[:16]), "code": "bad_request"}
+            if _ln != _line_from and _ln != CSQTT_DEFAULT_LINE:
+                _lsnap = (deps.get("node_snaps") or {}).get(nid) or {}
+                if _ln not in (_lsnap.get("csqtt_lines") or []):
+                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \"update node to …\")", v1=_ln), "code": "node_too_old"}
+            if _ln == CSQTT_DEFAULT_LINE:
+                inst.pop("line", None)                   # 2.1 is the absent value — a 2.1-only record stays byte-identical
+            else:
+                inst["line"] = _ln
         if inst.get("tun_addr") and not (_WDTT_CIDR_RE.match(inst["tun_addr"]) and inst["tun_addr"].endswith("/24")):
             return 400, {"ok": False, "error": "tun_addr must be an IPv4 /24 CIDR, e.g. 10.66.67.1/24", "code": "bad_request"}
         if "max_passwords" in body:
@@ -28666,6 +28732,8 @@ def api(method, path, qs, body, deps):
         nodes[nid].setdefault("csqtt", {})[iface] = inst
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Set csqtt instance", iface)
+        if _cur and _csqtt_line_of(inst) != _line_from:
+            ev_append(roster_path, "node", nid, "Switched a csqtt server's version", iface, _line_from + " → " + _csqtt_line_of(inst))
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, **({"dropped": _rdrop} if _rdrop["total"] else {})}}
 
     if method == "POST" and path == "/api/container/adopt":
@@ -29220,10 +29288,14 @@ def api(method, path, qs, body, deps):
     if method == "GET" and path == "/api/csqtt/versions":
         # csqtt rollback picker, the WDTT one's twin: OUR published builds (newest first) + this node's hold.
         # csqtt has ONE binary and no fork variance, so the hold is per NODE, not per (node, fork).
+        # Per LINE (docs/CSQTT-LINES-PLAN.md): one binary per (node, line), so the line follows from `iface` when given
+        # (or `line`), else 2.1 — what every caller meant before lines.
         nid = (qs.get("node") or [""])[0]
-        held = _turn_hold_get(nid, "fork:csqtt") if nid else ""
-        return 200, {"ok": True, "data": {"fork": "csqtt", "current": _csqtt_current_version(),
-                                          "versions": [v for v, _ in CSQTT_BUILDS], "held": held}}
+        _vi = ((nodes.get(nid) or {}).get("csqtt") or {}).get((qs.get("iface") or [""])[0]) if nid else None
+        _vl = _csqtt_line_of(_vi) if _vi else ((qs.get("line") or [""])[0] if (qs.get("line") or [""])[0] in CSQTT_LINES else CSQTT_DEFAULT_LINE)
+        held = _turn_hold_get(nid, _csqtt_hold_svc(_vl)) if nid else ""
+        return 200, {"ok": True, "data": {"fork": "csqtt", "line": _vl, "current": _csqtt_current_version(_vl),
+                                          "versions": [v for v, _ in (CSQTT_LINES.get(_vl) or [])], "held": held}}
 
     if method == "POST" and path == "/api/csqtt/version":
         # Roll a node's csqtt to a specific published build (holds it — the auto-updater won't move it), or release
@@ -29235,15 +29307,17 @@ def api(method, path, qs, body, deps):
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
         if iface and not ((nodes[nid].get("csqtt")) or {}).get(iface):
             return 404, {"ok": False, "error": "unknown csqtt instance", "code": "not_found"}
+        # The hold is per (node, LINE) — the line of `iface`, the server the caller acts from (2.1 without one).
+        _vl = _csqtt_line_of(((nodes[nid].get("csqtt")) or {}).get(iface)) if iface else CSQTT_DEFAULT_LINE
         if ver:
-            if not _csqtt_tag_for(ver):
+            if ver not in [v for v, _ in (CSQTT_LINES.get(_vl) or [])]:
                 return 400, {"ok": False, "error": "that version isn't a published csqtt build", "code": "bad_request"}
-            _turn_hold_set(nid, "fork:csqtt", ver)
-            verb = "Rolling back csqtt" if ver != _csqtt_current_version() else "Reinstalling csqtt"
+            _turn_hold_set(nid, _csqtt_hold_svc(_vl), ver)
+            verb = "Rolling back csqtt" if ver != _csqtt_current_version(_vl) else "Reinstalling csqtt"
         else:
-            _turn_hold_clear(nid, "fork:csqtt"); verb = "Updating csqtt to latest"
+            _turn_hold_clear(nid, _csqtt_hold_svc(_vl)); verb = "Updating csqtt to latest"
         ev_append(roster_path, "node", nid, verb, iface)
-        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "ver": ver or _csqtt_current_version()}}
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "line": _vl, "ver": ver or _csqtt_current_version(_vl)}}
 
     if method == "POST" and path == "/api/wdtt-peer/create":
         # A keyless WDTT peer: the panel mints ONE per-peer WRAP password (its identity — WDTT mints the WG keypair
@@ -31952,6 +32026,10 @@ class Handler(BaseHTTPRequestHandler):
                     _inst["dns"] = _dv
                 if _rep.get("stopped"):
                     _inst["stopped"] = True
+                # csqtt's line: the record must say what runs, or the next reply (line absent = 2.1) would ask the
+                # node to switch a server nobody asked to switch. 2.1 is the absent value.
+                if _fam == "csqtt" and str(_rep.get("line") or "") in CSQTT_LINES and _rep.get("line") != CSQTT_DEFAULT_LINE:
+                    _inst["line"] = _rep["line"]
                 # ⚠️⚠️ ITS USERS COME ACROSS IN THE SAME PASS, BEFORE THE RECORD EXISTS. This was learned by
                 # losing two of them. The entry above reasoned that recording was safe because the node's
                 # `pw_seen` fail-safe refuses to reap on an empty desired set — true, but ONLY while the node
@@ -32722,7 +32800,7 @@ class Handler(BaseHTTPRequestHandler):
         # captured at boot, so changing the fallback takes effect on the next sync rather than the next restart.
         _fb_vk = str(((Handler.deps.get("panel_settings") or {}) if Handler.deps else {}).get("vk_link") or "")
         _wdtt_des = _wdtt_reply(roster, nodes, nid, _fb_vk)
-        _csqtt_des = _csqtt_reply(roster, nodes, nid, _fb_vk)
+        _csqtt_des = _csqtt_reply(roster, nodes, nid, _fb_vk, snap)
         # Take over a wg/awg server running in ANOTHER container (Amnezia). One-shot, like the adoption
         # markers above: the node stops that container and stands the same server up natively, then reports
         # what it found so the peers can be imported. Sent only while the request is live.

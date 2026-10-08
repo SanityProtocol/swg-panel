@@ -1396,20 +1396,23 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
   // nodes running this fork + the installed version (shared per fork on a node) + the service/iface list to act on
   const running = {};
   for (const [nid, snap] of Object.entries(Store.stats || {})) {
-    if (csqtt) { for (const c of (snap.csqtt || [])) if (c && c.iface) { const m = running[nid] = running[nid] || { version: "", ids: [] }; if (c.version) m.version = c.version; m.ids.push(c.iface); } }
+    // csqtt: one binary per (node, VERSION) — a node running 2.1 and 2.5 is two rows, each with its own build and hold
+    if (csqtt) { for (const c of (snap.csqtt || [])) if (c && c.iface) { const ln = c.line || CSQTT_DEFAULT_LINE, k = ln === CSQTT_DEFAULT_LINE ? nid : nid + "@" + ln;
+      const m = running[k] = running[k] || { version: "", ids: [], node: nid, line: ln }; if (c.version) m.version = c.version; m.ids.push(c.iface); } }
     else if (wdtt) { for (const w of (snap.wdtt || [])) if (w && w.fork === fork && w.iface) { const m = running[nid] = running[nid] || { version: "", ids: [] }; if (w.version) m.version = w.version; m.ids.push(w.iface); } }
     else { for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fork) { const m = running[nid] = running[nid] || { version: "", ids: [] }; if (tp.version) m.version = tp.version; m.ids.push(tp.service); } }
   }
-  const nids = Object.keys(running).sort((a, b) => Store.byNode(a, b));
+  const nodeOf = k => (running[k] || {}).node || k;   // a row key is the node id — or "<node>@<line>" for a csqtt version other than 2.1
+  const nids = Object.keys(running).sort((a, b) => Store.byNode(nodeOf(a), nodeOf(b)) || a.localeCompare(b));
   const [vmap, setVmap] = useState({});   // nid -> versions[] (newest-first). ONLY the version list loads async.
   const [sel, setSel] = useState({});     // nid -> user override; absent = the actual hold (heldOf) — so the dropdown shows the right value on open, no "latest" flash
-  const heldOf = nid => (Store.turnHolds[nid] || {})[fork] || "";   // sync, from /api/state → correct current selection immediately
+  const heldOf = k => { const r = running[k] || {}; return (Store.turnHolds[nodeOf(k)] || {})[r.line && r.line !== CSQTT_DEFAULT_LINE ? fork + "@" + r.line : fork] || ""; };   // sync, from /api/state → correct current selection immediately
   const curSel = nid => (nid in sel ? sel[nid] : heldOf(nid));
   const key = nids.join(",");
   useEffect(() => { let live = true; (async () => {
     const out = {};
     for (const nid of nids) {
-      if (csqtt) { const r = await api.csqttVersions({ node: nid }); if (r && r.ok) out[nid] = r.data.versions || []; }   // one binary per node → keyed by node alone, no iface/fork
+      if (csqtt) { const r = await api.csqttVersions({ node: nodeOf(nid), iface: running[nid].ids[0] || "" }); if (r && r.ok) out[nid] = r.data.versions || []; }   // one binary per (node, version): the iface names the version
       else if (wdtt) { const r = await api.wdttVersions({ node: nid, iface: running[nid].ids[0] || "", fork }); if (r && r.ok) out[nid] = r.data.versions || []; }
       else { const r = await api.turnVersions({ owner, node: nid, fork }); if (r && r.ok) out[nid] = (r.data.tags || []).map(t => t.tag); }
     }
@@ -1424,8 +1427,8 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
     for (const nid of nids) {
       const want = curSel(nid), cur = heldOf(nid);
       if (want === cur) continue;
-      if (csqtt) { const r = await api.csqttVersion({ node: nid, iface: running[nid].ids[0] || "", ver: want }); if (r && !r.ok) errs.push(Store.nodeName(nid) + ": " + (srvText(r) || "failed")); }
-      if (wdtt) { const r = await api.wdttVersion({ node: nid, iface: running[nid].ids[0], ver: want }); if (r && !r.ok) errs.push(Store.nodeName(nid) + ": " + (srvText(r) || "failed")); }
+      if (csqtt) { const r = await api.csqttVersion({ node: nodeOf(nid), iface: running[nid].ids[0] || "", ver: want }); if (r && !r.ok) errs.push(Store.nodeName(nodeOf(nid)) + ": " + (srvText(r) || "failed")); }
+      else if (wdtt) { const r = await api.wdttVersion({ node: nid, iface: running[nid].ids[0], ver: want }); if (r && !r.ok) errs.push(Store.nodeName(nid) + ": " + (srvText(r) || "failed")); }   // `else`: a csqtt row fell through to the turn-proxy reinstall below, asking to reinstall "csqtt1" as a service
       else { for (const svc of running[nid].ids) { const r = await api.turnReinstall({ node: nid, service: svc, owner, ...(want ? { tag: want } : {}) }); if (r && !r.ok) { errs.push(Store.nodeName(nid) + ": " + (srvText(r) || "failed")); break; } } }
     }
     return errs;
@@ -1441,8 +1444,8 @@ export function ForkVersionPanel({ f, commitRef, onDirty }) {
     const mismatch = held && inst !== "—" && inst !== held;   // held at X but running Y → the node rejected/failed the swap
     return html`<div class="fvp-node" key=${nid}>
       <div class="fvp-head">
-        <span class="fvp-dot" style=${"background:" + (Store.nodeColor(nid) || "var(--ink)")}></span>
-        <b class="fvp-nm">${Store.nodeName(nid)}</b>
+        <span class="fvp-dot" style=${"background:" + (Store.nodeColor(nodeOf(nid)) || "var(--ink)")}></span>
+        <b class="fvp-nm">${Store.nodeName(nodeOf(nid))}</b>${csqtt && csqttLinesOn() ? html` <span class="faint">csqtt ${running[nid].line}</span>` : null}
         <span class="fvp-ver">${T("Installed")} <span class="mono">${inst}</span>${running[nid].ids.length > 1 ? html` · <span class="faint">${plural(running[nid].ids.length, "server")}</span>` : ""}</span>
         ${held ? html`<span class="tg" style=${"color:var(--" + (mismatch ? "dangling" : "warn") + ");background:color-mix(in srgb,var(--" + (mismatch ? "dangling" : "warn") + ") 16%,transparent)"}>${T("held · {v1}", { v1: held })}</span>` : null}
       </div>
@@ -1480,7 +1483,7 @@ export function TurnUpdateSheet({ node }) {
   const rows = (Store.turnUpdates || []).filter(r => !node || r.node === node);
   const [busy, setBusy] = useState("");          // "" | fork|node key | "*" for Update all
   const [done, setDone] = useState({});          // key -> "" (ok) | error text
-  const key = r => r.fork + "|" + r.node;
+  const key = r => r.fork + (r.line ? "@" + r.line : "") + "|" + r.node;   // a csqtt version other than 2.1 is its own update unit (`line`)
   // What restarts, named. A turn-proxy's id is its service (vk-turn-proxy-<fork>-56006); the fork half just
   // repeats the row's own label, so it shows as ":56006" — the same name:port convention turn-catalog.js
   // documents. WDTT and csqtt ids are already the interface name.
@@ -1508,15 +1511,15 @@ export function TurnUpdateSheet({ node }) {
   // drops to the node line when they do not, so a shared fact is stated once and a varying one stays visible.
   const groups = [];
   for (const r of rows) {
-    let g = groups.find(x => x.fork === r.fork);
-    if (!g) groups.push(g = { fork: r.fork, latest: r.latest, rows: [] });
+    let g = groups.find(x => x.fork === r.fork && x.line === r.line);
+    if (!g) groups.push(g = { fork: r.fork, line: r.line, latest: r.latest, rows: [] });
     g.rows.push(r);
   }
   // Ordered by what is READ, not by the key. The server sorts rows by fork id, which was the same string
   // until labels arrived; now "qwdtt" prints as SpaceNeuroX and "wdttplus" as Ivan4537, so an id-ordered list
   // looks shuffled — uppercase ids first, then authors in no visible order. Sorting on the rendered label puts
   // the column back in reading order and keeps one author's servers adjacent (amurcanov · WDTT, · CSQTT).
-  groups.sort((a, b) => forkPickLabel(a.fork).localeCompare(forkPickLabel(b.fork), undefined, { sensitivity: "base" }));
+  groups.sort((a, b) => forkPickLabel(a.fork).localeCompare(forkPickLabel(b.fork), undefined, { sensitivity: "base" }) || String(a.line || "").localeCompare(String(b.line || "")));
   for (const g of groups) {
     g.same = g.rows.every(r => r.installed === g.rows[0].installed) ? g.rows[0].installed : "";
     g.pend = g.rows.filter(r => done[key(r)] === undefined);   // the fork button disappears once its last node is done
@@ -1546,14 +1549,14 @@ export function TurnUpdateSheet({ node }) {
     <p class="hint" style="margin:2px 0 14px">${node
       ? Trich("Each update swaps the server's binary and *restarts it*, which briefly drops that server's clients. This one covers {v1} on {v2} — pick a quiet moment, or update them one at a time.", { v1: plural(servers, "server"), v2: Store.nodeName(node) })
       : Trich("Each update swaps the server's binary and *restarts it*, which briefly drops that server's clients. This one covers {v1} across {v2} — pick a quiet moment, or update them one at a time.", { v1: plural(servers, "server"), v2: plural(nodes, "prep|node") })}</p>
-    <div class="fvp">${groups.map(g => html`<div class="fvp-node" key=${g.fork} style=${"--tfc:" + turnColor(g.fork)}>
+    <div class="fvp">${groups.map(g => html`<div class="fvp-node" key=${g.fork + (g.line || "")} style=${"--tfc:" + turnColor(g.fork)}>
       <div class="fvp-head">
         <span class="fvp-dot" style="background:var(--tfc)"></span>
         ${/* author · product, never the raw id: "csqtt" is the INTERNAL key for amurcanov's csqtt server, and
               two of amurcanov's forks can be behind at once — one WDTT, one CSQTT. The id also mislabels
               wdttplus (Ivan4537), xxcipherx (XXcipherX) and qwdtt (SpaceNeuroX). forkPickLabel is the panel's
               one lookup for exactly this; see the note above forkLabel in turn-catalog.js. */""}
-        <b class="fvp-nm" style="color:var(--tfc)">${forkPickLabel(g.fork)}</b>
+        <b class="fvp-nm" style="color:var(--tfc)">${forkPickLabel(g.fork)}${g.line ? " " + g.line : ""}</b>
         ${g.rows.length === 1
           ? html`<span class="fvp-ver">${T("on")} ${Store.nodeName(g.rows[0].node)}<span class="verarrow">·</span>${pair(g.rows[0].installed, g.latest)}</span>`
           : html`<span class="fvp-ver">${g.same ? pair(g.same, g.latest) : html`<span class="verarrow">→</span><span class="mono vernew">${g.latest}</span>`}</span>`}
@@ -1563,7 +1566,7 @@ export function TurnUpdateSheet({ node }) {
             // Names its own scope. The footer one column away says "Update all" and means the whole fleet — two
             // identical labels with different blast radii is exactly the button an operator presses at 2am and
             // regrets. This one counts the nodes it will restart.
-            : html`<button class="btn btn-mini" disabled=${!!busy} onClick=${() => run(g.pend, "g:" + g.fork)}>${busy === "g:" + g.fork ? T("Updating…") : T("Update {v1}", { v1: plural(g.pend.length, "node") })}</button>`}
+            : html`<button class="btn btn-mini" disabled=${!!busy} onClick=${() => run(g.pend, "g:" + g.fork + (g.line || ""))}>${busy === "g:" + g.fork + (g.line || "") ? T("Updating…") : T("Update {v1}", { v1: plural(g.pend.length, "node") })}</button>`}
       </div>
       ${g.rows.length === 1
         ? html`<div class="tus-ids">${(g.rows[0].ids || []).map(id => html`<span class="iftype tus-id" key=${id}>${idLabel(g.rows[0].kind, id)}</span>`)}</div>`
@@ -2366,6 +2369,48 @@ export function EditWdttSheet({ node, iface }) {
 //    simpler — no fork/wg-port/vault. Users attach directly (keyless, panel-owned csqtt_password) and get a
 //    csqtt:// link (turn-artifacts.js csqttArtifact). ────────────────────────────────────────────────────────────
 export const CSQTT_COLOR = "#F97316";
+
+// ── csqtt VERSIONS (docs/CSQTT-LINES-PLAN.md) — which csqtt a server runs (2.1, 2.5 …), switchable both ways while
+//    its users stay. Not the build row in "Version, rollback & server defaults": that picks a build WITHIN a version.
+//    The panel offers the versions (Store.csqttLines); with one on offer there is no control anywhere. A node says
+//    which it can run (snap.csqtt_lines) — an older one can run only 2.1, and the panel refuses the rest there.
+export const CSQTT_DEFAULT_LINE = "2.1";
+export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;
+export const csqttLinesOn = () => (Store.csqttLines || []).length > 1;
+const csqttNodeLines = node => (Store.stats[node] || {}).csqtt_lines || [CSQTT_DEFAULT_LINE];
+// What each version means to the people on it. 2.5's note stands until P0 measures which client apps reach it.
+const csqttLineNote = l => l === CSQTT_DEFAULT_LINE ? T("Stable. Every client app connects, iPhone included.")
+  : T("New and less tested. The iPhone app (Anton48) may not connect to it.");
+const csqttLineIos = l => l === CSQTT_DEFAULT_LINE;
+// The switch as the node reports it: `want` = what the panel asked, `run` = what the server runs, `failed` = why the
+// node put it back (it reverts a version that will not start, and waits for a Restart or a new build to try again).
+export function csqttSwitchState(node, iface) {
+  const cfg = (((Store.nodes || []).find(n => n.id === node) || {}).csqtt_cfg || {})[iface] || {};
+  const c = ((Store.stats[node] || {}).csqtt || []).filter(Boolean).find(x => x.iface === iface) || {};
+  const want = csqttLineOf(cfg), run = c.line || CSQTT_DEFAULT_LINE;
+  const failed = c.line_failed && c.line_failed.line === want ? c.line_failed : null;
+  return { want, run, failed, switching: want !== run && !failed && !!c.iface };
+}
+export function CsqttVersionField({ node, value, onChange }) {
+  if (!csqttLinesOn()) return null;
+  const can = csqttNodeLines(node);
+  const opts = (Store.csqttLines || []).map(l => ({ value: l.id, label: "csqtt " + l.id,
+    ...(l.id !== value && !can.includes(l.id) ? { refuse: T("Update this node to run csqtt {v1}.", { v1: l.id }) } : {}) }));
+  const old = !can.some(l => l !== CSQTT_DEFAULT_LINE);
+  return html`<div class="field"><label>${T("Version")}</label>
+    <${Dropdown} value=${value} onChange=${onChange} options=${opts} ariaLabel=${T("Version")}/>
+    <div class="hint">${old ? T("Update this node to run another csqtt version.") : csqttLineNote(value)}</div></div>`;
+}
+// Ask before a switch: the server restarts and every user on it reconnects once. Same configs, same passwords.
+function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
+  const n = (Store.recon.peers || []).filter(p => p.targets.some(t => t.node === node && t.iface === iface)).length;
+  pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: to })} confirmLabel=${T("Switch to {v1}", { v1: to })} warn=${!csqttLineIos(to)}
+    body=${n ? T("The server restarts on csqtt {v1} and its {v2} reconnect once. Their configs stay the same. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
+      : T("The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: to, v2: from })}
+    note=${csqttLineIos(to) ? null : html`<p class="hint">${T("iPhone users on the Anton48 app may lose access until you switch back.")}</p>`}
+    onConfirm=${onConfirm}/>`);
+}
+
 export function CsqttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }) {
   const used = (() => {
     const ifaces = new Set(), subs = new Set(), ports = new Set();
@@ -2380,11 +2425,12 @@ export function CsqttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }
   const [iface, setIface] = useState(nextIface);
   const [subnet, setSubnet] = useState(nextSubnet);
   const [adv, setAdv] = useState(false);
+  const [line, setLine] = useState(CSQTT_DEFAULT_LINE);   // new servers start on 2.1 (plan §8 Q1)
   saveRef.current = async (lhost, lport, pin) => {
     const _ne = turnIfaceNameError(node, iface, "csqtt"); if (_ne) return fail(_ne);
     if (!/^\d{1,3}(\.\d{1,3}){3}\/24$/.test(subnet.trim())) return fail(T("Subnet must be an IPv4 /24 CIDR (e.g. 10.66.67.1/24)."));
     setBusy(true); setMsg({ k: "work", t: T("creating csqtt server… (the node installs it on its next sync)") });
-    const r = await api.csqttSet({ node, iface: iface.trim(), tun_addr: subnet.trim(), listen: lhost + ":" + lport, max_passwords: 500, stopped: false, ...(pin ? { bind_ip: pin } : {}) });
+    const r = await api.csqttSet({ node, iface: iface.trim(), tun_addr: subnet.trim(), listen: lhost + ":" + lport, max_passwords: 500, stopped: false, ...(pin ? { bind_ip: pin } : {}), ...(line !== CSQTT_DEFAULT_LINE ? { line } : {}) });
     if (!r.ok) return fail(srvText(r) || T("Request failed."));
     closeModal(); Store.apply(); await Store.poll();
     toast(T("csqtt server requested — the node installs it on its next sync. Add users from Peers."), "ok");
@@ -2397,6 +2443,7 @@ export function CsqttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }
       </div>
       <div class="hint">${T("csqtt owns its own raw-IP TUN interface — users attach to it directly (no forwards-to). It mints each user's address on connect; add + manage users from Peers.")}</div>
     </div>
+    <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
     <${Disclosure} title=${T("Advanced — built-in interface")} open=${adv} onToggle=${() => setAdv(a => !a)}>
       <div class="field"><label>${T("col|Interface")}</label><input value=${iface} onInput=${e => setIface(e.target.value)} placeholder="csqtt1" autocomplete="off"/></div>
       <div class="field"><label>${T("Tunnel subnet")}</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.66.67.1/24" autocomplete="off"/>
@@ -2416,9 +2463,12 @@ export function CsqttCard({ node, c, reorder }) {
   const _opTag = opTag(node + "|" + c.iface);
   const deleting = !!Store.ifaceGone[node + "|" + c.iface];
   const cstopped = !!((nrec.csqtt_cfg || {})[c.iface] || {}).stopped;   // operator-stopped, same as the WDTT card
+  const sw = csqttSwitchState(node, c.iface);
   const tag = deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
     : converting ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
     : _opTag ? _opTag
+    : sw.switching ? html`<${StatusTag} cls="tg tg-pending" icon="clock" label=${T("tag|switching")} title=${T("Moving to csqtt {v1} on the node's next sync", { v1: sw.want })}/>`
+    : sw.failed ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|switch failed")} title=${T("Switch to csqtt {v1} failed", { v1: sw.want })} msg=${sw.failed.why || ""}/>`
     : active ? null
     : cstopped ? html`<span class="tg-off" title=${T("Stopped from the panel — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
     : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("Installing / starting on the node")}/>`;
@@ -2434,6 +2484,7 @@ export function CsqttCard({ node, c, reorder }) {
     </div>
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">${T("CSQTT fork")}</span><span class="r">amurcanov</span></div>
+      ${csqttLinesOn() ? html`<div class="ifrow"><span class="l">${T("Version")}</span><span class="r">csqtt ${sw.run}</span></div>` : null}
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
       <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r"><a class="tg tg-csqtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(c.iface)} onClick=${e => e.stopPropagation()}>${c.iface}</a></span></div>
     </div></div>`;
@@ -2471,23 +2522,29 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
   const pinDirty = pin !== pinCur;
-  const anyDirty = endpointDirty || titleDirty || paramsDirty || pinDirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
+  const lineCur = csqttLineOf(cfg);
+  const [line, setLine] = useState(lineCur);   // the csqtt version — a switch, confirmed before it goes
+  const lineDirty = line !== lineCur;
+  const sw = csqttSwitchState(node, iface);
+  const anyDirty = endpointDirty || titleDirty || paramsDirty || pinDirty || lineDirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
   const wperr = portErrMsg(node, port, [lport]);
   const doSave = () => {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], bind_ip: pin, ...egressBody(egressInit(cfg)) })
+    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], bind_ip: pin, ...(lineDirty ? { line } : {}), ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
   const save = () => {
     if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: T("Listen port must be a number.") });
-    if (endpointDirty) {
-      pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
+    // A version switch asks first, and carries any other change with it. Going back to what already runs (a switch
+    // that failed, or one not landed yet) needs no question: nothing restarts that is not already restarting.
+    const askEndpoint = () => pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
-      return;
-    }
+    if (lineDirty && line !== sw.run) { confirmCsqttSwitch(node, iface, sw.run, line, endpointDirty ? askEndpoint : doSave); return; }
+    if (endpointDirty) { askEndpoint(); return; }
+    if (lineDirty) { doSave(); return; }
     if (paramsDirty || pinDirty) { doSave(); return; }
     closeModal(); pushOptTitle("c|" + node + "|" + iface, title.trim());
     api.csqttSet({ node, iface, listen: oldListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
@@ -2512,6 +2569,8 @@ export function CsqttManageSheet({ node, c: c0 }) {
     </div>
     <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
     <${ListenNotice} st=${lst}/>
+    <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
+    ${sw.failed && !lineDirty ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Switching to csqtt {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.", { v1: sw.want, v2: sw.failed.why || T("it did not start"), v3: sw.run })}</span></div>` : null}
     <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
       <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this csqtt server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.")}</p>

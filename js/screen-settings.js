@@ -2013,10 +2013,14 @@ export function PanelSettingsScreen() {
   // forks own their interface so they live in snap.wdtt / snap.csqtt (keyed by the instance's `fork`), and don't
   // report a binary version yet → show "installed" so a deployed one reads as used, not T("not yet used").
   // csqtt was missing here, so a node running two csqtt servers still showed that fork as never used.
+  // This row is csqtt 2.1's — the version this panel's check compares against. A server on another csqtt version
+  // (docs/CSQTT-LINES-PLAN.md) has its own build, latest and hold: it updates from the header badge and the fork's
+  // "Version, rollback" panel, and must not read here as a 2.1 server behind 2.1's newest build.
+  const csqttOtherLine = w => !!(w && w.kind === "csqtt" && w.line && w.line !== "2.1");
   const forkVersions = fid => { const v = new Set();
     for (const snap of Object.values(Store.stats || {})) {
       for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version);
-      for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) if (w && w.fork === fid) v.add(w.version || "installed");   // i18n-keys
+      for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) if (w && w.fork === fid && !csqttOtherLine(w)) v.add(w.version || "installed");   // i18n-keys
     }
     return [...v]; };
   // per-NODE view of a fork for the hover bubble: one row per node carrying its version + whether it's mid-update
@@ -2034,7 +2038,7 @@ export function PanelSettingsScreen() {
         m[nid] = cur;
       }
       for (const w of [...(snap.wdtt || []), ...(snap.csqtt || [])]) {   // self-contained kinds (keyed by fork, usually no version string)
-        if (!w || w.fork !== fid) continue;
+        if (!w || w.fork !== fid || csqttOtherLine(w)) continue;
         const cur = m[nid] || { version: "", installing: false, updatePending: false };
         cur.version = w.version || cur.version || "installed";   // i18n-keys
         if (w.active && w.active !== "active") cur.installing = true;   // starting / awaiting restore
@@ -2092,7 +2096,7 @@ export function PanelSettingsScreen() {
     const fork = turnForkList().find(x => x.id === fid) || {};
     if (fork.kind === "csqtt") {   // csqtt: one binary per NODE — release each node's hold and it takes the current build
       const all = [];
-      for (const [nid, snap] of Object.entries(Store.stats || {})) for (const c of (snap.csqtt || [])) if (c && c.iface) all.push({ node: nid, iface: c.iface });
+      for (const [nid, snap] of Object.entries(Store.stats || {})) for (const c of (snap.csqtt || [])) if (c && c.iface && !csqttOtherLine(c)) all.push({ node: nid, iface: c.iface });
       const ct = all.filter(t => canTurnAct(t.node));
       const cskip = new Set(all.filter(t => !canTurnAct(t.node)).map(t => t.node)).size;
       if (!ct.length) { skipNote(cskip); return; }

@@ -32,7 +32,7 @@ import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, DropsFigur
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
-         enabledTurnForks, useListenState, ListenHint, ListenNotice, ListenOnField, turnDialFallback } from "./turn.js";
+         enabledTurnForks, useListenState, ListenHint, ListenNotice, ListenOnField, turnDialFallback, CsqttVersionField, CSQTT_DEFAULT_LINE } from "./turn.js";
 import { PeerGrid, NodeRail } from "./grids.js";
 import { openCreatePeer } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -1224,6 +1224,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const _csqttForks = enabledTurnForks().filter(f => f.kind === "csqtt");
   const csqttOk = turnEnabled() && nrec.turn_manage && nrec.turn_arch_ok !== false && _csqttForks.length > 0;
   const [cfork, setCfork] = useState((_csqttForks[0] || {}).id || "csqtt");
+  const [cline, setCline] = useState(CSQTT_DEFAULT_LINE);   // csqtt version — new servers start on 2.1 (docs/CSQTT-LINES-PLAN.md §8)
   const isCsqtt = proto === "csqtt";
   const _idf = (Store.panelSettings || {}).interface_defaults || {};   // panel-wide new-interface defaults
   // `pre.dns` / `pre.keepalive` — a RECREATE knows what the interface was serving; only a fresh create takes
@@ -1344,7 +1345,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
       const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.csqttSet({ node, iface: nm, tun_addr: subnetServerAddr(subnet.trim()), listen: _lHost + ":" + (port.trim() || "46000"),
-        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...(pin ? { bind_ip: pin } : {}), ...egressBody(eg) });
+        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...(pin ? { bind_ip: pin } : {}), ...(cline !== CSQTT_DEFAULT_LINE ? { line: cline } : {}), ...egressBody(eg) });
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail(T("Interface name is required (no spaces or /)."));
@@ -1452,7 +1453,8 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       <div class="row2">
         <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${cfork} onChange=${v => setCfork(v)} options=${forkOpts(_csqttForks)} ariaLabel=${T("Server fork")}/><div class="hint">${T("Which csqtt server implements this instance")}</div></div>
         <div class="field"><label>${T("Max users")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${maxPw} onInput=${e => setMaxPw(e.target.value)} placeholder="500"/><div class="hint">${T("Cap on simultaneous access passwords · blank = 500")}</div></div>
-      </div>` : null}
+      </div>
+      <${CsqttVersionField} node=${node} value=${cline} onChange=${setCline}/>` : null}
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — after creating you must publish this port in the node's `docker-compose.yml` ({ports}) and `up -d`, or clients can't reach it. (A host-networking node needs none of this.)", { ports: 'ports: "' + (port || "PORT") + ":" + (port || "PORT") + '/udp"' })}</span></div>` : null}
       ${isWdtt ? html`<div class="row2">
         <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} ariaLabel=${T("Server fork")}

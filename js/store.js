@@ -238,7 +238,7 @@ export const api = {
   wdttRecreateFresh(b) { return this.post("/api/wdtt/recreate-fresh", b); }, // abandon the vaulted identity → mint a fresh key (users re-import)
   wdttVersions(q) { return this.get("/api/wdtt/versions?node=" + encodeURIComponent(q.node || "") + "&iface=" + encodeURIComponent(q.iface || "") + "&fork=" + encodeURIComponent(q.fork || "")); },   // our published builds (rollback targets) + any hold
   wdttVersion(b) { return this.post("/api/wdtt/version", b); },              // roll a WDTT instance to a build (ver) or release the hold (ver="")
-  csqttVersions(q) { return this.get("/api/csqtt/versions?node=" + encodeURIComponent(q.node || "")); },   // our published csqtt builds (rollback targets) + any hold. One binary per node → no fork/iface in the key
+  csqttVersions(q) { return this.get("/api/csqtt/versions?node=" + encodeURIComponent(q.node || "") + (q.iface ? "&iface=" + encodeURIComponent(q.iface) : "")); },   // our published csqtt builds (rollback targets) + any hold — per (node, version): the iface names the version, none = 2.1
   csqttVersion(b) { return this.post("/api/csqtt/version", b); },            // roll a node's csqtt to a build (ver) or release the hold (ver="")
   csqttSet(b) { return this.post("/api/csqtt/set", b); },                    // create/update a csqtt instance on a node (declarative)
   containerAdopt(b) { return this.post("/api/container/adopt", b); },   // take a wg/awg server over from another container (Amnezia)
@@ -327,6 +327,7 @@ export const Store = {
     this.datapath = d.datapath || {};              // THIS host's kernel datapath health (awg module loadable?) → healable "Fix" issue
     this.turnCatalog = d.turn_catalog || this.turnCatalog || null;   // single-source turn fork/client catalog (server-owned); turnForks() falls back to TURN_FORKS_FALLBACK when absent (mixed-version safe)
     this.turnHolds = d.turn_holds || this.turnHolds || {};   // {node: {fork: held_version}} → fork-row "held" flag
+    this.csqttLines = d.csqtt_lines || this.csqttLines || [];   // [{id, current}] csqtt versions on offer (docs/CSQTT-LINES-PLAN.md) — one entry = no Version control anywhere
     this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
     this.panelMigrateRevertable = !!d.panel_migrate_revertable;   // a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move" (server auto-clears at grace end)
     this.panelMigratePrev = d.panel_migrate_prev || null;         // the OLD address to cancel back to (only while revertable)

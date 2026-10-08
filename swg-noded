@@ -15996,6 +15996,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         snap["udp_ports"] = NODE_UDP_PORTS
     snap["wdtt"] = wdtt_snapshot()                    # WDTT instances: active + server pubkey + per-password device/traffic (read-back for the panel; no privkeys)
     snap["csqtt"] = csqtt_snapshot()                  # csqtt instances (raw-TUN): active + per-password device/traffic + byte-delta online (no privkeys)
+    snap["csqtt_lines"] = list(CSQTT_KNOWN_LINES)    # the csqtt lines this noded can run — the panel sends no other line here (docs/CSQTT-LINES-PLAN.md G1)
     # ⚠️ An instance WE hold that the panel does not claim. Nothing will ever start it: the node only runs
     # what the panel desires, and removals are explicit — so it sits installed, stopped and ownerless, while
     # the card reads "starting" for ever because our own record says it was not deliberately stopped. Seen on
@@ -21034,27 +21035,50 @@ def wdtt_snapshot():
 # ── csqtt node lifecycle (parallel to reconcile_wdtt; bare-metal systemd) ─────────────────────────────────────
 def _csqtt_svc(iface): return "swg-csqtt-" + iface
 def _csqtt_dir(iface): return CSQTT_ROOT + "/" + iface
-def _csqtt_bin_shared(): return CSQTT_BIN_DIR + "/" + _turn_arch() + "/csqtt-server"
-def _csqtt_ver_path():      # the INSTALLED build version, stamped beside the shared binary
-    return os.path.dirname(_csqtt_bin_shared()) + "/version.txt"
-def _csqtt_installed_ver():
+# csqtt version LINES (docs/CSQTT-LINES-PLAN.md): each instance runs ONE line (2.1, 2.5 …) and can be switched
+# between them, both ways, keeping its users. A line is a binary SLOT: 2.1 keeps the path every node already has
+# (no migration — a 2.1-only node is byte-identical), any other line gets .bin/<arch>/<line>/. The instance's
+# `<cfgdir>/server` symlink says which slot it runs — the unit and the docker argv exec the symlink, so a switch
+# is a repoint + one restart. The line is a path component: _csqtt_line_ok gates it before any path is built.
+CSQTT_DEFAULT_LINE = "2.1"
+CSQTT_KNOWN_LINES = ("2.1", "2.5")               # what this noded can run — advertised as snap["csqtt_lines"]
+_CSQTT_LINE_RE = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}$")
+def _csqtt_line_ok(line):
+    return bool(_CSQTT_LINE_RE.match(line or "")) and line in CSQTT_KNOWN_LINES
+def _csqtt_bin_shared(line=CSQTT_DEFAULT_LINE):
+    base = CSQTT_BIN_DIR + "/" + _turn_arch()
+    return base + "/csqtt-server" if line == CSQTT_DEFAULT_LINE else base + "/" + line + "/csqtt-server"
+def _csqtt_ver_path(line=CSQTT_DEFAULT_LINE):   # the INSTALLED build version, stamped beside the line's binary
+    return os.path.dirname(_csqtt_bin_shared(line)) + "/version.txt"
+def _csqtt_installed_ver(line=CSQTT_DEFAULT_LINE):
     """What is actually on disk — read from the stamp, never from the panel's desired `ver`. The snapshot used to
     echo inst["ver"] back, which reports whatever the panel ASKED for even when the node never fetched it: a fleet
     would claim an upgrade that never happened. This is the observation half."""
     try:
-        with open(_csqtt_ver_path()) as f:
+        with open(_csqtt_ver_path(line)) as f:
             return f.read().strip()[:40]
     except Exception:
         return ""
-def _csqtt_write_ver(ver):
+def _csqtt_write_ver(ver, line=CSQTT_DEFAULT_LINE):
     with contextlib.suppress(Exception):
-        p = _csqtt_ver_path(); os.makedirs(os.path.dirname(p), exist_ok=True)
+        p = _csqtt_ver_path(line); os.makedirs(os.path.dirname(p), exist_ok=True)
         tmp = p + ".tmp"
         with open(tmp, "w") as f:
             f.write((ver or "").strip())
         os.replace(tmp, p)
-def _csqtt_ifaces(want):    # every desired iface — one shared binary, so a version swap restarts them all
-    return list((want or {}).keys())
+def _csqtt_running_line(iface):
+    """The line this instance RUNS, read from where its `server` symlink points — "" when there is no link, or it
+    points at no known slot. The record's `line` is the last COMMITTED line; the two differ only mid-switch."""
+    try:
+        tgt = os.readlink(_csqtt_dir(iface) + "/server")
+    except OSError:
+        return ""
+    return next((l for l in CSQTT_KNOWN_LINES if tgt == _csqtt_bin_shared(l)), "")
+def _csqtt_line_of(inst):  # the committed line of a node-record instance (absent = 2.1, every pre-lines instance)
+    l = ((inst or {}).get("line") or "").strip()
+    return l if _csqtt_line_ok(l) else CSQTT_DEFAULT_LINE
+def _csqtt_ifaces(want, line=CSQTT_DEFAULT_LINE):   # the desired ifaces RUNNING one line — they share its binary, so a build swap restarts them all
+    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]
 # csqtt ships one implementation today; the instance still records WHICH fork, so a second one can never be
 # silently substituted the way an unknown WDTT fork used to be (see _wdtt_fork_unknown).
 CSQTT_FORK_OWNER = {"csqtt": "amurcanov/csqtt"}
@@ -21217,7 +21241,7 @@ def _swg_release_get(tag, arch, dest, want, what):
         err = (r.stderr or "").strip().replace("\n", " ")[:120]
     return (False, "GitHub was unreachable from this node" + ((": " + err) if err else ""))
 
-def _csqtt_fetch_bin(inst, binshared):
+def _csqtt_fetch_bin(inst, binshared, line=CSQTT_DEFAULT_LINE):
     """Put the csqtt server binary at `binshared`. '' on success, else WHY not — naming the actual cause.
 
     Panel mirror FIRST (the node already holds an outbound channel to the panel, and reaches it on boxes where
@@ -21235,11 +21259,11 @@ def _csqtt_fetch_bin(inst, binshared):
     ver = (inst.get("ver") or "").strip()
     want = (inst.get("sha256") or "").strip()
     if _csqtt_panel_fetch(binshared, want, ver or "csqtt") and os.path.exists(binshared):
-        _csqtt_write_ver(ver)      # stamp what we actually installed — the version board reads this, not the request
+        _csqtt_write_ver(ver, line)   # stamp what we actually installed — the version board reads this, not the request
         return ""
     okd, why = _swg_release_get(("csqtt-" + ver) if ver else "", arch, binshared, want, "csqtt")
     if okd:
-        _csqtt_write_ver(ver)
+        _csqtt_write_ver(ver, line)
         return ""
     return ("couldn't fetch the csqtt binary for " + arch + (" " + ver if ver else "")
             + " — the panel's mirror had none, and " + why
@@ -21252,20 +21276,21 @@ def _csqtt_panel_fetch(dest, want_sha, tag="csqtt"):
         return _turn_panel_fetch(CSQTT_OWNER, tag or "csqtt", _turn_arch(), dest, want_sha)
     return False
 
-def _csqtt_update_binary(inst, ver, ifaces):
-    """Swap the shared csqtt binary to a different published build. Re-fetch (atomic replace — a running process
+def _csqtt_update_binary(inst, ver, ifaces, line=CSQTT_DEFAULT_LINE):
+    """Swap one LINE's csqtt binary to a different published build. Re-fetch (atomic replace — a running process
     keeps the old inode), stamp the version, then restart every instance so they exec the new one. Mirrors
-    _wdtt_update_binary; csqtt has ONE binary for the whole node, so every iface restarts together. '' on success.
+    _wdtt_update_binary; csqtt has ONE binary per line on a node, so every iface on that line restarts together
+    (`ifaces` — _csqtt_ifaces(want, line)); another line's servers are not touched. '' on success.
 
     Without this, publishing a new CSQTT_BUILDS moved nothing: both _csqtt_fetch_bin call sites are guarded by
     `if not os.path.exists(binshared)`, so a node that already had a binary kept its old one for ever and only a
     fresh install ever saw the new build."""
-    binshared = _csqtt_bin_shared()
-    _e = _csqtt_fetch_bin(dict(inst, ver=ver), binshared)
+    binshared = _csqtt_bin_shared(line)
+    _e = _csqtt_fetch_bin(dict(inst, ver=ver), binshared, line)
     if _e or not os.path.exists(binshared):
         return _e or ("csqtt binary missing after a reportedly successful fetch — check free space on "
                       + os.path.dirname(binshared))
-    _csqtt_write_ver(ver)
+    _csqtt_write_ver(ver, line)
     if NODE_KIND == "docker":                     # container: restart each supervised child so it execs the new binary
         with contextlib.suppress(Exception): os.chmod(binshared, 0o755)
         insts = _csqtt_load(); err = ""
@@ -21513,16 +21538,107 @@ def _csqtt_verify(iface):
             return ""
     return "service did not become active — " + (log_no_detail() or "check `swg-logs turn " + iface + "`")
 
+# ── line switch (docs/CSQTT-LINES-PLAN.md §4.2) ────────────────────────────────────────────────────────────────
+# The store a line last left behind, one copy per line, so a switch the new line cannot start reverts onto the
+# store the old line wrote — not onto one the new line may have migrated. The users themselves never depend on
+# it: the panel owns every password and desired.json re-creates them on whichever line runs.
+_CSQTT_STORE_FILES = ("csqtt.db", "csqtt.db-wal", "csqtt.db-shm", "passwords.json", "passwords.json.imported")
+def _csqtt_store_bak(cfgdir, line): return cfgdir + "/.store-" + line + ".bak"
+def _csqtt_store_copy(cfgdir, line):
+    """The store as `line` leaves it → its .bak dir (replacing the older copy). Run with the server STOPPED: a WAL
+    store copied under a live writer is not a store."""
+    bak = _csqtt_store_bak(cfgdir, line)
+    shutil.rmtree(bak, ignore_errors=True); os.makedirs(bak, exist_ok=True)
+    for n in _CSQTT_STORE_FILES:
+        if os.path.exists(cfgdir + "/" + n):
+            shutil.copy2(cfgdir + "/" + n, bak + "/" + n)
+def _csqtt_store_restore(cfgdir, line):
+    """Put `line`'s copy back — the files the other line wrote go first, so its -wal can never replay onto it."""
+    bak = _csqtt_store_bak(cfgdir, line)
+    if not os.path.isdir(bak):
+        return
+    for n in _CSQTT_STORE_FILES:
+        with contextlib.suppress(FileNotFoundError): os.remove(cfgdir + "/" + n)
+    for n in _CSQTT_STORE_FILES:
+        if os.path.exists(bak + "/" + n):
+            shutil.copy2(bak + "/" + n, cfgdir + "/" + n)
+def _csqtt_relink(binp, target):   # atomic repoint: a crash leaves the old link or the new one, never none
+    tmp = binp + ".swap"
+    with contextlib.suppress(FileNotFoundError): os.remove(tmp)
+    os.symlink(target, tmp); os.replace(tmp, binp)
+def _csqtt_stop_one(iface):
+    if NODE_KIND == "docker":
+        _csqtt_docker_stop(iface)
+    else:
+        host_sh("systemctl stop " + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
+def _csqtt_start_one(inst):
+    if NODE_KIND == "docker":
+        return _csqtt_docker_start(inst)
+    host_sh(sc_enable_now(_csqtt_svc(inst["iface"])) + " >/dev/null 2>&1")
+    return ""
+def _csqtt_main_pid(iface):
+    if NODE_KIND == "docker":
+        return _csqtt_docker_pid(iface) or 0
+    out = (host_sh("systemctl show -p MainPID --value " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip()
+    return int(out) if out.isdigit() else 0
+def _csqtt_verify_stable(iface):
+    """_csqtt_verify, and then STILL the same process 5 s later, with its TUN up. _csqtt_verify alone is not enough
+    to judge a switch: a Type=simple unit reads "active" the instant it is exec'd, so a build that dies a second
+    later passes it — and the auto-revert, which exists for exactly that build, would never fire."""
+    err = _csqtt_verify(iface)
+    if err:
+        return err
+    pid = _csqtt_main_pid(iface)
+    time.sleep(5)
+    if not pid or _csqtt_main_pid(iface) != pid:
+        return "the server exited within seconds of starting — " + (log_no_detail() or "check `swg-logs turn " + iface + "`")
+    if not os.path.isdir("/sys/class/net/" + iface):
+        return "the server is running but never brought up its tunnel " + iface
+    return ""
+def _csqtt_switch_line(inst, frm, to, ver):
+    """Move one instance from line `frm` to line `to`. Returns (err, memo): ("", False) switched; (err, False) not
+    switched and nothing changed (a fetch that may work next sync); (err, True) the new line would not run, the
+    instance is back on `frm` with `frm`'s store, and the node must not retry this (line, build) on its own.
+
+    Every step is keyed on where the symlink points, so a noded crash anywhere resumes on the next pass — and the
+    copy is skipped once the link is already on `to`, so a resume never overwrites `frm`'s copy with a store the
+    new line may already have migrated."""
+    iface = inst["iface"]; cfgdir = _csqtt_dir(iface); binp = cfgdir + "/server"
+    if not ver:
+        return ("the panel named no csqtt " + to + " build to run", False)
+    tgt = _csqtt_bin_shared(to)
+    if not os.path.exists(tgt) or _csqtt_installed_ver(to) != ver:   # the wanted build rides the switch: one restart, not two
+        e = _csqtt_fetch_bin(dict(inst, ver=ver), tgt, to)
+        if e or not os.path.exists(tgt):
+            return (e or "csqtt " + to + " binary missing after a reportedly successful fetch", False)
+        with contextlib.suppress(Exception): os.chmod(tgt, 0o755)
+    resumed = _csqtt_running_line(iface) == to
+    _csqtt_stop_one(iface)
+    if not resumed:
+        _csqtt_store_copy(cfgdir, frm)
+        _csqtt_relink(binp, tgt)
+    if inst.get("stopped"):
+        return ("", False)                    # deliberately down: it starts on the new line when it is started
+    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify_stable(iface)
+    if not err:
+        return ("", False)
+    log(LOG_WARNING, "csqtt %s: line %s (%s) would not run — back on %s: %s", iface, to, ver, frm, err)
+    _csqtt_stop_one(iface)
+    _csqtt_store_restore(cfgdir, frm)
+    _csqtt_relink(binp, _csqtt_bin_shared(frm))
+    werr = _csqtt_start_one(dict(inst, line=frm)) or _csqtt_verify(iface)
+    return (err + ("" if not werr else " — and back on " + frm + " it did not come up either: " + werr), True)
+
 def _csqtt_install(inst):
     _unk = _csqtt_fork_unknown(inst)
     if _unk:
         return ("this node doesn't know the csqtt fork '" + _unk + "' — its swg-noded is older than the panel. "
                 "Update the node (its page offers \"update node to …\"), then this server installs on the next sync. "
                 "Known here: " + ", ".join(sorted(CSQTT_FORK_OWNER)) + ".")
-    iface = inst["iface"]; cfgdir = _csqtt_dir(iface)
-    binshared = _csqtt_bin_shared(); binp = cfgdir + "/server"
+    iface = inst["iface"]; cfgdir = _csqtt_dir(iface); line = _csqtt_line_of(inst)
+    binshared = _csqtt_bin_shared(line); binp = cfgdir + "/server"
     if not os.path.exists(binshared):
-        _err = _csqtt_fetch_bin(inst, binshared)          # panel mirror, then GitHub-direct + operator mirrors
+        _err = _csqtt_fetch_bin(inst, binshared, line)    # panel mirror, then GitHub-direct + operator mirrors
         if _err:
             return _err
         if not os.path.exists(binshared):                 # fetch reported success but wrote nothing → say so plainly
@@ -21590,9 +21706,12 @@ def _csqtt_reconfigure(inst):
     + the unit and restart. The store (passwords.json <=2.0.1 / csqtt.db 2.1.5+) is preserved — the whole
     config-dir is left in place and only csqtt.env + the unit are rewritten."""
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface); binp = cfgdir + "/server"
-    binshared = _csqtt_bin_shared()
+    # ⚠️ THE COMMITTED LINE'S slot. _csqtt_write_cfgdir relinks `server` on every reconfigure (a param change, unit or
+    # env drift, the bind heal) — linking the 2.1 slot here would quietly put a 2.5 server back on 2.1.
+    line = _csqtt_line_of(inst)
+    binshared = _csqtt_bin_shared(line)
     if not os.path.exists(binshared):        # same-arch self-heal, mirroring _wdtt_reconfigure: without this
-        _e = _csqtt_fetch_bin(inst, binshared)   # a reconfigure lays a DANGLING symlink and restarts into 203/EXEC
+        _e = _csqtt_fetch_bin(inst, binshared, line)   # a reconfigure lays a DANGLING symlink and restarts into 203/EXEC
         if _e:
             return _e
         if not os.path.exists(binshared):
@@ -22074,6 +22193,29 @@ def reconcile_csqtt(want, remove=None):
             inst = dict(req or {}); inst["iface"] = iface
             prev = have.get(iface) or {}
             inst["panel_managed"] = True
+            # LINES (docs/CSQTT-LINES-PLAN.md §4.2). `_cur` = the committed line (the record, else the symlink, else
+            # 2.1 — every instance from before lines). `_line` = the wanted one. ⚠️ A request WITHOUT `line` keeps
+            # the running line: an older or downgraded panel sends none, and reading that as "2.1" would pull every
+            # 2.5 server back. Its `ver` is then a 2.1 build, so it applies only to a server on 2.1.
+            _cur = (prev.get("line") if _csqtt_line_ok(prev.get("line")) else "") or _csqtt_running_line(iface) or CSQTT_DEFAULT_LINE
+            _line = (inst.get("line") or "").strip()
+            if not _line:
+                _line = _cur
+                if _cur != CSQTT_DEFAULT_LINE:
+                    inst.pop("ver", None)
+            if not _csqtt_line_ok(_line):
+                res["errors"].append(iface + ": this node doesn't know csqtt " + _line[:16] + " — update the node (its page offers "
+                                     "\"update node to …\"), then the server moves on the next sync. Known here: "
+                                     + ", ".join(CSQTT_KNOWN_LINES) + ".")
+                _line = _cur
+                inst.pop("ver", None)
+            inst["line"] = _cur                       # committed — becomes _line only once a switch is verified
+            _lf = prev.get("line_failed") or {}
+            if (_line != _cur and _lf.get("line") == _line and _lf.get("ver") == (inst.get("ver") or "").strip()
+                    and inst.get("restart") == prev.get("restart")):
+                # This (line, build) would not run here: wait for a new build, a request back to the running line,
+                # or the operator's Restart (the panel's `restart` stamp — "try again", with no new field for it).
+                inst["line_failed"] = _lf
             # owner --password + --web-pass are NODE-OWNED (the panel is blind): reuse the stored ones, else mint.
             inst["password"] = (prev.get("password") or inst.get("password") or "").strip() or _gen_csqtt_password()
             inst["web_pass"] = (prev.get("web_pass") or _gen_csqtt_password() + _gen_csqtt_password())
@@ -22133,6 +22275,8 @@ def reconcile_csqtt(want, remove=None):
             if _au:
                 _csqtt_serve_adopted(inst)
             if not _csqtt_present(iface):
+                if not inst.get("line_failed"):
+                    inst["line"] = _line              # nothing runs yet, so there is nothing to switch: install the wanted line
                 err = _csqtt_install(inst)
                 if err:
                     res["errors"].append(iface + ": " + err); have[iface] = inst; continue
@@ -22148,9 +22292,24 @@ def reconcile_csqtt(want, remove=None):
                 # has moved on, so blind-stamping would assert an upgrade that never happened, the exact lie this
                 # change exists to remove. Unstamped means UNKNOWN, so it re-fetches once and stamps the truth.
                 _want_ver = (inst.get("ver") or "").strip()
-                _inst_ver = _csqtt_installed_ver()
-                if _want_ver and _want_ver != _inst_ver:
-                    err = _csqtt_update_binary(inst, _want_ver, _csqtt_ifaces(want))
+                if _line != _cur and not inst.get("line_failed"):
+                    # A LINE SWITCH (§4.2): this one instance moves; the wanted build rides along, so no build
+                    # update follows. A fetch that failed changed nothing and is simply retried next sync; a line
+                    # that would not RUN is reverted by the switch itself and memoed, so it is not retried every sync.
+                    err, _memo = _csqtt_switch_line(inst, _cur, _line, _want_ver)
+                    if not err:
+                        inst["line"] = _line; inst.pop("line_failed", None)
+                        log(LOG_INFO, "csqtt %s: switched %s → %s (%s)", iface, _cur, _line, _want_ver)
+                        res["changed"] += 1
+                    else:
+                        if _memo:
+                            inst["line_failed"] = {"line": _line, "ver": _want_ver, "why": err[:200], "at": int(time.time())}
+                        # No `continue`: the server still runs `_cur`, and its users, params and desired set
+                        # must keep converging there while the switch waits (a fetch that keeps failing would
+                        # otherwise freeze every password change on this server).
+                        res["errors"].append(iface + ": couldn't switch to csqtt " + _line + ": " + err)
+                elif _want_ver and _line == _cur and _want_ver != _csqtt_installed_ver(_cur):
+                    err = _csqtt_update_binary(inst, _want_ver, _csqtt_ifaces(want, _cur), _cur)
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                     res["changed"] += 1
@@ -22252,6 +22411,7 @@ def csqtt_snapshot():
                         "ip": _dev.get("ip", ""), "online": online, "rx_speed": _rs, "tx_speed": _ts}
         _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # TUN aggregate throughput (same reader as a wg iface)
         _own = _turn_own_dns(_csqtt_dir(iface))   # what csqtt itself remembers (its DB)
+        _rl = _csqtt_running_line(iface) or _csqtt_line_of(inst)
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "bind": _env_listen(_csqtt_dir(iface) + "/csqtt.env"),   # what the server binds (turn_bind) — "" unknown
                     "bind_ip": inst.get("bind_ip", ""),   # the operator's Listen on, so a panel mirroring this record keeps it
@@ -22265,7 +22425,11 @@ def csqtt_snapshot():
                     # OBSERVED, not requested: the stamp beside the binary. Echoing inst["ver"] reported whatever
                     # the panel asked for even when the node never fetched it — a fleet claiming an upgrade it had
                     # not performed. "" = a pre-versioning binary of unknown build (the reconcile re-fetches it).
-                    "version": _csqtt_installed_ver(),
+                    "version": _csqtt_installed_ver(_rl),
+                    # The LINE it runs, from the symlink (docs/CSQTT-LINES-PLAN.md) — during a failed or half-done
+                    # switch this is the truth, and `version` above is that line's stamp, not another line's.
+                    "line": _rl,
+                    **({"line_failed": inst["line_failed"]} if inst.get("line_failed") else {}),
                     # T-18, the csqtt twin: the two params _csqtt_params_changed compares that nothing else
                     # reported. See the WDTT report for why a mirror without them restarts a live server.
                     "max_passwords": inst.get("max_passwords") or "",
