@@ -23,11 +23,19 @@ and every command that could delete a link is refused by a guard (the test fails
                  stamp saying "current" over an old inode would leave it on the old build for good
   [10] copyfail  a store copy that fails (a full disk) never leaves the server stopped: it runs on 2.1 again, the
                  failure is memoed
+  code review (2026-10-08):
+  [11] crash     a noded that died between repoint and record save: a request for the OLD line switches back from
+                 what really runs (the symlink), and a request for the new line resumes the switch's verify
+  [12] onepass   two servers asking for a switch in one pass: one switches, the other waits a sync
+  [13] restart   a Restart that retries a failed switch restarts the server once, not twice
+  [14] curver    while a switch is memoed, the line the server RUNS still takes the panel's `cur_ver`
+  [15] nover     a versionless fetch never lands in another line's slot (it would be 2.1's build)
+  [16] ifaces    a server not installed yet is not "running" any line, so a build swap does not restart it
 
 Run: python3 tests/csqtt_lines_node_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        reconfigure [5] · absent [6] · stable [3] · resume [4] · memo [7] · build [8] · sibling [9] ·
-                       copyfail [10]
+                       copyfail [10] · crash [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16]
 """
 import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
 
@@ -45,8 +53,13 @@ PLANTS = {   # name: (section, anchor, replacement)
     "memo": ("[7]", "                inst[\"line_failed\"] = _lf\n", "                pass\n"),
     "sibling": ("[9]", "        others = [i for i in siblings if i != iface]\n", "        others = []\n"),
     "copyfail": ("[10]", "            _csqtt_start_one(dict(inst, line=frm)) if not inst.get(\"stopped\") else None\n", "            pass\n"),
-    "build": ("[8]", "    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]",
-              "    return list((want or {}).keys())"),
+    "crash": ("[11]", "            _cur = _csqtt_running_line(iface) or _rec or CSQTT_DEFAULT_LINE", "            _cur = _rec or _csqtt_running_line(iface) or CSQTT_DEFAULT_LINE"),
+    "onepass": ("[12]", "                if _line != _cur and not inst.get(\"line_failed\") and _sw_pass[0]:", "                if False:"),
+    "restart": ("[13]", "and not inst.get(\"stopped\") and not _switched:\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)", "and not inst.get(\"stopped\"):\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)"),
+    "curver": ("[14]", "                _run_ver = _want_ver if _line == _cur else (inst.get(\"cur_ver\") or \"\").strip()", "                _run_ver = _want_ver if _line == _cur else \"\""),
+    "nover": ("[15]", "    if not ver and line != CSQTT_DEFAULT_LINE:\n", "    if False:\n"),
+    "ifaces": ("[16]", "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]"),
+    "build": ("[8]", "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return list(want or {})"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
 SECTION = [""]
@@ -99,6 +112,7 @@ def fake_fetch(inst, dest, line="2.1"):
     open(dest, "w").write(BUILD[line]); os.chmod(dest, 0o755)
     N._csqtt_write_ver(inst.get("ver") or "", line)
     return ""
+REAL_FETCH = N._csqtt_fetch_bin
 N._csqtt_fetch_bin = fake_fetch
 
 def lay(iface, line, store="A"):
@@ -215,6 +229,7 @@ try:
     rec_lo.pop("params", None)
 
     section("[6] a request with no line")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))   # committed AND running 2.5
     record(lo=rec_lo)
     N._csqtt_write_ver("2.1.9-3", "2.5")
     del SWITCHES[:], UPDATES[:]
@@ -254,6 +269,56 @@ try:
     del UPDATES[:]
     N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.1", ver="2.1.9-4", tun_addr="10.66.68.1/24")})
     check("one update, on line 2.5, restarting only the 2.5 server", UPDATES == [("2.5.0-2", ("lo",), "2.5")], UPDATES)
+
+    section("[11] a crash between repoint and record save")
+    SWITCH_RESULT[0] = ("", False)
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))   # the link moved…
+    record(lo=dict(rec_lo, line="2.1"))                                             # …the record did not
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.1", ver="2.1.9-4")})
+    check("asked for the old line: it switches back FROM what runs (2.5 → 2.1)", SWITCHES[:1] == [("lo", "2.5", "2.1", "2.1.9-4")], SWITCHES)
+    record(lo=dict(rec_lo, line="2.1"))
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2")})
+    check("asked for the new line: the cut switch is resumed (2.1 → 2.5, verify)", SWITCHES[:1] == [("lo", "2.1", "2.5", "2.5.0-2")], SWITCHES)
+
+    section("[12] one switch per pass")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))
+    N._csqtt_relink(N._csqtt_dir("csqttsib") + "/server", N._csqtt_bin_shared("2.1"))
+    record(lo=dict(rec_lo, line="2.1"), csqttsib=dict(sib, line="2.1"))
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.5", ver="2.5.0-2", tun_addr="10.66.68.1/24")})
+    check("two asked, one switched this pass", len(SWITCHES) == 1, SWITCHES)
+
+    section("[13] a Restart that retries a failed switch restarts once")
+    STARTS = []
+    real_start = N._csqtt_docker_start
+    N._csqtt_docker_start = lambda inst: (STARTS.append(inst.get("iface")), real_start(inst))[1]
+    record(lo=dict(rec_lo, line="2.1", restart=1, line_failed={"line": "2.5", "ver": "2.5.0-2", "why": "x"}))
+    SWITCH_RESULT[0] = ("", False)
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", restart=2)})
+    N._csqtt_docker_start = real_start
+    check("the switch was retried", len(SWITCHES) == 1, SWITCHES)
+    check("…and the restart stamp did not restart it a second time", STARTS.count("lo") == 0, STARTS)
+
+    section("[14] cur_ver while a switch is memoed")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))
+    N._csqtt_write_ver("2.1.9-3", "2.1")
+    record(lo=dict(rec_lo, line="2.1", line_failed={"line": "2.5", "ver": "2.5.0-2", "why": "x"}))
+    del UPDATES[:], SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4")})
+    check("no switch (memoed)", SWITCHES == [], SWITCHES)
+    check("the 2.1 line it runs takes cur_ver", UPDATES == [("2.1.9-4", ("lo",), "2.1")], UPDATES)
+
+    section("[15] a versionless fetch into another line's slot")
+    N._turn_arch_ok = lambda: True
+    e15 = REAL_FETCH({"ver": ""}, N._csqtt_bin_shared("2.5") + ".probe", "2.5")
+    check("refused, naming the line", "named no csqtt 2.5" in (e15 or ""), e15)
+    check("…and nothing landed", not os.path.exists(N._csqtt_bin_shared("2.5") + ".probe"))
+
+    section("[16] a server not installed yet runs no line")
+    check("_csqtt_ifaces leaves it out", N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5") == [], N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5"))
 finally:
     for i in ("lo", "csqttsib"):
         try: N._csqtt_docker_stop(i)

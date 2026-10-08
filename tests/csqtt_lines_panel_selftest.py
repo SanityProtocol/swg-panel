@@ -23,11 +23,16 @@ line made of a build that is already published — and the node's side played by
                  real line
   [10] unoffered a server recorded on a line this panel does not offer (the stand-in unset, a panel rolled back) gets
                  no line and no build — the node keeps what runs — and the mirror records such a line as it runs
+  code review (2026-10-08):
+  [11] running   during a pending/failed switch (record 2.5, the node runs 2.1) the version endpoints act on the line
+                 the server RUNS — the one its update row and Version row show — and the reply names that line's
+                 build as `cur_ver` so it keeps getting updates
+  [12] offline   a hold for a server on a line this panel does not offer is refused (it would land on 2.1's key)
 
 Run: python3 tests/csqtt_lines_panel_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8] ·
-                       override [9] · unoffered [10]
+                       override [9] · unoffered [10] · runline [11] · curver [11] · refuseoff [12]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -48,6 +53,10 @@ PLANTS = {
                "    for _cl in [CSQTT_DEFAULT_LINE]:          # every line's current build"),
     "override": ("[9]", "and line not in CSQTT_LINES and builds:", "and builds:"),
     "unoffered": ("[10]", "        if _line not in CSQTT_LINES:\n", "        if False:\n"),
+    "runline": ("[11]", "        _vl = (_csqtt_run_line(((deps.get(\"node_snaps\") or {}).get(nid)), iface, ((nodes[nid].get(\"csqtt\")) or {}).get(iface))",
+                "        _vl = (_csqtt_line_of(((nodes[nid].get(\"csqtt\")) or {}).get(iface))"),
+    "curver": ("[11]", "            if _row and _run != _line and _run in CSQTT_LINES:", "            if False:"),
+    "refuseoff": ("[12]", "        if _vl not in CSQTT_LINES:\n            # a server on a line", "        if False:\n            # a server on a line"),
     "mirror": ("[8]", "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
@@ -186,6 +195,8 @@ try:
 
     section("[5] versions and holds per line")
     put_csqtt("nnew", "csqtt2", dict(C1, tun_addr="10.66.91.1/24", listen="0.0.0.0:46020"))
+    sync("nnew", [{"iface": "csqtt1", "kind": "csqtt", "fork": "csqtt", "line": "2.5", "version": "2.1.9-3", "max_passwords": 500, "params": ""},
+                  {"iface": "csqtt2", "kind": "csqtt", "fork": "csqtt", "line": "2.1", "version": "2.1.9-4", "max_passwords": 500, "params": ""}])   # the switch landed
     code, v = req("/api/csqtt/versions?node=nnew&iface=csqtt1")
     vd = v.get("data") or {}
     check("2.5's picker lists 2.5's builds", vd.get("line") == "2.5" and vd.get("versions") == ["2.1.9-3"], vd)
@@ -254,6 +265,26 @@ try:
     sync("nnew", rows9)
     check("the mirror records a line it does not offer as it runs", ((nodes()["nnew"].get("csqtt") or {}).get("csqtt9") or {}).get("line") == "3.0",
           (nodes()["nnew"].get("csqtt") or {}).get("csqtt9"))
+    section("[11] the line a server runs, during a pending switch")
+    put_csqtt("nnew", "csqtt5", dict(C1, tun_addr="10.66.95.1/24", listen="0.0.0.0:46050", line="2.5"))
+    rows11 = rows + [{"iface": "csqtt5", "kind": "csqtt", "fork": "csqtt", "line": "2.1", "version": "2.1.9-4", "max_passwords": 500, "params": "",
+                      "line_failed": {"line": "2.5", "ver": "2.1.9-3", "why": "x"}}]
+    c5 = sync("nnew", rows11).get("csqtt5") or {}
+    check("the reply still asks for 2.5 with 2.5's build", c5.get("line") == "2.5" and c5.get("ver") == "2.1.9-3", c5)
+    check("…and names the build of the 2.1 it runs as cur_ver", c5.get("cur_ver") == "2.1.9-4", c5)
+    code, v = req("/api/csqtt/versions?node=nnew&iface=csqtt5")
+    check("its rollback picker is 2.1's (what runs)", (v.get("data") or {}).get("line") == "2.1", v)
+    req("/api/csqtt/version", {"node": "nnew", "iface": "csqtt2", "ver": "2.1.9-3"})       # a 2.1 hold on this node
+    code, r = req("/api/csqtt/version", {"node": "nnew", "iface": "csqtt5", "ver": ""})     # Update from its (2.1) row
+    holds = json.load(open(os.path.join(state, "turn-holds.json")))
+    check("Update from its row releases the 2.1 hold", code == 200 and "nnew|fork:csqtt" not in holds, (code, holds))
+    check("…and leaves the 2.5 hold alone", "nnew|fork:csqtt@2.5" in holds, holds)
+
+    section("[12] a hold for a line this panel does not offer")
+    code, r = req("/api/csqtt/version", {"node": "nnew", "iface": "csqtt8", "ver": "2.1.9-3"})
+    check("refused", code == 400 and "isn't a version" in json.dumps(r), (code, r))
+    holds = json.load(open(os.path.join(state, "turn-holds.json")))
+    check("…and no 2.1 hold was set by it", "nnew|fork:csqtt" not in holds, holds)
 finally:
     proc.terminate()
     try: proc.wait(5)
