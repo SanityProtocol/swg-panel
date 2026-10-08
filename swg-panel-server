@@ -9128,9 +9128,9 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
             merged["line"] = _line
             # While a switch is pending or failed (memoed), the server still RUNS another line: name that line's build
             # too, or it gets no updates or rollbacks until the operator resolves the switch.
-            _row = any(isinstance(c, dict) and c.get("iface") == iface for c in ((snap or {}).get("csqtt") or []))
-            _run = _csqtt_run_line(snap, iface, None)
-            if _row and _run != _line and _run in CSQTT_LINES:
+            _row = next((c for c in ((snap or {}).get("csqtt") or []) if isinstance(c, dict) and c.get("iface") == iface), None)
+            _run = str(_row.get("line") or CSQTT_DEFAULT_LINE) if _row else ""
+            if _run and _run != _line and _run in CSQTT_LINES:
                 _rv = _turn_hold_get(node_id, _csqtt_hold_svc(_run)) or _csqtt_current_version(_run)
                 if _rv:
                     merged["cur_ver"] = _rv
