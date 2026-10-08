@@ -6,8 +6,10 @@ reader the node and the panel both run (docs/LOGS-PLAN.md §3, §4, §23).
       — every key, every value, except those two instances of the OLD build disagree on themselves; a request carries
       `logs` only to the nodes it names, and only while it lives.
   [2] POST /api/node/logs: gzip lines reach the viewer; the request's key admits one node into one request (a wrong key
-      403, a gone request 404 — the node stops); never the node token (its check parses the whole node store), never
-      api(); a gzip bomb and an oversized body are refused.
+      403, a gone request 404 — the node stops); never the node store (find_node_by_token parses all of it), never
+      api(); a gzip bomb and an oversized body are refused. q189 F1: the body is read only from a node token a sync
+      reply handed an open request's key to — anyone else (no token, a wrong one) is 401 with the body unread, and at
+      most LOG_POST_SLOTS posts are unpacked + parsed at once (503, the node sends it again).
   [3] The store: the viewer's poll renews the lease, a lapsed one is gone (404, for the viewer and the node); at most 4,
       a 5th refused (not evicting), a replace frees its slot; 5 000 lines kept; the flood cap and the post interval
       scale with the request's size; a skewed node clock is measured; each box's state (old node, offline, no answer,
@@ -30,7 +32,10 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
      idleparse    with nothing open, a log post's body is still unpacked and parsed (plan §32 #4)
      replyalways  an idle reply carries `logs`              replyall     a request reaches nodes it does not name
-     nodetoken    the log POST checks the node token        nokey        any key is accepted
+     nodetoken    the log POST checks the node token in the node store (parses it)    nokey   any key is accepted
+     anonparse    an anonymous log post is read, unpacked and parsed before any check (q189 F1)
+     anytoken     any token reads as a node's                notoks       the sync does not hand its token to the request
+     parsefree    log posts are unpacked + parsed with no bound on how many at once
      bomb         the gzip body is unpacked without a limit nolease      the viewer's poll does not renew the lease
      noexpire     a lapsed request lives on                 evict        a 5th viewer evicts the oldest
      bufgrow      the line buffer has no bound              capflat      the flood cap does not scale with the nodes
@@ -89,6 +94,10 @@ PLANTS = {   # (program, anchor, replacement)
                   '''        if False:          # nothing open'''),
     "nodetoken": ("panel", '''        n = self._body_len(cap=LIVE_POST_MAX)\n        if n is None:\n            return\n''',
                   '''        n = self._body_len(cap=LIVE_POST_MAX)\n        if n is None:\n            return\n        self._node_token()\n'''),
+    "anonparse": ("panel", '''        if not log_post_admits(_log_tok(self.headers.get("Authorization"))):''', '''        if False:'''),
+    "anytoken": ("panel", '''    if not tok:\n        return False\n    with _LIVE_LOCK:''', '''    if tok:\n        return True\n    with _LIVE_LOCK:'''),
+    "notoks": ("panel", '''        _ltok = _log_tok(self.headers.get("Authorization"))''', '''        _ltok = ""'''),
+    "parsefree": ("panel", '''LOG_POST_SLOTS = threading.BoundedSemaphore(4)''', '''LOG_POST_SLOTS = threading.BoundedSemaphore(1 << 20)'''),
     "ackedstale": ("panel", '''    if nid != LIVE_PANEL and (not isinstance(snap, dict)''',
                    '''    if nid != LIVE_PANEL and nid not in rec["acked"] and (not isinstance(snap, dict)'''),
     "offlineoff": ("panel", '''        return {"state": "offline", **({"off": rec["off"][nid]} if rec["off"].get(nid) else {})}''',
@@ -251,12 +260,14 @@ def sync(port, tok, nid="n1", live=True):
     return r
 
 
-def post_lines(port, rid, key, lines, st=None, now=None, gz=True):
+def post_lines(port, rid, key, lines, st=None, now=None, gz=True, tok=None):
+    """A node's post as swg-noded makes it (_logs_post → post_json): its own node token in Authorization."""
     body = {"id": rid, "key": key, "now": now if now is not None else time.time(), "lines": lines, "cur": {"j": "c1"}}
     if st is not None:
         body["st"] = st
     raw = json.dumps(body).encode()
-    return req(port, "/api/node/logs", raw=gzip.compress(raw) if gz else raw, hdrs={"Content-Encoding": "gzip"} if gz else {})
+    return req(port, "/api/node/logs", raw=gzip.compress(raw) if gz else raw, token=tok,
+               hdrs={"Content-Encoding": "gzip"} if gz else {})
 
 
 ref_src = os.path.join(TMP, "ref-swg-panel-server")
@@ -309,26 +320,40 @@ try:
         key1 = sync(port, toks["n1"])["logs"][0]["key"]
         key2 = sync(port, toks["n2"], "n2")["logs"][0]["key"]
         t = int(time.time() * 1e6)
-        c, o = post_lines(port, rid, key1, [[t, "noded", 6, "hello"], [t + 1, "noded", 3, "bad"]], st={"noded": "ok"})
+        c, o = post_lines(port, rid, key1, [[t, "noded", 6, "hello"], [t + 1, "noded", 3, "bad"]], st={"noded": "ok"},
+                          tok=toks["n1"])
         v = req(port, "/api/logs/live?id=%s&after=0" % rid)[1].get("data") or {}
-        check("[2] gzip lines reach the viewer, with no node token", c == 200 and [l[1:] for l in v.get("lines", [])]
-              == [["n1", t, "noded", 6, "hello"], ["n1", t + 1, "noded", 3, "bad"]], (c, o, v.get("lines")))
-        c, o = post_lines(port, rid, "n1." + "0" * 32, [[t, "noded", 6, "x"]])
-        c2, _ = post_lines(port, rid, key2.replace("n2.", "n1."), [[t, "noded", 6, "x"]])
+        check("[2] gzip lines reach the viewer, with the node token its sync came with", c == 200
+              and [l[1:] for l in v.get("lines", [])] == [["n1", t, "noded", 6, "hello"], ["n1", t + 1, "noded", 3, "bad"]],
+              (c, o, v.get("lines")))
+        c, o = post_lines(port, rid, "n1." + "0" * 32, [[t, "noded", 6, "x"]], tok=toks["n1"])
+        c2, _ = post_lines(port, rid, key2.replace("n2.", "n1."), [[t, "noded", 6, "x"]], tok=toks["n1"])
         check("[2] a wrong key, or another node's, is 403", c == 403 and c2 == 403, (c, c2))
-        c, o = post_lines(port, "f" * 16, key1, [[t, "noded", 6, "x"]])
+        c, o = post_lines(port, "f" * 16, key1, [[t, "noded", 6, "x"]], tok=toks["n1"])
         check("[2] a request the panel does not have is 404 (the node stops)", c == 404 and o.get("code") == "gone", (c, o))
+        # q189 F1: 4 105 bytes of gzip that unpack to 4 MiB of "[{},{},…]" (~100 MB once parsed), from anyone
+        pbomb = gzip.compress(b"[" + b"{}," * ((4 << 20) // 3 - 1) + b"{}]", 9)
+        ca, oa = req(port, "/api/node/logs", raw=pbomb, hdrs={"Content-Encoding": "gzip"})
+        cw, _ = req(port, "/api/node/logs", raw=pbomb, token="x" * 24, hdrs={"Content-Encoding": "gzip"})
+        cl, _ = post_lines(port, rid, key1, [[t, "noded", 6, "x"]])
+        check("[2] F1: with a viewer open, a post with no node token — or a token no sync reply handed this request's key "
+              "to — is 401 (the 4 KB → 4 MiB gzip bomb included), and so is a right key without its node's token",
+              (ca, cw, cl) == (401, 401, 401) and oa.get("code") == "unauthorized", (ca, cw, cl, oa))
         bomb = gzip.compress(b'{"id": "' + rid.encode() + b'", "lines": [' + b" " * (6 << 20) + b"]}", 9)
-        c, o = req(port, "/api/node/logs", raw=bomb, hdrs={"Content-Encoding": "gzip"})
+        c, o = req(port, "/api/node/logs", raw=bomb, token=toks["n1"], hdrs={"Content-Encoding": "gzip"})
         check("[2] a gzip bomb (6 MiB unpacked) is refused", c == 413, (c, o, len(bomb)))
-        c, o = req(port, "/api/node/logs", raw=b"x" * ((1 << 20) + 10), hdrs={"Content-Encoding": "gzip"})
+        try:
+            c, o = req(port, "/api/node/logs", raw=b"x" * ((1 << 20) + 10), token=toks["n1"], hdrs={"Content-Encoding": "gzip"})
+        except urllib.error.URLError as e:   # answered before it was sent whole: the panel closes rather than read past
+            c, o = (413, e) if isinstance(e.reason, (BrokenPipeError, ConnectionResetError)) else (repr(e), None)   # DRAIN_CAP
         check("[2] a body over 1 MiB is refused", c == 413, (c, o))
         try:
-            c, o = req(port, "/api/node/logs", raw=gzip.compress(b"[" * 200000), hdrs={"Content-Encoding": "gzip"})
+            c, o = req(port, "/api/node/logs", raw=gzip.compress(b"[" * 200000), token=toks["n1"],
+                       hdrs={"Content-Encoding": "gzip"})
         except Exception as e:
             c, o = repr(e)[:80], None
         check("[2] a deeply nested body is a 400, never a dropped connection", c == 400, (c, o))
-        # no node token, no api(): in-process, nodes_load counted
+        # the node token checked in memory, never in the node store, no api(): in-process, nodes_load counted
         P = load("panel")
         calls = []
         P.nodes_load = lambda path, _n=P.nodes_load: (calls.append(path), _n(path))[1]
@@ -337,22 +362,40 @@ try:
 
         class H:
             pass
-        h = H()
         sent = []
         rec_id = P.live_open(["n1"], ["noded"], {"n1"})[1]["data"]["id"]
         k = P._live_key(P._LIVE_REQS[rec_id], "n1")
+        P.live_reply("n1", tok=P._log_tok("Bearer T1"))           # what the sync reply records (_node_sync_apply)
         body = gzip.compress(json.dumps({"id": rec_id, "key": k, "lines": [[1, "noded", 6, "x"]]}).encode())
-        h.headers = {"Content-Length": str(len(body)), "Content-Encoding": "gzip", "Authorization": "Bearer nope"}
-        h.rfile = io.BytesIO(body)
-        h._send = lambda code, obj: sent.append((code, obj))
-        h._body_len = lambda cap=0: P.Handler._body_len(h, cap)
-        h._node_token = lambda: P.Handler._node_token(h)
-        try:
-            P.Handler._node_logs(h)
-        except Exception as e:
-            sent.append(("raised", repr(e)))
-        check("[2] the log POST never reads the node store (no node-token check)", not calls and sent and sent[0][0] == 200,
-              (calls, sent))
+
+        def post_in(tok):
+            h = H()
+            h.headers = {"Content-Length": str(len(body)), "Content-Encoding": "gzip", "Authorization": "Bearer " + tok}
+            h.rfile = io.BytesIO(body)
+            h._send = lambda code, obj: sent.append((code, obj))
+            h._body_len = lambda cap=0: P.Handler._body_len(h, cap)
+            h._node_token = lambda: P.Handler._node_token(h)
+            try:
+                P.Handler._node_logs(h)
+            except Exception as e:
+                sent.append(("raised", repr(e)))
+            return h.rfile.tell()
+        post_in("T1")
+        check("[2] the log POST never reads the node store: its node token is checked in memory",
+              not calls and sent and sent[0][0] == 200, (calls, sent))
+        del sent[:]
+        n_read = post_in("nope")
+        check("[2] F1: a token no sync reply went with is 401 before a byte of the body is read (nothing unpacked)",
+              not calls and sent and sent[0][0] == 401 and n_read == 0, (calls, sent, n_read))
+        del sent[:]
+        held = [P.LOG_POST_SLOTS.acquire(blocking=False) for _ in range(4)]
+        post_in("T1")
+        for x in held:
+            if x:
+                P.LOG_POST_SLOTS.release()
+        post_in("T1")
+        check("[2] F1: with 4 posts being unpacked and parsed, a 5th is 503 (the node sends it again); then it is taken",
+              [s[0] for s in sent] == [503, 200] and sent[0][1].get("code") == "busy", sent)
         src = SRC["panel"]
         m = re.search(r"\n    def _node_logs\(self\):.*?\n    def ", src, re.S)
         code_only = re.sub(r'"""(.|\n)*?"""', "", m.group(0)) if m else ""

@@ -5,10 +5,11 @@ the spool and the merge, the download route, redaction, the reader both programs
   [1] The wire, against real panels: an idle fleet's sync reply is byte-identical to the build before P3 (ef9c309); a range
       reaches only the nodes it names, under `logrange` and never under P2's `logs` (a P2 node would follow it live), and
       only while it waits on that node.
-  [2] The parts: a node's progress, then numbered parts with the request's key; a repeat is kept once, a part out of order
-      is 409, a new part 0 starts that server afresh; a wrong key 403, a gone request 404; at most 4 range posts at a time
-      (503); the download: an attachment, gzip on the wire to a browser that takes it, the same text unpacked otherwise,
-      404 for an unknown id, never through api() and never on a node door.
+  [2] The parts: a node's progress, then numbered parts with the request's key, from the node token its sync came with
+      (q189 F1: the panel reads a log post's body only from a token a reply handed a request's key to); a repeat is kept
+      once, a part out of order is 409, a new part 0 starts that server afresh; a wrong key 403, a gone request 404; at
+      most 4 range posts at a time (503); the download: an attachment, gzip on the wire to a browser that takes it, the
+      same text unpacked otherwise, 404 for an unknown id, never through api() and never on a node door.
   [3] The store: at most 2 in progress (a 3rd 429); each server's share is the total divided; a server the panel has not
       heard from is asked and reads "offline"; an old node "old", a silent one "noanswer", a stalled one "failed", a request
       past its life "timeout"; "make the file now" leaves the rest out; an unpolled request goes, a made file goes after
@@ -79,6 +80,8 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      deepnav      a deep link navigates to Settings under the viewer instead of opening over its page
      notrap       Tab walks out of the full-screen viewer into the page hidden under it
      nofocusback  Exit drops the focus on <body>
+   q189 F1 ([2]):
+     rangetok     a range's sync reply does not hand its node token to the request (every range post refused 401)
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -123,6 +126,8 @@ PLANTS = {   # (program, anchor, replacement)
     "repeatdup": ("panel", '''            if 0 < seq < want or (seq == 0 and want and ns["state"] == "done"):''', '''            if False:'''),
     "norestart": ("panel", '''    with open(os.path.join(rec["dir"], nid + ".gz"), "wb" if first else "ab") as f:''',
                   '''    with open(os.path.join(rec["dir"], nid + ".gz"), "ab") as f:'''),
+    "rangetok": ("panel", '''            if tok:\n                rec["toks"].add(tok)\n            out.append({"id": rec["id"], "key": _live_key(rec, nid),''',
+                 '''            out.append({"id": rec["id"], "key": _live_key(rec, nid),'''),
     "noslots": ("panel", '''                if not RANGE_POST_SLOTS.acquire(blocking=False):''', '''                if not RANGE_POST_SLOTS.acquire(blocking=False) and False:'''),
     "maxreq": ("panel", '''if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX\n''', '''if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX + 9\n'''),
     "evenshare": ("panel", '''"label": label, "share": RANGE_TOTAL // len(nodes),''', '''"label": label, "share": RANGE_TOTAL,'''),
@@ -347,8 +352,10 @@ def sync(port, tok, nid="n1", rng=True):
     return r
 
 
-def post(port, body):
-    return req(port, "/api/node/logs", raw=gzip.compress(json.dumps(body).encode()), hdrs={"Content-Encoding": "gzip"})
+def post(port, body, tok):
+    """A node's post as swg-noded makes it (_logs_post → post_json): its own node token in Authorization."""
+    return req(port, "/api/node/logs", raw=gzip.compress(json.dumps(body).encode()), token=tok,
+               hdrs={"Content-Encoding": "gzip"})
 
 
 def wait_phase(port, rid, want=("ready", "failed"), secs=30):
@@ -404,8 +411,8 @@ def sec1():
     check("[1] never under P2's `logs` (a P2 node would follow it live), and not to a node it does not name",
           "logs" not in r1 and "logrange" not in r2 and "logs" not in r2, (r1.get("logs"), r2.get("logrange")))
     k = e["key"]
-    post(port_n, {"id": rid, "key": k, "now": time.time(), "st": {"noded": "ok"}})
-    post(port_n, {"id": rid, "key": k, "now": time.time(), "seq": 0, "lines": [], "done": {"read": 0}})
+    post(port_n, {"id": rid, "key": k, "now": time.time(), "st": {"noded": "ok"}}, toks[port_n]["n1"])
+    post(port_n, {"id": rid, "key": k, "now": time.time(), "seq": 0, "lines": [], "done": {"read": 0}}, toks[port_n]["n1"])
     r1 = sync(port_n, toks[port_n]["n1"])
     check("[1] a server that is done is no longer asked", "logrange" not in r1, r1.get("logrange"))
     req(port_n, "/api/logs/range/close", {"id": rid})
@@ -426,28 +433,29 @@ try:
         rid = o["data"]["id"]
         k1 = sync(port, toks["n1"])["logrange"][0]["key"]
         k2 = sync(port, toks["n2"], "n2")["logrange"][0]["key"]
-        c, o = post(port, {"id": rid, "key": "n1." + "0" * 32, "now": time.time(), "st": {}})
-        c2, _ = post(port, {"id": rid, "key": k2.replace("n2.", "n1."), "now": time.time(), "st": {}})
+        c, o = post(port, {"id": rid, "key": "n1." + "0" * 32, "now": time.time(), "st": {}}, toks["n1"])
+        c2, _ = post(port, {"id": rid, "key": k2.replace("n2.", "n1."), "now": time.time(), "st": {}}, toks["n1"])
         check("[2] a wrong key, or another node's, is 403", c == 403 and c2 == 403, (c, c2))
-        c, o = post(port, {"id": rid, "key": k1, "now": time.time(), "st": {"noded": "ok"}})
-        c, o = post(port, {"id": rid, "key": k1, "now": time.time(), "read": 5000})
+        c, o = post(port, {"id": rid, "key": k1, "now": time.time(), "st": {"noded": "ok"}}, toks["n1"])
+        c, o = post(port, {"id": rid, "key": k1, "now": time.time(), "read": 5000}, toks["n1"])
         v = req(port, "/api/logs/range?id=" + rid)[1]["data"]
         check("[2] the node's first word and its progress: \"reading\", lines read so far",
               c == 200 and v["nodes"]["n1"]["state"] == "reading" and v["nodes"]["n1"].get("read") == 5000, v["nodes"])
         t = int(time.time() * 1e6) - 600 * 10 ** 6
         part = lambda i: [[t + i * 1000 + j, "noded", 6, "n1 part %d line %d" % (i, j)] for j in range(3)]
-        c0, _ = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 0, "lines": part(0)})
-        c1, _ = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 1, "lines": part(1)})
-        cr, orr = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 1, "lines": part(1)})
-        cg, og = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 5, "lines": part(5)})
+        c0, _ = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 0, "lines": part(0)}, toks["n1"])
+        c1, _ = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 1, "lines": part(1)}, toks["n1"])
+        cr, orr = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 1, "lines": part(1)}, toks["n1"])
+        cg, og = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 5, "lines": part(5)}, toks["n1"])
         check("[2] parts in order are taken; a repeat is answered 200; one out of order is 409 with the next it wants",
               (c0, c1, cr) == (200, 200, 200) and cg == 409 and og.get("next") == 2, (c0, c1, cr, cg, og))
         # n2: a part 0, then the node restarted — a new part 0 starts it afresh
-        post(port, {"id": rid, "key": k2, "now": time.time(), "st": {"noded": "ok"}})
-        post(port, {"id": rid, "key": k2, "now": time.time(), "seq": 0, "lines": [[t + 5, "noded", 6, "n2 first read"]]})
+        post(port, {"id": rid, "key": k2, "now": time.time(), "st": {"noded": "ok"}}, toks["n2"])
+        post(port, {"id": rid, "key": k2, "now": time.time(), "seq": 0, "lines": [[t + 5, "noded", 6, "n2 first read"]]},
+             toks["n2"])
         post(port, {"id": rid, "key": k2, "now": time.time(), "seq": 0, "lines": [[t + 6, "noded", 6, "n2 second read"]],
-                    "done": {"read": 1}})
-        post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 2, "lines": part(2), "done": {"read": 9}})
+                    "done": {"read": 1}}, toks["n2"])
+        post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 2, "lines": part(2), "done": {"read": 9}}, toks["n1"])
         v = wait_phase(port, rid)
         check("[2] every server done → the file is made", v.get("phase") == "ready" and v.get("lines") == 10, v)
         c, b, h = download(port, rid)
@@ -465,7 +473,7 @@ try:
               and any("n2 second read" in ln for ln in body), body)
         c, o = download(port, "f" * 16)[:2]
         check("[2] an unknown download is 404", c == 404, c)
-        c, o = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 3, "lines": []})
+        c, o = post(port, {"id": rid, "key": k1, "now": time.time(), "seq": 3, "lines": []}, toks["n1"])
         check("[2] a part for a request that is made is 404 (the node stops)", c == 404, (c, o))
         req(port, "/api/logs/range/close", {"id": rid})
         check("[2] closed: the file is gone", download(port, rid)[0] == 404 and not os.listdir(os.path.join(CTX["state"], "logspool")),
@@ -478,6 +486,7 @@ try:
         rid2 = P.range_open({"nodes": ["n1"], **RANGE_BODY}, {"n1"})[1]["data"]["id"]
         rec = P._RANGE_REQS[rid2]
         k = P._live_key(rec, "n1")
+        P.range_reply("n1", tok=P._log_tok("Bearer T1"))          # what the sync reply records (_node_sync_apply)
         sent = []
 
         class H:
@@ -486,7 +495,7 @@ try:
         def handler(body):
             h = H()
             raw = gzip.compress(json.dumps(body).encode())
-            h.headers = {"Content-Length": str(len(raw)), "Content-Encoding": "gzip"}
+            h.headers = {"Content-Length": str(len(raw)), "Content-Encoding": "gzip", "Authorization": "Bearer T1"}
             h.rfile = io.BytesIO(raw)
             h._send = lambda code, obj: sent.append((code, obj))
             h._body_len = lambda cap=0: P.Handler._body_len(h, cap)
