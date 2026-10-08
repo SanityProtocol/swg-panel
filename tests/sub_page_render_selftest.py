@@ -29,6 +29,8 @@ Fixture — node q-node, three deployments per device:
       (Cara's office router carries 192.168.50.0/24 on the node, open to everyone there), not a blocked device's page (Anna's
       old tablet) — and the networks page's heading opens the picker instead, as a device's title does. Control: the same
       subscription on a desktop window shows the one Connections button in its header
+  [6] a fork is named by its catalog label, never its id: the samosvalishe proxy's cell says hackdiaz-dev (its repos moved,
+      the id stays in every node's unit names), and no cell on any OS or language says samosvalishe
 
 Needs google-chrome (or $CHROME) and node (seals the fixture secret). A missing browser is a FAIL, never a skip: a gate that
 cannot run has not passed.
@@ -40,6 +42,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-tabs       serves a sub.js that builds a tab for every group, page or not → RED on [1]'s Turn-tab check
      --perturb-copy       serves a sub.js whose one-tap csqtt Start no longer copies the link → RED on [3]
      --perturb-netswitch  serves a sub.js whose networks page carries a Connections button again → RED on [5]
+     --perturb-forkname   serves a sub.js that names a fork by its internal id again → RED on [6]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
 """
@@ -57,7 +60,8 @@ P_AUTO = "--perturb-autostart" in sys.argv
 P_TABS = "--perturb-tabs" in sys.argv
 P_COPY = "--perturb-copy" in sys.argv
 P_NETSW = "--perturb-netswitch" in sys.argv
-PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW
+P_FORKNAME = "--perturb-forkname" in sys.argv
+PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -186,8 +190,11 @@ if P_NETSW:
     page.appendChild(switchEl);
     return page;""", "the networks page without a Connections button")
 if P_BY:
-    perturbed_web('function tagBy(author) { return el("span", "scell-tag-by", t("by").replace("{author}", author)); }',
-                  'function tagBy(author) { return el("span", "scell-tag-by", " by " + author); }', "the badge's translated author word")
+    perturbed_web('function tagBy(author) { return el("span", "scell-tag-by", t("by").replace("{author}", forkLabel(author))); }',
+                  'function tagBy(author) { return el("span", "scell-tag-by", " by " + forkLabel(author)); }', "the badge's translated author word")
+if P_FORKNAME:
+    perturbed_web("function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }",
+                  "function forkLabel(f) { return f; }", "a fork named by its catalog label")
 
 sock = socket.socket(); sock.bind(("127.0.0.1", 0)); PORT = sock.getsockname()[1]; sock.close()
 env = dict(os.environ, SWG_SUB_FLEET=D + "/fleet.json", SWG_SUB_WEB=WEB, SWG_SUB_HOST="127.0.0.1", SWG_SUB_PORT=str(PORT),
@@ -218,7 +225,7 @@ READ = r"""(() => {
       mode: pg.getAttribute("data-mode"),
       cells: [...pg.querySelectorAll(".scell")].map(c => ({
         tag: txt(c, ".scell-tag"), by: txt(c, ".scell-tag-by"), getapp: txt(c, ".scell-getapp"), role: txt(c, ".scell-role-if"),
-        payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"),
+        payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"), text: c.textContent,
         qr: !!c.querySelector(".qrbox img[src^='data:image']") })) })) };
 })()"""
 
@@ -350,6 +357,16 @@ try:
     tp = [c for os_ in ALL_OS for c in turn_cells(renders[(os_, "ru")]) if (c["role"] or "") in ("AWG", "WG") and c["by"]]
     check("[2] the turn-proxy cell's author word is translated wherever one renders (RU)", tp and all(" by " not in c["by"] for c in tp),
           [c["by"] for os_ in ALL_OS for c in turn_cells(renders[(os_, "ru")]) if c["by"]])
+
+    # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hackdiaz-dev carries them
+    # on, but the id stays (it is in every node's unit names) — so the id must never reach the visitor
+    fp = [(os_, lang, c) for os_ in ALL_OS for lang in ("en", "ru") for c in turn_cells(renders[(os_, lang)])
+          if (c["role"] or "") in ("AWG", "WG")]
+    check("[6] the samosvalishe-fronted cell's badge names hackdiaz-dev on every OS and language",
+          fp and all("hackdiaz-dev" in (c["tag"] or "") for _o, _l, c in fp), [(o, l, c["tag"]) for o, l, c in fp])
+    leak = [(os_, lang, c["text"][:120]) for os_ in ALL_OS for lang in ("en", "ru") for p in renders[(os_, lang)]["pages"]
+            for c in p["cells"] if "samosvalishe" in (c["text"] or "")]
+    check("[6] …and no cell anywhere says samosvalishe", not leak, leak[:3])
 
     # [3] Start on the csqtt cell
     tab, _ = render("u1", "android", "en")
