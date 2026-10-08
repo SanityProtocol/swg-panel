@@ -494,7 +494,7 @@
     // .ipa needs self-signing), so both show: "… · TestFlight" then "iOS · IPA".
     if (ga.store) files = [{ name: ga.app + " · " + storeLabel(ga.store), url: ga.store }].concat(files);
     var label = ga.author
-      ? t("getAppBy").replace("{app}", ga.app).replace("{author}", ga.author)
+      ? t("getAppBy").replace("{app}", ga.app).replace("{author}", forkLabel(ga.author))
       : (files.length ? t("getAppManual").replace("{app}", ga.app)   // opens a bubble → "Get <app> manually"
                       : t("getApp").replace("{app}", ga.app) + (platLbl(ga.platform) ? " · " + platLbl(ga.platform) : ""));
     // ALWAYS a dropdown (▾) for consistency — even a page-only app (no direct installer, e.g. the Sidecar CLI) opens

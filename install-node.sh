@@ -639,6 +639,7 @@ turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }   # turn_latest_tag <
 install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags> [<Listen on ip>]
   local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" pin="${6:-}" arch dir bin svc url ver port inst fdir sbin
   case "$pin" in *[!0-9.]*|"") pin="";; esac   # an IPv4 address or nothing (swg-noded checks it is on the box)
+  [ "$owner" = "samosvalishe/free-turn-proxy" ] && owner="hackdiaz-dev/free-turn-proxy"   # repo deleted 2026-10; hackdiaz-dev carries it on (a record from before the move names the old one)
   case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
   # detect-and-REFUSE: the forks publish server-linux-amd64/arm64 only. Never fall back to amd64 on an unknown arch —
   # that fetched a wrong x86-64 binary → 404 / "Exec format error". Skip the turn-proxy with a clear message instead.

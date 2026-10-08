@@ -921,7 +921,7 @@ export function AppDropdown({ value, options, onChange }) {
   useEffect(() => { if (!open) return; const h = () => setOpen(false); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [open]);
   if (!cur) return null;
   // "by <author>" is one translated phrase (the key ClientEntryLabel already uses): a literal " by " stayed English on a RU panel.
-  const lbl = o => html`<span class="osdd-lbl"><b style=${o.nameColor ? "color:" + o.nameColor : ""}>${o.name}</b><span class="app-by">${Trich("by {v1}", { v1: html`<span class="app-by-who" style=${"color:" + o.color}>${o.author || "—"}</span>` })}</span>${o.plain ? html`<span class="app-plain">${T("tag|plain").toUpperCase()}</span>` : null}${autostartIcon(o.autostart)}</span>`;
+  const lbl = o => html`<span class="osdd-lbl"><b style=${o.nameColor ? "color:" + o.nameColor : ""}>${o.name}</b><span class="app-by">${Trich("by {v1}", { v1: html`<span class="app-by-who" style=${"color:" + o.color}>${o.author ? forkLabel(o.author) : "—"}</span>` })}</span>${o.plain ? html`<span class="app-plain">${T("tag|plain").toUpperCase()}</span>` : null}${autostartIcon(o.autostart)}</span>`;
   return html`<div class="osdd appdd" onClick=${e => e.stopPropagation()}>
     <button type="button" class=${"osdd-btn" + (open ? " open" : "")} onClick=${() => setOpen(o => !o)}>
       ${lbl(cur)}<span class="osdd-car">${open ? "▴" : "▾"}</span></button>
@@ -1246,7 +1246,7 @@ export function RosterCheckSheet() {
             const p4has = p4 && rcTotal(p4.counts) > 0;
             return html`<div class="roster-row" key=${cid}>
               <div class="roster-hd">
-                <span class="roster-nm" style=${color ? "color:" + color : ""}>${name}</span>${author ? html`<span class="roster-by">${T("by {v1}", { v1: author })}</span>` : null}
+                <span class="roster-nm" style=${color ? "color:" + color : ""}>${name}</span>${author ? html`<span class="roster-by">${T("by {v1}", { v1: forkLabel(author) })}</span>` : null}
                 ${p4 ? RosterCounts(p4.counts) : (t ? html`<span class=${"tg " + t[0]} title=${p1.status === "unwatched" ? T("No upstream source is tracked for this client — a format change here would not raise a flag.") : (p1.status === "unknown" ? T("The tracked file could not be fetched — the check did not run.") : "")}><${Ic} i=${t[1]}/>${t[2]}</span>` : null)}
                 <span class="grow"></span>
                 ${p4 && (p4.versions || []).length ? SetVersionPicker(p4, i => setVersion(cid, i), busy[cid]) : null}
