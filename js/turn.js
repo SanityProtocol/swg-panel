@@ -24,7 +24,7 @@ import {
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn, awg3Cls, awg3Tip, awgGen,
          isWdttName, isSelfContainedName, turnIfaceNameError,
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
-         subnetServerAddr, suggestSubnet, ghostIface } from "./model.js";
+         subnetServerAddr, suggestSubnet, ghostIface, ghostPeers } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle, reportDropped, rulesSummary } from "./routing.js";
 import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate, ReachField } from "./views.js";
@@ -2409,7 +2409,7 @@ export function CsqttVersionField({ node, value, onChange }) {
 }
 // Ask before a switch: the server restarts and every user on it reconnects once. Same configs, same passwords.
 function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
-  const n = (Store.recon.peers || []).filter(p => p.targets.some(t => t.node === node && t.iface === iface)).length;
+  const n = ghostPeers(node, iface).length;
   pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: to })} confirmLabel=${T("Switch to {v1}", { v1: to })} warn=${!csqttLineIos(to)}
     body=${n ? T("The server restarts on csqtt {v1} and its {v2} reconnect once. Their configs stay the same. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
       : T("The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: to, v2: from })}

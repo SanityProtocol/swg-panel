@@ -1526,6 +1526,13 @@ _csqtt_standin(os.environ.get("SWG_CSQTT_STANDIN", ""))
 def _csqtt_line_of(rec):                      # an instance record's line (absent / unknown = 2.1: every pre-lines server)
     l = str((rec or {}).get("line") or "").strip()
     return l if l in CSQTT_LINES else CSQTT_DEFAULT_LINE
+def _csqtt_run_line(snap, iface, rec):
+    """The line a server RUNS — its node's report (the symlink), else its record, else 2.1. The update rows and the
+    fork Version panel are built from the report, so every hold and build list is resolved the same way: during a
+    pending or failed switch the record names the line ASKED for, and a hold set by it would land on the wrong binary.
+    Raw — it can be a line this panel does not offer."""
+    row = next((c for c in ((snap or {}).get("csqtt") or []) if isinstance(c, dict) and c.get("iface") == iface), None)
+    return str((row or {}).get("line") or (rec or {}).get("line") or CSQTT_DEFAULT_LINE)
 def _csqtt_hold_svc(line):                    # turn-holds key: 2.1 keeps the one it always had
     return "fork:csqtt" if line == CSQTT_DEFAULT_LINE else "fork:csqtt@" + line
 def _csqtt_current_version(line=CSQTT_DEFAULT_LINE):
@@ -9119,6 +9126,14 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
             _cver = ""
         elif _lines_ok:
             merged["line"] = _line
+            # While a switch is pending or failed (memoed), the server still RUNS another line: name that line's build
+            # too, or it gets no updates or rollbacks until the operator resolves the switch.
+            _row = any(isinstance(c, dict) and c.get("iface") == iface for c in ((snap or {}).get("csqtt") or []))
+            _run = _csqtt_run_line(snap, iface, None)
+            if _row and _run != _line and _run in CSQTT_LINES:
+                _rv = _turn_hold_get(node_id, _csqtt_hold_svc(_run)) or _csqtt_current_version(_run)
+                if _rv:
+                    merged["cur_ver"] = _rv
         elif _line != CSQTT_DEFAULT_LINE:
             _cver = ""                                               # G1: never a non-2.1 build to a node that cannot keep it to one server
         if _cver:
@@ -29297,8 +29312,10 @@ def api(method, path, qs, body, deps):
         # Per LINE (docs/CSQTT-LINES-PLAN.md): one binary per (node, line), so the line follows from `iface` when given
         # (or `line`), else 2.1 — what every caller meant before lines.
         nid = (qs.get("node") or [""])[0]
-        _vi = ((nodes.get(nid) or {}).get("csqtt") or {}).get((qs.get("iface") or [""])[0]) if nid else None
-        _vl = _csqtt_line_of(_vi) if _vi else ((qs.get("line") or [""])[0] if (qs.get("line") or [""])[0] in CSQTT_LINES else CSQTT_DEFAULT_LINE)
+        _qi = (qs.get("iface") or [""])[0]
+        _vi = ((nodes.get(nid) or {}).get("csqtt") or {}).get(_qi) if nid else None
+        _vl = (_csqtt_run_line(((deps.get("node_snaps") or {}).get(nid)), _qi, _vi) if _vi
+               else ((qs.get("line") or [""])[0] if (qs.get("line") or [""])[0] in CSQTT_LINES else CSQTT_DEFAULT_LINE))
         held = _turn_hold_get(nid, _csqtt_hold_svc(_vl)) if nid else ""
         return 200, {"ok": True, "data": {"fork": "csqtt", "line": _vl, "current": _csqtt_current_version(_vl),
                                           "versions": [v for v, _ in (CSQTT_LINES.get(_vl) or [])], "held": held}}
@@ -29314,7 +29331,11 @@ def api(method, path, qs, body, deps):
         if iface and not ((nodes[nid].get("csqtt")) or {}).get(iface):
             return 404, {"ok": False, "error": "unknown csqtt instance", "code": "not_found"}
         # The hold is per (node, LINE) — the line of `iface`, the server the caller acts from (2.1 without one).
-        _vl = _csqtt_line_of(((nodes[nid].get("csqtt")) or {}).get(iface)) if iface else CSQTT_DEFAULT_LINE
+        _vl = (_csqtt_run_line(((deps.get("node_snaps") or {}).get(nid)), iface, ((nodes[nid].get("csqtt")) or {}).get(iface))
+               if iface else CSQTT_DEFAULT_LINE)
+        if _vl not in CSQTT_LINES:
+            # a server on a line this panel does not offer: its hold would land on 2.1's and move every 2.1 server here
+            return 400, {"ok": False, **perr("csqtt {v1} isn't a version this panel offers", v1=_vl[:16]), "code": "bad_request"}
         if ver:
             if ver not in [v for v, _ in (CSQTT_LINES.get(_vl) or [])]:
                 return 400, {"ok": False, "error": "that version isn't a published csqtt build", "code": "bad_request"}

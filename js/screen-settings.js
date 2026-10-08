@@ -2931,7 +2931,8 @@ const sectionLabel = k => ({
               const nodes = forkNodeStates(f.id, _all); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
               // per-node effective version: a hold shows "Held on <held>", else the running version. The row collapses
               // to ONE label when every node agrees, or "N versions" (detail in the hover bubble) when they differ.
-              const perNode = nodes.map(n => { const held = (Store.turnHolds[n.node] || {})[f.id] || ""; return { ...n, held, eff: held || n.version || "" }; });
+              // `_all` (only other csqtt versions run): their holds sit under csqtt@<line>, not under this row's key — no hold shown here (the fork's Version panel shows them per version)
+              const perNode = nodes.map(n => { const held = _all ? "" : (Store.turnHolds[n.node] || {})[f.id] || ""; return { ...n, held, eff: held || n.version || "" }; });
               const distinct = [...new Set(perNode.map(p => p.eff).filter(Boolean))];
               const allHeld = perNode.length > 0 && perNode.every(p => p.held);
               const bub = html`<span class="tf-verpop">

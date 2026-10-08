@@ -21077,7 +21077,9 @@ def _csqtt_line_of(inst):  # the committed line of a node-record instance (absen
     l = ((inst or {}).get("line") or "").strip()
     return l if _csqtt_line_ok(l) else CSQTT_DEFAULT_LINE
 def _csqtt_ifaces(want, line=CSQTT_DEFAULT_LINE):   # the desired ifaces RUNNING one line — they share its binary, so a build swap restarts them all
-    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]
+    # By the symlink alone: an iface not installed yet runs nothing, and restarting it would only fail (docker) or
+    # restart a unit that does not exist — its install fetches whatever the slot then holds.
+    return [i for i in (want or {}) if _csqtt_running_line(i) == line]
 # csqtt ships one implementation today; the instance still records WHICH fork, so a second one can never be
 # silently substituted the way an unknown WDTT fork used to be (see _wdtt_fork_unknown).
 CSQTT_FORK_OWNER = {"csqtt": "amurcanov/csqtt"}
@@ -21257,6 +21259,11 @@ def _csqtt_fetch_bin(inst, binshared, line=CSQTT_DEFAULT_LINE):
     arch = _turn_arch()
     ver = (inst.get("ver") or "").strip()
     want = (inst.get("sha256") or "").strip()
+    if not ver and line != CSQTT_DEFAULT_LINE:
+        # The versionless fetch is "the panel's current build" — 2.1's. Into another line's slot it would put a 2.1
+        # binary under every server on that line while they report the other line (a request from an older panel
+        # carries no build for them). Wait for a panel that names one.
+        return "the panel named no csqtt " + line + " build to fetch — this server keeps its slot until it does"
     if _csqtt_panel_fetch(binshared, want, ver or "csqtt") and os.path.exists(binshared):
         _csqtt_write_ver(ver, line)   # stamp what we actually installed — the version board reads this, not the request
         return ""
@@ -21612,7 +21619,9 @@ def _csqtt_switch_line(inst, frm, to, ver, siblings=()):
     tgt = _csqtt_bin_shared(to)
     if not os.path.exists(tgt) or _csqtt_installed_ver(to) != ver:   # the wanted build rides the switch: one restart, not two
         others = [i for i in siblings if i != iface]
-        e = (_csqtt_update_binary(inst, ver, others, to) if others and os.path.exists(tgt)
+        # _csqtt_update_binary verifies the server it is handed: hand it a sibling, so a sibling that does not come
+        # back on the new build is what gets reported — not this server, which is still up on `frm`.
+        e = (_csqtt_update_binary(dict(inst, iface=others[0]), ver, others, to) if others and os.path.exists(tgt)
              else _csqtt_fetch_bin(dict(inst, ver=ver), tgt, to))
         if e or not os.path.exists(tgt):
             return (e or "csqtt " + to + " binary missing after a reportedly successful fetch", False)
@@ -22190,6 +22199,7 @@ def reconcile_csqtt(want, remove=None):
     have = _csqtt_load()
     if not want and not have:
         return res
+    _sw_pass = [False]                     # one line switch per pass (see below)
     # A name the panel still lists for removal but ALSO asks for is a REUSED name: the operator deleted an
     # instance and made a new one with the same iface. Honouring the removal would delete what was just created,
     # and the next sync would build it again — remove/reinstall every few seconds, forever, re-minting the owner
@@ -22204,11 +22214,16 @@ def reconcile_csqtt(want, remove=None):
             inst = dict(req or {}); inst["iface"] = iface
             prev = have.get(iface) or {}
             inst["panel_managed"] = True
+            _switched = False                  # this server's line switch ran this pass — it restarted it already
             # LINES (docs/CSQTT-LINES-PLAN.md §4.2). `_cur` = the committed line (the record, else the symlink, else
             # 2.1 — every instance from before lines). `_line` = the wanted one. ⚠️ A request WITHOUT `line` keeps
             # the running line: an older or downgraded panel sends none, and reading that as "2.1" would pull every
             # 2.5 server back. Its `ver` is then a 2.1 build, so it applies only to a server on 2.1.
-            _cur = (prev.get("line") if _csqtt_line_ok(prev.get("line")) else "") or _csqtt_running_line(iface) or CSQTT_DEFAULT_LINE
+            # ⚠️ The SYMLINK first: it is what runs. The record is what was last COMMITTED (`_rec`); they differ only when
+            # a noded died mid-switch — then either the request is the line the link already shows (resume the switch's
+            # verify, below) or it is the old one (an ordinary switch back, from what really runs).
+            _rec = prev.get("line") if _csqtt_line_ok(prev.get("line")) else ""
+            _cur = _csqtt_running_line(iface) or _rec or CSQTT_DEFAULT_LINE
             _line = (inst.get("line") or "").strip()
             if not _line:
                 _line = _cur
@@ -22303,7 +22318,22 @@ def reconcile_csqtt(want, remove=None):
                 # has moved on, so blind-stamping would assert an upgrade that never happened, the exact lie this
                 # change exists to remove. Unstamped means UNKNOWN, so it re-fetches once and stamps the truth.
                 _want_ver = (inst.get("ver") or "").strip()
-                if _line != _cur and not inst.get("line_failed"):
+                if _line != _cur and not inst.get("line_failed") and _sw_pass[0]:
+                    # ONE switch per pass: each holds the pass for its stable verify (≥ 5 s), and ten at once would stall
+                    # every other reconcile on the node for over a minute. The rest wait a sync, shown as "switching".
+                    pass
+                elif _rec and _rec != _cur and _line == _cur and not inst.get("line_failed"):
+                    # A switch to `_cur` that a crash cut between the repoint and the verify: finish it — restart + the
+                    # stable verify, reverting to `_rec` (its store copy was taken before the repoint) if it will not run.
+                    _sw_pass[0] = _switched = True
+                    err, _memo = _csqtt_switch_line(inst, _rec, _cur, _want_ver, _csqtt_ifaces(want, _cur))
+                    if err:
+                        inst["line"] = _rec
+                        if _memo:
+                            inst["line_failed"] = {"line": _cur, "ver": _want_ver, "why": err[:200]}
+                        res["errors"].append(iface + ": couldn't switch to csqtt " + _cur + ": " + err)
+                elif _line != _cur and not inst.get("line_failed"):
+                    _sw_pass[0] = _switched = True
                     # A LINE SWITCH (§4.2): this one instance moves; the wanted build rides along, so no build
                     # update follows. A fetch that failed changed nothing and is simply retried next sync; a line
                     # that would not RUN is reverted by the switch itself and memoed, so it is not retried every sync.
@@ -22319,8 +22349,11 @@ def reconcile_csqtt(want, remove=None):
                         # must keep converging there while the switch waits (a fetch that keeps failing would
                         # otherwise freeze every password change on this server).
                         res["errors"].append(iface + ": couldn't switch to csqtt " + _line + ": " + err)
-                elif _want_ver and _line == _cur and _want_ver != _csqtt_installed_ver(_cur):
-                    err = _csqtt_update_binary(inst, _want_ver, _csqtt_ifaces(want, _cur), _cur)
+                # The build the panel names for what RUNS: `ver` when no switch is pending, else `cur_ver` — so a server
+                # whose switch failed (memoed) or waits still gets its own line's updates and rollbacks meanwhile.
+                _run_ver = _want_ver if _line == _cur else (inst.get("cur_ver") or "").strip()
+                if not _switched and _run_ver and _run_ver != _csqtt_installed_ver(_cur):
+                    err = _csqtt_update_binary(inst, _run_ver, _csqtt_ifaces(want, _cur) or [iface], _cur)
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                     res["changed"] += 1
@@ -22353,7 +22386,9 @@ def reconcile_csqtt(want, remove=None):
                     host_sh("systemctl " + ("disable --now " if inst.get("stopped") else "enable --now ")
                             + shlex.quote(_csqtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
-            if inst.get("restart") and inst.get("restart") != prev.get("restart") and not inst.get("stopped"):
+            # `not _switched`: a Restart that retried a failed switch has just restarted the server (onto the new line, or
+            # back) — a second restart here would drop every client twice.
+            if inst.get("restart") and inst.get("restart") != prev.get("restart") and not inst.get("stopped") and not _switched:
                 if NODE_KIND == "docker":
                     _csqtt_docker_start(inst)
                 else:
