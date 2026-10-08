@@ -12962,18 +12962,26 @@ def awg_rules(d, where="", gen3=None):
 # build) and odd-length hex (3.x and the pinned build) are refused somewhere; spaces between tags, <r 0> and upper-case hex
 # are read by all. Twin of js/mimic.js mimicCheck (tests/awg_i_check_selftest.py holds the two to one verdict per line).
 AWG_I_KEYS = ("I1", "I2", "I3", "I4", "I5")
-AWG_I_TAG_MAX, AWG_I_LINE_MAX = 1000, 4096
+AWG_I_TAG_MAX, AWG_I_LINE_MAX, AWG_I_UDP_MAX = 1000, 4096, 65507
 _AWG_I_TAG = re.compile(r"<([a-z]+)(?: ([^<>]*))?>")
+# Every AmneziaWG value is printable ASCII — and the node's tools split a conf with str.splitlines(), which also breaks on
+# U+2028, U+2029, U+0085 and \x1c–\x1e, so a value holding one would read as two lines there and as one malformed line to
+# awg-quick (code review 2026-10-08). ASCII whitespace at the ends is trimmed, as sanitize_awg_params trims what it stores.
+_AWG_BAD_CHAR = re.compile(r"[^\x20-\x7e]")
+
+
+def _awg_trim(v):
+    return ("" if v is None else str(v)).strip(" \t\n\r\f\v")
 
 
 def awg_i_check(v):
-    """One I line → (ok, bytes, why, tag): `bytes` it puts on the wire, or why an app refuses it — "ctl" a control
-    character (a line break), "long" over 4096 characters, "tag" a tag no app reads, "c" a <c>, "big" a random part over
-    1000 bytes, "t2" <t> twice. Blank and "-" are no packet."""
-    s = "" if v is None else str(v)
-    if re.search(r"[\x00-\x1f\x7f]", s):
+    """One I line → (ok, bytes, why, tag): `bytes` it puts on the wire, or why an app refuses it — "ctl" a character outside
+    printable ASCII (a line break, a tab, a Unicode space or line separator), "long" over 4096 characters, "tag" a tag no app
+    reads, "c" a <c>, "big" a random part over 1000 bytes, "t2" <t> twice, "huge" more than one UDP packet carries (65,507
+    bytes). Blank and "-" are no packet."""
+    s = _awg_trim(v)
+    if _AWG_BAD_CHAR.search(s):
         return False, 0, "ctl", ""
-    s = s.strip()
     if s in ("", AWG_OMIT):
         return True, 0, "", ""
     if len(s) > AWG_I_LINE_MAX:
@@ -12981,9 +12989,9 @@ def awg_i_check(v):
     n = t = 0
     rest = s
     while True:
-        rest = rest.lstrip()
+        rest = rest.lstrip(" ")
         if not rest:
-            return True, n, "", ""
+            return (False, 0, "huge", "") if n > AWG_I_UDP_MAX else (True, n, "", "")
         m = _AWG_I_TAG.match(rest)
         if not m:
             mm = re.match(r"<[^>]*>?", rest)
@@ -13021,7 +13029,9 @@ def awg_i_refusal(key, v):
     if why == "t2":
         return perr("{v1}: <t> appears twice — once per packet at most.", v1=key)
     if why == "ctl":
-        return perr("{v1}: holds a line break or another control character.", v1=key)
+        return perr("{v1}: holds a character apps cannot read — a line break, a tab, or anything outside plain ASCII.", v1=key)
+    if why == "huge":
+        return perr("{v1}: more than one UDP packet can carry (65,507 bytes).", v1=key)
     if why == "long":
         return perr("{v1}: longer than 4096 characters.", v1=key)
     return perr("{v1}: apps cannot read {v2} — use <b 0x…>, <r N>, <rc N>, <rd N> or <t>.", v1=key, v2=tag)
@@ -13029,11 +13039,12 @@ def awg_i_refusal(key, v):
 
 def awg_value_refusal(key, v):
     """Any AmneziaWG field: an I line must be one every app reads (awg_i_refusal); every other field must hold no control
-    character — a line break in S1 or H1 would put a line of its own into the server conf and every client config."""
+    character outside printable ASCII — a line break in S1 or H1 would put a line of its own into the server conf and every
+    client config."""
     if key in AWG_I_KEYS:
         return awg_i_refusal(key, v)
-    if re.search(r"[\x00-\x1f\x7f]", "" if v is None else str(v)):
-        return perr("{v1}: holds a line break or another control character.", v1=key)
+    if _AWG_BAD_CHAR.search(_awg_trim(v)):
+        return perr("{v1}: holds a character apps cannot read — a line break, a tab, or anything outside plain ASCII.", v1=key)
     return None
 
 
