@@ -216,6 +216,10 @@ check("built-in: shown as the fourth option, pickable, with its size", D.value =
       && /5 packets, 226 bytes/.test(flat(D.options[3].label)), D.options.map(o => [o.value, o.disabled]));
 check("built-in: 5 packets, 226 bytes, and its note", L.some(l => /5 packets, 226 bytes/.test(l.t)) && L.some(l => /every swgPanel install ships/.test(l.t)));
 check("built-in: no port line (no protocol to fit)", !L.some(l => /most natural/.test(l.t)));
+check("DNS: no port line either — UDP 53 is the node's own resolver on a stock Ubuntu",
+      !lines(pick({ eff: mimicLines({ I1: P0.DNSQ }), was: qL })).some(l => /most natural|UDP 53/.test(l.t)));
+check("DNS: still named as a disguise in the Save line", lines(pick({ eff: mimicLines({ I1: P0.DNSQ }), was: qL })).some(l => /are disguised as DNS query\./.test(l.t)));
+check("no DNS name is a service Russia restricts (YouTube, WhatsApp)", !M.DNS_NAMES.some(n => /youtube|whatsapp/i.test(n)) && M.DNS_NAMES[0] === "www.google.com", M.DNS_NAMES);
 v = pick({ eff: offL, was: offL }); L = lines(v);
 check("off: no packets, no 'what it does' line", L.some(l => /^No packets before the handshake\.$/.test(l.t)) && !L.some(l => /does not help/.test(l.t)));
 const big = mimicLines({ I1: "<r 1000><r 500>" });
