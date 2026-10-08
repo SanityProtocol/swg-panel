@@ -133,7 +133,8 @@ check("the node reports a handshake age", '"handshake": (_exit_handshake(rec, de
 # the moment record and device disagreed — exactly the case worth reporting — and `None` reads as "cannot
 # say", so the panel fell through to `ok` and the broken exit went GREEN again with no IP and no latency.
 check("…asked by the device's own kind", '_first = ["awg"] if (_kind == "awg" or (not _kind and _exit_awg(rec))) else _wgcmd(["wg"])' in nsrc)
-check("…with the other tool as a fallback", "for cmd in (_first, _other):" in nsrc)
+check("…with the other tool as a fallback (one helper, _exit_clis, shared with the DDNS re-point)",
+      "return (_first, _other)" in nsrc and "for cmd in _exit_clis(rec, dev):" in nsrc)
 # ⚠️ AND THE AGE FLOORS AT 1, or the sentinel has two meanings. `max(0, now - ts)` IS 0 for the whole
 # second after every rekey, so a healthy exit reported "never answered" about once every two minutes.
 # See tests/exit_cfg_rev_selftest.py, which measures it.
