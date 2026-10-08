@@ -9288,14 +9288,18 @@ def _exit_ping(endpoint, timeout=1.5):
                 s.close()
 
 
-_EXIT_REDIAL_AT = {}   # exit DEVICE -> when its endpoint name was last re-resolved (each probe thread writes only its own)
+_EXIT_REDIAL_AT = {}   # exit DEVICE -> when its endpoint name was last looked up (each probe thread writes only its own)
+_EXIT_RESOLVED = {}    # exit DEVICE -> (when, (host, port, [ip, …])): a probe's answer, waiting for the caller (_exit_redial)
 
 
 def _exit_resolve(dev, rec, now=None):
     """The addresses the exit's endpoint NAME has now, for `_exit_redial`: (host, port, [ip, …]), or None — an IP
     literal (nothing newer to get), asked within EXIT_REDIAL_EVERY_S of the last time, or a name that does not
     resolve just now. Only the LOOKUP: it waits on DNS, so it runs in the probe threads (_exit_probe_all), and it
-    changes nothing on the device. Both families, because the underlay may be v6 even though the tunnel is v4-only."""
+    changes nothing on the device. Both families, because the underlay may be v6 even though the tunnel is v4-only —
+    measured on msk-main 2026-10-08: all four WARP exits dial engage.cloudflareclient.com over [2606:4700:d0::a29f:c001].
+    The answer is parked in _EXIT_RESOLVED rather than returned with the pass's evidence: a slow resolver can carry the
+    thread past EXIT_PROBE_BOUND_S, and an answer that arrives late is still the answer — the next pass acts on it."""
     now = time.time() if now is None else now
     host, _, port = str((rec or {}).get("endpoint") or "").rpartition(":")
     host = host.strip("[]")
@@ -9313,7 +9317,10 @@ def _exit_resolve(dev, rec, now=None):
         ips = list(dict.fromkeys(a[4][0] for a in socket.getaddrinfo(host, int(port), 0, socket.SOCK_DGRAM)))
     except Exception:
         return None                                  # the device keeps what it has
-    return (host, port, ips) if ips else None
+    if not ips:
+        return None
+    _EXIT_RESOLVED[dev] = (time.time(), (host, port, ips))
+    return (host, port, ips)
 
 
 def _exit_redial(dev, rec, found):
@@ -9328,7 +9335,9 @@ def _exit_redial(dev, rec, found):
     reresolve-dns.sh for the case it exists for: only while the tunnel carries nothing (the caller asks), and the
     peer is touched only when the name no longer lists the address it dials — `wg set … endpoint` on the live device,
     no bounce, so the routing band is not rebuilt and a far side that is simply down costs one lookup. Every address
-    the name has counts as current, so a round-robin name never flaps; a move keeps the family it was dialling.
+    the name has counts as current, so a round-robin name never flaps; a move keeps the family it was dialling
+    (or falls back to v4, never into v6 — see below). Tried with both CLIs (_exit_clis): an amneziawg-go device is
+    invisible to `ip -d link`, and the first version asked only `wg` there and never re-pointed it.
 
     ⚠️ IN THE CALLER'S THREAD, NOT THE PROBE'S, and only for a peer the device HAS. A probe thread can outlive its pass,
     and `wg set <dev> peer <key> endpoint …` ADDS a peer it does not find — a probe finishing after the next pass
@@ -9336,33 +9345,60 @@ def _exit_redial(dev, rec, found):
     if not found or not rec.get("peer_key"):
         return None
     host, port, ips = found
-    cmd = ["awg"] if _link_kind(dev) == "awg" else _wgcmd(["wg"])
-    r = run(cmd + ["show", dev, "endpoints"])
-    if getattr(r, "returncode", 1) != 0:
-        return None
-    live = None
-    for ln in (r.stdout or "").splitlines():
-        parts = ln.split()
-        if len(parts) >= 2 and parts[0] == rec["peer_key"]:
-            live = parts[1]
+    live = cmd = None
+    for c in _exit_clis(rec, dev):
+        r = run(c + ["show", dev, "endpoints"])
+        if getattr(r, "returncode", 1) != 0:
+            continue
+        cmd = c
+        for ln in (r.stdout or "").splitlines():
+            parts = ln.split()
+            if len(parts) >= 2 and parts[0] == rec["peer_key"]:
+                live = parts[1]
+        break
     if live is None:
-        return None                                  # not this device's peer: `set` would ADD it
+        return None                                  # no CLI answered, or not this device's peer: `set` would ADD it
     live_ip = live.rpartition(":")[0].strip("[]")
     if live_ip in ips:
         return None                                  # it already dials what the name says: the far side is just down
+    # ⚠️ THE FAMILY IT WAS DIALLING, OR v4 — NEVER INTO v6. A DDNS name caught mid-update may answer AAAA alone; a v4
+    # tunnel moved onto it on a node without a v6 underlay stays dead, and then reads as "current" for ever. v4 is the
+    # one family every node has, so a v6 tunnel whose name lost its AAAA may fall back to it; nothing else changes family.
     _v6 = lambda a: ":" in a
-    ip = next((a for a in ips if live_ip and _v6(a) == _v6(live_ip)), None) or next((a for a in ips if not _v6(a)), ips[0])
+    try:
+        fam = _v6(str(ipaddress.ip_address(live_ip)))
+    except ValueError:
+        fam = None                                   # "(none)": no endpoint at all — any v4 will do
+    ip = (next((a for a in ips if _v6(a) == fam), None) if fam is not None else None) \
+        or next((a for a in ips if not _v6(a)), None)
+    if ip is None:
+        return None
     fresh = ("[%s]:%s" if _v6(ip) else "%s:%s") % (ip, port)
     r = run(cmd + ["set", dev, "peer", rec["peer_key"], "endpoint", fresh])
     if getattr(r, "returncode", 1) != 0:
         log(LOG_WARNING, "exit device %s: %s now resolves to %s, but re-pointing the tunnel failed: %s",
             dev, host, ip, (r.stderr or "").strip()[:160])
         return None
-    if not _v6(ip):
-        _EXIT_EP_IP[host] = (time.time(), ip)        # the latency column (v4 ICMP) follows the new address at once
+    # The latency column (v4 ICMP) asks the name's v4 address from now on — or looks it up afresh if it has none.
+    _v4 = next((a for a in ips if not _v6(a)), None)
+    if _v4:
+        _EXIT_EP_IP[host] = (time.time(), _v4)
+    else:
+        _EXIT_EP_IP.pop(host, None)
     log(LOG_INFO, "exit device %s: %s now resolves to %s (the tunnel was dialling %s) — re-pointed",
         dev, host, fresh, live)
     return fresh
+
+
+def _exit_clis(rec, dev):
+    """The two CLIs that may talk to this exit device, the likelier first: the one the KERNEL says made it, else the
+    one the record wants. "" from `_link_kind` is not only a down device — an AmneziaWG exit on userspace
+    amneziawg-go (no kernel module: a Secure Boot refusal, a failed compile) is a plain `tun` to `ip -d link`, and
+    `wg show` cannot reach its socket. So every reader asks the first and, failing that, the other."""
+    _kind = _link_kind(dev)
+    _first = ["awg"] if (_kind == "awg" or (not _kind and _exit_awg(rec))) else _wgcmd(["wg"])
+    _other = _wgcmd(["wg"]) if _first == ["awg"] else ["awg"]
+    return (_first, _other)
 
 
 def _exit_handshake(rec, dev):
@@ -9383,10 +9419,7 @@ def _exit_handshake(rec, dev):
     # operator needs to be told. None then reads as "cannot say", the panel falls through to `ok`, and the
     # broken exit goes GREEN AGAIN with no IP and no latency beside it. Reported from the field in that
     # state. "Could not tell" must not resolve to "fine": see the fall-through at the end.
-    _kind = _link_kind(dev)
-    _first = ["awg"] if (_kind == "awg" or (not _kind and _exit_awg(rec))) else _wgcmd(["wg"])
-    _other = _wgcmd(["wg"]) if _first == ["awg"] else ["awg"]
-    for cmd in (_first, _other):
+    for cmd in _exit_clis(rec, dev):
         r = run(cmd + ["show", dev, "latest-handshakes"])
         if getattr(r, "returncode", 1) != 0:
             continue
@@ -9523,8 +9556,8 @@ def _exit_probe_all(devs):
     whole outage, every other reconcile waited, and the verdict, which needs three passes, took 174 s. Together, a
     pass pays one device's timeouts. Only the evidence is gathered here; the verdict stays in the caller's thread,
     which alone touches _EXIT_HEALTH. A probe still out at EXIT_PROBE_BOUND_S, or one that raised, is no evidence.
-    A tunnel that carried nothing also looks up its endpoint's name here (`_exit_resolve`, a 4th element) because that
-    waits on DNS — seconds a device in a resolver outage, paid once, not per exit; re-pointing it is the caller's."""
+    A tunnel that carried nothing also looks up its endpoint's name here (`_exit_resolve`) because that waits on DNS —
+    seconds a device in a resolver outage, paid once, not per exit; re-pointing it is the caller's (_exit_redial)."""
     res = {}
     def one(dev, rec):
         tr = _exit_trace(dev)
@@ -9532,8 +9565,8 @@ def _exit_probe_all(devs):
         res[dev] = (tr, rch, None)               # the verdict's evidence is in: a ping that overruns the bound loses only itself
         res[dev] = (tr, rch, _exit_ping(rec.get("endpoint")))
         if not (tr or {}).get("ip") and rch is not True:
-            res[dev] += (_exit_resolve(dev, rec),)   # nothing crossed: where does its endpoint's NAME point now? (the caller acts)
-    ths =[threading.Thread(target=one, args=(d, r), daemon=True) for d, r in devs]
+            _exit_resolve(dev, rec)              # nothing crossed: where does its endpoint's NAME point now? (the caller acts)
+    ths = [threading.Thread(target=one, args=(d, r), daemon=True) for d, r in devs]
     for t in ths:
         t.start()
     end = time.monotonic() + EXIT_PROBE_BOUND_S
@@ -9832,6 +9865,7 @@ def reconcile_exits(desired, res):
                 # A tunnel built this pass is a NEW tunnel — possibly a new profile or account — and is judged from
                 # scratch rather than inheriting the verdict of the one it replaces.
                 _EXIT_HEALTH.pop(dev, None)
+                _EXIT_REDIAL_AT.pop(dev, None); _EXIT_RESOLVED.pop(dev, None)
                 r = _scoped_up(_exit_tool(rec), conf)
                 if r.returncode != 0:
                     err = err or (r.stderr or "wg-quick up failed").strip()[:160]
@@ -9859,10 +9893,10 @@ def reconcile_exits(desired, res):
         # (_exit_probe_all), judged here in this thread, in order: _EXIT_HEALTH is only ever touched by this loop.
         _pr = _exit_probe_all([(dev, rec) for _s, _x, dev, _p, rec, _e, _b in _slots])
         for _s, xid, dev, prov, rec, err, _blob_err in _slots:
-            _ev = _pr.get(dev) or ({}, None, None)
-            tr, _rch, _png = _ev[:3]
-            if len(_ev) > 3:
-                _exit_redial(dev, rec, _ev[3])
+            tr, _rch, _png = _pr.get(dev) or ({}, None, None)
+            _got = _EXIT_RESOLVED.pop(dev, None)       # a lookup's answer, from this pass's probe or a late one
+            if _got and not (tr or {}).get("ip") and _rch is not True and time.time() - _got[0] < 2 * EXIT_REDIAL_EVERY_S:
+                _exit_redial(dev, rec, _got[1])
             _hl = _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
             out[_s] = _exit_row(xid, dev, prov, rec, err, _blob_err, True, tr, _hl, _png)
 
