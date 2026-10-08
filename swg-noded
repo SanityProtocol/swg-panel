@@ -6994,7 +6994,7 @@ def _ensure_mech_block(mech, res):
             with contextlib.suppress(OSError):
                 os.unlink(os.path.join(GEO_DIR, ".mech.sig"))
             return
-        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "v": 5}, sort_keys=True).encode()).hexdigest()   # v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
+        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "v": 6}, sort_keys=True).encode()).hexdigest()   # v6: explicit burst on the port-scan meter; v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
         sigf = os.path.join(GEO_DIR, ".mech.sig")
         cur = ""
         with contextlib.suppress(OSError):
@@ -7034,9 +7034,17 @@ def _ensure_mech_block(mech, res):
         # mandate is about per-packet SCANNING; a counter on a terminal drop rule is not that.
         for S in sorted(portsets):                                # ONE port-drop rule per subnet (all its port mechanisms)
             lines.append("    ip saddr " + S + " fib daddr type != local meta l4proto . th dport @" + _mech_ports(S) + " counter drop")
+        # ⚠️ THE BURST IS WRITTEN OUT. Left unsaid, nft gives a limit `burst 5 packets`: one address could open 5 connections
+        # in a row, then one per 5 ms — and every packet of an unanswered UDP flow is `ct state new`, so a nested AmneziaWG
+        # handshake (5 I + 4 junk + init = 10 packets) lost 6–10 on every try and never connected (measured on msk-shadow,
+        # 2026-10-08), and the client was filed in @pscf as a scanner after one handshake. A page load is the same shape:
+        # Chrome's netlogs of six news / video sites, replayed through this bucket — burst 5 lost 1–10 TCP SYNs a page (a 1 s
+        # retransmit each), 5–57 flows with QUIC, 19–128 when the device asks an outside resolver (A + AAAA); 64 still lost
+        # 11, 100 none. 200 = one second of the rate: twice one device's need, for a household behind one address. A scan still
+        # meets the same 200/s: ~200 probes more once, then it is cut and flagged as before.
         for S in sorted(meters):                                  # per-SOURCE new-connection rate limit (scans / brute-force). Over-rate
             lines.append("    ip saddr " + S + " fib daddr type != local ct state new meter " + _mech_meter(S) +   # sources are recorded in the flagged set (→ real
-                         " { ip saddr limit rate over 200/second } add @" + _mech_flagged(S) + " { ip saddr timeout 600s } counter drop")   # scanner attribution, self-decaying)
+                         " { ip saddr limit rate over 200/second burst 200 packets } add @" + _mech_flagged(S) + " { ip saddr timeout 600s } counter drop")   # scanner attribution, self-decaying)
         lines += ["  }", "}"]
         with contextlib.suppress(OSError):
             os.makedirs(GEO_DIR, exist_ok=True)
