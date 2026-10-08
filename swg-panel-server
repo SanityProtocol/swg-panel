@@ -29334,7 +29334,8 @@ def api(method, path, qs, body, deps):
         _vl = (_csqtt_run_line(((deps.get("node_snaps") or {}).get(nid)), iface, ((nodes[nid].get("csqtt")) or {}).get(iface))
                if iface else CSQTT_DEFAULT_LINE)
         if _vl not in CSQTT_LINES:
-            # a server on a line this panel does not offer: its hold would land on 2.1's and move every 2.1 server here
+            # a server on a line this panel does not offer: no build of it is listed here, so say WHY instead of "isn't a
+            # published build" (and a release without a ver would only clear a hold no reply reads)
             return 400, {"ok": False, **perr("csqtt {v1} isn't a version this panel offers", v1=_vl[:16]), "code": "bad_request"}
         if ver:
             if ver not in [v for v, _ in (CSQTT_LINES.get(_vl) or [])]:

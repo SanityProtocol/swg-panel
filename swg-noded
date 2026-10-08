@@ -21649,6 +21649,18 @@ def _csqtt_switch_line(inst, frm, to, ver, siblings=()):
     werr = _csqtt_start_one(dict(inst, line=frm)) or _csqtt_verify(iface)
     return (err + ("" if not werr else " — and back on " + frm + " it did not come up either: " + werr), True)
 
+def _csqtt_abort_switch(inst, frm, back):
+    """A switch `back` → `frm` that a crash cut after its repoint, and the panel now asks for `back` again: undo it the
+    way a failed verify would — `back`'s store copy (taken just before the repoint) goes back in, so `back` never
+    starts on a store `frm` may have half-migrated. '' on success."""
+    iface = inst["iface"]; cfgdir = _csqtt_dir(iface)
+    _csqtt_stop_one(iface)
+    _csqtt_store_restore(cfgdir, back)
+    _csqtt_relink(cfgdir + "/server", _csqtt_bin_shared(back))
+    if inst.get("stopped"):
+        return ""
+    return _csqtt_start_one(dict(inst, line=back)) or _csqtt_verify(iface)
+
 def _csqtt_install(inst):
     _unk = _csqtt_fork_unknown(inst)
     if _unk:
@@ -22322,6 +22334,15 @@ def reconcile_csqtt(want, remove=None):
                     # ONE switch per pass: each holds the pass for its stable verify (≥ 5 s), and ten at once would stall
                     # every other reconcile on the node for over a minute. The rest wait a sync, shown as "switching".
                     pass
+                elif _rec and _rec != _cur and _line == _rec:
+                    # The same cut switch, but the panel now asks for the line it was leaving: undo it onto `_rec`'s own
+                    # store copy. An ordinary switch back would start `_rec` on whatever `_cur` left in the store.
+                    _sw_pass[0] = _switched = True
+                    inst["line"] = _rec; inst.pop("line_failed", None)
+                    err = _csqtt_abort_switch(inst, _cur, _rec)
+                    log(LOG_INFO, "csqtt %s: a switch to %s cut by a restart — back on %s", iface, _cur, _rec)
+                    if err:
+                        res["errors"].append(iface + ": back on csqtt " + _rec + ", but: " + err)
                 elif _rec and _rec != _cur and _line == _cur and not inst.get("line_failed"):
                     # A switch to `_cur` that a crash cut between the repoint and the verify: finish it — restart + the
                     # stable verify, reverting to `_rec` (its store copy was taken before the repoint) if it will not run.
