@@ -57,6 +57,7 @@ ALLOWED_CHUNKS = {
         "DNS", "MTU", "IP", "AS", "HeaderProtectionKey", "RandomTrailers", "nginx", "Caddy", "amurcanov",
         "swg", "Panel",                                   # the brand, "swgPanel", split for its two colours
         "docker",                                         # the run-model tag beside a node's name (log budget table)
+        "csqtt",                                          # "csqtt 2.5" — a server's csqtt version line (turn.js, 1.8.9)
     },
     "commands, paths and files the operator types or greps": {
         "docker compose up -d", "systemctl status", "dkms status", "modprobe amneziawg", "mokutil --sb-state",

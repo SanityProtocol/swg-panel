@@ -61,6 +61,16 @@ N.UNIT_DIR_PERSIST = UD
 N.unit_dir_persists = lambda: True
 N.log_ns_ok = lambda: True
 NOW = time.time()
+# A unit's start is told by systemd's MONOTONIC clock, which starts at boot: a unit "started a day ago" cannot exist on a
+# machine up less than a day — the fixture would hand _log_ns_unmoved a negative stamp, which it rightly skips (a gate
+# that was red on any box up < 24 h, CI runners included). Both sides read one clock shifted by 10^7 s instead.
+class _Clock:
+    def __getattr__(self, k):
+        return getattr(time, k)
+    @staticmethod
+    def monotonic():
+        return time.monotonic() + 1e7
+N.time = _Clock()
 def dropin(fam, age_s):
     p = os.path.join(UD, fam + ".d", N.LOG_NS_DROPIN)
     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -83,7 +93,7 @@ def fake_run(args, input_text=None, timeout=20):
         out = "".join("%s loaded active running x\n" % u for u in UNITS if any(u.startswith(p) for p in pats))
         return subprocess.CompletedProcess(args, 0, out, "")
     if args[:2] == ["systemctl", "show"]:
-        mono = time.monotonic()
+        mono = N.time.monotonic()
         blocks = ["Id=%s\nActiveEnterTimestampMonotonic=%d\n" % (u, int((mono - UNITS[u]) * 1e6)) for u in args if u in UNITS]
         return subprocess.CompletedProcess(args, 0, "\n".join(blocks), "")
     if args[:2] == ["systemctl", "restart"]:
