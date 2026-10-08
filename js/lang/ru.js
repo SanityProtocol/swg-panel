@@ -2579,7 +2579,8 @@ export const STR = {
   "{v1}: a random part is at most 1000 bytes — split it, like <r 1000><r 214>.": "{v1}: случайная часть — не больше 1000 байт; разбейте её, например <r 1000><r 214>.",
   "{v1}: <c> is gone from AmneziaWG 3.x, and apps refuse the whole config.": "{v1}: тега <c> нет в AmneziaWG 3.x — приложения отвергнут весь конфиг.",
   "{v1}: <t> appears twice — once per packet at most.": "{v1}: <t> встречается дважды — в пакете он может быть только один.",
-  "{v1}: holds a line break or another control character.": "{v1}: содержит перевод строки или другой управляющий символ.",
+  "{v1}: holds a character apps cannot read — a line break, a tab, or anything outside plain ASCII.": "{v1}: содержит символ, который приложения не прочитают, — перевод строки, табуляцию или что-либо кроме обычного ASCII.",
+  "{v1}: more than one UDP packet can carry (65,507 bytes).": "{v1}: больше, чем вмещает один UDP-пакет (65 507 байт).",
   "{v1}: longer than 4096 characters.": "{v1}: длиннее 4096 символов.",
   "{v1}: apps cannot read {v2} — use <b 0x…>, <r N>, <rc N>, <rd N> or <t>.": "{v1}: приложения не прочитают {v2} — используйте <b 0x…>, <r N>, <rc N>, <rd N> или <t>.",
   // budget-ok: disclosure title, own line

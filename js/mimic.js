@@ -99,19 +99,24 @@ export function mimicOf(awg) {
 
 /* One I line: is it something every app reads, and how many bytes does it put on the wire?
    → { ok: true, bytes } | { ok: false, why, tag? }. A blank or "-" line is ok and 0 bytes (no packet).
-   why: "ctl" a control character (a line break) · "long" over 4096 characters · "tag" not a tag this grammar knows ·
-        "c" a <c> (gone in AmneziaWG 3.x) · "big" a random part over 1000 bytes · "t2" <t> twice in one packet. */
-export const MIMIC_TAG_MAX = 1000, MIMIC_LINE_MAX = 4096;
+   why: "ctl" a character outside printable ASCII (a line break, a tab, a Unicode space or line separator) · "long" over 4096
+        characters · "tag" not a tag this grammar knows · "c" a <c> (gone in AmneziaWG 3.x) · "big" a random part over 1000
+        bytes · "t2" <t> twice in one packet · "huge" more than one UDP packet carries (65,507 bytes).
+   ASCII whitespace at the ends is trimmed first, as the panel's sanitize trims what it stores. Every AmneziaWG value is
+   printable ASCII, and the node's own tools split a conf on Unicode line breaks (Python's splitlines), so nothing else may
+   stay in a line. Twin: swg-panel-server awg_i_check (tests/awg_i_check_selftest.py). */
+export const MIMIC_TAG_MAX = 1000, MIMIC_LINE_MAX = 4096, MIMIC_UDP_MAX = 65507;
+const awgTrim = v => String(v ?? "").replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "");
+const AWG_BAD_CHAR = /[^\x20-\x7e]/;
 export function mimicCheck(s) {
-  s = String(s ?? "");
-  if (/[\x00-\x1f\x7f]/.test(s)) return { ok: false, why: "ctl" };
-  s = s.trim();
+  s = awgTrim(s);
+  if (AWG_BAD_CHAR.test(s)) return { ok: false, why: "ctl" };
   if (s === "" || s === "-") return { ok: true, bytes: 0 };
   if (s.length > MIMIC_LINE_MAX) return { ok: false, why: "long" };
   let bytes = 0, t = 0;
   // spaces between tags and <r 0> are read by every build (measured 2026-10-08: amneziawg-go 0.2.15, 3.1.20260828, the pinned
   // 0.0.20250522); odd hex is refused by 3.x and the pinned build, two <t> by 0.2.15, <c> by 3.x and the pinned build
-  for (let rest = s; (rest = rest.trimStart());) {
+  for (let rest = s; (rest = rest.replace(/^ +/, ""));) {
     const m = /^<([a-z]+)(?: ([^<>]*))?>/.exec(rest);
     if (!m) return { ok: false, why: "tag", tag: (rest.match(/^<[^>]*>?/) || [rest.slice(0, 16)])[0] };
     const [whole, name, arg] = m;
@@ -125,5 +130,13 @@ export function mimicCheck(s) {
     }
     return { ok: false, why: "tag", tag: whole };
   }
-  return { ok: true, bytes };
+  return bytes > MIMIC_UDP_MAX ? { ok: false, why: "huge" } : { ok: true, bytes };
 }
+
+/* Any AmneziaWG field the Edit sheet changes: an I line by mimicCheck, every other field printable ASCII only (twin of the
+   panel's awg_value_refusal) — so the sheet holds Save instead of closing on a save the panel refuses. */
+export function awgFieldCheck(k, v) {
+  return MIMIC_KEYS.includes(k) ? mimicCheck(v) : AWG_BAD_CHAR.test(awgTrim(v)) ? { ok: false, why: "ctl" } : { ok: true, bytes: 0 };
+}
+// the built-in set's packets and bytes, for the picker's row (fixed — computed once, not on every poll's render)
+export const MIMIC_BUILTIN_SIZE = MIMIC_KEYS.reduce(([n, b], k) => { const x = mimicCheck(MIMIC_BUILTIN[k]).bytes; return x ? [n + 1, b + x] : [n, b]; }, [0, 0]);

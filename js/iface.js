@@ -27,7 +27,7 @@ import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCac
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog, reportDropped, rulesSummary, targetLabel } from "./routing.js";
 import { rulesToRows } from "./rulerows.js";
-import { MIMIC_KEYS, MIMIC_PRESETS, MIMIC_BUILTIN, mimicOf, mimicCheck, mimicRender, mimicLines, mimicFill, mimicAfter } from "./mimic.js";
+import { MIMIC_KEYS, MIMIC_PRESETS, MIMIC_BUILTIN_SIZE, mimicOf, mimicCheck, awgFieldCheck, mimicRender, mimicLines, mimicFill, mimicAfter } from "./mimic.js";
 import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, DropsFigure, LossPop, meshHealth, ReachField } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
@@ -1135,7 +1135,8 @@ const MIMIC_TAIL = { off: () => T("disguise: off"), quic: () => T("disguise: QUI
 const mimicWhy = (k, c) => c.why === "big" ? T("{v1}: a random part is at most 1000 bytes — split it, like <r 1000><r 214>.", { v1: k })
   : c.why === "c" ? T("{v1}: <c> is gone from AmneziaWG 3.x, and apps refuse the whole config.", { v1: k })
   : c.why === "t2" ? T("{v1}: <t> appears twice — once per packet at most.", { v1: k })
-  : c.why === "ctl" ? T("{v1}: holds a line break or another control character.", { v1: k })
+  : c.why === "ctl" ? T("{v1}: holds a character apps cannot read — a line break, a tab, or anything outside plain ASCII.", { v1: k })
+  : c.why === "huge" ? T("{v1}: more than one UDP packet can carry (65,507 bytes).", { v1: k })
   : c.why === "long" ? T("{v1}: longer than 4096 characters.", { v1: k })
   : T("{v1}: apps cannot read {v2} — use <b 0x…>, <r N>, <rc N>, <rd N> or <t>.", { v1: k, v2: c.tag });
 const MIMIC_BIG = 1232;            // a packet above this may be split on a 1280-byte path (plan §5)
@@ -1145,12 +1146,11 @@ const MIMIC_MONTH = 30 * 24 * 30;  // handshakes a month for a device that stays
 export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
   const mim = mimicOf(eff), changed = MIMIC_KEYS.some(k => String(eff[k] ?? "") !== String(was[k] ?? ""));
   const size = ([a, b]) => T("1 packet, {v1}–{v2} bytes", { v1: fmtNum(a), v2: fmtNum(b) });
-  const bi = MIMIC_KEYS.map(k => mimicCheck(MIMIC_BUILTIN[k]).bytes);
   const opts = [
     { value: "off", label: html`${MIMIC_NAME.off()} <span class="faint">${T("no packets before the handshake")}</span>` },
     { value: "quic", label: html`${MIMIC_NAME.quic()} <span class="faint">${size(MIMIC_PRESETS.quic.sizes)}</span>` },
     { value: "dns", label: html`${MIMIC_NAME.dns()} <span class="faint">${size(MIMIC_PRESETS.dns.sizes)}</span>` },
-    { value: "builtin", label: html`${MIMIC_NAME.builtin()} <span class="faint">${T("{v1}, {v2} bytes", { v1: plural(bi.length, "packet"), v2: fmtNum(bi.reduce((a, b) => a + b, 0)) })}</span>` },
+    { value: "builtin", label: html`${MIMIC_NAME.builtin()} <span class="faint">${T("{v1}, {v2} bytes", { v1: plural(MIMIC_BUILTIN_SIZE[0], "packet"), v2: fmtNum(MIMIC_BUILTIN_SIZE[1]) })}</span>` },
     ...(mim === "custom" ? [{ value: "custom", label: MIMIC_NAME.custom(), disabled: true }] : []),
   ];
   const pk = MIMIC_KEYS.map(k => [k, mimicCheck(eff[k])]).filter(([, c]) => c.ok && c.bytes);
@@ -1948,9 +1948,20 @@ export function EditIfaceSheet({ node, iface }) {
   // one it never had stays blank. `mimEff` = the lines Save would leave: a blank cell keeps the record's (the update merges).
   const pickMimic = id => { const f = mimicFill(mimicRender(id), meta.awg_params); setAwg(a => ({ ...a, ...f })); };
   const mimWas = mimicLines(meta.awg_params), mimEff = mimicAfter(awg, meta.awg_params);
-  // a line the operator changed that some app cannot read — said under the picker, and Save waits (F9: the whole config fails)
-  const mimBad = isAwg ? MIMIC_KEYS.filter(k => mimEff[k] !== mimWas[k]).map(k => [k, mimicCheck(awg[k])]).find(([, c]) => !c.ok) : null;
-  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : "";
+  // A value the operator changed that the panel would refuse — said under the picker, and Save waits instead of closing on a
+  // save that then fails (F9: an app refuses the whole config; code review 2026-10-08): an I line some app cannot read, any
+  // field outside printable ASCII, and a line taken off ("-") on a node that cannot hold an empty field yet, or before the
+  // node has reported an interface whose set is not whole — the panel's own two refusals (awg_exact_refusal), in its words.
+  const _apT = k => String((meta.awg_params || {})[k] ?? "").trim();
+  const mimBad = isAwg ? AWG_ORDER.filter(k => { const d = String(awg[k] ?? "").trim(); return d && !awgIsNone(d) && d !== _apT(k); })
+    .map(k => [k, awgFieldCheck(k, awg[k])]).find(([, c]) => !c.ok) : null;
+  const _rm = isAwg && AWG_ORDER.some(k => awgIsNone(awg[k]) && (meta.awg_params || {})[k] != null);
+  const _snapN = Store.stats[node] || {};
+  const omitNo = !_rm ? "" : (((_snapN.datapath || {}).awg || {}).exact !== 1)
+    ? T("{v1} cannot hold an empty AmneziaWG field yet — it is offline or needs an update", { v1: Store.nodeName(node) })
+    : !meta.awg_exact && !Object.keys(((((_snapN.interfaces || {})[iface] || {}).meta || {}).awg_params) || {}).length
+      ? T("{v1}: wait for the node to report this interface, then set a field to none", { v1: iface }) : "";
+  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo;
   // The AmneziaWG version (docs/AWG3-PLAN.md §7.7): an AmneziaWG interface that is not a mesh link. Flipping it and pressing Save
   // opens the switch window; the reason the panel would refuse either way greys that side (an older node can do neither).
   const genWas = awgGen(node, iface) || "2.0";
