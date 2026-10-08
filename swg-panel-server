@@ -7897,11 +7897,13 @@ def range_read(ring, want, lv, since, until, stop, journal=None, files=(), ctrs=
 # each {nodes, sources, a lease the viewer's poll renews, the last LIVE_BUF lines}. A panel restart forgets them: the
 # viewer's next poll gets 404 and opens a new one, and the nodes' readers end with their leases.
 # The node leg rides the sync reply (`logs`, only while a request names that node — an idle fleet's reply is unchanged)
-# and the lines come back on POST /api/node/logs, authorized by a key bound to the request and the node (§23.1). Neither
+# and the lines come back on POST /api/node/logs, authorized by a key bound to the request and the node (§23.1) — read
+# only from the node token that reply went with (log_post_admits, before the body). Neither
 # that route nor the viewer's routes go through api(), which parses the whole node store on every call, nor take
 # _api_lock: they touch nothing but this store.
 LIVE_REQ_MAX, LIVE_LEASE, LIVE_BUF = 4, 15, 5000
 LIVE_POST_MAX, LIVE_POST_RAW_MAX, LIVE_POST_LINES = 1 << 20, 4 << 20, 2000
+LOG_POST_SLOTS = threading.BoundedSemaphore(4)   # log posts unpacked + parsed at once (4 KB of gzip can parse to ~100 MB)
 LIVE_RATE = 1000            # lines a second one request takes at most, shared by its nodes (§23.2)
 LIVE_CUR_MAX = 8192         # bytes of a node's resume point (a docker node's file cursors carry their paths)
 LIVE_SKEW_S = 2             # a node clock off by this much or more is corrected in the viewer (§23.7)
@@ -7934,6 +7936,26 @@ def _log_post_node(rec, key):
     ok = nid != LIVE_PANEL and nid in rec["nodeset"] and hmac.compare_digest(key.encode("utf-8", "replace"),
                                                                             _live_key(rec, nid).encode())
     return nid if ok else None
+
+
+def _log_tok(hdr):
+    """The sha256 of an `Authorization: Bearer <node token>` header's token (what find_node_by_token compares), or ""."""
+    tok = hdr[7:].strip() if isinstance(hdr, str) and hdr.startswith("Bearer ") else ""
+    return hashlib.sha256(tok.encode()).hexdigest() if tok else ""
+
+
+def log_post_admits(tok):
+    """May a log post's body be read at all? Only with a node token a sync reply handed an open request's key to (each
+    request's `toks`): a set lookup BEFORE the body is read, unpacked and parsed — never the node store (§23.1). The key
+    in the body still decides the request and the node; this keeps anyone else from making the panel parse (q189 F1: 16
+    anonymous 4 KB gzip posts took a panel from 44 MB to 829 MB while one viewer was open)."""
+    if not tok:
+        return False
+    with _LIVE_LOCK:
+        if any(tok in r.get("toks", ()) for r in _LIVE_REQS.values()):
+            return True
+    with _RANGE_LOCK:
+        return any(tok in r.get("toks", ()) for r in _RANGE_REQS.values())
 
 
 def _log_post_lines(lines, cap, marks=()):
@@ -7992,7 +8014,7 @@ def live_open(nodes, srcs, known, replace=None, now=None):
             "id": rid, "secret": secrets.token_bytes(16), "nodes": nodes, "nodeset": set(nodes), "src": srcs,
             "iv": live_iv(len(nodes)), "cap": live_cap(len(nodes)), "lease": now + LIVE_LEASE, "at": now,
             "seq": 0, "buf": collections.deque(maxlen=LIVE_BUF), "cur": {}, "st": {}, "off": {}, "sent": {},
-            "acked": set(), "stop": threading.Event()}
+            "acked": set(), "toks": set(), "stop": threading.Event()}
     if LIVE_PANEL in rec["nodeset"]:
         threading.Thread(target=_live_panel_run, args=(rec,), daemon=True, name="swg-logs-" + rid).start()
     return 200, {"ok": True, "data": {"id": rid, "iv": rec["iv"], "cap": rec["cap"]}}
@@ -8043,9 +8065,10 @@ def live_view(rid, after, have, snaps, seen, stale_s, now=None):
     return {"id": rid, "seq": seq, "lines": lines, "iv": rec["iv"], "h": h, **({} if h == have else {"nodes": nodes})}
 
 
-def live_reply(nid, now=None):
+def live_reply(nid, now=None, tok=""):
     """The sync reply's `logs` for one node: every live request naming it, or None — and then no key at all, so an idle
-    fleet's reply is byte-identical to one from before the viewer."""
+    fleet's reply is byte-identical to one from before the viewer. `tok`: the sync's node token (_log_tok), whose posts
+    each request it names then reads (log_post_admits)."""
     if not _LIVE_REQS:
         return None
     now = time.time() if now is None else now
@@ -8055,6 +8078,8 @@ def live_reply(nid, now=None):
         for rec in _LIVE_REQS.values():
             if nid in rec["nodeset"]:
                 rec["sent"].setdefault(nid, now)
+                if tok:
+                    rec["toks"].add(tok)
                 e = {"id": rec["id"], "src": rec["src"], "iv": rec["iv"], "cap": rec["cap"],
                      "lease": max(1, int(rec["lease"] - now)), "key": _live_key(rec, nid)}
                 if nid in rec["cur"]:
@@ -8285,7 +8310,7 @@ def range_open(body, known, now=None):
             "label": label, "share": RANGE_TOTAL // len(nodes), "iv": live_iv(len(nodes)), "at": now, "phase": "reading",
             "ns": {n: {"state": "waiting"} for n in nodes}, "dir": os.path.join(_RANGE_DIR["path"] or ".", rid),
             "made": 0.0, "read": 0.0, "polled": now, "locks": {n: threading.Lock() for n in nodes},
-            "stop": threading.Event()}
+            "toks": set(), "stop": threading.Event()}
         if rec:
             _RANGE_REQS[rid] = rec
     if busy:
@@ -8349,9 +8374,9 @@ def _range_tick(rec, snaps, seen, stale_s, now):
     return all(ns["state"] in RANGE_FINAL for ns in rec["ns"].values())
 
 
-def range_reply(nid, now=None):
+def range_reply(nid, now=None, tok=""):
     """The sync reply's `logrange` for one node: each range still waiting on it, or None — and then no key at all, so an
-    idle fleet's reply is byte-identical."""
+    idle fleet's reply is byte-identical. `tok` as live_reply's."""
     if not _RANGE_REQS:
         return None
     now = time.time() if now is None else now
@@ -8363,6 +8388,8 @@ def range_reply(nid, now=None):
             if rec["phase"] != "reading" or ns is None or ns["state"] not in ("waiting", "reading", "sending"):
                 continue
             ns.setdefault("sent", now)
+            if tok:
+                rec["toks"].add(tok)
             out.append({"id": rec["id"], "key": _live_key(rec, nid), "src": rec["src"], "lv": rec["lv"],
                         "since": rec["since"], "until": rec["until"], "share": rec["share"], "iv": rec["iv"],
                         "now": int(now)})
@@ -32843,8 +32870,9 @@ class Handler(BaseHTTPRequestHandler):
         # ignore it and behave as before.
         owned_ifaces = sorted((node.get("ifaces") or {}).keys())
         _nprobe = net_probe_reply(nid)
-        _live = live_reply(nid)          # Logs P2: only while a viewer names this node
-        _lrange = range_reply(nid)       # Logs P3: only while a range download waits on this node
+        _ltok = _log_tok(self.headers.get("Authorization"))   # this sync's node token: its log posts are read (F1)
+        _live = live_reply(nid, tok=_ltok)          # Logs P2: only while a viewer names this node
+        _lrange = range_reply(nid, tok=_ltok)       # Logs P3: only while a range download waits on this node
         # What the node drops even on an add-only interface: the keys the operator retired (rotated, deleted, moved off)
         # and every cut-off peer still on the wire here (cut_off_for_node). Just the retirements when nobody is cut off.
         _remove = {_ifn: list(_pks) for _ifn, _pks in (node.get("retire") or {}).items()}
@@ -33043,22 +33071,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def _node_logs(self):
         """Logs P2: a node's live lines for a viewer (live_absorb). Authorized by the key the node got in its sync reply for
-        that request — not the node token, whose check parses the whole node store (docs/LOGS-PLAN.md §23.1). gzip, at
-        most LIVE_POST_MAX on the wire and LIVE_POST_RAW_MAX unpacked. No _api_lock, no store, no snapshot: the sync
-        invariant (reconcile only on a 200 carrying `desired`) is not this route's business."""
+        that request — not by find_node_by_token, whose check parses the whole node store (docs/LOGS-PLAN.md §23.1). The
+        body is read only from the node token that reply went with (log_post_admits, a set lookup), and unpacked + parsed
+        LOG_POST_SLOTS at a time (503: noded sends it again). gzip, at most LIVE_POST_MAX on the wire and LIVE_POST_RAW_MAX
+        unpacked. No _api_lock, no store, no snapshot: the sync invariant (reconcile only on a 200 carrying `desired`) is
+        not this route's business."""
         if not _LIVE_REQS and not _RANGE_REQS:          # nothing open (nearly always): no remote body is unpacked and
             return self._send(404, {"ok": False, "error": "no such request", "code": "gone"})   # parsed for nothing
+        if not log_post_admits(_log_tok(self.headers.get("Authorization"))):   # before the body: anyone else parses nothing
+            return self._send(401, {"ok": False, "error": "invalid node token", "code": "unauthorized"})
         n = self._body_len(cap=LIVE_POST_MAX)
         if n is None:
             return
         raw = self.rfile.read(n) if n else b""
+        if not LOG_POST_SLOTS.acquire(blocking=False):
+            return self._send(503, {"ok": False, "error": "busy — send it again", "code": "busy"})
         try:                                               # remote input, before any key: never a dropped connection
-            if (self.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
-                d = zlib.decompressobj(16 + zlib.MAX_WBITS)
-                raw = d.decompress(raw, LIVE_POST_RAW_MAX)
-                if d.unconsumed_tail:
-                    return self._send(413, {"ok": False, "error": "request body too large", "code": "too_large"})
-            body = json.loads(raw or b"{}")              # RecursionError (deep nesting) included
+            try:
+                if (self.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
+                    d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                    raw = d.decompress(raw, LIVE_POST_RAW_MAX)
+                    if d.unconsumed_tail:
+                        return self._send(413, {"ok": False, "error": "request body too large", "code": "too_large"})
+                body = json.loads(raw or b"{}")          # RecursionError (deep nesting) included
+            finally:
+                LOG_POST_SLOTS.release()                   # the absorb — a range part's spool too — runs outside it
             if not isinstance(body, dict):
                 raise ValueError
             if body.get("id") in _RANGE_REQS and "seq" not in body:   # a range's progress: memory only, never refused
