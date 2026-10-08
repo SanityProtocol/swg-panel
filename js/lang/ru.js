@@ -4692,8 +4692,8 @@ export const STR = {
   "healthy": "работает",
   "down — host routing degraded": "не работает — домены страдают",
   "OFF — routing stays fresh, no remembered IPs": "ВЫКЛ — маршруты свежие, адреса не запоминаются",
-  "Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. The server's own Torrents / P2P setting can block it on every way out.":
-    "Резать BitTorrent и P2P с этого интерфейса на любом порту — их узнают по протоколу и по характеру соединений. Собственная настройка сервера «Торренты / P2P» может закрыть их на всех выходах.",
+  "Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. Counts only when the server's own Torrents / P2P setting is “Each interface decides”: by default the server blocks it on every way out.":
+    "Резать BitTorrent и P2P с этого интерфейса на любом порту — их узнают по протоколу и по характеру соединений. Действует, только если в настройке сервера «Торренты / P2P» выбрано «Решает каждый интерфейс»: по умолчанию сервер закрывает их на всех выходах.",
   // the node-wide torrent policy (Settings ▸ node ▸ Network ▸ Filters & abuse)
   "Torrents / P2P": "Торренты / P2P",
   "Torrents / P2P: {v1}": "Торренты / P2P: {v1}",
@@ -4723,10 +4723,8 @@ export const STR = {
   "Through another node": "Через другую ноду",
   "There is no mesh link to {v1}.": "До {v1} нет mesh-связи.",
   "{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.": "{v1} сейчас не выходит на связь — торрент-трафик, отправленный туда, не выйдет, пока связь не вернётся.",
-  "Chosen automatically: every interface on this server blocks torrents. Pick a setting to keep it from changing when an interface does.":
-    "Выбрано автоматически: все интерфейсы этого сервера блокируют торренты. Выберите значение явно, чтобы оно не менялось вместе с интерфейсами.",
-  "Chosen automatically: an interface on this server lets torrents through. Pick a setting to fix the choice.":
-    "Выбрано автоматически: один из интерфейсов этого сервера пропускает торренты. Выберите значение явно, чтобы закрепить его.",
+  "Chosen automatically: this is the default. An interface's own Torrents / P2P switch counts only when you pick “Each interface decides”.":
+    "Выбрано автоматически: это значение по умолчанию. Переключатель «Торренты / P2P» на интерфейсе действует, только если выбрать «Решает каждый интерфейс».",
   "the torrent route's way out is down — torrent traffic is blocked until it is back":
     "путь для торрентов сейчас не работает — пока он не восстановится, торрент-трафик блокируется",
   "Torrent route removed": "Маршрут для торрентов снят",

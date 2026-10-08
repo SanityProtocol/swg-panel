@@ -1026,7 +1026,7 @@ let _mech_hint = null;
 // screen offers them: a switch that blocks nothing is worse than no switch — and blocking WebRTC would break calls (Meet).
 const MECH_UNBUILT = new Set(["cryptomining", "webrtc"]);
 export const MECH_HINT = () => (_mech_hint || (_mech_hint = {
-  torrents:     T("Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. The server's own Torrents / P2P setting can block it on every way out."),
+  torrents:     T("Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. Counts only when the server's own Torrents / P2P setting is “Each interface decides”: by default the server blocks it on every way out."),
   smtp:         T("Drop outbound mail on TCP :25 — stops spam being relayed through this exit."),
   portscan:     T("Rate-limit outbound port-scans, brute-force and SYN-floods leaving this interface."),
   cryptomining: T("Drop known cryptomining / Stratum-pool traffic."),

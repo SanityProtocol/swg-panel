@@ -14424,26 +14424,27 @@ BLOCK_CAT_ORDER = list(BLOCK_CATEGORIES.keys()) + list(MECH_CATEGORIES.keys())
 
 # The node-wide P2P policy (docs/P2P-POLICY-PLAN.md): what happens to torrent traffic on EVERY way out of the node —
 # interfaces, mesh arrivals, the node's own processes — not only an interface's own subnet.
-#   block   dropped everywhere          direct  only out this node's own address (its main default route)
+#   block   dropped everywhere — THE DEFAULT     direct  only out this node's own address (its main default route)
 #   iface   each interface's "Torrents / P2P" switch decides (the per-interface mechanism, as before this policy)
 #   exit    out through the mesh to another node ({"node": nid})   dev   out through one of this node's exits ({"exit_id"})
-# The node is sent block|direct, or route + the lowered entry (cascade_plan's `_p2p`); iface is the absence of a policy.
+# The node is sent block|direct, or route + the lowered entry (cascade_plan's `_p2p`); iface is sent as no policy at all.
 P2P_ACTIONS = ("block", "direct", "iface", "exit", "dev")
 
 
 def p2p_policy(node):
-    """The node's P2P policy in force. Stored once the operator saves it; until then COMPUTED, never written: block when
-    every interface, WDTT and csqtt server on the node already blocks torrents (the default — so a new node is block, and
-    a pure exit with no user interfaces is too, which is where an abuse complaint lands), else iface — exactly the
-    behaviour the node had before the policy existed. A computed default is not stored so nothing migrates and nothing
-    flips back on a downgrade."""
+    """The node's P2P policy in force: what the operator saved, else block. The default is never written — it is the
+    absence of a choice — so nothing migrates, and a choice made later is the only thing ever stored.
+    ⚠️ Reversed 2026-10-08 (operator: torrents blocked by default). The default used to be COMPUTED from the node's
+    records: block while every interface, WDTT and csqtt server had Torrents / P2P switched on, else iface — "the
+    behaviour the node had before the policy existed". It read as block-by-default and was off in practice: an interface
+    the installer made or one onboarded is recorded with no block list, and so is a WDTT or csqtt server created from
+    the Turn proxies card, so one such record turned the node to iface — which also stops judging the node's own
+    processes and the traffic other nodes send out through it. Measured on swgt: 3 of 4 nodes computed iface, none by
+    choice. The per-interface switches still decide under an iface the operator picks."""
     v = node.get("p2p")
     if isinstance(v, dict) and v.get("action") in P2P_ACTIONS:
         return v["action"]
-    recs = [ov for ov in (node.get("ifaces") or {}).values() if isinstance(ov, dict) and not ov.get("system")]
-    recs += [ov for ov in (node.get("wdtt") or {}).values() if isinstance(ov, dict)]
-    recs += [ov for ov in (node.get("csqtt") or {}).values() if isinstance(ov, dict)]
-    return "block" if all("torrents" in (r.get("block") or []) for r in recs) else "iface"
+    return "block"
 
 
 def _block_list_src(pid, lid):

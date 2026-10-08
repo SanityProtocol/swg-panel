@@ -4788,7 +4788,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       <${DefaultReach} node=${node}/><//></div>` : null}
     ${(() => {   // shown as the policy IN FORCE: what is stored, or the computed default the server says applies
       const exits = v.exits || node.exits || [];
-      const curRec = (v.p2p && v.p2p.action) ? v.p2p : { action: node.p2p_eff || "iface" };
+      const curRec = (v.p2p && v.p2p.action) ? v.p2p : { action: node.p2p_eff || "block" };
       const cur = p2pVal(curRec), routed = curRec.action === "dev" || curRec.action === "exit";
       const pn = node.p2p_node;
       // The exits are the ROUTING PICKERS' OWN LIST (`exitOptionGroups`): a switched-off exit and a WARP account that is not
@@ -4819,9 +4819,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
             <div class="hint">${routed
               ? T("Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server, and programs running on it, are blocked.", { v1: p2pTarget(curRec, exits, node) })
               : P2P_HINT()[cur]}</div>
-            ${!(v.p2p && v.p2p.action) ? html`<div class="hint">${cur === "block"
-              ? T("Chosen automatically: every interface on this server blocks torrents. Pick a setting to keep it from changing when an interface does.")
-              : T("Chosen automatically: an interface on this server lets torrents through. Pick a setting to fix the choice.")}</div>` : null}
+            ${!(v.p2p && v.p2p.action) ? html`<div class="hint">${T("Chosen automatically: this is the default. An interface's own Torrents / P2P switch counts only when you pick “Each interface decides”.")}</div>` : null}
             ${tgtStale ? html`<div class="hint warnish">${T("{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.", { v1: tgt.name })}</div>` : null}
             ${tgtDrops ? html`<div class="hint warnish">${T("{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.", { v1: tgt.name })}</div>` : null}
             ${pn && pn.state === "degraded" && cur !== "iface" ? html`<div class="hint warnish">${T("This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.")}</div>` : null}
