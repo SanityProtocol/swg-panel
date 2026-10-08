@@ -19,11 +19,15 @@ line made of a build that is already published — and the node's side played by
   [7] prune      every line's current build and a per-line hold are in the mirror's needed-set
   [8] mirror     a server the node runs with no record is recorded with the line it runs (or the next reply
                  would ask the node to switch it to 2.1)
-  [9] default    without SWG_CSQTT_STANDIN there is one line and /api/state offers one
+  [9] default    without SWG_CSQTT_STANDIN there is one line and /api/state offers one; a stand-in never replaces a
+                 real line
+  [10] unoffered a server recorded on a line this panel does not offer (the stand-in unset, a panel rolled back) gets
+                 no line and no build — the node keeps what runs — and the mirror records such a line as it runs
 
 Run: python3 tests/csqtt_lines_panel_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
-                       g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8]
+                       g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8] ·
+                       override [9] · unoffered [10]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -42,6 +46,8 @@ PLANTS = {
               "                pass\n"),
     "needed": ("[7]", "    for _cl in CSQTT_LINES:                   # every line's current build",
                "    for _cl in [CSQTT_DEFAULT_LINE]:          # every line's current build"),
+    "override": ("[9]", "and line not in CSQTT_LINES and builds:", "and builds:"),
+    "unoffered": ("[10]", "        if _line not in CSQTT_LINES:\n", "        if False:\n"),
     "mirror": ("[8]", "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
@@ -169,14 +175,14 @@ try:
     c1 = sync("nnew").get("csqtt1") or {}
     check("the next reply asks for line 2.5 with 2.5's build", c1.get("line") == "2.5" and c1.get("ver") == "2.1.9-3", c1)
     code, ev = req("/api/events?limit=50")
-    check("the switch is in the activity log", "Switched a csqtt server's version" in json.dumps(ev), str(ev)[:200])
+    check("the switch is in the activity log", "Switching a csqtt server's version" in json.dumps(ev), str(ev)[:200])
 
     section("[4] what the SPA reads")
     code, st = req("/api/state")
     d = st.get("data") or st
     nn = next((n for n in (d.get("nodes") or []) if n.get("id") == "nnew"), {})
     check("csqtt_cfg publishes the line", ((nn.get("csqtt_cfg") or {}).get("csqtt1") or {}).get("line") == "2.5", nn.get("csqtt_cfg"))
-    check("/api/state offers 2.1 and 2.5", [x.get("id") for x in (d.get("csqtt_lines") or [])] == ["2.1", "2.5"], d.get("csqtt_lines"))
+    check("/api/state offers 2.1 and 2.5", d.get("csqtt_lines") == ["2.1", "2.5"], d.get("csqtt_lines"))
 
     section("[5] versions and holds per line")
     put_csqtt("nnew", "csqtt2", dict(C1, tun_addr="10.66.91.1/24", listen="0.0.0.0:46020"))
@@ -233,6 +239,21 @@ try:
     check("one line on offer", list(P1.CSQTT_LINES) == ["2.1"], list(P1.CSQTT_LINES))
     check("a stand-in naming an unpublished build adds nothing", (P1._csqtt_standin("2.5=9.9.9") or True) and list(P1.CSQTT_LINES) == ["2.1"])
     check("a stand-in cannot replace 2.1", (P1._csqtt_standin("2.1=2.0.1") or True) and P1.CSQTT_LINES["2.1"][0][0] == "2.1.9-4")
+    P1.CSQTT_LINES["2.5"] = [("2.5.0-1", "csqtt-2.5.0-1")]
+    P1._csqtt_standin("2.5=2.1.9-3")
+    check("a stand-in cannot replace a released 2.5", P1.CSQTT_LINES["2.5"] == [("2.5.0-1", "csqtt-2.5.0-1")], P1.CSQTT_LINES["2.5"])
+    del P1.CSQTT_LINES["2.5"]
+
+    section("[10] a line this panel does not offer")
+    put_csqtt("nnew", "csqtt8", dict(C1, tun_addr="10.66.98.1/24", listen="0.0.0.0:46080", line="3.0"))
+    c8 = sync("nnew", rows + [{"iface": "csqtt8", "kind": "csqtt", "fork": "csqtt", "line": "3.0", "version": "3.0.0-1", "max_passwords": 500, "params": ""}]).get("csqtt8") or {}
+    check("no line in the reply (the node keeps what runs)", "line" not in c8, c8)
+    check("no build in the reply", "ver" not in c8, c8)
+    rows9 = rows + [{"iface": "csqtt9", "kind": "csqtt", "fork": "csqtt", "line": "3.0", "version": "3.0.0-1", "listen": "0.0.0.0:46090",
+                     "tun_addr": "10.66.99.1/24", "max_passwords": 500, "params": "", "passwords": {}}]
+    sync("nnew", rows9)
+    check("the mirror records a line it does not offer as it runs", ((nodes()["nnew"].get("csqtt") or {}).get("csqtt9") or {}).get("line") == "3.0",
+          (nodes()["nnew"].get("csqtt") or {}).get("csqtt9"))
 finally:
     proc.terminate()
     try: proc.wait(5)
