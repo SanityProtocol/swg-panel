@@ -162,10 +162,13 @@ class Panel:
 
 
 def mask(o, port=None):
-    """Timestamps and run-unique values (the scratch port) masked, so two runs compare."""
+    """Timestamps and run-unique values (the scratch port) masked, so two runs compare. Also the sync reply's
+    `smart.p2p`, the node's torrent policy: its default changed ON PURPOSE on 2026-10-08 (block when nothing is saved —
+    the base sent None for a node with an interface record lacking torrents), which is not this plan's subject; the
+    policy's own gate is tests/p2p_policy_panel_selftest.py."""
     if isinstance(o, dict):
         return {k: ("T" if k in ("created", "at", "generated_at", "seen", "last_seen", "ts", "panel_now", "token", "token_hash",
-                                 "token_sha", "_seen") else mask(v, port)) for k, v in o.items()}
+                                 "token_sha", "_seen") or (k == "p2p" and "entries" in o) else mask(v, port)) for k, v in o.items()}
     if isinstance(o, (list, tuple)):
         return [mask(v, port) for v in o]
     if isinstance(o, (int, float)) and not isinstance(o, bool) and (o > 1.7e9 or (port and o == port)):

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Self-test — the node-wide P2P policy on the PANEL (docs/P2P-POLICY-PLAN.md, P2).
 
-  [1] p2p_policy: a stored choice wins; absent → COMPUTED, never written: block when every interface, WDTT and csqtt
-      server already blocks torrents (vacuously true for a node with none — a pure exit), else iface; system
-      interfaces (mesh links) don't count
+  [1] p2p_policy: a stored choice wins (iface included); absent → BLOCK, never written — whatever the records say: an
+      interface recorded with no block list (the installer's, an onboarded one, the sync's own record), one with
+      Torrents / P2P off, a WDTT or csqtt server without it. ⚠️ Reversed 2026-10-08: the default used to be computed
+      from those records (iface as soon as one lacked torrents) and was off on 3 of 4 swgt nodes, none by choice
   [2] THE DOOR — /api/nodes/update through the real handler: block|direct|iface stored as {action}; null → back to the
-      computed default; anything else refused and nothing written
-  [3] THE WIRE — the sync slice sends smart.p2p = {action} only for block|direct; iface sends None (the node keeps the
-      per-interface mechanism alone, exactly as before)
-  [4] THE CARD — a node told to block/direct that does not report `p2p` gets one issue; a node that reports it, or a
-      node under iface, or one that has not reported smart status at all, gets none
+      default; anything else refused and nothing written
+  [3] THE WIRE — the sync slice sends smart.p2p = {action} for block|direct — a node with nothing saved gets block —
+      and None only for a saved iface (the node keeps the per-interface mechanism alone)
+  [4] THE CARD — a node told to block/direct that does not report `p2p` gets one issue (a node with only a bare
+      interface record included — it is block by default); a node that reports it, or a node under a saved iface, or
+      one that has not reported smart status at all, gets none
   [5] PUBLISHED — /api/state's node carries p2p (stored), p2p_eff (in force) and p2p_node (what the node runs)
   P3 — ROUTE
   [6] the door: exit → another existing node only; dev → one of THIS node's exits only; refused otherwise, nothing written
@@ -24,7 +26,8 @@
   [13] the picker's exits ARE the routing pickers' list (`exitOptionGroups` — a switched-off exit and a WARP account that
        is not ready refused with their reason); a node with no mesh link is refused; a node not reporting is a WARNING on
        the chosen target, never a refusal (judged in this browser, before its first status pass too — code review);
-       and it says when the policy shown is the automatic default
+       and it says when the policy shown is the automatic default — the one sentence, that the default is block and an
+       interface's switch counts only under "Each interface decides"; with no p2p_eff from the server it shows block
   [14] CODE REVIEW #2: "not reporting" is the panel's own verdict (`nodeStatusOf` — the server's "never synced" too), and an
        exit that is gone from the list is named by its id, never "Custom"
   [9] the card: a route the node runs as block → "the torrent route is unavailable"; the target gone → pruned to block
@@ -41,9 +44,15 @@ SRC = open(PANEL, encoding="utf-8").read()
 SPA = os.path.join(ROOT, "js", "screen-settings.js")
 
 PLANTS = {
-    "wdtt-ignored":  ('    recs += [ov for ov in (node.get("wdtt") or {}).values() if isinstance(ov, dict)]\n', ""),
-    "system-counts": ('    recs = [ov for ov in (node.get("ifaces") or {}).values() if isinstance(ov, dict) and not ov.get("system")]',
-                      '    recs = [ov for ov in (node.get("ifaces") or {}).values() if isinstance(ov, dict)]'),
+    # the default before 2026-10-08: computed from the records, iface as soon as one lacked torrents
+    "computed-default": ('        return v["action"]\n    return "block"\n',
+                         '        return v["action"]\n'
+                         '    recs = [ov for ov in (node.get("ifaces") or {}).values() if isinstance(ov, dict) and not ov.get("system")]\n'
+                         '    recs += [ov for ov in (node.get("wdtt") or {}).values() if isinstance(ov, dict)]\n'
+                         '    recs += [ov for ov in (node.get("csqtt") or {}).values() if isinstance(ov, dict)]\n'
+                         '    return "block" if all("torrents" in (r.get("block") or []) for r in recs) else "iface"\n'),
+    "default-iface": ('        return v["action"]\n    return "block"\n', '        return v["action"]\n    return "iface"\n'),
+    "spa-iface-fallback": ('{ action: node.p2p_eff || "block" }', '{ action: node.p2p_eff || "iface" }'),
     "door-open":     ('            elif isinstance(_pp, dict) and _pp.get("action") in P2P_ACTIONS:',
                       '            elif isinstance(_pp, dict):'),
     "wire-iface":    ('"p2p": ({"action": _p2pa} if (_p2pa := p2p_policy(node)) in ("block", "direct")',
@@ -87,13 +96,16 @@ def run_checks(src, spa=None):
     P = load(src)
     tor = {"block": ["torrents", "smtp"]}
     # [1]
-    ok(P.p2p_policy({}) == "block", "[1] a node with no user interfaces (a pure exit) computes block")
-    ok(P.p2p_policy({"ifaces": {"wg0": tor, "swg_x": {"system": True}}}) == "block", "[1] system interfaces don't count")
-    ok(P.p2p_policy({"ifaces": {"wg0": tor, "wg1": {"block": ["smtp"]}}}) == "iface", "[1] one interface without torrents → iface")
-    ok(P.p2p_policy({"ifaces": {"wg0": tor}, "wdtt": {"w1": {"block": []}}}) == "iface", "[1] a WDTT server without torrents counts")
-    ok(P.p2p_policy({"ifaces": {"wg0": tor}, "csqtt": {"c1": {}}}) == "iface", "[1] a csqtt server without torrents counts")
+    ok(P.p2p_policy({}) == "block", "[1] nothing saved, no user interfaces (a pure exit) → block")
+    ok(P.p2p_policy({"ifaces": {"awg0": {}}}) == "block",
+       "[1] an interface recorded with no block list (installer / onboard / the sync's own record) → still block")
+    ok(P.p2p_policy({"ifaces": {"wg0": tor, "wg1": {"block": ["smtp"]}}}) == "block", "[1] an interface with Torrents off → still block")
+    ok(P.p2p_policy({"ifaces": {"wg0": tor}, "wdtt": {"w1": {"block": []}}, "csqtt": {"c1": {}}}) == "block",
+       "[1] a WDTT or csqtt server without torrents (the Turn proxies card sends none) → still block")
     ok(P.p2p_policy({"ifaces": {"wg1": {}}, "p2p": {"action": "direct"}}) == "direct", "[1] a stored choice wins")
-    ok(P.p2p_policy({"p2p": {"action": "nonsense"}}) == "block", "[1] a junk stored value falls back to the computed default")
+    ok(P.p2p_policy({"ifaces": {"wg1": tor}, "p2p": {"action": "iface"}}) == "iface",
+       "[1] …iface too: the per-interface switches decide once the operator picks it")
+    ok(P.p2p_policy({"p2p": {"action": "nonsense"}}) == "block", "[1] a junk stored value falls back to the default")
 
     # [2] the door
     tmp = tempfile.mkdtemp()
@@ -124,7 +136,7 @@ def run_checks(src, spa=None):
         return eval(s[:j + 1], {"p2p_policy": P.p2p_policy, "node": node, "my_plan": plan})
     if i0 > 0:
         for node, want in (({}, {"action": "block"}), ({"p2p": {"action": "direct"}}, {"action": "direct"}),
-                           ({"p2p": {"action": "iface"}}, None), ({"ifaces": {"wg1": {}}}, None)):
+                           ({"p2p": {"action": "iface"}}, None), ({"ifaces": {"wg1": {}}}, {"action": "block"})):
             got = wire(node)
             ok(got == want, "[3] %s → %s (got %s)" % (node, want, got))
 
@@ -133,6 +145,8 @@ def run_checks(src, spa=None):
     def iss(c, snap):
         return [i for i in P._node_issues(c, snap) if key in (i.get("error_key") or i.get("error") or "")]
     ok(len(iss({}, {"smartroute": {}})) == 1, "[4] block, node silent about p2p → one issue")
+    ok(len(iss({"ifaces": {"awg0": {}}}, {"smartroute": {}})) == 1,
+       "[4] …a node with only a bare interface record too (block by default, so an old noded is named)")
     ok(not iss({}, {"smartroute": {"p2p": {"state": "ok", "mode": "block"}}}), "[4] node reports p2p → no issue")
     ok(not iss({"p2p": {"action": "iface"}}, {"smartroute": {}}), "[4] iface → no issue")
     ok(not iss({}, {}), "[4] no smart status reported yet → no issue (absence is not evidence)")
@@ -237,6 +251,9 @@ def run_checks(src, spa=None):
     pt = pt[:pt.find("};")]
     ok('return x ? exitLabel(x, node) : String(p.exit_id || "")' in pt, "[14] an exit gone from the list is named by its id")
     ok("Chosen automatically" in spa, "[13] the automatic default is said")
+    ok("lets torrents through. Pick a setting" not in spa and "Pick a setting to keep it from changing" not in spa,
+       "[13] …as the default, not as a value that follows the interfaces")
+    ok('{ action: node.p2p_eff || "block" }' in spa, "[13] with no p2p_eff from the server the card shows block, the default")
     return fails
 
 
