@@ -24,6 +24,9 @@ carry traffic asks `_devexit_state`, which reads `dead` for an up device whose t
       swgt 2026-09-18: one after another, four WARP exits in an outage stretched every pass 5 s → ~55 s, past the
       panel's 30 s offline threshold); a probe that raises or outlasts the bound is no evidence; verdicts stay in the
       calling thread.
+  [8] a tunnel carrying nothing whose endpoint is a NAME is re-pointed when the name moves (a home router on a DDNS
+      name changes IP on every reboot — reported 2026-10-08: the exit went dead and never came back, because
+      WireGuard resolves the name once, at bring-up). Only a name, only on a move, rate-limited, never a carrying one.
 
 Hermetic: `run()` is stubbed and argv inspected; the probes are injected; nothing touches the network.
 
@@ -36,6 +39,8 @@ Run: python3 tests/exit_failover_selftest.py            (0 = pass)
      --perturb-icmp        a ping takes any echo reply carrying its ident, whoever sent it — RED in [7]
      --perturb-finally     a later exit whose setup raises leaves the earlier ones unjudged — RED in [7]
      --perturb-evidence    a ping that overruns the bound takes the trace + reach evidence with it — RED in [7]
+     --perturb-redial      a dead tunnel never re-resolves its endpoint's name — the shipped behaviour — RED in [5]
+     --perturb-redial-rr   only the name's FIRST address counts as current, so a round-robin name flaps — RED in [8]
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -58,6 +63,8 @@ PLANTS = {
     "--perturb-finally": ("    finally:\n        # ⚠️ IN A `finally`: a later exit",
                           "    except BaseException:\n        raise\n    if True:\n        # ⚠️ IN A `finally`: a later exit"),
     "--perturb-evidence": ("        res[dev] = (tr, rch, None)", "        pass"),
+    "--perturb-redial": ("            _exit_redial(dev, rec)  ", "            pass  "),
+    "--perturb-redial-rr": ('if live.rpartition(":")[0].strip("[]") in ips:', 'if live.rpartition(":")[0].strip("[]") in ips[:1]:'),
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
 
@@ -88,6 +95,9 @@ else:
     N = _load(NODED, "swgnoded")
 P = _load(PANEL, "swgpanel")
 _REAL_PING = N._exit_ping          # the real one, before any section stubs it
+_REAL_REDIAL = N._exit_redial      # likewise — [5] and [7] record the calls instead (it would ask a real resolver)
+_redialled = []
+N._exit_redial = lambda dev, rec, *a, **k: _redialled.append(dev)
 
 class _R:
     def __init__(s, out="", rc=0): s.stdout, s.stderr, s.returncode = out, "", rc
@@ -239,10 +249,13 @@ _r2 = next(x for x in N._EXITS["list"] if x["id"] == "aabbccdd")
 check("once judged dead, the exit's report carries no_traffic with the reason",
       isinstance(_r2.get("no_traffic"), dict) and _r2["no_traffic"].get("why") == BAD["err"], _r2)
 check("…and the routing reads the same verdict", N._devexit_state(D) == "dead", N._devexit_state(D))
+check("a tunnel carrying nothing asks whether its endpoint's name has moved", _redialled == [D, D], _redialled)
 _calls.clear()
 N._dev_link_state = lambda d: "up" if any(" up " in x for x in _calls) else "absent"
 N._exit_trace = lambda d: dict(OK)
+_redialled.clear()
 N.reconcile_exits(_want, {"changed": 0, "errors": []})
+check("…a carrying one never does (no lookup, no `wg set`)", _redialled == [], _redialled)
 check("a tunnel rebuilt this pass is judged from scratch, not dead by inheritance",
       N._devexit_state(D) == "up" and next(x for x in N._EXITS["list"] if x["id"] == "aabbccdd").get("no_traffic")
       is None, N._EXIT_HEALTH.get(D))
@@ -341,6 +354,59 @@ finally:
     N.socket, N.select = _real_sock_mod, _real_sel_mod
 check("a ping takes only ITS echo reply, from the server it pinged — not another exit's (%s ms)" % _ms,
       _ms is not None and _ms >= 55, _ms)
+
+# ── 8. a dead tunnel follows its endpoint's NAME ──────────────────────────────────────────────────────────
+KP = "a2V5LWtleS1rZXkta2V5LWtleS1rZXkta2V5LWtleS0="
+_dns, _runs8 = {"ips": ["198.51.100.20"]}, []
+_live8 = {"ep": "198.51.100.10:51820"}
+def _gai(host, port, fam, typ):
+    _dns.setdefault("asked", []).append(host)
+    if _dns["ips"] is None:
+        raise OSError("Name or service not known")
+    return [(fam, typ, 17, "", (ip, port)) for ip in _dns["ips"]]
+def _run8(a, **k):
+    _runs8.append(" ".join(map(str, a)))
+    if a[1:2] == ["show"]:
+        return _R("%s\t%s\n" % (KP, _live8["ep"]))
+    if a[1:2] == ["set"]:
+        _live8["ep"] = a[-1]
+    return _R("")
+_real_run8, _real_kind8 = N.run, N._link_kind
+N.socket = types.SimpleNamespace(getaddrinfo=_gai, AF_INET=2, SOCK_DGRAM=2)
+N.run, N._link_kind = _run8, (lambda d: "awg")
+N._EXIT_REDIAL_AT.clear()
+_rec8 = {"peer_key": KP, "endpoint": "home.keenetic.pro:51820"}
+try:
+    _f1 = _REAL_REDIAL("wgx-home", _rec8, now=1000)
+    check("the router's name moved: the live peer is re-pointed at the new address, on the live device (awg, no bounce)",
+          _f1 == "198.51.100.20:51820" and ("awg set wgx-home peer %s endpoint 198.51.100.20:51820" % KP) in _runs8
+          and not any((" down " in x or " up " in x) for x in _runs8), (_f1, _runs8))
+    _runs8.clear(); _dns["asked"] = []
+    _REAL_REDIAL("wgx-home", _rec8, now=1010)
+    check("…asked again 10 s later: no lookup at all (at most every EXIT_REDIAL_EVERY_S)", not _dns["asked"] and not _runs8,
+          (_dns["asked"], _runs8))
+    _f3 = _REAL_REDIAL("wgx-home", _rec8, now=1040)
+    check("…30 s later the name still says where it dials: looked up, peer untouched (the far side is just down)",
+          _dns["asked"] == ["home.keenetic.pro"] and _f3 is None and not any(" set " in x for x in _runs8), (_dns, _runs8))
+    _runs8.clear(); _dns["ips"] = ["203.0.113.5", "198.51.100.20"]
+    _f4 = _REAL_REDIAL("wgx-home", _rec8, now=1080)
+    check("…a round-robin name that still lists the dialled address: untouched (no flapping between its addresses)",
+          _f4 is None and not any(" set " in x for x in _runs8), (_f4, _runs8))
+    _runs8.clear(); _dns["ips"] = None
+    _f5 = _REAL_REDIAL("wgx-home", _rec8, now=1120)
+    check("…a name that does not resolve just now: the device keeps what it has", _f5 is None and not any(" set " in x for x in _runs8),
+          (_f5, _runs8))
+    _runs8.clear(); _dns["asked"] = []; _dns["ips"] = ["198.51.100.99"]
+    _f6 = _REAL_REDIAL("wgx-lit", {"peer_key": KP, "endpoint": "198.51.100.10:51820"}, now=2000)
+    check("an IP-literal endpoint is never looked up — there is no newer answer to get",
+          _f6 is None and not _dns["asked"] and not _runs8, (_dns, _runs8))
+    N._link_kind = lambda d: "wg"
+    _f7 = _REAL_REDIAL("wgx-wg", {"peer_key": KP, "endpoint": "engage.cloudflareclient.com:2408"}, now=3000)
+    check("a WireGuard device is re-pointed with its own tool", _f7 == "198.51.100.99:2408"
+          and any(x.startswith(tuple(w + " set wgx-wg " for w in ("wg", "awg"))) for x in _runs8)
+          and not any(x.startswith("awg ") for x in _runs8 if N._HAVE_WG), _runs8)
+finally:
+    N.socket, N.run, N._link_kind = _real_sock_mod, _real_run8, _real_kind8
 
 # ── 6. the panel ──────────────────────────────────────────────────────────────────────────────────
 def issues(ks):
