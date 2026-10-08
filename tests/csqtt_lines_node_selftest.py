@@ -35,11 +35,16 @@ and every command that could delete a link is refused by a guard (the test fails
   [17] fetchswitched  a switch whose fetch failed restarted nothing: Restart still restarts, cur_ver still applies
   [18] unknowncur     a request for a line this node does not know keeps the running line's cur_ver
   [19] runver         while a switch waits, the record's ver is the running line's build (what a self-heal fetches)
+  [20] notpresent     a server whose unit or binary is gone: a memoed switch re-installs what ran with its build; a cut
+                      switch rolls the store back to its copy and re-installs the line it was leaving
+  [21] snapcut        the snapshot reports a cut switch's marker line, the same line the reconcile treats as running
+  [12] also: a switch whose fetch failed spends the pass budget (budget)
 
 Run: python3 tests/csqtt_lines_node_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        reconfigure [5] · absent [6] · stable [3] · rollback [4] · memo [7] · build [8] · sibling [9] ·
-                       copyfail [10] · markorder [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16] · fetchswitched [17] · unknowncur [18] · runver [19]
+                       copyfail [10] · markorder [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16] · fetchswitched [17] · unknowncur [18] · runver [19] · budget [12] ·
+                       notpresent-ver / notpresent-cut [20] · snapcut [21]
 """
 import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
 
@@ -54,12 +59,16 @@ PLANTS = {   # name: (section, anchor, replacement)
     "stable": (("[3]", "[11]"), "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify_stable(iface)\n",
                "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify(iface)\n"),
     "rollback": (("[4]", "[11]"), "                if _cut:\n                    # A switch away from", "                if False:\n                    # A switch away from"),
-    "memo": (("[7]", "[14]", "[19]"), "                inst[\"line_failed\"] = _lf\n", "                pass\n"),
+    "memo": (("[7]", "[14]", "[19]", "[20]"), "                inst[\"line_failed\"] = _lf\n", "                pass\n"),
     "sibling": ("[9]", "        others = [i for i in siblings if i != iface]\n", "        others = []\n"),
     "copyfail": ("[10]", "        _csqtt_start_one(dict(inst, line=frm)) if not inst.get(\"stopped\") else None\n", "        pass\n"),
     "markorder": ("[11]", "        _csqtt_store_copy(cfgdir, frm)\n        _csqtt_cut_mark(iface, frm)\n", "        _csqtt_cut_mark(iface, frm)\n        _csqtt_store_copy(cfgdir, frm)\n"),
-    "fetchswitched": ("[17]", "                    _sw_pass[0] = _switched = (not err) or _memo", "                    _sw_pass[0] = _switched = True"),
+    "fetchswitched": ("[17]", "                    _switched = (not err) or _memo", "                    _switched = True"),
     "unknowncur": ("[18]", "                inst[\"ver\"] = (inst.get(\"cur_ver\") or \"\").strip()   # the panel's build for what runs, or none", "                inst.pop(\"ver\", None)"),
+    "budget": ("[12]", "                    _sw_pass[0] = True\n                    _switched = (not err) or _memo", "                    _sw_pass[0] = _switched = (not err) or _memo"),
+    "notpresent-ver": ("[20]", "                if inst[\"line\"] != _line:\n                    inst[\"ver\"] = (inst.get(\"cur_ver\") or \"\").strip()   # installing what ran", "                if False:\n                    inst[\"ver\"] = (inst.get(\"cur_ver\") or \"\").strip()   # installing what ran"),
+    "notpresent-cut": ("[20]", "                    _csqtt_store_restore(_csqtt_dir(iface), _cut)\n                    _csqtt_cut_clear(iface)\n                elif", "                    _csqtt_cut_clear(iface)\n                elif"),
+    "snapcut": ("[21]", "        _rl = _csqtt_cut_line(iface) or _csqtt_running_line(iface)", "        _rl = _csqtt_running_line(iface)"),
     "runver": ("[19]", "                if inst.get(\"line\") == _cur:\n", "                if False:\n"),
     "onepass": ("[12]", "                elif _line != _cur and not inst.get(\"line_failed\") and _sw_pass[0]:", "                elif False:"),
     "restart": ("[13]", "and not inst.get(\"stopped\") and not _switched:\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)", "and not inst.get(\"stopped\"):\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)"),
@@ -229,7 +238,7 @@ try:
     # ── the reconcile ─────────────────────────────────────────────────────────────────────────────────────────
     SWITCHES, UPDATES = [], []
     real_switch, real_update = N._csqtt_switch_line, N._csqtt_update_binary
-    def rec_switch(inst, frm, to, ver, siblings=()):
+    def rec_switch(inst, frm, to, ver, siblings=(), stopped=()):
         SWITCHES.append((inst["iface"], frm, to, ver)); return SWITCH_RESULT[0]
     def rec_update(inst, ver, ifaces, line="2.1"):
         UPDATES.append((ver, tuple(sorted(ifaces)), line)); N._csqtt_write_ver(ver, line); return ""
@@ -330,6 +339,12 @@ try:
     del SWITCHES[:]
     N.reconcile_csqtt({"csqttsib": want("csqttsib", line="2.5", ver="2.5.0-2", tun_addr="10.66.68.1/24")})
     check("…and switches on the next pass", [x[0] for x in SWITCHES] == ["csqttsib"], SWITCHES)
+    record(lo=dict(rec_lo, line="2.1"), csqttsib=dict(sib, line="2.1"))
+    SWITCH_RESULT[0] = ("the panel's mirror had no build", False)
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.5", ver="2.5.0-2", tun_addr="10.66.68.1/24")})
+    check("a switch whose fetch failed spends the pass too (one fetch walk per pass)", len(SWITCHES) == 1, SWITCHES)
+    SWITCH_RESULT[0] = ("", False)
 
     section("[13] a Restart that retries a failed switch restarts once")
     N._csqtt_docker_stop("lo"); lay("lo", "2.1", "A")       # alive, so supervision has nothing to relaunch
@@ -390,6 +405,31 @@ try:
     N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4")})
     r19 = N._csqtt_load().get("lo") or {}
     check("its ver is 2.1's build (a self-heal fetch into the 2.1 slot names it)", r19.get("ver") == "2.1.9-4" and r19.get("line") == "2.1", r19)
+
+    section("[20] a server whose unit or binary is gone")
+    INSTALLS = []
+    real_install = N._csqtt_install
+    N._csqtt_install = lambda inst: (INSTALLS.append((inst.get("line"), inst.get("ver"))), "")[1]
+    N._csqtt_docker_stop("lo")
+    os.remove(N._csqtt_dir("lo") + "/server")                                   # not present
+    record(lo=dict(rec_lo, line="2.1", line_failed={"line": "2.5", "ver": "2.5.0-2", "why": "x"}))
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4")})
+    check("a memoed switch: re-installs what ran (2.1) with ITS build, not the asked 2.5 build", INSTALLS[-1:] == [("2.1", "2.1.9-4")], INSTALLS)
+    os.makedirs(N._csqtt_dir("lo"), exist_ok=True)
+    open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("A\n"); N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1")
+    N._csqtt_cut_mark("lo", "2.1"); open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("MIGRATED-BY-2.5\n")
+    record(lo=dict(rec_lo, line="2.5"))
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2")})
+    check("a cut switch: the store is rolled back to 2.1's copy all the same", db("lo") == "A", db("lo"))
+    check("…the marker is gone and it re-installs the line it was leaving", not os.path.exists(N._csqtt_cut_path("lo")) and INSTALLS[-1][0] == "2.1", INSTALLS)
+    N._csqtt_install = real_install
+
+    section("[21] the snapshot during a cut switch")
+    lay("lo", "2.1", "A")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5")); N._csqtt_cut_mark("lo", "2.1")
+    row = next((c for c in N.csqtt_snapshot() if c.get("iface") == "lo"), {})
+    check("it reports the line being rolled back to (2.1), as the reconcile does", row.get("line") == "2.1", row.get("line"))
+    N._csqtt_cut_clear("lo")
 
     section("[16] a server not installed yet runs no line")
     check("_csqtt_ifaces leaves it out", N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5") == [], N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5"))
