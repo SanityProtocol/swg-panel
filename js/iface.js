@@ -27,7 +27,7 @@ import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCac
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog, reportDropped, rulesSummary, targetLabel } from "./routing.js";
 import { rulesToRows } from "./rulerows.js";
-import { MIMIC_KEYS, MIMIC_PRESETS, mimicOf, mimicCheck, mimicRender, mimicLines, mimicFill, mimicAfter } from "./mimic.js";
+import { MIMIC_KEYS, MIMIC_PRESETS, MIMIC_BUILTIN, mimicOf, mimicCheck, mimicRender, mimicLines, mimicFill, mimicAfter } from "./mimic.js";
 import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, DropsFigure, LossPop, meshHealth, ReachField } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
@@ -1129,7 +1129,7 @@ const natTail = " · NAT";   // …and the NAT source card, which now lives in t
    names it, as the Advanced summary names it, and what a failed mimicCheck means. One function per key: a key a ternary picks
    is never a key (memory i18n-bare-gate). */
 const MIMIC_NAME = { off: () => T("mimic|Off"), quic: () => "QUIC (HTTP/3)", dns: () => T("DNS query"),   // i18n-keys: a protocol name
-  builtin: () => T("Built-in (old)"), custom: () => T("mimic|Custom") };
+  builtin: () => T("Built-in"), custom: () => T("mimic|Custom") };
 const MIMIC_TAIL = { off: () => T("disguise: off"), quic: () => T("disguise: QUIC"), dns: () => T("disguise: DNS"),
   builtin: () => T("disguise: built-in"), custom: () => T("disguise: custom") };
 const mimicWhy = (k, c) => c.why === "big" ? T("{v1}: a random part is at most 1000 bytes — split it, like <r 1000><r 214>.", { v1: k })
@@ -1145,18 +1145,20 @@ const MIMIC_MONTH = 30 * 24 * 30;  // handshakes a month for a device that stays
 export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
   const mim = mimicOf(eff), changed = MIMIC_KEYS.some(k => String(eff[k] ?? "") !== String(was[k] ?? ""));
   const size = ([a, b]) => T("1 packet, {v1}–{v2} bytes", { v1: fmtNum(a), v2: fmtNum(b) });
+  const bi = MIMIC_KEYS.map(k => mimicCheck(MIMIC_BUILTIN[k]).bytes);
   const opts = [
     { value: "off", label: html`${MIMIC_NAME.off()} <span class="faint">${T("no packets before the handshake")}</span>` },
     { value: "quic", label: html`${MIMIC_NAME.quic()} <span class="faint">${size(MIMIC_PRESETS.quic.sizes)}</span>` },
     { value: "dns", label: html`${MIMIC_NAME.dns()} <span class="faint">${size(MIMIC_PRESETS.dns.sizes)}</span>` },
-    ...(mim === "builtin" || mim === "custom" ? [{ value: mim, label: MIMIC_NAME[mim](), disabled: true }] : []),
+    { value: "builtin", label: html`${MIMIC_NAME.builtin()} <span class="faint">${T("{v1}, {v2} bytes", { v1: plural(bi.length, "packet"), v2: fmtNum(bi.reduce((a, b) => a + b, 0)) })}</span>` },
+    ...(mim === "custom" ? [{ value: "custom", label: MIMIC_NAME.custom(), disabled: true }] : []),
   ];
   const pk = MIMIC_KEYS.map(k => [k, mimicCheck(eff[k])]).filter(([, c]) => c.ok && c.bytes);
   const bytes = pk.reduce((n, [, c]) => n + c.bytes, 0), big = pk.find(([, c]) => c.bytes > MIMIC_BIG);
   const lp = String(port || "").trim(), fit = MIMIC_PRESETS[mim] && MIMIC_PRESETS[mim].port;
   const line = (t, cls) => html`<p class=${"hint mimic-line" + (cls ? " " + cls : "")}>${t}</p>`;
   // what Save does to the devices (F1: each side sends its own I1–I5, so nobody is cut; a config carries the new set once issued)
-  const dev = plural(peers, "device"), preset = MIMIC_PRESETS[mim] && mim !== "off";
+  const dev = plural(peers, "device"), preset = !!fit;   // a protocol it looks like: QUIC, DNS
   const savedLine = () => !peers
     ? (mim === "off" ? T("Configs issued from now on carry no disguise.") : preset ? T("Configs issued from now on are disguised as {v1}.", { v1: MIMIC_NAME[mim]() })
       : T("Configs issued from now on carry the I1–I5 below."))
@@ -1167,7 +1169,7 @@ export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
     <div class="mimic-row"><span class="mimic-lbl">${T("Disguise as")}</span>
       <${Dropdown} className="selwrap mimic-dd" value=${mim} options=${opts} short=${() => MIMIC_NAME[mim]()} ariaLabel=${T("Disguise as")} onChange=${onPick}/></div>
     ${bad ? line(bad, "err") : html`
-      ${line(pk.length ? T("Before each handshake: {v1}, {v2} bytes — about {v3} a month for a device that stays connected.",
+      ${line(pk.length ? T("The disguise sends before each handshake: {v1}, {v2} bytes — about {v3} a month for a device that stays connected.",
         { v1: plural(pk.length, "packet"), v2: fmtNum(bytes), v3: fmtBytes((bytes + 28 * pk.length) * MIMIC_MONTH) }) : T("No packets before the handshake."))}
       ${big ? line(T("{v1} is {v2} bytes — above 1232 it may be split on a 1280-byte path, and split packets stand out.", { v1: big[0], v2: fmtNum(big[1].bytes) }), "warnish") : null}
       ${mim === "builtin" ? line(T("The set every swgPanel install ships, the same on every server.")) : null}

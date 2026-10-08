@@ -2544,7 +2544,8 @@ export const STR = {
   "Disguise as": "Маскировка под",
   "mimic|Off": "Нет",
   "DNS query": "DNS-запрос",
-  "Built-in (old)": "Встроенная (старая)",
+  "Built-in": "Встроенная",
+  "{v1}, {v2} bytes": "{v1}, байт: {v2}",
   "mimic|Custom": "Своя",
   "disguise: off": "маскировка: нет",
   "disguise: QUIC": "маскировка: QUIC",
@@ -2553,8 +2554,8 @@ export const STR = {
   "disguise: custom": "маскировка: своя",
   "no packets before the handshake": "без пакетов перед хендшейком",
   "1 packet, {v1}–{v2} bytes": "1 пакет, {v1}–{v2} байт",
-  "Before each handshake: {v1}, {v2} bytes — about {v3} a month for a device that stays connected.":
-    "Перед каждым хендшейком: {v1}, байт: {v2} — около {v3} в месяц для постоянно подключённого устройства.",
+  "The disguise sends before each handshake: {v1}, {v2} bytes — about {v3} a month for a device that stays connected.":
+    "Маскировка отправляет перед каждым хендшейком: {v1}, байт: {v2} — около {v3} в месяц для постоянно подключённого устройства.",
   "No packets before the handshake.": "Перед хендшейком пакетов нет.",
   "{v1} is {v2} bytes — above 1232 it may be split on a 1280-byte path, and split packets stand out.":
     "{v1} — байт: {v2}. Больше 1232 пакет может быть фрагментирован на пути с MTU 1280, а фрагменты заметны.",

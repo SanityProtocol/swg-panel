@@ -41,7 +41,8 @@ function renderDns(rand) {
   return set(`<r 2><b 0x${DNS_HEAD}${qname(DNS_NAMES[rand(DNS_NAMES.length)])}${DNS_TAIL}>`);
 }
 
-// What every swgPanel install has shipped (F2): the same five strings on every server.
+// What every swgPanel generator writes for a new interface (F2): the same five strings on every server. Offered as a pick
+// too — the way back to the set an interface was made with.
 export const MIMIC_BUILTIN = { I1: "<b 0xc000000001><r 64><t>", I2: "<r 24><t>", I3: "<r 32>", I4: "<b 0xc000000001><r 32><t>", I5: "<t><r 48>" };
 
 /* The presets the picker offers, in its order. `port` = where the protocol is normally seen (the port-fit hint); `sizes` = the
@@ -51,6 +52,7 @@ export const MIMIC_PRESETS = {
   off: { render: () => set("") },
   quic: { render: renderQuic, port: 443, sizes: [QUIC_MIN, QUIC_MAX] },
   dns: { render: renderDns, port: 53, sizes: [Math.min(...DNS_NAMES.map(dnsBytes)), Math.max(...DNS_NAMES.map(dnsBytes))] },
+  builtin: { render: () => ({ ...MIMIC_BUILTIN }) },
 };
 export const mimicRender = (id, rand = mimicRand) => MIMIC_PRESETS[id].render(rand);
 
