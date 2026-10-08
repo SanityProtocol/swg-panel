@@ -2561,7 +2561,6 @@ export const STR = {
     "{v1} — байт: {v2}. Больше 1232 пакет может быть фрагментирован на пути с MTU 1280, а фрагменты заметны.",
   "The set every swgPanel install ships, the same on every server.": "Набор, который ставит каждая установка swgPanel, — одинаковый на всех серверах.",
   "QUIC looks most natural on UDP 443 — this interface listens on {v1}.": "QUIC естественнее всего выглядит на UDP 443, а этот интерфейс слушает {v1}.",
-  "DNS looks most natural on UDP 53 — this interface listens on {v1}.": "DNS естественнее всего выглядит на UDP 53, а этот интерфейс слушает {v1}.",
   "Changes only what the packets before each handshake look like. It does not help where only listed addresses are allowed — a TURN server is the way there.":
     "Меняет только вид пакетов перед каждым хендшейком. Не помогает там, где разрешены только адреса из списка, — там нужен TURN-сервер.",
   "Configs issued from now on carry no disguise.": "Новые конфиги будут без маскировки.",

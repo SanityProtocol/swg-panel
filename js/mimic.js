@@ -32,9 +32,11 @@ function renderQuic(rand) {
 }
 
 // A standard DNS query: a random ID per packet, RD set, one question (type A, class IN) and an EDNS0 OPT record (4096-byte
-// UDP size). The name is drawn once from names every network resolves all day — none typeable (plan §2, review round 2).
-export const DNS_NAMES = ["www.google.com", "www.youtube.com", "www.apple.com", "www.microsoft.com", "www.cloudflare.com",
-  "www.wikipedia.org", "www.yandex.ru", "www.whatsapp.com"];   // i18n-keys: host names
+// UDP size). The name is drawn once from names every network resolves all day — none typeable (plan §2, review round 2) and
+// none a censor restricts where swgPanel is used (YouTube and WhatsApp are throttled in Russia: a query for one draws the very
+// attention the disguise is there to avoid — analysis round 2026-10-08).
+export const DNS_NAMES = ["www.google.com", "www.apple.com", "www.microsoft.com", "www.cloudflare.com", "www.wikipedia.org",
+  "www.yandex.ru", "www.amazon.com", "www.samsung.com"];   // i18n-keys: host names
 const DNS_HEAD = "01000001000000000001", DNS_TAIL = "00010001" + "0000291000000000000000";   // after the <r 2> ID: RD, one question, one additional · A IN · the OPT record
 const qname = name => name.split(".").map(l => hex(l.length, 1) + [...l].map(c => hex(c.charCodeAt(0), 1)).join("")).join("") + "00";
 function renderDns(rand) {
@@ -45,13 +47,15 @@ function renderDns(rand) {
 // too — the way back to the set an interface was made with.
 export const MIMIC_BUILTIN = { I1: "<b 0xc000000001><r 64><t>", I2: "<r 24><t>", I3: "<r 32>", I4: "<b 0xc000000001><r 32><t>", I5: "<t><r 48>" };
 
-/* The presets the picker offers, in its order. `port` = where the protocol is normally seen (the port-fit hint); `sizes` = the
-   smallest and largest packet a render can give, in bytes. */
+/* The presets the picker offers, in its order. `port` = where the protocol is normally seen and a node can usually listen
+   (the port-fit hint) — QUIC only: UDP 53 is held by the node's own resolver on a stock Ubuntu (systemd-resolved; a wildcard
+   bind there fails — measured on swgt 2026-10-08), so moving an interface there would stop it. `sizes` = the smallest and
+   largest packet a render can give, in bytes. */
 const dnsBytes = name => 2 + DNS_HEAD.length / 2 + qname(name).length / 2 + DNS_TAIL.length / 2;
 export const MIMIC_PRESETS = {
   off: { render: () => set("") },
   quic: { render: renderQuic, port: 443, sizes: [QUIC_MIN, QUIC_MAX] },
-  dns: { render: renderDns, port: 53, sizes: [Math.min(...DNS_NAMES.map(dnsBytes)), Math.max(...DNS_NAMES.map(dnsBytes))] },
+  dns: { render: renderDns, sizes: [Math.min(...DNS_NAMES.map(dnsBytes)), Math.max(...DNS_NAMES.map(dnsBytes))] },
   builtin: { render: () => ({ ...MIMIC_BUILTIN }) },
 };
 export const mimicRender = (id, rand = mimicRand) => MIMIC_PRESETS[id].render(rand);

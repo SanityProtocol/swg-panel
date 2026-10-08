@@ -1158,7 +1158,7 @@ export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
   const lp = String(port || "").trim(), fit = MIMIC_PRESETS[mim] && MIMIC_PRESETS[mim].port;
   const line = (t, cls) => html`<p class=${"hint mimic-line" + (cls ? " " + cls : "")}>${t}</p>`;
   // what Save does to the devices (F1: each side sends its own I1–I5, so nobody is cut; a config carries the new set once issued)
-  const dev = plural(peers, "device"), preset = !!fit;   // a protocol it looks like: QUIC, DNS
+  const dev = plural(peers, "device"), preset = mim === "quic" || mim === "dns";   // a protocol it looks like
   const savedLine = () => !peers
     ? (mim === "off" ? T("Configs issued from now on carry no disguise.") : preset ? T("Configs issued from now on are disguised as {v1}.", { v1: MIMIC_NAME[mim]() })
       : T("Configs issued from now on carry the I1–I5 below."))
@@ -1173,8 +1173,7 @@ export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
         { v1: plural(pk.length, "packet"), v2: fmtNum(bytes), v3: fmtBytes((bytes + 28 * pk.length) * MIMIC_MONTH) }) : T("No packets before the handshake."))}
       ${big ? line(T("{v1} is {v2} bytes — above 1232 it may be split on a 1280-byte path, and split packets stand out.", { v1: big[0], v2: fmtNum(big[1].bytes) }), "warnish") : null}
       ${mim === "builtin" ? line(T("The set every swgPanel install ships, the same on every server.")) : null}
-      ${fit && lp && +lp !== fit ? line(mim === "quic" ? T("QUIC looks most natural on UDP 443 — this interface listens on {v1}.", { v1: lp })
-        : T("DNS looks most natural on UDP 53 — this interface listens on {v1}.", { v1: lp })) : null}
+      ${fit && lp && +lp !== fit ? line(T("QUIC looks most natural on UDP 443 — this interface listens on {v1}.", { v1: lp })) : null}
       ${mim !== "off" ? line(T("Changes only what the packets before each handshake look like. It does not help where only listed addresses are allowed — a TURN server is the way there.")) : null}
       ${changed ? line(html`${savedLine()}${restart
           ? " " + T("The interface restarts; connected devices reconnect within a few seconds.") : ""}`, "mimic-save") : null}`}
