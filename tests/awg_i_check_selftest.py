@@ -11,14 +11,20 @@ it again on /api/iface/update (awg_i_check), so an API caller or an older cached
       entry each, so the Russian is the same on both paths)
   [3] a REAL panel process (temp state, scratch port, no auth; the node is played by POSTing snapshots):
       a QUIC and a DNS preset are stored; <r 1001>, <c>, two <t>, a line break, an unknown tag are refused naming the cell,
-      the record untouched; "-" still removes a line; a line the record — or, under a partial record, the node's report —
+      the record untouched; a line break in S1 (not an I line) is refused too; "-" still removes a line; a line the record — or, under a partial record, the node's report —
       already holds is re-sent with an unrelated edit and the save goes through; changing that line to another bad one is refused
 
+  [4] the templates every new interface or mesh link is made from (Settings → interface defaults, the fleet's and a link's
+      mesh_awg) go through the same check in awg_template_refusal: a changed bad I line and a line break in S1 are
+      refused, a stored bad line re-sent with an unrelated change is saved, and all three save sites pass the stored one
+
 Run: python3 tests/awg_i_check_selftest.py      (0 = pass; needs node)
-     --perturb cap|nocheck|resent   plants one regression in a copy of swg-panel-server and expects RED:
+     --perturb cap|nocheck|resent|tplcheck|ctl   plants one regression in a copy of swg-panel-server and expects RED:
         cap      the 1000-byte cap gone from awg_i_check          → [1] [3]
         nocheck  the check gone from /api/iface/update             → [3]
         resent   a line the node reports counts as a change        → [3]
+        tplcheck the check gone from the template saves            → [4]
+        ctl      control characters allowed in fields other than I → [3] [4]
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -28,7 +34,11 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else None
 PLANTS = {
     "cap": ["            if int(arg) > AWG_I_TAG_MAX:", "            if False:"],
-    "nocheck": ["                        _ib = awg_i_refusal(_k, clean[_k])", "                        _ib = None"],
+    "nocheck": ["                        _ib = awg_value_refusal(_k, clean[_k])", "                        _ib = None"],
+    "tplcheck": ["            _b = awg_value_refusal(k, v)\n            if _b:\n                return _b",
+                 "            _b = None\n            if _b:\n                return _b"],
+    "ctl": ["    if re.search(r\"[\\x00-\\x1f\\x7f]\", \"\" if v is None else str(v)):\n        return perr(",
+            "    if False:\n        return perr("],
     "resent": ["clean[_k] not in (str(_rec_u.get(_k, \"\")).strip(), str(_rep_ap.get(_k, \"\")).strip())",
                "clean[_k] != str(_rec_u.get(_k, \"\")).strip()"],
 }
@@ -117,6 +127,9 @@ json.dump({"n1": {"id": "n1", "name": "n1", "links": {}, "ifaces": {"awg1": {"aw
                                                                     "awg2": {"awg_params": dict(BASE)}}}},
           open(os.path.join(ST, "nodes.json"), "w"))
 open(os.path.join(ST, "users.json"), "w").write("{}\n")
+TPL_BAD = "<r 1214>"   # a stored interface-defaults I1 no app reads (written before the check existed)
+json.dump({"interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25, "awg_params": {"I1": TPL_BAD}}},
+          open(os.path.join(ST, "panel-settings.json"), "w"))
 FLEET = os.path.join(TMP, "fleet.json")
 json.dump({"nodes_path": os.path.join(ST, "nodes.json"), "roster_path": os.path.join(ST, "users.json"), "stats_dir": SD}, open(FLEET, "w"))
 sk = socket.socket(); sk.bind(("127.0.0.1", 0)); PORT = sk.getsockname()[1]; sk.close()
@@ -178,6 +191,10 @@ try:
         check("%s in %s → 400, the cell named, the reason said" % (what, k),
               c == 400 and (r.get("error") or "").startswith(k + ":") and key in (r.get("error") or ""), (c, r.get("error")))
         check("…and the record untouched", rec("awg0") == before, rec("awg0"))
+    c, r = upd("awg0", {**before, "S1": "28\nPostUp = id"})
+    check("a line break in S1 (not an I line) → 400, S1 named", c == 400 and (r.get("error") or "").startswith("S1:")
+          and "line break" in (r.get("error") or ""), (c, r.get("error")))
+    check("…and the record untouched", rec("awg0") == before, rec("awg0"))
     c, r = upd("awg0", {**before, "I1": "-"})
     check("\"-\" still removes a line", c == 200 and "I1" not in rec("awg0"), (c, r.get("error")))
     c, r = upd("awg1", {**BASE, **BUILTIN, "I3": REC_BAD}, mtu="1300")
@@ -189,6 +206,31 @@ try:
     check("…changing such a line to another bad one is refused", c == 400 and (r.get("error") or "").startswith("I3:"), (c, r.get("error")))
     c, r = upd("awg1", {"I3": "<r 1000><r 214>"})
     check("…and to a good one is saved", c == 200 and rec("awg1").get("I3") == "<r 1000><r 214>", (c, r.get("error")))
+
+    print("\n[4] the templates new interfaces and mesh links are made from")
+    def ps():
+        return json.load(open(os.path.join(ST, "panel-settings.json")))
+    IDF = {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25}
+    c, r = req("/api/panel/settings", {"interface_defaults": {**IDF, "mtu": 1300, "awg_params": {"I1": TPL_BAD}}})
+    check("a stored bad I1 in the interface defaults is re-sent with an unrelated change — saved",
+          c == 200 and ((ps().get("interface_defaults") or {}).get("mtu") == 1300), (c, r.get("error")))
+    for what, ap, k in [("a changed bad I1", {"I1": "<r 1215>"}, "I1"), ("a <c> in I3", {"I3": "<c>"}, "I3"),
+                        ("a line break in S1", {"S1": "28\nPostUp = id"}, "S1")]:
+        c, r = req("/api/panel/settings", {"interface_defaults": {**IDF, "awg_params": ap}})
+        check("interface defaults, %s → 400, %s named" % (what, k), c == 400 and (r.get("error") or "").startswith(k + ":"), (c, r.get("error")))
+    check("…and the stored defaults untouched", (ps().get("interface_defaults") or {}).get("awg_params") == {"I1": TPL_BAD},
+          (ps().get("interface_defaults") or {}).get("awg_params"))
+    c, r = req("/api/panel/settings", {"interface_defaults": {**IDF, "awg_params": {"I1": "<r 1000><r 214>"}}})
+    check("…a good I1 is saved", c == 200 and (ps().get("interface_defaults") or {}).get("awg_params", {}).get("I1") == "<r 1000><r 214>",
+          (c, r.get("error")))
+    c, r = req("/api/panel/settings", {"mesh_awg": {"I2": "<t><t>"}})
+    check("the fleet's mesh_awg, two <t> in I2 → 400, I2 named", c == 400 and (r.get("error") or "").startswith("I2:"), (c, r.get("error")))
+    c, r = req("/api/panel/settings", {"mesh_awg": {"I2": "<r 24><t>"}})
+    check("…a good one is saved", c == 200 and (ps().get("mesh_awg") or {}).get("I2") == "<r 24><t>", (c, r.get("error")))
+    srv_src = open(SERVER, encoding="utf-8").read()
+    calls = re.findall(r"(?<!def )awg_template_refusal\(([^\n]*(?:\n[^\n]*was=[^\n]*)?)", srv_src)
+    check("all three template saves pass the stored template (interface defaults, the fleet's mesh_awg, a link's)",
+          len(calls) == 3 and all("was=" in c for c in calls), calls)
 finally:
     proc.terminate()
     try:

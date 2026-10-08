@@ -99,6 +99,7 @@ for (const id of ["off", "quic", "dns"]) {
   }
 }
 check("off: no line at all", draws.off.every(r => MIMIC_KEYS.every(k => r[k] === "")));
+check("built-in: renders the fixed set every generator writes, and reads back as builtin", (r => MIMIC_KEYS.every(k => r[k] === MIMIC_BUILTIN[k]) && mimicOf(r) === "builtin")(mimicRender("builtin")));
 
 // [3]
 console.log("\n[3] two renders differ only in what is drawn");
@@ -166,7 +167,7 @@ const merge = (rec, body) => { const o = { ...rec }; for (const [k, v] of Object
 const base = { Jc: "4", Jmin: "40", Jmax: "70", S1: "28", H1: "1-2" };
 const recB = { ...base, ...MIMIC_BUILTIN };
 for (const [from, rec] of [["built-in", recB], ["QUIC", { ...base, I1: P0.QUIC8 }], ["off", { ...base }]]) {
-  for (const id of ["quic", "dns", "off"]) {
+  for (const id of ["quic", "dns", "off", "builtin"]) {
     const draft = { ...rec, ...mimicFill(mimicRender(id), rec) };
     const after = merge(rec, sent(draft));
     check(`${from} → ${id}: the record reads back as ${id}, and is what the sheet said Save would leave`,
@@ -196,9 +197,10 @@ const offL = mimicLines({}), qL = mimicLines({ I1: P0.QUIC8 }), bL = mimicLines(
 let v = pick({ eff: qL, was: qL });
 let L = lines(v), D = dd(v);
 check("the dropdown shows the stored disguise", D && D.value === "quic", D && D.value);
-check("its options: Off, QUIC, DNS — nothing else while the set is a preset", D && D.options.map(o => o.value).join() === "off,quic,dns", D && D.options.map(o => o.value));
+check("its options: Off, QUIC, DNS, Built-in — nothing else while the set is one of them", D && D.options.map(o => o.value).join() === "off,quic,dns,builtin", D && D.options.map(o => o.value));
+check("…every one pickable (Built-in is the way back to the set an interface was made with)", D && D.options.every(o => !o.disabled));
 check("the closed label is the name alone", D && D.short() === "QUIC (HTTP/3)");
-check("size: 1 packet, 1,232 bytes, a monthly figure", L.some(l => /^Before each handshake: 1 packet, 1,232 bytes — about [\d.]+M a month/.test(l.t)), L.map(l => l.t));
+check("size: 1 packet, 1,232 bytes, a monthly figure", L.some(l => /^The disguise sends before each handshake: 1 packet, 1,232 bytes — about [\d.]+M a month/.test(l.t)), L.map(l => l.t));
 check("port fit said on 51820", L.some(l => /QUIC looks most natural on UDP 443 — this interface listens on 51820/.test(l.t)));
 check("…and not on 443", !lines(pick({ eff: qL, was: qL, port: "443" })).some(l => /most natural/.test(l.t)));
 check("what it does / does not", L.some(l => /does not help where only listed addresses are allowed/.test(l.t)));
@@ -210,7 +212,8 @@ check("…and with it when it is (3.1, or a line removed)", lines(pick({ eff: qL
 check("to Off: the Off sentence", lines(pick({ eff: offL, was: qL })).some(l => /carry no disguise\. Devices on this interface keep their current one until re-imported \(12 devices\)/.test(l.t)));
 check("no device yet: the short sentence", lines(pick({ eff: qL, was: bL, peers: 0 })).some(l => /^Configs issued from now on are disguised as QUIC \(HTTP\/3\)\.$/.test(l.t)));
 v = pick({ eff: bL, was: bL }); L = lines(v); D = dd(v);
-check("built-in: shown as a fourth option that cannot be picked", D.value === "builtin" && D.options.length === 4 && D.options[3].disabled);
+check("built-in: shown as the fourth option, pickable, with its size", D.value === "builtin" && D.options.length === 4 && !D.options[3].disabled
+      && /5 packets, 226 bytes/.test(flat(D.options[3].label)), D.options.map(o => [o.value, o.disabled]));
 check("built-in: 5 packets, 226 bytes, and its note", L.some(l => /5 packets, 226 bytes/.test(l.t)) && L.some(l => /every swgPanel install ships/.test(l.t)));
 check("built-in: no port line (no protocol to fit)", !L.some(l => /most natural/.test(l.t)));
 v = pick({ eff: offL, was: offL }); L = lines(v);
@@ -219,6 +222,8 @@ const big = mimicLines({ I1: "<r 1000><r 500>" });
 L = lines(pick({ eff: big, was: offL }));
 check("custom with a 1500-byte I1: the warning", L.some(l => l.cls.includes("warnish") && /I1 is 1,500 bytes — above 1232/.test(l.t)), L);
 check("custom: shown as Custom", dd(pick({ eff: big, was: offL })).value === "custom");
+check("custom: a fifth row that cannot be picked", (o => o.length === 5 && o[4].value === "custom" && o[4].disabled)(dd(pick({ eff: big, was: offL })).options));
+check("built-in picked over QUIC: the Save line names the I1–I5, not a protocol", lines(pick({ eff: bL, was: qL })).some(l => /carry the I1–I5 below\./.test(l.t)));
 check("custom: the Save line names the I1–I5, not a preset", lines(pick({ eff: big, was: offL })).some(l => /carry the I1–I5 below\. Devices on this interface keep their current ones until re-imported \(12 devices\)/.test(l.t)));
 L = lines(pick({ eff: big, was: offL, bad: "I1: BAD" }));
 check("an error is the only line, in red", L.length === 1 && L[0].cls.includes("err") && L[0].t === "I1: BAD", L);
