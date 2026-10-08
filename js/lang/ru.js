@@ -2538,8 +2538,50 @@ export const STR = {
   "AmneziaWG parameters": "Параметры AmneziaWG",
   "Rendered into configs/QRs. Leave blank to keep the interface's existing values.":
     "Подставляются в конфиги и QR. Оставьте пустым, чтобы сохранить текущие значения интерфейса.",
-  "Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.":
-    "Отправляются на интерфейс ноды и подставляются в конфиги и QR. После изменения существующим клиентам нужен повторный импорт.",
+  "Pushed to the node's interface and rendered into configs/QRs. Existing devices must re-import after a change, except a change of disguise: each side sends its own.":
+    "Отправляются на интерфейс ноды и подставляются в конфиги и QR. После изменения существующим устройствам нужен повторный импорт — кроме смены маскировки: каждая сторона отправляет свою.",
+  // AmneziaWG "Disguise as" — the picker over I1–I5 in the Edit sheet (docs/AWG-MIMICRY-PLAN.md §3.1, §5)
+  "Disguise as": "Маскировка под",
+  "mimic|Off": "Нет",
+  "DNS query": "DNS-запрос",
+  "Built-in (old)": "Встроенная (старая)",
+  "mimic|Custom": "Своя",
+  "disguise: off": "маскировка: нет",
+  "disguise: QUIC": "маскировка: QUIC",
+  "disguise: DNS": "маскировка: DNS",
+  "disguise: built-in": "маскировка: встроенная",
+  "disguise: custom": "маскировка: своя",
+  "no packets before the handshake": "без пакетов перед хендшейком",
+  "1 packet, {v1}–{v2} bytes": "1 пакет, {v1}–{v2} байт",
+  "Before each handshake: {v1}, {v2} bytes — about {v3} a month for a device that stays connected.":
+    "Перед каждым хендшейком: {v1}, байт: {v2} — около {v3} в месяц для постоянно подключённого устройства.",
+  "No packets before the handshake.": "Перед хендшейком пакетов нет.",
+  "{v1} is {v2} bytes — above 1232 it may be split on a 1280-byte path, and split packets stand out.":
+    "{v1} — байт: {v2}. Больше 1232 пакет может быть фрагментирован на пути с MTU 1280, а фрагменты заметны.",
+  "The set every swgPanel install ships, the same on every server.": "Набор, который ставит каждая установка swgPanel, — одинаковый на всех серверах.",
+  "QUIC looks most natural on UDP 443 — this interface listens on {v1}.": "QUIC естественнее всего выглядит на UDP 443, а этот интерфейс слушает {v1}.",
+  "DNS looks most natural on UDP 53 — this interface listens on {v1}.": "DNS естественнее всего выглядит на UDP 53, а этот интерфейс слушает {v1}.",
+  "Changes only what the packets before each handshake look like. It does not help where only listed addresses are allowed — a TURN server is the way there.":
+    "Меняет только вид пакетов перед каждым хендшейком. Не помогает там, где разрешены только адреса из списка, — там нужен TURN-сервер.",
+  "Configs issued from now on carry no disguise.": "Новые конфиги будут без маскировки.",
+  "Configs issued from now on are disguised as {v1}.": "Новые конфиги будут маскироваться под {v1}.",
+  "Configs issued from now on carry the I1–I5 below.": "Новые конфиги получат I1–I5, заданные ниже.",
+  // budget-ok: a hint line under the picker, wraps
+  "On Save, devices keep working. Configs issued or re-imported from now on carry no disguise. Devices on this interface keep their current one until re-imported ({v1}).":
+    "После сохранения устройства продолжат работать. Конфиги, выданные или переимпортированные с этого момента, будут без маскировки. Устройства на этом интерфейсе сохранят прежнюю до переимпорта ({v1}).",
+  // budget-ok: a hint line under the picker, wraps
+  "On Save, devices keep working. Configs issued or re-imported from now on are disguised as {v1}. Devices on this interface keep their current disguise until re-imported ({v2}).":
+    "После сохранения устройства продолжат работать. Конфиги, выданные или переимпортированные с этого момента, будут маскироваться под {v1}. Устройства на этом интерфейсе сохранят прежнюю маскировку до переимпорта ({v2}).",
+  // budget-ok: a hint line under the picker, wraps
+  "On Save, devices keep working. Configs issued or re-imported from now on carry the I1–I5 below. Devices on this interface keep their current ones until re-imported ({v1}).":
+    "После сохранения устройства продолжат работать. Конфиги, выданные или переимпортированные с этого момента, получат I1–I5, заданные ниже. Устройства на этом интерфейсе сохранят прежние до переимпорта ({v1}).",
+  "The interface restarts; connected devices reconnect within a few seconds.": "Интерфейс перезапустится; подключённые устройства переподключатся за несколько секунд.",
+  "{v1}: a random part is at most 1000 bytes — split it, like <r 1000><r 214>.": "{v1}: случайная часть — не больше 1000 байт; разбейте её, например <r 1000><r 214>.",
+  "{v1}: <c> is gone from AmneziaWG 3.x, and apps refuse the whole config.": "{v1}: тега <c> нет в AmneziaWG 3.x — приложения отвергнут весь конфиг.",
+  "{v1}: <t> appears twice — once per packet at most.": "{v1}: <t> встречается дважды — в пакете он может быть только один.",
+  "{v1}: holds a line break or another control character.": "{v1}: содержит перевод строки или другой управляющий символ.",
+  "{v1}: longer than 4096 characters.": "{v1}: длиннее 4096 символов.",
+  "{v1}: apps cannot read {v2} — use <b 0x…>, <r N>, <rc N>, <rd N> or <t>.": "{v1}: приложения не прочитают {v2} — используйте <b 0x…>, <r N>, <rc N>, <rd N> или <t>.",
   // budget-ok: disclosure title, own line
   "Filters & abuse": "Фильтры и ограничения",
   "Advanced settings": "Дополнительно",
@@ -6856,7 +6898,7 @@ export const STR = {
   "ContentPaddingAddition is none while RandomTrailers is on — every small packet is padded about five times over.": "ContentPaddingAddition пустой, а RandomTrailers включён — каждый маленький пакет раздувается примерно в пять раз.",
   "Change {what} and remove {v1}?": "Изменить {what} и убрать {v1}?",
   "Remove {v1}?": "Убрать {v1}?",
-  "Type - in a cell to remove that line — every device re-imports, as with any change here.": "Введите - в ячейку, чтобы убрать эту строку — каждому устройству придётся заново импортировать конфигурацию, как и при любом изменении здесь.",
+  "Type - in a cell to remove that line — every device re-imports, as with any change here outside I1–I5.": "Введите - в ячейку, чтобы убрать эту строку — каждому устройству придётся заново импортировать конфигурацию, как и при любом изменении здесь, кроме I1–I5.",
   "Type - in a cell for no such line on the interfaces made from these; a blank cell stays automatic.": "Введите - в ячейку, чтобы у интерфейсов, созданных с этими значениями, такой строки не было; пустая ячейка остаётся автоматической.",
   "Type - in a cell for no such line on the links made from these; a blank cell stays automatic.": "Введите - в ячейку, чтобы у линков, созданных с этими значениями, такой строки не было; пустая ячейка остаётся автоматической.",
   "{v1} is a plain WireGuard interface — only an AmneziaWG interface can switch to AmneziaWG 3.1": "{v1} — интерфейс обычного WireGuard; на AmneziaWG 3.1 можно перевести только интерфейс AmneziaWG",
@@ -7179,6 +7221,7 @@ export const PLURALS = {
   deployment: ["развёртывание", "развёртывания", "развёртываний"],
   change: ["изменение", "изменения", "изменений"],
   device: ["устройство", "устройства", "устройств"],
+  packet: ["пакет", "пакета", "пакетов"],
   list: ["список", "списка", "списков"],
   rule: ["правило", "правила", "правил"],
   // Prepositional case — these two sit after «в» / «на» ("в 3 правилах на 2 интерфейсах"), where the

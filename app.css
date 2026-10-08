@@ -2826,6 +2826,13 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .awg-f input.awg-none,.awg-val.awg-none{color:var(--faint);background:transparent;border-style:dotted}   /* "-": no such line — no fill, a dotted edge (a fixed value is dashed) */
 .awg-none-v{color:var(--faint)}   /* the interface page: a field its whole set leaves out */
 .awg-omit-hint{margin:8px 0 0}
+/* the disguise picker (docs/AWG-MIMICRY-PLAN.md §3.1): above the grid, its label in the cells' own voice; the lines under it */
+.mimic{margin:0 0 12px}
+.mimic-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mimic-lbl{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
+.mimic-row .selwrap.mimic-dd{width:260px;min-width:0;flex:0 1 260px}   /* beside its label: beats `.field .selwrap:not(.mini)` (0,3,0) by coming later */
+.hint.mimic-line{margin:5px 0 0}
+.hint.mimic-save{color:var(--ink-2)}
 .iface-grid.awg3-row{margin-top:0}
 .awg3-row .ig-v{word-break:normal;overflow-wrap:anywhere}   /* a narrow column breaks at Awg3Row's <wbr>s (after "=", between */
 .awg3-v{white-space:nowrap}                                      /* the key's words), never inside a value */

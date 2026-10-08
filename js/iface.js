@@ -10,7 +10,7 @@
  * model.js, not a rename hunt. See docs/APP-JS-SPLIT-PLAN.md §5.
  */
 
-import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
+import { T, Trich, Tsplit, plural, pluralWord, srvText, fmtNum } from "./i18n.js";
 import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V, agoAge} from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
@@ -27,6 +27,7 @@ import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCac
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog, reportDropped, rulesSummary, targetLabel } from "./routing.js";
 import { rulesToRows } from "./rulerows.js";
+import { MIMIC_KEYS, MIMIC_PRESETS, mimicOf, mimicCheck, mimicRender, mimicLines, mimicFill, mimicAfter } from "./mimic.js";
 import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, DropsFigure, LossPop, meshHealth, ReachField } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
@@ -1124,6 +1125,59 @@ function AwgSwitchSheet({ node, iface, to, commit, sent }) {
 }
 const awgTail = " · AWG";   // i18n-keys: a protocol acronym, appended to the already-translated summary
 const natTail = " · NAT";   // …and the NAT source card, which now lives in the same section
+/* The disguise of an AmneziaWG interface (docs/AWG-MIMICRY-PLAN.md §3.1, §5) — what mimicOf reads from I1–I5, as the picker
+   names it, as the Advanced summary names it, and what a failed mimicCheck means. One function per key: a key a ternary picks
+   is never a key (memory i18n-bare-gate). */
+const MIMIC_NAME = { off: () => T("mimic|Off"), quic: () => "QUIC (HTTP/3)", dns: () => T("DNS query"),   // i18n-keys: a protocol name
+  builtin: () => T("Built-in (old)"), custom: () => T("mimic|Custom") };
+const MIMIC_TAIL = { off: () => T("disguise: off"), quic: () => T("disguise: QUIC"), dns: () => T("disguise: DNS"),
+  builtin: () => T("disguise: built-in"), custom: () => T("disguise: custom") };
+const mimicWhy = (k, c) => c.why === "big" ? T("{v1}: a random part is at most 1000 bytes — split it, like <r 1000><r 214>.", { v1: k })
+  : c.why === "c" ? T("{v1}: <c> is gone from AmneziaWG 3.x, and apps refuse the whole config.", { v1: k })
+  : c.why === "t2" ? T("{v1}: <t> appears twice — once per packet at most.", { v1: k })
+  : c.why === "ctl" ? T("{v1}: holds a line break or another control character.", { v1: k })
+  : c.why === "long" ? T("{v1}: longer than 4096 characters.", { v1: k })
+  : T("{v1}: apps cannot read {v2} — use <b 0x…>, <r N>, <rc N>, <rd N> or <t>.", { v1: k, v2: c.tag });
+const MIMIC_BIG = 1232;            // a packet above this may be split on a 1280-byte path (plan §5)
+const MIMIC_MONTH = 30 * 24 * 30;  // handshakes a month for a device that stays connected: one every 2 minutes
+/* The picker and the lines under it. `eff` = the five lines Save would leave (a blank cell keeps the record's: the update
+   merges), `was` = the record's, `port` = the listen port in the form. */
+export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
+  const mim = mimicOf(eff), changed = MIMIC_KEYS.some(k => String(eff[k] ?? "") !== String(was[k] ?? ""));
+  const size = ([a, b]) => T("1 packet, {v1}–{v2} bytes", { v1: fmtNum(a), v2: fmtNum(b) });
+  const opts = [
+    { value: "off", label: html`${MIMIC_NAME.off()} <span class="faint">${T("no packets before the handshake")}</span>` },
+    { value: "quic", label: html`${MIMIC_NAME.quic()} <span class="faint">${size(MIMIC_PRESETS.quic.sizes)}</span>` },
+    { value: "dns", label: html`${MIMIC_NAME.dns()} <span class="faint">${size(MIMIC_PRESETS.dns.sizes)}</span>` },
+    ...(mim === "builtin" || mim === "custom" ? [{ value: mim, label: MIMIC_NAME[mim](), disabled: true }] : []),
+  ];
+  const pk = MIMIC_KEYS.map(k => [k, mimicCheck(eff[k])]).filter(([, c]) => c.ok && c.bytes);
+  const bytes = pk.reduce((n, [, c]) => n + c.bytes, 0), big = pk.find(([, c]) => c.bytes > MIMIC_BIG);
+  const lp = String(port || "").trim(), fit = MIMIC_PRESETS[mim] && MIMIC_PRESETS[mim].port;
+  const line = (t, cls) => html`<p class=${"hint mimic-line" + (cls ? " " + cls : "")}>${t}</p>`;
+  // what Save does to the devices (F1: each side sends its own I1–I5, so nobody is cut; a config carries the new set once issued)
+  const dev = plural(peers, "device"), preset = MIMIC_PRESETS[mim] && mim !== "off";
+  const savedLine = () => !peers
+    ? (mim === "off" ? T("Configs issued from now on carry no disguise.") : preset ? T("Configs issued from now on are disguised as {v1}.", { v1: MIMIC_NAME[mim]() })
+      : T("Configs issued from now on carry the I1–I5 below."))
+    : mim === "off" ? T("On Save, devices keep working. Configs issued or re-imported from now on carry no disguise. Devices on this interface keep their current one until re-imported ({v1}).", { v1: dev })
+    : preset ? T("On Save, devices keep working. Configs issued or re-imported from now on are disguised as {v1}. Devices on this interface keep their current disguise until re-imported ({v2}).", { v1: MIMIC_NAME[mim](), v2: dev })
+    : T("On Save, devices keep working. Configs issued or re-imported from now on carry the I1–I5 below. Devices on this interface keep their current ones until re-imported ({v1}).", { v1: dev });
+  return html`<div class="mimic">
+    <div class="mimic-row"><span class="mimic-lbl">${T("Disguise as")}</span>
+      <${Dropdown} className="selwrap mimic-dd" value=${mim} options=${opts} short=${() => MIMIC_NAME[mim]()} ariaLabel=${T("Disguise as")} onChange=${onPick}/></div>
+    ${bad ? line(bad, "err") : html`
+      ${line(pk.length ? T("Before each handshake: {v1}, {v2} bytes — about {v3} a month for a device that stays connected.",
+        { v1: plural(pk.length, "packet"), v2: fmtNum(bytes), v3: fmtBytes((bytes + 28 * pk.length) * MIMIC_MONTH) }) : T("No packets before the handshake."))}
+      ${big ? line(T("{v1} is {v2} bytes — above 1232 it may be split on a 1280-byte path, and split packets stand out.", { v1: big[0], v2: fmtNum(big[1].bytes) }), "warnish") : null}
+      ${mim === "builtin" ? line(T("The set every swgPanel install ships, the same on every server.")) : null}
+      ${fit && lp && +lp !== fit ? line(mim === "quic" ? T("QUIC looks most natural on UDP 443 — this interface listens on {v1}.", { v1: lp })
+        : T("DNS looks most natural on UDP 53 — this interface listens on {v1}.", { v1: lp })) : null}
+      ${mim !== "off" ? line(T("Changes only what the packets before each handshake look like. It does not help where only listed addresses are allowed — a TURN server is the way there.")) : null}
+      ${changed ? line(html`${savedLine()}${restart
+          ? " " + T("The interface restarts; connected devices reconnect within a few seconds.") : ""}`, "mimic-save") : null}`}
+  </div>`;
+}
 export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
@@ -1888,6 +1942,14 @@ export function EditIfaceSheet({ node, iface }) {
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
   const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
   const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
+  // The disguise (docs/AWG-MIMICRY-PLAN.md §3.1): read back from I1–I5, never stored by name. A pick fills the five cells once,
+  // here — a render on every poll would redraw its random parts under the operator. A line the record holds goes with "-";
+  // one it never had stays blank. `mimEff` = the lines Save would leave: a blank cell keeps the record's (the update merges).
+  const pickMimic = id => { const f = mimicFill(mimicRender(id), meta.awg_params); setAwg(a => ({ ...a, ...f })); };
+  const mimWas = mimicLines(meta.awg_params), mimEff = mimicAfter(awg, meta.awg_params);
+  // a line the operator changed that some app cannot read — said under the picker, and Save waits (F9: the whole config fails)
+  const mimBad = isAwg ? MIMIC_KEYS.filter(k => mimEff[k] !== mimWas[k]).map(k => [k, mimicCheck(awg[k])]).find(([, c]) => !c.ok) : null;
+  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : "";
   // The AmneziaWG version (docs/AWG3-PLAN.md §7.7): an AmneziaWG interface that is not a mesh link. Flipping it and pressing Save
   // opens the switch window; the reason the panel would refuse either way greys that side (an older node can do neither).
   const genWas = awgGen(node, iface) || "2.0";
@@ -1941,7 +2003,9 @@ export function EditIfaceSheet({ node, iface }) {
     const portChanged = port.trim() !== String(meta.desired_port || meta.listen_port || "");
     const epChanged = host.trim() !== epHost;
     // …and a line taken off (a cell set to "-") breaks every client the same way (A7) — named in the same window
-    const awgRm = isAwg ? AWG_ORDER.filter(k => awgIsNone(awg[k]) && (meta.awg_params || {})[k] != null) : [];
+    // — but not I1–I5: each side sends its own, so taking one off cuts no device (docs/AWG-MIMICRY-PLAN.md F1; the line under
+    // the disguise picker says what does happen)
+    const awgRm = isAwg ? AWG_ORDER.filter(k => awgIsNone(awg[k]) && (meta.awg_params || {})[k] != null && !MIMIC_KEYS.includes(k)) : [];
     if (portChanged || epChanged || awgRm.length) {           // client-breaking → confirm first (the editor stays open behind it)
       const what = portChanged && epChanged ? T("endpoint and listen port") : portChanged ? T("listen port") : "endpoint";
       const title = !awgRm.length ? T("Change {what}?", { what }) : (portChanged || epChanged)
@@ -1976,7 +2040,7 @@ export function EditIfaceSheet({ node, iface }) {
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bring this interface up on the node")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> ${T("Start service")}</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Take this interface down on the node (stays down until started)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bounce this interface's service on the node (down then up)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !!mimErr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || mimErr || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
     <div class="iface-intro"><div>${Trich("Changing the *endpoint* or *port* will break the existing clients' connections; you will need to re-distribute the configs / QR codes.")}</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("This interface is *down* on the node. Change the *Listen port* to a free one and *Save* — the panel will write the new port and restart the interface to bring it up.")}</span></div>` : null}
     ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
@@ -2065,7 +2129,7 @@ export function EditIfaceSheet({ node, iface }) {
       open=${disc.filters} onToggle=${() => tog("filters")}>
       <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
     <//>
-    <${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS") + (isAwg ? awgTail : "") + (natPinApplies(eg) ? natTail : "")}
+    <${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS") + (isAwg ? awgTail + " · " + MIMIC_TAIL[mimicOf(mimEff)]() : "") + (natPinApplies(eg) ? natTail : "")}
       open=${disc.advanced} onToggle=${() => tog("advanced")}>
       <div class="field secdiv"><label>${isAwg ? T("AmneziaWG settings") : T("WireGuard settings")}</label></div>
       <div class="row2">
@@ -2074,11 +2138,14 @@ export function EditIfaceSheet({ node, iface }) {
       </div>
       <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder=${T("https://8.8.8.8/dns-query, 1.1.1.1")}/><div class="hint">${T("Comma-separated")}</div></div>
       ${isAwg ? html`<div class="field"><label>${T("AmneziaWG parameters")}</label>
-        <div class="hint" style="margin:0 0 8px">${T("Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.")}</div>
+        <div class="hint" style="margin:0 0 8px">${T("Pushed to the node's interface and rendered into configs/QRs. Existing devices must re-import after a change, except a change of disguise: each side sends its own.")}</div>
+        <${MimicPick} eff=${mimEff} was=${mimWas} port=${port} bad=${mimErr} onPick=${pickMimic}
+          peers=${Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface)).length}
+          restart=${gen === "3.1" || AWG_ORDER.some(k => awgIsNone(awg[k]) && (meta.awg_params || {})[k] != null)}/>
         <div class="awg-cols">${AWG_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]}
           class=${awgIsNone(awg[k]) ? "awg-none" : null} ...${meta.awg_exact && (meta.awg_params || {})[k] == null ? { placeholder: T("val|none") } : {}}
           onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div>
-        <p class=${"hint awg-omit-hint" + (awgOmitIssue(awg) ? " err" : "")}>${awgOmitIssue(awg) || T("Type - in a cell to remove that line — every device re-imports, as with any change here.")}</p>
+        <p class=${"hint awg-omit-hint" + (awgOmitIssue(awg) ? " err" : "")}>${awgOmitIssue(awg) || T("Type - in a cell to remove that line — every device re-imports, as with any change here outside I1–I5.")}</p>
         ${/* The 3.1 set as a fifth group — while the sheet says 3.1, the moment the switch is flipped too (setGen fills it), so
               one Save switches with the values wanted. HeaderProtectionKey and RandomTrailers
               change only through the switch (an editable key was a one-keystroke way to cut every client with no window), so
