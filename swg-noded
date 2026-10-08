@@ -18168,12 +18168,20 @@ def _turn_arch_ok():
     # "can this box run a turn-proxy". If a fork ever ships more arches, widen this set (and TURN_ARCHES on the panel).
     return _turn_arch() in ("amd64", "arm64")
 
+# A fork repo that moved: samosvalishe deleted samosvalishe/free-turn-proxy (2026-10) and hackdiaz-dev carries it on
+# (same releases, asset names and flags). A proxy installed before the move remembers the old repo (repo.txt, its
+# record), so the three places that fetch by repo — _turn_dl_urls, _turn_panel_fetch (the panel mirror is keyed by
+# repo too) and _turn_resolve_tag — map it here; an install also writes the new name (repo.txt, the unit).
+_TURN_REPO_MOVED = {"samosvalishe/free-turn-proxy": "hackdiaz-dev/free-turn-proxy"}
+def _turn_owner_now(owner):
+    return _TURN_REPO_MOVED.get(owner, owner)
 def _turn_dl_urls(owner, arch, tag=None):
     """GitHub release assets are single-origin (objects.githubusercontent.com). Try GitHub direct first, then
     any operator-configured proxy mirrors (SWG_TURN_MIRROR, space-separated prefixes — OPT-IN: proxying a binary
     you execute is a supply-chain trust decision, so it's off by default).
     When the panel supplies a release TAG (the checksum gate), pin the IMMUTABLE per-tag asset
     (releases/download/<tag>/…) instead of the moving 'latest' — so the bytes match the sha256 the panel hashed."""
+    owner = _turn_owner_now(owner)
     path = ("download/" + tag) if tag else "latest/download"
     base = "https://github.com/" + owner + "/releases/" + path + "/server-linux-" + arch
     urls = [base]
@@ -18219,6 +18227,7 @@ def _turn_panel_fetch(owner, tag, arch, dest, want):
     Censorship-robust: the node reaches the panel over its existing outbound-only channel even where GitHub is
     blocked. Returns True on a verified write (dest is left executable-ready), else False (caller falls back to
     GitHub-direct). No-ops without a pin tag or panel config — so mixed-version panels keep GitHub-direct."""
+    owner = _turn_owner_now(owner)
     panel = _TURN_PANEL or {}
     base = (panel.get("url") or "").rstrip("/")
     if not base or not tag or "/" not in (owner or ""):
@@ -18243,14 +18252,7 @@ def _turn_panel_fetch(owner, tag, arch, dest, want):
         return False
     return True
 
-# A fork repo that moved: samosvalishe deleted samosvalishe/free-turn-proxy (2026-10) and hackdiaz-dev carries it on
-# (same releases, asset names and flags). A proxy installed before the move remembers the old repo (repo.txt, its
-# record), so every GitHub fetch goes through here; the panel's own requests already name the new one.
-_TURN_REPO_MOVED = {"samosvalishe/free-turn-proxy": "hackdiaz-dev/free-turn-proxy"}
-def _turn_owner_now(owner):
-    return _TURN_REPO_MOVED.get(owner, owner)
 def _dturn_download(svc, owner, pin=None):
-    owner = _turn_owner_now(owner)
     arch = _turn_arch()
     if not _turn_arch_ok():                               # no server-linux-<arch> build exists → refuse cleanly (never fetch a wrong-arch binary)
         return "no turn-proxy build for this architecture (" + os.uname().machine + ") — forks publish amd64/arm64 only"
@@ -18286,7 +18288,6 @@ def _dturn_force_download(svc, owner, pin=None):
     """Reinstall/update: fetch the fork binary FRESH and atomically swap it in — WITHOUT ever unlinking the live
     shared file. A container bind-mounts this path (…:/turn-server); if it's momentarily missing when docker
     (re)creates a container, docker creates a *directory* there and everything breaks. So: temp + os.replace only."""
-    owner = _turn_owner_now(owner)
     arch = _turn_arch()
     if not _turn_arch_ok():                               # reinstall/update on an unrunnable arch → refuse cleanly
         return "no turn-proxy build for this architecture (" + os.uname().machine + ") — forks publish amd64/arm64 only"

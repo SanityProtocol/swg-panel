@@ -683,7 +683,7 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
     <div class="turncfg-head"><span class="tcf-label">${artLabel(a)}</span></div>
     ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${T(a.hint, a.hintArgs)}</div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
-      : qrView ? (ready ? html`<div class="turncfg-qr"><${QR} conf=${text} label=${a.label}/></div>` : html`<div class="turncfg-qr qr-pending">${T("generating…")}</div>`)
+      : qrView ? (ready ? html`<div class="turncfg-qr"><${QR} conf=${text} label=${artLabel(a)}/></div>` : html`<div class="turncfg-qr qr-pending">${T("generating…")}</div>`)
       : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => { e.target.select(); copy(text, a.uri ? T("Link copied") : T("Config copied")); }}>${ready ? text : T("generating…")}</textarea>
           <button class="cmd-copy" title=${T("Copy")} disabled=${!ready} onClick=${() => copy(text, a.uri ? T("Link copied") : T("Config copied"))}><${Ic} i="copy"/></button></div>`}
     ${a.cmd ? html`<div class="turncfg-cmd"><div class="tokenbox">${a.cmd}</div>
@@ -1295,7 +1295,8 @@ export function clientHandoff(cl, cid, qr, os) {
 }
 export function artLabel(a) {
   const m = (typeof SWGTurn !== "undefined" && SWGTurn.clientMeta) ? SWGTurn.clientMeta(a.enc) : null;
-  if (!m) return T(a.label || "");
+  // no app (the desktop CLI): turn-artifacts composed "<fork id> · CLI client (desktop)" — the id is not a name (forkLabel)
+  if (!m) return a.fork && String(a.label || "").startsWith(a.fork + " ") ? forkLabel(a.fork) + a.label.slice(a.fork.length) : T(a.label || "");
   return T("{v1} via {v2} ({v3}) by {v4}", { v1: forkLabel(a.fork), v2: m.app, v3: m.platform + (a.labelMode || ""), v4: forkLabel(m.author) });
 }
 export function wdttArtInput(peer, t) {

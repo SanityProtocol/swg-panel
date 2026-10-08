@@ -1992,7 +1992,7 @@
         var vlist = vall.slice(0, 1);
         var vkw = el("div", "scell-vk");
         var vkLbl = (appInfo.kind === "app") ? t("vkAddApp").replace("{app}", appInfo.app)
-                  : t("vkAddFork").replace("{fork}", appInfo.fork);
+                  : t("vkAddFork").replace("{fork}", forkLabel(appInfo.fork));
         vkw.appendChild(el("span", "scell-vklbl", vkLbl));
         vlist.forEach(function (raw) {
           var vkb = el("button", "scell-vkbtn", raw); vkb.title = t("tapCopy");

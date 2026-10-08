@@ -16,7 +16,7 @@ import { go } from "./router.js";
 import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
          turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
-import { turnFork, turnColor, turnForkList } from "./turn-catalog.js";
+import { turnFork, turnColor, turnForkList, forkLabel } from "./turn-catalog.js";
 import { Ic, ICON, Tag, tgt3, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, CapList, capShown, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
 import {
   genKeys, genPSK, buildConf, parseFullConf, downloadConf, getConfig, configOverrides, QR, qrDataURL,
@@ -194,7 +194,7 @@ export function TargetFrontBadge({ node, iface, peer, dim }) {
   }
   const tps = turnProxiesFor(node, iface);
   if (!tps.length) return null;
-  const one = t => shownTitle("t|" + node + "|" + t.service, t.title) || turnFork(t.service);
+  const one = t => shownTitle("t|" + node + "|" + t.service, t.title) || forkLabel(turnFork(t.service));
   const st = peer ? pubState(peer, "turn") : null;
   // Offline dims this the same way it dims the interface badge beside it — they describe one deployment, so
   // one of them fading while the other stays lit read as a difference in state that isn't there.
