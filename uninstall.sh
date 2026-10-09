@@ -1384,12 +1384,19 @@ rm_wdtt(){ local unit="$1" name iface fork
   info "Removing WDTT server ($iface${fork:+ · $fork})"
   [ -e "$unit" ] && run systemctl disable --now "$name"
   rmrf "$unit"; run systemctl daemon-reload
-  command -v ip >/dev/null 2>&1 && run ip link delete dev "$iface" 2>/dev/null || true   # its userspace tunnel outlives the process
-  rmrf "/var/run/wireguard/$iface.sock"   # the wireguard-go UAPI socket outlives it too — and a stale one makes the node report a PHANTOM adoption candidate
-  # The node owns this instance's egress rules (WDTT runs with -no-nat). Nothing else removes them, so they'd
-  # linger after an uninstall and a LATER install could reuse the iface name with a different subnet — leaving a
-  # MASQUERADE for the old one and clients with no internet. Delete by our own comment tag only.
-  _rm_egress_rules "$iface"
+  # ⚠️ A STALE BARE UNIT BESIDE THE DOCKER NODE THAT RUNS THIS INSTANCE NOW (a box converted bare → Docker before the convert
+  # deleted these units, 7d6a9a07): the interface, its UAPI socket and its egress rules are the container's — deleting them
+  # cut the live server's clients off. Only the unit goes then.
+  local live=no; docker_running swg-node && [ -d "$DOCKER_DIR/data/node/wdtt/$iface" ] && live=yes
+  if [ "$live" = yes ]; then info "  the Docker node runs $iface now — only this stale bare unit goes; its interface, socket and rules stay"
+  else
+    command -v ip >/dev/null 2>&1 && run ip link delete dev "$iface" 2>/dev/null || true   # its userspace tunnel outlives the process
+    rmrf "/var/run/wireguard/$iface.sock"   # the wireguard-go UAPI socket outlives it too — and a stale one makes the node report a PHANTOM adoption candidate
+    # The node owns this instance's egress rules (WDTT runs with -no-nat). Nothing else removes them, so they'd
+    # linger after an uninstall and a LATER install could reuse the iface name with a different subnet — leaving a
+    # MASQUERADE for the old one and clients with no internet. Delete by our own comment tag only.
+    _rm_egress_rules "$iface"
+  fi
   # ask_yn returns immediately once its variable is set, so a single answer used to apply to EVERY instance —
   # while the prompt named one specific path. This is the one irrecoverable action in the script, so ask per
   # instance (a name-scoped variable), and let an unattended run still answer once via WDTT_DATA_DEL.
