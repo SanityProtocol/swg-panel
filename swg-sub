@@ -867,6 +867,10 @@ def read_data(state, token):
 class Handler(BaseHTTPRequestHandler):
     server_version = "swg-sub"
     protocol_version = "HTTP/1.1"
+    # Each connection's socket timeout, plain HTTP and TLS alike (the stdlib's setup() puts it on whichever socket the
+    # handler gets): an idle or half-open client is let go after 60 s, as the TLS server's accept already did. Plain HTTP
+    # had none, so every idle connection held a thread and an fd for ever (1.8.9 qualification R2 HELPERS-2).
+    timeout = 60
     state = None
     _meta_warned = False        # link-preview metadata failure is reported once, not once per visit
     _tb, _tb_lock = [float("-inf"), 0], threading.Lock()   # do_GET: when it last wrote a traceback, and how many it held since
@@ -1050,6 +1054,16 @@ class _QuietServer(ThreadingHTTPServer):
     # do_GET answers those itself.
     def handle_error(self, request, client_address):
         pass                                            # failed handshake / scanner / vanished client — routine noise
+
+    # At most max_conns connections at once, one thread each, in both modes: one more is closed at once, before it costs a
+    # thread (1.8.9 qualification R2 HELPERS-2). ~1000 idle connections held every fd — at the soft limit (1024 on the bare
+    # unit) accept() failed with EMFILE and the serve loop spun a core while the page and /healthz stopped answering. 256:
+    # a page visit is a few short connections, so far above real use, and 256 sockets plus the one file each may have open
+    # stay near half that limit; where the limit is high (docker) it caps the threads' RAM.
+    max_conns = 256
+
+    def verify_request(self, request, client_address):
+        return threading.active_count() <= self.max_conns     # the serve loop's own thread + one per connection
 
 
 class _TLSServer(_QuietServer):
