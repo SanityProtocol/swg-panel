@@ -7958,10 +7958,17 @@ def log_post_admits(tok):
         return any(tok in r.get("toks", ()) for r in _RANGE_REQS.values())
 
 
+# A node's numbers are bounded before anything formats them (q189 PLO-2): one line timed 10**25 µs, a `now` of 1e300 or a
+# cut_t of 10**25 raised "timestamp out of range" in the file's making and failed the whole download for every server.
+LOG_T_MAX = 2 ** 53                       # µs — year 2255; a time is 0 <= t < this
+LOG_OFF_MAX = 10 * 365 * 86400            # s — a node's clock further off than ten years is not a clock
+
+
 def _log_post_lines(lines, cap, marks=()):
     """The well-formed [time µs, source, priority, text] among a post's first `cap` lines, each text cut to LIVE_TEXT_MAX."""
     return [[ln[0], ln[1], ln[2], ln[3][:LIVE_TEXT_MAX]] for ln in (lines if isinstance(lines, list) else [])[:cap]
             if isinstance(ln, list) and len(ln) == 4 and isinstance(ln[0], int) and not isinstance(ln[0], bool)
+            and 0 <= ln[0] < LOG_T_MAX
             and isinstance(ln[1], str) and (LIVE_SRC_RE.match(ln[1]) or ln[1] in marks)
             and isinstance(ln[2], int) and 0 <= ln[2] <= 7 and isinstance(ln[3], str)]
 
@@ -7974,9 +7981,11 @@ def _log_post_st(st):
 
 def _log_post_off(tn, now):
     """How far the node's clock is off, in whole seconds (0 under LIVE_SKEW_S), or None when its `now` is not a time."""
-    if not isinstance(tn, (int, float)) or isinstance(tn, bool) or not math.isfinite(tn):
-        return None
+    if not isinstance(tn, (int, float)) or isinstance(tn, bool) or not -LOG_T_MAX < tn < LOG_T_MAX or not math.isfinite(tn):
+        return None                       # (a 400-digit int overflowed math.isfinite itself — the bound comes first)
     off = tn - now
+    if abs(off) > LOG_OFF_MAX:
+        return None
     return int(round(off)) if abs(off) >= LIVE_SKEW_S else 0
 
 
@@ -8104,12 +8113,12 @@ def live_absorb(body, now=None):
         good = _log_post_lines(body.get("lines"), LIVE_POST_LINES, ("!skip", "!gap"))
         cur = body.get("cur")
         cur_ok = isinstance(cur, dict) and len(json.dumps(cur)) <= LIVE_CUR_MAX   # before the lines: a raise adds none
-        live_add(rec, nid, good)
+        st, off = _log_post_st(body.get("st")), _log_post_off(body.get("now"), now)   # …and these (PLO-2: a raise after the
+        live_add(rec, nid, good)                                                    # lines were kept made the node resend them)
         if cur_ok:
             rec["cur"][nid] = cur
         elif cur is not None:                              # too big to keep: a restart starts afresh rather than from
             rec["cur"].pop(nid, None)                      # a stale point (a repeat or a gap no marker would show)
-        st, off = _log_post_st(body.get("st")), _log_post_off(body.get("now"), now)
         if st is not None:
             rec["st"][nid] = st
         if off is not None:
@@ -8473,7 +8482,7 @@ def range_absorb(body, now=None):
             if done is not None:
                 for k in ("read", "cut", "cut_t"):
                     v = done.get(k)
-                    if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                    if isinstance(v, int) and not isinstance(v, bool) and 0 <= v < LOG_T_MAX:   # PLO-2: the header formats cut_t
                         ns[k] = v
                 ns["state"] = "done"
     return 200, {"ok": True, "next": seq + 1}
