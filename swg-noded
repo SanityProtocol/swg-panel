@@ -22248,6 +22248,10 @@ def _csqtt_serve_adopted(inst):
     inst["passwords"] = pwds
 
 
+_CSQTT_FETCH_LATER = {}     # (line, build) whose switch fetch failed -> monotonic time before which it is not walked again
+CSQTT_FETCH_RETRY_S = 300   # a walk is the panel mirror, then GitHub and every mirror with curl's retries: ≈ 90 s blackholed
+
+
 def reconcile_csqtt(want, remove=None):
     """Declarative csqtt reconcile (continuous). want = {iface: inst}. Installs missing, writes desired.json +
     SIGHUPs on password change, reconfigures on transport-param change, and removes ONLY panel-listed instances.
@@ -22263,7 +22267,6 @@ def reconcile_csqtt(want, remove=None):
     if not want and not have:
         return res
     _sw_pass = [False]                     # one line switch per pass (see below)
-    _fetch_dead = set()                    # (line, build) whose fetch failed THIS pass — the next server asking for it waits a sync
     # A name the panel still lists for removal but ALSO asks for is a REUSED name: the operator deleted an
     # instance and made a new one with the same iface. Honouring the removal would delete what was just created,
     # and the next sync would build it again — remove/reinstall every few seconds, forever, re-minting the owner
@@ -22394,6 +22397,8 @@ def reconcile_csqtt(want, remove=None):
                 # has moved on, so blind-stamping would assert an upgrade that never happened, the exact lie this
                 # change exists to remove. Unstamped means UNKNOWN, so it re-fetches once and stamps the truth.
                 _want_ver = (inst.get("ver") or "").strip()
+                if inst.get("restart") != prev.get("restart"):
+                    _CSQTT_FETCH_LATER.pop((_line, _want_ver), None)   # the operator's Restart: a failed fetch is tried at once
                 if _cut:
                     # A switch away from `_cut` that a crash cut (noded died between its marker and its verify): roll it
                     # back the way a failed verify does — `_cut`'s store copy back in, its slot back, started. Never
@@ -22404,13 +22409,17 @@ def reconcile_csqtt(want, remove=None):
                     log(LOG_WARNING, "csqtt %s: a switch away from %s was cut by a restart — rolled back", iface, _cut)
                     if err:
                         res["errors"].append(iface + ": rolled back to csqtt " + _cut + ", but: " + err)
-                elif _line != _cur and not inst.get("line_failed") and (_sw_pass[0] or (_line, _want_ver) in _fetch_dead):
+                elif _line != _cur and not inst.get("line_failed") and (
+                        _sw_pass[0] or time.monotonic() < _CSQTT_FETCH_LATER.get((_line, _want_ver), 0)):
                     # ONE switch per pass: each holds the pass for its stable verify (≥ 5 s), and ten at once would stall
                     # every other reconcile on the node for over a minute. The rest wait a sync, shown as "switching".
+                    # A (line, build) whose fetch failed waits CSQTT_FETCH_RETRY_S: tried every sync, the whole walk
+                    # (≈ 90 s with GitHub blackholed) held the loop past the panel's offline threshold, so the node
+                    # flapped offline (1.8.9 qualification NR-4). A new build, or the operator's Restart, tries at once.
                     pass
                 elif _line != _cur and not inst.get("line_failed"):
                     # A LINE SWITCH (§4.2): this one instance moves; the wanted build rides along, so no build
-                    # update follows. A fetch that failed changed nothing and is simply retried next sync; a line
+                    # update follows. A fetch that failed changed nothing and is tried again later (above); a line
                     # that would not RUN is reverted by the switch itself and memoed, so it is not retried every sync.
                     err, _memo = _csqtt_switch_line(inst, _cur, _line, _want_ver, _csqtt_ifaces(want, _line),
                                                     {i for i, r in want.items() if (r or {}).get("stopped")})
@@ -22421,7 +22430,7 @@ def reconcile_csqtt(want, remove=None):
                     # (line, build) is marked, so ten servers asking for one unfetchable build walk the mirrors once.
                     _sw_pass[0] = _switched = (not err) or _memo
                     if err and not _memo:
-                        _fetch_dead.add((_line, _want_ver))
+                        _CSQTT_FETCH_LATER[(_line, _want_ver)] = time.monotonic() + CSQTT_FETCH_RETRY_S
                     if not err:
                         inst["line"] = _line; inst.pop("line_failed", None)
                         log(LOG_INFO, "csqtt %s: switched %s → %s (%s)", iface, _cur, _line, _want_ver)
