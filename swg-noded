@@ -2748,25 +2748,40 @@ def _bind_ask_later(key):
     out instead of refusing would otherwise hold up the sync loop once per instance per pass."""
     _BIND_RETRY[key] = time.monotonic() + 300
 
-def bind_heal_due(key, envpath, listen):
-    """True ONCE per swg-noded run for a WDTT/csqtt server whose env file, written by a build before turn_bind, still
-    binds a host this box does not carry — the server that crash-looped on a DDNS name. Its caller rewrites the env
-    (and restarts it), so the update itself brings it up rather than its next edit. A server that works is never
-    restarted for this (its host lands on the box), and the lookup is made once per instance per run, never per sync."""
+def _bind_works(cur, mine, names=True):
+    """Can a server bind `cur` (host:port) AS IT IS — the one predicate of every bind heal (WDTT/csqtt, the bare vk-turn-proxy,
+    the Docker container)? True: every address (or IPv6, not judged), an address of this box, a name landing on it; False:
+    an address the box does not carry (never decided by turn_bind, or decided on one it has since lost — a DHCP
+    renumbering), a name landing elsewhere, or ANY name for a server that cannot take one (csqtt: names=False); None: a name
+    that does not resolve right now (asked again later, never judged)."""
+    host, _port, decidable = _bind_split(cur)
+    if not decidable:
+        return True
+    if not names and not _IPV4_RE.match(host):
+        return False
+    ip = _host_on_box(host, mine)
+    return None if ip is None else bool(ip)
+
+
+def bind_heal_due(key, envpath, listen, names=True):
+    """True ONCE per swg-noded run for a WDTT/csqtt server whose env file binds what it cannot bind (_bind_works): a host this
+    box does not carry — the server that crash-looped on a DDNS name an older build wrote, or one bound to an address the box
+    has since lost — or, for csqtt (names=False: it parses a socket address), any name, even one that lands on the box (1.8.9
+    qualification NR-5). Its caller rewrites the env (and restarts it), so the update itself brings it up rather than its
+    next edit. A server that works is never restarted for this, and the lookup is made once per instance per run."""
     if key in _BIND_HEALED or not _bind_ask_now(key):
         return False
     have = _env_listen(envpath)
-    host, _port, decidable = _bind_split(listen)
     mine = _local_v4()
-    if not have or have != listen or not decidable or mine is None:
+    if not have or mine is None:
         _BIND_HEALED.add(key)                          # nothing to heal (or nothing to judge with)
         return False
-    ip = _host_on_box(host, mine)
-    if ip is None:
+    ok = _bind_works(have, mine, names)
+    if ok is None:
         _bind_ask_later(key)                           # its name does not resolve right now: asked again in 5 min, not marked
         return False
     _BIND_HEALED.add(key)
-    return ip == ""
+    return not ok
 
 
 def rebind_env(envpath, inst, render):
@@ -2831,16 +2846,15 @@ def heal_turn_binds():
             if t.get("bind") == pin + ":" + port:
                 continue
         else:
-            if (t.get("bind") and t.get("bind") != listen) or not decidable:
-                _TURN_BIND_HEALED.add(svc)             # already decided by turn_bind, or nothing to decide
-                continue
-            ip = _host_on_box(host, mine)
-            if ip is None:
+            # what it binds NOW (_bind_works): a bind turn_bind decided earlier on an address the box has since lost (DHCP)
+            # crash-loops too — it was skipped as "already decided" (1.8.9 qualification FN-2(h); the Docker twin re-decides it)
+            ok = _bind_works(str(t.get("bind") or listen), mine)
+            if ok is None:
                 _bind_ask_later(svc); pending = True   # not known now: asked again in 5 min
                 continue
             _TURN_BIND_HEALED.add(svc)
-            if ip:
-                continue                               # lands on the box: it binds fine as it is
+            if ok:
+                continue                               # binds fine as it is (on the box, or every address)
         unit = host_sh("cat " + shlex.quote(_turn_unit_path(svc)) + " 2>/dev/null", probe=True).stdout or ""
         if not _unit_is_envform(unit):
             continue                                   # a baked ExecStart is migrated by the next edit, as before
@@ -18612,16 +18626,12 @@ def _dturn_bind_stale(svc, tp):
     pin = str(tp.get("bind_ip") or "")
     pinned = bool(pin and _IPV4_RE.match(pin) and pin in mine)
     if not pinned:
-        host, _port, decidable = _bind_split(cur)
-        if not decidable:
-            _TURN_BIND_HEALED.add(svc)                 # every address (or IPv6): binds as it is
-            return ""
-        ip = _host_on_box(host, mine)
-        if ip is None:
+        ok = _bind_works(cur, mine)
+        if ok is None:
             _bind_ask_later(svc)                       # not known now: asked again in 5 min
             return ""
-        if ip:
-            _TURN_BIND_HEALED.add(svc)                 # lands on the box: it binds fine as it is
+        if ok:
+            _TURN_BIND_HEALED.add(svc)                 # binds fine as it is (on the box, or every address)
             return ""
     _TURN_BIND_HEALED.add(svc)
     want = turn_bind(tp.get("listen", ""), pin=pin, prev=cur)
@@ -22697,7 +22707,7 @@ def reconcile_csqtt(want, remove=None):
                 # so it must not fire on every sync.
                 if (_csqtt_unit_drifted(iface, inst) or _csqtt_params_changed(prev, inst)
                         or (not inst.get("stopped") and _csqtt_env_drifted(iface, inst))
-                        or (not inst.get("stopped") and bind_heal_due("csqtt:" + iface, _csqtt_dir(iface) + "/csqtt.env", inst.get("listen") or ""))):
+                        or (not inst.get("stopped") and bind_heal_due("csqtt:" + iface, _csqtt_dir(iface) + "/csqtt.env", inst.get("listen") or "", names=False))):
                     err = _csqtt_reconfigure(inst)
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
