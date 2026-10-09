@@ -166,10 +166,13 @@ export function ListenNotice({ st }) {
 const _v4 = ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip || "");
 export function ListenOnField({ node, value, onChange }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-  const v4 = (nrec.ips || []).filter(_v4);
+  const nicOf = ip => ((nrec.ip_ifaces || []).find(p => p && p.ip === ip) || {}).iface || "";   // which card it sits on
+  // …never one of the node's own tunnels — its WireGuard / AmneziaWG interfaces and mesh links, a WDTT or csqtt server's devices:
+  // a server bound there reaches no client, and on a one-NIC box they made the field appear (q189 V-FEAT-A F4)
+  const tun = dev => !!dev && (Store.ifacesOf(node).includes(dev) || isSelfContainedName(dev));
+  const v4 = (nrec.ips || []).filter(ip => _v4(ip) && !tun(nicOf(ip)));
   if ((nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge") || !nrec.turn_bind_any) return null;
   if (v4.length < 2 && !value) return null;
-  const nicOf = ip => ((nrec.ip_ifaces || []).find(p => p && p.ip === ip) || {}).iface || "";   // which card it sits on
   const opts = [{ value: "", label: T("val|Auto") },
     ...v4.map(ip => ({ value: ip, label: [ip, nicOf(ip), isPrivIp(ip) ? T("private") : ""].filter(Boolean).join(" · ") })),
     ...(value && !v4.includes(value) ? [{ value, label: value + " · " + T("not on this node") }] : [])];
