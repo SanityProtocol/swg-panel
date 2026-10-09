@@ -246,7 +246,7 @@ PLANTS = {   # (program, anchor, replacement)
     "lvzabove": ("css", ".lv-full{position:fixed;inset:0;z-index:49;", ".lv-full{position:fixed;inset:0;z-index:950;"),
     "autostart": ("spa", "if (LV.busy || !LV.mounted || !LV.live || document.hidden) return;",
                   "if (LV.busy || !LV.mounted || document.hidden) return;"),
-    "deepnav": ("spa", "  LV.gen++; remember();\n  openLogOverlay();\n", "  LV.gen++; remember();\n  goSettings(\"logs\");\n"),
+    "deepnav": ("spa", "  LV.gen++;\n  openLogOverlay();\n", "  LV.gen++;\n  goSettings(\"logs\");\n"),   # no remember(): 318cbb8c
     "notrap": ("spa", 'document.addEventListener("keydown", k); document.addEventListener("focusin", f);',
                'document.addEventListener("keydown", k);'),
     "nofocusback": ("spa", "if (el) el.focus(); }, 0); };", "}, 0); };"),
