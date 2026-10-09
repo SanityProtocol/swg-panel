@@ -13766,22 +13766,42 @@ def mesh_types_in_play(deps, nodes):
                for c in n["mesh_link"].values())
 
 
+MESH_GEN_LABEL = {"wg": "WG", "2.0": "AWG 2.0", "3.1": "AWG 3.1"}   # the link type picker's own names (js meshGenLabel)
+
+
+def _mesh_relink_how(deps, nodes, a, b, want):
+    """How to rebuild ONE link, a↔b, as `want` — a phrase for the reasons below. A change of its type on its card under Node
+    connections rebuilds that link alone, on both ends (plan §8 round 12); re-provisioning a node rebuilds EVERY link it has,
+    so a reason about one link never sends the operator there (q189 PR-4). Naming the type is a change while the link follows
+    the default; a link with a type of its own changes by going back to Default — which is `want` only when the fleet's is."""
+    lbl = MESH_GEN_LABEL.get(want, want)
+    if not mesh_link_override(nodes, a, b):
+        return perr("to rebuild this link alone, pick {v1} as its type on its card under Node connections and Save", v1=lbl)
+    if mesh_gen_of(deps) == want:
+        return perr("to rebuild this link alone, pick Default as its type on its card under Node connections and Save")
+    return perr("to rebuild this link alone, pick Default as its type on its card under Node connections and Save, then {v1} "
+                "and Save again", v1=lbl)
+
+
 def mesh_gen_reasons(deps, nodes, snaps, nid):
     """The node's links that are not the type the mesh settings ask for, and why — [{peer, iface, type, want, msg}], the
     list its mesh card renders. Derived on every read from the link records against the settings (nothing stored): a
-    3.1 link built at 2.0 says what stopped it; any other mismatch is a link made before the setting changed."""
+    3.1 link built at 2.0 says what stopped it; any other mismatch is a link that kept what it was made with — made before
+    the setting changed, or while an end could not run it (a node enrolled after 3.1 was set has no report yet when its
+    links are made: q189 PR-4) — and says how to rebuild that one link."""
     me = nodes.get(nid) or {}
     mtu = mesh_cfg(deps)["mtu"]
     out = []
     for peer, lr in sorted((me.get("links") or {}).items()):
         if peer not in nodes or not isinstance(lr, dict):
             continue
-        x = min(nid, peer); xname = (nodes.get(x) or {}).get("name") or x
         want, have = mesh_gen_for(deps, nodes, nid, peer), mesh_link_gen(me, lr)
         row = {"peer": (nodes.get(peer) or {}).get("name") or peer, "iface": lr.get("iface") or "", "type": have, "want": want}
         if want != have:
             why = mesh_31_refusal(deps, nodes, snaps, nid, peer, mtu) if (want, have) == ("3.1", "2.0") else None
-            out.append(dict(row, msg=why or perr("made before the mesh type changed — re-provision {v1} to rebuild it", v1=xname)))
+            out.append(dict(row, msg=why or perr("it should be {v1}, but a link keeps the type it was made with until it is "
+                                                 "rebuilt — {v2}", v1=MESH_GEN_LABEL.get(want, want),
+                                                 v2=_mesh_relink_how(deps, nodes, nid, peer, want))))
         elif have != "wg":
             # …and a link that holds a field its template sets to none (A4): an end could not hold the omission when it was
             # made — or it was made before the template said so
@@ -13794,8 +13814,9 @@ def mesh_gen_reasons(deps, nodes, snaps, nid):
                          if not awg_exact_reported((snaps or {}).get(y))]
                 out.append(dict(row, msg=perr("{v1} has generated values: {v2} cannot hold an empty AmneziaWG field yet — it "
                                               "is offline or needs an update", v1=", ".join(_kept), v2=", ".join(_cant))
-                                if _cant else perr("made before the mesh AWG params changed — re-provision {v1} to rebuild it",
-                                                   v1=xname)))
+                                if _cant else perr("{v1} has generated values where its AWG params say none — a link keeps "
+                                                   "the values it was made with until it is rebuilt; {v2}", v1=", ".join(_kept),
+                                                   v2=_mesh_relink_how(deps, nodes, nid, peer, want))))
     return out
 
 

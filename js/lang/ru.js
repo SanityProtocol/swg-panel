@@ -6913,7 +6913,11 @@ export const STR = {
   "No nodes yet — enroll a node to link it to the others.": "Нод пока нет — подключите ноду, чтобы связать её с остальными.",
   "Link to {v1} ({v2}) is {v3}: {v4}": "Линк к {v1} ({v2}) — {v3}: {v4}",
   "the mesh MTU ({v1}) is too high for AmneziaWG 3.1 — header protection needs a link MTU of 1428 or less": "MTU меша ({v1}) слишком велик для AmneziaWG 3.1 — защите заголовков нужен MTU линка не больше 1428",
-  "made before the mesh type changed — re-provision {v1} to rebuild it": "создан до смены типа меша — пересоздайте линки {v1}, чтобы перестроить его",
+  // a link that kept what it was made with, and how to rebuild that one link (q189 PR-4) — never "re-provision the node": that rebuilds all its links
+  "it should be {v1}, but a link keeps the type it was made with until it is rebuilt — {v2}": "должен быть {v1}, но линк остаётся того типа, с которым создан, пока его не пересоберут — {v2}",
+  "to rebuild this link alone, pick {v1} as its type on its card under Node connections and Save": "чтобы пересобрать только этот линк, выберите тип {v1} на его карточке в «Связях ноды» и сохраните",
+  "to rebuild this link alone, pick Default as its type on its card under Node connections and Save": "чтобы пересобрать только этот линк, выберите тип «По умолчанию» на его карточке в «Связях ноды» и сохраните",
+  "to rebuild this link alone, pick Default as its type on its card under Node connections and Save, then {v1} and Save again": "чтобы пересобрать только этот линк, выберите тип «По умолчанию» на его карточке в «Связях ноды» и сохраните, затем выберите {v1} и сохраните ещё раз",
   // an AmneziaWG field set to none ("-") — docs/AWG-OMIT-AND-MESH-GEN-PLAN.md Part A
   "{v1} cannot hold an empty AmneziaWG field yet — it is offline or needs an update": "{v1} пока не может хранить пустое поле AmneziaWG — нода не в сети или её нужно обновить",
   "{v1} would have no AmneziaWG field left — make it a WireGuard interface instead": "у {v1} не останется ни одного поля AmneziaWG — вместо этого сделайте его интерфейсом WireGuard",
@@ -6924,7 +6928,7 @@ export const STR = {
   "{v1}: every AmneziaWG field is none — leave at least one, or use WireGuard interfaces": "{v1}: все поля AmneziaWG пустые — оставьте хотя бы одно или используйте интерфейсы WireGuard",
   "{v1}: AmneziaWG 3.1 links need S1–S4 for header protection — the mesh AWG params set {v2} to none": "{v1}: линкам AmneziaWG 3.1 нужны S1–S4 для защиты заголовков, а в параметрах AWG меша {v2} пустые",
   "{v1} has generated values: {v2} cannot hold an empty AmneziaWG field yet — it is offline or needs an update": "{v1} получили сгенерированные значения: {v2} пока не может хранить пустое поле AmneziaWG — нода не в сети или её нужно обновить",
-  "made before the mesh AWG params changed — re-provision {v1} to rebuild it": "создан до изменения параметров AWG меша — пересоздайте линки {v1}, чтобы перестроить его",
+  "{v1} has generated values where its AWG params say none — a link keeps the values it was made with until it is rebuilt; {v2}": "{v1} получили сгенерированные значения, хотя в параметрах AWG этого линка они пустые, — линк сохраняет значения, с которыми создан, пока его не пересоберут; {v2}",
   "{v1}: wait for the node to report this interface, then set a field to none": "{v1}: дождитесь, пока нода сообщит об этом интерфейсе, затем делайте поле пустым",
   "the interface defaults": "параметры интерфейсов по умолчанию",
   "the mesh AWG params": "параметры AWG меша",
