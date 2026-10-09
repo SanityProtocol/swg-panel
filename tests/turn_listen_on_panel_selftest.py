@@ -12,14 +12,27 @@ the node honours it (tests/turn_bind_selftest.py [7]). This drives what the pane
   [3] a record the panel MIRRORS from a node's report keeps it — otherwise the next sync reads as a parameter change
       and restarts the server on the wildcard
   [4] the node's `turn_bind_any` capability reaches /api/state (the field is offered only where it is honoured)
+  [5] q189 SPA-7 — the WDTT and csqtt sheets send `bind_ip` only when the pick changed, as TurnManageSheet does: their field
+      is seeded from the node's report too, which trails a save, and resending it with every params / endpoint / version
+      save re-pinned a saved Auto from a stale report (measured in the browser: a params-only save posted the stale pin
+      and the record took it). A save that leaves "Listen on" alone carries no `bind_ip`, so [1]'s "a save that does not
+      carry the key keeps it" holds the record.
 
 Run: python3 tests/turn_listen_on_panel_selftest.py      (0 = pass)
+     --perturb wdtt | csqtt    a sheet sends bind_ip with every save again → RED in [5] (exit 0 when caught)
 """
 import json, os, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
+PERTURB = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else None
+SPA_PLANTS = {   # (anchor in js/turn.js, what it was before q189 SPA-7)
+    "wdtt": ("raw: rawWant, block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...egressBody(egressInit(cfg)) })",
+             "raw: rawWant, block: cfg.block || [], bind_ip: pin, ...egressBody(egressInit(cfg)) })"),
+    "csqtt": ("params: params.trim(), block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...(lineDirty ? { line } : {}),",
+              "params: params.trim(), block: cfg.block || [], bind_ip: pin, ...(lineDirty ? { line } : {}),"),
+}
 FAILS = []
 def check(name, cond, detail=""):
     print(("  PASS " if cond else "  FAIL ") + name + (("  — " + json.dumps(detail, default=str)[:300]) if detail and not cond else ""))
@@ -109,6 +122,25 @@ try:
 
     print("\n[4] the capability")
     check("turn_bind_any reaches /api/state", home.get("turn_bind_any") is True, {k: home.get(k) for k in ("turn_manage", "turn_bind_any")})
+
+    print("\n[5] the sheets send Listen on only when it changed (q189 SPA-7)")
+    spa = open(os.path.join(ROOT, "js", "turn.js"), encoding="utf-8").read()
+    if PERTURB:
+        old, new = SPA_PLANTS[PERTURB]
+        assert spa.count(old) == 1, "plant anchor missing — this run would measure nothing: " + PERTURB
+        spa = spa.replace(old, new)
+    def sheet(name):
+        i = spa.index("export function %s(" % name)
+        return spa[i:spa.index("\nexport function ", i + 10)]
+    for nm, call in (("WdttManageSheet", "api.wdttSet({"), ("CsqttManageSheet", "api.csqttSet({")):
+        body = sheet(nm)
+        save = body[body.index(call):]
+        save = save[:save.index("\n")]
+        check("%s: its save carries bind_ip only when the pick changed (pinDirty), never the seeded value as such" % nm,
+              "...(pinDirty ? { bind_ip: pin } : {})" in save and "bind_ip: pin," not in save, save[:240])
+        check("%s: …and pinDirty is the pick against what the sheet opened with" % nm, "const pinDirty = pin !== pinCur;" in body)
+    tp = sheet("TurnManageSheet")
+    check("the reference: TurnManageSheet sends it only on a change too", "...(pin !== (tp.bind_ip || \"\") ? { bind_ip: pin } : {})" in tp)
 finally:
     proc.terminate()
     try:
@@ -119,5 +151,8 @@ finally:
 print("")
 if FAILS:
     log.seek(0); print(log.read()[-2000:])
+if PERTURB:
+    print("PERTURB %s: %s" % (PERTURB, "CAUGHT (%d red)" % len(FAILS) if FAILS else "NOT caught"))
+    sys.exit(0 if FAILS else 1)
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
 sys.exit(1 if FAILS else 0)
