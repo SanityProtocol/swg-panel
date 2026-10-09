@@ -14,13 +14,18 @@ every later `apt install` on the box ended in "E: Sub-process /usr/bin/dpkg retu
       PPA built — and the next run does not install it again; a newer package does. CONTROLS: a build that succeeded, and
       one that failed for want of headers, are not given up on
   [4b] (1.8.9 qualification IN-15) a build the BOX cut short — "No space left on device", a killed compiler, no build log
-      at all — is not a compile failure: not removed, not recorded (it was given up for good, even past `update -f`)
+      at all — is not a compile failure: not removed, not recorded (it was given up for good, even past `update -f`) — not
+      even where the cut-short build left the compiler's own located `fatal error:` (a full disk, a killed assembler).
+      (FN-1) gcc's located `fatal error:` for a header the newer kernel dropped IS one: removed + recorded (`: error: `
+      alone read it as transient, and the package stayed half-configured between updates)
   [5] awg_build_from_source, driven: upstream still at the commit that did not compile → no clone, no compile; moved on →
       it builds
   [6] update.sh: the heal answers in one line when nothing new can be tried, and both routes ask the record
 
 Run: python3 tests/awg_module_failed_selftest.py      (0 = pass)
      --perturb   awg_dkms_compile_failed judges without the build log again (52aa9c4) → RED on [4b]
+     --perturb-fatal   …reads `: error: ` alone again (84e36bf) → RED on [4b]'s dropped header only
+     --perturb-veto    …judges a located `fatal error:` without asking whether the box cut the build short → RED on [4b]
 """
 import os, subprocess, sys, tempfile
 
@@ -41,15 +46,26 @@ def grab_all(*names):
     return r.stdout + "\n"
 
 PERTURB = "--perturb" in sys.argv[1:]
+PERTURB_FATAL = "--perturb-fatal" in sys.argv[1:]
+PERTURB_VETO = "--perturb-veto" in sys.argv[1:]
 T = tempfile.mkdtemp(prefix="awgfail-")
 os.makedirs(T + "/bin"); os.makedirs(T + "/mods/7.0.0-38-generic/build")
 KV = "1.0.0-0~202609140848+4569c4c~ubuntu26.04.1"
 FUNCS = grab_all("awg_fail_get", "awg_fail_note", "awg_module_head", "awg_src_retry_due", "awg_pkg_retry_due", "awg_nothing_new", "awg_mod_built",
                  "_awg_kbuild", "awg_dkms_compile_failed", "awg_dkms_give_up", "awg_ppa_module_install")
+_LOGS = '"${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log'
+_ERR = "grep -qsE ': error: |:[0-9]+: fatal error: ' " + _LOGS
+_VETO = " && ! grep -qsE 'No space left on device|Killed signal|internal compiler error: Killed' " + _LOGS
 if PERTURB:   # the judgement as 52aa9c4 shipped it: half-configured + no module file, whatever the build log says
-    _old = "! awg_mod_built && grep -qs ': error: ' \"${SWG_DKMS_TREE:-/var/lib/dkms}\"/amneziawg/*/build/make.log"
+    _old = "! awg_mod_built && " + _ERR + _VETO
     assert FUNCS.count(_old) == 1, "perturbation anchor missing — would FALSE-PASS"
     FUNCS = FUNCS.replace(_old, "! awg_mod_built")
+if PERTURB_FATAL:   # as 84e36bf shipped it: `: error: ` alone
+    assert FUNCS.count(_ERR) == 1, "perturbation anchor missing — would FALSE-PASS"
+    FUNCS = FUNCS.replace(_ERR, "grep -qsE ': error: ' " + _LOGS)
+if PERTURB_VETO:    # a located `fatal error:` counted even where the box cut the build short
+    assert FUNCS.count(_VETO) == 1, "perturbation anchor missing — would FALSE-PASS"
+    FUNCS = FUNCS.replace(_VETO, "")
 MAKELOG = T + "/dkms/amneziawg/1.0.0/build/make.log"
 def makelog(text):
     """DKMS's build log for the last attempt (None: there is none)."""
@@ -66,6 +82,17 @@ NOSPACE = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86_6
            "make[2]: *** [scripts/Makefile.build:243: send.o] Error 1\n")
 KILLED = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86_64)\n"
           "gcc-13: fatal error: Killed signal terminated program cc1\ncompilation terminated.\n")
+FATAL_HDR = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86_64)\n"   # a header the newer kernel dropped
+             "/var/lib/dkms/amneziawg/1.0.0/build/socket.c:14:10: fatal error: net/udp_tunnel.h: No such file or directory\n"
+             "   14 | #include <net/udp_tunnel.h>\n      |          ^~~~~~~~~~~~~~~~~~\ncompilation terminated.\n"
+             "make[2]: *** [scripts/Makefile.build:243: socket.o] Error 1\n")
+NOSPACE_CC = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86_64)\n"   # the disk filled while cc1 wrote its .s
+              "/var/lib/dkms/amneziawg/1.0.0/build/send.c:412:1: fatal error: error writing to /tmp/ccQ2xV1a.s: No space left on device\n"
+              "compilation terminated.\nmake[2]: *** [scripts/Makefile.build:243: send.o] Error 1\n")
+KILLED_AS = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86_64)\n"   # the OOM killer took the assembler
+             "/var/lib/dkms/amneziawg/1.0.0/build/device.c:530:1: fatal error: error writing to -: Broken pipe\n"
+             "compilation terminated.\ngcc-13: fatal error: Killed signal terminated program as\n"
+             "make[2]: *** [scripts/Makefile.build:243: device.o] Error 1\n")
 makelog(COMPILE_ERR)
 def sh(body, kernel="7.0.0-38-generic", status="iF ", cand=KV, built=False, extra_env=None):
     stubs = ('have(){ command -v "$1" >/dev/null 2>&1; }\nDRYRUN=false\ninfo(){ echo "INFO $*"; }\nwarn(){ echo "WARN $*"; }\n'
@@ -144,11 +171,20 @@ os.makedirs(T + "/mods/7.0.0-38-generic/build")
 
 print("\n[4b] a build the box cut short is not a compile failure (IN-15)")
 for name, log in (("a full disk: the assembler's \"No space left on device\"", NOSPACE), ("a killed compiler (OOM)", KILLED),
-                  ("no DKMS build log at all", None)):
+                  ("no DKMS build log at all", None),
+                  ("a full disk mid-compile: gcc's own located `fatal error: error writing … No space left on device`", NOSPACE_CC),
+                  ("a killed assembler: a located `fatal error: … Broken pipe` beside gcc's `Killed signal`", KILLED_AS)):
     reset(); makelog(log)
     r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
     check("%s → not removed, not recorded, not said as \"does not compile\"" % name,
           "remove" not in c and not os.path.exists(T + "/awg-module-failed") and "does not compile" not in r.stdout, r.stdout + c)
+reset(); makelog(FATAL_HDR)
+r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
+rec = open(T + "/awg-module-failed").read() if os.path.exists(T + "/awg-module-failed") else ""
+check("FN-1: a header the newer kernel dropped (gcc's `file:line:col: fatal error: … No such file or directory`) → a compile "
+      "failure: said, the packages removed (dpkg left clean), the version recorded",
+      "RC1" in r.stdout and "does not compile on kernel 7.0.0-38-generic" in r.stdout and "RUN apt-get remove -y amneziawg-dkms amneziawg" in c
+      and "pkg=" + KV in rec, r.stdout + c + rec)
 reset(); makelog(COMPILE_ERR)
 r = sh('awg_dkms_compile_failed && echo FAILED || echo NOT')
 check("CONTROL: the compiler's own error in the log → a compile failure", "FAILED" in r.stdout, r.stdout + r.stderr)
@@ -184,6 +220,12 @@ for f in ("install-host.sh", "install-node.sh"):
           and "run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools" not in s)
 
 print("")
+if PERTURB_FATAL or PERTURB_VETO:
+    _want = (lambda f: f.startswith("FN-1: a header")) if PERTURB_FATAL else (lambda f: "not removed, not recorded" in f and "fatal error" in f)
+    _red = [f for f in FAILS if _want(f)]
+    print("perturb: %s" % ("RED as it must be (%d), all [4b]" % len(_red) if _red and len(_red) == len(FAILS)
+                           else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB:
     _red = [f for f in FAILS if "not removed, not recorded" in f]
     print("perturb: %s" % ("RED as it must be (%d), all [4b]" % len(_red) if _red and len(_red) == len(FAILS)
