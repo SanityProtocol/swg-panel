@@ -15,20 +15,38 @@ plain — aborted fetches 950 ERR lines, mid-body resets 950 stderr lines, bare 
       line and no 500; any OTHER fault keeps its ERR traceback and its 500 — but at most one traceback a minute, the next
       one saying how many were held back
 
-Run: python3 tests/sub_client_abort_selftest.py      --plant abort-err | plain-loud | no-ratelimit   (exit 0 when caught)
+Idle connections (1.8.9 qualification R2 HELPERS-2): each held a thread and an fd — plain HTTP for ever (no socket timeout),
+TLS 60 s — and at the soft fd limit (1024 on the bare unit) accept() failed with EMFILE: the serve loop spun a core and
+/healthz and every link stopped answering. Measured on d0bad281 (limit 1024, 1100 idle): 1021 threads, 1024 fds, 99 % CPU,
+/healthz timed out — plain still so 65 s later.
+
+  [5] the REAL swg-sub, its fd limit the bare unit's 1024, 1100 idle connections (plain, then TLS): it holds at most its
+      bound (one thread each) and closes every other one at once; its fds stay under half the limit, it does not spin, and
+      once the attacker is gone the page answers
+  [6] plain HTTP: each connection's socket timeout is the TLS server's 60 s (read from the program); lowered to 2 s in this
+      run, 300 idle connections — the bound's worth held, the rest closed at once — are all let go, and /healthz answers
+      while the attacker still holds every one of its sockets
+
+Run: python3 tests/sub_client_abort_selftest.py      --plant abort-err | plain-loud | no-ratelimit | nobound | notimeout
+                                                     (exit 0 when caught)
+     SWG_SUB=<swg-sub of an older build> python3 tests/sub_client_abort_selftest.py   (that build, unplanted)
 """
-import importlib.machinery, importlib.util, json, os, shutil, socket, ssl, struct, subprocess, sys, tempfile, time, types
-import urllib.request
+import importlib.machinery, importlib.util, json, os, re, resource, shutil, socket, ssl, struct, subprocess, sys, tempfile, time
+import types, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
-SUB = os.path.join(ROOT, "swg-sub")
+SUB = os.environ.get("SWG_SUB") or os.path.join(ROOT, "swg-sub")   # SWG_SUB=<an older build>: see it red
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 PLANTS = {   # name: (sections that must go red, anchor, planted text)
     "abort-err":    (("[1]", "[2]", "[3]", "[4]"), "        except (ConnectionError, TimeoutError, socket.timeout, ssl.SSLError) as e:\n",
                      "        except () as e:\n"),
-    "plain-loud":   (("[1]", "[3]"), "        srv = _QuietServer((host, port), Handler)\n", "        srv = ThreadingHTTPServer((host, port), Handler)\n"),
+    # the stdlib's own server in plain mode: loud again (HE-1), and without the connection bound (HELPERS-2) — [5] plain
+    "plain-loud":   (("[1]", "[3]", "[5]"), "        srv = _QuietServer((host, port), Handler)\n",
+                     "        srv = ThreadingHTTPServer((host, port), Handler)\n"),
     "no-ratelimit": (("[4]",), "                due = now - last >= 60\n", "                due = True\n"),
+    "nobound":      (("[5]",), "        return threading.active_count() <= self.max_conns", "        return True"),
+    "notimeout":    (("[6]",), "\n    timeout = 60\n", "\n    timeout = None\n"),
 }
 FAILS, SECTION = [], [""]
 def check(name, cond, detail=""):
@@ -45,9 +63,15 @@ if PLANT:
 SUBP = os.path.join(T, "swg-sub"); open(SUBP, "w", encoding="utf-8").write(src)
 N = 20
 REQ = b"GET /_a/sub.js HTTP/1.1\r\nHost: x\r\n\r\n"
+FDS = 1024        # [5][6]: swg-sub's fd limit — the bare unit's soft limit (its unit sets no LimitNOFILE)
+# [6]: the same program run with its handler's socket timeout lowered — only ever LOWERED: a copy that sets none keeps none
+LOWER = ("import importlib.machinery as m, importlib.util as u, sys\n"
+         "ld = m.SourceFileLoader('swgsub', sys.argv[1]); M = u.module_from_spec(u.spec_from_loader('swgsub', ld)); ld.exec_module(M)\n"
+         "if M.Handler.timeout is not None:\n    M.Handler.timeout = float(sys.argv[2])\n"
+         "M.main()\n")
 
 
-def serve(tls, debug=False):
+def serve(tls, debug=False, nofile=None, lower=None):
     d = tempfile.mkdtemp(dir=T); os.makedirs(d + "/subs/blobs"); os.makedirs(d + "/stats")
     J = lambda rel, o: json.dump(o, open(os.path.join(d, rel), "w"))
     J("fleet.json", {"roster_path": d + "/users.json", "nodes_path": d + "/nodes.json", "stats_dir": d + "/stats", "sub_dir": d + "/subs"})
@@ -62,7 +86,9 @@ def serve(tls, debug=False):
                         "-subj", "/CN=127.0.0.1", "-keyout", d + "/key.pem", "-out", d + "/cert.pem"], capture_output=True, check=True)
         env.update(SWG_SUB_TLS_CERT=d + "/cert.pem", SWG_SUB_TLS_KEY=d + "/key.pem")
     out, err = open(d + "/stdout", "w"), open(d + "/stderr", "w")
-    p = subprocess.Popen([sys.executable, SUBP], env=env, stdout=out, stderr=err)
+    p = subprocess.Popen([sys.executable, SUBP] if lower is None else [sys.executable, "-I", "-c", LOWER, SUBP, str(lower)],
+                         env=env, stdout=out, stderr=err,
+                         preexec_fn=(lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))) if nofile else None)
     ctx = None
     if tls:
         ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
@@ -115,6 +141,59 @@ def run_server_cases(tls, label):
         check("%s: …and the page still answers" % label, srv.healthz() == 200)
     finally:
         srv.p.terminate(); srv.p.wait(5)
+
+
+def attack(srv, n):
+    # n idle connections, as an attacker holds them: connected, not one byte sent. Paced 0.5 ms apart with a 5 s connect
+    # timeout — swg-sub listens with the stdlib's backlog of 5, and a connector that outruns its accept loop has its SYN
+    # dropped and retried a second later. One that still fails: the listener stopped accepting (its fds ran out), and the
+    # rest would only wait the same.
+    socks = []
+    for _ in range(n):
+        c = socket.socket(); c.settimeout(5)
+        try:
+            c.connect(("127.0.0.1", srv.port))
+        except OSError:
+            c.close(); break
+        c.setblocking(False); socks.append(c)
+        time.sleep(0.0005)
+    return socks
+
+
+def closed(socks):
+    # how many of them the server has closed (its FIN, or a reset) — peeked, never waited for
+    k = 0
+    for c in socks:
+        try:
+            k += c.recv(1, socket.MSG_PEEK) == b""
+        except BlockingIOError:
+            pass
+        except OSError:
+            k += 1
+    return k
+
+
+def proc(pid):
+    # the server's threads, open fds and CPU seconds so far
+    thr = int(re.search(r"^Threads:\s+(\d+)", open("/proc/%d/status" % pid).read(), re.M).group(1))
+    f = open("/proc/%d/stat" % pid).read().rsplit(")", 1)[1].split()
+    return thr, len(os.listdir("/proc/%d/fd" % pid)), (int(f[11]) + int(f[12])) / os.sysconf("SC_CLK_TCK")
+
+
+def until(cond, secs):
+    end = time.monotonic() + secs
+    while not cond():
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.2)
+    return True
+
+
+def hz(srv):
+    try:
+        return srv.healthz()
+    except Exception as e:
+        return "%s: %s" % (type(e).__name__, e)
 
 
 try:
@@ -179,6 +258,54 @@ try:
     check("…a minute on, the next one is written, saying how many were held back",
           len(errs) == 2 and "RuntimeError: a fault #5" in errs[1] and "(4 more since the last one were not written)" in errs[1],
           errs[1:][:1])
+
+    SECTION[0] = "[5]"; print("\n[5] 1100 idle connections, swg-sub's fd limit the bare unit's %d" % FDS, flush=True)
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)        # room for the attacker's own 1100 sockets
+    if soft < 4096 and (hard == resource.RLIM_INFINITY or hard >= 4096):
+        resource.setrlimit(resource.RLIMIT_NOFILE, (4096, hard))
+    room = resource.getrlimit(resource.RLIMIT_NOFILE)[0] >= 1600
+    BOUND = getattr(M._QuietServer, "max_conns", 0)               # the program's own bound (0: a build without one)
+    for tls, label in ((False, "plain"), (True, "TLS")):
+        if not room or (tls and not shutil.which("openssl")):
+            print("  SKIPPED [5] %s — %s" % (label, "no openssl here to make a certificate" if room else
+                                               "this gate cannot hold 1100 sockets here (its own fd limit)"))
+            continue
+        srv, socks = serve(tls, nofile=FDS), []
+        try:
+            socks = attack(srv, 1100)
+            until(lambda: len(socks) - closed(socks) <= BOUND, 15)   # those above the bound: at once (none timed out in 60 s)
+            held = len(socks) - closed(socks)
+            thr0, fds0, cpu0 = proc(srv.p.pid); time.sleep(2); thr1, fds1, cpu1 = proc(srv.p.pid)
+            check("%s: all 1100 connected" % label, len(socks) == 1100, "%d — the listener stopped accepting" % len(socks))
+            check("%s: …it holds its bound (%d), one thread each — every other one closed at once" % (label, BOUND),
+                  BOUND and BOUND // 2 <= held <= BOUND and max(thr0, thr1) <= BOUND + 1,
+                  "held %d, threads %d/%d" % (held, thr0, thr1))
+            check("%s: …its fds under half the limit (%d of %d): accept() cannot meet EMFILE" % (label, max(fds0, fds1), FDS),
+                  max(fds0, fds1) <= FDS // 2)
+            check("%s: …and it does not spin (%.2f s of CPU in 2 s)" % (label, cpu1 - cpu0), cpu1 - cpu0 < 1.0)
+            for c in socks:
+                c.close()
+            check("%s: the attacker gone, /healthz answers" % label, until(lambda: hz(srv) == 200, 10), hz(srv))
+        finally:
+            for c in socks:
+                c.close()
+            srv.p.terminate(); srv.p.wait(5)
+
+    SECTION[0] = "[6]"; print("\n[6] plain HTTP: an idle connection is let go after the socket timeout", flush=True)
+    check("each connection's socket timeout is the TLS server's 60 s, plain HTTP included (Handler.timeout)",
+          M.Handler.timeout == 60, M.Handler.timeout)
+    srv, socks = serve(False, nofile=FDS, lower=2), []             # the same program, its timeout lowered to 2 s in this run
+    try:
+        socks = attack(srv, 300)
+        check("300 idle connections (the bound's worth held, the rest closed at once): all let go after the timeout",
+              len(socks) == 300 and until(lambda: closed(socks) == len(socks), 20),
+              "%d connected, %d let go" % (len(socks), closed(socks)))
+        check("…the server's threads: its serve loop's alone again", until(lambda: proc(srv.p.pid)[0] == 1, 5), proc(srv.p.pid)[0])
+        check("…and /healthz answers while the attacker still holds every one of its sockets", hz(srv) == 200, hz(srv))
+    finally:
+        for c in socks:
+            c.close()
+        srv.p.terminate(); srv.p.wait(5)
 finally:
     shutil.rmtree(T, ignore_errors=True)
 
