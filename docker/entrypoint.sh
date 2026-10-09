@@ -364,8 +364,9 @@ fi
 
 # 2b) swg-sub's OWN cert (direct-TLS). Issued via issue_sub_cert() defined at the top of this file. Runs in the
 #     BACKGROUND (`&`): a fresh DNS-01 issue can take ~60s and blocking the panel boot on it would starve a flip's
-#     reachability commit (false auto-revert). The panel serves immediately; swg-sub picks the cert up on its next
-#     (re)start. At RUNTIME the panel-managed path is swg-netctl-docker's issue-cert verb → `entrypoint.sh sub-cert`.
+#     reachability commit (false auto-revert). The panel serves immediately; swg-sub's first start waits for the panel's
+#     serve.json, then for this cert (both waits bounded), so it serves HTTPS from its first listen (1.8.9 qualification
+#     U22-1). At RUNTIME the panel-managed path is swg-netctl-docker's issue-cert verb → `entrypoint.sh sub-cert`.
 # The sub's domain is PANEL-MANAGED (access.sub.url in panel-settings.json), so prefer that over the static install
 # env — otherwise a restart would re-issue for the env default and clobber a cert the UI issued for a different sub
 # host. Env stays the bootstrap for a first boot before any sub address is saved.
