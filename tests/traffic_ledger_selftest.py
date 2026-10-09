@@ -1599,14 +1599,22 @@ def section_14():
     check("[14] …even when it races a flush — a refusal is never re-read into a 503", st == 400 and time.monotonic() - t0_ < 0.2,
           (st, round(time.monotonic() - t0_, 2)))
     real_s = G._series
-    G._series = lambda qs, now=None: (time.sleep(1.5), real_s(qs, now))[1]   # a slow read (8 fine files of a big fleet)
+    # ⚠️ A READ THAT LASTS UNTIL THE FLUSH IS DONE, NOT 1.5 s. The flush had to finish in 0.5 s beside a 1.5 s read, and an
+    # fsync'd flush on a busy disk took 0.51 (1.8.9 qualification: a three-run stress of the suite). Now the read is held
+    # in, from the moment it is in, until the flush returns — a flush it holds up waits out its 10 s; one it does not, any
+    # time its own disk takes.
+    _in, _go = _th.Event(), _th.Event()
+    def _slow(qs, now=None):                                       # a slow read (8 fine files of a big fleet)
+        _in.set(); _go.wait(10)
+        return real_s(qs, now)
+    G._series = _slow
     rd = _th.Thread(target=lambda: G.series({"id": ["g1"], "by": ["peer"], "range": ["month"]})); rd.start()
-    time.sleep(0.2)
+    _in.wait(10)
     ing(G, "n1", wg("awg0", ("KG", 5300, 530)), day0 + 3 * 86400 + 600)
     t0_ = time.monotonic(); G.flush(); took = time.monotonic() - t0_
-    rd.join(); G._series = real_s
+    _go.set(); rd.join(); G._series = real_s
     check("[14] a slow read never holds the writer up — a restart's last write is never starved by a graph being drawn",
-          took < 0.5, round(took, 2))
+          took < 8, round(took, 2))
     os.unlink(L._fine_path(20260910))               # a day with no detail (1-day resolution, swept by OFF)
     r = tot(since=day0 + 20 * 3600 + 10 * 60)
     rows = {x["id"]: x["rx"] for x in r["rows"]}
