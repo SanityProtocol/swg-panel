@@ -32918,7 +32918,9 @@ class Handler(BaseHTTPRequestHandler):
             elif not _curated and not _enabled_prov.get(_c.split(":", 1)[0], False):   # routing provider not enabled → omit (node deletes the set)
                 continue
             else:
-                _caps = SMART_CAPS.get(_c, {}) if _curated else (_cix.get(_c) or {})
+                # No catalog: a provider list the panel already holds keeps the tiers it holds, as its caps do (sync_cat_caps).
+                # Left out, the node deleted its pulled copy and the rule routed nothing until the catalog came back (q189 V2-FLEET).
+                _caps = SMART_CAPS.get(_c, {}) if _curated else (_cix.get(_c) or ({} if _cix_have else {t: True for t in ("ip", "host") if list_meta(_c, t)}))
             _ent = {}
             for _tier in ("ip", "host"):
                 if not _caps.get(_tier):
