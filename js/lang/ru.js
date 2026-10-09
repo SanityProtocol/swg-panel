@@ -1634,7 +1634,7 @@ export const STR = {
   "Logs": "Логи",
   "Logging": "Логирование",
   "Logging — {v1}": "Логирование — {v1}",
-  "Logging — off: the stored logs are deleted": "Логирование — выкл: сохранённые логи удаляются",
+  "Logging — off: swg's stored logs are deleted": "Логирование — выкл: сохранённые логи swg удаляются",
   "How much the panel and every node write to their logs. One level for the whole fleet.":
     "Сколько панель и каждая нода пишут в свои логи. Один уровень на весь флот.",
   "Log level": "Уровень логирования",
@@ -1651,8 +1651,15 @@ export const STR = {
     "Плюс каждое изменение состояния: интерфейс поднялся, пир добавлен, маршрут установлен. По умолчанию.",
   "Everything, including each routing pass and every site your users open.":
     "Всё, включая каждый проход маршрутизации и каждый сайт, который открывают ваши пользователи.",
-  "Nothing is stored, and the logs kept so far are deleted. Failure details go blank: when something breaks, the panel can't say why.":
-    "Ничего не сохраняется, а уже сохранённые логи удаляются. Подробности сбоев пропадают: если что-то сломается, панель не сможет сказать почему.",
+  // what Off deletes and what it cannot, per kind of server (q189 DN-2 / NLH-2)
+  "swg's own logs are deleted, and nothing more is kept in them. A server's system journal keeps what it already holds — the kernel's P2P guard lines, with users' addresses, among them.":
+    "Собственные логи swg удаляются, и больше в них ничего не сохраняется. Системный журнал сервера хранит то, что в нём уже есть, — в том числе строки защиты от P2P из ядра с адресами пользователей.",
+  "On bare metal, a turn proxy, relay or WDTT / csqtt server not restarted since the update still writes there.":
+    "На железе turn-прокси, ретранслятор или сервер WDTT / csqtt, не перезапущенный после обновления, продолжает писать туда.",
+  "In Docker, each container's own log keeps its lines until the container is recreated; a turn container started before Off goes on logging until its next start.":
+    "В Docker собственный лог каждого контейнера хранит свои строки, пока контейнер не пересоздадут; turn-контейнер, запущенный до «Выкл», продолжает писать лог до следующего запуска.",
+  "Failure details go blank: when something breaks, the panel can't say why.":
+    "Подробности сбоев пропадают: если что-то сломается, панель не сможет сказать почему.",
   "Turn off debugging after": "Выключить отладку через",
   "24 hours": "24 часа",
   "debug|never": "никогда",

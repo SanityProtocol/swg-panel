@@ -2446,7 +2446,7 @@ export function PanelSettingsScreen() {
     if (glDirty("configs")) out.push(T("Client configs → {v1}", { v1: sc === "off" ? T("val|off") : T("val|encrypted") }));
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
     if (dispDirty()) out.push(T("Display — theme / status timing"));
-    if (logDirty()) out.push(logShown === "off" ? T("Logging — off: the stored logs are deleted") : T("Logging — {v1}", { v1: logLevelLabel(logShown) }));
+    if (logDirty()) out.push(logShown === "off" ? T("Logging — off: swg's stored logs are deleted") : T("Logging — {v1}", { v1: logLevelLabel(logShown) }));
     if (logMbPDirty()) out.push(T("Panel log budget → {v1} MB", { v1: logMbP }));
     if (tzDirty()) out.push(tz ? T("Days are counted in {v1}", { v1: tz }) : T("Days are counted in this server's zone"));
     if (infHist !== (ps.infinite_history !== false)) out.push(infHist ? T("Infinite history — on") : T("Infinite history — off: detail older than 33 days is deleted"));
@@ -3100,7 +3100,9 @@ const sectionLabel = k => ({
               class=${"seg" + (logShown === v ? " on" : "")} onClick=${() => pickLog(v)}>${logLevelLabel(v)}</button>`)}
           </div>
           ${logShown === "off"
-            ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Nothing is stored, and the logs kept so far are deleted. Failure details go blank: when something breaks, the panel can't say why.")}</div>`
+            ? html`<div class="hint warnish"><${Ic} i="warn"/> ${logOffHint({
+                bare: !(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind !== "docker"),
+                docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker") })}</div>`
             : html`<div class="hint">${logLevelHint(logShown)}</div>`}
           ${logShown === "debug" ? html`<div class="field logdebug"><label>${T("Turn off debugging after")}</label>
             <div class="logdebug-row">
@@ -3504,6 +3506,16 @@ export function logBudgetState(r) {
   if (+st.mb !== r.saved) return { tone: "warn", text: T("Pending"), title: r.id === "" ? T("The root helper applies it within 10 seconds.") : T("Applies on the node's next sync.") };
   return { tone: "ok", text: T("Applied"), title: "" };
 }
+// What Off deletes and what it cannot — said for the kinds of server this fleet has (q189 DN-2 / NLH-2, measured on both): swg's
+// own logs go (its journals on bare metal, its files in Docker), but a server's system journal keeps what it holds, the kernel's
+// P2P guard lines with users' addresses among them; a bare-metal service not restarted since the update still writes there; and
+// Docker keeps each container's own log until the container is recreated — a turn container started before Off goes on logging.
+export const logOffHint = ({ bare, docker }) => [
+  T("swg's own logs are deleted, and nothing more is kept in them. A server's system journal keeps what it already holds — the kernel's P2P guard lines, with users' addresses, among them."),
+  bare ? T("On bare metal, a turn proxy, relay or WDTT / csqtt server not restarted since the update still writes there.") : "",
+  docker ? T("In Docker, each container's own log keeps its lines until the container is recreated; a turn container started before Off goes on logging until its next start.") : "",
+  T("Failure details go blank: when something breaks, the panel can't say why."),
+].filter(Boolean).join(" ");
 // How far back a server's logs reach: once its budget is full (the oldest lines go to make room) "N days"; before that
 // nothing has gone yet, so "since <its first line's date>"
 export function logHolds(st) {
