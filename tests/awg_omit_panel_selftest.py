@@ -19,13 +19,16 @@ through REAL panel processes (temp state, scratch port, no auth; the nodes are p
         a restore sends `exact`; a create from defaults with "-" sends a whole set marked exact, without the omitted keys
     [5] a 3.1 switch keeps the omissions (awg3_full omit); a 3.1 create from 3.1 defaults with "-" leaves them out
     [6] bless-on-first-sight marks a conf missing a 2.0 key `awg_exact`; the meta of an `awg_exact` record is the record
-        alone, and carries the flag
+        alone, and carries the flag. q189 PR-3: the AmneziaWG 3.1 switch of such an adopted 1.x conf (no S3/S4) draws
+        S3 and S4 — header protection needs all four, so they are never "none" there (1.8.8 drew them; 94ba204's bless
+        made the switch refuse "S3, S4 cannot be none") — while its I1–I5 omissions stay
     [7] templates store "-" as written, and sanitize_awg_params never lets it through
 
 Run: python3 tests/awg_omit_panel_selftest.py           (0 = pass)
      --perturb merge    the update replaces the record again  → RED in [1] (and the partial-body plant reads identical)
      --perturb whole    no report under the record            → RED in [2]
      --perturb wire     the sync never sends exact            → RED in [4]
+     --perturb s34none  the 3.1 switch omits S1–S4 an exact record lacks  → RED in [6]
 """
 import json, os, re, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -41,6 +44,7 @@ PLANTS = {
     "whole": ("[2]", "                        _rec_u = {**{k: str(v) for k, v in _ra_u.items() if k not in AWG3_FIELDS or _was3}, **_rec_u}\n",
               "                        pass\n"),
     "wire": ("[4]", "                    if extra or ov.get(\"awg_exact\"):\n", "                    if extra:\n"),
+    "s34none": ("[6]", "\n                                    and k not in (\"S1\", \"S2\", \"S3\", \"S4\"))\n", ")\n"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else None
 
@@ -422,6 +426,12 @@ try:
         p.sync("nb", {"wg7": dict(OLD_AWG)})
         o = p.ov("nb", "wg7")
         check("a take-over's conf without S3/S4/I is blessed WHOLE (awg_exact)", o.get("awg_exact") is True and o.get("awg_params") == OLD_AWG, o)
+        code, r = p.req("/api/iface/update", {"node": "nb", "iface": "wg7", "awg_gen": "3.1"})
+        a = p.ov("nb", "wg7").get("awg_params") or {}
+        check("PR-3: its AmneziaWG 3.1 switch is taken — S3 and S4 drawn (12 or more), its own Jc…S2/H kept, I1–I5 still out",
+              code == 200 and a.get("HeaderProtectionKey") and all(k in a and int(a[k]) >= 12 for k in ("S3", "S4"))
+              and all(a.get(k) == v for k, v in OLD_AWG.items()) and not any(k in a for k in ("I1", "I2", "I3", "I4", "I5")),
+              (code, r.get("error"), a))
         p.sync("nb", {"wg8": dict(BASE20)})
         check("control: a full conf is blessed without the flag", "awg_exact" not in p.ov("nb", "wg8"), p.ov("nb", "wg8"))
         p.put("na", "awg0", {"awg_params": {k: v for k, v in BASE20.items() if k != "S3"}, "awg_exact": True})
