@@ -486,7 +486,10 @@ def main():
                          "Lets throughput be measured without arming a divert on a live interface.")
     ap.add_argument("--report", type=int, default=0)
     a = ap.parse_args()
-    log_reread()
+    if a.dst:                                    # TEST ONLY, run by hand: it prints all it measures (the probe, --report's
+        _LOG["level"] = LOG_DEBUG                # counters) whatever the node's level, as before levels (1.8.9 qual. HE-10)
+    else:
+        log_reread()
 
     fixed = None
     if a.dst:
@@ -580,7 +583,8 @@ def main():
                     R.reap(key.data)                 # one bad connection must never stop the loop
         if a.report and time.time() - last >= a.report:
             last = time.time()
-            log_reread()                         # the level may have moved since the last report
+            if not a.dst:
+                log_reread()                     # the level may have moved since the last report
             if _LOG["level"] >= LOG_DEBUG:       # a counter dump every few minutes: Debug, and built only then
                 log(LOG_DEBUG, "relay: " + " ".join("%s=%s" % kv for kv in sorted(ST.items())))
 
