@@ -49,6 +49,11 @@
        take only a mark before that rule, so it filled @fanseen (65 535) until fan-out flagged nobody; every mode carries
        `ip saddr != @flag` before the pair is written, and where `sudo -n` exists a flagged client's 60 new flows through
        the real kernel (throwaway namespaces) leave @fanseen empty
+  [26] 1.8.9 qualification V-FEAT-B F-1: libtorrent's DHT bootstrap get_peers (`d1:ad2:bsi1e2:id20:` — its `bs` key sorts
+       before `id`) is a DHT signature like the plain query: every mode's table carries its 16-byte compare; the
+       signatures, read as the kernel compares them, take the bootstrap query, the plain one and an answer and leave a
+       non-BitTorrent payload alone; and where `sudo -n` exists the real kernel flags the bootstrap's and the plain
+       query's sources and not the other one
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
      --perturb    plant each old behaviour in turn → every one must go RED (exit 0 when all are caught)
@@ -68,8 +73,8 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "rule-in-band": ("P2P_RULE_PRI = 6880 ", "P2P_RULE_PRI = 7050 "),
     "porthint":     ('            if "smtp" in cats:     els.append("tcp . 25")\n',
                      '            if "smtp" in cats:     els.append("tcp . 25")\n            if "torrents" in cats: els += ["udp . 6881-6889", "tcp . 6881-6889"]\n'),
-    "gate-memo":    ('if have.returncode == 0 and cur == sig and " drop" in (have.stdout or ""):\n            return\n        _P2P["tbl"] = True',
-                     'if have.returncode == 0 and cur == sig:\n            return\n        _P2P["tbl"] = True'),
+    "gate-memo":    ('if have.returncode == 0 and cur == sig and " drop" in (have.stdout or ""):\n            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")\n            return\n        _P2P["tbl"] = True',
+                     'if have.returncode == 0 and cur == sig:\n            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")\n            return\n        _P2P["tbl"] = True'),
     "rule-poll":    ('    if not on and _P2P["rule"] is False:\n        return\n', ''),
     "ctid-key":     ('"  set flag { typeof ip saddr; flags timeout; size 65535; }",', '"  set flag { typeof ip saddr; flags timeout; size 65535; }", "  set p2p_ct { typeof ct id; flags timeout; }",'),
     "probe-1line":  ('P2P_PROBE = "table inet swg_p2p_probe {\\n  chain c {\\n    meta l4proto udp @ih,0,64 0x0000041727101980 counter\\n  }\\n}\\n"',
@@ -107,6 +112,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "mech-twice":   ('        for ln in mech.splitlines():                              # ONE rule carries', '        for ln in (run(["nft", "list", "table", "inet", "swg_mech"]).stdout or "").splitlines():   # ONE rule carries'),
     "ips-coupled":  ('                out.setdefault("*", {})["torrent_ips"] = [str(i) for i in ips]', '                out["*"]["torrent_ips"] = [str(i) for i in ips]'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
+    "dht-bs":       ('    ("dht",    "udp", "@ih,0,128 0x64313a6164323a6273693165323a6964"),   # d1:ad2:bsi1e2:id\n', ''),
     "p2p-ok-on-fail": ('            _P2P.update(on=True, state="error",', '            _P2P.update(on=True, state="ok" if ih else "degraded",'),
     "p2p-log-whole":  ('        if r.returncode != 0 and logged:', '        if False:'),
     "p2p-nolog-once": ('                _P2P["nolog"] = True\n', '                pass\n'),
@@ -206,6 +212,41 @@ def _wire_fanseen(table):
         os.unlink(f.name)
     got = [ln.split()[1] for ln in (r.stdout or "").splitlines() if ln.startswith("PAIRS ")]
     return int(got[0]) if got and got[0].isdigit() else None
+
+
+# [26] the same router, one client with three addresses: the bootstrap get_peers, the plain query, a non-BitTorrent payload —
+# each to its own public address on 6881. The answer: the flagged sources and the dht counter. None = could not set up.
+WIRE_DHT = WIRE.split("nft add element")[0].replace(
+    "ip addr add 10.9.0.2/24 dev vc && ip link set vc up",
+    "ip addr add 10.9.0.2/24 dev vc && ip addr add 10.9.0.3/24 dev vc && ip addr add 10.9.0.4/24 dev vc && ip link set vc up") + r'''
+nsenter -t "$CPID" -n python3 -c '
+import os, socket
+ih, nid = os.urandom(20), os.urandom(20)
+pl = {"10.9.0.2": b"d1:ad2:bsi1e2:id20:" + nid + b"9:info_hash20:" + ih + b"e1:q9:get_peers1:t2:aa1:y1:qe",
+      "10.9.0.3": b"d1:ad2:id20:" + nid + b"9:info_hash20:" + ih + b"e1:q9:get_peers1:t2:bb1:y1:qe",
+      "10.9.0.4": b"\xc3\x00\x00\x00\x01\x08" + os.urandom(60)}
+for i, (src, p) in enumerate(sorted(pl.items())):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((src, 0)); s.sendto(p, ("198.51.100.%d" % (10 + i), 6881))
+'
+sleep 0.3
+echo "FLAG $(nft list set inet swg_p2p flag | grep -o '10\.9\.0\.[0-9]*' | sort | tr '\n' ' ')"
+echo "DHT $(nft list counter inet swg_p2p dht | grep -o 'packets [0-9]*' | grep -o '[0-9]*')"
+kill $CPID 2>/dev/null
+'''
+
+
+def _wire_dht(table):
+    import subprocess as sp
+    with tempfile.NamedTemporaryFile("w", suffix=".nft", delete=False) as f:
+        f.write(table)
+    try:
+        r = sp.run(["sudo", "-n", "unshare", "-n", "bash", "-s", f.name], input=WIRE_DHT, capture_output=True, text=True, timeout=60)
+    except Exception:
+        return None
+    finally:
+        os.unlink(f.name)
+    out = {ln.split(" ", 1)[0]: ln.split(" ", 1)[1].strip() for ln in (r.stdout or "").splitlines() if " " in ln}
+    return None if "FLAG" not in out else (out["FLAG"].split(), out.get("DHT", ""))
 
 
 # What nft prints when the kernel refuses one rule of a batch — here the hit line's `log` on a kernel without nft_log /
@@ -519,6 +560,43 @@ def run_checks(src):
             ok(pairs == 0, "[25] on the real kernel, Direct: a flagged client's 60 new flows write %d pairs into @fanseen (want 0)" % pairs)
     else:
         print("  SKIPPED [25] real-kernel flows — no `sudo -n` here")
+
+    # [26] V-FEAT-B F-1 — libtorrent's bootstrap get_peers is a DHT signature too
+    BOOT = b"d1:ad2:bsi1e2:id20:" + b"\x11" * 20 + b"9:info_hash20:" + b"\x22" * 20 + b"e1:q9:get_peers1:t2:aa1:y1:qe"
+    PLAIN = b"d1:ad2:id20:" + b"\x11" * 20 + b"9:info_hash20:" + b"\x22" * 20 + b"e1:q9:get_peers1:t2:bb1:y1:qe"
+    ANSWER = b"d1:rd2:id20:" + b"\x11" * 20 + b"5:nodes26:" + b"\x33" * 26 + b"e1:t2:aa1:y1:re"
+    OTHER = [b"\xc3\x00\x00\x00\x01\x08" + b"\x44" * 60, b"d1:xd2:id20:" + b"\x55" * 30, b"\x13BitTorrent" + b"\x00" * 40]
+    def dht_hits(payload):   # the dht compares as the kernel makes them: payload[off/8 : off/8 + len/8] == the constant
+        import re as _re
+        hit = False
+        for c, l4, m in m23._P2P_SIGS:
+            if c != "dht":
+                continue
+            g = _re.match(r"@ih,(\d+),(\d+) (.*)$", m)
+            o, n = int(g.group(1)) // 8, int(g.group(2)) // 8
+            consts = _re.findall(r"0x([0-9a-f]+)", g.group(3))
+            hit = hit or any(payload[o:o + n] == bytes.fromhex(k) for k in consts if len(k) == 2 * n)
+        return hit
+    ok(dht_hits(BOOT), "[26] the bootstrap get_peers (d1:ad2:bsi1e2:id20:) matches a dht signature, as the kernel compares it")
+    ok(dht_hits(PLAIN) and dht_hits(ANSWER), "[26] …and so do the plain query and an answer, as before")
+    ok(not any(dht_hits(x) for x in OTHER), "[26] …and a non-BitTorrent payload (QUIC-like, another bencoded dict) does not")
+    ok(all(c != "dht" or int(m.split(",")[2].split()[0]) <= 128 for c, l4, m in m23._P2P_SIGS),
+       "[26] every compare is at most 16 bytes (the kernel's limit)")
+    for k, tb in tabs.items():
+        if k == "no @ih":
+            continue
+        ok("meta l4proto udp @ih,0,128 0x64313a6164323a6273693165323a6964 counter name dht jump hit" in tb,
+           "[26] %s: the table carries the bootstrap variant beside the plain query" % k)
+    if _sp23.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and _sp23.run(["which", "unshare"], capture_output=True).returncode == 0:
+        got = _wire_dht(tabs["block"])
+        if got is None:
+            print("  SKIPPED [26] real-kernel DHT — the throwaway namespaces could not be set up here")
+        else:
+            ok(got[0] == ["10.9.0.2", "10.9.0.3"] and got[1] == "2",
+               "[26] on the real kernel, Block: the bootstrap's and the plain query's sources flagged, the other not, dht 2 "
+               "(got flag %s, dht %s)" % (got[0], got[1]))
+    else:
+        print("  SKIPPED [26] real-kernel DHT — no `sudo -n` here")
 
     # [18] forwarding + loose rp_filter with only a P2P route
     sc = []
