@@ -26,6 +26,11 @@ every later `apt install` on the box ended in "E: Sub-process /usr/bin/dpkg retu
   [4d] (IN-12(e)) a stale amneziawg.ko for this kernel (an old `make install`, a source build beside the package) does not
       hide a package whose build failed: half-configured + the compiler's error = given up (it stayed half-configured,
       recompiled on every update)
+  [4e] (1.8.9 qualification VERIFY2-VMB N4) what is said after a build the box cut short: the give-up's line says the package
+      is removed for now and the next update tries again (it said "awg interfaces use the userspace datapath" while awg0 ran
+      on the module still loaded), and tells its caller only once the package is gone; update.sh's heal then closes with
+      that — not "AmneziaWG healed — running the slower USERSPACE datapath" and "install matching linux-headers", neither
+      true there (the headers were installed, the compiler had run out of memory); the package follow's note, likewise
   [5] awg_build_from_source, driven: upstream still at the commit that did not compile → no clone, no compile; moved on →
       it builds
   [6] update.sh: the heal answers in one line when nothing new can be tried, and both routes ask the record
@@ -36,7 +41,9 @@ Run: python3 tests/awg_module_failed_selftest.py      (0 = pass)
      --perturb-veto    …judges a located `fatal error:` without asking whether the box cut the build short → RED on [4b]
      --perturb-stale   …asks for no module file for this kernel again (e66018f) → RED on [4d] only
      --perturb-lock    the give-up as e66018f shipped it: no lock wait, the version recorded whatever the removal did → RED on [4c] only
-     --perturb-transient  a half-configured build the box cut short is left as it is again (q189-int2) → RED on [4b] only
+     --perturb-transient  a half-configured build the box cut short is left as it is again (q189-int2) → RED on [4b] (+ [4e]'s
+                       give-up checks, which drive that path)
+     --perturb-words   the words as q189-int3 shipped them (lib's line, no AWG_GAVE_UP, the heal's usual close) → RED on [4e] only
 """
 import os, re, subprocess, sys, tempfile
 
@@ -61,6 +68,18 @@ if "--perturb-lock" in sys.argv[1:]:   # the give-up as e66018f shipped it: no l
     assert _s.count(_a) == 1 and _i > 0 and "could not be removed now" in _s[_i:_j], "perturbation anchor missing — would FALSE-PASS"
     _s = (_s[:_i] + _s[_j:]).replace(_a, "run apt-get remove -y amneziawg-dkms amneziawg")
     _fd, _LIB = tempfile.mkstemp(prefix="awgfail-lib-", suffix=".sh"); os.write(_fd, _s.encode()); os.close(_fd)
+if "--perturb-words" in sys.argv[1:]:   # q189-int3's words: "userspace datapath" in the give-up, the heal's usual close
+    _s = rd("lib/common.sh")
+    _a = "so the package is removed for now, keeping the package manager usable, and the next update tries again."
+    _b = '  [ "${1:-}" = transient ] && { AWG_GAVE_UP=transient; return 0; }\n'
+    assert _s.count(_a) == 1 and _s.count(_b) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _s = _s.replace(_a, "so the package is removed, keeping the package manager usable; awg interfaces use the userspace datapath, and the next update tries again.")
+    _s = _s.replace(_b, '  [ "${1:-}" = transient ] && return 0\n')
+    _fd, _LIB = tempfile.mkstemp(prefix="awgfail-lib-", suffix=".sh"); os.write(_fd, _s.encode()); os.close(_fd)
+    _c = ('  elif have awg && have awg-quick && have amneziawg-go && [ "${AWG_GAVE_UP:-}" = transient ]; then   # nothing healed (above)\n'
+          '    DID_UPDATE=yes; note "AmneziaWG: the kernel module\'s package is removed for now — its build did not finish on this box; the next update tries again"\n')
+    assert UP.count(_c) == 1, "perturbation anchor missing — would FALSE-PASS"
+    UP = UP.replace(_c, "")
 def grab_all(*names):
     """The functions as bash itself defines them: lib/common.sh sourced (definitions only), then `declare -f`."""
     r = subprocess.run(["bash", "-c", 'source "$1" >/dev/null 2>&1; declare -f "${@:2}"', "_", _LIB] + list(names),
@@ -249,6 +268,39 @@ r = sh('awg_ppa_module_install && echo RC0 || echo RC1', status="ii ", built=Tru
 check("CONTROL: the package built (ii) → kept, whatever the build log of an earlier attempt says",
       "RC0" in r.stdout and "remove" not in c, r.stdout + c)
 
+print("\n[4e] what is said after a build the box cut short (VERIFY2-VMB N4)")
+reset(); makelog(KILLED)
+r = sh('awg_ppa_module_install; echo "GAVE=${AWG_GAVE_UP:-}"'); c = calls()
+_gl = [l for l in r.stdout.splitlines() if "did not finish on this box" in l]
+check("(N4) the give-up's line: removed for now, the next update tries again — no claim about the datapath",
+      len(_gl) == 1 and "removed for now" in _gl[0] and "the next update tries again" in _gl[0] and "userspace" not in _gl[0], r.stdout)
+check("(N4) …and it tells its caller (AWG_GAVE_UP=transient) once the package is gone", "GAVE=transient" in r.stdout and "apt-get remove" in c,
+      r.stdout + c)
+reset(); makelog(KILLED); open(T + "/locked", "w").close()
+r = sh('awg_ppa_module_install; echo "GAVE=${AWG_GAVE_UP:-}"'); calls()
+check("(N4) CONTROL: a removal that lost dpkg's lock tells it nothing (the package is still there)",
+      "GAVE=\n" in r.stdout + "\n" and "could not be removed now" in r.stdout, r.stdout)
+os.remove(T + "/locked")
+_i = UP.index('  if modprobe amneziawg 2>/dev/null; then\n    DID_UPDATE=yes; ok "AmneziaWG healed — kernel datapath')
+CLOSE = UP[_i:UP.index("\n  fi\n", _i) + len("\n  fi\n")]
+def close(gave):
+    body = ('set -uo pipefail\nDID_UPDATE=no; DID_FAIL=no\nok(){ echo "OK $*"; }\nnote(){ echo "NOTE $*"; }\nwarn(){ echo "WARN $*"; }\n'
+            'modprobe(){ return 1; }\nhave(){ case "$1" in awg|awg-quick|amneziawg-go) return 0;; esac; return 1; }\n'
+            'awg_key_refused_here(){ return 1; }\nawg_fail_get(){ return 1; }\nawg_tools_drive_3x(){ return 0; }\nawg_tools_old_why(){ echo old; }\n'
+            'uname(){ echo 7.0.0-38-generic; }\n%s\n%secho "DID_UPDATE=$DID_UPDATE DID_FAIL=$DID_FAIL"\n') % ("AWG_GAVE_UP=transient" if gave else "", CLOSE)
+    return subprocess.run(["bash", "-c", body], capture_output=True, text=True)
+r = close(True)
+check("(N4) update.sh's heal after it: \"removed for now … the next update tries again\" — not \"healed\", not \"userspace\", not \"linux-headers\"",
+      "NOTE AmneziaWG: the kernel module's package is removed for now" in r.stdout and "the next update tries again" in r.stdout
+      and "healed" not in r.stdout and "userspace" not in r.stdout.lower() and "linux-headers" not in r.stdout
+      and "DID_UPDATE=yes DID_FAIL=no" in r.stdout, r.stdout + r.stderr)
+r = close(False)
+check("(N4) CONTROL: no such give-up in this run → the usual close (userspace, and the headers advice where it fits)",
+      "OK AmneziaWG healed — running the slower USERSPACE datapath" in r.stdout and "install matching linux-headers" in r.stdout, r.stdout + r.stderr)
+_fl = [l for l in UP.splitlines() if "module build did not finish on this box" in l]
+check("(N4) the package follow's note after it: removed for now, tried again — no \"userspace datapath\"",
+      len(_fl) == 1 and "removed for now" in _fl[0] and "userspace" not in _fl[0], _fl)
+
 print("\n[5] awg_build_from_source, driven")
 SRCF = grab_all("awg_build_from_source")
 def build(head):
@@ -280,9 +332,14 @@ for f in ("install-host.sh", "install-node.sh"):
           and "run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools" not in s)
 
 print("")
-if "--perturb-transient" in sys.argv[1:]:
-    _red = [f for f in FAILS if "removed for now" in f]
-    print("perturb: %s" % ("RED as it must be (%d), all [4b]" % len(_red) if _red and len(_red) == len(FAILS)
+if "--perturb-words" in sys.argv[1:]:
+    _red = [f for f in FAILS if "(N4)" in f]
+    print("perturb: %s" % ("RED as it must be (%d), all [4e]" % len(_red) if _red and len(_red) == len(FAILS)
+                           else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
+if "--perturb-transient" in sys.argv[1:]:   # [4e]'s give-up checks drive the same path: red with it
+    _red = [f for f in FAILS if "removed for now" in f or f.startswith("(N4)")]
+    print("perturb: %s" % ("RED as it must be (%d), all [4b] + [4e]'s give-up" % len(_red) if _red and len(_red) == len(FAILS)
                            else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB_STALE or PERTURB_LOCK:
@@ -298,8 +355,9 @@ if PERTURB_FATAL or PERTURB_VETO:
                            else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB:   # 52aa9c4 had both defects: the build log unread ([4b]) and any module file read as "it compiled" ([4d])
-    _red = [f for f in FAILS if "NOT recorded" in f or "tries it again" in f or f.startswith("half-configured + the compiler")]
-    print("perturb: %s" % ("RED as it must be (%d), all [4b] + [4d]'s stale module" % len(_red) if _red and len(_red) == len(FAILS)
+    _red = [f for f in FAILS if "NOT recorded" in f or "tries it again" in f or f.startswith("half-configured + the compiler")
+            or f.startswith("(N4)")]   # [4e]'s give-up checks drive the transient path this plant takes away
+    print("perturb: %s" % ("RED as it must be (%d), all [4b] + [4d]'s stale module + [4e]'s give-up" % len(_red) if _red and len(_red) == len(FAILS)
                            else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
