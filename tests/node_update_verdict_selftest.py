@@ -40,6 +40,7 @@ Run: python3 tests/node_update_verdict_selftest.py       (0 = pass)
      --perturb   restores the DEVNULL behaviour (the wrapper is bypassed, the command run bare) and expects
                  RED on every verdict check — nothing is written, which is exactly the old silence.
      --perturb-scope   the updater in a `--scope` again → RED on [9];  --perturb-env   no environment handed over → RED on [9]
+     --perturb-dollar  the command line handed to systemd-run unescaped again (PID 1 expands ${VAR}, turns $$ into $) → RED on [9]
 """
 import importlib.machinery, importlib.util, os, shutil, subprocess, sys, tempfile, types
 
@@ -49,6 +50,7 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
 PLANT = {"--perturb-scope": ('            r = subprocess.run(["systemd-run", "--unit", "swg-self-update",',
                              '            r = subprocess.run(["systemd-run", "--scope", "--unit", "swg-self-update",'),
+         "--perturb-dollar": ('                               + [a.replace("$", "$$") for a in base],', '                               + base,'),
          "--perturb-env": ("        with contextlib.suppress(OSError):\n            _self_update_env()\n",
                            "        with contextlib.suppress(OSError):\n            pass\n")}
 PLANTED = [a for a in sys.argv[1:] if a in PLANT]
@@ -223,6 +225,29 @@ try:
     ok = m.run_self_update({"node": {"update_cmd": "true"}}, {"to": "9.9.9"})
     check("[9g] a start systemd refuses (a run still going under the one unit name) → False: the next sync tries again, "
           "systemd's reason in the log", ok is False and any("already loaded" in s for _, s in LOGS), (ok, LOGS))
+    # [9i] an operator's own update_cmd holding $HOME, ${X}, $$: PID 1 expands ${VAR} and turns $$ into $ in a service's
+    # command line (systemd-run(1)) — every `$` goes to systemd-run doubled, so the shell gets the text exactly as written
+    m.os, m.shutil, m.subprocess = _Os(True), _which, _Sub()
+    del CALLS[:]
+    _cmd = 'X=mine; echo "$HOME ${X} $$" > /dev/null'
+    m.run_self_update({"node": {"update_cmd": _cmd}}, {"to": "9.9.9"})
+    _a = CALLS[-1][1] if CALLS else []
+    _w = _a[-1] if _a else ""
+    check("[9i] an update_cmd with $HOME / ${X} / $$: every `$` reaches systemd-run as `$$` — the shell gets it as written",
+          _a[-3:-1] == ["bash", "-c"] and "$$HOME $${X} $$$$" in _w and _w.replace("$$", "$") == m._self_update_wrapper(_cmd)
+          and "$" not in _w.replace("$$", ""), _w[-160:])
+    if shutil.which("sudo") and subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and \
+            os.path.isdir("/run/systemd/system") and shutil.which("systemd-run"):
+        # …and systemd itself agrees: the argv run for real (a throwaway unit name, waited for), the shell's own ${X} and $$
+        _out = os.path.join(TMP, "dollar")
+        m.run_self_update({"node": {"update_cmd": 'X=mine; printf "%%s|%%s" "${X}" "$$" > %s' % _out}}, {"to": "9.9.9"})
+        _a = list(CALLS[-1][1]); _a[_a.index("--unit") + 1] = "q189-dollar-%d" % os.getpid()
+        subprocess.run(["sudo", "-n", _a[0], "--wait"] + _a[1:], capture_output=True, timeout=60)
+        _g = subprocess.run(["sudo", "-n", "cat", _out], capture_output=True, text=True).stdout
+        check("[9i] …REAL: systemd-run runs it and the shell writes its own ${X} and its pid (it wrote \"|$\")",
+              _g.startswith("mine|") and _g[5:].isdigit(), _g)
+    else:
+        print("  SKIPPED [9i] real run — no `sudo -n` / systemd here")
     m.os, m.subprocess = _Os(False), _Sub()
     del CALLS[:]
     ok = m.run_self_update({"node": {"update_cmd": "true"}}, {"to": "9.9.9"})
