@@ -16,6 +16,9 @@
       netctl status tail.
   [7] swg-sni drops a line above the level before queueing it, and its per-host lines are Debug. A full queue's line names
       its cause and keeps to the level (1.8.9 qualification HE-9: "more than 100 a second", written at Errors too).
+      Its crash output is its own (HE-5): every traceback line starts "swg-sni: " (what the viewer and `swg-logs sni` file
+      it by), a thread's too, and the learned-set flusher outlives a write that raises (a fork refused under memory
+      pressure ended it for good, and learning with it).
 
 Run: python3 tests/log_levels_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
@@ -48,6 +51,9 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
      relaydstloop the relay's --dst test reads the node's level again at its first report
      snidropcause swg-sni's full-queue line blames a rate again ("more than 100 a second")
      snidroplevel swg-sni writes its full-queue line (a warning) whatever the level
+     sniprefix    swg-sni's crash traceback is queued without its "swg-sni: " prefix
+     snithreadhook swg-sni sets no thread hook (a thread's crash goes out bare, filed at info, unprefixed)
+     sniflusher   swg-sni's flusher thread runs the loop bare again (one write that raises ends it)
   [8] swg-sub follows the fleet's level from subs/serve.json (it cannot read panel-settings.json).
   [9] swg-relay's hand-run --dst test prints all it measures — the probe, the listening line, --report's counters — at
       any node level, as 1.8.8 did (1.8.9 qualification HE-10: at Errors only its error line, at Off nothing); the
@@ -112,6 +118,9 @@ PLANTS = {   # (program, anchor, replacement)
     "snidropcause": ("sni", '''"swg-sni: %d lines not written (queue full, %d waiting)",\n                                     (dropped, SAY_MAX)''',
                      '''"swg-sni: %d lines not written (more than %d a second)",\n                                     (dropped, SAY_RATE)'''),
     "snidroplevel": ("sni", '''        if dropped and LOG_WARNING <= _SAY["level"]:''', '''        if dropped:'''),
+    "sniprefix": ("sni", '''    say(LOG_ERR, "\\n".join("swg-sni: " + ln for ln in text.split("\\n")))''', '''    say(LOG_ERR, text)'''),
+    "snithreadhook": ("sni", '''threading.excepthook = lambda a: _say_excepthook(a.exc_type, a.exc_value, a.exc_traceback)\n''', ""),
+    "sniflusher": ("sni", '''target=self._flush_forever, name="swg-sni-flush"''', '''target=self._flush_loop, name="swg-sni-flush"'''),
     "relaydstloop": ("relay", '''            if not a.dst:\n                log_reread()                     # the level may have moved''',
                      '''            if True:\n                log_reread()                     # the level may have moved'''),
 }
@@ -628,6 +637,46 @@ for lv, what in (("3 3", "Errors"), ("6 6", "Info")):
         check("[7] at Info it is, naming its cause — the queue was full (not a rate)",
               len(full) == 1 and re.fullmatch(r"W swg-sni: \d+ lines not written \(queue full, %d waiting\)" % S9.SAY_MAX, full[0]),
               full[:2])
+
+S5 = sni_at("6 6")
+try:
+    raise OSError(98, "NFQUEUE bind: Address already in use")
+except OSError:
+    sys.excepthook(*sys.exc_info())                     # the hook the module set: a crash at start
+o = written(S5, lambda o: "OSError" in o)
+tb = [l for l in o.splitlines() if l.startswith("E ")]
+check("[7] a crash's traceback: at err, every line starting \"swg-sni: \" (swg-logs sni and the viewer file it by that)",
+      len(tb) >= 3 and all(l.startswith("E swg-sni: ") for l in tb) and "E swg-sni: Traceback (most recent call last):" in tb,
+      tb[:3])
+threading.Thread(target=lambda: 1 / 0, name="t-he5").start()
+o = written(S5, lambda o: "ZeroDivisionError" in o)
+check("[7] …a thread's crash too: through swg-sni's own hook, prefixed, at err",
+      "E swg-sni: ZeroDivisionError: division by zero" in o and "E swg-sni: Traceback" in o.split("OSError")[-1], o[-300:])
+sys.excepthook, threading.excepthook = sys.__excepthook__, threading.__excepthook__
+NFT5 = []
+
+
+def nft5(argv, input=None, **kw):
+    NFT5.append(input)
+    if len(NFT5) == 1:
+        raise BlockingIOError(11, "Resource temporarily unavailable")    # fork refused under memory pressure
+    return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+S5.subprocess = types.SimpleNamespace(run=nft5)
+C5 = S5.Classifier(os.path.join(TMP, "no-map", "sni-map.json"), "swg_smart")   # the real constructor starts the real flusher
+for ip in ("192.0.2.1", "192.0.2.2"):
+    with C5._lock:
+        C5._pending.append(("c1", ip))
+    C5._wake.set()
+    end = time.monotonic() + 3
+    while C5._pending and time.monotonic() < end:
+        time.sleep(0.05)
+    time.sleep(0.2)
+o = written(S5, lambda o: "BlockingIOError" in o)
+check("[7] the learned-set flusher outlives a write that raises: the next learn is written, the pending list drained",
+      len(NFT5) == 2 and "192.0.2.2" in (NFT5[-1] or "") and not C5._pending, (len(NFT5), C5._pending))
+check("[7] …and what it raised is said at err, prefixed", "E swg-sni: BlockingIOError: [Errno 11]" in o, o[-300:])
 
 # ── [8] swg-sub ─────────────────────────────────────────────────────────────────────────────────────────────────────
 print("[8] swg-sub")
