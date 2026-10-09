@@ -2214,7 +2214,7 @@ awg_dkms_give_up(){ # [transient] — after that: leave the package manager clea
   # removed all the same: left half-configured while the fault lasts, every apt run on the box (unattended security upgrades
   # included) ended in error and built it again. Not recorded: the next update tries again (1.8.9 qualification VERIFY1-B1)
   local v sha; v="$(dpkg-query -W -f='${Version}' amneziawg-dkms 2>/dev/null)"
-  if [ "${1:-}" = transient ]; then warn "AmneziaWG: the kernel module's build (amneziawg-dkms ${v:-?}) did not finish on this box — not a compile error (a full disk, or a compiler killed for memory) — so the package is removed, keeping the package manager usable; awg interfaces use the userspace datapath, and the next update tries again."
+  if [ "${1:-}" = transient ]; then warn "AmneziaWG: the kernel module's build (amneziawg-dkms ${v:-?}) did not finish on this box — not a compile error (a full disk, or a compiler killed for memory) — so the package is removed for now, keeping the package manager usable, and the next update tries again."
   else warn "AmneziaWG: its kernel module does not compile on kernel $(uname -r) (amneziawg-dkms ${v:-?}) — upstream does not support this kernel yet. The package manager is left clean, and awg interfaces use the userspace datapath; an update tries the module again when a new kernel or a newer AmneziaWG build arrives."; fi
   # Removed, not left half-configured: every later apt run on the box (ours, the operator's, unattended-upgrades) would
   # end in a dpkg error over it. --no-install-recommends on the tools: a recommends on the module must not reinstall it.
@@ -2227,7 +2227,9 @@ awg_dkms_give_up(){ # [transient] — after that: leave the package manager clea
     *) $DRYRUN || warn "AmneziaWG: amneziawg-dkms could not be removed now (the package manager is busy) — the next update tries again"
        return 0;;
   esac
-  [ "${1:-}" = transient ] && return 0
+  # AWG_GAVE_UP=transient: removed, for the caller's last word — a module already loaded keeps serving until a reboot, the
+  # headers are there, so neither "userspace" nor "install linux-headers" holds (1.8.9 qualification VERIFY2-VMB N4)
+  [ "${1:-}" = transient ] && { AWG_GAVE_UP=transient; return 0; }
   [ -n "$v" ] && awg_fail_note pkg "$v"
   sha="$(printf '%s' "$v" | sed -n 's/.*+\([0-9a-f]\{7,40\}\)~.*/\1/p')"   # the PPA builds upstream master and names the commit
   [ -n "$sha" ] && awg_fail_note src "$sha"

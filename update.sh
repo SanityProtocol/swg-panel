@@ -975,6 +975,8 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   if modprobe amneziawg 2>/dev/null; then
     DID_UPDATE=yes; ok "AmneziaWG healed — kernel datapath, awg interfaces can come up now"
     note "AmneziaWG: kernel module ready for $(uname -r)"
+  elif have awg && have awg-quick && have amneziawg-go && [ "${AWG_GAVE_UP:-}" = transient ]; then   # nothing healed (above)
+    DID_UPDATE=yes; note "AmneziaWG: the kernel module's package is removed for now — its build did not finish on this box; the next update tries again"
   elif have awg && have awg-quick && have amneziawg-go; then
     DID_UPDATE=yes; ok "AmneziaWG healed — running the slower USERSPACE datapath (no loadable kernel module)"
     note "AmneziaWG: userspace (amneziawg-go); $(if awg_key_refused_here; then echo "Secure Boot refuses the kernel module until its signing key is enrolled — see the steps above"; elif awg_fail_get pkg >/dev/null || awg_fail_get src >/dev/null; then echo "the kernel module does not compile on $(uname -r) yet — tried again when a new kernel or a newer AmneziaWG build arrives"; elif awg_tools_drive_3x; then echo 'install matching linux-headers for the faster kernel module'; else awg_tools_old_why; fi)"
@@ -1105,7 +1107,7 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
     fi
     if awg_dkms_pending; then   # the box cut its build short: removed all the same (not recorded) — see awg_dkms_give_up
       awg_dkms_give_up transient; DID_UPDATE=yes
-      note "AmneziaWG: $cand's module build did not finish on this box — removed for now, userspace datapath; tried again on the next update"
+      note "AmneziaWG: $cand's module build did not finish on this box — removed for now; tried again on the next update"
       return 0
     fi
     note "AmneziaWG: the package upgrade did not go through — tried again on the next update"
