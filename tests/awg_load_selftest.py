@@ -33,7 +33,7 @@ Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | ti
                                                     | churn | pid | latepickup | nsenter-rc | lsns-rc | bindns | hiddenns | nofallback
                                                     (exit 0 when caught)
 """
-import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
+import contextlib, importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -59,6 +59,12 @@ PLANTS = {
     "bindns": ("[4]", "agent", "        elif nsfs:\n            look.append((ns, str(nsfs).split(\"\\n\")[0], \"mounted at %s\" % str(nsfs).split(\"\\n\")[0]))\n"
                                 "        else:\n            return None\n", "        else:\n            continue\n"),
     "hiddenns": ("[4]", "agent", "    for ln in hosts:                                  # PID 1's own", "    for ln in []:                                  # PID 1's own"),
+    "stamp-direct": ("[12]", "noded", '    with open(AWG_LOAD_STAMP + ".tmp", "w") as f:\n        json.dump(doc, f)\n    os.replace(AWG_LOAD_STAMP + ".tmp", AWG_LOAD_STAMP)\n',
+                     '    with open(AWG_LOAD_STAMP, "w") as f:\n        json.dump(doc, f)\n'),
+    "taken-mem": ("[12]", "noded", '        if (_AWG_LOAD["v"] or {}).get("id") == pid:   # a stamp that cannot be read, but this run took the press: taken\n            return False\n',
+                  '        pass\n'),
+    "print": ("[12]", "noded", 'log(LOG_INFO, "awg module load #%d: %s (finished while swg-noded restarted)", n, _AWG_LOAD["v"]["code"])',
+              'print("awg module load #%d: %s (finished while swg-noded restarted)" % (n, _AWG_LOAD["v"]["code"]), flush=True)'),
     "nofallback": ("[11]", "agent", "    if not _awg_fallback():\n        raise AgentError(\"no_fallback\"", "    if False:\n        raise AgentError(\"no_fallback\""),
 }
 FAILS, SECTION = [], [""]
@@ -360,6 +366,35 @@ check("…once: the pass after that has nothing new", N4.awg_load_request({"n": 
 for ver, want in (("1.0.20251009", "2.0"), ("3.1.20260812", "3.1"), ("3.0.20260731", "3.0"), ("", None), ("garbage", None)):
     N2.run = lambda args, **kw: subprocess.CompletedProcess(args, 0, ver, "")
     check("modinfo %r → %r" % (ver, want), N2._awg_disk_gen() == want, N2._awg_disk_gen())
+
+print("\n[12] the press's stamp is written whole (q189 NLH-1); its late result is a log line (NLH-4)")
+SECTION[0] = "[12]"
+N5 = load(paths["noded"], "noded_load5")
+seen5 = []
+N5.run_agent = lambda agent, sudo, req, **k: seen5.append(req) or {"ok": False, "code": "busy", "error": "a dpkg run holds the lock"}
+N5.awg_load_request({"n": 21, "age": 1, "id": "21:1"}, "agent", False)
+open(N5.AWG_LOAD_STAMP, "w").write('{"n": 21, "id": "21:1", "ok": false, "co')   # an older build's rewrite, cut short
+check("a stamp cut short after a busy outcome: the same press is not run again (every AWG client lost a second 15 s)",
+      N5.awg_load_request({"n": 21, "age": 6, "id": "21:1"}, "agent", False) is False and len(seen5) == 1, seen5)
+N5._awg_load_stamp({"n": 22, "id": "22:1", "at": 1})
+_dump = N5.json.dump
+def _cut(doc, f):                                     # the disk fills in the middle of the write
+    f.write(json.dumps(doc)[:9]); f.flush(); raise OSError(28, "No space left on device")
+N5.json.dump = _cut
+try:
+    N5._awg_load_stamp({"n": 22, "id": "22:1", "ok": False, "code": "load_failed", "at": 2})
+except OSError:
+    pass
+finally:
+    N5.json.dump = _dump
+_st = None
+with contextlib.suppress(Exception):
+    _st = json.load(open(N5.AWG_LOAD_STAMP))
+check("…and a rewrite cut mid-way leaves the stamp before it WHOLE (through a .tmp and a rename)",
+      isinstance(_st, dict) and _st.get("id") == "22:1", open(N5.AWG_LOAD_STAMP).read()[:80])
+_srcn = open(paths["noded"], encoding="utf-8").read()
+check("NLH-4: no print() left in swg-noded — the late result is a log line, at its level and in the live viewer",
+      not re.search(r"^\s*print\(", _srcn, re.M), re.findall(r"^\s*print\(.*", _srcn, re.M)[:2])
 
 shutil.rmtree(TMP, ignore_errors=True)
 print()
