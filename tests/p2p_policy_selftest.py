@@ -60,6 +60,8 @@
        `sudo -n` exists, on the real kernel: a bridge container's 60 destinations and one user's DHT packet flag nothing,
        its established session keeps flowing, its DHT packet is still dropped — while WireGuard-like users on a plain veth
        are flagged as before
+  [29] 1.8.9 qualification FN-2(b): 1.8.8's SWGP chain is retired only once swg_p2p is IN FORCE (or nothing is wanted) —
+       a kernel that refuses the new table keeps the old guard, not none
   [28] 1.8.9 qualification NR-8: the pass reads swg_p2p TERSE (`nft -t`, no set elements — @fanseen alone holds up to 65 535,
        MBs a pass on a busy node) for its " drop" test; never the full dump
 
@@ -122,6 +124,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
     "bridge-flagged": ("""    nf = ("ip saddr != @nofan " if nofan else "") + 'meta iifkind != "bridge" '\n""",
                        """    nf = "ip saddr != @nofan " if nofan else ""\n"""),
+    "swgp-early":   ('    try:\n        mode = _p2p_mode(p2p)', '    try:\n        retire()\n        mode = _p2p_mode(p2p)'),
     "p2p-fulllist": ('        have = run(["nft", "-t", "list", "table", "inet", P2P_NFT_TABLE])', '        have = run(["nft", "list", "table", "inet", P2P_NFT_TABLE])'),
     "dht-bs":       ('    ("dht",    "udp", "@ih,0,128 0x64313a6164323a6273693165323a6964"),   # d1:ad2:bsi1e2:id\n', ''),
     "p2p-ok-on-fail": ('            _P2P.update(on=True, state="error",', '            _P2P.update(on=True, state="ok" if ih else "degraded",'),
@@ -811,6 +814,19 @@ def run_checks(src):
     m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
     ok(" log prefix " in b.tables.get("swg_p2p", "") and p2p_loads(b) == 1,
        "[24] CONTROL: a kernel that takes the log lines gets them, in one load")
+
+    # [29] FN-2(b) — SWGP goes only once swg_p2p is in force; the live source says when the guard cannot speak
+    retired = lambda b: sum(1 for a, _ in b.cmds if a[:3] == ["ipset", "destroy", "swgp_src"])
+    m, b = fresh(); b.refuse = lambda text: "table inet swg_p2p {" in text      # this kernel takes no swg_p2p at all
+    m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
+    ok(m._P2P["state"] == "error" and retired(b) == 0,
+       "[29] a kernel that refuses swg_p2p keeps 1.8.8's SWGP guard (state %r, SWGP retired %d×)" % (m._P2P["state"], retired(b)))
+    b.refuse = None
+    m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
+    ok(m._P2P["state"] == "ok" and retired(b) == 1, "[29] …and retires it once the table loads (%d×)" % retired(b))
+    m, b = fresh()
+    m._ensure_p2p(None, {}, {}, {"changed": 0, "errors": []})
+    ok(retired(b) == 1, "[29] nothing wanted: SWGP retired (no torrent blocking is wanted anywhere)")
 
     # [28] NR-8 — the " drop" test reads the table terse
     m, b = fresh()
