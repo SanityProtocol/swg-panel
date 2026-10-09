@@ -7886,6 +7886,41 @@ def _log_ns_dropins():
         log(LOG_INFO, "log budget: %d kind(s) of unit log into the %s journal from their next start", changed, LOG_NS)
 
 
+# ⚠️ systemd < 254 (Debian 12: 252, Ubuntu 22.04: 249) knows neither RestartSteps= nor RestartMaxDelaySec=, the back-off our
+# turn / WDTT / csqtt units carry, so it ignores both and restarts a failing server every RestartSec=3 for ever — CPU on 1 vCPU
+# and ~3 journal lines a restart into swg's namespace (1.8.9 qualification D12-1). There a prefix drop-in gives every unit of
+# those families, existing ones included, a flat 30 s it understands: read at the next restart, nothing restarted for it.
+RESTART_DROPIN = "swg-restart.conf"
+RESTART_FAMILIES = ("vk-turn-proxy-.service", "swg-wdtt-.service", "swg-csqtt-.service")
+
+
+def _restart_dropins():
+    """At start, on systemd < 254: the flat back-off drop-in for each family, written when missing or different, then one
+    daemon-reload. Never raises."""
+    if NODE_KIND == "docker":
+        return
+    m = re.match(r"systemd (\d+)", run(["systemctl", "--version"], timeout=10).stdout or "")
+    if not m or int(m.group(1)) >= 254:
+        return
+    udir = UNIT_DIR_PERSIST if unit_dir_persists() else UNIT_DIR_RUNTIME
+    want, changed = "[Service]\nRestartSec=30\n", 0
+    for u in RESTART_FAMILIES:
+        p = os.path.join(udir, u + ".d", RESTART_DROPIN)
+        with contextlib.suppress(OSError):
+            with open(p) as f:
+                if f.read() == want:
+                    continue
+        with contextlib.suppress(OSError):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p + ".tmp", "w") as f:
+                f.write(want)
+            os.replace(p + ".tmp", p)
+            changed += 1
+    if changed:
+        run(["systemctl", "daemon-reload"])
+        log(LOG_INFO, "restart back-off: systemd %s ignores RestartSteps= — turn / WDTT / csqtt units restart every 30 s", m.group(1))
+
+
 # A running process keeps the journal stream it was started with, so a unit started before its family's drop-in writes
 # the MAIN journal — outside the budget — until its next start, and a turn proxy, WDTT or csqtt server runs for weeks
 # (measured on msk-main 10-05: five servers since 10-02, 23 % of the main journal; nixos the same). They are restarted
@@ -23230,6 +23265,8 @@ def main():
         os.remove("/var/lib/swg-noded/swg-sni.log")
     with contextlib.suppress(Exception):
         _log_ns_dropins()                            # before the first pass: the units this node writes, into swg-node
+    with contextlib.suppress(Exception):
+        _restart_dropins()                           # systemd < 254: a back-off it understands for those units (D12-1)
     last_samples = {}
     last_route_sig = None; last_route_t = 0.0    # gate the heavy routing reconcile (see ROUTING_RECONCILE_EVERY_S)
     last_desired_sig = None                      # what the last completed pass applied — for the reconcile line's level only
