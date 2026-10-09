@@ -1933,9 +1933,13 @@ git_clone_depth1(){ # <url> <dest> [<tag or branch>]
   # A throttled link gives up instead of crawling: git aborts a transfer under 10 KB/s for 30 s, and the whole clone is
   # capped at 5 minutes where `timeout` exists. Measured on a home box in Russia (client report 2026-10-06): GitHub at a
   # crawl, and this clone — whose output goes to a log — left the installer silent for longer than anyone waits.
-  local _to=""; have timeout && _to="timeout 300"
-  run env GIT_TERMINAL_PROMPT=0 $_to git -c http.lowSpeedLimit=10240 -c http.lowSpeedTime=30 clone --depth=1 ${3:+--branch "$3"} "$1" "$2" && return 0
+  # --foreground: git stays in the installer's process group, so a Ctrl-C reaches it and ends the run — timeout's own group
+  # kept the Ctrl-C from git, and the run carried on once the clone ended (1.8.9 qualification IN-4). A clone that hit the
+  # cap is not tried again over HTTP/1.1: that is the slow link, not the 401 above, and a retry only doubled the wait (IN-21).
+  local _to="" _rc=0; have timeout && _to="timeout --foreground 300"
+  run env GIT_TERMINAL_PROMPT=0 $_to git -c http.lowSpeedLimit=10240 -c http.lowSpeedTime=30 clone --depth=1 ${3:+--branch "$3"} "$1" "$2" && return 0 || _rc=$?
   rm -rf "${2:?}"
+  [ "$_rc" != 124 ] || return 124
   run env GIT_TERMINAL_PROMPT=0 $_to git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=10240 -c http.lowSpeedTime=30 clone --depth=1 ${3:+--branch "$3"} "$1" "$2"
 }
 
@@ -2106,8 +2110,10 @@ awg_fail_note(){ # <pkg|src> <value> — this kernel's record gains one fact (a 
 }" "$1" "$2" > "$AWG_MOD_FAILED.tmp" 2>/dev/null && mv -f "$AWG_MOD_FAILED.tmp" "$AWG_MOD_FAILED" 2>/dev/null || true; }
 awg_module_head(){ # the commit upstream's kernel module is at now — empty when it cannot be asked (no git, no network)
   have git || return 0
-  local t=""; have timeout && t="timeout 30"
-  $t env GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/amnezia-vpn/amneziawg-linux-kernel-module HEAD 2>/dev/null | cut -f1 | sed -n 1p; }
+  # --foreground: a Ctrl-C ends it at once (IN-4); git's low-speed abort ends a stalled helper, which the cap then misses
+  local t=""; have timeout && t="timeout --foreground 30"
+  $t env GIT_TERMINAL_PROMPT=0 git -c http.lowSpeedLimit=10240 -c http.lowSpeedTime=30 \
+    ls-remote https://github.com/amnezia-vpn/amneziawg-linux-kernel-module HEAD 2>/dev/null | cut -f1 | sed -n 1p; }
 awg_src_retry_due(){ # [<head>] — 0 unless upstream is still the commit that did not compile on THIS kernel (unknown head: not due)
   local was h; was="$(awg_fail_get src)" || return 0
   h="${1-$(awg_module_head)}"; [ -n "$h" ] || return 1
