@@ -2114,7 +2114,7 @@ awg_src_retry_due(){ # [<head>] — 0 unless upstream is still the commit that d
   case "$h" in "$was"*) return 1;; esac; return 0; }
 awg_pkg_retry_due(){ # 0 unless amneziawg-dkms already did not compile on THIS kernel at the version apt would install now
   local was c; was="$(awg_fail_get pkg)" || return 0
-  c="$(apt-cache policy amneziawg-dkms 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p)"
+  c="$(LC_ALL=C apt-cache policy amneziawg-dkms 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p)"   # C: apt translates "Candidate:"
   [ -n "$c" ] && [ "$c" != "(none)" ] && [ "$c" != "$was" ]; }
 awg_nothing_new(){ # 0 = something did not compile on THIS kernel, and no recorded route has moved since (pkg / upstream)
   # Asked over the kinds that HAVE a record: a source build records only src, a PPA version without a commit only pkg —

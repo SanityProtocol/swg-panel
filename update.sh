@@ -183,7 +183,7 @@ col_v(){ printf '%s%s%s' "$C_BLUE" "$*" "$RESET"; }
 APT_DONE=no
 apt_refresh(){ [ "$APT_DONE" = yes ] && return 0; APT_DONE=yes; have apt-get && run apt-get update -qq 2>/dev/null || true; }
 pkg_installed(){ dpkg-query -W -f='${Version}' "$1" 2>/dev/null | sed -n 1p; }   # installed version, or empty
-pkg_candidate(){ apt-cache policy "$1" 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p; }
+pkg_candidate(){ LC_ALL=C apt-cache policy "$1" 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p; }   # C: apt translates "Candidate:" ("Кандидат:" under ru_RU)
 first_pkg(){ local p; for p in "$@"; do [ -n "$(pkg_installed "$p")" ] && { echo "$p"; return 0; }; done; return 1; }
 # pkg_update <label> <pkg…> : auto-check the first installed pkg; prompt y/n only if a newer candidate exists
 pkg_update(){ local label="$1"; shift; local pkg cur cand
