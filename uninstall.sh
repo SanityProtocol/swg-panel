@@ -1160,6 +1160,15 @@ rm_leftovers(){
   for _u in swg-relay.slice; do [ -e "$SD/$_u" ] && run systemctl stop "$_u" 2>/dev/null || true; done
   rmrf "$SD/swg-relay@.service" "$SD/swg-relay.slice" /etc/swg-panel/relay
   run systemctl daemon-reload
+  # …and a WDTT / csqtt server's state no unit runs from any more (_fork_orphans), each with rm_wdtt / rm_csqtt's own question
+  # and preset; no server of it is left to take down (an interface of that name now is the Docker node's)
+  local _sd _g _v
+  for _sd in $(_fork_orphans); do _g=CSQTT_DATA_DEL; [ "${_sd%/*}" = "$WDTT_DIR" ] && _g=WDTT_DATA_DEL
+    _v="${_g}_${_sd##*/}"; _v="${_v//[^A-Za-z0-9_]/_}"; [ -n "${!_g:-}" ] && printf -v "$_v" '%s' "${!_g}"
+    ask_yn "  Delete $_sd — a server's state a convert left here, run by nothing now? Without another copy its clients could never be restored." n "$_v"
+    if [ "${!_v}" = yes ]; then rmrf "$_sd"; else ok "Kept $_sd"; fi; done
+  for _sd in wdtt:"$WDTT_DIR" csqtt:"$CSQTT_DIR"; do ls $SD/swg-${_sd%%:*}-*.service >/dev/null 2>&1 || ls -d "${_sd#*:}"/*/ >/dev/null 2>&1 \
+    || { rmrf "${_sd#*:}/.bin"; $DRYRUN || rmdir "${_sd#*:}" 2>/dev/null || true; }; done
   # Service identities the pre-convert BARE install created. rm_panel/rm_node own these, and neither runs on a
   # docker-only box, so they outlived the uninstall — leaving swgpanel + group swg on a box with no swg on it.
   # Same -r split as the owners use (swgpush/swgagent carry a home dir; swgpanel/swgsub do not).
@@ -1216,7 +1225,12 @@ _has_leftovers(){ [ -d /etc/swg-sub ] || [ -d /opt/swg-sub ] || [ -e "$SD/swg-su
   || [ -d /var/www/wgstats ] || [ -e /usr/local/bin/swg-passwd ] \
   || [ -e "$SD/swg-relay.slice" ] || [ -e "$SD/swg-relay@.service" ] || [ -d /etc/swg-panel/relay ] \
   || id swgpanel >/dev/null 2>&1 || id swgsub >/dev/null 2>&1 || id swgpush >/dev/null 2>&1 || id swgagent >/dev/null 2>&1 \
-  || getent group swg >/dev/null 2>&1; }
+  || getent group swg >/dev/null 2>&1 || [ -n "$(_fork_orphans)" ]; }
+# A WDTT / csqtt server's state no unit runs from (1.8.9 qualification L8-a): a bare → Docker convert carries each instance
+# into the container and keeps the bare original — and deletes the bare csqtt units (lib/common.sh stop_bare_csqtt) — so no
+# component ever named /opt/swg-csqtt/<iface>, its clients' password store, and a FULL uninstall left it. One per line.
+_fork_orphans(){ local d k; for d in "$WDTT_DIR"/*/ "$CSQTT_DIR"/*/; do d="${d%/}"; [ -d "$d" ] || continue
+  k=csqtt; [ "${d%/*}" = "$WDTT_DIR" ] && k=wdtt; [ -e "$SD/swg-$k-${d##*/}.service" ] || printf '%s\n' "$d"; done; return 0; }
 
 # Delete the node-owned egress rules tagged for ONE interface (nat/POSTROUTING SNAT + filter/FORWARD accept +
 # mangle/FORWARD MSS), matching swg-noded's own tags. The END of the tag is matched — a quote, a space or the end of the
@@ -1388,7 +1402,7 @@ rm_wdtt(){ local unit="$1" name iface fork
   fi
   ls $SD/swg-wdtt-*.service >/dev/null 2>&1 || {          # last one out: shared per-fork binaries + the panel-facing record
     rmrf "$WDTT_DIR/.bin" $(rec_paths wdtt.json)
-    [ "${WDTT_DATA_DEL:-}" = yes ] && rmrf "$WDTT_DIR"   # :- — the per-instance answers live in WDTT_DATA_DEL_<iface>; this global is only ever set by an unattended run, so under `set -u` an interactive uninstall died right here
+    $DRYRUN || rmdir "$WDTT_DIR" 2>/dev/null || true   # and the dir once empty: every identity deleted. It read the RAW preset — the documented WDTT_DATA_DEL=y left it, empty (1.8.9 qualification D12-3)
   }
   ok "WDTT server ($iface) removed"
 }
@@ -1415,7 +1429,7 @@ rm_csqtt(){ local unit="$1" name iface
   fi
   ls $SD/swg-csqtt-*.service >/dev/null 2>&1 || {          # last one out: shared binary + the panel-facing record
     rmrf "$CSQTT_DIR/.bin" $(rec_paths csqtt.json)
-    [ "${CSQTT_DATA_DEL:-}" = yes ] && rmrf "$CSQTT_DIR"
+    $DRYRUN || rmdir "$CSQTT_DIR" 2>/dev/null || true   # …and the dir once empty (as rm_wdtt)
   }
   ok "csqtt server ($iface) removed"
 }
