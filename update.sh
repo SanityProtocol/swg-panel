@@ -1003,18 +1003,30 @@ awg_kdevs_elsewhere(){   # OTHER network namespaces holding an amneziawg device 
   # when it cannot look (no lsns / nsenter, or either one failing) — the caller must then not unload: it cannot know it cuts
   # no one. A namespace nsenter could not get into is NOT an empty one (the process lsns named for it may have exited while
   # others keep it alive): read as empty, `modprobe -r` destroyed its device (1.8.9 qualification, HE-2's twin in swg-agent).
-  local n me ns pid out list
+  # ⚠️ AND ONE NO PROCESS HOLDS: kept by a bind mount alone, it has no PID — it is entered by its mount (lsns's NSFS
+  # column) — and one mounted where this mount namespace does not see it, by PID 1's mount table through PID 1's root.
+  # A row with neither: "?". (lsns -r: one space between columns, an empty column empty, odd characters \x-escaped.)
+  local n me ns pid nsfs t out list ln seen=" "
   for n in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     [ -n "$(ip -n "$n" -o link show type amneziawg 2>/dev/null)" ] && echo "$n"
   done
   have lsns && have nsenter || { echo "?"; return 0; }
   me="$(readlink /proc/self/ns/net 2>/dev/null)" || me=""
-  list="$(lsns -t net -n -o NS,PID 2>/dev/null)" || { echo "?"; return 0; }
-  while read -r ns pid; do
-    [ -n "$pid" ] && [ "net:[$ns]" != "$me" ] || continue
-    out="$(nsenter --net="/proc/$pid/ns/net" ip -o link show type amneziawg 2>/dev/null)" || { echo "?"; return 0; }
+  list="$(lsns -t net -n -r -o NS,PID,NSFS 2>/dev/null)" || { echo "?"; return 0; }
+  [ -r /proc/1/mountinfo ] || { echo "?"; return 0; }
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    ns="${ln%% *}"; ln="${ln#* }"; pid="${ln%% *}"; nsfs=""; case "$ln" in *" "*) nsfs="${ln#* }";; esac
+    seen="$seen$ns "; [ "net:[$ns]" != "$me" ] || continue
+    if [ -n "$pid" ]; then t="/proc/$pid/ns/net"; elif [ -n "$nsfs" ]; then t="$nsfs"; else echo "?"; return 0; fi
+    out="$(nsenter --net="$t" ip -o link show type amneziawg 2>/dev/null)" || { echo "?"; return 0; }
     [ -n "$out" ] && echo "net:[$ns]"
   done <<< "$list"
+  while read -r ns nsfs; do                                    # PID 1's own nsfs mounts of a network namespace
+    case "$seen" in *" $ns "*) continue;; esac; seen="$seen$ns "; [ "net:[$ns]" != "$me" ] || continue
+    out="$(nsenter --net="/proc/1/root$nsfs" ip -o link show type amneziawg 2>/dev/null)" || { echo "?"; return 0; }
+    [ -n "$out" ] && echo "net:[$ns]"
+  done < <(awk '{ for (i = 6; i < NF; i++) if ($i == "-") break; if ($(i + 1) == "nsfs" && $4 ~ /^net:\[[0-9]+\]$/) { n = $4; gsub(/[^0-9]/, "", n); print n, $5 } }' /proc/1/mountinfo 2>/dev/null)
   return 0
 }
 awg_src_refresh(){   # refresh the amnezia apt source ALONE — a whole `apt-get update` on every one-click update is not needed here

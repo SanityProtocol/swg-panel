@@ -1795,7 +1795,10 @@ def _awg_devs_elsewhere():
     otherwise go without a word. None when it cannot look (no lsns / nsenter, or either one failing) — the caller must
     refuse: it cannot know it cuts no one. A namespace nsenter could not get into is NOT an empty one: the process lsns
     named for it may have exited while others keep it alive, or a security module refused the entry (1.8.9 qualification
-    HE-2 — it was read as empty, and `modprobe -r` went on)."""
+    HE-2 — it was read as empty, and `modprobe -r` went on).
+    ⚠️ AND A NAMESPACE NO PROCESS HOLDS: one kept by a bind mount alone (how `ip netns` and container runtimes keep one) has
+    no PID — it is entered by its mount (lsns's NSFS column) — and one mounted where this mount namespace does not see it
+    (we run inside swg-noded's) by PID 1's mount table, through PID 1's root. A row with neither: cannot look."""
     out = []
     for ln in subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout.splitlines():
         ns = ln.split()[0] if ln.split() else ""
@@ -1807,19 +1810,44 @@ def _awg_devs_elsewhere():
         me = os.readlink(_PROC + "/self/ns/net")
     except OSError:
         me = ""
-    ls = subprocess.run(["lsns", "-t", "net", "-n", "-o", "NS,PID"], capture_output=True, text=True)
-    if ls.returncode != 0:
+    ls = subprocess.run(["lsns", "-t", "net", "-J", "-o", "NS,PID,NSFS"], capture_output=True, text=True)
+    try:
+        rows = json.loads(ls.stdout).get("namespaces") if ls.returncode == 0 else None
+        hosts = open(_PROC + "/1/mountinfo").read().splitlines()
+    except (ValueError, AttributeError, OSError):
         return None
-    for ln in ls.stdout.splitlines():
-        f = ln.split()
-        if len(f) < 2 or "net:[%s]" % f[0] == me:
+    if not isinstance(rows, list):
+        return None
+    look, seen = [], set()                            # (namespace, the path nsenter enters it by, how it is held)
+    for r in rows:
+        ns, pid, nsfs = str((r or {}).get("ns") or ""), (r or {}).get("pid"), (r or {}).get("nsfs")
+        seen.add(ns)
+        if not ns or "net:[%s]" % ns == me:
             continue
-        p = subprocess.run(["nsenter", "--net=%s/%s/ns/net" % (_PROC, f[1]), "ip", "-o", "link", "show", "type", "amneziawg"],
+        if pid:
+            look.append((ns, "%s/%s/ns/net" % (_PROC, pid), "process %s" % pid))
+        elif nsfs:
+            look.append((ns, str(nsfs).split("\n")[0], "mounted at %s" % str(nsfs).split("\n")[0]))
+        else:
+            return None
+    for ln in hosts:                                  # PID 1's own: "… <root> <mount point> … - nsfs nsfs …"
+        a, sep, b = ln.partition(" - ")
+        f = a.split()
+        if not sep or b.split()[:1] != ["nsfs"] or len(f) < 5 or not re.fullmatch(r"net:\[\d+\]", f[3]):
+            continue
+        ns = f[3][5:-1]
+        if ns in seen or f[3] == me:
+            continue
+        seen.add(ns)
+        mp = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), f[4])
+        look.append((ns, _PROC + "/1/root" + mp, "mounted at %s" % mp))
+    for ns, path, how in look:
+        p = subprocess.run(["nsenter", "--net=" + path, "ip", "-o", "link", "show", "type", "amneziawg"],
                            capture_output=True, text=True)
         if p.returncode != 0:
             return None
         if (p.stdout or "").strip():
-            out.append("net:[%s] (process %s)" % (f[0], f[1]))
+            out.append("net:[%s] (%s)" % (ns, how))
     return out
 
 def _awg_ver_gen(v):
