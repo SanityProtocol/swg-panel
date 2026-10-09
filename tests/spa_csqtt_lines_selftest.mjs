@@ -11,8 +11,11 @@
  *
  *  [5] a record carried to a node that cannot run its version reads "update the node", never "switching" for ever
  *  [6] one line on offer but a server already runs another: the field stays, with that version selectable
+ *  [7] q189 SPA-11 — a record naming a line the panel no longer offers (a stand-in line taken away) reads as the panel reads
+ *      it (_csqtt_line_of: 2.1, what the node is sent): the card is not "switching" for ever; with the line back on offer
+ *      the same record is a switch again
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered> plants one regression, expects RED.
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -26,6 +29,8 @@ const PLANTS = {
   unoffered: ["turn.js", "  if (!csqttLinesOn() && value === CSQTT_DEFAULT_LINE) return null;", "  if (!csqttLinesOn()) return null;"],
   refuse: ["turn.js", "    ...(id !== value && !can.includes(id) ? {", "    ...(false ? {"],
   failed: ["turn.js", "  const failed = c.line_failed && c.line_failed.line === want ? c.line_failed : null;", "  const failed = c.line_failed || null;"],
+  stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
+          "export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;"],
 };
 const made = [];
 async function load(name) {
@@ -95,5 +100,17 @@ const f6 = TU.CsqttVersionField({ node: "nnew", value: "2.5", onChange: () => {}
 const d6 = dropdown(f6) || { options: [] };
 check("[6] one line on offer, a server on 2.5: the field still shows", f6 !== null, f6);
 check("[6] …listing 2.1 and the 2.5 it runs", JSON.stringify(d6.options.map(o => o.value)) === '["2.1","2.5"]', d6.options);
+
+// [7] q189 SPA-11
+Store.csqttLines = ["2.1"];
+Store.nodes = [{ id: "nnew", csqtt_cfg: { s: { line: "2.5" } } }];
+Store.stats = { nnew: { csqtt_lines: ["2.1", "2.5"], csqtt: [{ iface: "s", line: "2.1" }] } };
+const s7 = TU.csqttSwitchState("nnew", "s");
+check("[7] a record naming 2.5 when only 2.1 is offered: asked 2.1 (what the node is sent), runs 2.1 — not switching for ever",
+      s7.want === "2.1" && !s7.switching && !s7.blocked, s7);
+check("[7] …and csqttLineOf reads it as the panel does", TU.csqttLineOf({ line: "2.5" }) === "2.1" && TU.csqttLineOf({}) === "2.1", TU.csqttLineOf({ line: "2.5" }));
+Store.csqttLines = ["2.1", "2.5"];
+const s7b = TU.csqttSwitchState("nnew", "s");
+check("[7] with 2.5 back on offer, the same record is a switch again", s7b.want === "2.5" && s7b.switching, s7b);
 
 done(!!MODE, MODE || "");
