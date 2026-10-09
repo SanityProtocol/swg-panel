@@ -28,8 +28,9 @@
   [7] The verify readers read the namespace and give the unit's own reason even when systemd's line sorts after it.
   [8] Uninstall (rm_log_ns, per component) removes the drop-ins, the size file and swg-logs (the last only with the last
       unit); an operator's own drop-in stays; the journal is the end of the run's (F14: tests/uninstall_journals_selftest.py).
-  [9] swg-logs maps a source to journalctl over the right namespace and refuses a name with shell characters; update.sh
-      writes the drop-ins before it restarts anything.
+  [9] swg-logs maps a source to journalctl over the right namespace and refuses a name with shell characters; options
+      given alone go to journalctl over every journal (HE-6: `swg-logs -f` and `--since today` exited 2, "no source
+      called '-f'"), -h / --help stay its own usage; update.sh writes the drop-ins before it restarts anything.
 
 Run: python3 tests/log_budget_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
@@ -66,6 +67,7 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      settingsunguarded a value the panel never writes kills the tick before the queue
      dropinsaidonce    netctl warns on every tick about a drop-in it cannot write
      dropincarry       the budget's status rewrite drops the drop-in error it was kept with (said again next tick)
+     logsopts          swg-logs takes an option given alone for a source name again
 """
 import contextlib, importlib.machinery, importlib.util, io, json, os, re, shutil, socket, stat, struct, subprocess, sys, tempfile
 import threading, time, urllib.error, urllib.request
@@ -131,6 +133,7 @@ PLANTS = {   # (program, anchor, replacement)
     "settingsunguarded": ("netctl", '''        with contextlib.suppress(Exception):         # never kept from the queue''', '''        if True:         # never kept from the queue'''),
     "dropinsaidonce": ("netctl", '''    if err != prev.pop("dropin_err", None):''', '''    if err or prev.pop("dropin_err", None):'''),
     "dropincarry": ("netctl", '''        doc["dropin_err"] = prev["dropin_err"]''', '''        pass'''),
+    "logsopts": ("logs", '''case "$src" in -h|--help) ;; -*) set -- "$src" "$@"; src="" ;; esac''', ''':'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
 if PLANT:
@@ -711,6 +714,13 @@ o = subprocess.run([lg, "sni"], capture_output=True, text=True).stdout
 check("[9] swg-logs sni: noded's stream, its prefix", "[-u][swg-noded.service][--grep][^swg-sni:]" in o, o)
 p = subprocess.run([lg, "turn", "a;b"], capture_output=True, text=True)
 check("[9] a name with shell characters is refused", p.returncode == 2 and not p.stdout, (p.returncode, p.stdout))
+for args, tail in ((["-f"], "[-f]"), (["--since", "today"], "[--since][today]"), (["-n", "5", "-p", "err"], "[-n][5][-p][err]")):
+    p = subprocess.run([lg] + args, capture_output=True, text=True)
+    check("[9] swg-logs %s: options alone go to journalctl over every journal (a master here: both and the main one)" % " ".join(args),
+          p.returncode == 0 and p.stdout == ("[--namespace=*]" if ns else "") + tail, (p.returncode, p.stdout, p.stderr[:120]))
+p = subprocess.run([lg, "--help"], capture_output=True, text=True)
+check("[9] …and --help is still swg-logs' own usage, not journalctl's", p.returncode == 0 and "swg-logs [source [name]]" in p.stdout
+      and "[--help]" not in p.stdout, (p.returncode, p.stdout[:120]))
 U = SRC["update"]
 pb = U.index("# ───────────────────────── bare-metal panel (host or master)")
 check("[9] update.sh writes the panel's drop-ins before it restarts the panel",
