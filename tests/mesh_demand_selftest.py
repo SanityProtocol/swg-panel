@@ -38,8 +38,8 @@ PLANTS = [
      '                    if False:', "every pair the plan routes over is in the need set"),
     ("need-instances", '        recs += [v for k in ("wdtt", "csqtt") for v in (n.get(k) or {}).values() if isinstance(v, dict)]',
      '        recs += []', "…WDTT and csqtt instances included"),
-    ("need-pin", '            if ((((lr.get("relay") or {}).get("mode") or "forward") == "relay")',
-     '            if False and ((((lr.get("relay") or {}).get("mode") or "forward") == "relay")',
+    ("need-pin", '            if mesh_link_extras(lr):\n                want(nid, peer)',      # the settings that act (f17cc1d)
+     '            if False and mesh_link_extras(lr):\n                want(nid, peer)',
      "a relay-configured link is kept past the grace"),
     ("need-legs", '            want(nid, str((lg or {}).get("peer") or ""))', '            pass',
      "a pair only the last plan names is kept past the grace"),
@@ -47,8 +47,8 @@ PLANTS = [
      "the node door counts the links a node anchors in the mode in force"),
     ("grace", '        if p in need or now_ - _MESH_IDLE.setdefault(p, now_) < MESH_RETIRE_GRACE_S:', '        if p in need:',
      "the old pair is not retired a second before the grace"),
-    ("both-ends", '        for x, y in ((a, b), (b, a)):\n            n = nodes.get(x)', '        for x, y in ((a, b),):\n            n = nodes.get(x)',
-     "past the grace the old pair is gone from BOTH ends"),
+    ("both-ends", '        for x, y in ((a, b), (b, a)):    # retired, not rebuilt', '        for x, y in ((a, b),):    # retired, not rebuilt',
+     "past the grace the old pair is gone from BOTH ends"),     # one teardown, mesh_link_park (f17cc1d)
     ("idle-clear", '    for p in [p for p in _MESH_IDLE if p not in linked or p in need]:', '    for p in []:',
      "flipping back restarts the timer (no early retire)"),
     ("name-pending", '    existing |= set(node.get("delete") or {})', '    existing |= set()',

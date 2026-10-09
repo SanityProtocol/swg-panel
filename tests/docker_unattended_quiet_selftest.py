@@ -40,7 +40,9 @@ INST_SH = os.path.join(SRC, "install-docker.sh")
 inst = open(INST_SH, encoding="utf-8").read()
 if PERTURB:
     for a, b in [
-        ("HAVE_TTY=no; { : </dev/tty; } 2>/dev/null && HAVE_TTY=yes", "HAVE_TTY=yes"),   # every prompt tries the tty
+        # every prompt tries the tty — HAVE_TTY's probe gone, and the tty a question reads (SWG_TTY, /dev/null when
+        # this run is not the terminal's foreground, 80d5f71) the raw /dev/tty again
+        ("HAVE_TTY=no; swg_tty_ok && HAVE_TTY=yes", "HAVE_TTY=yes; SWG_TTY=/dev/tty"),
         ("elif $DRYRUN; then\n  echo; ok \"Dry run of the docker", "elif false; then\n  echo; ok \"Dry run of the docker"),
         ("    $DRYRUN || NEW_LOGIN=yes", "    NEW_LOGIN=yes"),
     ]:

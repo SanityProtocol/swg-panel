@@ -126,7 +126,7 @@ PLANTS = {   # name: ([(anchor, replacement), …], the check it must redden)
           "no observation"),
     "q": ([("            if row is not None:                                # a lost base.bin",
             "            if False:                                          # a lost base.bin")], "newest closed day"),
-    "s": ([("            self.on, self.why_off = False, \"index.json is unreadable and no backup is good (%s)\" % e\n            print(\"ledger: OFF — %s\" % self.why_off, flush=True)\n            return\n",
+    "s": ([("            self.on, self.why_off = False, \"index.json is unreadable and no backup is good (%s)\" % e\n            log(LOG_WARNING, \"ledger: OFF — %s\" % self.why_off)\n            return\n",   # log(): 6a0d507
             "            idx = None\n")], "lone corrupt index.json"),
     "t": ([("        try:\n            LEDGER.ingest(nid, snap, seq=seq)\n        except Exception as e:\n            LEDGER.ingest_failed(e)\n",
             "        LEDGER.ingest(nid, snap, seq=seq)\n")], "never fails the sync"),

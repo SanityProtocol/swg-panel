@@ -52,7 +52,8 @@ PLANTS = {   # name: (section it must redden, anchor, replacement)
                         "        if False:\n"),
     "old-node-recreate": ("[10]", "        if any(k in (req.get(\"awg_params\") or {}) for k in AWG3_FIELDS) and not awg_gen_reported(snap):\n",
                           "        if False:\n"),
-    "cookies": ("[11]", "if k in AWG_FIELDS and k != \"DisableCookies\" and v is not None", "if k in AWG_FIELDS and v is not None"),
+    "cookies": ("[11]", "if k in AWG_FIELDS and k != \"DisableCookies\" and k not in omit and v is not None",
+                "if k in AWG_FIELDS and k not in omit and v is not None"),   # `omit`: 94ba204
     "zero": ("[12]", "            if out[k] == \"0\":\n                out.pop(k)", "            if False:\n                out.pop(k)"),
     "redraw": ("[3]", "    if any(not d.get(k, \"\").isdigit() or int(d[k]) < 12 for k in _ss):\n",
                "    if False:\n"),

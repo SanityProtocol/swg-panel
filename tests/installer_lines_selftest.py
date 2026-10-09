@@ -138,20 +138,20 @@ if PERTURB:
     H = plant(H, 'if $DRYRUN; then\n  _dsch=https;', 'if false; then\n  _dsch=https;')
     N = plant(N, 'if $DRYRUN; then\n  echo; ok "Dry run of the bare-metal node', 'if false; then\n  echo; ok "Dry run of the bare-metal node')
     # [q] the unattended prompts ended blank again
-    H = plant(H, '    read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }', '    read -r _url_ans 2>/dev/null </dev/tty || _url_ans=force')
-    H = plant(H, '  read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '  read -r _url_ans 2>/dev/null </dev/tty || _url_ans=proceed')
-    D = plant(D, '      read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }', '      read -r _url_ans 2>/dev/null </dev/tty || _url_ans=force')
-    D = plant(D, '    read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '    read -r _url_ans 2>/dev/null </dev/tty || _url_ans=proceed')
-    CV = plant(CV, 'read -r a 2>/dev/null </dev/tty || { a=y; echo "y  (no terminal — default taken)"; };', 'read -r a 2>/dev/null </dev/tty || a=y;')
-    B = plant(B, 'read -r _pick 2>/dev/null </dev/tty || { _pick=""; echo "(no terminal — skipped)"; }', 'read -r _pick 2>/dev/null </dev/tty || _pick=""')
+    H = plant(H, '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }', '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=force')
+    H = plant(H, '  read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '  read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=proceed')
+    D = plant(D, '      read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }', '      read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=force')
+    D = plant(D, '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=proceed')
+    CV = plant(CV, 'read -r a 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { a=y; echo "y  (no terminal — default taken)"; };', 'read -r a 2>/dev/null <"${SWG_TTY:-/dev/tty}" || a=y;')
+    B = plant(B, 'read -r _pick 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _pick=""; echo "(no terminal — skipped)"; }', 'read -r _pick 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _pick=""')
     B = plant(B, '_pnl(){ printf \'\\n\' 2>/dev/null >/dev/tty || echo; _SWG_NL=1; }', '_pnl(){ printf \'\\n\' >/dev/tty 2>/dev/null || echo; _SWG_NL=1; }')
     B = plant(B, '[ "${!var}" = "$o" ] && { echo "  $p: $(b "$o")  (given — not asked)"; _pnl; return; }; done; fi', '[ "${!var}" = "$o" ] && return; done; fi')
     for _src in ("N", "H"):   # the bare ask / ask_yn took a default in silence again
         _t = globals()[_src]
-        _t = plant(_t, 'if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; else _notty "$p" "$d"; fi;',
-                   '_tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true;')
-        _t = plant(_t, 'if _tty; then read -rp "  $p ($([ "$d" = y ] && echo \'Y/n\' || echo \'y/N\')): " v </dev/tty || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi',
-                   '_tty && read -rp "  $p ($([ "$d" = y ] && echo \'Y/n\' || echo \'y/N\')): " v </dev/tty || true')
+        _t = plant(_t, 'if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$d"; fi;',
+                   '_tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || true;')
+        _t = plant(_t, 'if _tty; then read -rp "  $p ($([ "$d" = y ] && echo \'Y/n\' || echo \'y/N\')): " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi',
+                   '_tty && read -rp "  $p ($([ "$d" = y ] && echo \'Y/n\' || echo \'y/N\')): " v <"${SWG_TTY:-/dev/tty}" || true')
         globals()[_src] = _t
 
 def fn(src, name):

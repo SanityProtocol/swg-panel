@@ -35,7 +35,7 @@ PLANTS = {
     "r3": ('''                with self._lock:
                     for ip in ips:
                         self.seen.pop((ip, cat), None)
-                print("swg-sni: batch add failed''', '''                print("swg-sni: batch add failed'''),
+                say(LOG_ERR, "swg-sni: batch add failed''', '''                say(LOG_ERR, "swg-sni: batch add failed'''),   # say(): 6a0d507
     "r4": ('''                elif now - ts < self.refresh_age:              # fresh → already routing in this category, nothing to do''',
            '''                elif True:                                     # fresh → already routing in this category, nothing to do'''),
     "r5": ("if len(bycat) > 1 and subprocess.run(", "if False and subprocess.run("),

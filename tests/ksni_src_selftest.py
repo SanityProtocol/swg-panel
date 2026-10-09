@@ -84,8 +84,8 @@ PLANTS = {
     "win": ('''    rules = [["-A", CHAIN, "-m", "connbytes", "--connbytes", "%d:" % (_XTS_CONNBYTES + 1),
               "--connbytes-mode", "packets", "--connbytes-dir", "original", "-j", "RETURN"]]''',
             '''    rules = []'''),
-    "a": ('''    learn = list(dict.fromkeys([(e["subnet"], e["category"]) for e in entries]''',
-          '''    learn = (([(e["subnet"], e["category"]) for e in entries]'''),
+    "a": ('''    learn = list(dict.fromkeys([(e["subnet"], e["category"]) for e in rents]''',      # `rents`: the routed rows (498e465)
+          '''    learn = (([(e["subnet"], e["category"]) for e in rents]'''),
     "b": ('''            rules.append(["-A", CHAIN, *(["-s", S] if S is not None else _asrc), "-m", "mark", "--mark", hex(reset_mark),
                           "-j", "CONNMARK", "--save-mark"])''',
           '''            if (S, c) == next(p for p in learn if p[0] == S):
@@ -119,7 +119,11 @@ PLANTS = {
 ''')],
     "f": ('''    sig = hashlib.sha1((json.dumps(rules) + "|ttl:" + str(ttl)).encode()).hexdigest()[:16]''',
           '''    sig = hashlib.sha1((json.dumps(rules) + json.dumps(sorted((k, sorted(v)) for k, v in want_srcs.items())) + "|ttl:" + str(ttl)).encode()).hexdigest()[:16]'''),
-    "g": ('''[e for e in smart_exit if _ks or "src" not in e]''', '''[e for e in smart_exit]'''),
+    # the hand-off's filter: since 498e465 one list of Exit, Direct and Block rows (smart_exit was the exits alone)
+    "g": ('''
+                                         and (_ks or "src" not in e)], domains, SNI_RESET_MARK, res,''',
+          '''
+                                         ], domains, SNI_RESET_MARK, res,'''),
     "g2": ('''            "src": 2 if _KSNI_SRC["ok"] else 1,''', '''            "src": 2,'''),
     "g3": ('''            ok = run(["ipset", "create", "swgs_probe", "hash:net,iface", "family", "inet"]).returncode == 0''',
            '''            ok = run(["ipset", "create", "swgs_probe", "hash:net,iface", "family", "inet"]) is not None'''),
@@ -129,7 +133,11 @@ PLANTS = {
         body += ["add %s %s,%s" % (tmp, a, d) for d, a in sorted(mem)]''',
            '''        body = ["create %s hash:net family inet" % sn, "create %s hash:net family inet" % tmp, "flush " + tmp]
         body += ["add %s %s" % (tmp, a) for d, a in sorted(mem)]'''),
-          ('''_xts_srcsetname(e["src"]), "src,src"]''', '''_xts_srcsetname(e["src"]), "src"]''')],
+          # …and every rule that matches it, the address alone: a row's routing rule, and since 498e465 a Block's (`_who`)
+          ('''        who = ["-m", "set", "--match-set", _xts_srcsetname(e["src"]), "src,src"]''',
+           '''        who = ["-m", "set", "--match-set", _xts_srcsetname(e["src"]), "src"]'''),
+          ('''        return ["-m", "set", "--match-set", _xts_srcsetname(e["src"]), "src,src"]''',
+           '''        return ["-m", "set", "--match-set", _xts_srcsetname(e["src"]), "src"]''')],
     "s1": ('''        if setn.startswith("swgs_") and not (_XTS_SRC_RE.fullmatch(setn) or _XTS_SRC_RE.fullmatch(setn[:-1])):''',
            '''        if setn.startswith("swgs_") and not _XTS_SRC_RE.fullmatch(setn):'''),
     "d6": ('''        r = run(["ipset", "restore"], input_text="create swgk_TTL hash:ip family inet timeout %s\\nswap swgk_TTL %s\\n"

@@ -65,11 +65,11 @@ hits, uses, srcs = [], 0, {}
 for f in files:
     src = open(f, encoding="utf-8").read()
     if PERTURB and f.endswith(os.path.join("js", "turn.js")):
-        anchor = '<span class="app-by">${Trich("by {v1}", { v1: html`<span class="app-by-who" style=${"color:" + o.color}>${o.author || "—"}</span>` })}</span>'
-        if anchor not in src:
+        anchor = '<span class="app-by">${Trich("by {v1}", { v1: html`<span class="app-by-who" style=${"color:" + o.color}>${o.author ? forkLabel(o.author) : "—"}</span>` })}</span>'
+        if src.count(anchor) != 1:
             print("PERTURB FAILED — the AppDropdown anchor is gone, so the old literal cannot be planted back")
             sys.exit(1)
-        src = src.replace(anchor, '<span class="app-by"> by </span><span style=${"color:" + o.color}>${o.author || "—"}</span>')
+        src = src.replace(anchor, '<span class="app-by"> by </span><span style=${"color:" + o.color}>${o.author ? forkLabel(o.author) : "—"}</span>')
     srcs[f] = src
     code = mask_comments(src)
     uses += len(re.findall(r'Trich\("by \{v1\}"|t\("by"\)', code))

@@ -34,7 +34,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 
 PLANTS = {   # name: (file, anchor, replacement, the sections it must redden)
-    "rerender": ("js/crypto.js", "  if (!AWG_ORDER.slice(AWG3_FROM).some(k => awg[k] != null || lineRe(k).test(out))) {\n",
+    "rerender": ("js/crypto.js", "  if (!AWG_ORDER.slice(AWG3_FROM).some(k => awg[k] != null || lineRe(k).test(out))\n"
+                                 "      && !AWG_ORDER.slice(0, AWG3_FROM).some(k => awg[k] == null && lineRe(k).test(out))) {\n",   # A6: 0cbdd4d
                  "  if (true) {\n", ["[3]", "[4]"]),
     "keepalive": ("js/crypto.js", '  return g31 && /^\\s*\\d+\\s*$/.test(String(k)) && +k > 0 ? (+k) + "-" + (+k + 10) : k;\n',
                   "  return k;\n", ["[1]", "[2]", "[3]", "[4]", "[5]"]),
