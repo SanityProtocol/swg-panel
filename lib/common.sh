@@ -570,7 +570,9 @@ PY
     units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
     if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
       for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
+        # what clients dial (SWG_DIAL — set when it is not the bind: a DDNS name, an address behind NAT), else the bind
+        lis="$(sed -n 's/^SWG_DIAL=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
+        [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
         con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
         _sum_turn_row "$svc" "$lis" "$con"; done; fi
     _sum_wdtt_block baremetal
