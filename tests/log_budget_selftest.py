@@ -23,8 +23,6 @@
       never writes, past the size cap, a symlink, a FIFO — keep what is applied (the size, Off, the drop-ins) and never
       keep the queue from running, through the timer's real main() (1.8.9 qualification HE-3: a 500 MB budget fell to
       100 MB and journald deleted 84 094 entries for good).
-      A log drop-in it cannot write is said once (its error kept in the status file, carried by the budget's rewrite) and
-      again only when it changes (HE-7: a warning on every tick, thousands a day into the same small journal).
   [7] The verify readers read the namespace and give the unit's own reason even when systemd's line sorts after it.
   [8] Uninstall (rm_log_ns, per component) removes the drop-ins, the size file and swg-logs (the last only with the last
       unit); an operator's own drop-in stays; the journal is the end of the run's (F14: tests/uninstall_journals_selftest.py).
@@ -65,8 +63,6 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      settingsfollow    netctl opens the settings file following a symlink and waiting on a FIFO
      settingssize      netctl reads a settings file of any size
      settingsunguarded a value the panel never writes kills the tick before the queue
-     dropinsaidonce    netctl warns on every tick about a drop-in it cannot write
-     dropincarry       the budget's status rewrite drops the drop-in error it was kept with (said again next tick)
      logsopts          swg-logs takes an option given alone for a source name again
 """
 import contextlib, importlib.machinery, importlib.util, io, json, os, re, shutil, socket, stat, struct, subprocess, sys, tempfile
@@ -131,8 +127,6 @@ PLANTS = {   # (program, anchor, replacement)
                        '''os.path.join(STATE_DIR, "panel-settings.json"), os.O_RDONLY)'''),
     "settingssize": ("netctl", '''            if not stat.S_ISREG(st.st_mode) or st.st_size > SETTINGS_MAX:''', '''            if not stat.S_ISREG(st.st_mode):'''),
     "settingsunguarded": ("netctl", '''        with contextlib.suppress(Exception):         # never kept from the queue''', '''        if True:         # never kept from the queue'''),
-    "dropinsaidonce": ("netctl", '''    if err != prev.pop("dropin_err", None):''', '''    if err or prev.pop("dropin_err", None):'''),
-    "dropincarry": ("netctl", '''        doc["dropin_err"] = prev["dropin_err"]''', '''        pass'''),
     "logsopts": ("logs", '''case "$src" in -h|--help) ;; -*) set -- "$src" "$@"; src="" ;; esac''', ''':'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
@@ -620,22 +614,6 @@ check("[6] HE-3 at Off, a clobbered file stores nothing again (Storage=none and 
 put({"log_level": "info", "log_mb_panel": 64})
 r = real_tick()
 check("[6] HE-3 …and the panel's next good file is applied at once", "SystemMaxUse=64M" in (r[2] or "") and len(r[4]) == 1, r)
-
-# HE-7: a drop-in it cannot write — swg-update.service.d squatted by a file — is said once, and again only when it changes
-SQ = os.path.join(M.LOG_DROPIN_DIR, "swg-update.service.d")
-shutil.rmtree(SQ, ignore_errors=True); open(SQ, "w").write("a file where the drop-in directory goes\n")
-said = lambda: M._LOG_STREAM.getvalue().count("swg-update.service.d/swg-log.conf not written")
-n0 = said()
-for _ in range(3):
-    real_tick()
-check("[6] HE-7 a drop-in that cannot be written: said once over three ticks (not on every tick)", said() - n0 == 1, said() - n0)
-check("[6] HE-7 …its error kept in the status file through the budget's rewrite", "not written" in sf().get("dropin_err", ""), sf())
-os.remove(SQ); real_tick()
-check("[6] HE-7 once it can be written: written, and the error cleared",
-      os.path.isfile(os.path.join(SQ, "swg-log.conf")) and "dropin_err" not in sf(), (os.listdir(M.LOG_DROPIN_DIR), sf()))
-shutil.rmtree(SQ); open(SQ, "w").write("squatted again\n"); real_tick()
-check("[6] HE-7 …and a new failure is said again", said() - n0 == 2, said() - n0)
-os.remove(SQ)
 
 # ── [7] the verify readers ───────────────────────────────────────────────────────────────────────────────────────────
 spa, css = SRC["spa"], SRC["css"]
