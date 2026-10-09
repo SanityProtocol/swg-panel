@@ -81,7 +81,7 @@ You never edit `users.json` or `nodes.json` by hand — the UI does it.
 
 Four one-liners — each **prompts for whatever it needs**. Choose a method (bare-metal or Docker) per box; mix freely. On **NixOS** there is no one-liner and the installers refuse — see C.
 
-> On a root shell with no `sudo` (common on fresh Debian/VPS images), drop the `sudo` — `… | bash -s …`. bootstrap requires root either way and exits with a clear message if it isn't.
+> On a root shell with no `sudo` (common on fresh Debian/VPS images), drop the `sudo` — `bash -c "$(curl …)" -- …`. bootstrap requires root either way and exits with a clear message if it isn't.
 
 ### A — bare-metal (systemd)
 
@@ -174,10 +174,13 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
 Unattended example (config via env):
 
 ```bash
-sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.net \
-     BASIC_USER=admin BASIC_PASS='…' bash -s bare-metal \
-     < <(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)
+sudo ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.net \
+     BASIC_USER=admin BASIC_PASS='…' \
+     bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- bare-metal
 ```
+
+The variables go **after** `sudo`, as above: sudo drops an environment set in front of it, and Ubuntu 26.04's sudo-rs
+ignores `-E`. (The password this way is logged — see [Security](#security).)
 
 **One panel per box.** If a panel of the *other* method is already running here (a Docker panel when you install bare-metal, or the reverse), the installer stops and asks: **abort** (default), **stop the other** (it is disabled / set to `restart=no` and left stopped — nothing is deleted, and `update.sh` leaves it stopped), or **keep both**. Two panels keep separate servers and settings and both answer at the same address, so the browser shows whichever replies. To *move* between methods, use `bootstrap.sh` with the other method — it converts. Unattended runs answer with `SWG_OTHER_PANEL=abort|stop|keep`; with neither a terminal nor that, the installer refuses.
 
@@ -536,6 +539,9 @@ Full reference, with a response body for every endpoint: **[API.md](API.md)**.
 - **PSKs** are generated per peer and stored in the roster so every node stays consistent; keep `/var/lib/swg-panel` readable only by the panel user.
 - **Private keys** are generated in your browser and never sent to the panel in the clear. By default (`store_configs: encrypted`) the panel keeps each config as a blob your browser sealed with **your** encryption key, so QR/download stay available while the server cannot read the key; set `store_configs: off` for nothing at rest, and each private key is shown only once at creation. Either way, if a peer's key is lost, re-issue the peer.
 - **API tokens** are read-only and hashed at rest (SHA-256); a leaked token can observe fleet state but never modify it, and disabling the API in **Settings → Integrations** revokes every token immediately.
+- **What a bare-metal panel can read on its own host:** its live log viewer reads swg's journal, so the panel's service runs in the `systemd-journal` group — and that group reads every journal on the host, not only swg's. A panel taken over could read the host's other services' lines too (it already steers every node it manages).
+- **A password given on the command line is logged:** sudo logs the command it runs, so an unattended install given the panel password (`-pass`, `BASIC_PASS=`) leaves it in plaintext in that host's `auth.log` and journal — readable by root, `adm` and `systemd-journal` (the panel's process included, above) — in the `bash -c "$(curl …)"` form and the piped one alike. Let the installer ask for it, or change it under **Settings → Authentication** afterwards.
+- **A WDTT or csqtt server's owner password** is on the server's command line: `ps` shows it to every user of that node.
 
 ## Troubleshooting
 

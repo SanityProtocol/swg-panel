@@ -44,12 +44,15 @@ SSH, no rsync. Do not design an orchestration that expects to push to nodes.
 
 ```bash
 # panel only, fully unattended
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
-  | ROLE=host PANEL_DOMAIN=panel.example.org TLS_MODE=letsencrypt ACME_EMAIL=you@example.org \
-    BASIC_USER=admin BASIC_PASS='…' SERVE_MODE=internal sudo -E bash -s host
+sudo ROLE=host PANEL_DOMAIN=panel.example.org TLS_MODE=letsencrypt ACME_EMAIL=you@example.org \
+     BASIC_USER=admin BASIC_PASS='…' SERVE_MODE=internal \
+     bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- host
 ```
 
-`sudo -E` matters — without it the environment does not survive into the installer.
+The variables go **after** `sudo`, inline: sudo drops an environment set in front of it, and sudo-rs (Ubuntu 26.04)
+ignores `-E` — a `VAR=… sudo -E bash -s host` run took every default there. Do not pipe the script into `sudo bash`:
+under sudo-rs the piped script runs in the terminal's background and cannot ask anything. A password given this way is
+logged by sudo (auth.log, the journal) — README.technical.md's security notes say so.
 
 The variables are declared in a `CONFIG` block at the top of each script; that block is the source of
 truth, and this table is the subset an agent usually needs.
