@@ -1919,9 +1919,9 @@ def op_reload_awg_module(cfg, req):
         if not conf:
             with contextlib.suppress(Exception):
                 conf = _quick_target(iface_cfg(cfg, dev), dev)
-        if not conf or conf == dev:                    # swg-noded's AWG_CONF_DIRS: a device brought up by hand from any
-            conf = next((c for c in ("%s/%s.conf" % (d, dev) for d in ("/etc/amnezia/amneziawg", "/etc/amneziawg",
-                         "/usr/local/etc/amneziawg", "/etc/amnezia")) if os.path.isfile(c)), "")   # of them has a way back
+        if not conf or conf == dev:
+            conf = next((c for c in ("/etc/amnezia/amneziawg/%s.conf" % dev, "/etc/amneziawg/%s.conf" % dev)
+                         if os.path.isfile(c)), "")
         if not by_unit and not conf:
             no_way.append(dev)
         plan.append((dev, by_unit, conf))
