@@ -89,7 +89,7 @@ _nda = uni[uni.find("_node_dropins_away(){"):uni.find("\nrm_node(){")]
 check("uninstall.sh removes our drop-in with the unit (_node_dropins_away: the file on keep, the directory otherwise)",
       "rmrf $SD/swg-noded.service; _node_dropins_away;" in uni and 'rmrf "$d/10-swg-reach-sweep.conf"' in _nda and 'else rmrf "$d"; fi' in _nda,
       _nda[:200])
-check("the bare→docker teardown removes it too", "rm -rf /etc/systemd/system/swg-noded.service /etc/systemd/system/swg-noded.service.d;" in lib)
+check("the bare→docker teardown removes it too", "rm -rf /etc/systemd/system/swg-noded.service /etc/systemd/system/swg-noded.service.d\n" in lib)
 check("⚠️ the pre-copy sweep that could never run is gone from update.sh", "reach_tables_drop_if_unsupported" not in upd + lib)
 
 print("\n[2] the drop-in, as systemd will run it")
