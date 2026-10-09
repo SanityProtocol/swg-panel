@@ -60,6 +60,8 @@
        `sudo -n` exists, on the real kernel: a bridge container's 60 destinations and one user's DHT packet flag nothing,
        its established session keeps flowing, its DHT packet is still dropped — while WireGuard-like users on a plain veth
        are flagged as before
+  [28] 1.8.9 qualification NR-8: the pass reads swg_p2p TERSE (`nft -t`, no set elements — @fanseen alone holds up to 65 535,
+       MBs a pass on a busy node) for its " drop" test; never the full dump
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
      --perturb    plant each old behaviour in turn → every one must go RED (exit 0 when all are caught)
@@ -120,6 +122,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
     "bridge-flagged": ("""    nf = ("ip saddr != @nofan " if nofan else "") + 'meta iifkind != "bridge" '\n""",
                        """    nf = "ip saddr != @nofan " if nofan else ""\n"""),
+    "p2p-fulllist": ('        have = run(["nft", "-t", "list", "table", "inet", P2P_NFT_TABLE])', '        have = run(["nft", "list", "table", "inet", P2P_NFT_TABLE])'),
     "dht-bs":       ('    ("dht",    "udp", "@ih,0,128 0x64313a6164323a6273693165323a6964"),   # d1:ad2:bsi1e2:id\n', ''),
     "p2p-ok-on-fail": ('            _P2P.update(on=True, state="error",', '            _P2P.update(on=True, state="ok" if ih else "degraded",'),
     "p2p-log-whole":  ('        if r.returncode != 0 and logged:', '        if False:'),
@@ -154,7 +157,10 @@ class Box:
                 for name in ("swg_p2p", "swg_mech"):
                     if "table inet %s {" % name in text:
                         self.tables[name] = text
-        elif a[:4] == ["nft", "list", "table", "inet"]:
+        elif a[:4] == ["nft", "-t", "list", "table"] and a[4] == "inet":   # -t (terse) answers like `list`, set elements aside
+            a = ["nft"] + a[2:]
+            self.terse = getattr(self, "terse", 0) + 1
+        if a[:4] == ["nft", "list", "table", "inet"]:
             if a[4] in self.tables:
                 out = self.tables[a[4]]
             else:
@@ -805,6 +811,15 @@ def run_checks(src):
     m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
     ok(" log prefix " in b.tables.get("swg_p2p", "") and p2p_loads(b) == 1,
        "[24] CONTROL: a kernel that takes the log lines gets them, in one load")
+
+    # [28] NR-8 — the " drop" test reads the table terse
+    m, b = fresh()
+    for _ in range(3):
+        m._ensure_p2p({"action": "direct"}, {}, {}, {"changed": 0, "errors": []})
+    lists = [a for a, _t in b.cmds if a[-3:] == ["table", "inet", "swg_p2p"] and "list" in a]
+    ok(lists and all(a[:3] == ["nft", "-t", "list"] for a in lists),
+       "[28] swg_p2p is read terse (`nft -t list table`, no @fanseen elements) for its drop test — never the full dump: %s"
+       % sorted(set(" ".join(a[:3]) for a in lists)))
     return fails
 
 
