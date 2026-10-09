@@ -153,7 +153,45 @@ def find(o, key):
                 return r
     return None
 
-srv = subprocess.Popen([sys.executable, SRV], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+def _owns_port(pid, port):
+    """True when process `pid` holds the socket LISTENING on 127.0.0.1:`port` — that socket's inode (/proc/net/tcp) among
+    the process's own fds."""
+    want = "0100007F:%04X" % port
+    try:
+        rows = open("/proc/net/tcp").read().splitlines()[1:]
+    except OSError:
+        return True                                       # no /proc to ask: as before
+    socks = {"socket:[%s]" % f[9] for f in (r.split() for r in rows) if len(f) > 9 and f[1] == want and f[3] == "0A"}
+    try:
+        fds = os.listdir("/proc/%d/fd" % pid)
+    except OSError:
+        return False
+    for fd in fds:
+        try:
+            if os.readlink("/proc/%d/fd/%s" % (pid, fd)) in socks:
+                return True
+        except OSError:
+            pass
+    return False
+
+
+# ⚠️ OUR OWN PANEL, ON A PORT OF ITS OWN. The port is picked free and handed to the panel, which binds it a moment later:
+# under the six-way suite another test's server can take it in between — this panel then dies on EADDRINUSE and every
+# call below went to THAT server (1.8.9 qualification: about one run in 300, no union in either mode, the files of this
+# test's own state untouched). So the run waits until this process holds the listening socket, on a new port if it died.
+for _try in range(5):
+    if _try:
+        s = socket.socket(); s.bind(("127.0.0.1", 0)); PORT = s.getsockname()[1]; s.close()
+        env["SWG_PANEL_PORT"] = str(PORT)
+    srv = subprocess.Popen([sys.executable, SRV], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    _end = time.time() + 60
+    while srv.poll() is None and not _owns_port(srv.pid, PORT) and time.time() < _end:
+        time.sleep(0.05)
+    if srv.poll() is None and _owns_port(srv.pid, PORT):
+        break
+    srv.kill(); srv.wait()
+else:
+    sys.exit("the panel never came up on a port of its own: " + srv.stderr.read(2000).decode("utf-8", "replace"))
 try:
     for _ in range(150):
         try:
