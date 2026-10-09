@@ -22949,8 +22949,11 @@ def run_self_update(node_cfg, want):
         # and that request is tried again on the next sync), and nothing of it is left in swg-noded's cgroup to be killed
         # with it. --collect: a failed run is unloaded, so a later request can start one.
         if os.path.exists("/run/systemd/system") and shutil.which("systemd-run"):
+            # Every `$` as `$$`: PID 1 expands ${VAR} and turns $$ into $ in a service's command line (systemd-run(1)), so an
+            # operator's own update_cmd holding them ran mangled — `--scope` had run it as given (round-2 review of IN-13)
             r = subprocess.run(["systemd-run", "--unit", "swg-self-update", "--collect", "--quiet",
-                                "--description", "swg self-update (started by swg-noded, outside its sandbox)"] + base,
+                                "--description", "swg self-update (started by swg-noded, outside its sandbox)"]
+                               + [a.replace("$", "$$") for a in base],
                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
             if r.returncode != 0:
                 log(LOG_ERR, "self-update failed to start: %s", (r.stderr or "").strip()[:300] or "systemd-run exited %d" % r.returncode)
