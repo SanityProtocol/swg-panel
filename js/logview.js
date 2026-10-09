@@ -60,7 +60,9 @@ let _own = null;
 const remember = () => { const f = _own || LV;
   try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 2, nodes: f.nodes, src: f.src, wrap: LV.wrap })); } catch (_) { /* private mode */ } };
 
-const panelBare = () => { const lp = (Store.panelSettings || {}).log_panel || {}; return !lp.docker && lp.err !== "nixos"; };
+// the Panel's sources beyond its own service: read from its journal on bare metal and on NixOS (no root helper there, but the
+// main journal answers sub / update — q189 DN-14); a Docker panel has only its own file
+const panelBare = () => !((Store.panelSettings || {}).log_panel || {}).docker;
 function facetDefaults() {
   const ns = Store.nodes || [];
   return { nodes: [LOG_PANEL, ...(ns.length <= 5 ? ns.map(n => n.id) : [])],
