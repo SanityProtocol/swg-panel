@@ -43,6 +43,8 @@ print("[1] the lifecycle log across `lc_handoff; exec …`")
 pathf, outf = os.path.join(T, "lclog"), os.path.join(T, "stdout")
 script = ('source "$1" >/dev/null 2>&1; DRYRUN=false; lc_emit_file(){ :; }; LC_FILE=/dev/null\n'
           'lc_init convert-docker lc_emit_file; echo "$LC_LOG" > "$2"; echo "convert.sh output"\n'
+          # the tee opens the log on its own time (a process substitution): wait for it, as a convert's minutes of work do
+          'for i in $(seq 1 100); do [ -s "$LC_LOG" ] && break; sleep 0.05; done\n'
           'lc_handoff; exec bash -c "echo install-docker output; sleep 0.2"\n')
 with open(outf, "w") as o:
     subprocess.run(["bash", "-c", script, "_", libf, pathf], stdout=o, stderr=subprocess.STDOUT, timeout=30)
