@@ -88,7 +88,7 @@ PLANTS = {   # (program, anchor, replacement)
     "churn": ("noded", '''        if have == target:\n            continue\n''', ""),
     "floor": ("noded", '''"warning" if lvl < LOG_INFO else None''', '''"err" if lvl < LOG_INFO else None'''),
     "timercap": ("netctl", '''"notice" if lvl == LOG_INFO else None''', '''None'''),
-    "p2plog": ("noded", '''logged=log_level() >= LOG_INFO)''', '''logged=True)'''),
+    "p2plog": ("noded", '''logged = log_level() >= LOG_INFO and not _P2P["nolog"]''', '''logged = not _P2P["nolog"]'''),   # nolog: 5a5efb10
     "nohonest": ("noded", '''    return "service didn't stay up: " + reason[:150] + (" — " + nd if nd else "")''',
                  '''    return "service didn't stay up: " + reason[:150]'''),
     "snilevel": ("sni", '''        if prio > _SAY["level"]:\n            return\n''', ""),
