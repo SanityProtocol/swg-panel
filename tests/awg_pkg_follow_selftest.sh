@@ -19,11 +19,15 @@
 #  [14] ⚠️ under update.sh's own `set -euo pipefail`, with tools that FAIL the way the real ones do: no amneziawg-dkms
 #       (dpkg-query exits 1), a module that is not loaded after the upgrade (no /sys/module) — the update goes on
 #  [15] no lsns → it cannot see containers' namespaces → the module is not unloaded
+#  [18] (1.8.9 qualification IN-17) under a Russian locale apt prints "Кандидат:", not "Candidate:" — the candidate is still
+#       read (apt-cache in the C locale): a newer build is followed, and a given-up build's newer successor is due again;
+#       and, where this box's apt carries its Russian catalogue, the REAL apt-cache under LANGUAGE=ru through pkg_candidate
 # The harness runs the extracted functions under `set -euo pipefail` — the 1.8.9 code review found that without it this
 # gate passed while every node without amneziawg-dkms had its update end at the first line of the function.
 # Run: bash tests/awg_pkg_follow_selftest.sh     --perturb drops the tools-ownership check, the device check, the tools
 #      from the transaction, the hold check, the headers check, the namespace scan and the errexit-safe assignment; expects RED
 #      on [1] [2] [4] [6] [9] [10] [12] [15].
+#      --perturb-locale  apt-cache in the caller's locale again (pkg_candidate and awg_pkg_retry_due); expects RED on [18].
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 FAILS=0; check(){ if [ "$2" = 0 ]; then echo "  PASS $1"; else echo "  FAIL $1 ${3:-}"; FAILS=$((FAILS+1)); fi; }
@@ -46,10 +50,16 @@ if [ "${1:-}" = "--perturb" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#  have lsns \&\& have nsenter || { echo "?"; return 0; }#  return 0#')"; _planted "$_b" "$fn" "the namespace scan"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/cur="$(pkg_installed amneziawg-dkms)" || cur=""/cur="$(pkg_installed amneziawg-dkms)"/')"; _planted "$_b" "$fn" "the errexit-safe assignment"
 fi
+if [ "${1:-}" = "--perturb-locale" ]; then
+  _b="$fn"; fn="${fn//LC_ALL=C apt-cache/apt-cache}"; _planted "$_b" "$fn" "pkg_candidate's C locale"
+  _b="$libfn"; libfn="${libfn//LC_ALL=C apt-cache/apt-cache}"; _planted "$_b" "$libfn" "awg_pkg_retry_due's C locale"
+fi
 mkdir -p "$T/bin" "$T/sld" "$T/usr-bin"
 stub(){ printf '#!/bin/sh\n%s\n' "$2" > "$T/bin/$1"; chmod +x "$T/bin/$1"; }
 stub apt-get 'echo "apt-get $*" >> "$SBX/calls"; case "$*" in *install*) [ -e "$SBX/apt-fail" ] && exit 100; cp "$SBX/cand" "$SBX/inst-amneziawg-dkms"; [ -e "$SBX/disk-after" ] && cp "$SBX/disk-after" "$SBX/disk";; esac; exit 0'
-stub apt-cache 'printf "%s:\n  Installed: x\n  Candidate: %s\n" "$2" "$(cat "$SBX/cand")"'
+# apt speaks the box's language: with "$SBX/ru" the box is Russian, and only the C locale gets the English words back
+stub apt-cache 'if [ -e "$SBX/ru" ] && [ "${LC_ALL:-}" != C ]; then printf "%s:\n  Установлен: x\n  Кандидат:   %s\n" "$2" "$(cat "$SBX/cand")"
+else printf "%s:\n  Installed: x\n  Candidate: %s\n" "$2" "$(cat "$SBX/cand")"; fi'
 stub dpkg-query 'f="$SBX/inst-${4:-$3}"; [ -e "$f" ] || { echo "dpkg-query: no packages found matching ${4:-$3}" >&2; exit 1; }; cat "$f"'
 stub dpkg 'if [ "$1" = -S ]; then cat "$SBX/owner" 2>/dev/null; [ -s "$SBX/owner" ]; exit $?; fi; exec /usr/bin/dpkg "$@"'
 stub modinfo '[ -s "$SBX/disk" ] || { echo "modinfo: ERROR: Module amneziawg not found." >&2; exit 1; }; cat "$SBX/disk"'
@@ -176,6 +186,20 @@ check "given up (dpkg left clean, the version recorded) and counted as an update
 case_ c17b; touch "$SBX/apt-fail"; out="$(go)"
 check "CONTROL: a failure that is not a compile failure → not given up, said as tried again next time" "$(grep -q 'GIVE-UP' "$SBX/calls" && echo 1 || { printf '%s' "$out" | grep -q 'tried again on the next update' && echo 0 || echo 1; })" "$out"
 
+echo; echo "[18] a Russian locale (apt says \"Кандидат:\")"
+case_ c18; touch "$SBX/ru"; out="$(go)"
+check "a newer build is still seen and followed: one transaction" "$(grep -c 'install -y .*--only-upgrade amneziawg-dkms amneziawg-tools amneziawg$' "$SBX/calls" | grep -qx 1 && echo 0 || echo 1)" "$(cat "$SBX/calls") $out"
+case_ c18b; touch "$SBX/ru"; printf 'kernel=6.8.0-test\npkg=1.0.0-0~202601011111+000000~ubuntu24.04.1\n' > "$SBX/awg-module-failed"; out="$(go)"
+check "…and a given-up build's newer successor is due again (awg_pkg_retry_due)" "$(grep -q 'install -y' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls") $out"
+_ru="$(LANG=en_US.UTF-8 LANGUAGE=ru apt-cache policy bash 2>/dev/null | sed -n 3p)"
+case "$_ru" in
+  *Кандидат*) _pc="$(printf '%s\n' "$fn" | grep '^pkg_candidate()')"
+              _got="$(LANG=en_US.UTF-8 LANGUAGE=ru bash -c "$_pc"'
+pkg_candidate bash')"
+              check "the REAL apt-cache in Russian on this box (\"$(printf '%s' "$_ru" | sed 's/^ *//')\") → pkg_candidate still reads it" "$([ -n "$_got" ] && echo 0 || echo 1)" "got \"$_got\"" ;;
+  *) echo "  SKIPPED [18] real apt — its Russian catalogue or a non-C locale (en_US.UTF-8) is not on this box" ;;
+esac
+
 echo
-if [ "${1:-}" = "--perturb" ]; then [ "$FAILS" -gt 0 ] && { echo "perturb: RED as it must be ($FAILS)"; exit 0; } || { echo "perturb: NOT CAUGHT"; exit 1; }; fi
+case "${1:-}" in --perturb*) [ "$FAILS" -gt 0 ] && { echo "perturb: RED as it must be ($FAILS)"; exit 0; } || { echo "perturb: NOT CAUGHT"; exit 1; } ;; esac
 [ "$FAILS" = 0 ] && echo "ALL PASS" || echo "FAIL: $FAILS"; exit $((FAILS > 0))
