@@ -24,6 +24,8 @@
 #       and, where this box's apt carries its Russian catalogue, the REAL apt-cache under LANGUAGE=ru through pkg_candidate
 #  [19] (1.8.9 qualification, HE-2's twin) a container's namespace nsenter cannot get into, or an lsns that fails, is not an
 #       empty one → the module is not unloaded (read as empty, `modprobe -r` destroyed the container's device)
+#  [20] (1.8.9 qualification IN-1) no userspace fallback (amneziawg-go) → nothing upgraded, said: a build that does not
+#       compile here is given up AFTER the old module left the disk, and such a box had no AmneziaWG datapath after a reboot
 # The harness runs the extracted functions under `set -euo pipefail` — the 1.8.9 code review found that without it this
 # gate passed while every node without amneziawg-dkms had its update end at the first line of the function.
 # Run: bash tests/awg_pkg_follow_selftest.sh     --perturb drops the tools-ownership check, the device check, the tools
@@ -31,6 +33,7 @@
 #      on [1] [2] [4] [6] [9] [10] [12] [15].
 #      --perturb-locale  apt-cache in the caller's locale again (pkg_candidate and awg_pkg_retry_due); expects RED on [18].
 #      --perturb-nsenter a failed nsenter / lsns read as "nothing there" again; expects RED on [19].
+#      --perturb-fallback the follow upgrades with no userspace fallback again; expects RED on [20].
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 FAILS=0; check(){ if [ "$2" = 0 ]; then echo "  PASS $1"; else echo "  FAIL $1 ${3:-}"; FAILS=$((FAILS+1)); fi; }
@@ -57,6 +60,9 @@ if [ "${1:-}" = "--perturb-locale" ]; then
   _b="$fn"; fn="${fn//LC_ALL=C apt-cache/apt-cache}"; _planted "$_b" "$fn" "pkg_candidate's C locale"
   _b="$libfn"; libfn="${libfn//LC_ALL=C apt-cache/apt-cache}"; _planted "$_b" "$libfn" "awg_pkg_retry_due's C locale"
 fi
+if [ "${1:-}" = "--perturb-fallback" ]; then
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/  if ! have amneziawg-go; then/  if false; then/')"; _planted "$_b" "$fn" "the userspace-fallback check"
+fi
 if [ "${1:-}" = "--perturb-nsenter" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#ip -o link show type amneziawg 2>/dev/null)" || { echo "?"; return 0; }#ip -o link show type amneziawg 2>/dev/null)" || out=""#')"; _planted "$_b" "$fn" "nsenter's exit code"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#list="$(lsns -t net -n -o NS,PID 2>/dev/null)" || { echo "?"; return 0; }#list="$(lsns -t net -n -o NS,PID 2>/dev/null)" || list=""#')"; _planted "$_b" "$fn" "lsns's exit code"
@@ -73,6 +79,7 @@ stub modinfo '[ -s "$SBX/disk" ] || { echo "modinfo: ERROR: Module amneziawg not
 stub lsns '[ -e "$SBX/lsns-fails" ] && exit 1; cat "$SBX/lsns" 2>/dev/null; exit 0'
 stub modprobe 'echo "modprobe $*" >> "$SBX/calls"; if [ "$1" = -r ]; then rm -rf "$SYSMOD"; exit 0; fi; [ -e "$SBX/load-fail" ] && exit 1; mkdir -p "$SYSMOD"; exit 0'
 stub apt-mark 'cat "$SBX/held" 2>/dev/null; exit 0'
+stub amneziawg-go 'exit 0'   # the pinned userspace fallback, as every box the heal could reach has it ([20] hides it)
 stub nsenter '[ -e "$SBX/nsenter-fails" ] && exit 1; n="${1#--net=}"; shift; [ "$(readlink "$n")" = "net:[4026532999]" ] && [ -e "$SBX/ctr-dev" ] && echo "9: awg-ctr: <POINTOPOINT>"; exit 0'
 stub uname 'echo 6.8.0-test'
 stub ip 'case "$*" in "netns list") cat "$SBX/netns" 2>/dev/null;; "-n "*) [ -e "$SBX/ns-dev" ] && echo "7: e0: <POINTOPOINT> mtu 1420";; *type\ amneziawg*) cat "$SBX/kdevs" 2>/dev/null;; esac; exit 0'
@@ -80,7 +87,7 @@ printf '#!/bin/sh\n' > "$T/usr-bin/awg"; chmod +x "$T/usr-bin/awg"
 cat > "$T/run.sh" <<EOF
 set -euo pipefail
 HAVE_BNODE=yes; DRYRUN=false; APT_DONE=\${APT_DONE:-no}; DID_UPDATE=no; DID_FAIL=no
-have(){ [ "\${HIDE_LSNS:-}" = 1 ] && [ "\$1" = lsns ] && return 1; command -v "\$1" >/dev/null 2>&1; }; run(){ "\$@"; }
+have(){ [ "\${HIDE_LSNS:-}" = 1 ] && [ "\$1" = lsns ] && return 1; [ "\${HIDE_GO:-}" = 1 ] && [ "\$1" = amneziawg-go ] && return 1; command -v "\$1" >/dev/null 2>&1; }; run(){ "\$@"; }
 ok(){ echo "OK \$*"; }; warn(){ echo "WARN \$*"; }; note(){ echo "NOTE \$*"; }
 $fn
 $libfn
@@ -215,6 +222,13 @@ check "an lsns that fails → not unloaded" "$(grep -q 'modprobe -r' "$SBX/calls
 check "…the update goes on, the new module waiting for a reboot or the panel" "$(printf '%s' "$out" | grep -q 'AFTER' && printf '%s' "$out" | grep -q 'until the next reboot, or load it now from the panel' && echo 0 || echo 1)" "$out"
 case_ c19c; : > "$SBX/kdevs"; out="$(go)"
 check "CONTROL: every namespace looked into, none holds a device → unloaded and loaded" "$(grep -q 'modprobe -r amneziawg' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+
+echo; echo "[20] no userspace fallback (amneziawg-go)"
+case_ c20; out="$(HIDE_GO=1 go)"
+check "nothing upgraded — the module that works stays on disk" "$(grep -q 'install' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+check "…said, with the way out, and not a failure" "$(printf '%s' "$out" | grep -q 'WARN AmneziaWG: .* is available, but this box has no userspace fallback (amneziawg-go)' && printf '%s' "$out" | grep -q 'DID_FAIL=no' && echo 0 || echo 1)" "$out"
+case_ c20b; out="$(go)"
+check "CONTROL: with amneziawg-go the newer build is followed" "$(grep -q 'install -y .*--only-upgrade amneziawg-dkms' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
 
 echo
 case "${1:-}" in --perturb*) [ "$FAILS" -gt 0 ] && { echo "perturb: RED as it must be ($FAILS)"; exit 0; } || { echo "perturb: NOT CAUGHT"; exit 1; } ;; esac
