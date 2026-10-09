@@ -17,9 +17,15 @@
  * [6] the Disguise-as size counts its bytes as it counts its packets: «5 пакетов, 226 байт», «1 232 байта» — not «байт: 226»
  *     (seen live on a candidate panel); the Built-in option's size and the big-packet warning the same.
  *
+ * [7] the operator-ease pass (OE, 1.8.9) — what it saw in English on Russian screens: the interface's custom endpoint placeholder,
+ *     a new peer's address placeholder, the top destinations' "Uncategorised", a settings save's sections in the activity log
+ *     («Subscriptions»), "endpoint" in Restore or migrate, the Node-created title («Нода создан»), and a log line's level
+ *     (`info`, `err`); and the UP TO DATE pill's tooltip, which promised a click the pill cannot take (pointer-events: none).
+ *
  * The real js/i18n.js with the real Russian catalog; the real logBudgetState.
  * Run: node tests/spa_logs_i18n_selftest.mjs
- *      --perturb <skew | usedmb | genserver | plo12 | perlink | assembled | ruline | bytes>   one fix undone → RED (exit 0 when caught)
+ *      --perturb <skew | usedmb | genserver | plo12 | perlink | assembled | ruline | bytes | placeholder | address | uncat |
+ *                 settingsname | endpointru | nodecreated | lvlrow | uptodate>   one fix undone → RED (exit 0 when caught)
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -38,6 +44,14 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   assembled: ["swg-panel-server", '**perr("{v1} log viewers are open already", v1=LIVE_REQ_MAX)', '"error": "%d log viewers are open already" % LIVE_REQ_MAX'],
   ruline: ["js/lang/ru.js", '  "Listen on must be an IPv4 address of this node, or Auto": "«Слушать на» — IPv4-адрес этой ноды или «Авто»",\n', ""],
   bytes: ["js/iface.js", 'v2: fmtNum(bytes) + " " + pluralWord(bytes, "byte"), v3:', 'v2: fmtNum(bytes), v3:'],
+  placeholder: ["js/iface.js", 'customPlaceholder=${T("IP or hostname — e.g. vpn.example.com")}/>', 'customPlaceholder="IP or hostname — e.g. vpn.example.com"/>'],
+  address: ["js/sheets-crud.js", 'placeholder=${s.ipHint || T("address")}', 'placeholder=${s.ipHint || "address"}'],
+  uncat: ["js/routing.js", '  if (c === "uncat") return T("Uncategorised");', '  if (c === "uncat") return "Uncategorised";'],
+  settingsname: ["js/i18n.js", '  if (e && e.verb === "Updated panel settings") return n.split(", ").map(x => T(x)).join(", ");\n', ""],
+  endpointru: ["js/lang/ru.js", '"word|endpoint": "эндпоинт",', '"word|endpoint": "endpoint",'],
+  nodecreated: ["js/lang/ru.js", '"Node created": "Нода создана",', '"Node created": "Нода создан",'],
+  lvlrow: ["js/logview.js", '<span class="lv-lv">${levelShort(lv)}</span>', '<span class="lv-lv">${lv}</span>'],
+  uptodate: ["app.js", 'title="${esc(T("This panel is on the latest version"))}"', 'title="${esc(T("On the latest version — click to re-run the updater anyway (repairs this box: reinstalls missing pieces, re-enables services, rebuilds the datapath / AmneziaWG kernel module)"))}"'],
 };
 const read = f => {
   let s = fs.readFileSync(path.join(ROOT, f), "utf8");
@@ -139,5 +153,34 @@ check("[6] the line reads «… хендшейком: 5 пакетов, 226 ба
 check("[6] …and the picker builds it, the Built-in option's size and the big-packet warning that way (no «байт: N» left)",
       IFS.includes('v2: fmtNum(bytes) + " " + pluralWord(bytes, "byte"), v3:') && IFS.includes('pluralWord(MIMIC_BUILTIN_SIZE[1], "byte")')
       && IFS.includes('v2: fmtNum(big[1].bytes) + " " + pluralWord(big[1].bytes, "byte")') && !/байт: \{v\d\}/.test(RU), "");
+
+// [7] the operator-ease pass
+console.log("\n[7] what the operator-ease pass saw in English on Russian screens (OE, 1.8.9)");
+let RT7, SRV7 = I;
+try {
+  RT7 = await load("js/routing.js");
+  if (MODE === "settingsname") { SRV7 = await load("js/i18n.js"); await SRV7.loadLang(); }
+} finally { for (const p of made) fs.rmSync(p, { force: true }); }
+const IF7 = read("js/iface.js"), SC7 = read("js/sheets-crud.js"), APP7 = read("app.js");
+check("[7] the interface's custom endpoint placeholder: «IP или имя хоста — например, vpn.example.com»",
+      IF7.includes('customPlaceholder=${T("IP or hostname — e.g. vpn.example.com")}/>')
+      && T("IP or hostname — e.g. vpn.example.com") === "IP или имя хоста — например, vpn.example.com", "");
+check("[7] a new peer's address placeholder: «адрес»", SC7.includes('placeholder=${s.ipHint || T("address")}') && T("address") === "адрес", "");
+const unc = (() => { try { return RT7.catLabelOf("uncat"); } catch (e) { return "THREW " + e.message; } })();
+check("[7] the top destinations' Uncategorised: «Без категории»", unc === "Без категории", unc);
+const sv = SRV7.srvName({ verb: "Updated panel settings", kind: "panel", name: "Subscriptions, Network, Routing & Blocking" });
+check("[7] a settings save in the activity log names its sections in Russian: «Подписки, Сеть, Маршрутизация и блокировка»",
+      sv === [T("Subscriptions"), T("Network"), T("Routing & Blocking")].join(", ") && /^Подписки, /.test(sv)
+      && SRV7.srvName({ verb: "Created user", kind: "user", name: "Subscriptions" }) === "Subscriptions", sv);
+check("[7] an interface's endpoint in Restore or migrate: «эндпоинт», not \"endpoint\"",
+      RU.includes('"word|endpoint": "эндпоинт",') && T("word|endpoint") === "эндпоинт", T("word|endpoint"));
+check("[7] the Node-created title agrees: «Нода создана»", RU.includes('"Node created": "Нода создана",') && T("Node created") === "Нода создана", T("Node created"));
+const lv7 = ["err", "warn", "info", "debug"].map(k => T("lvl|" + k));
+check("[7] a log line's level in its column: «ошиб», «пред», «инфо», «отлад» — each within its 5 characters, English unchanged",
+      LV.includes('<span class="lv-lv">${levelShort(lv)}</span>') && JSON.stringify(lv7) === JSON.stringify(["ошиб", "пред", "инфо", "отлад"])
+      && lv7.every(x => x.length <= 5) && LV.includes('const levelShort = k => ({ err: T("lvl|err"), warn: T("lvl|warn"), info: T("lvl|info"), debug: T("lvl|debug") })[k];'), lv7);
+check("[7] the UP TO DATE pill promises no click it cannot take (.upd-uptodate has pointer-events: none): «На этой панели последняя версия»",
+      APP7.includes('title="${esc(T("This panel is on the latest version"))}"') && !/click to re-run the updater/.test(APP7)
+      && T("This panel is on the latest version") === "На этой панели последняя версия", "");
 
 done(MODE, MODE || "");
