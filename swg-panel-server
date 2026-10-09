@@ -27645,8 +27645,11 @@ def api(method, path, qs, body, deps):
                 _no3 = awg_gen_refusal((deps.get("node_snaps") or {}).get(nid), nodes[nid].get("name") or nid, iface)
                 if _no3:
                     return 400, {"ok": False, **_no3, "code": "bad_request"}
-                # …an interface whose set is whole keeps its omissions: every 2.0 key its record lacks stays out (A5)
-                _omit3 = (frozenset(k for k in AWG_FIELDS if k not in AWG3_FIELDS and k not in (ov.get("awg_params") or {}))
+                # …an interface whose set is whole keeps its omissions: every 2.0 key its record lacks stays out (A5) — but
+                # never S1–S4: header protection needs all four, so a missing one is drawn, as 1.8.8 did. An adopted
+                # AmneziaWG 1.x conf has no S3/S4, is blessed whole, and its switch was refused "cannot be none" (q189 PR-3).
+                _omit3 = (frozenset(k for k in AWG_FIELDS if k not in AWG3_FIELDS and k not in (ov.get("awg_params") or {})
+                                    and k not in ("S1", "S2", "S3", "S4"))
                           if ov.get("awg_exact") else ())
                 ov["awg_params"] = awg3_full(ov.get("awg_params"), _rmeta.get("awg_params"), awg3_defaults(deps), omit=_omit3)
                 if _omit3:
