@@ -1573,11 +1573,10 @@ def log_unit_caps(lvl):
 
 def log_dropins():
     """Write each timer unit's drop-in only when its content differs, then one daemon-reload. They start every 10–30 s,
-    so a change reaches them at once. Never raises. One that cannot be written fails again on every tick, so its error is
-    said once — kept in the status file, as the budget's is (log_budget carries it) — and again only when it changes."""
+    so a change reaches them at once. Never raises."""
     if DRYRUN or not os.path.isdir(LOG_DROPIN_DIR):
         return
-    changed, errs = 0, []
+    changed = 0
     for unit, body in log_unit_caps(log_level()).items():
         path = os.path.join(LOG_DROPIN_DIR, unit + ".d", LOG_DROPIN_FILE)
         want = ("[Service]\n" + body) if body else None
@@ -1600,12 +1599,7 @@ def log_dropins():
                 os.replace(path + ".tmp", path)
             changed += 1
         except OSError as e:
-            errs.append("%s not written: %s" % (path, e))
-    err, prev = "; ".join(errs)[:200] or None, _read_log_status()
-    if err != prev.pop("dropin_err", None):
-        if err:
-            log(LOG_WARNING, "log level: %s — tried again every tick, said once", err)
-        _write_log_status(dict(prev, dropin_err=err) if err else prev)
+            log(LOG_WARNING, "log level: %s not written: %s", path, e)
     if changed:
         run(["systemctl", "daemon-reload"])
         log(LOG_NOTICE, "log level: %d unit drop-in(s) changed — each unit takes it at its next start", changed)
@@ -1822,8 +1816,6 @@ def log_budget(ps):
         log(LOG_WARNING, "log budget: %s — tried again once a minute, said once", err)
     used, oldest = _log_dir_usage(_log_ns_dir() or "/nonexistent")
     doc = {"mb": mb_of(have), "used_mb": round(used / 1048576.0, 1)}
-    if prev.get("dropin_err"):
-        doc["dropin_err"] = prev["dropin_err"]                  # log_dropins' memory (it ran first this tick)
     if oldest:
         doc["oldest"] = oldest
     if err:
