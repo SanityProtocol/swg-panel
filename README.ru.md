@@ -400,10 +400,19 @@ AmneziaWG. 1.8.7 восстанавливает правильный тип, н�
 поэтому он таким и останется: его пользователям нужно приложение **AmneziaWG** с конфигурацией, которую панель
 показывает сейчас, — или удалите интерфейс и создайте его заново как WireGuard.
 
-**Возвращаетесь на старую версию?** На bare-metal-сервере делать ничего не нужно. **Docker**-сервер, запущенный
-на образе старше 1.8.7, сохраняет две таблицы файрвола, которыми та версия управлять не умеет, и они
-продолжают отклонять соединения, которые панель с тех пор разрешила. Удалите их на этом сервере (перезагрузка
-тоже их убирает):
+**Возвращаетесь на старую версию?** Возврат с 1.8.9 на **bare-metal**-сервере: 1.8.9 завела для служб swg собственный
+журнал (его читает `swg-logs`) и защиту от торрентов, которой старая версия не управляет. Когда старая версия запущена, верните
+её логи туда, где их читает её `journalctl -u …`, и уберите защиту — иначе её последняя политика продолжает судить
+трафик до перезагрузки:
+```bash
+sudo rm -f /etc/systemd/system/*.service.d/swg-ns.conf && sudo systemctl daemon-reload
+sudo systemctl restart swg-noded                  # на сервере панели ещё: swg-panel-server swg-sub
+sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null     # защита (перезагрузка тоже её убирает)
+```
+Шаблон mesh, заданный для одного сервера, 1.8.9 переносит на связи этого сервера: они его сохраняют, но старая панель
+показывает шаблон сервера пустым. **Docker**-сервер тоже сохраняет защиту (та же строка `nft` / `ip rule`), а запущенный
+на образе старше 1.8.7 — ещё две таблицы файрвола, которыми та версия управлять не умеет; они продолжают отклонять
+соединения, которые панель с тех пор разрешила. Удалите их на этом сервере (перезагрузка тоже их убирает):
 ```bash
 sudo nft delete table inet swg_reach; sudo nft delete table inet swg_share
 ```
@@ -571,7 +580,7 @@ swgPanel использует несколько прекрасных проек
 
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — оригинал
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [hackdiaz-dev](https://github.com/hackdiaz-dev/free-turn-proxy) (ранее samosvalishe)
+- [hackdiaz-dev](https://github.com/hackdiaz-dev/free-turn-proxy) (ранее samosvalishe — прокси, установленные из samosvalishe, продолжают работать и теперь обновляются из hackdiaz-dev)
 - [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
 - [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
