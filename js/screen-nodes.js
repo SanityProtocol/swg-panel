@@ -15,7 +15,7 @@ import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, nodeStatusOf, lastHeard, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
          turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3 } from "./model.js";
-import { turnFork, turnLabel, turnColor, turnForkList, forkProduct, forkPickLabel } from "./turn-catalog.js";
+import { turnFork, turnColor, turnForkList, forkLabel, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
   Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, openConfirm, ConfirmSheet,
@@ -1215,9 +1215,10 @@ export const nodeTurns = node => {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   return orderById(((Store.stats[node] || {}).turn_proxies) || [], nrec.turn_order, tp => tp.service);
 };
-// One turn-proxy badge: fork-coloured, labelled with the fork + the port it answers on.
+// One turn-proxy badge: fork-coloured, labelled with the fork's name — forkLabel, never the id in its service name ("hackdiaz-dev",
+// not "samosvalishe": q189 V-FEAT-A F5).
 export const TurnTag = (node, tp) =>
-  html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(node) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`;
+  html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(node) || turnDown(tp)) ? " muted" : "")}>${forkLabel(turnFork(tp.service))}</span>`;
 
 
 // Node throughput panel: a Peers/Mesh toggle in the header (right-aligned) splits the graph into client (rx−mrx),

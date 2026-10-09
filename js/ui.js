@@ -20,7 +20,7 @@ import { lang, setLang, LANGS, nextLang, T, Tsplit, srvText, srvVars } from "./i
 import { IFACE_COLOR_DEFAULTS, THEME_COLOR_DEFAULT, THEME_COLOR_LIGHT_DEFAULT, THEME_MODES,
          clampBrand, hexLum, pickThemed, resolvedTheme, themeMode } from "./theme.js";
 import { targetType, peerUncategorised, awgGen, awgGenPending, nodeStale, tip3 } from "./model.js";
-import { turnColor, turnLabel, turnForkList } from "./turn-catalog.js";
+import { turnColor, turnFork, turnForkList, forkLabel } from "./turn-catalog.js";
 import { h, render, Fragment } from "preact";
 import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import htm from "htm";
@@ -921,7 +921,7 @@ export function gridStatusBadge(t, p, re) {
     return uncatPop(html`<span class="badge b-uncat ic"><${Ic} i="warn"/>${statusLabel(st)}</span>`);
   }
   if (t.online && t.viaTurn) {
-    const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
+    const tf = turnFork(t.viaTurn), tn = forkLabel(tf), tc = turnColor(tf), ptitle = turnProxyTitle(t.node, t.viaTurn);   // the id picks the colour, the name is shown
     return html`<span class="turnwrap" title="">
       <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${statusLabel(st)}</span>
       <span class="turnbub">${T("Connected via")} <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
@@ -958,7 +958,7 @@ export function badgeWithReason(st, reason) {
 // <title>" bubble; online (direct) → a green glowing dot; otherwise a neutral idle dot.
 export function connDot(r) {
   if (r.online && r.viaTurn) {
-    const tn = turnLabel(r.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(r.node, r.viaTurn);
+    const tf = turnFork(r.viaTurn), tn = forkLabel(tf), tc = turnColor(tf), ptitle = turnProxyTitle(r.node, r.viaTurn);
     return html`<span class="turnwrap" title="">
       <span class="condot turn" style=${"--tfc:" + tc}></span>
       <span class="turnbub">${T("Connected via")} <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
@@ -976,8 +976,8 @@ export function connDot(r) {
 export function endpointCell(t) {
   const obs = t.observed;
   if (t.via === "turn") {
-    const tn = t.viaTurn ? turnLabel(t.viaTurn) : null;
-    const tc = tn ? turnColor(tn) : "var(--dim)";
+    const tf = t.viaTurn ? turnFork(t.viaTurn) : null, tn = tf ? forkLabel(tf) : null;
+    const tc = tf ? turnColor(tf) : "var(--dim)";
     const ptitle = t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
     return html`<span class="turnwrap" title="">
       <span class=${"addr turnep" + (t.online ? "" : " off")} style=${"color:" + (t.online ? tc : "var(--dim)")}>${T("turn-proxy")}</span>

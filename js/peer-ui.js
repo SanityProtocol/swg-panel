@@ -17,7 +17,7 @@ import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPr
 import { Store, api, bus, useStore } from "./store.js";
 import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer, isSelfContainedTgt, peerUncategorised } from "./model.js";
 import { go } from "./router.js";
-import { turnFork, turnLabel, turnColor, turnClientColor, turnClientAuthor, turnForkList, forkLabel } from "./turn-catalog.js";
+import { turnFork, turnColor, turnClientColor, turnClientAuthor, turnForkList, forkLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
   Popover, CapList, useCapped, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
@@ -1579,7 +1579,7 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
         <div class="row"><span class="k">${T("row|address")}</span><span class="vv">${t.ip || "—"}</span></div>
         <div class="row"><span class="k">${T("row|handshake")}</span><span class="vv">${obs ? seen(obs.handshake_age) : "—"}</span></div>
         <div class="row"><span class="k">${T("row|rate")}</span><span class="vv">${(() => { const xf = tgtXfer(t); return xf ? rateCell(xf.rx_speed, xf.tx_speed) : "—"; })()}</span></div>
-        <div class="row"><span class="k">${T("row|transport")}</span><span class="vv">${lt.viaTurn ? html`${T("via")} <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnLabel(lt.viaTurn))}>${turnLabel(lt.viaTurn)}</span>` : (lt.via === "direct" ? T("tag|direct") : "—")}</span></div>
+        <div class="row"><span class="k">${T("row|transport")}</span><span class="vv">${lt.viaTurn ? html`${T("via")} <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(lt.viaTurn))}>${forkLabel(turnFork(lt.viaTurn))}</span>` : (lt.via === "direct" ? T("tag|direct") : "—")}</span></div>
         ${tps.map(tp => html`<div class="row"><span class="k">${T("turn-proxy")}</span><span class="vv">${tp.listen || "—"}
           ${tp.wrap_key ? html`<${Fragment}> ${T("· key")} <span class="addr">${String(tp.wrap_key).slice(0, 8)}…</span><button class="copybtn" title=${T("Copy wrap key")} onClick=${() => copy(tp.wrap_key, T("Wrap key copied"))}><${Ic} i="copy"/></button></>` : null}</span></div>`)}
       </div>`}

@@ -18,7 +18,7 @@ import { esc, portOf, ipOf, ipChoices, ipPickerVal, seen, ago, dur, fmtBytes, is
 import { Store, api, bus, useStore } from "./store.js";
 import { pickThemed, toThemed } from "./theme.js";
 import {
-  TURN_FORKS_FALLBACK, turnLabel, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel, forkPickLabel,
+  TURN_FORKS_FALLBACK, turnFork, turnOwner, turnForkList, turnForksVisible, forkLabel, forkPickLabel,
   forkSupportsAwg, forkSupportsAwg3, turnColor, turnClientColor, turnClientAuthor,
 } from "./turn-catalog.js";
 import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLooping, turnLoopMins, turnProxiesFor, wdttOn, awg3Cls, awg3Tip, awgGen,
@@ -400,7 +400,7 @@ export function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
           return tp ? html`<${TurnCard} key=${tp.service} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${true} reorder=${tReorder}/>` : null;
         })}
     ${optTurns.map(o => optCard(o.svc, o.d))}
-    ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">${T("val|turn")}</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/>${act === "delete" ? html`<span class="tg-busy del">${T("deleting…")}</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${T("tag|pending")}</span>`}<button class="xbtn" title=${T("Cancel this request")} onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
+    ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">${T("val|turn")}</span><span class="ifname">${forkLabel(turnFork(s))}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/>${act === "delete" ? html`<span class="tg-busy del">${T("deleting…")}</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${T("tag|pending")}</span>`}<button class="xbtn" title=${T("Cancel this request")} onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
     ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">${T("val|turn")}</span><span class="ifname">${T("adopting…")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">${T("adopting…")}</span><button class="xbtn" title=${T("Cancel this request")} onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
     </div>
   <//>`;
@@ -631,9 +631,9 @@ export function TurnManageSheet({ node, tp }) {
     || params.trim() !== origParams.trim()
     || pin !== (tp.bind_ip || "")
     || title.trim() !== (tp.title || "");
-  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: turnFork(svc) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`} width=${664} headExtra=${html`<${ProxyDropsHeader} node=${node} svc=${svc}/><${TurnIpsHeader} node=${node} svc=${svc}/>`}
+  return html`<${Sheet} title=${html`${turnSheetTitle(forkLabel(turnFork(svc)), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}<button class="iconbtn sheet-verset" title=${T("Version, rollback & server defaults for {v1}", { v1: forkLabel(turnFork(svc)) })} onClick=${() => openServerDefaults(turnFork(svc))}><${Ic} i="gear"/></button>`} width=${664} headExtra=${html`<${ProxyDropsHeader} node=${node} svc=${svc}/><${TurnIpsHeader} node=${node} svc=${svc}/>`}
     foot=${html`<${Fragment}>
-      <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
+      <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${stopped
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title=${T("Start the service on the node")} onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> ${T("Start service")}</button>`
         : installing

@@ -204,7 +204,7 @@ export function TargetFrontBadge({ node, iface, peer, dim }) {
     : html`<span class=${"tg tgt-front " + (cls || "") + (dim ? " dim" : "")} style=${style} title=${title}>${body}</span>`;
   if (tps.length === 1) {
     const f = turnFork(tps[0].service);
-    return tag(one(tps[0]), "", "--tgc:" + (turnColor(f) || "var(--turn)"), T("Turn-proxy") + (f ? " · " + f : ""));
+    return tag(one(tps[0]), "", "--tgc:" + (turnColor(f) || "var(--turn)"), T("Turn-proxy") + (f ? " · " + forkLabel(f) : ""));
   }
   return html`<${Popover} hoverOnly cls="tgt-frontpop" popCls="tgt-frontbub"
     trigger=${tag(html`<${Fragment}>${T("val|turn")}<b class="turnx">×${tps.length}</b><//>`, "tgt-front-many", "",

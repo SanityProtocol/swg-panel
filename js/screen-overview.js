@@ -16,7 +16,7 @@ import {
   Store, api, bus, useStore,
 } from "./store.js";
 import {
-  turnColor, turnFork, turnForkList, forkNames,
+  turnColor, turnFork, turnForkList, forkNames, forkLabel,
 } from "./turn-catalog.js";
 import {
   targetType, awgDict3, tip3, lastHeard,
@@ -926,7 +926,7 @@ export function FlowMap2({ selIds, range, hist }) {
   }
   const epPos = id => spos[id] || satpos[id];
   const epR = id => spos[id] ? nR(id) : satR(id);
-  const epName = id => { if (spos[id]) return Store.nodeName(id); const s = sats.find(x => x.id === id) || {}; return s.kind === "turn" ? s.fork : s.label || s.kind || id; };
+  const epName = id => { if (spos[id]) return Store.nodeName(id); const s = sats.find(x => x.id === id) || {}; return s.kind === "turn" ? forkLabel(s.fork) : s.label || s.kind || id; };
   // ── viewBox — fit the frame to the content, then centre it in ONE fixed section (fixed aspect + min frame) so the card
   //    never resizes and sparse diagrams render at a consistent scale instead of being blown up to fill the width. All sizes
   //    (line widths, node/sat dims) are already in reference px, so this single scale carries the whole diagram. ──
@@ -1023,7 +1023,7 @@ export function FlowMap2({ selIds, range, hist }) {
       const occ = flows.filter(f => f.from === hov.id || f.to === hov.id).map(f => { const O = epPos(f.from === hov.id ? f.to : f.from); return O ? Math.atan2(O.y - P.y, O.x - P.x) : null; }).filter(a => a != null);
       spot = bubbleSpot(P, occ, epR(hov.id));
       if (spos[hov.id]) hv = { type: "ep", name: Store.nodeName(hov.id), ib: G.inTot[hov.id], ob: G.outTot[hov.id], sub: "server", col: Store.nodeColor(hov.id) };
-      else { const sm = sats.find(x => x.id === hov.id); if (sm) { const t = satTot[hov.id] || {}; hv = { type: "ep", name: sm.kind === "turn" ? sm.fork : sm.label || sm.kind, ib: t.ib, ob: t.ob, sub: sm.kind === "internet" ? (sm.measured ? "internet · measured" : "internet · estimated") : sm.kind === "turn" ? "turn-proxy" : sm.kind === "exit" ? T("external exit") : sm.kind === "mesh" ? T("fleet nodes not shown") : "clients", col: sm.color }; } }   // i18n-keys: internal fork/service id
+      else { const sm = sats.find(x => x.id === hov.id); if (sm) { const t = satTot[hov.id] || {}; hv = { type: "ep", name: sm.kind === "turn" ? forkLabel(sm.fork) : sm.label || sm.kind, ib: t.ib, ob: t.ob, sub: sm.kind === "internet" ? (sm.measured ? "internet · measured" : "internet · estimated") : sm.kind === "turn" ? "turn-proxy" : sm.kind === "exit" ? T("external exit") : sm.kind === "mesh" ? T("fleet nodes not shown") : "clients", col: sm.color }; } }   // i18n-keys: internal fork/service id
     }
   } else if (hov && hov.fi != null) {
     const f = flows[hov.fi], r = ribbons.find(x => x.idx === hov.fi);
