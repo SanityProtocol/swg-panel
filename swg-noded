@@ -7092,7 +7092,8 @@ def _retire_swgp(res):
 P2P_NFT_TABLE = "swg_p2p"
 P2P_BIT = 0x40000000          # unused elsewhere: the band is 7000-7099 and SNI marks keep 0x999x in their low 16 bits
 P2P_RULE_PRI = 6880           # BELOW the band: a whole-interface forward's `from S lookup T` (pref T) must not outrank it
-_P2P = {"on": False, "mode": "", "state": "", "ih": None, "retired": False, "rule": None, "tbl": None, "route": "", "route_dev": ""}   # rule/tbl: None = not yet looked
+_P2P = {"on": False, "mode": "", "state": "", "ih": None, "retired": False, "rule": None, "tbl": None, "route": "", "route_dev": "",
+        "detail": "", "nolog": False}   # rule/tbl: None = not yet looked · detail: why a load was refused · nolog: see _ensure_p2p
 _P2P_PORTOK = "3478-3481, 4500, 5222-5223, 5349, 8801-8810, 19302-19309, 27000-27200"   # STUN/TURN/Teams, IPsec, XMPP, Zoom, Meet, Steam
 _P2P_SHAPE = "meta l4proto { tcp, udp } th dport >= 1024 th dport != @portok ip daddr != @priv"
 _P2P_SIGS = (   # (counter, l4, raw-payload match) — exact protocol constants at fixed offsets, one compare each.
@@ -7375,21 +7376,42 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
             _rt = run(["ip", "route", "show", "table", str(ent["table"])]).stdout or ""
             _P2P["route"] = "up" if any(ln.split()[:1] == ["default"] for ln in _rt.splitlines()) else "down"
             _P2P["route_dev"] = ent["via_iface"]
-        text = _p2p_nft(mode, strict, oif, _p2p_link_nets(node_cfg), ih, route, logged=log_level() >= LOG_INFO)
-        _P2P.update(on=True, state="ok" if ih else "degraded")
+        logged = log_level() >= LOG_INFO and not _P2P["nolog"]
+        text = _p2p_nft(mode, strict, oif, _p2p_link_nets(node_cfg), ih, route, logged=logged)
         sig = hashlib.sha256(text.encode()).hexdigest()
         cur = ""
         with contextlib.suppress(OSError):
             cur = open(sigf).read().strip()
+        # ⚠️ "ok" ONLY FOR A TABLE IN FORCE. The state was set before the load, so a load the kernel refused reported a running
+        # guard while nothing was blocked — with 1.8.8's torrent chain already retired (1.8.9 qualification NR-2).
         if have.returncode == 0 and cur == sig and " drop" in (have.stdout or ""):
+            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")
             return
         _P2P["tbl"] = True
         r = run(["nft", "-f", "-"], input_text=text)
+        if r.returncode != 0 and logged:
+            # The hit lines are the first `log` statement in any swg table, and `nft -f` is ONE transaction: a kernel without
+            # nft's log expression, or without a log backend for both IPv4 and IPv6 (nft_log, nf_log_syslog — a minimal kernel,
+            # a container host that never loaded them), refuses that rule and with it the WHOLE table, every drop included. The
+            # guard matters more than its lines: the same table again without them, and none for the rest of this process.
+            r0, text = r, _p2p_nft(mode, strict, oif, _p2p_link_nets(node_cfg), ih, route, logged=False)
+            r = run(["nft", "-f", "-"], input_text=text)
+            if r.returncode == 0:
+                _P2P["nolog"] = True
+                sig = hashlib.sha256(text.encode()).hexdigest()
+                log(LOG_WARNING, "p2p: this kernel refused the torrent guard's log lines (%s) — the guard runs without them",
+                    ((r0.stderr or "").strip().splitlines() or ["nft exited %d" % r0.returncode])[0][:160])
         if r.returncode == 0:
             with contextlib.suppress(OSError):
                 os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
+            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")
             res["changed"] += 1
         else:
+            # Said on the node's card (smartroute.p2p): the policy is wanted and NOT in force — nft's first line, its
+            # "<file>:<line>:<col>: " position dropped.
+            _e = (r.stderr or "").strip().splitlines()
+            _P2P.update(on=True, state="error",
+                        detail=re.sub(r"^\S+:\d+:\d+(?:-\d+)?: ", "", _e[0])[:160] if _e else "nft exited %d" % r.returncode)
             res["errors"].append("p2p nft load failed: " + (r.stderr or "").strip()[:160])
     except Exception as e:
         res["errors"].append("p2p: " + str(e)[:120])
@@ -11546,11 +11568,12 @@ def smart_status():
             "dnsmasq": dns_alive, "route_localnet": _route_localnet_ok(),   # false in dns mode ⇒ client DNS blackholed (container)
             "src": 2 if _KSNI_SRC["ok"] else 1,   # 1: per-person rows in the nft chain · 2: Kernel SNI matches their hostnames too
             "arr": 1}                             # runs `smart.arrivals` — the default list for traffic cascaded in (ROUTING-PEERS-MESH-PLAN §4.3)
-    if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only), the mode in force,
-        _r = _P2P.get("route") or ""                            # and under route whether its way out is up — the last pass's answer,
-        if _r == "up" and _devexit_state(_P2P.get("route_dev") or "") != "up":   # corrected on EVERY report by the device itself
-            _r = "down"                                         # (sysfs + the exit judge, no fork): a way out lost between passes
-        base["p2p"] = {"state": _P2P["state"], "mode": _P2P["mode"], **({"route": _r} if _r else {})}
+    if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only) | error (its table
+        _r = _P2P.get("route") or ""                            # was refused, `detail` says why), the mode in force, and under route
+        if _r == "up" and _devexit_state(_P2P.get("route_dev") or "") != "up":   # whether its way out is up — the last pass's answer,
+            _r = "down"                                         # corrected on EVERY report by the device itself (sysfs + the exit
+        base["p2p"] = {"state": _P2P["state"], "mode": _P2P["mode"], **({"route": _r} if _r else {}),   # judge, no fork)
+                       **({"detail": _P2P["detail"]} if _P2P["state"] == "error" else {})}
     # §10.5 item 9. `_XTS_MAXLEN` is a fact about xt_string — it refuses a pattern longer than this outright —
     # and it lived ONLY here, so an over-long operand was accepted by the field, stored, shipped, and dropped
     # at the node with a report. The failure ORDERING is right and item 5 is why: the panel must never grow a
