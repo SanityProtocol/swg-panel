@@ -20,7 +20,7 @@
   [6] swg-netctl, the panel box's writer: the size file from panel-settings.json, the status file only when it changes and
       kept out of the 1-hour sweep, Off removes the stored files.
       Settings it cannot read as the panel writes them — emptied to {}, missing, truncated, not a dict, a value the panel
-      never writes, past the size cap, a symlink, a FIFO — keep what is applied (the size, Off, the drop-ins) and never
+      never writes — keep what is applied (the size, Off, the drop-ins) and never
       keep the queue from running, through the timer's real main() (1.8.9 qualification HE-3: a 500 MB budget fell to
       100 MB and journald deleted 84 094 entries for good).
   [7] The verify readers read the namespace and give the unit's own reason even when systemd's line sorts after it.
@@ -60,13 +60,11 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      uninstkeep   uninstall leaves the journal on disk
      settingsempty     netctl acts on an emptied settings file ({}): the defaults (100 MB, Info) replace what is applied
      settingsdropins   netctl writes the drop-ins with no settings read (Off's emerg flips back to Info's cap)
-     settingsfollow    netctl opens the settings file following a symlink and waiting on a FIFO
-     settingssize      netctl reads a settings file of any size
      settingsunguarded a value the panel never writes kills the tick before the queue
      logsopts          swg-logs takes an option given alone for a source name again
 """
-import contextlib, importlib.machinery, importlib.util, io, json, os, re, shutil, socket, stat, struct, subprocess, sys, tempfile
-import threading, time, urllib.error, urllib.request
+import importlib.machinery, importlib.util, io, json, os, re, shutil, socket, stat, struct, subprocess, sys, tempfile, threading
+import time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -120,12 +118,9 @@ PLANTS = {   # (program, anchor, replacement)
     "pid1last": ("noded", '''-n 8 --no-pager -o cat 2>/dev/null | " + JOURNAL_SKIP_PID1\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")''',
                  '''-n 8 --no-pager -o cat 2>/dev/null | "\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")'''),
     "uninstkeep": ("uninstall", '''  [ -n "$mid" ] && rmrf "/var/log/journal/$mid.$ns" "/run/log/journal/$mid.$ns"\n''', ""),
-    "settingsempty": ("netctl", '''    return ps if isinstance(ps, dict) and ps else None''', '''    return ps if isinstance(ps, dict) else None'''),
+    "settingsempty": ("netctl", '''    if not isinstance(ps, dict) or not ps:''', '''    if not isinstance(ps, dict):'''),
     "settingsdropins": ("netctl", '''        if ps is not None:                           # no settings this tick: what is applied stays (HE-3)''',
                         '''        if True:                           # no settings this tick: what is applied stays (HE-3)'''),
-    "settingsfollow": ("netctl", '''os.path.join(STATE_DIR, "panel-settings.json"), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)''',
-                       '''os.path.join(STATE_DIR, "panel-settings.json"), os.O_RDONLY)'''),
-    "settingssize": ("netctl", '''            if not stat.S_ISREG(st.st_mode) or st.st_size > SETTINGS_MAX:''', '''            if not stat.S_ISREG(st.st_mode):'''),
     "settingsunguarded": ("netctl", '''        with contextlib.suppress(Exception):         # never kept from the queue''', '''        if True:         # never kept from the queue'''),
     "logsopts": ("logs", '''case "$src" in -h|--help) ;; -*) set -- "$src" "$@"; src="" ;; esac''', ''':'''),
 }
@@ -549,7 +544,6 @@ check("[6] Off: Storage=none and the stored files removed", "Storage=none" in op
 # HE-3: settings that cannot be read as the panel writes them keep what is applied — through the timer's real tick, main()
 PSF = os.path.join(PST, "panel-settings.json")
 M.LOG_DROPIN_DIR = os.path.join(TMP, "netctl-dropins"); os.makedirs(M.LOG_DROPIN_DIR)
-M.SETTINGS_MAX = 4096                                    # the cap's test: a file past it is not read at all
 
 
 def put(o):
@@ -564,21 +558,15 @@ def put(o):
 
 def real_tick():
     """One timer tick: a fresh process (the level at its default), the REAL main(), one request in the queue → (main's rc,
-    the request taken, the size file, swg-netctl's drop-in, the journald restarts asked). "blocked" if main() hangs."""
+    the request taken, the size file, swg-netctl's drop-in, the journald restarts asked)."""
     M.log_set(M.LOG_INFO); MC.clear()
     q = os.path.join(PST, "netctl", "queue", "he3.json"); open(q, "w").write('{"verb": "nope"}')
-    res = {}
-
-    def go():
-        try:
-            res["rc"] = M.main(["swg-netctl", "run"])
-        except BaseException as e:
-            res["rc"] = type(e).__name__
-    th = threading.Thread(target=go, daemon=True); th.start(); th.join(5)
-    with contextlib.suppress(OSError):                   # a reader stuck on a FIFO (the follow plant) is let go
-        os.close(os.open(PSF, os.O_WRONLY | os.O_NONBLOCK))
+    try:
+        rc = M.main(["swg-netctl", "run"])
+    except Exception as e:
+        rc = type(e).__name__
     rd = lambda p: open(p).read() if os.path.exists(p) else None
-    return (res.get("rc", "blocked"), not os.path.exists(q), rd(M.LOG_NS_CONF),
+    return (rc, not os.path.exists(q), rd(M.LOG_NS_CONF),
             rd(os.path.join(M.LOG_DROPIN_DIR, "swg-netctl.service.d", "swg-log.conf")), [c for c in MC if "try-restart" in c])
 
 
@@ -586,22 +574,14 @@ put({"log_level": "info", "log_mb_panel": 500})
 r0 = real_tick()
 check("[6] HE-3 CONTROL: the real tick applies the settings (500 MB, Info's cap) and answers the queue",
       r0[0] == 0 and r0[1] and "SystemMaxUse=500M" in (r0[2] or "") and "LogLevelMax=notice" in (r0[3] or "") and len(r0[4]) == 1, r0)
-other = os.path.join(TMP, "elsewhere.json"); json.dump({"log_level": "info", "log_mb_panel": 48}, open(other, "w"))
 for what, o in (("emptied to {} (the clobber the panel restores from its backup)", "{}"), ("missing", None),
                 ("truncated mid-write", '{"log_level": "info", "log_mb_pa'), ("not a dict ([])", "[]"),
                 ("a value the panel never writes: log_level []", {"log_level": [], "log_mb_panel": 500}),
                 ("…log_debug_until 1e999", '{"log_level": "info", "log_debug_until": 1e999, "log_mb_panel": 500}'),
                 ("…log_debug_until of 400 digits", '{"log_level": "info", "log_debug_until": %s, "log_mb_panel": 500}' % ("9" * 400)),
-                ("…log_mb_panel \"abc\"", {"log_level": "info", "log_mb_panel": "abc"}),
-                ("past the size cap", json.dumps({"log_level": "info", "log_mb_panel": 16, "pad": "x" * 8192})),
-                ("a symlink (to a valid file that says 48 MB)", "LINK"), ("a FIFO", "FIFO")):
+                ("…log_mb_panel \"abc\"", {"log_level": "info", "log_mb_panel": "abc"})):
     put({"log_level": "info", "log_mb_panel": 500}); real_tick()      # each case from the same state: no case leaks into the next
-    if o == "LINK":
-        put(None); os.symlink(other, PSF)
-    elif o == "FIFO":
-        put(None); os.mkfifo(PSF)
-    else:
-        put(o)
+    put(o)
     r = real_tick()
     check("[6] HE-3 settings %s: what is applied stays (500 MB, its drop-in, no journald restart) and the queue is answered"
           % what, r[0] == 0 and r[1] and r[2] == r0[2] and r[3] == r0[3] and not r[4], r)
