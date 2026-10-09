@@ -58,8 +58,12 @@ detection, `ip` and the terminal are stubbed.
   [t] (1.8.8 deferred #5(b)) dnsmasq is masked BEFORE its package is installed, in both installers: its postinst started
       it, the start failed on :53 (systemd-resolved) and the first install printed an error for a unit masked right after
 
+  [u] (1.8.8 deferred #13) a dry run's file lines say "would write <path>" — it writes the preview copy, not the file it
+      names ("✓ wrote /etc/systemd/system/…" read as if the box had been changed); a real run still says "wrote"
+
 Run: python3 tests/installer_lines_selftest.py      (0 = pass)
      --perturb   the shipped lines planted back → RED
+     --perturb-wrote  "wrote" in a dry run again (e66018f) → RED on [u] only
      --perturb-mask   dnsmasq masked only after its install again (e66018f) → RED on [t] only
      --perturb-dial   the summary reads SWG_LISTEN alone again (e66018f) → RED on [s] only
 """
@@ -70,6 +74,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
 PERTURB_DIAL = "--perturb-dial" in sys.argv
 PERTURB_MASK = "--perturb-mask" in sys.argv
+PERTURB_WROTE = "--perturb-wrote" in sys.argv
 H = open(os.path.join(ROOT, "install-host.sh"), encoding="utf-8").read()
 N = open(os.path.join(ROOT, "install-node.sh"), encoding="utf-8").read()
 C = open(os.path.join(ROOT, "lib/common.sh"), encoding="utf-8").read()
@@ -587,7 +592,22 @@ for f, src in (("install-node.sh", N), ("install-host.sh", H)):
     mm = next((i for i, l in enumerate(calls) if l == "RUN systemctl mask dnsmasq"), -1)
     check("[t] %s: masked before its package is installed" % f, 0 <= mm < im, calls)
 
+print("\n[u] a dry run says it would write the file it names (1.8.8 deferred #13)")
+for f, src in (("install-node.sh", N), ("install-host.sh", H), ("install-docker.sh", D)):
+    m = re.search(r"^_WROTE=wrote; \$DRYRUN && _WROTE=\"would write\"[^\n]*\n", src, re.M)
+    wl = m.group(0) if m else ""
+    if PERTURB_WROTE and wl:
+        wl = "_WROTE=wrote\n"
+    for dry, want in (("true", "OK would write /etc/x.conf (644)"), ("false", "OK wrote /etc/x.conf (644)")):
+        d = tempfile.mkdtemp(prefix="instl-w-")
+        out = run('DRYRUN=%s; PREFIX=%s\n%s%sprintf x | writef /etc/x.conf 644\n' % (dry, d, wl, fn(src, "writef")))
+        check("[u] %s, %s: %r" % (f, "a dry run" if dry == "true" else "a real run", want[3:]), want in out and os.path.exists(d + "/etc/x.conf"), out)
+
 print()
+if PERTURB_WROTE:
+    _red = [x for x in FAILS if x.startswith("[u]")]
+    print("perturb-wrote: %s" % ("RED as it must be (%d), all [u]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB_MASK:
     _red = [x for x in FAILS if x.startswith("[t]")]
     print("perturb-mask: %s" % ("RED as it must be (%d), all [t]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
