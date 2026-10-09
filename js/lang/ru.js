@@ -1662,6 +1662,8 @@ export const STR = {
     "На железе turn-прокси, ретранслятор или сервер WDTT / csqtt, не перезапущенный после обновления, продолжает писать туда.",
   "In Docker, each container's own log keeps its lines until the container is recreated; a turn container started before Off goes on logging until its next start.":
     "В Docker собственный лог каждого контейнера хранит свои строки, пока контейнер не пересоздадут; turn-контейнер, запущенный до «Выкл», продолжает писать лог до следующего запуска.",
+  "On NixOS, a node's container logs to the host's system journal, which keeps those lines; a turn container started before Off goes on logging until its next start.":
+    "В NixOS контейнер ноды пишет в системный журнал хоста, и тот хранит эти строки; turn-контейнер, запущенный до «Выкл», продолжает писать лог до следующего запуска.",
   "Failure details go blank: when something breaks, the panel can't say why.":
     "Подробности сбоев пропадают: если что-то сломается, панель не сможет сказать почему.",
   "Turn off debugging after": "Выключить отладку через",

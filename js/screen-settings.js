@@ -3102,7 +3102,8 @@ const sectionLabel = k => ({
           ${logShown === "off"
             ? html`<div class="hint warnish"><${Ic} i="warn"/> ${logOffHint({
                 bare: !(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind !== "docker"),
-                docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker") })}</div>`
+                docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker" && n.platform !== "nixos"),
+                nixos: (Store.nodes || []).some(n => n.kind === "docker" && n.platform === "nixos") })}</div>`
             : html`<div class="hint">${logLevelHint(logShown)}</div>`}
           ${logShown === "debug" ? html`<div class="field logdebug"><label>${T("Turn off debugging after")}</label>
             <div class="logdebug-row">
@@ -3510,10 +3511,12 @@ export function logBudgetState(r) {
 // own logs go (its journals on bare metal, its files in Docker), but a server's system journal keeps what it holds, the kernel's
 // P2P guard lines with users' addresses among them; a bare-metal service not restarted since the update still writes there; and
 // Docker keeps each container's own log until the container is recreated — a turn container started before Off goes on logging.
-export const logOffHint = ({ bare, docker }) => [
+// NixOS's container arm logs to the host's system journal instead (oci-containers' journald driver), which keeps those lines.
+export const logOffHint = ({ bare, docker, nixos }) => [
   T("swg's own logs are deleted, and nothing more is kept in them. A server's system journal keeps what it already holds — the kernel's P2P guard lines, with users' addresses, among them."),
   bare ? T("On bare metal, a turn proxy, relay or WDTT / csqtt server not restarted since the update still writes there.") : "",
   docker ? T("In Docker, each container's own log keeps its lines until the container is recreated; a turn container started before Off goes on logging until its next start.") : "",
+  nixos ? T("On NixOS, a node's container logs to the host's system journal, which keeps those lines; a turn container started before Off goes on logging until its next start.") : "",
   T("Failure details go blank: when something breaks, the panel can't say why."),
 ].filter(Boolean).join(" ");
 // How far back a server's logs reach: once its budget is full (the oldest lines go to make room) "N days"; before that
