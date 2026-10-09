@@ -26,10 +26,15 @@ non-finite number is refused at the door; [7] a REAL snapshot (one of the test f
 SWG_SNAP_FIXTURES=<a dir of mirrored stats-*.json> runs whole real ones too) goes through the door and the sanitiser byte
 for byte — small fleets feel nothing.
 
+1.8.9 qualification R2 PANEL-1b — a `generated_at` past a double's range (10**400) is an int, so it was kept; the warm start's
+_warm_seen then float()ed it and raised, and a restarted panel did not come up until that mirror file was removed. [8] stores
+one through a real sync and boots the panel again over it.
+
 Hermetic ([6] and [7] run a real panel on a loopback scratch port, everything under a temp dir).
 Run: python3 tests/snap_shape_selftest.py (0 = pass).  --perturb makes the sanitiser a no-op and
-expects the malformed shapes to sail through.  --perturb-<meta|listwalk|forward|listen|turnproxies|door|snapnum> takes
-out one PANEL-1 line each (exit 0 when caught).
+expects the malformed shapes to sail through.  Each of --perturb-meta, --perturb-listwalk, --perturb-forward,
+--perturb-listen, --perturb-turnproxies, --perturb-door and --perturb-snapnum takes out one PANEL-1 line, and
+--perturb-overflow PANEL-1b's (exit 0 when caught).
 """
 import atexit, copy, importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -61,6 +66,7 @@ PLANTS = {
                     '        snap["turn_proxies"] = [t for t in snap["turn_proxies"] if isinstance(t, dict)]\n', ""),
     "door": ('json.loads(raw or "{}", parse_constant=_json_finite, parse_float=_json_finite)', 'json.loads(raw or "{}")'),
     "snapnum": ("    return n if math.isfinite(n) else None\n", "    return n\n"),
+    "overflow": ("except (TypeError, ValueError, OverflowError):", "except (TypeError, ValueError):"),   # PANEL-1b
 }
 TMP = tempfile.mkdtemp(prefix="snap-shape-")
 atexit.register(shutil.rmtree, TMP, True)          # every exit, an early one too
@@ -253,10 +259,28 @@ _fleet = os.path.join(TMP, "fleet.json")
 json.dump({"nodes_path": _np, "roster_path": os.path.join(_st, "users.json"), "stats_dir": STATS}, open(_fleet, "w"))
 _s = socket.socket(); _s.bind(("127.0.0.1", 0)); PORT = _s.getsockname()[1]; _s.close()
 _log = open(os.path.join(TMP, "panel.log"), "w+")
-proc = subprocess.Popen([sys.executable, PANEL], stdout=_log, stderr=subprocess.STDOUT,
-                        env={**os.environ, "SWG_PANEL_FLEET": _fleet, "SWG_PANEL_WEB": ROOT, "SWG_PANEL_HOST": "127.0.0.1",
-                             "SWG_PANEL_PORT": str(PORT), "SWG_PANEL_AUTH": "", "SWG_PANEL_TLS_CERT": "", "SWG_PANEL_TLS_KEY": "",
-                             "SWG_PANEL_STATE_TTL": "0"})
+
+
+def _boot():                                       # the same state, stats and port every time — [8] restarts it
+    return subprocess.Popen([sys.executable, PANEL], stdout=_log, stderr=subprocess.STDOUT,
+                            env={**os.environ, "SWG_PANEL_FLEET": _fleet, "SWG_PANEL_WEB": ROOT, "SWG_PANEL_HOST": "127.0.0.1",
+                                 "SWG_PANEL_PORT": str(PORT), "SWG_PANEL_AUTH": "", "SWG_PANEL_TLS_CERT": "",
+                                 "SWG_PANEL_TLS_KEY": "", "SWG_PANEL_STATE_TTL": "0"})
+
+
+def _up(p):                                        # True once it answers; False as soon as it has exited
+    for _ in range(300):
+        try:
+            urllib.request.urlopen("http://127.0.0.1:%d/healthz" % PORT, timeout=2)
+            return True
+        except Exception:
+            if p.poll() is not None:
+                return False
+            time.sleep(0.1)
+    return False
+
+
+proc = _boot()
 
 
 def req(path, data=None, token=None, raw=None):
@@ -295,14 +319,8 @@ def snap_of(nid, ifn, sub, **over):
 
 
 try:
-    for _ in range(300):
-        try:
-            urllib.request.urlopen("http://127.0.0.1:%d/healthz" % PORT, timeout=2)
-            break
-        except Exception:
-            if proc.poll() is not None:
-                sys.exit("panel exited: " + open(_log.name).read()[-2000:])
-            time.sleep(0.1)
+    if not _up(proc):
+        sys.exit("panel exited: " + open(_log.name).read()[-2000:])
     TOK = {n: json.loads(req("/api/nodes/rotate", {"id": n})[1])["data"]["token"] for n in (A, Q, B)}
     GOOD = {A: snap_of(A, "wg0", "10.8.0.0/24"), Q: snap_of(Q, "wg1", "10.9.0.0/24"), B: snap_of(B, "wg2", "10.7.0.0/24")}
     for n in (A, Q, B):
@@ -347,6 +365,18 @@ try:
             stored = fh.read()
         check("[7] %s: 200, and stored exactly as the node sent it (%d bytes)" % (label, len(stored)),
               qc == 200 and stored == json.dumps(snap), (qc, len(stored), len(json.dumps(snap))))
+
+    print("\n[8] PANEL-1b — a generated_at past a double's range (10**400), stored: the panel starts again over it")
+    qc = sync(Q, dict(GOOD[Q], generated_at=10 ** 400))[0]
+    proc.terminate()
+    proc.wait(timeout=10)
+    proc = _boot()                                 # its warm start reads the mirror that sync left
+    up = _up(proc)
+    check("[8] Q's sync with it answers 200, and a restarted panel comes up over it", qc == 200 and up,
+          (qc, up, "" if up else open(_log.name).read()[-300:]))
+    _o = others() if up else None
+    check("[8] …and answers: A's and B's syncs 200 with `desired`, /api/state 200 as JSON",
+          _o == ((200, True), (200, True), (200, True)), _o)
 finally:
     proc.terminate()
     try:
