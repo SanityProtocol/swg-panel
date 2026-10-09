@@ -2125,7 +2125,7 @@ export function EditIfaceSheet({ node, iface }) {
     <div class="field ipk-field subnet-row"><label>${T("Host tunnel IP")}</label><span class="ipk-val"><b>${(meta.address || "").split("/")[0] || meta.subnet || "—"}</b> <span class="faint">${T("(set at creation — delete & recreate to change)")}</span></span></div>
     <div class="row2">
       <div class="field"><label>${T("Endpoint host / IP")}</label>
-        <${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname — e.g. vpn.example.com"/>
+        <${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder=${T("IP or hostname — e.g. vpn.example.com")}/>
         <div class="hint">${T("What clients dial — config-facing only")}</div></div>
       <div class="field"><label>${T("Listen port")}</label><input class=${iperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/>${iperr ? html`<div class="hint err">${iperr}</div>` : html`<div class="hint">${T("Applied to the node (currently {v1})", { v1: meta.listen_port || "—" })}</div>`}</div>
     </div>

@@ -81,7 +81,7 @@ export const capFirst = s => (typeof s === "string" && s && !/[A-Z]/.test(s)) ? 
 // NOT a routing destination, so it's excluded from the destination stats (Top destinations / flow map).
 export const isBlockCat = c => /^blku?[_:]/i.test(String(c));
 export function catLabelOf(c) {   // built-in label · custom-list title (keyed by the list's id AND name, so whichever the node emits resolves to the human title) · inline custom → "Custom" · else the id
-  if (c === "uncat") return "Uncategorised";
+  if (c === "uncat") return T("Uncategorised");
   const lt = {};
   (Store.panelSettings?.custom_lists || []).forEach(l => { if (l && l.title) { if (l.id) lt[l.id] = l.title; if (l.name) lt[l.name] = l.title; } });
   if (isProviderCat(c)) return capFirst(prettyCatLabel(c, (Store.catLabels || {})[c]));   // provider list → humanised (country names etc.)

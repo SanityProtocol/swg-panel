@@ -1643,6 +1643,10 @@ export const STR = {
   "log|Warnings": "Предупреждения",
   "log|Info": "Инфо",
   "log|Debug": "Отладка",
+  "lvl|err": "ошиб",
+  "lvl|warn": "пред",
+  "lvl|info": "инфо",
+  "lvl|debug": "отлад",
   "Only failures: something that did not apply, start or sync.":
     "Только сбои: то, что не применилось, не запустилось или не синхронизировалось.",
   "Failures, and anything degraded, retrying or falling back.":
@@ -2511,6 +2515,7 @@ export const STR = {
   "Endpoint host / IP": "Хост / IP эндпоинта",
   "Public endpoint host / IP": "Публичный хост / IP эндпоинта",
   "Auto (node's detected address)": "Авто (определённый адрес ноды)",
+  "IP or hostname — e.g. vpn.example.com": "IP или имя хоста — например, vpn.example.com",
   "vpn.xyz.com or 203.0.113.7": "vpn.xyz.com или 203.0.113.7",
   "What clients dial": "Куда звонят клиенты",
   "What clients dial. Leave blank to use the node's detected address.":
@@ -3061,6 +3066,7 @@ export const STR = {
   "Per-destination smart routing": "Умная маршрутизация по назначению",
   "Exit via WARP": "Выход через WARP",
   "Exit via a custom config": "Выход через свой конфиг",
+  "Uncategorised": "Без категории",
   "Custom interface…": "Свой интерфейс…",
   "Ways out of {v1}": "Выходы ноды {v1}",
   "Every way *{v1}* can leave that isn't its own address. WARP accounts and pasted profiles are created under Settings → WARP; the devices below the line are this node's own, or names you add here.":
@@ -3774,7 +3780,7 @@ export const STR = {
   "Clearing…": "Очищаем…",
   "Couldn't clear it.": "Не удалось очистить.",
   "The panel changes these for you when the node comes back. An address of the old box cannot be bound on the new one, and its address is not known yet — so a listener becomes 0.0.0.0, which is every address the new box turns out to have, and a source address becomes auto. Clients are unaffected either way: a wildcard listener is what tells the panel to advertise this node's ingress name, exactly as a wg/awg interface already does. Anything not listed keeps what it has.": "Панель меняет это за вас, когда узел вернётся. Адрес старой машины нельзя занять на новой, а её адрес пока неизвестен — поэтому слушатель становится 0.0.0.0, то есть всеми адресами, какие у новой машины окажутся, а исходящий адрес — «авто». Клиентов это никак не задевает: 0.0.0.0 как раз и означает, что панель объявляет имя входа этого узла — ровно так же, как уже делает интерфейс wg/awg. Всё, чего нет в списке, сохраняется как есть.",
-  "word|endpoint": "endpoint",
+  "word|endpoint": "эндпоинт",
   "word|egress": "egress",
   "word|panel source": "источник к панели",
   "word|mesh source": "источник к узлам",
@@ -5078,7 +5084,7 @@ export const STR = {
   "couldn't create node": "не удалось создать ноду",
   "A label for this node — you can rename it anytime. The swatches set its colour per theme.":
     "Название ноды — переименовать можно когда угодно. Образцы задают цвет для каждой темы.",
-  "Node created": "Нода создан",
+  "Node created": "Нода создана",
   "New token": "Новый токен",
   "A label for this node — rename anytime, nothing else changes. The swatches set its colour per theme.":
     "Название ноды — переименование ничего больше не меняет. Образцы задают цвет для каждой темы.",

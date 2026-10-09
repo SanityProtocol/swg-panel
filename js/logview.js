@@ -28,6 +28,8 @@ export const LOG_PANEL = "panel";                   // the panel's own entry amo
 const PANEL_KINDS = ["panel", "sub", "netctl", "update"];
 const LEVELS = ["err", "warn", "info", "debug"];
 const levelLabel = k => ({ err: T("log|Errors"), warn: T("log|Warnings"), info: T("log|Info"), debug: T("log|Debug") })[k];
+// …and a line's own level, in its 5-character column: the journalctl word in English, its short form in Russian (OE, 1.8.9)
+const levelShort = k => ({ err: T("lvl|err"), warn: T("lvl|warn"), info: T("lvl|info"), debug: T("lvl|debug") })[k];
 const lvOf = p => p <= 3 ? "err" : p === 4 ? "warn" : p <= 6 ? "info" : "debug";
 // a node's chip colour: a stable pick from the panel's own status/brand hues, so 200 chips still read apart
 const CHIP = ["--brand", "--online", "--ready", "--pending", "--relay-2", "--smart", "--tport-os", "--partial", "--tport-dock", "--awg3"];
@@ -430,12 +432,12 @@ function Row({ l, q }) {
     <span class="lv-markt">${l.src === "!skip" ? T("{v1} lines skipped — narrow the sources or raise the filter", { v1: fmtNum(Number(l.text)) })
       : T("Resumed — some lines before this may be missing")}</span>
   </div>`;
-  const lv = lvOf(l.prio);                            // shown as journalctl names a priority: the same in every language
+  const lv = lvOf(l.prio);                            // its colour by the journalctl name; its label in the operator's language
   return html`<div class=${"lv-row lv-" + lv}>
     <span class="lv-t" title=${ymd(l.k)}>${hms(l.k)}</span>
     <span class="lv-chip" style=${"--lvc:" + chipOf(l.nid)}>${nodeName(l.nid)}</span>
     <span class="lv-src" title=${l.src}>${srcShown(l)}</span>
-    <span class="lv-lv">${lv}</span>
+    <span class="lv-lv">${levelShort(lv)}</span>
     <span class="lv-msg"><${Hi} text=${l.text} q=${q}/></span>
   </div>`;
 }
