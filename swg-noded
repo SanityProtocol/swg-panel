@@ -13715,6 +13715,11 @@ def _bin_gen(path, k31, k30):
     not read: an amneziawg-go is megabytes, and this runs on the smallest boxes too."""
     if not path or not os.path.isfile(path):
         return None
+    with open(path, "rb") as f:                 # NixOS: nixpkgs wraps every amneziawg-tools binary (makeWrapper), so `awg` is
+        head = f.read(4096)                     # a script whose keys are in the binary it execs — read that one (DN-20)
+    w = re.search(rb'"(/[^"]+/\.[^/"]+-wrapped)"', head) if head.startswith(b"#!") else None
+    if w and os.path.isfile(w.group(1).decode(errors="replace")):
+        path = w.group(1).decode(errors="replace")
     with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
         return "3.1" if m.find(k31) >= 0 else ("3.0" if m.find(k30) >= 0 else "2.0")
 
