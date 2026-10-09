@@ -33780,7 +33780,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._node_goodbye()
         if path == "/api/node/proc-status":
             return self._node_proc_status()
-        if path == "/api/node/logs":       # a live viewer's lines — the request's key, no node token, no lock (live_absorb)
+        if path == "/api/node/logs":       # a viewer's / range's lines — admitted by the node token its sync reply carried (a
+            #                                set lookup, before the body), parsed LOG_POST_SLOTS at a time, then the request's key; no store, no lock
             return self._node_logs()
         if path == "/api/node/rename":     # node-token auth — installer pushes a box-name change
             return self._node_rename()
