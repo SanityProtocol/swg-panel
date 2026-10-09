@@ -32801,15 +32801,17 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(_e, dict):
                 continue
             _ov = (node.get("ifaces") or {}).get(_ifn) or {}
-            # `stopped` is a decision, not damage. `system` (mesh) links self-heal — the same exclusion
-            # _broken_ifaces makes, and for the same reason.
-            if not _e.get("down") or _e.get("stopped") or _ov.get("system"):
+            # `stopped` is a decision, not damage. A `system` (mesh) link is started too: the mesh self-heal re-creates only
+            # a link the node STOPS reporting, so one reported down — its device lost and its conf kept (a module unload, a
+            # failed boot start, an outside `ip link del`) — came back by nothing, for ever, every route through it refused
+            # (q189 MESH-1). Not while the mesh itself has a create or a delete staged for it: that work is its own.
+            if not _e.get("down") or _e.get("stopped"):
                 if _ifn in _auto:                      # healthy again → forget the history
                     _auto.pop(_ifn, None); _auto_dirty = True
                 continue
             # A rebuild or a transfer in flight takes interfaces down as part of its own work, and may be
             # holding an escrowed key the node must NOT be raced into minting around. Leave those alone.
-            if _mig or _ifn in _pending:
+            if _mig or _ifn in _pending or (_ov.get("system") and (_ifn in (node.get("create") or {}) or _ifn in (node.get("delete") or {}))):
                 continue
             _st = _auto.get(_ifn) or {}
             _n = int(_st.get("n") or 0)
