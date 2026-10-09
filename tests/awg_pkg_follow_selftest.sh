@@ -26,6 +26,8 @@
 #       empty one → the module is not unloaded (read as empty, `modprobe -r` destroyed the container's device)
 #  [20] (1.8.9 qualification IN-1) no userspace fallback (amneziawg-go) → nothing upgraded, said: a build that does not
 #       compile here is given up AFTER the old module left the disk, and such a box had no AmneziaWG datapath after a reboot
+#  [17c] (1.8.9 qualification VERIFY1-B1) an upgrade whose build the BOX cut short (half-configured, not a compile failure) is
+#       removed for now, not recorded — left so, every apt run on the box failed until the fault cleared
 #  [23] (1.8.9 qualification VERIFY1-B1) a module the operator BLACKLISTED (modprobe.d) is not loaded by the automatic
 #       load — a newer build, no device anywhere: not unloaded and loaded again by name (`modprobe -b` says 0 without loading)
 #  [22] (1.8.9 qualification, HE-2's twin) a namespace NO process holds — kept by a bind mount (lsns: no PID, its NSFS path),
@@ -63,6 +65,9 @@ if [ "${1:-}" = "--perturb" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's|if \[ ! -e "[^"]*/libmod/$(uname -r)/build" \]; then|if false; then|')"; _planted "$_b" "$fn" "the headers check"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#  have lsns \&\& have nsenter || { echo "?"; return 0; }#  return 0#')"; _planted "$_b" "$fn" "the namespace scan"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/cur="$(pkg_installed amneziawg-dkms)" || cur=""/cur="$(pkg_installed amneziawg-dkms)"/')"; _planted "$_b" "$fn" "the errexit-safe assignment"
+fi
+if [ "${1:-}" = "--perturb-transient" ]; then   # q189-int2: a half-configured upgrade that is not a compile failure is left so
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/    if awg_dkms_pending; then   # the box cut its build short/    if false; then   # the box cut its build short/')"; _planted "$_b" "$fn" "the transient removal"
 fi
 if [ "${1:-}" = "--perturb-blacklist" ]; then   # e66018f: the automatic load asks nothing of modprobe.d
   _b="$fn"; fn="${fn//\] && ! awg_blacklisted; then/]; then}"; _planted "$_b" "$fn" "the blacklist check"
@@ -114,7 +119,8 @@ $fn
 $libfn
 AWG_MOD_FAILED="\$SBX/awg-module-failed"
 awg_compat_patch_installed(){ return 1; }; awg_dpkg_recover(){ echo "DPKG-RECOVER" >> "\$SBX/calls"; return 0; }
-awg_dkms_compile_failed(){ [ -e "\$SBX/compile-failed" ]; }; awg_dkms_give_up(){ echo "GIVE-UP" >> "\$SBX/calls"; }
+awg_dkms_compile_failed(){ [ -e "\$SBX/compile-failed" ]; }; awg_dkms_give_up(){ echo "GIVE-UP \$*" >> "\$SBX/calls"; }
+awg_dkms_pending(){ [ -e "\$SBX/pending" ]; }
 AWG_PKG_ROUTE=no; ensure_awg_pkg_follow; echo "DID_UPDATE=\$DID_UPDATE DID_FAIL=\$DID_FAIL ROUTE=\$AWG_PKG_ROUTE"; echo "AFTER: the update goes on"
 EOF
 case_(){   # case_ <name> : a fresh sandbox — 1.0 installed and loaded, 3.1 in the PPA, awg owned by amneziawg-tools
@@ -224,6 +230,8 @@ check "CONTROL: a record for another kernel → upgraded" "$(grep -q 'install -y
 echo; echo "[17] the upgrade fails because its module does not compile here — given up on, not left half-configured"
 case_ c17; touch "$SBX/apt-fail" "$SBX/compile-failed"; out="$(go)"
 check "given up (dpkg left clean, the version recorded) and counted as an update, not a failure" "$(grep -q 'GIVE-UP' "$SBX/calls" && printf '%s' "$out" | grep -q 'DID_UPDATE=yes DID_FAIL=no' && printf '%s' "$out" | grep -q 'does not compile on' && echo 0 || echo 1)" "$out $(cat "$SBX/calls")"
+case_ c17c; touch "$SBX/apt-fail" "$SBX/pending"; out="$(go)"
+check "(VERIFY1-B1) a build the box cut short, left half-configured → removed for now, NOT recorded (transient), said, an update" "$(grep -qx 'GIVE-UP transient' "$SBX/calls" && printf '%s' "$out" | grep -q "module build did not finish on this box" && printf '%s' "$out" | grep -q 'DID_UPDATE=yes DID_FAIL=no' && echo 0 || echo 1)" "$out $(cat "$SBX/calls")"
 case_ c17b; touch "$SBX/apt-fail"; out="$(go)"
 check "CONTROL: a failure that is not a compile failure → not given up, said as tried again next time" "$(grep -q 'GIVE-UP' "$SBX/calls" && echo 1 || { printf '%s' "$out" | grep -q 'tried again on the next update' && echo 0 || echo 1; })" "$out"
 
