@@ -872,7 +872,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   # route first, then builds from source, and only then falls back to the userspace datapath.
   # Docker nodes run userspace amneziawg-go from their image → skipped by the HAVE_BNODE gate.
   [ "$HAVE_BNODE" = yes ] || return 0
-  local _tools=no _mod=no _hf=0 _rs=0
+  local _tools=no _mod=no _hf=0 _rs=0 _bl=no
   have awg && have awg-quick && _tools=yes
   # The module source fixed for kernels that backport the new udp_tunnel API (PR #218, lib/common.sh) — on every update, so
   # a box whose module builds today does not break apt at its next kernel; and one it already broke (an Ubuntu 26.04 box
@@ -880,7 +880,10 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   if ! $DRYRUN && awg_compat_patch_installed; then
     DID_UPDATE=yes; awg_dpkg_recover || true
   fi
-  { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes
+  # The operator's own `blacklist amneziawg` (modprobe.d) is a choice, kept: the module is not loaded by name here nor
+  # "healed", and awg interfaces stay where they run — the update loaded it by name and moved awg0 and the mesh back onto
+  # it (1.8.9 qualification VERIFY1-B1; swg-noded stopped in F11). `modprobe -b` says 0 without loading, so it is asked.
+  if awg_blacklisted; then _bl=yes; else { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes; fi
   # D1: the pinned userspace fallback, install-if-missing, BEFORE the "already working" return — that return is exactly
   # how a box whose module works never got one, and a reboot onto a kernel without a module then took every awg
   # interface down (docs/AWG-DATAPATH-RESILIENCE-PLAN.md §1).
@@ -890,6 +893,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     if awg_go_pinned; then DID_UPDATE=yes; ok "AmneziaWG: userspace fallback installed (pinned $AWG_GO_TAG) — a kernel without a module no longer takes awg interfaces down"
     else note "AmneziaWG: the pinned userspace fallback could not be fetched — awg interfaces depend on the kernel module alone"; fi
   fi
+  if [ "$_bl" = yes ] && [ "$_tools" = yes ]; then note "AmneziaWG: the kernel module is blacklisted on this box (modprobe.d) — left as it is"; return 0; fi
   # D4: a box whose module loads TODAY still needs it for the kernel it boots NEXT. That early return is what let a
   # client's box sail through an update on kernel 138 with 139 installed, no headers for it and no module for it.
   # Install-if-missing only: the headers metapackage, then a DKMS build for every installed kernel that has headers.
@@ -1107,7 +1111,7 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
   DID_UPDATE=yes; note "AmneziaWG packages: $cur → $cand"
   disk="$(modinfo -F version amneziawg 2>/dev/null)" || disk=""; loaded="$(cat /sys/module/amneziawg/version 2>/dev/null)" || loaded=""
   if [ -z "$loaded" ] || [ "$disk" = "$loaded" ]; then ok "AmneziaWG packages updated (kernel module $disk)"; return 0; fi
-  if [ -z "$(awg_kdevs)" ] && [ -z "$(awg_kdevs_elsewhere)" ]; then   # nobody on the module → load the new one now, cutting no one
+  if [ -z "$(awg_kdevs)" ] && [ -z "$(awg_kdevs_elsewhere)" ] && ! awg_blacklisted; then   # nobody on the module → load the new one now, cutting no one
     if modprobe -r amneziawg 2>/dev/null && modprobe amneziawg 2>/dev/null; then
       ok "AmneziaWG $disk installed and loaded (no interface was using the kernel module)"; return 0
     fi
@@ -1138,6 +1142,7 @@ ensure_awg_back_on_kernel(){   # SURGICAL — NOT part of the general heal: move
   [ "$HAVE_BNODE" = yes ] || return 0
   have awg-quick || return 0
   $DRYRUN && return 0
+  awg_blacklisted && return 0   # the operator's own blacklist: theirs to keep the module out (ensure_awg_datapath)
   modprobe amneziawg 2>/dev/null || return 0
   local d n c conf sock xit _w moved="" stuck="" down="" xmoved="" refused="" xdir="${SWG_NODED_STATE:-/var/lib/swg-noded}/exits"
   for d in /sys/class/net/*; do

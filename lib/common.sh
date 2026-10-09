@@ -2179,6 +2179,7 @@ awg_key_refused_note(){ # say it with the steps, and record it for swg-noded (ke
   mkdir -p "$(dirname "$AWG_MOD_REFUSED")" 2>/dev/null || return 0
   printf 'kernel=%s\nboot=%s\nmok=%s\n' "$(uname -r)" "$(_awg_boot_id)" "$k" > "$AWG_MOD_REFUSED.tmp" 2>/dev/null && mv -f "$AWG_MOD_REFUSED.tmp" "$AWG_MOD_REFUSED" 2>/dev/null || true; }
 awg_mod_built(){ modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1; }   # a module file exists for THIS kernel (loadable or not)
+awg_blacklisted(){ modprobe -c 2>/dev/null | grep -qE '^blacklist[[:space:]]+amneziawg$'; }   # the operator's own (modprobe.d)
 _awg_kbuild(){ printf '%s' "${SWG_LIB_MODULES:-/lib/modules}/$(uname -r)/build"; }   # this kernel's headers (the gates point it elsewhere)
 awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that
   # — not a missing prerequisite (no headers), and not a module that built but will not load (Secure Boot: the package is
