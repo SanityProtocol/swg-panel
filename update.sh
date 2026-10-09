@@ -990,17 +990,21 @@ awg_kdevs(){   # the amneziawg KERNEL devices in this network namespace, one per
 awg_kdevs_elsewhere(){   # OTHER network namespaces holding an amneziawg device — `modprobe -r` would destroy it there too.
   # Named ones (`ip netns`) AND every process's (`lsns`): a Docker container's namespace is not named, and an AmneziaWG device
   # a container made on the host's module (Amnezia's own containers, say) would otherwise go without a word. Prints "?"
-  # when it cannot look (no lsns / nsenter) — the caller must then not unload: it cannot know it cuts no one.
-  local n me ns pid
+  # when it cannot look (no lsns / nsenter, or either one failing) — the caller must then not unload: it cannot know it cuts
+  # no one. A namespace nsenter could not get into is NOT an empty one (the process lsns named for it may have exited while
+  # others keep it alive): read as empty, `modprobe -r` destroyed its device (1.8.9 qualification, HE-2's twin in swg-agent).
+  local n me ns pid out list
   for n in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     [ -n "$(ip -n "$n" -o link show type amneziawg 2>/dev/null)" ] && echo "$n"
   done
   have lsns && have nsenter || { echo "?"; return 0; }
   me="$(readlink /proc/self/ns/net 2>/dev/null)" || me=""
+  list="$(lsns -t net -n -o NS,PID 2>/dev/null)" || { echo "?"; return 0; }
   while read -r ns pid; do
     [ -n "$pid" ] && [ "net:[$ns]" != "$me" ] || continue
-    [ -n "$(nsenter --net="/proc/$pid/ns/net" ip -o link show type amneziawg 2>/dev/null)" ] && echo "net:[$ns]"
-  done < <(lsns -t net -n -o NS,PID 2>/dev/null || true)
+    out="$(nsenter --net="/proc/$pid/ns/net" ip -o link show type amneziawg 2>/dev/null)" || { echo "?"; return 0; }
+    [ -n "$out" ] && echo "net:[$ns]"
+  done <<< "$list"
   return 0
 }
 awg_src_refresh(){   # refresh the amnezia apt source ALONE — a whole `apt-get update` on every one-click update is not needed here
