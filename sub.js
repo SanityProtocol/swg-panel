@@ -168,6 +168,7 @@
   function turnServer(f) { var s = turnServers() || []; for (var i = 0; i < s.length; i++) if (s[i].id === f) return s[i]; return null; }
   // A fork's shown name is its catalog label, never the internal id (they differ where a fork changed hands: samosvalishe → hackdiaz-dev).
   function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }
+  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);   // {fork} in a server name is the name (q189 HE-8)
   function forkRank(f) { var s = turnServers(); if (s && s.length) { for (var i = 0; i < s.length; i++) if (s[i].id === f) return i; return s.length; } var j = FORK_ORDER_FALLBACK.indexOf(f); return j < 0 ? FORK_ORDER_FALLBACK.length : j; }
   // WireGuard-only forks (the client can't front AmneziaWG) — from the catalog server's `protocols` (no "awg"); so
   // such a fork isn't offered for an AWG peer. The fallback mirrors the panel's old TURN_WG_ONLY.
@@ -1137,7 +1138,7 @@
     var done = el("div", "ph-copied"); done.appendChild(iconEl("checks")); done.appendChild(el("span", null, t("cmdCopied")));
     inner.appendChild(done);
     var head = el("div", "ph-head cli-head");
-    head.appendChild(el("span", "ph-title", (c.forkId ? c.forkId + " " : "") + "Sidecar"));
+    head.appendChild(el("span", "ph-title", (c.forkId ? forkLabel(c.forkId) + " " : "") + "Sidecar"));
     inner.appendChild(head);
     var steps = el("div", "ph-steps"), arr = ((t("cliSteps") || {})[subOs()]) || ((t("cliSteps") || {}).linux) || [];
     for (var i = 0; i < arr.length; i++) steps.appendChild(stepEl(arr[i]));
@@ -1865,7 +1866,7 @@
         // Badge "<fork> · <app>", collapsing to just the fork when the app name echoes it — same rule the turn cells use.
         var wHasApp = wAppName && wAppName !== wfork;
         var wtag = el("span", "scell-tag");
-        var wsrv = el("span", null, wfork); wsrv.style.color = wfc; wtag.appendChild(wsrv);
+        var wsrv = el("span", null, forkLabel(wfork)); wsrv.style.color = wfc; wtag.appendChild(wsrv);
         // Colour the app chip by the fork its client is NATIVE to (not the server fork) — same rule the turn cells use,
         // so "AMURCANOV · PWDTT" shows PWDTT in its home fork's colour, not amurcanov's.
         var wAppFork = (wga && wclients[wga.cid] && wclients[wga.cid].native_fork) || wfork;
@@ -1880,7 +1881,7 @@
         wrole.appendChild(el("span", "scell-role-if", "WDTT"));
         if (!wBackup) wrole.style.color = ifaceColor("wdtt");
         srvRow.appendChild(wrole);
-        ctrl.forkId = wfork; ctrl.app = wAppName; ctrl.zoomTail = wHasApp ? wAppName : wfork;
+        ctrl.forkId = wfork; ctrl.app = wAppName; ctrl.zoomTail = wHasApp ? wAppName : forkLabel(wfork);
         if (wart.vkMissing) {                                                   // no VK link yet → the same warning the turn cells show
           var wvkw = el("div", "scell-vk scell-vkwarn");
           wvkw.appendChild(el("div", "scell-vkwarn-t", t("vkMissingT")));

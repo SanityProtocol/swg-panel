@@ -16,7 +16,7 @@ import { b64, esc, url, tkey } from "./util.js";
 import { T, Tsplit, srvText } from "./i18n.js";
 import { Store, api, bus } from "./store.js";
 import { Ic, Sheet, Panel, toast, copy, closeModal, pushModal } from "./ui.js";
-import { turnFork, turnForkList } from "./turn-catalog.js";
+import { turnFork, turnForkList, forkLabel } from "./turn-catalog.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef } from "preact/hooks";
 import htm from "htm";
@@ -1063,6 +1063,7 @@ function _b64ToBytes(b64) { try { const s = atob(String(b64 || "").trim()); cons
 // turn-artifacts.js (window.SWGTurn), loaded by both the admin app and the subscription page.
 export function turnArtifact(baseConf, tp, vkLink, vkLinks, asClient, os) {
   const fork = turnFork(tp.service);
+  if (SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);   // {fork} in a server name is the catalog's name (q189 HE-8)
   // Every client (the server's own OR a cross-fork one) gets the admin's saved values for THIS (server, client, OS); the encoder
   // fills anything unset with the app's own default. `os` omitted → the client's primary platform (config-gen has
   // no device context yet; the sub page can pass the visitor's OS later).

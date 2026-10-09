@@ -149,6 +149,10 @@
     };
   }
 
+  // ── a fork's NAME for an end user ({fork} in a server-name template): each page hands its catalog's (q189 HE-8 —
+  // "samosvalishe 56005" was the raw id of a fork renamed hackdiaz-dev). Identity until a page sets it.
+  var forkName = function (f) { return f; };
+
   // ── fork id from a service name (vk-turn-proxy-<fork>-<port>) ──
   function label(service) {
     var s = (service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn";
@@ -454,7 +458,7 @@
       if (i > 0 && l.indexOf(":") === i) { host = l.slice(0, i); port = l.slice(i + 1); }
     }
     return tpl.replace(/\{(fork|host|port)\}/g, function (_m, k) {
-      return k === "fork" ? String(fork || "") : (k === "host" ? host : port);
+      return k === "fork" ? String(forkName(String(fork || "")) || fork || "") : (k === "host" ? host : port);
     }).trim();
   }
 
@@ -776,5 +780,5 @@
   // key can match — the fork and author are proper nouns. Expose the PARTS so the panel can put them through a
   // placeholder string instead, the way it already does for every other composed sentence.
   function clientMeta(enc) { var m = CLIENT_META[enc]; return m ? { app: m.app, platform: m.platform, author: m.author } : null; }
-  root.SWGTurn = { vkLinkCaps: VK_LINK_CAPS, artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
+  root.SWGTurn = { setForkLabel: function (fn) { if (typeof fn === "function") forkName = fn; }, vkLinkCaps: VK_LINK_CAPS, artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
 })(typeof window !== "undefined" ? window : this);

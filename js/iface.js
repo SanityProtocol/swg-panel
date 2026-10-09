@@ -251,7 +251,7 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, c
         <//>`}>
       <div class="iface-grid">
         <div class="ig-item"><span class="ig-l">${T("Type")}</span><span class="ig-v">${wd
-          ? html`WDTT${(cand.wdtt && cand.wdtt.fork) ? " · " + cand.wdtt.fork : ""}`
+          ? html`WDTT${(cand.wdtt && cand.wdtt.fork) ? " · " + forkLabel(cand.wdtt.fork) : ""}`
           : cand.type_why
           ? T("looks like {v1}", { v1: (cand.type_hint || "wg").toUpperCase() })
           : ctr
