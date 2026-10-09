@@ -17987,9 +17987,26 @@ def _snap_num(v):
     """A reported number, or None. NOT an isinstance test: this project's own nodes send numbers as strings
     in places (`wdtt[].raw_port` is str beside an int `wg_port`), so a numeric string has to count."""
     try:
-        return max(0.0, float(v or 0))
+        n = max(0.0, float(v or 0))
     except (TypeError, ValueError):
         return None
+    # …but not "inf" / "1e999", which float() reads and JSON cannot carry: kept, /api/state answered with a bare
+    # `Infinity` that the browser's r.json() refuses, and every operator's console froze (1.8.9 qualification R2 PANEL-1).
+    return n if math.isfinite(n) else None
+
+
+def _json_finite(s):
+    """json.loads hook — parse_constant AND parse_float — for a node's sync body (1.8.9 qualification R2 PANEL-1).
+
+    Python's json reads `NaN`, `Infinity`, `-Infinity` and a literal past a double's range (`1e400` → inf), none of
+    which is JSON: stored in a snapshot, they came back out of /api/state, which the browser's r.json() refuses — one
+    node's report froze every operator's console. Refused here as any unreadable body is (400): that node's pass is
+    skipped (noded reconciles only on a 200 with `desired`) and no other node's sync is touched. swg-noded never sends
+    one — its numbers are counters, rates and figures parsed from /proc and ping."""
+    n = float(s)
+    if not math.isfinite(n):
+        raise ValueError("not a finite number: %.24s" % s)
+    return n
 
 
 def _snap_sanitise(snap):
@@ -18044,6 +18061,31 @@ def _snap_sanitise(snap):
                 return "snapshot field %r: item %d must be an object, got %s" % (k, bad, type(v[bad]).__name__)
         else:
             return "snapshot field %r must be an object or a list, got %s" % (k, type(v).__name__)
+    # ⚠️ …AND ONE LEVEL FURTHER IN, where the readers walk without looking (1.8.9 qualification R2 PANEL-1). The check
+    # above stops at "each entry is an object"; the readers then take a field INSIDE one as given — `(blk.get("meta")
+    # or {}).get(…)`, `tp.get(…)`, `(snap.get("ip_forward") or {}).get(…)`, `(listen or "").strip()`. So one node
+    # reporting a string `meta` failed EVERY node's sync (cascade_plan plans the whole fleet: a 500, no `desired`), and
+    # a non-object `ip_forward` / `rp_filter` / turn-proxy or a non-string WDTT / csqtt `listen` answered /api/state
+    # with a 500 for every operator — kept across a restart, as the warm start restores the mirror through here. No
+    # swg-noded build sends any of these (1.8.8 and 1.8.9: build_meta, ip_forward_health and the rp_filter literal are
+    # objects, load_turn_proxies a list of them, `listen` its record's string), so each is DROPPED, never refused: what
+    # cannot be read is simply not there — the shape every reader already handles — and a real snapshot is untouched.
+    # Nothing below may raise — the warm start runs this at boot, outside any try — and the check above passes a LIST of
+    # objects too, so each walk takes only the shape its readers walk.
+    for blk in (snap["interfaces"].values() if isinstance(snap.get("interfaces"), dict) else ()):
+        if not isinstance(blk.get("meta") or {}, dict):
+            del blk["meta"]
+    for k in ("ip_forward", "rp_filter"):
+        if not isinstance(snap.get(k) or {}, dict):
+            del snap[k]
+    for k in ("wdtt", "csqtt"):
+        for e in (snap[k] if isinstance(snap.get(k), list) else ()):
+            if not isinstance(e.get("listen") or "", str):
+                del e["listen"]
+    if not isinstance(snap.get("turn_proxies") or [], list):
+        del snap["turn_proxies"]                         # a map or a string walks as its keys / letters
+    elif snap.get("turn_proxies"):
+        snap["turn_proxies"] = [t for t in snap["turn_proxies"] if isinstance(t, dict)]
     return None
 
 
@@ -31362,8 +31404,8 @@ class Handler(BaseHTTPRequestHandler):
         seq = next(_SYNC_SEQ)        # its arrival: a node's next sync can overtake this one (the ledger's ORDER note)
         if not self._node_sig_ok(node, raw):
             return
-        try:
-            body = json.loads(raw or "{}")
+        try:                                             # NaN / Infinity are refused here, not stored (_json_finite)
+            body = json.loads(raw or "{}", parse_constant=_json_finite, parse_float=_json_finite)
         except Exception:
             return self._send(400, {"error": "bad body"})
         snap = body.get("snapshot") or {}
