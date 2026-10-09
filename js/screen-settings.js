@@ -4489,10 +4489,14 @@ const p2pTarget = (p, exits, node) => {
 };
 const p2pLabel = (p, exits, node) => !p || !p.action ? "" : (p.action === "dev" || p.action === "exit")
   ? T("via {v1}", { v1: p2pTarget(p, exits, node) }) : (P2P_SHORT()[p.action] || "");
-const P2P_HINT = () => ({
-  block: T("Torrent traffic is dropped on every way out of this server: its interfaces, traffic other nodes send out through it, and programs running on it. Web, calls and games are not affected."),
+// What each policy does, said as measured (q189 V-FEAT-B F-2): a torrent program running ON the server is caught only by an
+// unencrypted handshake — an encrypted one (MSE) meets no signature, and local traffic has no fan-out flag by design, so it
+// got through (8 peers, 2.3 MB in 60 s, no counter moved); so did µTP on a flow already past its 4th packet.
+export const P2P_HINT = () => ({
+  block: T("Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web, calls and games are not affected."),
   direct: T("Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route."),
-  iface: T("Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked.") });
+  iface: T("Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked."),
+  routed: v1 => T("Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server is blocked. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through.", { v1 }) });
 
 export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManage, saveExits }) {
   const ips = node.ips || []; const v = vals || {};
@@ -4840,9 +4844,7 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
           summary=${T("Torrents / P2P: {v1}", { v1: p2pLabel(curRec, exits, node) })}>
           <div class="field"><label>${T("Torrents / P2P")}</label>
             <${Dropdown} value=${cur} onChange=${a => set({ p2p: p2pRec(a) })} options=${opts}/>
-            <div class="hint">${routed
-              ? T("Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server, and programs running on it, are blocked.", { v1: p2pTarget(curRec, exits, node) })
-              : P2P_HINT()[cur]}</div>
+            <div class="hint">${routed ? P2P_HINT().routed(p2pTarget(curRec, exits, node)) : P2P_HINT()[cur]}</div>
             ${!(v.p2p && v.p2p.action) ? html`<div class="hint">${T("Chosen automatically: this is the default. An interface's own Torrents / P2P switch counts only when you pick “Each interface decides”.")}</div>` : null}
             ${tgtStale ? html`<div class="hint warnish">${T("{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.", { v1: tgt.name })}</div>` : null}
             ${tgtDrops ? html`<div class="hint warnish">${T("{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.", { v1: tgt.name })}</div>` : null}

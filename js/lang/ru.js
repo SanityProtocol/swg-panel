@@ -4782,8 +4782,8 @@ export const STR = {
   "this server's address only": "только через адрес сервера",
   "per interface": "по интерфейсам",
   "torrents → {v1}": "торренты → {v1}",
-  "Torrent traffic is dropped on every way out of this server: its interfaces, traffic other nodes send out through it, and programs running on it. Web, calls and games are not affected.":
-    "Торрент-трафик отбрасывается на всех выходах сервера: с его интерфейсов, от других нод, выходящих через него, и от программ на самом сервере. Сайты, звонки и игры не затрагиваются.",
+  "Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web, calls and games are not affected.":
+    "Торрент-трафик отбрасывается на всех выходах сервера: с его интерфейсов и от других нод, выходящих через него. Торрент-программа на самом сервере блокируется, только когда её хендшейки не зашифрованы, — зашифрованная проходит. Сайты, звонки и игры не затрагиваются.",
   "Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.":
     "Торрент-трафик может выходить только через собственный адрес сервера — никогда через выход или другую ноду. Остальной трафик идёт своим маршрутом.",
   "Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked.":
@@ -4794,8 +4794,8 @@ export const STR = {
   "via {v1}": "через {v1}",
   "Route through {v1}": "Направлять через {v1}",
   "Route through node {v1}": "Направлять через ноду {v1}",
-  "Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server, and programs running on it, are blocked.":
-    "Торрент-трафик может выходить только через {v1}. Если этот путь не работает, торрент-трафик блокируется — другим путём он не уходит. Трафик других нод, выходящий через этот сервер, и программы на нём блокируются.",
+  "Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server is blocked. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through.":
+    "Торрент-трафик может выходить только через {v1}. Если этот путь не работает, торрент-трафик блокируется — другим путём он не уходит. Трафик других нод, выходящий через этот сервер, блокируется. Торрент-программа на самом сервере блокируется, только когда её хендшейки не зашифрованы, — зашифрованная проходит.",
   "{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.":
     "{v1} блокирует торрент-трафик, который ей присылают другие ноды, — направленное туда не выйдет. Разрешите его на {v1} или оставьте решать каждому интерфейсу.",
   "Through another node": "Через другую ноду",
