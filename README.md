@@ -381,23 +381,25 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
 stays that way: its users need the **AmneziaWG** app with the config the panel shows now — or delete the
 interface and create it again as WireGuard.
 
-**Going back to an older version?** Going back from 1.8.9 on a **bare-metal** server: 1.8.9 gave swg's services a
-journal of their own (`swg-logs` reads it) and a torrent guard an older version does not manage. Once the older version runs, put
-its logs back where its `journalctl -u …` reads them, and remove the guard — its last policy otherwise goes on judging
-traffic until a reboot:
+**Going back to an older version?** From 1.8.9, on a **bare-metal** server, two things stay: swg's services go on
+logging into the journals 1.8.9 gave them (an older version's `journalctl -u …` shows only systemd's lines; `swg-logs`
+still reads them), and 1.8.9's torrent guard stays in force with its last policy, whatever the older version's card
+says. A reboot ends the guard; once the older version runs, this ends both now:
 ```bash
 sudo rm -f /etc/systemd/system/*.service.d/swg-ns.conf && sudo systemctl daemon-reload
-sudo systemctl restart swg-noded                  # on the panel's server also: swg-panel-server swg-sub
-sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null     # the guard (a reboot clears it too)
+sudo systemctl try-restart 'swg-*.service'        # back to the system journal (a reboot moves them too)
+sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null     # the torrent guard
 ```
-A mesh template you set for one server is moved by 1.8.9 onto that server's links: they keep it, but an older panel
-shows that server's template empty. A **Docker** server keeps the guard too (the same `nft` / `ip rule` line), and one
-started on an image older than 1.8.7 keeps two more firewall tables that version can't manage, which go on refusing
-connections the panel has since allowed. Remove them on that server (a reboot clears them too):
+A **Docker** server keeps the guard too (the same `nft` / `ip rule` line), and one started on an image older than 1.8.7
+keeps two more firewall tables that version can't manage, which go on refusing connections the panel has since allowed.
+Remove them on that server (a reboot clears them too):
 ```bash
 sudo nft delete table inet swg_reach; sudo nft delete table inet swg_share
 ```
 On NixOS there is a little more — see [Going back to an older build](nix/README.md#going-back-to-an-older-build).
+A server's own mesh AWG params are kept on its links since 1.8.9: an older panel shows none on the server's card, and a
+link it rebuilds gets the fleet's default. Each release's notes in the [changelog](CHANGELOG.md) say what else going back
+from it takes.
 
 ### Backups — automatic, and manual
 
