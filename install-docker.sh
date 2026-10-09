@@ -1683,7 +1683,13 @@ BUILDFLAG=""; $BUILD && BUILDFLAG=--build   # default pulls prebuilt images from
 # containers would run `latest` — which was false. Ask the file too.
 _pinned_tag(){ [ -n "${SWG_IMAGE_TAG:-}" ] && return 0
   [ -f "$INSTALL_DIR/.env" ] && [ -n "$(sed -n 's/^SWG_IMAGE_TAG=//p' "$INSTALL_DIR/.env" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]*#.*//; s/[[:space:]]*$//')" ]; }
-if ! $BUILD && ! _pinned_tag && [ -n "${SWG_REF:-}" ] && [ "${SWG_REF}" != main ]; then
+# A COMMIT (bootstrap's SWG_COMMIT — a going back by commit) is installed while SWG_REF is the branch the box tracks, so the
+# branch test below stayed silent and the containers ran `latest` while every script said the commit (SOAK-3).
+if ! $BUILD && ! _pinned_tag && [ -n "${SWG_COMMIT:-}" ]; then
+  warn "installing scripts from commit $(b "$SWG_COMMIT"), but the CONTAINERS will run the published $(b latest) image —
+    that commit's own is $(b "sha-${SWG_COMMIT:0:7}") (kept for every release commit): set $(b "SWG_IMAGE_TAG=sha-${SWG_COMMIT:0:7}")
+    in $INSTALL_DIR/.env and re-run, or re-run with $(b --build) to build it from source."
+elif ! $BUILD && ! _pinned_tag && [ -n "${SWG_REF:-}" ] && [ "${SWG_REF}" != main ]; then
   warn "installing scripts from $(b "$SWG_REF"), but the CONTAINERS will run the published $(b latest) image —
     images are built from $(b main), so there is none for $(b "$SWG_REF"). Re-run with $(b --build) to build
     this branch from source, or set $(b SWG_IMAGE_TAG) to an image tag that exists."

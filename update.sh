@@ -2328,6 +2328,9 @@ PYDRIFT
     echo
     if confirm "Pull the latest image for $(col_l "docker ($prof)")?"; then
       info "pulling the latest image ($DOCKER_DIR)"
+      # a COMMIT (bootstrap's SWG_COMMIT — going back by commit) moves the scripts, not the containers: said (SOAK-3)
+      if [ -n "${SWG_COMMIT:-}" ] && [ -z "${SWG_IMAGE_TAG:-}" ] && ! grep -qs '^SWG_IMAGE_TAG=[^[:space:]#]' "$DOCKER_DIR/.env"; then
+        warn "updating to commit $(b "$SWG_COMMIT"), but the containers run the published $(b latest) image — for that commit's own, set $(b "SWG_IMAGE_TAG=sha-${SWG_COMMIT:0:7}") in $DOCKER_DIR/.env (kept for every release commit) and re-run"; fi
       if $DRYRUN; then DID_UPDATE=yes; echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d --force-recreate)"; note "docker ($prof): would pull + recreate"
       # --force-recreate: after `pull` updates :latest, a plain `up -d` may just (re)start the EXISTING
       # container on the OLD image (log shows "Started", not "Recreated") — so the node keeps the old

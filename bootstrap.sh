@@ -389,6 +389,7 @@ if printf '%s' "$REF" | grep -cE '^[0-9a-f]{7,40}$' >/dev/null; then
   # a ref goes into a URL and a shell command — the same character set swg-noded accepts for update_ref, or nothing
   printf '%s' "$_track" | grep -cE '^[A-Za-z0-9._/-]{1,100}$' >/dev/null || _track=""
   export SWG_REF="${_track:-main}"
+  export SWG_COMMIT="$REF"   # …and the commit itself: on Docker the containers do not follow it, and that is said (SOAK-3)
   info "installing commit $REF — this box's Update button keeps following $(b "$SWG_REF")"
 elif need git; then
   if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
