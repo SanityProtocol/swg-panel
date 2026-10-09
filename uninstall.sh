@@ -919,8 +919,12 @@ reap_iface_rules(){ local n="$1" s="${2:-}" l _s
 # (round 12e, R31-X3): a kernel wg0 outlives `docker stop` and forwards with whatever tables the kernel holds, and deleted only
 # after `docker rm`, the turn-proxies and the panel's goodbye it forwarded with none, its clients still connected.
 _node_nft_sweep(){
-  local img tl dels _n
+  local img tl dels _n _tag
   img="$(docker inspect -f '{{.Config.Image}}' swg-node 2>/dev/null || true)"
+  # …its container gone (1.8.8 deferred #15): the image its .env names, as compose resolves it — only one this box still
+  # has (an uninstall pulls nothing). Without it rm_docker_node takes the interfaces and the host's nft the tables.
+  [ -n "$img" ] || { _tag="$(sed -n 's/^SWG_IMAGE_TAG=//p' "$DOCKER_DIR/.env" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]\{1,\}#.*$//' | tr -d '"')"
+                     img="ghcr.io/sanityprotocol/swg-node:${_tag:-latest}"; docker image inspect "$img" >/dev/null 2>&1 || img=""; }
   [ -n "$img" ] || return 0
   if $DRYRUN; then echo "    [dry] stop swg-node, then delete its swg* nft tables with its own nft ($img)"; return 0; fi
   docker stop -t 10 swg-node >/dev/null 2>&1 || true
@@ -1447,7 +1451,7 @@ bm_node_detail(){  # bare-metal node: endpoint + interfaces from config.json
   fi
   printf 'swg-noded%s%s' "${ep:+ · endpoint $ep}" "${ifs:+ · ifaces: $ifs}"
 }
-docker_node_detail(){  # docker node: name/endpoint + interfaces (name:port) from the deployment .env
+docker_node_detail(){  # docker node: name/endpoint + interfaces (name:port) from the deployment .env; [$1] leads the line
   local env="$DOCKER_DIR/.env" ep nm ni ifs
   if [ -f "$env" ]; then
     ep="$(sed -n 's/^NODE_ENDPOINT=//p' "$env" | sed -n 1p | tr -d '"')"
@@ -1501,7 +1505,7 @@ print(", ".join(out))
 PYCQ
 )"
   cn="$(printf '%s' "$cl" | tr ',' '\n' | grep -c . 2>/dev/null)"
-  printf 'container swg-node%s%s%s%s%s%s' "${nm:+ · $nm}" "${ep:+ · endpoint $ep}" "${ifs:+ · ifaces: $ifs}" \
+  printf '%s%s%s%s%s%s%s' "${1:-container swg-node}" "${nm:+ · $nm}" "${ep:+ · endpoint $ep}" "${ifs:+ · ifaces: $ifs}" \
          "${tn:+ · turn-proxies: $tn}" "${wl:+ · WDTT ($wn): $wl}" "${cl:+ · csqtt ($cn): $cl}"
 }
 turn_exec_env(){  # <unit> -> "<listen>\t<connect>", resolving the EnvironmentFile (turn.env) form
@@ -1576,10 +1580,21 @@ except Exception: print("")' "$CSQTT_DIR/$iface" 2>/dev/null)"
 
 # Docker: the panel and node are separate containers — offer each independently. If the
 # deployment dir exists but neither container does, offer a files-only cleanup.
-DPANEL=false; DNODE=false
+DPANEL=false; DNODE=false; DNODE_GONE=false
 if command -v docker >/dev/null 2>&1; then
   docker_running swg-panel && DPANEL=true
   docker_running swg-node  && DNODE=true
+fi
+# ⚠️ A DOCKER NODE WHOSE CONTAINER IS ALREADY GONE (crashed and removed, `docker rm`, a `compose down` first) STILL LEFT ITS
+# HOST SIDE: host networking put its interfaces, their iptables rules, its nft tables and ip rules in this host's kernel. Not
+# knowing a node had been here, the run offered the panel or the files only, swept nothing and said "✓ Uninstall complete" —
+# wg0 still up and serving its clients (1.8.8 deferred #15; LC-24 lc7). Its two bind mounts exist only where a node ran: then
+# it is offered as the node it was (rm_docker_node reads its interfaces from node-confs, its image from the .env), BEFORE
+# the panel, whose data-dir answer can take node-confs with it. Never beside a BARE node: the host's interfaces and tables
+# are that node's now (a Docker data dir an uninstall kept stays through a bare install).
+if ! $DNODE && [ ! -f "$SD/swg-noded.service" ] && [ ! -d /opt/swg-noded ] \
+   && { [ -d "$DOCKER_DIR/data/node" ] || [ -d "$DOCKER_DIR/data/node-confs" ]; }; then
+  DNODE_GONE=true; add "Docker node (swg-node)" "$(docker_node_detail "its container is gone — what it left on this host goes")" rm_docker_node
 fi
 $DPANEL && add "Docker panel (swg-panel)" "container swg-panel" rm_docker_panel
 $DNODE  && add "Docker node (swg-node)"   "$(docker_node_detail)"   rm_docker_node
@@ -1609,7 +1624,7 @@ if [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ] \
    && [ ! -d /opt/swg-noded ] && [ ! -f $SD/swg-noded.service ] && _has_leftovers; then
   add "Leftover swg files" "swg-sub dirs/units + service identities from a docker or converted install" rm_leftovers
 fi
-if ! $DPANEL && ! $DNODE && { [ -f "$DOCKER_DIR/docker-compose.yml" ] || [ -f "$DOCKER_DIR/.env" ]; }; then
+if ! $DPANEL && ! $DNODE && ! $DNODE_GONE && { [ -f "$DOCKER_DIR/docker-compose.yml" ] || [ -f "$DOCKER_DIR/.env" ]; }; then
   add "Docker deployment (files)" "$DOCKER_DIR" rm_docker_files
 fi
 
