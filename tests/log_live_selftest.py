@@ -38,6 +38,7 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
      anytoken     any token reads as a node's                notoks       the sync does not hand its token to the request
      parsefree    log posts are unpacked + parsed with no bound on how many at once
      logobj       a node's snapshot `log` that is no object fails the viewer's poll (q189 PLO-4)
+     ctlbytes     noded sizes a post counting a control character as 1 byte (JSON writes 6: 413) (q189 PLO-11)
      bomb         the gzip body is unpacked without a limit nolease      the viewer's poll does not renew the lease
      noexpire     a lapsed request lives on                 evict        a 5th viewer evicts the oldest
      bufgrow      the line buffer has no bound              capflat      the flood cap does not scale with the nodes
@@ -88,6 +89,8 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {   # (program, anchor, replacement)
+    "ctlbytes": ("noded", "(len(t) + 5 * (len(t) - len(t.translate(_LIVE_CTL))) if t.isascii() else 6 * len(t))",
+                 "(len(t) if t.isascii() else 6 * len(t))"),
     "replyalways": ("panel", '''                                **({"logs": _live} if _live else {}),''',
                     '''                                "logs": _live or [],'''),
     "replyall": ("panel", '''            if nid in rec["nodeset"]:\n                rec["sent"].setdefault(nid, now)''',
@@ -774,6 +777,10 @@ def sec5():
     n = N._live_chunk(big)
     check("[5] a backlog goes in parts under the panel's limits (≤ 900 KiB of JSON a post)",
           150 < n < 250 and len(json.dumps(big[:n])) <= N.LIVE_POST_BYTES + 5000, n)
+    junk = [[i, "noded", 6, "".join(chr(c % 32) for c in range(2000))] for i in range(3000)]   # a log of binary junk
+    n = N._live_chunk(junk)
+    check("[5] q189 PLO-11: …a log of control characters too — JSON writes each as \\u00XX, 6 bytes (it went out at 5x the cap: 413)",
+          n > 0 and len(json.dumps(junk[:n])) <= N.LIVE_POST_BYTES + 5000, (n, len(json.dumps(junk[:n]))))
     # the source plan
     M = load("noded", {"SWG_NODED_STATE": os.path.join(TMP, "noded-plan")})
     M.NODE_KIND = "baremetal"
