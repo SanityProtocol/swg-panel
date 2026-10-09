@@ -14,8 +14,9 @@
 # Docker's json-file driver defaults to UNLIMITED. A container that spins and logs per iteration fills the host
 # disk with nothing else wrong: a csqtt a user had installed by hand next to the panel wrote 9.6G of one repeating
 # `[WARN] I/O errors` line and took the box down that way. 10m x 3 caps each service at 30MB. Applies on container
-# RECREATE, which `compose up -d` (and update.sh) already does. swg-noded caps the turn-proxy containers it
-# creates with the same numbers, in _dturn_run.
+# RECREATE, which `compose up -d` (and update.sh) already does. The turn-proxy and relay containers swg-noded creates
+# itself get their own cap — a share of the node's log budget (Settings → Logs), no log at all at logging Off
+# (docker_log_opts).
 x-logging: &logging
   driver: json-file
   options:
