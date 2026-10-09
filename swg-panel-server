@@ -13376,6 +13376,10 @@ def awg_gen_refusal(snap, name, iface=None):
         if awg_loadable(snap):                  # installed by an update, not loaded yet (docs/AWG31-LOAD-PLAN.md D2)
             return perr("{v1}: AmneziaWG 3.1 is installed, but the kernel module in use is still {v2} — load it now, or it "
                         "loads at the next reboot", v1=name, v2=g.get("module"))
+        if _awg_31_waiting(snap):               # …and Load now is not offered: nothing to fall back on (q189 HE-4)
+            return perr("{v1}: AmneziaWG 3.1 is installed, but the kernel module in use is still {v2} — it loads at the next "
+                        "reboot. It cannot be loaded now: this node has no userspace AmneziaWG (amneziawg-go) to run its "
+                        "interfaces on if the new module did not load", v1=name, v2=g.get("module"))
         return perr("{v1}: its AmneziaWG kernel module is {v2} — an AmneziaWG 3.1 interface needs 3.1", v1=name,
                     v2=g.get("module"))
     if (not g.get("module") or on_fallback) and order.get(g.get("fallback"), -1) < 2:
@@ -13388,14 +13392,22 @@ def awg_gen_refusal(snap, name, iface=None):
 
 
 
-def awg_loadable(snap):
-    """Can "Load now" bring AmneziaWG 3.1 to this node — 3.1 installed for the running kernel, an older module in use, tools
-    that drive 3.1, and a module that is the node's own (not a container's host)? docs/AWG31-LOAD-PLAN.md D2/D3. The node's
-    op checks it all again and refuses with a code; this only decides whether the panel offers the button."""
+def _awg_31_waiting(snap):
+    """Is AmneziaWG 3.1 waiting to load on this node — 3.1 installed for the running kernel, an older module in use, tools
+    that drive 3.1, and a module that is the node's own (not a container's host)? docs/AWG31-LOAD-PLAN.md D2/D3."""
     if not awg_gen_reported(snap) or (snap.get("kind") == "docker"):
         return False
     g = {k: v for k, v in _awg_datapath(snap)["gen"].items() if isinstance(v, str)}
     return g.get("disk") == "3.1" and g.get("module") in ("2.0", "3.0") and g.get("tools") == "3.1"
+
+
+def awg_loadable(snap):
+    """Can "Load now" bring AmneziaWG 3.1 to this node — 3.1 waiting to load, and a userspace AmneziaWG (amneziawg-go, the
+    node's `gen.fallback`) to run its interfaces on if the new module does not load? Without one the node's op refuses
+    `no_fallback` before anything stops — a module that did not load left every AmneziaWG interface and mesh link down
+    (q189 HE-4) — so the panel does not offer it. The node's op checks it all again and refuses with a code; this only
+    decides whether the panel offers the button."""
+    return _awg_31_waiting(snap) and isinstance(_awg_datapath(snap)["gen"].get("fallback"), str)
 
 
 def _awg_int(v):
@@ -13439,9 +13451,12 @@ def awg_load_status(node, snap, name, now=None):
     elif got.get("ok"):
         msg = perr("{v1}: AmneziaWG {v2} is loaded, but not every interface came back on it — on the userspace fallback: "
                    "{v3}; down: {v4}", v1=name, v2=ver, v3=", ".join(us) or "—", v4=", ".join(dn) or "—")
-    elif code == "load_failed":
+    elif code == "load_failed" and not dn:
         msg = perr("{v1}: the new AmneziaWG module did not load — its interfaces run on the userspace fallback until the "
                    "next reboot", v1=name)
+    elif code == "load_failed":                  # the node's word per interface — one that did not come back is not on any fallback
+        msg = perr("{v1}: the new AmneziaWG module did not load — on the userspace fallback: {v2}; down: {v3}", v1=name,
+                   v2=", ".join(us) or "—", v3=", ".join(dn))
     elif code == "busy":
         msg = perr("{v1}: the AmneziaWG module could not be unloaded — every interface was brought back as it was", v1=name)
     elif code == "tools_old":
@@ -13459,6 +13474,9 @@ def awg_load_status(node, snap, name, now=None):
         msg = perr("{v1}: nothing was changed — an AmneziaWG device lives in another network namespace", v1=name)
     elif code == "nothing_newer":
         msg = perr("{v1}: nothing was changed — the installed module is not newer than the one in use", v1=name)
+    elif code == "no_fallback":
+        msg = perr("{v1}: nothing was changed — this node has no userspace AmneziaWG (amneziawg-go) to fall back on if the new "
+                   "module did not load", v1=name)
     else:
         msg = perr("{v1}: the AmneziaWG module was not loaded — {v2}", v1=name, v2=str(got.get("error") or code)[:200])
     # "partial": the module is loaded but not every interface came back on it — shown as a problem, not as a success
