@@ -4785,8 +4785,8 @@ export const STR = {
   "this server's address only": "только через адрес сервера",
   "per interface": "по интерфейсам",
   "torrents → {v1}": "торренты → {v1}",
-  "Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web, calls and games are not affected.":
-    "Торрент-трафик отбрасывается на всех выходах сервера: с его интерфейсов и от других нод, выходящих через него. Торрент-программа на самом сервере блокируется, только когда её хендшейки не зашифрованы, — зашифрованная проходит. Сайты, звонки и игры не затрагиваются.",
+  "Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web browsing and video calls are not affected.":
+    "Торрент-трафик отбрасывается на всех выходах сервера: с его интерфейсов и от других нод, выходящих через него. Торрент-программа на самом сервере блокируется, только когда её хендшейки не зашифрованы, — зашифрованная проходит. Сайты и видеозвонки не затрагиваются.",
   "Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.":
     "Торрент-трафик может выходить только через собственный адрес сервера — никогда через выход или другую ноду. Остальной трафик идёт своим маршрутом.",
   "Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked.":

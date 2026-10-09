@@ -4496,7 +4496,7 @@ const p2pLabel = (p, exits, node) => !p || !p.action ? "" : (p.action === "dev" 
 // unencrypted handshake — an encrypted one (MSE) meets no signature, and local traffic has no fan-out flag by design, so it
 // got through (8 peers, 2.3 MB in 60 s, no counter moved); so did µTP on a flow already past its 4th packet.
 export const P2P_HINT = () => ({
-  block: T("Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web, calls and games are not affected."),
+  block: T("Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web browsing and video calls are not affected."),
   direct: T("Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route."),
   iface: T("Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked."),
   routed: v1 => T("Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server is blocked. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through.", { v1 }) });
