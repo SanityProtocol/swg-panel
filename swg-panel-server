@@ -8041,7 +8041,7 @@ def _live_node_state(rec, nid, snaps, seen, stale_s, now):
         return d
     if nid == LIVE_PANEL:
         return {"state": "waiting"}
-    if not (snap.get("log") or {}).get("live"):
+    if not (isinstance(snap.get("log"), dict) and snap["log"].get("live")):   # a `log` that is no object: no reader
         return {"state": "old"}
     sent = rec["sent"].get(nid)
     return {"state": "noanswer" if sent and now - sent > LIVE_NOANSWER_S else "waiting"}
@@ -8365,7 +8365,7 @@ def _range_tick(rec, snaps, seen, stale_s, now):
             snap, ls = snaps.get(nid), seen.get(nid)
             if not isinstance(snap, dict) or ls is None or now - ls > stale_s:
                 ns["state"] = "offline"
-            elif not (snap.get("log") or {}).get("range"):
+            elif not (isinstance(snap.get("log"), dict) and snap["log"].get("range")):   # no object: as _live_node_state
                 ns["state"] = "old"
             elif ns.get("sent") and now - ns["sent"] > LIVE_NOANSWER_S:
                 ns["state"] = "noanswer"
@@ -9618,16 +9618,27 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
     # A node-wide torrent policy the node does not run: noded older than the policy ignores `smart.p2p` and keeps blocking
     # only on the interfaces whose switch is on — so "blocked everywhere" would be a claim the datapath does not keep.
     # ASKED of the node (it reports `p2p` while the policy runs), never inferred from a version; a node that has not
-    # reported smart status at all says nothing either way.
+    # reported smart status at all says nothing either way. Both are read only as objects: one node's malformed report
+    # must never fail /api/state for every operator (q189 F2 — a string `p2p` raised here on every poll).
     _p2pa = p2p_policy(c)
-    if _p2pa != "iface" and isinstance(snap.get("smartroute"), dict) and not snap["smartroute"].get("p2p"):
+    _srp = snap.get("smartroute") if isinstance(snap.get("smartroute"), dict) else None
+    _p2pn = _srp.get("p2p") if _srp is not None and isinstance(_srp.get("p2p"), dict) else None
+    if _p2pa != "iface" and _srp is not None and not _p2pn:
         issues.append(perr("the torrent policy needs a node update — until then torrents are blocked only on interfaces "
                            "that have Torrents / P2P switched on"))
+    # The policy is wanted and its swg_p2p table is NOT in force: the load failed (`detail`: nft's first error line, the
+    # node's English, shown as it is). Nothing of it blocks or routes — and the 1.8.8 per-interface chain is retired.
+    elif _p2pn and _p2pn.get("state") == "error":
+        _pd = _p2pn.get("detail").strip()[:160] if isinstance(_p2pn.get("detail"), str) else ""
+        issues.append(perr("the torrent policy is not in force on this node — its rules failed to load ({v1}); until they "
+                           "load, torrents are not blocked or routed as set", v1=_pd) if _pd else
+                      perr("the torrent policy is not in force on this node — its rules failed to load; until they load, "
+                           "torrents are not blocked or routed as set"))
     # A route the plan could not lower (no mesh link to the node, a subnet clash there, the exit disabled or gone): the node
     # runs it as Block — fail closed — and says so by reporting mode block. Said here, or "routed" would be a quiet lie.
-    elif _p2pa in ("exit", "dev") and ((snap.get("smartroute") or {}).get("p2p") or {}).get("mode") == "block":
+    elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("mode") == "block":
         issues.append(perr("the torrent route is unavailable — torrent traffic is blocked until it is"))
-    elif _p2pa in ("exit", "dev") and ((snap.get("smartroute") or {}).get("p2p") or {}).get("route") == "down":
+    elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("route") == "down":
         issues.append(perr("the torrent route's way out is down — torrent traffic is blocked until it is back"))
     return issues
 
@@ -22978,7 +22989,8 @@ def api(method, path, qs, body, deps):
                         # empty (`new-record-field-must-be-published`) — the policy IN FORCE, and what the node reports it runs
                         "p2p": c.get("p2p") if isinstance(c.get("p2p"), dict) else None,
                         "p2p_eff": p2p_policy(c),
-                        "p2p_node": (snap.get("smartroute") or {}).get("p2p") or None,
+                        "p2p_node": (lambda s: s["p2p"] if isinstance(s, dict) and isinstance(s.get("p2p"), dict)
+                                     and s["p2p"] else None)(snap.get("smartroute")),   # an object or nothing (F2)
                         # whom the list affects, from the last sync's plan (T16) — None until a sync has planned it
                         "default_reach": ((deps.get("cas_reach") or {}).get(nid)
                                           if isinstance(c.get("default_routing"), list) else None),

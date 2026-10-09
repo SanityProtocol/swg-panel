@@ -4778,6 +4778,11 @@ export const STR = {
   "torrents can only be routed through one of this node's exits": "торренты можно направить только через один из выходов этой ноды",
   "the torrent policy needs a node update — until then torrents are blocked only on interfaces that have Torrents / P2P switched on":
     "для политики торрентов нужно обновить ноду — пока торренты блокируются только на интерфейсах, где включено «Торренты / P2P»",
+  // the node could not load its torrent rules ({v1}: nft's own first error line, left in English)
+  "the torrent policy is not in force on this node — its rules failed to load ({v1}); until they load, torrents are not blocked or routed as set":
+    "политика торрентов не действует на этой ноде — её правила не загрузились ({v1}); пока они не загрузятся, торренты не блокируются и не направляются так, как задано",
+  "the torrent policy is not in force on this node — its rules failed to load; until they load, torrents are not blocked or routed as set":
+    "политика торрентов не действует на этой ноде — её правила не загрузились; пока они не загрузятся, торренты не блокируются и не направляются так, как задано",
   "Drop outbound mail on TCP :25 — stops spam being relayed through this exit.":
     "Резать исходящую почту на TCP :25 — через этот выход не пойдёт спам.",
   "Rate-limit outbound port-scans, brute-force and SYN-floods leaving this interface.":
