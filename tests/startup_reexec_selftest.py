@@ -232,7 +232,9 @@ for prog in SRC:
 print("[4] no loop, no cwd on sys.path")
 for prog in SRC:
     if PYV >= (3, 10):
-        lp, _ = make(prog, lambda t: plant(t, "'_SWG_REEXEC':1,", ""))
+        # (--perturb-loop has taken this mark out already, with the other: planting it again found no anchor and the run
+        # stopped here, before its verdict — f8029e4 made this a plant)
+        lp, _ = make(prog, (lambda t: t) if MODE == "--perturb-loop" else (lambda t: plant(t, "'_SWG_REEXEC':1,", "")))
         r, _, err = run([lp, "x"])
         check("[4] %s: with the globals mark gone, sys.orig_argv alone stops a second exec" % prog,
               bool(r) and r["loader"] and not r["reexec"], (r, err))
