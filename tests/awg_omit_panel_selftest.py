@@ -17,7 +17,11 @@ through REAL panel processes (temp state, scratch port, no auth; the nodes are p
         HeaderProtectionKey without an S, R5 S1 + 56 = S2; templates: R3 and "every field none"
     [4] the wire: the sync sends `awg_params_exact` for an `awg_exact` record and pushes a key the node still has away;
         a restore sends `exact`; a create from defaults with "-" sends a whole set marked exact, without the omitted keys
-    [5] a 3.1 switch keeps the omissions (awg3_full omit); a 3.1 create from 3.1 defaults with "-" leaves them out
+    [5] a 3.1 switch keeps the omissions (awg3_full omit); a 3.1 create from 3.1 defaults with "-" leaves them out — and
+        (1.8.9 qualification CL-F1) so does the 3.1 SWITCH: the Edit sheet's flip-Save, whose 3.1 cells show the defaults'
+        "-", leaves those fields out of the record, the node's set, the meta and a client config js/crypto.js renders from
+        it; an API caller's {awg_gen: "3.1"} too; a value typed over that "-" is kept; a lost 2.0 interface recreated at 3.1
+        leaves them out of its create request (needs node, for the render)
     [6] bless-on-first-sight marks a conf missing a 2.0 key `awg_exact`; the meta of an `awg_exact` record is the record
         alone, and carries the flag. q189 PR-3: the AmneziaWG 3.1 switch of such an adopted 1.x conf (no S3/S4) draws
         S3 and S4 — header protection needs all four, so they are never "none" there (1.8.8 drew them; 94ba204's bless
@@ -31,6 +35,9 @@ Run: python3 tests/awg_omit_panel_selftest.py           (0 = pass)
      --perturb wire     the sync never sends exact            → RED in [4]
      --perturb s34none  the 3.1 switch omits S1–S4 an exact record lacks  → RED in [6]
      --perturb snone    a typed "-" on an S in the switch's own Save is drawn over in silence  → RED in [6]
+     --perturb switch31   the 3.1 switch draws the set over the 3.1 defaults' "-" again (CL-F1)  → RED in [5]
+     --perturb typed31    …and omits a field this Save typed a value into, over that "-"       → RED in [5]
+     --perturb recreate31 a recreate at 3.1 draws the set over the 3.1 defaults' "-" (CL-F1)     → RED in [5]
 """
 import json, os, re, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -49,6 +56,9 @@ PLANTS = {
               "                        pass\n"),
     "wire": ("[4]", "                    if extra or ov.get(\"awg_exact\"):\n", "                    if extra:\n"),
     "s34none": ("[6]", "\n                                    and k not in (\"S1\", \"S2\", \"S3\", \"S4\"))\n", ")\n"),
+    "switch31": ("[5]", "omit=frozenset(_omit3) | (awg3_omitted(deps) - set(ov.get(\"awg_params\") or {})))\n", "omit=frozenset(_omit3))\n"),
+    "typed31": ("[5]", "(awg3_omitted(deps) - set(ov.get(\"awg_params\") or {}))", "awg3_omitted(deps)"),
+    "recreate31": ("[5]", "\n                | (awg3_omitted(deps) - set(_awgput))))\n", "))\n"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else None
 
@@ -95,6 +105,26 @@ OLD_AWG = {k: BASE20[k] for k in ("Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", 
 G31 = {"module": "3.1", "fallback": "3.1", "tools": "3.1"}
 PUB = "8Y1mOEM2Uv3Ez6CUfXOvsUg0dNrV4kx0mB9rp1cV3lE="
 NODES_IDS = ("na", "nb", "nold")
+AWG3_EDIT = ("ContentPaddingAddition", "MaxHandshakeAttempts", "RekeyAfterTime", "RekeyTimeout", "RejectAfterTime",
+             "KeepaliveTimeout")                                  # js/iface.js AWG3_EDIT_COLS: the Edit sheet's 3.1 cells
+
+# A client config as the panel's QR / download renders it: js/crypto.js buildConf, run under node (tests/spa_env.mjs).
+RENDER = r"""
+import fs from "node:fs"; import { pathToFileURL } from "node:url";
+const IN = JSON.parse(fs.readFileSync(0, "utf8"));
+const C = await (await import(pathToFileURL(IN.root + "/tests/spa_env.mjs").href)).spa("crypto.js");
+console.log(C.buildConf({ privkey: "k", address: "10.70.0.2/32", dns: [], mtu: 1280, server_pubkey: "s", psk: "",
+                          endpoint: "203.0.113.7:51820", allowed: "", keepalive: 25, awg_params: IN.awg }));
+"""
+
+
+def render31(awg):
+    try:
+        r = subprocess.run(["node", "--input-type=module", "-e", RENDER], input=json.dumps({"root": ROOT, "awg": awg}),
+                           capture_output=True, text=True, timeout=120)
+    except OSError as e:
+        return "RENDER FAILED: %s (node is needed — not a pass)" % e
+    return r.stdout if r.returncode == 0 else "RENDER FAILED: " + r.stderr[-600:]
 
 
 def free_port():
@@ -426,6 +456,51 @@ try:
         check("a 3.1 create from them: no ContentPaddingAddition, no KeepaliveTimeout, the rest of the 3.1 set, exact",
               code == 200 and a.get("HeaderProtectionKey") and a.get("RandomTrailers") == "1" and "ContentPaddingAddition" not in a
               and "KeepaliveTimeout" not in a and a.get("RekeyAfterTime") and cr.get("awg_params_exact") is True, (code, cr))
+        # 1.8.9 qualification CL-F1: the 3.1 SWITCH leaves them out too (the defaults' hint promises both). The request is the one
+        # the Edit sheet's Save sends for a 2.0 → 3.1 flip (js/iface.js doSave + setGen): every cell from the meta, each blank
+        # flipped 3.1 cell filled from {awg31_builtin, interface_defaults.awg3_params} — so the operator SEES the "-" there.
+        live = {"awg20": dict(BASE20), "awg21": dict(BASE20), "awg22": dict(BASE20), "awg23": dict(BASE20)}
+        p.sync("na", live)                                         # the node's own 2.0 interfaces, blessed as every one is
+        def meta(nid, ifn):
+            m = ((((p.req("/api/state")[1].get("data") or {}).get("describe") or {}).get(nid) or {}).get(ifn) or {})
+            return m.get("meta") or m
+        def sheet_flip(nid, ifn, typed=None):
+            ps = p.req("/api/state")[1]["data"]["panel_settings"]
+            d = {**ps["awg31_builtin"], **(ps["interface_defaults"].get("awg3_params") or {})}
+            cells = {k: str(v) for k, v in (meta(nid, ifn).get("awg_params") or {}).items() if str(v).strip()}
+            cells.update({k: str(d[k]) for k in AWG3_EDIT if not cells.get(k) and d.get(k) is not None}, **(typed or {}))
+            return {"node": nid, "iface": ifn, "awg_params": cells, "awg_gen": "3.1"}
+        OUT31 = ("ContentPaddingAddition", "KeepaliveTimeout")
+        body = sheet_flip("na", "awg20")
+        code, r = p.req("/api/iface/update", body)
+        a = p.ov("na", "awg20").get("awg_params") or {}
+        check("CL-F1: the Edit sheet's flip to 3.1 (its cells show the defaults' \"-\") leaves ContentPaddingAddition and "
+              "KeepaliveTimeout out of the record, the rest of the 3.1 set in",
+              [body["awg_params"].get(k) for k in OUT31] == ["-", "-"] and code == 200 and a.get("HeaderProtectionKey")
+              and a.get("RekeyAfterTime") and not any(k in a for k in OUT31), ({k: a.get(k) for k in OUT31}, code, r))
+        d = ((p.sync("na", live).get("desired_ifaces") or {}).get("awg20") or {}).get("awg_params") or {}
+        check("…out of what the node is sent", d.get("HeaderProtectionKey") and not any(k in d for k in OUT31), {k: d.get(k) for k in OUT31})
+        m = meta("na", "awg20").get("awg_params") or {}
+        conf = render31(m)
+        check("…and out of the meta and a client config rendered from it (js/crypto.js buildConf)",
+              not any(k in m for k in OUT31) and "HeaderProtectionKey = " in conf and "RekeyAfterTime = " in conf
+              and not any(k + " =" in conf for k in OUT31), ({k: m.get(k) for k in OUT31}, [l for l in conf.splitlines()
+                                                                                       if l.split(" =")[0] in OUT31] or conf[:200]))
+        code, r = p.req("/api/iface/update", {"node": "na", "iface": "awg21", "awg_gen": "3.1"})
+        a = p.ov("na", "awg21").get("awg_params") or {}
+        check("…and an API caller's switch ({awg_gen: \"3.1\"} alone) leaves them out too",
+              code == 200 and a.get("HeaderProtectionKey") and not any(k in a for k in OUT31), ({k: a.get(k) for k in OUT31}, code, r))
+        code, r = p.req("/api/iface/update", sheet_flip("na", "awg22", {"ContentPaddingAddition": "20-40"}))
+        a = p.ov("na", "awg22").get("awg_params") or {}
+        check("…while a value typed over the sheet's \"-\" is kept (ContentPaddingAddition 20-40), the other \"-\" still out",
+              code == 200 and a.get("ContentPaddingAddition") == "20-40" and "KeepaliveTimeout" not in a, ({k: a.get(k) for k in OUT31}, code, r))
+        live.pop("awg23"); p.sync("na", live)                    # awg23 lost by its node: the recreate sheet, version flipped to 3.1
+        code, r = p.req("/api/iface/create", {"node": "na", "iface": "awg23", "protocol": "awg", "subnet": "10.79.0.0/24",
+                                              "listen_port": "51879", "awg_gen": "3.1"})
+        a = ((p.nodes()["na"].get("create") or {}).get("awg23") or {}).get("awg_params") or {}
+        check("…and a RECREATE of a 2.0 interface at 3.1 leaves them out of its create request and its record",
+              code == 200 and a.get("HeaderProtectionKey") and not any(k in a for k in OUT31)
+              and not any(k in (p.ov("na", "awg23").get("awg_params") or {}) for k in OUT31), ({k: a.get(k) for k in OUT31}, code, r))
         code, r = p.req("/api/panel/settings", {"interface_defaults": {**DEFAULTS, "awg_params": {"S2": "-"}, "awg3_params": {}}})
         code2, r2 = p.req("/api/iface/create", {"node": "nb", "iface": "awg7", "subnet": "10.68.0.0/24", "listen_port": 51834, "awg_gen": "3.1"})
         check("a 3.1 create from defaults with S2 none → refused (R4), naming S2", code == 200 and code2 == 400 and "S2" in r2.get("error", ""), (code, r, code2, r2))
