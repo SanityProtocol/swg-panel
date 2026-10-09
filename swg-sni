@@ -242,13 +242,16 @@ def say(prio, fmt, *args):
 
 
 def _say_excepthook(et, ev, tb):
-    """A crash's traceback at `err`, through the queue (drained at exit): printed bare it would be filed as info."""
+    """A crash's traceback at `err`, through the queue (drained at exit): printed bare it would be filed as info. Each
+    line starts "swg-sni: ": it shares swg-noded's stream, and the live viewer and `swg-logs sni` file a line by that."""
     if et is None or issubclass(et, (SystemExit, KeyboardInterrupt)):
         return
-    say(LOG_ERR, "".join(traceback.format_exception(et, ev, tb)).rstrip("\n"))
+    text = "".join(traceback.format_exception(et, ev, tb)).rstrip("\n")
+    say(LOG_ERR, "\n".join("swg-sni: " + ln for ln in text.split("\n")))
 
 
 sys.excepthook = _say_excepthook
+threading.excepthook = lambda a: _say_excepthook(a.exc_type, a.exc_value, a.exc_traceback)
 
 class NFQueue:
     """Minimal NFQUEUE reader over raw netlink. Bind a queue, receive full packets, ACCEPT them."""
@@ -620,7 +623,7 @@ class Classifier:
         self._last_reload = 0.0
         self._last_prune = 0.0                         # monotonic, as is every time the flusher keeps for itself
         self._reload()
-        t = threading.Thread(target=self._flush_loop, name="swg-sni-flush", daemon=True)
+        t = threading.Thread(target=self._flush_forever, name="swg-sni-flush", daemon=True)
         t.start()
 
     def _reload(self):
@@ -1007,6 +1010,17 @@ class Classifier:
             return True
         except Exception:
             return False
+
+    def _flush_forever(self):
+        """The flusher's thread: _flush_loop, run again after anything it raises (logged, a second apart). One nft fork
+        refused under memory pressure ended the thread for good: learning stopped while _pending grew without bound
+        (1.8.9 qualification HE-5)."""
+        while True:
+            try:
+                self._flush_loop()
+            except Exception as e:
+                _say_excepthook(type(e), e, e.__traceback__)
+                time.sleep(1.0)
 
     def _flush_loop(self):
         """Background: drain the pending buffer into batched nft writes (one transaction for every category), and sweep the
