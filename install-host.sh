@@ -556,7 +556,9 @@ ensure_wg_tools_once(){ # <awg|wg> [again] — ensure_wg_tools, once per run per
   # ⚠️ BUT A FAILURE IS NOT FINAL WHERE AN INTERFACE IS STARTED: `again` there tries a tool that failed earlier in the run
   # once more — a dpkg lock held at the tooling step (unattended-upgrades on a fresh box) is gone by then, and that failure,
   # kept, left an adopted wg0 DOWN after an rc-0 Docker → bare convert (1.8.9 qualification IN-18; 1.8.8 asked afresh there).
-  # Once per tool per run: a chain that really fails is not repeated for every interface.
+  # Once per tool per run: a chain that really fails is not repeated for every interface. The closing "for future interface
+  # creation" check asks `again` for wg (one apt attempt; 1.8.8 asked afresh there too) but not for awg: its chain is the
+  # GitHub download + compile the 2026-10-06 memo is for.
   local _v="_WGT_RC_$1" _a="_WGT_AGAIN_$1" _rc
   if [ -n "${!_v:-}" ] && { [ "${!_v}" = 0 ] || [ -z "${2:-}" ] || [ -n "${!_a:-}" ]; }; then return "${!_v}"; fi
   [ -z "${2:-}" ] || printf -v "$_a" '%s' 1
