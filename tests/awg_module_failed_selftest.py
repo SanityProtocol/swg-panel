@@ -18,16 +18,24 @@ every later `apt install` on the box ended in "E: Sub-process /usr/bin/dpkg retu
       even where the cut-short build left the compiler's own located `fatal error:` (a full disk, a killed assembler).
       (FN-1) gcc's located `fatal error:` for a header the newer kernel dropped IS one: removed + recorded (`: error: `
       alone read it as transient, and the package stayed half-configured between updates)
+  [4c] (1.8.9 qualification IN-12(a)) the give-up's removal waits for dpkg's lock (unattended-upgrades) and records
+      the version only once amneziawg-dkms is really gone — one that lost the lock is said and tried again next run (it
+      was recorded as given up and never retried: half-configured for good)
+  [4d] (IN-12(e)) a stale amneziawg.ko for this kernel (an old `make install`, a source build beside the package) does not
+      hide a package whose build failed: half-configured + the compiler's error = given up (it stayed half-configured,
+      recompiled on every update)
   [5] awg_build_from_source, driven: upstream still at the commit that did not compile → no clone, no compile; moved on →
       it builds
   [6] update.sh: the heal answers in one line when nothing new can be tried, and both routes ask the record
 
 Run: python3 tests/awg_module_failed_selftest.py      (0 = pass)
-     --perturb   awg_dkms_compile_failed judges without the build log again (52aa9c4) → RED on [4b]
+     --perturb   awg_dkms_compile_failed judges without the build log again (52aa9c4) → RED on [4b] (and [4d]: it had both)
      --perturb-fatal   …reads `: error: ` alone again (84e36bf) → RED on [4b]'s dropped header only
      --perturb-veto    …judges a located `fatal error:` without asking whether the box cut the build short → RED on [4b]
+     --perturb-stale   …asks for no module file for this kernel again (e66018f) → RED on [4d] only
+     --perturb-lock    the give-up as e66018f shipped it: no lock wait, the version recorded whatever the removal did → RED on [4c] only
 """
-import os, subprocess, sys, tempfile
+import os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -38,9 +46,17 @@ def check(name, cond, detail=""):
     print(("  PASS " if cond else "  FAIL ") + name + (("  — " + str(detail)[:500]) if detail and not cond else ""))
     if not cond:
         FAILS.append(name)
+_LIB = os.path.join(ROOT, "lib/common.sh")
+if "--perturb-lock" in sys.argv[1:]:   # the give-up as e66018f shipped it: no lock wait, the version recorded whatever the removal did
+    _s = rd("lib/common.sh")
+    _a = "run apt-get remove -y -o DPkg::Lock::Timeout=180 amneziawg-dkms amneziawg"
+    _i = _s.find("  # Recorded only once it is gone:"); _j = _s.find("  esac\n", _i) + len("  esac\n")
+    assert _s.count(_a) == 1 and _i > 0 and "could not be removed now" in _s[_i:_j], "perturbation anchor missing — would FALSE-PASS"
+    _s = (_s[:_i] + _s[_j:]).replace(_a, "run apt-get remove -y amneziawg-dkms amneziawg")
+    _fd, _LIB = tempfile.mkstemp(prefix="awgfail-lib-", suffix=".sh"); os.write(_fd, _s.encode()); os.close(_fd)
 def grab_all(*names):
     """The functions as bash itself defines them: lib/common.sh sourced (definitions only), then `declare -f`."""
-    r = subprocess.run(["bash", "-c", 'source "$1" >/dev/null 2>&1; declare -f "${@:2}"', "_", os.path.join(ROOT, "lib/common.sh")] + list(names),
+    r = subprocess.run(["bash", "-c", 'source "$1" >/dev/null 2>&1; declare -f "${@:2}"', "_", _LIB] + list(names),
                        capture_output=True, text=True)
     assert r.returncode == 0 and all((n + " ()") in r.stdout for n in names), "could not read %s from lib/common.sh" % (names,)
     return r.stdout + "\n"
@@ -48,6 +64,8 @@ def grab_all(*names):
 PERTURB = "--perturb" in sys.argv[1:]
 PERTURB_FATAL = "--perturb-fatal" in sys.argv[1:]
 PERTURB_VETO = "--perturb-veto" in sys.argv[1:]
+PERTURB_STALE = "--perturb-stale" in sys.argv[1:]
+PERTURB_LOCK = "--perturb-lock" in sys.argv[1:]
 T = tempfile.mkdtemp(prefix="awgfail-")
 os.makedirs(T + "/bin"); os.makedirs(T + "/mods/7.0.0-38-generic/build")
 KV = "1.0.0-0~202609140848+4569c4c~ubuntu26.04.1"
@@ -57,9 +75,12 @@ _LOGS = '"${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log'
 _ERR = "grep -qsE ': error: |:[0-9]+: fatal error: ' " + _LOGS
 _VETO = " && ! grep -qsE 'No space left on device|Killed signal|internal compiler error: Killed' " + _LOGS
 if PERTURB:   # the judgement as 52aa9c4 shipped it: half-configured + no module file, whatever the build log says
-    _old = "! awg_mod_built && " + _ERR + _VETO
+    _old = _ERR + _VETO
     assert FUNCS.count(_old) == 1, "perturbation anchor missing — would FALSE-PASS"
     FUNCS = FUNCS.replace(_old, "! awg_mod_built")
+if PERTURB_STALE:   # as e66018f shipped it: a module file for this kernel, any module file, means "it compiled"
+    assert FUNCS.count(_ERR + _VETO) == 1, "perturbation anchor missing — would FALSE-PASS"
+    FUNCS = FUNCS.replace(_ERR + _VETO, "! awg_mod_built && " + _ERR + _VETO)
 if PERTURB_FATAL:   # as 84e36bf shipped it: `: error: ` alone
     assert FUNCS.count(_ERR) == 1, "perturbation anchor missing — would FALSE-PASS"
     FUNCS = FUNCS.replace(_ERR, "grep -qsE ': error: ' " + _LOGS)
@@ -96,9 +117,11 @@ KILLED_AS = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86
 makelog(COMPILE_ERR)
 def sh(body, kernel="7.0.0-38-generic", status="iF ", cand=KV, built=False, extra_env=None):
     stubs = ('have(){ command -v "$1" >/dev/null 2>&1; }\nDRYRUN=false\ninfo(){ echo "INFO $*"; }\nwarn(){ echo "WARN $*"; }\n'
-             'run(){ echo "RUN $*" >> "$T/calls"; }\n'
+             'run(){ echo "RUN $*" >> "$T/calls"; case "$*" in *"apt-get remove"*|*"dpkg --remove"*) '
+             '[ -e "$T/locked" ] && return 100; touch "$T/removed";; esac; }\n'   # the lock held (unattended-upgrades) → 100
              'uname(){ [ "$1" = -r ] && echo %s || command uname "$@"; }\n'
-             'dpkg-query(){ case "$*" in *Status*) printf "%%s" "%s";; *Version*) printf "%%s" "%s";; esac; }\n'
+             'dpkg-query(){ case "$*" in *Status*) if [ -e "$T/removed" ]; then printf "rc "; else printf "%%s" "%s"; fi;; '
+             '*Version*) printf "%%s" "%s";; esac; }\n'
              'apt-cache(){ printf "amneziawg-dkms:\\n  Installed: (none)\\n  Candidate: %s\\n"; }\n'
              'modinfo(){ %s; }\n'
              'AWG_MOD_FAILED="$T/awg-module-failed"; SWG_LIB_MODULES="$T/mods"; SWG_DKMS_TREE="$T/dkms"\n') % (kernel, status, KV, cand, "return 0" if built else "return 1")
@@ -110,7 +133,7 @@ def calls():
     finally:
         open(T + "/calls", "w").close()
 def reset():
-    for f in ("awg-module-failed", "calls"):
+    for f in ("awg-module-failed", "calls", "removed", "locked"):
         if os.path.exists(T + "/" + f): os.remove(T + "/" + f)
 
 print("[1] the record")
@@ -155,7 +178,8 @@ r = sh('awg_ppa_module_install && echo RC0 || echo RC1')
 c = calls()
 rec = open(T + "/awg-module-failed").read() if os.path.exists(T + "/awg-module-failed") else ""
 check("a compile failure is given up on (rc 1) and said in one line", "RC1" in r.stdout and "does not compile on kernel 7.0.0-38-generic" in r.stdout, r.stdout + r.stderr)
-check("…the half-configured packages are removed (dpkg left clean), the tools kept", "RUN apt-get remove -y amneziawg-dkms amneziawg" in c, c)
+check("…the half-configured packages are removed (dpkg left clean), the tools kept",
+      re.search(r"RUN apt-get remove -y (-o \S+ )?amneziawg-dkms amneziawg", c), c)
 check("…and the version AND the commit the PPA built are recorded", "pkg=" + KV in rec and "src=4569c4c" in rec, rec)
 r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
 check("the next run does not install (and compile) it again", "RC1" in r.stdout and "amneziawg-dkms amneziawg-tools" not in c and "not rebuilding" in r.stdout, r.stdout + c)
@@ -183,11 +207,35 @@ r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
 rec = open(T + "/awg-module-failed").read() if os.path.exists(T + "/awg-module-failed") else ""
 check("FN-1: a header the newer kernel dropped (gcc's `file:line:col: fatal error: … No such file or directory`) → a compile "
       "failure: said, the packages removed (dpkg left clean), the version recorded",
-      "RC1" in r.stdout and "does not compile on kernel 7.0.0-38-generic" in r.stdout and "RUN apt-get remove -y amneziawg-dkms amneziawg" in c
+      "RC1" in r.stdout and "does not compile on kernel 7.0.0-38-generic" in r.stdout and "apt-get remove -y" in c
       and "pkg=" + KV in rec, r.stdout + c + rec)
 reset(); makelog(COMPILE_ERR)
 r = sh('awg_dkms_compile_failed && echo FAILED || echo NOT')
 check("CONTROL: the compiler's own error in the log → a compile failure", "FAILED" in r.stdout, r.stdout + r.stderr)
+
+print("\n[4c] the give-up waits for dpkg's lock, and records only what it removed (IN-12(a))")
+reset(); makelog(COMPILE_ERR); open(T + "/locked", "w").close()
+r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
+check("the removal waits for dpkg's lock (-o DPkg::Lock::Timeout=180)", "RUN apt-get remove -y -o DPkg::Lock::Timeout=180 amneziawg-dkms amneziawg" in c, c)
+check("…lost it all the same (still half-configured) → NOT recorded as given up, and said: the next run tries again",
+      not os.path.exists(T + "/awg-module-failed") and "could not be removed now" in r.stdout, r.stdout + c)
+os.remove(T + "/locked")
+r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
+rec = open(T + "/awg-module-failed").read() if os.path.exists(T + "/awg-module-failed") else ""
+check("…and the next run, the lock free, gives it up: removed, recorded", "apt-get install -y amneziawg amneziawg-dkms" in c
+      and "remove" in c and "pkg=" + KV in rec, r.stdout + c + rec)
+
+print("\n[4d] a stale module file for this kernel does not hide a package that did not compile (IN-12(e))")
+reset(); makelog(COMPILE_ERR)
+r = sh('awg_ppa_module_install && echo RC0 || echo RC1', built=True); c = calls()
+rec = open(T + "/awg-module-failed").read() if os.path.exists(T + "/awg-module-failed") else ""
+check("half-configured + the compiler's error, an amneziawg.ko for this kernel on disk → given up: removed, recorded",
+      "RC1" in r.stdout and re.search(r"RUN apt-get remove -y (-o \S+ )?amneziawg-dkms amneziawg", c) and "pkg=" + KV in rec,
+      r.stdout + c + rec)
+reset()
+r = sh('awg_ppa_module_install && echo RC0 || echo RC1', status="ii ", built=True); c = calls()
+check("CONTROL: the package built (ii) → kept, whatever the build log of an earlier attempt says",
+      "RC0" in r.stdout and "remove" not in c, r.stdout + c)
 
 print("\n[5] awg_build_from_source, driven")
 SRCF = grab_all("awg_build_from_source")
@@ -220,15 +268,21 @@ for f in ("install-host.sh", "install-node.sh"):
           and "run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools" not in s)
 
 print("")
+if PERTURB_STALE or PERTURB_LOCK:
+    _want = (lambda f: f.startswith("half-configured + the compiler")) if PERTURB_STALE else (lambda f: "lock" in f or "lost it" in f)
+    _red = [f for f in FAILS if _want(f)]
+    print("perturb: %s" % ("RED as it must be (%d), all %s" % (len(_red), "[4d]" if PERTURB_STALE else "[4c]") if _red and len(_red) == len(FAILS)
+                           else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB_FATAL or PERTURB_VETO:
     _want = (lambda f: f.startswith("FN-1: a header")) if PERTURB_FATAL else (lambda f: "not removed, not recorded" in f and "fatal error" in f)
     _red = [f for f in FAILS if _want(f)]
     print("perturb: %s" % ("RED as it must be (%d), all [4b]" % len(_red) if _red and len(_red) == len(FAILS)
                            else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
-if PERTURB:
-    _red = [f for f in FAILS if "not removed, not recorded" in f]
-    print("perturb: %s" % ("RED as it must be (%d), all [4b]" % len(_red) if _red and len(_red) == len(FAILS)
+if PERTURB:   # 52aa9c4 had both defects: the build log unread ([4b]) and any module file read as "it compiled" ([4d])
+    _red = [f for f in FAILS if "not removed, not recorded" in f or f.startswith("half-configured + the compiler")]
+    print("perturb: %s" % ("RED as it must be (%d), all [4b] + [4d]'s stale module" % len(_red) if _red and len(_red) == len(FAILS)
                            else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
