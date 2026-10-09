@@ -1199,7 +1199,7 @@ def _changelog_entries(lang="en", want=""):
     entries = entries[:80]
     if entries:
         cache["at"] = now; cache["entries"] = entries
-    return entries
+    return entries or cache["entries"]      # a 200 page with no headings (captive, block page) keeps the last good (q189 PLO-10)
 # The command an operator runs BY HAND when this panel cannot update itself: no root updater wired,
 # a container that cannot recreate itself, or a host whose installation is owned elsewhere. In-place,
 # swg programs only (--no-components leaves wg/awg/turn-proxies alone), unattended.
