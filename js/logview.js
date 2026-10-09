@@ -68,6 +68,9 @@ const chosenNodes = () => LV.nodes || facetDefaults().nodes;   // as chosen (and
 const nodesOf = () => { const have = new Set((Store.nodes || []).map(n => n.id));
   return have.size ? chosenNodes().filter(id => id === LOG_PANEL || have.has(id)) : chosenNodes(); };
 const srcOf = () => LV.src || facetDefaults().src;
+// the most sources the panel follows in one request (live_open, range_open cut the rest): more are said, never sent to be cut
+// (q189 SPA-8 — untick one mesh link of a 12-node mesh and the others are 65 sources of their own)
+const SRC_MAX = 64;
 
 // what a node's own page opens the viewer with: everything of that node's, the kernel aside (it is the whole kernel log)
 export const NODE_SOURCES = ["noded", "dns", "sni", "relay:*", "mesh:*", "turn:*", "iface:*", "p2p"];
@@ -103,6 +106,7 @@ function addLines(raw) {
 
 async function tick() {
   if (LV.busy || !LV.mounted || !LV.live || document.hidden) return;
+  if (srcOf().length > SRC_MAX) return closeReq();   // said in the viewer (SRC_MAX)
   // refused (no server of these can be watched — maybe a node not synced yet): said, and asked again every 10 s
   if (LV.err === "refused" && LV.refusedGen === LV.gen && Date.now() - LV.refusedAt < 10000) return;
   LV.busy = true;
@@ -579,7 +583,7 @@ function RangePanel() {
     bad_request: T("Pick at least one server, one source and one level."),
     bad_range: T("Pick a start before the end, at most 31 days apart.") }[RG.err] || (RG.err ? T("The panel did not answer. Try again.") : "");
   if (!RG.id) {
-    const can = ids.length && srcOf().length && lv.length;
+    const can = ids.length && srcOf().length && srcOf().length <= SRC_MAX && lv.length;
     return html`<div class="lv-pick lv-rng" role="group" aria-label=${T("Download a time range")}>
       <div class="lv-rng-title">${T("Download a time range")}</div>
       <div class="lv-rng-row">
@@ -684,9 +688,10 @@ export function LogViewer({ overlay } = {}) {
   const pause = () => { if (!LV.frozen) { LV.frozen = LV.lines.slice(); LV.missed = 0; bump(); } };
   const resume = () => { LV.frozen = null; LV.missed = 0; bump(); };
   // the head says what the stream is doing, in a word: live, held, or why not
-  const live = !ids.length || !srcs.length || !LV.live ? null : paused ? ["held", T("Paused")] : LV.err ? ["err", T("Not connected")]
+  const live = !ids.length || !srcs.length || srcs.length > SRC_MAX || !LV.live ? null : paused ? ["held", T("Paused")] : LV.err ? ["err", T("Not connected")]
     : LV.req ? ["on", T("Live")] : ["wait", T("Connecting…")];
   const empty = !ids.length || !srcs.length ? T("Pick at least one server and one source.")
+    : srcs.length > SRC_MAX ? T("{v1} sources are chosen, and a viewer follows {v2} at most. Choose fewer, or tick a whole group — it counts as one.", { v1: fmtNum(srcs.length), v2: SRC_MAX })
     : !LV.live ? html`<button class="btn btn-primary" onClick=${() => { LV.live = true; bump(); tick(); }}><${Ic} i="play"/> ${T("Start live log")}</button>`
     : LV.err === "busy" ? T("Four log viewers are open already. Close one, or wait a few seconds for a closed tab's to lapse.")
     : LV.err === "refused" ? T("None of the chosen servers can be watched. Pick again.")
