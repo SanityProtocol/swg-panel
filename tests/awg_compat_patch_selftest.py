@@ -53,10 +53,13 @@ _LIB = os.path.join(ROOT, "lib/common.sh")
 if PERTURB_CONFOLD or PERTURB_REINSTALL:
     if PERTURB_CONFOLD:
         _a, _b = "dpkg --force-confdef --force-confold --configure -a </dev/null >/dev/null", "dpkg --configure -a >/dev/null"
-    else:   # the bare --reinstall: nothing after it to fix the source, recover or give up
-        _a = ("  $DRYRUN && return 0\n  if awg_compat_patch_installed; then awg_dpkg_recover || true; fi\n"
-              "  if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi\n  return 0; }\n\n")
-        _b = "  return 0; }\n\n"
+    else:   # the bare --reinstall: nothing after it to fix the source, recover or give up — the tail awg_dkms_reinstall
+        # shares with awg_ppa_module_install (so anchored on its own reinstall line), with 2ed03500's pending give-up
+        _a = ("  run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true\n"
+              "  $DRYRUN && return 0\n  if awg_compat_patch_installed; then awg_dpkg_recover || true; fi\n"
+              "  if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi\n"
+              "  if awg_dkms_pending; then awg_dkms_give_up transient; return 1; fi\n  return 0; }\n")
+        _b = "  run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true\n  return 0; }\n"
     assert C.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
     _fd, _LIB = tempfile.mkstemp(prefix="awgcompat-lib-", suffix=".sh")
     os.write(_fd, C.replace(_a, _b).encode()); os.close(_fd)
