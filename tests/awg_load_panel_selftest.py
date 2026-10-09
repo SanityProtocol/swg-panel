@@ -9,8 +9,12 @@ auth; the nodes are played by POSTing snapshots to /api/node/sync.
   [4] pending until the node reports THAT press (its id, not only its counter); then its result, worded (done / partial /
       busy)
   [5] a press the node never answers reads as lost once the node would no longer act on it (11 min); the next press is n + 1
+  [6] nothing to fall back on (q189 HE-4): a node with no userspace AmneziaWG (`gen.fallback` null) is not offered the button
+      and is told why, its press is refused with that reason; the node's own refusal (`no_fallback`) is worded; a load that
+      failed names the interfaces that are down instead of promising they run on the fallback
 
-Run: python3 tests/awg_load_panel_selftest.py      --plant anyload | noage | nodisk | pidmatch | partial   (exit 0 when caught)
+Run: python3 tests/awg_load_panel_selftest.py
+     --plant anyload | noage | nodisk | pidmatch | partial | nofb | nofbwhy | nofbcode | downword   (exit 0 when caught)
 """
 import json, os, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
@@ -25,7 +29,14 @@ PLANTS = {"pidmatch": ("[4]", "    if (str(got.get(\"id\")) != pid) if got.get(\
           "noage": ("[3]", "\"age\": max(0, int(time.time()) - _awg_int((node.get(\"awg_load\") or {}).get(\"at\")))}}",
                     "\"age\": 0}}"),
           "nodisk": ("[1]", "    return g.get(\"disk\") == \"3.1\" and g.get(\"module\") in (\"2.0\", \"3.0\") and g.get(\"tools\") == \"3.1\"",
-                     "    return g.get(\"module\") in (\"2.0\", \"3.0\") and g.get(\"tools\") == \"3.1\"")}
+                     "    return g.get(\"module\") in (\"2.0\", \"3.0\") and g.get(\"tools\") == \"3.1\""),
+          # q189 HE-4: the button offered with nothing to fall back on · the switch's reason says "load it now" anyway ·
+          # the node's no_fallback refusal left to the generic sentence · a failed load promising the fallback to every interface
+          "nofb": ("[6]", "    return _awg_31_waiting(snap) and isinstance(_awg_datapath(snap)[\"gen\"].get(\"fallback\"), str)",
+                   "    return _awg_31_waiting(snap)"),
+          "nofbwhy": ("[6]", "        if _awg_31_waiting(snap):", "        if False:"),
+          "nofbcode": ("[6]", "    elif code == \"no_fallback\":", "    elif False:"),
+          "downword": ("[6]", "    elif code == \"load_failed\" and not dn:", "    elif code == \"load_failed\":")}
 FAILS, SECTION = [], [""]
 
 
@@ -47,6 +58,7 @@ if PLANT:
 GENS = {"ld": {"module": "2.0", "fallback": "3.1", "tools": "3.1", "disk": "3.1"},
         "nd": {"module": "2.0", "fallback": "3.1", "tools": "3.1", "disk": "2.0"},
         "dk": {"module": "2.0", "fallback": "3.1", "tools": "3.1", "disk": "3.1"},
+        "nf": {"module": "2.0", "fallback": None, "tools": "3.1", "disk": "3.1"},   # 3.1 waiting, and no amneziawg-go (HE-4)
         "old": None}
 state = os.path.join(TMP, "state"); os.makedirs(state); stats = os.path.join(TMP, "stats"); os.makedirs(stats)
 NODES = os.path.join(state, "nodes.json")
@@ -175,6 +187,40 @@ try:
     json.dump(n, open(NODES + ".tmp", "w")); os.replace(NODES + ".tmp", NODES)
     a = rec("ld").get("awg_load") or {}
     check("unanswered for an hour → lost, worded", a.get("state") == "lost" and "has not answered" in key(a.get("msg")), a)
+
+    SECTION[0] = "[6]"
+    print("\n[6] nothing to fall back on (q189 HE-4)")
+    check("3.1 waiting but no userspace AmneziaWG (gen.fallback null) → not offered", rec("nf").get("awg31_loadable") is False, rec("nf"))
+    w = key(rec("nf").get("awg31_no"))
+    check("…and told why: 3.1 is installed, loads at the next reboot, cannot be loaded now — no amneziawg-go to fall back on",
+          "is installed, but the kernel module in use" in w and "cannot be loaded now" in w and "amneziawg-go" in w
+          and "load it now" not in w, rec("nf").get("awg31_no"))
+    c, r = req("/api/node/awg-load", {"id": "nf"})
+    check("…its press → 409 with that reason, nothing stored", c == 409 and "cannot be loaded now" in key(r)
+          and "awg_load" not in json.load(open(NODES))["nf"], (c, r))
+    check("a node WITH one is still offered (the control)", rec("ld").get("awg31_loadable") is True, rec("ld"))
+    c, r = req("/api/node/awg-load", {"id": "ld"})
+    check("the next press is n = 3", c == 200 and (r.get("data") or {}).get("n") == 3, (c, r))
+    PID3 = (sync("ld").get("awg_load") or {}).get("id")
+    sync("ld", {"n": 3, "id": PID3, "ok": False, "code": "no_fallback", "error": "no amneziawg-go to fall back on if the new module would not load", "ifaces": {}})
+    a = rec("ld").get("awg_load") or {}
+    check("the node's own refusal (no_fallback) → failed, worded: nothing was changed, no userspace AmneziaWG",
+          a.get("state") == "failed" and key(a.get("msg")) == "{v1}: nothing was changed — this node has no userspace AmneziaWG "
+          "(amneziawg-go) to fall back on if the new module did not load", a)
+    sync("ld", {"n": 3, "id": PID3, "ok": False, "code": "load_failed", "loaded": "", "ifaces": {"awg0": "down", "swg_ab": "userspace", "swg_cd": "down"}})
+    a = rec("ld").get("awg_load") or {}
+    m = json.dumps(a.get("msg"))
+    check("a failed load with interfaces down names them, and which run on the fallback — no promise for the ones that do not",
+          a.get("state") == "failed" and "run on the userspace fallback until" not in m and "awg0, swg_cd" in m and "swg_ab" in m
+          and "down" in key(a.get("msg")), a)
+    sync("ld", {"n": 3, "id": PID3, "ok": False, "code": "load_failed", "loaded": "", "ifaces": {"awg0": "down"}})
+    a = rec("ld").get("awg_load") or {}
+    check("…every one down: none is said to run on the fallback", "run on the userspace fallback until" not in json.dumps(a.get("msg"))
+          and "awg0" in json.dumps(a.get("msg")), a)
+    sync("ld", {"n": 3, "id": PID3, "ok": False, "code": "load_failed", "loaded": "", "ifaces": {"awg0": "userspace", "swg_ab": "userspace"}})
+    a = rec("ld").get("awg_load") or {}
+    check("…every one on the fallback: the sentence that says so (unchanged)", "its interfaces run on the userspace fallback until the "
+          "next reboot" in key(a.get("msg")), a)
 finally:
     proc.terminate()
     with __import__("contextlib").suppress(Exception):
