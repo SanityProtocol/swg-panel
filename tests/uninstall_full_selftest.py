@@ -30,6 +30,9 @@ refuse any path outside the box, and such an escape fails the section that made 
       emptied and left, and a revert line claiming "a kept userspace server" before any keep question (d); route_localnet=1
       LIVE after the files that set it went — hosts on the box's network reach its 127.0.0.1 services until a reboot (e),
       bare and Docker; an operator's own sysctl file asking for it and their own local/wg lines are kept
+  [16] systemd < 254: the restart back-off swg-noded writes in the three family dirs (swg-restart.conf, D12-1) — rm_node no
+      longer says it "keeps" a dir that holds only that file (the end of the run takes both); an operator's own drop-in
+      there is still said and kept
 
 Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      SWG_UNINSTALL=<file>   run it against another uninstall.sh
@@ -46,6 +49,7 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-aatext  the revert line claims a kept server (as shipped) → RED on [13]'s revert-line check only
      --perturb-rl      route_localnet stays 1 (as shipped) → RED on [13] [15]'s route_localnet checks only
      --perturb-rlown   …turned off even where another file asks for it → RED on [14]'s route_localnet check only
+     --perturb-keepmsg rm_log_ns says it keeps a family dir holding only swg-restart.conf → RED on [16] only
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
@@ -55,7 +59,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 U = open(os.environ.get("SWG_UNINSTALL") or os.path.join(ROOT, "uninstall.sh"), encoding="utf-8").read()
 FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--perturb-bare", "--perturb-src", "--perturb-stop",
                                          "--perturb-ppa", "--perturb-go", "--perturb-key", "--perturb-srcppa", "--perturb-www",
-                                         "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown")}
+                                         "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -97,6 +101,8 @@ if FLAGS["--perturb-rl"]:
     plant('    || run sysctl -q -w net.ipv4.conf.all.route_localnet=0 >/dev/null 2>&1 || true\n', '    || true\n')
 if FLAGS["--perturb-rlown"]:
     plant("  grep -qsE --exclude='99-swg-*' '^", "  false && grep -qsE --exclude='99-swg-*' '^")
+if FLAGS["--perturb-keepmsg"]:
+    plant('    [ "$(ls -A "$SD/$u.d" 2>/dev/null)" = swg-restart.conf ] || rmdir_if_empty "$SD/$u.d";', '    rmdir_if_empty "$SD/$u.d";')
 if FLAGS["--perturb-image"]:
     plant('  [ -n "$img" ] || { _tag="$(sed -n ', '  false && { _tag="$(sed -n ')
 
@@ -540,6 +546,26 @@ rc, out, calls, esc = run(box, "--yes", env=FULL)
 check("[15] route_localnet is OFF again after the Docker node's uninstall (measured left at 1: LC-24, Debian, Ubuntu 22.04/26.04)",
       sysctl(box) == "0", (sysctl(box), out[-600:]))
 
+print("\n[16] systemd < 254: swg-noded's restart back-off drop-in in the three family dirs (1.8.9 qualification D12-1)")
+rfiles = dict(BARE_NODE)
+for fam in ("vk-turn-proxy-", "swg-wdtt-", "swg-csqtt-"):
+    rfiles["etc/systemd/system/%s.service.d/swg-ns.conf" % fam] = "[Service]\nLogNamespace=swg-node\n"
+    rfiles["etc/systemd/system/%s.service.d/swg-restart.conf" % fam] = "[Service]\nRestartSec=30\n"
+box = mkbox("restart-dropins", rfiles, BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+keeping = [l for l in out.splitlines() if "keeping " in l and ".service.d" in l]
+check("[16] no \"keeping …\" line about a family dir that holds only swg's own restart drop-in", not keeping, keeping)
+check("[16] …and the dirs are gone at the end, the drop-in with them",
+      not [d for d in os.listdir(os.path.join(box, "etc/systemd/system")) if d.endswith(".service.d")],
+      os.listdir(os.path.join(box, "etc/systemd/system")))
+rfiles["etc/systemd/system/vk-turn-proxy-.service.d/override.conf"] = "[Service]\nNice=5\n"
+box = mkbox("restart-dropins-own", rfiles, BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+keeping = [l for l in out.splitlines() if "keeping " in l and ".service.d" in l]
+check("[16] an operator's own drop-in there is still said and kept (only swg-restart.conf is ignored)",
+      len(keeping) == 1 and "vk-turn-proxy-.service.d" in keeping[0]
+      and sorted(os.listdir(os.path.join(box, "etc/systemd/system/vk-turn-proxy-.service.d"))) == ["override.conf"], (keeping, out[-800:]))
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
@@ -550,7 +576,7 @@ if PERTURBED:
             "--perturb-stop": ("[7] each removed interface's unit",), "--perturb-ppa": ("[10]",), "--perturb-go": ("[9] …and the purge",),
             "--perturb-key": ("[11] the PPA goes", "[12]"), "--perturb-srcppa": ("[12]",), "--perturb-www": ("[13] /var/www",),
             "--perturb-aa": ("[13] the AppArmor local/wg",), "--perturb-aatext": ("[13] …and the revert line",),
-            "--perturb-rl": ("[13] route_localnet", "[15]"), "--perturb-rlown": ("[14] route_localnet",)}
+            "--perturb-rl": ("[13] route_localnet", "[15]"), "--perturb-rlown": ("[14] route_localnet",), "--perturb-keepmsg": ("[16]",)}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
