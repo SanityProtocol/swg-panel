@@ -2609,7 +2609,7 @@ export const STR = {
   // budget-ok: a hint line under the picker, wraps
   "On Save, devices keep working. Configs issued or re-imported from now on carry the I1–I5 below. Devices on this interface keep their current ones until re-imported ({v1}).":
     "После сохранения устройства продолжат работать. Конфиги, выданные или переимпортированные с этого момента, получат I1–I5, заданные ниже. Устройства на этом интерфейсе сохранят прежние до переимпорта ({v1}).",
-  "The interface restarts; connected devices reconnect within a few seconds.": "Интерфейс перезапустится; подключённые устройства переподключатся за несколько секунд.",
+  "The interface restarts; connected devices reconnect in about 15 seconds.": "Интерфейс перезапустится; подключённые устройства переподключатся примерно через 15 секунд.",
   "{v1}: a random part is at most 1000 bytes — split it, like <r 1000><r 214>.": "{v1}: случайная часть — не больше 1000 байт; разбейте её, например <r 1000><r 214>.",
   "{v1}: <c> is gone from AmneziaWG 3.x, and apps refuse the whole config.": "{v1}: тега <c> нет в AmneziaWG 3.x — приложения отвергнут весь конфиг.",
   "{v1}: <t> appears twice — once per packet at most.": "{v1}: <t> встречается дважды — в пакете он может быть только один.",

@@ -1207,7 +1207,7 @@ export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
       ${fit && lp && +lp !== fit ? line(T("QUIC looks most natural on UDP 443 — this interface listens on {v1}.", { v1: lp })) : null}
       ${mim !== "off" ? line(T("Changes only what the packets before each handshake look like. It does not help where only listed addresses are allowed — a TURN server is the way there.")) : null}
       ${changed ? line(html`${savedLine()}${restart
-          ? " " + T("The interface restarts; connected devices reconnect within a few seconds.") : ""}`, "mimic-save") : null}`}
+          ? " " + T("The interface restarts; connected devices reconnect in about 15 seconds.") /* measured 15.2–15.4 s, WireGuard's rekey after silence (q189 V-FEAT-A F6) */ : ""}`, "mimic-save") : null}`}
   </div>`;
 }
 export function LoadIfaceSheet({ node, pre, ghost, back }) {
