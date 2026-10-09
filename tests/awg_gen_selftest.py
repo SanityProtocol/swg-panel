@@ -34,6 +34,7 @@ Run: python3 tests/awg_gen_selftest.py      (0 = pass)
      --perturb-exact    the presence compare ignores the flag        → RED in [8]
      --perturb-fwd      the flag is not passed to the agent          → RED in [8]
      --perturb-zero     `= 0` / `= off` lines count as 3.x keys      → RED in [9]
+     --perturb-wrapper  a NixOS `awg` wrapper script is read as itself (2.0) again (q189 DN-20) → RED in [1]
      --perturb-hold     a refused recreate is retried on the backoff → RED in [10]
      --perturb-sig      the cache ignores a new module/tools on disk → RED in [4]
 """
@@ -45,6 +46,7 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 
 PLANTS = {
+    "--perturb-wrapper": ("[1]", "    if w and os.path.isfile(w.group(1).decode(errors=\"replace\")):\n", "    if False:\n"),
     "--perturb-gate": ("[6]", "                refused = awg_gen_refusal(iface, awg)\n", "                refused = \"\"\n"),
     "--perturb-create": ("[6]", "        _no3 = awg_gen_refusal(iface, (want or {}).get(\"awg_params\"))   # an AmneziaWG 3 set this node cannot bring up\n",
                          "        _no3 = \"\"\n"),
@@ -101,6 +103,17 @@ for label, data, want in (("tools 3.1", b"HeaderProtectionKey RandomTrailers", "
     check("awg %s → %s" % (label, want), N._bin_gen(fake("t" + want, data), *[k.encode() for k in TOOLS]) == want)
 check("a binary that is not there → None (not a guess)", N._bin_gen(os.path.join(TMP, "nope"), b"x", b"y") is None
       and N._bin_gen("", b"x", b"y") is None)
+# q189 DN-20: NixOS — nixpkgs wraps EVERY amneziawg-tools binary (`for f in $out/bin/*; do wrapProgram $f`), so `awg` on PATH
+# is a makeWrapper script; the keys are in the binary it execs, `.awg-wrapped`
+_real = fake(".awg-wrapped", b"HeaderProtectionKey RandomTrailers")
+_wrap = os.path.join(TMP, "awg")
+open(_wrap, "w").write('#! /nix/store/xxxx-bash-5.2p37/bin/bash -e\nPATH=${PATH:+\':\'$PATH\':\'}\nPATH=${PATH/\':\'\'/nix/store/yyyy-procps/bin\'\':\'/\':\'}\n'
+                       'export PATH\nexec -a "$0" "%s"  "$@" \n' % _real)
+check("DN-20: a NixOS `awg` (a makeWrapper script) is read through to the binary it runs — 3.1 tools read as 3.1, not 2.0",
+      N._bin_gen(_wrap, *[k.encode() for k in TOOLS]) == "3.1", N._bin_gen(_wrap, *[k.encode() for k in TOOLS]))
+open(_wrap + "-x", "w").write('#!/bin/sh\nexec /usr/bin/true "$@"\n')
+check("…a script that wraps nothing of the kind is read as itself (2.0 — no keys), as before",
+      N._bin_gen(_wrap + "-x", *[k.encode() for k in TOOLS]) == "2.0")
 
 SECTION[0] = "[2]"
 print("\n[2] the genl answer maps exactly; nothing is rounded up")
