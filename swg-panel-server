@@ -18029,9 +18029,21 @@ def _json_finite(s):
     skipped (noded reconciles only on a 200 with `desired`) and no other node's sync is touched. swg-noded never sends
     one — its numbers are counters, rates and figures parsed from /proc and ping."""
     n = float(s)
-    if not math.isfinite(n):
+    if not math.isfinite(n) or abs(n) > 1e100:           # …and one past any real reading (PANEL-1d, see _json_int)
         raise ValueError("not a finite number: %.24s" % s)
     return n
+
+
+def _json_int(s):
+    """parse_int's twin of _json_finite (1.8.9 qualification R2 PANEL-1d). A FINITE number can still break what the
+    whole panel shares: two peers' rx_speed of 1.7e308 summed to inf (Infinity in /api/state again), and an integer of
+    401 digits — read exactly — made the first float() of it raise OverflowError, /api/state 500 for every operator. No
+    real reading comes near 1e100 (the test fleet's largest is a disk's 1.6e11 bytes; a petabyte counter is 1e15, a
+    nanosecond clock 1.8e18), and a million readings that size still sum to 1e106 — so a number past it is refused as
+    any unreadable body is, before int() spends time on its digits."""
+    if len(s.lstrip("-")) > 100:
+        raise ValueError("a number past 1e100: %.24s…" % s)
+    return int(s)
 
 
 def _snap_sanitise(snap, nid=""):
@@ -31456,7 +31468,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._node_sig_ok(node, raw):
             return
         try:                                             # NaN / Infinity are refused here, not stored (_json_finite)
-            body = json.loads(raw or "{}", parse_constant=_json_finite, parse_float=_json_finite)
+            body = json.loads(raw or "{}", parse_constant=_json_finite, parse_float=_json_finite, parse_int=_json_int)
         except Exception:
             return self._send(400, {"error": "bad body"})
         snap = body.get("snapshot") or {}
