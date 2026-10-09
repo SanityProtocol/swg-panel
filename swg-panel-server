@@ -13787,8 +13787,8 @@ def mesh_gen_reasons(deps, nodes, snaps, nid):
     """The node's links that are not the type the mesh settings ask for, and why — [{peer, iface, type, want, msg}], the
     list its mesh card renders. Derived on every read from the link records against the settings (nothing stored): a
     3.1 link built at 2.0 says what stopped it; any other mismatch is a link that kept what it was made with — made before
-    the setting changed, or while an end could not run it (a node enrolled after 3.1 was set has no report yet when its
-    links are made: q189 PR-4) — and says how to rebuild that one link."""
+    the setting changed, or while an end could not run it (a module or tools updated since) — and says how to rebuild that
+    one link. (A node enrolled after the type was set no longer lands here: its pairs wait for its report, mesh_link_waits.)"""
     me = nodes.get(nid) or {}
     mtu = mesh_cfg(deps)["mtu"]
     out = []
@@ -14076,6 +14076,19 @@ def mesh_reprovision_node(nodes, nid):
     me["links"] = {}
 
 
+def mesh_link_waits(deps, nodes, snaps, a, b):
+    """Is the pair a↔b not to be made YET — its type needs to know both ends (AmneziaWG 3.1: can both run it? a template
+    with a field set to none: can both hold the omission?) and an end has never reported? q189 PR-4: a node enrolled after
+    the fleet's mesh type was set to 3.1 had its links made at /api/nodes/create, before it ever reported, so every one was
+    made at 2.0 (mesh_31_refusal refuses an end with no report) — and nothing rebuilds a link that works. Waiting costs
+    nothing: an end that has never reported cannot bring a link up anyway, and its first sync stores its report before the
+    reconcile that then makes the pair at the type in force. A pair that needs nothing from the ends (2.0 or WireGuard with
+    no "-" in its template, the default) is made at once, as before; an existing link is never touched."""
+    if a in (snaps or {}) and b in (snaps or {}):
+        return False
+    return mesh_gen_for(deps, nodes, a, b) == "3.1" or bool(mesh_template(deps, mesh_link_layer(nodes, a, b))[1])
+
+
 def _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc=None, log=True):
     """Create the link between nodes a and b on BOTH ends (link records + create requests + matching
     awg_params/psk overrides). Caller ensures the pair isn't already linked. False when the x-end's pool cannot place
@@ -14283,6 +14296,8 @@ def reconcile_mesh(nodes, snaps, deps):
     made = 0
     for a, b in pairs:
         if b not in (nodes[a].get("links") or {}):
+            if mesh_link_waits(deps, nodes, snaps, a, b):
+                continue                                         # made on the first reconcile after that end reports
             if _mesh_make_link(nodes, snaps, deps, a, b, mc, alloc, log=made < MESH_LINK_EVENTS_MAX):
                 made += 1
                 changed = True
