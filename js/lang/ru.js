@@ -6977,6 +6977,8 @@ export const STR = {
   "{v1}: nothing was changed — the node cannot check its other network namespaces (lsns or nsenter is missing)": "{v1}: ничего не изменено — нода не может проверить свои другие сетевые пространства имён (нет lsns или nsenter)",
   "lsns or nsenter is missing, so the other network namespaces cannot be checked": "нет lsns или nsenter, поэтому другие сетевые пространства имён проверить нельзя",
   "no amneziawg-go to fall back on if the new module would not load": "нет amneziawg-go, на который можно перейти, если новый модуль не загрузится",
+  // rules whose exit node is offline (q189 FLA-F1)
+  "Routing on this node sends traffic out through {v1}, which is offline — that traffic is refused until {v1} is back": "Маршрутизация этой ноды отправляет трафик через {v1}, а она не в сети, — этот трафик отклоняется, пока {v1} не вернётся",
   // a block list the panel could not hand a node its caps for (no provider catalog, an older node) — q189 D12-OBS-1
   "{v1}: not filtered yet on {v2} — waiting for the provider catalog, or for this node's update.": "{v1}: пока не фильтруется на {v2} — ждёт каталог провайдеров или обновление ноды.",
   "Load AmneziaWG 3.1 · {name}": "Загрузить AmneziaWG 3.1 · {name}",

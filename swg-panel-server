@@ -9220,7 +9220,7 @@ def _awg_datapath(snap):
     return awg
 
 
-def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clash=None):
+def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clash=None, exits_offline=()):
     """Health-check roll-up for one node: settings edited on the server (drift), an egress IP / WAN
     NIC the node no longer has, and turn-proxies that aren't running. Empty list = healthy.
 
@@ -9654,6 +9654,12 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
         issues.append(perr("the torrent route is unavailable — torrent traffic is blocked until it is"))
     elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("route") == "down":
         issues.append(perr("the torrent route's way out is down — torrent traffic is blocked until it is back"))
+    # Rules (the default list's, an interface's, a forward) whose exit NODE is offline: that traffic is dropped — never leaked
+    # — and was said nowhere. On the operator's msk-main Google, GitHub and Discord were cut ~9.6 days unnoticed (q189
+    # FLA-F1). Names from the caller, which knows the fleet.
+    for _xn in exits_offline or ():
+        issues.append(perr("Routing on this node sends traffic out through {v1}, which is offline — that traffic is refused "
+                           "until {v1} is back", v1=_xn))
     return issues
 
 # A DNS name as an operator may type it: labels of letters/digits/hyphens, at least one dot, or a bare
@@ -18141,6 +18147,23 @@ def rule_on(r):
     return isinstance(r, dict) and r.get("enabled", True) is not False
 
 
+def _exit_nodes(n):
+    """Every node this node's configuration sends traffic out through: its default list's and its interfaces' (and WDTT /
+    csqtt instances') exit rules, and a forward's egress node — the ways cascade_plan reaches a peer (see mesh_need)."""
+    out = set()
+    if isinstance(n.get("default_routing"), list):
+        out |= {str(r.get("node") or "") for r in n["default_routing"] if isinstance(r, dict) and rule_on(r) and r.get("action") == "exit"}
+    for ov in [*(n.get("ifaces") or {}).values(), *(n.get("wdtt") or {}).values(), *(n.get("csqtt") or {}).values()]:
+        if not isinstance(ov, dict) or ov.get("system"):
+            continue
+        if ov.get("egress_mode") == "forward":
+            out.add(str(ov.get("egress_node") or ""))
+        elif ov.get("egress_mode") == "smart":
+            out |= {str(r.get("node") or "") for r in (ov.get("routing") or []) if isinstance(r, dict) and rule_on(r) and r.get("action") == "exit"}
+    out.discard("")
+    return out
+
+
 def who_wid(subnet, who):
     """The selection's id on the wire: 12 hex of sha1(subnet + the canonical lists). The lists are sorted, so an unchanged
     selection keeps its id; 48 bits, because a collision would hand one row another row's people."""
@@ -23019,6 +23042,7 @@ def api(method, path, qs, body, deps):
         _ros = roster if roster is not None else roster_load(roster_path)
         _refmap = _ghost_refs(_ros)   # {node:{iface:[pid]}} — walked once; /api/state passes its already-loaded roster to avoid a 2nd disk read
         _mg_on = mesh_types_in_play(deps, nodes)   # once: a fleet that never picks a mesh type walks no link for it
+        _stale2 = max(5, int(((panel_settings.get("advanced") or {}).get("node_stale_ms") or 30000) / 1000)) * 2   # FLA-F1
         # operator-set order (POST /api/order): `pos` ascending, unordered nodes after, by created
         for nid, c in sorted(nodes.items(), key=lambda kv: (kv[1].get("pos", 1 << 30), kv[1].get("created", 0), kv[0])):
             snap = snaps.get(nid) or {}
@@ -23113,11 +23137,14 @@ def api(method, path, qs, body, deps):
             _unp = (Handler.deps.get("mesh_unplaced") or {}).get(nid)
             if _unp:   # peer ids → names: _node_issues is handed one record, not the fleet
                 _unp = dict(_unp, peers=[(nodes.get(p) or {}).get("name") or p for p in _unp.get("peers") or ()])
+            # the nodes this one's rules exit through that are offline (twice the cards' stale line, as the updater reads it)
+            _offx = sorted({(nodes.get(t) or {}).get("name") or t for t in _exit_nodes(c)
+                            if t != nid and t in nodes and now() - (seen.get(t) or 0) > _stale2})
             _iss = _node_issues(c, snap, _ivk_now, (Handler.deps.get("cas_capped") or {}).get(nid) or (), _unp,
                                 (Handler.deps.get("cas_reach") or {}).get(nid),
                                 clash=[dict(e, **{k: (nodes.get(e[k]) or {}).get("name") or e[k]
                                                   for k in ("node", "via") if e.get(k)})
-                                       for e in (Handler.deps.get("cas_clash") or {}).get(nid) or ()])
+                                       for e in (Handler.deps.get("cas_clash") or {}).get(nid) or ()], exits_offline=_offx)
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https",    # a link's own type and params ride on its mesh_peers row
                         # the node's links that are not the type the settings ask for, with why — only when there is something
