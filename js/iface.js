@@ -21,7 +21,7 @@ import {
   cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg, candDialPort, turnIfaceNameError, awgDict3, awgGen, awg3Cls, awg3Tip, tip3, awg31No,
 } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkOpts, forkLabel } from "./turn-catalog.js";
-import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag, meshGenLabel, meshGenColor } from "./ui.js";
+import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag, meshGenLabel, meshGenColor } from "./ui.js";
 import { RangedHistory, IfaceThroughput, lossColorMesh } from "./charts.js";
 import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCached, subFeatureOn } from "./crypto.js";
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle,
@@ -984,37 +984,6 @@ export function awgOmitIssue(d, template) {
     return T("Every field is - — leave at least one, or use WireGuard interfaces.");
   return "";
 }
-// The panel's rules for a save that takes a line off (swg-panel-server awg_rules R1, R3–R5), judged on the set that save leaves:
-// the record under the cells (a blank cell keeps the record's — the update merges), "-" taking the line off; the 3.x keys only
-// on a 3.1 interface. The panel's own sentences. The Edit sheet holds Save on them: a refusal used to close the sheet, and every
-// other edit in it went with it (q189 SPA-3).
-export function awgSaveRule(cells, rec, where, gen3) {
-  const set = {};
-  for (const k of AWG_ORDER) {
-    const c = String((cells || {})[k] ?? "").trim(), v = c || String((rec || {})[k] ?? "").trim();
-    if ((gen3 || !AWG3_KEYS.includes(k)) && v && !awgIsNone(c)) set[k] = v;
-  }
-  const S = ["S1", "S2", "S3", "S4"], j = ["Jc", "Jmin", "Jmax"].filter(k => k in set).length;
-  if (!Object.keys(set).length) return T("{v1} would have no AmneziaWG field left — make it a WireGuard interface instead", { v1: where });
-  if (j && j < 3) return T("{v1}: Jc, Jmin and Jmax go together — set all three, or all three to none", { v1: where });
-  if ("HeaderProtectionKey" in set && !S.every(k => k in set))
-    return T("{v1}: header protection needs S1–S4 — {v2} cannot be none while it is on", { v1: where, v2: S.filter(k => !(k in set)).join(", ") });
-  if (/^\d+$/.test(set.S1 || "") && /^\d+$/.test(set.S2 || "") && +set.S1 + 56 === +set.S2)
-    return T("{v1}: S2 must not be S1 + 56 — the two handshake messages would be the same size", { v1: where });
-  return "";
-}
-// …and the one a mesh link's own template meets beside awgOmitIssue's two (swg-panel-server mesh_omit_s_refusal): an AmneziaWG 3.1
-// link needs S1–S4, so an S set to none — in the link's template, or in the fleet's where the link's leaves it blank (the panel's
-// mesh_template layering) — refuses the save. `gen` is the link's type in force.
-export function meshSNone(own, gen, node, peer) {
-  if (gen !== "3.1") return "";
-  const fleet = (Store.panelSettings || {}).mesh_awg || {}, o = own || {};
-  const om = ["S1", "S2", "S3", "S4"].filter(k => awgIsNone(o[k]) || (awgIsNone(fleet[k]) && !String(o[k] ?? "").trim()));
-  if (!om.length) return "";
-  const [a, b] = [node, peer].sort();
-  return T("{v1}: AmneziaWG 3.1 links need S1–S4 for header protection — the mesh AWG params set {v2} to none",
-           { v1: Store.nodeName(a) + " ↔ " + Store.nodeName(b), v2: om.join(", ") });
-}
 // W1 (A2): RandomTrailers on without ContentPaddingAddition is allowed, and pads every small packet about five times over.
 export const awgW1 = (d, rtOn) => rtOn && awgIsNone((d || {}).ContentPaddingAddition)
   ? T("ContentPaddingAddition is none while RandomTrailers is on — every small packet is padded about five times over.") : "";
@@ -1733,16 +1702,17 @@ export function ConnectionEditSheet({ node, iface }) {
   const lkLabel = { up: "connected", connecting: "connecting", down: "down" }[lk];
   const proto = (meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
     const Cell = (l, v) => html`<div class="conn-cell"><span class="cl">${l}</span><span class="cv">${v}</span></div>`;
-  const saveDial = () => {
-    closeModal();
-    mutate({
-      key: "conn:" + node + "|" + peer,
-      patch: () => {},
-      call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp,
+  // Sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with the type, AWG, dial and relay
+  // edits kept — the sheet used to close first, and the refusal took them all with it.
+  const [busy, setBusy] = useState(false), [saveErr, setSaveErr] = useState("");
+  const saveDial = async () => {
+    const r = await sheetSend(() => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp,
                                          relay_mode: relayOn ? "relay" : "forward", relay_quota_pct: Number(quota) || 50,
                                          ...(typeSet !== typeSet0 ? { mesh_awg_gen: typeSet } : {}),   // only a change rebuilds the link
-                                         ...(awgChanged ? { mesh_awg: Object.fromEntries(JSON.parse(tplKey(awgSet))) } : {}) }),
-    });
+                                         ...(awgChanged ? { mesh_awg: Object.fromEntries(JSON.parse(tplKey(awgSet))) } : {}) }), setSaveErr, setBusy);
+    if (!r.ok) return;
+    closeModal();
+    Store.poll().catch(() => {});
   };
   // ⚠️ 90, not 100. The relay is a single event loop, so one core is its structural ceiling anyway; what
   // 100 would mean on a 1-vCPU node is "the relay may have the whole machine". CPUQuota is the only hard
@@ -1751,9 +1721,6 @@ export function ConnectionEditSheet({ node, iface }) {
   const quotaErr = (() => { const q = Number(quota); return (!Number.isInteger(q) || q < 5 || q > QUOTA_MAX) ? T("CPU cap must be between {v1} and {v2}", { v1: "5", v2: String(QUOTA_MAX) }) : ""; })();
   const connDirty = dialSrc !== (meta.dial_src || "") || dialEp !== (meta.dial_endpoint || "")
     || relayOn !== relayOn0 || quota !== quota0 || relink;   // enable Save only when something actually changed
-  // the panel's "-" rules for this link's template (awg_template_refusal, mesh_omit_s_refusal), judged when the door judges them:
-  // Save waits on them — the sheet closed on the refusal, and the type, AWG, dial and relay edits went with it (q189 SPA-3)
-  const awgRule = (awgChanged && awgOmitIssue(awgSet, true)) || (relink && meshSNone(awgSet, typeSet || typeDflt, node, peer)) || "";
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
   const allMeta = Store.describe[node] || {};
   const carried = Object.keys(allMeta).filter(k => !allMeta[k].system
@@ -1772,8 +1739,8 @@ export function ConnectionEditSheet({ node, iface }) {
     .filter(x => x.cats.length);
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg") + awg3Cls(node, k)} ...${awg3Tip(node, k)}>${k}</span>`;
   const peerNm = html`<b style=${"color:" + Store.nodeColor(peer)}>${Store.nodeName(peer)}</b>`;
-  return html`<${Sheet} title=${T("Connection to {v1}", { v1: Store.nodeName(peer) })} width=${680} onClose=${closeModal}
-      foot=${footRow({ onCancel: closeModal, disabled: nodeDown || !connDirty || !!quotaErr || !!awgRule, title: nodeDown ? T("{v1} isn't reporting — reconnect it before changing this link", { v1: Store.nodeName(node) }) : (quotaErr || awgRule || (!connDirty ? T("No changes to save") : "")), onAction: saveDial, action: T("Save") })}>
+  return html`<${Sheet} title=${T("Connection to {v1}", { v1: Store.nodeName(peer) })} width=${680} onClose=${closeModal} err=${saveErr}
+      foot=${footRow({ onCancel: closeModal, disabled: busy || nodeDown || !connDirty || !!quotaErr, title: nodeDown ? T("{v1} isn't reporting — reconnect it before changing this link", { v1: Store.nodeName(node) }) : (quotaErr || (!connDirty ? T("No changes to save") : "")), onAction: saveDial, action: T("Save") })}>
     <div class="conncard">
       <div class="conncard-top">
         <span class=${"iftype " + proto}>${T("System {v1}", { v1: proto.toUpperCase() })}</span>
@@ -1809,8 +1776,7 @@ export function ConnectionEditSheet({ node, iface }) {
       after=${(nrec.mesh_gen_reasons || []).filter(r => r.iface === iface).map(r => html`<div class="hint warnish" key=${r.iface}>${srvText(r.msg)}</div>`)}/>
       <${MeshAwgParams} title=${T("This link's AWG params")} eff=${typeSet || typeDflt} value=${awgSet} onChange=${setAwgPick}
         placeholders=${meshAwgHints(live)} ph3=${ph3}
-        about=${T("Both ends of this link use these. A blank cell takes the fleet's default in Settings → Mesh, else a fresh value when the link is rebuilt.")}/>
-      ${awgRule && awgRule !== awgOmitIssue(awgSet, true) ? html`<p class="hint awg-omit-hint err">${awgRule}</p>` : null}</div>
+        about=${T("Both ends of this link use these. A blank cell takes the fleet's default in Settings → Mesh, else a fresh value when the link is rebuilt.")}/></div>
     <div class="row2" style="margin-top:14px">
       <div class="field"><label>${T("Dial source IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— {node}'s IP", { node: Store.nodeName(node) })}</span></label>
         <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto=${T("Auto (default route)")}/></div>
@@ -2004,9 +1970,7 @@ export function EditIfaceSheet({ node, iface }) {
   const genSw = isAwg && !meta.system && (meta.tool || "awg") === "awg";
   const [gen, setGen0] = useState(genWas);
   const genChanged = genSw && gen !== genWas;
-  // …and the rules a save that takes a line off must keep (the panel's awg_rules, on the set it would leave): Save waits on them too
-  const omitRule = isAwg && AWG_ORDER.some(k => awgIsNone(awg[k])) ? awgSaveRule(awg, meta.awg_params, iface, gen === "3.1") : "";
-  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo || omitRule;
+  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo;
   // Flipped to 3.1 before a Save: the 3.1 cells appear at once, holding what the switch would give them (Settings' 3.1
   // defaults over Amnezia's), so they are set in the same Save — never saved, reopened and saved again. A cell the operator
   // already typed is kept. Header protection and trailers stay the panel's: the key is born on the node's switch.
@@ -2024,24 +1988,22 @@ export function EditIfaceSheet({ node, iface }) {
   const istopped = !!ist.stopped;            // operator stopped it (not a failure)
   const idown = !istopped && ist.down;       // genuinely down
   const notup = !!idown || istopped;         // either way: Save brings it up; footer offers Start
-  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false); const [saveErr, setSaveErr] = useState("");
   const doSave = async (switched) => {
     const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, reach, ...egressBody(eg) };
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim();
       if (v && (gen === "3.1" || !AWG3_KEYS.includes(k))) o[k] = v; return o; }, {});
-    // A generation switch is sent from its window, which stays open until the panel answers: a refusal is returned to it.
-    const r0 = switched ? await api.ifaceUpdate({ ...body, awg_gen: gen }) : null;
-    if (r0 && !r0.ok) return r0;
-    // down → "start" (real bring-up); up → "apply" live (no restart). Optimistic: flip the lifecycle +
-    // close the modal(s) NOW so the detail page shows starting/applying the instant Save is pressed.
+    // The panel answers BEFORE the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept —
+    // it used to close first and lose them all. A generation switch is sent from its own window, which shows its refusal there.
+    const r = switched ? await api.ifaceUpdate({ ...body, awg_gen: gen }) : await sheetSend(() => api.ifaceUpdate(body), setSaveErr, setBusy);
+    if (!r || !r.ok) return r;
+    // Accepted: down → "start" (real bring-up); up → "apply" live (no restart) — the lifecycle flips and the sheet closes now.
     const key = node + "|" + iface, verb = notup ? "start" : "apply";
     // A switch is a recreate on the node, whenever it gets there: its tag (awgSwitchTag) stays until the node reports the new
     // version, so it gets no "apply" lifecycle — that one says "applied" after 6 s whatever the node has done.
     if (!(switched && !notup)) Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() };
     Store.apply(); closeAllModals();
     const fail = (m) => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 5000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 5100); };
-    const r = r0 || await api.ifaceUpdate(body);
-    if (!r.ok) return fail(srvText(r) || T("save failed"));
     reportDropped(r);   // §5.4: the panel keeps what it can and names what it could not
 
     if (notup) { const r2 = await api.ifaceStart({ node, iface }); if (!r2.ok) return fail(srvText(r2) || T("start failed")); }
@@ -2064,7 +2026,7 @@ export function EditIfaceSheet({ node, iface }) {
       pushModal(html`<${ConfirmSheet} title=${title} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This reconfigures the interface on the node. Existing peers will NOT be able to connect using their old configs — you'll need to re-issue and re-distribute the QR codes. The interface's keys and peers are kept.")}
         note=${html`<${SubAutoNote}/>`}
-        onConfirm=${() => { doSave(); }}/>`);
+        onConfirm=${() => doSave()}/>`);
       return;
     }
     doSave();
@@ -2086,7 +2048,7 @@ export function EditIfaceSheet({ node, iface }) {
   // a down interface's bring-up (`notup`) is not an edit.
   const dirtyRef = useRef(false), closeRef = useRef(null);
   dirtyRef.current = edited;
-  return html`<${Sheet} title=${T("Edit {v1} interface · {v2}", { v1: kindOf(node, iface).toUpperCase(), v2: iface })} width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef}
+  return html`<${Sheet} title=${T("Edit {v1} interface · {v2}", { v1: kindOf(node, iface).toUpperCase(), v2: iface })} width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef} err=${saveErr}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bring this interface up on the node")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> ${T("Start service")}</button>`
@@ -2196,7 +2158,7 @@ export function EditIfaceSheet({ node, iface }) {
         <div class="awg-cols">${AWG_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]}
           class=${awgIsNone(awg[k]) ? "awg-none" : null} ...${meta.awg_exact && (meta.awg_params || {})[k] == null ? { placeholder: T("val|none") } : {}}
           onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div>
-        <p class=${"hint awg-omit-hint" + (awgOmitIssue(awg) || omitRule ? " err" : "")}>${awgOmitIssue(awg) || omitRule || T("Type - in a cell to remove that line — every device re-imports, as with any change here outside I1–I5.")}</p>
+        <p class=${"hint awg-omit-hint" + (awgOmitIssue(awg) ? " err" : "")}>${awgOmitIssue(awg) || T("Type - in a cell to remove that line — every device re-imports, as with any change here outside I1–I5.")}</p>
         ${/* The 3.1 set as a fifth group — while the sheet says 3.1, the moment the switch is flipped too (setGen fills it), so
               one Save switches with the values wanted. HeaderProtectionKey and RandomTrailers
               change only through the switch (an editable key was a one-keystroke way to cut every client with no window), so

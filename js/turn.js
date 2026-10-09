@@ -25,7 +25,7 @@ import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLoopi
          isWdttName, isSelfContainedName, turnIfaceNameError,
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
          subnetServerAddr, suggestSubnet, ghostIface, ghostPeers } from "./model.js";
-import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
+import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, sheetSend, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle, reportDropped, rulesSummary } from "./routing.js";
 import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate, ReachField } from "./views.js";
 import { IfaceThroughput, RangedHistory, lossColor } from "./charts.js";
@@ -39,6 +39,8 @@ const html = htm.bind(h);
 
 // turn create/edit sheet heading: "Turn-proxy · <title> · <fork>" (title omitted when blank)
 export function turnSheetTitle(fork, title) { return T("Turn-proxy · {v1}", { v1: ((title || "").trim() ? (title.trim() + " · ") : "") + fork }); }
+// sheetSend's refusal, said on a sheet's own message line (formmsg) — the line every turn sheet already shows its errors on
+const errMsg = setMsg => t => setMsg(t ? { k: "err", t } : null);
 // a fresh 64-hex wrap key (browser crypto) — used to pre-fill the create form's params for obfuscation forks
 export function randWrapKey() { const a = new Uint8Array(32); crypto.getRandomValues(a); return Array.from(a, b => b.toString(16).padStart(2, "0")).join(""); }
 
@@ -603,13 +605,12 @@ export function TurnManageSheet({ node, tp }) {
     // (no status, no node round-trip, the proxy keeps running). Other field changes go the proper pending route.
     const titleOnly = newListen === (tp.listen || "") && connect === (tp.connect || "") && params.trim() === origParams.trim() && pin === (tp.bind_ip || "");
     if (titleOnly) {
-      const titleChanged = title.trim() !== (tp.title || "");
-      closeModal();
-      if (!titleChanged) return toast(T("No changes."), "ok");
+      if (title.trim() === (tp.title || "")) { closeModal(); return toast(T("No changes."), "ok"); }
+      // sent before the sheet closes (q189 SPA-3): a refused title stays here, in the panel's words
+      const r = await sheetSend(() => api.turnTitle({ node, service: svc, title: title.trim() }), errMsg(setMsg), setBusy);
+      if (!r.ok) return;
       pushOptTitle("t|" + node + "|" + svc, title.trim());   // show the new title on the card immediately
-      const r = await api.turnTitle({ node, service: svc, title: title.trim() });
-      if (r.ok) { await Store.poll(); toast(T("Title saved — the proxy keeps running."), "ok"); }
-      else toast(srvText(r) || T("Failed to save the title."), "err");
+      closeModal(); await Store.poll(); toast(T("Title saved — the proxy keeps running."), "ok");
       return;
     }
     setBusy(true); setMsg({ k: "work", t: T("saving…") });
@@ -2119,21 +2120,20 @@ export function WdttManageSheet({ node, w: w0 }) {
     : (port.trim() === String(RAW_PORT) || String(wgPort) === String(RAW_PORT))
       ? T("This server is using port {v1} itself — move its listen or internal WG port before turning RAW on.", { v1: RAW_PORT })
       : "";
-  const doSave = () => {
-    const key = node + "|" + iface, verb = "apply";
-    Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
-    const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
+  const doSave = async () => {
     // "Listen on" only when the pick changed, as TurnManageSheet does: the field is seeded from the node's report too, which
-    // trails a save — resent with every params save, a stale report re-pinned a saved Auto (q189 SPA-7)
-    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...egressBody(egressInit(cfg)) })
-      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed"));
-        reportDropped(r);   // §5.4
-        const mv = ((r.data || {}).raw_moved || "");
-        if (mv) toast(T("RAW-IP moved from {v1} to {v2} — one raw listener per address.", { v1: mv, v2: iface }), "ok", 5000);
-        Store.poll(); })
-      .catch(e => fail((e && e.message) || T("save failed")));
+    // trails a save — resent with every params save, a stale report re-pinned a saved Auto (q189 SPA-7). Sent before the sheet
+    // closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept.
+    const r = await sheetSend(() => api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...egressBody(egressInit(cfg)) }),
+      errMsg(setMsg), setBusy);
+    if (!r.ok) return;
+    Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
+    reportDropped(r);   // §5.4
+    const mv = ((r.data || {}).raw_moved || "");
+    if (mv) toast(T("RAW-IP moved from {v1} to {v2} — one raw listener per address.", { v1: mv, v2: iface }), "ok", 5000);
+    Store.poll();
   };
-  const save = () => {
+  const save = async () => {
     if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: T("Listen port must be a number.") });
     if (endpointDirty) {   // endpoint / DTLS port is baked into every user's link → confirm the re-issue
       pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
@@ -2148,11 +2148,12 @@ export function WdttManageSheet({ node, w: w0 }) {
       return;
     }
     if (paramsDirty || rawDirty || wgDirty || pinDirty) { doSave(); return; }   // extra ExecStart flags / RAW listener / Listen on → the node rewrites the unit + restarts
-    // title-only → a cosmetic panel-side label (no node restart, like a turn-proxy title): store + close immediately
-    closeModal();
+    // title-only → a cosmetic panel-side label (no node restart, like a turn-proxy title), sent before the sheet closes (SPA-3)
+    const r = await sheetSend(() => api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...egressBody(egressInit(cfg)) }),
+      errMsg(setMsg), setBusy);
+    if (!r.ok) return;
     pushOptTitle("w|" + node + "|" + iface, title.trim());   // reflect on the card instantly
-    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...egressBody(egressInit(cfg)) })
-      .then(r => { if (r && r.ok) { Store.poll(); reportDropped(r); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });   // §5.4: a title-only save re-posts the routing block, so it can drop too
+    closeModal(); Store.poll(); reportDropped(r); toast(T("Title saved."), "ok");   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked || awaiting} title=${title} onClick=${() => { startOrRestartWdtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet}
@@ -2293,16 +2294,15 @@ export function EditWdttSheet({ node, iface }) {
   // has one. Checked against the saved Extra flags: a `-dns` there wins (TurnDnsField says so).
   const dns = useTurnDns(cfg, fork, w);
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
-  const doSave = () => {
-    // Optimistic, like the interface edit sheet: flip the card to an "applying" badge + close the modal(s) NOW;
-    // the save + the node's reconcile run in the background. trackIfaceOps drives applying → applied / failed.
-    const key = node + "|" + iface, verb = "apply";
-    Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() };
+  const doSave = async () => {
+    // As the interface edit sheet: sent before the sheet closes (q189 SPA-3) — a refusal stays here, in the panel's words, with
+    // every edit kept; once accepted the card flips to "applying" and the sheet closes. trackIfaceOps drives applying → applied.
+    const r = await sheetSend(() => api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...dns.body, ...egressBody(eg) }),
+      errMsg(setMsg), setBusy);
+    if (!r.ok) return;
+    Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() };
     Store.apply(); closeAllModals();
-    const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: oldListen, wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...dns.body, ...egressBody(eg) })
-      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4; busy → applied via trackIfaceOps
-      .catch(e => fail((e && e.message) || T("save failed")));
+    reportDropped(r); Store.poll();   // §5.4
   };
   const save = () => {
     const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
@@ -2540,15 +2540,15 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const sw = csqttSwitchState(node, iface);
   const anyDirty = endpointDirty || titleDirty || paramsDirty || pinDirty || lineDirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
   const wperr = portErrMsg(node, port, [lport]);
-  const doSave = () => {
-    const key = node + "|" + iface, verb = "apply";
-    Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
-    const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...(lineDirty ? { line } : {}), ...egressBody(egressInit(cfg)) })   // Listen on: as WdttManageSheet's
-      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
-      .catch(e => fail((e && e.message) || T("save failed")));
+  const doSave = async () => {
+    // sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept
+    const r = await sheetSend(() => api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...(lineDirty ? { line } : {}), ...egressBody(egressInit(cfg)) }),   // Listen on: as WdttManageSheet's
+      errMsg(setMsg), setBusy);
+    if (!r.ok) return;
+    Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
+    reportDropped(r); Store.poll();   // §5.4
   };
-  const save = () => {
+  const save = async () => {
     if (port.trim() && !/^\d+$/.test(port.trim())) return setMsg({ k: "err", t: T("Listen port must be a number.") });
     // A version switch asks first, and carries any other change with it. Going back to what already runs (a switch
     // that failed, or one not landed yet) needs no question: nothing restarts that is not already restarting.
@@ -2558,9 +2558,11 @@ export function CsqttManageSheet({ node, c: c0 }) {
     if (endpointDirty) { askEndpoint(); return; }
     if (lineDirty) { doSave(); return; }
     if (paramsDirty || pinDirty) { doSave(); return; }
-    closeModal(); pushOptTitle("c|" + node + "|" + iface, title.trim());
-    api.csqttSet({ node, iface, listen: oldListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) })
-      .then(r => { if (r && r.ok) { Store.poll(); reportDropped(r); toast(T("Title saved."), "ok"); } else toast(srvText(r) || T("Save failed."), "err"); });   // §5.4: a title-only save re-posts the routing block, so it can drop too
+    const r = await sheetSend(() => api.csqttSet({ node, iface, listen: oldListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...egressBody(egressInit(cfg)) }),
+      errMsg(setMsg), setBusy);   // title-only, sent before the sheet closes (SPA-3)
+    if (!r.ok) return;
+    pushOptTitle("c|" + node + "|" + iface, title.trim());
+    closeModal(); Store.poll(); reportDropped(r); toast(T("Title saved."), "ok");   // §5.4: a title-only save re-posts the routing block, so it can drop too
   };
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${blocked} title=${title} onClick=${() => { startOrRestartCsqtt(node, iface, verb); closeModal(); }}><${Ic} i=${icon}/> ${label}</button>`;
   return html`<${Sheet}
@@ -2629,13 +2631,12 @@ export function EditCsqttSheet({ node, iface }) {
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
-  const doSave = () => {
-    const key = node + "|" + iface, verb = "apply";
-    Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
-    const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...dns.body, ...egressBody(eg) })
-      .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
-      .catch(e => fail((e && e.message) || T("save failed")));
+  const doSave = async () => {
+    // sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept
+    const r = await sheetSend(() => api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...dns.body, ...egressBody(eg) }), errMsg(setMsg), setBusy);
+    if (!r.ok) return;
+    Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
+    reportDropped(r); Store.poll();   // §5.4
   };
   const save = () => { const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
     if (dns.err) return setMsg({ k: "err", t: dns.err }); doSave(); };

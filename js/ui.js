@@ -201,6 +201,20 @@ export function mutate({ key, patch, call, onOk, timeout = 8000 }) {
     return r;
   })();
 }
+// ── a sheet's Save waits for the panel (q189 SPA-3, the root) ──
+// Sheets closed on Save and sent the change afterwards, so a refusal was a toast over a closed sheet and every edit in it was
+// gone. `sheetSend` sends FIRST and returns the panel's answer: a refusal is said in the sheet, in the panel's own words
+// (`setErr`, shown by Sheet's `err`), with every edit still there; only an accepted save goes on to close it. No rule of the
+// panel's is copied here — the panel judges, the sheet reports.
+export async function sheetSend(call, setErr, setBusy) {
+  if (setBusy) setBusy(true);
+  if (setErr) setErr("");
+  let r;
+  try { r = await call(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+  if (setBusy) setBusy(false);
+  if (!r || !r.ok) { if (setErr) setErr(srvText(r) || (r && r.code) || T("save failed")); return r || { ok: false }; }
+  return r;
+}
 export function rowError(key) { return Store.rowErrors[key] || null; }
 export function dismissError(key) { if (Store.rowErrors[key]) { delete Store.rowErrors[key]; Store.apply(); } }
 
@@ -458,7 +472,7 @@ export function subjectBlocked(subject) {
   const rec = subject.kind === "user" ? Store.user(subject.id) : Store.peer(subject.id);
   return !!(rec && rec.disabled);
 }
-export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, cleanRef, onBack, noGuard, subject }) {
+export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, cleanRef, onBack, noGuard, subject, err }) {
   useStore();                                    // track live block/unblock while the modal is open
   onClose = onClose || closeModal;
   const blocked = subjectBlocked(subject);
@@ -540,7 +554,7 @@ export function Sheet({ title, children, foot, onClose, width, headExtra, dirtyR
       <div class="sheet-head"><h3>${title}</h3>${blocked ? html`<span class="blocked-tag"><${Ic} i="off"/> ${T("status|Blocked")}</span>` : null}${headExtra || null}${onBack
         ? html`<button class="sheet-back" onClick=${tryClose}><${Ic} i="back"/> ${T("Back")}</button>`
         : html`<button class="x" onClick=${tryClose}>×</button>`}</div>
-      <div class="sheet-body">${children}</div>
+      <div class="sheet-body">${children}${err ? html`<div class="formmsg err" role="alert">${err}</div>` : null}</div>
       ${(foot || discard) ? html`<div class="sheet-foot">${discard
         ? html`<${Fragment}><span class="discard-msg"><${Ic} i="warn"/> ${T("Discard unsaved changes?")}</span><span class="grow"></span>
             <button class="btn btn-ghost" onClick=${() => setDiscarding(false)}>${T("Keep editing")}</button>

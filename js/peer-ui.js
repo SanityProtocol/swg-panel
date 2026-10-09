@@ -20,7 +20,7 @@ import { go } from "./router.js";
 import { turnFork, turnColor, turnClientColor, turnClientAuthor, turnForkList, forkLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
-  Popover, CapList, useCapped, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
+  Popover, CapList, useCapped, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
   openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, rowSingle, rowDouble, rowNoSelect, RowError,
   useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice, modalDepth, tgt3,
 } from "./ui.js";
@@ -1206,6 +1206,7 @@ export function UserEditCard({ user, done }) {
   const [tag, setTag] = useState(user.tag || "");
   const [note, setNote] = useState(user.note || "");
   const [expDate, setExpDate] = useState(expiryInputVal(user.expiry || 0));   // subscription expiry (blank = never)
+  const [busy, setBusy] = useState(false), [saveErr, setSaveErr] = useState("");
   const showVk = Store.peersOfUser(user.id).some(p => targetsWantVk(p.targets));   // a peer behind a turn-proxy, or on a WDTT server
   const dirty = name !== (user.name || "") || tag !== (user.tag || "") || note !== (user.note || "") || expDate !== expiryInputVal(user.expiry || 0);   // VK links save on their own (VkLinkField) → not part of this
   const save = async () => {
@@ -1215,12 +1216,11 @@ export function UserEditCard({ user, done }) {
     // clean message instead of a rejected save).
     const maxPeer = Store.peersOfUser(user.id).reduce((m, p) => Math.max(m, +(p.ownExpiry || 0)), 0);
     if (expSec && maxPeer && expSec < maxPeer) { toast(T("Subscription expiry can't be earlier than a peer's expiry ({date}).", { date: fmtDate(maxPeer) }), "err"); return; }
-    done();   // close the editor immediately; the row updates optimistically  (VK links are owned by VkLinkField — saved on their own)
-    mutate({
-      key: "user:" + user.id,
-      patch: s => { const u = s.roster.users[user.id]; if (u) { u.name = name.trim(); u.tag = tag.trim(); u.note = note; u.expiry = expSec; } },
-      call: () => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note, expiry: expSec }),
-    });
+    // Sent before the editor closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept — it used to
+    // close first and lose them. (VK links are owned by VkLinkField — saved on their own.)
+    const r = await sheetSend(() => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note, expiry: expSec }), setSaveErr, setBusy);
+    if (!r.ok) return;
+    done(); Store.poll().catch(() => {});
   };
   const del = () => openConfirm({ title: T("Delete user · {name}", { name: user.name }), confirmLabel: T("Delete user"), danger: true, back: done,
     body: T("Their peers are revoked and become unassigned.") + " " + T("This can't be undone.") + (() => {
@@ -1251,7 +1251,8 @@ export function UserEditCard({ user, done }) {
     <${SubLinkActions} user=${user}/>
     ${showVk ? html`<${VkLinkField} user=${user}/>` : null}
     <${UserNetworksPanel} user=${user}/>
-    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty} onClick=${save}>${T("Save")}</button></div>
+    ${saveErr ? html`<div class="formmsg err" role="alert">${saveErr}</div>` : null}
+    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty || busy} onClick=${save}>${T("Save")}</button></div>
   </div>`;
 }
 
