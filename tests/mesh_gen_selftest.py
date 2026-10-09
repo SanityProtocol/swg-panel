@@ -27,6 +27,7 @@ Run: python3 tests/mesh_gen_selftest.py            (0 = pass)
      --perturb-reprov  the reasons send the operator to re-provision the pair's anchor again (the copy before PR-4) — [11] must FAIL
      --perturb-own     the remedy ignores a link's own type (always "pick {type}") — [11] must FAIL
      --perturb-wait    a pair is made before an end has reported (the PR-4 behaviour) — [12] must FAIL
+     --perturb-partial-link   a link made from part of a template is not named — [13] must FAIL
 """
 import copy, importlib.machinery, importlib.util, json, os, random, subprocess, sys, tempfile
 
@@ -97,6 +98,9 @@ if "--perturb-own" in sys.argv:      # a remedy that ignores the link's own type
 if "--perturb-wait" in sys.argv:     # the tree before q189 PR-4's fix: a pair is made whatever its ends have reported
     P.mesh_link_waits = lambda deps, nodes, snaps, a, b: False
     print("(perturbed: no pair waits for its ends' reports — [12] must FAIL)")
+if "--perturb-partial-link" in sys.argv:   # the tree before q189 PR-11: such a link goes unnamed
+    P.mesh_link_partial = lambda ov: []
+    print("(perturbed: a link made from part of a template is not named — [13] must FAIL)")
 if "--perturb-link-awg" in sys.argv:  # the tree without a link's own params: the builder never reads them, nothing moves
     P.mesh_link_layer = lambda nodes, a, b: {"mesh_awg": {}}
     P.mesh_link_awg_migrate = lambda nodes: False
@@ -627,6 +631,29 @@ before = ids(t)
 del sx["n02"]                                   # its report gone (a panel restart without its mirror)…
 t = run(P, t, dm, sx)
 check("an existing link is never touched by the wait: an end that loses its report keeps its links as they are", ids(t) == before)
+
+# ── [13] a link 1.8.8 made from part of a template (q189 PR-11) ──────────────────────────────────────────────────────
+print("[13] a mesh link made from part of a template is named on its card, with the one-link rebuild")
+sn = {"n00": gen_snap(), "n01": gen_snap(), "n02": gen_snap()}
+d = deps(1320)                                   # no type, no "-": the reasons are otherwise never computed
+t = run(P, fleet(3), d, sn)
+ifc = t["n00"]["links"]["n01"]["iface"]; ifc2 = t["n01"]["links"]["n00"]["iface"]
+for nid, i in (("n00", ifc), ("n01", ifc2)):     # what 1.8.8 stored from a template that set only Jc/Jmin/Jmax
+    t[nid]["ifaces"][i]["awg_params"] = {"Jc": "5", "Jmin": "50", "Jmax": "80"}
+check("the card's reasons are computed although no mesh type is set", P.mesh_types_in_play(d, t))
+r = {x["peer"]: x for x in P.mesh_gen_reasons(d, t, sn, "n00")}
+m = (r.get("node1") or {}).get("msg") or {}
+check("n00's card names the link to n01 with the keys it lacks, and how to rebuild that one link",
+      m.get("error_key", "").startswith("made from part of a template") and m.get("error_vars", {}).get("v1") == "S1, S2, H1, H2, H3, H4"
+      and how(m) == (PICK, "AWG 2.0"), m)
+check("…and only that link (n00↔n02 is whole)", list(r) == ["node1"], list(r))
+t[ "n00"]["ifaces"][ifc]["awg_exact"] = True
+check("an exact link (a template's \"-\") omits keys on purpose and is not named", "node1" not in {x["peer"] for x in P.mesh_gen_reasons(d, t, sn, "n00")})
+t["n00"]["ifaces"][ifc].pop("awg_exact")
+t = relink(t, d, sn, "n00", "n01", "2.0")
+check("the rebuild as said gives the link a whole set on both ends, and the card names nothing",
+      not P.mesh_link_partial(t["n00"]["ifaces"][t["n00"]["links"]["n01"]["iface"]]) and P.mesh_gen_reasons(d, t, sn, "n00") == [])
+check("a fleet with no such link computes no reasons (the gate's cost unchanged)", not P.mesh_types_in_play(d, run(P, fleet(3), d, sn)))
 
 print()
 if FAILS:
