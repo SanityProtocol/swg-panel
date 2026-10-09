@@ -75,6 +75,7 @@ DOCKER_ONLY_FUNCS = {
     "_dturn_delete": "turn-on-docker only (see _dturn_run)",
     "_dturn_attach_running": "called only under `if TURN_DOCKER`",
     "_dturn_ensure": "called only by _dturn_reconcile, which returns first when not TURN_DOCKER",
+    "_dturn_bind_stale": "called only by _dturn_ensure (see there)",
 }
 SHELL_BUILTINS = {"cd", "exit", "printf", "kill", "echo", "test", "true", "false", "read", "export", "set", "trap", "wait", "command"}
 
