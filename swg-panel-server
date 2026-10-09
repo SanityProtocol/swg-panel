@@ -10598,8 +10598,14 @@ _FP_DELTA = {
         # The turn-PROXY half of this has always worked (rebuild_plan runs the same transform over its
         # captured `listen`); the turn-FAMILY half lives in the node record and was shipped verbatim by
         # _wdtt_reply / _csqtt_reply. Same rule, same transform, the row it was missing.
-        ("residue.wdtt.*.listen",      "bind_swap", "the address a WDTT server binds — only an address this box still has survives"),
-        ("residue.csqtt.*.listen",     "bind_swap", "the address a csqtt server binds — the same rule as its WDTT twin"),
+        # ⚠️ …BUT SINCE 4eec67e `listen` IS WHAT CLIENTS DIAL, and the node binds it only when it lands on the box
+        # (swg-noded turn_bind — anything else listens on 0.0.0.0, so that crash cannot recur). So it takes the
+        # ENDPOINT rule: the old box's own address still resets, but a DDNS name or a NAT front — the setups
+        # 4eec67e exists for — is the operator's and is kept (the bind rule reset them to 0.0.0.0 on every
+        # rebuild, the same box's too: q189 PR-1). The bind rule now belongs to `bind_ip` ("Listen on"), which the
+        # node itself ignores on a box that does not carry it.
+        ("residue.wdtt.*.listen",      "host_swap", "the host a WDTT server's clients dial — a name or a front door is kept, the old box's own address resets"),
+        ("residue.csqtt.*.listen",     "host_swap", "the host a csqtt server's clients dial — the same rule as its WDTT twin"),
         # ⚠️ …AND THE SOURCE IPs, which are the same fact in the other direction: not an address something
         # binds, but one it sends FROM. Every one of them must be an address the box actually owns — SNAT to
         # a non-local source drops the traffic, a panel-dial source that is not here cannot connect, and a
@@ -11442,23 +11448,26 @@ def rebuild_plan(deps, nodes, nid, snaps, seen, assume=None, supersede=None):
             unrestorable.append({"iface": tp.get("service"), "kind": "turn",
                                  "why": "turn proxy: no known fork/owner or unparsable bind — re-add it by hand"})
             continue
-        # The bind follows §1.5's BIND rule, which is not the endpoint one: only an IP the new box still
-        # reports survives, because that is the only kind of address a listener can actually take.
+        # `listen` is what clients dial (4eec67e — the node reports SWG_DIAL), so it follows §1.5's ENDPOINT rule as
+        # the wdtt/csqtt rows above do: a name or a front door is kept, the old box's own address resets.
         # ⚠️ AND SAY SO. This reset happens outside fp_transform — a turn proxy is captured from the
         # SNAPSHOT, not from the record the table walks — so it produced no address action and the
         # pre-flight's list simply did not mention it. The operator saw "Addresses" name the wdtt/csqtt
         # binds and concluded the proxies were being left alone, when they were being reset in exactly the
         # same way and for exactly the same reason. Same rule, same list.
         _tp_was = (tp.get("listen") or "").strip()
-        _tp_now = _bind_swap_transform(_tp_was, ctx) or ("0.0.0.0:%d" % _lp)
+        _tp_now = _host_swap_transform(_tp_was, ctx) or ("0.0.0.0:%d" % _lp)
         if _tp_was and _tp_now != _tp_was:
             addr_actions.append(("turn.%s.listen" % (tp.get("service") or "?"),
                                  "reset %r -> %r" % (_tp_was, _tp_now),
-                                 "the address this turn proxy binds — only an address the new box has survives"))
+                                 "the host clients dial this turn proxy at — the old box's own address resets"))
+        # …and its "Listen on" pin (`bind_ip`, b7f849c) rides along: the BIND rule decides it at the re-issue, against
+        # what the rebuilt box reports (a same-box re-image keeps it; a new box without that address gets Auto).
+        _bip = tp["bind_ip"].strip() if isinstance(tp.get("bind_ip"), str) else ""
         turn_capture.append({"service": tp.get("service"), "fork": fork, "owner": owner,
                              "listen": _tp_now,
                              "connect": tp.get("connect") or "", "params": tp.get("params") or "",
-                             "title": tp.get("title") or ""})
+                             "title": tp.get("title") or "", **({"bind_ip": _bip} if _bip and bind_ip_ok(_bip) else {})})
 
     # ── F4 · THE JOIN, and the join is the whole finding (§7.4) ────────────────────────────────────────
     # Both facts already exist, thirty lines apart and each individually reassuring: `unrestorable` names
@@ -32434,10 +32443,12 @@ class Handler(BaseHTTPRequestHandler):
                 _svc = _t.get("service") or ""
                 if _svc in _have or _svc in _pending:
                     continue                       # already back, or an install is already queued for it
+                # its "Listen on" pin by the BIND rule, now that the box has said which addresses it has (q189 PR-5)
+                _bp = _bind_swap_transform(_t.get("bind_ip") or "", {"after_ips": list(snap.get("node_ips") or [])})
                 _pending.setdefault(_svc, {"action": "install", "owner": _t.get("owner"),
                                            "listen": _t.get("listen"), "connect": _t.get("connect"),
                                            "params": _t.get("params") or "", "title": _t.get("title") or "",
-                                           "at": int(time.time())})
+                                           **({"bind_ip": _bp} if _bp else {}), "at": int(time.time())})
                 _left.append(_t)
             if _pending:
                 node["turn"] = _pending
