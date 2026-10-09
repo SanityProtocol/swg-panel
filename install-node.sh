@@ -228,11 +228,16 @@ detect_wg(){ # every CONVENTIONAL wg/awg location, not just the ones we install 
     for f in "$d"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
   done
 }
-ensure_wg_tools_once(){ # ensure_wg_tools, once per run per tool: the answer cannot change within one, and the AmneziaWG chain
-  # can download and compile for minutes. The install steps asked twice (Datapath tooling, then "for future interface
-  # creation"), so a download that failed or crawled the first time was simply repeated (client report 2026-10-06).
-  local _v="_WGT_RC_$1" _rc
-  if [ -n "${!_v:-}" ]; then return "${!_v}"; fi
+ensure_wg_tools_once(){ # <awg|wg> [again] — ensure_wg_tools, once per run per tool: the answer cannot change within one, and the
+  # AmneziaWG chain can download and compile for minutes. The install steps asked twice (Datapath tooling, then "for future
+  # interface creation"), so a download that failed or crawled the first time was simply repeated (client report 2026-10-06).
+  # ⚠️ BUT A FAILURE IS NOT FINAL WHERE AN INTERFACE IS STARTED: `again` there tries a tool that failed earlier in the run
+  # once more — a dpkg lock held at the tooling step (unattended-upgrades on a fresh box) is gone by then, and that failure,
+  # kept, left an adopted wg0 DOWN after an rc-0 Docker → bare convert (1.8.9 qualification IN-18; 1.8.8 asked afresh there).
+  # Once per tool per run: a chain that really fails is not repeated for every interface.
+  local _v="_WGT_RC_$1" _a="_WGT_AGAIN_$1" _rc
+  if [ -n "${!_v:-}" ] && { [ "${!_v}" = 0 ] || [ -z "${2:-}" ] || [ -n "${!_a:-}" ]; }; then return "${!_v}"; fi
+  [ -z "${2:-}" ] || printf -v "$_a" '%s' 1
   ensure_wg_tools "$1" && _rc=0 || _rc=$?
   printf -v "$_v" '%s' "$_rc"
   return "$_rc"
@@ -375,7 +380,7 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
   for name in "${SPEC_ORDER[@]}"; do
     cmd="${SPEC_CMD[$name]}"; proto="${SPEC_PROTO[$name]}"; port="${SPEC_PORT[$name]}"; subnet="${SPEC_SUBNET[$name]}"
     addr="${SPEC_ADDR[$name]}"; wan="${SPEC_WAN[$name]}"; ep="${SPEC_EP[$name]}"; dir="${SPEC_DIR[$name]}"; conf="$dir/$name.conf"
-    if ! ensure_wg_tools_once "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
+    if ! ensure_wg_tools_once "$cmd" again; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
     up="$(nat_hook_up "${subnet}" "${wan}")"   # reap-then-add: one copy whatever was there (lib/common.sh)
     down="$(nat_hook_down "${subnet}" "${wan}")"
     printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
@@ -561,7 +566,7 @@ apply_node_switch(){
   info "Bringing up the node's interfaces (starting each one — this can take a moment for many)…"
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -z "$n" ] && continue
     ip link show "$n" >/dev/null 2>&1 && continue          # already up → leave it
-    _c="${IF_CMD[$n]:-awg}"; ensure_wg_tools_once "$_c" || continue
+    _c="${IF_CMD[$n]:-awg}"; ensure_wg_tools_once "$_c" again || continue
     if [ "$_c" = awg ]; then bringup awg-quick "$n" && { run systemctl enable --quiet "awg-quick@$n" || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"
     else                     bringup wg-quick  "$n" && { run systemctl enable --quiet "wg-quick@$n"  || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"; fi
   done
