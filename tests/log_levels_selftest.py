@@ -43,7 +43,12 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
      reverifyskip the routing pass is gated on the log line's signature, so the reverify no longer forces a pass
      subfixed     swg-sub logs at Info whatever the fleet's level
      subserve     the panel leaves the level out of swg-sub's serve.json
+     relaydst     the relay's --dst test reads the node's level at start
+     relaydstloop the relay's --dst test reads the node's level again at its first report
   [8] swg-sub follows the fleet's level from subs/serve.json (it cannot read panel-settings.json).
+  [9] swg-relay's hand-run --dst test prints all it measures — the probe, the listening line, --report's counters — at
+      any node level, as 1.8.8 did (1.8.9 qualification HE-10: at Errors only its error line, at Off nothing); the
+      relay unit (no --dst) still follows the node's level.
 """
 import importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time, types
 import urllib.error, urllib.request
@@ -51,7 +56,8 @@ import urllib.error, urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PROG = {k: os.path.join(ROOT, f) for k, f in (("noded", "swg-noded"), ("panel", "swg-panel-server"), ("sni", "swg-sni"),
-                                              ("netctl", "swg-netctl"), ("agent", "swg-agent"), ("sub", "swg-sub"))}
+                                              ("netctl", "swg-netctl"), ("agent", "swg-agent"), ("sub", "swg-sub"),
+                                              ("relay", "swg-relay"))}
 REF = "4248d11"                                  # the last build before levels: the byte-identical reference
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 FAILS = []
@@ -99,6 +105,9 @@ PLANTS = {   # (program, anchor, replacement)
     "nofollow": ("panel", '''        threading.Thread(target=_panel_log_follow_loop, name="log-follow", daemon=True).start()''',
                  '''        pass'''),
     "updatelog": ("netctl", '''        caps["swg-update.service"] += "SyslogLevel=%s\\n" % cap\n''', "        pass\n"),
+    "relaydst": ("relay", '''        _LOG["level"] = LOG_DEBUG                # counters)''', '''        log_reread()                # counters)'''),
+    "relaydstloop": ("relay", '''            if not a.dst:\n                log_reread()                     # the level may have moved''',
+                     '''            if True:\n                log_reread()                     # the level may have moved'''),
 }
 SRC = {k: open(p, encoding="utf-8").read() for k, p in PROG.items()}
 if PLANT:
@@ -601,6 +610,33 @@ json.dump({"enabled": True}, open(sv, "w"))
 U._LOG_SERVE["at"] = -99
 U.log(U.LOG_INFO, "swg-sub: serving")
 check("[8] a serve.json from before levels: Info", "I swg-sub: serving" in ub.getvalue(), ub.getvalue())
+
+# ── [9] swg-relay's --dst test ──────────────────────────────────────────────────────────────────────────────────────
+print("[9] swg-relay's hand-run --dst test")
+RL = write_prog("relay")
+
+
+def relay_run(level, *args):
+    """The real swg-relay for ~2.5 s on a node whose level file says `level`: what it wrote."""
+    lf = os.path.join(TMP, "relay-level"); open(lf, "w").write(level + "\n")
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+    env = dict(os.environ, SWG_LOG_LEVEL_FILE=lf); env.pop("JOURNAL_STREAM", None)
+    p = subprocess.Popen([sys.executable, RL, "--host", "127.0.0.1", "--port", str(port)] + list(args), env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(2.5)
+    p.terminate()
+    return p.communicate(timeout=10)[0]
+
+
+for lv, what in (("3 3", "Errors"), ("-1 -1", "Off")):
+    o = relay_run(lv, "--dst", "127.0.0.1:9", "--report", "1")
+    check("[9] at %s the --dst test prints its probe and its listening line" % what,
+          "I relay: pipe requested=" in o and "I relay: cc requested=" in o and "I relay: listening " in o, o[-400:])
+    check("[9] …and --report's counters, as 1.8.8 did", o.count("D relay: accepted=") >= 1, o[-400:])
+o = relay_run("3 3")
+check("[9] the relay unit (no --dst) still follows the node's level: at Errors its error line alone",
+      "relay: IP_TRANSPARENT" in o and "relay: pipe requested=" not in o and "relay: listening" not in o
+      if os.geteuid() else "relay: pipe requested=" not in o and "relay: listening" not in o, o[-400:])
 
 print()
 if PLANT:
