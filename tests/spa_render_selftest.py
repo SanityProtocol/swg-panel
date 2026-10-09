@@ -36,11 +36,18 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
   [B12] the users grid's reach and networks chips stand at the end of the name cell, just before the Peers column
   [B13] a footer is one row of equals: in the device view and the user sheet, Block / Unassign / Delete / Rotate all keys are
         as tall as the buttons beside them, and in Russian the device view's six buttons stay on one row
+  [B14] the app bar on a phone (q189): at 390 px it wraps — every visible header control on the screen and tappable, the bar
+        adding no width (it ran to 1 257 px, so every screen scrolled sideways) — and scrolls away with the page; at 1 280 px it
+        is the one sticky 56 px row it was. English and Russian
+  [B15] the grids' traffic rail covers no row action (OE, 1.8.9): at 1 280×900 it sat over the last action of every row in its
+        band (a click on Delete peer opened the rail's Custom dates); at 1 366 it never did (the control)
+  [B16] the Add-node command names the panel's confirmed address (OE, 1.8.9): opened through a tunnel or another name, it was
+        built from this tab's address and pointed nowhere; with no address set, this tab's own as before
   [i18n] B1's words in Russian; [console] no error or exception on any view
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | railclear | cmdhost
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -83,6 +90,11 @@ PERTURBATIONS = {
     "pillwidth": ("app.css", "min-width:0;width:auto;height:28px;padding:0 10px;border-radius:999px;", "min-width:0;width:170px;height:28px;padding:0 10px;border-radius:999px;"),
     "chipsend": ("app.css", ".u-name>.ucounts{margin-left:auto;margin-right:10px}", ".u-name>.ucounts{}"),
     "footsize": ("app.css", ".sheet-foot :is(.btn-danger,.btn-warn,.btn-exp),.editfoot :is(.btn-danger,.btn-warn,.btn-exp){padding:8px 13px;font-size:13px;border-radius:var(--r-sm);gap:7px}", ""),
+    "phonebar": ("app.css", "  .appbar{flex-wrap:wrap;height:auto;gap:8px 6px;padding:8px 14px;position:static}.brand{margin-right:auto}\n",
+                 "  .appbar{gap:14px;padding:0 14px}\n"),
+    "railclear": ("app.css", "@media (min-width:901px) and (max-width:1352px){:root:has(.trafficrail) .view{padding-right:70px}}\n", ""),
+    "cmdhost": ("js/sheets-crud.js", 'const host = String(Store.panelPublicUrl || "").trim().replace(/\\/+$/, "") || `${location.origin}${BASE}`;',
+                "const host = `${location.origin}${BASE}`;"),
     "footwidth": ("js/sheets-crud.js", 'width=${760} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}', 'width=${640} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}'),
 }
 WEB = ROOT
@@ -606,6 +618,57 @@ try:
     check("[N2] the bubble opens on all of them, with no switch to offer", bub and len(bub["rows"]) == 2 and bub["live"] == 0 and not bub["sw"], bub)
     unhover(tab)
     check("[console] networks chip (nothing live): clean", not console_bad(tab), console_bad(tab)[:3])
+    tab.close()
+
+    # ── [B14] the app bar on a phone ─────────────────────────────────────────────────────────────────────────────────────────
+    BAR = """(() => { const bar = document.querySelector('.appbar'), br = bar.getBoundingClientRect();
+      const ctl = [...bar.querySelectorAll('a,button,.livepill,.tport')].filter(e => !e.hidden && e.getClientRects().length)
+        .map(e => { const r = e.getBoundingClientRect(), hit = document.elementFromPoint(Math.min(innerWidth - 1, r.left + r.width / 2), r.top + r.height / 2);
+          return { t: (e.getAttribute('aria-label') || e.textContent).trim().slice(0, 20), l: Math.round(r.left), r: Math.round(r.right),
+                   ok: r.left >= 0 && r.right <= innerWidth && !!hit && (hit === e || e.contains(hit)) }; });
+      return { vw: innerWidth, right: Math.max(...[...bar.querySelectorAll('*')].map(e => e.getBoundingClientRect().right)), h: Math.round(br.height),
+               pos: getComputedStyle(bar).position, ctl, n: ctl.length }; })()"""
+    for lang in ("en", "ru"):
+        tab = open_app(lang, viewport=(390, 844))
+        m = tab.ev(BAR)
+        bad = [c for c in m["ctl"] if not c["ok"]]
+        check("[B14] %s 390 px: all %d visible header controls on the screen and tappable (before: the right cluster from x≈560 on)" % (lang, m["n"]),
+              m["n"] >= 10 and not bad, bad or m)
+        check("[B14] %s 390 px: the bar adds no width (its content ends inside 390 px; before: 1 257 px) and scrolls with the page" % lang,
+              m["right"] <= m["vw"] and m["pos"] == "static", {k: m[k] for k in ("vw", "right", "pos", "h")})
+        tab.close()
+        tab = open_app(lang, viewport=(1280, 900))
+        m = tab.ev(BAR)
+        check("[B14] %s 1280 px: the one sticky 56 px row it was" % lang, m["h"] == 56 and m["pos"] == "sticky", {k: m[k] for k in ("h", "pos")})
+        tab.close()
+
+    # ── [B15] the traffic rail and the rows' actions ────────────────────────────────────────────────────────────────────────
+    RAIL = """(() => { const rail = document.querySelector('.trafficrail .railpanel'); if (!rail) return null;
+      const btn = [...document.querySelectorAll('tbody tr button, .urow button')].map(b => { const r = b.getBoundingClientRect();
+        if (r.top < 0 || r.bottom > innerHeight || !r.width) return null;
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { x: Math.round(r.left), y: Math.round(r.top), ok: !!hit && (hit === b || b.contains(hit)) }; }).filter(Boolean);
+      return { n: btn.length, covered: btn.filter(b => !b.ok) }; })()"""
+    for w in (1280, 1366):
+        for route in ("#/peers", "#/users"):
+            tab = open_app("en", viewport=(w, 900))
+            tab.goto(ORIGIN + "/" + route); settle(tab, 2500)
+            m = tab.ev(RAIL)
+            check("[B15] %d×900 %s: the rail covers none of the %s row buttons on screen%s" % (w, route, (m or {}).get("n"), " (before: the last action of each row in its band)" if w == 1280 else " (the control)"),
+                  bool(m) and m["n"] >= 10 and not m["covered"], m)
+            tab.close()
+
+    # ── [B16] the Add-node command's address ────────────────────────────────────────────────────────────────────────────────
+    tab = open_app("en", viewport=(1400, 900))
+    for pub, want in (("https://panel.example.net:2087", "-host https://panel.example.net:2087"), ("", "-host " + ORIGIN)):
+        txt = ev_mod(tab, "sheets-crud", STORE_JS + "S.panelPublicUrl = %s; const { h } = await import('preact'); const UI = await %s('ui');"
+                     " UI.openModal(h(M.NodeTokenSheet, { name: 'q-new', token: 'TOKEN-B16', isNew: true }));"
+                     " await new Promise(r => setTimeout(r, 900)); const sh = document.querySelector('.overlay.show .sheet');"
+                     " const t = sh ? sh.textContent : ''; UI.closeAllModals(); return t;" % (json.dumps(pub), MOD))
+        cmds = [c for c in (txt or "").split("sudo bash")[1:] if "TOKEN-B16" in c]   # each install command (bare metal, Docker)
+        check("[B16] %s: the command says %s" % ("the panel's confirmed address set" if pub else "none set", want),
+              len(cmds) == 2 and all(want in c for c in cmds), cmds or (txt or "")[:300])
+        settle(tab, 400)
     tab.close()
 finally:
     stop.set()
