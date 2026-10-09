@@ -193,10 +193,10 @@ def _say_loop():
             except Exception:
                 pass
         dropped, _SAY["dropped"] = _SAY["dropped"], 0
-        if dropped:
+        if dropped and LOG_WARNING <= _SAY["level"]:   # say() drops a line when SAY_MAX are waiting; this line is a warning
             try:
-                _say_write(_say_text(LOG_WARNING, "swg-sni: %d lines not written (more than %d a second)",
-                                     (dropped, SAY_RATE)))
+                _say_write(_say_text(LOG_WARNING, "swg-sni: %d lines not written (queue full, %d waiting)",
+                                     (dropped, SAY_MAX)))
             except Exception:
                 pass
         if q:
