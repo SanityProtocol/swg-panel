@@ -84,6 +84,8 @@ retire_docker_updater(){
   rm -f /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path \
         /etc/systemd/system/swg-update.timer /usr/local/bin/swg-update \
         /usr/local/bin/swg-update-check /var/lib/swg-update.stamp 2>/dev/null || true
+  # …and the Docker host's static level drop-in (docker_host_log_dropins): it would mask the bare netctl's of the same name
+  rm -f /etc/systemd/system/swg-update.service.d/swg-log.conf; rmdir /etc/systemd/system/swg-update.service.d 2>/dev/null || true
   systemctl daemon-reload 2>/dev/null || true
 }
 

@@ -800,8 +800,10 @@ lc_teardown_baremetal(){
     systemctl disable "awg-quick@$n" 2>/dev/null || true; systemctl disable "wg-quick@$n" 2>/dev/null || true
     rm -f "$f"; done
   for s in "$@"; do [ -n "$s" ] || continue; systemctl disable --now "$s" 2>/dev/null || true; rm -f "/etc/systemd/system/$s.service"; done   # migrated host turn-proxies only
-  rm -rf /etc/systemd/system/swg-noded.service /etc/systemd/system/swg-noded.service.d; systemctl daemon-reload 2>/dev/null || true
-  rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent; }
+  rm -rf /etc/systemd/system/swg-noded.service /etc/systemd/system/swg-noded.service.d
+  swg_log_teardown swg-node swg-relay@.service vk-turn-proxy-.service swg-wdtt-.service swg-csqtt-.service   # (see there)
+  systemctl daemon-reload 2>/dev/null || true
+  rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent /var/log/swg-agent; }
 # teardown_bare_panel — stop + remove the bare-metal panel (units + proxy vhost + binary), then move its STATE
 # dirs aside (already staged into data/) so the box no longer reads as a bare panel and a later convert-back
 # Remove the DOCKER address helper (swg-netctl-docker.*) — the mirror of what teardown_bare_panel does to the
@@ -820,6 +822,7 @@ remove_docker_netctl(){
   done
   rm -f /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer \
         /etc/systemd/system/swg-netctl-docker.path /usr/local/bin/swg-netctl-docker
+  rm -rf /etc/systemd/system/swg-netctl-docker.service.d   # its log level drop-in (docker_host_log_dropins) goes with it
   systemctl daemon-reload >/dev/null 2>&1 || true; }
 
 # restages cleanly. Used by the bare→docker host/master convert (install-docker.sh, at the atomic switch).
@@ -848,6 +851,7 @@ teardown_bare_panel(){
   rm -rf /opt/swg-panel /usr/local/bin/swg-panel-server   # remove the bare binary too, else the box still reads as a bare panel (bootstrap won't offer convert-back)
   local _ts _d; _ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
   for _d in /var/lib/swg-panel /etc/swg-panel; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$_ts" 2>/dev/null && seal_archive "$_d.converted-$_ts"; done
+  swg_log_teardown swg-panel swg-sub.service swg-netctl.service swg-update.service   # (see there)
   systemctl daemon-reload >/dev/null 2>&1 || true; }
 
 # ── A RECOVERY ARCHIVE IS ROOT'S ALONE ────────────────────────────────────────────────────────────────────────────────
@@ -2855,14 +2859,32 @@ swg_log_ns_ok(){ local d t="" v
       printf '%s\n' "$v" > "$SWG_LOG_NS_PROBE" 2>/dev/null || true;; esac
   } 9>>"$SWG_LOG_NS_PROBE.lock"
   [ "$v" = ok ]; }
-swg_log_ns_clear(){   # refused (above): every swg-ns.conf drop-in on the box goes. SWG_LOG_NS_CLEARED = how many
-  local f; SWG_LOG_NS_CLEARED=0
-  for f in /etc/systemd/system/*.d/"$SWG_LOG_NS_DROPIN" /run/systemd/system/*.d/"$SWG_LOG_NS_DROPIN"; do
-    [ -e "$f" ] || continue
-    if ${DRYRUN:-false}; then echo "    [skip] rm $f — this box cannot run a unit in a journal namespace"; continue; fi
-    if rm -f "$f"; then SWG_LOG_NS_CLEARED=$((SWG_LOG_NS_CLEARED + 1)); fi
-    rmdir "${f%/*}" 2>/dev/null || true
+swg_log_ns_clear(){   # [<unit or unit prefix>…] — refused (above): every swg-ns.conf drop-in on the box goes; named: only those
+  # units' (a convert's teardown, swg_log_teardown below). SWG_LOG_NS_CLEARED = how many
+  local f u why=" — this box cannot run a unit in a journal namespace"; SWG_LOG_NS_CLEARED=0
+  if [ $# -gt 0 ]; then why=""; else set -- '*'; fi
+  for u in "$@"; do
+    for f in /etc/systemd/system/$u.d/"$SWG_LOG_NS_DROPIN" /run/systemd/system/$u.d/"$SWG_LOG_NS_DROPIN"; do
+      [ -e "$f" ] || continue
+      if ${DRYRUN:-false}; then echo "    [skip] rm $f$why"; continue; fi
+      if rm -f "$f"; then SWG_LOG_NS_CLEARED=$((SWG_LOG_NS_CLEARED + 1)); fi
+      rmdir "${f%/*}" 2>/dev/null || true
+    done
   done
+  return 0; }
+# ⚠️ A CONVERT TAKES THE LOG PIECES OF THE UNITS IT REMOVES (1.8.9 qualification IN-6) — teardown_bare_panel and
+# lc_teardown_baremetal removed the units and left them: a bare → Docker convert kept swg-update.service.d/swg-ns.conf, so
+# the Docker one-click's output went only to a swg-panel journal nothing sizes any more (`journalctl -u swg-update` and the
+# compose logs showed nothing), and a host turn proxy the operator kept logged into a swg-node one. Their swg-ns.conf, the
+# level drop-ins swg-netctl / swg-noded keep under /run, the namespace's size there, and swg-logs once no bare swg unit is
+# left — uninstall.sh's rm_log_ns, which cannot be called from here (it does not source this file). The journals stay: a
+# convert keeps the history, an uninstall takes it.
+swg_log_teardown(){   # <namespace> <unit or unit prefix>…
+  local ns="$1" u; shift
+  swg_log_ns_clear "$@"
+  for u in "$@"; do rm -f "/run/systemd/system/$u.d/swg-log.conf"; rmdir "/run/systemd/system/$u.d" 2>/dev/null || true; done
+  rm -rf "/run/systemd/journald@$ns.conf.d"
+  { [ -e /etc/systemd/system/swg-noded.service ] || [ -e /etc/systemd/system/swg-panel-server.service ]; } || rm -f /usr/local/bin/swg-logs
   return 0; }
 swg_log_ns_text(){ printf '[Service]\nLogNamespace=%s\n' "$1"; }   # <namespace> → the drop-in, on stdout
 # update.sh's form: each <unit> that exists gets its drop-in when it is missing or different. SWG_LOG_NS_CHANGED = how
