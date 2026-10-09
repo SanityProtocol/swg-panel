@@ -319,11 +319,20 @@ rc, out, master = case_footer("swg-node", "0.2")
 check("node_reconfig_block on a node still says `--profile node up -d`", not master and "--profile node up -d" in out, out[-300:])
 
 print("\n[3] this environment shows the race, and the replacement reads the match — on any grep")
-def probe(consumer, path=None):
+# ⚠️ A CONSUMER THAT STOPS AT ITS MATCH IS WAITED FOR, NOT GIVEN 0.2 s. Its 141 needs it gone before the producer's second
+# line; a fixed sleep was outrun under load (the grep — or the stand-in below, a bash script — still starting), both
+# lines sat in the pipe, nothing broke and the control read 0 (1.8.9 qualification: a three-run stress of the suite). So
+# the producer waits (≤ 10 s) until the reader — the pipeline's other child of the shell — has exited. A reader that
+# drains never exits first: the expected 0 there needs no wait, and keeps the 0.2 s.
+_GONE = ('c=""; for _ in $(seq 500); do for p in $(cat /proc/$$/task/$$/children 2>/dev/null); do [ "$p" != "$BASHPID" ] && c=$p; done; '
+         '[ -n "$c" ] && break; sleep 0.02; done; '
+         'for _ in $(seq 500); do case "$(cut -d" " -f3 /proc/$c/stat 2>/dev/null)" in ""|Z|X) break;; esac; sleep 0.02; done')
+def probe(consumer, path=None, stops=False):
     env = dict(os.environ, PATH=path) if path else None
-    return subprocess.run(["bash", "-c", "set -o pipefail; { printf 'swg-panel\\n'; sleep 0.2; printf 'swg-node\\n'; } | %s; echo $?" % consumer],
+    return subprocess.run(["bash", "-c", "set -o pipefail; { printf 'swg-panel\\n'; %s; printf 'swg-node\\n'; } | %s; echo $?"
+                           % (_GONE if stops else "sleep 0.2", consumer)],
                           capture_output=True, text=True, env=env).stdout.strip()
-q, full = probe("grep -qx swg-panel"), probe("grep -cx swg-panel >/dev/null")
+q, full = probe("grep -qx swg-panel", stops=True), probe("grep -cx swg-panel >/dev/null")
 check("`grep -qx` behind a producer that writes again: 141 under pipefail (the race [2] must survive)", q == "141", q)
 check("`grep -cx … >/dev/null`: 0 — the count read every line", full == "0", full)
 # A grep that stops at its first match whenever its output is discarded — POSIX allows it, a busybox or a future GNU
@@ -338,7 +347,7 @@ open(os.path.join(NODRAIN, "grep"), "w").write(
     'exec %s "$@"\n' % (REAL_GREP, REAL_GREP))
 os.chmod(os.path.join(NODRAIN, "grep"), 0o755)
 ND_PATH = NODRAIN + ":" + os.environ["PATH"]
-nd_bare, nd_count = probe("grep -x swg-panel >/dev/null", ND_PATH), probe("grep -cx swg-panel >/dev/null", ND_PATH)
+nd_bare, nd_count = probe("grep -x swg-panel >/dev/null", ND_PATH, stops=True), probe("grep -cx swg-panel >/dev/null", ND_PATH)
 nd_none = probe("grep -cx swg-sub >/dev/null", ND_PATH)
 check("the stand-in grep does not drain: a bare `grep -x … >/dev/null` behind it reads 141 (else this [3] proves nothing)",
       nd_bare == "141", nd_bare)
