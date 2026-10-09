@@ -639,7 +639,8 @@ rm_log_ns(){   # <namespace> <unit or unit prefix>...
 }
 # …and at the END of the run, once NOTHING of swg's is left on the box (1.8.9 qualification L8-a, L8-c): every swg-ns /
 # swg-log / swg-journal drop-in left anywhere (the Docker removal path never ran rm_log_ns, and a converted box carries the
-# other method's), empty swg drop-in dirs, swg-logs. The namespaces — swg's whole log history, never rotated again once no
+# other method's) and swg-noded's swg-restart.conf (its systemd < 254 back-off, D12-1), empty swg drop-in dirs, swg-logs. The
+# namespaces — swg's whole log history, never rotated again once no
 # journald@swg-* runs — go only on a FULL uninstall: their journald is stopped first, its sockets with it (the next line a
 # straggler wrote would start it again, and with it the directory), then the stored lines and their journald@ config.
 # Kept data (the panel's, or Docker's data dir: the box comes back as itself) keeps the journals, and the summary says so.
@@ -656,7 +657,7 @@ _data_kept(){ [ "${KEEP_OWN_DROPINS:-no}" = yes ] || [ "${DOCKER_DATA_DEL:-}" = 
   [ -d /var/lib/swg-panel ] || [ -d /etc/swg-panel ] || [ -d "$DOCKER_DIR/data" ]; }
 rm_log_journals(){ local f d ns u mid had=""
   _swg_left && return 0
-  for f in "$SD"/*.d/swg-ns.conf "$SD"/*.d/swg-log.conf "$SD"/*.d/swg-journal.conf \
+  for f in "$SD"/*.d/swg-ns.conf "$SD"/*.d/swg-log.conf "$SD"/*.d/swg-journal.conf "$SD"/*.d/swg-restart.conf \
            /run/systemd/system/*.d/swg-ns.conf /run/systemd/system/*.d/swg-log.conf /run/systemd/system/*.d/swg-journal.conf; do
     [ -e "$f" ] || continue; rmrf "$f"; [ -z "$(ls -A "${f%/*}" 2>/dev/null)" ] && run rmdir "${f%/*}"; done
   for d in "$SD"/swg-*.d "$SD"/vk-turn-proxy-*.d; do [ -d "$d" ] && [ -z "$(ls -A "$d" 2>/dev/null)" ] && run rmdir "$d"; done
