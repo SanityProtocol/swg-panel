@@ -431,6 +431,11 @@ in
         serviceConfig = {
           Type = "oneshot";
           ExecStart = rebuild.script;
+          # The container arm starts this every 30 s: systemd's own start/stop lines (info) stay out of the journal, at
+          # every level, while the script's own lines (notice) stay in — as a Docker host's drop-in does (1.8.9
+          # qualification DN-15: ~8,600 lines a day each, Off included)
+          LogLevelMax = "notice";
+          SyslogLevel = "notice";
         } // rebuild.resourceGuard;   # nice/idle-IO/OOM-first — a rebuild must never starve its host
       };
 
