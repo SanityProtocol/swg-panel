@@ -133,8 +133,8 @@ PLANTS = {
     "pb3": ('''        sig = hashlib.sha1((sig + "|pb:" + json.dumps(sorted(pb_of.items()))).encode()).hexdigest()[:16]''', '''        pass'''),
     "pb4": ('''                if queue:                                      # swg-sni still reads the connection's first packets''',
             '''                if False:'''),
-    "pb5": ('''                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))''',
-            '''                        _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))'''),
+    "pb5": ('''                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))''',
+            '''                        _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))'''),   # `xc`: 90e7045
     "pb6": ('''[(sh, cond + [t for x in xs for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))])''',
             '''[(sh, cond)'''),
     "pb7": ('''                    ex += [[cnd, snm] for snm in [_smart_setname(c)] + ([_smart_learnsetname(c)] if queue else [])]''',
@@ -890,6 +890,19 @@ N.run = lambda args, input_text=None, timeout=20: K(args, input_text, timeout) i
 e_ = rc([AL, BLK, CA], "sni")
 check("Hybrid SNI: swg-sni's map carries the shadow category beside Alice's",
       not e_ and _sq and any(k.startswith("sw_") and v == ["sh.h2.example"] for k, v in _sq[-1].items()), (e_, _sq[-1:]))
+# ⚠️ …and with no Block by name beside it. Under a Block the shadow is a Block-by-name set, and that list (_DNS_SPARE, 90e7045)
+# changes with the shadow and rebuilds dnsmasq on its own — the Force-DNS check above held with the shadow's own line gone
+# (plant s7 stayed green). Under an Exit nothing else moves: only the shadow's signature can tell dnsmasq.
+EXW = dict(BLK, action="exit", via_iface="wgx0", table=7001)    # h2.example out an exit, for everyone
+K = fresh()
+N.run = lambda args, input_text=None, timeout=20: K(args, input_text, timeout) if args and args[0] == "nft" else \
+    __import__("subprocess").CompletedProcess(args, 0, "", "")
+N._DOMTIER_CACHE.pop("v", None)
+del _dq[:]
+errs = [rc([AL, EXW, CA], "forcedns") for _ in range(2)] + [rc([ALL_, EXW, CA], "forcedns")]
+check("Force-DNS, under an Exit: the rule turned into one for everyone — the shadow alone rebuilds dnsmasq (no Block by name moved)",
+      not any(errs) and len(_dq) >= 3 and any(k.startswith("sw_") for k in _dq[1][0]) and _dq[1][1] is True and _dq[2][1] is False,
+      (errs, [(sorted(d), u) for d, u in _dq]))
 
 shutil.rmtree(STATE, ignore_errors=True)
 print()
