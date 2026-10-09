@@ -18660,8 +18660,6 @@ def _dturn_verify(svc):
     time.sleep(1.5)
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
     if (r.stdout or "").strip() == "true": return ""
-    if log_level() == LOG_OFF:          # launched with no log driver (docker_log_opts): `docker logs` would only say THAT
-        return "turn container isn't running — " + log_no_detail()
     lg = run(["docker", "logs", "--tail", "5", _turn_cname(svc)])
     return ("turn container isn't running: " + ((lg.stderr or lg.stdout or "").strip() or "see docker logs"))[:160]
 
