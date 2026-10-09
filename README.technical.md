@@ -541,7 +541,7 @@ Full reference, with a response body for every endpoint: **[API.md](API.md)**.
 - **API tokens** are read-only and hashed at rest (SHA-256); a leaked token can observe fleet state but never modify it, and disabling the API in **Settings → Integrations** revokes every token immediately.
 - **What a bare-metal panel can read on its own host:** its live log viewer reads swg's journal, so the panel's service runs in the `systemd-journal` group — and that group reads every journal on the host, not only swg's. A panel taken over could read the host's other services' lines too (it already steers every node it manages).
 - **A password given on the command line is logged:** sudo logs the command it runs, so an unattended install given the panel password (`-pass`, `BASIC_PASS=`) leaves it in plaintext in that host's `auth.log` and journal — readable by root, `adm` and `systemd-journal` (the panel's process included, above) — in the `bash -c "$(curl …)"` form and the piped one alike. Let the installer ask for it, or change it under **Settings → Authentication** afterwards.
-- **A WDTT or csqtt server's owner password** is on the server's command line: `ps` shows it to every user of that node.
+- **A WDTT or csqtt server's owner password** is on the server's command line: `ps` shows it to every local account on that server.
 
 ## Troubleshooting
 
