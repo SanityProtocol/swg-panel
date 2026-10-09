@@ -1058,6 +1058,16 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
     warn "AmneziaWG: $cand is available, but the headers for this kernel ($(uname -r)) are not installed, so its module could not be built — the packages are left as they are (install linux-headers-$(uname -r), or reboot into a kernel that has them)"
     return 0
   fi
+  # ⚠️ NO USERSPACE FALLBACK, NO UPGRADE. The module that works is off disk before the new one builds, and a new build that
+  # does not compile here is given up (removed): a box without amneziawg-go then has NO AmneziaWG datapath after its next
+  # reboot — every awg interface and mesh link down (1.8.9 qualification IN-1, on a VM). With it, that box degrades to
+  # userspace instead. The datapath heal above installs the pinned fallback wherever GitHub or a mirror answers; a box it
+  # could not reach keeps the module that works, and follows once it has one.
+  if ! have amneziawg-go; then
+    note "AmneziaWG: $cand is available but not installed — the userspace fallback (amneziawg-go) is not installed"
+    warn "AmneziaWG: $cand is available, but this box has no userspace fallback (amneziawg-go) — the packages are left as they are: had the new module not compiled here, no AmneziaWG interface would come up after the next reboot (an update that can fetch amneziawg-go, from GitHub or SWG_TURN_MIRROR, installs it and follows)"
+    return 0
+  fi
   pk="amneziawg-dkms amneziawg-tools"; [ -n "$(pkg_installed amneziawg)" ] && pk="$pk amneziawg"
   # shellcheck disable=SC2086   # $pk is a word list
   # The new package ships its source as upstream has it: its own build for this kernel can fail before PR #218's fix is on
