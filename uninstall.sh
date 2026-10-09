@@ -1812,6 +1812,9 @@ if [ "${#DID_REMOVE[@]}" -gt 0 ] && command -v dpkg >/dev/null 2>&1; then
     [ -d "$_d" ] && [ -z "$(ls -A "$_d" 2>/dev/null)" ] && ! dpkg -S "$_d" >/dev/null 2>&1 && run rmdir "$_d"
   done
 fi
+# Docker Engine is not swg's to remove — other containers may use it, and an install may have found it here — but a run that
+# removed a Docker install says it stays, and how it goes (1.8.8 deferred #8)
+case " ${DID_REMOVE[*]-} " in *" Docker "*) command -v docker >/dev/null 2>&1 && DID_KEEP+=("Docker Engine — still installed, other containers may use it (to remove it: apt-get purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)");; esac
 
 echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
 if [ "${#DID_REMOVE[@]}" -gt 0 ]; then echo "  $(b Removed):"
