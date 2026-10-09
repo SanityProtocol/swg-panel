@@ -624,6 +624,11 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # Still no module: no headers for this kernel, or an LXC/OpenVZ guest that cannot load one at all. Fall
   # back to userspace so the node can still serve AmneziaWG — awg-quick picks it up by itself.
   if ensure_awg_userspace; then
+    # ⚠️ …but that is a DATAPATH, not the tools: with no awg / awg-quick nothing brings an AmneziaWG interface up, so it is
+    # a failure — ensure_wg_tools_once keeps it, and the switch's `again` tries once more (a dpkg lock held through the
+    # tooling step is gone by then). Counted a success, the memo kept it and an adopted awg0 + the mesh links stayed DOWN
+    # after an rc-0 Docker → bare convert, "awg-quick: command not found" (1.8.9 qualification F21; 1.8.8 asked afresh)
+    have awg && have awg-quick || return 1   # a datapath, not the tools
     warn "AmneziaWG will run on the SLOWER userspace datapath — no loadable kernel module on $(uname -r).$(
       have apt-get && awg_tools_drive_3x && ! [ -e "/lib/modules/$(uname -r)/build" ] && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
     return 0
