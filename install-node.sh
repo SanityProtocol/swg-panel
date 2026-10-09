@@ -314,7 +314,7 @@ build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING
   awg_dkms_build_all_kernels   # D4: every installed kernel with headers — an installed-but-not-booted kernel included
   modprobe amneziawg 2>/dev/null && return 0
   awg_mod_key_rejected && return 1   # built, refused for its key (Secure Boot) — a reinstall would only build it again
-  run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  awg_dkms_reinstall || return 1   # the source fixed again and dpkg finished; given up when it does not compile (lib/common.sh)
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || true
   run modprobe amneziawg 2>/dev/null || true
 }

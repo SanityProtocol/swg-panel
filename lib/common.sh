@@ -2215,6 +2215,16 @@ awg_ppa_module_install(){ # the package route's install — once: a compile fail
   if awg_compat_patch_installed; then awg_dpkg_recover || true; fi
   if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi
   return 0; }
+awg_dkms_reinstall(){ # the --reinstall fallback (build_awg_module, update.sh's heal). 1 = given up: it does not compile here
+  # The reinstall puts the source back AS SHIPPED — PR #218's fix undone — and its postinst builds that: on a 7.0.0-38 kernel
+  # it failed, and amneziawg-dkms was left half-configured for every later apt run, with nothing after it to recover or give
+  # up (1.8.9 qualification IN-10: a patched module that built but would not load, e.g. in an LXC guest). So, exactly as
+  # awg_ppa_module_install: fix the source again, finish dpkg, and give up on a build that still does not compile.
+  run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  $DRYRUN && return 0
+  if awg_compat_patch_installed; then awg_dpkg_recover || true; fi
+  if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi
+  return 0; }
 
 # ── upstream PR #218, applied to the module's source until upstream ships it ─────────────────────────────────────────────
 # amneziawg-linux-kernel-module picks the old (struct socket *) or new (struct sock *) setup_udp_tunnel_sock /

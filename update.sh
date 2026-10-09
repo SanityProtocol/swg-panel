@@ -953,8 +953,8 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
       # then), so force a build for the RUNNING kernel — an old kernel with newer headers would otherwise build
       # for the wrong one and modprobe would still fail.
       run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
-      modprobe amneziawg 2>/dev/null || awg_mod_key_rejected || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null
-                                          run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true
+      modprobe amneziawg 2>/dev/null || awg_mod_key_rejected || { awg_dkms_reinstall \
+                                          && run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true   # given up: no rebuild
       run modprobe amneziawg 2>/dev/null || true
     fi
   elif have apt-get; then
