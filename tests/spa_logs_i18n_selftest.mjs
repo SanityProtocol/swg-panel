@@ -1,5 +1,6 @@
-/* Self-test — the 1.8.9 qualification's Russian pass over the logs screens and the panel's new sentences (q189 SPA-14, SPA-15,
- * SPA-16, PLO-12, SPA-17b). The merge gate: no English inside a Russian screen, and Russian plurals that agree.
+/* Self-test — the 1.8.9 qualification's Russian pass: the logs screens, the panel's new sentences and the Disguise-as size (q189
+ * SPA-14, SPA-15, SPA-16, PLO-12, SPA-17b, and a line the lead saw live). The merge gate: no English inside a Russian screen, and
+ * Russian plurals that agree.
  *
  * [1] SPA-14 — the viewer's "Clock off" chip says its offset in the operator's units ("+3 мин", not "+3 min") and the disk
  *     budget's used figure is a localised number ("12,3 МБ", not "12.3 МБ").
@@ -13,10 +14,12 @@
  *     the torrent-policy check has its Russian line, and none of them is assembled at runtime (each a literal or a perr), so
  *     srvText() can always find it. (The tool behind this, .campaign/i18n-extract.mjs --server, read 25 untranslated + 5
  *     assembled at 52aa9c4.)
+ * [6] the Disguise-as size counts its bytes as it counts its packets: «5 пакетов, 226 байт», «1 232 байта» — not «байт: 226»
+ *     (seen live on a candidate panel); the Built-in option's size and the big-packet warning the same.
  *
  * The real js/i18n.js with the real Russian catalog; the real logBudgetState.
  * Run: node tests/spa_logs_i18n_selftest.mjs
- *      --perturb <skew | usedmb | genserver | plo12 | perlink | assembled | ruline>   one fix undone → RED (exit 0 when caught)
+ *      --perturb <skew | usedmb | genserver | plo12 | perlink | assembled | ruline | bytes>   one fix undone → RED (exit 0 when caught)
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -34,6 +37,7 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   perlink: ["js/lang/ru.js", '"val|per link": "свой у каждого",', '"val|per link": "у каждого линка свой",'],
   assembled: ["swg-panel-server", '**perr("{v1} log viewers are open already", v1=LIVE_REQ_MAX)', '"error": "%d log viewers are open already" % LIVE_REQ_MAX'],
   ruline: ["js/lang/ru.js", '  "Listen on must be an IPv4 address of this node, or Auto": "«Слушать на» — IPv4-адрес этой ноды или «Авто»",\n', ""],
+  bytes: ["js/iface.js", 'v2: fmtNum(bytes) + " " + pluralWord(bytes, "byte"), v3:', 'v2: fmtNum(bytes), v3:'],
 };
 const read = f => {
   let s = fs.readFileSync(path.join(ROOT, f), "utf8");
@@ -120,5 +124,20 @@ const asm = PANEL.split("\n").map((l, i) => [i + 1, l]).filter(([, l]) => !/perr
   && (/"error"\s*:\s*f"[^"]*\{/.test(l) || /"error"\s*:\s*"[^"]*%[sdr]/.test(l) || /"error"\s*:\s*(?:"(?:[^"\\]|\\.)*"\s*\+|[^,}]*\+\s*"(?:[^"\\]|\\.)*")/.test(l)));
 check("[5] no panel message is assembled at runtime (the extractor's three shapes: f-string, % and +)", !asm.length,
       asm.map(([i, l]) => i + ": " + l.trim().slice(0, 90)));
+
+// [6] the Disguise-as size
+console.log("\n[6] the Disguise-as size counts its bytes");
+const IFS = read("js/iface.js");
+const bw = [1, 2, 5, 21, 226, 1232].map(n => n + " " + I.pluralWord(n, "byte"));
+check("[6] «1 байт, 2 байта, 5 байт, 21 байт, 226 байт, 1232 байта»",
+      JSON.stringify(bw) === JSON.stringify(["1 байт", "2 байта", "5 байт", "21 байт", "226 байт", "1232 байта"]), bw);
+const KEY = "The disguise sends before each handshake: {v1}, {v2} — about {v3} a month for a device that stays connected.";
+check("[6] the line reads «… хендшейком: 5 пакетов, 226 байт — около 7.5M в месяц …»",
+      T(KEY, { v1: plural(5, "packet"), v2: "226 " + I.pluralWord(226, "byte"), v3: "7.5M" })
+        === "Маскировка отправляет перед каждым хендшейком: 5 пакетов, 226 байт — около 7.5M в месяц для постоянно подключённого устройства.",
+      T(KEY, { v1: plural(5, "packet"), v2: "226 " + I.pluralWord(226, "byte"), v3: "7.5M" }));
+check("[6] …and the picker builds it, the Built-in option's size and the big-packet warning that way (no «байт: N» left)",
+      IFS.includes('v2: fmtNum(bytes) + " " + pluralWord(bytes, "byte"), v3:') && IFS.includes('pluralWord(MIMIC_BUILTIN_SIZE[1], "byte")')
+      && IFS.includes('v2: fmtNum(big[1].bytes) + " " + pluralWord(big[1].bytes, "byte")') && !/байт: \{v\d\}/.test(RU), "");
 
 done(MODE, MODE || "");
