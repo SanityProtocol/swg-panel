@@ -52,7 +52,7 @@ if PERTURB:
     U = plant(U, "if [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ] \\\n   && [ ! -d /opt/swg-noded ]",
               "if [ ! -d \"$DOCKER_DIR\" ] && [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ] \\\n   && [ ! -d /opt/swg-noded ]")  # [4]
     U = plant(U, "|| { ! $DPANEL && _has_docker_netctl; }", "|| { [ ! -d /opt/swg-panel ] && _has_docker_netctl; }")  # [5]
-    U = plant(U, "  for _d in /etc/amnezia/amneziawg /etc/amnezia /etc/wireguard; do\n", "  for _d in; do\n")  # [6]
+    U = plant(U, "  for _d in /etc/amnezia/amneziawg /etc/amnezia /etc/wireguard /var/www; do\n", "  for _d in; do\n")  # [6]
     U = plant(U, '  if [ "${KEPT_DATAPATH:-false}" = true ]; then\n', '  if [ "${#DID_KEEP[@]}" -gt 0 ]; then\n')  # [7]
 if PERTURB_RECORD:
     U = plant(U, """    if ! $DRYRUN; then
@@ -195,16 +195,18 @@ for dp, want in (("true", False), ("false", True)):
 print("\n[6] empty interface-config dirs go — only empty, and only when no package owns them")
 emp = between(U, 'if [ "${#DID_REMOVE[@]}" -gt 0 ] && command -v dpkg >/dev/null 2>&1; then', "\n\necho;")
 t = tempfile.mkdtemp(prefix="wgd-")
-for sub in ("amnezia/amneziawg", "wireguard", "wgfull"):
+for sub in ("amnezia/amneziawg", "wireguard", "wgfull", "www"):
     os.makedirs(os.path.join(t, sub))
 open(os.path.join(t, "wgfull", "wg9.conf"), "w").write("x")
-emp2 = emp.replace("/etc/amnezia/amneziawg /etc/amnezia /etc/wireguard", "%s/amnezia/amneziawg %s/amnezia %s/wireguard %s/wgfull" % (t, t, t, t))
+emp2 = emp.replace("/etc/amnezia/amneziawg /etc/amnezia /etc/wireguard /var/www",
+                   "%s/amnezia/amneziawg %s/amnezia %s/wireguard %s/wgfull %s/www" % (t, t, t, t, t))
 assert emp2 != emp or PERTURB
 out, calls, _ = bash(PRE + "DID_REMOVE=(x)\n" + emp2, {"dpkg": '[ "$2" = "%s/wireguard" ] && exit 0; exit 1' % t})
 check("empty + unowned → /etc/amnezia/amneziawg (and then /etc/amnezia) removed",
       not os.path.exists(os.path.join(t, "amnezia", "amneziawg")) and not os.path.exists(os.path.join(t, "amnezia")), os.listdir(t))
 check("empty but a package owns it (dpkg -S answers) → /etc/wireguard KEPT", os.path.isdir(os.path.join(t, "wireguard")))
 check("a dir still holding a file → KEPT", os.path.isdir(os.path.join(t, "wgfull")))
+check("an empty /var/www (the panel's stats and acme dirs went) → removed too (1.8.8 deferred #3c)", not os.path.exists(os.path.join(t, "www")))
 
 print("\n[7] keeping a PACKAGE (or anything that runs no swg datapath) does not skip the datapath sweep")
 loop = between(U, "DID_REMOVE=(); DID_KEEP=(); NOT_DONE=()", "\n# Containers we TOOK")

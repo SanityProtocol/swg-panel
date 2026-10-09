@@ -25,6 +25,11 @@ refuse any path outside the box, and such an escape fails the section that made 
   [8] …beside a foreign AmneziaWG interface: offered, never removed unattended (kept, every file of it)
   [9] Ubuntu on the PPA's packages: none of the package's files is called a source build; the purge takes amneziawg-go
   [10] a bare → Docker converted box: the PPA packages its bare past installed are offered (the amnezia PPA is swg's)
+  [11]–[15] what else a FULL uninstall left (1.8.8 deferred #3): 22.04's PPA key (+ .gpg~) and /root/.launchpadlib (a, b);
+      the source fallback's PPA list (LC-24 lc7); an empty /var/www after a bare master (c); 26.04's local/wg the grant created,
+      emptied and left, and a revert line claiming "a kept userspace server" before any keep question (d); route_localnet=1
+      LIVE after the files that set it went — hosts on the box's network reach its 127.0.0.1 services until a reboot (e),
+      bare and Docker; an operator's own sysctl file asking for it and their own local/wg lines are kept
 
 Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      SWG_UNINSTALL=<file>   run it against another uninstall.sh
@@ -34,6 +39,13 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-stop    a removed interface's unit is not stopped (as shipped) → RED on [7]'s unit check only
      --perturb-ppa     the PPA packages are offered only beside a bare install (as shipped) → RED on [10] only
      --perturb-go      the package purge leaves amneziawg-go (as shipped) → RED on [9]'s amneziawg-go check only
+     --perturb-key     the PPA's key file and /root/.launchpadlib stay (as shipped) → RED on [11] [12]
+     --perturb-srcppa  the source build's removal leaves the PPA (as shipped) → RED on [12] only
+     --perturb-www     an empty /var/www stays (as shipped) → RED on [13]'s /var/www check only
+     --perturb-aa      the emptied local/wg stays (as shipped) → RED on [13]'s local/wg check only
+     --perturb-aatext  the revert line claims a kept server (as shipped) → RED on [13]'s revert-line check only
+     --perturb-rl      route_localnet stays 1 (as shipped) → RED on [13] [15]'s route_localnet checks only
+     --perturb-rlown   …turned off even where another file asks for it → RED on [14]'s route_localnet check only
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
@@ -42,7 +54,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 U = open(os.environ.get("SWG_UNINSTALL") or os.path.join(ROOT, "uninstall.sh"), encoding="utf-8").read()
 FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--perturb-bare", "--perturb-src", "--perturb-stop",
-                                         "--perturb-ppa", "--perturb-go")}
+                                         "--perturb-ppa", "--perturb-go", "--perturb-key", "--perturb-srcppa", "--perturb-www",
+                                         "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -68,14 +81,30 @@ if FLAGS["--perturb-ppa"]:
     plant('awg_pkg    && { $_bare_swg || ls /etc/apt/sources.list.d/*amnezia* >/dev/null 2>&1; } &&', 'awg_pkg    && $_bare_swg &&')
 if FLAGS["--perturb-go"]:
     plant('      rmrf /usr/local/bin/amneziawg-go   # the userspace fallback', '      :   # the userspace fallback')
+if FLAGS["--perturb-key"]:
+    plant('  rmrf /etc/apt/trusted.gpg.d/amnezia-ubuntu-ppa.gpg /etc/apt/trusted.gpg.d/amnezia-ubuntu-ppa.gpg~ /root/.launchpadlib; return 0; }',
+          '  return 0; }')
+if FLAGS["--perturb-srcppa"]:
+    plant('  awg_pkg || _awg_ppa_forget   # the PPA, when no package of it is left\n', '')
+if FLAGS["--perturb-www"]:
+    plant('/etc/wireguard /var/www; do', '/etc/wireguard; do')
+if FLAGS["--perturb-aa"]:
+    plant('    [ -s "$_aal" ] || ! grep -qsE', '    true || ! grep -qsE')
+if FLAGS["--perturb-aatext"]:
+    plant("(should you keep a WDTT / csqtt server or a userspace awg interface below, the wg CLI can no longer read its socket)",
+          "(a kept userspace server's socket becomes unreadable by the wg CLI)")
+if FLAGS["--perturb-rl"]:
+    plant('    || run sysctl -q -w net.ipv4.conf.all.route_localnet=0 >/dev/null 2>&1 || true\n', '    || true\n')
+if FLAGS["--perturb-rlown"]:
+    plant("  grep -qsE --exclude='99-swg-*' '^", "  false && grep -qsE --exclude='99-swg-*' '^")
 if FLAGS["--perturb-image"]:
     plant('  [ -n "$img" ] || { _tag="$(sed -n ', '  false && { _tag="$(sed -n ')
 
 T = tempfile.mkdtemp(prefix="unin-full-")
 
 # ── the box: every absolute path the uninstaller names moves under it ──────────────────────────────────────────────────
-_ROOTS = ("/opt/", "/etc/", "/var/", "/srv/", "/root/", "/run/", "/usr/local/bin/", "/usr/src/", "/usr/bin/awg",
-          "/usr/share/man/", "/lib/systemd/", "/usr/lib/systemd/", "/lib/modules/")
+_ROOTS = ("/opt/", "/etc/", "/var/", "/srv/", "/root/", "/run/", "/usr/local/bin/", "/usr/local/lib/", "/usr/src/", "/usr/bin/awg",
+          "/usr/share/man/", "/lib/systemd/", "/usr/lib/systemd/", "/lib/modules/", "/lib/sysctl.d/", "/usr/lib/sysctl.d/")
 _RE = re.compile(r"(?<![\w./])(" + "|".join(re.escape(r) for r in _ROOTS) + ")")
 def rooted(text, box):
     return _RE.sub(lambda m: box + m.group(1), text)
@@ -242,7 +271,7 @@ def mkbox(name, files, fx):
         if rel.endswith("/"):
             os.makedirs(p, exist_ok=True)
         else:
-            os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "w").write(text)
+            os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "w").write(text.replace("@BOX@", box))
     for rel, text in fx.items():
         open(os.path.join(box, "fx", rel), "w").write(text)
     sp = os.path.join(box, "bin", ".stub"); open(sp, "w").write(STUB); os.chmod(sp, 0o755)
@@ -450,6 +479,67 @@ check("[10] the AmneziaWG package (and its DKMS module, rebuilt at every kernel 
       any(c.startswith("AmneziaWG package") for c in comps) and "apt-get\tpurge -y amneziawg amneziawg-tools amneziawg-dkms" in calls,
       (comps, calls[-800:]))
 
+# ── #3: what else a FULL uninstall left (1.8.8 deferred #3 a–e) ──────────────────────────────────────────────────────────
+AA_BLOCK = ("  # --- swgPanel: userspace WireGuard datapaths (begin) ---\n  /run/wireguard/ r,\n  /run/wireguard/*.sock rw,\n"
+            "  /var/run/wireguard/ r,\n  /var/run/wireguard/*.sock rw,\n  # --- swgPanel: userspace WireGuard datapaths (end) ---\n")
+PKG_L = "ii  amneziawg  1.0  all\nii  amneziawg-tools  1.0  amd64\nii  amneziawg-dkms  1.0  all\n"
+def sysctl(box, k="net.ipv4.conf.all.route_localnet"):
+    return dict(l.split("=", 1) for l in fx(box, "sysctl")).get(k)
+
+print("\n[11] Ubuntu 22.04 on the PPA's packages: the PPA's key and add-apt-repository's cache")
+box = mkbox("u2204-ppa", dict(BARE_NODE, **{"etc/apt/sources.list.d/amnezia-ubuntu-ppa-jammy.list": "deb x jammy main\n",
+                                           "etc/apt/trusted.gpg.d/amnezia-ubuntu-ppa.gpg": "K", "etc/apt/trusted.gpg.d/amnezia-ubuntu-ppa.gpg~": "",
+                                           "root/.launchpadlib/api.launchpad.net/cache/x": "c", "usr/bin/awg": "x"}),
+            dict(BARE_FX, **{"dpkg.l": BARE_FX["dpkg.l"] + PKG_L, "dpkg.owned": "/usr/bin/awg\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[11] the run stays inside its box", not esc, esc)
+check("[11] the PPA goes with its packages, and its key (+ the .gpg~ beside it) and /root/.launchpadlib with it (#3 a, b)",
+      "add-apt-repository\t-y --remove ppa:amnezia/ppa" in calls and not [p for p in ("etc/apt/trusted.gpg.d/amnezia-ubuntu-ppa.gpg",
+      "etc/apt/trusted.gpg.d/amnezia-ubuntu-ppa.gpg~", "root/.launchpadlib") if os.path.lexists(os.path.join(box, p))], calls[-600:])
+
+print("\n[12] Ubuntu's source fallback (LC-24 lc7): the PPA swg added first, no package of it installed")
+box = mkbox("u2404-src", dict(BARE_NODE, **SRC_AWG, **{"etc/apt/sources.list.d/amnezia-ubuntu-ppa-noble.sources": "Types: deb\n",
+                                                     "root/.launchpadlib/api.launchpad.net/cache/x": "c"}), BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[12] the PPA list and /root/.launchpadlib go with the source build", "add-apt-repository\t-y --remove ppa:amnezia/ppa" in calls
+      and not os.path.lexists(os.path.join(box, "root/.launchpadlib")), calls[-600:])
+
+print("\n[13] a bare master, FULL: an empty /var/www, 26.04's local/wg, route_localnet")
+MASTER = dict(BARE_NODE, **{"etc/systemd/system/swg-panel-server.service": "[Service]\n", "opt/swg-panel/swg-panel-server": "x",
+                            "etc/swg-panel/install.conf": "PANEL_DOMAIN=192.168.77.9\n", "var/lib/swg-panel/users.json": "{}",
+                            "var/www/wgstats/x.json": "{}", "var/www/acme/.well-known/x": "x",
+                            "etc/apparmor.d/wg": "profile wg /usr/bin/wg {\n  include if exists <local/wg>\n}\n",
+                            "etc/apparmor.d/local/wg": AA_BLOCK,
+                            "etc/sysctl.d/99-swg-forward.conf": "net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n"})
+box = mkbox("master", MASTER, dict(BARE_FX, **{"sysctl": "net.ipv4.conf.all.route_localnet=1\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[13] the run stays inside its box", not esc, esc)
+check("[13] /var/www, left empty once the panel's stats and acme dirs went, goes (#3 c)", not os.path.exists(os.path.join(box, "var/www")),
+      sorted(os.listdir(os.path.join(box, "var"))))
+check("[13] the AppArmor local/wg the grant created — empty once our span is cut — goes; the profile includes it `if exists` (#3 d)",
+      not os.path.exists(os.path.join(box, "etc/apparmor.d/local/wg")), calls[-400:])
+rv = [l for l in out.splitlines() if "reverting the swgPanel AppArmor grant" in l]
+check("[13] …and the revert line does not claim a kept userspace server when it cannot know one (it runs before the keep questions)",
+      rv and not any("a kept userspace server" in l for l in rv), rv)
+check("[13] route_localnet is OFF again — the file that set it is gone, and nothing else asks for it (#3 e)",
+      sysctl(box) == "0" and not os.path.exists(os.path.join(box, "etc/sysctl.d/99-swg-forward.conf")), (sysctl(box), out[-600:]))
+
+print("\n[14] …the operator's own: a sysctl file that asks for route_localnet, a local/wg holding their lines")
+box = mkbox("master-own", dict(MASTER, **{"etc/sysctl.d/50-mine.conf": "net.ipv4.conf.all.route_localnet=1\n",
+                                          "etc/apparmor.d/local/wg": "  /etc/mine r,\n" + AA_BLOCK}),
+            dict(BARE_FX, **{"sysctl": "net.ipv4.conf.all.route_localnet=1\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[14] route_localnet stays 1 — another file asks for it", sysctl(box) == "1", sysctl(box))
+check("[14] local/wg stays, their line in it, our span cut", open(os.path.join(box, "etc/apparmor.d/local/wg")).read() == "  /etc/mine r,\n"
+      if os.path.exists(os.path.join(box, "etc/apparmor.d/local/wg")) else False)
+
+print("\n[15] a Docker node, FULL: route_localnet")
+box = mkbox("dnode-rl", dict(NODE_FILES, **{"etc/sysctl.d/99-swg-node.conf": "net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n"}),
+            dict(NODE_FX, **{"docker.ps": "swg-node\n", "sysctl": "net.ipv4.conf.all.route_localnet=1\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[15] route_localnet is OFF again after the Docker node's uninstall (measured left at 1: LC-24, Debian, Ubuntu 22.04/26.04)",
+      sysctl(box) == "0", (sysctl(box), out[-600:]))
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
@@ -457,7 +547,10 @@ if PERTURBED:
                                "the Docker dir is gone", "nothing of the node", "nothing was pulled", "the panel went too"),
             "--perturb-image": ("its nft tables went with its OWN nft",), "--perturb-bare": ("[6]",),
             "--perturb-src": ("[7] the source build is offered", "[7] …and taken", "[7] DKMS forgets", "[8]"),
-            "--perturb-stop": ("[7] each removed interface's unit",), "--perturb-ppa": ("[10]",), "--perturb-go": ("[9] …and the purge",)}
+            "--perturb-stop": ("[7] each removed interface's unit",), "--perturb-ppa": ("[10]",), "--perturb-go": ("[9] …and the purge",),
+            "--perturb-key": ("[11] the PPA goes", "[12]"), "--perturb-srcppa": ("[12]",), "--perturb-www": ("[13] /var/www",),
+            "--perturb-aa": ("[13] the AppArmor local/wg",), "--perturb-aatext": ("[13] …and the revert line",),
+            "--perturb-rl": ("[13] route_localnet", "[15]"), "--perturb-rlown": ("[14] route_localnet",)}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
