@@ -106,7 +106,15 @@ def run_in_pty(script, background, typed=b"", sup=None):
                 return out.decode(errors="replace"), (os.WIFEXITED(st) and os.WEXITSTATUS(st) == 99)
             out += d
         wp, st = os.waitpid(pid, os.WNOHANG)
-        if wp:
+        if wp:                                     # exited: what it wrote last may still sit in the pty — read it all
+            while select.select([fd], [], [], 0.2)[0]:
+                try:
+                    d = os.read(fd, 4096)
+                except OSError:
+                    break
+                if not d:
+                    break
+                out += d
             return out.decode(errors="replace"), (os.WIFEXITED(st) and os.WEXITSTATUS(st) == 99)
     os.kill(pid, signal.SIGKILL); os.waitpid(pid, 0)
     return out.decode(errors="replace") + "<TIMEOUT>", True
