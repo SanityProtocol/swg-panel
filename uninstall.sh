@@ -631,7 +631,7 @@ rm_log_ns(){   # <namespace> <unit or unit prefix>...
   local ns="$1" u; shift
   for u in "$@"; do
     rmrf "$SD/$u.d/swg-ns.conf" "/run/systemd/system/$u.d/swg-ns.conf" "/run/systemd/system/$u.d/swg-log.conf"   # + the level's
-    rmdir_if_empty "$SD/$u.d"; rmdir_if_empty "/run/systemd/system/$u.d"
+    [ "$(ls -A "$SD/$u.d" 2>/dev/null)" = swg-restart.conf ] || rmdir_if_empty "$SD/$u.d"; rmdir_if_empty "/run/systemd/system/$u.d"   # only swg-noded's systemd < 254 back-off left: not "kept" — rm_log_journals takes it at the end
   done
   rmrf "/run/systemd/journald@$ns.conf.d"
   { [ -e "$SD/swg-noded.service" ] || [ -e "$SD/swg-panel-server.service" ]; } || rmrf /usr/local/bin/swg-logs
