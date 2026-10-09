@@ -20460,8 +20460,12 @@ def _wdtt_install(inst):
     binshared = _wdtt_bin_shared(fork); binp = cfgdir + "/server"
     _want_ver = (inst.get("ver") or "").strip()
     if not os.path.exists(binshared):
+        _fk = ("wdtt:" + fork, _want_ver)                     # a failed fetch waits, as _csqtt_install's (1.8.9 qualification NODED-3)
+        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):
+            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _want_ver or "current")
         _e = _wdtt_fetch_bin(fork, inst, binshared, ver=_want_ver)
         if _e:
+            _CSQTT_FETCH_LATER[_fk] = time.monotonic() + CSQTT_FETCH_RETRY_S
             return _e
         if not os.path.exists(binshared):
             return "WDTT binary missing after a reportedly successful fetch — check free space on " + os.path.dirname(binshared)
@@ -20558,8 +20562,12 @@ def _wdtt_reconfigure(inst):
     fork = _wdtt_fork(inst)
     binshared = _wdtt_bin_shared(fork); binp = cfgdir + "/server"
     if not os.path.exists(binshared):                       # fork swap → fetch the new fork's binary from the mirror
+        _fk = ("wdtt:" + fork, (inst.get("ver") or "").strip())   # a failed fetch waits, as _csqtt_install's (NODED-3)
+        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):
+            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _fk[1] or "current")
         _e = _wdtt_fetch_bin(fork, inst, binshared)
         if _e:
+            _CSQTT_FETCH_LATER[_fk] = time.monotonic() + CSQTT_FETCH_RETRY_S
             return _e
         if not os.path.exists(binshared):
             return "WDTT binary missing after a reportedly successful fetch — check free space on " + os.path.dirname(binshared)
@@ -21967,8 +21975,15 @@ def _csqtt_install(inst):
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface); line = _csqtt_line_of(inst)
     binshared = _csqtt_bin_shared(line); binp = cfgdir + "/server"
     if not os.path.exists(binshared):
+        # A build whose fetch failed is walked again only after CSQTT_FETCH_RETRY_S, as a switch's (NR-4): a server whose binary
+        # neither the mirror nor GitHub serves walked them on every sync — ≈ 90 s with GitHub blackholed — and the node read
+        # offline (1.8.9 qualification NODED-3). Meanwhile it repeats what the card already says — that walk's reason.
+        _fk = (line, (inst.get("ver") or "").strip())
+        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):
+            return NODE_ERRORS.get(iface) or "the csqtt %s binary could not be fetched a moment ago — tried again within 5 minutes" % (_fk[1] or line)
         _err = _csqtt_fetch_bin(inst, binshared, line)    # panel mirror, then GitHub-direct + operator mirrors
         if _err:
+            _CSQTT_FETCH_LATER[_fk] = time.monotonic() + CSQTT_FETCH_RETRY_S
             return _err
         if not os.path.exists(binshared):                 # fetch reported success but wrote nothing → say so plainly
             return "csqtt binary missing after a reportedly successful fetch — check free space on " + os.path.dirname(binshared)
@@ -22040,8 +22055,12 @@ def _csqtt_reconfigure(inst):
     line = _csqtt_line_of(inst)
     binshared = _csqtt_bin_shared(line)
     if not os.path.exists(binshared):        # same-arch self-heal, mirroring _wdtt_reconfigure: without this
-        _e = _csqtt_fetch_bin(inst, binshared, line)   # a reconfigure lays a DANGLING symlink and restarts into 203/EXEC
+        _fk = (line, (inst.get("ver") or "").strip())   # a reconfigure lays a DANGLING symlink and restarts into 203/EXEC.
+        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):   # a failed fetch waits, as _csqtt_install's (NODED-3)
+            return NODE_ERRORS.get(iface) or "the csqtt %s binary could not be fetched a moment ago — tried again within 5 minutes" % (_fk[1] or line)
+        _e = _csqtt_fetch_bin(inst, binshared, line)
         if _e:
+            _CSQTT_FETCH_LATER[_fk] = time.monotonic() + CSQTT_FETCH_RETRY_S
             return _e
         if not os.path.exists(binshared):
             return "csqtt binary missing after a reportedly successful fetch — check free space on " + os.path.dirname(binshared)
@@ -22626,6 +22645,8 @@ def reconcile_csqtt(want, remove=None):
                 if inst["line"] != _line:
                     # installing what ran: that line's build, never the asked one (else what its slot was stamped with)
                     inst["ver"] = (inst.get("cur_ver") or "").strip() or _csqtt_installed_ver(inst["line"])
+                if inst.get("restart") != prev.get("restart"):   # the operator's Restart: its failed fetch is tried at once (NODED-3)
+                    _CSQTT_FETCH_LATER.pop((_csqtt_line_of(inst), (inst.get("ver") or "").strip()), None)
                 err = _csqtt_install(inst)
                 if not err and _cut:
                     _csqtt_cut_clear(iface)

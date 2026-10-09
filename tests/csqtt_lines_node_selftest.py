@@ -50,13 +50,19 @@ and every command that could delete a link is refused by a guard (the test fails
   [24] dl-direct      the GitHub-direct fetch lands beside the binary and is renamed in: onto a RUNNING server's binary curl
                       failed ETXTBSY (curl 23, read as "GitHub unreachable") and a running line never updated — REAL: a
                       running copy of /bin/sleep, the fetch from a file:// URL
+  1.8.9 qualification NODED-3:
+  [25] csqtt          a NEW server's install, and a present server's reconfigure self-heal, walk a build whose fetch failed
+                      once per window too — they walked the mirrors on every sync; the server's card keeps that walk's
+                      reason, a new build or the operator's Restart (install) is walked at once, two servers asking for one
+                      build walk it once (csq-install, csq-reconf, csq-restart)
+  [26] WDTT           the same for a WDTT install and reconfigure (wdtt-install, wdtt-reconf)
 
 Run: python3 tests/csqtt_lines_node_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
-                       reconfigure [5] · absent [6] · stable [3] · rollback [4] · memo [7] · build [8] · sibling [9] ·
+                       reconfigure [5] [25] · absent [6] · stable [3] · rollback [4] · memo [7] · build [8] · sibling [9] ·
                        copyfail [10] · markorder [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16] · fetchswitched [17] · unknowncur [18] · runver [19] · budget [12] [22] ·
                        notpresent-ver / notpresent-cut / markerkeep / verfallback [20] · snapcut [21] · starve [12] · restartretry [22] ·
-                       buildbackoff [23] · dl-direct [24]
+                       buildbackoff [23] · dl-direct [24] · csq-install / csq-reconf / csq-restart [25] · wdtt-install / wdtt-reconf [26]
 """
 import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
 
@@ -65,7 +71,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 
 PLANTS = {   # name: (section, anchor, replacement)
-    "reconfigure": ("[5]", "    line = _csqtt_line_of(inst)\n    binshared = _csqtt_bin_shared(line)\n    if not os.path.exists(binshared):        # same-arch",
+    "reconfigure": (("[5]", "[25]"), "    line = _csqtt_line_of(inst)\n    binshared = _csqtt_bin_shared(line)\n    if not os.path.exists(binshared):        # same-arch",
                     "    line = _csqtt_line_of(inst)\n    binshared = _csqtt_bin_shared()\n    if not os.path.exists(binshared):        # same-arch"),
     "absent": ("[6]", "            if not _line:\n                _line = _cur\n", "            if not _line:\n                _line = CSQTT_DEFAULT_LINE\n"),
     "stable": (("[3]", "[11]"), "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify_stable(iface)\n",
@@ -80,6 +86,11 @@ PLANTS = {   # name: (section, anchor, replacement)
     "budget": (("[12]", "[22]"), "                        _CSQTT_FETCH_LATER[(_line, _want_ver)] = time.monotonic() + CSQTT_FETCH_RETRY_S", "                        pass"),
     "buildbackoff": ("[23]", "\n                        and time.monotonic() >= _CSQTT_FETCH_LATER.get((_cur, _run_ver), 0)):   # FN-2(c): as a switch waits", "):"),
     "dl-direct": ("[24]", 'err, tmp = "", dest + ".dl"', 'err, tmp = "", dest'),
+    "csq-install": ("[25]", '        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):\n            return NODE_ERRORS.get(iface) or "the csqtt', '        if False:\n            return NODE_ERRORS.get(iface) or "the csqtt'),
+    "csq-reconf": ("[25]", "        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):   # a failed fetch waits, as _csqtt_install's (NODED-3)\n", "        if False:\n"),
+    "csq-restart": ("[25]", '                    _CSQTT_FETCH_LATER.pop((_csqtt_line_of(inst), (inst.get("ver") or "").strip()), None)\n', "                    pass\n"),
+    "wdtt-install": ("[26]", '        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):\n            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _want_ver or "current")', '        if False:\n            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _want_ver or "current")'),
+    "wdtt-reconf": ("[26]", '        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):\n            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _fk[1] or "current")', '        if False:\n            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _fk[1] or "current")'),
     "restartretry": ("[22]", "                    _CSQTT_FETCH_LATER.pop((_line, _want_ver), None)", "                    pass"),
     "starve": ("[12]", "                    _sw_pass[0] = _switched = (not err) or _memo", "                    _switched = (not err) or _memo; _sw_pass[0] = True"),
     "markerkeep": ("[20]", "                if not err and _cut:\n                    _csqtt_cut_clear(iface)", "                if _cut:\n                    _csqtt_cut_clear(iface)"),
@@ -537,6 +548,110 @@ try:
         check("…and nothing is left beside it", not os.path.exists(_dest + ".dl"), os.listdir(_d24))
     finally:
         _pr.kill(); N._turn_dl_urls = _urls
+
+    # NODED-3: the passes are run as the sync loop runs them — each server's error put on its card (NODE_ERRORS[iface])
+    def sync(reconcile, w):
+        res = reconcile(w)
+        for e in res["errors"]:
+            k, _, m = e.partition(": "); N.NODE_ERRORS[k] = m or e
+        return res
+    UNFETCHABLE = (" — the panel's mirror had none, and GitHub was unreachable from this node: curl: (28) Failed to connect to "
+                   "github.com port 443")
+
+    section("[25] csqtt: a NEW server's install, and a reconfigure's self-heal, wait a window after a failed fetch (NODED-3)")
+    clk = _Clock(); N.time = clk
+    FETCHED = []
+    def fail_fetch(inst, dest, line="2.1"):
+        FETCHED.append((inst.get("iface"), line, inst.get("ver")))
+        return "couldn't fetch the csqtt binary for amd64 " + (inst.get("ver") or "") + UNFETCHABLE
+    real_env_drifted = N._csqtt_env_drifted
+    N._csqtt_fetch_bin = fail_fetch
+    try:
+        N._CSQTT_FETCH_LATER.clear(); N.NODE_ERRORS.clear()
+        N._csqtt_docker_stop("lo"); N._csqtt_docker_stop("csqttsib")
+        shutil.rmtree(os.path.dirname(N._csqtt_bin_shared("2.5")), ignore_errors=True)   # 2.5 is on neither the mirror nor GitHub
+        record()
+        w25 = lambda **kw: {"csqttnew": want("csqttnew", **dict({"line": "2.5", "ver": "2.5.0-7", "listen": "0.0.0.0:46025",
+                                                                  "tun_addr": "10.66.25.1/24"}, **kw))}
+        sync(N.reconcile_csqtt, w25())
+        e25 = N.NODE_ERRORS.get("csqttnew", "")
+        check("install: the first sync walks the sources once and says why", FETCHED == [("csqttnew", "2.5", "2.5.0-7")]
+              and "couldn't fetch" in e25, (FETCHED, e25))
+        for _ in range(5):
+            sync(N.reconcile_csqtt, w25())
+        check("…the next five syncs walk nothing (each walk ≈ 90 s with GitHub blackholed)", len(FETCHED) == 1, FETCHED)
+        check("…and the server's card keeps that walk's reason", N.NODE_ERRORS.get("csqttnew") == e25, N.NODE_ERRORS.get("csqttnew"))
+        clk.off += N.CSQTT_FETCH_RETRY_S + 1
+        sync(N.reconcile_csqtt, w25())
+        check("once the window has run out it is walked again", len(FETCHED) == 2, FETCHED)
+        sync(N.reconcile_csqtt, w25(restart=9)); sync(N.reconcile_csqtt, w25(restart=9))
+        check("the operator's Restart walks it at once, once", len(FETCHED) == 3, FETCHED)
+        sync(N.reconcile_csqtt, w25(restart=9, ver="2.5.0-8"))
+        check("a new build is walked at once", len(FETCHED) == 4 and FETCHED[-1][2] == "2.5.0-8", FETCHED)
+        del FETCHED[:]
+        sync(N.reconcile_csqtt, dict(w25(ver="2.5.0-9"), csqttnew2=want("csqttnew2", line="2.5", ver="2.5.0-9", listen="0.0.0.0:46026",
+                                                                        tun_addr="10.66.26.1/24")))
+        check("two new servers asking for one unfetchable build: one walk", len(FETCHED) == 1, FETCHED)
+        # a present server whose line's binary is gone (its stamp left, its link on no slot this box knows — an arch move),
+        # its env drifted: every sync reconfigures it, and the reconfigure's self-heal fetches
+        _odd = os.path.join(TMP, "moved", "csqtt-server"); os.makedirs(os.path.dirname(_odd), exist_ok=True)
+        open(_odd, "w").write(GOOD); os.chmod(_odd, 0o755)
+        N._csqtt_relink(N._csqtt_dir("lo") + "/server", _odd)
+        N._csqtt_write_ver("2.5.0-7", "2.5")
+        record(lo=dict(rec_lo, line="2.5", ver="2.5.0-7"))
+        N._csqtt_env_drifted = lambda *a, **k: True
+        N._CSQTT_FETCH_LATER.clear(); del FETCHED[:]
+        w25r = {"lo": want("lo", line="2.5", ver="2.5.0-7")}
+        sync(N.reconcile_csqtt, w25r)
+        check("reconfigure: the self-heal walks the sources once", FETCHED == [("lo", "2.5", "2.5.0-7")], FETCHED)
+        sync(N.reconcile_csqtt, w25r); sync(N.reconcile_csqtt, w25r)
+        check("…and not on the next syncs", len(FETCHED) == 1, FETCHED)
+    finally:
+        N.time = time; N._csqtt_fetch_bin = fake_fetch; N._csqtt_env_drifted = real_env_drifted; N._CSQTT_FETCH_LATER.clear()
+
+    section("[26] WDTT: a NEW server's install, and a reconfigure's self-heal, wait a window after a failed fetch (NODED-3)")
+    N.WDTT_ROOT = os.path.join(TMP, "wdtt"); N.WDTT_BIN_DIR = N.WDTT_ROOT + "/.bin"; N.WDTT_RECORD = os.path.join(TMP, "wdtt.json")
+    clk = _Clock(); N.time = clk
+    WFETCHED = []
+    def wfail(fork, inst, dest, ver=None):
+        WFETCHED.append((inst.get("iface"), fork, ver if ver is not None else inst.get("ver")))
+        return "couldn't fetch the " + fork + " WDTT binary for amd64" + UNFETCHABLE
+    real_wfetch = N._wdtt_fetch_bin
+    N._wdtt_fetch_bin = wfail
+    try:
+        N._CSQTT_FETCH_LATER.clear(); N.NODE_ERRORS.clear()
+        json.dump({"wdtt": []}, open(N.WDTT_RECORD, "w"))
+        ww = lambda **kw: dict({"listen": "0.0.0.0:56025", "wg_addr": "10.66.27.1/24", "wg_port": 56125, "fork": "amurcanov",
+                                "ver": "1.4.2", "passwords": {}}, **kw)
+        sync(N.reconcile_wdtt, {"wdttnew": ww()})
+        e26 = N.NODE_ERRORS.get("wdttnew", "")
+        check("install: the first sync walks the sources once and says why", WFETCHED == [("wdttnew", "amurcanov", "1.4.2")]
+              and "couldn't fetch" in e26, (WFETCHED, e26))
+        for _ in range(5):
+            sync(N.reconcile_wdtt, {"wdttnew": ww()})
+        check("…the next five syncs walk nothing", len(WFETCHED) == 1, WFETCHED)
+        check("…and the server's card keeps that walk's reason", N.NODE_ERRORS.get("wdttnew") == e26, N.NODE_ERRORS.get("wdttnew"))
+        clk.off += N.CSQTT_FETCH_RETRY_S + 1
+        sync(N.reconcile_wdtt, {"wdttnew": ww()})
+        check("once the window has run out it is walked again", len(WFETCHED) == 2, WFETCHED)
+        sync(N.reconcile_wdtt, {"wdttnew": ww(ver="1.4.3")})
+        check("a new build is walked at once", len(WFETCHED) == 3 and WFETCHED[-1][2] == "1.4.3", WFETCHED)
+        # a present server whose fork's binary is gone (its stamp left), its Listen changed: WDTT keeps the old record while
+        # the reconfigure fails, so every sync reconfigures it, and the reconfigure's self-heal fetches
+        _wd = N._wdtt_dir("wdttold"); os.makedirs(_wd, exist_ok=True)
+        _old = os.path.join(TMP, "moved", "wdtt-server"); open(_old, "w").write(GOOD); os.chmod(_old, 0o755)
+        os.symlink(_old, _wd + "/server")
+        N._wdtt_write_ver("amurcanov", "1.4.9")
+        json.dump({"wdtt": [dict(ww(listen="0.0.0.0:56028", wg_addr="10.66.28.1/24", wg_port=56128, ver="1.4.9"), iface="wdttold",
+                                 password="owner", panel_managed=True, pw_seen=True)]}, open(N.WDTT_RECORD, "w"))
+        N._CSQTT_FETCH_LATER.clear(); del WFETCHED[:]
+        w26r = {"wdttold": ww(listen="0.0.0.0:56029", wg_addr="10.66.28.1/24", wg_port=56128, ver="1.4.9")}
+        sync(N.reconcile_wdtt, w26r)
+        check("reconfigure: the self-heal walks the sources once", WFETCHED == [("wdttold", "amurcanov", "1.4.9")], WFETCHED)
+        sync(N.reconcile_wdtt, w26r); sync(N.reconcile_wdtt, w26r)
+        check("…and not on the next syncs", len(WFETCHED) == 1, WFETCHED)
+    finally:
+        N.time = time; N._wdtt_fetch_bin = real_wfetch; N._CSQTT_FETCH_LATER.clear()
 
     section("[16] a server not installed yet runs no line")
     check("_csqtt_ifaces leaves it out", N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5") == [], N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5"))
