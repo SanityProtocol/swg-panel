@@ -1511,39 +1511,27 @@ LOG_DROPIN_FILE = "swg-log.conf"
 # within seconds. The panel and swg-sub run for weeks and filter their own lines: a cap there would outlive the level
 # and swallow their Debug after a raise (code review, 2026-10-04).
 LOG_TIMER_UNITS = ("swg-netctl.service", "swg-update.service")
-SETTINGS_MAX = 16 << 20      # panel-settings.json is a few KB; a file past this is not one the panel wrote
-
-
-def read_settings():
-    """panel-settings.json as the panel writes it — a dict with something in it — or None. Read as a request is: never
-    through a symlink, never waiting on a FIFO, only a regular file of a sane size (the panel can put anything at this path,
-    and root reads it every tick). None KEEPS WHAT IS APPLIED: a missing, empty or corrupt file is a clobber the panel
-    restores from its backup within seconds, or a panel not started yet — and "the defaults" read from one shrank a 500 MB
-    budget to 100 MB, which journald enforces by deleting the history for good (84 094 entries on a test VM), and stored
-    logs again at Off (1.8.9 qualification HE-3)."""
-    try:
-        fd = os.open(os.path.join(STATE_DIR, "panel-settings.json"), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd) as f:
-            st = os.fstat(f.fileno())
-            if not stat.S_ISREG(st.st_mode) or st.st_size > SETTINGS_MAX:
-                return None
-            ps = json.load(f)
-    except (OSError, ValueError):
-        return None
-    return ps if isinstance(ps, dict) and ps else None
 
 
 def log_from_settings():
     """The fleet's level from panel-settings.json (root reads it directly, as _load_access_tls does): the base level,
     plus Debug while `log_debug_until` is -1 (until changed) or still ahead. Computed on every run, so Debug's expiry
     reaches these units within one timer tick with nothing written at expiry. Returns the settings it read — once a tick,
-    the budget's too — or None (see read_settings), and then sets nothing. A value the panel never writes ([] for the
-    level, 1e999) raises before anything is set: main keeps what is applied then too."""
-    ps = read_settings()
-    if ps is not None:
-        until = int(ps.get("log_debug_until") or 0)
-        log_set(min(LOG_LEVELS.get(ps.get("log_level"), LOG_INFO), LOG_INFO),
-                -1 if until == -1 else max(0, until - time.time()))
+    the budget's too — or None, and then sets nothing, so that what is applied stays: a missing, empty or corrupt file is
+    a clobber the panel restores from its backup within seconds, or a panel not started yet, and "the defaults" read from
+    one shrank a 500 MB budget to 100 MB, which journald enforces by deleting the history for good (84 094 entries on a
+    test VM), and stored logs again at Off (1.8.9 qualification HE-3). A value the panel never writes ([] for the level,
+    1e999) raises before anything is set: main keeps what is applied then too."""
+    try:
+        with open(os.path.join(STATE_DIR, "panel-settings.json")) as f:
+            ps = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(ps, dict) or not ps:
+        return None
+    until = int(ps.get("log_debug_until") or 0)
+    log_set(min(LOG_LEVELS.get(ps.get("log_level"), LOG_INFO), LOG_INFO),
+            -1 if until == -1 else max(0, until - time.time()))
     return ps
 
 
