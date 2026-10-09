@@ -907,7 +907,13 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   if [ "$_tools" = yes ] && awg_mod_key_rejected; then
     awg_key_refused_note
     have amneziawg-go || { ensure_awg_userspace && DID_UPDATE=yes; } || true
-    note "AmneziaWG: userspace datapath — Secure Boot refuses the kernel module until its signing key is enrolled (sudo mokutil --import $(awg_mok_key || echo '<the DKMS key>'), then reboot)"
+    # ⚠️ "userspace" only when there IS one. With no amneziawg-go either, nothing can bring an awg interface up — a FAILED
+    # update, as the heal's own last branch says it (and 1.8.8 did here); "userspace datapath" and success hid it.
+    if have amneziawg-go; then
+      note "AmneziaWG: userspace datapath — Secure Boot refuses the kernel module until its signing key is enrolled (sudo mokutil --import $(awg_mok_key || echo '<the DKMS key>'), then reboot)"
+    else
+      DID_FAIL=yes; warn "AmneziaWG tools are installed but Secure Boot refuses its kernel module on $(uname -r), and the userspace datapath could not be installed — awg interfaces cannot come up until the key is enrolled (the steps above)"
+    fi
     return 0
   fi
   # Nothing new to try: the module did not compile on this kernel, and neither the package nor upstream has moved since.
