@@ -31,8 +31,13 @@ like that with nothing on the panel saying so.
       amneziawg-go to be had → a FAILED update saying awg interfaces cannot come up (it said "userspace datapath" and
       succeeded); CONTROLS: amneziawg-go present, or installed by that very run → the userspace note, not a failure
 
+  [6c] (1.8.9 qualification F11 / NLH-5) the probe never loads past a blacklist (`modprobe -b`) and is not asked at all
+      where the kernel enforces no module signature (read from sysfs: module.sig_enforce, a lockdown) — nowhere else can
+      it refuse a key; on a VM it loaded a module its operator had blacklisted, 0.7 s after swg-noded started
+
 Run: python3 tests/secure_boot_dpkg_selftest.py      (0 = pass)
      --plant sbclaim   the branch as it shipped (the userspace note whatever is there) → RED on [10] (exit 0 when caught)
+     --plant nlh5-noblacklist | nlh5-noenforce   the probe by name / on every kernel again → RED on [6c]
 """
 import builtins, importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile, time
 from unittest import mock
@@ -202,7 +207,15 @@ def load(name, path):
     except SystemExit:
         pass
     return m
-N = load("swgnoded", os.path.join(ROOT, "swg-noded"))
+_NODED = os.path.join(ROOT, "swg-noded")
+_NPLANTS = {"nlh5-noblacklist": ('r = run(["modprobe", "-b", "amneziawg"], timeout=30)', 'r = run(["modprobe", "amneziawg"], timeout=30)'),
+            "nlh5-noenforce": ('run(["modinfo", "-F", "signer", "amneziawg"]).stdout.strip() and _awg_sig_enforced():',
+                               'run(["modinfo", "-F", "signer", "amneziawg"]).stdout.strip():')}
+if PLANT in _NPLANTS:
+    _src = open(_NODED, encoding="utf-8").read(); _o, _n = _NPLANTS[PLANT]
+    assert _src.count(_o) == 1, "plant anchor missing — this run would measure nothing"
+    _NODED = os.path.join(tempfile.mkdtemp(prefix="sbplant-"), "swg-noded"); open(_NODED, "w", encoding="utf-8").write(_src.replace(_o, _n))
+N = load("swgnoded", _NODED)
 P = load("swgpanel", os.path.join(ROOT, "swg-panel-server"))
 KR = os.uname().release
 
@@ -212,13 +225,15 @@ BOOTS = {"id": "boot-1"}; N._boot_id = lambda: BOOTS["id"]
 DEPS = {"stamp": "dep-1"}; N._modules_dep_stamp = lambda: DEPS["stamp"]
 KK = {"signer": "host Secure Boot Module Signature key", "err": "modprobe: ERROR: could not insert 'amneziawg': Key was rejected by service",
       "rc": 1, "sigkey": "", "probes": 0}
+_REAL_ENFORCED = N._awg_sig_enforced
+N._awg_sig_enforced = lambda: True              # a Secure Boot box (lockdown), as the cells below model; [6c] reads the real one
 def krun(args, timeout=20, **k):
     if args[:3] == ["modinfo", "-F", "signer"]:
         return subprocess.CompletedProcess(args, 0, KK["signer"] + "\n", "")
     if args[:3] == ["modinfo", "-F", "sig_key"]:
         return subprocess.CompletedProcess(args, 0, KK["sigkey"] + "\n", "")
     if args[:1] == ["modprobe"]:
-        KK["probes"] += 1
+        KK["probes"] += 1; KK["argv"] = list(args)
         return subprocess.CompletedProcess(args, KK["rc"], "", KK["err"] if KK["rc"] else "")
     return subprocess.CompletedProcess(args, 1, "", "")
 N.run = krun
@@ -275,6 +290,30 @@ check("another refusal (a build for another ABI) → not a key refusal", a.get("
 fresh(); rec("awg-module-refused", "kernel=%s\nboot=boot-0\nmok=/var/lib/dkms/mok.pub; rm -rf /\n" % KR)
 a = health(built=True)
 check("a key path that is not a plain path is dropped (why stays)", a.get("why") == "key" and "mok" not in a, a)
+print("\n[6c] the probe: never past a blacklist, never where no key can be refused (F11 / NLH-5)")
+fresh(); a = health(built=True)
+check("it asks `modprobe -b` — a blacklisted module is not loaded by asking (a by-name modprobe ignores `blacklist`)",
+      KK.get("argv") == ["modprobe", "-b", "amneziawg"], KK.get("argv"))
+_SYSD = tempfile.mkdtemp(prefix="sbsys-")
+N.SIG_ENFORCE, N.LOCKDOWN = _SYSD + "/sig_enforce", _SYSD + "/lockdown"
+def _reads(sig, lock):
+    for f, v in ((N.SIG_ENFORCE, sig), (N.LOCKDOWN, lock)):
+        if os.path.exists(f): os.remove(f)
+        if v is not None: open(f, "w").write(v)
+N._awg_sig_enforced = _REAL_ENFORCED                 # the module's own, reading the two files
+for sig, lock, want, what in (("Y\n", "[none] integrity confidentiality\n", True, "module.sig_enforce=Y"),
+                             ("N\n", "none [integrity] confidentiality\n", True, "a lockdown in integrity mode (Secure Boot)"),
+                             ("N\n", "none integrity [confidentiality]\n", True, "a lockdown in confidentiality mode"),
+                             ("N\n", "[none] integrity confidentiality\n", False, "no sig_enforce, no lockdown"),
+                             ("N\n", None, False, "no sig_enforce and no lockdown file"),
+                             (None, None, False, "no sig_enforce parameter at all (the kernel checks no signatures)")):
+    _reads(sig, lock)
+    check("_awg_sig_enforced: %s → %s" % (what, want), N._awg_sig_enforced() is want, N._awg_sig_enforced())
+_reads("N\n", "[none] integrity confidentiality\n"); fresh(); a = health(built=True)
+check("a kernel that enforces no signature → no modprobe at all (nothing loaded to find out), no key refusal",
+      KK["probes"] == 0 and a.get("why") != "key", (KK["probes"], a))
+N._awg_sig_enforced = lambda: True
+
 if _sh.which("openssl"):
     fresh(sigkey=colons); rec("", ""); N.AWG_MOK_CANDIDATES = (T + "/a.der", T + "/b.der"); N.run = lambda args, timeout=20, **k: (
         subprocess.run(args, capture_output=True, text=True) if args[:1] == ["openssl"] else krun(args, timeout))
@@ -436,7 +475,9 @@ check("…and host_datapath_health reports why=compile from it",
 check("the master's notice words it without 'running Update rebuilds it'", 'if (dp.why === "compile") add("awg"' in rd("js/views.js"))
 
 if PLANT:
-    caught = [f for f in FAILS if f.startswith("refused for its key, amneziawg-go absent")]
+    _pre = {"sbclaim": "refused for its key, amneziawg-go absent", "nlh5-noblacklist": "it asks `modprobe -b`",
+            "nlh5-noenforce": "a kernel that enforces no signature"}[PLANT]
+    caught = [f for f in FAILS if f.startswith(_pre)]
     print("\nplant %s: %s" % (PLANT, ("RED as it must be (%d)" % len(caught)) if caught and len(caught) == len(FAILS)
                                      else "NOT CAUGHT — the gate is blind to it" if not caught else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if caught and len(caught) == len(FAILS) else 1)
