@@ -13389,11 +13389,13 @@ def awg_gen_refusal(snap, name, iface=None):
     if g.get("module") and not on_fallback and order.get(g.get("module"), -1) < 2:
         if awg_loadable(snap):                  # installed by an update, not loaded yet (docs/AWG31-LOAD-PLAN.md D2)
             return perr("{v1}: AmneziaWG 3.1 is installed, but the kernel module in use is still {v2} — load it now, or it "
-                        "loads at the next reboot", v1=name, v2=g.get("module"))
+                        "loads at the next reboot if the kernel accepts it; the node page says why when it does not",
+                        v1=name, v2=g.get("module"))     # a promise only a kernel that takes the module keeps (q189 FP-3)
         if _awg_31_waiting(snap):               # …and Load now is not offered: nothing to fall back on (q189 HE-4)
             return perr("{v1}: AmneziaWG 3.1 is installed, but the kernel module in use is still {v2} — it loads at the next "
-                        "reboot. It cannot be loaded now: this node has no userspace AmneziaWG (amneziawg-go) to run its "
-                        "interfaces on if the new module did not load", v1=name, v2=g.get("module"))
+                        "reboot if the kernel accepts it (the node page says why when it does not). It cannot be loaded now: "
+                        "this node has no userspace AmneziaWG (amneziawg-go) to run its interfaces on if the new module did "
+                        "not load", v1=name, v2=g.get("module"))
         return perr("{v1}: its AmneziaWG kernel module is {v2} — an AmneziaWG 3.1 interface needs 3.1", v1=name,
                     v2=g.get("module"))
     if (not g.get("module") or on_fallback) and order.get(g.get("fallback"), -1) < 2:
