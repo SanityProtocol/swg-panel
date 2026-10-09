@@ -13,7 +13,8 @@ reader the node and the panel both run (docs/LOGS-PLAN.md §3, §4, §23).
   [3] The store: the viewer's poll renews the lease, a lapsed one is gone (404, for the viewer and the node); at most 4,
       a 5th refused (not evicting), a replace frees its slot; 5 000 lines kept; the flood cap and the post interval
       scale with the request's size; a skewed node clock is measured; each box's state (old node, offline, no answer,
-      waiting, ok); the states block only when it changed.
+      waiting, ok); the states block only when it changed. q189 PLO-4: a snapshot `log` that is no object (a string, a
+      list, a number, true) reads "old" — the viewer's poll for every operator never raises on it.
   [4] The reader (one block, byte-identical in swg-noded and swg-panel-server): a renamed file loses and repeats nothing,
       a copy-truncated one is read again, a cursor resumes (same inode, renamed to .1) or says "!gap"; the flood cap
       skips and says how many; the backfill is the last 200 per source; journal lines are filed by unit / identifier /
@@ -36,6 +37,7 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
      anonparse    an anonymous log post is read, unpacked and parsed before any check (q189 F1)
      anytoken     any token reads as a node's                notoks       the sync does not hand its token to the request
      parsefree    log posts are unpacked + parsed with no bound on how many at once
+     logobj       a node's snapshot `log` that is no object fails the viewer's poll (q189 PLO-4)
      bomb         the gzip body is unpacked without a limit nolease      the viewer's poll does not renew the lease
      noexpire     a lapsed request lives on                 evict        a 5th viewer evicts the oldest
      bufgrow      the line buffer has no bound              capflat      the flood cap does not scale with the nodes
@@ -97,6 +99,8 @@ PLANTS = {   # (program, anchor, replacement)
     "anonparse": ("panel", '''        if not log_post_admits(_log_tok(self.headers.get("Authorization"))):''', '''        if False:'''),
     "anytoken": ("panel", '''    if not tok:\n        return False\n    with _LIVE_LOCK:''', '''    if tok:\n        return True\n    with _LIVE_LOCK:'''),
     "notoks": ("panel", '''        _ltok = _log_tok(self.headers.get("Authorization"))''', '''        _ltok = ""'''),
+    "logobj": ("panel", '''    if not (isinstance(snap.get("log"), dict) and snap["log"].get("live")):''',
+               '''    if not (snap.get("log") or {}).get("live"):'''),
     "parsefree": ("panel", '''LOG_POST_SLOTS = threading.BoundedSemaphore(4)''', '''LOG_POST_SLOTS = threading.BoundedSemaphore(1 << 20)'''),
     "ackedstale": ("panel", '''    if nid != LIVE_PANEL and (not isinstance(snap, dict)''',
                    '''    if nid != LIVE_PANEL and nid not in rec["acked"] and (not isinstance(snap, dict)'''),
@@ -494,6 +498,16 @@ def sec3():
           "long resume point (60 files) is kept",
           r1 == 403 and r2 == 200 and len(P._LIVE_REQS[rid4]["cur"].get("a", {}).get("f", {})) == 60, (r1, r2))
     P.live_absorb({"id": rid4, "key": P._live_key(P._LIVE_REQS[rid4], "a"), "lines": [], "cur": {"j": "x" * 9000}})
+    got = {}
+    for bad in ("x", [1], 5, True):                   # q189 PLO-4: one node's malformed `log`, through the real poll
+        rid6 = P.live_open(["c"], ["noded"], known, now=T[0])[1]["data"]["id"]   # a box that has not posted yet
+        try:
+            got[repr(bad)] = P.live_view(rid6, 0, "", {"c": {"log": bad}}, {"c": T[0]}, 30, now=T[0])["nodes"]["c"]["state"]
+        except Exception as e:
+            got[repr(bad)] = "raised %s" % type(e).__name__
+        P.live_close(rid6)
+    check("[3] PLO-4: a snapshot `log` that is no object reads \"old\" — the viewer's poll never raises on it",
+          set(got.values()) == {"old"}, got)
     check("[3] a resume point too big to keep drops the stored one (a restart starts afresh, not from a stale point)",
           "a" not in P._LIVE_REQS[rid4]["cur"], list(P._LIVE_REQS[rid4]["cur"]))
     for i in list(P._LIVE_REQS):

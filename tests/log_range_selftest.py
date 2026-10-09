@@ -12,7 +12,8 @@ the spool and the merge, the download route, redaction, the reader both programs
       same text unpacked otherwise, 404 for an unknown id, never through api() and never on a node door.
   [3] The store: at most 2 in progress (a 3rd 429); each server's share is the total divided; a server the panel has not
       heard from is asked and reads "offline"; an old node "old", a silent one "noanswer", a stalled one "failed", a request
-      past its life "timeout"; "make the file now" leaves the rest out; an unpolled request goes, a made file goes after
+      past its life "timeout"; a snapshot `log` that is no object reads "old", never an exception (q189 PLO-4); "make the
+      file now" leaves the rest out; an unpolled request goes, a made file goes after
       its keep, 4 files at most; the spool is emptied at start.
   [4] The file: every server's lines merged by time on the panel's clock (a skewed node corrected); the §5 header with
       what is not whole and why; redaction of 32-byte keys (exactly), Bearer and swgp_ tokens, and none when unticked;
@@ -80,8 +81,9 @@ Run: python3 tests/log_range_selftest.py   (0 = pass)
      deepnav      a deep link navigates to Settings under the viewer instead of opening over its page
      notrap       Tab walks out of the full-screen viewer into the page hidden under it
      nofocusback  Exit drops the focus on <body>
-   q189 F1 ([2]):
+   q189 F1 ([2]) and PLO-4 ([3]):
      rangetok     a range's sync reply does not hand its node token to the request (every range post refused 401)
+     rlogobj      a node's snapshot `log` that is no object fails the range's progress poll
 """
 import gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile, threading, time
 import urllib.error, urllib.request
@@ -128,6 +130,8 @@ PLANTS = {   # (program, anchor, replacement)
                   '''    with open(os.path.join(rec["dir"], nid + ".gz"), "ab") as f:'''),
     "rangetok": ("panel", '''            if tok:\n                rec["toks"].add(tok)\n            out.append({"id": rec["id"], "key": _live_key(rec, nid),''',
                  '''            out.append({"id": rec["id"], "key": _live_key(rec, nid),'''),
+    "rlogobj": ("panel", '''            elif not (isinstance(snap.get("log"), dict) and snap["log"].get("range")):''',
+                '''            elif not (snap.get("log") or {}).get("range"):'''),
     "noslots": ("panel", '''                if not RANGE_POST_SLOTS.acquire(blocking=False):''', '''                if not RANGE_POST_SLOTS.acquire(blocking=False) and False:'''),
     "maxreq": ("panel", '''if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX\n''', '''if r["phase"] in ("reading", "making")) >= RANGE_REQ_MAX + 9\n'''),
     "evenshare": ("panel", '''"label": label, "share": RANGE_TOTAL // len(nodes),''', '''"label": label, "share": RANGE_TOTAL,'''),
@@ -558,6 +562,17 @@ try:
         ns = rec["ns"]
         check("[3] a node the panel has not heard from is asked and reads \"offline\"; one without `log.range` \"old\"",
               ns.get("ghost1", {}).get("state") == "offline" and ns["n2"]["state"] == "old", ns)
+        got = {}
+        for bad in ("x", [1], 5, True):               # q189 PLO-4: one node's malformed `log`, through the real progress poll
+            rid5 = P.range_open({"nodes": ["n1"], **RANGE_BODY}, known)[1]["data"]["id"]
+            try:
+                got[repr(bad)] = P.range_api_get({"id": [rid5]}, {"node_snaps": {"n1": {"log": bad}},
+                                                                  "node_seen": {"n1": now}})[1]["data"]["nodes"]["n1"]["state"]
+            except Exception as e:
+                got[repr(bad)] = "raised %s" % type(e).__name__
+            P.range_api_post("/api/logs/range/close", {"id": rid5}, {})
+        check("[3] PLO-4: a snapshot `log` that is no object reads \"old\" — the progress poll never raises on it",
+              set(got.values()) == {"old"}, got)
         P.range_reply("n1", now=now - 30); P.range_reply("n3", now=now)
         P._range_tick(rec, snaps, seen, 30, now)
         check("[3] asked over 20 s ago with no word: \"noanswer\"; asked just now: still waiting",

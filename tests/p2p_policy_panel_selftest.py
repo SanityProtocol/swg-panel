@@ -31,6 +31,12 @@
   [14] CODE REVIEW #2: "not reporting" is the panel's own verdict (`nodeStatusOf` — the server's "never synced" too), and an
        exit that is gone from the list is named by its id, never "Custom"
   [9] the card: a route the node runs as block → "the torrent route is unavailable"; the target gone → pruned to block
+  [15] q189 F2 — ONE NODE'S MALFORMED REPORT NEVER FAILS /api/state FOR EVERY OPERATOR: `smartroute` or its `p2p` that is
+       not an object (a string, a list, a number) is read as "not reported" by _node_issues — never an exception — and
+       /api/state through the real api() answers 200 with that node's p2p_node null (it was a 500 on every poll)
+  [16] q189 NR-2 (panel row): a node whose torrent rules failed to load (p2p state "error") is SAID, in one translated
+       sentence with nft's own line as its value (as it is, cut at 160) — under any policy, iface included, and in place
+       of the route rows; no detail → the same sentence without it; state ok/degraded → nothing
 
 Run: python3 tests/p2p_policy_panel_selftest.py        (0 = pass)
      --perturb    plant each old behaviour in turn → every one must go RED (exit 0 when all are caught)
@@ -57,8 +63,8 @@ PLANTS = {
                       '            elif isinstance(_pp, dict):'),
     "wire-iface":    ('"p2p": ({"action": _p2pa} if (_p2pa := p2p_policy(node)) in ("block", "direct")',
                       '"p2p": ({"action": _p2pa} if (_p2pa := p2p_policy(node)) in ("block", "direct", "iface")'),
-    "issue-always":  ('isinstance(snap.get("smartroute"), dict) and not snap["smartroute"].get("p2p"):',
-                      'isinstance(snap.get("smartroute"), dict):'),
+    "issue-always":  ('    if _p2pa != "iface" and _srp is not None and not _p2pn:',
+                      '    if _p2pa != "iface" and _srp is not None:'),
     "p3-no-clash":   ('                    _subs = [s for n_, s in _own if not _clashes(nid, n_, s, _Q, "rule")]',
                       '                    _subs = [s for n_, s in _own]'),
     "p3-into-smart": ('        sn["_p2p"] = {"table": T, "via_iface": dev_n, "subnets": sorted(set(subs))}',
@@ -69,8 +75,19 @@ PLANTS = {
     "spa-action-only": ('    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action, ...(n.p2p.node ? { node: n.p2p.node } : {}),\n                                   ...(n.p2p.exit_id ? { exit_id: n.p2p.exit_id } : {}) } : null,',
                         '    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action } : null,'),
     "no-prune-event":("    _report_p2p_pruned(deps, _p2p_pruned)\n", ""),
-    "no-route-down": ("    elif _p2pa in (\"exit\", \"dev\") and ((snap.get(\"smartroute\") or {}).get(\"p2p\") or {}).get(\"route\") == \"down\":",
-                      "    elif False:"),
+    "no-route-down": ('    elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("route") == "down":', "    elif False:"),
+    # q189 F2: the unguarded reads of 52aa9c4 put back, one at a time
+    "f2-sr-any":     ('    _srp = snap.get("smartroute") if isinstance(snap.get("smartroute"), dict) else None',
+                      '    _srp = snap.get("smartroute") if snap.get("smartroute") is not None else None'),
+    "f2-p2p-any":    ('    _p2pn = _srp.get("p2p") if _srp is not None and isinstance(_srp.get("p2p"), dict) else None',
+                      '    _p2pn = _srp.get("p2p") if _srp is not None else None'),
+    "f2-p2p-node":   ('''                        "p2p_node": (lambda s: s["p2p"] if isinstance(s, dict) and isinstance(s.get("p2p"), dict)
+                                     and s["p2p"] else None)(snap.get("smartroute")),   # an object or nothing (F2)''',
+                      '''                        "p2p_node": (snap.get("smartroute") or {}).get("p2p") or None,'''),
+    # q189 NR-2: the failed load unsaid, or said without nft's line
+    "nr2-silent":    ('    elif _p2pn and _p2pn.get("state") == "error":', '    elif False:'),
+    "nr2-no-detail": ('''                           "load, torrents are not blocked or routed as set", v1=_pd) if _pd else''',
+                      '''                           "load, torrents are not blocked or routed as set", v1=_pd) if False else'''),
     "spa-own-list":  ('        ...exitOptionGroups({ ...node, exits }, { prefix: "dev:", stored: node.exits || [] })',
                       '        ...exits.filter(x => x && x.id).map(x => ({ value: "dev:" + x.id, label: x.label || x.id }))'),
     "spa-stale-refuse": ('        ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : {}) }));',
@@ -153,7 +170,7 @@ def run_checks(src, spa=None):
 
     # [5] published
     blk = [l for l in src.splitlines() if '"p2p_eff": p2p_policy(c)' in l or '"p2p": c.get("p2p") if isinstance' in l
-           or '"p2p_node": (snap.get("smartroute")' in l]
+           or '"p2p_node": ' in l]
     ok(len(blk) == 3, "[5] /api/state publishes p2p, p2p_eff, p2p_node")
     # ── P3 ──
     X1 = {"id": "aaaa0001", "label": "X", "device": "wgx0", "enabled": True, "producer": "adopted", "killswitch": True}
@@ -231,6 +248,53 @@ def run_checks(src, spa=None):
     iss12b = [i.get("error_key") or i.get("error") for i in P._node_issues({"p2p": {"action": "dev", "exit_id": "x"}},
               {"smartroute": {"p2p": {"state": "ok", "mode": "route", "route": "up"}}})]
     ok(not any("torrent" in (i or "") for i in iss12b), "[12] …and an up route says nothing")
+    # [15] q189 F2 — a malformed report is "not reported", never an exception, never a 500 for everyone
+    for pol in ({}, {"p2p": {"action": "exit", "node": "n2"}}, {"p2p": {"action": "dev", "exit_id": "x"}}):
+        for sr in ({"p2p": "block"}, {"p2p": ["x"]}, {"p2p": 3}, ["x"], "block", 5):
+            try:
+                got = [i.get("error_key") or "" for i in P._node_issues(pol, {"smartroute": sr})]
+            except Exception as e:
+                got = "raised %s: %s" % (type(e).__name__, e)
+            want = (["the torrent policy needs a node update — until then torrents are blocked only on interfaces that have "
+                     "Torrents / P2P switched on"] if isinstance(sr, dict) else [])
+            ok(got == want, "[15] smartroute=%r under %s → %s (got %s)" % (sr, pol.get("p2p") or "the default", want or "nothing",
+                                                                          got))
+    tmp15 = tempfile.mkdtemp()
+    np15, rp15 = os.path.join(tmp15, "nodes.json"), os.path.join(tmp15, "users.json")
+    json.dump({"n1": {"name": "n1", "ifaces": {}, "p2p": {"action": "exit", "node": "n2"}}, "n2": {"name": "n2", "ifaces": {}},
+               "n3": {"name": "n3", "ifaces": {}}}, open(np15, "w"))
+    json.dump({"version": P.ROSTER_VERSION, "users": {}, "peers": {}}, open(rp15, "w"))
+    d15 = {"nodes_path": np15, "roster_path": rp15, "stats_dir": tmp15, "fleet": {}, "panel_settings": {},
+           "node_snaps": {"n1": {"smartroute": {"p2p": "block"}}, "n2": {"smartroute": ["x"]},
+                          "n3": {"smartroute": {"p2p": {"state": "ok", "mode": "block"}}}},
+           "node_seen": {"n1": 1, "n2": 1, "n3": 1}}
+    P.Handler.deps = d15
+    try:
+        code, obj = P.api("GET", "/api/state", {}, {}, d15)
+    except Exception as e:
+        code, obj = "raised %s: %s" % (type(e).__name__, e), {}
+    pn = {n["id"]: n.get("p2p_node") for n in ((obj or {}).get("data") or {}).get("nodes") or []} if code == 200 else code
+    ok(pn == {"n1": None, "n2": None, "n3": {"state": "ok", "mode": "block"}},
+       "[15] /api/state through the real api(): 200 with a string p2p and a list smartroute on two nodes — their p2p_node "
+       "null, the good node's kept (got %s)" % (pn,))
+    # [16] q189 NR-2 — the node's torrent rules did not load
+    K16 = ("the torrent policy is not in force on this node — its rules failed to load ({v1}); until they load, torrents "
+           "are not blocked or routed as set")
+    K16b = ("the torrent policy is not in force on this node — its rules failed to load; until they load, torrents are not "
+            "blocked or routed as set")
+    det = "Error: Could not process rule: No such file or directory"
+    def tor(pol, p2p):
+        return [(i.get("error_key"), (i.get("error_vars") or {}).get("v1")) for i in P._node_issues(pol, {"smartroute": {"p2p": p2p}})
+                if "torrent" in (i.get("error_key") or "")]
+    for pol in ({}, {"p2p": {"action": "direct"}}, {"p2p": {"action": "iface"}}, {"p2p": {"action": "exit", "node": "n2"}}):
+        got = tor(pol, {"state": "error", "mode": "route" if "node" in str(pol) else "block", "route": "down", "detail": det})
+        ok(got == [(K16, det)], "[16] state error under %s → the one sentence, nft's line as its value (got %s)"
+           % (pol.get("p2p") or "the default", got))
+    ok(tor({}, {"state": "error", "mode": "block"}) == [(K16b, None)], "[16] no detail → the sentence without it")
+    ok(tor({}, {"state": "error", "mode": "block", "detail": ["x"]}) == [(K16b, None)], "[16] a detail that is no string → without it")
+    ok(tor({}, {"state": "error", "mode": "block", "detail": "x" * 400}) == [(K16, "x" * 160)], "[16] a long detail is cut at 160")
+    ok(not tor({}, {"state": "ok", "mode": "block"}) and not tor({}, {"state": "degraded", "mode": "block"}),
+       "[16] state ok / degraded → nothing said")
     # [10] the draft keeps the route's target
     spa = spa if spa is not None else open(SPA, encoding="utf-8").read()
     nf = spa[spa.find("const nFields = n =>"):]
