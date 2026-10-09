@@ -13464,17 +13464,18 @@ _DPKG = {"mtime": None, "at": 0.0, "v": None, "peek": 0.0}
 
 
 def _dpkg_busy():
+    # By the INODE alone: on btrfs stat() gives a subvolume's anonymous device, never the one /proc/locks names, so a held
+    # lock read as free there (q189 NLH-3). Another filesystem's lock on the same inode number only delays a report.
     """Is a dpkg/apt run holding dpkg's locks RIGHT NOW? Read from /proc/locks — never by taking a lock, which would make an
     apt run starting in that instant fail on it. A long postinst (a DKMS build for every kernel on a slow box) can leave
     `status` unwritten for more than DPKG_SETTLE while dpkg is busy; its lock is held all along (code review)."""
     ids = set()
     for p in DPKG_LOCKS:
         with contextlib.suppress(OSError):
-            st = os.stat(p)
-            ids.add("%02x:%02x:%d" % (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino))
+            ids.add(str(os.stat(p).st_ino))
     try:
         with open(PROC_LOCKS) as f:
-            return bool(ids) and any(x in ids for ln in f for x in ln.split())
+            return bool(ids) and any(x.count(":") == 2 and x.rsplit(":", 1)[1] in ids for ln in f for x in ln.split())
     except OSError:
         return False
 
