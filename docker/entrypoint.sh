@@ -6,11 +6,15 @@ set -eu
 
 log() { printf '\033[0;36m[entrypoint]\033[0m %s\n' "$*"; }
 # The renewal loop's outcome also goes to the panel's own log file, as `acme: …` lines, so Settings → Logs shows it under
-# the Panel (docs/LOGS-PLAN.md §23.6) — the container log alone is not where the viewer reads. Only into a file that is
-# there: the panel deletes it at logging Off and writes it from its first line otherwise.
+# the Panel (docs/LOGS-PLAN.md §23.6) — the container log alone is not where the viewer reads. At the panel's level (its
+# base level; Off: nothing — the panel deleted the file), into the file whether or not it is there yet: the panel writes it
+# from its first kept line on, so after Off → Warnings, or a rotation, a quiet panel dropped the renewal warning for days,
+# and at Errors the hourly Info line still went in (1.8.9 qualification DN-10).
 panel_log(){   # <letter E/W/I> <text>
-  local f=/var/lib/swg-panel/log/swg-panel.log
-  [ -f "$f" ] && printf '%s %s acme: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$f" 2>/dev/null || true
+  local f=/var/lib/swg-panel/log/swg-panel.log lvl
+  lvl="$(sed -n 's/.*"log_level"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' /var/lib/swg-panel/panel-settings.json 2>/dev/null | sed -n 1p)"
+  case "$lvl:$1" in off:*|error:[WI]|warning:I) return 0;; esac
+  mkdir -p "${f%/*}" 2>/dev/null || true; printf '%s %s acme: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$f" 2>/dev/null || true
 }
 
 # ─────────────────────── swg-sub certificate (defined up front) ───────────────────────
