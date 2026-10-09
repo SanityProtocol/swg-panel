@@ -126,7 +126,7 @@ check("[3] a DOWN interface in the stopped set is reported stopped (the mark kep
       0 < i_down < i_clear and '"stopped": True' in snap[i_down:i_down + 300]
       and "_set_iface_stopped(iface, False)" in snap[i_clear:i_clear + 250] and "_set_iface_stopped" not in snap[i_down:i_clear], (i_down, i_clear))
 P = open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read()
-check("[3] …and the panel never auto-starts a stopped interface", 'if not _e.get("down") or _e.get("stopped") or _ov.get("system"):' in P)
+check("[3] …and the panel never auto-starts a stopped interface", 'if not _e.get("down") or _e.get("stopped"):' in P)   # mesh links no longer skipped there (q189 MESH-1)
 
 print()
 if FAILS:
