@@ -54,7 +54,11 @@ const STORE_KEY = "swg-logview";
 // shows and nothing can untick.
 const migrate = src => [...new Set(src.flatMap(x => x === "iface:*" ? ["iface:*", "mesh:*"] : x.startsWith("iface:swg_") ? ["mesh:" + x.slice(6)] : [x]))];
 try { const s = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); if (s && Array.isArray(s.nodes) && Array.isArray(s.src)) Object.assign(LV, { nodes: s.nodes, src: s.v === 2 ? s.src : migrate(s.src), wrap: !!s.wrap }); } catch (_) { /* private mode */ }
-const remember = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 2, nodes: LV.nodes, src: LV.src, wrap: LV.wrap })); } catch (_) { /* private mode */ } };
+// A deep link's servers and sources are a pending filter (LOGS-PLAN §5): the operator's own choice is kept here while it is up —
+// what is remembered — and comes back when it closes (q189 SPA-9: one click on a node page's logs icon replaced it for good).
+let _own = null;
+const remember = () => { const f = _own || LV;
+  try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 2, nodes: f.nodes, src: f.src, wrap: LV.wrap })); } catch (_) { /* private mode */ } };
 
 const panelBare = () => { const lp = (Store.panelSettings || {}).log_panel || {}; return !lp.docker && lp.err !== "nixos"; };
 function facetDefaults() {
@@ -77,9 +81,10 @@ export const NODE_SOURCES = ["noded", "dns", "sni", "relay:*", "mesh:*", "turn:*
 export const TURN_SOURCES = ["turn:*"];             // a node's turn proxies, WDTT and csqtt — every instance
 /* Open the viewer from elsewhere (the node page, a failing turn proxy): full screen over that page, with these facets. */
 export function openLogs({ nodes, src } = {}) {
+  if (!_own) _own = { nodes: LV.nodes, src: LV.src };
   if (nodes) LV.nodes = nodes;
   if (src) LV.src = src;
-  LV.gen++; remember();
+  LV.gen++;
   openLogOverlay();
 }
 
@@ -647,7 +652,8 @@ export const openLogOverlay = () => showOverlay(false);
 // …and that Stop stops even with the Settings card open underneath, which keeps a viewer mounted — so it cannot wait for the
 // last unmount (q189 SPA-1: the card streamed on, polling every 1.5 s, after the operator pressed Stop)
 const closeLogOverlay = () => { if (!LV.card) { closeReq(); LV.live = false; }
-  LV.overlay = false; bump(); const b = _back; _back = null;
+  LV.overlay = false; if (_own) { Object.assign(LV, _own); _own = null; LV.gen++; }   // a deep link's choice goes with it
+  bump(); const b = _back; _back = null;
   setTimeout(() => { const el = b && b.isConnected ? b : document.querySelector(".lv-fs"); if (el) el.focus(); }, 0); };   // the card's icon is drawn anew
 export function LogOverlay() {
   const [, setV] = useState(0);
