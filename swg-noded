@@ -18467,7 +18467,8 @@ def _dturn_download(svc, owner, pin=None):
         return "no turn-proxy build for this architecture (" + os.uname().machine + ") — forks publish amd64/arm64 only"
     tag, want = _turn_pin(pin)                            # panel checksum gate: pin the tag + expected sha256 (both '' → unverified)
     binp = _turn_bin_local(svc)   # shared per-fork slot
-    if os.path.exists(binp):       # already have this fork's binary (another instance, or a prior install) → REUSE,
+    # executable, not merely there: an older build's cut download left a partial 0644 file here (1.8.9 qualification NODED-2)
+    if os.access(binp, os.X_OK):   # already have this fork's binary (another instance, or a prior install) → REUSE,
         return ""                  # no GitHub hit. (A panel Reinstall removes binp first, so it still forces a fresh fetch.)
     try: os.makedirs(os.path.dirname(binp), exist_ok=True)
     except OSError as e: return "mkdir: " + str(e)
@@ -18479,18 +18480,27 @@ def _dturn_download(svc, owner, pin=None):
             _turn_write_version(svc, tag or _turn_resolve_tag(owner)); return ""
     if _turn_panel_fetch(owner, tag, arch, binp, want):  # P2: pull the (verified) binary from the panel mirror first — censorship-robust
         _turn_write_version(svc, tag or _turn_resolve_tag(owner)); return ""
-    err = "binary download failed"
+    # Beside it, then renamed in whole (as _swg_release_get, NR-3): curl onto binp itself left a cut transfer's partial — or,
+    # after --retry, empty — 0644 file there, which every later install of the fork reused: its containers crash-looped
+    # while the install read ok (1.8.9 qualification NODED-2). Per instance, as _dturn_force_download's: the background
+    # ensure and an install can fetch one fork at once.
+    err, tmp = "binary download failed", binp + ".dl." + _turn_inst(svc)
     for url in _turn_dl_urls(owner, arch, tag):          # GitHub-direct fallback (mirror miss / no pin / mixed-version)
         r = run(["curl", "-4", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
-                 "--retry-delay", "3", "--retry-all-errors", url, "-o", binp], timeout=320)
+                 "--retry-delay", "3", "--retry-all-errors", url, "-o", tmp], timeout=320)
         if r.returncode == 0:
-            if not _turn_sha_ok(binp, want):             # downloaded but doesn't match the panel's hash → delete + refuse (never chmod/exec)
-                with contextlib.suppress(OSError): os.remove(binp)
+            if not _turn_sha_ok(tmp, want):              # downloaded but doesn't match the panel's hash → delete + refuse (never chmod/exec)
+                with contextlib.suppress(OSError): os.remove(tmp)
                 return "checksum mismatch — refusing to run unverified turn binary (want " + want[:12] + "…)"
-            with contextlib.suppress(OSError): os.chmod(binp, 0o755)
+            try:
+                os.chmod(tmp, 0o755); os.replace(tmp, binp)
+            except OSError as e:
+                with contextlib.suppress(OSError): os.remove(tmp)
+                return ("could not put the turn binary in place: " + str(e))[:160]
             _turn_write_version(svc, tag or _turn_resolve_tag(owner))   # record which release tag we just fetched
             return ""
         err = (r.stderr or "binary download failed").strip()[:160]
+    with contextlib.suppress(OSError): os.remove(tmp)    # what a cut transfer left
     return err
 
 def _dturn_force_download(svc, owner, pin=None):
