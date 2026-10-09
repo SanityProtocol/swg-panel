@@ -54,6 +54,12 @@
        signatures, read as the kernel compares them, take the bootstrap query, the plain one and an answer and leave a
        non-BitTorrent payload alone; and where `sudo -n` exists the real kernel flags the bootstrap's and the plain
        query's sources and not the other one
+  [27] 1.8.9 qualification V-FEAT-B DN-5: a source arriving from a Linux BRIDGE on the node (a Docker container: many users
+       behind one address) is never flagged — neither by the fan-out nor by a signature hit — and is judged packet by
+       packet like the node's own programs; every mode carries the exclusion, as a meta key (no set of names); and where
+       `sudo -n` exists, on the real kernel: a bridge container's 60 destinations and one user's DHT packet flag nothing,
+       its established session keeps flowing, its DHT packet is still dropped — while WireGuard-like users on a plain veth
+       are flagged as before
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
      --perturb    plant each old behaviour in turn → every one must go RED (exit 0 when all are caught)
@@ -112,6 +118,8 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "mech-twice":   ('        for ln in mech.splitlines():                              # ONE rule carries', '        for ln in (run(["nft", "list", "table", "inet", "swg_mech"]).stdout or "").splitlines():   # ONE rule carries'),
     "ips-coupled":  ('                out.setdefault("*", {})["torrent_ips"] = [str(i) for i in ips]', '                out["*"]["torrent_ips"] = [str(i) for i in ips]'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
+    "bridge-flagged": ("""    nf = ("ip saddr != @nofan " if nofan else "") + 'meta iifkind != "bridge" '\n""",
+                       """    nf = "ip saddr != @nofan " if nofan else ""\n"""),
     "dht-bs":       ('    ("dht",    "udp", "@ih,0,128 0x64313a6164323a6273693165323a6964"),   # d1:ad2:bsi1e2:id\n', ''),
     "p2p-ok-on-fail": ('            _P2P.update(on=True, state="error",', '            _P2P.update(on=True, state="ok" if ih else "degraded",'),
     "p2p-log-whole":  ('        if r.returncode != 0 and logged:', '        if False:'),
@@ -247,6 +255,82 @@ def _wire_dht(table):
         os.unlink(f.name)
     out = {ln.split(" ", 1)[0]: ln.split(" ", 1)[1].strip() for ln in (r.stdout or "").splitlines() if " " in ln}
     return None if "FLAG" not in out else (out["FLAG"].split(), out.get("DHT", ""))
+
+
+# [27] a Docker-like bridge (kind bridge) with a container netns behind it, and WireGuard-like users on a plain veth: what is
+# flagged, how many packets of the container's established session leave, whether the DHT packets leave.
+WIRE_BRIDGE = r'''# DN-5 on the real kernel, in throwaway namespaces: router R (this table + a postrouting probe that counts what leaves),
+# a Docker-like bridge "docker0" (kind bridge) with a container netns C behind it (172.17.0.2 and .3 = "many users behind
+# one container"), and a WireGuard-like client W on a plain veth (10.9.0.2 and .3 = one user per address, the control).
+set -u
+ip link set lo up || { echo SETUP-FAILED lo; exit 0; }
+unshare -n sleep 30 & CPID=$!
+unshare -n sleep 30 & WPID=$!
+sleep 0.3
+ip link add docker0 type bridge && ip addr add 172.17.0.1/16 dev docker0 && ip link set docker0 up \
+  && ip link add vethh type veth peer name vethc && ip link set vethc netns "$CPID" && ip link set vethh master docker0 && ip link set vethh up \
+  && ip link add vr type veth peer name vc && ip link set vc netns "$WPID" && ip addr add 10.9.0.1/24 dev vr && ip link set vr up \
+  && ip link add eth0 type dummy && ip addr add 192.0.2.1/24 dev eth0 && ip link set eth0 up \
+  && ip route add default via 192.0.2.254 dev eth0 onlink && sysctl -qw net.ipv4.ip_forward=1 \
+  && nsenter -t "$CPID" -n sh -c 'ip link set lo up && ip addr add 172.17.0.2/16 dev vethc && ip addr add 172.17.0.3/16 dev vethc && ip link set vethc up && ip route add default via 172.17.0.1' \
+  && nsenter -t "$WPID" -n sh -c 'ip link set lo up && ip addr add 10.9.0.2/24 dev vc && ip addr add 10.9.0.3/24 dev vc && ip link set vc up && ip route add default via 10.9.0.1' \
+  || { echo SETUP-FAILED net; kill $CPID $WPID; exit 0; }
+nft -f "$1" || { echo SETUP-FAILED nft; kill $CPID $WPID; exit 0; }
+nft -f - <<'NFT' || { echo SETUP-FAILED probe; kill $CPID $WPID; exit 0; }
+table inet leave {
+  chain post {
+    type filter hook postrouting priority 200; policy accept;
+    ip daddr 198.51.100.200 udp dport 50000 counter name est
+    ip daddr 198.51.100.100 udp dport 6881 counter name dhtc
+    ip daddr 198.51.100.101 udp dport 6881 counter name dhtw
+  }
+  counter est {}
+  counter dhtc {}
+  counter dhtw {}
+}
+NFT
+SEND='
+import os, socket, sys
+who, what = sys.argv[1], sys.argv[2]
+def udp(src, sport=0):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((src, sport)); return s
+if what == "est":            # one user'"'"'s long session (an established flow: 6 packets)
+    s = udp(who, 40000)
+    for i in range(int(sys.argv[3])): s.sendto(b"x" * 40, ("198.51.100.200", 50000))
+if what == "fan":            # the other users: 60 new high-port destinations in a minute
+    s = udp(who)
+    for i in range(60): s.sendto(b"\x00" * 40, ("198.51.100.%d" % (1 + i), 51413))
+if what == "dht":            # one user'"'"'s DHT get_peers
+    s = udp(who); s.sendto(b"d1:ad2:id20:" + os.urandom(20) + b"9:info_hash20:" + os.urandom(20) + b"e1:q9:get_peers1:t2:aa1:y1:qe",
+                          ("198.51.100.%s" % sys.argv[3], 6881))
+'
+nsenter -t "$CPID" -n python3 -c "$SEND" 172.17.0.2 est 6
+nsenter -t "$CPID" -n python3 -c "$SEND" 172.17.0.2 fan
+nsenter -t "$CPID" -n python3 -c "$SEND" 172.17.0.2 est 1
+nsenter -t "$CPID" -n python3 -c "$SEND" 172.17.0.3 dht 100
+nsenter -t "$WPID" -n python3 -c "$SEND" 10.9.0.2 fan
+nsenter -t "$WPID" -n python3 -c "$SEND" 10.9.0.3 dht 101
+sleep 0.3
+echo "FLAG $(nft list set inet swg_p2p flag | grep -o '[0-9]*\.[0-9]*\.[0-9]*\.[0-9]* timeout' | grep -o '^[0-9.]*' | sort | tr '\n' ' ')"
+echo "EST $(nft list counter inet leave est | grep -o 'packets [0-9]*' | grep -o '[0-9]*')"
+echo "DHTOUT container=$(nft list counter inet leave dhtc | grep -o 'packets [0-9]*' | grep -o '[0-9]*') client=$(nft list counter inet leave dhtw | grep -o 'packets [0-9]*' | grep -o '[0-9]*')"
+echo "COUNTERS $(nft list counters table inet swg_p2p | grep -B1 'packets' | grep -o 'counter [a-z_]*\|packets [0-9]*' | paste -sd' ')"
+kill $CPID $WPID 2>/dev/null
+'''
+
+
+def _wire_bridge(table):
+    import subprocess as sp
+    with tempfile.NamedTemporaryFile("w", suffix=".nft", delete=False) as f:
+        f.write(table)
+    try:
+        r = sp.run(["sudo", "-n", "unshare", "-n", "bash", "-s", f.name], input=WIRE_BRIDGE, capture_output=True, text=True, timeout=90)
+    except Exception:
+        return None
+    finally:
+        os.unlink(f.name)
+    out = {ln.split(" ", 1)[0]: ln.split(" ", 1)[1].strip() if " " in ln else "" for ln in (r.stdout or "").splitlines()}
+    return None if "FLAG" not in out else out
 
 
 # What nft prints when the kernel refuses one rule of a batch — here the hit line's `log` on a kernel without nft_log /
@@ -597,6 +681,30 @@ def run_checks(src):
                "(got flag %s, dht %s)" % (got[0], got[1]))
     else:
         print("  SKIPPED [26] real-kernel DHT — no `sudo -n` here")
+
+    # [27] V-FEAT-B DN-5 — a bridge source (a container: many users behind one address) is never flagged
+    for k, tb in tabs.items():
+        if k == "legacy":
+            continue                                          # cls is scoped to the strict subnets there: a container is not in them
+        hitl = [l for l in tb.splitlines() if "add @flag { ip saddr timeout 10m }" in l and "meter p2pfan" not in l]
+        fanl = [l for l in tb.splitlines() if "meter p2pfan" in l]
+        ok(hitl and all('meta iifkind != "bridge" ' in l for l in hitl) and fanl and all('meta iifkind != "bridge" ' in l for l in fanl),
+           "[27] %s: neither a signature hit nor the fan-out flags a source that arrived from a bridge" % k)
+        ok("ifname" not in tb.split("chain")[0] and "iifname" not in tb,
+           "[27] %s: by a meta key, not a set of interface names (the host's older nft must read what a Docker node writes)" % k)
+    if _sp23.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and _sp23.run(["which", "unshare"], capture_output=True).returncode == 0:
+        got = _wire_bridge(tabs["block"])
+        if got is None:
+            print("  SKIPPED [27] real-kernel bridge — the throwaway namespaces could not be set up here")
+        else:
+            fl = got.get("FLAG", "").split()
+            ok("172.17.0.2" not in fl and "172.17.0.3" not in fl,
+               "[27] on the real kernel, Block: a bridge container's 60 destinations and one user's DHT packet flag nothing (flag: %s)" % fl)
+            ok(got.get("EST") == "7", "[27] …its established session keeps flowing (%s of 7 packets left)" % got.get("EST"))
+            ok("container=0" in got.get("DHTOUT", ""), "[27] …its DHT packet is still dropped (%s)" % got.get("DHTOUT"))
+            ok("10.9.0.2" in fl and "10.9.0.3" in fl, "[27] …while WireGuard-like users on a plain veth are flagged as before (%s)" % fl)
+    else:
+        print("  SKIPPED [27] real-kernel bridge — no `sudo -n` here")
 
     # [18] forwarding + loose rp_filter with only a P2P route
     sc = []
