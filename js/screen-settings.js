@@ -2287,15 +2287,19 @@ export function PanelSettingsScreen() {
   // node's list that named it to Direct and re-derives `default_exit` (prune_exit_refs, derive_default_exit) — a draft
   // still holding the old rule then posts an exit the server no longer has, and the whole section comes back refused
   // until the operator finds that rule (code review, P3). So the list is re-based with the exits: taken from the server
-  // where it was not being edited, and pruned the same way in the draft where it was.
+  // where it was not being edited, and pruned the same way in the draft where it was. The torrent route too (prune_p2p_refs
+  // makes a route through that exit Block): left in the draft, every later save of the node was refused until a reload,
+  // "torrents can only be routed through one of this node's exits" (q189 SPA-2 / PR-7).
   const rebaseDefault = (nid, fresh) => {
     const live = new Set((fresh.exits || []).map(x => String(x.id)));
     setNodeEdits(e => { const cur = e[nid] || {}, o = orig[nid] || {};
       let dr = cur.default_routing;
       if (Array.isArray(dr)) dr = eq(dr, o.default_routing) ? fresh.default_routing
         : dr.map(r => r && r.action === "dev" && !live.has(String(r.exit_id || "")) ? (({ exit_id, ...x }) => ({ ...x, action: "direct" }))(r) : r);
-      return { ...e, [nid]: { ...cur, default_routing: dr, default_exit: eq(cur.default_exit, o.default_exit) ? fresh.default_exit : cur.default_exit } }; });
-    setOrig(o => ({ ...o, [nid]: { ...(o[nid] || {}), default_routing: fresh.default_routing, default_exit: fresh.default_exit } }));
+      const p2p = eq(cur.p2p, o.p2p) ? fresh.p2p
+        : cur.p2p && cur.p2p.action === "dev" && !live.has(String(cur.p2p.exit_id || "")) ? { action: "block" } : cur.p2p;
+      return { ...e, [nid]: { ...cur, default_routing: dr, default_exit: eq(cur.default_exit, o.default_exit) ? fresh.default_exit : cur.default_exit, p2p } }; });
+    setOrig(o => ({ ...o, [nid]: { ...(o[nid] || {}), default_routing: fresh.default_routing, default_exit: fresh.default_exit, p2p: fresh.p2p } }));
   };
   const [saved, setSaved] = useState(0);   // timestamp; the green "All settings saved" flash shows while now < saved
   // Access & TLS reports its {dirty,busy,msg,run} up here so the shared footer drives its Save + status like every
