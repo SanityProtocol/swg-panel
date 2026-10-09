@@ -784,20 +784,17 @@ sudo nixos-rebuild switch --flake /etc/nixos#myhost
 sudo rm -rf /var/lib/swg-noded /etc/amnezia/amneziawg /etc/wireguard /etc/swg-agent \
             /opt/swg-wdtt /opt/swg-csqtt /opt/vk-turn-proxy
 # журнал нативного варианта (сначала остановите его journald, иначе он снова создаст каталог)
-sudo systemctl stop systemd-journald@swg-node.service systemd-journald@swg-node.socket \
-                    systemd-journald-varlink@swg-node.socket 2>/dev/null
+sudo systemctl stop 'systemd-journald@swg-node.*' 'systemd-journald-varlink@swg-node.*'
 sudo rm -rf /var/log/journal/*.swg-node
 ```
 
-**Что ядро держит до перезагрузки.** Пересборка останавливает демон, но не то, что он настроил: интерфейсы (ниже),
-таблицы nft swg (`inet swg_smart`, `swg_p2p`, `swg_reach`, `swg_mech`), его правила маршрутизации (pref 6880, 6890 и
-правила 7000 с таблицей 7000) и его правила NAT продолжают действовать — а NixOS снова выключает `net.ipv4.ip_forward`,
-так что оставленный интерфейс перестаёт передавать трафик. Перезагрузка убирает всё это; убрать таблицы и правила сразу:
+**Что ядро держит до перезагрузки.** Пересборка останавливает демон, но не то, что он настроил: туннельные интерфейсы,
+таблицы nft swg (`inet swg_*` — среди них защита от торрентов и доступ к устройствам, они продолжают действовать на
+трафик), его правила и таблицы маршрутизации и его правила NAT остаются — а NixOS снова выключает `net.ipv4.ip_forward`,
+так что оставленный интерфейс перестаёт передавать трафик. Перезагрузка убирает всё это; таблицы можно убрать сразу:
 
 ```bash
-for t in swg_smart swg_p2p swg_reach swg_mech; do sudo nft delete table inet "$t" 2>/dev/null; done
-for p in 6880 6890; do sudo ip rule del pref "$p" 2>/dev/null; done
-while sudo ip rule del pref 7000 2>/dev/null; do :; done; sudo ip route flush table 7000
+for t in $(sudo nft list tables inet | awk '$3 ~ /^swg_/ {print $3}'); do sudo nft delete table inet "$t"; done
 ```
 
 Контейнерный узел может оставить после себя интерфейсы-пустышки с адресами — его

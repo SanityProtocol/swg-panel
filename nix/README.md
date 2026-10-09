@@ -770,20 +770,17 @@ default here anyway: those files are the node's identity.
 sudo rm -rf /var/lib/swg-noded /etc/amnezia/amneziawg /etc/wireguard /etc/swg-agent \
             /opt/swg-wdtt /opt/swg-csqtt /opt/vk-turn-proxy
 # the native arm's journal (its journald stopped first, or it writes the directory again)
-sudo systemctl stop systemd-journald@swg-node.service systemd-journald@swg-node.socket \
-                    systemd-journald-varlink@swg-node.socket 2>/dev/null
+sudo systemctl stop 'systemd-journald@swg-node.*' 'systemd-journald-varlink@swg-node.*'
 sudo rm -rf /var/log/journal/*.swg-node
 ```
 
-**What the kernel keeps until a reboot.** The rebuild stops the daemon, not what it set up: the interfaces (below), swg's
-nft tables (`inet swg_smart`, `swg_p2p`, `swg_reach`, `swg_mech`), its policy-routing rules (prefs 6880, 6890 and the 7000
-ones, with table 7000) and its NAT rules stay in force — and NixOS turns `net.ipv4.ip_forward` back off, so an interface
-you keep stops carrying traffic. A reboot clears all of it; to clear the tables and rules now:
+**What the kernel keeps until a reboot.** The rebuild stops the daemon, not what it set up: the tunnel interfaces, swg's
+nft tables (`inet swg_*` — the torrent guard and device access among them, still acting on traffic), its policy-routing
+rules and tables, and its NAT rules stay — and NixOS turns `net.ipv4.ip_forward` back off, so an interface you keep
+stops carrying traffic. A reboot clears all of it; the tables can go now:
 
 ```bash
-for t in swg_smart swg_p2p swg_reach swg_mech; do sudo nft delete table inet "$t" 2>/dev/null; done
-for p in 6880 6890; do sudo ip rule del pref "$p" 2>/dev/null; done
-while sudo ip rule del pref 7000 2>/dev/null; do :; done; sudo ip route flush table 7000
+for t in $(sudo nft list tables inet | awk '$3 ~ /^swg_/ {print $3}'); do sudo nft delete table inet "$t"; done
 ```
 
 A container node can leave address-carrying husk interfaces behind — its userspace datapath devices
