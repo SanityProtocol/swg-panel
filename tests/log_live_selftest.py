@@ -64,6 +64,7 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
      ackedstale   a node that answered once reads "ok" for good, even after it stops syncing
      offlineoff   an answered node that goes offline loses its clock offset (its lines misplaced)
      backfillcut  a slow (cold) journal's backfill tail goes through the flood cap and reads as skipped
+     acmefile     docker: the renewal loop's acme lines go only into a file already there, at any level (e66018f, DN-10)
 """
 import collections, gzip, importlib.machinery, importlib.util, io, json, os, re, socket, subprocess, sys, tempfile
 import threading, time, urllib.error, urllib.request
@@ -161,6 +162,12 @@ PLANTS = {   # (program, anchor, replacement)
     "deepjson": ("panel", '''        except Exception:\n            code, obj = 400, {"ok": False, "error": "invalid body", "code": "bad_request"}''',
                  '''        except (ValueError, zlib.error):\n            code, obj = 400, {"ok": False, "error": "invalid body", "code": "bad_request"}'''),
     "curstale": ("panel", '''        elif cur is not None:''', '''        elif False:'''),
+    "acmefile": ("entry", '''  local f=/var/lib/swg-panel/log/swg-panel.log lvl
+  lvl="$(sed -n 's/.*"log_level"[[:space:]]*:[[:space:]]*"\\([a-z]*\\)".*/\\1/p' /var/lib/swg-panel/panel-settings.json 2>/dev/null | sed -n 1p)"
+  case "$lvl:$1" in off:*|error:[WI]|warning:I) return 0;; esac
+  mkdir -p "${f%/*}" 2>/dev/null || true; printf '%s %s acme: %s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$f" 2>/dev/null || true''',
+                 '''  local f=/var/lib/swg-panel/log/swg-panel.log
+  [ -f "$f" ] && printf '%s %s acme: %s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$f" 2>/dev/null || true'''),
     "backfillcut": ("block", '''            if el < LIVE_BACKFILL_S or (self.p is not None and self.jback and el < LIVE_BACKFILL_WAIT):''',
                     '''            if el < LIVE_BACKFILL_S:'''),
     "noselect": ("panel", "import secrets\nimport select\nimport shutil\n", "import secrets\nimport shutil\n"),
@@ -874,8 +881,29 @@ def sec7():
           "getent group systemd-journal" in SRC["install"] and "SWG_JOURNAL_DROPIN" in SRC["install"]
           and '"$_pdd/swg-journal.conf"' in SRC["uninstall"] and 'SupplementaryGroups = [ "systemd-journal" ];' in SRC["nix"]
           and "getent group systemd-journal" in SRC["common"])
-    check("[7] docker: the renewal loop's outcome reaches the panel's file, only when that file exists (Off deleted it)",
-          '[ -f "$f" ] && printf' in SRC["entry"] and SRC["entry"].count("panel_log ") >= 2)
+    # docker: the renewal loop's outcome in the panel's file — at the panel's level, created when the panel has not
+    # written it yet (after Off → Warnings, or a rotation, a quiet panel's file is not there: the warning was dropped), never
+    # at Off (the panel deleted it), and no Info line below Info (1.8.9 qualification DN-10). The real panel_log, driven.
+    m = re.search(r"^panel_log\(\)\{.*?^\}\n", SRC["entry"], re.S | re.M)
+    pl = m.group(0) if m else ""
+    def acme(level, letter, there=False):
+        d = tempfile.mkdtemp(prefix="acme-", dir=TMP)
+        if there:   # the panel's own file, already written
+            os.makedirs(os.path.join(d, "log")); open(os.path.join(d, "log", "swg-panel.log"), "w").write("P\n")
+        if level is not None:
+            open(os.path.join(d, "panel-settings.json"), "w").write(json.dumps({"log_level": level, "x": 1}, indent=2) + "\n")
+        subprocess.run(["sh", "-c", "set -eu\n" + pl.replace("/var/lib/swg-panel/", d + "/") + 'panel_log %s "renewal check"\necho done' % letter],
+                       capture_output=True, text=True, timeout=30)
+        f = os.path.join(d, "log", "swg-panel.log")
+        return open(f).read() if os.path.exists(f) else None
+    w = acme("warning", "W")
+    check("[7] docker: the renewal warning reaches the panel's file at Warnings, though the panel has not written it yet",
+          w is not None and re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ W acme: renewal check\n$", w) is not None
+          and SRC["entry"].count("panel_log ") >= 2, w)
+    check("[7] …an Info line not at Warnings or Errors, a warning not at Errors, nothing at all at Off (the panel deleted the file)",
+          acme("warning", "I") is None and acme("error", "I") is None and acme("error", "W") is None and acme("off", "W") is None
+          and acme("error", "I", there=True) == "P\n" and acme("warning", "I", there=True) == "P\n")
+    check("[7] …and at Info (or no level saved yet) both go in", acme("info", "I") is not None and acme(None, "I") is not None)
     P = load("panel")
     fj = os.path.join(TMP, "fakejournal-panel")
     open(fj, "w").write("#!/usr/bin/env python3\nimport json, sys, time\nprint(json.dumps({'__CURSOR': 'p1', '__REALTIME_TIMESTAMP': '5',"
