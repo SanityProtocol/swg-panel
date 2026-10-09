@@ -52,14 +52,19 @@ detection, `ip` and the terminal are stubbed.
       the bare installers' ask / ask_yn helpers, which with no terminal printed nothing at all (a node's dry run took
       "Verify the panel's TLS certificate?" in silence); their ask_valid / ask_choice and the Docker helpers already did.
 
+  [s] (1.8.9 qualification FN-2(a)) the summary lists a bare host turn proxy by the address its clients DIAL (SWG_DIAL —
+      a DDNS name, an address behind NAT), not its bind ("0.0.0.0:56000"); one with no SWG_DIAL by its listen, as before
+
 Run: python3 tests/installer_lines_selftest.py      (0 = pass)
      --perturb   the shipped lines planted back → RED
+     --perturb-dial   the summary reads SWG_LISTEN alone again (e66018f) → RED on [s] only
 """
 import json, os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
+PERTURB_DIAL = "--perturb-dial" in sys.argv
 H = open(os.path.join(ROOT, "install-host.sh"), encoding="utf-8").read()
 N = open(os.path.join(ROOT, "install-node.sh"), encoding="utf-8").read()
 C = open(os.path.join(ROOT, "lib/common.sh"), encoding="utf-8").read()
@@ -542,7 +547,32 @@ check("[r] uninstall.sh: with no terminal a question says the default it took",
 out = run(AYN + 'KEEP=y; ask_yn "  Keep the configs?" n KEEP; echo "KEEP=$KEEP"\n', setsid=True)
 check("[r] …and a given answer is said as given", "  Keep the configs? yes  (given — not asked)" in out and "KEEP=yes" in out, out)
 
+print("\n[s] the summary names a host turn proxy by what its clients dial (FN-2(a))")
+SNB = fn(C, "summary_node_block")
+_dial = ("        lis=\"$(sed -n 's/^SWG_DIAL=//p' \"/opt/vk-turn-proxy/$inst/turn.env\" 2>/dev/null | sed -n 1p || true)\"\n"
+         "        [ -n \"$lis\" ] || lis=")
+assert SNB.count(_dial) == 1, "the dial read is not where [s] reads it — would FALSE-PASS"
+if PERTURB_DIAL:
+    SNB = SNB.replace(_dial, "        lis=")
+_st = tempfile.mkdtemp(prefix="instl-sum-")
+for _n, _env in (("wings-56000", "SWG_LISTEN=0.0.0.0:56000\nSWG_DIAL=home.ddns.net:56000\nSWG_CONNECT=127.0.0.1:51820\n"),
+                 ("anton-56001", "SWG_LISTEN=203.0.113.7:56001\nSWG_CONNECT=127.0.0.1:51821\n")):
+    os.makedirs(os.path.join(_st, "units"), exist_ok=True); os.makedirs(os.path.join(_st, "opt", _n))
+    open(os.path.join(_st, "units", "vk-turn-proxy-%s.service" % _n), "w").write("x")
+    open(os.path.join(_st, "opt", _n, "turn.env"), "w").write(_env)
+_snb = SNB.replace("/etc/systemd/system/vk-turn-proxy-", _st + "/units/vk-turn-proxy-").replace("/opt/vk-turn-proxy/", _st + "/opt/")
+out = run('_sum_node_ep(){ :; }; _sum_node_purl(){ :; }; _sum_note(){ :; }; _sum_iface_row(){ :; }; _sum_wdtt_block(){ :; }\n'
+          '_sum_csqtt_block(){ :; }; node_reconfig_block(){ :; }; _sum_fwd_iface(){ :; }; _SUM_DDIR=/nonexistent\n%s%s'
+          'summary_node_block baremetal no\n' % (fn(C, "_sum_turn_row"), _snb))
+check("[s] a proxy behind NAT / on a DDNS name: listed by the name its clients dial, not its bind",
+      "vk-turn-proxy-wings-56000 home.ddns.net:56000 → 127.0.0.1:51820" in out and "0.0.0.0:56000" not in out, out)
+check("[s] …one with no dial host of its own: by its listen, as before", "vk-turn-proxy-anton-56001 203.0.113.7:56001 → 127.0.0.1:51821" in out, out)
+
 print()
+if PERTURB_DIAL:
+    _red = [f for f in FAILS if f.startswith("[s]")]
+    print("perturb-dial: %s" % ("RED as it must be (%d), all [s]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if FAILS:
     print("FAIL (%d): %s" % (len(FAILS), "; ".join(FAILS)))
     sys.exit(1)
