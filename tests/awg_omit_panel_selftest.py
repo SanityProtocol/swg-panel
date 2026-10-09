@@ -72,11 +72,17 @@ open(BASEF, "w").write(subprocess.run(["git", "-C", ROOT, "show", BASE + ":swg-p
                                       text=True, check=True).stdout)
 
 RUNNER = os.path.join(TMP, "run.py")
+# ⚠️ THE SEEDED BYTES ARE THE REQUESTS' ALONE. os.urandom was the seeded stream for every thread of the panel, and its
+# background threads draw from it too — an atomic write's uuid4 temp name (the ledger's writer, the client assets): when
+# one of them ran between two of the script's requests depended on the load, so the HeaderProtectionKey a create drew
+# did too, and "the base twice is identical" went red (1.8.9 qualification: about one suite run in three under load).
+# The script's requests run one after another, each in a handler thread: those draw the seeded stream, the rest real bytes.
 open(RUNNER, "w").write(r'''
-import os, random, runpy, sys
+import os, random, runpy, sys, threading
 random.seed(int(os.environ["OMIT_SEED"]))
 _r = random.Random(int(os.environ["OMIT_SEED"]) + 1)
-os.urandom = lambda n: _r.randbytes(n)
+_real = os.urandom
+os.urandom = lambda n: _r.randbytes(n) if "process_request" in threading.current_thread().name else _real(n)
 sys.argv = [sys.argv[1]]
 runpy.run_path(sys.argv[0], run_name="__main__")
 ''')
