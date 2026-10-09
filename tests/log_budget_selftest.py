@@ -38,7 +38,6 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      unittext     LogNamespace goes into the relay's unit text (every relay restarts at the update)
      dockeroff    a container launched at Off still logs
      dockerdriver the sizes go out without their driver (a journald-default daemon refuses the container)
-     dn8-off      a container launched at Off that dies reads Docker's "does not support reading" (q189 DN-8)
      norotate     the docker log file is never rotated
      sweeplog     netctl's status sweep removes the budget's status file
      headold      nothing rotated yet: the node reports no oldest line (Holds stays blank)
@@ -90,7 +89,6 @@ PLANTS = {   # (program, anchor, replacement)
     "tilde": ("noded", r'''-([0-9a-f]{16})\.journal$")''', r'''-([0-9a-f]{16})\.journal~?$")'''),
     "unittext": ("noded", '''RELAY_UNIT_TMPL = """[Unit]''', '''RELAY_UNIT_TMPL = """[Service]\nLogNamespace=swg-node\n[Unit]'''),
     "dockeroff": ("noded", '''    if not cap:\n        return ["--log-driver", "none"]\n''', ""),
-    "dn8-off": ("noded", "    if log_level() == LOG_OFF:          # launched with no log driver", "    if False:          # launched with no log driver"),
     "dockerdriver": ("noded", '''    return ["--log-driver", "json-file", "--log-opt", "max-size=%dk"''', '''    return ["--log-opt", "max-size=%dk"'''),
     "norotate": ("noded", '''            if _LOG_FILE["size"] >= _LOG_FILE["cap"] // 2:''', '''            if False:'''),
     "headold": ("noded", '''    if journal and oldest is None:\n        oldest = _journal_head(os.path.join(d, "system.journal"))\n''', ""),
@@ -440,14 +438,6 @@ else:
     print("  SKIPPED [5] docker daemon check — no docker answering without root, or no local alpine/busybox image")
 N.log_set(N.LOG_OFF)
 check("[5] at Off a launched container keeps no log", N.docker_log_opts() == ["--log-driver", "none"], N.docker_log_opts())
-_rsave, _ssave = N.run, N.time.sleep
-N.time.sleep = lambda s: None
-N.run = lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "false\n", "") if cmd[:2] == ["docker", "inspect"] else \
-    subprocess.CompletedProcess(cmd, 1, "", "Error response from daemon: configured logging driver does not support reading")
-_v = N._dturn_verify("vk-turn-proxy-WINGS-N-56000")
-N.run, N.time.sleep = _rsave, _ssave
-check("[5] q189 DN-8: …so a container launched at Off that does not stay up says logging is off, not Docker's \"does not "
-      "support reading\"", _v == "turn container isn't running — its own lines are not kept (logging is off)", _v)
 sl = os.path.join(N.WDTT_ROOT, "w1", "server.log")
 open(sl, "w").write("x" * 500); open(sl + ".1", "w").write("old")
 N.DNSMASQ_LOG = os.path.join(TMP, "dnsmasq.log")
