@@ -1767,8 +1767,13 @@ EOF
 # ⚠️ …SO WHETHER THE OPERATOR TURNED swg-sub OFF IS READ HERE, before this run writes its unit: one that existed and was
 # disabled and stopped stays so at the end (1.8.8 deferred #9). Read at the end, the unit written just below looked like
 # one — a FRESH install left swg-sub disabled and stopped, and served no subscription links (1.8.9 qualification F25).
+# ⚠️ …BUT ONE PARKED WITH ITS PANEL COMES BACK WITH IT. A Docker install's guard parks the bare panel and its swg-sub
+# together (guard_second_panel: `disable --now` both); going back to bare re-enables the panel below, and its swg-sub,
+# read as the operator's choice, stayed off "as it was" — every subscription link dead (1.8.9 qualification R2 INST-2).
+# Parked is update.sh's own test (ensure_sub_server: a parked panel's swg-sub is parked with it): one rule for both.
 _sub_off=no; [ -e "$PREFIX/etc/systemd/system/swg-sub.service" ] && ! $DRYRUN && ! systemctl is-enabled --quiet swg-sub 2>/dev/null \
-  && ! systemctl is-active --quiet swg-sub 2>/dev/null && _sub_off=yes
+  && ! systemctl is-active --quiet swg-sub 2>/dev/null \
+  && ! { [ -f "$PREFIX/etc/systemd/system/swg-panel-server.service" ] && bare_panel_parked; } && _sub_off=yes
 if [ -f "$PREFIX$SUB_DIR/swg-sub" ] && [ ! -e "$PREFIX/etc/systemd/system/swg-sub.service" ]; then write_sub_unit; run systemctl daemon-reload; fi
 
 # ───────────────────────── login + TLS + serve mode ─────────────────────────
