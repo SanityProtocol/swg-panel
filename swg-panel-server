@@ -27893,7 +27893,11 @@ def api(method, path, qs, body, deps):
                 _omit3 = (frozenset(k for k in AWG_FIELDS if k not in AWG3_FIELDS and k not in (ov.get("awg_params") or {})
                                     and k not in ("S1", "S2", "S3", "S4"))
                           if ov.get("awg_exact") else ())
-                ov["awg_params"] = awg3_full(ov.get("awg_params"), _rmeta.get("awg_params"), awg3_defaults(deps), omit=_omit3)
+                # …and a 3.1 field the 3.1 defaults (Settings → Interfaces) set to none stays out, as a 3.1 create leaves it
+                # out: the defaults' hint promises both, and the Edit sheet's flipped cell shows that "-". A value this record
+                # holds for it (typed over the "-" in this Save) is kept. 1.8.9 qualification CL-F1: drawn over in silence.
+                ov["awg_params"] = awg3_full(ov.get("awg_params"), _rmeta.get("awg_params"), awg3_defaults(deps),
+                                             omit=frozenset(_omit3) | (awg3_omitted(deps) - set(ov.get("awg_params") or {})))
                 if _omit3:
                     _bad = awg_rules(ov["awg_params"], iface)
                     if _bad:
@@ -28162,8 +28166,11 @@ def api(method, path, qs, body, deps):
             _no3 = awg_gen_refusal((deps.get("node_snaps") or {}).get(nid), nodes[nid].get("name") or nid)
             if _no3:
                 return 400, {"ok": False, **_no3, "code": "bad_request"}
-            _awgput, _e3 = awg3_check(awg3_full(_awgput, None, awg3_defaults(deps), omit=_omit or (
-                frozenset(k for k in AWG_FIELDS if k not in AWG3_FIELDS and k not in _awgput) if _exact else ())))
+            # …and a RECREATE taken to 3.1 (its sheet's version switch) leaves out a 3.1 field the 3.1 defaults set to none, as
+            # the switch does, unless its record holds a value (CL-F1; a fresh create's `_omit` already has them)
+            _awgput, _e3 = awg3_check(awg3_full(_awgput, None, awg3_defaults(deps), omit=(_omit or (
+                frozenset(k for k in AWG_FIELDS if k not in AWG3_FIELDS and k not in _awgput) if _exact else frozenset()))
+                | (awg3_omitted(deps) - set(_awgput))))
             if _e3:
                 return 400, {"ok": False, **_e3, "code": "bad_request"}
             _bl = turn_awg3_blockers(deps, nodes, nid, {req.get("listen_port")})   # a proxy left on this port by an older interface
