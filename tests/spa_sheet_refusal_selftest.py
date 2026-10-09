@@ -13,10 +13,15 @@ gone now — the panel judges, the sheet reports.
   [3] the mesh-link sheet: AWG 3.1 picked with S4 set to none in the link's own params — Save is pressed (no copy of the rule
       holds it), the panel refuses (mesh_omit_s_refusal), the sheet stays open with that sentence, the type pick and the cell
   [4] every other Save sheet sends first (sheetSend) — none closes before the panel answers (source)
+  [5] the WDTT and csqtt MANAGE sheets, run (q189 F22: the root's conversion passed `setBusy` there and never declared it —
+      a ReferenceError, so a valid title, ExecStart-params or listen-port Save made no POST, said nothing and stored nothing):
+      a title with a control character is sent, refused, and the sheet stays with the panel's sentence and the edit; valid
+      ExecStart params are sent, stored, and the sheet closes — no page exception on either
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
 Run: python3 tests/spa_sheet_refusal_selftest.py      (0 = pass)
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: iface-close | link-close | err-slot
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: iface-close | link-close | err-slot |
+                       wdtt-busy | csqtt-busy
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -53,6 +58,11 @@ PERTURBATIONS = {   # the served SPA with one fix undone
     "link-close": ("js/iface.js", "    const r = await sheetSend(() => api.connectionUpdate({",
                    "    closeModal(); const r = await sheetSend(() => api.connectionUpdate({"),
     "err-slot": ("js/ui.js", '${err ? html`<div class="formmsg err" role="alert">${err}</div>` : null}', ""),
+    # F22: each manage sheet's `busy` declaration taken out again (the line is the same in both; the next one tells them apart)
+    "wdtt-busy": ("js/turn.js", "  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);   // sheetSend holds Save while it sends (q189 F22)\n"
+                                "  // RAW-IP mode", "  const [msg, setMsg] = useState(null); const busy = false;\n  // RAW-IP mode"),
+    "csqtt-busy": ("js/turn.js", "  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);   // sheetSend holds Save while it sends (q189 F22)\n"
+                                 "  const newListen = (ipPickerVal(", "  const [msg, setMsg] = useState(null); const busy = false;\n  const newListen = (ipPickerVal("),
 }
 WEB = ROOT
 if PERTURB:
@@ -159,7 +169,9 @@ try:
                                                      "awg_params": rec.get("awg_params") or {}}}
         return {"hostname": name, "generated_at": int(time.time()), "noded_version": "1.8.9-beta", "kind": "baremetal", "interfaces": ifs,
                 "turn_proxies": [], "node_ips": [ip], "node_ifaces": ["eth0"],
-                "datapath": {"awg": {"gen": {"module": "3.1", "fallback": "3.1", "tools": "3.1", "disk": "3.1"}, "exact": 1}}}
+                "datapath": {"awg": {"gen": {"module": "3.1", "fallback": "3.1", "tools": "3.1", "disk": "3.1"}, "exact": 1}},
+                **(EXTRA if nid == A["id"] else {})}
+    EXTRA = {}   # [5]: the WDTT and csqtt servers node A reports, once the panel holds them
     AWG0 = {"awg0": {"peers": [], "meta": {"listen_port": 51820, "address": "10.60.0.1/24", "subnet": "10.60.0.0/24", "type": "awg",
                                            "public_key": base64.b64encode(b"a" * 32).decode(), "endpoint": "203.0.113.10:51820",
                                            "awg_params": {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": 20, "S2": 30, "H1": 1, "H2": 2, "H3": 3, "H4": 4}}}}
@@ -176,6 +188,19 @@ try:
     threading.Thread(target=keep_syncing, daemon=True).start()
     if "awg0" not in (nodes()[A["id"]].get("ifaces") or {}):
         bail("fixture: awg0 was not recorded from node A's report")
+    # [5]'s servers on node A, made the way the Turn proxies card makes them, then reported by the node
+    must(call("POST", "/api/wdtt/set", {"node": A["id"], "iface": "wdtt1", "listen": "203.0.113.10:56000", "wg_port": 56001, "fork": "amurcanov",
+                                        "wg_addr": "10.11.0.1/24", "title": "", "params": "", "raw": False, "block": []}), "WDTT server")
+    must(call("POST", "/api/csqtt/set", {"node": A["id"], "iface": "csqtt1", "listen": "203.0.113.10:56002", "tun_addr": "10.10.0.1/24",
+                                         "title": "", "params": "", "block": []}), "csqtt server")
+    _w, _c = nodes()[A["id"]]["wdtt"]["wdtt1"], nodes()[A["id"]]["csqtt"]["csqtt1"]
+    EXTRA.update(wdtt=[{"iface": "wdtt1", "service": "swg-wdtt-wdtt1", "active": "active", "listen": _w["listen"], "bind": _w["listen"],
+                        "wg_addr": _w.get("wg_addr") or "10.11.0.1/24", "wg_port": 56001, "fork": "amurcanov", "version": "1.2.4-3",
+                        "stopped": False, "params": "", "passwords": {}}],
+                 csqtt=[{"iface": "csqtt1", "service": "swg-csqtt-csqtt1", "active": "active", "listen": _c["listen"], "bind": _c["listen"],
+                         "tun_addr": "10.10.0.1/24", "kind": "csqtt", "fork": "csqtt", "version": "2.1.9-4", "line": "2.1", "stopped": False,
+                         "params": "", "passwords": {}}])
+    sync()
 
     br = Browser()
     MOD = "(async n => import(performance.getEntriesByType('resource').map(r => r.name).find(u => new RegExp('/js/' + n + '\\\\.js\\\\?v=').test(u))))"
@@ -279,6 +304,58 @@ try:
         o = iface_round(t2, "100")
         check("[1ru] «MTU — от 576 до 9200», in the open sheet", o.get("open") is True and "MTU — от 576 до 9200" in (o.get("msg") or []), o)
     guarded("[1ru]", s1ru)
+    # ── [5] the WDTT and csqtt manage sheets, run ──────────────────────────────────────────────────────────────────
+    print("\n[5] the WDTT and csqtt MANAGE sheets: a refused save stays with its edit, a valid one is stored and closes (F22)")
+    def manage_round(tab, rid, setjs):
+        """Open the manage sheet from its card, apply `setjs`, press Save; → what was sent, the sheet, and the page's exceptions."""
+        n0 = len(br.events)
+        o = tab.ev("(async () => {" + HELP + r"""
+          const calls = []; const of = window.fetch;
+          window.fetch = function (u, opt) { const c = { url: String(u), method: (opt && opt.method) || 'GET' }; calls.push(c);
+            return of.apply(this, arguments).then(r => { c.status = r.status; return r; }); };
+          try {
+            const card = document.querySelector('.ifcard.tp[data-rid="%s"]'); if (!card) return { err: 'no card' };
+            card.click(); await sleep(1200);
+            let sh = sheet(); if (!sh) return { err: 'no sheet' };
+            const lab = f => ((f.querySelector('label') || {}).textContent || '').replace(/\s+/g, ' ').trim();
+            const fieldRx = (sh, re) => [...sh.querySelectorAll('.field')].find(f => re.test(lab(f)));
+            const disc = re => { const b = [...sheet().querySelectorAll('button')].find(b => re.test(b.textContent) && !/^(Save|Cancel|Delete)/.test(b.textContent.trim())); if (b) b.click(); return !!b; };
+            %s
+            await sleep(400);
+            const b = save(); const enabled = !!b && !b.disabled; if (enabled) b.click();
+            await sleep(2500);
+            sh = sheet();
+            const ti = sh && fieldRx(sh, /^Title/), pa = sh && fieldRx(sh, /ExecStart/);
+            return { enabled, open: !!sh && /proxy/.test((sh.querySelector('h3') || {}).textContent || ''),
+                     msg: sh ? [...sh.querySelectorAll('.formmsg.err')].map(e => e.textContent.trim()) : [],
+                     title: ti ? ti.querySelector('input').value : null, params: pa ? (pa.querySelector('input, textarea') || {}).value : null,
+                     posts: calls.filter(c => c.method === 'POST').map(c => [c.url.replace(/^.*?(\/api\/)/, '/api/'), c.status]) };
+          } finally { window.fetch = of; }
+        })()""" % (rid, setjs), timeout=60)
+        exc = [((e["params"]["exceptionDetails"].get("exception") or {}).get("description") or e["params"]["exceptionDetails"].get("text", "")).split("\n")[0]
+               for e in br.events[n0:] if e.get("method") == "Runtime.exceptionThrown" and e.get("sessionId") == tab.s]
+        return o, exc
+    SET_TITLE = "const t = fieldRx(sh, /^Title/); typeInto(t.querySelector('input'), 'gate\\u0001title');"
+    SET_PARAMS = ("disc(/Server parameters/); await sleep(500); sh = sheet(); const p = fieldRx(sh, /ExecStart/); "
+                  "const pi = p.querySelector('input, textarea'); const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(pi), 'value'); "
+                  "d.set.call(pi, '-v'); pi.dispatchEvent(new Event('input', { bubbles: true }));")
+    def s5():
+        t5 = open_app("en")
+        for kind, rid, ep in (("WDTT", "wdtt:wdtt1", "/api/wdtt/set"), ("csqtt", "csqtt:csqtt1", "/api/csqtt/set")):
+            key, iface = kind.lower(), rid.split(":")[1]
+            o, exc = manage_round(t5, rid, SET_TITLE)
+            check("[5] %s: a title with a control character is sent (one POST, refused)" % kind, o.get("posts") == [[ep, 400]], [o, exc])
+            check("[5] …the sheet stays, saying the panel's own sentence", o.get("open") is True and "control characters are not allowed" in (o.get("msg") or []), o)
+            check("[5] …with the title as typed", o.get("title") == "gate\u0001title", o.get("title"))
+            check("[5] …nothing stored, and no page exception", not nodes()[A["id"]][key][iface].get("title") and not exc, [nodes()[A["id"]][key][iface].get("title"), exc])
+            close_all(t5)
+            o, exc = manage_round(t5, rid, SET_PARAMS)
+            check("[5] %s: valid ExecStart params are sent and accepted (one POST, 200)" % kind, o.get("posts") == [[ep, 200]], [o, exc])
+            check("[5] …the sheet closes, the panel stored them, and no page exception",
+                  o.get("open") is False and nodes()[A["id"]][key][iface].get("params") == "-v" and not exc,
+                  [o.get("open"), nodes()[A["id"]][key][iface].get("params"), exc])
+            close_all(t5)
+    guarded("[5]", s5)
 finally:
     stop.set()
     if br:
