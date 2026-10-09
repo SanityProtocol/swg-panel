@@ -22647,9 +22647,10 @@ def default_update_cmd(node_cfg):
 def _self_update_wrapper(cmd):
     """Shell that runs `cmd`, then records what it did where the next daemon can find it.
 
-    Runs in the updater's own transient scope, so it survives the restart the updater performs and writes its
-    verdict afterwards. `rm -f` on the result FIRST: if this wrapper dies mid-way, the next sync must find
-    nothing rather than report a previous run's verdict as this one's."""
+    Runs as the updater's own transient service (run_self_update), so it survives the restart the updater performs and
+    writes its verdict afterwards. `rm -f` on the result FIRST: if this wrapper dies mid-way, the next sync must find
+    nothing rather than report a previous run's verdict as this one's. It starts by taking swg-noded's environment for
+    whatever its own lacks (_self_update_env), and removes that file at once."""
     inner = cmd if isinstance(cmd, str) else " ".join(shlex.quote(c) for c in cmd)
     if os.geteuid() != 0:
         # ⚠️ SUDO TAKES A COMMAND, NOT A SHELL FRAGMENT. The old form pasted the prefix onto the front of the
@@ -22660,6 +22661,7 @@ def _self_update_wrapper(cmd):
         inner = "sudo -n bash -c " + shlex.quote(inner)
     return (
         "umask 027\n"
+        'E={env}\n[ -f "$E" ] && . "$E"\nrm -f "$E"\n'
         "R={res}\nL={res}.log\nV={ver}\n"
         'rm -f "$R" "$L"\n'
         'B=$(cat "$V" 2>/dev/null)\n'
@@ -22679,28 +22681,60 @@ def _self_update_wrapper(cmd):
         'mv -f "$R.tmp" "$R"\n'
         'rm -f "$L"\n'
         'exit "$rc"\n'
-    ).format(res=shlex.quote(UPDATE_RESULT_FILE), ver=shlex.quote(_noded_version_path()), inner=inner)
+    ).format(env=shlex.quote(UPDATE_ENV_FILE), res=shlex.quote(UPDATE_RESULT_FILE), ver=shlex.quote(_noded_version_path()),
+             inner=inner)
+
+
+def _self_update_env():
+    """swg-noded's environment, kept for the updater, which starts with PID 1's (run_self_update) — swg's own settings among
+    it (SWG_TURN_MIRROR, which the panel sets here and the amneziawg-go fetch uses), a proxy, a drop-in's variables. One
+    line per variable, applied by the wrapper only where its own environment lacks it, in a file only its owner reads: a
+    unit's Environment= is readable by every local user over D-Bus, and a proxy URL can carry a password."""
+    tmp = UPDATE_ENV_FILE + ".tmp"
+    with contextlib.suppress(OSError):
+        os.remove(tmp)
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+        for k, v in sorted(os.environ.items()):
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+                f.write('[ -n "${%s+x}" ] || export %s=%s\n' % (k, k, shlex.quote(v)))
+    os.replace(tmp, UPDATE_ENV_FILE)
 
 
 def run_self_update(node_cfg, want):
-    """Run the swg-only in-place updater, detached so it survives swg-noded's own restart. Only ever
-    called on a valid sync reply that carries an 'update'. Updates swg-noded/swg-agent (and a co-located
-    panel) — NOT wg/awg/turn-proxies. The panel clears the request once we report the new version."""
+    """Run the in-place updater, detached so it survives swg-noded's own restart. Only ever called on a valid sync
+    reply that carries an 'update'. Updates swg-noded/swg-agent (and a co-located panel), and — `--no-components`
+    notwithstanding — heals the AmneziaWG datapath, follows the amnezia packages (apt, DKMS) and installs swg-logs;
+    never WireGuard's own packages nor the turn-proxies. The panel clears the request once we report the new version."""
     cmd = (node_cfg.get("node") or {}).get("update_cmd") or default_update_cmd(node_cfg)
     # Always through a shell now, LIST COMMAND INCLUDED — the wrapper is what turns a detached updater into a
     # reported one, and an operator's own `update_cmd` deserves that as much as ours does (shlex-quoted, so a
     # list is passed through exactly as it would have been exec'd).
     base = ["bash", "-c", _self_update_wrapper(cmd)]
     try:
-        # run OUTSIDE swg-noded's own cgroup, so the updater's 'systemctl restart swg-noded' doesn't
-        # kill the updater itself. systemd-run --scope gives it a fresh transient scope.
+        with contextlib.suppress(OSError):
+            _self_update_env()
+        # ⚠️ A TRANSIENT SERVICE, STARTED BY PID 1 — NEVER `--scope`. It must run outside swg-noded's cgroup (the updater's
+        # `systemctl restart swg-noded` would kill it) AND outside its sandbox. A scope only moves the process to another
+        # cgroup: it stayed in swg-noded's mount namespace, where ProtectSystem=true makes /usr read-only (apt's amnezia
+        # follow, the module source patch, swg-logs: EROFS, dpkg left half-installed) and PrivateTmp's /tmp goes away when
+        # the update restarts swg-noded mid-run (mktemp failed) — and the run still said "Update complete" (1.8.9
+        # qualification IN-13, on a VM). A service gets the host's namespaces. systemd-run returns once PID 1 has started
+        # it, so it is waited for: its answer is the start's (a run still going under the one unit name refuses a second,
+        # and that request is tried again on the next sync), and nothing of it is left in swg-noded's cgroup to be killed
+        # with it. --collect: a failed run is unloaded, so a later request can start one.
         if os.path.exists("/run/systemd/system") and shutil.which("systemd-run"):
-            argv = ["systemd-run", "--scope", "--collect", "--quiet", "--unit", "swg-self-update"] + base
+            r = subprocess.run(["systemd-run", "--unit", "swg-self-update", "--collect", "--quiet",
+                                "--description", "swg self-update (started by swg-noded, outside its sandbox)"] + base,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+            if r.returncode != 0:
+                log(LOG_ERR, "self-update failed to start: %s", (r.stderr or "").strip()[:300] or "systemd-run exited %d" % r.returncode)
+                return False
+            how = "as swg-self-update.service, outside swg-noded's sandbox"
         else:
-            argv = base
-        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
-        log(LOG_INFO, f"self-update started → {want.get('to')}")
+            subprocess.Popen(base, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            how = "as a child of swg-noded (no systemd)"
+        log(LOG_INFO, f"self-update started → {want.get('to')} ({how})")
         return True
     except Exception as e:
         log(LOG_ERR, 'self-update failed to start: %s', e)
@@ -22708,6 +22742,7 @@ def run_self_update(node_cfg, want):
 
 
 UPDATE_RESULT_FILE = os.path.join(STATE_DIR, ".update-result")
+UPDATE_ENV_FILE = os.path.join(STATE_DIR, ".update-env")
 
 
 def update_auto():
