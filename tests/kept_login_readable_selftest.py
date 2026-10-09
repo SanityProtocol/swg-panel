@@ -20,6 +20,8 @@ Run: python3 tests/kept_login_readable_selftest.py (0 = pass)
 import base64, hashlib, os, re, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from _tree_copy import copy_tree  # noqa: E402 — the live tree, minus what other gates remove while it is copied
 PERTURB = "--perturb" in sys.argv
 FAILS = []
 
@@ -32,8 +34,8 @@ def check(name, cond, detail=""):
 
 T = tempfile.mkdtemp(prefix="keptlogin-")
 SRC = os.path.join(T, "src")
-shutil.copytree(ROOT, SRC, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs",
-                                                         ".campaign", "__pycache__", "forks", "screenshots"))
+copy_tree(ROOT, SRC, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs",
+                                                  ".campaign", "__pycache__", "forks", "screenshots"))
 host = os.path.join(SRC, "install-host.sh")
 src = open(host, encoding="utf-8").read()
 KEEP = '''run chmod 640 "$ETC_DIR/auth"; run chown root:swg "$ETC_DIR/auth"'''

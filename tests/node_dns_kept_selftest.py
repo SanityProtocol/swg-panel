@@ -28,6 +28,8 @@ Run: python3 tests/node_dns_kept_selftest.py      (0 = pass)
 import json, os, re, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from _tree_copy import copy_tree  # noqa: E402 — the live tree, minus what other gates remove while it is copied
 FAILS = []
 
 
@@ -109,8 +111,8 @@ for label, dns, want in (("a list", ["9.9.9.9", "8.8.8.8"], ["9.9.9.9", "8.8.8.8
 
 print("\n[3] install-node.sh --dry-run over an existing node config (a plain re-install)")
 S = os.path.join(T, "src")
-shutil.copytree(ROOT, S, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs",
-                                                       ".campaign", "__pycache__", "forks", "screenshots", ".claude"))
+copy_tree(ROOT, S, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs",
+                                                ".campaign", "__pycache__", "forks", "screenshots", ".claude"))
 OLDCFG = os.path.join(T, "old-config.json")
 json.dump({"interfaces": {}, "endpoint_host": "192.168.77.2", "dns": ["9.9.9.9", "8.8.8.8"],
            "panel": {"url": "https://192.168.77.1:2087", "token": "R20dryDummyToken00000000", "verify": False},

@@ -60,6 +60,8 @@ Run: python3 tests/convert_carries_env_knobs_selftest.py      (0 = pass)
 import json, os, re, shutil, stat, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from _tree_copy import copy_tree  # noqa: E402 — the live tree, minus what other gates remove while it is copied
 FAILS = []
 
 
@@ -227,8 +229,8 @@ if m:
 
 # ── [4] install-node.sh writes the DNS it is given ──────────────────────────────────────────────────────────────
 S = os.path.join(T, "src")
-shutil.copytree(ROOT, S, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs",
-                                                       ".campaign", "__pycache__", "forks", "screenshots", ".claude"))
+copy_tree(ROOT, S, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs",
+                                                ".campaign", "__pycache__", "forks", "screenshots", ".claude"))
 env = dict(os.environ, DNS="9.9.9.9", PANEL_URL="https://192.168.77.1:2087", NODE_TOKEN="R20dryDummyToken00000000",
            TLS_VERIFY="no", ENDPOINT_IP="192.168.77.2")
 r = subprocess.run(["bash", "install-node.sh", "--dry-run"], cwd=S, env=env, stdin=subprocess.DEVNULL, capture_output=True,
