@@ -92,6 +92,10 @@ for f, src in (("install-node.sh", node), ("install-host.sh", host)):
     check("%s: a chain that really fails is tried once more, not once per interface" % f, "N=2" in r.stdout, r.stdout + r.stderr)
 check("install-node.sh: the switch's bring-up of adopted interfaces asks `again`",
       'ensure_wg_tools_once "$_c" again || continue' in node)
+check("install-node.sh: the closing \"for future interface creation\" check asks `again` for wg (apt only), not for awg "
+      "(its GitHub chain is what the memo is for)",
+      'ensure_wg_tools_once wg again || warn "wireguard tools not installed' in node
+      and 'ensure_wg_tools_once awg || warn "amneziawg tools not installed' in node)
 check("both installers' create loops ask `again`",
       node.count('if ! ensure_wg_tools_once "$cmd" again; then') == 1 and host.count('if ! ensure_wg_tools_once "$cmd" again; then') == 1)
 
