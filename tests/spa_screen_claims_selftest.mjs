@@ -20,10 +20,14 @@
  * [5] q189 HE-8 — the END USERS' surfaces: a server-name template's {fork} gave "samosvalishe 56005" in users' apps (the
  *     shared turn-artifacts.js knows no catalog); the sub page's Sidecar title and WDTT chip/zoom printed fork ids, and the
  *     SPA's WDTT adopt label too. Each page now hands turn-artifacts its catalog's name, and the prints go through forkLabel.
+ * [6] q189 LC24 L4-a — a node left on 1.8.8 under this panel read "Torrents / P2P: blocked" as in force, though its build runs
+ *     no node-wide policy: it is behind the panel and reports none (a current node reports every policy but "each interface
+ *     decides"). The summary now says it is not in force there until the node is updated; a current node, one that reports
+ *     its policy, "each interface decides" and an unsaved choice read as before.
  *
  * The real js/i18n.js with the real Russian catalog; the real modules (screen-settings, screen-nodes, ui, iface, mimic).
  * Run: node tests/spa_screen_claims_selftest.mjs
- *      --perturb <offhint | confirm | p2pblock | p2proute | tag | bubble | title | fewsec | artifactname | subhook>   one fix undone → RED
+ *      --perturb <offhint | confirm | p2pblock | p2proute | tag | bubble | title | fewsec | artifactname | subhook | p2pold>   one fix undone → RED
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -46,6 +50,8 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   artifactname: ["turn-artifacts.js", 'return k === "fork" ? String(forkName(String(fork || "")) || fork || "") :',
                  'return k === "fork" ? String(fork || "") :'],
   subhook: ["sub.js", "  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);", ""],
+  p2pold: ["js/screen-settings.js", 'export const p2pNotRunHere = (node, rec) => !!node && !!rec && !node.p2p_node',
+           'export const p2pNotRunHere = (node, rec) => false && !!node && !!rec && !node.p2p_node'],
   fewsec: ["js/iface.js", 'T("The interface restarts; connected devices reconnect in about 15 seconds.")',
            'T("The interface restarts; connected devices reconnect within a few seconds.")'],
 };
@@ -212,5 +218,21 @@ check("[5] the sub page's Sidecar title and its WDTT chip and zoom print the nam
       SUB.includes('(c.forkId ? forkLabel(c.forkId) + " " : "") + "Sidecar"') && SUB.includes('var wsrv = el("span", null, forkLabel(wfork));')
       && SUB.includes("ctrl.zoomTail = wHasApp ? wAppName : forkLabel(wfork);"), "");
 check("[5] …and the SPA's WDTT adopt label", JS["iface.js"].includes('" · " + forkLabel(cand.wdtt.fork)'), "");
+
+// ── [6] a 1.8.8 node's torrent policy ───────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[6] a node whose build runs no node-wide torrent policy does not read it as in force (LC24 L4-a)");
+const old = { outdated: true, p2p_node: null, p2p_eff: "block" };
+const NR = typeof SS.p2pNotRunHere === "function" ? SS.p2pNotRunHere : () => false;   // a build without it reads every node as before
+check("[6] a 1.8.8 node (behind, reports no policy) with Block in force: not run there", NR(old, { action: "block" }) === true);
+check("[6] …and a route in force on it, the same", NR({ ...old, p2p_eff: "exit" }, { action: "exit", node: "n2" }) === true);
+check("[6] a current node not yet reporting (just saved, a restart): not called old",
+      NR({ ...old, outdated: false }, { action: "block" }) === false);
+check("[6] a node that reports its policy: as before", NR({ ...old, p2p_node: { state: "ok", mode: "block" } }, { action: "block" }) === false);
+check("[6] \"each interface decides\" (what a 1.8.8 node does anyway), and an unsaved choice: as before",
+      NR({ ...old, p2p_eff: "iface" }, { action: "iface" }) === false && NR(old, { action: "iface" }) === false);
+const L4 = "Torrents / P2P: {v1} — not in force on this node until it is updated";
+check("[6] the summary says it, in Russian", ruHas(L4) && /не действует/.test(T(L4, { v1: "x" })), T(L4, { v1: "x" }));
+check("[6] the node form's summary asks p2pNotRunHere for that sentence",
+      JS["screen-settings.js"].includes('summary=${p2pNotRunHere(node, curRec) ? T("' + L4 + '"'), "");
 
 done(MODE, MODE || "");
