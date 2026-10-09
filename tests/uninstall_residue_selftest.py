@@ -161,7 +161,7 @@ check("NO record (an older install) → the rule is named, never deleted", "dele
 print("\n[4] 'Leftover swg files' is offered beside a KEPT docker dir, and decides the identities at run time")
 _ga = "(`swgpanel` owns data a convert copied in).\n"
 gate = between(U, _ga,
-               'if ! $DPANEL && ! $DNODE && { [ -f "$DOCKER_DIR/docker-compose.yml" ]')
+               'if ! $DPANEL && ! $DNODE && ! $DNODE_GONE && { [ -f "$DOCKER_DIR/docker-compose.yml" ]')
 gate = gate[len(_ga):]
 kd = tempfile.mkdtemp(prefix="kept-"); os.makedirs(os.path.join(kd, "data", "lib"))
 out, calls, _ = bash('SD=/nonexistent; DOCKER_DIR=%s; DPANEL=false; DNODE=false\n_has_leftovers(){ return 0; }\n'

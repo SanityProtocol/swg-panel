@@ -467,6 +467,7 @@ DOCKER_STUB = r'''#!/bin/bash
 echo "docker $*" >> "$LOG"
 case "$1" in
   inspect) [ -n "${NO_CTR:-}" ] && exit 1; echo "ghcr.io/sanityprotocol/swg-node:sha-test"; exit 0;;
+  image) [ "$*" = "image inspect ghcr.io/sanityprotocol/swg-node:${ENV_TAG:-none}" ] && exit 0; exit 1;;   # only the one its .env names
   stop) exit 0;;
   run)
     case " $* " in
@@ -507,8 +508,11 @@ def sweep_run(dry=False, **env):
     t, b = sandbox()
     put(os.path.join(b, "docker"), DOCKER_STUB)
     ifd = host_ifaces(t, b, ("wg0",))   # awg0 was userspace: it went with the container
-    script = ("set -uo pipefail\nDRYRUN=%s\ninfo(){ echo \"INFO $*\"; }\nwarn(){ echo \"WARN $*\"; }\nb(){ printf '%%s' \"$*\"; }\n"
-              "%s%s_node_nft_sweep \"wg0 awg0\"\necho END\n" % ("true" if dry else "false", fn(U, "_rm_host_iface"), fn(U, "_node_nft_sweep")))
+    dd = os.path.join(t, "dd"); os.makedirs(dd)
+    if env.get("ENV_TAG"):
+        put(os.path.join(dd, ".env"), "NODE_TOKEN=x\nSWG_IMAGE_TAG=%s   # a comment\n" % env["ENV_TAG"])
+    script = ("set -uo pipefail\nDRYRUN=%s\nDOCKER_DIR=%s\ninfo(){ echo \"INFO $*\"; }\nwarn(){ echo \"WARN $*\"; }\nb(){ printf '%%s' \"$*\"; }\n"
+              "%s%s_node_nft_sweep \"wg0 awg0\"\necho END\n" % ("true" if dry else "false", dd, fn(U, "_rm_host_iface"), fn(U, "_node_nft_sweep")))
     e = {"PATH": b, "LOG": os.path.join(t, "log"), "BATCH": os.path.join(t, "batch"), "IFDIR": ifd}
     e.update({k: str(v) for k, v in env.items()})
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=e, timeout=60)
@@ -536,8 +540,12 @@ rc, out, log, batch, left = sweep_run(LIST_RC=1)
 check("[3] a failed read is said, and the host-side sweep still runs (it returns 0)",
       rc == 0 and "END" in out and "WARN could not read the node's nft tables with its own nft" in out and not batch, (out, log))
 rc, out, log, batch, left = sweep_run(NO_CTR=1)
-check("[3] no swg-node container → nothing at all", rc == 0 and out.strip() == "END" and log == "docker inspect -f {{.Config.Image}} swg-node\n"
-      and left == ["wg0"], (out, log))
+check("[3] no swg-node container and no image of it → nothing at all", rc == 0 and out.strip() == "END" and log ==
+      "docker inspect -f {{.Config.Image}} swg-node\ndocker image inspect ghcr.io/sanityprotocol/swg-node:latest\n" and left == ["wg0"], (out, log))
+rc, out, log, batch, left = sweep_run(NO_CTR=1, ENV_TAG="sha-env")
+check("[3] its container gone, the image its .env names on the box (1.8.8 deferred #15) → the same sweep, with that image",
+      rc == 0 and not left and batch == "delete table inet swg_reach\ndelete table inet swg_smart\n"
+      and all("--entrypoint nft ghcr.io/sanityprotocol/swg-node:sha-env" in c for c in log.splitlines() if c.startswith("docker run")), (out, log))
 i_cap = U.find('  capture_adopted "$_acfg" "$DOCKER_DIR/data/node/adopted-containers.json"\n  rm -f "$_acfg"\n')
 i_sw = U.find('  _node_nft_sweep "$_ifn"             # stopped, its interfaces, then its nft tables')
 i_rm = U.find("  run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'")
