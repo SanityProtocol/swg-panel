@@ -1785,8 +1785,10 @@ def _awg_devs_elsewhere():
     """Network namespaces OTHER than this one holding an amneziawg KERNEL device — `modprobe -r` destroys them all.
     Named ones (`ip netns`) AND every process's (`lsns -t net`, one line per namespace): a Docker container's namespace is
     not named, and an AmneziaWG device a container made on the host's module (Amnezia's own containers, say) would
-    otherwise go without a word. None when it cannot look (no lsns / nsenter) — the caller must refuse: it cannot know it
-    cuts no one."""
+    otherwise go without a word. None when it cannot look (no lsns / nsenter, or either one failing) — the caller must
+    refuse: it cannot know it cuts no one. A namespace nsenter could not get into is NOT an empty one: the process lsns
+    named for it may have exited while others keep it alive, or a security module refused the entry (1.8.9 qualification
+    HE-2 — it was read as empty, and `modprobe -r` went on)."""
     out = []
     for ln in subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout.splitlines():
         ns = ln.split()[0] if ln.split() else ""
@@ -1798,12 +1800,17 @@ def _awg_devs_elsewhere():
         me = os.readlink(_PROC + "/self/ns/net")
     except OSError:
         me = ""
-    for ln in subprocess.run(["lsns", "-t", "net", "-n", "-o", "NS,PID"], capture_output=True, text=True).stdout.splitlines():
+    ls = subprocess.run(["lsns", "-t", "net", "-n", "-o", "NS,PID"], capture_output=True, text=True)
+    if ls.returncode != 0:
+        return None
+    for ln in ls.stdout.splitlines():
         f = ln.split()
         if len(f) < 2 or "net:[%s]" % f[0] == me:
             continue
         p = subprocess.run(["nsenter", "--net=%s/%s/ns/net" % (_PROC, f[1]), "ip", "-o", "link", "show", "type", "amneziawg"],
                            capture_output=True, text=True)
+        if p.returncode != 0:
+            return None
         if (p.stdout or "").strip():
             out.append("net:[%s] (process %s)" % (f[0], f[1]))
     return out
