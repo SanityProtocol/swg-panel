@@ -1145,6 +1145,15 @@ def main():
     state = State(fleet)
     Handler.state = state
     _LOG_SERVE["path"] = os.path.join(state.sub_dir, "serve.json")
+    # …and for serve.json, which the panel writes at the END of its start, well after the entrypoint wrote fleet.json. Read
+    # before it, the TLS mode is unknown, so the listener was decided plain HTTP without waiting for the certificate the
+    # entrypoint issues in the background — and stayed so until a restart (1.8.8 deferred #17: 1 fresh Docker master in 4).
+    if not os.path.exists(_LOG_SERVE["path"]):
+        log(LOG_INFO, "swg-sub: waiting for the panel's %s …" % _LOG_SERVE["path"])
+        for _ in range(30):
+            time.sleep(2)
+            if os.path.exists(_LOG_SERVE["path"]):
+                break
 
     global SUB_BASE, SUB_BASE_ALT                            # SWG_SUB_BASE wins (infra), else the panel's serve.base (from the sub public URL path)
     def _read_bases():
