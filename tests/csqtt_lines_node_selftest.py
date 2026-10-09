@@ -44,12 +44,19 @@ and every command that could delete a link is refused by a guard (the test fails
   [22] backoff        a switch whose fetch failed is walked again only after CSQTT_FETCH_RETRY_S, not every sync (each
                       walk ≈ 90 s with GitHub blackholed, and the node read offline); a new build or the operator's
                       Restart tries at once (budget, restartretry)
+  1.8.9 qualification NR-3 + FN-2(c):
+  [23] buildbackoff   the BUILD update of what runs (same line) waits a window after a failed fetch too — it walked the
+                      mirrors on every sync; a new build is walked at once
+  [24] dl-direct      the GitHub-direct fetch lands beside the binary and is renamed in: onto a RUNNING server's binary curl
+                      failed ETXTBSY (curl 23, read as "GitHub unreachable") and a running line never updated — REAL: a
+                      running copy of /bin/sleep, the fetch from a file:// URL
 
 Run: python3 tests/csqtt_lines_node_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        reconfigure [5] · absent [6] · stable [3] · rollback [4] · memo [7] · build [8] · sibling [9] ·
                        copyfail [10] · markorder [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16] · fetchswitched [17] · unknowncur [18] · runver [19] · budget [12] [22] ·
-                       notpresent-ver / notpresent-cut / markerkeep / verfallback [20] · snapcut [21] · starve [12] · restartretry [22]
+                       notpresent-ver / notpresent-cut / markerkeep / verfallback [20] · snapcut [21] · starve [12] · restartretry [22] ·
+                       buildbackoff [23] · dl-direct [24]
 """
 import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
 
@@ -71,6 +78,8 @@ PLANTS = {   # name: (section, anchor, replacement)
     "fetchswitched": (("[12]", "[17]"), "                    _sw_pass[0] = _switched = (not err) or _memo", "                    _sw_pass[0] = _switched = True"),
     "unknowncur": ("[18]", "                inst[\"ver\"] = (inst.get(\"cur_ver\") or \"\").strip()   # the panel's build for what runs, or none", "                inst.pop(\"ver\", None)"),
     "budget": (("[12]", "[22]"), "                        _CSQTT_FETCH_LATER[(_line, _want_ver)] = time.monotonic() + CSQTT_FETCH_RETRY_S", "                        pass"),
+    "buildbackoff": ("[23]", "\n                        and time.monotonic() >= _CSQTT_FETCH_LATER.get((_cur, _run_ver), 0)):   # FN-2(c): as a switch waits", "):"),
+    "dl-direct": ("[24]", 'err, tmp = "", dest + ".dl"', 'err, tmp = "", dest'),
     "restartretry": ("[22]", "                    _CSQTT_FETCH_LATER.pop((_line, _want_ver), None)", "                    pass"),
     "starve": ("[12]", "                    _sw_pass[0] = _switched = (not err) or _memo", "                    _switched = (not err) or _memo; _sw_pass[0] = True"),
     "markerkeep": ("[20]", "                if not err and _cut:\n                    _csqtt_cut_clear(iface)", "                if _cut:\n                    _csqtt_cut_clear(iface)"),
@@ -249,8 +258,12 @@ try:
     real_switch, real_update = N._csqtt_switch_line, N._csqtt_update_binary
     def rec_switch(inst, frm, to, ver, siblings=(), stopped=()):
         SWITCHES.append((inst["iface"], frm, to, ver)); return SWITCH_RESULT[0]
+    UPDATE_RESULT = [""]
     def rec_update(inst, ver, ifaces, line="2.1"):
-        UPDATES.append((ver, tuple(sorted(ifaces)), line)); N._csqtt_write_ver(ver, line); return ""
+        UPDATES.append((ver, tuple(sorted(ifaces)), line))
+        if not UPDATE_RESULT[0]:
+            N._csqtt_write_ver(ver, line)
+        return UPDATE_RESULT[0]
     N._csqtt_switch_line = rec_switch; N._csqtt_update_binary = rec_update
     SWITCH_RESULT = [("", False)]
     def record(**insts):
@@ -488,6 +501,42 @@ try:
         check("a new build is walked at once", len(SWITCHES) == 4 and SWITCHES[-1][3] == "2.5.0-8", SWITCHES)
     finally:
         N.time = time; SWITCH_RESULT[0] = ("", False); N._CSQTT_FETCH_LATER.clear()
+
+    section("[23] the build update of what runs waits a window after a failed fetch, as a switch does (FN-2(c))")
+    clk = _Clock(); N.time = clk
+    try:
+        N._CSQTT_FETCH_LATER.clear()
+        N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1")); N._csqtt_write_ver("2.1.9-3", "2.1")
+        record(lo=dict(rec_lo, line="2.1", restart=5))
+        UPDATE_RESULT[0] = ("couldn't fetch the csqtt binary for amd64 2.1.9-4 — the panel's mirror had none, and GitHub was "
+                            "unreachable from this node: curl: (28) Failed to connect to github.com port 443")
+        w23 = lambda **kw: {"lo": want("lo", **dict({"line": "2.1", "ver": "2.1.9-4", "restart": 5}, **kw))}
+        del UPDATES[:]
+        for _ in range(6):
+            N.reconcile_csqtt(w23())
+        check("six syncs, ONE walk of the mirrors for the same line's new build", len(UPDATES) == 1, UPDATES)
+        clk.off += N.CSQTT_FETCH_RETRY_S + 1
+        N.reconcile_csqtt(w23())
+        check("once the window has run out it is walked again", len(UPDATES) == 2, UPDATES)
+        N.reconcile_csqtt(w23(ver="2.1.9-5"))
+        check("a newer build is walked at once", len(UPDATES) == 3 and UPDATES[-1][0] == "2.1.9-5", UPDATES)
+    finally:
+        N.time = time; UPDATE_RESULT[0] = ""; N._CSQTT_FETCH_LATER.clear()
+
+    section("[24] the GitHub-direct fetch never writes onto a RUNNING binary (NR-3) — real: curl, a running process")
+    import hashlib, subprocess
+    _d24 = tempfile.mkdtemp(dir=TMP); _dest = _d24 + "/server"; _new = _d24 + "/new-build"
+    shutil.copy("/bin/sleep", _dest); os.chmod(_dest, 0o755); shutil.copy("/bin/true", _new)
+    _want = hashlib.sha256(open(_new, "rb").read()).hexdigest()
+    _urls = N._turn_dl_urls; N._turn_dl_urls = lambda repo, arch, tag: ["file://" + _new]
+    _pr = subprocess.Popen([_dest, "30"]); time.sleep(0.3)
+    try:
+        okd, why = N._swg_release_get("csqtt-2.1.9-9", "amd64", _dest, _want, "csqtt")
+        check("the new build lands while the old one runs (it was curl 23, ETXTBSY, said as \"GitHub unreachable\")",
+              okd and hashlib.sha256(open(_dest, "rb").read()).hexdigest() == _want and _pr.poll() is None, (okd, why[:120]))
+        check("…and nothing is left beside it", not os.path.exists(_dest + ".dl"), os.listdir(_d24))
+    finally:
+        _pr.kill(); N._turn_dl_urls = _urls
 
     section("[16] a server not installed yet runs no line")
     check("_csqtt_ifaces leaves it out", N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5") == [], N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5"))
