@@ -2985,6 +2985,8 @@ export const STR = {
   // budget-ok: toolbar button, row has a grow spacer
   "Add rule": "Добавить правило",
   "Everything else": "Всё остальное",
+  "“Everything else → Block” stops each new connection before its site name is read, so the rules above that match by site name never take effect: those sites are blocked too. Route them by address (an IP range or a network) instead, or block by name only what you don't want.":
+    "«Всё остальное → Заблокировать» останавливает каждое новое соединение раньше, чем прочитано имя сайта, поэтому правила выше, срабатывающие по имени сайта, не действуют: эти сайты тоже блокируются. Направьте их по адресу (диапазон IP или сеть) или блокируйте по имени только то, что не нужно.",
   // A rule whose destination has been removed from the panel. «Указывает в никуда» is the plain reading of
   // a control that renders blank while a real choice sits in the store.
   "{v1} pointing nowhere": "указывают в никуда: {v1}",

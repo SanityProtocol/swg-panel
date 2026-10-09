@@ -1326,6 +1326,16 @@ export function rowGate(row, mode, node, b) {
     : { ok: false, why: "person_ksni", fix: "sni" };
 }
 
+/* F105 (the 1.8.8 qualification's #18): on an SNI engine "Everything else → Block" drops each new connection to an address no
+   rule has learned yet — before its site name can be read — so a rule above it that matches by site name never sees one: an
+   allow-list by name blocks everything. The datapath change was judged not worth it (it would let a Block's first packets out),
+   so the rule list says it where the operator builds it. A Block row above it loses nothing; the others are counted. */
+export const catchAllPreemptsNames = (mode, rows, catchAll) => (mode === "sni" || mode === "sni_kernel")
+  && !!catchAll && catchAll.enabled !== false && catchAll.action === "block"
+  && (rows || []).some(r => r.enabled !== false && r.action !== "block" && (r.badges || []).some(b => {
+    const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
+    return caps ? !!caps.host : !_ipKind(b.kind); }));
+
 /* Why a badge cannot run here, said in one sentence, plus the label of the mode that would fix it. Never a
    bare "unsupported": the operator has to be able to act on it, and for three of the five reasons the action
    is one click away. */
@@ -2610,6 +2620,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
       : T("no rules yet")}${nodeRows.length > 10 ? " " + T("…and {v1} more", { v1: nodeRows.length - 10 }) : ""}</div>` : null}
     ${nodeScope && _mode === "sni_kernel" && ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) < 2 && dispRows.some(r => r.aud !== "local")
       ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for traffic cascaded in — only IP addresses and networks apply to it.")}</span></div>` : null}
+    ${catchAllPreemptsNames(_mode, dispRows, catchAll) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("“Everything else → Block” stops each new connection before its site name is read, so the rules above that match by site name never take effect: those sites are blocked too. Route them by address (an IP range or a network) instead, or block by name only what you don't want.")}</span></div>` : null}
     ${dispRows.length || catchAll ? null : html`<div class="hint">${others.length
       ? Trich("No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.")
       : Trich("No rules yet. Add a rule to send some destinations out a device on this node or block them, or set *Everything else* to say where the rest goes.")}</div>`}
