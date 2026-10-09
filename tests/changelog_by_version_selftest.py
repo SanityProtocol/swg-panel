@@ -12,16 +12,19 @@ Real functions: `_check_latest_remote`, `_changelog_entries`; the network is a s
   [2] a stale copy (no `want` in it) is fetched again — but at most once a minute, not on every open
   [3] a copy that holds `want` is kept for the hour
   [4] /api/state no longer ships notes; /api/changelog passes the badge's version
+  [5] a refetch answered 200 by a page with no headings (a captive or block page) keeps the cached entries — it answered []
+      and both bubbles showed nothing (q189 PLO-10)
 
-Run: python3 tests/changelog_by_version_selftest.py      --plant backward | keepstale | nowant   (exit 0 when caught)
+Run: python3 tests/changelog_by_version_selftest.py      --plant backward | keepstale | nowant | blank   (exit 0 when caught)
 """
-import importlib.machinery, importlib.util, io, os, sys, tempfile, urllib.error, urllib.request
+import importlib.machinery, importlib.util, io, os, sys, tempfile, time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(HERE, "..", "swg-panel-server")
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 PLANTS = {"backward": ("[1]", "            if not LATEST_REMOTE.get(\"version\") or _vtuple(v) >= _vtuple(LATEST_REMOTE[\"version\"]):", "            if True:"),
           "keepstale": ("[2]", "(has or now - cache.get(\"tried\", 0) < CHANGELOG_RETRY_S)", "True"),
+          "blank": ("[5]", "    return entries or cache[\"entries\"]", "    return entries"),
           "nowant": ("[4]", "\"entries\": _changelog_entries(_req_lang(), want)}}", "\"entries\": _changelog_entries(_req_lang())}}")}
 FAILS, SECTION = [], [""]
 
@@ -120,6 +123,14 @@ src = open(path).read()
 check("/api/state ships no notes any more", "latest_remote_notes" not in src and "latest_remote_date" not in src)
 check("/api/changelog passes the badge's version", "\"entries\": _changelog_entries(_req_lang(), want)}}" in src
       and "want = _short_ver((qs.get(\"want\")" in src)
+
+SECTION[0] = "[5]"
+print("\n[5] a refetch answered by a page with no headings")
+m._CHANGELOG_CACHE["en"] = {"at": int(time.time()), "tried": 0, "entries": [{"version": "1.8.8-beta", "date": "", "notes": ["x"]}]}
+NET["cl"] = "<html><body>Access restricted by your provider</body></html>"
+m._CHANGELOG_CACHE["en"]["tried"] -= 61
+es = m._changelog_entries("en", "1.8.9-beta")                # wants the badge's version, the copy lacks it → refetched
+check("the cached entries are kept and answered, not []", [e["version"] for e in es] == ["1.8.8-beta"], es)
 
 print()
 if PLANT:
