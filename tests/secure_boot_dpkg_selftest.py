@@ -43,6 +43,7 @@ Run: python3 tests/secure_boot_dpkg_selftest.py      (0 = pass)
      --plant sbclaim   the branch as it shipped (the userspace note whatever is there) → RED on [10] (exit 0 when caught)
      --plant nlh5-noblacklist | nlh5-noenforce   the probe by name / on every kernel again → RED on [6c]
      --plant bl-heal | bl-back   update.sh's heal / its move back onto the kernel ask by name again (e66018f) → RED on [11]
+     --plant bl-quiet   awg_blacklisted with grep -q (quits at the match; modprobe -c dies of SIGPIPE; pipefail) → RED on [11]
 """
 import builtins, importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile, time
 from unittest import mock
@@ -230,6 +231,9 @@ KR = os.uname().release
 
 print("\n[11] update.sh on a box whose operator blacklisted the module (VERIFY1-B1)")
 BLF = grab("lib/common.sh", "awg_blacklisted")
+if PLANT == "bl-quiet":   # the first form of the fix: grep -q, which quits at the match
+    assert BLF.count("grep -cE") == 1, "plant anchor missing — this run would measure nothing"
+    BLF = BLF.replace("grep -cE", "grep -qE")
 HEAL11 = grab_text("update.sh", "ensure_awg_datapath")
 BACK11 = grab_text("update.sh", "ensure_awg_back_on_kernel")
 if PLANT == "bl-heal":   # e66018f: the heal asks modprobe by name whatever modprobe.d says
@@ -241,15 +245,27 @@ if PLANT == "bl-back":
     assert BACK11.count(_a) == 1, "plant anchor missing — this run would measure nothing"
     BACK11 = BACK11.replace(_a, '  : # (the blacklist not asked)')
 BACK11 = BACK11.replace("/sys/class/net", T + "/no-such-sys")   # nothing of this box's own devices is ever looked at
+# modprobe as a PROCESS on PATH, and -c as the real one prints it: the modprobe.d directives first, then tens of thousands of
+# alias lines — a consumer that quits at the match (grep -q) leaves it to die of SIGPIPE, and under update.sh's pipefail the
+# blacklist then read as absent (the first form of this fix; the suite's pipefail linter caught it)
+BLBIN = os.path.join(T, "blbin"); os.makedirs(BLBIN, exist_ok=True)
+open(os.path.join(BLBIN, "modprobe"), "w").write('#!/bin/bash\nif [ "$1" = -c ]; then echo "options x y=1"\n'
+                                                 '  [ -e "$T/blacklisted" ] && echo "blacklist amneziawg"\n'
+                                                 "  exec seq -f 'alias pci:v%08g z' 1 60000\nfi\n"
+                                                 'echo "MODPROBE $*" >> "$T/calls"; exit 0\n')
+os.chmod(os.path.join(BLBIN, "modprobe"), 0o755)
 def bl(body, blacklisted):
-    mp = ('modprobe(){ if [ "$1" = -c ]; then echo "options x y=1"; %s echo "alias z amneziawg"; return 0; fi\n'
-          '  echo "MODPROBE $*" >> "$T/calls"; return 0; }\n') % ('echo "blacklist amneziawg";' if blacklisted else "")
+    if blacklisted:
+        open(T + "/blacklisted", "w").close()
+    elif os.path.exists(T + "/blacklisted"):
+        os.remove(T + "/blacklisted")
+    mp = ""
     script = ('set -euo pipefail\nHAVE_BNODE=yes; DID_UPDATE=no; DID_FAIL=no; DRYRUN=false\nok(){ echo "OK $*"; }; note(){ echo "NOTE $*"; }\n'
               'run(){ "$@"; }; have(){ case "$1" in awg|awg-quick|amneziawg-go) return 0;; *) command -v "$1" >/dev/null 2>&1;; esac; }\n'
               'awg_compat_patch_installed(){ return 1; }\nawg_go_needs_install(){ return 1; }\nensure_awg_headers_follow(){ return 1; }\n'
               'awg_dkms_build_all_kernels(){ :; }\nawg_headers_meta(){ :; }\ndkms(){ echo x; }\n' + mp + BLF + body)
     return subprocess.run(["bash", "-c", STUBS.replace("run(){", "_unused_run(){") + script], capture_output=True, text=True,
-                          env=dict(os.environ, T=T))
+                          env=dict(os.environ, T=T, PATH=BLBIN + ":" + os.environ["PATH"]))
 for blk, label in ((True, "blacklisted"), (False, "CONTROL: not blacklisted")):
     reset()
     r = bl(HEAL11 + 'ensure_awg_datapath; echo "RC=$? FAIL=$DID_FAIL"\n', blk)
@@ -526,7 +542,7 @@ check("the master's notice words it without 'running Update rebuilds it'", 'if (
 if PLANT:
     _pre = {"sbclaim": "refused for its key, amneziawg-go absent", "nlh5-noblacklist": "it asks `modprobe -b`",
             "nlh5-noenforce": "a kernel that enforces no signature", "bl-heal": "the heal on a blacklisted box",
-            "bl-back": "the move back onto the kernel on a blacklisted box"}[PLANT]
+            "bl-back": "the move back onto the kernel on a blacklisted box", "bl-quiet": "the "}[PLANT]
     caught = [f for f in FAILS if f.startswith(_pre)]
     print("\nplant %s: %s" % (PLANT, ("RED as it must be (%d)" % len(caught)) if caught and len(caught) == len(FAILS)
                                      else "NOT CAUGHT — the gate is blind to it" if not caught else "ALSO red elsewhere: %s" % FAILS))
