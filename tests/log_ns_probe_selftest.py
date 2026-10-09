@@ -248,20 +248,20 @@ def netctl(rc, sr):
             return 0, "systemd-journald@swg-probe.service loaded active running x\n"
         return 0, ""
     M.run = run; M._read_log_status = lambda: {}; M._write_log_status = docs.append
-    M.log_budget_mb = lambda: 100; M.log_level = lambda: M.LOG_INFO
+    M.log_budget_mb = lambda ps: 100; M.log_level = lambda: M.LOG_INFO
     return M, log, docs
 os.geteuid = lambda: 0
 try:
     sr = sandbox("netctl-refused")
     M, log, docs = netctl(1, sr)
-    M.log_budget()
+    M.log_budget({})
     d = docs[-1] if docs else {}
     check("refused: the panel's budget is unsupported, with the reason", d.get("unsupported") is True
           and "cannot run in a journal namespace" in str(d.get("err")), (d, log))
     check("…no size file, no journald restart", not os.path.exists(M.LOG_NS_CONF) and not any("try-restart" in l for l in log), log)
     sr = sandbox("netctl-ok")
     M, log, docs = netctl(0, sr)
-    M.log_budget()
+    M.log_budget({})
     check("CONTROL ok: the size file is written and its journald restarted, as before",
           os.path.exists(M.LOG_NS_CONF) and any("try-restart systemd-journald@swg-panel.service" in l for l in log), (docs, log))
 finally:
