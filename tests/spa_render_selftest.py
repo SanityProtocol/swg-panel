@@ -38,7 +38,9 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
         as tall as the buttons beside them, and in Russian the device view's six buttons stay on one row
   [B14] the app bar on a phone (q189): at 390 px it wraps — every visible header control on the screen and tappable, the bar
         adding no width (it ran to 1 257 px, so every screen scrolled sideways) — and scrolls away with the page; at 1 280 px it
-        is the one sticky 56 px row it was. English and Russian
+        is the one sticky 56 px row it was. English and Russian. And with every header control shown (an update pill, the
+        deployment badge, the vault lock, the logs button) Log out stays on the screen at 1 280 px in Russian — its parts sit closer
+        together there (it ran to 1 308 px) — while English keeps its one 56 px row as it was
   [B15] the grids' traffic rail covers no row action (OE, 1.8.9): at 1 280×900 it sat over the last action of every row in its
         band (a click on Delete peer opened the rail's Custom dates); at 1 366 it never did (the control)
   [B16] the Add-node command names the panel's confirmed address (OE, 1.8.9): opened through a tunnel or another name, it was
@@ -47,7 +49,7 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | railclear | cmdhost
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -92,6 +94,8 @@ PERTURBATIONS = {
     "footsize": ("app.css", ".sheet-foot :is(.btn-danger,.btn-warn,.btn-exp),.editfoot :is(.btn-danger,.btn-warn,.btn-exp){padding:8px 13px;font-size:13px;border-radius:var(--r-sm);gap:7px}", ""),
     "phonebar": ("app.css", "  .appbar{flex-wrap:wrap;height:auto;gap:8px 6px;padding:8px 14px;position:static}.brand{margin-right:auto}\n",
                  "  .appbar{gap:14px;padding:0 14px}\n"),
+    "rutight": ("app.css", '@media (min-width:1280px) and (max-width:1365px){html[lang="ru"] .appbar{gap:14px}html[lang="ru"] .appbar-right,'
+                           'html[lang="ru"] .updslot{gap:8px}\n  html[lang="ru"] .tabs a{padding:8px 7px}}\n', ""),
     "railclear": ("app.css", "@media (min-width:901px) and (max-width:1352px){:root:has(.trafficrail) .view{padding-right:70px}}\n", ""),
     "cmdhost": ("js/sheets-crud.js", 'const host = String(Store.panelPublicUrl || "").trim().replace(/\\/+$/, "") || `${location.origin}${BASE}`;',
                 "const host = `${location.origin}${BASE}`;"),
@@ -621,6 +625,10 @@ try:
     tab.close()
 
     # ── [B14] the app bar on a phone ─────────────────────────────────────────────────────────────────────────────────────────
+    FULL = """(() => { const u = document.getElementById('updslot');
+      if (u && !u.querySelector('.updpill')) u.insertAdjacentHTML('afterbegin', '<button class="livepill updpill">'
+        + (document.documentElement.lang === 'ru' ? 'обновить до <b>1.8.10-beta</b>' : 'update to <b>1.8.10-beta</b>') + '</button>');
+      for (const id of ['host-tport', 'vaultlock-btn', 'logs-btn']) { const e = document.getElementById(id); if (e) e.hidden = false; } })()"""
     BAR = """(() => { const bar = document.querySelector('.appbar'), br = bar.getBoundingClientRect();
       const ctl = [...bar.querySelectorAll('a,button,.livepill,.tport')].filter(e => !e.hidden && e.getClientRects().length)
         .map(e => { const r = e.getBoundingClientRect(), hit = document.elementFromPoint(Math.min(innerWidth - 1, r.left + r.width / 2), r.top + r.height / 2);
@@ -639,7 +647,22 @@ try:
         tab.close()
         tab = open_app(lang, viewport=(1280, 900))
         m = tab.ev(BAR)
-        check("[B14] %s 1280 px: the one sticky 56 px row it was" % lang, m["h"] == 56 and m["pos"] == "sticky", {k: m[k] for k in ("h", "pos")})
+        bad = [c for c in m["ctl"] if not c["ok"]]
+        if lang == "en":
+            check("[B14] en 1280 px: the one sticky 56 px row it was, everything on the screen", m["h"] == 56 and m["pos"] == "sticky" and not bad,
+                  bad or {k: m[k] for k in ("h", "pos")})
+        else:
+            check("[B14] ru 1280 px: the one sticky 56 px row, every header control on the screen and tappable",
+                  m["h"] == 56 and m["pos"] == "sticky" and not bad and m["right"] <= m["vw"], bad or {k: m[k] for k in ("vw", "right", "h", "pos")})
+        # every header control on — the widest the bar gets — and measured in the same task: the header repaints its slots on the poll
+        m = tab.ev("(" + FULL + ", " + BAR + ")")
+        bad = [c for c in m["ctl"] if not c["ok"]]
+        if lang == "ru":
+            check("[B14] ru 1280 px, every header control on: still one 56 px row, Log out and the rest on the screen and tappable (before: Log out at 1 272–1 308 px)",
+                  m["n"] >= 12 and not bad and m["right"] <= m["vw"] and m["h"] == 56, bad or {k: m[k] for k in ("vw", "right", "h")})
+        else:
+            check("[B14] en 1280 px, every header control on: still the one 56 px row, everything on the screen", m["n"] >= 12 and not bad and m["h"] == 56,
+                  bad or {k: m[k] for k in ("vw", "right", "h")})
         tab.close()
 
     # ── [B15] the traffic rail and the rows' actions ────────────────────────────────────────────────────────────────────────
