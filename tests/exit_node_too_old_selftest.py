@@ -48,8 +48,9 @@ if PP:
     SRC = SRC.replace(_DERIVE, '            _x_unsup = False\n')
 
 panel = PANEL
-if PP:
-    _fd, panel = tempfile.mkstemp(suffix=".py", prefix="xtoo-", dir=HERE)
+if PP:                                           # the planted copy (and its pyc) in a temp dir, never in tests/
+    _pd = tempfile.mkdtemp(prefix="xtoo-panel-")
+    _fd, panel = tempfile.mkstemp(suffix=".py", prefix="xtoo-", dir=_pd)
     os.write(_fd, SRC.encode()); os.close(_fd)
 _l = importlib.machinery.SourceFileLoader("swgpanel", panel)
 P = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgpanel", _l))
@@ -58,7 +59,7 @@ try:
 except SystemExit:
     pass
 if PP:
-    os.unlink(panel)
+    shutil.rmtree(_pd, ignore_errors=True)
 P.ev_append = lambda *a, **k: None
 
 EXITS = [{"id": "aabbccdd", "label": "imported one", "producer": "imported", "provider": "warp",
