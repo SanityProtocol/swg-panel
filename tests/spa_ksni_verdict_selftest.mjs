@@ -7,8 +7,14 @@
  * push operators off a mode that now does what they asked. What stays gated is the one thing the kernel may still be
  * unable to do: bind a per-person row's devices (`src < 2`), for every action alike.
  *
+ * …and the one thing a name rule there still cannot do: run above "Everything else → Block" (F105, the 1.8.8 qualification's
+ * #18). On both SNI engines the catch-all drops each new connection to an address no rule has learned yet, before its site name
+ * is read, so a name rule above it never sees one — an allow-list by name blocks everything. The datapath change was judged not
+ * worth it; the rule list says so where it is built, EN + RU (`catchAllPreemptsNames`, the notice under the list).
+ *
  * Run: node tests/spa_ksni_verdict_selftest.mjs
- *      --perturb   puts the pre-1.8.8 verdict branch back into `rowGate` and expects red.
+ *      --perturb        puts the pre-1.8.8 verdict branch back into `rowGate` and expects red.
+ *      --perturb f105   the catch-all warning never shown again — expects red in [F105].
  */
 import { spa, check, done, ROOT } from "./spa_env.mjs";
 import fs from "node:fs";
@@ -16,8 +22,16 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const PERTURB = process.argv.includes("--perturb");
+const F105 = PERTURB && process.argv[process.argv.indexOf("--perturb") + 1] === "f105";
 let R;
-if (PERTURB) {
+if (F105) {
+  const src = fs.readFileSync(path.join(ROOT, "js", "routing.js"), "utf8");
+  const a = 'export const catchAllPreemptsNames = (mode, rows, catchAll) => (mode === "sni" || mode === "sni_kernel")';
+  if (src.split(a).length !== 2) { console.log("ANCHOR MISSING: catchAllPreemptsNames"); process.exit(1); }
+  const tmp = path.join(ROOT, "js", "__perturb_ksni_verdict.js");
+  fs.writeFileSync(tmp, src.replace(a, "export const catchAllPreemptsNames = () => false; const _was = (mode, rows, catchAll) => (mode === \"sni\" || mode === \"sni_kernel\")"));
+  try { R = await import(pathToFileURL(tmp).href); } finally { fs.unlinkSync(tmp); }
+} else if (PERTURB) {
   const src = fs.readFileSync(path.join(ROOT, "js", "routing.js"), "utf8");
   const a = "  if (!(row && row.who) || ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) >= 2) return g;\n";
   if (src.split(a).length !== 2) { console.log("ANCHOR MISSING: the per-person line the old branch sat above"); process.exit(1); }
@@ -71,4 +85,22 @@ const txt = typeof sum === "string" ? sum : JSON.stringify(sum);
 check("the Kernel-SNI summary counts nothing as unable to run", !/can.t run here/.test(txt), txt);
 const card = JSON.stringify(MODE_META.sni_kernel);
 check("the Kernel SNI card no longer says a site name picks an exit only", !/exit only|Substring match only|content filters inert/.test(card), card.slice(0, 300));
-done(PERTURB, "the pre-1.8.8 verdict branch put back");
+console.log("\n[F105: a site-name rule above \"Everything else → Block\" on an SNI engine is said to be pre-empted]");
+const blockAll = { enabled: true, category: "all", action: "block" };
+const pre = (mode, rows, ca = blockAll) => { try { return R.catchAllPreemptsNames(mode, rows, ca); } catch (e) { return "THREW " + e.message; } };
+check("[F105] Hybrid SNI and Kernel SNI: a Direct or Exit rule by site name above a catch-all Block is said",
+      pre("sni", [dirSite]) === true && pre("sni_kernel", [exitSite]) === true, [pre("sni", [dirSite]), pre("sni_kernel", [exitSite])]);
+check("[F105] …and a list with sites in it, alone or with networks", pre("sni", [dirHost]) === true && pre("sni_kernel", [row("exit", { t: "list", id: "cl_mix" })]) === true,
+      [pre("sni", [dirHost]), pre("sni_kernel", [row("exit", { t: "list", id: "cl_mix" })])]);
+check("[F105] not said where nothing is lost: by address only, a Block rule above, a disabled row",
+      pre("sni", [row("direct", tgt("203.0.113.0/24"))]) === false && pre("sni", [blkSite, blkMix]) === false
+      && pre("sni", [{ ...dirSite, enabled: false }]) === false, [pre("sni", [row("direct", tgt("203.0.113.0/24"))]), pre("sni", [blkSite, blkMix])]);
+check("[F105] not said for a catch-all that is not a Block, or none, or on an engine that reads names first (Force-DNS) or none (IP)",
+      pre("sni", [dirSite], { enabled: true, category: "all", action: "direct" }) === false && pre("sni", [dirSite], null) === false
+      && pre("forcedns", [dirSite]) === false && pre("kernel", [dirSite]) === false, "");
+const RT = fs.readFileSync(path.join(ROOT, "js", "routing.js"), "utf8"), RUS = fs.readFileSync(path.join(ROOT, "js", "lang", "ru.js"), "utf8");
+const SAY = "“Everything else → Block” stops each new connection before its site name is read, so the rules above that match by site name never take effect: those sites are blocked too. Route them by address (an IP range or a network) instead, or block by name only what you don't want.";
+check("[F105] the rule list shows the warning under the list when it holds, with its Russian line",
+      RT.includes("${catchAllPreemptsNames(_mode, dispRows, catchAll) ? html`<div class=\"notice warn\"><${Ic} i=\"warn\"/><span>${T(" + JSON.stringify(SAY) + ")}")
+      && RUS.includes(JSON.stringify(SAY) + ":\n    \"«Всё остальное → Заблокировать» останавливает каждое новое соединение раньше, чем прочитано имя сайта"), "");
+done(PERTURB, F105 ? "the catch-all warning never shown" : "the pre-1.8.8 verdict branch put back");
