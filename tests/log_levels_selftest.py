@@ -14,7 +14,8 @@
   [5] The P2P guard's nft rules lose their `log` below Info — through the real apply path.
   [6] The "why it failed" readers say so when the level is why: turn verify, WDTT verify, the agent's unit start, the
       netctl status tail.
-  [7] swg-sni drops a line above the level before queueing it, and its per-host lines are Debug.
+  [7] swg-sni drops a line above the level before queueing it, and its per-host lines are Debug. A full queue's line names
+      its cause and keeps to the level (1.8.9 qualification HE-9: "more than 100 a second", written at Errors too).
 
 Run: python3 tests/log_levels_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
@@ -45,6 +46,8 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
      subserve     the panel leaves the level out of swg-sub's serve.json
      relaydst     the relay's --dst test reads the node's level at start
      relaydstloop the relay's --dst test reads the node's level again at its first report
+     snidropcause swg-sni's full-queue line blames a rate again ("more than 100 a second")
+     snidroplevel swg-sni writes its full-queue line (a warning) whatever the level
   [8] swg-sub follows the fleet's level from subs/serve.json (it cannot read panel-settings.json).
   [9] swg-relay's hand-run --dst test prints all it measures — the probe, the listening line, --report's counters — at
       any node level, as 1.8.8 did (1.8.9 qualification HE-10: at Errors only its error line, at Off nothing); the
@@ -106,6 +109,9 @@ PLANTS = {   # (program, anchor, replacement)
                  '''        pass'''),
     "updatelog": ("netctl", '''        caps["swg-update.service"] += "SyslogLevel=%s\\n" % cap\n''', "        pass\n"),
     "relaydst": ("relay", '''        _LOG["level"] = LOG_DEBUG                # counters)''', '''        log_reread()                # counters)'''),
+    "snidropcause": ("sni", '''"swg-sni: %d lines not written (queue full, %d waiting)",\n                                     (dropped, SAY_MAX)''',
+                     '''"swg-sni: %d lines not written (more than %d a second)",\n                                     (dropped, SAY_RATE)'''),
+    "snidroplevel": ("sni", '''        if dropped and LOG_WARNING <= _SAY["level"]:''', '''        if dropped:'''),
     "relaydstloop": ("relay", '''            if not a.dst:\n                log_reread()                     # the level may have moved''',
                      '''            if True:\n                log_reread()                     # the level may have moved'''),
 }
@@ -591,6 +597,37 @@ check("[7] at Debug it is, formatted only when written",
 per_host = re.findall(r'say\((LOG_\w+), "swg-sni: %s → ', SRC["sni"])
 check("[7] both per-host lines are Debug (users' visited hosts stay out of the default level)",
       per_host == ["LOG_DEBUG", "LOG_DEBUG"], per_host)
+
+
+def sni_at(level):
+    """A fresh swg-sni whose level file says `level`; what its writer writes lands in its own buffer."""
+    open(lvl_file, "w").write(level + "\n")
+    m = load("sni", {"SWG_LOG_LEVEL_FILE": lvl_file})
+    m.sys = types.SimpleNamespace(stdout=io.StringIO())
+    return m
+
+
+def written(m, until=lambda o: False, secs=3.0):
+    """What `m`'s writer has written, once `until` holds or `secs` have passed."""
+    end = time.monotonic() + secs
+    while not until(m.sys.stdout.getvalue()) and time.monotonic() < end:
+        time.sleep(0.05)
+    return m.sys.stdout.getvalue()
+
+
+for lv, what in (("3 3", "Errors"), ("6 6", "Info")):
+    S9 = sni_at(lv)
+    for i in range(S9.SAY_MAX + 500):                  # more than the queue holds, at once
+        S9.say(S9.LOG_ERR, "swg-sni: err %d", i)
+    o = written(S9, (lambda o: "not written" in o) if what == "Info" else (lambda o: False), 2.5)
+    full = [l for l in o.splitlines() if "not written" in l]
+    if what == "Errors":
+        check("[7] at Errors a full queue's line (a warning) is not written; the errors are",
+              not full and "E swg-sni: err 0" in o, full[:2])
+    else:
+        check("[7] at Info it is, naming its cause — the queue was full (not a rate)",
+              len(full) == 1 and re.fullmatch(r"W swg-sni: \d+ lines not written \(queue full, %d waiting\)" % S9.SAY_MAX, full[0]),
+              full[:2])
 
 # ── [8] swg-sub ─────────────────────────────────────────────────────────────────────────────────────────────────────
 print("[8] swg-sub")
