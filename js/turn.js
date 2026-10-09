@@ -2123,7 +2123,9 @@ export function WdttManageSheet({ node, w: w0 }) {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], bind_ip: pin, ...egressBody(egressInit(cfg)) })
+    // "Listen on" only when the pick changed, as TurnManageSheet does: the field is seeded from the node's report too, which
+    // trails a save — resent with every params save, a stale report re-pinned a saved Auto (q189 SPA-7)
+    api.wdttSet({ node, iface, listen: newListen, wg_port: wgPort, fork, title: title.trim(), params: params.trim(), raw: rawWant, block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...egressBody(egressInit(cfg)) })
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed"));
         reportDropped(r);   // §5.4
         const mv = ((r.data || {}).raw_moved || "");
@@ -2539,7 +2541,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     const key = node + "|" + iface, verb = "apply";
     Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     const fail = m => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 6000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 6100); };
-    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], bind_ip: pin, ...(lineDirty ? { line } : {}), ...egressBody(egressInit(cfg)) })
+    api.csqttSet({ node, iface, listen: newListen, title: title.trim(), params: params.trim(), block: cfg.block || [], ...(pinDirty ? { bind_ip: pin } : {}), ...(lineDirty ? { line } : {}), ...egressBody(egressInit(cfg)) })   // Listen on: as WdttManageSheet's
       .then(r => { if (!r.ok) return fail(srvText(r) || T("save failed")); reportDropped(r); Store.poll(); })   // §5.4
       .catch(e => fail((e && e.message) || T("save failed")));
   };
