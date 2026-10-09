@@ -34,6 +34,11 @@
   [15] q189 F2 — ONE NODE'S MALFORMED REPORT NEVER FAILS /api/state FOR EVERY OPERATOR: `smartroute` or its `p2p` that is
        not an object (a string, a list, a number) is read as "not reported" by _node_issues — never an exception — and
        /api/state through the real api() answers 200 with that node's p2p_node null (it was a 500 on every poll)
+  [17] q189 SPA-2 / PR-7 — an exit write re-bases the Settings draft's torrent route with the exits (rebaseDefault, the
+       same writer that already re-bases the default list): taken from the server where it was not being edited, and a
+       route through a removed exit made Block where it was (prune_p2p_refs' rule) — else every later save of the node
+       posted the dead route and was refused "torrents can only be routed through one of this node's exits" until a reload
+       (measured in the browser: Settings → WARP → Remove, then a Network change → Save → 400)
   [16] q189 NR-2 (panel row): a node whose torrent rules failed to load (p2p state "error") is SAID, in one translated
        sentence with nft's own line as its value (as it is, cut at 160) — under any policy, iface included, and in place
        of the route rows; no detail → the same sentence without it; state ok/degraded → nothing
@@ -95,6 +100,9 @@ PLANTS = {
     "spa-inline-stale": ('      const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";',
                          '      const tgtSt = tgt ? (((Store.recon || {}).nodeStatus) || {})[tgt.id] : undefined;\n      const tgtStale = !tgtDrops && !!tgtSt && tgtSt !== "live";'),
     "spa-custom-name": ('  return x ? exitLabel(x, node) : String(p.exit_id || "");', '  return exitLabel(x || { id: p.exit_id }, node);'),
+    # q189 SPA-2: the draft's torrent route is no longer re-based with the exits
+    "spa-p2p-rebase": ("      const p2p = eq(cur.p2p, o.p2p) ? fresh.p2p\n", "      const p2p = cur.p2p; ({}).x = eq(cur.p2p, o.p2p) ? fresh.p2p\n"),
+    "spa-p2p-orig":   ("default_exit: fresh.default_exit, p2p: fresh.p2p } }));", "default_exit: fresh.default_exit } }));"),
     "unpublished":   ('                        "p2p_eff": p2p_policy(c),\n', ""),
 }
 
@@ -318,6 +326,15 @@ def run_checks(src, spa=None):
     ok("lets torrents through. Pick a setting" not in spa and "Pick a setting to keep it from changing" not in spa,
        "[13] …as the default, not as a value that follows the interfaces")
     ok('{ action: node.p2p_eff || "block" }' in spa, "[13] with no p2p_eff from the server the card shows block, the default")
+    # [17] q189 SPA-2: the exit writers' re-base carries the torrent route
+    rb = spa[spa.find("const rebaseDefault = (nid, fresh) => {"):]
+    rb = rb[:rb.find("\n  };\n")]
+    ok("const p2p = eq(cur.p2p, o.p2p) ? fresh.p2p" in rb, "[17] an unedited torrent route in the draft is taken from the server after an exit write")
+    ok('cur.p2p.action === "dev" && !live.has(String(cur.p2p.exit_id || "")) ? { action: "block" }' in rb,
+       "[17] …an edited one through a removed exit becomes Block, as the server's prune makes it")
+    ok(", p2p } }; });" in rb, "[17] …and the draft is written with it")
+    ok("p2p: fresh.p2p } }));" in rb, "[17] …and `orig` follows the server, so the section is not left dirty by the prune")
+    ok(spa.count("rebaseDefault(selNode, fresh);") == 3, "[17] all three exit writers call the re-base (%d)" % spa.count("rebaseDefault(selNode, fresh);"))
     return fails
 
 
