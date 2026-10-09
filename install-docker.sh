@@ -301,16 +301,17 @@ PY
 ) ; return 0; }   # a record line with an empty service would leave the loop non-zero → trips set -e at the bare callers
 # One instance == one container (swg-turn-<fork>-<port>) so the SAME fork can run many times
 # (2× wings, 3× samosvalishe, …) — each on its own port with its own wrap key.
-install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" port inst svc
+install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" pin="${6:-}" port inst svc
   # CONTAINER model: don't install a host systemd unit or download here — just write the turn RECORD.
   # swg-noded materialises it into a sibling container (swg-turn-*) on its next start (it fetches the binary).
+  # `listen` is what clients DIAL; `pin` the operator's "Listen on" (bind_ip), kept only when it is an address.
   port="${listen##*:}"; inst="$fork-$port"; svc="vk-turn-proxy-$inst"
   if $DRYRUN; then echo "    [skip] record turn-proxy $svc ($owner: $listen → $connect) in $TURN_RECORD"
   else
     mkdir -p "$(dirname "$TURN_RECORD")"
-    python3 - "$TURN_RECORD" "$svc" "$owner" "$listen" "$connect" "$extra" <<'PY' || { warn "couldn't write turn record"; return 0; }
+    python3 - "$TURN_RECORD" "$svc" "$owner" "$listen" "$connect" "$extra" "$pin" <<'PY' || { warn "couldn't write turn record"; return 0; }
 import json, sys, re
-p, svc, owner, listen, connect, extra = sys.argv[1:7]
+p, svc, owner, listen, connect, extra, pin = sys.argv[1:8]
 try:
     d = json.load(open(p)); tps = d.get("turn_proxies") if isinstance(d, dict) else None
     tps = tps if isinstance(tps, list) else []
@@ -319,7 +320,8 @@ except Exception:
 tps = [t for t in tps if t.get("service") != svc]
 m = re.search(r"-wrap-key[ =]+(\S+)", extra or "")
 tps.append({"service": svc, "listen": listen, "connect": connect,
-            "params": (extra or "").strip(), "wrap_key": (m.group(1) if m else ""), "owner": owner})
+            "params": (extra or "").strip(), "wrap_key": (m.group(1) if m else ""), "owner": owner,
+            **({"bind_ip": pin} if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", pin or "") else {})})
 json.dump({"turn_proxies": tps}, open(p, "w"))
 PY
   fi
@@ -380,19 +382,24 @@ fwd_resolve(){ local n p x; while read -r n p x; do [ -n "$n" ] && [ "$n" = "$1"
 # the atomic switch tears them down (recorded in MIGRATED_TURNS). Decline ⇒ left on bare-metal (stopped at switch).
 migrate_baremetal_turns(){
   [ "${SWG_CONVERT_DIR:-}" = convert-docker ] || return 0
-  local units u svc owner lis con params envf exe inst
+  local units u svc owner lis con params envf exe inst pin
   units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null)" || true
   [ -n "$units" ] || return 0
   echo; info "Turn-proxies to migrate from the bare-metal node:"; echo
+  # SWG_LISTEN is what the proxy BINDS (swg-noded turn_bind); what clients dial, when it differs, is SWG_DIAL — and the record
+  # keeps the dialled host, as install-node.sh / convert.sh read it. The operator's "Listen on" (SWG_PIN) goes with it as bind_ip.
   for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
-    lis=""; con=""; [ -f "$envf" ] && { lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; }
+    lis=""; con=""; [ -f "$envf" ] && { lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" | sed -n 1p)"; [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"
+                                        con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; }
     printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "${lis:-?}" "${con:-?}"; done
   echo
   # Approach B: auto-carry — always migrate the existing turn-proxies (no prompt). New ones are created from the panel.
   for u in $units; do
-    svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
+    svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"; pin=""
     if [ -f "$envf" ]; then
-      lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" | sed -n 1p)"
+      lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" | sed -n 1p)"; [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"
+      pin="$(sed -n 's/^SWG_PIN=//p' "$envf" | sed -n 1p)"
+      con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" | sed -n 1p)"
     else
       exe="$(sed -n 's/^ExecStart=//p' "$u" | sed -n 1p)"
       lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"; con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
@@ -401,7 +408,7 @@ migrate_baremetal_turns(){
     owner="$(sed -n 's/.*vk-turn-proxy (\([^)]*\)).*/\1/p' "$u" | sed -n 1p)"
     [ "$owner" = "samosvalishe/free-turn-proxy" ] && owner="hackdiaz-dev/free-turn-proxy"   # repo deleted 2026-10; hackdiaz-dev carries it on
     fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"
-    install_turn_binary "$fork" "$owner" "$lis" "$con" "$params"     # writes the docker turn RECORD (no host unit)
+    install_turn_binary "$fork" "$owner" "$lis" "$con" "$params" "$pin"   # writes the docker turn RECORD (no host unit)
     MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"          # tear the bare unit down at the atomic switch
   done
 }
