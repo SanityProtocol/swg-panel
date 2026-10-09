@@ -144,8 +144,12 @@ reset(); r = build(EXEC); c = calls()
 check("CONTROL: another refusal → it is cloned and built", "CLONE https://github.com/amnezia-vpn/amneziawg-linux-kernel-module" in c, r.stdout + c)
 
 print("\n[4] build_awg_module, driven")
+# the --reinstall goes through lib's awg_dkms_reinstall (IN-10: its source fixed again, dpkg finished, a non-compiling build
+# given up — driven in tests/awg_compat_patch_selftest.py [4c]); here only whether build_awg_module reaches it
+REINST = grab("lib/common.sh", "awg_dkms_reinstall") + ('awg_compat_patch_installed(){ return 1; }\nawg_dpkg_recover(){ :; }\n'
+                                                       'awg_dkms_compile_failed(){ return 1; }\nawg_dkms_give_up(){ :; }\n')
 for f in ("install-node.sh", "install-host.sh"):
-    fn = grab_text(f, "build_awg_module")
+    fn = REINST + grab_text(f, "build_awg_module")
     for err, name, want in ((KEY, "refused for its key", False), (EXEC, "CONTROL: another refusal", True)):
         reset()
         r = sh('awg_dkms_build_all_kernels(){ :; }\n' + fn + 'build_awg_module; echo DONE', modprobe_err=err); c = calls()
@@ -164,7 +168,7 @@ check("update.sh: the heal stops at a refused key — the note, userspace, one c
 check("update.sh: Secure Boot is asked BEFORE 'nothing new to try' (an old compile record would give the wrong reason)",
       U.index('if [ "$_tools" = yes ] && awg_mod_key_rejected; then') < U.index('have amneziawg-go && awg_nothing_new; then'))
 check("update.sh: the package route's retry skips the --reinstall for a refused key",
-      "modprobe amneziawg 2>/dev/null || awg_mod_key_rejected || { run apt-get install --reinstall -y amneziawg-dkms" in U)
+      "modprobe amneziawg 2>/dev/null || awg_mod_key_rejected || { awg_dkms_reinstall" in U)
 check("update.sh: the closing userspace line names Secure Boot when it was recorded",
       'userspace (amneziawg-go); $(if awg_key_refused_here; then echo "Secure Boot refuses the kernel module' in U)
 

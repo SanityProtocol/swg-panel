@@ -25,10 +25,15 @@ What this drives:
       and is NOT given up on; a build that still fails after the fix is (the record of tests/awg_module_failed_selftest).
       (1.8.9 qualification IN-12(b)) dpkg --configure -a runs with no terminal (stdin /dev/null) and keeps a changed
       config file (--force-confdef --force-confold): a pending package's conffile question waited unseen
+  [4c] (1.8.9 qualification IN-10) the --reinstall fallback — build_awg_module (install-node AND install-host, driven) and
+      update.sh's heal: a patched module that built but will not load (an LXC guest) is reinstalled, which puts the source
+      back AS SHIPPED and fails its build on 7.0.0-38 — the source is fixed again, dpkg finished (configured), and a build
+      that still does not compile is given up (removed, recorded; build_awg_module says 1). It was left half-configured
   [5] the fix is applied on every path that builds: the package route, the source build, the update's source
       registration, the installers' "already working" return, every update, and after a package upgrade
 
 Run: python3 tests/awg_compat_patch_selftest.py      (0 = pass)
+     --perturb-reinstall the fallback as e66018f shipped it (a bare --reinstall) → RED on [4c] only
      --perturb-confold   awg_dpkg_recover as e66018f shipped it (the terminal as stdin, no conffile answer) → RED on [4]'s dpkg line only
 """
 import os, shutil, subprocess, sys, tempfile
@@ -43,12 +48,18 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 PERTURB_CONFOLD = "--perturb-confold" in sys.argv[1:]
+PERTURB_REINSTALL = "--perturb-reinstall" in sys.argv[1:]
 _LIB = os.path.join(ROOT, "lib/common.sh")
-if PERTURB_CONFOLD:
-    _a = "dpkg --force-confdef --force-confold --configure -a </dev/null >/dev/null"
+if PERTURB_CONFOLD or PERTURB_REINSTALL:
+    if PERTURB_CONFOLD:
+        _a, _b = "dpkg --force-confdef --force-confold --configure -a </dev/null >/dev/null", "dpkg --configure -a >/dev/null"
+    else:   # the bare --reinstall: nothing after it to fix the source, recover or give up
+        _a = ("  $DRYRUN && return 0\n  if awg_compat_patch_installed; then awg_dpkg_recover || true; fi\n"
+              "  if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi\n  return 0; }\n\n")
+        _b = "  return 0; }\n\n"
     assert C.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
     _fd, _LIB = tempfile.mkstemp(prefix="awgcompat-lib-", suffix=".sh")
-    os.write(_fd, C.replace(_a, "dpkg --configure -a >/dev/null").encode()); os.close(_fd)
+    os.write(_fd, C.replace(_a, _b).encode()); os.close(_fd)
 def grab_all(*names):
     r = subprocess.run(["bash", "-c", 'source "$1" >/dev/null 2>&1; declare -p AWG_COMPAT_MARK; declare -f "${@:2}"', "_",
                         _LIB] + list(names), capture_output=True, text=True)
@@ -64,7 +75,7 @@ COMPAT = "/* upstream compat.h, abridged */\n#endif\n\n" + OLD_BLOCK + "\n#if LI
 T = tempfile.mkdtemp(prefix="awgcompat-")
 FUNCS = grab_all("awg_compat_patch", "awg_compat_patch_installed", "awg_dpkg_recover", "awg_fail_get", "awg_fail_note",
                  "awg_pkg_retry_due", "awg_mod_built", "_awg_kbuild", "awg_dkms_compile_failed", "awg_dkms_give_up",
-                 "awg_ppa_module_install")
+                 "awg_ppa_module_install", "awg_dkms_reinstall", "awg_mod_key_rejected")
 STUBS = 'have(){ command -v "$1" >/dev/null 2>&1; }\nDRYRUN=false\ninfo(){ echo "INFO $*"; }\nwarn(){ echo "WARN $*"; }\n'
 def sh(body, env=None):   # stdin a pipe, never a terminal or /dev/null: what a command ran with is then what it was given
     return subprocess.run(["bash", "-c", STUBS + FUNCS + body], capture_output=True, text=True, env=dict(os.environ, T=T, **(env or {})),
@@ -149,6 +160,44 @@ r, c = ppa(False)
 check("still failing after the fix → given up on (packages removed, record kept)",
       "RC1" in r.stdout and "apt-get remove -y" in c and "amneziawg-dkms amneziawg" in c and os.path.exists(T + "/awg-module-failed"), r.stdout + c)
 
+print("\n[4c] the --reinstall fallback fixes the source again, finishes dpkg, gives up a build that does not compile (IN-10)")
+def reinstall(f, builds_after_fix):
+    shutil.rmtree(os.path.join(T, "usr"), ignore_errors=True)
+    p = os.path.join(T, "usr", "amneziawg-1.0.0", "compat"); os.makedirs(p); open(p + "/compat.h", "w").write(COMPAT)
+    sh('awg_compat_patch_installed >/dev/null', {"SWG_USR_SRC": T + "/usr"})   # the box before: the patched source built…
+    for x in ("awg-module-failed", "calls", "removed"):
+        if os.path.exists(T + "/" + x): os.remove(T + "/" + x)
+    open(T + "/state", "w").close()                                          # …the package configured, the module built
+    os.makedirs(T + "/dkms/amneziawg/1.0.0/build", exist_ok=True)
+    fn = H[H.index("\nbuild_awg_module(){") + 1:] if f == "install-host.sh" else N[N.index("\nbuild_awg_module(){") + 1:]
+    fn = fn[:fn.index("\n}\n") + 3]
+    body = ('uname(){ [ "$1" = -r ] && echo %s || command uname "$@"; }\n'
+            'modprobe(){ echo "modprobe: ERROR: could not insert amneziawg: Operation not permitted" >&2; return 1; }\n'   # LXC: no key
+            'modinfo(){ case "$*" in *-F*) return 0;; esac; [ -f "$T/state" ]; }\nawg_dkms_build_all_kernels(){ :; }\n'
+            'run(){ echo "RUN $*" >> "$T/calls"; case "$*" in '
+            '*"--reinstall -y amneziawg-dkms"*) printf %%s "$SHIPPED" > "$T/usr/amneziawg-1.0.0/compat/compat.h"; rm -f "$T/state"; '
+            'echo "compat.h:812:9: error: too many arguments to function setup_udp_tunnel_sock" > "$T/dkms/amneziawg/1.0.0/build/make.log";; '
+            '*"dpkg "*"--configure -a"*) %s;; *"apt-get remove"*) touch "$T/removed";; esac; }\n'
+            'dpkg(){ case "$1" in --audit) [ -f "$T/state" ] || [ -f "$T/removed" ] || echo "amneziawg-dkms half-configured";; esac; }\n'
+            'dpkg-query(){ case "$*" in *Status*) if [ -f "$T/removed" ]; then printf "rc "; elif [ -f "$T/state" ]; then printf "ii "; '
+            'else printf "iF "; fi;; *Version*) printf "1.0.0-0~202609140848+4569c4c~ubuntu26.04.1";; esac; }\n'
+            'AWG_MOD_FAILED="$T/awg-module-failed"; SWG_LIB_MODULES="$T/mods"; SWG_USR_SRC="$T/usr"; SWG_DKMS_TREE="$T/dkms"\n'
+            ) % (KV, ('grep -q "PR #218" "$T/usr/amneziawg-1.0.0/compat/compat.h" && touch "$T/state"') if builds_after_fix else ':')
+    r = sh(body + fn + 'build_awg_module && echo RC0 || echo RC1\n', {"SHIPPED": COMPAT})
+    c = open(T + "/calls").read() if os.path.exists(T + "/calls") else ""
+    return r, c, "PR #218" in open(p + "/compat.h").read()
+for f in ("install-node.sh", "install-host.sh"):
+    r, c, patched = reinstall(f, True)
+    check("%s: reinstalled (the shipped source back, its build failed) → fixed again, dpkg finished, configured, not given up" % f,
+          "--reinstall -y amneziawg-dkms" in c and patched and c.find("--reinstall") < c.find("--configure -a")
+          and os.path.exists(T + "/state") and "remove" not in c and not os.path.exists(T + "/awg-module-failed"), r.stdout + r.stderr + c)
+    r, c, patched = reinstall(f, False)
+    check("%s: …still not compiling after the fix → given up: removed, recorded, build_awg_module says 1 (no rebuild after)" % f,
+          "RC1" in r.stdout and "apt-get remove -y" in c and os.path.exists(T + "/awg-module-failed")
+          and "dkms autoinstall" not in c[c.find("--reinstall"):], r.stdout + r.stderr + c)
+check("update.sh: its heal's --reinstall is the same fallback, and a give-up skips the rebuild after it",
+      "|| awg_mod_key_rejected || { awg_dkms_reinstall \\\n                                          && run dkms autoinstall" in UP)
+
 print("\n[5] every path that builds applies it")
 fb = C[C.index("\nawg_build_from_source(){"):]
 check("the source build fixes its clone before building it",
@@ -163,9 +212,10 @@ check("update.sh: every update fixes the source and finishes dpkg", "if ! $DRYRU
 check("update.sh: a package upgrade is judged only after the fix", "&& ! { awg_compat_patch_installed && awg_dpkg_recover; }; then" in UP)
 
 print("")
-if PERTURB_CONFOLD:
-    _red = [f for f in FAILS if "no terminal and the old config file kept" in f]
-    print("perturb: %s" % ("RED as it must be (%d), all [4]'s dpkg line" % len(_red) if _red and len(_red) == len(FAILS)
+if PERTURB_CONFOLD or PERTURB_REINSTALL:
+    _red = [f for f in FAILS if (("no terminal and the old config file kept" in f) if PERTURB_CONFOLD
+                                 else ("reinstalled" in f or "still not compiling" in f))]
+    print("perturb: %s" % ("RED as it must be (%d), all %s" % (len(_red), "[4]'s dpkg line" if PERTURB_CONFOLD else "[4c]") if _red and len(_red) == len(FAILS)
                            else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
