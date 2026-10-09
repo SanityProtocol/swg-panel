@@ -23149,7 +23149,28 @@ def _release_startup_memory():
         pass
 
 
+def _sigterm_exit(_sig, _frm):
+    """SIGTERM → exit at once (the panel's _sigterm_exit). os._exit, not SystemExit: the daemon threads (the turn
+    reconcile, the mesh probe, live readers) hold nothing to close, and finalization can abort in the stdout lock."""
+    with contextlib.suppress(Exception):
+        sys.stdout.flush(); sys.stderr.flush()
+        if _LOG_FILE["f"]:
+            _LOG_FILE["f"].flush()
+    os._exit(0)
+
+
+def _pid1_signals():
+    """As a container's PID 1 swg-noded IGNORED SIGTERM — a PID 1 has no default action, and one sent from outside its
+    namespace is delivered only to a handler — so every container stop waited 10 s for SIGKILL: +10 s of client outage on
+    each update, restart, recreate and arm switch (1.8.9 qualification NX-L1). Off PID 1 (bare metal) the default stays:
+    SIGTERM ends it at once."""
+    if os.getpid() == 1:
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(signal.SIGTERM, _sigterm_exit)
+
+
 def main():
+    _pid1_signals()
     if NODE_KIND == "docker":                       # our own log file from the first line, startup and its errors included
         with contextlib.suppress(Exception):
             log_file(os.path.join(LOG_DIR_DOCKER, "swg-noded.log"), _log_docker_caps(_LOG_BUDGET["mb"]))
