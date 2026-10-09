@@ -16393,6 +16393,48 @@ def _catalog_last_good():
     except Exception:
         return {}
 
+def sync_cat_caps(plan_cats, cix, cix_have, blk_srcs, snap):
+    """The category caps a node's sync carries, and the categories the node must keep its own caps for: (caps, keep), or
+    (None, []) to omit the key (absent means "keep yours"). Curated categories come from SMART_CAPS, the block feeds and
+    unions from what this node blocks (`blk_srcs`), provider categories from the catalog.
+    WITHOUT A CATALOG, WHAT THE PANEL CAN STILL RESOLVE IS SENT (q189 D12-OBS-1): the curated and block caps (they never
+    depended on the catalog) and a provider list the panel already holds (the tiers it holds). Only a PROVIDER category it
+    cannot look up at all waits. The catch-all `all` and a custom rule need no caps — counting them as catalog-dependent
+    withheld every cap from every Smart interface's node, so a fresh or restarted node had no host cap for its block union
+    and Hybrid SNI / Force-DNS blocked nothing while the screen counted the list (measured: api.github.com rate-limited, no
+    catalog-index.json). A node that keeps its caps for the categories named in `cat_caps_keep` is sent the rest; one that
+    would clear them (no `caps_keep` in its report) keeps the old omission, so nothing it holds is lost."""
+    caps = {**{c: SMART_CAPS[c] for c in plan_cats if c in SMART_CAPS},
+            **{c: cix[c] for c in plan_cats if c in cix and c not in SMART_CATEGORIES},
+            **{c: {t: True} for c, t in blk_srcs.items()}}
+    keep = []
+    if not cix_have:
+        for c in sorted(plan_cats):
+            if c in caps or ":" not in c or c.startswith(("blk:", "blku:")):
+                continue                    # resolved above, or a custom rule / the catch-all: no caps to look up
+            held = {t: True for t in ("ip", "host") if list_meta(c, t)}
+            if held:
+                caps[c] = held
+            else:
+                keep.append(c)
+        if keep and not node_keeps_caps(snap):
+            return None, []
+    return caps, keep
+
+
+# {node id: True} while its last sync withheld every cap — no catalog, a provider category the panel cannot look up, and a node
+# that would clear its caps (sync_cat_caps → None). Its block lists then filter nothing until the catalog arrives or the node is
+# updated, so the Overview's coverage says they are waiting there instead of counting them (q189 D12-OBS-1).
+_CAPS_WITHHELD = {}
+
+
+def node_keeps_caps(snap):
+    """Does this node keep its caps for the categories a sync names in `cat_caps_keep` (rather than clearing every cap a
+    `cat_caps` leaves out)? Its smart report says so (`caps_keep: 1`); an older node does not, and is sent no partial caps."""
+    _sr = snap.get("smartroute") if isinstance(snap, dict) else None
+    return isinstance(_sr, dict) and _sr.get("caps_keep") == 1
+
+
 def catalog_cached():
     """The catalog AS ALREADY HELD — memory, else the on-disk copy REGARDLESS of its TTL. NEVER fetches, so this
     is the one that is safe to call from a request handler.
@@ -25951,6 +25993,7 @@ def api(method, path, qs, body, deps):
         _ps = Handler.deps.get("panel_settings")
         cat = block_catalog(_ps); _bpe = block_providers_enabled(_ps)
         enforced = {}; n_ifaces = 0; mech = {}          # enforced: category → {(blk sid, tier)} across the fleet
+        waiting = {}                                    # category → node names whose caps the panel withheld (_CAPS_WITHHELD)
         for _nid, n in (nodes or {}).items():
             if not isinstance(n, dict):
                 continue
@@ -25958,9 +26001,15 @@ def api(method, path, qs, body, deps):
                 feeds, mids = _block_feeds(cat, _bpe, _nid, n.get("routing_mode") or "kernel", _validate_block(b, _ps))
                 if not feeds and not mids:
                     continue
-                n_ifaces += 1
                 for mid in mids:
                     mech[mid] = mech.get(mid, 0) + 1
+                if _CAPS_WITHHELD.get(_nid):            # its sync carried no caps: these lists filter nothing there yet
+                    for cid in feeds:
+                        waiting.setdefault(cid, set()).add(n.get("name") or _nid)
+                    if mids:
+                        n_ifaces += 1
+                    continue
+                n_ifaces += 1
                 for cid, pairs in feeds.items():
                     enforced.setdefault(cid, set()).update(pairs)
         dom = ips = 0; seen = set(); catcov = {}
@@ -25979,7 +26028,9 @@ def api(method, path, qs, body, deps):
         # drop rule, one counter) for O(1) lookup, so per-category BLOCK COUNTS don't exist. What IS meaningful + free is
         # WHAT each category is filtering (list size); ranked biggest-first, it answers "what's protecting me".
         cats = sorted(catcov.values(), key=lambda x: -(x["domains"] + x["threat_ips"]))
-        cov = {"domains": dom, "threat_ips": ips, "categories": len(enforced), "ifaces": n_ifaces, "mechanisms": mech, "cats": cats}
+        cov = {"domains": dom, "threat_ips": ips, "categories": len(enforced), "ifaces": n_ifaces, "mechanisms": mech, "cats": cats,
+               **({"waiting": [{"label": (cat.get(cid) or {}).get("label") or cid, "nodes": sorted(ns)}
+                               for cid, ns in sorted(waiting.items())]} if waiting else {})}
         # Per-category BLOCKED COUNTS (SNI mode) — sum each content category's blkc ring over the window. Filename
         # blkc-<nid>-<sanitised cat>.rrd; nid is hex + cat is sanitised → exactly one '-'. Ranged like the other tiles.
         blkcat_tot = {}
@@ -32812,18 +32863,16 @@ class Handler(BaseHTTPRequestHandler):
             if _ent:
                 _list_manifest[_c] = _ent
         # Per-category caps for the node. Curated cats come from the SMART_CAPS constant and are always right;
-        # provider cats can only come from the catalog. So when we hold NO catalog at all, this dict is not
-        # "the caps are empty" — it is "we could not look them up", and the two must not be sent identically:
-        # the node CLEARS and replaces _CAT_CAPS from whatever arrives, so shipping a lossy dict would strip
-        # the caps of every provider category and stop their host-tier fill. Send None → the key is omitted →
-        # the node keeps what it already had (see swg-noded, _CAT_CAPS). A stale catalog is still a catalog and
-        # takes the normal path; only a panel that has never managed to fetch one omits.
-        _smart_cats = _plan_cats
-        _cat_caps = {**{c: SMART_CAPS[c] for c in _smart_cats if c in SMART_CAPS},
-                     **{c: _cix[c] for c in _smart_cats if c in _cix and c not in SMART_CATEGORIES},
-                     **{c: {t: True} for c, t in _blk_srcs.items()}}
-        if not _cix_have and any(c not in SMART_CAPS and c not in _blk_srcs for c in _smart_cats):
-            _cat_caps = None            # catalog-dependent cats are in play and we have no catalog — say nothing
+        # provider cats can only come from the catalog. With NO catalog a provider category's caps are "we could not
+        # look them up", not "empty": the node CLEARS and replaces _CAT_CAPS from whatever arrives, so a lossy dict would
+        # strip them. sync_cat_caps sends what resolves without one (block unions, curated, held provider lists) and names
+        # only a provider category it cannot look up — or, for a node that would clear it, omits the key as before
+        # (absent → the node keeps what it had, see swg-noded _CAT_CAPS). A stale catalog is still a catalog.
+        _cat_caps, _caps_keep = sync_cat_caps(_plan_cats, _cix, _cix_have, _blk_srcs, snap)
+        if _cat_caps is None:
+            _CAPS_WITHHELD[nid] = True
+        else:
+            _CAPS_WITHHELD.pop(nid, None)
         # Interface-key vault: the operator vault's PUBLIC key (nodes seal their interface keys to it, for a
         # full-wipe restore) + the ifaces the panel still needs a CURRENT sealed key for (no blob, or the blob is
         # for an older/rotated key). Absent a vault → empty, so nodes seal nothing.
@@ -33061,9 +33110,10 @@ class Handler(BaseHTTPRequestHandler):
                                           # The node reads its <cat>.txt/.doms (pulled from the panel via list_manifest) using these — a
                                           # curated cat's host cap is what gets its pulled .doms loaded into dnsmasq (custom cats ship inline).
                                           # built above as _cat_caps (block feeds: their single tier drives the node's .txt/.doms fill).
-                                          # OMITTED entirely when the panel holds no catalog and catalog-backed cats are in play —
-                                          # absent means "keep yours", empty would mean "you have none".
+                                          # OMITTED only when the panel holds no catalog, a provider category it cannot look up is in
+                                          # play and the node would clear its caps — absent means "keep yours", empty "you have none".
                                           **({"cat_caps": _cat_caps} if _cat_caps is not None else {}),
+                                          **({"cat_caps_keep": _caps_keep} if _cat_caps is not None and _caps_keep else {}),
                                           # domain tier: active bundles + custom-rule domain lists → node fills these via dnsmasq. ONLY for a
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
                                           "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in _plan_cats if c in HOST_CATEGORIES},
