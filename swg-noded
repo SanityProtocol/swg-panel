@@ -2862,12 +2862,7 @@ def heal_turn_binds():
 
 def _env_listen(path):
     """SWG_LISTEN out of a turn-family env file — what the server binds — or "" when it cannot be read."""
-    with contextlib.suppress(OSError):
-        with open(path) as f:
-            for ln in f:
-                if ln.startswith("SWG_LISTEN="):
-                    return ln.split("=", 1)[1].strip()
-    return ""
+    return (_env_line(path, "SWG_LISTEN") or "").strip()
 
 
 def network_route_refusal(prefix, local=(), gateways=(), panel=(), resolvers=(), resolvers_known=True):
