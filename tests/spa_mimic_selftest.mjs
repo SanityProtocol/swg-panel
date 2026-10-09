@@ -16,10 +16,14 @@
  * [8] the sheet's wiring: I1–I5 removals never open the "clients break" window; a bad changed line holds Save.
  *
  * The browser half (the sheet fed by a real panel's /api/state) is checked against a running panel — logic only here.
+ * Every draw below comes from one SEEDED generator, so a run measures the renderer and never luck (q189 SPA-18: "more than
+ * 250 distinct of 300" failed ~2 % of runs on the CSPRNG's draws); the CSPRNG path the sheet uses is checked on its own, by
+ * properties every draw must have.
  *
  * Run: node tests/spa_mimic_selftest.mjs
  *      --perturb r1001|c|t2|nl|big|cap|ascii|huge   plants a defect in js/mimic.js (a preset that breaks an app, or a validator that
  *      lets one through) and expects RED.
+ *      --perturb fixednib   the QUIC nibble no longer drawn (the draw count kept) — the seeded variety checks still go RED
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -37,6 +41,7 @@ const PLANTS = {
   cap: ["if (+arg > MIMIC_TAG_MAX)", "if (false)"],                           // the validator lets <r 1001> through
   ascii: ["const AWG_BAD_CHAR = /[^\\x20-\\x7e]/;", "const AWG_BAD_CHAR = /[\\x00-\\x1f\\x7f]/;"],   // Unicode line breaks let through
   huge: ["return bytes > MIMIC_UDP_MAX ?", "return false ?"],                 // no ceiling on a packet
+  fixednib: ["nib = rand(16);", "nib = (rand(16), 0);"],                      // a renderer that stops varying a part
 };
 if (MODE && !PLANTS[MODE]) { console.log("unknown perturbation " + MODE); process.exit(2); }
 let M, made = null;
@@ -53,6 +58,10 @@ const IF = await spa("iface.js");
 const { MIMIC_KEYS, MIMIC_BUILTIN, mimicRender, mimicOf, mimicCheck, mimicFill, mimicAfter, mimicLines } = M;
 
 const queue = a => { let i = 0; return n => { const v = a[i++]; if (v === undefined || v >= n) throw new Error(`draw ${i}: ${v} of ${n}`); return v; }; };
+// one seeded generator (mulberry32) for every draw below: the same renders on every run (q189 SPA-18)
+const seeded = seed => { let x = seed >>> 0; return n => { x = (x + 0x6D2B79F5) >>> 0; let t = x; t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) % n; }; };
+const R = seeded(1889);
 // the tags of one line, as the apps read them
 const tags = s => [...String(s).matchAll(/<([a-z]+)(?: ([^>]*))?>/g)].map(m => ({ name: m[1], arg: m[2] }));
 
@@ -83,7 +92,7 @@ console.log("\n[2] every preset, drawn 300 times");
 const RANGE = { quic: [1200, 1232], dns: [40, 80] };   // plan §2 — literals, not the module's constants
 const draws = {};
 for (const id of ["off", "quic", "dns"]) {
-  const rs = draws[id] = Array.from({ length: 300 }, () => mimicRender(id));
+  const rs = draws[id] = Array.from({ length: 300 }, () => mimicRender(id, R));
   const bad = rs.find(r => !MIMIC_KEYS.every(k => mimicCheck(r[k]).ok));
   check(`${id}: every render validates`, !bad, bad && MIMIC_KEYS.map(k => [k, mimicCheck(bad[k])]));
   const wrong = rs.find(r => mimicOf(r) !== id);
@@ -102,6 +111,11 @@ for (const id of ["off", "quic", "dns"]) {
 }
 check("off: no line at all", draws.off.every(r => MIMIC_KEYS.every(k => r[k] === "")));
 check("built-in: renders the fixed set every generator writes, and reads back as builtin", (r => MIMIC_KEYS.every(k => r[k] === MIMIC_BUILTIN[k]) && mimicOf(r) === "builtin")(mimicRender("builtin")));
+// the sheet's own draw — the browser's CSPRNG (mimicRand) — by properties EVERY draw must have, so it can never flake
+const csp = ["quic", "dns"].flatMap(id => Array.from({ length: 50 }, () => [id, mimicRender(id)]));
+check("the sheet's default draw (the CSPRNG): every render validates, reads back as itself and stays in its stated size range",
+      csp.every(([id, r]) => mimicCheck(r.I1).ok && mimicOf(r) === id && mimicCheck(r.I1).bytes >= M.MIMIC_PRESETS[id].sizes[0]
+                && mimicCheck(r.I1).bytes <= M.MIMIC_PRESETS[id].sizes[1]), csp.find(([id, r]) => mimicOf(r) !== id));
 
 // [3]
 console.log("\n[3] two renders differ only in what is drawn");
@@ -114,7 +128,7 @@ check("QUIC: the size varies", new Set(draws.quic.map(r => mimicCheck(r.I1).byte
 const dnsName = s => /^<r 2><b 0x01000001000000000001((?:[0-9a-f]{2})+)00010001(0000291000000000000000)>$/.exec(s);
 check("DNS: every render is the one template around the name", draws.dns.every(r => dnsName(r.I1)));
 check("DNS: the name varies", new Set(draws.dns.map(r => (dnsName(r.I1) || [])[1])).size >= 4);
-const a = mimicRender("quic"), b = mimicRender("quic");
+const a = mimicRender("quic", R), b = mimicRender("quic", R);
 check("two QUIC renders: same template, and not the same string every time",
       quicTpl(a.I1) === quicTpl(b.I1) && new Set(draws.quic.map(r => r.I1)).size > 250);
 
@@ -179,18 +193,18 @@ const base = { Jc: "4", Jmin: "40", Jmax: "70", S1: "28", H1: "1-2" };
 const recB = { ...base, ...MIMIC_BUILTIN };
 for (const [from, rec] of [["built-in", recB], ["QUIC", { ...base, I1: P0.QUIC8 }], ["off", { ...base }]]) {
   for (const id of ["quic", "dns", "off", "builtin"]) {
-    const draft = { ...rec, ...mimicFill(mimicRender(id), rec) };
+    const draft = { ...rec, ...mimicFill(mimicRender(id, R), rec) };
     const after = merge(rec, sent(draft));
     check(`${from} → ${id}: the record reads back as ${id}, and is what the sheet said Save would leave`,
           mimicOf(after) === id && JSON.stringify(mimicLines(after)) === JSON.stringify(mimicAfter(draft, rec)), [mimicOf(after), mimicLines(after)]);
     check(`${from} → ${id}: the J/S/H lines are untouched`, Object.keys(base).every(k => after[k] === base[k]));
   }
 }
-const fOff = mimicFill(mimicRender("off"), { ...base });
+const fOff = mimicFill(mimicRender("off", R), { ...base });
 check("Off on an interface with no I lines writes nothing (Save stays dark)", MIMIC_KEYS.every(k => fOff[k] === ""), fOff);
-const fQ = mimicFill(mimicRender("quic"), recB);
+const fQ = mimicFill(mimicRender("quic", R), recB);
 check("QUIC over the built-in set: I1 drawn, I2–I5 \"-\" (removed)", fQ.I1.startsWith("<b 0xc") && MIMIC_KEYS.slice(1).every(k => fQ[k] === "-"), fQ);
-const fD = mimicFill(mimicRender("dns"), { ...base, I1: P0.QUIC8 });
+const fD = mimicFill(mimicRender("dns", R), { ...base, I1: P0.QUIC8 });
 check("DNS over QUIC: I2–I5 blank (they were never there)", MIMIC_KEYS.slice(1).every(k => fD[k] === ""), fD);
 check("a blank cell keeps the record's line", mimicAfter({ I1: "" }, recB).I1 === MIMIC_BUILTIN.I1);
 check("a typed cell over a preset → custom", mimicOf(mimicAfter({ ...draws.quic[0], I1: draws.quic[0].I1 + "<t>" }, {})) === "custom");
