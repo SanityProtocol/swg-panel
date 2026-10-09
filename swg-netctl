@@ -38,7 +38,6 @@ stdlib-only Python 3, single file — same as the other swg programs.
 
 import contextlib
 import errno
-import fcntl
 import grp
 import hashlib
 import ipaddress
@@ -1642,85 +1641,26 @@ def _journal_head(path):
 
 
 def log_ns_ok():
-    """True where systemd ships journald's namespace template (without it no unit could carry LogNamespace=) AND a unit can
-    actually run with one (log_ns_probe)."""
+    """True where systemd ships journald's namespace template (without it no unit could carry LogNamespace=) AND the install's
+    probe did not find a unit refused in one (log_ns_template_only)."""
     return any(os.path.exists(os.path.join(d, "systemd-journald@.service"))
                for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")) \
-        and log_ns_probe()
+        and not log_ns_template_only()
 
 
 # ⚠️ THE TEMPLATE IS NOT ENOUGH: where systemd runs but mount namespaces are refused (an OpenVZ/Virtuozzo-like container, an
 # LXC that denies unshare), a unit naming a namespace exits 226/NAMESPACE (1.8.9 qualification IN-11). The installers and
-# update.sh then write no drop-in; this helper must not size or restart a journald nothing logs into, and the panel's budget
-# row must read "Not supported". The answer is the one lib/common.sh and swg-noded keep: /run/swg-log-ns (ok | refused),
-# probed once per boot with a throwaway unit — here only when no other prober has answered yet (this helper starts every
-# tick, so the file is its memory).
-LOG_NS_PROBE = os.environ.get("SWG_LOG_NS_PROBE") or "/run/swg-log-ns"
-LOG_NS_PROBE_NS = "swg-probe"
+# update.sh probe it and write no drop-in there; this helper must not size or restart a journald nothing logs into, and the
+# panel's budget row must read "Not supported". It reads their answer: /var/lib/swg-log-ns (ok | refused).
+LOG_NS_PROBE = os.environ.get("SWG_LOG_NS_PROBE") or "/var/lib/swg-log-ns"
 
 
 def log_ns_template_only():
-    """The template is there but no unit can run in a namespace (the probe said refused)."""
+    """The template is there but no unit can run in a namespace (the install's probe said refused)."""
     with contextlib.suppress(OSError):
         with open(LOG_NS_PROBE) as f:
             return f.read().strip() == "refused"
     return False
-
-
-def log_ns_probe():
-    def cached():
-        with contextlib.suppress(OSError):
-            with open(LOG_NS_PROBE) as f:
-                v = f.read().strip()
-            if v in ("ok", "refused"):
-                return v == "ok"
-        return None
-    v = cached()
-    if v is not None:
-        return v
-    if os.geteuid() != 0:
-        return True                                   # only root starts a unit: the template answers, as before the probe
-    lk = None
-    try:
-        with contextlib.suppress(OSError):
-            lk = open(LOG_NS_PROBE + ".lock", "a")
-            until = time.monotonic() + 90
-            while True:
-                try:
-                    fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    if time.monotonic() > until:
-                        break
-                    time.sleep(0.5)
-        v = cached()
-        if v is None:
-            rc, out = run(["systemd-run", "--wait", "--quiet", "--collect", "-p", "LogNamespace=" + LOG_NS_PROBE_NS,
-                           shutil.which("true") or "/bin/true"], timeout=60)
-            v = rc == 0
-            _rc, units = run(["systemctl", "list-units", "--all", "--plain", "--no-legend",
-                              "systemd-journald@%s.*" % LOG_NS_PROBE_NS, "systemd-journald-varlink@%s.*" % LOG_NS_PROBE_NS],
-                             timeout=15)
-            units = [ln.split()[0] for ln in (units or "").splitlines() if ln.strip() and ln.split()[0].endswith((".service", ".socket"))]
-            if units:
-                run(["systemctl", "stop"] + units, timeout=30)   # first: a namespace journald writes its directory again as it exits
-            with contextlib.suppress(OSError):
-                with open("/etc/machine-id") as f:
-                    mid = f.read().strip()
-                for d in (("/var/log/journal/%s.%s" % (mid, LOG_NS_PROBE_NS), "/run/log/journal/%s.%s" % (mid, LOG_NS_PROBE_NS))
-                          if mid else ()):
-                    shutil.rmtree(d, ignore_errors=True)
-            with contextlib.suppress(OSError):
-                with open(LOG_NS_PROBE + ".tmp", "w") as f:
-                    f.write("ok\n" if v else "refused\n")
-                os.replace(LOG_NS_PROBE + ".tmp", LOG_NS_PROBE)
-            if not v:
-                log(LOG_WARNING, "log budget: a unit cannot run in a journal namespace here (%s) — the panel's units log into "
-                    "the main journal", (out or "").strip()[-160:])
-        return v
-    finally:
-        if lk:
-            lk.close()
 
 
 def _log_ns_dir():

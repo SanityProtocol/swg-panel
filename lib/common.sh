@@ -2803,7 +2803,7 @@ SWG_LOG_NS_DROPIN=swg-ns.conf
 # answer is kept in /run/swg-log-ns (ok | refused), which swg-noded and swg-netctl read too, under the same lock. Refused:
 # no drop-in is written and any already there goes (swg_log_ns_clear) — the box logs into the main journal exactly as
 # 1.8.8 did, swg-logs reads it there (`--namespace=+` merges the main journal), the budget rows say "Not supported".
-SWG_LOG_NS_PROBE="${SWG_LOG_NS_PROBE:-/run/swg-log-ns}"
+SWG_LOG_NS_PROBE="${SWG_LOG_NS_PROBE:-/var/lib/swg-log-ns}"
 _swg_log_ns_run_probe(){   # → 0 when a throwaway unit ran with LogNamespace=swg-probe; the probe namespace is cleaned up either way
   local rc=1 u t mid
   t="$(type -P true 2>/dev/null || true)"; [ -n "$t" ] || t=/bin/true

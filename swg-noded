@@ -7730,101 +7730,33 @@ _JOURNAL_NAME_RE = re.compile(r"^[\w-]+@[0-9a-f]{32}-[0-9a-f]{16}-([0-9a-f]{16})
 
 
 def log_ns_ok():
-    """True where a unit may carry LogNamespace=: a host systemd that ships journald's namespace template, AND where a unit
-    can actually run with one (_log_ns_probe). A unit naming a namespace on a box without it fails to start, so nothing is
-    moved there. Asked once."""
+    """True where a unit may carry LogNamespace=: a host systemd that ships journald's namespace template, AND — where an
+    install or update asked — one that can actually run a unit in it (_log_ns_refused). A unit naming a namespace on a box
+    without it fails to start, so nothing is moved there. Asked once."""
     if _LOG_BUDGET["ns"] is None:
         _LOG_BUDGET["ns"] = (NODE_KIND != "docker" and os.path.isdir("/run/systemd/system")
                              and any(os.path.exists(os.path.join(d, "systemd-journald@.service"))
                                      for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system",
                                                "/lib/systemd/system"))
-                             and _log_ns_probe())
+                             and not _log_ns_refused())
     return _LOG_BUDGET["ns"]
 
 
 # ⚠️ THE TEMPLATE IS NOT ENOUGH. Where systemd runs but mount namespaces are refused (an OpenVZ/Virtuozzo-like container, an
 # LXC that denies unshare), a unit naming a namespace exits 226/NAMESPACE while the same unit with 1.8.8's settings runs:
-# every relay / turn / WDTT / csqtt unit would fail from its next start (1.8.9 qualification IN-11, V-LOGS F-3). So a
-# throwaway unit is RUN with one, once per boot — the answer kept in /run/swg-log-ns (ok | refused) and shared, under its
-# lock, with lib/common.sh (installers, update.sh) and swg-netctl. Refused: nothing is moved, the drop-ins an earlier run
-# wrote go (_log_ns_dropins), the budget row reads "Not supported", and the units log into the main journal as in 1.8.8.
-LOG_NS_PROBE = os.environ.get("SWG_LOG_NS_PROBE") or "/run/swg-log-ns"
-LOG_NS_PROBE_NS = "swg-probe"
+# every relay / turn / WDTT / csqtt unit would fail from its next start (1.8.9 qualification IN-11, V-LOGS F-3). The installers
+# and update.sh probe it (lib/common.sh swg_log_ns_ok: a throwaway unit) and keep the answer in /var/lib/swg-log-ns
+# (ok | refused); this daemon only reads it. Refused: nothing is moved, the drop-ins an earlier run wrote go
+# (_log_ns_dropins), the budget row reads "Not supported". No answer (NixOS, no installer): the template decides, as before.
+LOG_NS_ANSWER = os.environ.get("SWG_LOG_NS_PROBE") or "/var/lib/swg-log-ns"
 
 
-def _journal_dirs(ns):
-    """A namespace's journal directories (persistent, volatile) on this box; none without a machine-id."""
-    try:
-        with open("/etc/machine-id") as f:
-            mid = f.read().strip()
-    except OSError:
-        return []
-    return ["/var/log/journal/%s.%s" % (mid, ns), "/run/log/journal/%s.%s" % (mid, ns)] if mid else []
-
-
-def _log_ns_probe_run():
-    """One throwaway unit with LogNamespace=swg-probe: (ran, why). The probe namespace is cleaned up either way — its
-    journald and sockets stopped BEFORE its directory goes (a namespace journald writes its directory again as it exits)."""
-    r = run(["systemd-run", "--wait", "--quiet", "--collect", "-p", "LogNamespace=" + LOG_NS_PROBE_NS,
-             shutil.which("true") or "/bin/true"], timeout=60)
-    u = run(["systemctl", "list-units", "--all", "--plain", "--no-legend", "systemd-journald@%s.*" % LOG_NS_PROBE_NS,
-             "systemd-journald-varlink@%s.*" % LOG_NS_PROBE_NS], timeout=15)
-    units = [ln.split()[0] for ln in (u.stdout or "").splitlines() if ln.strip()]
-    if units:
-        run(["systemctl", "stop"] + units, timeout=30)
-    for d in _journal_dirs(LOG_NS_PROBE_NS):
-        shutil.rmtree(d, ignore_errors=True)
-    return r.returncode == 0, ((r.stderr or "").strip().splitlines() or ["systemd-run exited %d" % r.returncode])[-1][:160]
-
-
-def _log_ns_probe():
-    """Can a unit run in a journal namespace here? Read from /run/swg-log-ns, else probed once (under its lock: another
-    prober's answer is taken) and written there. Never raises; a probe that could not run reads as refused."""
-    def cached():
-        with contextlib.suppress(OSError):
-            with open(LOG_NS_PROBE) as f:
-                v = f.read().strip()
-            if v in ("ok", "refused"):
-                return v == "ok"
-        return None
-    v = cached()
-    if v is not None:
-        _LOG_BUDGET["ns_refused"] = not v
-        return v
-    if os.geteuid() != 0:
-        return True                                   # only root starts a unit (as another user systemd-run asks polkit): the
-                                                      # template answers, as before the probe; a root prober's answer is read
-    lk = None
-    try:
-        with contextlib.suppress(OSError):
-            lk = open(LOG_NS_PROBE + ".lock", "a")
-            until = time.monotonic() + 90
-            while True:
-                try:
-                    fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    if time.monotonic() > until:
-                        break
-                    time.sleep(0.5)
-        v = cached()
-        if v is None:
-            try:
-                v, why = _log_ns_probe_run()
-            except Exception as e:
-                v, why = False, str(e)[:160]
-            with contextlib.suppress(OSError):
-                with open(LOG_NS_PROBE + ".tmp", "w") as f:
-                    f.write("ok\n" if v else "refused\n")
-                os.replace(LOG_NS_PROBE + ".tmp", LOG_NS_PROBE)
-            if not v:
-                log(LOG_WARNING, "log budget: a unit cannot run in a journal namespace here (%s) — swg's units log into the "
-                    "main journal, as before 1.8.9", why)
-        _LOG_BUDGET["ns_refused"] = not v
-        return v
-    finally:
-        if lk:
-            lk.close()
+def _log_ns_refused():
+    """The install's probe said no unit can run in a journal namespace here."""
+    with contextlib.suppress(OSError):
+        with open(LOG_NS_ANSWER) as f:
+            _LOG_BUDGET["ns_refused"] = f.read().strip() == "refused"
+    return bool(_LOG_BUDGET.get("ns_refused"))
 
 
 # A filter stage for a unit's tail: drops systemd's own lines that say only THAT it failed ("<unit>: Failed with result",
@@ -7845,7 +7777,7 @@ def journal_cmd():
 def _log_ns_dropins():
     """At start: the namespace on the units this node writes (see above). Only what is missing or different is written,
     then one daemon-reload; nothing is restarted here — a unit already running moves in the update window
-    (_log_ns_move). Where no unit can run in a namespace (_log_ns_probe), the drop-ins an earlier run wrote go instead:
+    (_log_ns_move). Where no unit can run in a namespace (_log_ns_refused), the drop-ins an earlier run wrote go instead:
     left, each unit of their families would exit 226/NAMESPACE from its next start. Never raises."""
     if not log_ns_ok():
         if _LOG_BUDGET.get("ns_refused"):
