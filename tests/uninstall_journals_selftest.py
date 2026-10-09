@@ -15,7 +15,8 @@ journal again after the run for as long as its journald is still loaded — what
   [1] a pure bare node, FULL: rm_node's rm_log_ns, then the end of the run — the swg-node journal is gone and STAYS gone
       (journald@swg-node's two sockets and its service stopped before the directory goes), every swg-ns / swg-log drop-in,
       the restart back-off swg-noded writes beside them on systemd < 254 (swg-restart.conf, 1.8.9 qualification D12-1), the
-      size file and swg-logs gone; the box's MAIN journal untouched; the summary names it under Removed
+      size file, swg-logs and the namespace probe's kept answer (/var/lib/swg-log-ns + its lock, IN-11) gone; the box's
+      MAIN journal untouched; the summary names it under Removed
   [2] a converted box, the Docker removal path, FULL (no rm_log_ns): the bare-era template drop-ins, the Docker-era
       swg-log.conf, the empty swg-update.service.d, swg-logs, both namespaces' journals and their journald@ config — gone
   [3] keep-data (a bare master's, a Docker data dir's): the journals stay WITH their history and their journald is not
@@ -30,13 +31,15 @@ Run: python3 tests/uninstall_journals_selftest.py        (0 = pass)
      --perturb-keep   kept data does not keep the journals → RED on [3]
      --perturb-left   a kept swg component does not hold the teardown back → RED on [4]
      --perturb-restart  swg-noded's swg-restart.conf (systemd < 254's back-off, D12-1) is left → RED on [1] [2] [3]
+     --perturb-probe  the journal-namespace probe's kept answer (/var/lib/swg-log-ns, IN-11) is left → RED on [1] [2] [3]
 """
 import os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 SRC = open(os.environ.get("SWG_UNINSTALL") or os.path.join(ROOT, "uninstall.sh"), encoding="utf-8").read()
-FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-ns", "--perturb-stop", "--perturb-keep", "--perturb-left", "--perturb-restart")}
+FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-ns", "--perturb-stop", "--perturb-keep", "--perturb-left", "--perturb-restart",
+                                       "--perturb-probe")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -55,7 +58,8 @@ for flag, old, new in (("--perturb-ns", '      [ -n "$mid" ] && rmrf "/var/log/j
                        ("--perturb-stop", '      [ -n "$u" ] && { run systemctl stop $u 2>/dev/null || true; }', '      :'),
                        ("--perturb-keep", '_data_kept(){ [ "${KEEP_OWN_DROPINS:-no}" = yes ]', '_data_kept(){ return 1; [ "${KEEP_OWN_DROPINS:-no}" = yes ]'),
                        ("--perturb-left", '_swg_left(){ local f\n', '_swg_left(){ local f; return 1\n'),
-                       ("--perturb-restart", ' "$SD"/*.d/swg-restart.conf \\\n', ' \\\n')):
+                       ("--perturb-restart", ' "$SD"/*.d/swg-restart.conf \\\n', ' \\\n'),
+                       ("--perturb-probe", ' /var/lib/swg-log-ns /var/lib/swg-log-ns.lock   #', '   #')):
     if FLAGS[flag]:
         assert FN.count(old) == 1, "perturbation anchor missing — would FALSE-PASS: " + old.strip()[:60]
         FN = FN.replace(old, new)
@@ -77,7 +81,7 @@ def sandbox(files, loaded=(), docker=()):
 def run_uninstall(t, ur, body, dry=False, env=""):
     fn = FN
     for a in ("/run/", "/etc/systemd/journald@", "/etc/machine-id", "/etc/swg-panel", "/var/lib/swg-panel", "/var/log/journal",
-              "/usr/local/bin/swg-logs"):   # /run/ first: the root itself may sit under /run (a TMPDIR there)
+              "/usr/local/bin/swg-logs", "/var/lib/swg-log-ns"):   # /run/ first: the root itself may sit under /run (a TMPDIR there)
         fn = fn.replace(a, ur + a)
     sh = ('set -uo pipefail\nT=%s\nDRYRUN=%s\nSD=%s/etc/systemd/system\nDOCKER_DIR=%s/opt/swg-panel-docker\n%s\n'
           'DID_REMOVE=(); DID_KEEP=()\n'
@@ -120,7 +124,9 @@ NODE_TRACES = {"etc/systemd/system/swg-noded.service.d/swg-ns.conf": "x", "etc/s
                "etc/systemd/system/vk-turn-proxy-.service.d/swg-restart.conf": "x", "etc/systemd/system/swg-csqtt-.service.d/swg-restart.conf": "x",
                "run/systemd/system/vk-turn-proxy-.service.d/swg-log.conf": "x", "run/systemd/system/awg-quick@awg0.service.d/swg-log.conf": "x",
                "run/systemd/journald@swg-node.conf.d/swg.conf": "x", "var/log/journal/MID.swg-node/system.journal": "HISTORY",
-               "usr/local/bin/swg-logs": "x"}
+               "usr/local/bin/swg-logs": "x",
+               # the journal-namespace probe's answer the installers keep (1.8.9 qualification IN-11), and a lock beside it
+               "var/lib/swg-log-ns": "ok\n", "var/lib/swg-log-ns.lock": ""}
 RM_NODE = 'rm_log_ns swg-node swg-noded.service swg-relay@.service vk-turn-proxy-.service swg-wdtt-.service swg-csqtt-.service\n'
 RM_PANEL = 'rm_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service\n'
 swg_left = lambda ur: [p for p in left(ur) if not p.startswith(("etc/machine-id", "var/log/journal/MID/"))]
@@ -138,6 +144,8 @@ check("every swg-ns / swg-log drop-in, the size file and swg-logs are gone — n
       [p for p in swg_left(ur) if not p.startswith("var/log/journal/")] == [], swg_left(ur))
 check("the box's MAIN journal is untouched", open(os.path.join(ur, "var/log/journal/MID/system.journal")).read() == "MAIN"
       and os.path.exists(os.path.join(ur, "var/log/journal/MID/user-1000.journal")), left(ur))
+check("the namespace probe's kept answer (/var/lib/swg-log-ns) and its lock go too",
+      not [p for p in ("var/lib/swg-log-ns", "var/lib/swg-log-ns.lock") if os.path.exists(os.path.join(ur, p))], left(ur))
 check("the summary names it under Removed", "REMOVED=swg's own journals (swg-node)" in r.stdout, r.stdout + r.stderr)
 shutil.rmtree(t, ignore_errors=True)
 
@@ -156,6 +164,7 @@ check("both namespaces' journals are gone and stay gone (swg-panel's journald st
       not any(os.path.exists(os.path.join(ur, "var/log/journal/MID." + ns)) for ns in ("swg-panel", "swg-node"))
       and all(("STOP " + u) in calls for u in JD("swg-panel")), swg_left(ur))
 check("the box's MAIN journal is untouched", open(os.path.join(ur, "var/log/journal/MID/system.journal")).read() == "MAIN")
+check("the namespace probe's kept answer and its lock go on this path too", not [p for p in ("var/lib/swg-log-ns", "var/lib/swg-log-ns.lock") if os.path.exists(os.path.join(ur, p))], left(ur))
 shutil.rmtree(t, ignore_errors=True)
 
 print("\n[3] keep-data: the journals stay, with their history")
@@ -172,6 +181,7 @@ for name, env, extra, body in (("a bare master that keeps the panel's data", "KE
           kept == ["HISTORY", "HISTORY"] and "STOP " not in calls, (kept, calls[-300:]))
     check("%s: the summary says so (Kept)" % name, "KEPT=swg's own journals (swg-panel, swg-node) — kept with the data" in r.stdout,
           r.stdout + r.stderr)
+    check("%s: the namespace probe's kept answer goes — a box fact, not data" % name, not [p for p in ("var/lib/swg-log-ns", "var/lib/swg-log-ns.lock") if os.path.exists(os.path.join(ur, p))], left(ur))
     check("%s: the removed units' drop-ins and swg-logs still go" % name,
           not [p for p in left(ur) if p.startswith(("etc/systemd/system/", "run/systemd/system/")) or "swg-logs" in p], left(ur))
     shutil.rmtree(t, ignore_errors=True)
@@ -184,7 +194,8 @@ _j = os.path.join(ur, "var/log/journal/MID.swg-node/system.journal")
 check("its journal, the drop-ins and swg-logs stay, its journald is not stopped",
       os.path.exists(_j) and open(_j).read() == "HISTORY" and "STOP " not in calls
       and os.path.exists(os.path.join(ur, "etc/systemd/system/vk-turn-proxy-.service.d/swg-ns.conf"))
-      and os.path.exists(os.path.join(ur, "usr/local/bin/swg-logs")), (calls[-300:], left(ur)))
+      and os.path.exists(os.path.join(ur, "usr/local/bin/swg-logs")) and os.path.exists(os.path.join(ur, "var/lib/swg-log-ns")),
+      (calls[-300:], left(ur)))
 shutil.rmtree(t, ignore_errors=True)
 
 print("\n[5] a dry run")
@@ -202,7 +213,9 @@ if PERTURBED:
     sect = {"--perturb-ns": ("the swg-node journal is gone", "journald@swg-node's two sockets", "both namespaces' journals"),
             "--perturb-stop": ("the swg-node journal is gone", "journald@swg-node's two sockets", "both namespaces' journals"),
             "--perturb-keep": ("a bare master", "a Docker install"), "--perturb-left": ("its journal, the drop-ins",),
-            "--perturb-restart": ("every swg-ns / swg-log drop-in", "the four bare-era", "a bare master", "a Docker install")}
+            "--perturb-restart": ("every swg-ns / swg-log drop-in", "the four bare-era", "a bare master", "a Docker install"),
+            "--perturb-probe": ("every swg-ns / swg-log drop-in", "the namespace probe's", "a bare master that keeps the panel's data: the namespace",
+                                "a Docker install whose data dir is kept: the namespace")}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     ok = bool(red) and len(red) == len(FAILS)
