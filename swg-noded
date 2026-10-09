@@ -20994,9 +20994,10 @@ def reconcile_wdtt(want, remove=None):
                 _fk = _wdtt_fork(inst); _inst_ver = _wdtt_installed_ver(_fk)
                 if _want_ver and not _inst_ver and os.path.exists(_wdtt_bin_shared(_fk)):
                     _wdtt_write_ver(_fk, _want_ver)           # first sync after upgrade: the running (unversioned) binary IS the current build → just stamp it, no re-fetch/restart
-                elif _want_ver and _want_ver != _inst_ver:
+                elif _want_ver and _want_ver != _inst_ver and time.monotonic() >= _CSQTT_FETCH_LATER.get(("wdtt:" + _fk, _want_ver), 0):
                     err = _wdtt_update_binary(inst, _want_ver, _wdtt_fork_ifaces(_fk, want))
-                    if err:
+                    if err:   # a failed fetch walks the mirrors again in 5 minutes, not every sync (FN-2(c), as csqtt's)
+                        _CSQTT_FETCH_LATER[("wdtt:" + _fk, _want_ver)] = time.monotonic() + CSQTT_FETCH_RETRY_S
                         res["errors"].append(iface + ": " + err); continue
                     res["changed"] += 1
                 # Heal a unit that no longer matches what this build writes — a fix to the unit itself (the PATH
@@ -21502,21 +21503,25 @@ def _swg_release_get(tag, arch, dest, want, what):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
     except OSError as e:
         return (False, "mkdir: " + str(e))
-    err = ""
-    for url in _turn_dl_urls(SWG_BUILD_REPO, arch, tag):
+    err, tmp = "", dest + ".dl"   # beside it, then renamed: curl onto a RUNNING binary fails ETXTBSY (curl 23, read as GitHub
+    for url in _turn_dl_urls(SWG_BUILD_REPO, arch, tag):   # unreachable) and a running line never updated (1.8.9 NR-3)
         r = run(["curl", "-4", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
-                 "--retry-delay", "3", "--retry-all-errors", url, "-o", dest], timeout=320)
+                 "--retry-delay", "3", "--retry-all-errors", url, "-o", tmp], timeout=320)
         if r.returncode == 0:
-            if not _turn_sha_ok(dest, want):          # never chmod+exec bytes that don't match the panel's hash
-                with contextlib.suppress(OSError): os.remove(dest)
+            if not _turn_sha_ok(tmp, want):           # never chmod+exec bytes that don't match the panel's hash
+                with contextlib.suppress(OSError): os.remove(tmp)
                 return (False, "checksum mismatch — refusing to run an unverified " + what + " binary")
-            with contextlib.suppress(OSError): os.chmod(dest, 0o755)
+            try:
+                os.chmod(tmp, 0o755); os.replace(tmp, dest)   # a running process keeps the old inode
+            except OSError as e:
+                return (False, "could not put the new " + what + " binary in place: " + str(e))
             # Say so. A fallback that silently succeeds papers over a broken mirror: the panel could be resolving
             # the wrong URL for months and every node would quietly paper over it by going direct — which is
             # exactly how the csqtt owner-mapping bug stayed invisible. Working is not the same as healthy.
             log(LOG_WARNING, "fetch: %s %s came from GitHub direct — the panel's mirror did not serve it", what, tag)
             return (True, "")
         err = (r.stderr or "").strip().replace("\n", " ")[:120]
+    with contextlib.suppress(OSError): os.remove(tmp)
     return (False, "GitHub was unreachable from this node" + ((": " + err) if err else ""))
 
 def _csqtt_fetch_bin(inst, binshared, line=CSQTT_DEFAULT_LINE):
@@ -22496,7 +22501,7 @@ def _csqtt_serve_adopted(inst):
     inst["passwords"] = pwds
 
 
-_CSQTT_FETCH_LATER = {}     # (line, build) whose switch fetch failed -> monotonic time before which it is not walked again
+_CSQTT_FETCH_LATER = {}     # (line, build) — ("wdtt:<fork>", build) for WDTT — whose fetch failed -> monotonic time before which it is not walked again
 CSQTT_FETCH_RETRY_S = 300   # a walk is the panel mirror, then GitHub and every mirror with curl's retries: ≈ 90 s blackholed
 
 
@@ -22697,9 +22702,11 @@ def reconcile_csqtt(want, remove=None):
                     # Everything below that can fetch (a reconfigure's or a re-install's self-heal) fetches into the
                     # slot of what RUNS — so it must name that line's build, never the requested line's.
                     inst["ver"] = _run_ver
-                if not _switched and _run_ver and _run_ver != _csqtt_installed_ver(_cur):
+                if (not _switched and _run_ver and _run_ver != _csqtt_installed_ver(_cur)
+                        and time.monotonic() >= _CSQTT_FETCH_LATER.get((_cur, _run_ver), 0)):   # FN-2(c): as a switch waits
                     err = _csqtt_update_binary(inst, _run_ver, _csqtt_ifaces(want, _cur) or [iface], _cur)
                     if err:
+                        _CSQTT_FETCH_LATER[(_cur, _run_ver)] = time.monotonic() + CSQTT_FETCH_RETRY_S
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                     res["changed"] += 1
                 # NOTE the `have[iface] = inst` before each continue. Without it an error here DROPPED the
