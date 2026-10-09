@@ -7868,11 +7868,15 @@ def _log_docker_caps(mb):
 
 def docker_log_opts():
     """`docker run` options for a container this node launches: its share of the budget in two files, or no log at all
-    at Off. Taken at launch, never compared: a datapath container is not recreated for a log setting."""
+    at Off. Taken at launch, never compared: a datapath container is not recreated for a log setting.
+    ⚠️ The driver is NAMED with its sizes. max-size / max-file are json-file's options, and a daemon whose default driver
+    is another one — journald on NixOS's docker backend, or any daemon.json saying journald, syslog, gelf — refuses the
+    container outright ("unknown log opt 'max-file' for journald log driver"): every turn proxy and relay failed to start
+    there (1.8.9 qualification DN-6). compose's x-logging names json-file for the same reason."""
     cap = _log_docker_caps(_LOG_BUDGET["mb"])
     if not cap:
         return ["--log-driver", "none"]
-    return ["--log-opt", "max-size=%dk" % max(512, cap // 2048), "--log-opt", "max-file=2"]
+    return ["--log-driver", "json-file", "--log-opt", "max-size=%dk" % max(512, cap // 2048), "--log-opt", "max-file=2"]
 
 
 def _log_budget():
