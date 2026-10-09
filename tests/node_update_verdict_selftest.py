@@ -31,16 +31,33 @@ What this gate holds down:
 Hermetic: no network, no systemd, no panel. The command under test is a local shell script, and the "version
 file" is a real file this test rewrites to simulate an update landing.
 
+  7. (1.8.9 qualification IN-13) WHERE it runs: a transient SERVICE that PID 1 starts — outside swg-noded's cgroup and
+     its sandbox (a `--scope` stayed in swg-noded's mount namespace: /usr read-only, a /tmp that went away with the
+     restart) — waited for, so a refused start is retried; swg-noded's environment handed over in a file only its
+     owner reads, filling only what the updater's own lacks; no systemd → the wrapper as swg-noded's child.
+
 Run: python3 tests/node_update_verdict_selftest.py       (0 = pass)
      --perturb   restores the DEVNULL behaviour (the wrapper is bypassed, the command run bare) and expects
                  RED on every verdict check — nothing is written, which is exactly the old silence.
+     --perturb-scope   the updater in a `--scope` again → RED on [9];  --perturb-env   no environment handed over → RED on [9]
 """
-import importlib.machinery, importlib.util, os, shutil, subprocess, sys, tempfile
+import importlib.machinery, importlib.util, os, shutil, subprocess, sys, tempfile, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
+PLANT = {"--perturb-scope": ('            r = subprocess.run(["systemd-run", "--unit", "swg-self-update",',
+                             '            r = subprocess.run(["systemd-run", "--scope", "--unit", "swg-self-update",'),
+         "--perturb-env": ("        with contextlib.suppress(OSError):\n            _self_update_env()\n",
+                           "        with contextlib.suppress(OSError):\n            pass\n")}
+PLANTED = [a for a in sys.argv[1:] if a in PLANT]
+if PLANTED:
+    _src = open(NODED, encoding="utf-8").read()
+    _old, _new = PLANT[PLANTED[0]]
+    assert _src.count(_old) == 1, "plant anchor missing — this run would measure nothing"
+    NODED = os.path.join(tempfile.mkdtemp(prefix="swg-upd-plant-"), "swg-noded")
+    open(NODED, "w", encoding="utf-8").write(_src.replace(_old, _new))
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -148,8 +165,82 @@ cleared = set(re.findall(r'"([a-z-]+)"', _mm.group(1))) if _mm else set()
 check("[8b] the panel has a clearing rule at all", bool(_mm))
 check("[8c] ⚠️ …and it covers every verdict the node can send", emitted <= cleared, sorted(emitted - cleared))
 
+# ── [9] WHERE the updater runs (1.8.9 qualification IN-13) ─────────────────────────────────────────────────
+# A `systemd-run --scope` only moves the updater to another cgroup: it stayed in swg-noded's mount namespace, where /usr is
+# read-only (apt, the module source, swg-logs: EROFS) and its private /tmp goes away when the update restarts swg-noded.
+# Measured on this box's systemd from a ProtectSystem=true unit (q189 IN-13): the scope ran in the unit's namespace with /usr
+# READ-ONLY and mktemp failing after the unit stopped; a transient service ran in PID 1's, /usr writable, /tmp kept.
+# systemd itself is not asked here: its presence and systemd-run are stubbed, and every call is recorded.
+class _Path:
+    def __init__(self, sysd): self.sysd = sysd
+    def exists(self, p): return self.sysd if p == "/run/systemd/system" else os.path.exists(p)
+    def __getattr__(self, k): return getattr(os.path, k)
+class _Os:
+    def __init__(self, sysd): self.path = _Path(sysd)
+    def __getattr__(self, k): return getattr(os, k)
+CALLS, LOGS = [], []
+class _Sub:
+    def __init__(self, rc=0, err=""): self.rc, self.err = rc, err
+    def run(self, argv, **kw):
+        CALLS.append(("run", list(argv), kw)); return types.SimpleNamespace(returncode=self.rc, stdout="", stderr=self.err)
+    def Popen(self, argv, **kw):
+        CALLS.append(("Popen", list(argv), kw)); return types.SimpleNamespace(pid=1)
+    def __getattr__(self, k): return getattr(subprocess, k)
+_real = (m.os, m.shutil, m.subprocess, m.log)
+_which = types.SimpleNamespace(which=lambda n: "/usr/bin/" + n)
+MIRROR = "https://mirror.example/gh 'quoted' $x"            # what the panel's turn_mirror puts into swg-noded's environment
+os.environ["SWG_TURN_MIRROR"] = MIRROR
+try:
+    m.log = lambda lvl, msg, *a: LOGS.append((lvl, (msg % a) if a else msg))
+    m.os, m.shutil, m.subprocess = _Os(True), _which, _Sub()
+    ok = m.run_self_update({"node": {"update_cmd": "true"}}, {"to": "9.9.9"})
+    kind, argv, kw = CALLS[-1] if CALLS else (None, [], {})
+    check("[9] systemd: a transient SERVICE that PID 1 starts — systemd-run WITHOUT --scope, one unit name, collected",
+          ok is True and kind == "run" and argv[:5] == ["systemd-run", "--unit", "swg-self-update", "--collect", "--quiet"]
+          and "--scope" not in argv, (ok, kind, argv[:8]))
+    check("[9b] …running the wrapper, waited for (its answer is the start's)", argv[-3:-1] == ["bash", "-c"] and kw.get("timeout"),
+          (argv[-3:-1], kw.get("timeout")))
+    check("[9c] …and the log line says where it runs", any("swg-self-update.service, outside swg-noded's sandbox" in s for _, s in LOGS), LOGS)
+    _st = os.stat(m.UPDATE_ENV_FILE) if os.path.exists(m.UPDATE_ENV_FILE) else None
+    check("[9d] swg-noded's environment is handed over in a file only its owner reads — never --setenv (a unit's "
+          "environment is readable by every local user over D-Bus)",
+          _st is not None and (_st.st_mode & 0o777) == 0o600 and not any(a.startswith("--setenv") or a == "-E" for a in argv),
+          (_st and oct(_st.st_mode), argv[:10]))
+    m.os, m.shutil, m.subprocess = _real[:3]
+    _seen = os.path.join(TMP, "seen")
+    m.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+    m.os.geteuid = lambda: 0                              # the wrapper as root builds it (swg-noded runs as root): no sudo,
+    _w = m._self_update_wrapper('printf "%s|%s" "$SWG_TURN_MIRROR" "$PATH" > ' + _seen)   # which would reset the environment
+    m.os = _real[0]
+    subprocess.run(["env", "-i", "PATH=/usr/bin:/bin", "bash", "-c", _w], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _got = open(_seen).read() if os.path.exists(_seen) else ""
+    check("[9e] the updater, started with PID 1's environment, gets swg-noded's SWG_TURN_MIRROR byte for byte (the "
+          "amneziawg-go fetch's mirror); what it has of its own (PATH) stays its own", _got == MIRROR + "|/usr/bin:/bin", _got)
+    check("[9f] …and the file is removed once read", not os.path.exists(m.UPDATE_ENV_FILE))
+    m.os, m.shutil, m.subprocess = _Os(True), _which, _Sub(1, "Failed to start transient service unit: Unit swg-self-update.service "
+                                                            "was already loaded or has a fragment file.")
+    del LOGS[:]
+    ok = m.run_self_update({"node": {"update_cmd": "true"}}, {"to": "9.9.9"})
+    check("[9g] a start systemd refuses (a run still going under the one unit name) → False: the next sync tries again, "
+          "systemd's reason in the log", ok is False and any("already loaded" in s for _, s in LOGS), (ok, LOGS))
+    m.os, m.subprocess = _Os(False), _Sub()
+    del CALLS[:]
+    ok = m.run_self_update({"node": {"update_cmd": "true"}}, {"to": "9.9.9"})
+    kind, argv, kw = CALLS[-1] if CALLS else (None, [], {})
+    check("[9h] no systemd → the wrapper itself, a child of swg-noded in a session of its own, not waited for",
+          ok is True and kind == "Popen" and argv[:2] == ["bash", "-c"] and kw.get("start_new_session"), (ok, kind, argv[:3]))
+finally:
+    m.os, m.shutil, m.subprocess, m.log = _real
+    os.environ.pop("SWG_TURN_MIRROR", None)
+
 shutil.rmtree(TMP, ignore_errors=True)
 print()
+if PLANTED:
+    _red = [f for f in FAILS if f.startswith("[9")]
+    _ok = bool(_red) and len(_red) == len(FAILS)
+    print("plant %s: %s" % (PLANTED[0], ("RED as it must be (%d)" % len(_red)) if _ok
+                                       else "NOT CAUGHT" if not FAILS else "ALSO red outside [9]: %s" % FAILS))
+    sys.exit(0 if _ok else 1)
 if FAILS:
     print("FAILED (%d): %s" % (len(FAILS), ", ".join(FAILS)))
     sys.exit(1)
