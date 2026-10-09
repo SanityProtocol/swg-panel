@@ -14,7 +14,7 @@ auth; the nodes are played by POSTing snapshots to /api/node/sync.
       failed names the interfaces that are down instead of promising they run on the fallback
 
 Run: python3 tests/awg_load_panel_selftest.py
-     --plant anyload | noage | nodisk | pidmatch | partial | nofb | nofbwhy | nofbcode | downword   (exit 0 when caught)
+     --plant anyload | noage | nodisk | pidmatch | partial | nofb | nofbwhy | nofbcode | downword | promise   (exit 0 when caught)
 """
 import json, os, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
@@ -36,6 +36,8 @@ PLANTS = {"pidmatch": ("[4]", "    if (str(got.get(\"id\")) != pid) if got.get(\
                    "    return _awg_31_waiting(snap)"),
           "nofbwhy": ("[6]", "        if _awg_31_waiting(snap):", "        if False:"),
           "nofbcode": ("[6]", "    elif code == \"no_fallback\":", "    elif False:"),
+          "promise": ("[1]", "loads at the next reboot if the kernel accepts it; the node page says why when it does not",
+                      "loads at the next reboot"),
           "downword": ("[6]", "    elif code == \"load_failed\" and not dn:", "    elif code == \"load_failed\":")}
 FAILS, SECTION = [], [""]
 
@@ -142,6 +144,8 @@ try:
     check("disk 3.1, module 2.0, tools 3.1 → offered", rec("ld").get("awg31_loadable") is True, rec("ld"))
     check("…and told it is installed, not loaded", "is installed, but the kernel module in use" in key(rec("ld").get("awg31_no")),
           rec("ld").get("awg31_no"))
+    check("…and that the next reboot loads it only if the kernel accepts it (q189 FP-3: Secure Boot, a wrong kernel)",
+          "if the kernel accepts it" in key(rec("ld").get("awg31_no")), rec("ld").get("awg31_no"))
     check("2.0 on disk → not offered, told the module is 2.0", rec("nd").get("awg31_loadable") is False
           and "its AmneziaWG kernel module is" in key(rec("nd").get("awg31_no")), rec("nd"))
     check("a Docker node → not offered (its module is the host's)", rec("dk").get("awg31_loadable") is False, rec("dk"))
@@ -194,7 +198,7 @@ try:
     w = key(rec("nf").get("awg31_no"))
     check("…and told why: 3.1 is installed, loads at the next reboot, cannot be loaded now — no amneziawg-go to fall back on",
           "is installed, but the kernel module in use" in w and "cannot be loaded now" in w and "amneziawg-go" in w
-          and "load it now" not in w, rec("nf").get("awg31_no"))
+          and "load it now" not in w and "if the kernel accepts it" in w, rec("nf").get("awg31_no"))
     c, r = req("/api/node/awg-load", {"id": "nf"})
     check("…its press → 409 with that reason, nothing stored", c == 409 and "cannot be loaded now" in key(r)
           and "awg_load" not in json.load(open(NODES))["nf"], (c, r))
