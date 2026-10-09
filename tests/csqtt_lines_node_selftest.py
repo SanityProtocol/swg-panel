@@ -40,12 +40,16 @@ and every command that could delete a link is refused by a guard (the test fails
   [21] snapcut        the snapshot reports a cut switch's marker line, the same line the reconcile treats as running
   [12] also: a build whose fetch failed is walked once per pass (budget), yet spends no switch — a server asking for
        another build is not starved behind it (starve)
+  1.8.9 qualification NR-4:
+  [22] backoff        a switch whose fetch failed is walked again only after CSQTT_FETCH_RETRY_S, not every sync (each
+                      walk ≈ 90 s with GitHub blackholed, and the node read offline); a new build or the operator's
+                      Restart tries at once (budget, restartretry)
 
 Run: python3 tests/csqtt_lines_node_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        reconfigure [5] · absent [6] · stable [3] · rollback [4] · memo [7] · build [8] · sibling [9] ·
-                       copyfail [10] · markorder [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16] · fetchswitched [17] · unknowncur [18] · runver [19] · budget [12] ·
-                       notpresent-ver / notpresent-cut / markerkeep / verfallback [20] · snapcut [21] · starve [12]
+                       copyfail [10] · markorder [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16] · fetchswitched [17] · unknowncur [18] · runver [19] · budget [12] [22] ·
+                       notpresent-ver / notpresent-cut / markerkeep / verfallback [20] · snapcut [21] · starve [12] · restartretry [22]
 """
 import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
 
@@ -66,7 +70,8 @@ PLANTS = {   # name: (section, anchor, replacement)
     "markorder": ("[11]", "        _csqtt_store_copy(cfgdir, frm)\n        _csqtt_cut_mark(iface, frm)\n", "        _csqtt_cut_mark(iface, frm)\n        _csqtt_store_copy(cfgdir, frm)\n"),
     "fetchswitched": (("[12]", "[17]"), "                    _sw_pass[0] = _switched = (not err) or _memo", "                    _sw_pass[0] = _switched = True"),
     "unknowncur": ("[18]", "                inst[\"ver\"] = (inst.get(\"cur_ver\") or \"\").strip()   # the panel's build for what runs, or none", "                inst.pop(\"ver\", None)"),
-    "budget": ("[12]", "                        _fetch_dead.add((_line, _want_ver))", "                        pass"),
+    "budget": (("[12]", "[22]"), "                        _CSQTT_FETCH_LATER[(_line, _want_ver)] = time.monotonic() + CSQTT_FETCH_RETRY_S", "                        pass"),
+    "restartretry": ("[22]", "                    _CSQTT_FETCH_LATER.pop((_line, _want_ver), None)", "                    pass"),
     "starve": ("[12]", "                    _sw_pass[0] = _switched = (not err) or _memo", "                    _switched = (not err) or _memo; _sw_pass[0] = True"),
     "markerkeep": ("[20]", "                if not err and _cut:\n                    _csqtt_cut_clear(iface)", "                if _cut:\n                    _csqtt_cut_clear(iface)"),
     "verfallback": ("[20]", "(inst.get(\"cur_ver\") or \"\").strip() or _csqtt_installed_ver(inst[\"line\"])", "(inst.get(\"cur_ver\") or \"\").strip()"),
@@ -74,7 +79,7 @@ PLANTS = {   # name: (section, anchor, replacement)
     "notpresent-cut": ("[20]", "                    _csqtt_store_restore(_csqtt_dir(iface), _cut)\n                    log(LOG_WARNING", "                    log(LOG_WARNING"),
     "snapcut": ("[21]", "        _rl = _csqtt_cut_line(iface) or _csqtt_running_line(iface)", "        _rl = _csqtt_running_line(iface)"),
     "runver": ("[19]", "                if inst.get(\"line\") == _cur:\n", "                if False:\n"),
-    "onepass": ("[12]", "(_sw_pass[0] or (_line, _want_ver) in _fetch_dead)", "((_line, _want_ver) in _fetch_dead)"),
+    "onepass": ("[12]", "_sw_pass[0] or time.monotonic() < _CSQTT_FETCH_LATER.get((_line, _want_ver), 0))", "time.monotonic() < _CSQTT_FETCH_LATER.get((_line, _want_ver), 0))"),
     "restart": ("[13]", "and not inst.get(\"stopped\") and not _switched:\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)", "and not inst.get(\"stopped\"):\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)"),
     "curver": (("[14]", "[17]", "[19]"), "                _run_ver = _want_ver if _line == _cur else (inst.get(\"cur_ver\") or \"\").strip()", "                _run_ver = _want_ver if _line == _cur else \"\""),
     "nover": ("[15]", "    if not ver and line != CSQTT_DEFAULT_LINE:\n", "    if False:\n"),
@@ -350,9 +355,11 @@ try:
     check("two asking for ONE build nobody can fetch: it is walked once per pass", len(SWITCHES) == 1, SWITCHES)
     record(lo=dict(rec_lo, line="2.1"), csqttsib=dict(sib, line="2.1"))
     del SWITCHES[:]
+    N._CSQTT_FETCH_LATER.clear()        # a later pass, once 2.5.0-2's backoff ([22]) ran out: it is walked — and fails — again
     N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.5", ver="2.5.0-3", tun_addr="10.66.68.1/24")})
     check("…but a failed fetch spends no switch: a server asking for ANOTHER build is not starved", len(SWITCHES) == 2, SWITCHES)
     SWITCH_RESULT[0] = ("", False)
+    N._CSQTT_FETCH_LATER.clear()
 
     section("[13] a Restart that retries a failed switch restarts once")
     N._csqtt_docker_stop("lo"); lay("lo", "2.1", "A")       # alive, so supervision has nothing to relaunch
@@ -450,6 +457,37 @@ try:
         check("it reports the line being rolled back to (2.1), as the reconcile does", row.get("line") == "2.1", row.get("line"))
     finally:
         N._csqtt_cut_clear("lo"); N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))
+
+    section("[22] an unfetchable switch is walked once per backoff window, not every sync")
+    class _Clock:                                        # swg-noded's own `time`, its monotonic moved on by hand
+        off = 0.0
+        def __getattr__(self, k): return getattr(time, k)
+        def monotonic(self): return time.monotonic() + self.off
+    clk = _Clock(); N.time = clk
+    try:
+        N._CSQTT_FETCH_LATER.clear()
+        record(lo=dict(rec_lo, line="2.1", restart=5))
+        SWITCH_RESULT[0] = ("couldn't fetch the csqtt binary for amd64 2.5.0-7 — the panel's mirror had none, and GitHub was "
+                            "unreachable from this node: curl: (28) Failed to connect to github.com port 443", False)
+        w22 = lambda **kw: {"lo": want("lo", **dict({"line": "2.5", "ver": "2.5.0-7", "restart": 5}, **kw))}
+        del SWITCHES[:]
+        errs = [N.reconcile_csqtt(w22())["errors"] for _ in range(6)]
+        check("six syncs, ONE walk of the mirrors (each ≈ 90 s with GitHub blackholed)", len(SWITCHES) == 1, SWITCHES)
+        check("…the failure said on the sync that walked; the rest wait quietly, the server on what it runs",
+              any("couldn't switch to csqtt 2.5" in e for e in errs[0]) and not any(errs[1:])
+              and (N._csqtt_load().get("lo") or {}).get("line") == "2.1"
+              and not (N._csqtt_load().get("lo") or {}).get("line_failed"), (errs, N._csqtt_load().get("lo")))
+        clk.off += N.CSQTT_FETCH_RETRY_S + 1
+        N.reconcile_csqtt(w22())
+        check("once the window has run out it is walked again", len(SWITCHES) == 2, SWITCHES)
+        N.reconcile_csqtt(w22())
+        check("…and then waits a window again", len(SWITCHES) == 2, SWITCHES)
+        N.reconcile_csqtt(w22(restart=6))
+        check("the operator's Restart walks it at once", len(SWITCHES) == 3, SWITCHES)
+        N.reconcile_csqtt(w22(restart=6, ver="2.5.0-8"))
+        check("a new build is walked at once", len(SWITCHES) == 4 and SWITCHES[-1][3] == "2.5.0-8", SWITCHES)
+    finally:
+        N.time = time; SWITCH_RESULT[0] = ("", False); N._CSQTT_FETCH_LATER.clear()
 
     section("[16] a server not installed yet runs no line")
     check("_csqtt_ifaces leaves it out", N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5") == [], N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5"))
