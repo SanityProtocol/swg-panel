@@ -132,6 +132,11 @@ def call(method, path, body=None, token=None):
         return r.status, json.loads(raw or b"{}")
     except ValueError:
         return r.status, {"raw": raw[:200]}
+def _rd(p):
+    try:
+        return json.load(open(p))
+    except Exception as e:
+        return {"unreadable": repr(e)}
 def find(o, key):
     """the first value under `key` anywhere in a reply"""
     if isinstance(o, dict):
@@ -182,11 +187,23 @@ try:
                                                    "routing": [{"category": "custom", "action": "block", "targets": "tracker.example"}]})
         check("[2] %s: the interface blocks Ads & Trackers behind a custom routing rule" % mode, st == 200, r)
         st, r = call("POST", "/api/node/sync", {"snapshot": snap()}, TOK)
-        st, r = call("POST", "/api/node/sync", {"snapshot": snap()}, TOK)   # the union is built on the first; served on the next
+        # ⚠️ THE FIRST SYNC KICKS THE UNION'S BUILD, ON A THREAD OF THE PANEL; the next sync serves it once it is built.
+        # Waited for by its meta on disk (the commit writes it last, atomically): a second sync sent straight away raced
+        # the build under load and found no union in the manifest (1.8.9 qualification: 7 runs in 300, six at a time
+        # beside CPU and fsync load, the union's `.meta.tmp.<hex>` still being written).
+        _bu = [c for c in (find(r, "categories") or []) if c.startswith("blku:host:")]
+        _end = time.time() + 120
+        while _bu and not all(os.path.exists(M._list_metapath(u, "host")) for u in _bu) and time.time() < _end:
+            time.sleep(0.05)
+        st, r = call("POST", "/api/node/sync", {"snapshot": snap()}, TOK)   # …built: served on the next sync
         caps, cats, man = find(r, "cat_caps"), find(r, "categories") or [], find(r, "list_manifest") or {}
         unions = [c for c in cats if c.startswith("blku:host:")]
         check("[2] %s: the plan holds the block union and a category outside SMART_CAPS (the custom rule)" % mode,
-              bool(unions) and any(c.startswith("custom") or c == "all" for c in cats), cats)
+              bool(unions) and any(c.startswith("custom") or c == "all" for c in cats),
+              # (seen once in ~1000 runs under heavy load: no union in either mode — what the panel held, to say why)
+              (st, cats, ((_rd(D + "/state/nodes.json").get(NID) or {}).get("ifaces") or {}).get("awg0"),
+               ((_rd(D + "/state/panel-settings.json").get("block_catalog") or {}).get("categories") or {}).get("ads"),
+               sorted(os.listdir(D + "/state/lists"))))
         check("[2] %s: the sync carries cat_caps with the union's host cap — no catalog, and none needed" % mode,
               isinstance(caps, dict) and all((caps.get(u) or {}).get("host") for u in unions) and bool(unions), caps)
         check("[2] %s: …and the union in its list manifest, so the node pulls the names it blocks" % mode,
