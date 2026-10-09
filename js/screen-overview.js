@@ -1239,7 +1239,10 @@ export function Protection({ range, bs }) {
   const cov = (d && d.coverage) || {};
   const mech = cov.mechanisms || {};
   const mechKeys = Object.keys(mech);
-  const hasCov = (cov.domains || 0) + (cov.threat_ips || 0) + (cov.categories || 0) + mechKeys.length > 0;
+  // lists the panel could not hand a node its caps for (no provider catalog, an older node): they filter nothing there yet,
+  // so they are said as waiting — never counted as filtering (q189 D12-OBS-1)
+  const waiting = Array.isArray(cov.waiting) ? cov.waiting : [];
+  const hasCov = (cov.domains || 0) + (cov.threat_ips || 0) + (cov.categories || 0) + mechKeys.length + waiting.length > 0;
   const torrents = (d && d.torrents) || 0, scan = (d && d.scan) || 0, reach = (d && d.reach) || 0, blocked = (d && d.blocked) || 0;
   const mechd = (d && d.mech) || 0;   // packets the FREE port rules dropped (SMTP / QUIC / torrent port-hint)
   const who = (d && d.who) || {};   // per-metric attribution {scan:[{user,peers,count}], …} → the hover "who" bubble
@@ -1335,6 +1338,8 @@ export function Protection({ range, bs }) {
         </span>
         ${mechKeys.length ? html`<span class="prot-mech">${mechKeys.map(m => html`<span class="prot-chip" key=${m}>${MECH_LABEL[m] || m}${mech[m] > 1 ? html` <i>×${mech[m]}</i>` : ""}</span>`)}</span>` : null}
       </div>` : null}
+      ${waiting.map(w => html`<div class="hint warnish" style="margin-top:8px" key=${w.label}>${T("{v1}: not filtered yet on {v2} — waiting for the provider catalog, or for this node's update.",
+        { v1: w.label, v2: (w.nodes || []).join(", ") })}</div>`)}
     </div>
   <//>`;
 }
