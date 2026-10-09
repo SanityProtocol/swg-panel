@@ -30,6 +30,8 @@ the spool and the merge, the download route, redaction, the reader both programs
 Run: python3 tests/log_range_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
      replyidle    an idle reply carries `logrange`               inlogs       a range rides P2's `logs`
+     srcnl        a source "noded\\n" passes (`$`, q189 PR-18)
+     hugetime     a line timed 10**25 µs is taken (q189 PLO-2)  hugecut      a done.cut_t of 10**25 is taken
      replydone    a server that is done is still asked           nokey        any key is accepted
      noorder      a part out of order is taken                   repeatdup    a repeated part is written twice
      norestart    a new part 0 is appended, not a fresh start    noslots      range posts are not bounded
@@ -150,6 +152,10 @@ PLANTS = {   # (program, anchor, replacement)
     "noredact": ("panel", '''def range_redact(text):
     for rx, rep, need in _RANGE_REDACT:''', '''def range_redact(text):
     for rx, rep, need in ():'''),
+    "hugetime": ("panel", "            and 0 <= ln[0] < LOG_T_MAX", ""),
+    "hugecut": ("panel", "isinstance(v, int) and not isinstance(v, bool) and 0 <= v < LOG_T_MAX:", "isinstance(v, int) and not isinstance(v, bool) and v >= 0:"),
+    "srcnl": ("panel", 'LIVE_SRC_RE = re.compile(r"^[a-z0-9]{1,16}(?::(?:\\*|[A-Za-z0-9_.@-]{1,64}))?\\Z")',
+              'LIVE_SRC_RE = re.compile(r"^[a-z0-9]{1,16}(?::(?:\\*|[A-Za-z0-9_.@-]{1,64}))?$")'),
     "keyloose": ("panel", '''(re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=(?![A-Za-z0-9+/=])"), "[key]", "="),''',
                  '''(re.compile(r"[A-Za-z0-9+/]{43}="), "[key]", "="),'''),
     "redactalways": ("panel", '''"redact": body.get("redact") is not False,''', '''"redact": True,'''),
@@ -676,6 +682,35 @@ try:
               and "# not redacted" in txt, txt[:600])
         rec, txt = make(P, lines=[])
         check("[4] a server with nothing: the file is still made", "second (n2" in txt, txt[-300:])
+        try:   # q189 PR-18: `$` let a source "noded\n" into the spool TSV, and the file failed on its 4-field unpack
+            rec, txt = make(P, lines=[[int(time.time() - 1800) * 10 ** 6, "noded\n", 6, "smuggled"],
+                                      [int(time.time() - 1799) * 10 ** 6, "noded", 6, "kept"]])
+            ok = "kept" in txt and "smuggled" not in txt
+        except Exception as e:
+            ok, txt = False, "%s: %s" % (type(e).__name__, e)
+        check("[4] a source with a trailing newline is dropped, and the file is still made", ok, txt[-300:])
+        # q189 PLO-2: a node's absurd numbers are bounded before anything formats them — one used to fail every server's file
+        try:
+            rec, txt = make(P, lines=[[10 ** 25, "noded", 6, "from the far future"], [int(time.time() - 1700) * 10 ** 6, "noded", 6, "kept2"]])
+            ok = "kept2" in txt and "far future" not in txt and rec["phase"] != "failed"
+        except Exception as e:
+            ok, txt = False, "%s: %s" % (type(e).__name__, e)
+        check("[4] a line timed 10**25 µs is dropped, and every server's file is still made", ok, txt[-300:])
+        try:
+            st0, o0 = P.range_open({"nodes": ["n1"], **RANGE_BODY, "redact": True, "names": {"n1": "alpha"}}, {"n1"})
+            r0 = P._RANGE_REQS[o0["data"]["id"]]; k0 = P._live_key(r0, "n1")
+            P.range_absorb({"id": r0["id"], "key": k0, "now": time.time(), "st": {"noded": "ok"}})
+            P.range_absorb({"id": r0["id"], "key": k0, "now": time.time(), "seq": 0, "done": {"read": 1, "cut": 3, "cut_t": 10 ** 25},
+                            "lines": [[int(time.time() - 1600) * 10 ** 6, "noded", 6, "kept3"]]})
+            r0["phase"] = "making"; P._range_make(r0)
+            t0 = gzip.open(r0["dir"] + ".log.gz", "rt").read()
+            ok = "kept3" in t0 and r0["phase"] != "failed"
+        except Exception as e:
+            ok, t0 = False, "%s: %s" % (type(e).__name__, e)
+        check("[4] a done.cut_t of 10**25 is not taken, and the file is still made", ok, t0[-300:])
+        offs = [P._log_post_off(v, time.time()) for v in (int("1" + "0" * 400), 1e300, float("nan"), time.time() + 20 * 365 * 86400)]
+        check("[4] a node's `now` that is not a clock (400 digits, 1e300, NaN, 20 years off) reads as no offset — no exception",
+              offs == [None, None, None, None], offs)
 
     guarded("[4]", sec4)
 
