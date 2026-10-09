@@ -2312,7 +2312,12 @@ if [ -f "$PREFIX$SUB_DIR/swg-sub" ]; then   # inert until enabled in Settings �
   # the moment the move then happened, far from the run that caused it (1.8.8 qualification, round 10, F92).
   _subu="$PREFIX/etc/systemd/system/swg-sub.service"; _subu_was="$(cat "$_subu" 2>/dev/null || true)"
   _sub_was_up=no; ! $DRYRUN && systemctl is-active --quiet swg-sub 2>/dev/null && _sub_was_up=yes
-  write_sub_unit; run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-sub || warn "couldn't start swg-sub"
+  # ⚠️ …AND ONE THE OPERATOR DISABLED AND STOPPED STAYS SO, as an update keeps it (F93): a re-install enabled and started it
+  # again — a public listener back on its port, the operator's choice silently replaced (1.8.8 deferred #9)
+  _sub_off=no; [ -n "$_subu_was" ] && [ "$_sub_was_up" = no ] && ! $DRYRUN && ! systemctl is-enabled --quiet swg-sub 2>/dev/null && _sub_off=yes
+  write_sub_unit; run systemctl daemon-reload
+  if [ "$_sub_off" = yes ]; then ok "swg-sub left disabled and stopped, as it was (systemctl enable --now swg-sub to serve subscriptions)"
+  else run systemctl enable --quiet $_NOW swg-sub || warn "couldn't start swg-sub"; fi
   if [ "$_sub_was_up" = yes ] && [ "$(cat "$_subu" 2>/dev/null || true)" != "$_subu_was" ]; then
     if run systemctl restart swg-sub; then ok "swg-sub restarted — its unit changed (it listens on ${SUB_BIND}:${SUB_PORT} unless the panel's Settings set another address)"
       # ⚠️ …AND THE PANEL RECORDS WHERE IT LISTENS NOW. The panel was (re)started above, before swg-sub moved: its start
