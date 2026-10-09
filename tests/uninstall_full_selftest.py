@@ -41,6 +41,8 @@ refuse any path outside the box, and such an escape fails the section that made 
   [20] the datapath sweep takes the torrent policy's rule (`6880: from all fwmark 0x40000000 lookup main` under Direct —
       measured left on every OS) and never flushes main; /etc/sysctl.d/99-swg-turn.conf (swg-noded's turn socket caps, kept
       across every reboot after the uninstall) goes with the other two sysctl files (1.8.9 qualification NR-6, DEB-2)
+  [21] a turn proxy behind NAT / DDNS is listed (and asked about) by the host its clients dial — SWG_DIAL, as every other
+      list reads it — not its bind 0.0.0.0; one whose dial is its bind as before (1.8.9 qualification FN-2(a), a dry run)
   [16] systemd < 254: the restart back-off swg-noded writes in the three family dirs (swg-restart.conf, D12-1) — rm_node no
       longer says it "keeps" a dir that holds only that file (the end of the run takes both); an operator's own drop-in
       there is still said and kept
@@ -49,7 +51,7 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      SWG_UNINSTALL=<file>   run it against another uninstall.sh
      --perturb-gone    the gone node is not offered (as shipped) → RED on [1] [2] [3]
      --perturb-bare    …it is, beside a bare node too → RED on [6] only
-     --perturb-src     the source build is not offered (as shipped) → RED on [7] [8]
+     --perturb-src     the source build is not offered (as shipped) → RED on [7] [8] [12] (the fallback's PPA goes with it)
      --perturb-stop    a removed interface's unit is not stopped (as shipped) → RED on [7]'s unit check only
      --perturb-ppa     the PPA packages are offered only beside a bare install (as shipped) → RED on [10] only
      --perturb-go      the package purge leaves amneziawg-go (as shipped) → RED on [9]'s amneziawg-go check only
@@ -66,6 +68,7 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-orphan  state no unit runs from is never offered (as shipped) → RED on [19]'s question and nothing-left checks only
      --perturb-6880    the sweep skips the torrent policy's rule (as shipped) → RED on [20]'s 6880 check only
      --perturb-turnconf  99-swg-turn.conf stays (as shipped) → RED on [20]'s sysctl check only
+     --perturb-dial    a turn proxy listed by its bind (as shipped) → RED on [21]'s first check only
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
@@ -77,7 +80,7 @@ FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--
                                          "--perturb-ppa", "--perturb-go", "--perturb-key", "--perturb-srcppa", "--perturb-www",
                                          "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg",
                                          "--perturb-engine", "--perturb-d123", "--perturb-orphan", "--perturb-6880",
-                                         "--perturb-turnconf")}
+                                         "--perturb-turnconf", "--perturb-dial")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -132,6 +135,9 @@ if FLAGS["--perturb-6880"]:
     plant("awk '$1==6880 || ($1>=6890 && $1<=6989)'", "awk '$1>=6890 && $1<=6989'")
 if FLAGS["--perturb-turnconf"]:
     plant(" /etc/sysctl.d/99-swg-turn.conf   # + swg-noded's", "   # + swg-noded's")
+if FLAGS["--perturb-dial"]:
+    plant("\"$({ sed -n 's/^SWG_DIAL=//p' \"$envf\"; sed -n 's/^SWG_LISTEN=//p' \"$envf\"; } 2>/dev/null | awk 'NF && !d {print; d=1}')\"",
+          "\"$(sed -n 's/^SWG_LISTEN=//p' \"$envf\" 2>/dev/null | sed -n 1p)\"")
 if FLAGS["--perturb-image"]:
     plant('  [ -n "$img" ] || { _tag="$(sed -n ', '  false && { _tag="$(sed -n ')
 
@@ -655,20 +661,38 @@ check("[20] `6880: from all fwmark 0x40000000 lookup main` (the P2P policy under
 check("[20] /etc/sysctl.d/99-swg-turn.conf (the turn listeners' socket-buffer caps swg-noded wrote) goes with the other two",
       not here(box, "etc/sysctl.d/99-swg-turn.conf"), sorted(os.listdir(os.path.join(box, "etc/sysctl.d"))))
 
+print("\n[21] turn proxies listed by the host their clients dial (1.8.9 qualification FN-2(a))")
+TURN_UNIT = ("[Unit]\nDescription=vk-turn-proxy (WINGS-N)\n[Service]\nEnvironmentFile=-@BOX@/opt/vk-turn-proxy/%s/turn.env\n"
+             "ExecStart=@BOX@/opt/vk-turn-proxy/.bin/WINGS-N/turn -listen ${SWG_LISTEN} -connect ${SWG_CONNECT}\n")
+tfiles = dict(BARE_NODE, **{
+    "etc/systemd/system/vk-turn-proxy-WINGS-N-56200.service": TURN_UNIT % "WINGS-N-56200",
+    "opt/vk-turn-proxy/WINGS-N-56200/turn.env": "SWG_LISTEN=0.0.0.0:56200\nSWG_DIAL=home.example.net:56200\nSWG_CONNECT=127.0.0.1:51820\n",
+    "etc/systemd/system/vk-turn-proxy-WINGS-N-56300.service": TURN_UNIT % "WINGS-N-56300",
+    "opt/vk-turn-proxy/WINGS-N-56300/turn.env": "SWG_LISTEN=203.0.113.7:56300\nSWG_CONNECT=127.0.0.1:51820\n"})
+box = mkbox("turn-dial", tfiles, BARE_FX)
+rc, out, calls, esc = run(box, "--dry-run", "--yes", env=FULL)
+comps = components(out)
+t1 = next((c for c in comps if "vk-turn-proxy-WINGS-N-56200" in c), "")
+t2 = next((c for c in comps if "vk-turn-proxy-WINGS-N-56300" in c), "")
+check("[21] a proxy behind NAT / DDNS is listed by the host its clients dial (SWG_DIAL), not its bind 0.0.0.0",
+      "home.example.net:56200 → 127.0.0.1:51820" in t1 and "0.0.0.0" not in t1, comps)
+check("[21] …one with no SWG_DIAL (dial == bind) by its listen, as before", "203.0.113.7:56300 → 127.0.0.1:51820" in t2, comps)
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
     sect = {"--perturb-gone": ("the node is offered", "…and not as mere", "NOTHING of the node", "its nft tables went",
                                "the Docker dir is gone", "nothing of the node", "nothing was pulled", "the panel went too"),
             "--perturb-image": ("its nft tables went with its OWN nft",), "--perturb-bare": ("[6]",),
-            "--perturb-src": ("[7] the source build is offered", "[7] …and taken", "[7] DKMS forgets", "[8]"),
+            "--perturb-src": ("[7] the source build is offered", "[7] …and taken", "[7] DKMS forgets", "[8]", "[12]"),
             "--perturb-stop": ("[7] each removed interface's unit",), "--perturb-ppa": ("[10]",), "--perturb-go": ("[9] …and the purge",),
             "--perturb-key": ("[11] the PPA goes", "[12]"), "--perturb-srcppa": ("[12]",), "--perturb-www": ("[13] /var/www",),
             "--perturb-aa": ("[13] the AppArmor local/wg",), "--perturb-aatext": ("[13] …and the revert line",),
             "--perturb-rl": ("[13] route_localnet", "[15]"), "--perturb-rlown": ("[14] route_localnet",), "--perturb-keepmsg": ("[16]",),
             "--perturb-engine": ("[17] the summary of [1]'s",), "--perturb-d123": ("[18] WDTT_DATA_DEL", "[19] …and with CSQTT_DATA_DEL=y"),
             "--perturb-orphan": ("[19] the csqtt password store", "[19] …and with CSQTT_DATA_DEL=y"),
-            "--perturb-6880": ("[20] `6880",), "--perturb-turnconf": ("[20] /etc/sysctl.d/99-swg-turn.conf",)}
+            "--perturb-6880": ("[20] `6880",), "--perturb-turnconf": ("[20] /etc/sysctl.d/99-swg-turn.conf",),
+            "--perturb-dial": ("[21] a proxy behind NAT",)}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
