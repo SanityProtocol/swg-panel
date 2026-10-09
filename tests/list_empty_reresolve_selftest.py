@@ -20,7 +20,7 @@ it is for "a resolve that finished and produced nothing", which is precisely wha
 Run: python3 tests/list_empty_reresolve_selftest.py      (0 = pass)
      --perturb   restores `if m and not force: return m` and expects RED.
 """
-import importlib.machinery, importlib.util, json, os, sys, tempfile, time
+import importlib.machinery, importlib.util, json, os, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -57,6 +57,38 @@ if PERTURB:
 TMP = tempfile.mkdtemp(prefix="listheal-")
 P.LIST_DIR = TMP
 
+# ⚠️ WAIT FOR THE RESOLVE ITSELF, NOT FOR A NUMBER OF NAPS. list_ensure resolves on a thread of its own, and every wait
+# here polled _LIST_INFLIGHT up to 200 × 5 ms and then went on regardless. Under load the resolve's two file writes
+# (seed: the list and its meta, on the disk /tmp is) can stall longer than that, and a check then read a resolve that had
+# run but not finished — "[4] a zero result arms _LIST_FAILED" went red under the full suite (1.8.9 qualification; 4 runs
+# in 200, six at a time). Every thread the panel starts here is recorded, and each check waits for it to end.
+_STARTED = []
+
+
+class _Recorded(threading.Thread):
+    def start(self):
+        _STARTED.append(self)
+        super().start()
+
+
+class _Threading:                                  # the panel's `threading`, its Thread recorded
+    Thread = _Recorded
+
+    def __getattr__(self, name):
+        return getattr(threading, name)
+
+
+P.threading = _Threading()
+
+
+def settle():
+    """Join every resolve list_ensure started — none started, nothing to wait for."""
+    while _STARTED:
+        t = _STARTED.pop(0)
+        t.join(120)
+        if t.is_alive():
+            check("a list resolve finishes (one is still running after 120 s)", False)
+
 def seed(cat, tier, n):
     """Put a stored answer of `n` records on disk, exactly as _list_commit would."""
     P._LIST_META.pop(cat + "|" + tier, None)
@@ -75,16 +107,7 @@ def kicked(cat, tier, produces):
     real, P.list_store = P.list_store, fake_store
     try:
         P.list_ensure(cat, tier)
-        for _ in range(200):                 # the resolve runs on its own thread
-            with P._LIST_LOCK:
-                busy = (cat + "|" + tier) in P._LIST_INFLIGHT
-            if not busy and ran:
-                break
-            if not busy and not ran:
-                time.sleep(0.005)
-                break
-            time.sleep(0.005)
-        time.sleep(0.02)
+        settle()                             # the resolve runs on its own thread: until it has ENDED
     finally:
         P.list_store = real
     return bool(ran)
@@ -113,13 +136,7 @@ def _store_zero(c, t):
 real, P.list_store = P.list_store, _store_zero
 try:
     P.list_ensure("mc:really-empty", "host")
-    for _ in range(200):
-        with P._LIST_LOCK:
-            busy = "mc:really-empty|host" in P._LIST_INFLIGHT
-        if not busy:
-            break
-        time.sleep(0.005)
-    time.sleep(0.02)
+    settle()
 finally:
     P.list_store = real
 check("the resolve ran", bool(ran))
@@ -140,12 +157,7 @@ _real, P.list_store = P.list_store, _count_store
 try:
     for _ in range(5):                       # five syncs in a row, well inside the cooldown
         P.list_ensure("mc:hot-empty", "host")
-        for _ in range(200):
-            with P._LIST_LOCK:
-                if "mc:hot-empty|host" not in P._LIST_INFLIGHT:
-                    break
-            time.sleep(0.005)
-        time.sleep(0.01)
+        settle()
 finally:
     P.list_store = _real
 check("five back-to-back syncs cause exactly ONE upstream resolve", len(_n) == 1, len(_n))
@@ -157,12 +169,7 @@ def _count2(c, t):
 _real, P.list_store = P.list_store, _count2
 try:
     P.list_ensure("mc:hot-empty", "host")
-    for _ in range(200):
-        with P._LIST_LOCK:
-            if "mc:hot-empty|host" not in P._LIST_INFLIGHT:
-                break
-        time.sleep(0.005)
-    time.sleep(0.02)
+    settle()
 finally:
     P.list_store = _real
 check("once it expires, it tries again (so it still heals)", len(_n2) == 1, len(_n2))
@@ -176,7 +183,7 @@ _real, P.list_store = P.list_store, _count3
 try:
     for _ in range(3):
         P.list_ensure("mc:hot-empty", "host", force=True)
-        time.sleep(0.02)
+        settle()                             # a fetch it did start is counted, however late it runs
 finally:
     P.list_store = _real
 check("a `force`d attempt inside the back-off fetches nothing", len(_forced) == 0, len(_forced))
