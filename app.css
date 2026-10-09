@@ -1180,7 +1180,13 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 
 /* ───── responsive: collapse tables to cards ───── */
 @media(max-width:680px){
-  .appbar{gap:14px;padding:0 14px}.tabs a{padding:7px 11px}   /* keep just the panel version on small screens */
+  /* A PHONE: the bar's parts do not fit one 56px line (they ran to 1 257px at 390px, so every screen scrolled sideways), so it
+     wraps — the brand and the icon buttons, then the tabs, then the version and the status pills — and scrolls away with the
+     page rather than keep those rows over the content. Nothing is hidden. */
+  .appbar{flex-wrap:wrap;height:auto;gap:8px 6px;padding:8px 14px;position:static}.brand{margin-right:auto}
+  .appbar-right{display:contents}.appbar-right>.iconbtn,.appbar-right>.acct-wrap{order:1}
+  .tabs{order:2;flex:1 0 100%;flex-wrap:wrap}.tabs a{padding:7px 9px}.tabs a.active::after{left:9px;right:9px}
+  .appver,.appbar-right>.livepill,.appbar-right>.tport,.appbar-right>.updslot{order:3}
   .view{padding:16px 13px 70px}
   .statgrid{grid-template-columns:1fr 1fr}
   thead{display:none}
