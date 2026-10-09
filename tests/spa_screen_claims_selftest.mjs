@@ -17,10 +17,13 @@
  *     colour; turnLabel (the id) is used nowhere outside turn-catalog.js.
  * [4] V-FEAT-A F6 — the Disguise picker said a restart brings devices back "within a few seconds". Measured 15.2–15.4 s (the
  *     devices still on their old set come back on WireGuard's own rekey after silence): it now says about 15 seconds.
+ * [5] q189 HE-8 — the END USERS' surfaces: a server-name template's {fork} gave "samosvalishe 56005" in users' apps (the
+ *     shared turn-artifacts.js knows no catalog); the sub page's Sidecar title and WDTT chip/zoom printed fork ids, and the
+ *     SPA's WDTT adopt label too. Each page now hands turn-artifacts its catalog's name, and the prints go through forkLabel.
  *
  * The real js/i18n.js with the real Russian catalog; the real modules (screen-settings, screen-nodes, ui, iface, mimic).
  * Run: node tests/spa_screen_claims_selftest.mjs
- *      --perturb <offhint | confirm | p2pblock | p2proute | tag | bubble | title | fewsec>   one fix undone → RED (exit 0 when caught)
+ *      --perturb <offhint | confirm | p2pblock | p2proute | tag | bubble | title | fewsec | artifactname | subhook>   one fix undone → RED
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -40,6 +43,9 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   tag: ["js/screen-nodes.js", '" muted" : "")}>${forkLabel(turnFork(tp.service))}</span>`;', '" muted" : "")}>${turnFork(tp.service)}</span>`;'],
   bubble: ["js/ui.js", "const tf = turnFork(r.viaTurn), tn = forkLabel(tf), tc = turnColor(tf),", "const tf = turnFork(r.viaTurn), tn = tf, tc = turnColor(tf),"],
   title: ["js/turn.js", "turnSheetTitle(forkLabel(turnFork(svc)), title)", "turnSheetTitle(turnFork(svc), title)"],
+  artifactname: ["turn-artifacts.js", 'return k === "fork" ? String(forkName(String(fork || "")) || fork || "") :',
+                 'return k === "fork" ? String(fork || "") :'],
+  subhook: ["sub.js", "  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);", ""],
   fewsec: ["js/iface.js", 'T("The interface restarts; connected devices reconnect in about 15 seconds.")',
            'T("The interface restarts; connected devices reconnect within a few seconds.")'],
 };
@@ -181,5 +187,30 @@ check("[4] …its English says about 15 seconds, and no Disguise line says a few
       JS["iface.js"].includes('T("The interface restarts; connected devices reconnect in about 15 seconds.")')
       && !JS["iface.js"].includes("reconnect within a few seconds") && ruHas("The interface restarts; connected devices reconnect in about 15 seconds."), "");
 check("[4] …and no restart, no clause", !lines(pick({ eff: qL, was: bL, restart: false })).some(l => /перезапустится/.test(l)));
+
+// ── [5] the end users' surfaces ─────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[5] what END USERS see: the fork's name in their app's server name and on the sub page (HE-8)");
+const vm = await import("node:vm");
+const box = { console, TextEncoder, TextDecoder, Uint8Array, Buffer, atob: x => Buffer.from(x, "base64").toString("binary"),
+              btoa: x => Buffer.from(x, "binary").toString("base64") };
+box.window = box; box.self = box; box.globalThis = box;
+vm.runInNewContext(read("turn-artifacts.js"), box, { filename: "turn-artifacts.js" });
+const SWT = box.SWGTurn;
+const CONF5 = "[Interface]\nPrivateKey = aaaa\nAddress = 10.66.0.5/32\n[Peer]\nPublicKey = bbbb\nEndpoint = 203.0.113.9:51820\nAllowedIPs = 0.0.0.0/0\n";
+const nameOf = () => { const s5 = JSON.stringify(SWT.artifact(CONF5, { service: "vk-turn-proxy-samosvalishe-56005", listen: "203.0.113.9:56005",
+                                                               wrap_key: "k".repeat(64) }, "https://vk.com/call/join/abc", { serverName: "{fork} {port}" }));
+  const m5 = s5.match(/freeturn:\/\/([A-Za-z0-9_\-+/=%]+)/);
+  try { return JSON.parse(Buffer.from(decodeURIComponent(m5[1]).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")).name; }
+  catch (e) { return "(undecodable) " + s5.slice(0, 120); } };
+if (SWT.setForkLabel) SWT.setForkLabel(TC.forkLabel);       // what each page does with its own catalog
+check("[5] a FreeTurn user's server name from \"{fork} {port}\" reads «hackdiaz-dev 56005»", nameOf() === "hackdiaz-dev 56005", nameOf());
+const SUB = read("sub.js");
+check("[5] both pages hand turn-artifacts their catalog's name (the sub page, the SPA's turnArtifact)",
+      SUB.includes("  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);")
+      && JS["crypto.js"].includes("if (SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);"), "");
+check("[5] the sub page's Sidecar title and its WDTT chip and zoom print the name, not the id",
+      SUB.includes('(c.forkId ? forkLabel(c.forkId) + " " : "") + "Sidecar"') && SUB.includes('var wsrv = el("span", null, forkLabel(wfork));')
+      && SUB.includes("ctrl.zoomTail = wHasApp ? wAppName : forkLabel(wfork);"), "");
+check("[5] …and the SPA's WDTT adopt label", JS["iface.js"].includes('" · " + forkLabel(cand.wdtt.fork)'), "");
 
 done(MODE, MODE || "");
