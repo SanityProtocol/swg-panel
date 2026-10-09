@@ -149,6 +149,11 @@ h1,h2,h3{font-family:var(--sans)}
 .tabs a.active::after{content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;border-radius:2px;
   background:var(--brand);box-shadow:0 0 9px color-mix(in srgb,var(--brand) 55%,transparent)}
 .appbar-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+/* Russian's header words are wider: with every header control on (an update pill, the deployment badge, the vault lock) the bar ran
+   past the screen up to 1 365px and pushed Log out off it. There its parts sit closer together. Russian only, in that band: English
+   fits at 1 280px by a hair, and every other width keeps its spacing. */
+@media (min-width:1280px) and (max-width:1365px){html[lang="ru"] .appbar{gap:14px}html[lang="ru"] .appbar-right,html[lang="ru"] .updslot{gap:8px}
+  html[lang="ru"] .tabs a{padding:8px 7px}}
 /* NOWRAP ON EVERY HEADER PILL. These are single-token status chips — a count and a word, a version, an
    action — and the English happens to be short enough that none of them ever wrapped. Russian is not:
    "FIX 2 ISSUES" becomes "ИСПРАВИТЬ 2 ПРОБЛЕМЫ" and broke onto FOUR lines, taking the whole header bar with
