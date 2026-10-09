@@ -265,6 +265,45 @@ if [ -e /etc/NIXOS ] || grep -qsE '^ID="?nixos"?[[:space:]]*$' /etc/os-release; 
     an install that is already on this box, identity intact."
 fi
 
+# ── an update runs OUTSIDE swg-noded's sandbox ──
+# ⚠️ A 1.8.8 swg-noded starts the panel's update with `systemd-run --scope`: another cgroup, but still swg-noded's mount
+# namespace — ProtectSystem=true leaves /usr read-only (swg-logs, the AmneziaWG source patch, apt's package follow: EROFS,
+# dpkg left half-installed) and PrivateTmp's /tmp goes away when the update restarts swg-noded (mktemp fails) — and the
+# run still said "Update complete" (1.8.9 qualification IN-13). This build's swg-noded starts it as a service, but on the
+# day a box updates FROM 1.8.8 the launcher is the old one, and the first new thing it runs is this script. So an update
+# that finds itself in such a sandbox runs this script again — same arguments, same environment — as a transient service
+# PID 1 starts (the host's namespaces), and exits with its code; its output goes where this run's goes (--pipe), so the
+# old launcher's verdict and output tail stay true. Once (SWG_UPDATE_HOP). A namespace that only routes the journal
+# (swg-update.service's LogNamespace=) is no sandbox: /usr writable, the host's /tmp. No systemd-run: said, and on in place.
+_swg_sandboxed(){ local s p
+  s="$(readlink /proc/self/ns/mnt 2>/dev/null)" && p="$(readlink /proc/1/ns/mnt 2>/dev/null)" && [ -n "$p" ] && [ "$s" != "$p" ] || return 1
+  [ -w /usr ] || return 0
+  [ "$(stat -Lc %d:%i /tmp 2>/dev/null)" != "$(stat -Lc %d:%i /proc/1/root/tmp 2>/dev/null)" ]; }
+if [ "$ACTION" = update ] && [ -z "${SWG_UPDATE_HOP:-}" ] && _swg_sandboxed; then
+  _src=""; case "$0" in /*) if [ -f "$0" ]; then _src=file; fi;; esac   # `bash <file>` (1.8.8's launcher), or `bash -c <text>`
+  if [ -z "$_src" ] && [ -n "${BASH_EXECUTION_STRING:-}" ]; then _src=text; fi
+  if [ -n "$_src" ] && [ -d /run/systemd/system ] && command -v systemd-run >/dev/null 2>&1 \
+     && _hop="$(mktemp -d /run/swg-update-hop.XXXXXX)"; then
+    umask 077
+    if [ "$_src" = file ]; then cp "$0" "$_hop/bootstrap.sh"; else printf '%s\n' "$BASH_EXECUTION_STRING" > "$_hop/bootstrap.sh"; fi
+    # the service starts with PID 1's environment: this run's (the panel's turn mirror, a proxy, SWG_REF) fills in what it
+    # lacks — from a file only root reads, not --setenv: a unit's environment is readable by every local user over D-Bus
+    { for _k in $(compgen -e); do
+        case "$_k" in INVOCATION_ID|JOURNAL_STREAM|NOTIFY_SOCKET|SYSTEMD_EXEC_PID|PWD|OLDPWD|SHLVL|_) continue;; esac
+        if [ -n "${!_k+x}" ]; then printf '[ -n "${%s+x}" ] || export %s=%q\n' "$_k" "$_k" "${!_k}"; fi
+      done
+      printf 'export SWG_UPDATE_HOP=1\nbash %q' "$_hop/bootstrap.sh"; printf ' %q' ${SWG_ARGS[@]+"${SWG_ARGS[@]}"}
+      printf '\nrc=$?; rm -rf %q; exit "$rc"\n' "$_hop"; } > "$_hop/run"
+    info "this update runs inside swg-noded's sandbox (/usr read-only, a private /tmp) — running it again as a service, outside it"
+    _rc=0
+    systemd-run --unit swg-self-update --collect --wait --pipe --quiet \
+      --description "swg self-update (run again outside swg-noded's sandbox)" bash "$_hop/run" || _rc=$?
+    rm -rf "$_hop"
+    exit "$_rc"
+  fi
+  warn "this update runs inside a service's sandbox (/usr read-only or a private /tmp) and cannot be run again outside it here — going on in place"
+fi
+
 # ── fetch the repo ──
 need(){ command -v "$1" >/dev/null 2>&1; }
 # ⚠️ THIS TRAP NEVER FIRED. Every dispatch below used `exec`, which REPLACES this process, and traps
