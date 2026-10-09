@@ -2844,8 +2844,10 @@ SWG_LOG_NS_DROPIN=swg-ns.conf
 # are refused (an OpenVZ/Virtuozzo-like container, an LXC that denies unshare), a unit naming a namespace exits
 # 226/NAMESPACE while the same unit with 1.8.8's settings runs — an update would have written the drop-ins and the panel,
 # noded, sub, netctl and update units would not have started again (1.8.9 qualification IN-11, V-LOGS F-3). So a throwaway
-# unit is RUN with one (namespace swg-probe; its journald stopped and its directory removed after), once per boot: the
-# answer is kept in /run/swg-log-ns (ok | refused), which swg-noded and swg-netctl read too, under the same lock. Refused:
+# unit is RUN with one (namespace swg-probe; its journald stopped and its directory removed after) — once, by the first
+# installer or update.sh on the box: root, before the daemons it starts (update.sh runs one at a time, under its lock). The
+# answer is kept for good in /var/lib/swg-log-ns (ok | refused; remove it to ask again) and swg-noded and swg-netctl only
+# read it. Refused:
 # no drop-in is written and any already there goes (swg_log_ns_clear) — the box logs into the main journal exactly as
 # 1.8.8 did, swg-logs reads it there (`--namespace=+` merges the main journal), the budget rows say "Not supported".
 SWG_LOG_NS_PROBE="${SWG_LOG_NS_PROBE:-/var/lib/swg-log-ns}"
@@ -2867,11 +2869,8 @@ swg_log_ns_ok(){ local d t="" v
   # a dry run starts no unit, and only root can start one (systemd-run as another user asks polkit): the template answers
   # there, as it did before the probe — every real caller (an installer, update.sh) is root
   if ${DRYRUN:-false} || [ "$(id -u)" != 0 ]; then return 0; fi
-  { if have flock; then flock -w 90 9 || true; fi
-    v="$(cat "$SWG_LOG_NS_PROBE" 2>/dev/null || true)"           # another prober may have answered while this one waited
-    case "$v" in ok|refused) ;; *) v=refused; if _swg_log_ns_run_probe; then v=ok; fi
-      printf '%s\n' "$v" > "$SWG_LOG_NS_PROBE" 2>/dev/null || true;; esac
-  } 9>>"$SWG_LOG_NS_PROBE.lock"
+  v=refused; if _swg_log_ns_run_probe; then v=ok; fi
+  printf '%s\n' "$v" > "$SWG_LOG_NS_PROBE" 2>/dev/null || true
   [ "$v" = ok ]; }
 swg_log_ns_clear(){   # [<unit or unit prefix>…] — refused (above): every swg-ns.conf drop-in on the box goes; named: only those
   # units' (a convert's teardown, swg_log_teardown below). SWG_LOG_NS_CLEARED = how many
