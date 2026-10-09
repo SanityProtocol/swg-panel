@@ -10,15 +10,21 @@ ran that whole chain twice. On a VPS abroad all of it takes seconds, which is wh
   [2] git_clone_depth1 aborts a clone under 10 KB/s for 30 s and caps the whole clone (timeout 300) where `timeout` exists
   [3] ensure_wg_tools_once runs ensure_wg_tools once per tool per run and hands back its answer, a failure included —
       and every install step in both installers goes through it
+  [3b] (1.8.9 qualification IN-18) …except where an interface is STARTED (`again`): a tool that failed earlier in the run
+      (a dpkg lock held at the tooling step, unattended-upgrades) is tried once more there — kept, an adopted wg0 stayed
+      DOWN after an rc-0 Docker → bare convert; once per tool per run, so a chain that really fails is not repeated per
+      interface; the switch's bring-up and both installers' create loops ask it
   [4] a kernel module that does not build says why (the work dir and its log are deleted right after)
 
 Run: python3 tests/installer_slow_link_selftest.py      (0 = pass)
+     --perturb   a failure is final again, `again` or not (52aa9c4) → RED on [3b]
 """
 import os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 rd = lambda f: open(os.path.join(ROOT, f), encoding="utf-8").read()
+PERTURB = "--perturb" in sys.argv[1:]
 lib, node, host = rd("lib/common.sh"), rd("install-node.sh"), rd("install-host.sh")
 FAILS = []
 def check(name, cond, detail=""):
@@ -68,11 +74,37 @@ for f, src in (("install-node.sh", node), ("install-host.sh", host)):
             and not l.lstrip().startswith("#") and "ensure_wg_tools \"$1\" && _rc" not in l]
     check("%s: every install step goes through it" % f, not bare, bare)
 
+print("\n[3b] a failure is tried once more where an interface is started (IN-18)")
+for f, src in (("install-node.sh", node), ("install-host.sh", host)):
+    once = grab(src, "ensure_wg_tools_once")
+    if PERTURB:
+        _c = '{ [ "${!_v}" = 0 ] || [ -z "${2:-}" ] || [ -n "${!_a:-}" ]; }'
+        assert once.count(_c) == 1, "perturbation anchor missing — would FALSE-PASS"
+        once = once.replace(_c, "true")
+    r = sh('set -euo pipefail\nN=0\nLOCK=1\nensure_wg_tools(){ N=$((N+1)); [ "$LOCK" = 0 ]; }\n' + once
+           + 'ensure_wg_tools_once wg && echo t=0 || echo t=$?\n'                   # Datapath tooling: dpkg's lock held
+           + 'LOCK=0\nensure_wg_tools_once wg again && echo s1=0 || echo s1=$?\n'   # the switch: the lock is gone
+           + 'ensure_wg_tools_once wg again && echo s2=0 || echo s2=$?\nensure_wg_tools_once wg && echo e=0 || echo e=$?\necho N=$N\n')
+    check("%s: the tooling step fails on dpkg's lock; the switch's bring-up tries again and the tool is there" % f,
+          "t=1" in r.stdout and "s1=0" in r.stdout and "s2=0" in r.stdout and "e=0" in r.stdout and "N=2" in r.stdout, r.stdout + r.stderr)
+    r = sh('set -euo pipefail\nN=0\nensure_wg_tools(){ N=$((N+1)); return 1; }\n' + once
+           + 'ensure_wg_tools_once awg || true\nfor i in 1 2 3; do ensure_wg_tools_once awg again || true; done\necho N=$N\n')
+    check("%s: a chain that really fails is tried once more, not once per interface" % f, "N=2" in r.stdout, r.stdout + r.stderr)
+check("install-node.sh: the switch's bring-up of adopted interfaces asks `again`",
+      'ensure_wg_tools_once "$_c" again || continue' in node)
+check("both installers' create loops ask `again`",
+      node.count('if ! ensure_wg_tools_once "$cmd" again; then') == 1 and host.count('if ! ensure_wg_tools_once "$cmd" again; then') == 1)
+
 print("\n[4] a module that does not build says why")
 body = grab(lib, "awg_build_from_source")
 check("the failure path warns with a line from the build log", 'warn "the AmneziaWG kernel module did not build for $(uname -r): ${_why:-' in body, "")
 check("…before the work dir (and its log) is deleted", body.find("did not build for") < body.rfind('rm -rf "$w"'), "")
 
 print("")
+if PERTURB:
+    _red = [f for f in FAILS if "tries again" in f or "tried once more" in f]
+    print("perturb: %s" % ("RED as it must be (%d), all [3b]" % len(_red) if _red and len(_red) == len(FAILS)
+                           else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
 sys.exit(1 if FAILS else 0)
