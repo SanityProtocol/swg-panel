@@ -7,30 +7,22 @@
  *     a template grid is its `omit` hint until a rule is broken, then the rule; read-only "-" reads "none"; a grid with no
  *     `omit` (no template) draws no line.
  * [3] Awg3Grid: a "-" cell is `awg-none`; the W1 warning shows only while RandomTrailers reads on.
- * [4] q189 SPA-3 — Save waits for what the panel would refuse: awgSaveRule (the Edit sheet: the panel's awg_rules R1, R3–R5 on
- *     the set the save leaves) and meshSNone (the mesh-link sheet: mesh_omit_s_refusal over the panel's template layering) give
- *     the SAME sentence as the panel's own functions, run in python on the same corpus — and both sheets' Save is held on them
- *     (the sheet closed on the refusal before, and every other edit in it went with it).
+ * [4] q189 SPA-3, the root: the panel judges a save's "-" rules and the sheet reports its refusal (sheetSend; the browser half is
+ *     tests/spa_sheet_refusal_selftest.py) — the round-1 copies of those rules in the SPA (awgSaveRule, meshSNone) are gone, and
+ *     neither sheet's Save waits on a copied rule.
  *
  * The browser half (the Edit sheet and the interface page fed by a real panel's /api/state, the removal confirm) was checked
  * against a running panel — .campaign/rigs/omit-ui-rig.py; logic only here.
  *
  * Run: node tests/spa_awg_omit_selftest.mjs     --perturb trio   plants a trio rule that never fires and expects RED.
- *      --perturb saverule | linkrule   a sheet's Save no longer waits on the rule → RED in [4]
- *      --perturb rules | layer         awgSaveRule drops R4 / meshSNone ignores the fleet's template → RED in [4] (parity)
  */
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { ROOT, check, done } from "./spa_env.mjs";
 
 const MODE = process.argv.includes("--perturb") ? process.argv[process.argv.indexOf("--perturb") + 1] : null;
-const PLANTS = { trio: ["iface.js", "  if (n && n < 3) return T(", "  if (false) return T("],
-  saverule: ["iface.js", "  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo || omitRule;", "  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo;"],
-  linkrule: ["iface.js", "disabled: nodeDown || !connDirty || !!quotaErr || !!awgRule,", "disabled: nodeDown || !connDirty || !!quotaErr,"],
-  rules: ["iface.js", '  if ("HeaderProtectionKey" in set && !S.every(k => k in set))', '  if (false)'],
-  layer: ["iface.js", " || (awgIsNone(fleet[k]) && !String(o[k] ?? \"\").trim())", ""] };
+const PLANTS = { trio: ["iface.js", "  if (n && n < 3) return T(", "  if (false) return T("] };
 const made = [];
 async function load(name) {
   if (!MODE || PLANTS[MODE][0] !== name) return import(pathToFileURL(path.join(ROOT, "js", name)).href);
@@ -84,59 +76,13 @@ check("[3] the \"-\" cell is awg-none", inputs(a3).some(p => p.class === "awg-no
 check("[3] W1 under the 3.1 cells while RandomTrailers is on, not when it reads —",
       hints(a3).length === 1 && /RandomTrailers/.test(text(hints(a3)[0])) && hints(a3off).length === 0);
 
-// [4] q189 SPA-3
-const { Store } = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href);
-Store.nodes = Store.fleet = [{ id: "na", name: "alpha" }, { id: "nb", name: "beta" }];   // nodeName reads the fleet projection
-const B = { Jc: "4", Jmin: "40", Jmax: "70", S1: "28", S2: "94", S3: "88", S4: "33", H1: "1", H2: "2", H3: "3", H4: "4" };
-const B31 = { ...B, HeaderProtectionKey: "ZPx7sT8PpJ3aUVTMYCWgSVhdLbq0uVpO6hZe3mO2yJ0=", RandomTrailers: "1", ContentPaddingAddition: "10-100" };
-const none = ks => Object.fromEntries(ks.map(k => [k, "-"]));
-const EDIT = [   // [cells typed, the record, gen3] — the panel stores {**record, **typed} minus the "-" keys, then awg_rules
-  [{ Jc: "-" }, B, false], [none(["Jc", "Jmin", "Jmax"]), B, false], [{ Jc: "-", Jmin: "" }, B, false],
-  [none(Object.keys(B)), B, false], [{ ...none(Object.keys(B)), I1: "<b 0x01>" }, B, false],
-  [{ S3: "-" }, B31, true], [{ S3: "-" }, B31, false], [{ HeaderProtectionKey: "-", S3: "-" }, B31, true],
-  [{ S1: "28", S2: "84", I5: "-" }, B, false], [{ S1: "", S2: "84", H1: "-" }, B, false], [{ Jc: "-", Jmin: "-", Jmax: "-", S4: "-" }, B31, true],
-];
-const LINK = [   // [the link's own template, the fleet's, the link type in force]
-  [{ S2: "-" }, {}, "3.1"], [{ S2: "-" }, {}, "2.0"], [{}, { S3: "-" }, "3.1"], [{ S3: "5" }, { S3: "-" }, "3.1"],
-  [{ S3: "" }, { S3: "-", S1: "-" }, "3.1"], [{ Jc: "5" }, { S4: "-" }, "3.1"], [{ S1: "-", S4: "-" }, { S2: "-" }, "3.1"],
-];
-const PY = `
-import json, sys, types
-src = open(sys.argv[1], encoding="utf-8").read()
-m = types.ModuleType("p"); m.__file__ = sys.argv[1]
-exec(compile(src, sys.argv[1], "exec"), m.__dict__)
-data = json.loads(sys.argv[2])
-out = {"edit": [], "link": []}
-for cells, rec, gen3 in data["edit"]:
-    om = {k for k, v in cells.items() if str(v).strip() == "-"}
-    d = {**{k: v for k, v in rec.items()}, **{k: v for k, v in cells.items() if str(v).strip() and k not in om}}
-    d = {k: v for k, v in d.items() if k not in om and (gen3 or k not in m.AWG3_FIELDS)}
-    r = m.awg_rules(d, "awg9", gen3=None)
-    out["edit"].append(r["error"] if r else "")
-for own, fleet, gen in data["link"]:
-    om = m.mesh_template({"panel_settings": {"mesh_awg": fleet}}, {"mesh_awg": own})[1]
-    r = m.mesh_omit_s_refusal(gen, om, m.mesh_pair_name({"na": {"name": "alpha"}, "nb": {"name": "beta"}}, "nb", "na"))
-    out["link"].append(r["error"] if r else "")
-print(json.dumps(out))`;
-const py = spawnSync("python3", ["-c", PY, path.join(ROOT, "swg-panel-server"), JSON.stringify({ edit: EDIT, link: LINK })], { encoding: "utf8" });
-const PANEL = py.status === 0 ? JSON.parse(py.stdout.trim().split("\n").pop()) : null;
-check("[4] the panel's own awg_rules / mesh_template / mesh_omit_s_refusal ran on the corpus", !!PANEL, (py.stderr || "").slice(-400));
-if (PANEL) {
-  const spaE = EDIT.map(([c, r, g]) => IF.awgSaveRule(c, r, "awg9", g));
-  const mis = EDIT.map((e, i) => [JSON.stringify(e[0]), spaE[i], PANEL.edit[i]]).filter(([, a, b]) => a !== b);
-  check("[4] Edit sheet: awgSaveRule says what the panel's awg_rules says, case by case (R1, R3, R4, R5 and the legal omissions)", !mis.length, mis);
-  check("[4] …and the corpus reaches every rule and a pass", ["no AmneziaWG field left", "go together", "header protection needs", "S1 + 56", ""]
-        .every(w => PANEL.edit.some(x => w ? x.includes(w) : x === "")), PANEL.edit);
-  const spaL = LINK.map(([o, f, g]) => { Store.panelSettings = { mesh_awg: f }; return IF.meshSNone(o, g, "na", "nb"); });
-  const misL = LINK.map((l, i) => [JSON.stringify(l), spaL[i], PANEL.link[i]]).filter(([, a, b]) => a !== b);
-  check("[4] mesh-link sheet: meshSNone says what the panel's mesh_omit_s_refusal says over its template layering", !misL.length, misL);
-}
-let isrc = fs.readFileSync(path.join(ROOT, "js", "iface.js"), "utf8");
-if (MODE && PLANTS[MODE][0] === "iface.js") isrc = isrc.replace(PLANTS[MODE][1], PLANTS[MODE][2]);
-check("[4] the Edit sheet's Save waits on it: mimErr (Save's disabled and its title) carries the rule",
-      isrc.includes("const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo || omitRule;")
-      && isrc.includes("const omitRule = isAwg && AWG_ORDER.some(k => awgIsNone(awg[k])) ? awgSaveRule(awg, meta.awg_params, iface, gen === \"3.1\") : \"\";"));
-check("[4] the mesh-link sheet's Save waits on its rule, and says it",
-      isrc.includes("disabled: nodeDown || !connDirty || !!quotaErr || !!awgRule,") && isrc.includes("(quotaErr || awgRule ||"));
+// [4] q189 SPA-3, the root
+console.log("\n[4] the panel judges, the sheet reports — no copy of the panel's rules");
+const isrc = fs.readFileSync(path.join(ROOT, "js", "iface.js"), "utf8");
+check("[4] iface.js exports no copy of the panel's save rules (awgSaveRule, meshSNone)", !("awgSaveRule" in IF) && !("meshSNone" in IF) && !/awgSaveRule|meshSNone/.test(isrc));
+check("[4] the Edit sheet's Save waits on the disguise check and the node's capability only (mimErr), not on a copied rule",
+      isrc.includes("const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo;") && !/omitRule|awgRule/.test(isrc));
+check("[4] both sheets send through sheetSend, so the panel's refusal is said in them",
+      isrc.includes("sheetSend(() => api.ifaceUpdate(body)") && isrc.includes("sheetSend(() => api.connectionUpdate({"));
 
-done(MODE, MODE || "");
+done(MODE, MODE ? "the trio rule" : "");
