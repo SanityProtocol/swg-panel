@@ -55,8 +55,12 @@ detection, `ip` and the terminal are stubbed.
   [s] (1.8.9 qualification FN-2(a)) the summary lists a bare host turn proxy by the address its clients DIAL (SWG_DIAL —
       a DDNS name, an address behind NAT), not its bind ("0.0.0.0:56000"); one with no SWG_DIAL by its listen, as before
 
+  [t] (1.8.8 deferred #5(b)) dnsmasq is masked BEFORE its package is installed, in both installers: its postinst started
+      it, the start failed on :53 (systemd-resolved) and the first install printed an error for a unit masked right after
+
 Run: python3 tests/installer_lines_selftest.py      (0 = pass)
      --perturb   the shipped lines planted back → RED
+     --perturb-mask   dnsmasq masked only after its install again (e66018f) → RED on [t] only
      --perturb-dial   the summary reads SWG_LISTEN alone again (e66018f) → RED on [s] only
 """
 import json, os, re, subprocess, sys, tempfile
@@ -65,6 +69,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
 PERTURB_DIAL = "--perturb-dial" in sys.argv
+PERTURB_MASK = "--perturb-mask" in sys.argv
 H = open(os.path.join(ROOT, "install-host.sh"), encoding="utf-8").read()
 N = open(os.path.join(ROOT, "install-node.sh"), encoding="utf-8").read()
 C = open(os.path.join(ROOT, "lib/common.sh"), encoding="utf-8").read()
@@ -568,7 +573,25 @@ check("[s] a proxy behind NAT / on a DDNS name: listed by the name its clients d
       "vk-turn-proxy-wings-56000 home.ddns.net:56000 → 127.0.0.1:51820" in out and "0.0.0.0:56000" not in out, out)
 check("[s] …one with no dial host of its own: by its listen, as before", "vk-turn-proxy-anton-56001 203.0.113.7:56001 → 127.0.0.1:51821" in out, out)
 
+print("\n[t] dnsmasq is masked before its package is installed (1.8.8 deferred #5(b))")
+for f, src in (("install-node.sh", N), ("install-host.sh", H)):
+    est = fn(src, "ensure_smart_tools")
+    _m = "run systemctl mask dnsmasq 2>/dev/null || true; run apt-get install -y dnsmasq"
+    assert est.count(_m) == 1, "the mask is not where [t] reads it"
+    if PERTURB_MASK:
+        est = est.replace(_m, "run apt-get install -y dnsmasq")
+    out = run('C=$(mktemp)\nhave(){ case "$1" in dnsmasq|nft|ipset) return 1;; *) command -v "$1" >/dev/null 2>&1;; esac; }\n'
+              'run(){ echo "RUN $*" >> "$C"; }\n%sensure_smart_tools\ncat "$C"\n' % est)
+    calls = [l for l in out.splitlines() if l.startswith("RUN ")]
+    im = next((i for i, l in enumerate(calls) if l.startswith("RUN apt-get install -y dnsmasq")), -1)
+    mm = next((i for i, l in enumerate(calls) if l == "RUN systemctl mask dnsmasq"), -1)
+    check("[t] %s: masked before its package is installed" % f, 0 <= mm < im, calls)
+
 print()
+if PERTURB_MASK:
+    _red = [x for x in FAILS if x.startswith("[t]")]
+    print("perturb-mask: %s" % ("RED as it must be (%d), all [t]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB_DIAL:
     _red = [f for f in FAILS if f.startswith("[s]")]
     print("perturb-dial: %s" % ("RED as it must be (%d), all [s]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
