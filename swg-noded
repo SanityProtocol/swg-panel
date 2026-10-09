@@ -13784,6 +13784,15 @@ def _awg_load_boot():
 
 with contextlib.suppress(Exception):
     _awg_load_boot()
+def _awg_load_stamp(doc):
+    """Write the Load now stamp WHOLE: through a .tmp and a rename, so a cut write (a full disk, the daemon killed by an
+    update in that millisecond) leaves the old stamp rather than half a one — read as no stamp, it ran the same press again
+    (1.8.9 qualification V-AWG §1.6: every AWG client lost a second 15 s). Raises OSError like the open it replaces."""
+    with open(AWG_LOAD_STAMP + ".tmp", "w") as f:
+        json.dump(doc, f)
+    os.replace(AWG_LOAD_STAMP + ".tmp", AWG_LOAD_STAMP)
+
+
 
 
 def awg_load_request(req, agent, sudo):
@@ -13814,18 +13823,17 @@ def awg_load_request(req, agent, sudo):
                     _AWG_LOAD["v"] = _awg_load_result(rec, n, pid)
                     _AWG_GEN["v"] = None
                     with contextlib.suppress(OSError):
-                        with open(AWG_LOAD_STAMP, "w") as f:
-                            json.dump(dict(_AWG_LOAD["v"], at=int(time.time())), f)
-                    print("awg module load #%d: %s (finished while swg-noded restarted)" % (n, _AWG_LOAD["v"]["code"]), flush=True)
+                        _awg_load_stamp(dict(_AWG_LOAD["v"], at=int(time.time())))
+                    log(LOG_INFO, "awg module load #%d: %s (finished while swg-noded restarted)", n, _AWG_LOAD["v"]["code"])
                     return True                 # its interfaces were bounced: the routing reconcile follows
             return False
     except (OSError, ValueError, TypeError, AttributeError):
-        pass
+        if (_AWG_LOAD["v"] or {}).get("id") == pid:   # a stamp that cannot be read, but this run took the press: taken
+            return False
     # ⚠️ ONCE PER PRESS NEEDS THE PRESS RECORDED FIRST. Unrecorded (a full or read-only state dir), every pass for ten minutes
     # would take it for new and cut every client again — so a press that cannot be recorded is refused, not acted on.
     try:
-        with open(AWG_LOAD_STAMP, "w") as f:
-            json.dump({"n": n, "id": pid, "at": int(time.time())}, f)
+        _awg_load_stamp({"n": n, "id": pid, "at": int(time.time())})
     except OSError as e:
         _AWG_LOAD["v"] = {"n": n, "id": pid, "ok": False, "code": "cannot_record", "ifaces": {}, "was": "", "loaded": "",
                           "error": str(e)[:200]}
@@ -13853,8 +13861,7 @@ def awg_load_request(req, agent, sudo):
         _AWG_LOAD["v"] = dict(base, ok=False, code=code, error=str(r.get("error") or "")[:300])
     _AWG_GEN["v"] = None                            # the next snapshot reads the module that is loaded NOW
     with contextlib.suppress(OSError):              # the result outlives a daemon restart, so the panel still gets it
-        with open(AWG_LOAD_STAMP, "w") as f:
-            json.dump(dict(_AWG_LOAD["v"], at=int(time.time())), f)
+        _awg_load_stamp(dict(_AWG_LOAD["v"], at=int(time.time())))
     log(LOG_INFO, "awg module load #%d: %s %s", n, _AWG_LOAD["v"]["code"], json.dumps(_AWG_LOAD["v"]["ifaces"]))
     return _AWG_LOAD["v"]["code"] not in AWG_LOAD_PRECHECK
 
