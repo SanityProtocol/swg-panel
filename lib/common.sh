@@ -2171,25 +2171,34 @@ awg_key_refused_note(){ # say it with the steps, and record it for swg-noded (ke
 awg_mod_built(){ modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1; }   # a module file exists for THIS kernel (loadable or not)
 _awg_kbuild(){ printf '%s' "${SWG_LIB_MODULES:-/lib/modules}/$(uname -r)/build"; }   # this kernel's headers (the gates point it elsewhere)
 awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that
-  # — not a missing prerequisite (no headers), and not a module that built but will not load (Secure Boot): the package's
-  # postinst failed, so dpkg holds it half-configured, and there is no module file for this kernel. ⚠️ AND THE COMPILER SAID
-  # SO: DKMS's build log names a compiler error — `: error: `, or gcc's `<file>:<line>:<col>: fatal error:`, a header the
-  # newer kernel dropped (read as a box fault, that one was never given up: the package stayed half-configured between
-  # updates, failing every apt run on the box — FN-1). A build the BOX cut short — a full disk ("No space left on device"),
+  # — not a missing prerequisite (no headers), and not a module that built but will not load (Secure Boot: the package is
+  # configured): the package's postinst failed, so dpkg holds it half-configured — whatever module file this kernel has
+  # besides (a stale `make install`, a source build beside the package: it hid the failure, and the package stayed
+  # half-configured, recompiled on every update — 1.8.9 qualification IN-12(e)). ⚠️ AND THE COMPILER SAID SO: DKMS's build
+  # log names a compiler error — `: error: `, or gcc's `<file>:<line>:<col>: fatal error:`, a header the newer kernel
+  # dropped (read as a box fault, that one was never given up: the package stayed half-configured between updates, failing
+  # every apt run on the box — FN-1). A build the BOX cut short — a full disk ("No space left on device"),
   # a killed compiler or assembler ("Killed signal") — fails the same way, and was given up for good on that alone (1.8.9
   # qualification IN-15, on a VM); it is tried again instead, whatever errors of its own it left (cc1's located "fatal
   # error: error writing to …"). A driver's `gcc: fatal error:` has no location and is not a compile failure either.
   [ -e "$(_awg_kbuild)" ] && have dpkg-query || return 1
   case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*|iH*) ;; *) return 1;; esac
-  ! awg_mod_built && grep -qsE ': error: |:[0-9]+: fatal error: ' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log \
+  grep -qsE ': error: |:[0-9]+: fatal error: ' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log \
     && ! grep -qsE 'No space left on device|Killed signal|internal compiler error: Killed' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log; }
 awg_dkms_give_up(){ # after that: leave the package manager clean, keep the tools, remember what did not compile
   local v sha; v="$(dpkg-query -W -f='${Version}' amneziawg-dkms 2>/dev/null)"
   warn "AmneziaWG: its kernel module does not compile on kernel $(uname -r) (amneziawg-dkms ${v:-?}) — upstream does not support this kernel yet. The package manager is left clean, and awg interfaces use the userspace datapath; an update tries the module again when a new kernel or a newer AmneziaWG build arrives."
   # Removed, not left half-configured: every later apt run on the box (ours, the operator's, unattended-upgrades) would
   # end in a dpkg error over it. --no-install-recommends on the tools: a recommends on the module must not reinstall it.
-  run apt-get remove -y amneziawg-dkms amneziawg >/dev/null 2>&1 || run dpkg --remove --force-remove-reinstreq amneziawg-dkms amneziawg >/dev/null 2>&1 || true
+  run apt-get remove -y -o DPkg::Lock::Timeout=180 amneziawg-dkms amneziawg >/dev/null 2>&1 || run dpkg --remove --force-remove-reinstreq amneziawg-dkms amneziawg >/dev/null 2>&1 || true
   have awg || run apt-get install -y --no-install-recommends amneziawg-tools >/dev/null 2>&1 || true
+  # Recorded only once it is gone: a removal that lost dpkg's lock all the same (unattended-upgrades) was recorded as given
+  # up, so no later run tried again, and the package stayed half-configured for good (1.8.9 qualification IN-12(a)).
+  case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in
+    ""|?n*|?c*) ;;
+    *) $DRYRUN || warn "AmneziaWG: amneziawg-dkms could not be removed now (the package manager is busy) — the next update tries again"
+       return 0;;
+  esac
   [ -n "$v" ] && awg_fail_note pkg "$v"
   sha="$(printf '%s' "$v" | sed -n 's/.*+\([0-9a-f]\{7,40\}\)~.*/\1/p')"   # the PPA builds upstream master and names the commit
   [ -n "$sha" ] && awg_fail_note src "$sha"
@@ -2280,7 +2289,8 @@ awg_dpkg_recover(){ # finish a dpkg run an AmneziaWG build failure left pending 
   have dpkg || return 0
   [ -n "$(dpkg --audit 2>/dev/null)" ] || return 0
   info "AmneziaWG: finishing the package configuration a failed module build left pending (dpkg --configure -a)…"
-  run env DEBIAN_FRONTEND=noninteractive dpkg --configure -a >/dev/null 2>&1 || true
+  # no terminal, and the old config file kept: a pending package's conffile question would wait unseen (IN-12(b))
+  run env DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold --configure -a </dev/null >/dev/null 2>&1 || true
   [ -z "$(dpkg --audit 2>/dev/null)" ] && return 0
   warn "AmneziaWG: some packages are still not configured — see \`dpkg --audit\`"
   return 1; }
