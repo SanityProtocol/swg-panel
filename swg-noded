@@ -18436,6 +18436,80 @@ def _dturn_image_current(svc):
     return False
 
 
+def _dturn_bind_stale(svc, tp):
+    """Why a RUNNING container must be recreated for its bind, "" to leave it — host networking, once per swg-noded run per
+    proxy: the Docker twin of heal_turn_binds. A build before turn_bind (1.8.8) handed the container the record's `listen`
+    as its bind; one whose host this box does not carry (a public IP behind 1:1 NAT, the DDNS name of the router in front)
+    crash-loops on `bind: cannot assign requested address` — and docker calls a container in its restart back-off Running,
+    and the release-day update keeps the image NAME (`latest`), so nothing recreated it and the node reported it running
+    (1.8.9 qualification DN-1). The container's own `-listen` is compared with what turn_bind() gives now, and a difference
+    recreates it when that bind cannot work as it is — not every address, not on this box — or when it ignores a Listen on
+    (`bind_ip`) the box carries. Never a container that binds fine as it is (a name or an address that lands on the box,
+    every address), never one docker cannot describe, and a name that does not resolve right now is asked about again in
+    5 minutes rather than judged. Bridge networking always binds every address in our netns (_dturn_args)."""
+    if NODE_NET == "bridge" or svc in _TURN_BIND_HEALED or not _bind_ask_now(svc):
+        return ""
+    mine = _local_v4()
+    if mine is None:
+        return ""                                      # this box's addresses cannot be read now: asked next pass
+    r = run(["docker", "inspect", "-f", "{{json .Args}}", _turn_cname(svc)])
+    try:
+        args = json.loads(r.stdout) if r.returncode == 0 else None
+        cur = str(args[args.index("-listen") + 1])
+    except (ValueError, TypeError, IndexError, AttributeError):
+        _TURN_BIND_HEALED.add(svc)                     # docker could not say → leave it alone
+        return ""
+    pin = str(tp.get("bind_ip") or "")
+    pinned = bool(pin and _IPV4_RE.match(pin) and pin in mine)
+    if not pinned:
+        host, _port, decidable = _bind_split(cur)
+        if not decidable:
+            _TURN_BIND_HEALED.add(svc)                 # every address (or IPv6): binds as it is
+            return ""
+        ip = _host_on_box(host, mine)
+        if ip is None:
+            _bind_ask_later(svc)                       # not known now: asked again in 5 min
+            return ""
+        if ip:
+            _TURN_BIND_HEALED.add(svc)                 # lands on the box: it binds fine as it is
+            return ""
+    _TURN_BIND_HEALED.add(svc)
+    want = turn_bind(tp.get("listen", ""), pin=pin, prev=cur)
+    if want == cur:
+        return ""
+    return ("binds %s, not its Listen on — now %s" if pinned else "binds %s, which is not on this box — now %s") % (cur, want)
+
+
+# A docker node's turn record has two writers: apply_turn (the sync loop) and _dturn_keep_bind (the background reconcile).
+_TURN_REC_LOCK = threading.Lock()
+
+def _dturn_keep_bind(svc, bind):
+    """Keep the bind a background (re)create gave a container in the turn record: the snapshot reports it (`bind`), and the
+    next launch keeps it while its name does not resolve (turn_bind's prev). apply_turn's recreates write theirs with the
+    record; the background reconcile works on a fresh read every pass and kept nothing, so after its recreate the node went
+    on reporting the old bind, or none, which the panel reads as "listens on all addresses" (1.8.9 qualification DN-1).
+    One field of one entry, re-read and replaced under the record lock, so nothing apply_turn wrote meanwhile is undone
+    (a Stop, a delete, new params); its own tmp file. (apply_turn writes the copy it read when it started: a bind kept
+    in those few seconds is lost to it — the report then names the old one until the next recreate.)"""
+    if not bind:
+        return
+    with _TURN_REC_LOCK:
+        try:
+            with open(TURN_RECORD) as f:
+                d = json.load(f)
+            hit = [t for t in (d.get("turn_proxies") or []) if isinstance(t, dict) and t.get("service") == svc]
+            if not hit or all(t.get("bind") == bind for t in hit):
+                return
+            for t in hit:
+                t["bind"] = bind
+            tmp = TURN_RECORD + ".bind.tmp"
+            with open(tmp, "w") as f:
+                json.dump(d, f)
+            os.replace(tmp, TURN_RECORD)
+        except Exception as e:
+            log(LOG_WARNING, "swg-noded: turn %s — its bind %s could not be kept in the record: %s", svc, bind, e)
+
+
 def _dturn_verify(svc):
     time.sleep(1.5)
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
@@ -18651,12 +18725,14 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
     if (r.stdout or "").strip() == "true":
         _ns_ok = _dturn_netns_current(svc)      # (bridge) joined to our LIVE netns
         _img_ok = _dturn_image_current(svc)     # ...and on the image this node runs turns from
-        if _ns_ok and _img_ok:
+        _bind_why = _dturn_bind_stale(svc, tp) if _ns_ok and _img_ok else ""   # ...and on a bind that can work (DN-1)
+        if _ns_ok and _img_ok and not _bind_why:
             _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc); _TURN_ATTEMPTS.pop(svc, None); NODE_PROGRESS.pop(svc, None)
             return
-        # running, but not as it should be → fall through to the recreate path, saying which of the two it is
-        log(LOG_INFO, "swg-noded: turn %s %s — recreating it", svc, "is on a stale netns after a node recreate" if not _ns_ok
-                    else "runs an image this node no longer uses (want %s)" % SWG_TURN_IMAGE)
+        # running, but not as it should be → fall through to the recreate path, saying which of the three it is
+        log(LOG_NOTICE if _bind_why else LOG_INFO, "swg-noded: turn %s %s — recreating it", svc,
+            "is on a stale netns after a node recreate" if not _ns_ok
+            else "runs an image this node no longer uses (want %s)" % SWG_TURN_IMAGE if not _img_ok else _bind_why)
     if _TURN_ATTEMPTS.get(svc, 0) >= TURN_MAX_ATTEMPTS and not os.path.exists(_turn_bin_local(svc)):
         _TURN_FAILED.add(svc); _TURN_INSTALLING.discard(svc); NODE_PROGRESS.pop(svc, None)   # given up — "install failed" (a manual Reinstall resets the counter)
         return
@@ -18686,6 +18762,7 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
             _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
             log(LOG_ERR, "swg-noded: turn %s 'docker run' failed: %s", svc, (rr.stderr or rr.stdout or "").strip()[:200])
             return
+        _dturn_keep_bind(svc, tp.get("bind", ""))   # the record (what the node reports) learns what it binds now
         verr = _dturn_verify(svc)
         if verr:
             _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
@@ -19147,10 +19224,11 @@ def apply_turn(turn, turn_onboard):
             fail(sp, str(e))
     if changed:
         try:
-            tmp = TURN_RECORD + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump({"turn_proxies": list(rec.values())}, f)
-            os.replace(tmp, TURN_RECORD)
+            with _TURN_REC_LOCK:                       # the background reconcile keeps a bind in it too (_dturn_keep_bind)
+                tmp = TURN_RECORD + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump({"turn_proxies": list(rec.values())}, f)
+                os.replace(tmp, TURN_RECORD)
         except Exception as e:
             res["errors"].append("record: " + str(e))
     return res
