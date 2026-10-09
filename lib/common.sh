@@ -1132,6 +1132,18 @@ stop_bare_csqtt(){
   done
   [ "$n" -gt 0 ] && { systemctl daemon-reload >/dev/null 2>&1 || true; echo "    stopped $n bare-metal csqtt server(s) — the container owns them now"; }
   return 0; }
+# stop_bare_wdtt — the same for the bare WDTT servers: stopped AND their units deleted. They were only disabled, and a unit
+# left behind is what a later uninstall lists as "WDTT (service + interface)" — whose removal deletes the interface, its
+# SNAT rules and its UAPI socket by that name: the Docker node's LIVE WDTT once the convert is done (1.8.9 qualification,
+# FIXER-U). Units only, as before: the config-dir was carried and stays.
+stop_bare_wdtt(){
+  local unit n=0 sd="${SYSTEMD_DIR:-/etc/systemd/system}"
+  for unit in $(ls "$sd"/swg-wdtt-*.service 2>/dev/null || true); do
+    systemctl disable --now "$(basename "$unit" .service)" >/dev/null 2>&1 || true
+    rm -f "$unit"; n=$((n+1))
+  done
+  [ "$n" -gt 0 ] && { systemctl daemon-reload >/dev/null 2>&1 || true; echo "    stopped $n bare-metal WDTT server(s) — the container owns them now"; }
+  return 0; }
 
 # ── turn-proxy: the binary download (GitHub direct, then opt-in mirrors) ──
 

@@ -1749,7 +1749,7 @@ if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   # them at the switch so their DTLS/WG ports free up for the container's WDTT, and only NOW (past the point of no
   # return) so a mid-convert abort never drops WDTT while the bare node is still the live install.
   if [ "$PROFILE" != host ]; then
-    for _wu in $(systemctl list-unit-files --no-legend 2>/dev/null | grep -oE 'swg-wdtt-[^ ]+\.service'); do systemctl disable --now "$_wu" >/dev/null 2>&1 || true; done
+    stop_bare_wdtt    # stopped and deleted — a unit left behind is a later uninstall's "WDTT" component, which removes the live one
     stop_bare_csqtt   # same for csqtt — and its raw TUN, which outlives the process and would keep the iface name taken
   fi
 fi
