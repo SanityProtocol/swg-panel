@@ -4171,8 +4171,7 @@ export const STR = {
   // narrow-width problem is the header's own, not this string's; kept correct rather than trimmed for it.
   "fix {count}": "исправить {count}",
   // budget-ok: hover caption, no box
-  "On the latest version — click to re-run the updater anyway (repairs this box: reinstalls missing pieces, re-enables services, rebuilds the datapath / AmneziaWG kernel module)":
-    "Версия последняя — нажмите, чтобы всё равно запустить обновление (чинит этот сервер: доустанавливает недостающее, включает службы, пересобирает датапас / модуль ядра AmneziaWG)",
+  "This panel is on the latest version": "На этой панели последняя версия",
   // budget-ok: hover caption on an icon button, no box
   "Check status": "Проверить состояние",
 
