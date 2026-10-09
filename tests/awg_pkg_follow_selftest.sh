@@ -26,6 +26,8 @@
 #       empty one → the module is not unloaded (read as empty, `modprobe -r` destroyed the container's device)
 #  [20] (1.8.9 qualification IN-1) no userspace fallback (amneziawg-go) → nothing upgraded, said: a build that does not
 #       compile here is given up AFTER the old module left the disk, and such a box had no AmneziaWG datapath after a reboot
+#  [23] (1.8.9 qualification VERIFY1-B1) a module the operator BLACKLISTED (modprobe.d) is not loaded by the automatic
+#       load — a newer build, no device anywhere: not unloaded and loaded again by name (`modprobe -b` says 0 without loading)
 #  [22] (1.8.9 qualification, HE-2's twin) a namespace NO process holds — kept by a bind mount (lsns: no PID, its NSFS path),
 #       or mounted only where PID 1 sees it (its mount table, through its root) — is looked into: not unloaded
 #  [21] (1.8.9 qualification IN-15) a build an earlier update left half-configured (a full disk, not a compiler error, so not
@@ -50,17 +52,20 @@ fn="${fn//\/etc\/apt\/sources.list.d/$T/sld}"; fn="${fn//\/sys\/module\/amneziaw
 fn="${fn//\/lib\/modules/$T/libmod}"; fn="${fn//\/proc\//$T/proc/}"
 # The give-up record it asks (lib/common.sh, as bash defines it) — real, against a record in the sandbox; the compat fix, the
 # dpkg recovery and the give-up itself are stubs that leave a trace (each is driven in its own gate).
-libfn="$(bash -c 'source "$1" >/dev/null 2>&1; declare -f awg_fail_get awg_pkg_retry_due' _ "$ROOT/lib/common.sh")"
+libfn="$(bash -c 'source "$1" >/dev/null 2>&1; declare -f awg_fail_get awg_pkg_retry_due awg_blacklisted' _ "$ROOT/lib/common.sh")"
 printf '%s\n' "$libfn" | grep -q '^awg_pkg_retry_due ()' || { echo "  FAIL awg_pkg_retry_due not found in lib/common.sh"; exit 1; }
 _planted(){ [ "$1" != "$2" ] || { echo "  STALE PERTURBATION — $3: its anchor is missing, nothing was planted, this run would FALSE-PASS"; exit 3; }; }
 if [ "${1:-}" = "--perturb" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/in amneziawg-tools:\*) ;; \*) return 0 ;; esac/in *) ;; esac/')"; _planted "$_b" "$fn" "the tools-ownership check"
-  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/if \[ -z "\$(awg_kdevs)" \] && \[ -z "\$(awg_kdevs_elsewhere)" \]; then/if true; then/')"; _planted "$_b" "$fn" "the device check"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/if \[ -z "\$(awg_kdevs)" \] && \[ -z "\$(awg_kdevs_elsewhere)" \] && ! awg_blacklisted; then/if true; then/')"; _planted "$_b" "$fn" "the device check"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/pk="amneziawg-dkms amneziawg-tools"/pk="amneziawg-dkms"/')"; _planted "$_b" "$fn" "the tools in the transaction"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/\*" amneziawg-dkms "\*|\*" amneziawg-tools "\*|\*" amneziawg "\*)/*" never-held "*)/')"; _planted "$_b" "$fn" "the hold check"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's|if \[ ! -e "[^"]*/libmod/$(uname -r)/build" \]; then|if false; then|')"; _planted "$_b" "$fn" "the headers check"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#  have lsns \&\& have nsenter || { echo "?"; return 0; }#  return 0#')"; _planted "$_b" "$fn" "the namespace scan"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/cur="$(pkg_installed amneziawg-dkms)" || cur=""/cur="$(pkg_installed amneziawg-dkms)"/')"; _planted "$_b" "$fn" "the errexit-safe assignment"
+fi
+if [ "${1:-}" = "--perturb-blacklist" ]; then   # e66018f: the automatic load asks nothing of modprobe.d
+  _b="$fn"; fn="${fn//\] && ! awg_blacklisted; then/]; then}"; _planted "$_b" "$fn" "the blacklist check"
 fi
 if [ "${1:-}" = "--perturb-locale" ]; then
   _b="$fn"; fn="${fn//LC_ALL=C apt-cache/apt-cache}"; _planted "$_b" "$fn" "pkg_candidate's C locale"
@@ -90,7 +95,8 @@ stub dpkg-query 'case "$2" in *Status*) cat "$SBX/status" 2>/dev/null || printf 
 stub dpkg 'if [ "$1" = -S ]; then cat "$SBX/owner" 2>/dev/null; [ -s "$SBX/owner" ]; exit $?; fi; exec /usr/bin/dpkg "$@"'
 stub modinfo '[ -s "$SBX/disk" ] || { echo "modinfo: ERROR: Module amneziawg not found." >&2; exit 1; }; cat "$SBX/disk"'
 stub lsns '[ -e "$SBX/lsns-fails" ] && exit 1; cat "$SBX/lsns" 2>/dev/null; exit 0'
-stub modprobe 'echo "modprobe $*" >> "$SBX/calls"; if [ "$1" = -r ]; then rm -rf "$SYSMOD"; exit 0; fi; [ -e "$SBX/load-fail" ] && exit 1; mkdir -p "$SYSMOD"; exit 0'
+stub modprobe 'if [ "$1" = -c ]; then [ -e "$SBX/blacklisted" ] && echo "blacklist amneziawg"; exit 0; fi
+echo "modprobe $*" >> "$SBX/calls"; if [ "$1" = -r ]; then rm -rf "$SYSMOD"; exit 0; fi; [ -e "$SBX/load-fail" ] && exit 1; mkdir -p "$SYSMOD"; exit 0'
 stub apt-mark 'cat "$SBX/held" 2>/dev/null; exit 0'
 stub amneziawg-go 'exit 0'   # the pinned userspace fallback, as every box the heal could reach has it ([20] hides it)
 stub nsenter '[ -e "$SBX/nsenter-fails" ] && exit 1; n="${1#--net=}"; shift; l="$(readlink "$n")" || exit 1
@@ -266,6 +272,11 @@ check "it is finished (dpkg --configure -a), though nothing newer is offered" "$
 check "…and counted as an update" "$(printf '%s' "$out" | grep -q 'DID_UPDATE=yes DID_FAIL=no' && echo 0 || echo 1)" "$out"
 case_ c21b; cp "$SBX/cand" "$SBX/inst-amneziawg-dkms"; out="$(go)"
 check "CONTROL: a configured package is left alone" "$(grep -q 'DPKG-RECOVER' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+
+echo; echo "[23] a module the operator blacklisted"
+case_ c23; : > "$SBX/kdevs"; : > "$SBX/blacklisted"; out="$(go)"
+check "a newer build, no device: not unloaded, not loaded again by name" "$(grep -qE 'modprobe (-r )?amneziawg' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+check "…the packages still followed, the update not failed" "$(grep -q 'install -y .*--only-upgrade amneziawg-dkms' "$SBX/calls" && printf '%s' "$out" | grep -q 'DID_FAIL=no' && echo 0 || echo 1)" "$out"
 
 echo
 case "${1:-}" in --perturb*) [ "$FAILS" -gt 0 ] && { echo "perturb: RED as it must be ($FAILS)"; exit 0; } || { echo "perturb: NOT CAUGHT"; exit 1; } ;; esac

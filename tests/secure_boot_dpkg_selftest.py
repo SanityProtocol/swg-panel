@@ -31,6 +31,10 @@ like that with nothing on the panel saying so.
       amneziawg-go to be had → a FAILED update saying awg interfaces cannot come up (it said "userspace datapath" and
       succeeded); CONTROLS: amneziawg-go present, or installed by that very run → the userspace note, not a failure
 
+  [11] (1.8.9 qualification VERIFY1-B1) update.sh on a box whose operator BLACKLISTED amneziawg (modprobe.d) — the REAL
+      ensure_awg_datapath and ensure_awg_back_on_kernel: no `modprobe amneziawg` by name, nothing healed or moved, one
+      line saying why (the update loaded it by name and moved awg0 and the mesh back onto it); CONTROLS: no blacklist →
+      both ask modprobe as before
   [6c] (1.8.9 qualification F11 / NLH-5) the probe never loads past a blacklist (`modprobe -b`) and is not asked at all
       where the kernel enforces no module signature (read from sysfs: module.sig_enforce, a lockdown) — nowhere else can
       it refuse a key; on a VM it loaded a module its operator had blacklisted, 0.7 s after swg-noded started
@@ -38,6 +42,7 @@ like that with nothing on the panel saying so.
 Run: python3 tests/secure_boot_dpkg_selftest.py      (0 = pass)
      --plant sbclaim   the branch as it shipped (the userspace note whatever is there) → RED on [10] (exit 0 when caught)
      --plant nlh5-noblacklist | nlh5-noenforce   the probe by name / on every kernel again → RED on [6c]
+     --plant bl-heal | bl-back   update.sh's heal / its move back onto the kernel ask by name again (e66018f) → RED on [11]
 """
 import builtins, importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile, time
 from unittest import mock
@@ -222,6 +227,46 @@ if PLANT in _NPLANTS:
 N = load("swgnoded", _NODED)
 P = load("swgpanel", os.path.join(ROOT, "swg-panel-server"))
 KR = os.uname().release
+
+print("\n[11] update.sh on a box whose operator blacklisted the module (VERIFY1-B1)")
+BLF = grab("lib/common.sh", "awg_blacklisted")
+HEAL11 = grab_text("update.sh", "ensure_awg_datapath")
+BACK11 = grab_text("update.sh", "ensure_awg_back_on_kernel")
+if PLANT == "bl-heal":   # e66018f: the heal asks modprobe by name whatever modprobe.d says
+    _a = '  if awg_blacklisted; then _bl=yes; else { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes; fi\n'
+    assert HEAL11.count(_a) == 1, "plant anchor missing — this run would measure nothing"
+    HEAL11 = HEAL11.replace(_a, '  { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes\n')
+if PLANT == "bl-back":
+    _a = '  awg_blacklisted && return 0   # the operator\'s own blacklist'
+    assert BACK11.count(_a) == 1, "plant anchor missing — this run would measure nothing"
+    BACK11 = BACK11.replace(_a, '  : # (the blacklist not asked)')
+BACK11 = BACK11.replace("/sys/class/net", T + "/no-such-sys")   # nothing of this box's own devices is ever looked at
+def bl(body, blacklisted):
+    mp = ('modprobe(){ if [ "$1" = -c ]; then echo "options x y=1"; %s echo "alias z amneziawg"; return 0; fi\n'
+          '  echo "MODPROBE $*" >> "$T/calls"; return 0; }\n') % ('echo "blacklist amneziawg";' if blacklisted else "")
+    script = ('set -euo pipefail\nHAVE_BNODE=yes; DID_UPDATE=no; DID_FAIL=no; DRYRUN=false\nok(){ echo "OK $*"; }; note(){ echo "NOTE $*"; }\n'
+              'run(){ "$@"; }; have(){ case "$1" in awg|awg-quick|amneziawg-go) return 0;; *) command -v "$1" >/dev/null 2>&1;; esac; }\n'
+              'awg_compat_patch_installed(){ return 1; }\nawg_go_needs_install(){ return 1; }\nensure_awg_headers_follow(){ return 1; }\n'
+              'awg_dkms_build_all_kernels(){ :; }\nawg_headers_meta(){ :; }\ndkms(){ echo x; }\n' + mp + BLF + body)
+    return subprocess.run(["bash", "-c", STUBS.replace("run(){", "_unused_run(){") + script], capture_output=True, text=True,
+                          env=dict(os.environ, T=T))
+for blk, label in ((True, "blacklisted"), (False, "CONTROL: not blacklisted")):
+    reset()
+    r = bl(HEAL11 + 'ensure_awg_datapath; echo "RC=$? FAIL=$DID_FAIL"\n', blk)
+    c = calls()
+    if blk:
+        check("the heal on a blacklisted box: no `modprobe amneziawg` by name, nothing healed, said once",
+              "MODPROBE" not in c and "RC=0 FAIL=no" in r.stdout and "blacklisted on this box (modprobe.d)" in r.stdout, (c, r.stdout + r.stderr))
+    else:
+        check("%s: the heal asks modprobe for the module as before" % label, "MODPROBE amneziawg" in c, (c, r.stdout + r.stderr))
+    reset()
+    r = bl(BACK11 + 'ensure_awg_back_on_kernel; echo "RC=$?"\n', blk)
+    c = calls()
+    if blk:
+        check("the move back onto the kernel on a blacklisted box: no `modprobe amneziawg` by name, nothing moved",
+              "MODPROBE" not in c and "RC=0" in r.stdout, (c, r.stdout + r.stderr))
+    else:
+        check("%s: the move asks modprobe as before" % label, "MODPROBE amneziawg" in c, (c, r.stdout + r.stderr))
 
 print("\n[6] swg-noded: why the module does not load — the KERNEL is asked (once per boot and module file), the record kept in step")
 S = tempfile.mkdtemp(prefix="sbstate-"); N.STATE_DIR = S
@@ -480,7 +525,8 @@ check("the master's notice words it without 'running Update rebuilds it'", 'if (
 
 if PLANT:
     _pre = {"sbclaim": "refused for its key, amneziawg-go absent", "nlh5-noblacklist": "it asks `modprobe -b`",
-            "nlh5-noenforce": "a kernel that enforces no signature"}[PLANT]
+            "nlh5-noenforce": "a kernel that enforces no signature", "bl-heal": "the heal on a blacklisted box",
+            "bl-back": "the move back onto the kernel on a blacklisted box"}[PLANT]
     caught = [f for f in FAILS if f.startswith(_pre)]
     print("\nplant %s: %s" % (PLANT, ("RED as it must be (%d)" % len(caught)) if caught and len(caught) == len(FAILS)
                                      else "NOT CAUGHT — the gate is blind to it" if not caught else "ALSO red elsewhere: %s" % FAILS))
