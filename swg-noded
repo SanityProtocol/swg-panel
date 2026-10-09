@@ -17748,19 +17748,31 @@ def _pin_mismatch_hint(err, panel=None):
     if err not in ("tls fingerprint mismatch", "tls pin malformed") or time.time() - _PIN_HINT["at"] < 3600:
         return
     _PIN_HINT["at"] = time.time()
+    # A node our NixOS module runs (it sets SWG_NODE_PLATFORM=nixos on both arms) has no installer to re-run (seen in
+    # the 1.8.9 qualification): its pin is configuration.nix's, and nixos-rebuild switch applies it — restarting the
+    # container arm's unit, whose definition changed, but not the native arm's swg-noded (restartOnRebuild is off by
+    # default).
+    def nixos(sha):
+        return ("services.swg-node.panelTlsFingerprint in its configuration.nix: set it to %s, or clear it and set "
+                "verifyPanelTls = true for a certificate a public CA vouches for (verified, not pinned — a pin breaks at "
+                "its next renewal); then run nixos-rebuild switch%s."
+                % (sha, "" if NODE_KIND == "docker" else " and restart swg-noded"))
     if err == "tls pin malformed":
         fp = str((panel or {}).get("fingerprint") or "")
+        fix = ("On this NixOS node the pin is " + nixos("the panel's sha256") if NODE_PLATFORM == "nixos" else
+               "Re-run the node installer on this box at a terminal: it shows the certificate the panel presents and asks "
+               "before pinning it. Unattended, give it TLS_FINGERPRINT=<the panel's sha256>, or TLS_VERIFY=yes for one a "
+               "public CA vouches for.")
         log(LOG_ERR, "panel TLS: the pin on record for the panel is not a sha256 fingerprint%s, so every sync is refused and "
-              "nothing is sent — it names no certificate at all. Re-run the node installer on this box at a terminal: it "
-              "shows the certificate the panel presents and asks before pinning it. Unattended, give it "
-              "TLS_FINGERPRINT=<the panel's sha256>, or TLS_VERIFY=yes for one a public CA vouches for."
-              % ((' ("%s%s")' % (fp[:24], "…" if len(fp) > 24 else "")) if fp else ""))
+              "nothing is sent — it names no certificate at all. %s"
+              % ((' ("%s%s")' % (fp[:24], "…" if len(fp) > 24 else "")) if fp else "", fix))
         return
+    fix = ("this NixOS node's pin is " + nixos("the new sha256") if NODE_PLATFORM == "nixos" else
+           "re-run the node installer on this box at a terminal and accept the new certificate when it asks (one a public "
+           "CA vouches for is then verified, not pinned); unattended it never takes a changed certificate — give it "
+           "TLS_FINGERPRINT=<the new sha256>, or TLS_VERIFY=yes for a CA one.")
     log(LOG_ERR, "panel TLS: the panel's certificate no longer matches this node's pin, so every sync is refused. If the "
-          "panel's certificate was renewed or replaced on purpose, re-run the node installer on this box at a terminal "
-          "and accept the new certificate when it asks (one a public CA vouches for is then verified, not pinned); "
-          "unattended it never takes a changed certificate — give it TLS_FINGERPRINT=<the new sha256>, or TLS_VERIFY=yes "
-          "for a CA one. Anything else may be an impersonator.")
+          "panel's certificate was renewed or replaced on purpose, %s Anything else may be an impersonator." % fix)
 
 
 _LOCAL_HEAL = {"at": 0.0}
