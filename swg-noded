@@ -7243,7 +7243,15 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
         L.append("  set strict { typeof ip saddr; flags interval; elements = { %s } }" % ", ".join(strict))
     if mode == "route" and rt.get("routable"):
         L.append("  set routable { typeof ip saddr; flags interval; elements = { %s } }" % ", ".join(rt["routable"]))
-    nf = "ip saddr != @nofan " if nofan else ""
+    # Never FLAGGED — neither by the fan-out nor by a signature hit — only judged packet by packet (`hit` still drops or
+    # routes the signature's packet): a source that wears many users' traffic. A mesh link's onward-NAT arrivals (@nofan),
+    # and anything arriving from a Linux BRIDGE on this box — a Docker / podman / LXD container, a VM: a bridge container
+    # was ONE source, so 58 destinations a minute from its users, or one user's DHT packet, cut every high-port flow of all
+    # of them for 10 minutes, new and established, and the next container handed the same address inherited the cut (1.8.9
+    # qualification V-FEAT-B DN-5). Its plain BitTorrent is still dropped, as from the node's own programs; what only the
+    # fan-out caught there (encrypted torrents) passes, as from the node's own programs — 1.8.8 judged no container at all.
+    # A meta key, not a set of names: nothing a Docker node writes may be unreadable to the host's older nft (see above).
+    nf = ("ip saddr != @nofan " if nofan else "") + 'meta iifkind != "bridge" '
     # Who is BLOCKED in prerouting — a list of scopes, each its own drop rule: everyone under block; the strict subnets;
     # under route, everyone outside the routable subnets (no routable subnet at all → everyone).
     whos = []
