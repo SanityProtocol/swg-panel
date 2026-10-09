@@ -43,6 +43,8 @@ Run: python3 tests/turn_bind_selftest.py         (0 = pass)
      --perturb-report   the report does not read the binds the background reconcile gave its containers — RED in [12].
      --perturb-persist  apply_turn writes its record without them (the copy it read) — RED in [12].
      --perturb-looping  a container in docker's restart back-off reads running again (FN-2(g)) — RED in [12].
+     --perturb-names    csqtt's heal takes a name that lands on the box as bindable again (NR-5) — RED in [6].
+     --perturb-decided  the bare heal skips a bind turn_bind decided earlier again (FN-2(h)) — RED in [9].
 """
 import os, socket, sys, types
 
@@ -55,6 +57,8 @@ PERTURB_DN1 = "--perturb-dn1" in sys.argv[1:]
 PERTURB_REPORT = "--perturb-report" in sys.argv[1:]
 PERTURB_PERSIST = "--perturb-persist" in sys.argv[1:]
 PERTURB_LOOPING = "--perturb-looping" in sys.argv[1:]
+PERTURB_NAMES = "--perturb-names" in sys.argv[1:]
+PERTURB_DECIDED = "--perturb-decided" in sys.argv[1:]
 ANCHOR = '    mine = _local_v4()\n    if mine is None:\n        return s\n'
 SRCS = {f: open(os.path.join(ROOT, f), encoding="utf-8").read() for f in ("install-node.sh", "install-host.sh", "convert.sh", "install-docker.sh")}
 if PERTURB_DOCKER:   # the convert as it shipped: the bind read as the address clients dial, the pin never read
@@ -78,6 +82,10 @@ if PERTURB:
 for _flag, _old, _new in ((PERTURB_DN1, '        _bind_why = _dturn_bind_stale(svc, tp) if _ns_ok and _img_ok else ""', '        _bind_why = ""'),
                           (PERTURB_REPORT, '            if _DTURN_BINDS.get(t["service"]):\n                t["bind"] = _DTURN_BINDS[t["service"]]\n',
                            '            pass\n'),
+                          (PERTURB_NAMES, '    if not names and not _IPV4_RE.match(host):\n        return False\n', ''),
+                          (PERTURB_DECIDED, '            ok = _bind_works(str(t.get("bind") or listen), mine)\n',
+                           '            if t.get("bind") and t.get("bind") != listen:\n                _TURN_BIND_HEALED.add(svc); continue\n'
+                           '            ok = _bind_works(str(t.get("bind") or listen), mine)\n'),
                           (PERTURB_LOOPING, '        _DTURN_RUN["set"] = {x[0] for x in rows if not x[1].startswith("Restarting")}\n',
                            '        _DTURN_RUN["set"] = {x[0] for x in rows}\n'),
                           (PERTURB_PERSIST, '                if _DTURN_BINDS.get(_s):\n                    _t["bind"] = _DTURN_BINDS[_s]\n',
@@ -178,6 +186,15 @@ open(envp, "w").write("SWG_LISTEN=192.168.88.10:56000\n")
 check("a working server (its host is on the box) is never restarted for it", N.bind_heal_due("wdtt:w1", envp, "192.168.88.10:56000") is False)
 open(envp, "w").write("SWG_LISTEN=0.0.0.0:56000\n")
 check("a file this build wrote (already the bind) → nothing to heal", N.bind_heal_due("wdtt:w2", envp, DDNS + ":56000") is False)
+# q189 NR-5: csqtt parses a socket address — a NAME in its env cannot work even where it lands on the box (1.8.8 wrote it)
+open(envp, "w").write("SWG_LISTEN=nettop.lan:46000\n")
+check("NR-5: a csqtt env binding a NAME (even one on the box) → heal due — csqtt cannot take a name",
+      N.bind_heal_due("csqtt:c1", envp, "nettop.lan:46000", **({"names": False} if "names=True" in src else {})) is True)
+check("NR-5: …a WDTT env with that name is left alone (it binds a name that lands on the box)",
+      N.bind_heal_due("wdtt:w3", envp, "nettop.lan:46000") is False)
+# FN-2(h)'s class for WDTT/csqtt: a bind turn_bind DECIDED earlier on an address the box has since lost (a DHCP renumbering)
+open(envp, "w").write("SWG_LISTEN=10.9.9.9:56000\nSWG_DIAL=%s:56000\n" % DDNS)
+check("a decided bind on an address the box no longer carries → heal due", N.bind_heal_due("wdtt:w4", envp, DDNS + ":56000") is True)
 open(envp, "w").write("SWG_IFACE=wdtt0\nSWG_LISTEN=%s:56000\n" % DDNS)
 N.rebind_env(envp, W, N._wdtt_env_text)
 check("Restart rewrites an env that binds an unbindable host", N._env_listen(envp) == "0.0.0.0:56000", open(envp).read()[:120])
@@ -248,7 +265,9 @@ ENVS = {"vk-turn-proxy-samosvalishe-56000": "SWG_LISTEN=%s:56000\nSWG_CONNECT=12
         "vk-turn-proxy-samosvalishe-57000": "SWG_LISTEN=192.168.88.10:57000\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n",
         "vk-turn-proxy-samosvalishe-58000": "SWG_LISTEN=192.168.88.10:58000\nSWG_PIN=10.66.66.1\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n",
         "vk-turn-proxy-samosvalishe-60000": "SWG_LISTEN=%s:60000\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n" % DDNS,
-        "vk-turn-proxy-samosvalishe-61000": "SWG_LISTEN=10.66.66.1:61000\nSWG_PIN=10.66.66.1\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n"}
+        "vk-turn-proxy-samosvalishe-61000": "SWG_LISTEN=10.66.66.1:61000\nSWG_PIN=10.66.66.1\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n",
+        # q189 FN-2(h): a bind turn_bind decided earlier, on an address the box has since lost (a DHCP renumbering)
+        "vk-turn-proxy-samosvalishe-62000": "SWG_LISTEN=10.9.9.9:62000\nSWG_DIAL=%s:62000\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n" % DDNS}
 CMDS = []
 INACTIVE = {"vk-turn-proxy-samosvalishe-60000"}
 def fake_host_sh(cmd, **k):
@@ -275,7 +294,8 @@ _json.dump({"turn_proxies": [
     {"service": "vk-turn-proxy-samosvalishe-58000", "listen": "192.168.88.10:58000", "bind": "192.168.88.10:58000", "bind_ip": "10.66.66.1"},
     {"service": "vk-turn-proxy-samosvalishe-59000", "listen": DDNS + ":59000", "bind": DDNS + ":59000", "stopped": True},
     {"service": "vk-turn-proxy-samosvalishe-60000", "listen": DDNS + ":60000", "bind": DDNS + ":60000"},       # stopped by hand: no flag
-    {"service": "vk-turn-proxy-samosvalishe-61000", "listen": "192.168.88.10:61000", "bind_ip": "10.66.66.1"}]}, open(rec, "w"))   # stale record
+    {"service": "vk-turn-proxy-samosvalishe-61000", "listen": "192.168.88.10:61000", "bind_ip": "10.66.66.1"},   # stale record
+    {"service": "vk-turn-proxy-samosvalishe-62000", "listen": DDNS + ":62000", "bind": "10.9.9.9:62000"}]}, open(rec, "w"))
 N.heal_turn_binds()
 w = [c for c in CMDS if "<<'SWGENV'" in c]
 check("the DDNS-bound proxy is re-rendered onto 0.0.0.0 and restarted",
@@ -285,6 +305,8 @@ check("a carried Listen on is applied", any("samosvalishe-58000" in c and "SWG_L
 check("a stopped one is left alone", not any("59000" in c for c in CMDS), CMDS)
 check("one stopped by hand (inactive, no flag in the record) is not started by a restart", not any("samosvalishe-60000" in c for c in w), w)
 check("a render that would not change the bind does not restart (stale record, env already right)", not any("samosvalishe-61000" in c for c in w), w)
+check("FN-2(h): a bind decided earlier on an address the box has since LOST (DHCP) is re-decided and restarted, as on Docker",
+      any("samosvalishe-62000" in c and "SWG_LISTEN=0.0.0.0:62000" in c and "systemctl restart" in c for c in w), w)
 n = len(CMDS); N.heal_turn_binds()
 check("once per run: a second sync does nothing", len(CMDS) == n, CMDS[n:])
 N._tp_from_unit = _orig_tp
@@ -472,7 +494,7 @@ if PERTURB_DN1 or PERTURB_REPORT or PERTURB_PERSIST or PERTURB_LOOPING:
     print("PERTURB OK — %d checks went red, all in [12]" % len(FAILS) if _ok else
           "PERTURB FAILED — " + ("also red before [12]: %s" % FAILS[:_F12] if _F12 else "nothing went red in [12]"))
     sys.exit(0 if _ok else 1)
-if PERTURB or PERTURB_DOCKER:
+if PERTURB or PERTURB_DOCKER or PERTURB_NAMES or PERTURB_DECIDED:
     print("PERTURB OK — %d checks went red" % len(FAILS) if FAILS else "PERTURB FAILED — nothing went red; this gate cannot see the regression")
     sys.exit(0 if FAILS else 1)
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
