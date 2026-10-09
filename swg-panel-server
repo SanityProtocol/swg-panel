@@ -13761,9 +13761,27 @@ def mesh_types_in_play(deps, nodes):
     ps = deps.get("panel_settings") or {}
     if ps.get("mesh_awg_gen") or (isinstance(ps.get("mesh_awg"), dict) and AWG_OMIT in ps["mesh_awg"].values()):
         return True
-    return any(isinstance(c, dict) and (c.get("type") or (isinstance(c.get("awg"), dict) and AWG_OMIT in c["awg"].values()))
-               for n in nodes.values() if isinstance(n, dict) and isinstance(n.get("mesh_link"), dict)
-               for c in n["mesh_link"].values())
+    if any(isinstance(c, dict) and (c.get("type") or (isinstance(c.get("awg"), dict) and AWG_OMIT in c["awg"].values()))
+           for n in nodes.values() if isinstance(n, dict) and isinstance(n.get("mesh_link"), dict)
+           for c in n["mesh_link"].values()):
+        return True
+    # …or a link 1.8.8 made from part of a template (q189 PR-11): a dict lookup per link record, no snapshot walked
+    return any(mesh_link_partial(ov) for n in nodes.values() if isinstance(n, dict)
+               for ov in (n.get("ifaces") or {}).values() if isinstance(ov, dict) and ov.get("system"))
+
+
+_MESH_MUST = ("S1", "S2", "H1", "H2", "H3", "H4")
+
+
+def mesh_link_partial(ov):
+    """The S / H keys an AmneziaWG mesh link's record lacks — a link 1.8.8 made from PART of a template (f8ebb5b fixed new
+    links only): its ends never handshake (each rolled its own S/H), or after both restart they run with no S or H line at
+    all — plain WireGuard on the wire, while the panel shows AmneziaWG (q189 PR-11). An exact link (a template's "-") omits
+    keys on purpose and is not one; a WireGuard link has no params."""
+    p = (ov or {}).get("awg_params") if isinstance(ov, dict) else None
+    if not isinstance(p, dict) or not p or ov.get("awg_exact"):
+        return []
+    return [k for k in _MESH_MUST if k not in p]
 
 
 MESH_GEN_LABEL = {"wg": "WG", "2.0": "AWG 2.0", "3.1": "AWG 3.1"}   # the link type picker's own names (js meshGenLabel)
@@ -13797,7 +13815,12 @@ def mesh_gen_reasons(deps, nodes, snaps, nid):
             continue
         want, have = mesh_gen_for(deps, nodes, nid, peer), mesh_link_gen(me, lr)
         row = {"peer": (nodes.get(peer) or {}).get("name") or peer, "iface": lr.get("iface") or "", "type": have, "want": want}
-        if want != have:
+        _miss = mesh_link_partial((me.get("ifaces") or {}).get(lr.get("iface")))
+        if _miss:                                    # made from part of a template (q189 PR-11) — before any type question
+            out.append(dict(row, msg=perr("made from part of a template — {v1} missing, so this link may not handshake, or runs "
+                                          "without those lines (plain WireGuard on the wire); {v2}", v1=", ".join(_miss),
+                                          v2=_mesh_relink_how(deps, nodes, nid, peer, want))))
+        elif want != have:
             why = mesh_31_refusal(deps, nodes, snaps, nid, peer, mtu) if (want, have) == ("3.1", "2.0") else None
             out.append(dict(row, msg=why or perr("it should be {v1}, but a link keeps the type it was made with until it is "
                                                  "rebuilt — {v2}", v1=MESH_GEN_LABEL.get(want, want),

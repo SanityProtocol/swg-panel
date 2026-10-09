@@ -6921,6 +6921,7 @@ export const STR = {
   "Link to {v1} ({v2}) is {v3}: {v4}": "Линк к {v1} ({v2}) — {v3}: {v4}",
   "the mesh MTU ({v1}) is too high for AmneziaWG 3.1 — header protection needs a link MTU of 1428 or less": "MTU меша ({v1}) слишком велик для AmneziaWG 3.1 — защите заголовков нужен MTU линка не больше 1428",
   // a link that kept what it was made with, and how to rebuild that one link (q189 PR-4) — never "re-provision the node": that rebuilds all its links
+  "made from part of a template — {v1} missing, so this link may not handshake, or runs without those lines (plain WireGuard on the wire); {v2}": "собран из части шаблона — нет {v1}, поэтому линк может не устанавливать соединение или работать без этих строк (по сети идёт обычный WireGuard); {v2}",
   "it should be {v1}, but a link keeps the type it was made with until it is rebuilt — {v2}": "должен быть {v1}, но линк остаётся того типа, с которым создан, пока его не пересоберут — {v2}",
   "to rebuild this link alone, pick {v1} as its type on its card under Node connections and Save": "чтобы пересобрать только этот линк, выберите тип {v1} на его карточке в «Связях ноды» и сохраните",
   "to rebuild this link alone, pick Default as its type on its card under Node connections and Save": "чтобы пересобрать только этот линк, выберите тип «По умолчанию» на его карточке в «Связях ноды» и сохраните",
