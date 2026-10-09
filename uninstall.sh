@@ -661,7 +661,7 @@ rm_log_journals(){ local f d ns u mid had=""
            /run/systemd/system/*.d/swg-ns.conf /run/systemd/system/*.d/swg-log.conf /run/systemd/system/*.d/swg-journal.conf; do
     [ -e "$f" ] || continue; rmrf "$f"; [ -z "$(ls -A "${f%/*}" 2>/dev/null)" ] && run rmdir "${f%/*}"; done
   for d in "$SD"/swg-*.d "$SD"/vk-turn-proxy-*.d; do [ -d "$d" ] && [ -z "$(ls -A "$d" 2>/dev/null)" ] && run rmdir "$d"; done
-  rmrf /usr/local/bin/swg-logs
+  rmrf /usr/local/bin/swg-logs /var/lib/swg-log-ns /var/lib/swg-log-ns.lock   # + the journal-namespace probe answer the installers keep (IN-11)
   mid="$(cat /etc/machine-id 2>/dev/null || true)"
   for ns in swg-panel swg-node; do
     [ -n "$mid" ] && { [ -e "/var/log/journal/$mid.$ns" ] || [ -e "/run/log/journal/$mid.$ns" ]; } && had="${had:+$had, }$ns"; done
