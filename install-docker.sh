@@ -1482,6 +1482,7 @@ if [ -n "${SWG_CARRY_ENV:-}" ] && [ -s "$SWG_CARRY_ENV" ]; then
     match($0, /^[A-Za-z_][A-Za-z0-9_]*=/) { k = substr($0, 1, RLENGTH-1); if (!(k in have)) { print; have[k] = 1 } }' "$SWG_CARRY_ENV")"
   [ -n "$_carried" ] && printf '\n# ───────── kept from the bare-metal drop-ins this box was converted from ─────────\n%s\n' "$_carried" >> "$PREFIX$INSTALL_DIR/.env"
 fi
+if [ -n "${SWG_CARRY_ENV:-}" ] && ! $DRYRUN; then rm -f "$SWG_CARRY_ENV" 2>/dev/null || true; fi   # convert.sh's hand-off: read once (LC24 #15b)
 # …then the converted-from install's own keys (see _CONV_ENV above): the same rule — a key already in the file (written,
 # or kept from the live .env) wins, the operator's line is kept byte for byte, and only the NAMES are printed.
 if [ -n "$_CONV_ENV" ]; then

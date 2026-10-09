@@ -647,7 +647,10 @@ _lc_inprogress(){ case "$1" in reinstall) echo reinstalling;; convert-bare) echo
 _lc_success(){    case "$1" in reinstall) echo reinstalled;; convert-bare) echo converted-bare;; convert-docker) echo converted-docker;; update) echo updated;; uninstall) echo "";; esac; }
 _lc_prefix(){     case "$1" in convert-*) echo convert;; *) echo "$1";; esac; }   # aborted/failed are op-generic
 lc_emit(){ [ -n "${LC_EMIT:-}" ] && [ -n "${1:-}" ] && "$LC_EMIT" "$1" "${2:-}" || true; }
-lc_handoff(){ LC_HANDOFF=1; }                                  # another script now owns the terminal (convert→installer)
+lc_handoff(){ LC_HANDOFF=1                                      # another script now owns the terminal (convert→installer)
+  # …and exec'd, it never runs our EXIT trap: the log goes now (the tee writes on into the unlinked file) — every bare →
+  # Docker convert left a /tmp copy of the whole install's output behind (1.8.9 qualification LC24 #15b)
+  if [ -n "${LC_LOG:-}" ]; then rm -f "$LC_LOG" 2>/dev/null || true; fi; }
 # The node's TRUST travels with its token: LC_VERIFY (yes = CA verification) and LC_FP (its pinned certificate) — every
 # POST goes through panel_req, which checks the panel on the connection the token is sent on. The caller sets LC_FP
 # wherever the node has a pin (bare: the agent config's panel.fingerprint; Docker: TLS_FINGERPRINT / its learned
