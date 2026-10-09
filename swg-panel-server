@@ -13240,6 +13240,18 @@ def awg3_omitted(deps):
     return frozenset(k for k in _AWG3_RANGED if isinstance(a, dict) and str(a.get(k) if a.get(k) is not None else "").strip() == AWG_OMIT)
 
 
+def awg3_left_out(rec, was=None):
+    """The six 3.1 fields `rec` has no value for, when the interface was ALREADY on 3.1: `was` (the set as stored before this
+    Save; `rec` itself by default) holds a HeaderProtectionKey. Such a set was stored whole — every switch, create and recreate
+    draws all six (awg3_full), a bless takes the device's own — so a missing one is a "-" (the operator's, or the 3.1 defaults'
+    at its switch or create) or its own conf's choice, never "not set yet": a re-switch or a recreate on 3.1 leaves them out,
+    and switching twice changes nothing (q189 CL-F1b). A 2.0 record lacks them for being 2.0."""
+    rec = rec if isinstance(rec, dict) else {}
+    was = rec if was is None else was if isinstance(was, dict) else {}
+    return (frozenset(k for k in _AWG3_RANGED if not str(rec.get(k) or "").strip())
+            if str(was.get("HeaderProtectionKey") or "").strip() else frozenset())
+
+
 def awg3_template_clean(raw):
     """The six AmneziaWG 3.1 template fields of `raw` (ContentPaddingAddition and the timings) as a save stores them — (dict,
     None) or (None, perr): values checked the way an interface's are (awg3_check, over Amnezia's set for whatever is blank, so
@@ -27802,6 +27814,7 @@ def api(method, path, qs, body, deps):
                 if not (0 <= k <= 65535):
                     return 400, {"ok": False, "error": "keepalive must be 0-65535", "code": "bad_request"}
                 ov["keepalive"] = k          # 0 is meaningful: "no PersistentKeepalive line"
+        _rec0 = ov.get("awg_params") or {}   # the set as stored before this Save: the 3.1 switch asks if it was on 3.1 (CL-F1b)
         if "awg_params" in body:
             awg = body.get("awg_params")
             if not awg:
@@ -27897,10 +27910,12 @@ def api(method, path, qs, body, deps):
                 # out: the defaults' hint promises both, and the Edit sheet's flipped cell shows that "-". A value this record
                 # holds for it (typed over the "-" in this Save) is kept. 1.8.9 qualification CL-F1: drawn over in silence.
                 # So does one THIS Save sets to none — a "-" typed over the value the flip filled in: the merge above took it
-                # off the record, where a 2.0 record's 3.1 fields all read "not set yet" (CL-F1a).
+                # off the record, where a 2.0 record's 3.1 fields all read "not set yet" (CL-F1a). A record already on 3.1
+                # keeps out every 3.1 field it has no value for (awg3_left_out, CL-F1b).
                 ov["awg_params"] = awg3_full(ov.get("awg_params"), _rmeta.get("awg_params"), awg3_defaults(deps),
                                              omit=frozenset(_omit3) | (awg3_omitted(deps) - set(ov.get("awg_params") or {}))
-                                             | (awg_template(body.get("awg_params"), gen3=True)[1] & set(_AWG3_RANGED)))
+                                             | (awg_template(body.get("awg_params"), gen3=True)[1] & set(_AWG3_RANGED))
+                                             | awg3_left_out(ov.get("awg_params"), _rec0))
                 if _omit3:
                     _bad = awg_rules(ov["awg_params"], iface)
                     if _bad:
@@ -28170,10 +28185,11 @@ def api(method, path, qs, body, deps):
             if _no3:
                 return 400, {"ok": False, **_no3, "code": "bad_request"}
             # …and a RECREATE taken to 3.1 (its sheet's version switch) leaves out a 3.1 field the 3.1 defaults set to none, as
-            # the switch does, unless its record holds a value (CL-F1; a fresh create's `_omit` already has them)
+            # the switch does, unless its record holds a value (CL-F1; a fresh create's `_omit` already has them); a record
+            # already on 3.1 puts back exactly its own set (awg3_left_out, CL-F1b)
             _awgput, _e3 = awg3_check(awg3_full(_awgput, None, awg3_defaults(deps), omit=(_omit or (
                 frozenset(k for k in AWG_FIELDS if k not in AWG3_FIELDS and k not in _awgput) if _exact else frozenset()))
-                | (awg3_omitted(deps) - set(_awgput))))
+                | (awg3_omitted(deps) - set(_awgput)) | awg3_left_out(_awgput)))
             if _e3:
                 return 400, {"ok": False, **_e3, "code": "bad_request"}
             _bl = turn_awg3_blockers(deps, nodes, nid, {req.get("listen_port")})   # a proxy left on this port by an older interface

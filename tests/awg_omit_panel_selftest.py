@@ -22,7 +22,8 @@ through REAL panel processes (temp state, scratch port, no auth; the nodes are p
         "-", leaves those fields out of the record, the node's set, the meta and a client config js/crypto.js renders from
         it; an API caller's {awg_gen: "3.1"} too; a value typed over that "-" is kept; a lost 2.0 interface recreated at 3.1
         leaves them out of its create request (needs node, for the render); CL-F1a: a "-" TYPED into a flipped 3.1 cell over
-        the value the flip filled in stays out too
+        the value the flip filled in stays out too; CL-F1b: a 3.1 interface's own "-" stays out at a re-switch to 3.1 and at a
+        recreate on 3.1
     [6] bless-on-first-sight marks a conf missing a 2.0 key `awg_exact`; the meta of an `awg_exact` record is the record
         alone, and carries the flag. q189 PR-3: the AmneziaWG 3.1 switch of such an adopted 1.x conf (no S3/S4) draws
         S3 and S4 — header protection needs all four, so they are never "none" there (1.8.8 drew them; 94ba204's bless
@@ -40,6 +41,10 @@ Run: python3 tests/awg_omit_panel_selftest.py           (0 = pass)
      --perturb typed31    …and omits a field this Save typed a value into, over that "-"       → RED in [5]
      --perturb recreate31 a recreate at 3.1 draws the set over the 3.1 defaults' "-" (CL-F1)     → RED in [5]
      --perturb typedsave31 the switch draws over a "-" typed into a flipped 3.1 cell (CL-F1a)    → RED in [5]
+     --perturb left31     a re-switch to 3.1 refills a 3.1 interface's own "-" (CL-F1b)          → RED in [5]
+     --perturb left31r    …and so does a recreate on 3.1 (CL-F1b)                                → RED in [5]
+     --perturb left31was  "already on 3.1" read after this Save's merge: a 2.0 interface switched with a
+                          HeaderProtectionKey in the same request gets none of the six                → RED in [5]
 """
 import json, os, re, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -60,8 +65,11 @@ PLANTS = {
     "s34none": ("[6]", "\n                                    and k not in (\"S1\", \"S2\", \"S3\", \"S4\"))\n", ")\n"),
     "switch31": ("[5]", "(awg3_omitted(deps) - set(ov.get(\"awg_params\") or {}))", "frozenset()"),
     "typed31": ("[5]", "(awg3_omitted(deps) - set(ov.get(\"awg_params\") or {}))", "awg3_omitted(deps)"),
-    "recreate31": ("[5]", "\n                | (awg3_omitted(deps) - set(_awgput))))\n", "))\n"),
+    "recreate31": ("[5]", "(awg3_omitted(deps) - set(_awgput))", "frozenset()"),
     "typedsave31": ("[5]", "(awg_template(body.get(\"awg_params\"), gen3=True)[1] & set(_AWG3_RANGED))", "frozenset()"),
+    "left31": ("[5]", "| awg3_left_out(ov.get(\"awg_params\"), _rec0)", "| frozenset()"),
+    "left31was": ("[5]", "awg3_left_out(ov.get(\"awg_params\"), _rec0)", "awg3_left_out(ov.get(\"awg_params\"))"),
+    "left31r": ("[5]", "| awg3_left_out(_awgput)", "| frozenset()"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else None
 
@@ -515,6 +523,31 @@ try:
               "of the record and the node's set", pre == "15-20" and code == 200 and a.get("HeaderProtectionKey")
               and "MaxHandshakeAttempts" not in a and d.get("HeaderProtectionKey") and "MaxHandshakeAttempts" not in d,
               ({"pre": pre, "record": a.get("MaxHandshakeAttempts"), "node": d.get("MaxHandshakeAttempts")}, code, r))
+        # CL-F1b: a record ALREADY on 3.1 keeps out what it has no value for — awg21 (switched above) gets its own "-" in its Edit
+        # sheet (no flip), then an API caller's re-switch to 3.1, then it is lost and recreated on 3.1 (the recreate flow keeps
+        # the version it had)
+        code0, r0 = p.req("/api/iface/update", {"node": "na", "iface": "awg21", "awg_params": {"MaxHandshakeAttempts": "-"}})
+        code, r = p.req("/api/iface/update", {"node": "na", "iface": "awg21", "awg_gen": "3.1"})
+        a = p.ov("na", "awg21").get("awg_params") or {}
+        check("CL-F1b: a 3.1 interface's own \"-\" (MaxHandshakeAttempts, its Edit sheet) stays out at a re-switch to 3.1 — "
+              "switching twice changes nothing", code0 == 200 and code == 200 and a.get("HeaderProtectionKey")
+              and "MaxHandshakeAttempts" not in a and a.get("RekeyAfterTime"), ({"record": a.get("MaxHandshakeAttempts")}, code0, r0, code, r))
+        live.pop("awg21"); p.sync("na", live)                    # awg21 lost by its node
+        code, r = p.req("/api/iface/create", {"node": "na", "iface": "awg21", "protocol": "awg", "subnet": "10.78.0.0/24",
+                                              "listen_port": "51878", "awg_gen": "3.1"})
+        a = ((p.nodes()["na"].get("create") or {}).get("awg21") or {}).get("awg_params") or {}
+        check("…and at a recreate on 3.1: its create request puts back exactly its set — no MaxHandshakeAttempts",
+              code == 200 and a.get("HeaderProtectionKey") and "MaxHandshakeAttempts" not in a and a.get("RekeyAfterTime")
+              and "MaxHandshakeAttempts" not in (p.ov("na", "awg21").get("awg_params") or {}), ({"create": a.get("MaxHandshakeAttempts")}, code, r))
+        # …"already on 3.1" is the set as STORED: an API caller's HeaderProtectionKey in the same request as a 2.0 interface's
+        # switch is not one, and the switch still draws the six (but the ones the defaults set to none)
+        HK = "ZPx7sT8PpJ3aUVTMYCWgSVhdLbq0uVpO6hZe3mO2yJ0="
+        live["awg25"] = dict(BASE20); p.sync("na", live)
+        code, r = p.req("/api/iface/update", {"node": "na", "iface": "awg25", "awg_params": {"HeaderProtectionKey": HK}, "awg_gen": "3.1"})
+        a = p.ov("na", "awg25").get("awg_params") or {}
+        check("…while a 2.0 interface switched with a HeaderProtectionKey in the same request still gets the six drawn",
+              code == 200 and a.get("HeaderProtectionKey") == HK and a.get("MaxHandshakeAttempts") == "15-20" and a.get("RekeyAfterTime")
+              and not any(k in a for k in OUT31), ({k: a.get(k) for k in ("MaxHandshakeAttempts", "RekeyAfterTime") + OUT31}, code, r))
         code, r = p.req("/api/panel/settings", {"interface_defaults": {**DEFAULTS, "awg_params": {"S2": "-"}, "awg3_params": {}}})
         code2, r2 = p.req("/api/iface/create", {"node": "nb", "iface": "awg7", "subnet": "10.68.0.0/24", "listen_port": 51834, "awg_gen": "3.1"})
         check("a 3.1 create from defaults with S2 none → refused (R4), naming S2", code == 200 and code2 == 400 and "S2" in r2.get("error", ""), (code, r, code2, r2))
