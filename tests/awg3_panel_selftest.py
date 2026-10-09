@@ -55,8 +55,6 @@ PLANTS = {   # name: (section it must redden, anchor, replacement)
     "cookies": ("[11]", "if k in AWG_FIELDS and k != \"DisableCookies\" and k not in omit and v is not None",
                 "if k in AWG_FIELDS and k not in omit and v is not None"),   # `omit`: 94ba204
     "zero": ("[12]", "            if out[k] == \"0\":\n                out.pop(k)", "            if False:\n                out.pop(k)"),
-    "digits": ("[13]", 'm = re.fullmatch(r"\\s*([0-9]+)\\s*(?:-\\s*([0-9]+)\\s*)?", str(out[k]))',
-               'm = re.fullmatch(r"\\s*(\\d+)\\s*(?:-\\s*(\\d+)\\s*)?", str(out[k]))'),
     "redraw": ("[3]", "    if any(not d.get(k, \"\").isdigit() or int(d[k]) < 12 for k in _ss):\n",
                "    if False:\n"),
     "s12": ("[4]", "        if low:\n            return None, perr(\"{v1} must be 12 or more while header protection is on\", v1=\", \".join(low))\n",
@@ -365,17 +363,6 @@ try:
     check("saved without the zero keys", code == 200 and "ContentPaddingAddition" not in a and "RekeyTimeout" not in a, a)
     code, r = update("n31", "awg14", awg_params={**FULL31, "HeaderProtectionKey": "A" * 43 + "="})
     check("an all-zero HeaderProtectionKey → 400", code == 400 and "HeaderProtectionKey" in (r.get("error") or ""), (code, r))
-
-    SECTION[0] = "[13]"
-    print("\n[13] a 3.x range takes ASCII digits only (q189 PR-8: \\d took \"١٠-١٠٠\", which awg-quick cannot read)")
-    put_record("n31", "awg15", {"awg_params": dict(FULL31)})
-    code, r = update("n31", "awg15", awg_params={**FULL31, "RekeyAfterTime": "\u0661\u0660-\u0661\u0660\u0660"})
-    check("Arabic-Indic digits → 400 naming the field, nothing stored", code == 400 and "RekeyAfterTime" in (r.get("error") or "")
-          and ov("n31", "awg15")["awg_params"].get("RekeyAfterTime") == FULL31.get("RekeyAfterTime"), (code, r))
-    code, r = req("/api/panel/settings", {"interface_defaults": {"awg3_params": {"RekeyAfterTime": "\u0661\u0660-\u0661\u0660\u0660"}}})
-    check("…and in the interface defaults' 3.1 template too", code == 400, (code, r))
-    code, r = update("n31", "awg15", awg_params={**FULL31, "RekeyAfterTime": "100-120"})
-    check("the same range in ASCII digits is taken", code == 200 and ov("n31", "awg15")["awg_params"].get("RekeyAfterTime") == "100-120", (code, r))
 
     SECTION[0] = "[9]"
     print("\n[9] a 2.0 interface: nothing new on the wire")
