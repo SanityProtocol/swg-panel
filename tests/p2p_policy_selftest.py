@@ -45,6 +45,10 @@
        reason in the snapshot (it read "ok" while nothing was blocked), a later accepted load clears it; a kernel that
        refuses only the hit lines' `log` (no nft_log / nf_log_syslog: `nft -f` is one transaction, so the whole table went
        with it) gets the same table without them — said once, and not reloaded on every pass after
+  [25] 1.8.9 qualification NR-1: the fan-out never counts a source already flagged — under Direct / Route its new flows
+       take only a mark before that rule, so it filled @fanseen (65 535) until fan-out flagged nobody; every mode carries
+       `ip saddr != @flag` before the pair is written, and where `sudo -n` exists a flagged client's 60 new flows through
+       the real kernel (throwaway namespaces) leave @fanseen empty
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
      --perturb    plant each old behaviour in turn → every one must go RED (exit 0 when all are caught)
@@ -106,6 +110,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "p2p-ok-on-fail": ('            _P2P.update(on=True, state="error",', '            _P2P.update(on=True, state="ok" if ih else "degraded",'),
     "p2p-log-whole":  ('        if r.returncode != 0 and logged:', '        if False:'),
     "p2p-nolog-once": ('                _P2P["nolog"] = True\n', '                pass\n'),
+    "fan-counts-flagged": ('ct state new %s %s ip saddr != @flag ip saddr . ip daddr != @fanseen', 'ct state new %s %s ip saddr . ip daddr != @fanseen'),
 }
 
 
@@ -158,6 +163,49 @@ class Box:
             rc = 1
         r = types.SimpleNamespace(returncode=rc, stdout=out, stderr=err)
         return r
+
+
+# [25] on the real kernel, in throwaway network namespaces (root via `sudo -n`; nothing touches the host's own netns and no
+# /run/netns entry is made): client C 10.9.0.2 ──veth── router R (this table, ip_forward, a dummy "eth0" as its default
+# route). The client is put in @flag, as a DHT packet would, then opens 60 new UDP flows to 60 public addresses on a high
+# port; the answer is how many of its pairs the fan-out wrote into @fanseen. None = could not set up (said SKIPPED).
+WIRE = r'''
+set -u
+ip link set lo up || { echo SETUP-FAILED lo; exit 0; }
+unshare -n sleep 20 & CPID=$!
+sleep 0.3
+ip link add vr type veth peer name vc 2>/dev/null && ip link set vc netns "$CPID" \
+  && ip addr add 10.9.0.1/24 dev vr && ip link set vr up \
+  && ip link add eth0 type dummy && ip addr add 192.0.2.1/24 dev eth0 && ip link set eth0 up \
+  && ip route add default via 192.0.2.254 dev eth0 onlink && sysctl -qw net.ipv4.ip_forward=1 \
+  && nsenter -t "$CPID" -n sh -c 'ip link set lo up && ip addr add 10.9.0.2/24 dev vc && ip link set vc up && ip route add default via 10.9.0.1' \
+  || { echo SETUP-FAILED net; kill $CPID; exit 0; }
+nft -f "$1" || { echo SETUP-FAILED nft; kill $CPID; exit 0; }
+nft add element inet swg_p2p flag '{ 10.9.0.2 timeout 10m }'
+nsenter -t "$CPID" -n python3 -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for i in range(60):
+    s.sendto(b"\x00" * 40, ("198.51.100.%d" % (1 + i), 51413))
+'
+sleep 0.3
+echo "PAIRS $(nft list set inet swg_p2p fanseen | grep -o '10\.9\.0\.2 \. ' | wc -l)"
+kill $CPID 2>/dev/null
+'''
+
+
+def _wire_fanseen(table):
+    import subprocess as sp
+    with tempfile.NamedTemporaryFile("w", suffix=".nft", delete=False) as f:
+        f.write(table)
+    try:
+        r = sp.run(["sudo", "-n", "unshare", "-n", "bash", "-s", f.name], input=WIRE, capture_output=True, text=True, timeout=60)
+    except Exception:
+        return None
+    finally:
+        os.unlink(f.name)
+    got = [ln.split()[1] for ln in (r.stdout or "").splitlines() if ln.startswith("PAIRS ")]
+    return int(got[0]) if got and got[0].isdigit() else None
 
 
 # What nft prints when the kernel refuses one rule of a batch — here the hit line's `log` on a kernel without nft_log /
@@ -456,6 +504,21 @@ def run_checks(src):
             ok(r.returncode == 0, "[23] the real nft accepts the whole %s table (%s)" % (k, (r.stderr or "").strip()[:160]))
     else:
         print("  SKIPPED [23] real-nft check — no `sudo -n nft` here")
+
+    # [25] NR-1 — a flagged source is never counted by the fan-out: under Direct / Route its new flows take only a mark (no
+    # verdict) before this rule, and counting them filled @fanseen until fan-out could flag nobody else
+    for k, tb in tabs.items():
+        fl = [l for l in tb.splitlines() if "add @fanseen" in l]
+        ok(len(fl) == 1 and "ip saddr != @flag ip saddr . ip daddr != @fanseen" in fl[0],
+           "[25] %s: the fan-out skips a source already flagged — before its pair is written into @fanseen" % k)
+    if _sp23.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and _sp23.run(["which", "unshare"], capture_output=True).returncode == 0:
+        pairs = _wire_fanseen(tabs["direct"])
+        if pairs is None:
+            print("  SKIPPED [25] real-kernel flows — the throwaway namespaces could not be set up here")
+        else:
+            ok(pairs == 0, "[25] on the real kernel, Direct: a flagged client's 60 new flows write %d pairs into @fanseen (want 0)" % pairs)
+    else:
+        print("  SKIPPED [25] real-kernel flows — no `sudo -n` here")
 
     # [18] forwarding + loose rp_filter with only a P2P route
     sc = []
