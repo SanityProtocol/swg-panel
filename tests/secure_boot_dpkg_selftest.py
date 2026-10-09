@@ -27,11 +27,16 @@ like that with nothing on the panel saying so.
       names, only package-shaped ones), "repair node" not offered when the node recorded why — and every sentence has
       its Russian line
   [9] the master's own host check reads the compile record the same way
+  [10] (1.8.9 qualification IN-16) update.sh's REAL ensure_awg_datapath, driven: a module refused for its key and no
+      amneziawg-go to be had → a FAILED update saying awg interfaces cannot come up (it said "userspace datapath" and
+      succeeded); CONTROLS: amneziawg-go present, or installed by that very run → the userspace note, not a failure
 
 Run: python3 tests/secure_boot_dpkg_selftest.py      (0 = pass)
+     --plant sbclaim   the branch as it shipped (the userspace note whatever is there) → RED on [10] (exit 0 when caught)
 """
 import builtins, importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile, time
 from unittest import mock
+PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -157,6 +162,37 @@ check("update.sh: the package route's retry skips the --reinstall for a refused 
       "modprobe amneziawg 2>/dev/null || awg_mod_key_rejected || { run apt-get install --reinstall -y amneziawg-dkms" in U)
 check("update.sh: the closing userspace line names Secure Boot when it was recorded",
       'userspace (amneziawg-go); $(if awg_key_refused_here; then echo "Secure Boot refuses the kernel module' in U)
+
+print("\n[10] update.sh's heal, DRIVEN: refused for its key and no userspace datapath either → a FAILED update (1.8.9 IN-16)")
+FN = grab_text("update.sh", "ensure_awg_datapath")
+if PLANT == "sbclaim":                                   # the shape that shipped: "userspace datapath", success, whatever is there
+    _a = '    if have amneziawg-go; then\n      note "AmneziaWG: userspace datapath — Secure Boot'
+    assert FN.count(_a) == 1, "plant anchor missing — this run would measure nothing"
+    FN = FN.replace(_a, '    if true; then\n      note "AmneziaWG: userspace datapath — Secure Boot')
+HEAL = ('set -euo pipefail\nHAVE_BNODE=yes; DID_UPDATE=no; DID_FAIL=no\nok(){ echo "OK $*"; }\n'
+        'have(){ case "$1" in awg|awg-quick|dkms) return 0;; amneziawg-go) [ -e "$T/go" ];; *) command -v "$1" >/dev/null 2>&1;; esac; }\n'
+        'awg_compat_patch_installed(){ return 1; }\nawg_go_needs_install(){ [ ! -e "$T/go" ]; }\n'
+        'awg_go_pinned(){ return 1; }\n'                  # GitHub and every mirror unreachable
+        'ensure_awg_userspace(){ [ -e "$T/go-builds" ] && touch "$T/go"; [ -e "$T/go" ]; }\nawg_nothing_new(){ return 1; }\n')
+def heal(go=None):
+    reset()
+    for f in ("go", "go-builds"):
+        if os.path.exists(T + "/" + f):
+            os.remove(T + "/" + f)
+    if go:
+        open(T + "/" + go, "w").close()
+    return sh(HEAL + FN + 'ensure_awg_datapath; echo "RC=$? DID_FAIL=$DID_FAIL GO=$(have amneziawg-go && echo yes || echo no)"\n',
+              modprobe_err=KEY)
+r = heal()
+check("refused for its key, amneziawg-go absent and not to be had → DID_FAIL, said as 'cannot come up' — never 'userspace datapath'",
+      "DID_FAIL=yes GO=no" in r.stdout and "awg interfaces cannot come up" in r.stdout
+      and "NOTE AmneziaWG: userspace datapath" not in r.stdout and "mokutil --import" in r.stdout, r.stdout + r.stderr)
+r = heal("go")
+check("CONTROL: amneziawg-go there → the userspace note, not a failure",
+      "DID_FAIL=no GO=yes" in r.stdout and "NOTE AmneziaWG: userspace datapath" in r.stdout, r.stdout + r.stderr)
+r = heal("go-builds")
+check("CONTROL: amneziawg-go installed by this very run → the userspace note, DID_UPDATE, not a failure",
+      "DID_FAIL=no GO=yes" in r.stdout and "NOTE AmneziaWG: userspace datapath" in r.stdout, r.stdout + r.stderr)
 
 def load(name, path):
     l = importlib.machinery.SourceFileLoader(name, path)
@@ -399,5 +435,10 @@ check("…and host_datapath_health reports why=compile from it",
       'if not out["awg"]["ok"] and _host_awg_record("awg-module-failed"):\n                out["awg"]["why"] = "compile"' in PS)
 check("the master's notice words it without 'running Update rebuilds it'", 'if (dp.why === "compile") add("awg"' in rd("js/views.js"))
 
+if PLANT:
+    caught = [f for f in FAILS if f.startswith("refused for its key, amneziawg-go absent")]
+    print("\nplant %s: %s" % (PLANT, ("RED as it must be (%d)" % len(caught)) if caught and len(caught) == len(FAILS)
+                                     else "NOT CAUGHT — the gate is blind to it" if not caught else "ALSO red elsewhere: %s" % FAILS))
+    sys.exit(0 if caught and len(caught) == len(FAILS) else 1)
 print("\n%s — %d failed" % ("RED" if FAILS else "GREEN", len(FAILS)))
 sys.exit(1 if FAILS else 0)
