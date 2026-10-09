@@ -8739,6 +8739,7 @@ def range_read(ring, want, lv, since, until, stop, journal=None, files=(), ctrs=
 # [{id, src, iv, cap, lease, key, cur?}]. Each id gets ONE reader thread (a LiveReader), never the sync loop's time: it posts
 # the new lines to /api/node/logs every `iv` s — and once at its start, with each source's state, even with no lines — and
 # stops by itself when the id leaves a reply, when its lease runs out without a reply renewing it (~20 s: the panel is
+_LIVE_CTL = dict.fromkeys(range(32))   # the control characters JSON writes as \u00XX (str.translate deletes them)
 # unreachable), or when the panel answers 404 (the request is gone). `cur` is where the last reader of that id on this node
 # stopped, so one restarted after a noded restart resumes with no gap and no repeat. The key is the panel's proof that this
 # node may post into that request: it is not the node token, whose check reads the whole node store (§23.1).
@@ -8865,11 +8866,12 @@ def _logs_entries(reqs, most, need=()):
 def _live_chunk(pend):
     """How many of the pending lines one post carries: LIVE_POST_BYTES of JSON at most (gzip never makes it bigger than
     that by much, so it stays under the panel's 1 MiB on the wire and 4 MiB unpacked), and always at least one. Sized
-    from the text, not serialized: a character outside ASCII is escaped as up to 6 bytes."""
+    from the text, not serialized: a character outside ASCII is escaped as up to 6 bytes, and so is an ASCII control
+    character (\u0001) — a log of binary junk counted 1 byte each went out at 5x the cap and the panel refused it (413)."""
     n, size = 0, 0
     for ln in pend:
         t = ln[3]
-        size += 48 + len(ln[1]) + (len(t) if t.isascii() else 6 * len(t))
+        size += 48 + len(ln[1]) + (len(t) + 5 * (len(t) - len(t.translate(_LIVE_CTL))) if t.isascii() else 6 * len(t))
         if n and size > LIVE_POST_BYTES:
             break
         n += 1
