@@ -26,17 +26,23 @@ non-finite number is refused at the door; [7] a REAL snapshot (one of the test f
 SWG_SNAP_FIXTURES=<a dir of mirrored stats-*.json> runs whole real ones too) goes through the door and the sanitiser byte
 for byte — small fleets feel nothing.
 
+1.8.9 qualification R2 PANEL-1c — the class, not its instances: [9] drives EVERY top-level field the readers touch (found
+at run time: this tree's swg-noded build_snapshot, and what the panel reads off a snapshot on these paths) × the wrong
+types through Q's own sync, another node's sync, /api/state and the warm start, against the real handlers in process.
+
 1.8.9 qualification R2 PANEL-1b — a `generated_at` past a double's range (10**400) is an int, so it was kept; the warm start's
 _warm_seen then float()ed it and raised, and a restarted panel did not come up until that mirror file was removed. [8] stores
 one through a real sync and boots the panel again over it.
 
 Hermetic ([6] and [7] run a real panel on a loopback scratch port, everything under a temp dir).
 Run: python3 tests/snap_shape_selftest.py (0 = pass).  --perturb makes the sanitiser a no-op and
-expects the malformed shapes to sail through.  Each of --perturb-meta, --perturb-listwalk, --perturb-forward,
---perturb-listen, --perturb-turnproxies, --perturb-door and --perturb-snapnum takes out one PANEL-1 line, and
---perturb-overflow PANEL-1b's (exit 0 when caught).
+expects the malformed shapes to sail through.  Each of --perturb-meta, --perturb-listen, --perturb-forward,
+--perturb-turnproxies, --perturb-door and --perturb-snapnum takes out one PANEL-1 line, --perturb-overflow PANEL-1b's,
+and --perturb-shape (a whole row of the table), --perturb-bad, --perturb-ifacelist and --perturb-said PANEL-1c's
+(exit 0 when caught).
 """
-import atexit, copy, importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
+import atexit, copy, importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time
+import traceback
 import urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -46,24 +52,22 @@ PERTURB = "--perturb" in sys.argv
 PLANT = next((a[len("--perturb-"):] for a in sys.argv if a.startswith("--perturb-")), "")
 # Each puts back exactly one PANEL-1 line as it was at d0bad281 (the anchor must match once, or the run measures nothing).
 PLANTS = {
-    "meta": ('    for blk in (snap["interfaces"].values() if isinstance(snap.get("interfaces"), dict) else ()):\n'
-             '        if not isinstance(blk.get("meta") or {}, dict):\n'
-             '            del blk["meta"]\n', ""),
-    # …and the walk taken unguarded: a LIST of interface objects passes the state check, and `.values()` then raised
-    # inside the sanitiser — at the warm start, outside any try, that is a panel that does not boot.
-    "listwalk": ('snap["interfaces"].values() if isinstance(snap.get("interfaces"), dict) else ()',
-                 '(snap.get("interfaces") or {}).values()'),
-    "forward": ('    for k in ("ip_forward", "rp_filter"):\n'
-                '        if not isinstance(snap.get(k) or {}, dict):\n'
-                '            del snap[k]\n', ""),
+    "meta": ('    for blk in (snap.get("interfaces") or {}).values():\n'
+             '        if blk.get("meta") and not isinstance(blk["meta"], dict):\n'
+             '            _said("interfaces.*.meta", type(blk.pop("meta")).__name__, "dict")\n', ""),
     "listen": ('    for k in ("wdtt", "csqtt"):\n'
                '        for e in (snap[k] if isinstance(snap.get(k), list) else ()):\n'
-               '            if not isinstance(e.get("listen") or "", str):\n'
-               '                del e["listen"]\n', ""),
-    "turnproxies": ('    if not isinstance(snap.get("turn_proxies") or [], list):\n'
-                    '        del snap["turn_proxies"]                         # a map or a string walks as its keys / letters\n'
-                    '    elif snap.get("turn_proxies"):\n'
-                    '        snap["turn_proxies"] = [t for t in snap["turn_proxies"] if isinstance(t, dict)]\n', ""),
+               '            if e.get("listen") and not isinstance(e["listen"], str):\n'
+               '                _said(k + "[].listen", type(e.pop("listen")).__name__, "str")\n', ""),
+    # _SNAP_SHAPE's rows (PANEL-1 folded into PANEL-1c's table): each plant takes one row, or part of one, out
+    "forward": ('("iface_key_sealed", "ip_forward", "relay", "rp_filter", "wdtt_key_sealed"), (dict, None))',
+                '("iface_key_sealed", "relay", "wdtt_key_sealed"), (dict, None))'),
+    "turnproxies": ('"node_ip_ifaces", "turn_proxies", "wdtt_dormant"), (list, dict))', '"node_ip_ifaces", "wdtt_dormant"), (list, dict))'),
+    "shape": ('    **dict.fromkeys(("ether_ifaces", "ifaces_awaiting_key", "node_ifaces", "node_ips"), (list, str)),\n', ""),
+    "bad": ('    if _bad and not (isinstance(_bad, list) and all(isinstance(b, str) for b in _bad)):\n', '    if False:\n'),
+    "ifacelist": ('    if isinstance(snap.get("interfaces"), list):', '    if False:'),
+    "said": ('            log(LOG_WARNING, "node %s: snapshot field %r is %s, not %s — ignored", nid or "?", field, got, want)\n',
+             '            pass\n'),
     "door": ('json.loads(raw or "{}", parse_constant=_json_finite, parse_float=_json_finite)', 'json.loads(raw or "{}")'),
     "snapnum": ("    return n if math.isfinite(n) else None\n", "    return n\n"),
     "overflow": ("except (TypeError, ValueError, OverflowError):", "except (TypeError, ValueError):"),   # PANEL-1b
@@ -93,7 +97,7 @@ except SystemExit:
     pass
 _san = P._snap_sanitise
 if PERTURB:
-    P._snap_sanitise = lambda snap: None          # accepts anything, cleans nothing — how it shipped
+    P._snap_sanitise = lambda snap, nid="": None  # accepts anything, cleans nothing — how it shipped
 
 print("\n[1] telemetry is CLEANED, and the node keeps syncing")
 for field, bad, why in (("inet", "nope", "a string where a rate map goes"),
@@ -192,9 +196,24 @@ _nothing = {"ip_forward": None, "rp_filter": {}, "turn_proxies": [], "wdtt": [{"
 err, s = _san(_nothing)
 check("a value every reader already reads as nothing is left exactly as it was",
       err is None and s == {"generated_at": 1, **_nothing}, (err, s))
-err, s = _san({"interfaces": [{"peers": [], "meta": "x"}], "wdtt": {"w1": {"listen": 443}}})
-check("a shape the state check passes and these walks do not take (a LIST of interfaces, a MAP of WDTT servers) leaves the "
-      "sanitiser standing — it runs at boot, outside any try", err is None, err)
+err, s = _san({"interfaces": [{"peers": [], "meta": "x"}]})
+check("interfaces as a LIST of objects is REFUSED like any malformed state (it raised in every node's sync), and names "
+      "the field", isinstance(err, str) and "interfaces" in err and not err.startswith("RAISED"), err)
+err, s = _san({"wdtt": {"w1": {"listen": 443}}})
+check("a MAP of WDTT servers (the state check passes it, the walks do not take it) leaves the sanitiser standing — it "
+      "runs at boot, outside any try", err is None, err)
+_said = []
+_log_was5, P.log = P.log, (lambda lvl, fmt, *a: _said.append(fmt % a))
+try:
+    for _n in ("n1", "n1", "n1", "n2"):            # a node keeps sending it: one line, not one per sync
+        P._snap_sanitise({"generated_at": 1, "node_ips": 5, "relay": "on", "interfaces": {"w": {"peers": [], "meta": "x"}}}, _n)
+except TypeError as e:                             # a sanitiser that is not told the node cannot name it
+    _said.append("RAISED %s" % e)
+finally:
+    P.log = _log_was5
+_n1 = [x for x in _said if x.startswith("node n1:")]
+check("a drop is not silent: the node and the field are named once per (node, field) — three syncs, three lines; "
+      "another node, its own", len(_n1) == 3 and len(_said) == 6 and any("'node_ips' is int, not list" in x for x in _n1), _said)
 
 # One of the test fleet's own snapshots (msk-main, 1.8.8-beta by its stamp, d81cba17 by content: two interfaces — one a
 # mesh link —, a turn proxy, a WDTT and a csqtt server, and the telemetry), as the panel mirrored it on 2026-10-09:
@@ -369,7 +388,11 @@ try:
     print("\n[8] PANEL-1b — a generated_at past a double's range (10**400), stored: the panel starts again over it")
     qc = sync(Q, dict(GOOD[Q], generated_at=10 ** 400))[0]
     proc.terminate()
-    proc.wait(timeout=10)
+    try:                                           # a stop is no measurement: wait it out, then make sure of it
+        proc.wait(timeout=60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
     proc = _boot()                                 # its warm start reads the mirror that sync left
     up = _up(proc)
     check("[8] Q's sync with it answers 200, and a restarted panel comes up over it", qc == 200 and up,
@@ -383,6 +406,160 @@ finally:
         proc.wait(timeout=10)
     except Exception:
         proc.kill()
+
+print("\n[9] PANEL-1c — EVERY top-level field the readers touch × the wrong types, through what the whole panel shares")
+# The structural guard (1.8.9 qualification R2 PANEL-1c — FP-1, PANEL-1, PANEL-1b and four more were one class: one node's
+# report breaking a request every node or every operator shares). The fields are enumerated at RUN time, so a field added
+# later by either side is driven here the day it lands: every top-level key this tree's swg-noded build_snapshot puts in a
+# snapshot, and every key the panel READ off one on these paths (a recording dict around Q's snapshot). Per (field, type),
+# Q reporting it over the fixture above, through the real handlers in process: Q's own sync (the door, then
+# `_node_sync_apply` — refused is fine, a raise is a 500 that keeps the node from ever converging), A's sync (A forwards wg0
+# through Q: 200 with `desired`), /api/state (`api` and the json.dumps the HTTP layer does: 200 and strict JSON), and the
+# warm start's step over the mirror that sync left (load, `_snap_sanitise`, `_warm_seen`: no raise).
+NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
+_nsrc = open(NODED, encoding="utf-8").read()
+_bs = _nsrc[_nsrc.index("\ndef build_snapshot("):]
+_bs = _bs[:_bs.index("\ndef ", 10)]
+_lit, _depth, NODED_KEYS = _bs[_bs.index("snap = {"):], 0, set()
+for _m in re.finditer(r'[{}]|"([A-Za-z_]\w*)"\s*:', _lit):        # the literal's own keys (depth 1)…
+    if _m.group(0) == "{":
+        _depth += 1
+    elif _m.group(0) == "}":
+        _depth -= 1
+        if not _depth:
+            break
+    elif _depth == 1:
+        NODED_KEYS.add(_m.group(1))
+NODED_KEYS |= set(re.findall(r'\*\*\(?\{"([A-Za-z_]\w*)"', _bs))     # …the ones it splices in (**{"log": …})…
+NODED_KEYS |= set(re.findall(r'\bsnap\["([A-Za-z_]\w*)"\]\s*=', _nsrc))   # …and the ones set on it after
+check("[9] the fields swg-noded puts in a snapshot were found (%d)" % len(NODED_KEYS),
+      len(NODED_KEYS) >= 50 and {"interfaces", "node_ips", "exits", "relay", "mesh_health"} <= NODED_KEYS, sorted(NODED_KEYS))
+
+_A9, _Q9 = "aaaaaaaaaaaa", "bbbbbbbbbbbb"
+_BASE = json.loads(FIXTURE)
+_GOOD_A = {"hostname": "a", "generated_at": int(time.time()), "noded_version": "t", "node_ips": ["192.0.2.1"],
+           "interfaces": {"wg0": {"peers": [], "meta": {"subnet": "10.8.0.0/24", "listen_port": 51820}}},
+           "smartroute": {"arr": 1, "src": 1}}
+_LK9 = lambda a, p: {"iface": "swg_002cdb7b", "address": a, "peer_address": p, "subnet": "10.255.0.0/31", "listen_port": 10001}
+_REC9 = {_A9: {"id": _A9, "name": "a", "endpoint_host": "192.0.2.1", "ifaces": {"wg0": {"egress_mode": "forward", "egress_node": _Q9}},
+               "default_routing": [{"category": "google", "action": "exit", "node": _Q9}],
+               "links": {_Q9: _LK9("10.255.0.0", "10.255.0.1")}},
+         _Q9: {"id": _Q9, "name": "q", "endpoint_host": "203.0.113.10",
+               "ifaces": {"awg2": {}, "swg_002cdb7b": {"system": True, "link_node": _A9}},
+               "wdtt": {"wdtt1": {"listen": "203.0.113.10:56000", "wg_addr": "10.11.0.1/24"}},
+               "csqtt": {"csqtt1": {"listen": "203.0.113.10:56002", "tun_addr": "10.10.0.1/24"}},
+               "links": {_A9: _LK9("10.255.0.1", "10.255.0.0")}}}
+_W9 = os.path.join(TMP, "w9")
+
+
+class _Hdr:
+    headers = {"Authorization": "Bearer t"}
+
+
+def _w9_fresh():
+    shutil.rmtree(_W9, ignore_errors=True); os.makedirs(os.path.join(_W9, "stats"))
+    json.dump(_REC9, open(os.path.join(_W9, "nodes.json"), "w"))
+    json.dump({"version": P.ROSTER_VERSION, "users": {}, "peers": {}}, open(os.path.join(_W9, "users.json"), "w"))
+    d = {"nodes_path": os.path.join(_W9, "nodes.json"), "roster_path": os.path.join(_W9, "users.json"),
+         "stats_dir": os.path.join(_W9, "stats"), "fleet": {}, "panel_settings": {}, "node_snaps": {}, "node_seen": {}}
+    P.Handler.deps = d
+    for nid, s in ((_A9, _GOOD_A), (_Q9, _BASE)):
+        s = copy.deepcopy(s); P._snap_sanitise(s); d["node_snaps"][nid] = s; d["node_seen"][nid] = int(time.time())
+    return d
+
+
+def _where(e):
+    tb = [f for f in traceback.extract_tb(e.__traceback__) if f.filename == PANEL]
+    return "%s at %s:%s" % (type(e).__name__, tb[-1].name, tb[-1].lineno) if tb else type(e).__name__
+
+
+def _sync9(d, nid, snap):
+    try:
+        if P._snap_sanitise(snap):
+            return "refused"
+    except Exception as e:
+        return "door raises " + _where(e)
+    d["node_snaps"][nid] = snap; d["node_seen"][nid] = int(time.time())
+    nodes = P.nodes_load(d["nodes_path"])
+    try:
+        with P._api_lock:
+            code, obj = P.Handler._node_sync_apply(_Hdr(), nid, nodes.get(nid), nodes, snap, None)
+    except Exception as e:
+        return "raises " + _where(e)
+    return "ok" if code == 200 and "desired" in ((obj.get("data") if isinstance(obj, dict) else None) or obj or {}) else "code %s" % code
+
+
+def _state9(d):
+    try:
+        code, obj = P.api("GET", "/api/state", {}, {}, d)
+    except Exception as e:
+        return "raises " + _where(e)
+    return "ok" if code == 200 and _strict(json.dumps(obj)) else "code %s / not JSON" % code
+
+
+def _warm9(d, nid):
+    try:
+        s = json.loads(json.dumps(d["node_snaps"][nid]))
+        if isinstance(s, dict) and s and P._snap_sanitise(s) is None:
+            P._warm_seen(int(time.time()) - 5, s)
+    except Exception as e:
+        return "raises " + _where(e)
+    return "ok"
+
+
+_log_was, P.log = P.log, (lambda *a, **k: None)   # the paths' own warnings are not results
+try:
+    TOUCHED = set()
+
+    class _Rec(dict):                              # records every top-level key a reader takes off Q's snapshot
+        def get(self, k, d=None):
+            TOUCHED.add(k); return dict.get(self, k, d)
+
+        def __getitem__(self, k):
+            TOUCHED.add(k); return dict.__getitem__(self, k)
+
+        def __contains__(self, k):
+            TOUCHED.add(k); return dict.__contains__(self, k)
+
+        def setdefault(self, k, d=None):
+            TOUCHED.add(k); return dict.setdefault(self, k, d)
+
+        def pop(self, k, *a):
+            TOUCHED.add(k); return dict.pop(self, k, *a)
+    _d = _w9_fresh()
+    _d["node_snaps"][_Q9] = _Rec(_d["node_snaps"][_Q9])
+    _base_run = [_sync9(_d, _A9, copy.deepcopy(_GOOD_A)), _state9(_d), _sync9(_d, _Q9, _Rec(copy.deepcopy(_BASE)))]
+    _d["node_snaps"][_Q9] = _Rec(_d["node_snaps"][_Q9])
+    _base_run += [_state9(_d), _warm9(_d, _Q9)]
+    check("[9] the fixture itself goes through every path (the matrix's control)", _base_run == ["ok"] * 5, _base_run)
+    FIELDS = sorted(NODED_KEYS | {k for k in TOUCHED if isinstance(k, str)})
+    check("[9] …and the panel read %d of its fields on the way (the recording works)" % len(TOUCHED),
+          len(TOUCHED) >= 40 and {"interfaces", "node_ips", "exits"} <= TOUCHED, sorted(TOUCHED))
+    TYPES9 = [("int", 7), ("bigint", 10 ** 400), ("str", "x"), ("list", ["x"]), ("dict", {"x": 1}), ("null", None),
+              ("bool", True), ("list[int]", [7]), ("list[dict]", [{"x": 1}]), ("dict{str}", {"x": "y"})]
+    NAMED9 = [("rp_filter", "bad = [1]", {"needed": True, "bad": [1]}),         # the one walked a level further in
+              ("interfaces", "a LIST of objects", [{"meta": {"subnet": "10.9.0.0/24"}, "peers": []}]),   # passes as a list
+              ("wdtt", "a MAP of objects", {"w1": {"iface": "w1", "listen": "203.0.113.10:56000"}}),
+              ("csqtt", "a MAP of objects", {"c1": {"iface": "c1", "listen": "203.0.113.10:56002"}})]
+    bad = {}
+    for fld, tname, tval in [(f, n, v) for f in FIELDS for n, v in TYPES9] + NAMED9:
+        _d = _w9_fresh()
+        q = copy.deepcopy(_BASE); q[fld] = copy.deepcopy(tval)
+        r = {"Q's own sync": _sync9(_d, _Q9, q)}
+        if r["Q's own sync"] == "refused":
+            r["Q's own sync"] = "ok"                   # a malformed STATE field is refused (400): nothing stored, nothing to break
+        r["A's sync"] = _sync9(_d, _A9, copy.deepcopy(_GOOD_A))
+        r["/api/state"] = _state9(_d)
+        r["warm start"] = _warm9(_d, _Q9)
+        bad[(fld, tname)] = ["%s: %s" % (path, res) for path, res in r.items() if res != "ok"]
+    for fld in FIELDS:
+        hits = ["%s → %s" % (t, b) for (f, t), bs in bad.items() if f == fld and t in dict(TYPES9) for b in bs]
+        check("[9] %s × %d types: nothing raises, every other node syncs, the console reads" % (fld, len(TYPES9)), not hits, hits)
+    for fld, tname, _v in NAMED9:
+        check("[9] %s as %s: nothing raises, every other node syncs, the console reads" % (fld, tname),
+              not bad[(fld, tname)], bad[(fld, tname)])
+finally:
+    P.log = _log_was
 
 print()
 if PERTURB:

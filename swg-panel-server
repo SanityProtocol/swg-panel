@@ -17981,6 +17981,19 @@ _SNAP_TELEMETRY = ("inet", "cat_rate", "exit_rate")
 # reader that raises is `blk.get("meta")` — one level in. Every reader of these three walks the elements as
 # objects, so that is the shape to insist on.
 _SNAP_STATE = ("interfaces", "wdtt", "csqtt")
+# …and every other top-level field a reader WALKS, as (container, item): the type a list's entries or an object's values
+# must have, or None for an object read key by key. Each is the shape every swg-noded build sends — the same producer at
+# 1.8.8 and 1.8.9 (build_snapshot), checked against the test fleet's own snapshots — and each, in another shape, raised in
+# a reader the whole panel shares: /api/state for every operator, or every node's sync (1.8.9 qualification R2 PANEL-1 /
+# PANEL-1c, found by driving every field the readers touch × the wrong types; tests/snap_shape_selftest.py [9] keeps it).
+_SNAP_SHAPE = {
+    **dict.fromkeys(("container_ifaces", "csqtt_candidates", "devexit", "exit_candidates", "exits", "iface_candidates",
+                     "node_ip_ifaces", "turn_proxies", "wdtt_dormant"), (list, dict)),
+    **dict.fromkeys(("ether_ifaces", "ifaces_awaiting_key", "node_ifaces", "node_ips"), (list, str)),
+    **dict.fromkeys(("iface_drops", "mesh_health"), (dict, dict)),
+    **dict.fromkeys(("iface_key_sealed", "ip_forward", "relay", "rp_filter", "wdtt_key_sealed"), (dict, None)),
+}
+_SNAP_SAID = set()                                       # (node, field) already logged as dropped — once each per process
 
 
 def _snap_num(v):
@@ -18009,8 +18022,9 @@ def _json_finite(s):
     return n
 
 
-def _snap_sanitise(snap):
-    """Clean the telemetry in `snap` IN PLACE and return a refusal reason for malformed state, or None.
+def _snap_sanitise(snap, nid=""):
+    """Clean the telemetry in `snap` IN PLACE and return a refusal reason for malformed state, or None. `nid` names
+    the node in the one log line a dropped field gets.
 
     Telemetry is reduced to exactly what every reader below assumes — `{key: {…: number}}` — so no consumer
     needs its own guard, and a value that cannot be read is simply not there rather than raising three
@@ -18047,6 +18061,8 @@ def _snap_sanitise(snap):
             if inner:
                 clean[str(kk)] = inner
         snap[k] = clean
+    if isinstance(snap.get("interfaces"), list):         # walked BY NAME everywhere: a list raised in every node's sync
+        return "snapshot field 'interfaces' must be an object, got list"   # and in /api/state (q189 R2 PANEL-1c)
     for k in _SNAP_STATE:
         if k not in snap:
             continue
@@ -18061,31 +18077,40 @@ def _snap_sanitise(snap):
                 return "snapshot field %r: item %d must be an object, got %s" % (k, bad, type(v[bad]).__name__)
         else:
             return "snapshot field %r must be an object or a list, got %s" % (k, type(v).__name__)
-    # ⚠️ …AND ONE LEVEL FURTHER IN, where the readers walk without looking (1.8.9 qualification R2 PANEL-1). The check
-    # above stops at "each entry is an object"; the readers then take a field INSIDE one as given — `(blk.get("meta")
-    # or {}).get(…)`, `tp.get(…)`, `(snap.get("ip_forward") or {}).get(…)`, `(listen or "").strip()`. So one node
-    # reporting a string `meta` failed EVERY node's sync (cascade_plan plans the whole fleet: a 500, no `desired`), and
-    # a non-object `ip_forward` / `rp_filter` / turn-proxy or a non-string WDTT / csqtt `listen` answered /api/state
-    # with a 500 for every operator — kept across a restart, as the warm start restores the mirror through here. No
-    # swg-noded build sends any of these (1.8.8 and 1.8.9: build_meta, ip_forward_health and the rp_filter literal are
-    # objects, load_turn_proxies a list of them, `listen` its record's string), so each is DROPPED, never refused: what
-    # cannot be read is simply not there — the shape every reader already handles — and a real snapshot is untouched.
-    # Nothing below may raise — the warm start runs this at boot, outside any try — and the check above passes a LIST of
-    # objects too, so each walk takes only the shape its readers walk.
-    for blk in (snap["interfaces"].values() if isinstance(snap.get("interfaces"), dict) else ()):
-        if not isinstance(blk.get("meta") or {}, dict):
-            del blk["meta"]
-    for k in ("ip_forward", "rp_filter"):
-        if not isinstance(snap.get(k) or {}, dict):
-            del snap[k]
+    # ⚠️ …AND ONE LEVEL FURTHER IN, where the readers walk without looking (1.8.9 qualification R2 PANEL-1, PANEL-1c). The
+    # check above stops at "each entry is an object"; the readers then take a field as given — `(blk.get("meta") or
+    # {}).get(…)`, `tp.get(…)`, `(snap.get("ip_forward") or {}).get(…)`, `(listen or "").strip()`, `for ip in node_ips`.
+    # So one node reporting one of them in another shape failed EVERY node's sync (cascade_plan and reconcile_mesh plan the
+    # whole fleet: a 500, no `desired`) or answered /api/state with a 500 for every operator — kept across a restart, as
+    # the warm start restores the mirror through here. No swg-noded build sends any of these shapes (see _SNAP_SHAPE), so
+    # each is DROPPED, never refused: what cannot be read is simply not there — the shape every reader already handles —
+    # a real snapshot is untouched, and the node is named in the log once. Nothing below may raise: the warm start runs
+    # this at boot, outside any try.
+    def _said(field, got, want):                         # once per (node, field) per process, as _TURN_PRUNE_WARNED does
+        if (nid, field) not in _SNAP_SAID:
+            _SNAP_SAID.add((nid, field))
+            log(LOG_WARNING, "node %s: snapshot field %r is %s, not %s — ignored", nid or "?", field, got, want)
+    for blk in (snap.get("interfaces") or {}).values():
+        if blk.get("meta") and not isinstance(blk["meta"], dict):
+            _said("interfaces.*.meta", type(blk.pop("meta")).__name__, "dict")
     for k in ("wdtt", "csqtt"):
         for e in (snap[k] if isinstance(snap.get(k), list) else ()):
-            if not isinstance(e.get("listen") or "", str):
-                del e["listen"]
-    if not isinstance(snap.get("turn_proxies") or [], list):
-        del snap["turn_proxies"]                         # a map or a string walks as its keys / letters
-    elif snap.get("turn_proxies"):
-        snap["turn_proxies"] = [t for t in snap["turn_proxies"] if isinstance(t, dict)]
+            if e.get("listen") and not isinstance(e["listen"], str):
+                _said(k + "[].listen", type(e.pop("listen")).__name__, "str")
+    for k, (outer, inner) in _SNAP_SHAPE.items():
+        v = snap.get(k)
+        if not v:
+            continue                                     # absent, or empty: every reader reads it as nothing
+        if not isinstance(v, outer):                     # a number does not walk; a map or a string walks as keys / letters
+            _said(k, type(snap.pop(k)).__name__, outer.__name__)
+        elif inner and not all(isinstance(x, inner) for x in (v if outer is list else v.values())):
+            _said(k, "a %s holding other things" % outer.__name__, "a %s of %s" % (outer.__name__, inner.__name__))
+            snap[k] = ([x for x in v if isinstance(x, inner)] if outer is list
+                       else {kk: x for kk, x in v.items() if isinstance(x, inner)})
+    _bad = (snap.get("rp_filter") or {}).get("bad")     # the one walked a level further in: ", ".join(bad)
+    if _bad and not (isinstance(_bad, list) and all(isinstance(b, str) for b in _bad)):
+        _said("rp_filter.bad", type(_bad).__name__ if not isinstance(_bad, list) else "a list holding other things", "a list of str")
+        snap["rp_filter"]["bad"] = [b for b in _bad if isinstance(b, str)] if isinstance(_bad, list) else []
     return None
 
 
@@ -31414,7 +31439,7 @@ class Handler(BaseHTTPRequestHandler):
         # panel — and before this the only symptom was a node that quietly stopped reporting. `snap_err` is
         # written only when it CHANGES: a node repeating a bad snapshot every 5s must not rewrite the store
         # every 5s, and the first occurrence is the one worth timestamping.
-        _serr = _snap_sanitise(snap)
+        _serr = _snap_sanitise(snap, nid)
         # ⚠️ LIVENESS FIRST, OUTSIDE THE LOCK. `node_seen` is what the SPA's online dot and the node.offline webhooks
         # (_node_watch_loop, 30 s) read. Stamped after the lock, an operator action that holds _api_lock across a slow
         # network call (a transfer to an unreachable panel: 25–85 s; a GitHub check that times out) would mark every
@@ -35599,7 +35624,7 @@ def main():
         # exactly the value the sync path refuses straight into the cache, past the check that exists to
         # keep it out. A file whose STATE is malformed is skipped: the node then reads as never-reported,
         # which is what it effectively is until it syncs again.
-        if isinstance(_snap, dict) and _snap and _snap_sanitise(_snap) is None:
+        if isinstance(_snap, dict) and _snap and _snap_sanitise(_snap, _nid) is None:
             Handler.deps["node_snaps"][_nid] = _snap
             Handler.deps["node_seen"][_nid] = _warm_seen(_mt, _snap)
         # restore the LIVE 5s buffer so the LIVE chart survives a restart/update (mirrors live-<id>.json)
