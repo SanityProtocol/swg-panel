@@ -7376,10 +7376,11 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
     """Reconcile the P2P policy (see the block comment above). Signature-gated like _ensure_mech_block, and the gate asks
     the property that matters — the table is there AND still drops — not only our own memo (the flushed-in-place lesson,
     _ensure_mech_block). Never raises; never touches another table; nothing wanted → only ours is deleted."""
-    try:
-        if not _P2P["retired"]:                               # the per-interface SWGP chain + its ipset are replaced by this table
+    def retire():   # 1.8.8's per-interface SWGP chain + its ipset — only once this table is IN FORCE (or nothing is wanted):
+        if not _P2P["retired"]:   # retired first, a kernel that refused the new table had no torrent guard at all (FN-2(b))
             _retire_swgp(res)
             _P2P["retired"] = True
+    try:
         mode = _p2p_mode(p2p)
         strict = []
         for s, ids in sorted((mech or {}).items()):
@@ -7405,6 +7406,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
             return
         have = run(["nft", "-t", "list", "table", "inet", P2P_NFT_TABLE])   # -t: no set elements (fanseen alone: up to 65 535, MBs)
         if mode == "legacy" and not strict:                   # nothing wanted
+            retire()
             _P2P.update(on=False, state="", tbl=False)
             if have.returncode == 0:
                 run(["nft", "delete", "table", "inet", P2P_NFT_TABLE]); res["changed"] += 1
@@ -7430,6 +7432,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
         # ⚠️ "ok" ONLY FOR A TABLE IN FORCE. The state was set before the load, so a load the kernel refused reported a running
         # guard while nothing was blocked — with 1.8.8's torrent chain already retired (1.8.9 qualification NR-2).
         if have.returncode == 0 and cur == sig and " drop" in (have.stdout or ""):
+            retire()
             _P2P.update(on=True, state="ok" if ih else "degraded", detail="")
             return
         _P2P["tbl"] = True
@@ -7447,6 +7450,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
                 log(LOG_WARNING, "p2p: this kernel refused the torrent guard's log lines (%s) — the guard runs without them",
                     ((r0.stderr or "").strip().splitlines() or ["nft exited %d" % r0.returncode])[0][:160])
         if r.returncode == 0:
+            retire()
             with contextlib.suppress(OSError):
                 os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
             _P2P.update(on=True, state="ok" if ih else "degraded", detail="")
