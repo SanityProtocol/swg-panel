@@ -14,7 +14,9 @@
   [4] The namespace on the units the node writes: prefix drop-ins beside them, written once; the unit texts the drift checks
       compare carry no LogNamespace (a changed text would restart a datapath unit).
   [5] docker: our own log file (timestamped, two files of half the budget, removed at Off); a launched container's share,
-      or no log at all at Off; the supervised logs emptied at Off.
+      or no log at all at Off; the supervised logs emptied at Off. The share NAMES its driver (json-file): a daemon whose
+      default is journald (NixOS's docker backend, a daemon.json) refused the sizes, and every turn proxy and relay with
+      them (1.8.9 qualification DN-6) — asked of the local docker daemon where one answers without root (SKIPPED otherwise).
   [6] swg-netctl, the panel box's writer: the size file from panel-settings.json, the status file only when it changes and
       kept out of the 1-hour sweep, Off removes the stored files.
   [7] The verify readers read the namespace and give the unit's own reason even when systemd's line sorts after it.
@@ -35,6 +37,7 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      tilde        the oldest-file parser takes a damaged `….journal~`
      unittext     LogNamespace goes into the relay's unit text (every relay restarts at the update)
      dockeroff    a container launched at Off still logs
+     dockerdriver the sizes go out without their driver (a journald-default daemon refuses the container)
      norotate     the docker log file is never rotated
      sweeplog     netctl's status sweep removes the budget's status file
      headold      nothing rotated yet: the node reports no oldest line (Holds stays blank)
@@ -86,6 +89,7 @@ PLANTS = {   # (program, anchor, replacement)
     "tilde": ("noded", r'''-([0-9a-f]{16})\.journal$")''', r'''-([0-9a-f]{16})\.journal~?$")'''),
     "unittext": ("noded", '''RELAY_UNIT_TMPL = """[Unit]''', '''RELAY_UNIT_TMPL = """[Service]\nLogNamespace=swg-node\n[Unit]'''),
     "dockeroff": ("noded", '''    if not cap:\n        return ["--log-driver", "none"]\n''', ""),
+    "dockerdriver": ("noded", '''    return ["--log-driver", "json-file", "--log-opt", "max-size=%dk"''', '''    return ["--log-opt", "max-size=%dk"'''),
     "norotate": ("noded", '''            if _LOG_FILE["size"] >= _LOG_FILE["cap"] // 2:''', '''            if False:'''),
     "headold": ("noded", '''    if journal and oldest is None:\n        oldest = _journal_head(os.path.join(d, "system.journal"))\n''', ""),
     "ncheadold": ("netctl", '''    if oldest is None:\n        oldest = _journal_head(os.path.join(d, "system.journal"))\n''', ""),
@@ -416,7 +420,22 @@ os.makedirs(os.path.join(N.WDTT_ROOT, "w1"))
 N._LOG_BUDGET["mb"] = 100
 N.log_set(N.LOG_INFO)
 opts = N.docker_log_opts()
-check("[5] a launched container's share: 100 MB over 5 logs, two files of 10 MB", opts == ["--log-opt", "max-size=10240k", "--log-opt", "max-file=2"], opts)
+check("[5] a launched container's share: 100 MB over 5 logs, two files of 10 MB — json-file NAMED with its sizes",
+      opts == ["--log-driver", "json-file", "--log-opt", "max-size=10240k", "--log-opt", "max-file=2"], opts)
+# …and the daemon itself agrees: the options as `docker create` takes them, on a daemon whose default driver is journald —
+# modelled by naming journald FIRST (a later --log-driver wins, as ours wins over a daemon default). Nothing is run, the
+# container is removed at once; an image already on this box only (never a pull).
+_dk = shutil.which("docker")
+_img = next((i for i in ("alpine:latest", "busybox:latest") if _dk and subprocess.run([_dk, "image", "inspect", i],
+                                                                                     capture_output=True).returncode == 0), "")
+if _img:
+    _cn = "swg-logopt-probe-%d" % os.getpid()
+    _r = subprocess.run([_dk, "create", "--name", _cn, "--log-driver", "journald"] + opts + [_img, "true"], capture_output=True, text=True)
+    subprocess.run([_dk, "rm", "-f", _cn], capture_output=True)
+    check("[5] a docker daemon whose default driver is journald creates the container with these options (%s)"
+          % ((_r.stderr or "").strip().splitlines() or ["ok"])[-1][:120], _r.returncode == 0)
+else:
+    print("  SKIPPED [5] docker daemon check — no docker answering without root, or no local alpine/busybox image")
 N.log_set(N.LOG_OFF)
 check("[5] at Off a launched container keeps no log", N.docker_log_opts() == ["--log-driver", "none"], N.docker_log_opts())
 sl = os.path.join(N.WDTT_ROOT, "w1", "server.log")
