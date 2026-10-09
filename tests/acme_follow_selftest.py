@@ -84,7 +84,8 @@ PLANTS = [
      "    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)", "a FIFO in the queue cannot wedge the helper (read O_NONBLOCK, checked on the fd)"),
     ("NETCTL", '        _sweep(qfd, 0, keep=lambda n: n.endswith(".json") or (n.endswith(".json.tmp") and not _older(qfd, n, 60)))',
      "        pass", "the watched queue dir is cleared of what is not a request (an old claim, an abandoned .tmp)"),
-    ("NETCTL", "            _sweep(sfd, 3600)", "            pass", "answers older than an hour are swept (the panel, group-only on status/, cannot delete them)"),
+    ("NETCTL", "            _sweep(sfd, 3600, keep=lambda n: n == LOG_STATUS)", "            pass",     # `keep`: bb1a50d
+     "answers older than an hour are swept (the panel, group-only on status/, cannot delete them)"),
     ("NETCTL", "        if not names:\n            return ", "        if False:\n            return ", "an idle tick (empty queue) does nothing and logs nothing"),
     ("NETCTL", "            if d and (targets & here) and not DRYRUN:", "            if False:",
      "a kept entry that still installs into the PANEL's paths is moved to swg-sub's (else its renewal overwrites the panel)"),
@@ -114,13 +115,16 @@ PLANTS = [
 ]
 
 if "--perturb" in sys.argv:
-    caught, bad = 0, []
-    for key, old, new, must in PLANTS:
+    import concurrent.futures as cf
+
+    def _plant_run(plant):
+        """One plant: a planted copy of its file, this whole gate run against it → (key, must, verdict or stale line)."""
+        key, old, new, must = plant
         src = open(PATHS[key], encoding="utf-8").read()
         edits = list(zip(old, new)) if isinstance(old, (list, tuple)) else [(old, new)]   # several edits = one plant
         stale = [o for o, _n in edits if src.count(o) != 1]
         if stale:
-            bad.append("%s: anchor found %d times (stale plant) — %s" % (key, src.count(stale[0]), must)); continue
+            return key, must, "%s: anchor found %d times (stale plant) — %s" % (key, src.count(stale[0]), must)
         for o, n_ in edits:
             src = src.replace(o, n_)
         with tempfile.NamedTemporaryFile("w", suffix="-plant", delete=False) as f:
@@ -133,10 +137,20 @@ if "--perturb" in sys.argv:
             r = subprocess.CompletedProcess([], 1, (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or ""), "")
             red = True
         os.unlink(f.name)
-        print("  %-13s %s — %s" % (key, "caught" if red else ("CRASHED" if "Traceback" in r.stderr else "NOT CAUGHT"), must[:70]))
-        caught += red
-        if not red:
-            bad.append(must)
+        return key, must, "caught" if red else ("CRASHED" if "Traceback" in r.stderr else "NOT CAUGHT")
+
+    caught, bad = 0, []
+    # ⚠️ FOUR AT A TIME. Each plant is a whole run of this gate (~19 s, most of it its own waits), so 33 one after another
+    # took 633 s — past the perturbation sweep's 600 s cap, where the row read "timeout" and hid a stale plant behind it
+    # (1.8.9 qualification). Each run has its own temp dir and planted copy, nothing is shared; verdicts print in order.
+    with cf.ThreadPoolExecutor(4) as ex:
+        for key, must, v in ex.map(_plant_run, PLANTS):
+            if v not in ("caught", "CRASHED", "NOT CAUGHT"):
+                bad.append(v); continue
+            print("  %-13s %s — %s" % (key, v, must[:70]))
+            caught += v == "caught"
+            if v != "caught":
+                bad.append(must)
     print("%d plants, %d caught" % (len(PLANTS), caught))
     for b_ in bad:
         print("  ✗ " + b_)
