@@ -8734,12 +8734,12 @@ def range_read(ring, want, lv, since, until, stop, journal=None, files=(), ctrs=
 # [{id, src, iv, cap, lease, key, cur?}]. Each id gets ONE reader thread (a LiveReader), never the sync loop's time: it posts
 # the new lines to /api/node/logs every `iv` s — and once at its start, with each source's state, even with no lines — and
 # stops by itself when the id leaves a reply, when its lease runs out without a reply renewing it (~20 s: the panel is
-_LIVE_CTL = dict.fromkeys(range(32))   # the control characters JSON writes as \u00XX (str.translate deletes them)
 # unreachable), or when the panel answers 404 (the request is gone). `cur` is where the last reader of that id on this node
 # stopped, so one restarted after a noded restart resumes with no gap and no repeat. The key is the panel's proof that this
 # node may post into that request: it is not the node token, whose check reads the whole node store (§23.1).
 LIVE_MAX, LIVE_GRACE, LIVE_PEND_MAX = 4, 5, 2000
 LIVE_POST_BYTES = 900 << 10     # JSON one post carries at most (see _live_chunk)
+_LIVE_CTL = dict.fromkeys(range(32))   # the control characters JSON writes as \u00XX (str.translate deletes them)
 LIVE_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 LIVE_SRC_RE = re.compile(r"^[a-z0-9]{1,16}(?::(?:\*|[A-Za-z0-9_.@-]{1,64}))?$")
 _LIVE = {}                     # request id -> {stop, exp, src, iv, cap, key, cur, url, panel}
@@ -13461,11 +13461,11 @@ _DPKG = {"mtime": None, "at": 0.0, "v": None, "peek": 0.0}
 
 
 def _dpkg_busy():
-    # By the INODE alone: on btrfs stat() gives a subvolume's anonymous device, never the one /proc/locks names, so a held
-    # lock read as free there (q189 NLH-3). Another filesystem's lock on the same inode number only delays a report.
     """Is a dpkg/apt run holding dpkg's locks RIGHT NOW? Read from /proc/locks — never by taking a lock, which would make an
     apt run starting in that instant fail on it. A long postinst (a DKMS build for every kernel on a slow box) can leave
     `status` unwritten for more than DPKG_SETTLE while dpkg is busy; its lock is held all along (code review)."""
+    # By the INODE alone: on btrfs stat() gives a subvolume's anonymous device, never the one /proc/locks names, so a held
+    # lock read as free there (q189 NLH-3). Another filesystem's lock on the same inode number only delays a report.
     ids = set()
     for p in DPKG_LOCKS:
         with contextlib.suppress(OSError):
@@ -13782,6 +13782,8 @@ def _awg_load_boot():
 
 with contextlib.suppress(Exception):
     _awg_load_boot()
+
+
 def _awg_load_stamp(doc):
     """Write the Load now stamp WHOLE: through a .tmp and a rename, so a cut write (a full disk, the daemon killed by an
     update in that millisecond) leaves the old stamp rather than half a one — read as no stamp, it ran the same press again
@@ -13789,8 +13791,6 @@ def _awg_load_stamp(doc):
     with open(AWG_LOAD_STAMP + ".tmp", "w") as f:
         json.dump(doc, f)
     os.replace(AWG_LOAD_STAMP + ".tmp", AWG_LOAD_STAMP)
-
-
 
 
 def awg_load_request(req, agent, sudo):
