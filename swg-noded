@@ -9751,10 +9751,7 @@ def _exit_probe_all(devs):
         res[dev] = (tr, rch, None)               # the verdict's evidence is in: a ping that overruns the bound loses only itself
         res[dev] = (tr, rch, _exit_ping(rec.get("endpoint")))
         if not (tr or {}).get("ip") and rch is not True:
-            # nothing crossed: where does its endpoint's NAME point now? In a thread of its own the join below does not wait
-            # on — the answer is parked and acted on next pass anyway, and a slowly resolving DDNS name stretched the pass
-            # toward the 40 s bound, past the panel's 30 s offline mark (1.8.9 qualification NR-11)
-            threading.Thread(target=_exit_resolve, args=(dev, rec), daemon=True).start()
+            _exit_resolve(dev, rec)              # nothing crossed: where does its endpoint's NAME point now? (the caller acts)
     ths = [threading.Thread(target=one, args=(d, r), daemon=True) for d, r in devs]
     for t in ths:
         t.start()
