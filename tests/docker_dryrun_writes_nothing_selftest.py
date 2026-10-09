@@ -16,6 +16,8 @@ Run: python3 tests/docker_dryrun_writes_nothing_selftest.py (0 = pass)
 import os, re, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from _tree_copy import copy_tree  # noqa: E402 — the live tree, minus what other gates remove while it is copied
 PERTURB = "--perturb" in sys.argv
 FAILS = []
 
@@ -28,7 +30,7 @@ def check(name, cond, detail=""):
 
 T = tempfile.mkdtemp(prefix="dockerdry-")
 SRC = os.path.join(T, "src")
-shutil.copytree(ROOT, SRC, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs", ".campaign", "__pycache__", "forks", "screenshots"))
+copy_tree(ROOT, SRC, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs", ".campaign", "__pycache__", "forks", "screenshots"))
 inst = open(os.path.join(SRC, "install-docker.sh"), encoding="utf-8").read()
 GUARDED = '''if [ "$PROFILE" != node ] && ! $DRYRUN; then
   mkdir -p "$INSTALL_DIR/data/lib/configs" "$INSTALL_DIR/data/etc/tls" 2>/dev/null || true
