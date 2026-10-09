@@ -1623,7 +1623,10 @@ ensure_panel_unit_warn(){   # DETECT + WARN only — never recreate. The panel u
   warn "swg-panel-server.service is MISSING — the panel is not managed by systemd and won't survive a reboot."
   warn "Its unit carries your TLS cert/key, port, and login, which an update must not guess. Re-run the host"
   warn "installer to restore it with your real settings:"
-  warn '    sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- host'
+  # …from the ref this box follows (main pinned here re-installed main over a dev box: IN-8); a ref other than main rides
+  # INSIDE the string, as bootstrap's own hand-back does — sudo drops SWG_REF in front of it
+  local _r="${SWG_REF:-main}" _p=""; [ "$_r" = main ] || _p="SWG_REF=$(printf '%q' "$_r"); "
+  warn "    sudo bash -c \"$_p\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/$_r/bootstrap.sh)\" -- host"
 }
 
 ensure_netctl_docker(){   # HEAL (install-if-missing) the docker address helper on a panel-bearing docker host.
