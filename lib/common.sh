@@ -2196,9 +2196,14 @@ awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did 
   case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*|iH*) ;; *) return 1;; esac
   grep -qsE ': error: |:[0-9]+: fatal error: ' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log \
     && ! grep -qsE 'No space left on device|Killed signal|internal compiler error: Killed' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log; }
-awg_dkms_give_up(){ # after that: leave the package manager clean, keep the tools, remember what did not compile
+awg_dkms_pending(){ case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*|iH*) return 0;; esac; return 1; }
+awg_dkms_give_up(){ # [transient] — after that: leave the package manager clean, keep the tools, remember what did not compile
+  # transient: the build did not COMPILE-fail — the box cut it short (a full disk, a compiler killed for memory) — and it is
+  # removed all the same: left half-configured while the fault lasts, every apt run on the box (unattended security upgrades
+  # included) ended in error and built it again. Not recorded: the next update tries again (1.8.9 qualification VERIFY1-B1)
   local v sha; v="$(dpkg-query -W -f='${Version}' amneziawg-dkms 2>/dev/null)"
-  warn "AmneziaWG: its kernel module does not compile on kernel $(uname -r) (amneziawg-dkms ${v:-?}) — upstream does not support this kernel yet. The package manager is left clean, and awg interfaces use the userspace datapath; an update tries the module again when a new kernel or a newer AmneziaWG build arrives."
+  if [ "${1:-}" = transient ]; then warn "AmneziaWG: the kernel module's build (amneziawg-dkms ${v:-?}) did not finish on this box — not a compile error (a full disk, or a compiler killed for memory) — so the package is removed, keeping the package manager usable; awg interfaces use the userspace datapath, and the next update tries again."
+  else warn "AmneziaWG: its kernel module does not compile on kernel $(uname -r) (amneziawg-dkms ${v:-?}) — upstream does not support this kernel yet. The package manager is left clean, and awg interfaces use the userspace datapath; an update tries the module again when a new kernel or a newer AmneziaWG build arrives."; fi
   # Removed, not left half-configured: every later apt run on the box (ours, the operator's, unattended-upgrades) would
   # end in a dpkg error over it. --no-install-recommends on the tools: a recommends on the module must not reinstall it.
   run apt-get remove -y -o DPkg::Lock::Timeout=180 amneziawg-dkms amneziawg >/dev/null 2>&1 || run dpkg --remove --force-remove-reinstreq amneziawg-dkms amneziawg >/dev/null 2>&1 || true
@@ -2210,6 +2215,7 @@ awg_dkms_give_up(){ # after that: leave the package manager clean, keep the tool
     *) $DRYRUN || warn "AmneziaWG: amneziawg-dkms could not be removed now (the package manager is busy) — the next update tries again"
        return 0;;
   esac
+  [ "${1:-}" = transient ] && return 0
   [ -n "$v" ] && awg_fail_note pkg "$v"
   sha="$(printf '%s' "$v" | sed -n 's/.*+\([0-9a-f]\{7,40\}\)~.*/\1/p')"   # the PPA builds upstream master and names the commit
   [ -n "$sha" ] && awg_fail_note src "$sha"
@@ -2225,6 +2231,7 @@ awg_ppa_module_install(){ # the package route's install — once: a compile fail
   # its postinst built from the source as shipped; fixed now (PR #218), the half-configured package builds again
   if awg_compat_patch_installed; then awg_dpkg_recover || true; fi
   if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi
+  if awg_dkms_pending; then awg_dkms_give_up transient; return 1; fi
   return 0; }
 awg_dkms_reinstall(){ # the --reinstall fallback (build_awg_module, update.sh's heal). 1 = given up: it does not compile here
   # The reinstall puts the source back AS SHIPPED — PR #218's fix undone — and its postinst builds that: on a 7.0.0-38 kernel
@@ -2235,6 +2242,7 @@ awg_dkms_reinstall(){ # the --reinstall fallback (build_awg_module, update.sh's 
   $DRYRUN && return 0
   if awg_compat_patch_installed; then awg_dpkg_recover || true; fi
   if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi
+  if awg_dkms_pending; then awg_dkms_give_up transient; return 1; fi
   return 0; }
 
 # ── upstream PR #218, applied to the module's source until upstream ships it ─────────────────────────────────────────────

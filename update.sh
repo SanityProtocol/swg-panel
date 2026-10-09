@@ -1103,6 +1103,11 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
       note "AmneziaWG: $cand does not compile on $(uname -r) — removed, userspace datapath; tried again with a newer build or kernel"
       return 0
     fi
+    if awg_dkms_pending; then   # the box cut its build short: removed all the same (not recorded) — see awg_dkms_give_up
+      awg_dkms_give_up transient; DID_UPDATE=yes
+      note "AmneziaWG: $cand's module build did not finish on this box — removed for now, userspace datapath; tried again on the next update"
+      return 0
+    fi
     note "AmneziaWG: the package upgrade did not go through — tried again on the next update"
     warn "AmneziaWG: the amnezia packages could not be upgraded ($cur → $cand) — tried again on the next update"
     return 0
