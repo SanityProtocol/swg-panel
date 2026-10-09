@@ -461,10 +461,11 @@ healthy answer — but a *wrong path* answers 401 too, so it makes a poor check.
 
 ```bash
 # Node
-journalctl -u podman-swg-node -n 20    # or swg-noded on the native arm
+journalctl -u podman-swg-node -n 20    # native arm: swg-logs noded -n 20
 ```
 
-You are looking for `syncing to https://… (interfaces: …, endpoint …)` and **no** `sync error`
+On the native arm the daemon logs into its own journal (the `swg-node` namespace), so a plain `journalctl -u swg-noded`
+shows only systemd's start and stop lines; `swg-logs` reads swg's journals by source name. You are looking for `syncing to https://… (interfaces: …, endpoint …)` and **no** `sync error`
 lines. `Connection refused` here means the node cannot reach `panelUrl` — check the address, and on
 a master check it is the loopback one from step 5, not the public address.
 
@@ -578,6 +579,13 @@ sudo rm -f /run/systemd/system/swg-relay@.service && sudo systemctl daemon-reloa
 A reboot clears both. The older build writes its own relay template when it wants a relay. After a
 container → native switch, remove the relay containers too (see
 [Switching `delivery`](#switching-delivery-on-a-node-that-already-runs)).
+
+Going back to a build older than 1.8.9 leaves 1.8.9's torrent guard in force — its last policy goes on judging traffic,
+whatever the older build's card says — until a reboot or:
+
+```bash
+sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null
+```
 
 ---
 
@@ -761,6 +769,21 @@ default here anyway: those files are the node's identity.
 ```bash
 sudo rm -rf /var/lib/swg-noded /etc/amnezia/amneziawg /etc/wireguard /etc/swg-agent \
             /opt/swg-wdtt /opt/swg-csqtt /opt/vk-turn-proxy
+# the native arm's journal (its journald stopped first, or it writes the directory again)
+sudo systemctl stop systemd-journald@swg-node.service systemd-journald@swg-node.socket \
+                    systemd-journald-varlink@swg-node.socket 2>/dev/null
+sudo rm -rf /var/log/journal/*.swg-node
+```
+
+**What the kernel keeps until a reboot.** The rebuild stops the daemon, not what it set up: the interfaces (below), swg's
+nft tables (`inet swg_smart`, `swg_p2p`, `swg_reach`, `swg_mech`), its policy-routing rules (prefs 6880, 6890 and the 7000
+ones, with table 7000) and its NAT rules stay in force — and NixOS turns `net.ipv4.ip_forward` back off, so an interface
+you keep stops carrying traffic. A reboot clears all of it; to clear the tables and rules now:
+
+```bash
+for t in swg_smart swg_p2p swg_reach swg_mech; do sudo nft delete table inet "$t" 2>/dev/null; done
+for p in 6880 6890; do sudo ip rule del pref "$p" 2>/dev/null; done
+while sudo ip rule del pref 7000 2>/dev/null; do :; done; sudo ip route flush table 7000
 ```
 
 A container node can leave address-carrying husk interfaces behind — its userspace datapath devices
@@ -792,12 +815,12 @@ subscription vault. There is no other copy. Back it up before you delete it.
 # 1. delete the node in the panel first (see above), then rebuild with both modules gone:
 sudo nixos-rebuild switch --flake /etc/nixos#myhost
 
-# 2. state
+# 2. state (and the native arm's journal — see "Removing a node")
 sudo rm -rf /var/lib/swg-panel /var/lib/swg-noded /etc/swg-panel /etc/swg-agent \
             /etc/swg-secrets /etc/amnezia /etc/wireguard \
             /opt/swg-wdtt /opt/swg-csqtt /opt/vk-turn-proxy
 
-# 3. leftover tunnel devices, if any
+# 3. leftover tunnel devices, if any (swg's nft tables and ip rules stay until a reboot — see "Removing a node")
 for i in $(ip -br link | awk '{print $1}' | grep -E '^(wg|awg|swg_|wdtt|csqtt)'); do
   sudo ip link del "$i"
 done
@@ -1018,7 +1041,7 @@ into every component, so splitting it would put version skew a rebuild away.
 | `libexec/swg-noded/` | `swg-noded`, `swg-sni`, `VERSION` |
 | `libexec/swg-agent/` | `swg-agent` |
 | `libexec/swg-node/` | `node-entrypoint.sh` — the node's bootstrap, shared with the container images |
-| `bin/` | `swg-netctl`, `swg-passwd`, and wrappers for the five programs above |
+| `bin/` | `swg-netctl`, `swg-passwd`, `swg-logs` (reads swg's journals by source name), and wrappers for the five programs above |
 
 Two of the programs resolve files **relative to themselves** — `swg-noded` looks for `VERSION` and
 `swg-sni` beside itself, the panel and `swg-sub` fall back to `VERSION` beside themselves — so each

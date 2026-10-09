@@ -467,10 +467,12 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8088/healthz        # 
 
 ```bash
 # Узел
-journalctl -u podman-swg-node -n 20    # или swg-noded в нативном варианте
+journalctl -u podman-swg-node -n 20    # нативный вариант: swg-logs noded -n 20
 ```
 
-Вы ищете `syncing to https://… (interfaces: …, endpoint …)` и **отсутствие** строк `sync error`.
+В нативном варианте демон пишет в собственный журнал (пространство имён `swg-node`), поэтому обычный
+`journalctl -u swg-noded` показывает только строки systemd о запуске и остановке; `swg-logs` читает журналы swg по имени
+источника. Вы ищете `syncing to https://… (interfaces: …, endpoint …)` и **отсутствие** строк `sync error`.
 `Connection refused` здесь означает, что узел не достучался до `panelUrl` — проверьте адрес, а на
 мастере проверьте, что это loopback-адрес из шага 5, а не публичный.
 
@@ -586,6 +588,13 @@ sudo rm -f /run/systemd/system/swg-relay@.service && sudo systemctl daemon-reloa
 Перезагрузка убирает и то и другое. Старая сборка сама пишет свой шаблон релея, когда релей ей нужен.
 После переключения container → native удалите ещё и контейнеры релея (см.
 [Смена `delivery`](#смена-delivery-на-работающем-узле)).
+
+Возврат на сборку старше 1.8.9 оставляет действовать защиту от торрентов из 1.8.9 — её последняя политика продолжает
+судить трафик, что бы ни показывала карточка старой сборки, — до перезагрузки или до:
+
+```bash
+sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null
+```
 
 ---
 
@@ -774,6 +783,21 @@ sudo nixos-rebuild switch --flake /etc/nixos#myhost
 ```bash
 sudo rm -rf /var/lib/swg-noded /etc/amnezia/amneziawg /etc/wireguard /etc/swg-agent \
             /opt/swg-wdtt /opt/swg-csqtt /opt/vk-turn-proxy
+# журнал нативного варианта (сначала остановите его journald, иначе он снова создаст каталог)
+sudo systemctl stop systemd-journald@swg-node.service systemd-journald@swg-node.socket \
+                    systemd-journald-varlink@swg-node.socket 2>/dev/null
+sudo rm -rf /var/log/journal/*.swg-node
+```
+
+**Что ядро держит до перезагрузки.** Пересборка останавливает демон, но не то, что он настроил: интерфейсы (ниже),
+таблицы nft swg (`inet swg_smart`, `swg_p2p`, `swg_reach`, `swg_mech`), его правила маршрутизации (pref 6880, 6890 и
+правила 7000 с таблицей 7000) и его правила NAT продолжают действовать — а NixOS снова выключает `net.ipv4.ip_forward`,
+так что оставленный интерфейс перестаёт передавать трафик. Перезагрузка убирает всё это; убрать таблицы и правила сразу:
+
+```bash
+for t in swg_smart swg_p2p swg_reach swg_mech; do sudo nft delete table inet "$t" 2>/dev/null; done
+for p in 6880 6890; do sudo ip rule del pref "$p" 2>/dev/null; done
+while sudo ip rule del pref 7000 2>/dev/null; do :; done; sudo ip route flush table 7000
 ```
 
 Контейнерный узел может оставить после себя интерфейсы-пустышки с адресами — его
@@ -805,12 +829,12 @@ sudo rm -rf /var/lib/swg-panel /etc/swg-panel
 # 1. сначала удалите узел в панели (см. выше), затем пересоберите без обоих модулей в конфигурации:
 sudo nixos-rebuild switch --flake /etc/nixos#myhost
 
-# 2. состояние
+# 2. состояние (и журнал нативного варианта — см. «Удаление узла»)
 sudo rm -rf /var/lib/swg-panel /var/lib/swg-noded /etc/swg-panel /etc/swg-agent \
             /etc/swg-secrets /etc/amnezia /etc/wireguard \
             /opt/swg-wdtt /opt/swg-csqtt /opt/vk-turn-proxy
 
-# 3. оставшиеся туннельные устройства, если они есть
+# 3. оставшиеся туннельные устройства, если они есть (таблицы nft и правила ip swg держатся до перезагрузки — см. «Удаление узла»)
 for i in $(ip -br link | awk '{print $1}' | grep -E '^(wg|awg|swg_|wdtt|csqtt)'); do
   sudo ip link del "$i"
 done
@@ -1046,7 +1070,7 @@ iptables-**legacy**. `iptables-nft` это не затрагивает, и по�
 | `libexec/swg-noded/` | `swg-noded`, `swg-sni`, `VERSION` |
 | `libexec/swg-agent/` | `swg-agent` |
 | `libexec/swg-node/` | `node-entrypoint.sh` — bootstrap узла, общий с образами контейнеров |
-| `bin/` | `swg-netctl`, `swg-passwd` и обёртки для пяти программ выше |
+| `bin/` | `swg-netctl`, `swg-passwd`, `swg-logs` (читает журналы swg по имени источника) и обёртки для пяти программ выше |
 
 Две программы ищут файлы **относительно себя** — `swg-noded` ищет рядом с собой `VERSION` и
 `swg-sni`, а панель и `swg-sub` откатываются к `VERSION` рядом с собой, — поэтому каждая программа
