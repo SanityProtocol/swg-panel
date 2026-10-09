@@ -26,6 +26,8 @@
 #       empty one → the module is not unloaded (read as empty, `modprobe -r` destroyed the container's device)
 #  [20] (1.8.9 qualification IN-1) no userspace fallback (amneziawg-go) → nothing upgraded, said: a build that does not
 #       compile here is given up AFTER the old module left the disk, and such a box had no AmneziaWG datapath after a reboot
+#  [22] (1.8.9 qualification, HE-2's twin) a namespace NO process holds — kept by a bind mount (lsns: no PID, its NSFS path),
+#       or mounted only where PID 1 sees it (its mount table, through its root) — is looked into: not unloaded
 #  [21] (1.8.9 qualification IN-15) a build an earlier update left half-configured (a full disk, not a compiler error, so not
 #       given up) is finished — the retry that run promised; the version check alone sees nothing newer and never would
 # The harness runs the extracted functions under `set -euo pipefail` — the 1.8.9 code review found that without it this
@@ -37,6 +39,7 @@
 #      --perturb-nsenter a failed nsenter / lsns read as "nothing there" again; expects RED on [19].
 #      --perturb-fallback the follow upgrades with no userspace fallback again; expects RED on [20].
 #      --perturb-retry   a half-configured amneziawg-dkms is left as it is again; expects RED on [21].
+#      --perturb-bind    PID-less rows skipped and PID 1's mounts not read again; expects RED on [22].
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 FAILS=0; check(){ if [ "$2" = 0 ]; then echo "  PASS $1"; else echo "  FAIL $1 ${3:-}"; FAILS=$((FAILS+1)); fi; }
@@ -66,12 +69,16 @@ fi
 if [ "${1:-}" = "--perturb-fallback" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/  if ! have amneziawg-go; then/  if false; then/')"; _planted "$_b" "$fn" "the userspace-fallback check"
 fi
+if [ "${1:-}" = "--perturb-bind" ]; then
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/elif \[ -n "\$nsfs" \]; then t="\$nsfs"; else echo "?"; return 0; fi/else continue; fi/')"; _planted "$_b" "$fn" "the bind-mounted rows"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#  done < <(awk .*/proc/1/mountinfo 2>/dev/null)#  done < /dev/null#')"; _planted "$_b" "$fn" "PID 1's mounts"
+fi
 if [ "${1:-}" = "--perturb-retry" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/in iF\*|iU\*) if awg_dpkg_recover; then DID_UPDATE=yes; fi ;; esac/in NEVER) ;; esac/')"; _planted "$_b" "$fn" "the half-configured retry"
 fi
 if [ "${1:-}" = "--perturb-nsenter" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#ip -o link show type amneziawg 2>/dev/null)" || { echo "?"; return 0; }#ip -o link show type amneziawg 2>/dev/null)" || out=""#')"; _planted "$_b" "$fn" "nsenter's exit code"
-  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#list="$(lsns -t net -n -o NS,PID 2>/dev/null)" || { echo "?"; return 0; }#list="$(lsns -t net -n -o NS,PID 2>/dev/null)" || list=""#')"; _planted "$_b" "$fn" "lsns's exit code"
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#list="$(lsns -t net -n -r -o NS,PID,NSFS 2>/dev/null)" || { echo "?"; return 0; }#list="$(lsns -t net -n -r -o NS,PID,NSFS 2>/dev/null)" || list=""#')"; _planted "$_b" "$fn" "lsns's exit code"
 fi
 mkdir -p "$T/bin" "$T/sld" "$T/usr-bin"
 stub(){ printf '#!/bin/sh\n%s\n' "$2" > "$T/bin/$1"; chmod +x "$T/bin/$1"; }
@@ -86,7 +93,9 @@ stub lsns '[ -e "$SBX/lsns-fails" ] && exit 1; cat "$SBX/lsns" 2>/dev/null; exit
 stub modprobe 'echo "modprobe $*" >> "$SBX/calls"; if [ "$1" = -r ]; then rm -rf "$SYSMOD"; exit 0; fi; [ -e "$SBX/load-fail" ] && exit 1; mkdir -p "$SYSMOD"; exit 0'
 stub apt-mark 'cat "$SBX/held" 2>/dev/null; exit 0'
 stub amneziawg-go 'exit 0'   # the pinned userspace fallback, as every box the heal could reach has it ([20] hides it)
-stub nsenter '[ -e "$SBX/nsenter-fails" ] && exit 1; n="${1#--net=}"; shift; [ "$(readlink "$n")" = "net:[4026532999]" ] && [ -e "$SBX/ctr-dev" ] && echo "9: awg-ctr: <POINTOPOINT>"; exit 0'
+stub nsenter '[ -e "$SBX/nsenter-fails" ] && exit 1; n="${1#--net=}"; shift; l="$(readlink "$n")" || exit 1
+case "$l" in "net:[4026532999]") f=ctr-dev;; "net:[4026532412]") f=bind-dev;; "net:[4026532413]") f=hidden-dev;; *) f=none;; esac
+[ -e "$SBX/$f" ] && echo "9: awg-ctr: <POINTOPOINT>"; exit 0'
 stub uname 'echo 6.8.0-test'
 stub ip 'case "$*" in "netns list") cat "$SBX/netns" 2>/dev/null;; "-n "*) [ -e "$SBX/ns-dev" ] && echo "7: e0: <POINTOPOINT> mtu 1420";; *type\ amneziawg*) cat "$SBX/kdevs" 2>/dev/null;; esac; exit 0'
 printf '#!/bin/sh\n' > "$T/usr-bin/awg"; chmod +x "$T/usr-bin/awg"
@@ -114,7 +123,13 @@ case_(){   # case_ <name> : a fresh sandbox — 1.0 installed and loaded, 3.1 in
   export SYSMOD="$T/sysmod"; mkdir -p "$SYSMOD" "$T/libmod/6.8.0-test/build"
   rm -rf "$T/proc"; mkdir -p "$T/proc/self/ns" "$T/proc/1/ns" "$T/proc/4242/ns"
   ln -s "net:[4026531840]" "$T/proc/self/ns/net"; ln -s "net:[4026531840]" "$T/proc/1/ns/net"; ln -s "net:[4026532999]" "$T/proc/4242/ns/net"
-  printf '4026531840 1\n4026532999 4242\n' > "$SBX/lsns"
+  # lsns -r: NS PID NSFS — and a namespace NO process holds, kept by a bind mount (no PID, its NSFS path); PID 1 sees that
+  # mount too, and (with "$SBX/hidden-mount") one more that only PID 1's mount table names ([22])
+  rm -rf "$T/run"; mkdir -p "$T/run/ctrns" "$T/proc/1/root$T/run/ctrns" "$T/proc/1/root/run/hidden"
+  ln -s "net:[4026532412]" "$T/run/ctrns/b1"; ln -s "net:[4026532412]" "$T/proc/1/root$T/run/ctrns/b1"
+  ln -s "net:[4026532413]" "$T/proc/1/root/run/hidden/b2"
+  printf '4026531840 1 \n4026532999 4242 \n4026532412  %s\n' "$T/run/ctrns/b1" > "$SBX/lsns"
+  printf '22 1 8:2 / / rw shared:1 - ext4 /dev/sda2 rw\n301 25 0:4 net:[4026532412] %s rw shared:5 - nsfs nsfs rw\n' "$T/run/ctrns/b1" > "$T/proc/1/mountinfo"
 }
 go(){ PATH="$T/bin:$T/usr-bin:/usr/bin:/bin" bash "$T/run.sh" 2>&1; }
 
@@ -235,6 +250,15 @@ check "nothing upgraded — the module that works stays on disk" "$(grep -q 'ins
 check "…said, with the way out, and not a failure" "$(printf '%s' "$out" | grep -q 'WARN AmneziaWG: .* is available, but this box has no userspace fallback (amneziawg-go)' && printf '%s' "$out" | grep -q 'DID_FAIL=no' && echo 0 || echo 1)" "$out"
 case_ c20b; out="$(go)"
 check "CONTROL: with amneziawg-go the newer build is followed" "$(grep -q 'install -y .*--only-upgrade amneziawg-dkms' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+
+echo; echo "[22] a namespace no process holds"
+case_ c22; : > "$SBX/kdevs"; touch "$SBX/bind-dev"; out="$(go)"
+check "a device in a namespace kept by a bind mount (no PID in lsns, its NSFS path) → not unloaded" "$(grep -q 'modprobe -r' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+case_ c22b; : > "$SBX/kdevs"; touch "$SBX/hidden-dev"
+printf '302 25 0:4 net:[4026532413] /run/hidden/b2 rw shared:6 - nsfs nsfs rw\n' >> "$T/proc/1/mountinfo"; out="$(go)"
+check "…and in one only PID 1's mount table names (through PID 1's root) → not unloaded" "$(grep -q 'modprobe -r' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
+case_ c22c; : > "$SBX/kdevs"; printf '302 25 0:4 net:[4026532413] /run/hidden/b2 rw shared:6 - nsfs nsfs rw\n' >> "$T/proc/1/mountinfo"; out="$(go)"
+check "CONTROL: both looked into and empty → reloaded" "$(grep -q 'modprobe -r amneziawg' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
 
 echo; echo "[21] a build an earlier update left half-configured"
 case_ c21; cp "$SBX/cand" "$SBX/inst-amneziawg-dkms"; printf 'iF ' > "$SBX/status"; out="$(go)"

@@ -10,7 +10,9 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
   [3] a device with no unit and no conf → refused naming it, nothing stopped
   [4] a device in another network namespace — named, or a CONTAINER's (seen only through /proc) → refused, nothing stopped;
       a namespace nsenter cannot get into, or lsns failing, is not an empty one → refused (cannot_check), `modprobe -r`
-      never asked (1.8.9 qualification HE-2: read as empty, the container's device went with the unload)
+      never asked (1.8.9 qualification HE-2: read as empty, the container's device went with the unload); a namespace
+      no process holds — kept by a bind mount lsns lists without a PID, or one only PID 1's mount table names — is looked
+      into too (V-AWG: a device in such a namespace was destroyed)
   [5] the swap: every device down BEFORE the unload, back the way it was started (unit / conf / an exit's conf path),
       on the new module
   [6] the module will not unload → every device brought back, "busy"
@@ -28,7 +30,8 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
        the agent after swg-noded restarted is picked up at the next start
 
 Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | timeout | procscan | noscope | key31 | record
-                                                    | churn | pid | latepickup | nsenter-rc | lsns-rc | nofallback   (exit 0 when caught)
+                                                    | churn | pid | latepickup | nsenter-rc | lsns-rc | bindns | hiddenns | nofallback
+                                                    (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
@@ -51,7 +54,11 @@ PLANTS = {
                    "                if False:\n                    _AWG_LOAD[\"v\"] = _awg_load_result(rec, n, pid)\n                    _AWG_GEN"),
     "pid": ("[10]", "noded", "        if str(st.get(\"id\") or st.get(\"n\") or \"\") == pid:", "        if str(st.get(\"n\") or \"\") == str(n):"),
     "nsenter-rc": ("[4]", "agent", "        if p.returncode != 0:\n            return None\n", ""),
-    "lsns-rc": ("[4]", "agent", "    if ls.returncode != 0:\n        return None\n", ""),
+    "lsns-rc": ("[4]", "agent", "rows = json.loads(ls.stdout).get(\"namespaces\") if ls.returncode == 0 else None",
+                "rows = json.loads(ls.stdout).get(\"namespaces\") if ls.stdout.strip() else []"),
+    "bindns": ("[4]", "agent", "        elif nsfs:\n            look.append((ns, str(nsfs).split(\"\\n\")[0], \"mounted at %s\" % str(nsfs).split(\"\\n\")[0]))\n"
+                                "        else:\n            return None\n", "        else:\n            continue\n"),
+    "hiddenns": ("[4]", "agent", "    for ln in hosts:                                  # PID 1's own", "    for ln in []:                                  # PID 1's own"),
     "nofallback": ("[11]", "agent", "    if not _awg_fallback():\n        raise AgentError(\"no_fallback\"", "    if False:\n        raise AgentError(\"no_fallback\""),
 }
 FAILS, SECTION = [], [""]
@@ -91,8 +98,11 @@ N = load(paths["noded"], "noded_load")
 class Sys:
     """A fake box: devices, a module on disk and a loaded one, units — and the log of what was asked, in order."""
     def __init__(self, devs, loaded="1.0.20251009", disk="3.1.20260812", tools="3.1", netns=None, fail_rm=False, fail_load=False, ctr_dev=False,
-                 nsenter_rc=0, lsns_rc=0):
+                 nsenter_rc=0, lsns_rc=0, bind_dev=False, hidden_dev=False):
         self.nsenter_rc, self.lsns_rc = nsenter_rc, lsns_rc    # ≠ 0: that tool fails (prints nothing), whatever the box holds
+        # namespaces no process holds: one kept by a bind mount this scan's mount namespace sees (lsns lists it, no PID, its
+        # NSFS path), and one mounted only where PID 1 sees it (not in lsns; PID 1's mountinfo, reached through PID 1's root)
+        self.bind_dev, self.hidden_dev = bind_dev, hidden_dev
         self.root = tempfile.mkdtemp(dir=TMP)
         os.makedirs(self.root + "/class/net"); os.makedirs(self.root + "/module/amneziawg")
         open(self.root + "/module/amneziawg/version", "w").write(loaded)
@@ -102,6 +112,16 @@ class Sys:
         self.ctr_dev, self.proc = ctr_dev, os.path.join(self.root, "proc")
         for pid, ns in (("self", "net:[4026531840]"), ("1", "net:[4026531840]"), ("4242", "net:[4026532999]")):
             os.makedirs(os.path.join(self.proc, pid, "ns")); os.symlink(ns, os.path.join(self.proc, pid, "ns", "net"))
+        self.bindpath = os.path.join(self.root, "run", "ctrns", "b1")            # an nsfs bind mount: a link to its namespace
+        os.makedirs(os.path.dirname(self.bindpath)); os.symlink("net:[4026532412]", self.bindpath)
+        _seen_by_1 = os.path.join(self.proc, "1", "root") + self.bindpath         # PID 1 sees that same mount, at that path
+        os.makedirs(os.path.dirname(_seen_by_1)); os.symlink("net:[4026532412]", _seen_by_1)
+        os.makedirs(os.path.join(self.proc, "1", "root", "run", "hidden"))        # one only PID 1's mount table names
+        os.symlink("net:[4026532413]", os.path.join(self.proc, "1", "root", "run", "hidden", "b2"))
+        open(os.path.join(self.proc, "1", "mountinfo"), "w").write(
+            "22 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw\n"
+            "301 25 0:4 net:[4026532412] %s rw,nosuid shared:5 - nsfs nsfs rw\n" % self.bindpath
+            + ("302 25 0:4 net:[4026532413] /run/hidden/b2 rw,nosuid shared:6 - nsfs nsfs rw\n" if hidden_dev else ""))
         self.awg = os.path.join(self.root, "awg")
         open(self.awg, "wb").write(b"\x7fELF ... " + {"3.1": b"HeaderProtectionKey RandomTrailers", "3.0": b"HeaderProtectionKey"}.get(tools, b"Jc Jmin"))
 
@@ -128,11 +148,18 @@ class Sys:
         if a[:1] == ["ip"] and "netns" in a and "list" in a:
             out = "".join(ns + "\n" for ns in self.netns)
         elif a[:1] == ["lsns"]:
-            out, rc = ("4026531840 1\n4026532999 4242\n", 0) if not self.lsns_rc else ("", self.lsns_rc)
+            rows = [{"ns": 4026531840, "pid": 1, "nsfs": None}, {"ns": 4026532999, "pid": 4242, "nsfs": None},
+                    {"ns": 4026532412, "pid": None, "nsfs": self.bindpath}]
+            out, rc = (json.dumps({"namespaces": rows}), 0) if not self.lsns_rc else ("", self.lsns_rc)
         elif a[:1] == ["nsenter"]:
+            try:
+                ns = os.readlink(a[1].split("=", 1)[1])
+            except OSError:
+                ns, rc = "", 1                           # nsenter: cannot open the namespace file
             if self.nsenter_rc:
                 rc = self.nsenter_rc                     # e.g. the process lsns named exited; others keep the namespace alive
-            elif os.readlink(a[1].split("=", 1)[1]) == "net:[4026532999]" and self.ctr_dev:
+            elif (ns == "net:[4026532999]" and self.ctr_dev) or (ns == "net:[4026532412]" and self.bind_dev) \
+                    or (ns == "net:[4026532413]" and self.hidden_dev):
                 out = "9: awg-ctr: <POINTOPOINT>\n"
         elif a[:2] == ["ip", "-n"]:
             out = "".join("%d: %s: <POINTOPOINT>\n" % (i, d) for i, d in enumerate(self.netns.get(a[2], []), 7))
@@ -210,6 +237,12 @@ check("…a container's namespace nsenter cannot get into (exit 1, nothing print
 b = Sys({"awg0": "unit"}, ctr_dev=True, lsns_rc=1); ok, r = agent_on(b)
 check("…nor is a scan whose lsns failed → refused (cannot_check), `modprobe -r` never asked",
       not ok and r == "cannot_check" and not any("stop" in c or c.startswith("modprobe") for c in b.calls), (r, b.calls))
+b = Sys({"awg0": "unit"}, bind_dev=True); ok, r = agent_on(b)
+check("a device in a namespace NO PROCESS holds, kept by a bind mount (lsns: no PID, its NSFS path) → refused, nothing stopped",
+      not ok and r == "other_netns" and not any("stop" in c or c.startswith("modprobe") for c in b.calls), (r, b.calls))
+b = Sys({"awg0": "unit"}, hidden_dev=True); ok, r = agent_on(b)
+check("…and in one mounted only where PID 1 sees it (not in lsns: PID 1's mount table, through its root) → refused",
+      not ok and r == "other_netns" and not any("stop" in c or c.startswith("modprobe") for c in b.calls), (r, b.calls))
 
 SECTION[0] = "[5]"
 print("\n[5] the swap")
