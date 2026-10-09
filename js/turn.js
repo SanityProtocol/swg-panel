@@ -2084,7 +2084,7 @@ export function WdttManageSheet({ node, w: w0 }) {
   const [pin, setPin] = useState(pinCur);   // Listen on ("" = Auto)
   const lst = useListenState(node, ipPickerVal(hostSel, hostCustom), lhost, w.bind, pin);
   const [port, setPort] = useState(lport || "");
-  const [msg, setMsg] = useState(null);
+  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);   // sheetSend holds Save while it sends (q189 F22)
   // RAW-IP mode — a SECOND listener on the same server, capability-gated (qWDTT + ildarmaga) and off unless
   // the operator asks for it. One per listen ADDRESS across ALL forks: turning it on here takes it from
   // whichever instance held it, because the app resolves one raw port for every server (see rawOwnerOn).
@@ -2167,7 +2167,7 @@ export function WdttManageSheet({ node, w: w0 }) {
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${WdttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", T("Start service"), T("Bring this WDTT server up on the node"))
           : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this WDTT server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this WDTT server on the node"))}<//>`}
-      <//>`, onCancel: closeModal, disabled: !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
+      <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
     ${awaiting ? html`<div class="notice warn"><${Ic} i="shield"/><span>${Trich("This server was wiped. Its identity (server keypair + owner password) is *escrowed in your Encryption Vault*. *Restore* to bring it back with its original identity — no user re-imports.")}
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-primary" disabled=${restoring || recreating} onClick=${() => wdttRestoreIdentity(node, iface)}><${Ic} i="shield"/> ${restoring ? T("Restoring…") : T("Restore server identity")}</button>
@@ -2531,7 +2531,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const [pin, setPin] = useState(pinCur);   // Listen on ("" = Auto)
   const lst = useListenState(node, ipPickerVal(hostSel, hostCustom), lhost, c.bind, pin);   // see WdttManageSheet
   const [port, setPort] = useState(lport || "");
-  const [msg, setMsg] = useState(null);
+  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);   // sheetSend holds Save while it sends (q189 F22)
   const newListen = (ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0") + ":" + (port.trim() || "46000");
   const endpointDirty = !!oldListen && newListen !== oldListen;
   const titleDirty = title.trim() !== (cfg.title || "").trim();
@@ -2576,7 +2576,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
         <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${CsqttDeleteSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
         ${notup ? control("start", "play", T("Start service"), T("Bring this csqtt server up on the node"))
           : html`<${Fragment}>${control("stop", "stop", T("Stop service"), T("Take this csqtt server down (stays down until started)"))}${control("restart", "refresh", T("Restart service"), T("Bounce this csqtt server on the node"))}<//>`}
-      <//>`, onCancel: closeModal, disabled: !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
+      <//>`, onCancel: closeModal, disabled: busy || !anyDirty || !!wperr, onAction: save, action: T("Save") })}>
     <${IfaceThroughput} node=${node} iface=${iface}/>
     <div class="iface-intro" style="margin-top:10px"><div>${T("Changing the endpoint or port rewrites the unit's ExecStart on the node and restarts it — every user's link is re-issued.")}</div></div>
     <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${iface} autocomplete="off"/></div>
