@@ -6,7 +6,8 @@
  *     bare-metal turn / relay / WDTT / csqtt unit not restarted since the update still writes there, and in Docker the node
  *     container's own log keeps every earlier line (Debug's SNI host names included) until it is recreated, while a turn
  *     container started before Off keeps logging client addresses. The hint now says what Off deletes and what it cannot, for
- *     the kinds of server the fleet has; the Save confirm line names swg's logs.
+ *     the kinds of server the fleet has; the Save confirm line names swg's logs. On NixOS's container arm the node container logs to
+ *     the host's system journal (oci-containers' journald driver), so its own sentence says that, not Docker's (round 2).
  * [2] V-FEAT-B F-2 — "Block everywhere" (and a route through an exit or a node) said torrents from "programs running on it" are
  *     dropped / blocked. Measured: a client on the server itself with encryption forced got 8 peers and 2.3 MB in 60 s with no
  *     counter moving, and µTP on a flow past its 4th packet got through. Both hints now say a program on the server is stopped
@@ -27,7 +28,7 @@
  *
  * The real js/i18n.js with the real Russian catalog; the real modules (screen-settings, screen-nodes, ui, iface, mimic).
  * Run: node tests/spa_screen_claims_selftest.mjs
- *      --perturb <offhint | confirm | p2pblock | p2proute | tag | bubble | title | fewsec | artifactname | subhook | p2pold>   one fix undone → RED
+ *      --perturb <offhint | nixosoff | confirm | p2pblock | p2proute | games | tag | bubble | title | fewsec | artifactname | subhook | p2pold>   one fix undone → RED
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -37,8 +38,10 @@ import { ROOT, check, done } from "./spa_env.mjs";
 const MODE = process.argv.includes("--perturb") ? process.argv[process.argv.indexOf("--perturb") + 1] : null;
 const OLD_OFF = "Nothing is stored, and the logs kept so far are deleted. Failure details go blank: when something breaks, the panel can't say why.";
 const PLANTS = {   // file → [anchor, what it was before the fix]
-  offhint: ["js/screen-settings.js", 'export const logOffHint = ({ bare, docker }) => [',
-            'export const logOffHint = () => T(' + JSON.stringify(OLD_OFF) + '); const _wasOffHint = ({ bare, docker }) => ['],
+  offhint: ["js/screen-settings.js", 'export const logOffHint = ({ bare, docker, nixos }) => [',
+            'export const logOffHint = () => T(' + JSON.stringify(OLD_OFF) + '); const _wasOffHint = ({ bare, docker, nixos }) => ['],
+  nixosoff: ["js/screen-settings.js", 'docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker" && n.platform !== "nixos"),\n                nixos: (Store.nodes || []).some(n => n.kind === "docker" && n.platform === "nixos") })}</div>`',
+             'docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker") })}</div>`'],
   confirm: ["js/screen-settings.js", 'T("Logging — off: swg\'s stored logs are deleted")', 'T("Logging — off: the stored logs are deleted")'],
   p2pblock: ["js/screen-settings.js", 'block: T("Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web, calls and games are not affected."),',
              'block: T("Torrent traffic is dropped on every way out of this server: its interfaces, traffic other nodes send out through it, and programs running on it. Web, calls and games are not affected."),'],
@@ -103,6 +106,7 @@ const K = {
   head: "swg's own logs are deleted, and nothing more is kept in them. A server's system journal keeps what it already holds — the kernel's P2P guard lines, with users' addresses, among them.",
   bare: "On bare metal, a turn proxy, relay or WDTT / csqtt server not restarted since the update still writes there.",
   docker: "In Docker, each container's own log keeps its lines until the container is recreated; a turn container started before Off goes on logging until its next start.",
+  nixos: "On NixOS, a node's container logs to the host's system journal, which keeps those lines; a turn container started before Off goes on logging until its next start.",
   tail: "Failure details go blank: when something breaks, the panel can't say why.",
 };
 for (const k of Object.values(K)) check("[1] RU line for “" + k.slice(0, 60) + "…”", ruHas(k), k);
@@ -115,6 +119,11 @@ check("[1] Docker only: what goes, the system journal, each container's own log 
       offFor({ bare: false, docker: true }) === want(["head", "docker", "tail"]), offFor({ bare: false, docker: true }));
 check("[1] both kinds: all four, in that order", offFor({ bare: true, docker: true }) === want(["head", "bare", "docker", "tail"]),
       offFor({ bare: true, docker: true }));
+check("[1] a NixOS container node: the host journal keeps its lines — «В NixOS контейнер ноды пишет в системный журнал хоста» — not Docker's sentence",
+      offFor({ bare: false, docker: false, nixos: true }) === want(["head", "nixos", "tail"])
+      && /В NixOS контейнер ноды пишет в системный журнал хоста, и тот хранит эти строки/.test(offFor({ nixos: true })),
+      offFor({ bare: false, docker: false, nixos: true }));
+check("[1] …and all three arms side by side, in order", offFor({ bare: true, docker: true, nixos: true }) === want(["head", "bare", "docker", "nixos", "tail"]), "");
 check("[1] …in Russian: «Собственные логи swg удаляются», «Системный журнал сервера хранит то, что в нём уже есть», «В Docker»",
       /^Собственные логи swg удаляются/.test(offFor({ bare: true, docker: true })) && /Системный журнал сервера хранит то, что в нём уже есть/.test(offFor({ bare: true, docker: true }))
       && /В Docker собственный лог каждого контейнера/.test(offFor({ bare: true, docker: true })), offFor({ bare: true, docker: true }));
@@ -124,7 +133,8 @@ check("[1] the old claim is gone from every screen and from the catalog (\"the l
 const SET = JS["screen-settings.js"];
 check("[1] the card asks for the hint with the fleet's kinds: the panel's own (log_panel.docker) and every node's",
       SET.includes("${logOffHint({") && SET.includes('bare: !(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind !== "docker")')
-      && SET.includes('docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker")'), "");
+      && SET.includes('docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker" && n.platform !== "nixos"),')
+      && SET.includes('nixos: (Store.nodes || []).some(n => n.kind === "docker" && n.platform === "nixos") })}'), "");
 check("[1] the Save confirm line names swg's logs, in both languages",
       SET.includes('T("Logging — off: swg\'s stored logs are deleted")') && !SET.includes('"Logging — off: the stored logs are deleted"')
       && T("Logging — off: swg's stored logs are deleted") === "Логирование — выкл: сохранённые логи swg удаляются",
