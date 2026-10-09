@@ -21,7 +21,8 @@ through REAL panel processes (temp state, scratch port, no auth; the nodes are p
     [6] bless-on-first-sight marks a conf missing a 2.0 key `awg_exact`; the meta of an `awg_exact` record is the record
         alone, and carries the flag. q189 PR-3: the AmneziaWG 3.1 switch of such an adopted 1.x conf (no S3/S4) draws
         S3 and S4 — header protection needs all four, so they are never "none" there (1.8.8 drew them; 94ba204's bless
-        made the switch refuse "S3, S4 cannot be none") — while its I1–I5 omissions stay
+        made the switch refuse "S3, S4 cannot be none") — while its I1–I5 omissions stay; but an S the operator TYPES as none
+        in the same Save as the switch is refused, naming it (header protection needs S1–S4) — never drawn over in silence
     [7] templates store "-" as written, and sanitize_awg_params never lets it through
 
 Run: python3 tests/awg_omit_panel_selftest.py           (0 = pass)
@@ -29,6 +30,7 @@ Run: python3 tests/awg_omit_panel_selftest.py           (0 = pass)
      --perturb whole    no report under the record            → RED in [2]
      --perturb wire     the sync never sends exact            → RED in [4]
      --perturb s34none  the 3.1 switch omits S1–S4 an exact record lacks  → RED in [6]
+     --perturb snone    a typed "-" on an S in the switch's own Save is drawn over in silence  → RED in [6]
 """
 import json, os, re, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -39,6 +41,8 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 BASE = os.environ.get("SWG_OMIT_BASE") or "cba8e22"
 
 PLANTS = {
+    "snone": ("[6]", "                if _s_none:\n                    return 400, {\"ok\": False, **perr(\"{v1}: header protection needs S1",
+              "                if False:\n                    return 400, {\"ok\": False, **perr(\"{v1}: header protection needs S1"),
     "merge": ("[1]", "                    _m = {**_rec_u, **clean}\n                    _m = {k: _m[k] for k in AWG_FIELDS if k in _m}\n",
               "                    _m = dict(clean)\n"),
     "whole": ("[2]", "                        _rec_u = {**{k: str(v) for k, v in _ra_u.items() if k not in AWG3_FIELDS or _was3}, **_rec_u}\n",
@@ -426,6 +430,10 @@ try:
         p.sync("nb", {"wg7": dict(OLD_AWG)})
         o = p.ov("nb", "wg7")
         check("a take-over's conf without S3/S4/I is blessed WHOLE (awg_exact)", o.get("awg_exact") is True and o.get("awg_params") == OLD_AWG, o)
+        code0, r0 = p.req("/api/iface/update", {"node": "nb", "iface": "wg7", "awg_gen": "3.1", "awg_params": {"S3": "-"}})
+        check("PR-3's follow-up: an S typed as none in the same Save as the switch is refused, naming it — never drawn over",
+              code0 == 400 and "S3" in (r0.get("error") or "") and "header protection" in (r0.get("error") or "")
+              and not (p.ov("nb", "wg7").get("awg_params") or {}).get("HeaderProtectionKey"), (code0, r0))
         code, r = p.req("/api/iface/update", {"node": "nb", "iface": "wg7", "awg_gen": "3.1"})
         a = p.ov("nb", "wg7").get("awg_params") or {}
         check("PR-3: its AmneziaWG 3.1 switch is taken — S3 and S4 drawn (12 or more), its own Jc…S2/H kept, I1–I5 still out",
