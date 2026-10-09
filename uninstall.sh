@@ -621,21 +621,61 @@ _node_dropins_away(){ local d="$SD/swg-noded.service.d" mine=""
   [ "${KEEP_OWN_DROPINS:-no}" = yes ] && mine="$(ls -A "$d" 2>/dev/null | grep -vxE '10-swg-reach-sweep.conf|swg-ns.conf' | tr '\n' ' ' || true)"
   if [ -n "$mine" ]; then rmrf "$d/10-swg-reach-sweep.conf" "$d/swg-ns.conf"; info "  Kept your own drop-in(s) for the node — $d: ${mine% } (a re-install picks them up)"
   else rmrf "$d"; fi; }
-# swg's own journal (docs/LOGS-PLAN.md §2, §18): the namespace drop-ins (ours, under /etc; swg-noded's, beside the units it
-# writes — /etc, or /run where units cannot persist), the size file under /run and the stored lines; swg-logs goes with
-# the last of the two. Its journald is NOT stopped: a unit still running in the namespace (a turn proxy kept by this
-# run) would lose its log stream, and a namespace journald ends by itself once its last client has. TWIN of lib/common.sh's
-# SWG_LOG_NS_DROPIN (this file does not source it).
+# swg's own journal (docs/LOGS-PLAN.md §2, §18): the namespace drop-ins of the units this component removes (ours, under
+# /etc; swg-noded's, beside the units it writes — /etc, or /run where units cannot persist) and the size file under /run;
+# swg-logs goes with the last of the two. Its journald is NOT stopped and its stored lines stay HERE: a unit still running
+# in the namespace (a turn proxy kept by this run) would lose its log stream, and kept data keeps them — rm_log_journals,
+# at the end of the run, takes them once nothing of swg's is left. TWIN of lib/common.sh's SWG_LOG_NS_DROPIN (this file
+# does not source it).
 rm_log_ns(){   # <namespace> <unit or unit prefix>...
-  local ns="$1" u mid; shift
+  local ns="$1" u; shift
   for u in "$@"; do
     rmrf "$SD/$u.d/swg-ns.conf" "/run/systemd/system/$u.d/swg-ns.conf" "/run/systemd/system/$u.d/swg-log.conf"   # + the level's
     rmdir_if_empty "$SD/$u.d"; rmdir_if_empty "/run/systemd/system/$u.d"
   done
   rmrf "/run/systemd/journald@$ns.conf.d"
-  mid="$(cat /etc/machine-id 2>/dev/null || true)"
-  [ -n "$mid" ] && rmrf "/var/log/journal/$mid.$ns" "/run/log/journal/$mid.$ns"
   { [ -e "$SD/swg-noded.service" ] || [ -e "$SD/swg-panel-server.service" ]; } || rmrf /usr/local/bin/swg-logs
+  return 0
+}
+# …and at the END of the run, once NOTHING of swg's is left on the box (1.8.9 qualification L8-a, L8-c): every swg-ns /
+# swg-log / swg-journal drop-in left anywhere (the Docker removal path never ran rm_log_ns, and a converted box carries the
+# other method's), empty swg drop-in dirs, swg-logs. The namespaces — swg's whole log history, never rotated again once no
+# journald@swg-* runs — go only on a FULL uninstall: their journald is stopped first, its sockets with it (the next line a
+# straggler wrote would start it again, and with it the directory), then the stored lines and their journald@ config.
+# Kept data (the panel's, or Docker's data dir: the box comes back as itself) keeps the journals, and the summary says so.
+# Anything of swg's still here (a kept panel, node, turn proxy, WDTT/csqtt server, relay or container) logs into them:
+# nothing is touched then. The box's MAIN journal never is — only <machine-id>.swg-panel / .swg-node.
+_swg_left(){ local f
+  if $DRYRUN; then [ "${#DID_KEEP[@]}" -gt 0 ]; return; fi   # a dry run removed nothing: judged by its answers
+  for f in "$SD"/swg-panel-server.service "$SD"/swg-noded.service "$SD"/swg-sub.service "$SD"/swg-netctl*.service \
+           "$SD"/swg-update.service "$SD"/swg-relay@.service "$SD"/vk-turn-proxy-*.service "$SD"/swg-wdtt-*.service "$SD"/swg-csqtt-*.service; do
+    [ -e "$f" ] && return 0; done
+  docker_running swg-panel || docker_running swg-node; }
+_data_kept(){ [ "${KEEP_OWN_DROPINS:-no}" = yes ] || [ "${DOCKER_DATA_DEL:-}" = no ] || [ "${DOCKER_KEEP_CONFS:-}" = yes ] && return 0
+  $DRYRUN && return 1
+  [ -d /var/lib/swg-panel ] || [ -d /etc/swg-panel ] || [ -d "$DOCKER_DIR/data" ]; }
+rm_log_journals(){ local f d ns u mid had=""
+  _swg_left && return 0
+  for f in "$SD"/*.d/swg-ns.conf "$SD"/*.d/swg-log.conf "$SD"/*.d/swg-journal.conf \
+           /run/systemd/system/*.d/swg-ns.conf /run/systemd/system/*.d/swg-log.conf /run/systemd/system/*.d/swg-journal.conf; do
+    [ -e "$f" ] || continue; rmrf "$f"; [ -z "$(ls -A "${f%/*}" 2>/dev/null)" ] && run rmdir "${f%/*}"; done
+  for d in "$SD"/swg-*.d "$SD"/vk-turn-proxy-*.d; do [ -d "$d" ] && [ -z "$(ls -A "$d" 2>/dev/null)" ] && run rmdir "$d"; done
+  rmrf /usr/local/bin/swg-logs
+  mid="$(cat /etc/machine-id 2>/dev/null || true)"
+  for ns in swg-panel swg-node; do
+    [ -n "$mid" ] && { [ -e "/var/log/journal/$mid.$ns" ] || [ -e "/run/log/journal/$mid.$ns" ]; } && had="${had:+$had, }$ns"; done
+  if _data_kept; then
+    [ -n "$had" ] && DID_KEEP+=("swg's own journals ($had) — kept with the data (read: journalctl --namespace=<name>)")
+  else
+    for ns in swg-panel swg-node; do
+      u="$(systemctl list-units --all --plain --no-legend "systemd-journald@$ns.*" "systemd-journald-varlink@$ns.*" 2>/dev/null | awk '{print $1}')"
+      [ -n "$u" ] && { run systemctl stop $u 2>/dev/null || true; }   # loaded → stopped, sockets with it
+      rmrf "/run/systemd/journald@$ns.conf.d" "/etc/systemd/journald@$ns.conf" "/etc/systemd/journald@$ns.conf.d"
+      [ -n "$mid" ] && rmrf "/var/log/journal/$mid.$ns" "/run/log/journal/$mid.$ns"
+    done
+    [ -n "$had" ] && DID_REMOVE+=("swg's own journals ($had) — the box's main journal untouched")
+  fi
+  run systemctl daemon-reload 2>/dev/null || true
   return 0
 }
 rm_node(){
@@ -1677,6 +1717,7 @@ if [ -n "${ADOPTED_CTRS:-}" ] && command -v docker >/dev/null 2>&1; then
 fi
 
 unpark_kept_panel
+rm_log_journals   # swg's own journals + every log drop-in, once nothing of swg's is left (see there)
 # Recovery archives from earlier converts/uninstalls (.converted-* / .uninstalled-*). They are OURS, but they are
 # deliberately-kept state — a node token plus interface private keys — and the installer offers them as a recovery
 # list, so they are never deleted without being asked. Default NO; a preset ARCHIVES_DEL=y covers unattended wipes.
