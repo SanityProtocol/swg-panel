@@ -189,7 +189,10 @@ in
     # $-brace is INTERPOLATED — this comment cost a run). Asking for the wrong unit returns
     # "could not be found", which reads exactly like a module that failed to define anything.
     print(node1.succeed("systemctl status swg-noded.service --no-pager -l || true"))
-    print(node1.succeed("journalctl -u swg-noded.service --no-pager | tail -40 || true"))
+    # swg-noded logs into the `swg-node` journal namespace (node.nix LogNamespace, 1.8.9): `--namespace=+swg-node` reads it
+    # merged with the main journal, where PID 1's start/stop lines are. A plain `-u` sees only those, so every read below
+    # would come back empty — and the critical-invariant subtest would never run (q189 DN-4).
+    print(node1.succeed("journalctl --namespace=+swg-node -u swg-noded.service --no-pager | tail -40 || true"))
     print(node1.succeed("cat /var/lib/swg-test/node.env || echo '(no env file — the tmpfiles rule did not land)'"))
 
     # ⚠️ THE CONTROL FOR EVERYTHING BELOW, and it costs nothing: the node has been running since
@@ -248,7 +251,7 @@ in
                 {k: seen.get(k) for k in ("id", "name", "status", "last_seen", "kind", "platform",
                                           "declarative", "peer_count", "hostname")}, indent=2)
                   if seen else "(the panel has no entry with this id at all)")
-            print(node1.succeed("journalctl -u swg-noded.service --no-pager | tail -60 || true"))
+            print(node1.succeed("journalctl --namespace=+swg-node -u swg-noded.service --no-pager | tail -60 || true"))
 
         ok("node-enrolled", "online after presenting the minted token")
         print(panel.succeed("cat /var/lib/swg-panel/nodes.json"))
@@ -293,11 +296,11 @@ in
         # Aliveness FIRST: absence of rc=127 is equally true of a daemon that never called host_sh,
         # which is precisely how this bug survived two probes. Prove the call path was reached.
         node1.wait_until_succeeds(
-            "journalctl -u swg-noded.service --no-pager | grep -qE 'wdtt|host_sh'", timeout=90)
+            "journalctl --namespace=+swg-node -u swg-noded.service --no-pager | grep -qE 'wdtt|host_sh'", timeout=90)
         # NOT `log` — the driver binds that name to its own AbstractLogger, and shadowing it is a
         # type error rather than a runtime surprise (the driver type-checks testScript, which is the
         # only reason this was a 12-second failure instead of a confusing one).
-        journal = node1.succeed("journalctl -u swg-noded.service --no-pager")
+        journal = node1.succeed("journalctl --namespace=+swg-node -u swg-noded.service --no-pager")
         bad = [ln for ln in journal.splitlines()
                if "host_sh rc=127" in ln or "No such file or directory: 'sh'" in ln]
         assert not bad, "host_sh has no shell on this node:\n" + "\n".join(bad[:5])
@@ -333,7 +336,7 @@ in
         # failed a number of times rather than merely not having got round to it yet.
         time.sleep(45)
         tries = node1.succeed(
-            "journalctl -u swg-noded.service --since '-45s' --no-pager | grep -ciE 'refused|error|failed|unreachable' || true").strip()
+            "journalctl --namespace=+swg-node -u swg-noded.service --since '-45s' --no-pager | grep -ciE 'refused|error|failed|unreachable' || true").strip()
         print(f"node logged {tries} failure-ish lines while the panel was down")
 
         still = node1.succeed(f"PATH={npath} awg show awg0 peers")
