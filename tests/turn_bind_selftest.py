@@ -26,9 +26,13 @@ panel gave stays what clients dial — in the node's record, and for a vk-turn-p
   [9] heal_turn_binds: a vk-turn-proxy env with an unbindable host (an older build, an installer, convert.sh) is
       re-rendered and restarted once per run; a carried Listen on is applied; a working or stopped one is left alone
   [10] every bash reader of turn.env takes SWG_DIAL before SWG_LISTEN (the bind), or a re-install / convert loses the host
+  [11] (1.8.9 qualification IN-3) the LIVE bare → Docker convert — install-docker.sh's migrate_baremetal_turns +
+       install_turn_binary, driven on fake units and turn.env files: the docker record keeps the host clients dial (a DDNS
+       name not on the box) and the Listen on as bind_ip; an older env and a legacy unit as before
 
 Run: python3 tests/turn_bind_selftest.py         (0 = pass)
      --perturb   turn_bind hands the host on unchanged again — expects RED in [1]–[9].
+     --perturb-docker   install-docker.sh reads SWG_LISTEN alone and drops SWG_PIN again — expects RED in [10] and [11].
 """
 import os, socket, sys, types
 
@@ -36,7 +40,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv[1:]
+PERTURB_DOCKER = "--perturb-docker" in sys.argv[1:]
 ANCHOR = '    mine = _local_v4()\n    if mine is None:\n        return s\n'
+SRCS = {f: open(os.path.join(ROOT, f), encoding="utf-8").read() for f in ("install-node.sh", "install-host.sh", "convert.sh", "install-docker.sh")}
+if PERTURB_DOCKER:   # the convert as it shipped: the bind read as the address clients dial, the pin never read
+    _dial = """lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" | sed -n 1p)"; [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)\""""
+    _pin = """pin="$(sed -n 's/^SWG_PIN=//p' "$envf" | sed -n 1p)\""""
+    assert SRCS["install-docker.sh"].count(_dial) == 2 and SRCS["install-docker.sh"].count(_pin) == 1, \
+        "perturbation anchors missing — would FALSE-PASS"
+    SRCS["install-docker.sh"] = SRCS["install-docker.sh"].replace(_dial, """lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)\"""").replace(_pin, 'pin=""')
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -247,15 +259,61 @@ check("once per run: a second sync does nothing", len(CMDS) == n, CMDS[n:])
 N._tp_from_unit = _orig_tp
 
 print("\n[10] every bash reader of turn.env takes the dialled host (SWG_DIAL) before the bind")
-for f in ("install-node.sh", "install-host.sh", "convert.sh"):
-    lines = open(os.path.join(ROOT, f), encoding="utf-8").read().splitlines()
+for f in ("install-node.sh", "install-host.sh", "convert.sh", "install-docker.sh"):
+    lines = SRCS[f].splitlines()
     bad = [i + 1 for i, l in enumerate(lines) if "s/^SWG_LISTEN=//p" in l
            and not any("s/^SWG_DIAL=//p" in x for x in lines[max(0, i - 2):i + 1])]
     check("%s: no reader takes SWG_LISTEN alone" % f, not bad, bad)
 
+print("\n[11] the LIVE bare → Docker convert (install-docker.sh migrate_baremetal_turns, driven) keeps what clients dial and "
+      "the Listen on (1.8.9 qualification IN-3)")
+import json as _json, shutil as _sh, subprocess as _sp, tempfile as _tf
+_D = SRCS["install-docker.sh"]
+_end = '(starts as a container on first run)"; }\n'
+_a = _D.index("\ninstall_turn_binary(){") + 1; _b = _D.index(_end, _a) + len(_end)
+_c = _D.index("\nmigrate_baremetal_turns(){") + 1; _d = _D.index("\n}\n", _c) + 3
+_T = _tf.mkdtemp(prefix="turn-convert-")
+_fn = (_D[_a:_b] + _D[_c:_d]).replace("/etc/systemd/system/", _T + "/sys/").replace("/opt/vk-turn-proxy/", _T + "/opt/vk-turn-proxy/")
+_UNIT = ("[Unit]\nDescription=vk-turn-proxy (cacggghp/vk-turn-proxy) — x → 127.0.0.1:51820\n\n[Service]\n"
+         "EnvironmentFile=-/opt/vk-turn-proxy/%s/turn.env\nExecStart=/opt/vk-turn-proxy/%s/server -listen ${SWG_LISTEN} -connect ${SWG_CONNECT} $SWG_PARAMS\n")
+_ENVS = {   # as swg-noded's _turn_env_text writes them ([2], [7])
+    "anton48-56000": "SWG_LISTEN=0.0.0.0:56000\nSWG_DIAL=%s:56000\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=-wrap-srtp -wrap-key aa11\n" % DDNS,
+    "anton48-56001": "SWG_LISTEN=192.168.1.50:56001\nSWG_DIAL=203.0.113.7:56001\nSWG_PIN=192.168.1.50\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=-wrap-srtp -wrap-key bb22\n",
+    "anton48-56002": "SWG_LISTEN=198.51.100.9:56002\nSWG_CONNECT=127.0.0.1:51820\nSWG_PARAMS=\n",          # an older file: no DIAL, no PIN
+}
+os.makedirs(_T + "/sys")
+for _i, _e in _ENVS.items():
+    os.makedirs(_T + "/opt/vk-turn-proxy/" + _i)
+    open(_T + "/opt/vk-turn-proxy/%s/turn.env" % _i, "w").write(_e)
+    open(_T + "/sys/vk-turn-proxy-%s.service" % _i, "w").write(_UNIT % (_i, _i))
+open(_T + "/sys/vk-turn-proxy-anton48-56003.service", "w").write(   # a legacy unit: everything baked into ExecStart
+    "[Unit]\nDescription=vk-turn-proxy (cacggghp/vk-turn-proxy) — x\n\n[Service]\n"
+    "ExecStart=/opt/vk-turn-proxy/anton48-56003/server -listen 198.51.100.9:56003 -connect 127.0.0.1:51820 -wrap-srtp -wrap-key cc33\n")
+_r = _sp.run(["bash", "-c", 'set -euo pipefail\ninfo(){ :; }; ok(){ :; }; warn(){ echo "WARN $*"; }; col(){ printf "%s" "$2"; }\n'
+              'C_GREEN=""; RESET=""; MIGRATED_TURNS=""\n' + _fn + '\nmigrate_baremetal_turns >/dev/null\necho "MIGRATED=$MIGRATED_TURNS"\n'],
+             capture_output=True, text=True, env=dict(os.environ, SWG_CONVERT_DIR="convert-docker", DRYRUN="false", TURN_RECORD=_T + "/rec.json"))
+_rec = {}
+if os.path.exists(_T + "/rec.json"):
+    _rec = {t["service"]: t for t in _json.load(open(_T + "/rec.json"))["turn_proxies"]}
+_g = lambda i: _rec.get("vk-turn-proxy-" + i) or {}
+check("a DDNS name not on the box: the record keeps the NAME clients dial, not the 0.0.0.0 bind (no pin → no bind_ip)",
+      _g("anton48-56000").get("listen") == DDNS + ":56000" and "bind_ip" not in _g("anton48-56000"),
+      (_r.stdout + _r.stderr)[-300:] + str(_g("anton48-56000")))
+check("a Listen on: the record keeps the dialled public address AND the pin as bind_ip (not the LAN bind as listen)",
+      _g("anton48-56001").get("listen") == "203.0.113.7:56001" and _g("anton48-56001").get("bind_ip") == "192.168.1.50", _g("anton48-56001"))
+check("CONTROL: an older env (no SWG_DIAL, no SWG_PIN) → listen = SWG_LISTEN, no bind_ip",
+      _g("anton48-56002").get("listen") == "198.51.100.9:56002" and "bind_ip" not in _g("anton48-56002"), _g("anton48-56002"))
+check("CONTROL: a legacy unit (ExecStart only) → listen from -listen, its wrap key kept, no bind_ip",
+      _g("anton48-56003").get("listen") == "198.51.100.9:56003" and _g("anton48-56003").get("wrap_key") == "cc33"
+      and "bind_ip" not in _g("anton48-56003"), _g("anton48-56003"))
+check("…every one carried, wrap key and connect kept, and each marked for the switch's teardown",
+      len(_rec) == 4 and _g("anton48-56001").get("wrap_key") == "bb22" and _g("anton48-56000").get("connect") == "127.0.0.1:51820"
+      and _r.stdout.count("vk-turn-proxy-anton48-") == 4, (sorted(_rec), _r.stdout[-200:]))
+_sh.rmtree(_T, ignore_errors=True)
+
 socket.getaddrinfo = _real_gai
 print("")
-if PERTURB:
+if PERTURB or PERTURB_DOCKER:
     print("PERTURB OK — %d checks went red" % len(FAILS) if FAILS else "PERTURB FAILED — nothing went red; this gate cannot see the regression")
     sys.exit(0 if FAILS else 1)
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
