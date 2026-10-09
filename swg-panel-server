@@ -27787,6 +27787,13 @@ def api(method, path, qs, body, deps):
                 _no3 = awg_gen_refusal((deps.get("node_snaps") or {}).get(nid), nodes[nid].get("name") or nid, iface)
                 if _no3:
                     return 400, {"ok": False, **_no3, "code": "bad_request"}
+                # An S set to none IN THIS SAVE is the operator's choice, and 3.1's header protection cannot keep it: refused,
+                # saying why — never drawn over in silence (q189 PR-3's follow-up; the sheet stays open on it).
+                _s_none = sorted(k for k in ("S1", "S2", "S3", "S4") if isinstance(body.get("awg_params"), dict)
+                                 and str(body["awg_params"].get(k, "")).strip() == AWG_OMIT)
+                if _s_none:
+                    return 400, {"ok": False, **perr("{v1}: header protection needs S1–S4 — {v2} cannot be none while it is on",
+                                                     v1=iface, v2=", ".join(_s_none)), "code": "bad_request"}
                 # …an interface whose set is whole keeps its omissions: every 2.0 key its record lacks stays out (A5) — but
                 # never S1–S4: header protection needs all four, so a missing one is drawn, as 1.8.8 did. An adopted
                 # AmneziaWG 1.x conf has no S3/S4, is blessed whole, and its switch was refused "cannot be none" (q189 PR-3).
