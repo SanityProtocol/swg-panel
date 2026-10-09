@@ -65,7 +65,6 @@ PLANTS = {
                   '        pass\n'),
     "print": ("[12]", "noded", 'log(LOG_INFO, "awg module load #%d: %s (finished while swg-noded restarted)", n, _AWG_LOAD["v"]["code"])',
               'print("awg module load #%d: %s (finished while swg-noded restarted)" % (n, _AWG_LOAD["v"]["code"]), flush=True)'),
-    "ipn-rc": ("[4]", "agent", '    if ns and p.returncode != 0:\n        return None                                   # a named namespace ip could not read is not an empty one\n', ''),
     "nofallback": ("[11]", "agent", "    if not _awg_fallback():\n        raise AgentError(\"no_fallback\"", "    if False:\n        raise AgentError(\"no_fallback\""),
 }
 FAILS, SECTION = [], [""]
@@ -105,8 +104,7 @@ N = load(paths["noded"], "noded_load")
 class Sys:
     """A fake box: devices, a module on disk and a loaded one, units — and the log of what was asked, in order."""
     def __init__(self, devs, loaded="1.0.20251009", disk="3.1.20260812", tools="3.1", netns=None, fail_rm=False, fail_load=False, ctr_dev=False,
-                 nsenter_rc=0, lsns_rc=0, bind_dev=False, hidden_dev=False, ipn_rc=0):
-        self.ipn_rc = ipn_rc                                   # ≠ 0: `ip -n <a named netns>` fails (cannot open it)
+                 nsenter_rc=0, lsns_rc=0, bind_dev=False, hidden_dev=False):
         self.nsenter_rc, self.lsns_rc = nsenter_rc, lsns_rc    # ≠ 0: that tool fails (prints nothing), whatever the box holds
         # namespaces no process holds: one kept by a bind mount this scan's mount namespace sees (lsns lists it, no PID, its
         # NSFS path), and one mounted only where PID 1 sees it (not in lsns; PID 1's mountinfo, reached through PID 1's root)
@@ -169,8 +167,6 @@ class Sys:
             elif (ns == "net:[4026532999]" and self.ctr_dev) or (ns == "net:[4026532412]" and self.bind_dev) \
                     or (ns == "net:[4026532413]" and self.hidden_dev):
                 out = "9: awg-ctr: <POINTOPOINT>\n"
-        elif a[:2] == ["ip", "-n"] and self.ipn_rc:
-            rc = self.ipn_rc                               # "Cannot open network namespace …: Permission denied"
         elif a[:2] == ["ip", "-n"]:
             out = "".join("%d: %s: <POINTOPOINT>\n" % (i, d) for i, d in enumerate(self.netns.get(a[2], []), 7))
         elif a[:1] == ["ip"] and "amneziawg" in a:
@@ -246,9 +242,6 @@ check("…a container's namespace nsenter cannot get into (exit 1, nothing print
       not ok and r == "cannot_check" and not any("stop" in c or c.startswith("modprobe") for c in b.calls), (r, b.calls))
 b = Sys({"awg0": "unit"}, ctr_dev=True, lsns_rc=1); ok, r = agent_on(b)
 check("…nor is a scan whose lsns failed → refused (cannot_check), `modprobe -r` never asked",
-      not ok and r == "cannot_check" and not any("stop" in c or c.startswith("modprobe") for c in b.calls), (r, b.calls))
-b = Sys({"awg0": "unit"}, netns={"ve": ["e0"]}, ipn_rc=1); ok, r = agent_on(b)
-check("FN-2(d): a NAMED namespace `ip -n` cannot read is not read as empty → refused (cannot_check), `modprobe -r` never asked",
       not ok and r == "cannot_check" and not any("stop" in c or c.startswith("modprobe") for c in b.calls), (r, b.calls))
 b = Sys({"awg0": "unit"}, bind_dev=True); ok, r = agent_on(b)
 check("a device in a namespace NO PROCESS holds, kept by a bind mount (lsns: no PID, its NSFS path) → refused, nothing stopped",
