@@ -19,12 +19,18 @@ ran that whole chain twice. On a VPS abroad all of it takes seconds, which is wh
       (a dpkg lock held at the tooling step, unattended-upgrades) is tried once more there — kept, an adopted wg0 stayed
       DOWN after an rc-0 Docker → bare convert; once per tool per run, so a chain that really fails is not repeated per
       interface; the switch's bring-up and both installers' create loops ask it
+  [3c] (1.8.9 qualification F21, a regression vs 1.8.8) the REAL ensure_wg_tools awg on a pristine Docker-first box whose dpkg
+      lock is held through the tooling step (the PPA locked out, no make/gcc for the source build, amneziawg-go downloads):
+      the userspace fallback is a DATAPATH, not the tools — with no awg / awg-quick that is a failure, so the switch's
+      `again` tries once more and installs them once the lock is free. It returned success, the memo kept it, `again`
+      never retried, and awg0 + both mesh links were DOWN after an rc-0 convert ("awg-quick: command not found")
   [4] a kernel module that does not build says why (the work dir and its log are deleted right after)
 
 Run: python3 tests/installer_slow_link_selftest.py      (0 = pass)
      --perturb        a failure is final again, `again` or not (52aa9c4) → RED on [3b]
      --perturb-fg     timeout without --foreground at both sites (e66018f) → RED on [2b] only
      --perturb-retry  a timed-out clone is tried again over HTTP/1.1 (e66018f) → RED on [2c] only
+     --perturb-f21    the userspace fallback counted as the tools again (q189-int2) → RED on [3c] only
 """
 import os, pty, re, select, subprocess, sys, tempfile, time
 
@@ -34,6 +40,7 @@ rd = lambda f: open(os.path.join(ROOT, f), encoding="utf-8").read()
 PERTURB = "--perturb" in sys.argv[1:]
 PERTURB_FG = "--perturb-fg" in sys.argv[1:]
 PERTURB_RETRY = "--perturb-retry" in sys.argv[1:]
+PERTURB_F21 = "--perturb-f21" in sys.argv[1:]
 lib, node, host = rd("lib/common.sh"), rd("install-node.sh"), rd("install-host.sh")
 if PERTURB_FG:
     assert lib.count("timeout --foreground 300") == 1 and lib.count("timeout --foreground 30\"") == 1, \
@@ -183,6 +190,40 @@ check("install-node.sh: the closing \"for future interface creation\" check asks
 check("both installers' create loops ask `again`",
       node.count('if ! ensure_wg_tools_once "$cmd" again; then') == 1 and host.count('if ! ensure_wg_tools_once "$cmd" again; then') == 1)
 
+print("\n[3c] the userspace fallback is not the tools: a box left without awg / awg-quick is a failure, tried `again` (F21)")
+F21 = "    have awg && have awg-quick || return 1   # a datapath, not the tools"
+STUB = ('set -euo pipefail\nDRYRUN=false\ninfo(){ :; }\nwarn(){ echo "WARN $*"; }\nrun(){ "$@"; }\n'
+        'have(){ case "$1" in awg|awg-quick) [ -e "$T/f21/tools" ];; amneziawg-go) [ -e "$T/f21/go" ];; apt-get) return 0;; '
+        '*) command -v "$1" >/dev/null 2>&1;; esac; }\n'
+        'modprobe(){ [ -e "$T/f21/tools" ]; }\nawg_go_needs_install(){ return 1; }\nawg_ppa_suite(){ echo noble; }\napt-get(){ :; }\n'
+        'awg_ppa_add(){ :; }\nensure_awg_headers_follow(){ :; }\nawg_dkms_drop_unowned(){ :; }\nbuild_awg_module(){ :; }\n'
+        'awg_mod_key_rejected(){ return 1; }\nawg_tools_drive_3x(){ return 1; }\n'
+        'awg_ppa_module_install(){ echo PPA >> "$T/f21/calls"; [ -e "$T/f21/locked" ] && return 1; touch "$T/f21/tools"; }\n'   # dpkg's lock held → nothing installed
+        'awg_build_from_source(){ echo SRC >> "$T/f21/calls"; return 1; }\n'          # no make / gcc on a Docker-first box
+        'ensure_awg_userspace(){ touch "$T/f21/go"; }\n')                             # the pinned amneziawg-go downloads
+for f, src in (("install-node.sh", node), ("install-host.sh", host)):
+    fn = grab(src, "ensure_wg_tools")
+    if PERTURB_F21:
+        assert fn.count(F21) == 1, "perturbation anchor missing — would FALSE-PASS"
+        fn = fn.replace(F21 + "\n", "")
+    import shutil
+    shutil.rmtree(T + "/f21", ignore_errors=True); os.makedirs(T + "/f21"); open(T + "/f21/locked", "w").close()
+    r = sh(STUB + fn + grab(src, "ensure_wg_tools_once")
+           + 'ensure_wg_tools_once awg && echo T=0 || echo T=$?\n'                          # Datapath tooling: dpkg's lock held
+           + 'echo "TOOLS1=$(have awg-quick && echo yes || echo no)"\nrm -f "$T/f21/locked"\n'
+           + 'ensure_wg_tools_once awg again && echo S=0 || echo S=$?\n'                    # the switch's bring-up: the lock is gone
+           + 'echo "TOOLS2=$(have awg-quick && echo yes || echo no)"\n')
+    calls = open(T + "/f21/calls").read().split()
+    check("%s: locked out at the tooling step, amneziawg-go there, no awg / awg-quick → a FAILURE, not the userspace datapath" % f,
+          "T=1" in r.stdout and "TOOLS1=no" in r.stdout and "SLOWER userspace datapath" not in r.stdout, r.stdout + r.stderr)
+    check("%s: …so the switch's `again` tries once more and installs the tools once the lock is free" % f,
+          "S=0" in r.stdout and "TOOLS2=yes" in r.stdout and calls.count("PPA") == 2, (r.stdout, calls))
+    shutil.rmtree(T + "/f21", ignore_errors=True); os.makedirs(T + "/f21"); open(T + "/f21/tools", "w").close()
+    r = sh(STUB.replace('modprobe(){ [ -e "$T/f21/tools" ]; }', 'modprobe(){ return 1; }')
+           .replace('touch "$T/f21/tools"; }', 'return 1; }') + fn + 'ensure_wg_tools awg && echo R=0 || echo R=$?\n')
+    check("%s: CONTROL — the tools there, no module: the userspace datapath, a success, said as such" % f,
+          "R=0" in r.stdout and "SLOWER userspace datapath" in r.stdout, r.stdout + r.stderr)
+
 print("\n[4] a module that does not build says why")
 body = grab(lib, "awg_build_from_source")
 check("the failure path warns with a line from the build log", 'warn "the AmneziaWG kernel module did not build for $(uname -r): ${_why:-' in body, "")
@@ -190,6 +231,7 @@ check("…before the work dir (and its log) is deleted", body.find("did not buil
 
 print("")
 for _on, _sec, _pick in ((PERTURB, "[3b]", lambda f: "tries again" in f or "tried once more" in f),
+                         (PERTURB_F21, "[3c]", lambda f: "locked out at the tooling step" in f or "`again` tries once more" in f),
                          (PERTURB_FG, "[2b]", lambda f: "the Ctrl-C" in f),
                          (PERTURB_RETRY, "[2c]", lambda f: "hit the cap" in f)):
     if _on:
