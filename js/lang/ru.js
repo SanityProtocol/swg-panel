@@ -4775,6 +4775,7 @@ export const STR = {
   // the node-wide torrent policy (Settings ▸ node ▸ Network ▸ Filters & abuse)
   "Torrents / P2P": "Торренты / P2P",
   "Torrents / P2P: {v1}": "Торренты / P2P: {v1}",
+  "Torrents / P2P: {v1} — not in force on this node until it is updated": "Торренты / P2P: {v1} — на этой ноде не действует, пока её не обновят",
   "Block everywhere": "Блокировать везде",
   "Allow, only out this server's own address": "Разрешить, только через собственный адрес сервера",
   "Each interface decides": "Решает каждый интерфейс",

@@ -4480,6 +4480,9 @@ const p2pVal = p => !p || !p.action ? "" : p.action === "dev" ? "dev:" + p.exit_
 const p2pRec = val => val.startsWith("dev:") ? { action: "dev", exit_id: val.slice(4) }
   : val.startsWith("exit:") ? { action: "exit", node: val.slice(5) } : { action: val };
 const p2pNodeName = id => ((Store.nodes || []).find(n => n.id === id) || {}).name || id;
+// The policy in force is not run on a node whose build has none (1.8.8 under this panel): it is behind the panel and reports
+// no policy, where a current node reports every one but "each interface decides" (swg-noded _ensure_p2p) — q189 LC24 L4-a.
+export const p2pNotRunHere = (node, rec) => !!node && !!rec && !node.p2p_node && !!node.outdated && node.p2p_eff !== "iface" && rec.action === node.p2p_eff;
 const p2pTarget = (p, exits, node) => {
   if (p.action === "exit") return p2pNodeName(p.node);
   if (p.action !== "dev") return "";
@@ -4841,7 +4844,8 @@ export function NodeEgressForm({ node, vals, set, escrowOn, goSection, openManag
       const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";
       return html`<div class="field">
         <${Disclosure} title=${T("Filters & abuse")} sumCls="on" open=${p2pOpen} onToggle=${() => setP2pOpen(o => !o)}
-          summary=${T("Torrents / P2P: {v1}", { v1: p2pLabel(curRec, exits, node) })}>
+          summary=${p2pNotRunHere(node, curRec) ? T("Torrents / P2P: {v1} — not in force on this node until it is updated", { v1: p2pLabel(curRec, exits, node) })
+                   : T("Torrents / P2P: {v1}", { v1: p2pLabel(curRec, exits, node) })}>
           <div class="field"><label>${T("Torrents / P2P")}</label>
             <${Dropdown} value=${cur} onChange=${a => set({ p2p: p2pRec(a) })} options=${opts}/>
             <div class="hint">${routed ? P2P_HINT().routed(p2pTarget(curRec, exits, node)) : P2P_HINT()[cur]}</div>
