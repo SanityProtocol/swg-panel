@@ -1764,6 +1764,11 @@ EOF
 # installed. After an uninstall that kept the data, the re-install started the panel before it wrote swg-sub's unit
 # (below, at the end), so the bind came back only at the panel's NEXT start (1.8.8 qualification, round 8). A unit that
 # is missing is written now (its final text, and its start, come at the end as before); one that exists is left alone.
+# ⚠️ …SO WHETHER THE OPERATOR TURNED swg-sub OFF IS READ HERE, before this run writes its unit: one that existed and was
+# disabled and stopped stays so at the end (1.8.8 deferred #9). Read at the end, the unit written just below looked like
+# one — a FRESH install left swg-sub disabled and stopped, and served no subscription links (1.8.9 qualification F25).
+_sub_off=no; [ -e "$PREFIX/etc/systemd/system/swg-sub.service" ] && ! $DRYRUN && ! systemctl is-enabled --quiet swg-sub 2>/dev/null \
+  && ! systemctl is-active --quiet swg-sub 2>/dev/null && _sub_off=yes
 if [ -f "$PREFIX$SUB_DIR/swg-sub" ] && [ ! -e "$PREFIX/etc/systemd/system/swg-sub.service" ]; then write_sub_unit; run systemctl daemon-reload; fi
 
 # ───────────────────────── login + TLS + serve mode ─────────────────────────
@@ -2327,8 +2332,8 @@ if [ -f "$PREFIX$SUB_DIR/swg-sub" ]; then   # inert until enabled in Settings �
   _subu="$PREFIX/etc/systemd/system/swg-sub.service"; _subu_was="$(cat "$_subu" 2>/dev/null || true)"
   _sub_was_up=no; ! $DRYRUN && systemctl is-active --quiet swg-sub 2>/dev/null && _sub_was_up=yes
   # ⚠️ …AND ONE THE OPERATOR DISABLED AND STOPPED STAYS SO, as an update keeps it (F93): a re-install enabled and started it
-  # again — a public listener back on its port, the operator's choice silently replaced (1.8.8 deferred #9)
-  _sub_off=no; [ -n "$_subu_was" ] && [ "$_sub_was_up" = no ] && ! $DRYRUN && ! systemctl is-enabled --quiet swg-sub 2>/dev/null && _sub_off=yes
+  # again — a public listener back on its port, the operator's choice silently replaced (1.8.8 deferred #9). _sub_off was
+  # read before this run wrote the unit (above, F25).
   write_sub_unit; run systemctl daemon-reload
   if [ "$_sub_off" = yes ]; then ok "swg-sub left disabled and stopped, as it was (systemctl enable --now swg-sub to serve subscriptions)"
   else run systemctl enable --quiet $_NOW swg-sub || warn "couldn't start swg-sub"; fi
