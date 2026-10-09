@@ -1791,7 +1791,7 @@ export const STR = {
   "Stop live log (Esc)": "Остановить логи (Esc)",
   "Leave full screen (Esc)": "Свернуть (Esc)",
   "The lines shown": "Показанные строки",
-  "{v1} lines, as a text file — at once": "Строк: {v1}, текстовым файлом — сразу",
+  "{v1} lines, as a text file — at once; keys and tokens are not masked": "Строк: {v1}, текстовым файлом — сразу; ключи и токены не скрываются",
   "{v1} sources are chosen, and a viewer follows {v2} at most. Choose fewer, or tick a whole group — it counts as one.":
     "Выбрано источников: {v1}, а просмотр следит не больше чем за {v2}. Выберите меньше или отметьте группу целиком — она считается за один.",
   "A time range…": "За период…",

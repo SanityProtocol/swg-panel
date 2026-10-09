@@ -737,7 +737,7 @@ export function LogViewer({ overlay } = {}) {
         onClick=${() => { for (const l of LV.lines) if (l.src[0] !== "!" && !(l.k <= (LV.floor[l.nid] || -Infinity))) LV.floor[l.nid] = l.k;   // q189 SPA-5
           LV.lines = []; LV.frozen = LV.frozen ? [] : null; LV.missed = 0; bump(); }}><${Ic} i="trash"/></button>
       <${MenuButton} icon="download" title=${T("Download")} items=${[
-        { key: "shown", label: T("The lines shown"), hint: T("{v1} lines, as a text file — at once", { v1: fmtNum(lines.length) }), disabled: !lines.length, onClick: () => download(lines) },
+        { key: "shown", label: T("The lines shown"), hint: T("{v1} lines, as a text file — at once; keys and tokens are not masked", { v1: fmtNum(lines.length) }), disabled: !lines.length, onClick: () => download(lines) },
         { key: "range", label: T("A time range…"), hint: T("Every line of a time range from these servers, as one file"), disabled: !!RG.id, onClick: rangeOpen }]}/>
       </div>
     </div>
