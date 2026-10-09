@@ -6975,6 +6975,7 @@ export const STR = {
   "{v1}: nothing was changed — the node could not record the request (its state directory is not writable)": "{v1}: ничего не изменено — нода не смогла записать запрос (каталог её состояния недоступен для записи)",
   "{v1}: nothing was changed — the node cannot check its other network namespaces (lsns or nsenter is missing)": "{v1}: ничего не изменено — нода не может проверить свои другие сетевые пространства имён (нет lsns или nsenter)",
   "lsns or nsenter is missing, so the other network namespaces cannot be checked": "нет lsns или nsenter, поэтому другие сетевые пространства имён проверить нельзя",
+  "no amneziawg-go to fall back on if the new module would not load": "нет amneziawg-go, на который можно перейти, если новый модуль не загрузится",
   "Load AmneziaWG 3.1 · {name}": "Загрузить AmneziaWG 3.1 · {name}",
   "Load now": "Загрузить сейчас",
   "Every AmneziaWG interface on {name} restarts on the new kernel module. Connected devices lose traffic for about 15 seconds while they reconnect; nothing else changes. Or leave it: the module loads at the next reboot.": "Все интерфейсы AmneziaWG на {name} перезапустятся на новом модуле ядра. Подключённые устройства примерно на 15 секунд потеряют трафик, пока переподключаются; больше ничего не меняется. Или оставьте как есть: модуль загрузится при следующей перезагрузке.",
