@@ -81,6 +81,9 @@ PLANTS = {
                         '    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action } : null,'),
     "no-prune-event":("    _report_p2p_pruned(deps, _p2p_pruned)\n", ""),
     "no-route-down": ('    elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("route") == "down":', "    elif False:"),
+    # q189 FP-1: cascade_plan's arrivals check reads a malformed report again
+    "fp1-arr":       ('        return isinstance(_sr, dict) and bool(_sr.get("arr"))',
+                      '        return bool((_sr or {}).get("arr"))'),
     # q189 F2: the unguarded reads of 52aa9c4 put back, one at a time
     "f2-sr-any":     ('    _srp = snap.get("smartroute") if isinstance(snap.get("smartroute"), dict) else None',
                       '    _srp = snap.get("smartroute") if snap.get("smartroute") is not None else None'),
@@ -285,6 +288,22 @@ def run_checks(src, spa=None):
     ok(pn == {"n1": None, "n2": None, "n3": {"state": "ok", "mode": "block"}},
        "[15] /api/state through the real api(): 200 with a string p2p and a list smartroute on two nodes — their p2p_node "
        "null, the good node's kept (got %s)" % (pn,))
+    # [15] q189 FP-1 — …nor fails cascade_plan, which plans EVERY node's sync over every other node's report
+    SN15 = {"interfaces": {"wg0": {"meta": {"subnet": "10.8.0.0/24"}}}, "smartroute": {"mode": "kernel", "src": 1, "arr": 1}}
+    SP15 = {"interfaces": {"wg0": {"meta": {"subnet": "10.9.0.0/24"}}}, "ether_ifaces": ["eth0"], "wan_iface": "eth0",
+            "ether_gws": {"eth0": "198.51.100.1"}, "node_ips": ["198.51.100.254"]}
+    def fl15():
+        return {"n1": {"name": "a", "ifaces": {"wg0": {}}, "links": {"n2": {"iface": "swg_p", "peer_address": "10.255.0.1"}},
+                       "default_routing": [{"category": "*", "action": "exit", "node": "n2", "on": True}]},
+                "n2": {"name": "b", "ifaces": {"wg0": {}}, "links": {"n1": {"iface": "swg_n", "peer_address": "10.255.0.0"}},
+                       "default_routing": [{"category": "*", "action": "direct", "on": True}]}}
+    for bad in ("x", ["x"], 5):
+        try:
+            pl = P.cascade_plan(fl15(), {"n1": SN15, "n2": dict(SP15, smartroute=bad)})
+            got = "ok, %d nodes planned" % len(pl)
+        except Exception as e:
+            got = "raised %s: %s" % (type(e).__name__, e)
+        ok(got.startswith("ok"), "[15] cascade_plan with n2's smartroute=%r beside n1's default list: %s" % (bad, got))
     # [16] q189 NR-2 — the node's torrent rules did not load
     K16 = ("the torrent policy is not in force on this node — its rules failed to load ({v1}); until they load, torrents "
            "are not blocked or routed as set")
