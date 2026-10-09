@@ -16,10 +16,14 @@ actually logs into, and the gate reads that name from the module, so renaming it
   [2] every journalctl read of swg-noded.service in nix/checks/*.nix passes --namespace=+<that name>
   [3] the five reads are all still there, each named by what it is for
   [4] the panel's unit has no namespace, so its one read stays a plain -u (the sixth journalctl, left as it is)
+  [5] (1.8.9 qualification DN-15) the self-update services — swg-update (panel.nix), swg-node-update (node.nix), which the
+      container arm's timer starts every 30 s — keep systemd's own start/stop lines out of the journal (LogLevelMax
+      notice, at every level, Off included: ~8,600 lines a day each) and their own lines in (SyslogLevel notice)
 
 Run: python3 tests/nix_fleet_journal_selftest.py      (0 = pass)
      --perturb      takes the namespace off the outage-window read (the one the invariant subtest counts) → RED
      --perturb-ns   renames the unit's namespace in node.nix (in memory) → RED (the reads no longer follow it)
+     --perturb-quiet  the two update services without their notice caps (e66018f, in memory) → RED on [5] only
 """
 import glob, os, re, sys
 
@@ -27,6 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
 PERTURB_NS = "--perturb-ns" in sys.argv
+PERTURB_QUIET = "--perturb-quiet" in sys.argv
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -48,6 +53,11 @@ if PERTURB_NS:
     a = 'LogNamespace = "swg-node";'
     assert NODE.count(a) == 1, "anchor missing — this run would FALSE-PASS"
     NODE = NODE.replace(a, 'LogNamespace = "swg-node2";')
+
+if PERTURB_QUIET:
+    a = '          LogLevelMax = "notice";\n          SyslogLevel = "notice";\n'
+    assert NODE.count(a) == 1 and PANEL.count(a) == 1, "anchor missing — this run would FALSE-PASS"
+    NODE, PANEL = NODE.replace(a, ""), PANEL.replace(a, "")
 
 # a Nix comment line is not a command: only code lines are read below
 code = lambda src: "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
@@ -82,7 +92,20 @@ print("\n[4] the panel's unit has no namespace, so its read stays a plain -u")
 check("panel.nix sets no LogNamespace", not re.search(r"^\s*LogNamespace\s*=", code(PANEL), re.M))
 check("the panel's one read is the main journal's", "journalctl -u swg-panel-server.service" in fleet)
 
+print("\n[5] the self-update services keep systemd's per-tick lines out (DN-15)")
+for f, src, unit in (("panel.nix", PANEL, "swg-update"), ("node.nix", NODE, "swg-node-update")):
+    m = re.search(r"systemd\.services\.%s = mkIf [^\n]*\{\n(.*?)\n      \};\n" % re.escape(unit), code(src), re.S)
+    body = m.group(1) if m else ""
+    sc = re.search(r"serviceConfig = \{(.*?)\}", body, re.S)
+    sc = sc.group(1) if sc else ""
+    check("%s: systemd.services.%s — LogLevelMax and SyslogLevel notice, in its serviceConfig" % (f, unit),
+          'LogLevelMax = "notice";' in sc and 'SyslogLevel = "notice";' in sc, sc.strip()[:200] or "unit or serviceConfig not found")
+
 print()
+if PERTURB_QUIET:
+    _red = [x for x in FAILS if "LogLevelMax and SyslogLevel" in x]
+    print("perturb-quiet: %s" % ("RED as it must be (%d), all [5]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB or PERTURB_NS:
     if FAILS:
         print("PERTURB OK (%s) — %d checks went red" % ("--perturb-ns" if PERTURB_NS else "--perturb", len(FAILS))); sys.exit(0)
