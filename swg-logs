@@ -29,6 +29,7 @@ A=()                                                    # journalctl's arguments
 ns(){ ns_ok && A+=("--namespace=+$1"); return 0; }      # without namespaces everything is in the main journal
 
 src="${1:-}"; [ $# -gt 0 ] && shift
+case "$src" in -h|--help) ;; -*) set -- "$src" "$@"; src="" ;; esac   # options alone: every line, the options to journalctl
 name=""
 case "$src" in relay|turn|iface)                     # these take an optional name before the options
   case "${1:-}" in ""|-*) ;; *) name="$1"; shift;; esac;;
