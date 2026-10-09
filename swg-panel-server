@@ -27896,8 +27896,11 @@ def api(method, path, qs, body, deps):
                 # …and a 3.1 field the 3.1 defaults (Settings → Interfaces) set to none stays out, as a 3.1 create leaves it
                 # out: the defaults' hint promises both, and the Edit sheet's flipped cell shows that "-". A value this record
                 # holds for it (typed over the "-" in this Save) is kept. 1.8.9 qualification CL-F1: drawn over in silence.
+                # So does one THIS Save sets to none — a "-" typed over the value the flip filled in: the merge above took it
+                # off the record, where a 2.0 record's 3.1 fields all read "not set yet" (CL-F1a).
                 ov["awg_params"] = awg3_full(ov.get("awg_params"), _rmeta.get("awg_params"), awg3_defaults(deps),
-                                             omit=frozenset(_omit3) | (awg3_omitted(deps) - set(ov.get("awg_params") or {})))
+                                             omit=frozenset(_omit3) | (awg3_omitted(deps) - set(ov.get("awg_params") or {}))
+                                             | (awg_template(body.get("awg_params"), gen3=True)[1] & set(_AWG3_RANGED)))
                 if _omit3:
                     _bad = awg_rules(ov["awg_params"], iface)
                     if _bad:

@@ -21,7 +21,8 @@ through REAL panel processes (temp state, scratch port, no auth; the nodes are p
         (1.8.9 qualification CL-F1) so does the 3.1 SWITCH: the Edit sheet's flip-Save, whose 3.1 cells show the defaults'
         "-", leaves those fields out of the record, the node's set, the meta and a client config js/crypto.js renders from
         it; an API caller's {awg_gen: "3.1"} too; a value typed over that "-" is kept; a lost 2.0 interface recreated at 3.1
-        leaves them out of its create request (needs node, for the render)
+        leaves them out of its create request (needs node, for the render); CL-F1a: a "-" TYPED into a flipped 3.1 cell over
+        the value the flip filled in stays out too
     [6] bless-on-first-sight marks a conf missing a 2.0 key `awg_exact`; the meta of an `awg_exact` record is the record
         alone, and carries the flag. q189 PR-3: the AmneziaWG 3.1 switch of such an adopted 1.x conf (no S3/S4) draws
         S3 and S4 — header protection needs all four, so they are never "none" there (1.8.8 drew them; 94ba204's bless
@@ -38,6 +39,7 @@ Run: python3 tests/awg_omit_panel_selftest.py           (0 = pass)
      --perturb switch31   the 3.1 switch draws the set over the 3.1 defaults' "-" again (CL-F1)  → RED in [5]
      --perturb typed31    …and omits a field this Save typed a value into, over that "-"       → RED in [5]
      --perturb recreate31 a recreate at 3.1 draws the set over the 3.1 defaults' "-" (CL-F1)     → RED in [5]
+     --perturb typedsave31 the switch draws over a "-" typed into a flipped 3.1 cell (CL-F1a)    → RED in [5]
 """
 import json, os, re, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -56,9 +58,10 @@ PLANTS = {
               "                        pass\n"),
     "wire": ("[4]", "                    if extra or ov.get(\"awg_exact\"):\n", "                    if extra:\n"),
     "s34none": ("[6]", "\n                                    and k not in (\"S1\", \"S2\", \"S3\", \"S4\"))\n", ")\n"),
-    "switch31": ("[5]", "omit=frozenset(_omit3) | (awg3_omitted(deps) - set(ov.get(\"awg_params\") or {})))\n", "omit=frozenset(_omit3))\n"),
+    "switch31": ("[5]", "(awg3_omitted(deps) - set(ov.get(\"awg_params\") or {}))", "frozenset()"),
     "typed31": ("[5]", "(awg3_omitted(deps) - set(ov.get(\"awg_params\") or {}))", "awg3_omitted(deps)"),
     "recreate31": ("[5]", "\n                | (awg3_omitted(deps) - set(_awgput))))\n", "))\n"),
+    "typedsave31": ("[5]", "(awg_template(body.get(\"awg_params\"), gen3=True)[1] & set(_AWG3_RANGED))", "frozenset()"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else None
 
@@ -501,6 +504,17 @@ try:
         check("…and a RECREATE of a 2.0 interface at 3.1 leaves them out of its create request and its record",
               code == 200 and a.get("HeaderProtectionKey") and not any(k in a for k in OUT31)
               and not any(k in (p.ov("na", "awg23").get("awg_params") or {}) for k in OUT31), ({k: a.get(k) for k in OUT31}, code, r))
+        # CL-F1a: this Save's own "-", typed into a flipped 3.1 cell over the value the flip filled in (MaxHandshakeAttempts: the
+        # defaults leave it blank, so the sheet shows Amnezia's 15-20)
+        live["awg24"] = dict(BASE20); p.sync("na", live)
+        pre = sheet_flip("na", "awg24")["awg_params"].get("MaxHandshakeAttempts")
+        code, r = p.req("/api/iface/update", sheet_flip("na", "awg24", {"MaxHandshakeAttempts": "-"}))
+        a = p.ov("na", "awg24").get("awg_params") or {}
+        d = ((p.sync("na", live).get("desired_ifaces") or {}).get("awg24") or {}).get("awg_params") or {}
+        check("CL-F1a: a \"-\" typed into a flipped 3.1 cell over its pre-filled value (MaxHandshakeAttempts 15-20) stays out "
+              "of the record and the node's set", pre == "15-20" and code == 200 and a.get("HeaderProtectionKey")
+              and "MaxHandshakeAttempts" not in a and d.get("HeaderProtectionKey") and "MaxHandshakeAttempts" not in d,
+              ({"pre": pre, "record": a.get("MaxHandshakeAttempts"), "node": d.get("MaxHandshakeAttempts")}, code, r))
         code, r = p.req("/api/panel/settings", {"interface_defaults": {**DEFAULTS, "awg_params": {"S2": "-"}, "awg3_params": {}}})
         code2, r2 = p.req("/api/iface/create", {"node": "nb", "iface": "awg7", "subnet": "10.68.0.0/24", "listen_port": 51834, "awg_gen": "3.1"})
         check("a 3.1 create from defaults with S2 none → refused (R4), naming S2", code == 200 and code2 == 400 and "S2" in r2.get("error", ""), (code, r, code2, r2))
