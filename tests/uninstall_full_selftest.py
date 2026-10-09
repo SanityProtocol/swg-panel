@@ -18,11 +18,22 @@ refuse any path outside the box, and such an escape fails the section that made 
   [5] a dry run of [1] changes nothing
   [6] a BARE node beside a Docker data dir an earlier uninstall kept: no gone node is made up — the host's interfaces and
       tables are the bare node's; the kept data is "Docker deployment (files)", as before
+  [7] a bare Debian node — AmneziaWG BUILT FROM SOURCE (1.8.8 deferred #1, #16, #2): never offered, so its tools, man pages,
+      unit templates, the DKMS tree (DKMS rebuilt the module at every kernel upgrade, on a box without swg) and the pinned
+      amneziawg-go stayed. Now offered and taken, `dkms remove … --all` included; each removed interface's unit is stopped
+      before the interface goes (a boot-started one stayed "active (exited)", and failed once its package went)
+  [8] …beside a foreign AmneziaWG interface: offered, never removed unattended (kept, every file of it)
+  [9] Ubuntu on the PPA's packages: none of the package's files is called a source build; the purge takes amneziawg-go
+  [10] a bare → Docker converted box: the PPA packages its bare past installed are offered (the amnezia PPA is swg's)
 
 Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      SWG_UNINSTALL=<file>   run it against another uninstall.sh
      --perturb-gone    the gone node is not offered (as shipped) → RED on [1] [2] [3]
      --perturb-bare    …it is, beside a bare node too → RED on [6] only
+     --perturb-src     the source build is not offered (as shipped) → RED on [7] [8]
+     --perturb-stop    a removed interface's unit is not stopped (as shipped) → RED on [7]'s unit check only
+     --perturb-ppa     the PPA packages are offered only beside a bare install (as shipped) → RED on [10] only
+     --perturb-go      the package purge leaves amneziawg-go (as shipped) → RED on [9]'s amneziawg-go check only
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
@@ -30,7 +41,8 @@ import json, os, re, shutil, stat, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 U = open(os.environ.get("SWG_UNINSTALL") or os.path.join(ROOT, "uninstall.sh"), encoding="utf-8").read()
-FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--perturb-bare")}
+FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--perturb-bare", "--perturb-src", "--perturb-stop",
+                                         "--perturb-ppa", "--perturb-go")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -48,6 +60,14 @@ if FLAGS["--perturb-gone"]:
     plant('   && { [ -d "$DOCKER_DIR/data/node" ] || [ -d "$DOCKER_DIR/data/node-confs" ]; }; then\n', '   && false; then\n')
 if FLAGS["--perturb-bare"]:
     plant('if ! $DNODE && [ ! -f "$SD/swg-noded.service" ] && [ ! -d /opt/swg-noded ] \\\n', 'if ! $DNODE \\\n')
+if FLAGS["--perturb-src"]:
+    plant('{ awg_src_tools || [ -n "$(awg_src_trees)" ]; } && $_bare_swg && {', 'false && {')
+if FLAGS["--perturb-stop"]:
+    plant('    else run systemctl stop "${tool}@$n" >/dev/null 2>&1 || true   # its unit FIRST', '    else :   # its unit FIRST')
+if FLAGS["--perturb-ppa"]:
+    plant('awg_pkg    && { $_bare_swg || ls /etc/apt/sources.list.d/*amnezia* >/dev/null 2>&1; } &&', 'awg_pkg    && $_bare_swg &&')
+if FLAGS["--perturb-go"]:
+    plant('      rmrf /usr/local/bin/amneziawg-go   # the userspace fallback', '      :   # the userspace fallback')
 if FLAGS["--perturb-image"]:
     plant('  [ -n "$img" ] || { _tag="$(sed -n ', '  false && { _tag="$(sed -n ')
 
@@ -367,12 +387,77 @@ comps = components(out)
 check("[6] no gone Docker node is offered beside the bare node — its kept data is \"Docker deployment (files)\"",
       not any(c.startswith("Docker node (swg-node)") for c in comps) and any(c.startswith("Docker deployment (files)") for c in comps), comps)
 
+# ── a bare node whose AmneziaWG was BUILT FROM SOURCE (every Debian node; Ubuntu's fallback) ─────────────────────────────
+SRC_AWG = {"usr/bin/awg": "x", "usr/bin/awg-quick": "x", "usr/share/man/man8/awg.8": "x", "usr/share/man/man8/awg-quick.8": "x",
+           "lib/systemd/system/awg-quick@.service": "[Service]\n", "lib/systemd/system/awg-quick.target": "[Unit]\n",
+           "usr/src/amneziawg-1.0.0/dkms.conf": 'PACKAGE_NAME="amneziawg"\nPACKAGE_VERSION="1.0.0"\n',
+           "usr/local/bin/amneziawg-go": "x"}
+BARE_NODE = {"etc/systemd/system/swg-noded.service": "[Service]\n", "opt/swg-noded/swg-noded": "x", "opt/swg-agent/swg-agent": "x",
+             "etc/swg-agent/config.json": '{"panel": {"url": "https://127.0.0.1:9", "token": "t", "verify": false}, '
+                                          '"interfaces": {"awg0": {}, "wg0": {}}}',
+             "etc/amnezia/amneziawg/awg0.conf": "[Interface]\nAddress = 10.60.2.1/24\nListenPort = 51821\n",
+             "etc/amnezia/amneziawg/swg_88930e42.conf": "[Interface]\nAddress = 10.255.0.0/31\nListenPort = 9999\n",
+             "etc/wireguard/wg0.conf": "[Interface]\nAddress = 10.60.1.1/24\nListenPort = 51820\n"}
+BARE_FX = {"ip.links": "lo\neth0\nawg0\nwg0\nswg_88930e42\n", "dpkg.l": "ii  wireguard  1.0  all\nii  wireguard-tools  1.0  amd64\n",
+           "dkms.status": "amneziawg/1.0.0, 6.1.0-53-cloud-amd64, x86_64: installed\n", "docker.ps": ""}
+AWG_SRC_LEFT = lambda box: [p for p in SRC_AWG if os.path.lexists(os.path.join(box, p))]
+SRC_LABEL = "AmneziaWG built from source (kernel module + tools)"
+
+print("\n[7] a bare node on Debian: its AmneziaWG built from source")
+box = mkbox("deb-src", dict(BARE_NODE, **SRC_AWG), BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+comps = components(out)
+check("[7] the run stays inside its box", not esc, esc)
+check("[7] the source build is offered for removal", any(c.startswith(SRC_LABEL) for c in comps), comps)
+check("[7] …and taken: the tools, man pages, unit templates, the DKMS tree and the pinned amneziawg-go — nothing of it left",
+      not AWG_SRC_LEFT(box), AWG_SRC_LEFT(box))
+check("[7] DKMS forgets the module (`dkms remove amneziawg/1.0.0 --all`) — no rebuild at the next kernel",
+      "dkms\tremove amneziawg/1.0.0 --all" in calls, calls[-1200:])
+cl = calls.splitlines()
+def at(pred):
+    return next((k for k, l in enumerate(cl) if pred(l)), -1)
+st_a, dn_a = at(lambda l: l == "systemctl\tstop awg-quick@awg0"), at(lambda l: l == "awg-quick\tdown awg0")
+st_w, dn_w = at(lambda l: l == "systemctl\tstop wg-quick@wg0"), at(lambda l: l == "wg-quick\tdown wg0")
+check("[7] each removed interface's unit is STOPPED before the interface goes (a boot-started one stayed \"active (exited)\", "
+      "and failed once its package went — 1.8.8 deferred #16)", 0 <= st_a < dn_a and 0 <= st_w < dn_w, (st_a, dn_a, st_w, dn_w))
+
+print("\n[8] …a foreign AmneziaWG interface beside it")
+box = mkbox("deb-src-foreign", dict(BARE_NODE, **SRC_AWG, **{"etc/amnezia/amneziawg/awg9.conf": "[Interface]\nListenPort = 51999\n"}), BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[8] the source build is offered but never removed unattended then — kept, every file of it still there",
+      any(c.startswith(SRC_LABEL) for c in components(out)) and "Kept %s." % SRC_LABEL in out
+      and sorted(AWG_SRC_LEFT(box)) == sorted(SRC_AWG) and "dkms\tremove" not in calls, (components(out), AWG_SRC_LEFT(box), out[-1500:]))
+
+print("\n[9] an Ubuntu node on the PPA's packages: nothing of them is called a source build")
+box = mkbox("ubu-pkg", dict(BARE_NODE, **SRC_AWG),
+            dict(BARE_FX, **{"dpkg.l": BARE_FX["dpkg.l"] + "ii  amneziawg  1.0  all\nii  amneziawg-tools  1.0  amd64\nii  amneziawg-dkms  1.0  all\n",
+                             "dpkg.owned": "/usr/bin/awg\n/usr/bin/awg-quick\n/usr/src/amneziawg-1.0.0\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+comps = components(out)
+check("[9] the package is offered, no \"built from source\" component, and its tree is never `dkms remove`d by us",
+      any(c.startswith("AmneziaWG package") for c in comps) and not any(c.startswith(SRC_LABEL) for c in comps)
+      and "dkms\tremove" not in calls, (comps, calls[-800:]))
+check("[9] …and the purge takes the pinned userspace fallback with it (/usr/local/bin/amneziawg-go — 1.8.8 deferred #2)",
+      not os.path.exists(os.path.join(box, "usr/local/bin/amneziawg-go")) and os.path.exists(os.path.join(box, "usr/bin/awg")), AWG_SRC_LEFT(box))
+
+print("\n[10] a bare → Docker converted box: the PPA's packages its bare past installed")
+cfiles = dict(NODE_FILES, **{"etc/apt/sources.list.d/amnezia-ubuntu-ppa-noble.sources": "Types: deb\n"})
+box = mkbox("conv-ppa", cfiles, dict(NODE_FX, **{"docker.ps": "swg-node\n", "dpkg.l": "ii  amneziawg  1.0  all\nii  amneziawg-tools  1.0  amd64\nii  amneziawg-dkms  1.0  all\n",
+                                               "dpkg.owned": "/usr/bin/awg\n/usr/src/amneziawg-1.0.0\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+comps = components(out)
+check("[10] the AmneziaWG package (and its DKMS module, rebuilt at every kernel upgrade) is offered — the amnezia PPA is swg's",
+      any(c.startswith("AmneziaWG package") for c in comps) and "apt-get\tpurge -y amneziawg amneziawg-tools amneziawg-dkms" in calls,
+      (comps, calls[-800:]))
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
     sect = {"--perturb-gone": ("the node is offered", "…and not as mere", "NOTHING of the node", "its nft tables went",
                                "the Docker dir is gone", "nothing of the node", "nothing was pulled", "the panel went too"),
-            "--perturb-image": ("its nft tables went with its OWN nft",), "--perturb-bare": ("[6]",)}
+            "--perturb-image": ("its nft tables went with its OWN nft",), "--perturb-bare": ("[6]",),
+            "--perturb-src": ("[7] the source build is offered", "[7] …and taken", "[7] DKMS forgets", "[8]"),
+            "--perturb-stop": ("[7] each removed interface's unit",), "--perturb-ppa": ("[10]",), "--perturb-go": ("[9] …and the purge",)}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
