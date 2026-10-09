@@ -1514,7 +1514,7 @@ CSQTT_BUILDS = [("2.1.9-4", "csqtt-2.1.9-4"), ("2.1.9-3", "csqtt-2.1.9-3"), ("2.
 #   panel, every node reply and the SPA are exactly what they were before lines.
 CSQTT_DEFAULT_LINE = "2.1"
 CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS}
-_CSQTT_LINE_RE = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}\Z")   # \Z, not $: "2.5\n" passed (q189 PR-18)
+_CSQTT_LINE_RE = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}$")
 def _csqtt_standin(spec):
     line, _, vers = (spec or "").partition("=")
     line = line.strip()
@@ -7909,8 +7909,8 @@ LIVE_CUR_MAX = 8192         # bytes of a node's resume point (a docker node's fi
 LIVE_SKEW_S = 2             # a node clock off by this much or more is corrected in the viewer (§23.7)
 LIVE_NOANSWER_S = 20        # a node that has not posted this long after it was asked: "no answer"
 LIVE_PANEL = "panel"        # the panel's own entry among a request's nodes
-LIVE_ID_RE = re.compile(r"^[0-9a-f]{16}\Z")      # \Z, not $ — a trailing newline is not part of an id (q189 PR-18)
-LIVE_SRC_RE = re.compile(r"^[a-z0-9]{1,16}(?::(?:\*|[A-Za-z0-9_.@-]{1,64}))?\Z")   # \Z: "noded\n" broke the spool TSV
+LIVE_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+LIVE_SRC_RE = re.compile(r"^[a-z0-9]{1,16}(?::(?:\*|[A-Za-z0-9_.@-]{1,64}))?$")
 LIVE_STATES = ("ok", "absent", "off", "unavailable", "noaccess")
 _LIVE_REQS = {}             # id -> request (live_open)
 _LIVE_LOCK = threading.Lock()
@@ -8230,7 +8230,7 @@ RANGE_SPAN_MAX = 31 * 86400
 RANGE_LABELS = ("15m", "1h", "24h", "7d", "custom")
 RANGE_FINAL = ("done", "failed", "timeout", "skipped", "offline", "old", "noanswer")
 RANGE_POST_SLOTS = threading.BoundedSemaphore(4)   # range posts taken at once: 200 servers finishing together queue up
-RANGE_NODE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")
+RANGE_NODE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _RANGE_REQS = {}            # id -> request (range_open)
 _RANGE_LOCK = threading.Lock()
 _RANGE_DIR = {"path": ""}   # <state>/logspool (range_init)
