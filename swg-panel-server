@@ -8364,6 +8364,9 @@ def _range_tick(rec, snaps, seen, stale_s, now):
     late = now - rec["at"] > RANGE_LIFE
     for nid, ns in rec["ns"].items():
         s = ns["state"]
+        _lg = (snaps.get(nid) or {}).get("log") if isinstance(snaps.get(nid), dict) else None
+        if isinstance(_lg, dict) and isinstance(_lg.get("oldest"), (int, float)) and not isinstance(_lg.get("oldest"), bool):
+            ns["oldest"] = int(_lg["oldest"])               # how far back its own logs reach — for the header (q189 PLO-8)
         if s in RANGE_FINAL:
             continue
         if late:
@@ -8558,6 +8561,8 @@ def _range_why(rec, nid, ns):
             out.append(words + ": " + ", ".join(sorted(by[v])))
     if ns.get("off"):
         out.append("clock %d s %s — corrected" % (abs(ns["off"]), "ahead" if ns["off"] > 0 else "behind"))
+    if ns.get("oldest") and ns["oldest"] > rec["since"]:   # a budget that keeps less than the range (q189 PLO-8)
+        out.append("swg's own logs reach back only to %s" % _range_fmt_t(ns["oldest"] * 1000000, tz)[:19])
     return "; ".join(out)
 
 
