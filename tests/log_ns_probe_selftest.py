@@ -7,8 +7,8 @@ namespaces are refused (an OpenVZ/Virtuozzo-like container, an LXC that denies u
 whether journald's namespace TEMPLATE exists — it does there — so an update would have written the drop-ins and the
 panel, noded, sub, netctl and update units (and every relay / turn / WDTT / csqtt unit from its next start) would not run.
 
-Now a throwaway unit is run with LogNamespace=swg-probe once per boot (lib/common.sh, swg-noded, swg-netctl share the
-answer in /run/swg-log-ns, under one lock); refused, no drop-in is written and any already there goes. Driven here on the
+Now the installers and update.sh run a throwaway unit with LogNamespace=swg-probe (lib/common.sh) and keep the answer in
+/var/lib/swg-log-ns; swg-noded and swg-netctl only READ it. Refused, no drop-in is written and any already there goes. On the
 REAL functions with stubbed systemd-run / systemctl in a sandbox root (a refusal cannot be made on a normal host; the real
 success path is measured in the qualification record):
 
@@ -18,15 +18,17 @@ success path is measured in the qualification record):
   [2] update.sh ensure_log_ns, refused: daemon-reload, a long-running unit the drop-in had failed is restarted, a oneshot
       only reset (its next tick runs), and it is said
   [3] install-host.sh / install-node.sh: every site that writes a drop-in clears them instead where the probe refuses
-  [4] swg-noded: refused → log_ns_ok() False, the prefix drop-ins an earlier run wrote are removed (daemon-reload), the
-      budget row reads unsupported with the reason; ok → the drop-ins are written as before
-  [5] swg-netctl: refused → the budget is unsupported with the reason, no size file, no journald restart; ok → as before
+  [4] swg-noded READS the installs' answer (/var/lib/swg-log-ns) and never starts a unit itself: refused → log_ns_ok() False,
+      the prefix drop-ins an earlier run wrote are removed (daemon-reload), the budget row reads unsupported with the reason;
+      ok → the drop-ins are written as before; no answer (NixOS, no installer) → the template decides, as before IN-11
+  [5] swg-netctl reads it too: refused → the budget is unsupported with the reason, no size file, no journald restart; ok and
+      no answer → as before; it never starts a unit either
 
 Run: python3 tests/log_ns_probe_selftest.py        (0 = pass)
      SWG_SRC_ROOT=<dir>   run it against other copies of the files (the shipped ones: red on [1]–[5])
      --perturb-lib     lib/common.sh answers by the template alone again → RED on [1] [2]
-     --perturb-noded   swg-noded answers by the template alone again → RED on [4]
-     --perturb-netctl  swg-netctl answers by the template alone again → RED on [5]
+     --perturb-noded   swg-noded ignores the installs' answer (the template alone again) → RED on [4]
+     --perturb-netctl  swg-netctl ignores it → RED on [5]
      --perturb-clear   a refusal removes nothing (lib, noded) → RED on [1] [2] [4]
 """
 import json, os, re, shutil, subprocess, sys, tempfile, types
@@ -172,100 +174,82 @@ for f, n in (("install-host.sh", 5), ("install-node.sh", 1)):
     check("%s: all %d drop-in sites clear them where the probe refuses" % (f, n),
           len(sites) == n and all(x.endswith("; else swg_log_ns_clear; fi") for x in sites), sites)
 
-_geteuid = os.geteuid
 
 section("[4]", "swg-noded")
 src = rd("swg-noded")
-src = plant(src, '                                               "/lib/systemd/system"))\n                             and _log_ns_probe())',
+src = plant(src, '                                               "/lib/systemd/system"))\n                             and not _log_ns_refused())',
             '                                               "/lib/systemd/system")))', "--perturb-noded")
 src = plant(src, '        if _LOG_BUDGET.get("ns_refused"):\n', '        if False:\n', "--perturb-clear")
-def noded(rc, sr):
-    os.environ["SWG_LOG_NS_PROBE"] = os.path.join(sr, "run/swg-log-ns-noded")
+def answer(sr, name, v):   # what an install's probe kept (None: no install ever asked)
+    p = os.path.join(sr, "var/lib/" + name)
+    if v is not None:
+        put(sr, "var/lib/" + name, v + "\n")
+    return p
+def noded(v, sr):
+    os.environ["SWG_LOG_NS_PROBE"] = answer(sr, "swg-log-ns", v)
     N = types.ModuleType("n"); N.__dict__.update({"__name__": "n", "__file__": "swg-noded"})
     exec(compile(src.split("\nif __name__ ==")[0], "swg-noded", "exec"), N.__dict__)
-    N.LOG_NS_PROBE = os.environ["SWG_LOG_NS_PROBE"]
     N.NODE_KIND = "baremetal"; N.UNIT_DIR_PERSIST = os.path.join(sr, "etc/systemd/system")
     N.UNIT_DIR_RUNTIME = os.path.join(sr, "run/systemd/system"); N.unit_dir_persists = lambda: True
-    N._journal_dirs = lambda ns: [os.path.join(sr, "var/log/journal/MID." + ns)]
     N.LOG_NS_CONF = os.path.join(sr, "run/systemd/journald@swg-node.conf.d/swg.conf")
     log = []
-    def run(cmd, *a, **k):
-        log.append(" ".join(cmd))
-        if cmd[0] == "systemd-run":
-            os.makedirs(os.path.join(sr, "var/log/journal/MID.swg-probe"), exist_ok=True)
-            return subprocess.CompletedProcess(cmd, rc, "", "" if rc == 0 else "run-u4.service: Failed to set up mount namespacing (226/NAMESPACE)")
-        if cmd[:2] == ["systemctl", "list-units"]:
-            return subprocess.CompletedProcess(cmd, 0, "systemd-journald@swg-probe.service loaded active running x\n", "")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-    N.run = run
+    N.run = lambda cmd, *a, **k: log.append(" ".join(cmd)) or subprocess.CompletedProcess(cmd, 0, "", "")
     return N, log
-os.geteuid = lambda: 0                               # the probe runs as root in life
-try:
-    sr = sandbox("noded-refused")
-    for u in ("swg-relay@.service", "vk-turn-proxy-.service", "swg-wdtt-.service", "swg-csqtt-.service"):
-        put(sr, "etc/systemd/system/%s.d/swg-ns.conf" % u, "[Service]\nLogNamespace=swg-node\n")
-    N, log = noded(1, sr)
-    N._log_ns_dropins()
-    check("refused: log_ns_ok() is False", N.log_ns_ok() is False, log)
-    check("…the prefix drop-ins an earlier run wrote are removed, systemd reloads",
-          dropins(sr) == [] and "systemctl daemon-reload" in log, (dropins(sr), log))
-    check("…the probe namespace is cleaned up (its journald stopped, its directory gone)",
-          any(l.startswith("systemctl stop systemd-journald@swg-probe") for l in log)
-          and not os.path.exists(os.path.join(sr, "var/log/journal/MID.swg-probe")), log)
-    N._log_budget()
-    st = N._LOG_BUDGET.get("status") or {}
-    check("…the budget row reads unsupported, with the reason", st.get("unsupported") is True
-          and "cannot run in a journal namespace" in str(st.get("err")), st)
-    N2, log2 = noded(1, sr)
-    check("…a restarted noded starts no unit to ask again (the kept answer)", N2.log_ns_ok() is False
-          and not any(l.startswith("systemd-run") for l in log2), log2)
-    sr = sandbox("noded-ok")
-    N, log = noded(0, sr)
-    N._log_ns_dropins()
-    check("CONTROL ok: the four prefix drop-ins are written as before", len(dropins(sr)) == 4 and N.log_ns_ok() is True, (dropins(sr), log))
-finally:
-    os.geteuid = _geteuid
+sr = sandbox("noded-refused")
+for u in ("swg-relay@.service", "vk-turn-proxy-.service", "swg-wdtt-.service", "swg-csqtt-.service"):
+    put(sr, "etc/systemd/system/%s.d/swg-ns.conf" % u, "[Service]\nLogNamespace=swg-node\n")
+N, log = noded("refused", sr)
+N._log_ns_dropins()
+check("refused (the installs' answer): log_ns_ok() is False", N.log_ns_ok() is False, log)
+check("…the prefix drop-ins an earlier run wrote are removed, systemd reloads",
+      dropins(sr) == [] and "systemctl daemon-reload" in log, (dropins(sr), log))
+N._log_budget()
+st = N._LOG_BUDGET.get("status") or {}
+check("…the budget row reads unsupported, with the reason", st.get("unsupported") is True
+      and "cannot run in a journal namespace" in str(st.get("err")), st)
+check("…and the daemon starts no unit of its own to ask", not any(l.startswith("systemd-run") for l in log), log)
+sr = sandbox("noded-ok")
+N, log = noded("ok", sr)
+N._log_ns_dropins()
+check("CONTROL ok: the four prefix drop-ins are written as before", len(dropins(sr)) == 4 and N.log_ns_ok() is True, (dropins(sr), log))
+sr = sandbox("noded-none")
+N, log = noded(None, sr)
+N._log_ns_dropins()
+check("no answer (NixOS: no installer ever asked): the template decides, as before IN-11", len(dropins(sr)) == 4
+      and N.log_ns_ok() is True and not any(l.startswith("systemd-run") for l in log), (dropins(sr), log))
 
 section("[5]", "swg-netctl")
 nsrc = rd("swg-netctl")
-nsrc = plant(nsrc, '               for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")) \\\n        and log_ns_probe()\n',
+nsrc = plant(nsrc, '               for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system")) \\\n        and not log_ns_template_only()\n',
              '               for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"))\n',
              "--perturb-netctl")
-def netctl(rc, sr):
-    os.environ.update({"SWG_LOG_NS_PROBE": os.path.join(sr, "run/swg-log-ns-netctl"), "SWG_STATE_DIR": os.path.join(sr, "pst"),
+def netctl(v, sr):
+    os.environ.update({"SWG_LOG_NS_PROBE": answer(sr, "swg-log-ns", v), "SWG_STATE_DIR": os.path.join(sr, "pst"),
                        "SWG_LOG_NS_CONF": os.path.join(sr, "run/systemd/journald@swg-panel.conf.d/swg.conf"),
                        "SWG_PANEL_USER": "nobody-here", "SWG_PANEL_GROUP": "nogroup-here"})
     os.makedirs(os.path.join(sr, "pst"), exist_ok=True)
     M = types.ModuleType("m"); M.__dict__.update({"__name__": "m", "__file__": "swg-netctl"})
     exec(compile(nsrc.split("\nif __name__ ==")[0], "swg-netctl", "exec"), M.__dict__)
-    M.LOG_NS_PROBE = os.environ["SWG_LOG_NS_PROBE"]; M.LOG_NS_CONF = os.environ["SWG_LOG_NS_CONF"]
+    M.LOG_NS_CONF = os.environ["SWG_LOG_NS_CONF"]
     log, docs = [], []
-    def run(argv, env=None, timeout=None):
-        log.append(" ".join(argv))
-        if argv[0] == "systemd-run":
-            return rc, "" if rc == 0 else "run-u4.service: Failed to set up mount namespacing (226/NAMESPACE)"
-        if argv[:2] == ["systemctl", "list-units"]:
-            return 0, "systemd-journald@swg-probe.service loaded active running x\n"
-        return 0, ""
-    M.run = run; M._read_log_status = lambda: {}; M._write_log_status = docs.append
+    M.run = lambda argv, env=None, timeout=None: log.append(" ".join(argv)) or (0, "")
+    M._read_log_status = lambda: {}; M._write_log_status = docs.append
     M.log_budget_mb = lambda ps: 100; M.log_level = lambda: M.LOG_INFO
     return M, log, docs
-os.geteuid = lambda: 0
-try:
-    sr = sandbox("netctl-refused")
-    M, log, docs = netctl(1, sr)
+sr = sandbox("netctl-refused")
+M, log, docs = netctl("refused", sr)
+M.log_budget({})
+d = docs[-1] if docs else {}
+check("refused: the panel's budget is unsupported, with the reason", d.get("unsupported") is True
+      and "cannot run in a journal namespace" in str(d.get("err")), (d, log))
+check("…no size file, no journald restart, no unit started", not os.path.exists(M.LOG_NS_CONF)
+      and not any("try-restart" in l or l.startswith("systemd-run") for l in log), log)
+for label, v in (("ok", "ok"), ("no answer", None)):
+    sr = sandbox("netctl-" + label.replace(" ", ""))
+    M, log, docs = netctl(v, sr)
     M.log_budget({})
-    d = docs[-1] if docs else {}
-    check("refused: the panel's budget is unsupported, with the reason", d.get("unsupported") is True
-          and "cannot run in a journal namespace" in str(d.get("err")), (d, log))
-    check("…no size file, no journald restart", not os.path.exists(M.LOG_NS_CONF) and not any("try-restart" in l for l in log), log)
-    sr = sandbox("netctl-ok")
-    M, log, docs = netctl(0, sr)
-    M.log_budget({})
-    check("CONTROL ok: the size file is written and its journald restarted, as before",
+    check("CONTROL %s: the size file is written and its journald restarted, as before" % label,
           os.path.exists(M.LOG_NS_CONF) and any("try-restart systemd-journald@swg-panel.service" in l for l in log), (docs, log))
-finally:
-    os.geteuid = _geteuid
 
 shutil.rmtree(T, ignore_errors=True)
 print("")
