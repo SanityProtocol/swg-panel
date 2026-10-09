@@ -41,6 +41,10 @@
        flagged four times): every mode declares `fanseen` and only a (source, destination) pair not met in the last
        minute reaches the meter; and the real nft accepts every mode's whole table where `sudo -n nft` exists
   [10] a node with nothing to do pays no subprocess per sync once it has looked; a new strict subnet still builds
+  [24] 1.8.9 qualification NR-2: the state is what is IN FORCE — a load the kernel refuses reports "error" with nft's
+       reason in the snapshot (it read "ok" while nothing was blocked), a later accepted load clears it; a kernel that
+       refuses only the hit lines' `log` (no nft_log / nf_log_syslog: `nft -f` is one transaction, so the whole table went
+       with it) gets the same table without them — said once, and not reloaded on every pass after
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
      --perturb    plant each old behaviour in turn → every one must go RED (exit 0 when all are caught)
@@ -99,6 +103,9 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "mech-twice":   ('        for ln in mech.splitlines():                              # ONE rule carries', '        for ln in (run(["nft", "list", "table", "inet", "swg_mech"]).stdout or "").splitlines():   # ONE rule carries'),
     "ips-coupled":  ('                out.setdefault("*", {})["torrent_ips"] = [str(i) for i in ips]', '                out["*"]["torrent_ips"] = [str(i) for i in ips]'),
     "no-retire":    ('        if not _P2P["retired"]:', '        if False:'),
+    "p2p-ok-on-fail": ('            _P2P.update(on=True, state="error",', '            _P2P.update(on=True, state="ok" if ih else "degraded",'),
+    "p2p-log-whole":  ('        if r.returncode != 0 and logged:', '        if False:'),
+    "p2p-nolog-once": ('                _P2P["nolog"] = True\n', '                pass\n'),
 }
 
 
@@ -113,14 +120,17 @@ class Box:
     """A stand-in for the box: records every command, answers the few reads the code makes."""
     def __init__(self, ih=True, wan="eth0"):
         self.cmds, self.tables, self.rules, self.ih, self.wan, self.tables_rt = [], {}, [], ih, wan, {}
+        self.refuse = None                # text -> True: this `nft -f` is refused WHOLE, as the kernel refuses a batch
 
     def run(self, args, input_text=None, timeout=20):
         a = list(args); self.cmds.append((a, input_text))
-        out, rc = "", 0
+        out, rc, err = "", 0, ""
         if a[:2] == ["nft", "-f"]:
             text = input_text if a[2] == "-" else open(a[2]).read()
             if "swg_p2p_probe" in text:
                 rc = 0 if self.ih else 1
+            elif self.refuse and self.refuse(text):
+                rc, err = 1, REFUSED
             else:
                 for name in ("swg_p2p", "swg_mech"):
                     if "table inet %s {" % name in text:
@@ -146,8 +156,14 @@ class Box:
             rc = 0 if len(self.rules) < before else 2
         elif a[:3] == ["iptables", "-t", "mangle"] and "-C" in a:
             rc = 1
-        r = types.SimpleNamespace(returncode=rc, stdout=out, stderr="")
+        r = types.SimpleNamespace(returncode=rc, stdout=out, stderr=err)
         return r
+
+
+# What nft prints when the kernel refuses one rule of a batch — here the hit line's `log` on a kernel without nft_log /
+# nf_log_syslog. `nft -f` is one transaction: the whole table goes with that rule (shown on the real kernel in q189 NR-2).
+REFUSED = ("/dev/stdin:30:5-62: Error: Could not process rule: No such file or directory\n"
+           '    limit rate 20/minute log prefix "swg-p2p hit: " level info\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n')
 
 
 def run_checks(src):
@@ -493,6 +509,53 @@ def run_checks(src):
     ok(len(b.cmds) == n, "[10] a node with nothing to do runs no subprocess once it has looked (small fleets feel nothing)")
     m._ensure_p2p(None, {"10.67.0.0/24": ["torrents"]}, {}, {"changed": 0, "errors": []})
     ok("swg_p2p" in b.tables, "[10] …and still builds the moment a strict subnet appears")
+
+    # [24] NR-2 — the state is what is IN FORCE, and a log line never costs the guard
+    import contextlib as _cl
+    def p2p_snap(m):
+        st = None
+        with _cl.suppress(Exception):
+            st = m.smart_status()
+        return (st or {}).get("p2p")
+    p2p_loads = lambda b: sum(1 for a, t in b.cmds if a[:3] == ["nft", "-f", "-"] and "table inet swg_p2p {" in (t or ""))
+    m, b = fresh(); said = []
+    m.log = lambda lvl, msg, *a: said.append((lvl, (msg % a) if a else msg)); m.log_level = lambda: m.LOG_INFO
+    b.refuse = lambda t: "table inet swg_p2p {" in t                       # the kernel refuses the table, log or not
+    res = {"changed": 0, "errors": []}
+    m._ensure_p2p({"action": "block"}, {}, {}, res)
+    sp = p2p_snap(m)
+    ok("swg_p2p" not in b.tables and m._P2P["state"] == "error",
+       "[24] a load the kernel refused reports state error, never ok (%r)" % m._P2P["state"])
+    ok((sp or {}).get("state") == "error" and (sp or {}).get("mode") == "block"
+       and (sp or {}).get("detail") == "Error: Could not process rule: No such file or directory",
+       "[24] …and the node's report says so, with nft's reason, its stdin position dropped (%s)" % sp)
+    ok(any("p2p nft load failed" in e for e in res["errors"]), "[24] …and the failure is still logged as an error")
+    b.refuse = None                                                        # the kernel takes it on a later pass
+    m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
+    sp = p2p_snap(m)
+    ok("swg_p2p" in b.tables and (sp or {}).get("state") == "ok" and "detail" not in (sp or {}),
+       "[24] once a load is taken: ok, and no stale reason (%s)" % sp)
+    # the hit lines' `log` is refused (no nft_log / nf_log_syslog): the guard loads without them, once
+    m, b = fresh(); said = []
+    m.log = lambda lvl, msg, *a: said.append((lvl, (msg % a) if a else msg)); m.log_level = lambda: m.LOG_INFO
+    b.refuse = lambda t: "table inet swg_p2p {" in t and " log prefix " in t
+    res = {"changed": 0, "errors": []}
+    m._ensure_p2p({"action": "block"}, {}, {}, res)
+    t24 = b.tables.get("swg_p2p", "")
+    ok(" drop" in t24 and " log prefix " not in t24 and m._P2P["state"] == "ok" and not res["errors"],
+       "[24] a kernel that refuses only the `log` lines still gets the guard — the same table without them (%r, %s)"
+       % (m._P2P["state"], res["errors"]))
+    ok(sum(1 for lvl, s in said if lvl == m.LOG_WARNING and "log lines" in s) == 1, "[24] …said once, at warning (%s)" % said)
+    n24 = p2p_loads(b)
+    for _ in range(3):
+        m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
+    ok(p2p_loads(b) == n24 and m._P2P["state"] == "ok",
+       "[24] …and the passes after it load nothing: a reload would empty @flag and @fanseen every pass (%d → %d loads)"
+       % (n24, p2p_loads(b)))
+    m, b = fresh(); m.log_level = lambda: m.LOG_INFO
+    m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
+    ok(" log prefix " in b.tables.get("swg_p2p", "") and p2p_loads(b) == 1,
+       "[24] CONTROL: a kernel that takes the log lines gets them, in one load")
     return fails
 
 
