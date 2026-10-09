@@ -1736,7 +1736,7 @@ if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && teardown_bare_panel   # host/master convert: stop+remove the bare panel (and move its state aside)
   # ONLY tear the bare NODE down when its datapath is actually being converted (master/node). A HOST-only
   # convert moves just the panel → docker; the co-located bare node must stay UP + keep serving its peers.
-  [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-${SWG_CONVERT_TURNS:-}}
+  [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-}
   # WDTT servers are their own systemd units (not covered by lc_teardown_baremetal's interface/turn teardown) — stop
   # them at the switch so their DTLS/WG ports free up for the container's WDTT, and only NOW (past the point of no
   # return) so a mid-convert abort never drops WDTT while the bare node is still the live install.

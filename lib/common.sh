@@ -1088,8 +1088,9 @@ migrate_csqtt(){
 #   to-docker    the record IS the config (load_turn_proxies returns it as-is on a container node) and swg-noded's
 #                background reconcile recreates each container from it, downloading the binary. Carrying it is enough.
 #   to-baremetal a bare node reads its turn set from the UNITS ON DISK and drops record entries with no unit, so the
-#                record alone shows nothing on the panel until each proxy is re-created. convert.sh's turn_to_bare
-#                writes those units (it downloads the binary per fork); this does not, and says so at the call site.
+#                record alone shows nothing on the panel until each proxy is re-created. install-node.sh's
+#                migrate_docker_turns writes those units (it downloads the binary per fork); this does not, and says so
+#                at the call site.
 migrate_turn_record(){
   local dir="$1" dd="${2:-/opt/swg-panel-docker}" nd="${3:-}" src dst
   [ -n "$nd" ] || nd="$dd/data/node"

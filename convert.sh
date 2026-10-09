@@ -55,8 +55,6 @@ sub(){  echo "${C_BL}::${RESET} $*"; }                    # indented sub-item / 
 ok(){   echo "${C_GREEN}✓${RESET} $*"; }
 warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
-# ── turn-proxy list rows for the migration prompts (the per-server summary's rows live in lib/common.sh now) ──
-# the interface a turn-proxy forwards to: the iface whose ListenPort matches the connect port (else empty)
 # ── the docker-only one-click updater, retired on the way OUT of docker ────────────────────────────────
 # `wire_host_updater` lays `swg-update{,-check}` + swg-update.service/.timer down on EVERY docker profile,
 # node included, because a container cannot recreate itself: the panel/node touches a trigger and this
@@ -115,16 +113,6 @@ for n, ic in (d.get("interfaces") or {}).items():
   done
   printf '%s' "$out"; }
 
-fwd_iface_for(){ local cp="${1##*:}" f lp; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue; lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" | sed -n 1p)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return 0; }; done; return 0; }   # no match → empty + success (a non-zero here would trip set -e in callers)
-# turn_row <service> <listen> <connect> — green service + "listen → connect (iface)"
-turn_row(){ local fw; fw="$(fwd_iface_for "${3:-}")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$1" "$RESET" "${2:-?}" "${3:-?}" "${fw:+ ($fw)}"; }
-# turn_unit_lc <unit-path> — echo "<listen>\t<connect>" for a host turn-proxy systemd unit (turn.env, else ExecStart)
-turn_unit_lc(){ local u="$1" svc inst envf exe lis="" con=""
-  svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
-  if [ -f "$envf" ]; then lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" | sed -n 1p)"; [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; fi   # SWG_DIAL: the dialled host, when it differs from the bind
-  if [ -z "$lis" ]; then exe="$(sed -n 's/^ExecStart=//p' "$u" | sed -n 1p)"
-    lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"; con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"; fi
-  printf '%s\t%s\n' "$lis" "$con"; }
 detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | sed -n 1p || true; }   # || true: no default route → pipeline nonzero; caller falls back to eth0
 # import a (docker) conf as a BARE-METAL conf: drop any PostUp/PostDown, then add host NAT (the bare
 # datapath has no container to masquerade for it). Keys + Address + Amnezia params carry over.
@@ -223,185 +211,10 @@ import_bare_conf(){ # <src> <dest> [<conf whose hooks an ADOPTED src takes back>
   chmod 600 "$dest"
 }
 
-cyn(){ local a; [ "${ASSUME_YES:-no}" = yes ] && { printf '  %s (Y/n): y\n' "$1"; return 0; }
-  printf '  %s (Y/n): ' "$1"; read -r a 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { a=y; echo "y  (no terminal — default taken)"; }; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
-
 # Lifecycle signalling is handled by lc_init (lib/common.sh): it's armed at the point we tell the panel
 # "converting…", and its EXIT/INT traps then emit converted-* (success) / convert-aborted / convert-failed.
 # docker→bare runs install-node.sh as a subprocess (this script stays in control → its trap fires); bare→docker
 # execs install-docker.sh, which carries SWG_CONVERT_DIR so IT emits the terminal.
-
-# install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
-turn_install_host(){
-  local svc="$1" owner="$2" lis="$3" con="$4" params="$5" pin="${6:-}" inst dir bin arch url
-  case "$pin" in *[!0-9.]*|"") pin="";; esac   # Listen on: an IPv4 address or nothing
-  local ok=1 ver fork fdir sbin mk
-  inst="${svc#vk-turn-proxy-}"; fork="${inst%-*}"
-  fdir="/opt/vk-turn-proxy/.bin/$fork"; sbin="$fdir/server"   # ONE binary per fork — shared by every instance
-  dir="/opt/vk-turn-proxy/$inst"; bin="$dir/server"          # this instance: turn.env + a 'server' symlink → the shared binary
-  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
-  # detect-and-REFUSE: forks publish server-linux-amd64/arm64 only — skip rather than fetch a wrong-arch binary
-  [ -n "$arch" ] || { warn "  $(b "$svc") — no turn-proxy build for $(uname -m) (amd64/arm64 only); skipping"; return 0; }
-  url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
-  mkdir -p "$fdir" "$dir"
-  mk="/var/lib/swg-noded/turn-pending/$svc"; mkdir -p /var/lib/swg-noded/turn-pending 2>/dev/null || true
-  printf '%s\n%s\n%s\n' "$lis" "$con" "$owner" > "$mk" 2>/dev/null || true   # the running node shows this as "installing" until its unit is up
-  if [ -x "$sbin" ]; then info "  $(b "$svc") — reusing the $fork binary already downloaded"
-  else
-    info "  migrating $(b "$svc") — downloading $owner from GitHub (up to ~2 min)…"
-    dl_turn_bin "$owner" "$arch" "$sbin" && chmod +x "$sbin" || ok=0
-  fi
-  ln -sfn "../.bin/$fork/server" "$bin"   # unit ExecStart points here; resolves to the shared binary
-  # remember the fork's settings so it survives a failed download: repo.txt (reinstall owner) + version (shared), turn.env + unit.
-  printf '%s\n' "$owner" > "$fdir/repo.txt"; chmod 644 "$fdir/repo.txt" 2>/dev/null || true
-  ver=unknown; [ "$ok" = 1 ] && ver="$(curl -fsS -o /dev/null -w '%{redirect_url}' --connect-timeout 15 --max-time 30 "$url" 2>/dev/null | sed -nE 's#.*/releases/download/([^/]+)/.*#\1#p')"
-  printf '%s\n' "${ver:-unknown}" > "$fdir/version.txt"; chmod 644 "$fdir/version.txt" 2>/dev/null || true
-  # SWG_LISTEN is what the proxy BINDS; written as the dialled host (bash cannot decide a bind) — swg-noded's
-  # heal_turn_binds re-renders it on the node's first sync when that host is not on this box, or a pin is set.
-  cat > "$dir/turn.env" <<EOF
-SWG_LISTEN=${lis}
-${pin:+SWG_PIN=${pin}
-}SWG_CONNECT=${con}
-SWG_PARAMS=${params}
-EOF
-  cat > "/etc/systemd/system/$svc.service" <<EOF
-[Unit]
-Description=vk-turn-proxy ($owner) — ${lis} → ${con}
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-EnvironmentFile=-${dir}/turn.env
-ExecStart=${bin} -listen \${SWG_LISTEN} -connect \${SWG_CONNECT} \$SWG_PARAMS
-Restart=on-failure
-RestartSec=3
-$TURN_HARDENING
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload 2>/dev/null || true
-  # TURN_DEFER_START: write+enable but DON'T start (docker still holds the listen port) — the switch starts it later.
-  if [ -n "${TURN_DEFER_START:-}" ]; then systemctl enable "$svc" 2>/dev/null || true
-  else systemctl enable --now "$svc" 2>/dev/null || true; fi   # without the binary the unit just stays down (panel shows it, Reinstall re-fetches)
-  rm -f "$mk" 2>/dev/null || true   # done → the node reports the real unit now (up, or down if the download failed)
-  [ "$ok" = 1 ]
-}
-
-# pre-download every fork's turn binary into the shared cache (/opt/vk-turn-proxy/.bin/<fork>/server) WHILE the
-# docker node is still up + serving — so the post-switch turn_to_bare reuses them (no slow download after the cutover).
-turn_predownload(){
-  local rec="$DOCKER_DIR/data/node/turn-proxy.json" list svc owner lis con params arch fork fdir sbin n=0
-  command -v python3 >/dev/null 2>&1 || return 0
-  [ -f "$rec" ] || return 0
-  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
-  [ -n "$arch" ] || return 0   # no turn-proxy build for this arch → nothing to pre-download
-  list="$(python3 - "$rec" <<'PY' 2>/dev/null
-import json, sys
-try: d = json.load(open(sys.argv[1])); tps = d.get("turn_proxies") or []
-except Exception: tps = []
-for t in (tps if isinstance(tps, list) else []):
-    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), (t.get("params") or "")]))
-PY
-)"
-  [ -n "$list" ] || return 0
-  info "Pre-downloading turn-proxy binaries while the docker node still serves (keeps the cutover quick)…"
-  while IFS="$(printf '\t')" read -r svc owner lis con params; do
-    [ -n "$svc" ] && [ -n "$owner" ] || continue
-    fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"; fdir="/opt/vk-turn-proxy/.bin/$fork"; sbin="$fdir/server"
-    [ -x "$sbin" ] && { sub "$(b "$fork") binary already present"; continue; }
-    mkdir -p "$fdir"
-    info "Downloading $(b "$fork") turn-proxy binary…"
-    if dl_turn_bin "$owner" "$arch" "$sbin"; then chmod +x "$sbin" 2>/dev/null || true; sub "downloaded $(b "$fork") binary"; n=$((n+1))
-    else warn "  $fork: pre-download failed — turn_to_bare will retry it after the switch"; rm -f "$sbin" 2>/dev/null || true; fi
-  done <<EOF
-$list
-EOF
-  [ "$n" -gt 0 ] && sub "cached $n turn-proxy binary(ies) — the switch + migration will be fast"
-  return 0
-}
-
-# docker turn record → host systemd units, then drop the swg-turn containers
-turn_to_bare(){
-  local rec="$DOCKER_DIR/data/node/turn-proxy.json" list svc owner lis con params
-  command -v python3 >/dev/null 2>&1 || return 0
-  [ -f "$rec" ] || return 0
-  list="$(python3 - "$rec" <<'PY' 2>/dev/null
-import json, sys
-try: d = json.load(open(sys.argv[1])); tps = d.get("turn_proxies") or []
-except Exception: tps = []
-for t in (tps if isinstance(tps, list) else []):
-    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), t.get("bind_ip") or "-", (t.get("params") or "")]))
-PY
-)"
-  [ -n "$list" ] || return 0
-  echo; info "Turn-proxy services to migrate (host systemd units written now; brought up at the switch):"; echo
-  # pin before params, "-" when none: tab is IFS whitespace, so an empty field would collapse and shift params into it
-  while IFS="$(printf '\t')" read -r svc owner lis con pin params; do [ -n "$svc" ] && turn_row "$svc" "$lis" "$con"; done <<EOF
-$list
-EOF
-  echo
-  cyn "Transfer these turn-proxies into the bare-metal node?" || { info "  leaving them on docker — they stop at the switch; you can add fresh ones in the next step"; return 0; }
-  # Write each host unit NOW, enabled but NOT started, WHILE the docker turn containers still hold the listen
-  # ports — install-node starts them after the switch frees the ports.
-  while IFS="$(printf '\t')" read -r svc owner lis con pin params; do
-    [ -n "$svc" ] || continue
-    [ -n "$owner" ] || { warn "  $svc: no fork in the record — skipping"; continue; }
-    if TURN_DEFER_START=1 turn_install_host "$svc" "$owner" "$lis" "$con" "$params" "${pin#-}"; then
-      sub "prepared $(b "$svc") → host systemd (starts at the switch)"; MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"
-    else
-      warn "  $svc: binary download failed — its unit + settings were kept, so it shows on the panel as failed; open it and press Reinstall (no re-entry needed)"
-    fi
-  done <<EOF
-$list
-EOF
-}
-
-# host systemd turn units → docker record (COPY ONLY — the host units are torn down later, at the switch, so
-# an abort mid-copy never loses a turn-proxy). Records the migrated services in MIGRATED_TURNS for the teardown.
-turn_to_docker(){
-  local units u svc exe lis con params owner envf _lis _con rec="$DOCKER_DIR/data/node/turn-proxy.json"
-  command -v python3 >/dev/null 2>&1 || return 0
-  units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
-  [ -n "$units" ] || return 0
-  echo; info "Turn-proxy services to migrate:"; echo
-  # NB: '|| true' — turn_unit_lc has no trailing newline, so read returns 1 at EOF and would abort under set -e.
-  for u in $units; do svc="$(basename "$u" .service)"; IFS="$(printf '\t')" read -r _lis _con < <(turn_unit_lc "$u") || true; turn_row "$svc" "$_lis" "$_con"; done
-  echo
-  cyn "Transfer these turn-proxies into the docker node?" || { info "  left the host turn-proxies running"; return 0; }
-  mkdir -p "$(dirname "$rec")"
-  for u in $units; do
-    svc="$(basename "$u" .service)"; pin=""   # per unit: a legacy one has none, and must not inherit the last one's
-    exe="$(sed -n 's/^ExecStart=//p' "$u" | sed -n 1p)"
-    case "$exe" in
-      *'${SWG_'*)   # EnvironmentFile form — read listen/connect/params out of turn.env
-        envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" | sed -n 1p)"
-        lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" 2>/dev/null | sed -n 1p)"   # SWG_DIAL = what clients dial when it differs from the bind (swg-noded turn_bind); SWG_LISTEN is what it binds
-        [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
-        pin="$(sed -n 's/^SWG_PIN=//p' "$envf" 2>/dev/null | sed -n 1p)"   # Listen on — carried into the container record
-        con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | sed -n 1p)"
-        params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | sed -n 1p)" ;;
-      *)            # legacy baked-ExecStart form
-        lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
-        con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
-        params="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}[^ ]*[[:space:]]*\(.*\)$/\1/p')" ;;
-    esac
-    owner="$(sed -n 's/.*vk-turn-proxy (\([^)]*\)).*/\1/p' "$u" | sed -n 1p)"
-    python3 - "$rec" "$svc" "$owner" "$lis" "$con" "$params" "${pin:-}" <<'PY' || true
-import json, sys, re
-p, svc, owner, lis, con, params, pin = sys.argv[1:8]
-try: d = json.load(open(p)); tps = d.get("turn_proxies") if isinstance(d, dict) else None; tps = tps if isinstance(tps, list) else []
-except Exception: tps = []
-tps = [t for t in tps if t.get("service") != svc]
-m = re.search(r"-wrap-key[ =]+(\S+)", params or "")
-tps.append({"service": svc, "listen": lis, "connect": con, "params": (params or "").strip(),
-            "wrap_key": (m.group(1) if m else ""), "owner": owner, **({"bind_ip": pin} if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", pin or "") else {})})
-json.dump({"turn_proxies": tps}, open(p, "w"))
-PY
-    MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"   # staged only — torn down at the switch (below)
-    sub "staged $(b "$svc") → docker record (recreated as a container on the node's first run)"
-  done
-}
 
 CHECK=no; [ "${1:-}" = --check ] && { CHECK=yes; shift; }
 # Accept the spelling we PRINT. Every banner and sentence here says "bare-metal", so that is what people type —
@@ -439,11 +252,10 @@ FROM="$(_norm_method "${1:-}")"; TO="$(_norm_method "${2:-}")"; ROLE="$(_norm_ro
 # method installed reached here and died at argument parsing, after the operator had already answered the
 # menu and the "proceed with the conversion" confirm. It used to be dropped in silence; refusing every
 # unrecognised word turned that into a failed conversion for a flag the front door itself forwards.
-# Honoured, not merely tolerated: this script has its own yes/no questions (the turn-proxy transfer), and
-# `-y` means the same thing here as everywhere else. `cyn` reads it.
-ASSUME_YES=no
+# Accepted, and nothing more: this script asks no question of its own (the turn-proxy transfer questions belonged to
+# a second migration path nothing called — removed, 1.8.9 qualification IN-5; the installers it runs ask theirs).
 for _x in "${@:4}"; do case "$_x" in
-  -y|--yes) ASSUME_YES=yes ;;
+  -y|--yes) ;;
   --dry-run) die "convert.sh has no dry run — a conversion cannot be rehearsed by rendering files, because it takes the old method down before the new one is up. Use $(b "convert.sh --check $FROM $TO $ROLE") for the port/interface pre-flight." ;;
   *) die "‘$_x’ isn't an option here. $_USAGE" ;;
 esac; done
@@ -483,7 +295,6 @@ write_recovery(){   # write_recovery <space-separated interface names>
     } > "$RECOVERY" ) 2>/dev/null && chmod 600 "$RECOVERY" 2>/dev/null || true
 }
 clear_recovery(){ rm -f "$RECOVERY" 2>/dev/null || true; }
-MIGRATED_TURNS=""   # turn-proxy services turn_to_bare moved onto host systemd (for the final summary)
 # the per-server summary now lives in lib/common.sh (print_summary) — shared by every install / convert / update.
 # a LIVE docker node = an actual swg-node container (running or stopped). A bare $DOCKER_DIR with no
 # container is just a stale leftover (e.g. a previous convert that didn't finish moving it aside).
@@ -1319,7 +1130,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     || warn "install-node.sh reported an error — check the node on the panel."
   reap_adopted_container_nat $names   # the node container's rule for an adopted interface (see reap_container_nat)
 
-  # move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker convert isn't
+  # move the old docker dir aside so a later bare→docker convert isn't
   # blocked by the leftover .env — UNLESS the docker PANEL is still running from this dir (a co-located master-split:
   # only the node converted, the panel stays on docker and needs the dir + its compose/.env + bind mounts).
   # The docker updater has no job on a bare NODE (a bare node has none by design) — but the same files ARE the
@@ -1431,7 +1242,7 @@ PY
   _carry="$(mktemp 2>/dev/null || echo /tmp/swg-carry.$$)"; carry_dropins_to_env "$_carry" swg-noded   # its own drop-ins → .env
   lc_handoff   # exec replaces us → install-docker.sh owns the terminal; SWG_CONVERT_DIR makes it emit "converted-docker"
   exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" NODE_ENDPOINT="$NEP" TLS_VERIFY="$NVERIFY" TLS_FINGERPRINT="$NFP" SWG_CONVERT_DIR=convert-docker \
-       SWG_CONVERT_TURNS="$MIGRATED_TURNS" ${NDNS:+DNS="$NDNS"} SWG_CARRY_ENV="$_carry" bash "$SRC/install-docker.sh" node
+       ${NDNS:+DNS="$NDNS"} SWG_CARRY_ENV="$_carry" bash "$SRC/install-docker.sh" node
 fi
 
 die "unsupported conversion: $FROM → $TO ($ROLE) — supported: baremetal→docker and docker→baremetal, for node, host or master."
