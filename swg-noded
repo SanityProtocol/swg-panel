@@ -7101,6 +7101,10 @@ _P2P_SIGS = (   # (counter, l4, raw-payload match) — exact protocol constants 
     ("bt_tcp", "tcp", "@ih,0,128 0x13426974546f7272656e742070726f74"),
     ("bt_utp", "udp", "@ih,160,128 0x13426974546f7272656e742070726f74"),   # the same handshake inside µTP's 20-byte header
     ("dht",    "udp", "@ih,0,96 { 0x64313a6164323a696432303a, 0x64313a7264323a696432303a }"),   # d1:ad2:id20: / d1:rd2:id20:
+    # libtorrent's DHT bootstrap get_peers carries a `bs` key, which sorts before `id`: d1:ad2:bsi1e2:id20: — the first 16
+    # bytes of it (the compare limit). Missed, 4 queries left per client start and 2 were answered (1.8.9 qualification
+    # V-FEAT-B F-1); 1.8.8's 6881-6889 port hint had dropped them on an interface with the chip on.
+    ("dht",    "udp", "@ih,0,128 0x64313a6164323a6273693165323a6964"),   # d1:ad2:bsi1e2:id
     ("udptrk", "udp", "@ih,0,64 0x0000041727101980"),                     # BEP-15 connect magic
 )
 
