@@ -25,13 +25,18 @@ gate only ever read the three writers that HAVE a wrapper. Found during 1.8.5 qu
 run the "install from main, update from dev" cell: the node would have fetched main's bootstrap and the cell
 would have passed while measuring nothing.
 
+[5] (1.8.9 qualification IN-8) update.sh's "re-run the host installer" hint (the panel unit is missing) names the ref the
+    box follows — `SWG_REF=dev; ` inside the string and dev's bootstrap — not main: followed on a dev box, it re-installed main
+
 Run: python3 tests/update_ref_selftest.py (0 = pass).  --perturb restores the hardcoded `main`.
+     --perturb-hint   the hint pinned to main again (e66018f) → RED on [5] only
 """
 import os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
+PERTURB_HINT = "--perturb-hint" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -179,7 +184,34 @@ check("update.sh HEALS the node's update_ref on every update",
 check("…from SWG_REF, defaulting to main",
       're.search' and 'want="${SWG_REF:-main}"' in nsrc["update.sh"])
 
+print("\n[5] update.sh's hint for a missing panel unit names the box's ref (IN-8)")
+U = open(os.path.join(ROOT, "update.sh"), encoding="utf-8").read()
+m = re.search(r"^ensure_panel_unit_warn\(\)\{.*?^\}\n", U, re.S | re.M)
+HINT = m.group(0) if m else ""
+if PERTURB_HINT:
+    _a = re.search(r'\n  local _r=[^\n]*\n  warn "    sudo bash -c[^\n]*\n', HINT)
+    assert _a, "perturbation anchor missing — would FALSE-PASS"
+    HINT = HINT.replace(_a.group(0), "\n  warn '    sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)\" -- host'\n")
+_pd = tempfile.mkdtemp(prefix="unitwarn-"); open(os.path.join(_pd, "swg-panel-server"), "w").close()
+assert HINT.count("/etc/systemd/system/swg-panel-server.service") == 1, "the unit check is not where [5] reads it"
+HINT = HINT.replace("/etc/systemd/system/swg-panel-server.service", _pd + "/no-such.service")   # the unit is missing, on any box
+for ref, want in (("dev", 'sudo bash -c "SWG_REF=dev; $(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/dev/bootstrap.sh)" -- host'),
+                  ("main", 'sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- host'),
+                  (None, 'sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- host')):
+    env = {k: v for k, v in os.environ.items() if k != "SWG_REF"}
+    if ref is not None:
+        env["SWG_REF"] = ref
+    r = subprocess.run(["bash", "-c", 'set -euo pipefail\nwarn(){ echo "WARN $*"; }; PANEL_DIR=%s; DID_FAIL=no\n%s\nensure_panel_unit_warn\necho "FAIL=$DID_FAIL"'
+                        % (_pd, HINT)], capture_output=True, text=True, env=env)
+    line = next((l for l in r.stdout.splitlines() if "bootstrap.sh" in l), "")
+    check("SWG_REF=%-7s → the hint names %s" % (ref if ref is not None else "(unset)", "dev, inside the string" if ref == "dev" else "main"),
+          line.strip().endswith(want) and "FAIL=yes" in r.stdout, (line, r.stderr[-200:]))
+
 print()
+if PERTURB_HINT:
+    _red = [f for f in FAILS if f.startswith("SWG_REF=")]
+    print("perturb-hint: %s" % ("RED as it must be (%d), all [5]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB:
     ok = bool(FAILS)
     print(("PERTURB OK — %d checks went red: the wrapper hardcoded `main` again" % len(FAILS)) if ok
