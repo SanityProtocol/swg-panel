@@ -1678,6 +1678,9 @@ def load_turn_proxies():
             else:
                 seen[s] = len(uniq); uniq.append(t)
         tp = uniq
+        for t in tp:                    # the bind each container runs with, as this process knows it (see _DTURN_BINDS)
+            if _DTURN_BINDS.get(t["service"]):
+                t["bind"] = _DTURN_BINDS[t["service"]]
         _dturn_attach_running(tp)
         _attach_turn_version(tp)
         _attach_turn_src_ips(tp)
@@ -18299,6 +18302,15 @@ def _params_set_wrapkey(params, key):
         return re.sub(r"-password[ =]+\S+", "-password " + key, params)
     return (params + " -wrap-key " + key).strip()
 
+# What each turn container binds, as this process last launched it (_dturn_args) or read it off the container
+# (_dturn_bind_stale). The report reads it FIRST (load_turn_proxies), so the record keeps ONE writer: apply_turn, whose `rec`
+# comes from load_turn_proxies, persists it with its next write. A second writer in the background reconcile lost the race
+# it was written for — apply_turn writes the copy it read when it started, and the release-day restart runs both at once
+# (the heal on noded's start, the first sync's apply_turn) — so the node went on reporting the old bind (1.8.9 qualification
+# DN-1, review).
+_DTURN_BINDS = {}
+
+
 def _dturn_args(tp):
     listen = tp.get("listen", "")
     if NODE_NET == "bridge" and ":" in listen:
@@ -18308,6 +18320,8 @@ def _dturn_args(tp):
     else:
         listen = turn_bind(listen, pin=tp.get("bind_ip"), prev=tp.get("bind"))   # host networking: Listen on, else what lands on the box, else every address
     tp["bind"] = listen                                # reported with the proxy (the record keeps what clients dial)
+    if tp.get("service"):
+        _DTURN_BINDS[tp["service"]] = listen           # …first from memory: a launch from the background is not in `rec`
     args = ["-listen", listen, "-connect", tp.get("connect", "")]
     p = (tp.get("params") or "").strip()
     if p:
@@ -18567,6 +18581,7 @@ def _dturn_bind_stale(svc, tp):
     except (ValueError, TypeError, IndexError, AttributeError):
         _TURN_BIND_HEALED.add(svc)                     # docker could not say → leave it alone
         return ""
+    _DTURN_BINDS[svc] = cur                            # what it binds today — reported first (a recreate below replaces it)
     pin = str(tp.get("bind_ip") or "")
     pinned = bool(pin and _IPV4_RE.match(pin) and pin in mine)
     if not pinned:
@@ -18586,36 +18601,6 @@ def _dturn_bind_stale(svc, tp):
     if want == cur:
         return ""
     return ("binds %s, not its Listen on — now %s" if pinned else "binds %s, which is not on this box — now %s") % (cur, want)
-
-
-# A docker node's turn record has two writers: apply_turn (the sync loop) and _dturn_keep_bind (the background reconcile).
-_TURN_REC_LOCK = threading.Lock()
-
-def _dturn_keep_bind(svc, bind):
-    """Keep the bind a background (re)create gave a container in the turn record: the snapshot reports it (`bind`), and the
-    next launch keeps it while its name does not resolve (turn_bind's prev). apply_turn's recreates write theirs with the
-    record; the background reconcile works on a fresh read every pass and kept nothing, so after its recreate the node went
-    on reporting the old bind, or none, which the panel reads as "listens on all addresses" (1.8.9 qualification DN-1).
-    One field of one entry, re-read and replaced under the record lock, so nothing apply_turn wrote meanwhile is undone
-    (a Stop, a delete, new params); its own tmp file. (apply_turn writes the copy it read when it started: a bind kept
-    in those few seconds is lost to it — the report then names the old one until the next recreate.)"""
-    if not bind:
-        return
-    with _TURN_REC_LOCK:
-        try:
-            with open(TURN_RECORD) as f:
-                d = json.load(f)
-            hit = [t for t in (d.get("turn_proxies") or []) if isinstance(t, dict) and t.get("service") == svc]
-            if not hit or all(t.get("bind") == bind for t in hit):
-                return
-            for t in hit:
-                t["bind"] = bind
-            tmp = TURN_RECORD + ".bind.tmp"
-            with open(tmp, "w") as f:
-                json.dump(d, f)
-            os.replace(tmp, TURN_RECORD)
-        except Exception as e:
-            log(LOG_WARNING, "swg-noded: turn %s — its bind %s could not be kept in the record: %s", svc, bind, e)
 
 
 def _dturn_verify(svc):
@@ -18870,7 +18855,6 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
             _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
             log(LOG_ERR, "swg-noded: turn %s 'docker run' failed: %s", svc, (rr.stderr or rr.stdout or "").strip()[:200])
             return
-        _dturn_keep_bind(svc, tp.get("bind", ""))   # the record (what the node reports) learns what it binds now
         verr = _dturn_verify(svc)
         if verr:
             _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
@@ -19115,7 +19099,7 @@ def apply_turn(turn, turn_onboard):
                     fail(svc, err) if err else good(svc, "ins:" + svc)
                     continue
                 if act == "delete":
-                    _dturn_delete(svc, rec); rec.pop(svc, None); changed = True; good(svc, "del:" + svc); continue
+                    _dturn_delete(svc, rec); rec.pop(svc, None); _DTURN_BINDS.pop(svc, None); changed = True; good(svc, "del:" + svc); continue
                 if act == "reinstall":      # force a fresh binary (fix a failed download / update to latest) + (re)create — ASYNC (see _TURN_JOBS)
                     with _TURN_JOBS_LOCK: _job = dict(_TURN_JOBS.get(svc) or {})
                     if _job and not _job.get("done"):
@@ -19331,12 +19315,15 @@ def apply_turn(turn, turn_onboard):
         except Exception as e:
             fail(sp, str(e))
     if changed:
+        if TURN_DOCKER:                                # the binds the background reconcile gave its containers since `rec` was
+            for _s, _t in rec.items():                 # read (see _DTURN_BINDS): this is the record's one writer
+                if _DTURN_BINDS.get(_s):
+                    _t["bind"] = _DTURN_BINDS[_s]
         try:
-            with _TURN_REC_LOCK:                       # the background reconcile keeps a bind in it too (_dturn_keep_bind)
-                tmp = TURN_RECORD + ".tmp"
-                with open(tmp, "w") as f:
-                    json.dump({"turn_proxies": list(rec.values())}, f)
-                os.replace(tmp, TURN_RECORD)
+            tmp = TURN_RECORD + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"turn_proxies": list(rec.values())}, f)
+            os.replace(tmp, TURN_RECORD)
         except Exception as e:
             res["errors"].append("record: " + str(e))
     return res
