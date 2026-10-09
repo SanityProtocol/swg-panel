@@ -38,7 +38,8 @@ Hermetic ([6] and [7] run a real panel on a loopback scratch port, everything un
 Run: python3 tests/snap_shape_selftest.py (0 = pass).  --perturb makes the sanitiser a no-op and
 expects the malformed shapes to sail through.  Each of --perturb-meta, --perturb-listen, --perturb-forward,
 --perturb-turnproxies, --perturb-door and --perturb-snapnum takes out one PANEL-1 line, --perturb-overflow PANEL-1b's,
-and --perturb-shape (a whole row of the table), --perturb-bad, --perturb-ifacelist and --perturb-said PANEL-1c's
+and --perturb-shape (a whole row of the table), --perturb-bad, --perturb-ifacelist and --perturb-said PANEL-1c's,
+--perturb-bigfloat and --perturb-bigint PANEL-1d's
 (exit 0 when caught).
 """
 import atexit, copy, importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time
@@ -68,7 +69,11 @@ PLANTS = {
     "ifacelist": ('    if isinstance(snap.get("interfaces"), list):', '    if False:'),
     "said": ('            log(LOG_WARNING, "node %s: snapshot field %r is %s, not %s — ignored", nid or "?", field, got, want)\n',
              '            pass\n'),
-    "door": ('json.loads(raw or "{}", parse_constant=_json_finite, parse_float=_json_finite)', 'json.loads(raw or "{}")'),
+    "door": ('json.loads(raw or "{}", parse_constant=_json_finite, parse_float=_json_finite, parse_int=_json_int)',
+             'json.loads(raw or "{}")'),
+    # PANEL-1d: each bound on its own
+    "bigfloat": ("    if not math.isfinite(n) or abs(n) > 1e100:", "    if not math.isfinite(n):"),
+    "bigint": ('    if len(s.lstrip("-")) > 100:\n', "    if False:\n"),
     "snapnum": ("    return n if math.isfinite(n) else None\n", "    return n\n"),
     "overflow": ("except (TypeError, ValueError, OverflowError):", "except (TypeError, ValueError):"),   # PANEL-1b
 }
@@ -330,6 +335,11 @@ def sync(nid, snap=None, raw=None):
     return code, "desired" in (j.get("data") or j)
 
 
+def _peer(k, **over):                            # a peer as swg-noded reports one (peer_view's fields)
+    return dict({"public_key": k * 22 + "=", "allowed_ips": "10.9.0.%d/32" % (len(k) + 1), "rx_bytes": 1, "tx_bytes": 1,
+                 "rx_speed": 0.0, "tx_speed": 0.0, "online": True, "last_handshake": int(time.time()), "handshake_age": 5}, **over)
+
+
 def snap_of(nid, ifn, sub, **over):
     s = {"hostname": nid, "generated_at": int(time.time()), "noded_version": "t", "node_ips": ["192.0.2.1"],
          "interfaces": {ifn: {"peers": [], "meta": {"subnet": sub, "listen_port": 51820}}}, "smartroute": {"arr": 1, "src": 1}}
@@ -363,10 +373,22 @@ try:
             ("(c) Q's NaN", _qbase + ', "zzz": NaN}}', 400),
             ("(c) Q's log.oldest = -Infinity", _qbase + ', "log": {"oldest": -Infinity, "live": 1}}}', 400),
             ("(c) Q's log.oldest = 1e400 (a literal past a double's range)", _qbase + ', "log": {"oldest": 1e400, "live": 1}}}', 400),
-            ("(c) Q's inet.up = \"inf\" (a string)", _qbase + ', "inet": {"up": "inf", "down": 1}}}', 200)):
+            ("(c) Q's inet.up = \"inf\" (a string)", _qbase + ', "inet": {"up": "inf", "down": 1}}}', 200),
+            # PANEL-1d — FINITE numbers the panel's own arithmetic cannot take: a sum of two past a double (Infinity in
+            # /api/state again), and an integer of 401 digits (its first float() raised: /api/state 500 for everyone).
+            # The bound sits at 1e100; 1e100 itself is still a number like any other.
+            ("(d) Q's two peers at rx_speed 1.7e308 (their sum is past a double)",
+             {"snapshot": snap_of(Q, "wg1", "", interfaces={"wg1": {"meta": {"subnet": "10.9.0.0/24", "listen_port": 51820},
+                                                                     "peers": [_peer("k1", rx_speed=1.7e308), _peer("k2", rx_speed=1.7e308)]}})}, 400),
+            ("(d) Q's peer rx_bytes = 10**400 (an integer of 401 digits)",
+             {"snapshot": snap_of(Q, "wg1", "", interfaces={"wg1": {"meta": {"subnet": "10.9.0.0/24", "listen_port": 51820},
+                                                                     "peers": [_peer("k1", rx_bytes=10 ** 400)]}})}, 400),
+            ("(d) Q's two peers at rx_speed 1e100 (the bound itself)",
+             {"snapshot": snap_of(Q, "wg1", "", interfaces={"wg1": {"meta": {"subnet": "10.9.0.0/24", "listen_port": 51820},
+                                                                     "peers": [_peer("k1", rx_speed=1e100), _peer("k2", rx_speed=1e100)]}})}, 200)):
         qc = sync(Q, raw=(body if isinstance(body, str) else json.dumps(body)).encode())[0]
         check("[6] %s: Q's own sync answers %d" % (label, q_want) + (" (refused at the door, nothing stored)" if q_want == 400
-              else " (dropped, not refused)"), qc == q_want, qc)
+              else " (accepted)" if label.startswith("(d)") else " (dropped, not refused)"), qc == q_want, qc)
         _o = others()
         check("[6] %s: A's and B's next syncs 200 with `desired`, /api/state 200 as JSON" % label,
               _o == ((200, True), (200, True), (200, True)), _o)
@@ -387,6 +409,12 @@ try:
 
     print("\n[8] PANEL-1b — a generated_at past a double's range (10**400), stored: the panel starts again over it")
     qc = sync(Q, dict(GOOD[Q], generated_at=10 ** 400))[0]
+    check("[8] since PANEL-1d the sync door refuses the value itself (400)", qc == 400, qc)
+    # …so the mirror holding it is one an EARLIER panel wrote, before that door existed: planted as that panel stored it
+    _mf = os.path.join(STATS, "stats-%s.json" % Q)
+    _ms = json.load(open(_mf))
+    _ms["generated_at"] = 10 ** 400
+    open(_mf, "w").write(json.dumps(_ms))
     proc.terminate()
     try:                                           # a stop is no measurement: wait it out, then make sure of it
         proc.wait(timeout=60)
@@ -395,8 +423,7 @@ try:
         proc.wait()
     proc = _boot()                                 # its warm start reads the mirror that sync left
     up = _up(proc)
-    check("[8] Q's sync with it answers 200, and a restarted panel comes up over it", qc == 200 and up,
-          (qc, up, "" if up else open(_log.name).read()[-300:]))
+    check("[8] a restarted panel comes up over a mirror holding it", up, "" if up else open(_log.name).read()[-300:])
     _o = others() if up else None
     check("[8] …and answers: A's and B's syncs 200 with `desired`, /api/state 200 as JSON",
           _o == ((200, True), (200, True), (200, True)), _o)
