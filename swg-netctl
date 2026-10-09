@@ -1511,20 +1511,40 @@ LOG_DROPIN_FILE = "swg-log.conf"
 # within seconds. The panel and swg-sub run for weeks and filter their own lines: a cap there would outlive the level
 # and swallow their Debug after a raise (code review, 2026-10-04).
 LOG_TIMER_UNITS = ("swg-netctl.service", "swg-update.service")
+SETTINGS_MAX = 16 << 20      # panel-settings.json is a few KB; a file past this is not one the panel wrote
+
+
+def read_settings():
+    """panel-settings.json as the panel writes it — a dict with something in it — or None. Read as a request is: never
+    through a symlink, never waiting on a FIFO, only a regular file of a sane size (the panel can put anything at this path,
+    and root reads it every tick). None KEEPS WHAT IS APPLIED: a missing, empty or corrupt file is a clobber the panel
+    restores from its backup within seconds, or a panel not started yet — and "the defaults" read from one shrank a 500 MB
+    budget to 100 MB, which journald enforces by deleting the history for good (84 094 entries on a test VM), and stored
+    logs again at Off (1.8.9 qualification HE-3)."""
+    try:
+        fd = os.open(os.path.join(STATE_DIR, "panel-settings.json"), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd) as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_size > SETTINGS_MAX:
+                return None
+            ps = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return ps if isinstance(ps, dict) and ps else None
 
 
 def log_from_settings():
     """The fleet's level from panel-settings.json (root reads it directly, as _load_access_tls does): the base level,
     plus Debug while `log_debug_until` is -1 (until changed) or still ahead. Computed on every run, so Debug's expiry
-    reaches these units within one timer tick with nothing written at expiry."""
-    try:
-        with open(os.path.join(STATE_DIR, "panel-settings.json")) as f:
-            ps = json.load(f)
+    reaches these units within one timer tick with nothing written at expiry. Returns the settings it read — once a tick,
+    the budget's too — or None (see read_settings), and then sets nothing. A value the panel never writes ([] for the
+    level, 1e999) raises before anything is set: main keeps what is applied then too."""
+    ps = read_settings()
+    if ps is not None:
         until = int(ps.get("log_debug_until") or 0)
-    except (OSError, ValueError, TypeError, AttributeError):
-        return
-    log_set(min(LOG_LEVELS.get(ps.get("log_level"), LOG_INFO), LOG_INFO),
-            -1 if until == -1 else max(0, until - time.time()))
+        log_set(min(LOG_LEVELS.get(ps.get("log_level"), LOG_INFO), LOG_INFO),
+                -1 if until == -1 else max(0, until - time.time()))
+    return ps
 
 
 def log_no_detail():
@@ -1598,14 +1618,11 @@ LOG_STATUS = "_log.json"
 _JOURNAL_NAME_RE = re.compile(r"^[\w-]+@[0-9a-f]{32}-[0-9a-f]{16}-([0-9a-f]{16})\.journal$")
 
 
-def log_budget_mb():
-    """The panel's budget from panel-settings.json (root reads it, as for the level): absent = 100, never below 16."""
-    try:
-        with open(os.path.join(STATE_DIR, "panel-settings.json")) as f:
-            v = json.load(f).get("log_mb_panel")
-        return max(LOG_MB_MIN, int(v)) if v not in (None, "") else LOG_MB_DEFAULT
-    except (OSError, ValueError, TypeError, AttributeError):
-        return LOG_MB_DEFAULT
+def log_budget_mb(ps):
+    """The panel's budget from its settings `ps` (log_from_settings read them): absent = 100, never below 16. A value the
+    panel never writes raises, and the size in force is kept."""
+    v = ps.get("log_mb_panel")
+    return max(LOG_MB_MIN, int(v)) if v not in (None, "") else LOG_MB_DEFAULT
 
 
 def _log_dir_usage(d):
@@ -1769,14 +1786,14 @@ def mb_of(conf):
     return int(m.group(1)) if m else None
 
 
-def log_budget():
+def log_budget(ps):
     """Every tick, after the queue (a journald restart must never hold an Access request): the namespace's size and
     storage — Off stores nothing, and removes what was stored, since journald's Storage=none keeps the files it has —
-    then the status for the panel. Never raises; a steady box compares a string and writes nothing. This helper starts
-    afresh every tick, so the last status is its memory: what failed, and when to try again."""
+    then the status for the panel. A steady box compares a string and writes nothing. This helper starts afresh every
+    tick, so the last status is its memory: what failed, and when to try again. `ps`: the settings this tick read."""
     if DRYRUN:
         return
-    mb, off = log_budget_mb(), log_level() == LOG_OFF
+    mb, off = log_budget_mb(ps), log_level() == LOG_OFF
     want = "[Journal]\nStorage=%s\nSystemMaxUse=%dM\nRuntimeMaxUse=%dM\n" % ("none" if off else "persistent", mb, mb)
     have, err, retry = None, None, None
     with contextlib.suppress(OSError):
@@ -1927,14 +1944,18 @@ def main(argv):
     if len(argv) < 2:
         print("usage: swg-netctl run | <verb> <args...>", file=sys.stderr)
         return 2
+    ps = None
     if not DRYRUN:                                   # a dry run is asked for at a terminal: it always prints
-        log_from_settings()
+        with contextlib.suppress(Exception):         # never kept from the queue: a value the panel never writes is
+            ps = log_from_settings()                 # read as no settings at all
     if argv[1] == "run":
-        with contextlib.suppress(Exception):
-            log_dropins()                            # every tick, before the idle return: Debug's expiry lands here
+        if ps is not None:                           # no settings this tick: what is applied stays (HE-3)
+            with contextlib.suppress(Exception):
+                log_dropins()                        # every tick, before the idle return: Debug's expiry lands here
         process_queue()
-        with contextlib.suppress(Exception):
-            log_budget()                             # …and the budget, AFTER the queue: a journald restart holds nothing
+        if ps is not None:
+            with contextlib.suppress(Exception):
+                log_budget(ps)                       # …and the budget, AFTER the queue: a journald restart holds nothing
         return 0
     try:
         msg = dispatch(argv[1], argv[2:])
