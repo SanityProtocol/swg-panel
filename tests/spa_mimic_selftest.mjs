@@ -256,7 +256,8 @@ check("a \"-\" on a node without datapath.awg.exact holds Save, in the panel's o
       /\.exact !== 1\)\s*\? T\("\{v1\} cannot hold an empty AmneziaWG field yet/.test(body));
 check("…and before the node has reported a set for an interface whose record is not whole",
       /!meta\.awg_exact && !Object\.keys\([^\n]*awg_params\) \|\| \{\}\)\.length/.test(body) && /wait for the node to report this interface/.test(body));
-check("…which reaches Save through mimErr", /const mimErr = mimBad \? mimicWhy\(mimBad\[0\], mimBad\[1\]\) : omitNo;/.test(body));
+check("…which reaches Save through mimErr (with the omission rules after it — q189 SPA-3)",
+      /const mimErr = mimBad \? mimicWhy\(mimBad\[0\], mimBad\[1\]\) : omitNo \|\| omitRule;/.test(body));
 check("the Advanced summary names the disguise", /awgTail \+ " · " \+ MIMIC_TAIL\[mimicOf\(mimEff\)\]\(\)/.test(body));
 check("F8: the false 'must re-import after a change' line is gone", !body.includes('"Pushed to the node\'s interface and rendered into configs/QRs. Existing clients must re-import after a change."'));
 
