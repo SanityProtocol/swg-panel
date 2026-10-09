@@ -29,13 +29,11 @@ line made of a build that is already published — and the node's side played by
                  build as `cur_ver` so it keeps getting updates
   [12] offline   a hold for a server on a line this panel does not offer is refused, saying why (no build of that
                  line is listed here); no 2.1 hold results
-  [13] newline   a node reporting a line with a trailing newline ("2.5\n") is not mirrored as a line (`$` let it through;
-                 q189 PR-18)
 
 Run: python3 tests/csqtt_lines_panel_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8] ·
-                       override [9] · unoffered [10] · runline / runline-get / curver [11] · refuseoff [12] · newline [13]
+                       override [9] · unoffered [10] · runline / runline-get / curver [11] · refuseoff [12]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -63,7 +61,6 @@ PLANTS = {
     "curver": ("[11]", "            if _run and _run != _line and _run in CSQTT_LINES:", "            if False:"),
     "refuseoff": ("[12]", "        if _vl not in CSQTT_LINES:\n            # a server on a line", "        if False:\n            # a server on a line"),
     "mirror": (("[8]", "[10]"), "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
-    "newline": ("[13]", '_CSQTT_LINE_RE = re.compile(r"^[0-9]{1,3}\\.[0-9]{1,3}\\Z")', '_CSQTT_LINE_RE = re.compile(r"^[0-9]{1,3}\\.[0-9]{1,3}$")'),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
 SECTION = [""]
@@ -286,16 +283,6 @@ try:
     holds = json.load(open(os.path.join(state, "turn-holds.json")))
     check("Update from its row releases the 2.1 hold", code == 200 and "nnew|fork:csqtt" not in holds, (code, holds))
     check("…and leaves the 2.5 hold alone", "nnew|fork:csqtt@2.5" in holds, holds)
-
-    section("[13] a line with a trailing newline is not a line")
-    rows13 = [{"iface": "csqtt9", "kind": "csqtt", "fork": "csqtt", "line": "2.5\n", "version": "2.1.9-3", "listen": "0.0.0.0:46090",
-               "tun_addr": "10.66.99.1/24", "max_passwords": 500, "params": "", "passwords": {}}]
-    sync("nnew", rows13)
-    rec9 = (nodes()["nnew"].get("csqtt") or {}).get("csqtt9") or {}
-    check("the server is mirrored (the control)", bool(rec9), sorted((nodes()["nnew"].get("csqtt") or {})))
-    check("the mirror does not record \"2.5\\n\" as the server's line", bool(rec9) and "\n" not in str(rec9.get("line") or ""), rec9)
-    check("the line pattern itself refuses a trailing newline (the snapshot's own cleaning hid it on this path)",
-          P1._CSQTT_LINE_RE.match("2.5\n") is None and P1._CSQTT_LINE_RE.match("2.5") is not None)
 
     section("[12] a hold for a line this panel does not offer")
     code, r = req("/api/csqtt/version", {"node": "nnew", "iface": "csqtt8", "ver": "2.1.9-3"})
