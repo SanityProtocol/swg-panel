@@ -7,7 +7,9 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
 
   [1] nothing newer installed → refused, nothing stopped
   [2] tools that cannot drive a 3.x module → refused, nothing stopped
-  [3] a device with no unit and no conf → refused naming it, nothing stopped
+  [3] a device with no unit and no conf → refused naming it, nothing stopped; one brought up by hand from a conf in any of
+      swg-noded's four AmneziaWG conf dirs (/usr/local/etc/amneziawg, /etc/amnezia too) has its way back (1.8.9
+      qualification HE-11: those two were refused no_way_back)
   [4] a device in another network namespace — named, or a CONTAINER's (seen only through /proc) → refused, nothing stopped;
       a namespace nsenter cannot get into, or lsns failing, is not an empty one → refused (cannot_check), `modprobe -r`
       never asked (1.8.9 qualification HE-2: read as empty, the container's device went with the unload); a namespace
@@ -31,6 +33,7 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
 
 Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | timeout | procscan | noscope | key31 | record
                                                     | churn | pid | latepickup | nsenter-rc | lsns-rc | bindns | hiddenns | nofallback
+                                                    | confdirs
                                                     (exit 0 when caught)
 """
 import contextlib, importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
@@ -66,6 +69,8 @@ PLANTS = {
     "print": ("[12]", "noded", 'log(LOG_INFO, "awg module load #%d: %s (finished while swg-noded restarted)", n, _AWG_LOAD["v"]["code"])',
               'print("awg module load #%d: %s (finished while swg-noded restarted)" % (n, _AWG_LOAD["v"]["code"]), flush=True)'),
     "nofallback": ("[11]", "agent", "    if not _awg_fallback():\n        raise AgentError(\"no_fallback\"", "    if False:\n        raise AgentError(\"no_fallback\""),
+    "confdirs": ("[3]", "agent", "for d in (\"/etc/amnezia/amneziawg\", \"/etc/amneziawg\",\n                         \"/usr/local/etc/amneziawg\", \"/etc/amnezia\"))",
+                 "for d in (\"/etc/amnezia/amneziawg\", \"/etc/amneziawg\"))"),
 }
 FAILS, SECTION = [], [""]
 
@@ -228,6 +233,15 @@ SECTION[0] = "[3]"
 print("\n[3] a device with no way back")
 b = Sys({"awg0": "unit", "stray": "none"}); ok, r = agent_on(b)
 check("refused: no_way_back, nothing stopped", not ok and r == "no_way_back" and not any("stop" in c for c in b.calls), (r, b.calls))
+_isfile = os.path.isfile
+for d in ("/usr/local/etc/amneziawg", "/etc/amnezia"):
+    os.path.isfile = lambda p, c=d + "/awg5.conf": p == c or _isfile(p)      # a conf there, and no unit, for awg5
+    try:
+        b = Sys({"awg5": "conf"}); ok, r = agent_on(b)
+    finally:
+        os.path.isfile = _isfile
+    check("a device brought up by hand from %s/awg5.conf (no unit) has its way back: swapped on that conf, not refused" % d,
+          ok and r.get("ifaces") == {"awg5": "kernel"} and ("awg-quick up %s/awg5.conf" % d) in b.calls, (r, b.calls[-6:]))
 
 SECTION[0] = "[4]"
 print("\n[4] a device in another namespace")
