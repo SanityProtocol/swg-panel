@@ -13345,7 +13345,7 @@ def awg3_check(d):
                 return None, perr("{v1} must be on or off", v1=k)
     for k in _AWG3_RANGED:
         if k in out:
-            m = re.fullmatch(r"\s*([0-9]+)\s*(?:-\s*([0-9]+)\s*)?", str(out[k]))   # ASCII digits: "١٠-١٠٠" passed \d (q189 PR-8)
+            m = re.fullmatch(r"\s*(\d+)\s*(?:-\s*(\d+)\s*)?", str(out[k]))
             if not m or (m.group(2) and int(m.group(1)) > int(m.group(2))):
                 return None, perr("{v1} must be a number or a range like 10-100", v1=k)
             out[k] = m.group(1) + ("-" + m.group(2) if m.group(2) else "")
