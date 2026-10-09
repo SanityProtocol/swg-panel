@@ -477,8 +477,12 @@ nodes_path, roster_path = os.path.join(TMP2, "nodes.json"), os.path.join(TMP2, "
 json.dump({"n1": json.loads(json.dumps(NREC))}, open(nodes_path, "w"))
 RD = roster(); RD["version"] = P.ROSTER_VERSION
 json.dump(RD, open(roster_path, "w"))
+# ⚠️ panel_settings_path too: without it the settings saves in [10] wrote to "" — an fsync'd `.tmp.<hex>` in the cwd, the tree
+# root under the suite, removed a moment later when the rename failed (and the failure suppressed). Six gates at once
+# copy that tree, and a copy that listed the file and then lost it went red (1.8.9 qualification).
 deps = {"nodes_path": nodes_path, "roster_path": roster_path, "node_snaps": {"n1": SNAP}, "stats_dir": TMP2, "fleet": {},
-        "panel_settings": json.loads(json.dumps(P.PANEL_SETTINGS_DEFAULTS))}
+        "panel_settings": json.loads(json.dumps(P.PANEL_SETTINGS_DEFAULTS)),
+        "panel_settings_path": os.path.join(TMP2, "panel-settings.json")}
 def rec():
     return json.load(open(nodes_path))["n1"]
 def door(path, body):
