@@ -38,6 +38,7 @@ like that with nothing on the panel saying so.
 Run: python3 tests/secure_boot_dpkg_selftest.py      (0 = pass)
      --plant sbclaim   the branch as it shipped (the userspace note whatever is there) → RED on [10] (exit 0 when caught)
      --plant nlh5-noblacklist | nlh5-noenforce   the probe by name / on every kernel again → RED on [6c]
+     --plant nlh3-dev   dpkg's lock matched by device + inode again (blind on btrfs) → RED on NLH-3
 """
 import builtins, importlib.machinery, importlib.util, io, json, os, re, subprocess, sys, tempfile, time
 from unittest import mock
@@ -210,7 +211,11 @@ def load(name, path):
 _NODED = os.path.join(ROOT, "swg-noded")
 _NPLANTS = {"nlh5-noblacklist": ('r = run(["modprobe", "-b", "amneziawg"], timeout=30)', 'r = run(["modprobe", "amneziawg"], timeout=30)'),
             "nlh5-noenforce": ('run(["modinfo", "-F", "signer", "amneziawg"]).stdout.strip() and _awg_sig_enforced():',
-                               'run(["modinfo", "-F", "signer", "amneziawg"]).stdout.strip():')}
+                               'run(["modinfo", "-F", "signer", "amneziawg"]).stdout.strip():'),
+            "nlh3-dev": ('            ids.add(str(os.stat(p).st_ino))\n    try:\n        with open(PROC_LOCKS) as f:\n'
+                         '            return bool(ids) and any(x.count(":") == 2 and x.rsplit(":", 1)[1] in ids for ln in f for x in ln.split())',
+                         '            st = os.stat(p)\n            ids.add("%02x:%02x:%d" % (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino))\n'
+                         '    try:\n        with open(PROC_LOCKS) as f:\n            return bool(ids) and any(x in ids for ln in f for x in ln.split())')}
 if PLANT in _NPLANTS:
     _src = open(_NODED, encoding="utf-8").read(); _o, _n = _NPLANTS[PLANT]
     assert _src.count(_o) == 1, "plant anchor missing — this run would measure nothing"
@@ -380,6 +385,9 @@ check("…dpkg writes again and settles clean → nothing pending", dk(now) == {
 fresh(3600); AUD.update(out=AUDIT, rc=1); open(N.PROC_LOCKS, "w").write("1: POSIX  ADVISORY  WRITE 4242 %s 0 EOF\n" % LOCKID)
 check("status untouched for an hour but dpkg HOLDS its lock (a long postinst) → not judged, dpkg not asked",
       dk(now) == {"pending": [], "interrupted": False} and AUD["n"] == 0, AUD)
+open(N.PROC_LOCKS, "w").write("1: POSIX  ADVISORY  WRITE 4242 00:1f:%d 0 EOF\n" % _st.st_ino)
+check("NLH-3: dpkg HOLDS its lock on btrfs (stat's subvolume device ≠ the one /proc/locks names) → still not judged",
+      dk(now) == {"pending": [], "interrupted": False} and AUD["n"] == 0, AUD)
 open(N.PROC_LOCKS, "w").write("1: POSIX  ADVISORY  WRITE 4242 00:00:1 0 EOF\n")
 check("CONTROL: another file's lock → judged", dk(now)["pending"][:1] == ["amneziawg-dkms"])
 open(N.PROC_LOCKS, "w").write("")
@@ -476,7 +484,7 @@ check("the master's notice words it without 'running Update rebuilds it'", 'if (
 
 if PLANT:
     _pre = {"sbclaim": "refused for its key, amneziawg-go absent", "nlh5-noblacklist": "it asks `modprobe -b`",
-            "nlh5-noenforce": "a kernel that enforces no signature"}[PLANT]
+            "nlh5-noenforce": "a kernel that enforces no signature", "nlh3-dev": "NLH-3"}[PLANT]
     caught = [f for f in FAILS if f.startswith(_pre)]
     print("\nplant %s: %s" % (PLANT, ("RED as it must be (%d)" % len(caught)) if caught and len(caught) == len(FAILS)
                                      else "NOT CAUGHT — the gate is blind to it" if not caught else "ALSO red elsewhere: %s" % FAILS))
