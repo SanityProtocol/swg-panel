@@ -8008,7 +8008,7 @@ def live_open(nodes, srcs, known, replace=None, now=None):
         if isinstance(replace, str) and replace in _LIVE_REQS:
             _LIVE_REQS.pop(replace)["stop"].set()
         if len(_LIVE_REQS) >= LIVE_REQ_MAX:
-            return 429, {"ok": False, "error": "%d log viewers are open already" % LIVE_REQ_MAX, "code": "busy"}
+            return 429, {"ok": False, **perr("{v1} log viewers are open already", v1=LIVE_REQ_MAX), "code": "busy"}
         rid = secrets.token_hex(8)
         rec = _LIVE_REQS[rid] = {
             "id": rid, "secret": secrets.token_bytes(16), "nodes": nodes, "nodeset": set(nodes), "src": srcs,
@@ -8314,13 +8314,13 @@ def range_open(body, known, now=None):
         if rec:
             _RANGE_REQS[rid] = rec
     if busy:
-        return 429, {"ok": False, "error": "%d downloads are being made already" % RANGE_REQ_MAX, "code": "busy"}
+        return 429, {"ok": False, **perr("{v1} downloads are being made already", v1=RANGE_REQ_MAX), "code": "busy"}
     try:
         os.makedirs(rec["dir"], mode=0o700)
     except OSError as e:
         with _RANGE_LOCK:
             _RANGE_REQS.pop(rid, None)
-        return 500, {"ok": False, "error": "cannot spool the download: %s" % e, "code": "internal"}
+        return 500, {"ok": False, **perr("cannot spool the download: {v1}", v1=e), "code": "internal"}
     if LIVE_PANEL in rec["nodeset"]:
         threading.Thread(target=_range_panel_run, args=(rec,), daemon=True, name="swg-range-" + rid).start()
     return 200, {"ok": True, "data": {"id": rid, "share": rec["share"]}}
@@ -27133,7 +27133,7 @@ def api(method, path, qs, body, deps):
                     _prec["exit_id"] = _x
                 nodes[nid]["p2p"] = _prec
             else:
-                return 400, {"ok": False, "error": "torrent policy must be one of: " + ", ".join(P2P_ACTIONS), "code": "bad_request"}
+                return 400, {"ok": False, **perr("torrent policy must be one of: {v1}", v1=", ".join(P2P_ACTIONS)), "code": "bad_request"}
         # …and nothing else is left pointing at an exit that is gone either — see `prune_exit_refs` and
         # `prune_default_exit`. Unconditional, so a record already in that state heals on the next save of
         # anything rather than waiting for someone to touch the exact field that broke.
@@ -33145,8 +33145,8 @@ class Handler(BaseHTTPRequestHandler):
         Range: the file stays RANGE_KEEP after each download, and a broken one is clicked again."""
         got = range_download(rid)
         if got is None:
-            return self._send(404, {"ok": False, "error": "no such download (made files are kept %d min)"
-                                    % (RANGE_KEEP // 60), "code": "gone"})
+            return self._send(404, {"ok": False, **perr("no such download (made files are kept {v1} min)", v1=RANGE_KEEP // 60),
+                                    "code": "gone"})
         path, raw, size, name = got
         gz = accepts_gzip(self.headers.get("Accept-Encoding"))
         try:

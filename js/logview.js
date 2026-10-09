@@ -379,7 +379,8 @@ function StateChips() {
   return html`<div class="lv-states">${items.map(it => html`<${NamesChip} key=${it.key} txt=${it.txt} tip=${it.tip} tone=${it.tone} ids=${it.ids}
     extra=${it.key === "skew" ? id => " " + skewText((LV.states[id] || {}).off) : null}/>`)}</div>`;
 }
-const skewText = s => !s ? "" : (s > 0 ? "+" : "−") + (Math.abs(s) >= 120 ? Math.round(Math.abs(s) / 60) + " min" : Math.abs(s) + " s");
+// in the panel's units, in the operator's language (q189 SPA-14: "+3 min" stayed English on a Russian panel)
+const skewText = s => !s ? "" : (s > 0 ? "+" : "−") + (Math.abs(s) >= 120 ? T("{v1} min", { v1: Math.round(Math.abs(s) / 60) }) : T("{v1} s", { v1: Math.abs(s) }));
 
 // ── the stream ────────────────────────────────────────────────────────────────────────────────────────────────────
 const pad = (n, w = 2) => String(n).padStart(w, "0");
@@ -609,12 +610,12 @@ function RangePanel() {
   const head = ph === "ready" ? T("Ready: {v1} lines, {v2}.", { v1: fmtNum(v.lines), v2: fmtBytes(v.raw) })
     : ph === "failed" ? T("The file could not be made: {v1}", { v1: v.err || "?" })
     : ph === "making" ? T("Making the file…")
-    : T("Reading {v1}: waiting on {v2} of {v3} servers.", { v1: v ? dtShow(v.since) + " – " + dtShow(v.until) : "…", v2: fmtNum(total - done), v3: fmtNum(total) });
+    : T("Reading {v1}: waiting on {v2} of {v3}.", { v1: v ? dtShow(v.since) + " – " + dtShow(v.until) : "…", v2: fmtNum(total - done), v3: plural(total, "gen|server") });   // «из 1 сервера» (q189 SPA-15)
   const partial = ph === "ready" && (Object.keys(g.cat).some(k => k !== "done") || g.extra.cut);
   return html`<div class="lv-pick lv-rng" role="group" aria-label=${T("Download a time range")}>
     <div class="lv-rng-row"><span class=${"lv-rng-head" + (ph === "failed" ? " bad" : "")} aria-live="polite">${head}</span><span class="grow"></span>
       ${ph === "ready" ? html`<a class="btn btn-mini btn-primary" href=${"api/logs/download/" + RG.id} download=${v.name}><${Ic} i="download"/> ${T("Save the file")}</a>` : null}</div>
-    <div class="lv-rng-bar" role="img" aria-label=${T("Waiting on {v2} of {v3} servers", { v2: fmtNum(total - done), v3: fmtNum(total) })}>
+    <div class="lv-rng-bar" role="img" aria-label=${T("Waiting on {v2} of {v3}", { v2: fmtNum(total - done), v3: plural(total, "gen|server") })}>
       ${RORDER.filter(k => g.cat[k]).map(k => html`<i key=${k} class=${"lv-rng-seg c-" + k} style=${"flex-grow:" + g.cat[k].length}></i>`)}</div>
     <div class="lv-states">${[...RORDER.filter(k => g.cat[k]).map(k => [k, g.cat[k]]), ...Object.entries(g.extra)].map(([k, l]) => {
       const [txt, tip, tone] = say[k] || [k, "", "faint"];

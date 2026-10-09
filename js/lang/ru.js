@@ -366,7 +366,7 @@ export const STR = {
   "{node} is already on {p} ({a}), but it keeps its clients off that network. Turn on “Clients can reach it” under Local network on {node} to let them in.":
     "{node} уже в сети {p} ({a}), но не пускает туда своих клиентов. Чтобы пустить их, включите «Клиентам доступна» в разделе «Локальная сеть» на {node}.",
   "{p} overlaps a tunnel subnet on {node} ({a}).": "{p} пересекается с подсетью туннеля на {node} ({a}).",
-  "{p} overlaps a mesh link on {node} ({a}).": "{p} пересекается с mesh-связью на {node} ({a}).",
+  "{p} overlaps a mesh link on {node} ({a}).": "{p} пересекается с меш-связью на {node} ({a}).",
   "{p} contains {a}, the gateway {node} reaches the internet through.": "В {p} входит {a} — шлюз, через который {node} выходит в интернет.",
   "{p} contains {a}, the address {node} reaches this panel by.": "В {p} входит {a} — адрес, по которому {node} достаёт до этой панели.",
   "{p} contains {a}, the DNS server {node} depends on — it could no longer find this panel.": "В {p} входит {a} — DNS-сервер, от которого зависит {node}: без него панель будет не найти.",
@@ -1691,6 +1691,9 @@ export const STR = {
     "Сборка ноды слишком старая для лимита логов. Обновите ноду, чтобы он применился.",
   "Not supported": "Не поддерживается",
   "Not applied": "Не применён",
+  "This server's journald has no namespaces, so swg's logs cannot have a budget of their own here.":
+    "journald на этом сервере не поддерживает пространства имён, поэтому у логов swg здесь не может быть своего лимита.",
+  "The budget could not be applied ({v1}). It is tried again every minute.": "Лимит не удалось применить ({v1}). Попытка повторяется каждую минуту.",
   "Not reporting — the figures are from its last report.": "Не на связи — цифры из последнего отчёта.",
   "Pending": "Применяется",
   "The root helper applies it within 10 seconds.": "Root-помощник применит его в течение 10 секунд.",
@@ -1801,8 +1804,33 @@ export const STR = {
   "This download is gone: made files are kept for {n} min. Make it again.": "Этого файла уже нет: готовые файлы хранятся {n} мин. Соберите его заново.",
   "Pick at least one server, one source and one level.": "Выберите хотя бы один сервер, один источник и один уровень.",
   "The panel did not answer. Try again.": "Панель не ответила. Попробуйте ещё раз.",
-  "Reading {v1}: waiting on {v2} of {v3} servers.": "Читаем {v1}: ждём {v2} из {v3} серверов.",
-  "Waiting on {v2} of {v3} servers": "Ждём {v2} из {v3} серверов",
+  // the panel's own answers on the log routes — read by the viewer's code and by swg-noded, shown on no screen of the
+  // SPA (the viewer words its own sentences by `code`); translated so a srvText() of them never prints English
+  "{v1} log viewers are open already": "уже открыто просмотров логов: {v1}",
+  "{v1} downloads are being made already": "уже собирается файлов: {v1}",
+  "cannot spool the download: {v1}": "не удалось сохранить файл для скачивания: {v1}",
+  "no such download": "такого файла нет",
+  "no such download (made files are kept {v1} min)": "такого файла нет (готовые файлы хранятся {v1} мин)",
+  "no such request": "такого запроса нет",
+  "no such viewer": "такого просмотра нет",
+  "nodes and sources are lists": "серверы и источники должны быть списками",
+  "nodes, sources and levels are lists": "серверы, источники и уровни должны быть списками",
+  "pick at least one server and one source": "выберите хотя бы один сервер и один источник",
+  "pick at least one server, one source and one level": "выберите хотя бы один сервер, один источник и один уровень",
+  "since and until are times in seconds": "since и until — время в секундах",
+  "the range must end after it starts, and span 31 days at most": "конец промежутка должен быть позже начала, а сам он — не длиннее 31 дня",
+  "invalid body": "неверное тело запроса",
+  "busy — send it again": "занято — отправьте ещё раз",
+  "not this request's key": "ключ не от этого запроса",
+  "bad part number": "неверный номер части",
+  "parts must come in order": "части должны идти по порядку",
+  "this server's part is closed": "часть этого сервера уже закрыта",
+  "the panel cannot spool it": "панель не может сохранить эту часть",
+  "log_level must be off, error, warning or info": "log_level: off, error, warning или info",
+  "log_debug must be 0, 3600, 86400 or -1": "log_debug: 0, 3600, 86400 или -1",
+  // {v3} is "N servers" through PLURALS gen|server: «из 1 сервера», «из 21 сервера», «из 5 серверов»
+  "Reading {v1}: waiting on {v2} of {v3}.": "Читаем {v1}: ждём {v2} из {v3}.",
+  "Waiting on {v2} of {v3}": "Ждём {v2} из {v3}",
   "Making the file…": "Собираем файл…",
   "Ready: {v1} lines, {v2}.": "Готово: строк — {v1}, {v2}.",
   "The file could not be made: {v1}": "Не удалось собрать файл: {v1}",
@@ -3152,7 +3180,7 @@ export const STR = {
   "Paste a custom config": "Вставить свой конфиг",
   "Paste the profile before saving.": "Перед сохранением вставьте профиль.",
   "Cloudflare WARP accounts and WireGuard profiles from anywhere else. Websites see the exit rather than this node.":
-    "Аккаунты Cloudflare WARP и профили WireGuard откуда угодно ещё. Сайты видят exit, а не эту ноду.",
+    "Аккаунты Cloudflare WARP и профили WireGuard откуда угодно ещё. Сайты видят этот выход, а не эту ноду.",
   "WARP+ licence key — optional": "Ключ WARP+ — необязательно",
   "Paste the [Interface] / [Peer] profile here": "Вставьте сюда профиль с [Interface] / [Peer]",
   "Paste a WireGuard profile for the new exit, or remove it.":
@@ -3702,6 +3730,7 @@ export const STR = {
   "This node has several IPv4 addresses. Listening on all of them, a reply can leave from one clients didn't dial, and the VK relay drops it. Pick the address to listen on under *Listen on* — behind NAT, the one your router forwards this port to.":
     "У этой ноды несколько IPv4-адресов. Когда сервер слушает на всех, ответ может уйти с адреса, к которому клиенты не подключались, и реле VK его отбросит. Выберите адрес в поле *Слушать на* — за NAT тот, на который роутер пробрасывает этот порт.",
   "Listen on": "Слушать на",
+  "Listen on must be an IPv4 address of this node, or Auto": "«Слушать на» — IPv4-адрес этой ноды или «Авто»",
   "private": "частный",
   "not on this node": "нет на этой ноде",
   "Only this address — replies leave from it. Clients still dial the endpoint above.":
@@ -3755,10 +3784,10 @@ export const STR = {
   "Reclaimed {v1} — {v2} user(s) kept": "{v1} возвращён, юзеров: {v2}",
   "Couldn't reclaim {v1}": "Не удалось вернуть {v1}",
   "Take this server back under the panel, keeping the users in its store": "Вернуть этот сервер под управление панели, сохранив пользователей из его хранилища",
-  "Mesh egress IP": "IP для mesh",
+  "Mesh egress IP": "IP для меша",
   "— source to dial other nodes": "— источник для других узлов",
-  "Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.": "С какого из адресов этого узла он подключается к mesh-связям других узлов. Отдельное соединение может переопределить это на своей карточке.",
-  "mesh egress IP → {v1}": "IP для mesh → {v1}",
+  "Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.": "С какого из адресов этого узла он подключается к меш-связям других узлов. Отдельное соединение может переопределить это на своей карточке.",
+  "mesh egress IP → {v1}": "IP для меша → {v1}",
   "Source IP this node uses to reach the panel. Ignored on same-server installs; falls back to auto if it can't connect.":
     "Адрес источника, с которого нода обращается к панели. На установках на одном сервере игнорируется; при неудаче — авто.",
   "Mesh settings (ingress address, subnet, port, prefix, AWG) for this node are configured in {where} — select this node there.":
@@ -4764,7 +4793,7 @@ export const STR = {
   "{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.":
     "{v1} блокирует торрент-трафик, который ей присылают другие ноды, — направленное туда не выйдет. Разрешите его на {v1} или оставьте решать каждому интерфейсу.",
   "Through another node": "Через другую ноду",
-  "There is no mesh link to {v1}.": "До {v1} нет mesh-связи.",
+  "There is no mesh link to {v1}.": "До {v1} нет меш-связи.",
   "{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.": "{v1} сейчас не выходит на связь — торрент-трафик, отправленный туда, не выйдет, пока связь не вернётся.",
   "Chosen automatically: this is the default. An interface's own Torrents / P2P switch counts only when you pick “Each interface decides”.":
     "Выбрано автоматически: это значение по умолчанию. Переключатель «Торренты / P2P» на интерфейсе действует, только если выбрать «Решает каждый интерфейс».",
@@ -4776,6 +4805,7 @@ export const STR = {
     "маршрут для торрентов недоступен — пока он не заработает, торрент-трафик блокируется",
   "torrents can only be routed to another node of this fleet": "торренты можно направить только на другую ноду этого флота",
   "torrents can only be routed through one of this node's exits": "торренты можно направить только через один из выходов этой ноды",
+  "torrent policy must be one of: {v1}": "политика торрентов — одно из: {v1}",
   "the torrent policy needs a node update — until then torrents are blocked only on interfaces that have Torrents / P2P switched on":
     "для политики торрентов нужно обновить ноду — пока торренты блокируются только на интерфейсах, где включено «Торренты / P2P»",
   // the node could not load its torrent rules ({v1}: nft's own first error line, left in English)
@@ -6127,6 +6157,7 @@ export const STR = {
   "mesh_mode must be auto, full or demand": "mesh_mode: auto, full или demand",
   "mesh_awg_gen must be 2.0, 3.1 or wg": "mesh_awg_gen: 2.0, 3.1 или wg",
   "mesh_awg_gen must be 2.0, 3.1, wg or blank": "mesh_awg_gen: 2.0, 3.1, wg или пусто",
+  "mesh_awg must be an object": "mesh_awg должен быть объектом",
   "an AmneziaWG interface needs at least one AmneziaWG parameter — create a WireGuard interface instead": "интерфейсу AmneziaWG нужен хотя бы один параметр AmneziaWG — создайте вместо него интерфейс WireGuard",
   "mesh subnet must be an IPv4 range of /31 or larger (or blank)": "подсеть меша — диапазон IPv4 размером /31 или шире (или пусто)",
   "{v1} holds too few mesh links for this node ({v2} fit, {v3} needed) — choose a larger subnet, or leave it blank to use the panel's": "В подсети {v1} слишком мало места для меш-линков этой ноды (помещается: {v2}, нужно: {v3}) — выберите подсеть шире или оставьте поле пустым, чтобы взять подсеть панели",
@@ -6876,7 +6907,7 @@ export const STR = {
   "S and H are drawn fresh; the 3.1 fields take what they inherit (the values shown in them), whose ranges the protocol randomises on its own.": "S и H выбираются заново; поля 3.1 получают то, что наследуют (значения, показанные в них), — их диапазоны протокол и так перебирает случайно.",
   "Obfuscation for new AmneziaWG mesh links, unless a link sets its own on its card. Blank = auto (a fresh set per link).":
     "Маскировка для новых меш-линков AmneziaWG, если линк не задаёт свою на своей карточке. Пусто — авто (свой набор на каждый линк).",
-  "val|per link": "у каждого линка свой",
+  "val|per link": "свой у каждого",
   "Each link gets a key of its own.": "Каждый линк получает собственный ключ.",
   "On for every AmneziaWG 3.1 link.": "Включено для каждого линка AmneziaWG 3.1.",
   "What AmneziaWG 3.1 links add to the fields above. A blank cell takes the value shown in it — the mesh default, or the 3.1 defaults in Settings → Interfaces; - for no such line.": "Что линки AmneziaWG 3.1 добавляют к полям выше. Пустая ячейка берёт значение, показанное в ней, — значение меша по умолчанию или значения 3.1 по умолчанию из «Настройки → Интерфейсы»; - — такой строки не будет.",
@@ -7220,6 +7251,8 @@ export const PLURALS = {
   pattern: ["шаблон", "шаблона", "шаблонов"],
   // Genitive — this slot sits after «у» ("у 2 пользователей"), where the nominative "пользователя" is wrong.
   "gen|user": ["пользователя", "пользователей", "пользователей"],
+  // Genitive after «из» — the range download's progress: «ждём 1 из 1 сервера», «из 21 сервера», «из 5 серверов».
+  "gen|server": ["сервера", "серверов", "серверов"],
   "dead VK link": ["мёртвая ссылка", "мёртвые ссылки", "мёртвых ссылок"],
   domain: ["домен", "домена", "доменов"],
   "threat-IP": ["опасный IP", "опасных IP", "опасных IP"],

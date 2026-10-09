@@ -10,7 +10,7 @@
  * lives here rather than being split between screen and store.
  */
 
-import { T, Trich, Tsplit, plural, srvText, locale } from "./i18n.js";
+import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
 import { nodeStatusOf, nodeStale } from "./model.js";
 import {
@@ -3497,8 +3497,9 @@ export function logBudgetState(r) {
   if (!st) return r.stale ? { tone: "faint", text: T("Offline"), title: T("Not reporting — it applies the budget when it is back.") }
     : r.id === "" ? { tone: "warn", text: T("Waiting"), title: T("The panel's root helper reports within a few seconds of starting.") }
     : { tone: "warn", text: T("Update the node"), title: T("This node's build is too old to keep a log budget. Update it to apply one.") };
-  if (st.err) return st.unsupported ? { tone: "bad", text: T("Not supported"), title: st.err }
-    : { tone: "bad", text: T("Not applied"), title: st.err };   // a restart that failed: tried again every minute
+  // the node's (or the root helper's) own `err` is English: said in a sentence of ours, its detail as the value (q189 PLO-12)
+  if (st.err) return st.unsupported ? { tone: "bad", text: T("Not supported"), title: T("This server's journald has no namespaces, so swg's logs cannot have a budget of their own here.") }
+    : { tone: "bad", text: T("Not applied"), title: T("The budget could not be applied ({v1}). It is tried again every minute.", { v1: st.err }) };   // a restart that failed
   if (r.stale) return { tone: "faint", text: T("Offline"), title: T("Not reporting — the figures are from its last report.") };
   if (+st.mb !== r.saved) return { tone: "warn", text: T("Pending"), title: r.id === "" ? T("The root helper applies it within 10 seconds.") : T("Applies on the node's next sync.") };
   return { tone: "ok", text: T("Applied"), title: "" };
@@ -3537,7 +3538,7 @@ function LogBudgetTable({ rows, onMb }) {
             aria-label=${T("Budget for {v1}, MB", { v1: r.name })} title=${T("At least {v1} MB", { v1: LOG_MB_MIN })} aria-invalid=${bad ? "true" : "false"} onDblClick=${e => e.target.select()}
             onInput=${e => onMb(r.id, e.target.value.replace(/[^0-9]/g, "").slice(0, 6))}/><span class="faint">${T("MB")}</span></span>
           <span class="lb-used" role="cell">${pct == null ? html`<span class="faint">—</span>` : html`
-            <span class="lb-usedn">${T("{v1} MB", { v1: st.used_mb })}</span>
+            <span class="lb-usedn">${T("{v1} MB", { v1: fmtNum(st.used_mb) })}</span>
             <span class="lb-meter" aria-hidden="true"><i style=${"width:" + pct + "%"}></i></span>`}</span>
           <span class=${"lb-holds" + (holds ? (holds.full ? "" : " since") : " none")} role="cell"
             title=${holds && !holds.full ? T("Nothing has been removed yet: every line since then is kept") : ""}>${holds
