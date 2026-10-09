@@ -25,7 +25,7 @@ Run: python3 tests/exit_node_too_old_selftest.py      (0 = pass)
      --perturb-panel   panel stops deriving the flag  -> the old node must go back to spinning
      --perturb-spa     SPA stops reading it           -> same, from the other end
 """
-import importlib.machinery, importlib.util, json, os, subprocess, sys, tempfile
+import importlib.machinery, importlib.util, json, os, pathlib, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -104,20 +104,26 @@ check("⚠️ …and neither does a node that has simply never synced — that o
 print("\n[2] the flag travels, and the SPA turns it into a sentence an operator can act on")
 # ⚠️ THE RECORDS BELOW ARE THE PANEL'S OWN OUTPUT, UNEDITED. Retyping them here would test two fixtures
 # that agree and leave the field free to stop travelling.
-probe = os.path.join(HERE, "_xtoo_probe.mjs")
+# The probe — and the perturbed routing.js — live in a directory of their own, never in the tree: a gate copying the tree
+# while they existed could list them and lose them (1.8.9 qualification: the six-way suite).
+PD = tempfile.mkdtemp(prefix="xtoo-")
+probe = os.path.join(PD, "probe.mjs")
 spa = os.path.join(ROOT, "js", "routing.js")
-mod = "routing.js"
+mod = spa
 if PS:
     src = open(spa, encoding="utf-8").read()
     a = "  if ((node || {}).exits_unsupported)\n"
     assert src.count(a) == 1, "SPA anchor missing — this run would FALSE-PASS"
     src = src.replace(a, "  if (false)\n")
-    mod = "__xtoo_perturb.js"
-    open(os.path.join(ROOT, "js", mod), "w", encoding="utf-8").write(src)
+    # its siblings by absolute URL, so it binds the very Store the probe fills
+    src = re.sub(r"(\bfrom\s*)([\"'])\./", lambda m: m.group(1) + m.group(2) + pathlib.Path(ROOT, "js").as_uri() + "/", src)
+    mod = os.path.join(PD, "routing-perturbed.mjs")
+    open(mod, "w", encoding="utf-8").write(src)
+SPA_ENV = json.dumps(pathlib.Path(HERE, "spa_env.mjs").as_uri())
 open(probe, "w").write("""
-import { ROOT } from "./spa_env.mjs";
+import { ROOT } from SPA_ENV;
 import { pathToFileURL } from "node:url"; import path from "node:path"; import fs from "node:fs";
-const { exitHealth, exitHealthMark } = await import(pathToFileURL(path.join(ROOT, "js", process.argv[2])).href);
+const { exitHealth, exitHealthMark } = await import(pathToFileURL(process.argv[2]).href);
 const { Store } = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href);
 const nodes = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 const out = {};
@@ -131,14 +137,12 @@ for (const [id, n] of Object.entries(nodes)) {
   }
 }
 process.stdout.write(JSON.stringify(out));
-""")
+""".replace("SPA_ENV", SPA_ENV, 1))
 tf = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
 json.dump(N, tf); tf.close()
 r = subprocess.run([os.environ.get("NODE_BIN", "node"), probe, mod, tf.name],
                    capture_output=True, text=True, cwd=ROOT)
-os.unlink(probe); os.unlink(tf.name)
-if PS:
-    os.unlink(os.path.join(ROOT, "js", mod))
+shutil.rmtree(PD, ignore_errors=True); os.unlink(tf.name)
 if r.returncode != 0:
     check("the SPA probe ran", False, r.stderr[-400:])
     V = {}

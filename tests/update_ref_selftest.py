@@ -157,14 +157,15 @@ for f in ("install-node.sh", "install-host.sh"):
           re.search(r'_swg_[a-z_]*ref="\$\{SWG_REF:-(main|\$\{EXIST_REF:-main\})\}"', nsrc[f]) is not None)
 
 # and the command it actually builds, for each ref — driven through the real function
-import importlib.machinery, importlib.util
-_fd, _tmp = tempfile.mkstemp(suffix=".py", prefix="noded-ref-", dir=HERE)
+import importlib.machinery, importlib.util, shutil
+_dir = tempfile.mkdtemp(prefix="noded-ref-")     # not tests/: each run left a ~1.5 MB pyc in tests/__pycache__ for good, and
+_fd, _tmp = tempfile.mkstemp(suffix=".py", prefix="noded-ref-", dir=_dir)   # a gate copying the tree could lose the copy
 os.write(_fd, nsrc["swg-noded"].encode()); os.close(_fd)
 _l = importlib.machinery.SourceFileLoader("nodedref", _tmp)
 _m = importlib.util.module_from_spec(importlib.util.spec_from_loader("nodedref", _l))
 try: _l.exec_module(_m)
 except SystemExit: pass
-os.unlink(_tmp)
+shutil.rmtree(_dir, ignore_errors=True)
 for ref, want in ((None, "main"), ("dev", "dev"), ("v1.9.0", "v1.9.0"), ("", "main"),
                   ("evil;rm -rf /", "main")):
     cfg = {"node": ({} if ref is None else {"update_ref": ref})}

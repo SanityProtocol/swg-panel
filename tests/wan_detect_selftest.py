@@ -18,7 +18,7 @@ implementations are driven here, through a fake `ip`, off the same table.
 Run: python3 tests/wan_detect_selftest.py       (0 = pass)
      --perturb   restores the `route get 1.1.1.1` probe in BOTH and expects RED.
 """
-import importlib.machinery, importlib.util, os, re, sys, tempfile
+import importlib.machinery, importlib.util, os, re, shutil, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -63,6 +63,11 @@ def _fake_out(argv):
         return t["get_1111"]
     return ""
 
+# The loaded copies live in a directory of their own, removed once both are in: in tests/ each run left two ~1.5 MB pycs in
+# tests/__pycache__ for good, and a gate copying the tree while the copy existed could list it and lose it (1.8.9
+# qualification: the six-way suite).
+MODDIR = tempfile.mkdtemp(prefix="wan-mod-")
+
 def _load(path, name, run_impl):
     src = open(path, encoding="utf-8").read()
     if PERTURB:
@@ -70,7 +75,7 @@ def _load(path, name, run_impl):
         src = re.sub(r"    best, best_metric = \"\", None\n(?:.|\n)*?    if best:\n        return best\n",
                      "", src, count=2)
         assert "best, best_metric" not in src, "perturbation did not remove both — this run would FALSE-PASS"
-    fd, tmp = tempfile.mkstemp(suffix=".py", prefix="wan-" + name + "-", dir=HERE)
+    fd, tmp = tempfile.mkstemp(suffix=".py", prefix="wan-" + name + "-", dir=MODDIR)
     os.write(fd, src.encode()); os.close(fd)
     l = importlib.machinery.SourceFileLoader(name, tmp)
     mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, l))
@@ -87,6 +92,7 @@ class _R:      # swg-noded's run() returns an object with .stdout
 ND = _load(os.path.join(ROOT, "swg-noded"), "wnoded", lambda a, **k: _R(_fake_out(a)))
 # swg-agent's run() returns the string itself
 AG = _load(os.path.join(ROOT, "swg-agent"), "wagent", lambda a, **k: _fake_out(a))
+shutil.rmtree(MODDIR, ignore_errors=True)
 
 print("[1] the WAN is read off the default route, not off a probe that a host route can steer")
 for case, want in (("normal", "eth0"), ("hijacked", "eth0"), ("two_defaults", "tun0"),

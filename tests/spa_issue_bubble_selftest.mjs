@@ -12,6 +12,7 @@
  * Run: node tests/spa_issue_bubble_selftest.mjs      --perturb nodepage   the node page's i18n= taken off → RED in [1]
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -51,9 +52,16 @@ check("[2] the panel's _node_issues ran on the fixture (four issues at least)", 
 globalThis.localStorage = { getItem: k => (k === "swg-lang" ? "ru" : null), setItem: () => {}, removeItem: () => {} };
 const I = await import(pathToFileURL(path.join(ROOT, "js", "i18n.js")).href);
 await I.loadLang();
-const made = path.join(ROOT, "js", "__perturbed_screen-nodes.js");
+// ⚠️ IN A DIRECTORY OF ITS OWN, its siblings by absolute URL (the very modules i18n was loaded into above): written into
+// js/, it was a file a gate copying the tree meanwhile could list and lose (1.8.9 qualification: the six-way suite).
+const madeDir = fs.mkdtempSync(path.join(os.tmpdir(), "issue-bubble-"));
+const made = path.join(madeDir, "screen-nodes.mjs");
+const JS_URL = pathToFileURL(path.join(ROOT, "js") + path.sep).href;
 let SNM;
-try { fs.writeFileSync(made, SN); SNM = await import(pathToFileURL(made).href); } finally { fs.rmSync(made, { force: true }); }
+try {
+  fs.writeFileSync(made, SN.replace(/(\bfrom\s*)(["'])\.\//g, (m, f, q) => f + q + JS_URL));
+  SNM = await import(pathToFileURL(made).href);
+} finally { fs.rmSync(madeDir, { recursive: true, force: true }); }
 if (ISS) {
   const flat = x => Array.isArray(x) ? x.map(flat).join("") : x && typeof x === "object" && x.props ? flat(x.props.children) : x == null || x === false ? "" : String(x);
   const rows = v => { const out = []; const w = x => { if (Array.isArray(x)) x.forEach(w);
