@@ -1802,10 +1802,7 @@ def _awg_devs_elsewhere():
     out = []
     for ln in subprocess.run(["ip", "netns", "list"], capture_output=True, text=True).stdout.splitlines():
         ns = ln.split()[0] if ln.split() else ""
-        devs = _awg_kernel_devs(ns) if ns else []
-        if devs is None:
-            return None                                   # cannot look into it (1.8.9 qualification FN-2(d), HE-2's class)
-        if devs:
+        if ns and _awg_kernel_devs(ns):
             out.append(ns)
     if not (shutil.which("lsns") and shutil.which("nsenter")):
         return None
@@ -1866,8 +1863,6 @@ def _awg_kernel_devs(ns=None):
     """amneziawg KERNEL devices (a userspace amneziawg-go runs a tun and is never listed), in `ns` or this namespace."""
     p = subprocess.run(["ip"] + (["-n", ns] if ns else []) + ["-o", "link", "show", "type", "amneziawg"],
                        capture_output=True, text=True)
-    if ns and p.returncode != 0:
-        return None                                   # a named namespace ip could not read is not an empty one
     return [ln.split(":", 2)[1].strip().split("@")[0] for ln in (p.stdout or "").splitlines() if ln.count(":") >= 2]
 
 
