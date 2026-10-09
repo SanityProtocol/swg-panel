@@ -83,8 +83,8 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "rule-in-band": ("P2P_RULE_PRI = 6880 ", "P2P_RULE_PRI = 7050 "),
     "porthint":     ('            if "smtp" in cats:     els.append("tcp . 25")\n',
                      '            if "smtp" in cats:     els.append("tcp . 25")\n            if "torrents" in cats: els += ["udp . 6881-6889", "tcp . 6881-6889"]\n'),
-    "gate-memo":    ('if have.returncode == 0 and cur == sig and " drop" in (have.stdout or ""):\n            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")\n            return\n        _P2P["tbl"] = True',
-                     'if have.returncode == 0 and cur == sig:\n            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")\n            return\n        _P2P["tbl"] = True'),
+    "gate-memo":    ('if have.returncode == 0 and cur == sig and " drop" in (have.stdout or ""):\n            retire()\n            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")\n            return\n        _P2P["tbl"] = True',
+                     'if have.returncode == 0 and cur == sig:\n            retire()\n            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")\n            return\n        _P2P["tbl"] = True'),   # retire(): 3e882502
     "rule-poll":    ('    if not on and _P2P["rule"] is False:\n        return\n', ''),
     "ctid-key":     ('"  set flag { typeof ip saddr; flags timeout; size 65535; }",', '"  set flag { typeof ip saddr; flags timeout; size 65535; }", "  set p2p_ct { typeof ct id; flags timeout; }",'),
     "probe-1line":  ('P2P_PROBE = "table inet swg_p2p_probe {\\n  chain c {\\n    meta l4proto udp @ih,0,64 0x0000041727101980 counter\\n  }\\n}\\n"',
