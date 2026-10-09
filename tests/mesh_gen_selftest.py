@@ -16,10 +16,16 @@ What is pinned here, and why each matters:
   [4] the S4 refit on a 3.1 link stays ≥ 12, and where a raised MTU leaves no room for 12 it leaves the link alone (no event,
       no change, every pass) instead of drawing a value header protection refuses;
   [5] the per-node override beats the panel's, and the X end decides; a node whose override the far end overrules is told so.
+  [11] a link that kept what it was made with (q189 PR-4: a node enrolled after 3.1 was set has its links made at 2.0, and
+      nothing rebuilds them when it reports) says what is true and how to rebuild THAT link from its card — following the
+      default, its own type with the fleet's the same, its own type with the fleet's another — and each remedy, applied the
+      way /api/connection/update applies it, rebuilds that one link as said and no other; the "-" case the same way.
 
 Hermetic: no network, no panel process. The baseline tree is read with `git show` (SWG_MESH_GEN_BASE, default cba8e22).
 Run: python3 tests/mesh_gen_selftest.py            (0 = pass)
      python3 tests/mesh_gen_selftest.py --perturb  (must FAIL: the type setting is ignored)
+     --perturb-reprov  the reasons send the operator to re-provision the pair's anchor again (the copy before PR-4) — [11] must FAIL
+     --perturb-own     the remedy ignores a link's own type (always "pick {type}") — [11] must FAIL
 """
 import copy, importlib.machinery, importlib.util, json, os, random, subprocess, sys, tempfile
 
@@ -79,6 +85,14 @@ if "--perturb-keep" in sys.argv:      # the tree before round 14: a teardown dro
         _park(nodes, who, other, **kw)
     P.mesh_link_park = _drop
     print("(perturbed: a teardown parks nothing — [10] must FAIL)")
+if "--perturb-reprov" in sys.argv:   # the copy before q189 PR-4: a reason about one link re-provisions the pair's anchor
+    P._mesh_relink_how = lambda deps, nodes, a, b, want: P.perr("re-provision {v1} to rebuild it",
+                                                                v1=(nodes.get(min(a, b)) or {}).get("name") or min(a, b))
+    print("(perturbed: the reasons re-provision a node — [11] must FAIL)")
+if "--perturb-own" in sys.argv:      # a remedy that ignores the link's own type: "pick X" is no change when X is its type already
+    P._mesh_relink_how = lambda deps, nodes, a, b, want: P.perr(
+        "to rebuild this link alone, pick {v1} as its type on its card under Node connections and Save", v1=P.MESH_GEN_LABEL[want])
+    print("(perturbed: the remedy ignores a link's own type — [11] must FAIL)")
 if "--perturb-link-awg" in sys.argv:  # the tree without a link's own params: the builder never reads them, nothing moves
     P.mesh_link_layer = lambda nodes, a, b: {"mesh_awg": {}}
     P.mesh_link_awg_migrate = lambda nodes: False
@@ -484,6 +498,100 @@ rec = {"name": "x", "links": {"a": {}}, "mesh_link": {"b": {"type": "wg"}}, "lin
 clean = P.transfer_strip(rec)[0]
 check("a transfer carries neither the pairs' own settings nor parked ones (keyed by this fleet's ids)",
       not ({"links", "mesh_link", "link_keep"} & set(clean)), sorted(clean))
+
+# ── [11] what a link that kept what it was made with says, and how to rebuild THAT link (q189 PR-4) ────────────────────
+print("[11] a link that kept its type says so, and how to rebuild that one link — never \"re-provision\" a node")
+PICK = "to rebuild this link alone, pick {v1} as its type on its card under Node connections and Save"
+DFLT = "to rebuild this link alone, pick Default as its type on its card under Node connections and Save"
+DFLT2 = "to rebuild this link alone, pick Default as its type on its card under Node connections and Save, then {v1} and Save again"
+TYPE = "it should be {v1}, but a link keeps the type it was made with until it is rebuilt — {v2}"
+
+
+def relink(t, d, sn, a, b, typ):
+    """What /api/connection/update does with a type change: store it on the pair, tear the ONE link down, reconcile."""
+    P.mesh_link_cfg_put(t, a, b, type=typ, awg=P.mesh_template_clean(P.mesh_link_awg_set(t, a, b))[0] or {})
+    P.mesh_relink_pair(t, a, b)
+    return run(P, t, d, sn)
+
+
+def ids(t):
+    return {(a, b): (la["iface"], json.dumps(ia.get("awg_params"), sort_keys=True)) for a, b, la, _, ia, *_ in links(t)}
+
+
+def how(m):
+    v2 = ((m or {}).get("error_vars") or {}).get("v2") or {}
+    return v2.get("error_key"), (v2.get("error_vars") or {}).get("v1")
+
+
+d = deps(1320, {"mesh_awg_gen": "3.1"})
+sn = {"n00": gen_snap(), "n01": gen_snap()}
+t = run(P, fleet(3), d, sn)                     # n02 enrolled after 3.1 was set: no report yet when its links are made
+sn["n02"] = gen_snap()
+t = run(P, t, d, sn)                            # …then it reports 3.1, and nothing rebuilds (this fix changes no link making)
+gens = {(a, b): P.mesh_link_gen(t[a], la) for a, b, la, *_ in links(t)}
+check("the finding, as it stands: n02's links stay 2.0 after it reports 3.1",
+      gens == {("n00", "n01"): "3.1", ("n00", "n02"): "2.0", ("n01", "n02"): "2.0"}, gens)
+r = P.mesh_gen_reasons(d, t, sn, "n02")
+check("n02's card names both links", [x["peer"] for x in r] == ["node0", "node1"], r)
+check("…saying what is true: it should be AWG 3.1, and a link keeps the type it was made with",
+      all(x["msg"].get("error_key") == TYPE and x["msg"]["error_vars"]["v1"] == "AWG 3.1" for x in r), [x["msg"] for x in r])
+check("…and how to rebuild that one link: pick AWG 3.1 as its type on its card",
+      all(how(x["msg"]) == (PICK, "AWG 3.1") for x in r), [how(x["msg"]) for x in r])
+check("…never a type change that did not happen, nor re-provisioning a node (that rebuilds every link it has)",
+      not any("re-provision" in x["msg"]["error"] or "changed" in x["msg"]["error"] for x in r), [x["msg"]["error"] for x in r])
+before = ids(t)
+t = relink(t, d, sn, "n02", "n00", "3.1")
+after = ids(t)
+check("the remedy, applied as the card applies it: n00↔n02 is rebuilt at 3.1, under a new name",
+      P.mesh_link_gen(t["n00"], t["n00"]["links"]["n02"]) == "3.1" and after[("n00", "n02")][0] != before[("n00", "n02")][0], after)
+check("…and no other link moved (n00↔n01 and n01↔n02 are as they were)",
+      all(after[k] == before[k] for k in (("n00", "n01"), ("n01", "n02"))), (before, after))
+check("…and n02's card now names only the link still at 2.0", [x["peer"] for x in P.mesh_gen_reasons(d, t, sn, "n02")] == ["node1"])
+
+# a link with a type of its own: "pick AWG 3.1" would be no change there (Save stays dark) — Default is the change
+for fleet_gen, want_how in (("3.1", (DFLT, None)), (None, (DFLT2, "AWG 3.1"))):
+    d = deps(1320, {"mesh_awg_gen": fleet_gen} if fleet_gen else {})
+    sn = {"n00": gen_snap(), "n01": gen_snap()}
+    f = fleet(3); P.mesh_link_cfg_put(f, "n01", "n02", type="3.1")
+    t = run(P, f, d, sn)
+    sn["n02"] = gen_snap()
+    t = run(P, t, d, sn)
+    r = {x["peer"]: x for x in P.mesh_gen_reasons(d, t, sn, "n02")}
+    tag = "fleet's type %s" % (fleet_gen or "2.0 (unset)")
+    check("%s, n01↔n02 set to 3.1 on its own and made at 2.0: told it should be AWG 3.1, and %s" % (tag, "pick Default" if
+          fleet_gen else "pick Default, then AWG 3.1 again"), "node1" in r and r["node1"]["msg"].get("error_key") == TYPE
+          and how(r["node1"]["msg"]) == want_how, r.get("node1"))
+    before = ids(t)
+    t = relink(t, d, sn, "n01", "n02", "")      # Default
+    if not fleet_gen:
+        check("%s: Default rebuilds it at the fleet's 2.0 — no reason left, so the second step is the operator's own" % tag,
+              P.mesh_link_gen(t["n01"], t["n01"]["links"]["n02"]) == "2.0" and P.mesh_gen_reasons(d, t, sn, "n02") == [])
+        t = relink(t, d, sn, "n01", "n02", "3.1")
+    after = ids(t)
+    check("%s: the remedy as said leaves n01↔n02 at 3.1, and only that link moved" % tag,
+          P.mesh_link_gen(t["n01"], t["n01"]["links"]["n02"]) == "3.1"
+          and all(after[k] == before[k] for k in after if k != ("n01", "n02")), (before, after))
+
+# the "-" case: values generated because an end could not hold an omission when the link was made, and it can now
+ex = lambda: {"datapath": {"awg": {"gen": {"module": "3.1", "tools": "3.1"}, "exact": 1}}}
+d = deps(1320, {"mesh_awg": {"I1": "-", "I2": "-", "Jc": "5", "Jmin": "50", "Jmax": "80"}})
+sn = {"n00": ex(), "n01": ex(), "n02": {}}
+t = run(P, fleet(3), d, sn)
+sn["n02"] = ex()
+t = run(P, t, d, sn)
+r = P.mesh_gen_reasons(d, t, sn, "n02")
+OMIT = "{v1} has generated values where its AWG params say none — a link keeps the values it was made with until it is rebuilt; {v2}"
+check("\"-\" fields made with generated values, the end able to hold none now: both links say so, with the one-link remedy",
+      len(r) == 2 and all(x["msg"].get("error_key") == OMIT and x["msg"]["error_vars"]["v1"] == "I1, I2"
+                          and how(x["msg"]) == (PICK, "AWG 2.0") for x in r), [x["msg"] for x in r])
+check("…never re-provisioning a node", not any("re-provision" in x["msg"]["error"] for x in r))
+before = ids(t)
+t = relink(t, d, sn, "n00", "n02", "2.0")
+L = {(a, b): ia for a, b, _, _, ia, *_ in links(t)}
+after = ids(t)
+check("…and the remedy as said rebuilds n00↔n02 without I1/I2, exact, and moves no other link",
+      "I1" not in L[("n00", "n02")]["awg_params"] and L[("n00", "n02")].get("awg_exact") is True
+      and all(after[k] == before[k] for k in after if k != ("n00", "n02")), (L[("n00", "n02")], before, after))
 
 print()
 if FAILS:
