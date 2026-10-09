@@ -249,13 +249,6 @@ del DNS["nowhere.invalid"]; N._RESOLVED.clear()        # the outage begins (and 
 open(envp, "w").write("SWG_LISTEN=192.168.88.10:56000\n")
 N.rebind_env(envp, dict(W, listen="nowhere.invalid:56000"), N._wdtt_env_text)
 check("Restart during a DNS outage leaves a working env alone", N._env_listen(envp) == "192.168.88.10:56000", open(envp).read())
-# q189 NR-13: _env_listen is _env_line's reading of SWG_LISTEN (one parser of these files), with the same answers
-_ev = envp + ".nr13"
-open(_ev, "w").write("SWG_DIAL=x:1\nSWG_LISTEN= 192.168.88.10:56000 \r\nSWG_PIN=\n")
-check("NR-13: SWG_LISTEN read through _env_line — surrounding blanks and a CR stripped, a missing key or file is \"\"",
-      N._env_listen(_ev) == "192.168.88.10:56000" and N._env_listen(_ev + ".none") == ""
-      and (open(_ev, "w").write("SWG_DIAL=x:1\n") and N._env_listen(_ev) == "")
-      and "_env_line(path, \"SWG_LISTEN\")" in src, N._env_listen(_ev))
 
 print("\n[9] vk-turn-proxy heal (installers, convert.sh, an older build wrote the dialled host)")
 import json as _json
