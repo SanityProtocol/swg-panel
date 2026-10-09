@@ -13598,7 +13598,8 @@ AWG_LOAD_RESULT = os.path.join(STATE_DIR, "awg-load-result.json")  # the agent's
 AWG_LOAD_MAX_AGE = 600
 # Codes the agent refuses with BEFORE it stops anything — every other outcome (done, load_failed, busy, a timeout or an
 # internal error mid-op) may have bounced the interfaces, so the routing reconcile must run.
-AWG_LOAD_PRECHECK = {"nothing_newer", "tools_old", "no_way_back", "other_netns", "not_loaded", "container", "cannot_check"}
+AWG_LOAD_PRECHECK = {"nothing_newer", "tools_old", "no_way_back", "other_netns", "not_loaded", "container", "cannot_check",
+                     "no_fallback"}
 _AWG_LOAD = {"v": None}
 _AWG_LOAD_KEYS = ("n", "id", "ok", "code", "ifaces", "was", "loaded", "error")
 

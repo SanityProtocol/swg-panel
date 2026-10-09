@@ -1779,6 +1779,13 @@ def op_start_iface(cfg, req):
 _AWG_GEN_ORDER = {"2.0": 0, "3.0": 1, "3.1": 2}
 _SYS = "/sys"                       # a test points it at a temp tree
 _PROC = "/proc"                     # …and this one
+AWG_GO_PATHS = ("/usr/local/sbin/amneziawg-go", "/usr/local/bin/amneziawg-go", "/usr/sbin/amneziawg-go", "/usr/bin/amneziawg-go")
+
+
+def _awg_fallback():
+    """Is there a userspace AmneziaWG (amneziawg-go) for awg-quick to fall back to when the module is gone — on PATH, as
+    awg-quick looks for it, or where we install it (swg-noded reads its `gen.fallback` the same way)."""
+    return bool(shutil.which("amneziawg-go")) or any(os.access(p, os.X_OK) for p in AWG_GO_PATHS)
 
 
 def _awg_devs_elsewhere():
@@ -1865,6 +1872,12 @@ def op_reload_awg_module(cfg, req):
             ok_tools = False
         if not ok_tools:
             raise AgentError("tools_old", "the awg tools predate AmneziaWG %s and could not configure the new module" % gd)
+    # ⚠️ NOTHING TO FALL BACK ON, NO UNLOAD. Nothing here knows the new module loads before the old one is out (Secure Boot
+    # refusing its key, a build that does not match this kernel): awg-quick then brings every interface up on amneziawg-go
+    # — or on nothing, and every AmneziaWG interface and mesh link stayed down until someone acted (1.8.9 qualification
+    # HE-4, on a VM: 106 s, indefinitely without the rig).
+    if not _awg_fallback():
+        raise AgentError("no_fallback", "no amneziawg-go to fall back on if the new module would not load")
     ns_busy = _awg_devs_elsewhere()
     if ns_busy is None:
         raise AgentError("cannot_check", "lsns or nsenter is missing, so the other network namespaces cannot be checked")
