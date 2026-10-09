@@ -14232,6 +14232,11 @@ def mesh_need(nodes, deps):
             for r in n["default_routing"]:
                 if isinstance(r, dict) and rule_on(r) and r.get("action") == "exit":
                     want(nid, str(r.get("node") or ""))
+        # …and its torrent policy's "Route through node Q" (P2P-POLICY-PLAN P3): cascade_plan sends every one of its client
+        # subnets' P2P over the N↔Q link, so demand mode must link that pair too — it never came up there (q189 PR-2)
+        _pp = n.get("p2p") if isinstance(n.get("p2p"), dict) else {}
+        if _pp.get("action") == "exit":
+            want(nid, str(_pp.get("node") or ""))
         for peer, lr in (n.get("links") or {}).items():
             if mesh_link_extras(lr):
                 want(nid, peer)
