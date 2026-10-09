@@ -20,8 +20,8 @@
   [6] swg-netctl, the panel box's writer: the size file from panel-settings.json, the status file only when it changes and
       kept out of the 1-hour sweep, Off removes the stored files.
   [7] The verify readers read the namespace and give the unit's own reason even when systemd's line sorts after it.
-  [8] Uninstall removes the drop-ins, the size file, the journal and swg-logs (the last only with the last unit); an
-      operator's own drop-in stays.
+  [8] Uninstall (rm_log_ns, per component) removes the drop-ins, the size file and swg-logs (the last only with the last
+      unit); an operator's own drop-in stays; the journal is the end of the run's (F14: tests/uninstall_journals_selftest.py).
   [9] swg-logs maps a source to journalctl over the right namespace and refuses a name with shell characters; update.sh
       writes the drop-ins before it restarts anything.
 
@@ -578,8 +578,11 @@ sh = ('DRYRUN=false; SD=%s\nrun(){ "$@"; }\nb(){ printf %%s "$*"; }\ninfo(){ :; 
       'rm_log_ns swg-node swg-noded.service swg-relay@.service vk-turn-proxy-.service swg-wdtt-.service swg-csqtt-.service\n') % (SD, fn)
 subprocess.run(["bash", "-c", sh], check=True)
 left = sorted(os.path.relpath(os.path.join(dp, f), UR) for dp, _d, fs in os.walk(UR) for f in fs)
-check("[8] the drop-ins, the size file and the journal are gone; the operator's own drop-in stays",
-      left == ["bin/swg-logs", "etc/swg-noded.service.d/my-own.conf", "etc/swg-panel-server.service", "mid"], left)
+check("[8] the drop-ins and the size file are gone; the operator's own drop-in stays; the journal is left for the end of the "
+      "run (rm_log_journals: a FULL uninstall takes it once nothing of swg's is left, kept data keeps it — "
+      "tests/uninstall_journals_selftest.py)",
+      left == ["bin/swg-logs", "etc/swg-noded.service.d/my-own.conf", "etc/swg-panel-server.service", "mid",
+               "var/log/journal/MID.swg-node/system.journal"], left)
 check("[8] swg-logs stays while the panel is still installed", os.path.exists(os.path.join(UR, "bin/swg-logs")))
 os.remove(os.path.join(SD, "swg-panel-server.service"))
 subprocess.run(["bash", "-c", sh], check=True)
