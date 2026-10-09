@@ -11,10 +11,23 @@ mount/unmount order, so the text checks of tests/log_range_selftest.py could not
   [2] SPA-4 — the level chips (Errors / Warnings / Info / Debug, with three-digit counts) are each whole on screen and the card
       fits the screen, at 360 and 390 px, in English and in Russian, in the Settings card and in the full-screen viewer —
       before the fix one row needed 380–460 px: "Debug" was cut and «Отладка» hidden, and the card ran off the screen.
+  [3]–[6] the viewer's own logic, the live endpoints answered by the page (round 2; the panel real for the rest):
+  [3] SPA-5 — Clear, then the tab hidden and shown: the reopened request's backfill brings back only what came after the
+      Clear (before: every cleared line came back).
+  [4] SPA-8 — 70 sources chosen (one mesh link unticked in a 12-node mesh): no request is opened, the viewer says how many and
+      the limit, and no time range can be made of them (before: sent, and the panel silently kept the first 64); 64 streams.
+      SPA-19 — the same Download menu says "The lines shown" are written with keys and tokens unmasked (the range beside it
+      masks them), in English and Russian.
+  [5] SPA-9 — a deep link (openLogs, as the node page and a failing turn proxy call it) leaves the remembered servers and
+      sources alone, a Wrap toggle in it keeps them too, and closing it gives Settings → Logs the operator's choice back
+      (before: the link's node and sources replaced it for good).
+  [6] DN-14 — a NixOS panel (its /api/state says log_panel {err: "nixos"}) asks for and offers its four sources (before: the
+      service only, as a Docker panel).
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
 Run: python3 tests/logview_render_selftest.py      (0 = pass)
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: stopcard | chipwrap
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED:
+                       stopcard | chipwrap | floor | srcmax | deeplink | nixos | unmasked
 """
 import http.client, json, os, shutil, socket, subprocess, sys, tempfile, time
 
@@ -52,6 +65,13 @@ PERTURBATIONS = {
                  "const closeLogOverlay = () => {\n  LV.overlay = false;"),
     "chipwrap": ("app.css", "  .lv-levels{flex-wrap:wrap;gap:6px;border:0;border-radius:0;overflow:visible}\n"
                             "  .lv-lvb{border:1px solid var(--line-solid);border-radius:var(--r-sm)}\n", ""),
+    "floor": ("js/logview.js", "else { LV.held = { ...LV.floor }; for", "else { LV.held = {}; for"),
+    "srcmax": ("js/logview.js", "const SRC_MAX = 64;", "const SRC_MAX = Infinity;"),
+    "deeplink": ("js/logview.js", "  if (!_own) _own = { nodes: LV.nodes, src: LV.src };\n  if (nodes) LV.nodes = nodes;\n  if (src) LV.src = src;\n  LV.gen++;\n",
+                 "  if (nodes) LV.nodes = nodes;\n  if (src) LV.src = src;\n  LV.gen++; remember();\n"),
+    "unmasked": ("js/logview.js", 'T("{v1} lines, as a text file — at once; keys and tokens are not masked"', 'T("{v1} lines, as a text file — at once"'),
+    "nixos": ("js/logview.js", "const panelBare = () => !((Store.panelSettings || {}).log_panel || {}).docker;",
+              'const panelBare = () => { const lp = (Store.panelSettings || {}).log_panel || {}; return !lp.docker && lp.err !== "nixos"; };'),
 }
 WEB = ROOT
 if PERTURB:
@@ -109,6 +129,28 @@ MEASURE = """(sel => { const g = document.querySelector(sel); if (!g) return nul
     const hit = document.elementFromPoint(Math.min(innerWidth - 1, r.left + r.width / 2), r.top + r.height / 2);
     return { t: b.textContent.replace(/\\s+/g, ' ').trim(), vis: Math.round(vis), w: Math.round(r.width), tap: !!hit && b.contains(hit) }; });
   return { chips, card: [Math.round(card.left), Math.round(card.right)], vw: innerWidth }; })"""
+
+# [3]–[6]: the live endpoints answered by the page from window.__plan (request id → one batch per poll); every open recorded in
+# window.__posts; the panel's own kind can be made NixOS's (its /api/state says log_panel {err: "nixos"}, as the server does there).
+FAKE = """(() => {
+  window.__hidden = false; window.__posts = []; window.__plan = {}; window.T0 = Date.now() * 1000 - 120e6;
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => window.__hidden });
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => window.__hidden ? 'hidden' : 'visible' });
+  const of = window.fetch, J = o => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  let n = 0;
+  window.fetch = async function (u, o) {
+    const url = String(u), m = (o && o.method) || 'GET';
+    if (url.includes('/api/logs/live/close')) return J({ ok: true });
+    if (url.includes('/api/logs/live') && m === 'POST') { window.__posts.push(JSON.parse(o.body)); return J({ ok: true, data: { id: 'r' + (++n), iv: 1, cap: 1000 } }); }
+    if (url.includes('/api/logs/live?')) {
+      const q = new URL(url, location.href).searchParams, after = +q.get('after'), b = (window.__plan[q.get('id')] || []).shift() || [];
+      return J({ ok: true, data: { seq: after + b.length, h: 'h', lines: b.map((l, i) => [after + i + 1, ...l]), nodes: { panel: { state: 'ok', st: { panel: 'ok' } } } } });
+    }
+    const r = await of.apply(this, arguments);
+    if (__NIXOS__ && url.includes('/api/state')) { const j = await r.clone().json(); (j.data.panel_settings = j.data.panel_settings || {}).log_panel = { err: 'nixos' }; return J(j); }
+    return r;
+  };
+})();"""
 
 br = None
 try:
@@ -214,6 +256,155 @@ try:
         tab = open_app(lang, w, 800)
         guarded("[2] %s %d" % (lang, w), lambda: sec2(tab, lang, w))
         tab.close()
+
+    # ── [3]–[6]: the viewer's own logic, with the live endpoints answered by the page (FAKE) ───────────────────────────────
+    # The panel stays real for everything else (/api/state, the settings save); /api/logs/live* is answered from a script the
+    # section writes (window.__plan: request id → batches, one per poll), so a reopen's backfill can be made exactly the lines
+    # already shown, in one part or in two. `document.hidden` is the section's to flip, like a tab switched away and back.
+    def open_fake(lang, w, h, seed=None, nixos=False):
+        tab = Tab(br)
+        br.send("Emulation.setDeviceMetricsOverride", {"width": w, "height": h, "deviceScaleFactor": 1, "mobile": False}, session=tab.s)
+        br.send("Page.addScriptToEvaluateOnNewDocument", {"source": "try { localStorage.setItem('swg-lang', %s); %s } catch (_) {}\n%s"
+                % (json.dumps(lang), ("localStorage.setItem('swg-logview', %s);" % json.dumps(json.dumps(seed))) if seed
+                   else "localStorage.removeItem('swg-logview');",
+                   FAKE.replace("__NIXOS__", "true" if nixos else "false"))}, session=tab.s)
+        tab.goto(ORIGIN + "/#/panel/settings")
+        for _ in range(200):
+            try:
+                if tab.ev("!!document.querySelector('button.setrail-i')"):
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        wait(tab, 1200)
+        quiet(tab)
+        tab.ev("[...document.querySelectorAll('button.setrail-i')].find(b => /^(Logs|Логи)/.test(b.textContent.trim())).click()")
+        wait(tab, 1000)
+        return tab
+
+    rows = lambda tab: tab.ev("[...document.querySelectorAll('.card.lv .lv-row:not(.lv-mark) .lv-msg')].map(e => e.textContent)")
+    start = lambda tab: tab.ev("([...document.querySelectorAll('.card.lv button')].find(b => /Start live log|Запустить логи/.test(b.textContent))"
+                               " || {click() {}}).click()")
+
+    def until(tab, expr, secs=12):
+        """Poll a page expression until it is truthy (a loaded box can be slow); its last value either way."""
+        end, v = time.time() + secs, None
+        while time.time() < end:
+            v = tab.ev(expr)
+            if v:
+                return v
+            time.sleep(0.25)
+        return v
+
+    def reopen(tab):
+        """The tab hidden and shown again: the viewer closes its request and opens a new one for the same choice."""
+        tab.ev("window.__hidden = true; document.dispatchEvent(new Event('visibilitychange'))")
+        wait(tab, 400)
+        tab.ev("window.__hidden = false; document.dispatchEvent(new Event('visibilitychange'))")
+
+    LN = lambda i: ["panel", "T0 + %d * 1e6" % i, "panel", 6, "line %d" % i]   # [server, time (µs, a JS expression), source, prio, text]
+    plan = lambda tab, rid, batches: tab.ev("window.__plan[%s] = %s.map(b => b.map(l => [l[0], eval(l[1]), l[2], l[3], l[4]])); true"
+                                            % (json.dumps(rid), json.dumps(batches)))
+
+    # [3] SPA-5 — Clear, then a reopen: the backfill brings back only what came after the Clear
+    print("[3] Clear the list, then the tab hidden and shown")
+
+    def sec3(tab):
+        plan(tab, "r1", [[LN(1), LN(2), LN(3)]])
+        start(tab)
+        got = until(tab, "document.querySelectorAll('.card.lv .lv-row:not(.lv-mark)').length >= 3 && 1")
+        check("[3] three lines streamed", got and rows(tab) == ["line 1", "line 2", "line 3"], rows(tab))
+        tab.ev("document.querySelector('.card.lv button[aria-label=\"Clear the list\"]').click()")
+        wait(tab, 300)
+        check("[3] Clear empties the list", rows(tab) == [], rows(tab))
+        plan(tab, "r2", [[LN(1), LN(2), LN(3), LN(4)]])     # the reopened request's backfill: the cleared three + one new
+        reopen(tab)
+        until(tab, "window.__posts.length >= 2 && document.querySelectorAll('.card.lv .lv-row:not(.lv-mark)').length >= 1 && 1")
+        wait(tab, 3200)                                    # two more polls: anything the backfill would bring back is here
+        check("[3] after the reopen only the line that came after the Clear is shown (before: the cleared three came back)",
+              rows(tab) == ["line 4"], rows(tab))
+
+    tab = open_fake("en", 1280, 900)
+    guarded("[3]", lambda: sec3(tab))
+    tab.close()
+
+    # [4] SPA-8 — more sources than the panel follows (64): said, and not sent to be cut
+    print("[4] more than 64 sources chosen")
+    many = lambda n: ["mesh:swg_l%d" % i for i in range(n)]
+
+    def sec5(tab, n):
+        start(tab)
+        wait(tab, 3500)
+        posts = tab.ev("window.__posts.map(p => p.src.length)")
+        txt = tab.ev("(document.querySelector('.card.lv .lv-empty') || {}).textContent || ''")
+        if n > 64:
+            check("[4] %d sources: no request is opened (before: sent, and the panel keeps the first 64 in edit order)" % n, posts == [], posts)
+            check("[4] …and the viewer says why, with the number and the limit", "%d sources" % n in txt and "64" in txt, txt)
+            tab.ev("[...document.querySelectorAll('.card.lv button')].find(b => b.getAttribute('aria-label') === 'Download').click()")
+            wait(tab, 400)
+            shown = tab.ev("([...document.querySelectorAll('.lv-menu button')].find(b => /The lines shown/.test(b.textContent)) || {}).textContent || ''")
+            ru = open(os.path.join(WEB, "js", "lang", "ru.js"), encoding="utf-8").read()
+            check("[4] SPA-19: \"The lines shown\" says keys and tokens are not masked — and in Russian, «ключи и токены не скрываются»",
+                  "keys and tokens are not masked" in shown and '"{v1} lines, as a text file — at once; keys and tokens are not masked": '
+                  '"Строк: {v1}, текстовым файлом — сразу; ключи и токены не скрываются"' in ru, shown)
+            tab.ev("[...document.querySelectorAll('.lv-menu button')].find(b => /A time range/.test(b.textContent)).click()")
+            wait(tab, 500)
+            dis = tab.ev("([...document.querySelectorAll('.card.lv .lv-rng button')].find(b => /Make the file/.test(b.textContent)) || {}).disabled")
+            check("[4] …and a time range cannot be made of them either", dis is True, dis)
+        else:
+            check("[4] the control: exactly 64 sources stream as before", posts[:1] == [64], posts)
+
+    for n in (70, 64):
+        tab = open_fake("en", 1280, 900, seed={"v": 2, "nodes": ["panel"], "src": many(n), "wrap": False})
+        guarded("[4] %d" % n, lambda: sec5(tab, n))
+        tab.close()
+
+    # [5] SPA-9 — a deep link (a node page's logs icon, a failing turn proxy) is a pending filter: what the operator chose stays
+    print("[5] a deep link leaves the remembered choice alone")
+
+    def sec6(tab):
+        saved = lambda: tab.ev("JSON.parse(localStorage.getItem('swg-logview') || 'null')")
+        # the module the app runs — by its stamped URL (?v=…, the panel's cache key), or a second copy would answer
+        tab.ev("import(document.querySelector('link[rel=modulepreload][href*=\"js/logview.js\"]').href)"
+               ".then(m => m.openLogs({ nodes: ['n1'], src: ['noded', 'dns'] }))")
+        wait(tab, 800)
+        s = saved() or {}
+        check("[5] the deep link opens the full-screen viewer", tab.ev("!!document.querySelector('.lv-full')"))
+        check("[5] the remembered choice is untouched (before: replaced by the link's node and sources for good)",
+              s.get("nodes") == ["panel"] and s.get("src") == ["panel", "sub"], s)
+        tab.ev("document.querySelector('.lv-full button[aria-label=\"Wrap long lines\"]').click()")
+        wait(tab, 300)
+        s = saved() or {}
+        check("[5] a Wrap toggle in the linked view remembers the wrap, and still the operator's servers and sources",
+              s.get("wrap") is True and s.get("nodes") == ["panel"] and s.get("src") == ["panel", "sub"], s)
+        tab.ev("document.querySelector('.lv-full .lv-x').click()")
+        wait(tab, 800)
+        fv = tab.ev("[...document.querySelectorAll('.card.lv .lv-facet .lv-fv')].map(e => e.textContent)")
+        check("[5] closed, Settings → Logs shows the operator's own choice again: Panel, Panel service + Subscription page",
+              bool(fv) and fv[0] == "Panel" and fv[1] == "2 of 4", fv)
+
+    tab = open_fake("en", 1280, 900, seed={"v": 2, "nodes": ["panel"], "src": ["panel", "sub"], "wrap": False})
+    guarded("[5]", lambda: sec6(tab))
+    tab.close()
+
+    # [6] DN-14 — a NixOS panel: no root helper, but its journal answers the subscription page and the updates too
+    print("[6] a NixOS panel's own sources")
+
+    def sec7(tab):
+        start(tab)
+        until(tab, "window.__posts.length && 1")
+        src = (tab.ev("window.__posts[0] && window.__posts[0].src") or [])
+        check("[6] the default choice asks for the Panel's four sources (before: the service only, as on Docker)",
+              all(k in src for k in ("panel", "sub", "netctl", "update")), src)
+        tab.ev("[...document.querySelectorAll('.card.lv .lv-facet')].find(b => /^Panel/.test(b.querySelector('.lv-fl').textContent)).click()")
+        wait(tab, 500)
+        items = tab.ev("[...document.querySelectorAll('.lv-mppop .lv-mprow .lv-mplbl')].map(e => e.textContent)")
+        check("[6] …and the Panel list offers them", items == ["Panel service", "Subscription page", "Root helper", "Updates"], items)
+
+    tab = open_fake("en", 1280, 900, nixos=True)
+    guarded("[6]", lambda: sec7(tab))
+    tab.close()
+
 finally:
     if br:
         br.close()
