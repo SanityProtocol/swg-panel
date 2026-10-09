@@ -13258,18 +13258,41 @@ def _awg_refused_record(refused, boot):
         os.replace(p + ".tmp", p)
 
 
+SIG_ENFORCE = "/sys/module/module/parameters/sig_enforce"
+LOCKDOWN = "/sys/kernel/security/lockdown"
+
+
+def _awg_sig_enforced():
+    """Does this kernel refuse a module it cannot verify — module.sig_enforce, or a lockdown (what Secure Boot turns on)?
+    Read, not tried. No sig_enforce parameter at all: this kernel checks no module signatures."""
+    try:
+        with open(SIG_ENFORCE) as f:
+            if f.read().strip() == "Y":
+                return True
+    except OSError:
+        return False
+    try:
+        with open(LOCKDOWN) as f:
+            return "[none]" not in f.read()
+    except OSError:
+        return False
+
+
 def _awg_key_refused():
     """Does the kernel refuse this kernel's built, SIGNED AmneziaWG module for its signing key (Secure Boot, the key not
-    enrolled)? Asked of the kernel itself — one `modprobe` per boot and module file, never per sync. The installer's record
+    enrolled)? Asked of the kernel itself — one `modprobe -b` per boot and module file, never per sync. The installer's record
     alone went stale on the next reboot, enrolled or not, and the panel then fell back to "update to rebuild" (code review).
     A modprobe that succeeds simply loads the module, as the first awg interface would. An unsigned module is not this:
-    there is no key to enrol for it."""
+    there is no key to enrol for it. ⚠️ ONLY WHERE A KEY CAN BE REFUSED, AND NEVER PAST A BLACKLIST: asked only when the
+    kernel enforces module signatures (read from sysfs, _awg_sig_enforced), and with -b — a by-name modprobe ignores
+    `blacklist amneziawg`, and loaded the module on a box its operator keeps on userspace 0.7 s after swg-noded started (1.8.9
+    qualification F11 / NLH-5, on a VM)."""
     k = (_boot_id(), _modules_dep_stamp())
     if _AWG_KEY["k"] == k:
         return _AWG_KEY["v"]
     v = False
-    if run(["modinfo", "-F", "signer", "amneziawg"]).stdout.strip():
-        r = run(["modprobe", "amneziawg"], timeout=30)
+    if run(["modinfo", "-F", "signer", "amneziawg"]).stdout.strip() and _awg_sig_enforced():
+        r = run(["modprobe", "-b", "amneziawg"], timeout=30)
         v = r.returncode != 0 and any(s in (r.stderr or "") for s in ("Key was rejected", "Required key not available"))
     _AWG_KEY.update(k=k, v=v)
     _awg_refused_record(v, k[0])
