@@ -41,6 +41,7 @@ const LV = {
   req: null, seq: 0, h: "", states: {}, iv: 1, err: "", ver: 0,   // the panel's request and what it last said
   lines: [], frozen: null, missed: 0, uid: 0,         // the merged lines; Paused: the list as it was, and what came since
   held: {},                                           // a reopen: the newest line each server already has here
+  floor: {},                                          // …or had, before a Clear: a reopen's backfill does not bring those back
   // gen counts the facet choices; openGen is the one the open request was made for, streamGen the one the lines on screen
   // are — so a change during an open, or a failed open after a change, is never taken for a mere reopen
   gen: 1, openGen: 0, streamGen: 0, refusedGen: 0, refusedAt: 0, busy: false, timer: null, mounted: 0,
@@ -118,8 +119,8 @@ async function tick() {
       } else if (!LV.mounted || !LV.live || document.hidden) api.post("/api/logs/live/close", { id: r.data.id }).catch(() => {});   // left (or stopped) meanwhile
       else {
         Object.assign(LV, { req: r.data.id, seq: 0, h: "", states: {}, iv: r.data.iv, err: "", openGen: gen });   // a change since: replaced next tick
-        if (gen !== LV.streamGen) Object.assign(LV, { lines: [], frozen: null, missed: 0, held: {}, streamGen: gen });
-        else { LV.held = {}; for (const l of LV.lines) if (l.src[0] !== "!" && !(l.k <= (LV.held[l.nid] || -Infinity))) LV.held[l.nid] = l.k; }
+        if (gen !== LV.streamGen) Object.assign(LV, { lines: [], frozen: null, missed: 0, held: {}, floor: {}, streamGen: gen });
+        else { LV.held = { ...LV.floor }; for (const l of LV.lines) if (l.src[0] !== "!" && !(l.k <= (LV.held[l.nid] || -Infinity))) LV.held[l.nid] = l.k; }
       }
     } else {
       const r = await api.get("/api/logs/live?id=" + LV.req + "&after=" + LV.seq + "&h=" + LV.h);
@@ -720,7 +721,8 @@ export function LogViewer({ overlay } = {}) {
       <button class=${"btn btn-mini ico" + (LV.wrap ? " on" : "")} aria-pressed=${LV.wrap} title=${T("Wrap long lines")} aria-label=${T("Wrap long lines")}
         onClick=${() => { LV.wrap = !LV.wrap; remember(); bump(); }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h13a3 3 0 0 1 0 6h-4m2-2-2 2 2 2M4 18h5"/></svg></button>
       <button class="btn btn-mini ico" title=${T("Clear the list")} aria-label=${T("Clear the list")}
-        onClick=${() => { LV.lines = []; LV.frozen = LV.frozen ? [] : null; LV.missed = 0; bump(); }}><${Ic} i="trash"/></button>
+        onClick=${() => { for (const l of LV.lines) if (l.src[0] !== "!" && !(l.k <= (LV.floor[l.nid] || -Infinity))) LV.floor[l.nid] = l.k;   // q189 SPA-5
+          LV.lines = []; LV.frozen = LV.frozen ? [] : null; LV.missed = 0; bump(); }}><${Ic} i="trash"/></button>
       <${MenuButton} icon="download" title=${T("Download")} items=${[
         { key: "shown", label: T("The lines shown"), hint: T("{v1} lines, as a text file — at once", { v1: fmtNum(lines.length) }), disabled: !lines.length, onClick: () => download(lines) },
         { key: "range", label: T("A time range…"), hint: T("Every line of a time range from these servers, as one file"), disabled: !!RG.id, onClick: rangeOpen }]}/>
