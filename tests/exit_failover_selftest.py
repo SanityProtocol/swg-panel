@@ -47,6 +47,8 @@ Run: python3 tests/exit_failover_selftest.py            (0 = pass)
      --perturb-redial-rr   only the name's FIRST address counts as current, so a round-robin name flaps — RED in [8]
      --perturb-ghost       a device without the peer gets `wg set … peer K endpoint` anyway (which ADDS it) — RED in [8]
      --perturb-thread      the probe thread re-points the device itself — RED in [5]
+     --perturb-joined      the name lookup runs inside the joined probe thread again (a slow DDNS name stretches the pass:
+                           q189 NR-11) — RED in [7]
      --perturb-v6          a v4 tunnel whose name answers AAAA alone is moved into v6 — RED in [8]
      --perturb-clis        only the first CLI is asked (an amneziawg-go device never re-pointed) — RED in [8]
      --perturb-late        the lookup's answer is not parked for the caller (a late one is lost) — RED in [8]
@@ -73,11 +75,12 @@ PLANTS = {
     "--perturb-finally": ("    finally:\n        # ⚠️ IN A `finally`: a later exit",
                           "    except BaseException:\n        raise\n    if True:\n        # ⚠️ IN A `finally`: a later exit"),
     "--perturb-evidence": ("        res[dev] = (tr, rch, None)", "        pass"),
-    "--perturb-redial": ("            _exit_resolve(dev, rec)              # nothing crossed", "            pass  #"),
+    "--perturb-redial": ("            threading.Thread(target=_exit_resolve, args=(dev, rec), daemon=True).start()", "            pass"),
     "--perturb-redial-rr": ("    if live_ip in ips:", "    if live_ip in ips[:1]:"),
     "--perturb-ghost": ("    if live is None:\n        return None", "    if live is None:\n        live = \"\""),
-    "--perturb-thread": ("            _exit_resolve(dev, rec)              # nothing crossed",
-                         "            _exit_redial(dev, rec, _exit_resolve(dev, rec))  #"),
+    "--perturb-thread": ("            threading.Thread(target=_exit_resolve, args=(dev, rec), daemon=True).start()",
+                         "            _exit_redial(dev, rec, _exit_resolve(dev, rec))"),
+    "--perturb-joined": ("            threading.Thread(target=_exit_resolve, args=(dev, rec), daemon=True).start()", "            _exit_resolve(dev, rec)"),
     "--perturb-v6": ("        or next((a for a in ips if not _v6(a)), None)", "        or ips[0]"),
     "--perturb-clis": ("    for c in _exit_clis(rec, dev):\n        r = run(c + [\"show\", dev, \"endpoints\"])",
                        "    for c in _exit_clis(rec, dev)[:1]:\n        r = run(c + [\"show\", dev, \"endpoints\"])"),
@@ -264,17 +267,23 @@ N._exit_ping = lambda ep, *a, **k: None
 N.EXIT_DEAD_AFTER_S, N.EXIT_DEAD_MIN_PROBES = 0, 2
 N._EXIT_HEALTH.clear()
 _want = [{"id": "aabbccdd", "device": D, "provider": "warp"}]
+def _wait(cond, s=3.0):   # the name lookup runs in a thread of its own (q189 NR-11): wait for it, as the next pass does
+    _e = __import__("time").monotonic() + s
+    while not cond() and __import__("time").monotonic() < _e:
+        __import__("time").sleep(0.02)
 N.reconcile_exits(_want, {"changed": 0, "errors": []})
 _r1 = next(x for x in N._EXITS["list"] if x["id"] == "aabbccdd")
 check("first failed pass: not reported yet (hysteresis)", _r1.get("no_traffic") is None, _r1)
+_wait(lambda: len(_redialled) >= 1)
 N.reconcile_exits(_want, {"changed": 0, "errors": []})
 _r2 = next(x for x in N._EXITS["list"] if x["id"] == "aabbccdd")
 check("once judged dead, the exit's report carries no_traffic with the reason",
       isinstance(_r2.get("no_traffic"), dict) and _r2["no_traffic"].get("why") == BAD["err"], _r2)
 check("…and the routing reads the same verdict", N._devexit_state(D) == "dead", N._devexit_state(D))
+_wait(lambda: len(_redialled) >= 2)
 check("a tunnel carrying nothing asks whether its endpoint's name has moved", _redialled == [D, D], _redialled)
 check("…and the answer is acted on in the CALLING thread, never by a probe that may outlive its pass",
-      _redial_main == [(D, FOUND, True)] * 2, _redial_main)
+      _redial_main and all(x == (D, FOUND, True) for x in _redial_main), _redial_main)
 _calls.clear()
 N._dev_link_state = lambda d: "up" if any(" up " in x for x in _calls) else "absent"
 N._exit_trace = lambda d: dict(OK)
@@ -330,6 +339,14 @@ check("…each is no evidence: reported, trace empty, its verdict untouched — 
               for d in ("wgx-a0000002", "wgx-a0000003"))
       and N._EXIT_HEALTH["wgx-a0000001"]["fails"] == 1 and N._EXIT_HEALTH["wgx-a0000004"]["fails"] == 1,
       ({k: v["trace"] for k, v in _rows.items()}, {k: v.get("fails") for k, v in N._EXIT_HEALTH.items()}))
+# q189 NR-11: a dead exit whose DDNS name resolves slowly does not stretch the pass — the lookup is not joined
+N._EXIT_HEALTH.clear(); _raise.clear(); _stall.clear(); N.EXIT_PROBE_BOUND_S = 40
+_rs = N._exit_resolve; N._exit_resolve = lambda dev, rec, *a, **k: (_t.sleep(2.0), None)[1]
+_sv = dict(_SLOW); _SLOW.update(trace=0, reach=0, ping=0)
+_t0 = _t.time(); N._exit_probe_all([("wgx-ddns", {"endpoint": "home.keenetic.pro:51820"})]); _dt = _t.time() - _t0
+N._exit_resolve = _rs; _SLOW.update(_sv)
+check("NR-11: a dead exit whose name resolves in 2 s costs the pass nothing of it (%.1f s; joined, it waited for DNS)" % _dt,
+      _dt < 1.0, _dt)
 # a ping that overruns the bound loses only itself: the trace + reach evidence is already recorded
 N._EXIT_HEALTH.clear(); _raise.clear(); _stall.clear(); N.EXIT_PROBE_BOUND_S = 1.5
 N._exit_ping = lambda ep, *a, **k: (_t.sleep(4.0), None)[1]
