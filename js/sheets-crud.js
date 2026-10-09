@@ -2248,8 +2248,8 @@ export function nixNodeSteps(host, endpoint, token, recovery, mode, reserved) {
    two values, and for a declarative (NixOS) node there is no `-key` in it at all, so an operator had
    nothing to copy and no way to tell which of the offered commands was the right kind.
 
-   Minted here, in the browser, from `location.origin` — deliberately the same source the commands use,
-   so the address in the token is whatever address the operator actually reached this panel on.
+   Minted here, in the browser, from the same address the commands use (NodeTokenSheet's `host`), so the token and the
+   commands can never name two different panels.
 
    It does NOT replace the enrolment token, and the commands below are byte-identical to before: every
    bootstrap.sh already published passes `-key` through verbatim, so a compound value there would fail
@@ -2261,7 +2261,9 @@ function transferToken(host, token) {
 }
 
 export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint, rebuild }) {
-  const host = `${location.origin}${BASE}`;
+  // the address a node dials: the panel's confirmed public one (what every sync tells the fleet), this tab's own only when none is
+  // set — a panel reached through an SSH tunnel or another name handed out a command that pointed nowhere (OE, 1.8.9)
+  const host = String(Store.panelPublicUrl || "").trim().replace(/\/+$/, "") || `${location.origin}${BASE}`;
   const bare = bootCmd(`node -key ${token} -host ${host}`);
   const docker = bootCmd(`docker node -key ${token} -host ${host}`);
   const nixos = platform === "nixos";
