@@ -47,7 +47,8 @@ detection, `ip` and the terminal are stubbed.
       yes/no questions took a given answer or the no-terminal default in silence.
   [q] the other prompts with no terminal ended in a blank line, as the secret prompt did (M9): a port that is not
       Cloudflare-proxyable ("…type proceed, or enter a new URL"), a port already in use ("…type force"), both installers;
-      the convert's yes/no (convert.sh cyn) and the bootstrap's re-enroll pick. Each says the answer it took now. So do
+      the bootstrap's re-enroll pick (convert.sh's yes/no, cyn, went with the dead migration path it served — 1.8.9
+      qualification IN-5, tests/convert_dead_code_selftest.py). Each says the answer it took now. So do
       the bare installers' ask / ask_yn helpers, which with no terminal printed nothing at all (a node's dry run took
       "Verify the panel's TLS certificate?" in silence); their ask_valid / ask_choice and the Docker helpers already did.
 
@@ -142,7 +143,6 @@ if PERTURB:
     H = plant(H, '  read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '  read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=proceed')
     D = plant(D, '      read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }', '      read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=force')
     D = plant(D, '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=proceed')
-    CV = plant(CV, 'read -r a 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { a=y; echo "y  (no terminal — default taken)"; };', 'read -r a 2>/dev/null <"${SWG_TTY:-/dev/tty}" || a=y;')
     B = plant(B, 'read -r _pick 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _pick=""; echo "(no terminal — skipped)"; }', 'read -r _pick 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _pick=""')
     B = plant(B, '_pnl(){ printf \'\\n\' 2>/dev/null >/dev/tty || echo; _SWG_NL=1; }', '_pnl(){ printf \'\\n\' >/dev/tty 2>/dev/null || echo; _SWG_NL=1; }')
     B = plant(B, '[ "${!var}" = "$o" ] && { echo "  $p: $(b "$o")  (given — not asked)"; _pnl; return; }; done; fi', '[ "${!var}" = "$o" ] && return; done; fi')
@@ -509,9 +509,6 @@ for src, label in ((H, "install-host.sh"), (D, "install-docker.sh")):
         line = next((l for l in out.splitlines() if "anyway:" in l or "to change:" in l), "")
         check("[q] %s: the %s prompt ends in its answer" % (label, ans),
               line.rstrip().endswith(": %s  (no terminal — default taken)" % ans) and "ANS=%s" % ans in out, out)
-out = run(fn(CV, "cyn") + 'cyn "Transfer these turn-proxies into the bare-metal node?" && echo YES\n', setsid=True)
-check("[q] convert.sh: the yes/no says the yes it took",
-      "Transfer these turn-proxies into the bare-metal node? (Y/n): y  (no terminal — default taken)" in out and "YES" in out, out)
 for src, label in ((N, "install-node.sh"), (H, "install-host.sh")):
     out = run('_tty(){ { : </dev/tty; } 2>/dev/null; }\n' + fn(src, "_notty") + fn(src, "_given") + fn(src, "ask") + fn(src, "ask_yn") +
               'ask "Subscription page hostname" "" SUB_DOMAIN\necho "SUB=[$SUB_DOMAIN]"\n'
