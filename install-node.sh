@@ -1097,7 +1097,7 @@ EOF
 # the device-access tables must not outlive a downgrade — see noded_reach_sweep_dropin (lib/common.sh)
 noded_reach_sweep_dropin "$NODED_DIR" | writef "/etc/systemd/system/$NODED_REACH_SWEEP_DROPIN" 644
 # swg's own journal, held to its budget (lib/common.sh), and the command that reads it
-if swg_log_ns_ok; then swg_log_ns_text swg-node | writef "/etc/systemd/system/swg-noded.service.d/$SWG_LOG_NS_DROPIN" 644; fi
+if swg_log_ns_ok; then swg_log_ns_text swg-node | writef "/etc/systemd/system/swg-noded.service.d/$SWG_LOG_NS_DROPIN" 644; else swg_log_ns_clear; fi
 if [ -f "$SRC/swg-logs" ]; then writef /usr/local/bin/swg-logs 755 < "$SRC/swg-logs"; fi
 
 # ───────────────────────── enable ─────────────────────────

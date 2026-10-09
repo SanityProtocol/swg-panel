@@ -2795,14 +2795,55 @@ PY
 # are written at runtime under /run (swg-netctl for swg-panel, swg-noded for swg-node); the units swg-noded writes get
 # their drop-in from swg-noded. Read them with swg-logs.
 SWG_LOG_NS_DROPIN=swg-ns.conf
-swg_log_ns_ok(){ local d; for d in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
-  [ -e "$d/systemd-journald@.service" ] && return 0; done; return 1; }
+# ⚠️ …AND ONLY WHERE A UNIT CAN ACTUALLY RUN IN ONE. The template file is not enough: where systemd runs but mount namespaces
+# are refused (an OpenVZ/Virtuozzo-like container, an LXC that denies unshare), a unit naming a namespace exits
+# 226/NAMESPACE while the same unit with 1.8.8's settings runs — an update would have written the drop-ins and the panel,
+# noded, sub, netctl and update units would not have started again (1.8.9 qualification IN-11, V-LOGS F-3). So a throwaway
+# unit is RUN with one (namespace swg-probe; its journald stopped and its directory removed after), once per boot: the
+# answer is kept in /run/swg-log-ns (ok | refused), which swg-noded and swg-netctl read too, under the same lock. Refused:
+# no drop-in is written and any already there goes (swg_log_ns_clear) — the box logs into the main journal exactly as
+# 1.8.8 did, swg-logs reads it there (`--namespace=+` merges the main journal), the budget rows say "Not supported".
+SWG_LOG_NS_PROBE="${SWG_LOG_NS_PROBE:-/run/swg-log-ns}"
+_swg_log_ns_run_probe(){   # → 0 when a throwaway unit ran with LogNamespace=swg-probe; the probe namespace is cleaned up either way
+  local rc=1 u t mid
+  t="$(type -P true 2>/dev/null || true)"; [ -n "$t" ] || t=/bin/true
+  if have systemd-run && timeout 60 systemd-run --wait --quiet --collect -p LogNamespace=swg-probe "$t" >/dev/null 2>&1; then rc=0; fi
+  u="$(systemctl list-units --all --plain --no-legend 'systemd-journald@swg-probe.*' 'systemd-journald-varlink@swg-probe.*' 2>/dev/null | awk '{print $1}' || true)"
+  if [ -n "$u" ]; then systemctl stop $u >/dev/null 2>&1 || true; fi   # first: a namespace journald writes its directory again as it exits
+  mid="$(cat /etc/machine-id 2>/dev/null || true)"
+  if [ -n "$mid" ]; then rm -rf "/var/log/journal/$mid.swg-probe" "/run/log/journal/$mid.swg-probe" 2>/dev/null || true; fi
+  return "$rc"; }
+swg_log_ns_ok(){ local d t="" v
+  for d in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+    if [ -e "$d/systemd-journald@.service" ]; then t=1; fi; done
+  [ -n "$t" ] || return 1
+  v="$(cat "$SWG_LOG_NS_PROBE" 2>/dev/null || true)"
+  case "$v" in ok) return 0;; refused) return 1;; esac
+  # a dry run starts no unit, and only root can start one (systemd-run as another user asks polkit): the template answers
+  # there, as it did before the probe — every real caller (an installer, update.sh) is root
+  if ${DRYRUN:-false} || [ "$(id -u)" != 0 ]; then return 0; fi
+  { if have flock; then flock -w 90 9 || true; fi
+    v="$(cat "$SWG_LOG_NS_PROBE" 2>/dev/null || true)"           # another prober may have answered while this one waited
+    case "$v" in ok|refused) ;; *) v=refused; if _swg_log_ns_run_probe; then v=ok; fi
+      printf '%s\n' "$v" > "$SWG_LOG_NS_PROBE" 2>/dev/null || true;; esac
+  } 9>>"$SWG_LOG_NS_PROBE.lock"
+  [ "$v" = ok ]; }
+swg_log_ns_clear(){   # refused (above): every swg-ns.conf drop-in on the box goes. SWG_LOG_NS_CLEARED = how many
+  local f; SWG_LOG_NS_CLEARED=0
+  for f in /etc/systemd/system/*.d/"$SWG_LOG_NS_DROPIN" /run/systemd/system/*.d/"$SWG_LOG_NS_DROPIN"; do
+    [ -e "$f" ] || continue
+    if ${DRYRUN:-false}; then echo "    [skip] rm $f — this box cannot run a unit in a journal namespace"; continue; fi
+    if rm -f "$f"; then SWG_LOG_NS_CLEARED=$((SWG_LOG_NS_CLEARED + 1)); fi
+    rmdir "${f%/*}" 2>/dev/null || true
+  done
+  return 0; }
 swg_log_ns_text(){ printf '[Service]\nLogNamespace=%s\n' "$1"; }   # <namespace> → the drop-in, on stdout
 # update.sh's form: each <unit> that exists gets its drop-in when it is missing or different. SWG_LOG_NS_CHANGED = how
-# many were written; the caller daemon-reloads before it restarts anything.
+# many were written; the caller daemon-reloads before it restarts anything. Where no unit can run in a namespace, every
+# drop-in there goes instead (SWG_LOG_NS_CLEARED).
 swg_log_ns_heal(){   # <namespace> <unit>...
-  local ns="$1" u d want; shift; SWG_LOG_NS_CHANGED=0
-  swg_log_ns_ok || return 0
+  local ns="$1" u d want; shift; SWG_LOG_NS_CHANGED=0; SWG_LOG_NS_CLEARED=0
+  swg_log_ns_ok || { swg_log_ns_clear; return 0; }
   want="$(swg_log_ns_text "$ns")"
   for u in "$@"; do
     [ -f "/etc/systemd/system/$u" ] || continue

@@ -1790,6 +1790,14 @@ ensure_log_ns(){   # <namespace> <unit>... — swg's own journal (lib/common.sh)
   # (log_ns_build): a declined upgrade keeps an old build, whose writers never size it (journald's defaults, 10 % of the disk).
   if $DRYRUN; then echo "    [skip] LogNamespace=$1 drop-ins for: ${*:2} + /usr/local/bin/swg-logs"; return 0; fi
   swg_log_ns_heal "$@"
+  if [ "${SWG_LOG_NS_CLEARED:-0}" -gt 0 ]; then   # this box cannot run a unit in a journal namespace (lib/common.sh, IN-11)
+    systemctl daemon-reload || true
+    local _u; for _u in "${@:2}"; do case "$_u" in
+      swg-update.service|swg-netctl.service) systemctl reset-failed "$_u" 2>/dev/null || true;;   # oneshots: their next tick runs
+      *) if systemctl is-failed --quiet "$_u" 2>/dev/null; then systemctl restart "$_u" 2>/dev/null || true; fi;; esac; done
+    DID_UPDATE=yes; note "swg's logs: this box cannot run a unit in a journal namespace — its LogNamespace drop-ins removed"
+    warn "this box cannot run a unit in a journal namespace (mount namespaces are refused here) — swg logs into the main journal, as before 1.8.9"
+  fi
   if [ "$SWG_LOG_NS_CHANGED" -gt 0 ]; then
     systemctl daemon-reload || true
     DID_UPDATE=yes; note "swg's logs: ${*:2} → the $1 journal (read with swg-logs)"
