@@ -8,7 +8,9 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
   [1] nothing newer installed → refused, nothing stopped
   [2] tools that cannot drive a 3.x module → refused, nothing stopped
   [3] a device with no unit and no conf → refused naming it, nothing stopped
-  [4] a device in another network namespace — named, or a CONTAINER's (seen only through /proc) → refused, nothing stopped
+  [4] a device in another network namespace — named, or a CONTAINER's (seen only through /proc) → refused, nothing stopped;
+      a namespace nsenter cannot get into, or lsns failing, is not an empty one → refused (cannot_check), `modprobe -r`
+      never asked (1.8.9 qualification HE-2: read as empty, the container's device went with the unload)
   [5] the swap: every device down BEFORE the unload, back the way it was started (unit / conf / an exit's conf path),
       on the new module
   [6] the module will not unload → every device brought back, "busy"
@@ -23,7 +25,7 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
        the agent after swg-noded restarted is picked up at the next start
 
 Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | timeout | procscan | noscope | key31 | record
-                                                    | churn | pid | latepickup   (exit 0 when caught)
+                                                    | churn | pid | latepickup | nsenter-rc | lsns-rc   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
@@ -45,6 +47,8 @@ PLANTS = {
     "latepickup": ("[9]", "noded", "                if isinstance(rec, dict) and rec.get(\"id\") == pid:\n                    _AWG_LOAD[\"v\"] = _awg_load_result(rec, n, pid)\n                    _AWG_GEN",
                    "                if False:\n                    _AWG_LOAD[\"v\"] = _awg_load_result(rec, n, pid)\n                    _AWG_GEN"),
     "pid": ("[10]", "noded", "        if str(st.get(\"id\") or st.get(\"n\") or \"\") == pid:", "        if str(st.get(\"n\") or \"\") == str(n):"),
+    "nsenter-rc": ("[4]", "agent", "        if p.returncode != 0:\n            return None\n", ""),
+    "lsns-rc": ("[4]", "agent", "    if ls.returncode != 0:\n        return None\n", ""),
 }
 FAILS, SECTION = [], [""]
 
@@ -82,7 +86,9 @@ N = load(paths["noded"], "noded_load")
 
 class Sys:
     """A fake box: devices, a module on disk and a loaded one, units — and the log of what was asked, in order."""
-    def __init__(self, devs, loaded="1.0.20251009", disk="3.1.20260812", tools="3.1", netns=None, fail_rm=False, fail_load=False, ctr_dev=False):
+    def __init__(self, devs, loaded="1.0.20251009", disk="3.1.20260812", tools="3.1", netns=None, fail_rm=False, fail_load=False, ctr_dev=False,
+                 nsenter_rc=0, lsns_rc=0):
+        self.nsenter_rc, self.lsns_rc = nsenter_rc, lsns_rc    # ≠ 0: that tool fails (prints nothing), whatever the box holds
         self.root = tempfile.mkdtemp(dir=TMP)
         os.makedirs(self.root + "/class/net"); os.makedirs(self.root + "/module/amneziawg")
         open(self.root + "/module/amneziawg/version", "w").write(loaded)
@@ -118,9 +124,11 @@ class Sys:
         if a[:1] == ["ip"] and "netns" in a and "list" in a:
             out = "".join(ns + "\n" for ns in self.netns)
         elif a[:1] == ["lsns"]:
-            out = "4026531840 1\n4026532999 4242\n"
+            out, rc = ("4026531840 1\n4026532999 4242\n", 0) if not self.lsns_rc else ("", self.lsns_rc)
         elif a[:1] == ["nsenter"]:
-            if os.readlink(a[1].split("=", 1)[1]) == "net:[4026532999]" and self.ctr_dev:
+            if self.nsenter_rc:
+                rc = self.nsenter_rc                     # e.g. the process lsns named exited; others keep the namespace alive
+            elif os.readlink(a[1].split("=", 1)[1]) == "net:[4026532999]" and self.ctr_dev:
                 out = "9: awg-ctr: <POINTOPOINT>\n"
         elif a[:2] == ["ip", "-n"]:
             out = "".join("%d: %s: <POINTOPOINT>\n" % (i, d) for i, d in enumerate(self.netns.get(a[2], []), 7))
@@ -189,6 +197,13 @@ check("refused: other_netns, nothing stopped", not ok and r == "other_netns" and
 b = Sys({"awg0": "unit"}, ctr_dev=True); ok, r = agent_on(b)
 check("a device in a container's namespace (only lsns sees it) → refused, nothing stopped",
       not ok and r == "other_netns" and not any("stop" in c for c in b.calls), (r, b.calls))
+b = Sys({"awg0": "unit"}, ctr_dev=True, nsenter_rc=1); ok, r = agent_on(b)
+check("…a container's namespace nsenter cannot get into (exit 1, nothing printed) is not read as empty → refused "
+      "(cannot_check), nothing stopped, `modprobe -r` never asked",
+      not ok and r == "cannot_check" and not any("stop" in c or c.startswith("modprobe") for c in b.calls), (r, b.calls))
+b = Sys({"awg0": "unit"}, ctr_dev=True, lsns_rc=1); ok, r = agent_on(b)
+check("…nor is a scan whose lsns failed → refused (cannot_check), `modprobe -r` never asked",
+      not ok and r == "cannot_check" and not any("stop" in c or c.startswith("modprobe") for c in b.calls), (r, b.calls))
 
 SECTION[0] = "[5]"
 print("\n[5] the swap")
