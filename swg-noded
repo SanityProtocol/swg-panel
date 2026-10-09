@@ -6135,6 +6135,25 @@ def _smart_load_cidrs(cidrs_map, set_counts, res):
 # from it by _panel_list_refresh — the node never fetches from GitHub. A bare id with no pulled file is a
 # custom_<hash> rule, whose contents the panel ships inline.
 _CAT_CAPS = {}   # {cat:{ip,host}} — refreshed from the sync `smart.cat_caps` at the top of every reconcile
+
+
+def _cat_caps_take(smart):
+    """Take the panel's category caps from a sync's `smart` block. ABSENT ≠ EMPTY: the panel omits `cat_caps` when it could
+    not look them up (it holds no provider catalog and this node's caps would be stripped), and sends it — possibly empty —
+    when it could. Clearing on absent would strip every provider category's caps the first time the panel restarted without
+    a warm catalog, silently stopping their host-tier fill. Same shape as _panel_list_refresh's GC, which prunes only on a
+    NON-empty manifest for exactly this reason.
+    …and `cat_caps_keep` names the provider categories the panel could not look up while sending the rest (q189 D12-OBS-1:
+    it used to withhold every cap, the block unions' too, so a fresh or restarted node enforced no domain block list): their
+    caps stay as they are. An older panel never names any, so its full dict replaces as before; this node says it keeps
+    them (`caps_keep` in smart_status), and a panel that does not hear it sends no partial dict."""
+    caps_in = (smart or {}).get("cat_caps")
+    if caps_in is None:
+        return
+    kept = {c: _CAT_CAPS[c] for c in ((smart or {}).get("cat_caps_keep") or []) if isinstance(c, str) and c in _CAT_CAPS}
+    _CAT_CAPS.clear()
+    _CAT_CAPS.update(caps_in)
+    _CAT_CAPS.update(kept)
 def _is_provider_cat(cat):
     return ":" in str(cat)                                      # <prov>:<id> → panel-resolved + panel-pulled
 
@@ -10293,14 +10312,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _engine_change_reset(host_engine, res, already=_reset_ran)  # a mode switch starts the new engine from its own learning
     ip_learning = (smart or {}).get("ip_learning", True)       # False → keep the node "fresh": learned SNI IPs expire fast (short TTL)
     learn_ttl = 3600 if ip_learning else 120                   # learned-IP lifetime (s) — kernel-SNI ipset AND Hybrid-SNI catl_ set
-    # Panel-shipped caps → host-tier seeding + kernel greying. ABSENT ≠ EMPTY: the panel omits this key when it
-    # holds no provider catalog (it could not look the caps up), and sends it — possibly empty — when it could.
-    # Clearing on absent would strip every provider category's caps the first time the panel restarted without a
-    # warm catalog, silently stopping their host-tier fill. Same shape as _panel_list_refresh's GC, which already
-    # prunes only on a NON-empty manifest for exactly this reason.
-    _caps_in = (smart or {}).get("cat_caps")
-    if _caps_in is not None:
-        _CAT_CAPS.clear(); _CAT_CAPS.update(_caps_in)
+    # Panel-shipped caps → host-tier seeding + kernel greying (see _cat_caps_take).
+    _cat_caps_take(smart)
     # PROVIDER lists: pull each routed one from the PANEL (not GitHub) when its version changed — writes the same
     # <cat>.txt / <cat>.doms the loaders below consume. New cat → now; changed cat → only in the quiet window.
     _panel_list_refresh((smart or {}).get("list_manifest") or {}, (panel_cfg or {}).get("geo_update") or {},
@@ -11684,7 +11697,8 @@ def smart_status():
     base = {"mode": mode, "engine": engine, "engine_ok": engine_ok, "sni_alive": sni_alive,
             "dnsmasq": dns_alive, "route_localnet": _route_localnet_ok(),   # false in dns mode ⇒ client DNS blackholed (container)
             "src": 2 if _KSNI_SRC["ok"] else 1,   # 1: per-person rows in the nft chain · 2: Kernel SNI matches their hostnames too
-            "arr": 1}                             # runs `smart.arrivals` — the default list for traffic cascaded in (ROUTING-PEERS-MESH-PLAN §4.3)
+            "arr": 1,                             # runs `smart.arrivals` — the default list for traffic cascaded in (ROUTING-PEERS-MESH-PLAN §4.3)
+            "caps_keep": 1}                       # keeps its caps for the categories a sync names in `cat_caps_keep` (_cat_caps_take)
     if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only) | error (its table
         _r = _P2P.get("route") or ""                            # was refused, `detail` says why), the mode in force, and under route
         if _r == "up" and _devexit_state(_P2P.get("route_dev") or "") != "up":   # whether its way out is up — the last pass's answer,
