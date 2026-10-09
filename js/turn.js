@@ -2378,7 +2378,10 @@ export const CSQTT_COLOR = "#F97316";
 //    already runs another one, which stays visible. A node says which it can run (snap.csqtt_lines) — an older one can
 //    run only 2.1, and the panel refuses the rest there.
 export const CSQTT_DEFAULT_LINE = "2.1";
-export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;
+// A server's version as the PANEL reads its record (swg-panel-server _csqtt_line_of): a line no longer on offer is 2.1, which is
+// what the node is sent — so the card never says "switching" to a version nothing moves to (q189 SPA-11: a record left naming
+// a stand-in line read "switching" for ever).
+export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || "").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };
 export const csqttLinesOn = () => (Store.csqttLines || []).length > 1;
 const csqttNodeLines = node => (Store.stats[node] || {}).csqtt_lines || [CSQTT_DEFAULT_LINE];
 // What each version means to the people on it. 2.5's note stands until P0 measures which client apps reach it.
