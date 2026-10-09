@@ -1939,6 +1939,17 @@ mk_selfsigned(){ CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key
   if $DRYRUN; then echo "    [skip] openssl self-signed -> $TLS_DIR (CN=$PANEL_DOMAIN)"; : > "$PREFIX$CERT_FULLCHAIN"; : > "$PREFIX$CERT_KEY"
   else run openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$CERT_KEY" -out "$CERT_FULLCHAIN" -subj "/CN=${PANEL_DOMAIN}" -addext "subjectAltName=$(san_for "$PANEL_DOMAIN")"; fi
   cert_perms; if $DRYRUN; then ok "dry run — would create a self-signed certificate for ${PANEL_DOMAIN} (10y)"; else ok "self-signed certificate for ${PANEL_DOMAIN} (10y)"; fi; }
+# ⚠️ AN ISSUANCE THAT FAILED IS RECORDED AS WHAT IS SERVED. install.conf and the panel's Access & TLS settings were written
+# with the mode asked for, before the issuance: after a fallback the summary, Settings and every update said Let's Encrypt
+# (an update: "the certificate renews on its own again") while a self-signed certificate was served, and nothing retried
+# (1.8.8 deferred #6, letsencrypt-ip with :80 closed). Both now say self-signed; the warning says how to ask again.
+tls_fallback_selfsigned(){
+  local asked="$TLS_MODE"; mk_selfsigned; TLS_MODE=selfsigned; $DRYRUN && return 0
+  sed -i 's/^TLS_MODE=.*/TLS_MODE=selfsigned/' "$ETC_DIR/install.conf" 2>/dev/null || true
+  if have python3; then PANEL_DOMAIN="$PANEL_DOMAIN" PANEL_BASE="$PANEL_BASE" PORT="$PORT" TLS_MODE=selfsigned PROXIED=no \
+    seed_access_settings "$STATE_DIR/panel-settings.json" || true
+    chown "$PANEL_USER:swg" "$STATE_DIR/panel-settings.json" 2>/dev/null || true; chmod 600 "$STATE_DIR/panel-settings.json" 2>/dev/null || true; fi
+  warn "recorded as self-signed — to try $asked again once the cause above is fixed: Settings → Access & TLS, or re-run the installer"; }
 reuse_cert(){   # re-install with REUSE_TLS=yes: keep the cert already in $TLS_DIR, no re-issue
   if [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ]; then
     CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; cert_perms; ok "keeping the existing certificate in $TLS_DIR"
@@ -2025,7 +2036,7 @@ obtain_cert_internal(){
             warn "acme.sh exit $rc, but a cert for $PANEL_DOMAIN already exists — installing it."
           else
             acme_clear_unusable "$PANEL_DOMAIN"   # leave nothing that would mask this error next time
-            warn "issuance failed (acme.sh exit $rc) — falling back to a self-signed cert."; mk_selfsigned; return
+            warn "issuance failed (acme.sh exit $rc) — falling back to a self-signed cert."; tls_fallback_selfsigned; return
           fi
         fi
       fi
@@ -2046,12 +2057,12 @@ obtain_cert_internal(){
         warn "acme.sh installs $(b "$PANEL_DOMAIN")'s certificate for another program ($(b "$_foreign")) — leaving that as it is; the panel takes each renewal from acme.sh itself"
         if ! acme_copy_foreign "$PANEL_DOMAIN"; then
           warn "could not copy acme.sh's certificate for $PANEL_DOMAIN — falling back to a self-signed cert."
-          mk_selfsigned; return
+          tls_fallback_selfsigned; return
         fi
       elif ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
           --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl kill -s HUP swg-panel-server.service 2>/dev/null || true"; then
         warn "acme.sh could not install the certificate for $PANEL_DOMAIN — falling back to a self-signed cert."
-        mk_selfsigned; return
+        tls_fallback_selfsigned; return
       fi
       cert_perms; if $DRYRUN; then ok "dry run — would issue + install a certificate via $TLS_MODE (auto-renews)"; else ok "issued + installed certificate via $TLS_MODE (auto-renews)"; fi;;
     *) die "TLS must be cloudflare|letsencrypt|letsencrypt-ip|selfsigned|skip";;
