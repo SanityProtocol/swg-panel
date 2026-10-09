@@ -19,13 +19,16 @@ Real functions: swg-agent's `op_reload_awg_module` against a fake system (a temp
       of its own (a swg-noded restart must not kill it between the unload and the bring-up)
   [9] the result reaches the snapshot and outlives a daemon restart; the module on disk is reported by its version
 
+  [11] (1.8.9 qualification HE-4) no userspace fallback (no amneziawg-go on PATH or where we install it) → refused
+       no_fallback before anything stops — a new module that would not load left every interface down; noded counts it
+       as a pre-check refusal (no churn)
   [10] (code review) the tools check wants the key of the generation on disk — 3.0 tools for a 3.1 module are refused;
        no lsns → refused (cannot check); the result goes to result_path; a press is its counter AND time; a press that
        cannot be recorded is refused; a `busy` still counts as churn, a pre-check refusal does not; a result written by
        the agent after swg-noded restarted is picked up at the next start
 
 Run: python3 tests/awg_load_selftest.py      --plant order | busyback | age | timeout | procscan | noscope | key31 | record
-                                                    | churn | pid | latepickup | nsenter-rc | lsns-rc   (exit 0 when caught)
+                                                    | churn | pid | latepickup | nsenter-rc | lsns-rc | nofallback   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
@@ -49,6 +52,7 @@ PLANTS = {
     "pid": ("[10]", "noded", "        if str(st.get(\"id\") or st.get(\"n\") or \"\") == pid:", "        if str(st.get(\"n\") or \"\") == str(n):"),
     "nsenter-rc": ("[4]", "agent", "        if p.returncode != 0:\n            return None\n", ""),
     "lsns-rc": ("[4]", "agent", "    if ls.returncode != 0:\n        return None\n", ""),
+    "nofallback": ("[11]", "agent", "    if not _awg_fallback():\n        raise AgentError(\"no_fallback\"", "    if False:\n        raise AgentError(\"no_fallback\""),
 }
 FAILS, SECTION = [], [""]
 
@@ -158,13 +162,15 @@ class Sys:
         return subprocess.CompletedProcess(args, rc, out, "")
 
 
-def agent_on(box, cfg=None, extra=None, lsns=True, **req):
+def agent_on(box, cfg=None, extra=None, lsns=True, go=True, **req):
     A._SYS, A._PROC = box.root, box.proc
     A.subprocess.run = box
     A._scope_available = lambda: False
     A._IN_CONTAINER = False
+    A.AWG_GO_PATHS = ()                            # only what `which` answers: this box's own amneziawg-go stays out of it
     A.shutil.which = lambda n: {"systemctl": "/bin/systemctl", "awg": box.awg, "nsenter": "/usr/bin/nsenter",
-                                "lsns": "/usr/bin/lsns" if lsns else None}.get(n)
+                                "lsns": "/usr/bin/lsns" if lsns else None,
+                                "amneziawg-go": "/usr/local/bin/amneziawg-go" if go else None}.get(n)
     try:
         return True, A.op_reload_awg_module(cfg or {"interfaces": {}}, {"op": "reload-awg-module", "extra_confs": extra or {}, **req})
     except A.AgentError as e:
@@ -242,6 +248,22 @@ check("no lsns → refused (cannot_check), nothing stopped", not ok and r == "ca
 check("the swap's result went to result_path, with the press id", rec6 != {} or True)
 check("…a done one ([5]) and a busy one ([6]) — each with its id", rec6.get("result") == "busy" and rec6.get("id") == "2:1790000100", rec6)
 
+SECTION[0] = "[11]"
+print("\n[11] no userspace fallback")
+b = Sys({"awg0": "unit", "awg1": "conf"}); ok, r = agent_on(b, CFG, go=False)
+check("no amneziawg-go → refused (no_fallback) before anything stops, `modprobe -r` never asked",
+      not ok and r == "no_fallback" and not any("stop" in c or "down" in c or c.startswith("modprobe") for c in b.calls), (r, b.calls))
+check("…every interface still up on the module it had", sorted(b.kdevs()) == ["awg0", "awg1"] and b.loaded() == "1.0.20251009", (b.kdevs(), b.loaded()))
+b = Sys({"awg0": "unit"}); ok, r = agent_on(b, go=True)
+check("CONTROL: with amneziawg-go the same box swaps", ok and r.get("result") == "done", r)
+_which, _paths = A.shutil.which, A.AWG_GO_PATHS
+A.shutil.which = lambda n: None                     # nothing on PATH…
+_go = os.path.join(TMP, "go-elsewhere"); A.AWG_GO_PATHS = (_go,)
+check("…nothing on PATH or where we install it → no fallback", A._awg_fallback() is False)
+open(_go, "w").write("#!/bin/sh\n"); os.chmod(_go, 0o755)
+check("…and one where we install it, off PATH, counts", A._awg_fallback() is True)
+A.shutil.which, A.AWG_GO_PATHS = _which, _paths
+
 SECTION[0] = "[8]"
 print("\n[8] the request")
 seen = []
@@ -269,6 +291,10 @@ N.run_agent = lambda agent, sudo, payload, timeout=20, scope=None: {"ok": False,
 check("a busy reload still counts as churn (the interfaces were bounced)", N.awg_load_request({"n": 8, "age": 1, "id": "8:1"}, "agent", False) is True)
 N.run_agent = lambda agent, sudo, payload, timeout=20, scope=None: {"ok": False, "code": "tools_old", "error": "…"}
 check("a pre-check refusal does not", N.awg_load_request({"n": 9, "age": 1, "id": "9:1"}, "agent", False) is False)
+SECTION[0] = "[11]"
+N.run_agent = lambda agent, sudo, payload, timeout=20, scope=None: {"ok": False, "code": "no_fallback", "error": "…"}
+check("…nor does no_fallback (nothing was stopped)", N.awg_load_request({"n": 19, "age": 1, "id": "19:1"}, "agent", False) is False)
+SECTION[0] = "[10]"
 N.run_agent = lambda agent, sudo, payload, timeout=20, scope=None: (seen.append((payload, timeout, scope)) or
                                                         {"ok": True, "data": {"result": "done", "was": "1.0.20251009",
                                                                               "loaded": "3.1.20260812", "ifaces": {"awg0": "kernel"}}})
