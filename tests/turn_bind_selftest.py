@@ -42,6 +42,7 @@ Run: python3 tests/turn_bind_selftest.py         (0 = pass)
      --perturb-dn1    the background reconcile never compares a running container's bind (52aa9c4) — expects RED in [12].
      --perturb-report   the report does not read the binds the background reconcile gave its containers — RED in [12].
      --perturb-persist  apply_turn writes its record without them (the copy it read) — RED in [12].
+     --perturb-looping  a container in docker's restart back-off reads running again (FN-2(g)) — RED in [12].
 """
 import os, socket, sys, types
 
@@ -53,6 +54,7 @@ PERTURB_DOCKER = "--perturb-docker" in sys.argv[1:]
 PERTURB_DN1 = "--perturb-dn1" in sys.argv[1:]
 PERTURB_REPORT = "--perturb-report" in sys.argv[1:]
 PERTURB_PERSIST = "--perturb-persist" in sys.argv[1:]
+PERTURB_LOOPING = "--perturb-looping" in sys.argv[1:]
 ANCHOR = '    mine = _local_v4()\n    if mine is None:\n        return s\n'
 SRCS = {f: open(os.path.join(ROOT, f), encoding="utf-8").read() for f in ("install-node.sh", "install-host.sh", "convert.sh", "install-docker.sh")}
 if PERTURB_DOCKER:   # the convert as it shipped: the bind read as the address clients dial, the pin never read
@@ -76,6 +78,8 @@ if PERTURB:
 for _flag, _old, _new in ((PERTURB_DN1, '        _bind_why = _dturn_bind_stale(svc, tp) if _ns_ok and _img_ok else ""', '        _bind_why = ""'),
                           (PERTURB_REPORT, '            if _DTURN_BINDS.get(t["service"]):\n                t["bind"] = _DTURN_BINDS[t["service"]]\n',
                            '            pass\n'),
+                          (PERTURB_LOOPING, '        _DTURN_RUN["set"] = {x[0] for x in rows if not x[1].startswith("Restarting")}\n',
+                           '        _DTURN_RUN["set"] = {x[0] for x in rows}\n'),
                           (PERTURB_PERSIST, '                if _DTURN_BINDS.get(_s):\n                    _t["bind"] = _DTURN_BINDS[_s]\n',
                            '                pass\n')):
     if _flag:
@@ -449,12 +453,21 @@ check("race: …and the record ends with it, apply_turn's own change kept",
 getattr(N, "_DTURN_BINDS", {}).clear(); N._TURN_BIND_HEALED.clear()   # a restarted noded: nothing in memory
 _rep = {t["service"]: t for t in N.load_turn_proxies()}
 check("a restarted noded reports the persisted bind from the record", _rep[_RC].get("bind") == "0.0.0.0:56230", _rep[_RC])
+# FN-2(g): docker lists a container in its restart back-off among the running — its Status says so, in the same call
+N._DTURN_RUN["at"] = 0.0
+N.run = lambda cmd, **k: types.SimpleNamespace(returncode=0, stderr="", stdout="swg-turn-WINGS-N-56200\tRestarting (1) 2 seconds ago\n"
+                                               "swg-turn-WINGS-N-56201\tUp 5 minutes\n") if cmd[:2] == ["docker", "ps"] else \
+    types.SimpleNamespace(returncode=0, stdout="", stderr="")
+_tl = [{"service": _S(56200)}, {"service": _S(56201)}]
+N._dturn_attach_running(_tl)
+check("FN-2(g): a container crash-looping in docker's restart back-off is not running (and not \"pending\"); an Up one is",
+      _tl[0].get("running") is False and _tl[0].get("pending") is False and _tl[1].get("running") is True, _tl)
 N.run = _save_run; N.TURN_DOCKER = False
 _sh.rmtree(_T, ignore_errors=True)
 
 socket.getaddrinfo = _real_gai
 print("")
-if PERTURB_DN1 or PERTURB_REPORT or PERTURB_PERSIST:
+if PERTURB_DN1 or PERTURB_REPORT or PERTURB_PERSIST or PERTURB_LOOPING:
     _ok = len(FAILS) > _F12 and _F12 == 0
     print("PERTURB OK — %d checks went red, all in [12]" % len(FAILS) if _ok else
           "PERTURB FAILED — " + ("also red before [12]: %s" % FAILS[:_F12] if _F12 else "nothing went red in [12]"))
