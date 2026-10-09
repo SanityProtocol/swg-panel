@@ -719,7 +719,7 @@ rm_node(){
   # The AppArmor grant the installer added so the wg CLI could read userspace interface sockets is a
   # policy change we made to this box, so it goes back when we do. It lives INSIDE a file the
   # distribution and the operator may also write in, so only the span between our own two markers is
-  # cut — never the file — and the profile is reloaded so the removal actually takes effect.
+  # cut — the file only when nothing else is in it — and the profile is reloaded so the removal takes effect.
   # ⚠️ TWIN: these two markers are lib/common.sh's APPARMOR_LOCAL_BEGIN/_END, spelled out because
   # this file deliberately does not source it (see the note at the top). Change one, change both.
   for _aal in /etc/apparmor.d/local/*; do
@@ -729,9 +729,11 @@ rm_node(){
     # userspace awg interface is left with a running datapath whose socket the wg CLI can no longer
     # read. Nothing of ours reads it once the node is gone, so the removal stands; it is said out loud
     # rather than left to be discovered.
-    info "  reverting the swgPanel AppArmor grant in $_aal (a kept userspace server's socket becomes unreadable by the wg CLI)"
+    info "  reverting the swgPanel AppArmor grant in $_aal (should you keep a WDTT / csqtt server or a userspace awg interface below, the wg CLI can no longer read its socket)"
     run sed -i '/# --- swgPanel: userspace WireGuard datapaths (begin) ---/,/# --- swgPanel: userspace WireGuard datapaths (end) ---/d' "$_aal"
     _aap="/etc/apparmor.d/$(basename "$_aal")"
+    # …and a file that held nothing else goes — the grant created it (26.04's wg profile ships none) — when the profile takes it `if exists` (1.8.8 #3d)
+    [ -s "$_aal" ] || ! grep -qsE "include[[:space:]]+if[[:space:]]+exists[[:space:]]+<local/${_aal##*/}>" "$_aap" || rmrf "$_aal"
     [ -f "$_aap" ] && command -v apparmor_parser >/dev/null 2>&1 && run apparmor_parser -r "$_aap" 2>/dev/null || true
   done
   hand_ids_to_root swgpush swgagent   # a kept path never keeps a uid this run frees (F90)
@@ -1048,6 +1050,11 @@ rm_awg_foreign(){
   remove_ifaces /etc/amnezia/amneziawg awg-quick foreign
   rmdir_if_empty /etc/amnezia/amneziawg
 }
+# The amnezia PPA swg added (Ubuntu), with what adding it left beside it: 22.04's key file (+ its .gpg~) — add-apt-repository
+# --remove keeps it — and add-apt-repository's Launchpad cache (1.8.8 deferred #3 a, b); the source fallback's list too, which
+# no package removal ever reached (LC-24 lc7).
+_awg_ppa_forget(){ ls /etc/apt/sources.list.d/*amnezia* >/dev/null 2>&1 && run add-apt-repository -y --remove ppa:amnezia/ppa
+  rmrf /etc/apt/trusted.gpg.d/amnezia-ubuntu-ppa.gpg /etc/apt/trusted.gpg.d/amnezia-ubuntu-ppa.gpg~ /root/.launchpadlib; return 0; }
 # ⚠️ SAY WHAT ACTUALLY HAPPENED. These printed their ✓ unconditionally, so a purge that failed — and
 # apt fails for an ordinary reason, another apt holding /var/lib/dpkg/lock-frontend — still reported
 # "WireGuard package removed" AND listed it under Removed: in the summary. Measured on hel-flux
@@ -1058,7 +1065,7 @@ rm_awg_pkg(){
   down_ifaces /etc/amnezia/amneziawg awg-quick      # if the configs were kept, bring the ifaces down before pulling the module
   if command -v apt-get >/dev/null 2>&1; then
     if run apt-get purge -y amneziawg amneziawg-tools amneziawg-dkms; then
-      run add-apt-repository -y --remove ppa:amnezia/ppa; run apt-get autoremove -y
+      _awg_ppa_forget; run apt-get autoremove -y
       rmrf /usr/local/bin/amneziawg-go   # the userspace fallback swg pinned beside it — nothing drives it without the tools (1.8.8 deferred #2)
       ok "AmneziaWG package removed"
     else
@@ -1083,6 +1090,7 @@ rm_awg_src(){ local d
   awg_src_tools && rmrf /usr/bin/awg /usr/bin/awg-quick /usr/share/man/man8/awg.8 /usr/share/man/man8/awg-quick.8 /lib/systemd/system/awg-quick@.service \
     /lib/systemd/system/awg-quick.target /usr/lib/systemd/system/awg-quick@.service /usr/lib/systemd/system/awg-quick.target
   rmrf /usr/local/bin/amneziawg-go; run systemctl daemon-reload 2>/dev/null || true
+  awg_pkg || _awg_ppa_forget   # the PPA, when no package of it is left
   ok "AmneziaWG (built from source) removed — the module still loaded goes at the next boot"
 }
 rm_wg_peers(){
@@ -1326,6 +1334,12 @@ rm_node_netobjects(){
   # 99-swg-forward.conf is the BARE installer's name; install-docker.sh writes 99-swg-node.conf instead, so the
   # docker drop-in was never removed. Both are ours and both are unconditionally rewritten by a re-install.
   rmrf /etc/sysctl.d/99-swg-forward.conf /etc/sysctl.d/99-swg-node.conf
+  # …and the value they set stays LIVE until a reboot: route_localnet=1 (Force-DNS's DNAT to the node's own resolver — those
+  # files, and swg-noded at run time) lets hosts on this box's network reach its 127.0.0.1 services (1.8.8 deferred #3e).
+  # Turned off, unless a sysctl file that is not swg's still asks for it.
+  grep -qsE --exclude='99-swg-*' '^[[:space:]]*net[./]ipv4[./]conf[./]all[./]route_localnet[[:space:]]*=[[:space:]]*1' /etc/sysctl.conf \
+    /etc/sysctl.d/*.conf /run/sysctl.d/*.conf /usr/local/lib/sysctl.d/*.conf /usr/lib/sysctl.d/*.conf /lib/sysctl.d/*.conf \
+    || run sysctl -q -w net.ipv4.conf.all.route_localnet=0 >/dev/null 2>&1 || true
   if [ -n "$_unread" ]; then
     warn "swg datapath objects: the rest removed — NOT the nft tables, whose ruleset could not be read (see above)"
     NOT_DONE+=("swg nft tables — the host's nft could not read the ruleset ($_unread); a reboot clears them")
@@ -1791,8 +1805,9 @@ $DRYRUN || rmdir /etc/swg-agent 2>/dev/null || true   # (a dry run removes nothi
 # The interface-config dirs, once EMPTY and NOT a package's. Our installers create them (writef's mkdir -p) and a
 # bare→docker convert empties them; with the wg/awg package still installed dpkg owns them and they stay (so does
 # anything with a file left in it, or any box without dpkg to ask). Seen: both left empty after a full uninstall.
+# /var/www too: the panel's stats and acme dirs made it, and went (1.8.8 deferred #3c).
 if [ "${#DID_REMOVE[@]}" -gt 0 ] && command -v dpkg >/dev/null 2>&1; then
-  for _d in /etc/amnezia/amneziawg /etc/amnezia /etc/wireguard; do
+  for _d in /etc/amnezia/amneziawg /etc/amnezia /etc/wireguard /var/www; do
     [ -d "$_d" ] && [ -z "$(ls -A "$_d" 2>/dev/null)" ] && ! dpkg -S "$_d" >/dev/null 2>&1 && run rmdir "$_d"
   done
 fi
