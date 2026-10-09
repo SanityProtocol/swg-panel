@@ -43,6 +43,9 @@ refuse any path outside the box, and such an escape fails the section that made 
       across every reboot after the uninstall) goes with the other two sysctl files (1.8.9 qualification NR-6, DEB-2)
   [21] a turn proxy behind NAT / DDNS is listed (and asked about) by the host its clients dial — SWG_DIAL, as every other
       list reads it — not its bind 0.0.0.0; one whose dial is its bind as before (1.8.9 qualification FN-2(a), a dry run)
+  [22] a box converted bare → Docker before the convert deleted the bare WDTT units, at a terminal: the Docker node KEPT, the
+      stale WDTT unit removed — the live Docker node's wdtt0, its SNAT rule and its UAPI socket survive (rm_wdtt took all
+      three, cutting its clients off); with the Docker node removed in the same run wdtt0 goes as before
   [16] systemd < 254: the restart back-off swg-noded writes in the three family dirs (swg-restart.conf, D12-1) — rm_node no
       longer says it "keeps" a dir that holds only that file (the end of the run takes both); an operator's own drop-in
       there is still said and kept
@@ -69,6 +72,7 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-6880    the sweep skips the torrent policy's rule (as shipped) → RED on [20]'s 6880 check only
      --perturb-turnconf  99-swg-turn.conf stays (as shipped) → RED on [20]'s sysctl check only
      --perturb-dial    a turn proxy listed by its bind (as shipped) → RED on [21]'s first check only
+     --perturb-live    rm_wdtt tears down a WDTT interface the Docker node runs (as shipped) → RED on [22]'s survival check only
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
@@ -80,7 +84,7 @@ FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--
                                          "--perturb-ppa", "--perturb-go", "--perturb-key", "--perturb-srcppa", "--perturb-www",
                                          "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg",
                                          "--perturb-engine", "--perturb-d123", "--perturb-orphan", "--perturb-6880",
-                                         "--perturb-turnconf", "--perturb-dial")}
+                                         "--perturb-turnconf", "--perturb-dial", "--perturb-live")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -138,6 +142,8 @@ if FLAGS["--perturb-turnconf"]:
 if FLAGS["--perturb-dial"]:
     plant("\"$({ sed -n 's/^SWG_DIAL=//p' \"$envf\"; sed -n 's/^SWG_LISTEN=//p' \"$envf\"; } 2>/dev/null | awk 'NF && !d {print; d=1}')\"",
           "\"$(sed -n 's/^SWG_LISTEN=//p' \"$envf\" 2>/dev/null | sed -n 1p)\"")
+if FLAGS["--perturb-live"]:
+    plant('  local live=no; docker_running swg-node && [ -d "$DOCKER_DIR/data/node/wdtt/$iface" ] && live=yes\n', '  local live=no\n')
 if FLAGS["--perturb-image"]:
     plant('  [ -n "$img" ] || { _tag="$(sed -n ', '  false && { _tag="$(sed -n ')
 
@@ -678,6 +684,56 @@ check("[21] a proxy behind NAT / DDNS is listed by the host its clients dial (SW
       "home.example.net:56200 → 127.0.0.1:51820" in t1 and "0.0.0.0" not in t1, comps)
 check("[21] …one with no SWG_DIAL (dial == bind) by its listen, as before", "203.0.113.7:56300 → 127.0.0.1:51820" in t2, comps)
 
+def run_tty(box, answers, *args, env=None):
+    """The same run at a terminal (a pty, its foreground): each question is answered by the first (regex, answer) in
+    `answers` its text matches, else with "n"."""
+    import pty, select, time
+    e = {"BOX": box, "HOME": os.path.join(box, "root"), "PATH": os.path.join(box, "bin"), "TMPDIR": os.path.join(box, "tmp"),
+         "LANG": "C.UTF-8", "SWG_TTY_WARNED": "1", "TERM": "dumb"}
+    e.update(env or {})
+    for f in ("calls.log", "escapes.log"):
+        if os.path.exists(os.path.join(box, f)):
+            os.remove(os.path.join(box, f))
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execve("/bin/bash", ["/bin/bash", os.path.join(box, "run.sh")] + list(args), e)
+    buf, asked, end = "", 0, time.time() + 300
+    while time.time() < end:
+        if not select.select([fd], [], [], 1)[0]:
+            continue
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf += re.sub(r"\x1b\[[0-9;]*m", "", chunk.decode("utf-8", "replace"))
+        prompts = re.findall(r"[^\n]*\((?:y/N|Y/n)\): ", buf)
+        while asked < len(prompts):
+            q = prompts[asked]; asked += 1
+            os.write(fd, ((next((a for r, a in answers if re.search(r, q)), "n")) + "\n").encode())
+    os.waitpid(pid, 0)
+    rdf = lambda n: open(os.path.join(box, n)).read() if os.path.exists(os.path.join(box, n)) else ""
+    return buf.replace("\r", ""), rdf("calls.log"), rdf("escapes.log")
+
+print("\n[22] a box converted bare → Docker before the convert deleted the bare WDTT units: the stale unit removed, the Docker node KEPT")
+CONV_WDTT = dict(NODE_FILES, **{"etc/systemd/system/swg-wdtt-wdtt0.service": "[Unit]\nDescription=swg-wdtt (amurcanov/proxy-turn-vk-android)\n",
+                                "opt/swg-wdtt/wdtt0/wg-keys.dat": "K", "opt/swg-wdtt/.bin/amurcanov/server": "x",
+                                "opt/swg-panel-docker/data/node/wdtt/wdtt0/wg-keys.dat": "K",   # the instance the container runs
+                                "var/run/wireguard/wdtt0.sock": ""})
+box = mkbox("conv-wdtt-live", CONV_WDTT, dict(NODE_FX, **{"docker.ps": "swg-node\n", "ip.links": NODE_FX["ip.links"] + "wdtt0\n",
+            "ipt.nat": NODE_FX["ipt.nat"] + "-A POSTROUTING -s 10.66.66.0/24 -o eth0 -m comment --comment \"swg-egress:wdtt0\" -j MASQUERADE\n"}))
+out, calls, esc = run_tty(box, [(r"Uninstall Docker node", "n"), (r"WDTT-proxy swg-wdtt-wdtt0", "y")], env=dict(FULL, WDTT_DATA_DEL="n"))
+check("[22] the run stays inside its box; the Docker node kept, the stale unit removed",
+      not esc and "swg-node" in fx(box, "docker.ps") and not here(box, "etc/systemd/system/swg-wdtt-wdtt0.service"), (esc, out[-1200:]))
+check("[22] the LIVE Docker node's wdtt0 survives — its interface, its SNAT rule and its UAPI socket",
+      "wdtt0" in fx(box, "ip.links") and any("swg-egress:wdtt0" in l for l in fx(box, "ipt.nat")) and here(box, "var/run/wireguard/wdtt0.sock"),
+      (fx(box, "ip.links"), [l for l in fx(box, "ipt.nat") if "wdtt0" in l], out[-1200:]))
+box = mkbox("conv-wdtt-gone", CONV_WDTT, dict(NODE_FX, **{"docker.ps": "swg-node\n", "ip.links": NODE_FX["ip.links"] + "wdtt0\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[22] …and with the Docker node removed in the same run, wdtt0 (left in the host's netns) goes with the unit",
+      "wdtt0" not in fx(box, "ip.links"), (fx(box, "ip.links"), out[-800:]))
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
@@ -692,7 +748,7 @@ if PERTURBED:
             "--perturb-engine": ("[17] the summary of [1]'s",), "--perturb-d123": ("[18] WDTT_DATA_DEL", "[19] …and with CSQTT_DATA_DEL=y"),
             "--perturb-orphan": ("[19] the csqtt password store", "[19] …and with CSQTT_DATA_DEL=y"),
             "--perturb-6880": ("[20] `6880",), "--perturb-turnconf": ("[20] /etc/sysctl.d/99-swg-turn.conf",),
-            "--perturb-dial": ("[21] a proxy behind NAT",)}
+            "--perturb-dial": ("[21] a proxy behind NAT",), "--perturb-live": ("[22] the LIVE Docker node's wdtt0",)}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
