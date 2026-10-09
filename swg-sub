@@ -1130,6 +1130,11 @@ def log(prio, msg, *args):            # noqa: F811 — the shared helper's log()
 
 
 def main():
+    # As a docker container's PID 1 swg-sub IGNORED SIGTERM — a PID 1 has no default action, and a signal from outside its
+    # namespace (docker stop) reaches only a handler — so every stop waited ~10 s for SIGKILL (1.8.9 qualification, as
+    # swg-noded's NX-L1). Nothing here to flush or close. Off PID 1 (bare metal) SIGTERM's default stays.
+    if os.getpid() == 1:
+        signal.signal(signal.SIGTERM, lambda _sig, _frm: os._exit(0))
     # Tolerate a cold start where the panel hasn't written fleet.json yet (docker: swg-sub and the
     # panel come up together and share the config volume). Wait a bounded while, then let the process
     # exit so the supervisor (systemd Restart / compose restart) retries — never spin forever.
