@@ -85,7 +85,7 @@ export function catLabelOf(c) {   // built-in label · custom-list title (keyed 
   const lt = {};
   (Store.panelSettings?.custom_lists || []).forEach(l => { if (l && l.title) { if (l.id) lt[l.id] = l.title; if (l.name) lt[l.name] = l.title; } });
   if (isProviderCat(c)) return capFirst(prettyCatLabel(c, (Store.catLabels || {})[c]));   // provider list → humanised (country names etc.)
-  return capFirst(SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || (String(c).startsWith("custom") ? "Custom" : c));
+  return capFirst(SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || (String(c).startsWith("custom") ? T("Custom") : c));
 }
 // Host/IP capability flags for a list — ALWAYS Host first, IP second (house rule).
 export const capBadges = caps => html`<span class="capbs">
