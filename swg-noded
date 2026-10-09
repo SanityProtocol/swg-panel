@@ -18784,7 +18784,7 @@ def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
     verr = _dturn_verify(svc)
     return (verr, tp)   # keep the record even if down, so the panel shows it (greyed)
 
-_DTURN_RUN = {"at": 0.0, "set": set()}
+_DTURN_RUN = {"at": 0.0, "set": set(), "loop": set()}
 _TURN_INSTALLING = set()   # services whose container is being downloaded/(re)created RIGHT NOW → "installing"
 _TURN_FAILED = set()       # services whose last install/run attempt errored → "install failed" on the panel
 _TURN_ATTEMPTS = {}        # svc -> consecutive failed-download count; the bg reconcile STOPS retrying after
@@ -18821,8 +18821,12 @@ def _turn_fork_lock(fork):
 def _dturn_attach_running(tps):
     nowt = time.time()
     if nowt - _DTURN_RUN["at"] >= 15:
-        r = run(["docker", "ps", "--filter", "name=swg-turn-", "--format", "{{.Names}}"])
-        _DTURN_RUN["set"] = set((r.stdout or "").split()); _DTURN_RUN["at"] = nowt
+        # its Status in the same call: docker lists a container in its restart back-off ("Restarting (1) …") among the running,
+        # so a turn proxy crash-looping for ANY reason read running, every surface green (1.8.9 qualification FN-2(g))
+        r = run(["docker", "ps", "--filter", "name=swg-turn-", "--format", "{{.Names}}\t{{.Status}}"])
+        rows = [ln.split("\t", 1) + [""] for ln in (r.stdout or "").splitlines() if ln.strip()]
+        _DTURN_RUN["set"] = {x[0] for x in rows if not x[1].startswith("Restarting")}
+        _DTURN_RUN["loop"] = {x[0] for x in rows if x[1].startswith("Restarting")}; _DTURN_RUN["at"] = nowt
     for t in tps:
         if t.get("service"):
             svc = t["service"]
@@ -18834,7 +18838,8 @@ def _dturn_attach_running(tps):
             # docker: only the proxy the bg reconcile is working on right now is "installing"; the others not
             # yet up (and not failed/stopped) are "pending" — queued for the sequential reconcile, not stuck.
             t["installing"] = active and not stopped
-            t["pending"] = (not t["running"]) and (not failed) and (not stopped) and (not active)
+            t["pending"] = (not t["running"]) and (not failed) and (not stopped) and (not active) \
+                and _turn_cname(svc) not in _DTURN_RUN["loop"]   # a looping container is down, not waiting its turn
 
 def _dturn_ensure(tp):   # make the container match the record entry (download binary if missing, run if not up)
     svc = tp.get("service")
