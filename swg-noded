@@ -7278,9 +7278,11 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
     # minutes. A destination this source already met in the last minute is not counted again (`add` does not refresh
     # the timeout, so a pair counts once per minute). Strictly fewer flags than before — every new pair is a new flow —
     # and still a swarm: the torrent the same node caught met 117 different peers. Destinations, not ports: a
-    # port-hopping proxy (Hysteria2) hits many ports of one server. A flagged source never reaches this rule (its
-    # packets were dropped above), so it cannot fill the set; a full set stops counting rather than flagging.
-    L.append("    ct state new %s %s ip saddr . ip daddr != @fanseen add @fanseen { ip saddr . ip daddr timeout 1m } "
+    # port-hopping proxy (Hysteria2) hits many ports of one server. A full set stops counting rather than flagging — so a
+    # FLAGGED source is never counted (`ip saddr != @flag`): under Block its packets were dropped above, but under Direct
+    # and Route its new flows only take the mark above, with no verdict, and came down here — every pair it met went into
+    # @fanseen, and a few torrenting users filled it, after which fan-out flagged nobody (1.8.9 qualification NR-1).
+    L.append("    ct state new %s %s ip saddr != @flag ip saddr . ip daddr != @fanseen add @fanseen { ip saddr . ip daddr timeout 1m } "
              "meter p2pfan size 65535 { ip saddr limit rate over 30/minute burst 30 packets } "
              "add @flag { ip saddr timeout 10m } counter name fan_flag%s"
              % (_P2P_SHAPE, nf, ' limit rate 6/minute log prefix "swg-p2p fan: " level info' if logged else ""))
