@@ -40,8 +40,8 @@ Run: python3 tests/turn_bind_selftest.py         (0 = pass)
      --perturb   turn_bind hands the host on unchanged again — expects RED in [1]–[9].
      --perturb-docker   install-docker.sh reads SWG_LISTEN alone and drops SWG_PIN again — expects RED in [10] and [11].
      --perturb-dn1    the background reconcile never compares a running container's bind (52aa9c4) — expects RED in [12].
-     --perturb-keep   …compares it, but the record does not keep the new bind — expects RED in [12].
-     --perturb-lock   apply_turn writes the record without the lock — expects RED in [12].
+     --perturb-report   the report does not read the binds the background reconcile gave its containers — RED in [12].
+     --perturb-persist  apply_turn writes its record without them (the copy it read) — RED in [12].
 """
 import os, socket, sys, types
 
@@ -51,8 +51,8 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv[1:]
 PERTURB_DOCKER = "--perturb-docker" in sys.argv[1:]
 PERTURB_DN1 = "--perturb-dn1" in sys.argv[1:]
-PERTURB_KEEP = "--perturb-keep" in sys.argv[1:]
-PERTURB_LOCK = "--perturb-lock" in sys.argv[1:]
+PERTURB_REPORT = "--perturb-report" in sys.argv[1:]
+PERTURB_PERSIST = "--perturb-persist" in sys.argv[1:]
 ANCHOR = '    mine = _local_v4()\n    if mine is None:\n        return s\n'
 SRCS = {f: open(os.path.join(ROOT, f), encoding="utf-8").read() for f in ("install-node.sh", "install-host.sh", "convert.sh", "install-docker.sh")}
 if PERTURB_DOCKER:   # the convert as it shipped: the bind read as the address clients dial, the pin never read
@@ -74,10 +74,12 @@ assert src.count(ANCHOR) == 1, "perturbation anchor missing or not unique — wo
 if PERTURB:
     src = src.replace(ANCHOR, '    return s\n', 1)
 for _flag, _old, _new in ((PERTURB_DN1, '        _bind_why = _dturn_bind_stale(svc, tp) if _ns_ok and _img_ok else ""', '        _bind_why = ""'),
-                          (PERTURB_KEEP, '        _dturn_keep_bind(svc, tp.get("bind", ""))', '        pass'),
-                          (PERTURB_LOCK, '            with _TURN_REC_LOCK:                       # the background', '            if True:                       # the background')):
-    assert src.count(_old) == 1, "perturbation anchor missing or not unique — would FALSE-PASS: " + _old.strip()[:60]
+                          (PERTURB_REPORT, '            if _DTURN_BINDS.get(t["service"]):\n                t["bind"] = _DTURN_BINDS[t["service"]]\n',
+                           '            pass\n'),
+                          (PERTURB_PERSIST, '                if _DTURN_BINDS.get(_s):\n                    _t["bind"] = _DTURN_BINDS[_s]\n',
+                           '                pass\n')):
     if _flag:
+        assert src.count(_old) == 1, "perturbation anchor missing or not unique — would FALSE-PASS: " + _old.strip()[:60]
         src = src.replace(_old, _new, 1)
 N = types.ModuleType("n")
 N.__dict__.update({"__name__": "n", "__file__": NODED})
@@ -380,8 +382,6 @@ _rec = lambda: {t["service"]: t for t in _json.load(open(N.TURN_RECORD))["turn_p
 check("1.8.8's container on an IP the box does not carry is recreated on every address — once in three passes",
       _c(56200).get("listen") == "0.0.0.0:56200" and _c(56200).get("made") == 1, _c(56200))
 check("…one on the router's DDNS name likewise", _c(56201).get("listen") == "0.0.0.0:56201" and _c(56201).get("made") == 1, _c(56201))
-check("…and the record keeps the new bind (the listen clients dial unchanged)",
-      _rec()[_S(56200)].get("bind") == "0.0.0.0:56200" and _rec()[_S(56200)].get("listen") == "203.0.113.7:56200", _rec()[_S(56200)])
 _rep = {t["service"]: t for t in N.load_turn_proxies()}
 check("…so the node reports it (`bind`), not a running proxy with no bind",
       _rep[_S(56200)].get("bind") == "0.0.0.0:56200" and _rep[_S(56201)].get("bind") == "0.0.0.0:56201", {k: _rep[_S(56200)].get(k) for k in ("listen", "bind")})
@@ -390,8 +390,8 @@ check("a container that binds fine is left alone: a name on the box, an address 
       {p: _c(p) for p in (56202, 56203, 56204)})
 check("…and its record is not touched", all("bind" not in _rec()[_S(p)] for p in (56202, 56203, 56204)), [_rec()[_S(p)] for p in (56202, 56203, 56204)])
 check("a bind decided earlier on an address the box no longer carries (DHCP) is recreated", _c(56205).get("listen") == "0.0.0.0:56205", _c(56205))
-check("a carried Listen on the box carries is applied", _c(56206).get("listen") == "10.66.66.1:56206" and _rec()[_S(56206)].get("bind") == "10.66.66.1:56206",
-      (_c(56206), _rec()[_S(56206)]))
+check("a carried Listen on the box carries is applied", _c(56206).get("listen") == "10.66.66.1:56206"
+      and {t["service"]: t for t in N.load_turn_proxies()}[_S(56206)].get("bind") == "10.66.66.1:56206", _c(56206))
 check("a stopped proxy is not started, one docker cannot describe is left alone",
       _S(56208) not in str(_CMDS) and _c(56209).get("made") == 0, (_c(56209), [c for c in _CMDS if "56208" in str(c)][:2]))
 check("a name that does not resolve right now is not judged…", _c(56207).get("made") == 0 and _S(56207) not in N._TURN_BIND_HEALED, _c(56207))
@@ -411,33 +411,43 @@ N.NODE_NET = "bridge"; N._TURN_BIND_HEALED.clear(); _n = len(_CMDS)
 check("bridge networking: never judged (it binds every address in our netns)",
       N._dturn_bind_stale(_S(56200), {"listen": "203.0.113.7:56200"}) == "" and len(_CMDS) == _n, _CMDS[_n:])
 N.NODE_NET = "host"
-_d = _rec(); _d[_S(56203)]["stopped"] = True; _d["vk-turn-proxy-WINGS-N-56299"] = {"service": "vk-turn-proxy-WINGS-N-56299", "listen": "x:1"}
-_json.dump({"turn_proxies": list(_d.values())}, open(N.TURN_RECORD, "w")); open(N.TURN_RECORD + ".tmp", "w").write("apply_turn's")
-N._dturn_keep_bind(_S(56203), "192.168.88.10:56203")
-check("the background writer re-reads the record: a Stop and a new proxy written meanwhile are kept, one field set",
-      _rec()[_S(56203)].get("stopped") is True and "vk-turn-proxy-WINGS-N-56299" in _rec() and _rec()[_S(56203)].get("bind") == "192.168.88.10:56203",
-      _rec()[_S(56203)])
-check("…through its own tmp file, never apply_turn's", open(N.TURN_RECORD + ".tmp").read() == "apply_turn's")
-os.remove(N.TURN_RECORD + ".tmp")
-class _SpyLock:   # the record lock, counting the writes made while it is held (no timing: a write outside it is not counted)
-    def __init__(self): self.l, self.writes = _th.Lock(), 0
-    def __enter__(self):
-        self.l.acquire(); self.before = open(N.TURN_RECORD).read(); return self
-    def __exit__(self, *a):
-        self.writes += open(N.TURN_RECORD).read() != self.before; self.l.release()
-_lk = N._TURN_REC_LOCK; N._TURN_REC_LOCK = _SpyLock()
+check("the record has one writer: the background reconcile wrote nothing into it (apply_turn persists the binds)",
+      "bind" not in _rec()[_S(56200)] and not hasattr(N, "_dturn_keep_bind"), _rec()[_S(56200)])
 N.apply_turn({_S(56202): {"action": "title", "title": "home"}}, None)
-N._dturn_keep_bind(_S(56202), "192.168.88.10:56202")
-check("both writers of the record write it under the one lock (apply_turn, the background reconcile)",
-      N._TURN_REC_LOCK.writes == 2 and _rec()[_S(56202)].get("title") == "home" and _rec()[_S(56202)].get("bind") == "192.168.88.10:56202",
-      (N._TURN_REC_LOCK.writes, _rec()[_S(56202)]))
-N._TURN_REC_LOCK = _lk
+check("…and the next write of it (an operator's Title on another proxy) carries every bind the background gave its containers",
+      _rec()[_S(56200)].get("bind") == "0.0.0.0:56200" and _rec()[_S(56206)].get("bind") == "10.66.66.1:56206"
+      and _rec()[_S(56200)].get("listen") == "203.0.113.7:56200" and _rec()[_S(56202)].get("title") == "home", _rec()[_S(56200)])
+# THE RACE the second writer lost (release day: the heal runs on noded's start while the first sync's apply_turn runs), driven
+# deterministically — apply_turn reads the record, the background heal recreates a proxy, apply_turn writes what it read
+N._TURN_BIND_HEALED.clear(); getattr(N, "_DTURN_BINDS", {}).clear()   # (an older build has no memory)
+_RC = "vk-turn-proxy-WINGS-N-56230"
+_d = _rec(); _d[_RC] = {"service": _RC, "listen": "203.0.113.9:56230", "connect": "127.0.0.1:51820", "params": ""}
+_json.dump({"turn_proxies": list(_d.values())}, open(N.TURN_RECORD, "w"))
+_BOXC[N._turn_cname(_RC)] = {"listen": "203.0.113.9:56230", "made": 0}      # 1.8.8's container, crash-looping
+_orig_ltp, _first = N.load_turn_proxies, [True]
+def _interleaved():
+    r = _orig_ltp()
+    if _first[0]:
+        _first[0] = False
+        N._dturn_reconcile()                            # the background heal, start to end, between apply_turn's read and write
+    return r
+N.load_turn_proxies = _interleaved
+N.apply_turn({_S(56203): {"action": "title", "title": "lan"}}, None)
+N.load_turn_proxies = _orig_ltp
+_rep = {t["service"]: t for t in N.load_turn_proxies()}
+check("race: the heal recreated it between apply_turn's read and write — the report names the new bind",
+      _c(56230).get("listen") == "0.0.0.0:56230" and _rep[_RC].get("bind") == "0.0.0.0:56230", (_c(56230), _rep[_RC].get("bind")))
+check("race: …and the record ends with it, apply_turn's own change kept",
+      _rec()[_RC].get("bind") == "0.0.0.0:56230" and _rec()[_S(56203)].get("title") == "lan", (_rec()[_RC], _rec()[_S(56203)].get("title")))
+getattr(N, "_DTURN_BINDS", {}).clear(); N._TURN_BIND_HEALED.clear()   # a restarted noded: nothing in memory
+_rep = {t["service"]: t for t in N.load_turn_proxies()}
+check("a restarted noded reports the persisted bind from the record", _rep[_RC].get("bind") == "0.0.0.0:56230", _rep[_RC])
 N.run = _save_run; N.TURN_DOCKER = False
 _sh.rmtree(_T, ignore_errors=True)
 
 socket.getaddrinfo = _real_gai
 print("")
-if PERTURB_DN1 or PERTURB_KEEP or PERTURB_LOCK:
+if PERTURB_DN1 or PERTURB_REPORT or PERTURB_PERSIST:
     _ok = len(FAILS) > _F12 and _F12 == 0
     print("PERTURB OK — %d checks went red, all in [12]" % len(FAILS) if _ok else
           "PERTURB FAILED — " + ("also red before [12]: %s" % FAILS[:_F12] if _F12 else "nothing went red in [12]"))
