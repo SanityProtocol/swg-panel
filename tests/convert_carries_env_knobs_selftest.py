@@ -38,6 +38,9 @@ console port — and the Docker box came up on main's release check and the dire
          value that is not a plain port / address, or one with a quote the .env cannot hold, is named, not carried
       e. only the units asked for are read (a node convert does not carry a panel drop-in); no drop-ins → nothing said,
          nothing parked
+      f. (1.8.9 qualification IN-20) swg's OWN log drop-ins (swg-ns.conf, swg-journal.conf, swg-log.conf) are neither read
+         nor parked nor named — every bare → Docker convert of a 1.8.9 box told the operator "not carried: LogNamespace=
+         (swg-ns.conf)…" as if they were theirs, and parked copies; the operator's own file beside them still is
   [6] install-docker.sh appends the carried keys under their own heading, a key the file already has never twice
   [7] the call sites: the host / master convert reads the panel's (and a master's node's) drop-ins and hands the carry
       file and the given values to install-docker.sh (host, and a master's node step); the node convert reads
@@ -51,6 +54,7 @@ Run: python3 tests/convert_carries_env_knobs_selftest.py      (0 = pass)
      --perturb-dropins  bare → docker carries nothing from the drop-ins (the shipped behaviour) → RED on [5]
      --perturb-park     the drop-ins are not kept aside → RED on [5a]
      --perturb-own-park our own 50-swg-from-docker.conf is parked again (round 8's noise) → RED on [5c]
+     --perturb-logs     swg's log drop-ins read as the operator's again (e66018f) → RED on [5f] only
      --perturb-docker-carry   install-docker.sh ignores SWG_CARRY_ENV → RED on [6]
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
@@ -80,6 +84,8 @@ PLANTS = {
                        '               && chmod 600 "$park/$u.service.d/$(basename "$f")" && parked=yes ;;\n', '      FILE)  : ;;\n'),
     "--perturb-own-park": ('        if name != "50-swg-from-docker.conf":\n            print("FILE\\t%s\\t%s" % (unit, f))',
                            '        if True:\n            print("FILE\\t%s\\t%s" % (unit, f))'),
+    "--perturb-logs": ('OURS = {"swg-panel-server": {"zz-swg-update.conf"} | LOGS, "swg-noded": {"10-swg-reach-sweep.conf"} | LOGS}',
+                       'OURS = {"swg-panel-server": {"zz-swg-update.conf"}, "swg-noded": {"10-swg-reach-sweep.conf"}}'),
 }
 DOCKER_PLANTS = {
     "--perturb-docker-carry": ('if [ -n "${SWG_CARRY_ENV:-}" ] && [ -s "$SWG_CARRY_ENV" ]; then\n', 'if false; then\n'),
@@ -307,6 +313,19 @@ check("[5e] a node convert reads swg-noded's drop-ins only (a panel drop-in on t
 r, carried, park, sd = dropins("e2", {}, "swg-panel-server", "swg-noded")
 check("[5e] no drop-ins: nothing carried, nothing said, nothing parked",
       r.returncode == 0 and carried == "" and "SUB " not in r.stdout and not os.path.exists(park), (r.returncode, r.stdout))
+
+LOGS = {"swg-panel-server.service.d/swg-ns.conf": "[Service]\nLogNamespace=swg-panel\n",
+        "swg-panel-server.service.d/swg-journal.conf": "[Service]\nSupplementaryGroups=systemd-journal\n",
+        "swg-noded.service.d/swg-ns.conf": "[Service]\nLogNamespace=swg-node\n",
+        "swg-noded.service.d/swg-log.conf": "[Service]\nLogLevelMax=notice\n"}
+r, carried, park, sd = dropins("f", dict(LOGS, **{"swg-panel-server.service.d/latest.conf": LATEST}), "swg-panel-server", "swg-noded")
+parked = sorted(os.path.relpath(os.path.join(dp, f), park) for dp, _, fs in os.walk(park) for f in fs) if os.path.isdir(park) else []
+check("[5f] swg's own log drop-ins (swg-ns / swg-journal / swg-log.conf) are neither named nor parked; the operator's file is",
+      parked == ["swg-panel-server.service.d/latest.conf"] and not re.search(r"LogNamespace|SupplementaryGroups|LogLevelMax", r.stdout)
+      and "SWG_LATEST_URL" in (carried or ""), (parked, r.stdout))
+r, carried, park, sd = dropins("f2", LOGS, "swg-panel-server", "swg-noded")
+check("[5f] …with only swg's own there: nothing said, nothing parked", r.returncode == 0 and carried == "" and "SUB " not in r.stdout
+      and not os.path.exists(park), (r.returncode, r.stdout))
 
 # ── [6] install-docker.sh takes the carry file ───────────────────────────────────────────────────────────────────
 a = dsrc.find('if [ -n "${SWG_CARRY_ENV:-}" ] && [ -s "$SWG_CARRY_ENV" ]; then\n')
