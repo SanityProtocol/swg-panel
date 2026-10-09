@@ -45,7 +45,7 @@ def plant(src, a, b):
     return src.replace(a, b)
 
 if PERTURB:
-    U = plant(U, "awk '$1>=6890 && $1<=6989'", "awk '$1>=1 && $1<=0'")                                  # [1]
+    U = plant(U, "awk '$1==6880 || ($1>=6890 && $1<=6989)'", "awk '$1>=1 && $1<=0'")                    # [1]
     U = plant(U, " /var/www/acme /usr/local/bin/swg-passwd\n", " /var/www/acme\n")    # [2] (3016459 moved its comment up)
     H = plant(H, '      grep -qsx "${PORT}/tcp" "$ETC_DIR/ufw-added" || echo "${PORT}/tcp" >> "$ETC_DIR/ufw-added"\n',
               '      :\n')                                                                                # [3]
@@ -92,7 +92,8 @@ PRE = ('DRYRUN=false\ninfo(){ echo "INFO $*"; }; ok(){ echo "OK $*"; }; warn(){ 
        'b(){ printf %s "$*"; }\nrun(){ "$@"; }\n')
 
 print("[1] the datapath sweep takes the upstream-mark band too — rules only, never a table of that number")
-rules = ("0:\tfrom all lookup local\n5000:\tfrom all lookup main\n6890:\tfrom all fwmark 0x1aea lookup 7000\n"
+rules = ("0:\tfrom all lookup local\n5000:\tfrom all lookup main\n6880:\tfrom all fwmark 0x40000000 lookup main\n"
+         "6890:\tfrom all fwmark 0x1aea lookup 7000\n"
          "6891:\tfrom 10.18.0.1 fwmark 0x1aeb lookup 7001\n6990:\tfrom all fwmark 0x9c40 lookup 6990\n"
          "7000:\tfrom 10.8.0.0/24 lookup 7000\n32766:\tfrom all lookup main")
 out, calls, _ = bash(PRE + "rmrf(){ :; }\n" + fn(U, "rm_node_netobjects") + "rm_node_netobjects\n",
@@ -101,6 +102,8 @@ out, calls, _ = bash(PRE + "rmrf(){ :; }\n" + fn(U, "rm_node_netobjects") + "rm_
 dels = re.findall(r"^ip rule del pref (\d+)$", calls, re.M)
 flush = re.findall(r"^ip route flush table (\d+)$", calls, re.M)
 check("6890 and 6891 (the upstream band) are deleted", "6890" in dels and "6891" in dels, calls)
+check("…and 6880, the torrent policy's rule under Direct (1.8.9 qualification NR-6) — main is never flushed",
+      "6880" in dels and "main" not in flush and "6880" not in flush, (dels, flush))
 check("…and no `table 6890`/`6891` is flushed — those priorities name no table of ours", "6890" not in flush and "6891" not in flush, flush)
 check("the table band is still swept as before (7000: rule + table)", "7000" in dels and "7000" in flush, calls)
 check("nobody else's rule is touched (0, 5000, 32766), nor the relay's 6990 (rm_node owns it)",

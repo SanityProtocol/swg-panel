@@ -38,6 +38,9 @@ refuse any path outside the box, and such an escape fails the section that made 
   [19] a bare → Docker converted node: the bare csqtt store no unit names (the convert deleted the units) was never offered
       and outlived a FULL uninstall — its clients' passwords on a box the operator wiped. Now asked about by path, with
       rm_csqtt's question and preset, and nothing of a server torn down for it (L8-a)
+  [20] the datapath sweep takes the torrent policy's rule (`6880: from all fwmark 0x40000000 lookup main` under Direct —
+      measured left on every OS) and never flushes main; /etc/sysctl.d/99-swg-turn.conf (swg-noded's turn socket caps, kept
+      across every reboot after the uninstall) goes with the other two sysctl files (1.8.9 qualification NR-6, DEB-2)
   [16] systemd < 254: the restart back-off swg-noded writes in the three family dirs (swg-restart.conf, D12-1) — rm_node no
       longer says it "keeps" a dir that holds only that file (the end of the run takes both); an operator's own drop-in
       there is still said and kept
@@ -61,6 +64,8 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-engine  the Docker uninstall's summary is silent about Docker Engine (as shipped) → RED on [17]'s first check only
      --perturb-d123    the raw `= yes` preset test back (as shipped) → RED on [18] and [19]'s nothing-left check only
      --perturb-orphan  state no unit runs from is never offered (as shipped) → RED on [19]'s question and nothing-left checks only
+     --perturb-6880    the sweep skips the torrent policy's rule (as shipped) → RED on [20]'s 6880 check only
+     --perturb-turnconf  99-swg-turn.conf stays (as shipped) → RED on [20]'s sysctl check only
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
@@ -71,7 +76,8 @@ U = open(os.environ.get("SWG_UNINSTALL") or os.path.join(ROOT, "uninstall.sh"), 
 FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--perturb-bare", "--perturb-src", "--perturb-stop",
                                          "--perturb-ppa", "--perturb-go", "--perturb-key", "--perturb-srcppa", "--perturb-www",
                                          "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg",
-                                         "--perturb-engine", "--perturb-d123", "--perturb-orphan")}
+                                         "--perturb-engine", "--perturb-d123", "--perturb-orphan", "--perturb-6880",
+                                         "--perturb-turnconf")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -122,6 +128,10 @@ if FLAGS["--perturb-d123"]:
     plant('    $DRYRUN || rmdir "$CSQTT_DIR" 2>/dev/null || true', '    [ "${CSQTT_DATA_DEL:-}" = yes ] && rmrf "$CSQTT_DIR"')
 if FLAGS["--perturb-orphan"]:
     plant('_fork_orphans(){ local d k; for d in', '_fork_orphans(){ return 0; local d k; for d in')
+if FLAGS["--perturb-6880"]:
+    plant("awk '$1==6880 || ($1>=6890 && $1<=6989)'", "awk '$1>=6890 && $1<=6989'")
+if FLAGS["--perturb-turnconf"]:
+    plant(" /etc/sysctl.d/99-swg-turn.conf   # + swg-noded's", "   # + swg-noded's")
 if FLAGS["--perturb-image"]:
     plant('  [ -n "$img" ] || { _tag="$(sed -n ', '  false && { _tag="$(sed -n ')
 
@@ -632,6 +642,19 @@ box = mkbox("conv-forks-keep", CONV_FORK, dict(NODE_FX, **{"docker.ps": "swg-nod
 rc, out, calls, esc = run(box, "--yes", env=dict(FULL, CSQTT_DATA_DEL="n"))
 check("[19] CSQTT_DATA_DEL=n: the store is kept, with what it needs", here(box, "opt/swg-csqtt/csqtt0/passwords.json"), out[-800:])
 
+print("\n[20] the sweep: the torrent policy's rule at 6880, the turn listeners' sysctl file (1.8.9 qualification NR-6, DEB-2)")
+RULES = ("0:\tfrom all lookup local\n6880:\tfrom all fwmark 0x40000000 lookup main\n6890:\tfrom all fwmark 0x1aea lookup 7000\n"
+         "7000:\tfrom 10.60.1.0/24 lookup 7000\n32766:\tfrom all lookup main\n32767:\tfrom all lookup default\n")
+box = mkbox("sweep-6880", dict(BARE_NODE, **{"etc/sysctl.d/99-swg-turn.conf": "net.core.rmem_max = 25165824\nnet.core.wmem_max = 25165824\n"}),
+            dict(BARE_FX, **{"ip.rules": RULES}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[20] the run stays inside its box", not esc, esc)
+check("[20] `6880: from all fwmark 0x40000000 lookup main` (the P2P policy under Direct) goes with the rest — rules only: main is never flushed",
+      not [r for r in fx(box, "ip.rules") if r.startswith("6880:")] and "ip\troute flush table main" not in calls
+      and "ip\troute flush table 6880" not in calls, (fx(box, "ip.rules"), [l for l in calls.splitlines() if l.startswith("ip\t")]))
+check("[20] /etc/sysctl.d/99-swg-turn.conf (the turn listeners' socket-buffer caps swg-noded wrote) goes with the other two",
+      not here(box, "etc/sysctl.d/99-swg-turn.conf"), sorted(os.listdir(os.path.join(box, "etc/sysctl.d"))))
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
@@ -644,7 +667,8 @@ if PERTURBED:
             "--perturb-aa": ("[13] the AppArmor local/wg",), "--perturb-aatext": ("[13] …and the revert line",),
             "--perturb-rl": ("[13] route_localnet", "[15]"), "--perturb-rlown": ("[14] route_localnet",), "--perturb-keepmsg": ("[16]",),
             "--perturb-engine": ("[17] the summary of [1]'s",), "--perturb-d123": ("[18] WDTT_DATA_DEL", "[19] …and with CSQTT_DATA_DEL=y"),
-            "--perturb-orphan": ("[19] the csqtt password store", "[19] …and with CSQTT_DATA_DEL=y")}
+            "--perturb-orphan": ("[19] the csqtt password store", "[19] …and with CSQTT_DATA_DEL=y"),
+            "--perturb-6880": ("[20] `6880",), "--perturb-turnconf": ("[20] /etc/sysctl.d/99-swg-turn.conf",)}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
