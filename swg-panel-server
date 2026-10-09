@@ -17988,8 +17988,8 @@ def _snap_num(v):
     in places (`wdtt[].raw_port` is str beside an int `wg_port`), so a numeric string has to count."""
     try:
         n = max(0.0, float(v or 0))
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError, OverflowError):   # an int past a double (a 10**400 generated_at, kept as an int):
+        return None                                  # the warm start raised on it, so the panel did not boot (q189 R2 PANEL-1b)
     # …but not "inf" / "1e999", which float() reads and JSON cannot carry: kept, /api/state answered with a bare
     # `Infinity` that the browser's r.json() refuses, and every operator's console froze (1.8.9 qualification R2 PANEL-1).
     return n if math.isfinite(n) else None
