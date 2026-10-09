@@ -380,7 +380,8 @@ carry_dropins_to_env(){
   shift; : > "$carry"; DROPIN_GIVE=""
   out="$(python3 - "$@" <<'PY' 2>/dev/null || true
 import glob, os, re, shlex, sys
-OURS = {"swg-panel-server": {"zz-swg-update.conf"}, "swg-noded": {"10-swg-reach-sweep.conf"}}
+LOGS = {"swg-ns.conf", "swg-journal.conf", "swg-log.conf"}   # swg's own (1.8.9) — not the operator's to be told about (IN-20)
+OURS = {"swg-panel-server": {"zz-swg-update.conf"} | LOGS, "swg-noded": {"10-swg-reach-sweep.conf"} | LOGS}
 # the Docker .env key each variable arrives through: carried as it is (C), or given to the installer as its own (G)
 MAP = {"swg-panel-server": {"SWG_LATEST_URL": ("SWG_LATEST_URL", "C"), "SWG_PANEL_CONSOLE_PORT": ("CONSOLE_PORT", "G"),
                             "SWG_PANEL_CONSOLE_HOST": ("CONSOLE_BIND", "G")},
