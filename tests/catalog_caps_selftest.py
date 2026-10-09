@@ -15,6 +15,9 @@ tracker answered 200, "swg-sni: loaded 0 domains" — while the Overview counted
   [2] end to end, a real panel with no catalog and no way to fetch one: a node on Hybrid SNI whose interface blocks "Ads &
       Trackers" (its list already held) behind a custom routing rule — its sync carries the union's host cap, and the list
       in its manifest; the same on Force-DNS
+  [2c] a provider ROUTING list the panel already holds (MetaCubeX's cloudflare, as msk-main routes by it), with no catalog: it
+      stays in the node's list manifest with the version the panel holds, and its caps with the tier it holds — left out of the
+      manifest, the node deleted its pulled copy and the rule routed nothing until the catalog came back (q189 V2-FLEET noticed 2)
   [3] the node half, swg-noded's own _cat_caps_take: a partial dict keeps the caps of the categories named in `cat_caps_keep`
       and replaces the rest; an older panel's full dict (no keep) replaces as before; an absent key keeps everything; a name
       the node never had invents nothing; the node says it keeps them (`caps_keep: 1` in smart_status) and the panel reads that
@@ -24,6 +27,7 @@ Hermetic (the panel's fetches go to a dead proxy). Run: python3 tests/catalog_ca
      --perturb        the old rule (anything outside SMART_CAPS and the block sources withholds every cap) → RED
      --perturb-node   the node ignores `cat_caps_keep` (clears every cap a partial dict leaves out) → RED in [3]
      --perturb-cov    the Overview counts a node's block lists though its caps were withheld → RED in [2b]
+     --perturb-held   the manifest takes a provider list's tiers from the catalog alone again → RED in [2c]
 """
 import http.client, importlib.machinery, importlib.util, json, os, re, socket, subprocess, sys, tempfile, time
 
@@ -33,6 +37,7 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 PERTURB = "--perturb" in sys.argv
 PERTURB_NODE = "--perturb-node" in sys.argv
 PERTURB_COV = "--perturb-cov" in sys.argv
+PERTURB_HELD = "--perturb-held" in sys.argv
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 
 FAILS = []
@@ -59,6 +64,13 @@ if PERTURB_COV:   # the coverage before the fix: what is configured, whatever th
     SRV = os.path.join(TMP, "swg-panel-server.perturbed-cov")
     open(SRV, "w", encoding="utf-8").write(src.replace(a, "                if False:\n"))
 
+if PERTURB_HELD:   # the manifest before the fix: a provider list's tiers from the catalog only
+    src = open(SERVER, encoding="utf-8").read()
+    a = "(_cix.get(_c) or ({} if _cix_have else {t: True for t in (\"ip\", \"host\") if list_meta(_c, t)}))"
+    if src.count(a) != 1:
+        print("PERTURB FAILED — the manifest anchor is not in the panel exactly once"); sys.exit(1)
+    SRV = os.path.join(TMP, "swg-panel-server.perturbed-held")
+    open(SRV, "w", encoding="utf-8").write(src.replace(a, "(_cix.get(_c) or {})"))
 loader = importlib.machinery.SourceFileLoader("swgpanel_catcaps", SRV)
 spec = importlib.util.spec_from_loader("swgpanel_catcaps", loader)
 M = importlib.util.module_from_spec(spec)
@@ -203,6 +215,21 @@ try:
             check("[2b] %s: the rest is sent, the provider list named in cat_caps_keep" % label,
                   isinstance(caps, dict) and any(k.startswith("blku:host:") for k in caps) and keep == ["mcx:geosite-unheld"], [caps, keep])
             check("[2b] %s: the Overview counts its block list again, nothing waiting" % label, cov.get("domains") and not waiting, cov)
+    # [2c] a provider routing list the panel holds, with no catalog — it must stay in the manifest (V2-FLEET noticed 2)
+    st, r = call("POST", "/api/panel/settings", {"providers": {"mc": True}})
+    check("[2c] MetaCubeX switched on (its catalog cannot be fetched here)", st == 200, r)
+    hold("mc:cloudflare", "host", 76)
+    st, r = call("POST", "/api/iface/update", {"node": NID, "iface": "awg0", "block": ["ads"], "egress_mode": "smart", "routing_v": 2,
+                                               "routing": [{"category": "mc:cloudflare", "action": "block"}]})
+    check("[2c] the interface routes by mc:cloudflare, whose host list the panel holds", st == 200, r)
+    sn = dict(snap(), smartroute={"caps_keep": 1})
+    call("POST", "/api/node/sync", {"snapshot": sn}, TOK)
+    st, r = call("POST", "/api/node/sync", {"snapshot": sn}, TOK)
+    caps, cats, man = find(r, "cat_caps") or {}, find(r, "categories") or [], find(r, "list_manifest") or {}
+    check("[2c] the plan routes it", "mc:cloudflare" in cats, cats)
+    check("[2c] the list manifest keeps it, with the version the panel holds (the node keeps its copy)",
+          (man.get("mc:cloudflare") or {}).get("host") == "t1", {k: v for k, v in man.items() if not k.startswith("blk")})
+    check("[2c] …and its caps say the tier held", caps.get("mc:cloudflare") == {"host": True}, caps.get("mc:cloudflare"))
     check("[2] the panel never got a catalog (the dead proxy held)", not os.path.exists(D + "/state/catalog-index.json"))
 finally:
     srv.terminate()
@@ -248,7 +275,7 @@ else:
           and not M.node_keeps_caps({"smartroute": "x"}) and not M.node_keeps_caps({}), "")
 
 print()
-if PERTURB or PERTURB_NODE or PERTURB_COV:
+if PERTURB or PERTURB_NODE or PERTURB_COV or PERTURB_HELD:
     print("PERTURB OK — %d checks went red" % len(FAILS) if FAILS else "PERTURB FAILED — the undone fix passed every check")
     sys.exit(0 if FAILS else 1)
 if FAILS:
