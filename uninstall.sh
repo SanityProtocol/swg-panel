@@ -1021,7 +1021,8 @@ remove_ifaces(){ local dir="$1" tool="$2" want="${3:-own}" f n addr port
     addr="$(awk -F= 'tolower($1)~/address/{gsub(/[ \t]/,"",$2);split($2,a,",");print a[1];exit}' "$f" 2>/dev/null)"
     port="$(awk -F= 'tolower($1)~/listenport/{gsub(/[ \t]/,"",$2);print $2;exit}' "$f" 2>/dev/null)"
     if $DRYRUN; then echo "    [dry] down + disable ${tool}@$n + remove $n"
-    else { command -v "$tool" >/dev/null 2>&1 && "$tool" down "$n"; ip link delete "$n"; } >/dev/null 2>&1 || true
+    else run systemctl stop "${tool}@$n" >/dev/null 2>&1 || true   # its unit FIRST: one started at boot stayed "active (exited)", then failed once its package went (1.8.8 deferred #16)
+      { command -v "$tool" >/dev/null 2>&1 && "$tool" down "$n"; ip link delete "$n"; } >/dev/null 2>&1 || true
       # DISABLE the unit instance, not just `down` it. Without this the enable symlink in
       # multi-user.target.wants survives the conf it points at, and once the wg/awg package is removed too
       # there is no unit file behind it either — systemd then reports `wg-quick@<n>.service not-found failed`
@@ -1058,12 +1059,31 @@ rm_awg_pkg(){
   if command -v apt-get >/dev/null 2>&1; then
     if run apt-get purge -y amneziawg amneziawg-tools amneziawg-dkms; then
       run add-apt-repository -y --remove ppa:amnezia/ppa; run apt-get autoremove -y
+      rmrf /usr/local/bin/amneziawg-go   # the userspace fallback swg pinned beside it — nothing drives it without the tools (1.8.8 deferred #2)
       ok "AmneziaWG package removed"
     else
       NOT_DONE+=("AmneziaWG package (kernel module + tools)")
       warn "apt could not purge the AmneziaWG packages (see the error above) — they are STILL INSTALLED. Re-run once apt is free."
     fi
   else warn "Non-apt system — remove the amneziawg packages with your package manager."; fi
+}
+# ⚠️ AN AmneziaWG BUILT FROM SOURCE (every Debian node — the PPA is Ubuntu-only — and Ubuntu's fallback when the PPA's module
+# does not build) was never offered: `make install`'s tools and a module registered with DKMS from /usr/src belong to no
+# package, so the package question never named them, and DKMS went on rebuilding the module at every kernel upgrade on a box
+# without swg — one it cannot build for leaves apt half-configured (1.8.8 deferred #1, #16). A tree is ours when no package owns
+# it, as lib/common.sh's awg_dkms_drop_unowned decides (this file does not source it); the tools when /usr/bin/awg is no
+# package's. The module stays loaded until the next boot: unloading it safely needs every namespace scanned (deferred #3f).
+awg_src_trees(){ local d; command -v dpkg >/dev/null 2>&1 || return 0
+  for d in /usr/src/amneziawg-*; do grep -qs '^PACKAGE_NAME="\?amneziawg"\?[[:space:]]*$' "$d/dkms.conf" && ! dpkg -S "$d" >/dev/null 2>&1 && printf '%s\n' "$d"; done; return 0; }
+awg_src_tools(){ [ -e /usr/bin/awg ] && command -v dpkg >/dev/null 2>&1 && ! dpkg -S /usr/bin/awg >/dev/null 2>&1; }
+rm_awg_src(){ local d
+  info "Uninstalling AmneziaWG built from source (kernel module + tools)"
+  down_ifaces /etc/amnezia/amneziawg awg-quick      # as rm_awg_pkg: kept configs' interfaces go down before their module does
+  for d in $(awg_src_trees); do run dkms remove "amneziawg/${d##*/amneziawg-}" --all >/dev/null 2>&1 || true; rmrf "$d"; done
+  awg_src_tools && rmrf /usr/bin/awg /usr/bin/awg-quick /usr/share/man/man8/awg.8 /usr/share/man/man8/awg-quick.8 /lib/systemd/system/awg-quick@.service \
+    /lib/systemd/system/awg-quick.target /usr/lib/systemd/system/awg-quick@.service /usr/lib/systemd/system/awg-quick.target
+  rmrf /usr/local/bin/amneziawg-go; run systemctl daemon-reload 2>/dev/null || true
+  ok "AmneziaWG (built from source) removed — the module still loaded goes at the next boot"
 }
 rm_wg_peers(){
   info "Removing WireGuard interface configs (peers)"
@@ -1650,8 +1670,12 @@ awg_ifaces && { _d="$(iface_list /etc/amnezia/amneziawg own)"; [ -n "$_d" ] && a
 # and purging the package still ends with somebody else's tunnel dead, just less obviously. When a
 # foreign interface of this kind is present the package question is therefore never-auto too: it must
 # be typed, it is kept with no terminal, and the hint says why.
-awg_pkg    && $_bare_swg && { if [ -n "$_f" ]; then add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg "" "$_f needs it" Uninstall "AmneziaWG package (kernel module + tools)" never-auto
+# …and the amnezia PPA is swg's: only its bare installer adds it, never a Docker install — so a box converted to Docker, whose
+# packages (and their DKMS module, rebuilt at every kernel upgrade) its bare past installed, is offered them too (1.8.8 #1).
+awg_pkg    && { $_bare_swg || ls /etc/apt/sources.list.d/*amnezia* >/dev/null 2>&1; } && { if [ -n "$_f" ]; then add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg "" "$_f needs it" Uninstall "AmneziaWG package (kernel module + tools)" never-auto
                              else add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg; fi; }
+{ awg_src_tools || [ -n "$(awg_src_trees)" ]; } && $_bare_swg && { if [ -n "$_f" ]; then add "AmneziaWG built from source (kernel module + tools)" "awg · awg-quick · its DKMS module" rm_awg_src "" "$_f needs it" Uninstall "AmneziaWG built from source (kernel module + tools)" never-auto
+                             else add "AmneziaWG built from source (kernel module + tools)" "awg · awg-quick · its DKMS module" rm_awg_src; fi; }
 wg_ifaces  && { _d="$(iface_list /etc/wireguard own)"; [ -n "$_d" ] && add "WireGuard interfaces" "$_d" rm_wg_peers "" "$_d" Remove
                 _fw="$(iface_list /etc/wireguard foreign)"; [ -n "$_fw" ] && add "WireGuard interfaces NOT created by swg" "$_fw" rm_wg_foreign "" "$_fw" Remove "WireGuard interfaces NOT created by swg" never-auto; true; }
 wg_pkg     && $_bare_swg && { if [ -n "$_fw" ]; then add "WireGuard package (kernel module + tools)" "wireguard · wireguard-tools" rm_wg_pkg "" "$_fw needs it" Uninstall "WireGuard package (kernel module + tools)" never-auto
@@ -1690,7 +1714,7 @@ for i in $(seq 0 $((N-1))); do
     # else's interface does not — keeping one of those used to skip the sweep below all the same, so the common
     # "remove swg, keep the wg/awg packages" left every swg ip rule, nft table and iptables tag behind for good.
     # Anything not named here counts as datapath (a new component is safe until someone decides otherwise).
-    case "${CFN[$i]}" in rm_awg_pkg|rm_wg_pkg|rm_awg_foreign|rm_wg_foreign|rm_panel|rm_docker_panel|rm_docker_files|rm_netctl|rm_leftovers) ;;
+    case "${CFN[$i]}" in rm_awg_pkg|rm_awg_src|rm_wg_pkg|rm_awg_foreign|rm_wg_foreign|rm_panel|rm_docker_panel|rm_docker_files|rm_netctl|rm_leftovers) ;;
       *) KEPT_DATAPATH=true;; esac
   fi
   echo
