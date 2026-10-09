@@ -14,7 +14,10 @@ bind — and `restart` STARTS a stopped unit — then said it "was listening"; e
       unit, or a stopped swg-sub (`enable --now` starts it on the new unit), is not restarted. After that restart a running
       panel is restarted too — its start is where the settings record swg-sub's new address (round 12, q5: the panel's
       start came before swg-sub moved, and Settings kept the old port) — never during a convert's deferred start.
-      (1.8.8 deferred #9) A re-install leaves a swg-sub the operator DISABLED and stopped as it was — no `enable --now`
+      (1.8.8 deferred #9) A re-install leaves a swg-sub the operator DISABLED and stopped as it was — no `enable --now`;
+      that is read BEFORE the run writes the unit (with install-host.sh's early write run too): a FRESH install's swg-sub,
+      whose unit this run wrote moments before, is enabled and started — read at the end it looked like an operator's
+      choice and stayed off (1.8.9 qualification F25)
   [3] the panel (_record_sub_bind): a URL that names the OLD port follows the recorded one (host, scheme, path, an IPv6
       literal kept) — logged and in the activity list; a URL with no port, or with another port, stays
   [4] the panel (_flag_sub_url_port): a URL naming a port where nothing on this box answers is flagged, with both ways
@@ -28,7 +31,7 @@ bind — and `restart` STARTS a stopped unit — then said it "was listening"; e
       a Docker re-install keeps SUB_PORT / SUB_BIND from its .env
 
 Run: python3 tests/sub_port_kept_selftest.py        (0 = pass)
-     --perturb   nine plants, each on its own — each must turn its own check red
+     --perturb   eleven plants, each on its own — each must turn its own check red (f25: the decision read at the end)
 """
 import ast, contextlib, io, json, os, re, socket, subprocess, sys, tempfile
 from urllib.parse import urlparse
@@ -55,6 +58,9 @@ PLANTS = [
      '                    and _netctl_enqueue(deps, "restart", ["sub"])):\n', "[5] the footprint heal: a stopped swg-sub is set right, not restarted"),
     ("keepoff", "HOST", '  if [ "$_sub_off" = yes ]; then ok "swg-sub left disabled and stopped, as it was (systemctl enable --now swg-sub to serve subscriptions)"\n',
      '  if false; then :\n', "[2] …a swg-sub the operator disabled and stopped: left so, not enabled nor started"),
+    ("f25", "HOST", '  # read before this run wrote the unit (above, F25).\n  write_sub_unit; run systemctl daemon-reload\n',
+     '  _sub_off=no; [ -n "$_subu_was" ] && [ "$_sub_was_up" = no ] && ! $DRYRUN && ! systemctl is-enabled --quiet swg-sub 2>/dev/null && _sub_off=yes\n'
+     '  write_sub_unit; run systemctl daemon-reload\n', "[2] a FRESH install: swg-sub is enabled and started (1.8.9 qualification F25)"),
     ("update", "UPDATE", '      elif ! $DRYRUN && ! systemctl is-active --quiet swg-sub 2>/dev/null; then\n',
      '      elif false; then\n', "[6] update.sh restarts swg-sub only when it runs"),
     ("enable", "UPDATE", '    if ! $DRYRUN && ! systemctl is-enabled --quiet swg-sub 2>/dev/null && systemctl is-active --quiet swg-sub 2>/dev/null; then\n',
@@ -131,10 +137,17 @@ check("[1] install.conf keeps SUB_PORT, and SUB_BIND only as given (or kept from
 
 print("\n[2] install-host.sh: a changed unit restarts a running swg-sub")
 SUBBLK = span(H, 'if [ -f "$PREFIX$SUB_DIR/swg-sub" ]; then   # inert until enabled in Settings → Subscriptions\n', "\n  fi\nfi\n")
-def sub_block(was_up, change, panel_up=True, defer="", enabled=True):
+# the early write (the unit exists before the panel's first start) and, read before it, the operator's choice (F25) — an
+# older install-host.sh has the write only, so this runs against one (SWG_SP_HOST) too
+EARLYW = line_of(H, 'if [ -f "$PREFIX$SUB_DIR/swg-sub" ] && [ ! -e "$PREFIX/etc/systemd/system/swg-sub.service" ]; then write_sub_unit;')
+REC = span(H, '_sub_off=no; [ -e "$PREFIX/etc/systemd/system/swg-sub.service" ]', '&& _sub_off=yes\n') \
+    if '_sub_off=no; [ -e "$PREFIX/etc/systemd/system/swg-sub.service" ]' in H else ""
+def sub_block(was_up, change, panel_up=True, defer="", enabled=True, fresh=False):
     d = tempfile.mkdtemp(prefix="sp-u-"); os.makedirs(os.path.join(d, "opt/swg-sub")); os.makedirs(os.path.join(d, "etc/systemd/system"))
     open(os.path.join(d, "opt/swg-sub/swg-sub"), "w").write("")
-    unit = os.path.join(d, "etc/systemd/system/swg-sub.service"); open(unit, "w").write("OLD\n")
+    unit = os.path.join(d, "etc/systemd/system/swg-sub.service")
+    if not fresh:
+        open(unit, "w").write("OLD\n")
     log = os.path.join(d, "log")
     stub = tempfile.mkdtemp(prefix="sp-s-")
     open(os.path.join(stub, "systemctl"), "w").write(
@@ -145,8 +158,8 @@ def sub_block(was_up, change, panel_up=True, defer="", enabled=True):
     os.chmod(os.path.join(stub, "systemctl"), 0o755)
     script = ('PREFIX=%s; SUB_DIR=/opt/swg-sub; DRYRUN=false; _NOW=--now; SUB_BIND=0.0.0.0; SUB_PORT=8446; SWG_DEFER_START="%s"\n'
               'run(){ "$@"; }; ok(){ echo "OK $*"; }; warn(){ echo "WARN $*"; }; sub(){ echo "SUB $*"; }\n'
-              'write_sub_unit(){ printf "%s" > "$PREFIX/etc/systemd/system/swg-sub.service"; }\n%s'
-              % (d, defer, "NEW\\n" if change else "OLD\\n", SUBBLK))
+              'write_sub_unit(){ printf "%s" > "$PREFIX/etc/systemd/system/swg-sub.service"; }\n%s%s%s'
+              % (d, defer, "NEW\\n" if change else "OLD\\n", REC, EARLYW, SUBBLK))
     rc, out = bash(script, {"PATH": stub + ":" + os.environ["PATH"]})
     return rc, out, open(log).read() if os.path.exists(log) else ""
 rc, out, log = sub_block(True, True)
@@ -167,6 +180,10 @@ rc, out, log = sub_block(False, True, enabled=False)
 check("[2] …a swg-sub the operator disabled and stopped: left so, not enabled nor started",
       rc == 0 and "enable" not in log.replace("is-enabled", "") and "restart swg-sub" not in log and "left disabled and stopped" in out,
       (rc, out, log))
+rc, out, log = sub_block(False, True, enabled=False, fresh=True)   # what systemd says of a unit this run wrote: neither
+check("[2] a FRESH install: swg-sub is enabled and started (1.8.9 qualification F25)",
+      rc == 0 and "enable --quiet --now swg-sub" in log and "left disabled" not in out
+      and log.index("daemon-reload") < log.index("enable --quiet --now swg-sub"), (rc, out, log))
 
 print("\n[3] the panel: the URL follows a port that moves")
 P = SRC["PANEL"]
