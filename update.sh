@@ -1042,6 +1042,11 @@ ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current bu
   case "$(dpkg -S "$awgp" 2>/dev/null)" in amneziawg-tools:*) ;; *) return 0 ;; esac   # never `| grep -q` under pipefail
   AWG_PKG_ROUTE=yes
   if $DRYRUN; then ok "AmneziaWG packages: an update checks the amnezia PPA and follows its build (module and tools together)"; return 0; fi
+  # A build an earlier update could not finish for a reason of the BOX's (a full disk, a killed compiler: not a compiler
+  # error, so not given up — awg_dkms_compile_failed) is left half-configured, at the version it was going to: the version
+  # check below sees nothing newer, so finishing it here IS the retry that run promised. A version given up on was removed:
+  # this never re-runs a build that does not compile.
+  case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*) if awg_dpkg_recover; then DID_UPDATE=yes; fi ;; esac
   [ "$APT_DONE" = yes ] || awg_src_refresh || true
   cand="$(pkg_candidate amneziawg-dkms)" || cand=""
   { [ -n "$cand" ] && [ "$cand" != "(none)" ] && dpkg --compare-versions "$cand" gt "$cur"; } || return 0

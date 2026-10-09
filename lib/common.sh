@@ -2166,10 +2166,13 @@ awg_mod_built(){ modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1; }   # a mod
 _awg_kbuild(){ printf '%s' "${SWG_LIB_MODULES:-/lib/modules}/$(uname -r)/build"; }   # this kernel's headers (the gates point it elsewhere)
 awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that
   # — not a missing prerequisite (no headers), and not a module that built but will not load (Secure Boot): the package's
-  # postinst failed, so dpkg holds it half-configured, and there is no module file for this kernel.
+  # postinst failed, so dpkg holds it half-configured, and there is no module file for this kernel. ⚠️ AND THE COMPILER SAID
+  # SO: DKMS's build log names a compiler error (`: error: `), as the source route judges it. A build the BOX cut short — a
+  # full disk ("No space left on device"), a killed compiler — fails the same way, and was given up for good on that alone
+  # (1.8.9 qualification IN-15, on a VM); it is tried again instead.
   [ -e "$(_awg_kbuild)" ] && have dpkg-query || return 1
   case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*|iH*) ;; *) return 1;; esac
-  ! awg_mod_built; }
+  ! awg_mod_built && grep -qs ': error: ' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log; }
 awg_dkms_give_up(){ # after that: leave the package manager clean, keep the tools, remember what did not compile
   local v sha; v="$(dpkg-query -W -f='${Version}' amneziawg-dkms 2>/dev/null)"
   warn "AmneziaWG: its kernel module does not compile on kernel $(uname -r) (amneziawg-dkms ${v:-?}) — upstream does not support this kernel yet. The package manager is left clean, and awg interfaces use the userspace datapath; an update tries the module again when a new kernel or a newer AmneziaWG build arrives."
