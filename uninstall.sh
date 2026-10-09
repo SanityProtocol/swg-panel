@@ -1564,7 +1564,7 @@ turn_exec_env(){  # <unit> -> "<listen>\t<connect>", resolving the EnvironmentFi
   case "$exe" in
     *'${SWG_'*)   # env-file form — values live in turn.env, not the ExecStart
       envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$unit" 2>/dev/null | sed -n 1p)"
-      printf '%s\t%s' "$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)" "$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | sed -n 1p)" ;;
+      printf '%s\t%s' "$({ sed -n 's/^SWG_DIAL=//p' "$envf"; sed -n 's/^SWG_LISTEN=//p' "$envf"; } 2>/dev/null | awk 'NF && !d {print; d=1}')" "$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | sed -n 1p)" ;;   # SWG_DIAL first: what clients dial, when it differs from the bind (FN-2(a))
     *)            # legacy baked-ExecStart form
       printf '%s\t%s' "$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')" "$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
   esac
