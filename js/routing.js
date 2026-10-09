@@ -3582,7 +3582,10 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   // bare `wgx-229f0c44` when untitled, adopted ones as a bare `wg-lab0`, and a pasted profile carried a
   // third shape ("Custom — <title> — <device>"). The same exit therefore read differently depending on
   // which list you opened it from, and an untitled one never said what it WAS.
-  const warp = exits.filter(x => (x.producer || "adopted") === "imported").map(x => mk(x, exitLabel(x, node)));
+  // …and grouped by what they are: a WireGuard profile the operator pasted is imported too, but it is no WARP account (OE, 1.8.9)
+  const imp = exits.filter(x => (x.producer || "adopted") === "imported");
+  const warp = imp.filter(x => x.provider !== "profile").map(x => mk(x, exitLabel(x, node)));
+  const prof = imp.filter(x => x.provider === "profile").map(x => mk(x, exitLabel(x, node)));
   const ext = exits.filter(x => (x.producer || "adopted") !== "imported")
     .map(x => mk({ ...x, _ext: true }, exitLabel(x, node)));
   // ⚠️ AND EVERY DEVICE THE NODE ALREADY HAS. An exit record is the panel's bookkeeping, not the world:
@@ -3624,6 +3627,7 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
       onClick=${e => { e.stopPropagation(); onManage(); }}>${T("Manage…")}</button>` } : {}) });
   return [
     ...(warp.length ? [{ group: T("Exit via WARP"), items: warp }] : []),
+    ...(prof.length ? [{ group: T("Exit via a custom config"), items: prof }] : []),
     // "an external interface" stopped being true the moment a NIC could be one — the node's own card is
     // not external to it. The group is what traffic LEAVES BY, whichever kind of device that is.
     ...(ext.length ? [{ group: T("Leave by a device"), items: ext }] : []),

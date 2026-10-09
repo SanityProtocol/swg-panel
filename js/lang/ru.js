@@ -3060,6 +3060,7 @@ export const STR = {
   "Forward to {node}": "Переслать на {node}",
   "Per-destination smart routing": "Умная маршрутизация по назначению",
   "Exit via WARP": "Выход через WARP",
+  "Exit via a custom config": "Выход через свой конфиг",
   "Custom interface…": "Свой интерфейс…",
   "Ways out of {v1}": "Выходы ноды {v1}",
   "Every way *{v1}* can leave that isn't its own address. WARP accounts and pasted profiles are created under Settings → WARP; the devices below the line are this node's own, or names you add here.":
