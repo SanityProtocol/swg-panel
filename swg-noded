@@ -7394,7 +7394,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
         sigf = os.path.join(GEO_DIR, ".p2p.sig")
         if mode == "legacy" and not strict and _P2P["tbl"] is False:   # nothing wanted, and already confirmed gone
             return
-        have = run(["nft", "list", "table", "inet", P2P_NFT_TABLE])
+        have = run(["nft", "-t", "list", "table", "inet", P2P_NFT_TABLE])   # -t: no set elements (fanseen alone: up to 65 535, MBs)
         if mode == "legacy" and not strict:                   # nothing wanted
             _P2P.update(on=False, state="", tbl=False)
             if have.returncode == 0:
