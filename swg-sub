@@ -44,6 +44,7 @@ import json
 import os
 import re
 import signal
+import socket
 import ssl
 import sys
 import threading
@@ -868,6 +869,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     state = None
     _meta_warned = False        # link-preview metadata failure is reported once, not once per visit
+    _tb, _tb_lock = [float("-inf"), 0], threading.Lock()   # do_GET: when it last wrote a traceback, and how many it held since
 
     def log_message(self, *a):
         pass                                            # no request logging — the page is public, keep it quiet
@@ -988,8 +990,22 @@ class Handler(BaseHTTPRequestHandler):
         # a 500 the operator can see, a traceback in the journal, and the rest of the pages still served.
         try:
             self._route()
+        except (ConnectionError, TimeoutError, socket.timeout, ssl.SSLError) as e:
+            # The CLIENT went away mid-reply — a closed tab, a phone that lost its network, a reset, its TLS cut under the
+            # write. Routine on a public page, and not a fault here: one Debug line, no traceback, nothing to answer. As an
+            # ERR traceback (~20 lines each) any client could rotate the panel's history out of the journal namespace it
+            # shares with swg-sub (1.8.9 qualification HE-1).
+            log(LOG_DEBUG, "sub: a client went away before its reply was written (%s)", e.__class__.__name__)
         except Exception:
-            log(LOG_ERR, traceback.format_exc().rstrip("\n"))
+            # A real fault keeps its traceback — at most one a minute, with how many were held back: the page answers
+            # every visitor, and a fault on it would otherwise write one per request.
+            with Handler._tb_lock:
+                now, (last, held) = time.monotonic(), Handler._tb
+                due = now - last >= 60
+                Handler._tb = [now, 0] if due else [last, held + 1]
+            if due:
+                log(LOG_ERR, traceback.format_exc().rstrip("\n")
+                    + ("\n(%d more since the last one were not written)" % held if held else ""))
             if not getattr(self, "_replied", False):
                 with contextlib.suppress(Exception):     # the peer may be gone; never raise out of the handler
                     self._send(500, "server error\n")
@@ -1027,7 +1043,16 @@ class Handler(BaseHTTPRequestHandler):
         return self._page()
 
 
-class _TLSServer(ThreadingHTTPServer):
+class _QuietServer(ThreadingHTTPServer):
+    # The plain-HTTP server too: the stdlib's handle_error prints ~20 bare lines to stderr for every connection reset
+    # before or between requests — a bare connect + RST is enough, before any limiter — and they went to the shared
+    # journal at Info (1.8.9 qualification HE-1). What reaches here is a connection-level failure, never a page fault:
+    # do_GET answers those itself.
+    def handle_error(self, request, client_address):
+        pass                                            # failed handshake / scanner / vanished client — routine noise
+
+
+class _TLSServer(_QuietServer):
     daemon_threads = True
     ssl_ctx = None
 
@@ -1040,9 +1065,6 @@ class _TLSServer(ThreadingHTTPServer):
         if self.ssl_ctx is not None:
             request = self.ssl_ctx.wrap_socket(request, server_side=True)
         super().finish_request(request, client_address)
-
-    def handle_error(self, request, client_address):
-        pass                                            # failed handshake / scanner / vanished client — routine noise
 
 
 def _serve_config(state):
@@ -1165,7 +1187,7 @@ def main():
         srv.ssl_ctx = ctx
         scheme = "https"
     else:
-        srv = ThreadingHTTPServer((host, port), Handler)
+        srv = _QuietServer((host, port), Handler)
 
     def _reload(_sig, _frm):
         # SIGHUP: re-read serve.json (mount base + transitional alt base) with NO rebind, and — under TLS — swap in a
