@@ -14,9 +14,15 @@ branch the box's wrapper already follows (main when none).
 The fetch block is lifted out of bootstrap.sh as SHIPPED and run with `git`, `curl` and `tar` as stubs on PATH
 that record their arguments. No network.
 
+[4] (1.8.9 qualification SOAK-3) …and on Docker a commit moves the SCRIPTS, not the containers (they run the published
+    `latest`; images are tagged sha-<7>): bootstrap also exports the commit (SWG_COMMIT), and install-docker.sh and
+    update.sh say so plainly, naming SWG_IMAGE_TAG=sha-<7> — silent where a tag is pinned (.env or the environment) or
+    built from source. (SWG_REF is the tracked branch, so the old "not main" warning never fired for a commit.)
+
 Run: python3 tests/bootstrap_commit_ref_selftest.py            (0 = pass)
      --perturb        the commit branch taken back out → RED
      --perturb-track  the commit exported as the ref to track (the shipped 314b2e7 behaviour) → RED
+     --perturb-commit no SWG_COMMIT, no commit warning (e66018f) → RED on [4] only
 """
 import os, re, subprocess, sys, tempfile
 
@@ -24,9 +30,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
 PERTURB_TRACK = "--perturb-track" in sys.argv
+PERTURB_COMMIT = "--perturb-commit" in sys.argv
 src = open(os.path.join(ROOT, "bootstrap.sh"), encoding="utf-8").read()
 i = src.index('_fetched=""\n'); j = src.index('cd "$TMP/swg-panel"', i)
 block = src[i:j]
+if PERTURB_COMMIT:
+    a = '  export SWG_COMMIT="$REF"'
+    assert block.count(a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    block = block.replace(a, "  :")
 if PERTURB_TRACK:
     a = '  export SWG_REF="${_track:-main}"\n'
     assert block.count(a) == 1, "perturbation anchor missing — would FALSE-PASS"
@@ -59,7 +70,7 @@ def run(ref, wrapper=None, track=None):
     script = ('set -euo pipefail\nREF=%s\nexport SWG_REF="$REF"\nREPO=https://github.com/SanityProtocol/swg-panel\nTMP=%s\n'
               'need(){ command -v "$1" >/dev/null 2>&1; }\nwarn(){ echo "WARN $*" >&2; }\ninfo(){ echo "INFO $*" >&2; }\n'
               'b(){ printf %%s "$*"; }\ndie(){ echo "DIE $*" >&2; exit 9; }\n%s\necho "FETCHED=$_fetched"; '
-              'echo "EXPORTED=$SWG_REF"; ls "$TMP"\n') % (ref, tmp, blk)
+              'echo "EXPORTED=$SWG_REF"; echo "COMMIT=${SWG_COMMIT:-}"; ls "$TMP"\n') % (ref, tmp, blk)
     env = dict(os.environ, PATH=d + ":" + os.environ["PATH"]); env.pop("SWG_TRACK", None)
     if track:
         env["SWG_TRACK"] = track
@@ -93,7 +104,48 @@ for wrapper, track, want, why in ((None, None, "main", "no wrapper yet → main"
 p, calls = run("dev", wrapper="main")
 check("a branch is untouched: SWG_REF=dev stays dev whatever the wrapper follows", "EXPORTED=dev\n" in p.stdout, (p.stdout, p.stderr))
 
+print("\n[4] a commit on Docker: the containers do not follow it, and that is said (SOAK-3)")
+p, calls = run("df3bb45")
+check("a commit → bootstrap exports it as SWG_COMMIT (beside the branch it tracks)", "COMMIT=df3bb45\n" in p.stdout, (p.stdout, p.stderr))
+p, calls = run("dev")
+check("…a branch → no SWG_COMMIT", "COMMIT=\n" in p.stdout, (p.stdout, p.stderr))
+dk = open(os.path.join(ROOT, "install-docker.sh"), encoding="utf-8").read()
+a = dk.index("_pinned_tag(){"); b = dk.index("\nfi\n", dk.index("images are built from", a)) + 4
+WARN = dk[a:b]
+up = open(os.path.join(ROOT, "update.sh"), encoding="utf-8").read()
+m = re.search(r'\n( *if \[ -n "\$\{SWG_COMMIT:-\}" \][^\n]*\n[^\n]*; fi)\n', up)
+UWARN = m.group(1) if m else 'echo "UPDATE WARNING NOT FOUND"'
+if PERTURB_COMMIT:
+    assert WARN.count('[ -n "${SWG_COMMIT:-}" ]') == 1 and m, "perturbation anchor missing — would FALSE-PASS"
+    WARN = WARN.replace('[ -n "${SWG_COMMIT:-}" ]', "false"); UWARN = ":"
+def warnings(env, envfile=None, build="false"):
+    d = tempfile.mkdtemp()
+    if envfile is not None:
+        open(os.path.join(d, ".env"), "w").write(envfile)
+    script = ('set -euo pipefail\nBUILD=%s; INSTALL_DIR=%s; DOCKER_DIR=%s\nb(){ printf %%s "$*"; }\nwarn(){ echo "WARN $*"; }\n%s\n%s\n'
+              % (build, d, d, WARN, UWARN))
+    e = {k: v for k, v in os.environ.items() if k not in ("SWG_REF", "SWG_COMMIT", "SWG_IMAGE_TAG")}
+    e.update(env)
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=e)
+r = warnings({"SWG_REF": "main", "SWG_COMMIT": "df3bb458fa2855c72970441ada9e7f722dcd9d52"}, envfile="PANEL_DOMAIN=x\n")
+w = [l for l in r.stdout.splitlines() if l.startswith("WARN")]
+check("a commit, nothing pinned → install-docker.sh and update.sh each say the containers run latest, naming sha-df3bb45",
+      len(w) == 2 and all("df3bb45" in l and "latest" in l for l in w) and "SWG_IMAGE_TAG=sha-df3bb45" in r.stdout, (r.stdout, r.stderr))
+r = warnings({"SWG_REF": "main", "SWG_COMMIT": "df3bb45"}, envfile="SWG_IMAGE_TAG=sha-df3bb45\n")
+check("…a tag pinned in .env → silent", "WARN" not in r.stdout and r.returncode == 0, (r.stdout, r.stderr))
+r = warnings({"SWG_REF": "main", "SWG_COMMIT": "df3bb45", "SWG_IMAGE_TAG": "sha-df3bb45"}, envfile="")
+check("…a tag pinned in the environment → silent", "WARN" not in r.stdout and r.returncode == 0, (r.stdout, r.stderr))
+r = warnings({"SWG_REF": "main"}, envfile="")
+check("CONTROL: main, no commit → silent", "WARN" not in r.stdout and r.returncode == 0, (r.stdout, r.stderr))
+r = warnings({"SWG_REF": "dev"}, envfile="")
+check("CONTROL: a branch → install-docker.sh's branch warning, as before", r.stdout.count("WARN") == 1 and "installing scripts from dev" in r.stdout,
+      (r.stdout, r.stderr))
+
 print()
+if PERTURB_COMMIT:
+    _red = [f for f in FAILS if f.startswith(("a commit", "…a branch"))]
+    print("perturb-commit: %s" % ("RED as it must be (%d), all [4]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if FAILS:
     print("FAIL (%d): %s" % (len(FAILS), "; ".join(FAILS)))
     sys.exit(1)
