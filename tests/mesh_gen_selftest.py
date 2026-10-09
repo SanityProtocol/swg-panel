@@ -26,6 +26,7 @@ Run: python3 tests/mesh_gen_selftest.py            (0 = pass)
      python3 tests/mesh_gen_selftest.py --perturb  (must FAIL: the type setting is ignored)
      --perturb-reprov  the reasons send the operator to re-provision the pair's anchor again (the copy before PR-4) — [11] must FAIL
      --perturb-own     the remedy ignores a link's own type (always "pick {type}") — [11] must FAIL
+     --perturb-wait    a pair is made before an end has reported (the PR-4 behaviour) — [12] must FAIL
 """
 import copy, importlib.machinery, importlib.util, json, os, random, subprocess, sys, tempfile
 
@@ -93,6 +94,9 @@ if "--perturb-own" in sys.argv:      # a remedy that ignores the link's own type
     P._mesh_relink_how = lambda deps, nodes, a, b, want: P.perr(
         "to rebuild this link alone, pick {v1} as its type on its card under Node connections and Save", v1=P.MESH_GEN_LABEL[want])
     print("(perturbed: the remedy ignores a link's own type — [11] must FAIL)")
+if "--perturb-wait" in sys.argv:     # the tree before q189 PR-4's fix: a pair is made whatever its ends have reported
+    P.mesh_link_waits = lambda deps, nodes, snaps, a, b: False
+    print("(perturbed: no pair waits for its ends' reports — [12] must FAIL)")
 if "--perturb-link-awg" in sys.argv:  # the tree without a link's own params: the builder never reads them, nothing moves
     P.mesh_link_layer = lambda nodes, a, b: {"mesh_awg": {}}
     P.mesh_link_awg_migrate = lambda nodes: False
@@ -406,7 +410,7 @@ check("n00↔n02 is made from its own params on both ends; n00↔n01 and n01↔n
       (gp("n00", "n02").get("Jc"), gp("n00", "n01").get("Jc")))
 FLEET = dict(FULLT, Jc="5", H1="100-115", I1="<r 9>")
 f = fleet(2); f["n00"]["mesh_link"] = {"n01": {"awg": {"Jc": "6", "Jmin": "60", "Jmax": "90", "I2": "-"}}}
-t2 = run(P, f, deps(1320, {"mesh_awg": FLEET}))
+t2 = run(P, f, deps(1320, {"mesh_awg": FLEET}), {"n00": {}, "n01": {}})   # both have reported — neither can hold an omission
 a2, b2 = (t2["n00"]["ifaces"][t2["n00"]["links"]["n01"]["iface"]]["awg_params"],
           t2["n01"]["ifaces"][t2["n01"]["links"]["n00"]["iface"]]["awg_params"])
 check("a link that sets only some fields takes the FLEET's for the rest, field by field — H1 and I1 the fleet's, not the "
@@ -523,16 +527,15 @@ def how(m):
     return v2.get("error_key"), (v2.get("error_vars") or {}).get("v1")
 
 
+sn = {"n00": gen_snap(), "n01": gen_snap(), "n02": gen_snap()}
+t = run(P, fleet(3), deps(1320), sn)             # a 2.0 fleet, every pair made…
 d = deps(1320, {"mesh_awg_gen": "3.1"})
-sn = {"n00": gen_snap(), "n01": gen_snap()}
-t = run(P, fleet(3), d, sn)                     # n02 enrolled after 3.1 was set: no report yet when its links are made
-sn["n02"] = gen_snap()
-t = run(P, t, d, sn)                            # …then it reports 3.1, and nothing rebuilds (this fix changes no link making)
+t = run(P, t, d, sn)                            # …then the fleet's type is set to 3.1: nothing rebuilds a working link
 gens = {(a, b): P.mesh_link_gen(t[a], la) for a, b, la, *_ in links(t)}
-check("the finding, as it stands: n02's links stay 2.0 after it reports 3.1",
-      gens == {("n00", "n01"): "3.1", ("n00", "n02"): "2.0", ("n01", "n02"): "2.0"}, gens)
+check("a fleet whose type became 3.1 after its links were made: they stay 2.0 (nothing rebuilds a working link)",
+      gens == {("n00", "n01"): "2.0", ("n00", "n02"): "2.0", ("n01", "n02"): "2.0"}, gens)
 r = P.mesh_gen_reasons(d, t, sn, "n02")
-check("n02's card names both links", [x["peer"] for x in r] == ["node0", "node1"], r)
+check("n02's card names both its links", [x["peer"] for x in r] == ["node0", "node1"], r)
 check("…saying what is true: it should be AWG 3.1, and a link keeps the type it was made with",
       all(x["msg"].get("error_key") == TYPE and x["msg"]["error_vars"]["v1"] == "AWG 3.1" for x in r), [x["msg"] for x in r])
 check("…and how to rebuild that one link: pick AWG 3.1 as its type on its card",
@@ -546,19 +549,19 @@ check("the remedy, applied as the card applies it: n00↔n02 is rebuilt at 3.1, 
       P.mesh_link_gen(t["n00"], t["n00"]["links"]["n02"]) == "3.1" and after[("n00", "n02")][0] != before[("n00", "n02")][0], after)
 check("…and no other link moved (n00↔n01 and n01↔n02 are as they were)",
       all(after[k] == before[k] for k in (("n00", "n01"), ("n01", "n02"))), (before, after))
-check("…and n02's card now names only the link still at 2.0", [x["peer"] for x in P.mesh_gen_reasons(d, t, sn, "n02")] == ["node1"])
+check("…and n02's card now names only its link still at 2.0", [x["peer"] for x in P.mesh_gen_reasons(d, t, sn, "n02")] == ["node1"])
 
 # a link with a type of its own: "pick AWG 3.1" would be no change there (Save stays dark) — Default is the change
 for fleet_gen, want_how in (("3.1", (DFLT, None)), (None, (DFLT2, "AWG 3.1"))):
     d = deps(1320, {"mesh_awg_gen": fleet_gen} if fleet_gen else {})
-    sn = {"n00": gen_snap(), "n01": gen_snap()}
+    sn = {"n00": gen_snap(), "n01": gen_snap(), "n02": gen_snap(module="2.0", tools="2.0")}
     f = fleet(3); P.mesh_link_cfg_put(f, "n01", "n02", type="3.1")
-    t = run(P, f, d, sn)
+    t = run(P, f, d, sn)                        # n02 runs a 2.0 module: the pair is made at 2.0, and says why…
     sn["n02"] = gen_snap()
-    t = run(P, t, d, sn)
+    t = run(P, t, d, sn)                        # …then its module is updated to 3.1
     r = {x["peer"]: x for x in P.mesh_gen_reasons(d, t, sn, "n02")}
     tag = "fleet's type %s" % (fleet_gen or "2.0 (unset)")
-    check("%s, n01↔n02 set to 3.1 on its own and made at 2.0: told it should be AWG 3.1, and %s" % (tag, "pick Default" if
+    check("%s, n01↔n02 set to 3.1 on its own, made at 2.0 while n02 ran a 2.0 module: told it should be AWG 3.1, and %s" % (tag, "pick Default" if
           fleet_gen else "pick Default, then AWG 3.1 again"), "node1" in r and r["node1"]["msg"].get("error_key") == TYPE
           and how(r["node1"]["msg"]) == want_how, r.get("node1"))
     before = ids(t)
@@ -592,6 +595,38 @@ after = ids(t)
 check("…and the remedy as said rebuilds n00↔n02 without I1/I2, exact, and moves no other link",
       "I1" not in L[("n00", "n02")]["awg_params"] and L[("n00", "n02")].get("awg_exact") is True
       and all(after[k] == before[k] for k in after if k != ("n00", "n02")), (L[("n00", "n02")], before, after))
+
+# ── [12] a pair whose type needs both ends' reports waits for them (q189 PR-4, the behaviour) ──────────────────────────
+print("[12] a node enrolled after 3.1 (or a \"-\" template) was set gets its links once it has reported — at the type in force")
+d = deps(1320, {"mesh_awg_gen": "3.1"})
+sn = {"n00": gen_snap(), "n01": gen_snap()}
+t = run(P, fleet(3), d, sn)                     # n02 enrolled, no report yet
+lk = {(a, b) for a, b, *_ in links(t)}
+check("3.1 fleet: no pair is made with the node that has not reported; the reported pair is made at 3.1",
+      lk == {("n00", "n01")} and P.mesh_link_gen(t["n00"], t["n00"]["links"]["n01"]) == "3.1", lk)
+check("…and no card names a reason meanwhile", all(P.mesh_gen_reasons(d, t, sn, x) == [] for x in t), {x: P.mesh_gen_reasons(d, t, sn, x) for x in t})
+sn["n02"] = gen_snap()
+t = run(P, t, d, sn)                            # its first sync stores its report, then reconciles
+gens = {(a, b): P.mesh_link_gen(t[a], la) for a, b, la, *_ in links(t)}
+check("its first report made its pairs — at 3.1, as the fleet asks", gens == {("n00", "n01"): "3.1", ("n00", "n02"): "3.1", ("n01", "n02"): "3.1"}, gens)
+check("…and no card names a reason (the PR-4 mismatch no longer arises)", all(P.mesh_gen_reasons(d, t, sn, x) == [] for x in t))
+t0 = run(P, fleet(3), deps(1320), {"n00": gen_snap(), "n01": gen_snap()})
+check("a 2.0 fleet with no \"-\" makes every pair at once, reported or not (as before — small fleets feel nothing)",
+      {(a, b) for a, b, *_ in links(t0)} == {("n00", "n01"), ("n00", "n02"), ("n01", "n02")})
+dm = deps(1320, {"mesh_awg": {"I1": "-", "I2": "-", "Jc": "5", "Jmin": "50", "Jmax": "80"}})
+sx = {"n00": ex(), "n01": ex()}
+t = run(P, fleet(3), dm, sx)
+check("a \"-\" template: the node that has not reported waits too", {(a, b) for a, b, *_ in links(t)} == {("n00", "n01")})
+sx["n02"] = ex()
+t = run(P, t, dm, sx)
+L = {(a, b): ia for a, b, _, _, ia, *_ in links(t)}
+check("…and once it reports it can hold an omission, its links are whole and exact — no generated I1/I2, no card reason",
+      all("I1" not in L[k]["awg_params"] and L[k].get("awg_exact") is True for k in (("n00", "n02"), ("n01", "n02")))
+      and P.mesh_gen_reasons(dm, t, sx, "n02") == [], {k: (sorted(v["awg_params"]), v.get("awg_exact")) for k, v in L.items()})
+before = ids(t)
+del sx["n02"]                                   # its report gone (a panel restart without its mirror)…
+t = run(P, t, dm, sx)
+check("an existing link is never touched by the wait: an end that loses its report keeps its links as they are", ids(t) == before)
 
 print()
 if FAILS:
