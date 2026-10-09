@@ -19585,7 +19585,8 @@ def cascade_plan(nodes, snaps, custom_lists=None):
         """Does this node run `smart.arrivals`? ASKED of the node (`arr` in its smart status, §4.3), never inferred from a
         version. A node that has not reported yet is not capable — it gets the catch-all as a plain default, which is what
         an older node gets and fails toward the exit (§4.4)."""
-        return bool((((snaps or {}).get(nid) or {}).get("smartroute") or {}).get("arr"))
+        _sr = ((snaps or {}).get(nid) or {}).get("smartroute")   # one node's malformed report must not fail every sync that
+        return isinstance(_sr, dict) and bool(_sr.get("arr"))     # plans over it (q189 FP-1, F2's rule)
 
     def _nlist_selective(nid):
         """Does the node's list say anything to its OWN clients beyond what a plain default says? True when a rule reaches
