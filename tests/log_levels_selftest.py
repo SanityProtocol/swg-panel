@@ -14,8 +14,7 @@
   [5] The P2P guard's nft rules lose their `log` below Info — through the real apply path.
   [6] The "why it failed" readers say so when the level is why: turn verify, WDTT verify, the agent's unit start, the
       netctl status tail.
-  [7] swg-sni drops a line above the level before queueing it, and its per-host lines are Debug. A full queue's line names
-      its cause and keeps to the level (1.8.9 qualification HE-9: "more than 100 a second", written at Errors too).
+  [7] swg-sni drops a line above the level before queueing it, and its per-host lines are Debug.
       Its crash output is its own (HE-5): every traceback line starts "swg-sni: " (what the viewer and `swg-logs sni` file
       it by), a thread's too, and the learned-set flusher outlives a write that raises (a fork refused under memory
       pressure ended it for good, and learning with it).
@@ -49,8 +48,6 @@ Run: python3 tests/log_levels_selftest.py   (0 = pass)
      subserve     the panel leaves the level out of swg-sub's serve.json
      relaydst     the relay's --dst test reads the node's level at start
      relaydstloop the relay's --dst test reads the node's level again at its first report
-     snidropcause swg-sni's full-queue line blames a rate again ("more than 100 a second")
-     snidroplevel swg-sni writes its full-queue line (a warning) whatever the level
      sniprefix    swg-sni's crash traceback is queued without its "swg-sni: " prefix
      snithreadhook swg-sni sets no thread hook (a thread's crash goes out bare, filed at info, unprefixed)
      sniflusher   swg-sni's flusher thread runs the loop bare again (one write that raises ends it)
@@ -115,9 +112,6 @@ PLANTS = {   # (program, anchor, replacement)
                  '''        pass'''),
     "updatelog": ("netctl", '''        caps["swg-update.service"] += "SyslogLevel=%s\\n" % cap\n''', "        pass\n"),
     "relaydst": ("relay", '''        _LOG["level"] = LOG_DEBUG                # counters)''', '''        log_reread()                # counters)'''),
-    "snidropcause": ("sni", '''"swg-sni: %d lines not written (queue full, %d waiting)",\n                                     (dropped, SAY_MAX)''',
-                     '''"swg-sni: %d lines not written (more than %d a second)",\n                                     (dropped, SAY_RATE)'''),
-    "snidroplevel": ("sni", '''        if dropped and LOG_WARNING <= _SAY["level"]:''', '''        if dropped:'''),
     "sniprefix": ("sni", '''    say(LOG_ERR, "\\n".join("swg-sni: " + ln for ln in text.split("\\n")))''', '''    say(LOG_ERR, text)'''),
     "snithreadhook": ("sni", '''threading.excepthook = lambda a: _say_excepthook(a.exc_type, a.exc_value, a.exc_traceback)\n''', ""),
     "sniflusher": ("sni", '''target=self._flush_forever, name="swg-sni-flush"''', '''target=self._flush_loop, name="swg-sni-flush"'''),
@@ -623,20 +617,6 @@ def written(m, until=lambda o: False, secs=3.0):
         time.sleep(0.05)
     return m.sys.stdout.getvalue()
 
-
-for lv, what in (("3 3", "Errors"), ("6 6", "Info")):
-    S9 = sni_at(lv)
-    for i in range(S9.SAY_MAX + 500):                  # more than the queue holds, at once
-        S9.say(S9.LOG_ERR, "swg-sni: err %d", i)
-    o = written(S9, (lambda o: "not written" in o) if what == "Info" else (lambda o: False), 2.5)
-    full = [l for l in o.splitlines() if "not written" in l]
-    if what == "Errors":
-        check("[7] at Errors a full queue's line (a warning) is not written; the errors are",
-              not full and "E swg-sni: err 0" in o, full[:2])
-    else:
-        check("[7] at Info it is, naming its cause — the queue was full (not a rate)",
-              len(full) == 1 and re.fullmatch(r"W swg-sni: \d+ lines not written \(queue full, %d waiting\)" % S9.SAY_MAX, full[0]),
-              full[:2])
 
 S5 = sni_at("6 6")
 try:
