@@ -96,6 +96,7 @@ for _a in "$@"; do
   _prev="$_a"
 done
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
+_WROTE=wrote; $DRYRUN && _WROTE="would write"   # a dry run writes the preview copy, not the file it names (1.8.8 deferred #13)
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, dl_turn_bin
 # Refuse on a declaratively managed host BEFORE anything is written — the panel laid down here would
@@ -163,7 +164,7 @@ bringup(){ local tool="$1" ifn="$2" out
   else [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/      /' >&2; return 1; fi; }
 writef(){ # writef <abs_path> <mode>   (content on stdin)
   local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"
-  chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
+  chmod "$m" "$full" 2>/dev/null || true; ok "${_WROTE:-wrote} $p ($m)"; }
 # writef, but the file arrives by RENAME instead of by truncating in place — a NEW inode, not the same one
 # refilled. For a script that can be REPLACED WHILE IT IS RUNNING this is the difference between working and
 # not: /usr/local/bin/swg-update re-bakes itself during the update it is performing, and bash reads a script
@@ -173,7 +174,7 @@ writef(){ # writef <abs_path> <mode>   (content on stdin)
 # leaves a truncated one behind, a rename cannot.)
 writef_atomic(){ # writef_atomic <abs_path> <mode>   (content on stdin)
   local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full.new"
-  chmod "$m" "$full.new" 2>/dev/null || true; mv -f "$full.new" "$full"; ok "wrote $p ($m)"; }
+  chmod "$m" "$full.new" 2>/dev/null || true; mv -f "$full.new" "$full"; ok "${_WROTE:-wrote} $p ($m)"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }   # menu <styled-label> <description>
 key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  a 'mneziawg'           → [a]mneziawg
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd a 'mneziawg (default)'  → [a]mneziawg (default)

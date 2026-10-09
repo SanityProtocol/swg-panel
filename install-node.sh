@@ -62,6 +62,7 @@ NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 # were typed — `… node --yes --dry-run` ran a REAL install (1.8.8 qualification, round 12; install-host.sh the same).
 DRYRUN=false; for _a in "$@"; do case "$_a" in --dry-run) DRYRUN=true;; esac; done
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
+_WROTE=wrote; $DRYRUN && _WROTE="would write"   # a dry run writes the preview copy, not the file it names (1.8.8 deferred #13)
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, dl_turn_bin
 # Refuse on a declaratively managed host BEFORE anything is written — a node laid down here would
@@ -110,7 +111,7 @@ bringup(){ local tool="$1" ifn="$2" out
   if $DRYRUN; then echo "    [skip] $tool up $ifn"; return 0; fi
   if out="$("$tool" up "$ifn" 2>&1)"; then return 0
   else [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/      /' >&2; return 1; fi; }
-writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
+writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "${_WROTE:-wrote} $p ($m)"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  a 'mneziawg'           → [a]mneziawg
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd a 'mneziawg (default)'  → [a]mneziawg (default)

@@ -118,6 +118,7 @@ DNS="${DNS:-1.1.1.1}"
 DRYRUN=false
 ARGS=("$@"); for a in "${ARGS[@]+"${ARGS[@]}"}"; do [ "$a" = "--dry-run" ] && DRYRUN=true; done
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
+_WROTE=wrote; $DRYRUN && _WROTE="would write"   # a dry run writes the preview copy, not the file it names (1.8.8 deferred #13)
 
 c(){ printf '\033[%sm' "$1"; }
 # data-entry spacing primitives (lib/common.sh is sourced later in this script, but info/warn above use these) —
@@ -181,7 +182,7 @@ key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole l
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd l 'etsencrypt (default)'  → [l]etsencrypt (default)
 keyg(){ printf '%s[%s]%s%s'   "$C_GREY"        "$1" "$2" "$RESET"; }   # de-emphasised label grey:  keyg n 'one'                → [n]one
 STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # skip the leading blank when a prompt already printed one
-writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
+writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "${_WROTE:-wrote} $p ($m)"; }
 ask(){ local v p="$1" d="${2:-}"; echo
   if [ "$HAVE_TTY" = yes ]; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || v=""; else v=""; _notty "$p" "$d"; fi
   printf -v "$3" '%s' "${v:-$d}"; }
@@ -1496,7 +1497,7 @@ if [ -n "$_CONV_ENV" ]; then
   fi
 fi
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
-ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
+ok "${_WROTE:-wrote} $INSTALL_DIR/.env (profile $PROFILE)"
 # ⚠️ THE .env NOW NAMES THE PANEL THIS NODE SYNCS WITH, SO ITS LEARNED COPY GOES. docker/node-entrypoint.sh reads
 # data/node/panel-url / -token / -verify / -fp AHEAD of the .env at every start: left behind, a copy from an earlier
 # transfer or re-point overrode the panel this run decided — an address or key given here (-host / -key, typed at the
