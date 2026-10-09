@@ -26,6 +26,8 @@
 #       empty one → the module is not unloaded (read as empty, `modprobe -r` destroyed the container's device)
 #  [20] (1.8.9 qualification IN-1) no userspace fallback (amneziawg-go) → nothing upgraded, said: a build that does not
 #       compile here is given up AFTER the old module left the disk, and such a box had no AmneziaWG datapath after a reboot
+#  [21] (1.8.9 qualification IN-15) a build an earlier update left half-configured (a full disk, not a compiler error, so not
+#       given up) is finished — the retry that run promised; the version check alone sees nothing newer and never would
 # The harness runs the extracted functions under `set -euo pipefail` — the 1.8.9 code review found that without it this
 # gate passed while every node without amneziawg-dkms had its update end at the first line of the function.
 # Run: bash tests/awg_pkg_follow_selftest.sh     --perturb drops the tools-ownership check, the device check, the tools
@@ -34,6 +36,7 @@
 #      --perturb-locale  apt-cache in the caller's locale again (pkg_candidate and awg_pkg_retry_due); expects RED on [18].
 #      --perturb-nsenter a failed nsenter / lsns read as "nothing there" again; expects RED on [19].
 #      --perturb-fallback the follow upgrades with no userspace fallback again; expects RED on [20].
+#      --perturb-retry   a half-configured amneziawg-dkms is left as it is again; expects RED on [21].
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 FAILS=0; check(){ if [ "$2" = 0 ]; then echo "  PASS $1"; else echo "  FAIL $1 ${3:-}"; FAILS=$((FAILS+1)); fi; }
@@ -63,6 +66,9 @@ fi
 if [ "${1:-}" = "--perturb-fallback" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/  if ! have amneziawg-go; then/  if false; then/')"; _planted "$_b" "$fn" "the userspace-fallback check"
 fi
+if [ "${1:-}" = "--perturb-retry" ]; then
+  _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's/in iF\*|iU\*) if awg_dpkg_recover; then DID_UPDATE=yes; fi ;; esac/in NEVER) ;; esac/')"; _planted "$_b" "$fn" "the half-configured retry"
+fi
 if [ "${1:-}" = "--perturb-nsenter" ]; then
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#ip -o link show type amneziawg 2>/dev/null)" || { echo "?"; return 0; }#ip -o link show type amneziawg 2>/dev/null)" || out=""#')"; _planted "$_b" "$fn" "nsenter's exit code"
   _b="$fn"; fn="$(printf '%s\n' "$fn" | sed -e 's#list="$(lsns -t net -n -o NS,PID 2>/dev/null)" || { echo "?"; return 0; }#list="$(lsns -t net -n -o NS,PID 2>/dev/null)" || list=""#')"; _planted "$_b" "$fn" "lsns's exit code"
@@ -73,7 +79,7 @@ stub apt-get 'echo "apt-get $*" >> "$SBX/calls"; case "$*" in *install*) [ -e "$
 # apt speaks the box's language: with "$SBX/ru" the box is Russian, and only the C locale gets the English words back
 stub apt-cache 'if [ -e "$SBX/ru" ] && [ "${LC_ALL:-}" != C ]; then printf "%s:\n  Установлен: x\n  Кандидат:   %s\n" "$2" "$(cat "$SBX/cand")"
 else printf "%s:\n  Installed: x\n  Candidate: %s\n" "$2" "$(cat "$SBX/cand")"; fi'
-stub dpkg-query 'f="$SBX/inst-${4:-$3}"; [ -e "$f" ] || { echo "dpkg-query: no packages found matching ${4:-$3}" >&2; exit 1; }; cat "$f"'
+stub dpkg-query 'case "$2" in *Status*) cat "$SBX/status" 2>/dev/null || printf "ii "; exit 0;; esac; f="$SBX/inst-${4:-$3}"; [ -e "$f" ] || { echo "dpkg-query: no packages found matching ${4:-$3}" >&2; exit 1; }; cat "$f"'
 stub dpkg 'if [ "$1" = -S ]; then cat "$SBX/owner" 2>/dev/null; [ -s "$SBX/owner" ]; exit $?; fi; exec /usr/bin/dpkg "$@"'
 stub modinfo '[ -s "$SBX/disk" ] || { echo "modinfo: ERROR: Module amneziawg not found." >&2; exit 1; }; cat "$SBX/disk"'
 stub lsns '[ -e "$SBX/lsns-fails" ] && exit 1; cat "$SBX/lsns" 2>/dev/null; exit 0'
@@ -92,7 +98,7 @@ ok(){ echo "OK \$*"; }; warn(){ echo "WARN \$*"; }; note(){ echo "NOTE \$*"; }
 $fn
 $libfn
 AWG_MOD_FAILED="\$SBX/awg-module-failed"
-awg_compat_patch_installed(){ return 1; }; awg_dpkg_recover(){ return 0; }
+awg_compat_patch_installed(){ return 1; }; awg_dpkg_recover(){ echo "DPKG-RECOVER" >> "\$SBX/calls"; return 0; }
 awg_dkms_compile_failed(){ [ -e "\$SBX/compile-failed" ]; }; awg_dkms_give_up(){ echo "GIVE-UP" >> "\$SBX/calls"; }
 AWG_PKG_ROUTE=no; ensure_awg_pkg_follow; echo "DID_UPDATE=\$DID_UPDATE DID_FAIL=\$DID_FAIL ROUTE=\$AWG_PKG_ROUTE"; echo "AFTER: the update goes on"
 EOF
@@ -229,6 +235,13 @@ check "nothing upgraded — the module that works stays on disk" "$(grep -q 'ins
 check "…said, with the way out, and not a failure" "$(printf '%s' "$out" | grep -q 'WARN AmneziaWG: .* is available, but this box has no userspace fallback (amneziawg-go)' && printf '%s' "$out" | grep -q 'DID_FAIL=no' && echo 0 || echo 1)" "$out"
 case_ c20b; out="$(go)"
 check "CONTROL: with amneziawg-go the newer build is followed" "$(grep -q 'install -y .*--only-upgrade amneziawg-dkms' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+
+echo; echo "[21] a build an earlier update left half-configured"
+case_ c21; cp "$SBX/cand" "$SBX/inst-amneziawg-dkms"; printf 'iF ' > "$SBX/status"; out="$(go)"
+check "it is finished (dpkg --configure -a), though nothing newer is offered" "$(grep -q 'DPKG-RECOVER' "$SBX/calls" && ! grep -q 'install -y' "$SBX/calls" && echo 0 || echo 1)" "$(cat "$SBX/calls")"
+check "…and counted as an update" "$(printf '%s' "$out" | grep -q 'DID_UPDATE=yes DID_FAIL=no' && echo 0 || echo 1)" "$out"
+case_ c21b; cp "$SBX/cand" "$SBX/inst-amneziawg-dkms"; out="$(go)"
+check "CONTROL: a configured package is left alone" "$(grep -q 'DPKG-RECOVER' "$SBX/calls" && echo 1 || echo 0)" "$(cat "$SBX/calls")"
 
 echo
 case "${1:-}" in --perturb*) [ "$FAILS" -gt 0 ] && { echo "perturb: RED as it must be ($FAILS)"; exit 0; } || { echo "perturb: NOT CAUGHT"; exit 1; } ;; esac

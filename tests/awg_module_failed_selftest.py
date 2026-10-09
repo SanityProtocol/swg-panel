@@ -9,15 +9,18 @@ every later `apt install` on the box ended in "E: Sub-process /usr/bin/dpkg retu
   [1] the record: one per kernel — a fact for this kernel is kept with the others, another kernel's record is no record
   [2] awg_pkg_retry_due: retried only when apt would install a newer amneziawg-dkms, or on another kernel
   [3] awg_src_retry_due: retried only when upstream's head has moved (an unknown head is not a reason to compile)
-  [4] awg_ppa_module_install, driven: a compile failure (headers here, package half-configured, no module file) removes
-      the two packages, keeps the tools, records the version AND the commit the PPA built — and the next run does not
-      install it again; a newer package does. CONTROLS: a build that succeeded, and one that failed for want of headers,
-      are not given up on
+  [4] awg_ppa_module_install, driven: a compile failure (headers here, package half-configured, no module file, and the
+      COMPILER's error in DKMS's make.log) removes the two packages, keeps the tools, records the version AND the commit the
+      PPA built — and the next run does not install it again; a newer package does. CONTROLS: a build that succeeded, and
+      one that failed for want of headers, are not given up on
+  [4b] (1.8.9 qualification IN-15) a build the BOX cut short — "No space left on device", a killed compiler, no build log
+      at all — is not a compile failure: not removed, not recorded (it was given up for good, even past `update -f`)
   [5] awg_build_from_source, driven: upstream still at the commit that did not compile → no clone, no compile; moved on →
       it builds
   [6] update.sh: the heal answers in one line when nothing new can be tried, and both routes ask the record
 
 Run: python3 tests/awg_module_failed_selftest.py      (0 = pass)
+     --perturb   awg_dkms_compile_failed judges without the build log again (52aa9c4) → RED on [4b]
 """
 import os, subprocess, sys, tempfile
 
@@ -37,11 +40,33 @@ def grab_all(*names):
     assert r.returncode == 0 and all((n + " ()") in r.stdout for n in names), "could not read %s from lib/common.sh" % (names,)
     return r.stdout + "\n"
 
+PERTURB = "--perturb" in sys.argv[1:]
 T = tempfile.mkdtemp(prefix="awgfail-")
 os.makedirs(T + "/bin"); os.makedirs(T + "/mods/7.0.0-38-generic/build")
 KV = "1.0.0-0~202609140848+4569c4c~ubuntu26.04.1"
 FUNCS = grab_all("awg_fail_get", "awg_fail_note", "awg_module_head", "awg_src_retry_due", "awg_pkg_retry_due", "awg_nothing_new", "awg_mod_built",
                  "_awg_kbuild", "awg_dkms_compile_failed", "awg_dkms_give_up", "awg_ppa_module_install")
+if PERTURB:   # the judgement as 52aa9c4 shipped it: half-configured + no module file, whatever the build log says
+    _old = "! awg_mod_built && grep -qs ': error: ' \"${SWG_DKMS_TREE:-/var/lib/dkms}\"/amneziawg/*/build/make.log"
+    assert FUNCS.count(_old) == 1, "perturbation anchor missing — would FALSE-PASS"
+    FUNCS = FUNCS.replace(_old, "! awg_mod_built")
+MAKELOG = T + "/dkms/amneziawg/1.0.0/build/make.log"
+def makelog(text):
+    """DKMS's build log for the last attempt (None: there is none)."""
+    if text is None:
+        if os.path.exists(MAKELOG): os.remove(MAKELOG)
+        return
+    os.makedirs(os.path.dirname(MAKELOG), exist_ok=True); open(MAKELOG, "w").write(text)
+COMPILE_ERR = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86_64)\n"
+               "/var/lib/dkms/amneziawg/1.0.0/build/compat/compat.h:812:9: error: too many arguments to function 'setup_udp_tunnel_sock'\n"
+               "make[2]: *** [scripts/Makefile.build:243: socket.o] Error 1\n")
+NOSPACE = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86_64)\n"
+           "{standard input}: Assembler messages:\n"
+           "{standard input}:4211: Fatal error: can't write 3904 bytes to section .debug_abbrev of /var/lib/dkms/amneziawg/1.0.0/build/send.o: 'No space left on device'\n"
+           "make[2]: *** [scripts/Makefile.build:243: send.o] Error 1\n")
+KILLED = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86_64)\n"
+          "gcc-13: fatal error: Killed signal terminated program cc1\ncompilation terminated.\n")
+makelog(COMPILE_ERR)
 def sh(body, kernel="7.0.0-38-generic", status="iF ", cand=KV, built=False, extra_env=None):
     stubs = ('have(){ command -v "$1" >/dev/null 2>&1; }\nDRYRUN=false\ninfo(){ echo "INFO $*"; }\nwarn(){ echo "WARN $*"; }\n'
              'run(){ echo "RUN $*" >> "$T/calls"; }\n'
@@ -49,7 +74,7 @@ def sh(body, kernel="7.0.0-38-generic", status="iF ", cand=KV, built=False, extr
              'dpkg-query(){ case "$*" in *Status*) printf "%%s" "%s";; *Version*) printf "%%s" "%s";; esac; }\n'
              'apt-cache(){ printf "amneziawg-dkms:\\n  Installed: (none)\\n  Candidate: %s\\n"; }\n'
              'modinfo(){ %s; }\n'
-             'AWG_MOD_FAILED="$T/awg-module-failed"; SWG_LIB_MODULES="$T/mods"\n') % (kernel, status, KV, cand, "return 0" if built else "return 1")
+             'AWG_MOD_FAILED="$T/awg-module-failed"; SWG_LIB_MODULES="$T/mods"; SWG_DKMS_TREE="$T/dkms"\n') % (kernel, status, KV, cand, "return 0" if built else "return 1")
     env = dict(os.environ, T=T, **(extra_env or {}))
     return subprocess.run(["bash", "-c", stubs + FUNCS + body], capture_output=True, text=True, env=env)
 def calls():
@@ -117,6 +142,17 @@ r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
 check("CONTROL: no headers for this kernel is a missing prerequisite, not a compile failure", "RC0" in r.stdout and "remove" not in c, r.stdout + c)
 os.makedirs(T + "/mods/7.0.0-38-generic/build")
 
+print("\n[4b] a build the box cut short is not a compile failure (IN-15)")
+for name, log in (("a full disk: the assembler's \"No space left on device\"", NOSPACE), ("a killed compiler (OOM)", KILLED),
+                  ("no DKMS build log at all", None)):
+    reset(); makelog(log)
+    r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
+    check("%s → not removed, not recorded, not said as \"does not compile\"" % name,
+          "remove" not in c and not os.path.exists(T + "/awg-module-failed") and "does not compile" not in r.stdout, r.stdout + c)
+reset(); makelog(COMPILE_ERR)
+r = sh('awg_dkms_compile_failed && echo FAILED || echo NOT')
+check("CONTROL: the compiler's own error in the log → a compile failure", "FAILED" in r.stdout, r.stdout + r.stderr)
+
 print("\n[5] awg_build_from_source, driven")
 SRCF = grab_all("awg_build_from_source")
 def build(head):
@@ -148,5 +184,10 @@ for f in ("install-host.sh", "install-node.sh"):
           and "run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools" not in s)
 
 print("")
+if PERTURB:
+    _red = [f for f in FAILS if "not removed, not recorded" in f]
+    print("perturb: %s" % ("RED as it must be (%d), all [4b]" % len(_red) if _red and len(_red) == len(FAILS)
+                           else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
 sys.exit(1 if FAILS else 0)

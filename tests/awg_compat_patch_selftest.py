@@ -111,13 +111,17 @@ def ppa(builds_after_fix):
     p = os.path.join(T, "usr", "amneziawg-1.0.0", "compat"); os.makedirs(p); open(p + "/compat.h", "w").write(COMPAT)
     for f in ("state", "awg-module-failed", "calls"):
         if os.path.exists(T + "/" + f): os.remove(T + "/" + f)
+    # DKMS's build log of the attempt that failed: the COMPILER's error, which is what makes it "does not compile" (IN-15)
+    os.makedirs(T + "/dkms/amneziawg/1.0.0/build", exist_ok=True)
+    open(T + "/dkms/amneziawg/1.0.0/build/make.log", "w").write(
+        "/var/lib/dkms/amneziawg/1.0.0/build/compat/compat.h:812:9: error: too many arguments to function 'setup_udp_tunnel_sock'\n")
     body = ('uname(){ [ "$1" = -r ] && echo %s || command uname "$@"; }\n'
             'run(){ echo "RUN $*" >> "$T/calls"; case "$*" in *"dpkg --configure -a"*) %s;; esac; }\n'
             'dpkg(){ case "$1" in --audit) [ -f "$T/state" ] || echo "amneziawg-dkms half-configured";; esac; }\n'
             'dpkg-query(){ case "$*" in *Status*) [ -f "$T/state" ] && printf "ii " || printf "iF ";; *Version*) printf "1.0.0-0~202609140848+4569c4c~ubuntu26.04.1";; esac; }\n'
             'apt-cache(){ printf "  Candidate: 1.0.0-0~202609140848+4569c4c~ubuntu26.04.1\\n"; }\n'
             'modinfo(){ [ -f "$T/state" ]; }\n'
-            'AWG_MOD_FAILED="$T/awg-module-failed"; SWG_LIB_MODULES="$T/mods"; SWG_USR_SRC="$T/usr"\n'
+            'AWG_MOD_FAILED="$T/awg-module-failed"; SWG_LIB_MODULES="$T/mods"; SWG_USR_SRC="$T/usr"; SWG_DKMS_TREE="$T/dkms"\n'
             'awg_ppa_module_install && echo RC0 || echo RC1\n') % (KV, 'touch "$T/state"' if builds_after_fix else ':')
     r = sh(body)
     c = open(T + "/calls").read() if os.path.exists(T + "/calls") else ""
