@@ -30,6 +30,8 @@ refuse any path outside the box, and such an escape fails the section that made 
       emptied and left, and a revert line claiming "a kept userspace server" before any keep question (d); route_localnet=1
       LIVE after the files that set it went — hosts on the box's network reach its 127.0.0.1 services until a reboot (e),
       bare and Docker; an operator's own sysctl file asking for it and their own local/wg lines are kept
+  [17] a Docker uninstall leaves Docker Engine and says so in the summary, with how to remove it; a bare one says nothing
+      (1.8.8 deferred #8)
   [16] systemd < 254: the restart back-off swg-noded writes in the three family dirs (swg-restart.conf, D12-1) — rm_node no
       longer says it "keeps" a dir that holds only that file (the end of the run takes both); an operator's own drop-in
       there is still said and kept
@@ -50,6 +52,7 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-rl      route_localnet stays 1 (as shipped) → RED on [13] [15]'s route_localnet checks only
      --perturb-rlown   …turned off even where another file asks for it → RED on [14]'s route_localnet check only
      --perturb-keepmsg rm_log_ns says it keeps a family dir holding only swg-restart.conf → RED on [16] only
+     --perturb-engine  the Docker uninstall's summary is silent about Docker Engine (as shipped) → RED on [17]'s first check only
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
@@ -59,7 +62,8 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 U = open(os.environ.get("SWG_UNINSTALL") or os.path.join(ROOT, "uninstall.sh"), encoding="utf-8").read()
 FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--perturb-bare", "--perturb-src", "--perturb-stop",
                                          "--perturb-ppa", "--perturb-go", "--perturb-key", "--perturb-srcppa", "--perturb-www",
-                                         "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg")}
+                                         "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg",
+                                         "--perturb-engine")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -103,6 +107,8 @@ if FLAGS["--perturb-rlown"]:
     plant("  grep -qsE --exclude='99-swg-*' '^", "  false && grep -qsE --exclude='99-swg-*' '^")
 if FLAGS["--perturb-keepmsg"]:
     plant('    [ "$(ls -A "$SD/$u.d" 2>/dev/null)" = swg-restart.conf ] || rmdir_if_empty "$SD/$u.d";', '    rmdir_if_empty "$SD/$u.d";')
+if FLAGS["--perturb-engine"]:
+    plant('case " ${DID_REMOVE[*]-} " in *" Docker "*) command -v docker', 'case "" in *" Docker "*) command -v docker')
 if FLAGS["--perturb-image"]:
     plant('  [ -n "$img" ] || { _tag="$(sed -n ', '  false && { _tag="$(sed -n ')
 
@@ -352,6 +358,7 @@ def clean(left):
 print("[1] a Docker node whose container is already gone — the image still on the box")
 box = mkbox("gone-node", NODE_FILES, NODE_FX)
 rc, out, calls, esc = run(box, "--yes", env=FULL)
+OUT_DOCKER = out
 comps = components(out)
 check("the run stays inside its box (no rm/cp/mv outside it)", not esc, esc)
 check("the node is offered as the node it was, its container named gone",
@@ -441,6 +448,7 @@ SRC_LABEL = "AmneziaWG built from source (kernel module + tools)"
 print("\n[7] a bare node on Debian: its AmneziaWG built from source")
 box = mkbox("deb-src", dict(BARE_NODE, **SRC_AWG), BARE_FX)
 rc, out, calls, esc = run(box, "--yes", env=FULL)
+OUT_BARE = out
 comps = components(out)
 check("[7] the run stays inside its box", not esc, esc)
 check("[7] the source build is offered for removal", any(c.startswith(SRC_LABEL) for c in comps), comps)
@@ -566,6 +574,13 @@ check("[16] an operator's own drop-in there is still said and kept (only swg-res
       len(keeping) == 1 and "vk-turn-proxy-.service.d" in keeping[0]
       and sorted(os.listdir(os.path.join(box, "etc/systemd/system/vk-turn-proxy-.service.d"))) == ["override.conf"], (keeping, out[-800:]))
 
+print("\n[17] Docker Engine: a Docker uninstall leaves it — and says so (1.8.8 deferred #8)")
+def kept_list(out):
+    return out.split("Kept:", 1)[1].split("\n\n", 1)[0] if "Kept:" in out else ""
+check("[17] the summary of [1]'s Docker uninstall names Docker Engine under Kept, and how to remove it",
+      "Docker Engine" in kept_list(OUT_DOCKER) and "apt-get purge docker-ce" in kept_list(OUT_DOCKER), OUT_DOCKER[-700:])
+check("[17] …and [7]'s bare one says nothing about Docker", "Docker Engine" not in OUT_BARE, OUT_BARE[-500:])
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
@@ -576,7 +591,8 @@ if PERTURBED:
             "--perturb-stop": ("[7] each removed interface's unit",), "--perturb-ppa": ("[10]",), "--perturb-go": ("[9] …and the purge",),
             "--perturb-key": ("[11] the PPA goes", "[12]"), "--perturb-srcppa": ("[12]",), "--perturb-www": ("[13] /var/www",),
             "--perturb-aa": ("[13] the AppArmor local/wg",), "--perturb-aatext": ("[13] …and the revert line",),
-            "--perturb-rl": ("[13] route_localnet", "[15]"), "--perturb-rlown": ("[14] route_localnet",), "--perturb-keepmsg": ("[16]",)}
+            "--perturb-rl": ("[13] route_localnet", "[15]"), "--perturb-rlown": ("[14] route_localnet",), "--perturb-keepmsg": ("[16]",),
+            "--perturb-engine": ("[17] the summary of [1]'s",)}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
