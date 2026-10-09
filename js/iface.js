@@ -1181,7 +1181,7 @@ export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
     { value: "off", label: html`${MIMIC_NAME.off()} <span class="faint">${T("no packets before the handshake")}</span>` },
     { value: "quic", label: html`${MIMIC_NAME.quic()} <span class="faint">${size(MIMIC_PRESETS.quic.sizes)}</span>` },
     { value: "dns", label: html`${MIMIC_NAME.dns()} <span class="faint">${size(MIMIC_PRESETS.dns.sizes)}</span>` },
-    { value: "builtin", label: html`${MIMIC_NAME.builtin()} <span class="faint">${T("{v1}, {v2} bytes", { v1: plural(MIMIC_BUILTIN_SIZE[0], "packet"), v2: fmtNum(MIMIC_BUILTIN_SIZE[1]) })}</span>` },
+    { value: "builtin", label: html`${MIMIC_NAME.builtin()} <span class="faint">${plural(MIMIC_BUILTIN_SIZE[0], "packet")}, ${fmtNum(MIMIC_BUILTIN_SIZE[1])} ${pluralWord(MIMIC_BUILTIN_SIZE[1], "byte")}</span>` },
     ...(mim === "custom" ? [{ value: "custom", label: MIMIC_NAME.custom(), disabled: true }] : []),
   ];
   const pk = MIMIC_KEYS.map(k => [k, mimicCheck(eff[k])]).filter(([, c]) => c.ok && c.bytes);
@@ -1200,9 +1200,9 @@ export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
     <div class="mimic-row"><span class="mimic-lbl">${T("Disguise as")}</span>
       <${Dropdown} className="selwrap mimic-dd" value=${mim} options=${opts} short=${() => MIMIC_NAME[mim]()} ariaLabel=${T("Disguise as")} onChange=${onPick}/></div>
     ${bad ? line(bad, "err") : html`
-      ${line(pk.length ? T("The disguise sends before each handshake: {v1}, {v2} bytes — about {v3} a month for a device that stays connected.",
-        { v1: plural(pk.length, "packet"), v2: fmtNum(bytes), v3: fmtBytes((bytes + 28 * pk.length) * MIMIC_MONTH) }) : T("No packets before the handshake."))}
-      ${big ? line(T("{v1} is {v2} bytes — above 1232 it may be split on a 1280-byte path, and split packets stand out.", { v1: big[0], v2: fmtNum(big[1].bytes) }), "warnish") : null}
+      ${line(pk.length ? T("The disguise sends before each handshake: {v1}, {v2} — about {v3} a month for a device that stays connected.",   // the bytes counted as the packets are: «226 байт», «1 232 байта» (q189 RU pass)
+        { v1: plural(pk.length, "packet"), v2: fmtNum(bytes) + " " + pluralWord(bytes, "byte"), v3: fmtBytes((bytes + 28 * pk.length) * MIMIC_MONTH) }) : T("No packets before the handshake."))}
+      ${big ? line(T("{v1} is {v2} — above 1232 it may be split on a 1280-byte path, and split packets stand out.", { v1: big[0], v2: fmtNum(big[1].bytes) + " " + pluralWord(big[1].bytes, "byte") }), "warnish") : null}
       ${mim === "builtin" ? line(T("The set every swgPanel install ships, the same on every server.")) : null}
       ${fit && lp && +lp !== fit ? line(T("QUIC looks most natural on UDP 443 — this interface listens on {v1}.", { v1: lp })) : null}
       ${mim !== "off" ? line(T("Changes only what the packets before each handshake look like. It does not help where only listed addresses are allowed — a TURN server is the way there.")) : null}

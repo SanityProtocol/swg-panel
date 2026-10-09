@@ -2573,7 +2573,6 @@ export const STR = {
   "mimic|Off": "Нет",
   "DNS query": "DNS-запрос",
   "Built-in": "Встроенная",
-  "{v1}, {v2} bytes": "{v1}, байт: {v2}",
   "mimic|Custom": "Своя",
   "disguise: off": "маскировка: нет",
   "disguise: QUIC": "маскировка: QUIC",
@@ -2582,11 +2581,11 @@ export const STR = {
   "disguise: custom": "маскировка: своя",
   "no packets before the handshake": "без пакетов перед хендшейком",
   "1 packet, {v1}–{v2} bytes": "1 пакет, {v1}–{v2} байт",
-  "The disguise sends before each handshake: {v1}, {v2} bytes — about {v3} a month for a device that stays connected.":
-    "Маскировка отправляет перед каждым хендшейком: {v1}, байт: {v2} — около {v3} в месяц для постоянно подключённого устройства.",
+  "The disguise sends before each handshake: {v1}, {v2} — about {v3} a month for a device that stays connected.":
+    "Маскировка отправляет перед каждым хендшейком: {v1}, {v2} — около {v3} в месяц для постоянно подключённого устройства.",
   "No packets before the handshake.": "Перед хендшейком пакетов нет.",
-  "{v1} is {v2} bytes — above 1232 it may be split on a 1280-byte path, and split packets stand out.":
-    "{v1} — байт: {v2}. Больше 1232 пакет может быть фрагментирован на пути с MTU 1280, а фрагменты заметны.",
+  "{v1} is {v2} — above 1232 it may be split on a 1280-byte path, and split packets stand out.":
+    "{v1} — {v2}. Больше 1232 пакет может быть фрагментирован на пути с MTU 1280, а фрагменты заметны.",
   "The set every swgPanel install ships, the same on every server.": "Набор, который ставит каждая установка swgPanel, — одинаковый на всех серверах.",
   "QUIC looks most natural on UDP 443 — this interface listens on {v1}.": "QUIC естественнее всего выглядит на UDP 443, а этот интерфейс слушает {v1}.",
   "Changes only what the packets before each handshake look like. It does not help where only listed addresses are allowed — a TURN server is the way there.":
@@ -7283,6 +7282,8 @@ export const PLURALS = {
   change: ["изменение", "изменения", "изменений"],
   device: ["устройство", "устройства", "устройств"],
   packet: ["пакет", "пакета", "пакетов"],
+  // the disguise's size, counted as its packets are: «226 байт», «1 232 байта», «1 байт»
+  byte: ["байт", "байта", "байт"],
   list: ["список", "списка", "списков"],
   rule: ["правило", "правила", "правил"],
   // Prepositional case — these two sit after «в» / «на» ("в 3 правилах на 2 интерфейсах"), where the
