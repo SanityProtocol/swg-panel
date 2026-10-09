@@ -27,10 +27,13 @@
  *     no node-wide policy: it is behind the panel and reports none (a current node reports every policy but "each interface
  *     decides"). The summary now says it is not in force there until the node is updated; a current node, one that reports
  *     its policy, "each interface decides" and an unsaved choice read as before.
+ * [7] q189 V2-FLEET noticed 4 — Settings told the operator of a NixOS node to re-run a node installer NixOS does not have (the
+ *     self-signed → CA switch, twice) or gave no NixOS way at all (a re-point after an address change): each now says what holds
+ *     there — the configuration.nix option, nixos-rebuild switch, a swg-noded restart — in EN and RU.
  *
  * The real js/i18n.js with the real Russian catalog; the real modules (screen-settings, screen-nodes, ui, iface, mimic).
  * Run: node tests/spa_screen_claims_selftest.mjs
- *      --perturb <offhint | nixosoff | confirm | p2pblock | p2proute | games | tag | bubble | title | fewsec | artifactname | subhook | p2pold>   one fix undone → RED
+ *      --perturb <offhint | nixosoff | confirm | p2pblock | p2proute | games | tag | bubble | title | fewsec | artifactname | subhook | p2pold | nixhint>   one fix undone → RED
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -58,6 +61,7 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   subhook: ["sub.js", "  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);", ""],
   p2pold: ["js/screen-settings.js", 'export const p2pNotRunHere = (node, rec) => !!node && !!rec && !node.p2p_node',
            'export const p2pNotRunHere = (node, rec) => false && !!node && !!rec && !node.p2p_node'],
+  nixhint: ["js/screen-settings.js", "recreate the container; on NixOS, set `services.swg-node.panelUrl` in the node's configuration.nix, run `nixos-rebuild switch` and restart `swg-noded`.", "recreate the container."],
   fewsec: ["js/iface.js", 'T("The interface restarts; connected devices reconnect in about 15 seconds.")',
            'T("The interface restarts; connected devices reconnect within a few seconds.")'],
 };
@@ -250,5 +254,17 @@ const L4 = "Torrents / P2P: {v1} — not in force on this node until it is updat
 check("[6] the summary says it, in Russian", ruHas(L4) && /не действует/.test(T(L4, { v1: "x" })), T(L4, { v1: "x" }));
 check("[6] the node form's summary asks p2pNotRunHere for that sentence",
       JS["screen-settings.js"].includes('summary=${p2pNotRunHere(node, curRec) ? T("' + L4 + '"'), "");
+
+// ── [7] NixOS nodes have no installer ─────────────────────────────────────────────────────────────────────────────────
+console.log("\n[7] what holds on a NixOS node: its configuration.nix option, nixos-rebuild switch, a swg-noded restart (V2-FLEET noticed 4)");
+const SSRC = JS["screen-settings.js"];
+const nixTls = SSRC.split("then re-run the node installer on the nodes that pinned it — on a NixOS node, clear `services.swg-node.panelTlsFingerprint` and set `verifyPanelTls = true` in its configuration.nix, run `nixos-rebuild switch` and restart `swg-noded`.").length - 1;
+check("[7] both self-signed → CA sentences give the NixOS way (clear the pin, verify through the CA)", nixTls === 2, nixTls);
+check("[7] none still sends a NixOS operator to the installer alone", !SSRC.includes("then re-run the node installer on the nodes that pinned it.\")"), "");
+check("[7] the address-change note gives the NixOS way beside bare metal and Docker",
+      SSRC.includes("recreate the container; on NixOS, set `services.swg-node.panelUrl` in the node's configuration.nix, run `nixos-rebuild switch` and restart `swg-noded`."), "");
+const ruNix = RU.split("nixos-rebuild switch").length - 1;
+check("[7] …all three in Russian too (three keys, three translations)",
+      ruNix === 6 && (RU.match(/на ноде NixOS очистите/g) || []).length === 2 && /на NixOS задайте `services\.swg-node\.panelUrl`/.test(RU), ruNix);
 
 done(MODE, MODE || "");
