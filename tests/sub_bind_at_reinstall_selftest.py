@@ -53,7 +53,10 @@ starts = [i for i, c in L if re.search(r"systemctl (enable[^\n]*\$_NOW|restart|s
           and "record swg-sub's new address" not in c]
 record = [i for i, c in L if re.search(r"systemctl restart swg-panel-server", c) and "record swg-sub's new address" in c]
 early = [i for i, c in L if "write_sub_unit" in c and "! -e" in c and "swg-sub.service" in c]
-final = [i for i, c in L if "write_sub_unit" in c and "enable" in c and "swg-sub" in c]
+# the final write: its line, and swg-sub's enable within the two after it (since 1.8.8 deferred #9 the enable is the else of
+# "left disabled and stopped, as it was")
+final = [i for i, c in L if "write_sub_unit" in c and "! -e" not in c and not re.match(r"write_sub_unit\(\)\{", c)
+         and any(re.search(r"\brun systemctl enable[^\n]*swg-sub", c2) for _, c2 in L[i - 1:i + 2])]   # run: not the hint's text
 defn = [i for i, c in L if re.match(r"write_sub_unit\(\)\{", c)]
 
 print("[1] swg-sub's unit exists before the panel first starts")
