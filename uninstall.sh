@@ -1329,8 +1329,9 @@ rm_node_netobjects(){
     # how the relay names a leg). It survived every uninstall — `6890: from all fwmark 0x1aea lookup 7000` was still
     # there on a fully removed master (1.8.8 qualification). A priority in it is NOT a table id (its rule looks up one in
     # the 7000 band, flushed above), so only the rule goes — never `table 6890`. Band spelled out: this file does not
-    # read swg-noded; derived there as BASE − (MAX − BASE) − 11, so a change to the table band moves it.
-    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1>=6890 && $1<=6989'); do
+    # read swg-noded; derived there as BASE − (MAX − BASE) − 11, so a change to the table band moves it. …And 6880, the torrent
+    # policy's rule (P2P_RULE_PRI: `fwmark 0x40000000 lookup main` under Direct) — a rule only, too (1.8.9 qualification NR-6).
+    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6880 || ($1>=6890 && $1<=6989)'); do
       run ip rule del pref "$n"
     done
   fi
@@ -1348,7 +1349,7 @@ rm_node_netobjects(){
   fi
   # 99-swg-forward.conf is the BARE installer's name; install-docker.sh writes 99-swg-node.conf instead, so the
   # docker drop-in was never removed. Both are ours and both are unconditionally rewritten by a re-install.
-  rmrf /etc/sysctl.d/99-swg-forward.conf /etc/sysctl.d/99-swg-node.conf
+  rmrf /etc/sysctl.d/99-swg-forward.conf /etc/sysctl.d/99-swg-node.conf /etc/sysctl.d/99-swg-turn.conf   # + swg-noded's turn socket caps (DEB-2)
   # …and the value they set stays LIVE until a reboot: route_localnet=1 (Force-DNS's DNAT to the node's own resolver — those
   # files, and swg-noded at run time) lets hosts on this box's network reach its 127.0.0.1 services (1.8.8 deferred #3e).
   # Turned off, unless a sysctl file that is not swg's still asks for it.
