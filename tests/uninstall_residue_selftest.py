@@ -169,7 +169,7 @@ out, calls, _ = bash('SD=/nonexistent; DOCKER_DIR=%s; DPANEL=false; DNODE=false\
 check("no bare install left, docker dir KEPT → 'Leftover swg files' is offered", "ADD Leftover swg files" in out, out)
 rl = fn(U, "rm_leftovers")
 def leftovers(docker_live):
-    return bash(PRE + 'SD=/nonexistent; DOCKER_DIR=%s\nrmrf(){ echo "RMRF $*"; }\nufw_forget(){ echo "UFWFORGET $*"; }\n'
+    return bash(PRE + 'SD=/nonexistent; DOCKER_DIR=%s; WDTT_DIR=/nonexistent/wdtt; CSQTT_DIR=/nonexistent/csqtt\nrmrf(){ echo "RMRF $*"; }\nufw_forget(){ echo "UFWFORGET $*"; }\n'
                 'docker_running(){ %s; }\nid(){ return 0; }\n%s rm_leftovers\necho "REMOVED_LEFTOVERS=${REMOVED_LEFTOVERS:-}"\n'
                 % (kd, "return 0" if docker_live else "return 1", rl), {"systemctl": "exit 0", "userdel": "exit 0", "chown": "exit 0"})
 out, calls, _ = leftovers(False)

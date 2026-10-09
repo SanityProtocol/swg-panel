@@ -32,6 +32,12 @@ refuse any path outside the box, and such an escape fails the section that made 
       bare and Docker; an operator's own sysctl file asking for it and their own local/wg lines are kept
   [17] a Docker uninstall leaves Docker Engine and says so in the summary, with how to remove it; a bare one says nothing
       (1.8.8 deferred #8)
+  [18] a bare node's WDTT and csqtt servers under the documented `WDTT_DATA_DEL=y CSQTT_DATA_DEL=y`: /opt/swg-wdtt and
+      /opt/swg-csqtt were left empty (the per-instance answer was normalised, the parent's removal read the RAW preset) —
+      now the dir goes once empty; an identity kept keeps its dir (1.8.9 qualification D12-3)
+  [19] a bare → Docker converted node: the bare csqtt store no unit names (the convert deleted the units) was never offered
+      and outlived a FULL uninstall — its clients' passwords on a box the operator wiped. Now asked about by path, with
+      rm_csqtt's question and preset, and nothing of a server torn down for it (L8-a)
   [16] systemd < 254: the restart back-off swg-noded writes in the three family dirs (swg-restart.conf, D12-1) — rm_node no
       longer says it "keeps" a dir that holds only that file (the end of the run takes both); an operator's own drop-in
       there is still said and kept
@@ -53,6 +59,8 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-rlown   …turned off even where another file asks for it → RED on [14]'s route_localnet check only
      --perturb-keepmsg rm_log_ns says it keeps a family dir holding only swg-restart.conf → RED on [16] only
      --perturb-engine  the Docker uninstall's summary is silent about Docker Engine (as shipped) → RED on [17]'s first check only
+     --perturb-d123    the raw `= yes` preset test back (as shipped) → RED on [18] and [19]'s nothing-left check only
+     --perturb-orphan  state no unit runs from is never offered (as shipped) → RED on [19]'s question and nothing-left checks only
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
@@ -63,7 +71,7 @@ U = open(os.environ.get("SWG_UNINSTALL") or os.path.join(ROOT, "uninstall.sh"), 
 FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--perturb-bare", "--perturb-src", "--perturb-stop",
                                          "--perturb-ppa", "--perturb-go", "--perturb-key", "--perturb-srcppa", "--perturb-www",
                                          "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg",
-                                         "--perturb-engine")}
+                                         "--perturb-engine", "--perturb-d123", "--perturb-orphan")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -109,6 +117,11 @@ if FLAGS["--perturb-keepmsg"]:
     plant('    [ "$(ls -A "$SD/$u.d" 2>/dev/null)" = swg-restart.conf ] || rmdir_if_empty "$SD/$u.d";', '    rmdir_if_empty "$SD/$u.d";')
 if FLAGS["--perturb-engine"]:
     plant('case " ${DID_REMOVE[*]-} " in *" Docker "*) command -v docker', 'case "" in *" Docker "*) command -v docker')
+if FLAGS["--perturb-d123"]:
+    plant('    $DRYRUN || rmdir "$WDTT_DIR" 2>/dev/null || true', '    [ "${WDTT_DATA_DEL:-}" = yes ] && rmrf "$WDTT_DIR"')
+    plant('    $DRYRUN || rmdir "$CSQTT_DIR" 2>/dev/null || true', '    [ "${CSQTT_DATA_DEL:-}" = yes ] && rmrf "$CSQTT_DIR"')
+if FLAGS["--perturb-orphan"]:
+    plant('_fork_orphans(){ local d k; for d in', '_fork_orphans(){ return 0; local d k; for d in')
 if FLAGS["--perturb-image"]:
     plant('  [ -n "$img" ] || { _tag="$(sed -n ', '  false && { _tag="$(sed -n ')
 
@@ -581,6 +594,44 @@ check("[17] the summary of [1]'s Docker uninstall names Docker Engine under Kept
       "Docker Engine" in kept_list(OUT_DOCKER) and "apt-get purge docker-ce" in kept_list(OUT_DOCKER), OUT_DOCKER[-700:])
 check("[17] …and [7]'s bare one says nothing about Docker", "Docker Engine" not in OUT_BARE, OUT_BARE[-500:])
 
+# ── WDTT / csqtt state on the box (1.8.9 qualification D12-3, L8-a) ──────────────────────────────────────────────────
+FORKS = {"etc/systemd/system/swg-wdtt-wdtt0.service": "[Unit]\nDescription=swg-wdtt (amurcanov/proxy-turn-vk-android)\n",
+         "opt/swg-wdtt/wdtt0/wg-keys.dat": "K", "opt/swg-wdtt/wdtt0/wdtt.env": "SWG_LISTEN=0.0.0.0:56000\n",
+         "opt/swg-wdtt/.bin/amurcanov/server": "x",
+         "etc/systemd/system/swg-csqtt-csqtt0.service": "[Service]\n", "opt/swg-csqtt/csqtt0/csqtt.env": "SWG_LISTEN=0.0.0.0:46000\n",
+         "opt/swg-csqtt/csqtt0/passwords.json": '{"passwords": {"alice": "x"}}', "opt/swg-csqtt/.bin/amd64/server": "x"}
+here = lambda box, p: os.path.lexists(os.path.join(box, p))
+
+print("\n[18] a bare node's WDTT and csqtt servers, FULL, the documented `y` (1.8.9 qualification D12-3)")
+box = mkbox("forks-y", dict(BARE_NODE, **FORKS), BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[18] the run stays inside its box", not esc, esc)
+check("[18] WDTT_DATA_DEL=y / CSQTT_DATA_DEL=y: /opt/swg-wdtt and /opt/swg-csqtt go — not left behind, empty",
+      not here(box, "opt/swg-wdtt") and not here(box, "opt/swg-csqtt"), [p for p in ("opt/swg-wdtt", "opt/swg-csqtt") if here(box, p)])
+box = mkbox("forks-keep", dict(BARE_NODE, **FORKS), BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=dict(FULL, WDTT_DATA_DEL="n"))
+check("[18] WDTT_DATA_DEL=n: the identity stays, its dir with it; the shared binaries go",
+      here(box, "opt/swg-wdtt/wdtt0/wg-keys.dat") and not here(box, "opt/swg-wdtt/.bin") and not here(box, "opt/swg-csqtt"),
+      sorted(os.listdir(os.path.join(box, "opt"))))
+
+print("\n[19] a bare → Docker converted node, FULL: the WDTT / csqtt state its bare past left (1.8.9 qualification L8-a)")
+CONV_FORK = dict(NODE_FILES, **{"etc/systemd/system/swg-wdtt-wdtt0.service": FORKS["etc/systemd/system/swg-wdtt-wdtt0.service"],
+                                "opt/swg-wdtt/wdtt0/wg-keys.dat": "K", "opt/swg-wdtt/.bin/amurcanov/server": "x",
+                                "opt/swg-csqtt/csqtt0/passwords.json": '{"passwords": {"alice": "x"}}',
+                                "opt/swg-csqtt/csqtt0/csqtt.env": "SWG_LISTEN=0.0.0.0:46000\n", "opt/swg-csqtt/.bin/amd64/server": "x"})
+box = mkbox("conv-forks", CONV_FORK, dict(NODE_FX, **{"docker.ps": "swg-node\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[19] the run stays inside its box", not esc, esc)
+check("[19] the csqtt password store no unit names (the convert deleted the bare csqtt units) is asked about, by its path",
+      "/opt/swg-csqtt/csqtt0" in "\n".join(l for l in out.splitlines() if "Delete" in l), out[-1500:])
+check("[19] …and with CSQTT_DATA_DEL=y nothing of /opt/swg-csqtt or /opt/swg-wdtt is left",
+      not here(box, "opt/swg-csqtt") and not here(box, "opt/swg-wdtt"), [p for p in ("opt/swg-wdtt", "opt/swg-csqtt") if here(box, p)])
+check("[19] …and no server is torn down for it: no `ip link delete csqtt0`, no rule of csqtt0's touched (a name the Docker node may use)",
+      "link delete dev csqtt0" not in calls and "swg-egress:csqtt0" not in calls, calls[-800:])
+box = mkbox("conv-forks-keep", CONV_FORK, dict(NODE_FX, **{"docker.ps": "swg-node\n"}))
+rc, out, calls, esc = run(box, "--yes", env=dict(FULL, CSQTT_DATA_DEL="n"))
+check("[19] CSQTT_DATA_DEL=n: the store is kept, with what it needs", here(box, "opt/swg-csqtt/csqtt0/passwords.json"), out[-800:])
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
@@ -592,7 +643,8 @@ if PERTURBED:
             "--perturb-key": ("[11] the PPA goes", "[12]"), "--perturb-srcppa": ("[12]",), "--perturb-www": ("[13] /var/www",),
             "--perturb-aa": ("[13] the AppArmor local/wg",), "--perturb-aatext": ("[13] …and the revert line",),
             "--perturb-rl": ("[13] route_localnet", "[15]"), "--perturb-rlown": ("[14] route_localnet",), "--perturb-keepmsg": ("[16]",),
-            "--perturb-engine": ("[17] the summary of [1]'s",)}
+            "--perturb-engine": ("[17] the summary of [1]'s",), "--perturb-d123": ("[18] WDTT_DATA_DEL", "[19] …and with CSQTT_DATA_DEL=y"),
+            "--perturb-orphan": ("[19] the csqtt password store", "[19] …and with CSQTT_DATA_DEL=y")}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
