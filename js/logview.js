@@ -115,7 +115,7 @@ async function tick() {
         LV.req = null;
         LV.err = r && r.code === "bad_request" ? "refused" : (r && r.code) || "error";
         if (LV.err === "refused") Object.assign(LV, { refusedGen: gen, refusedAt: Date.now() });
-      } else if (!LV.mounted || document.hidden) api.post("/api/logs/live/close", { id: r.data.id }).catch(() => {});   // left meanwhile
+      } else if (!LV.mounted || !LV.live || document.hidden) api.post("/api/logs/live/close", { id: r.data.id }).catch(() => {});   // left (or stopped) meanwhile
       else {
         Object.assign(LV, { req: r.data.id, seq: 0, h: "", states: {}, iv: r.data.iv, err: "", openGen: gen });   // a change since: replaced next tick
         if (gen !== LV.streamGen) Object.assign(LV, { lines: [], frozen: null, missed: 0, held: {}, streamGen: gen });
@@ -638,7 +638,10 @@ let _back = null;
 // card: opened from the Settings card's icon — Exit only leaves full screen (the card streams on); else Exit stops it
 const showOverlay = card => { if (!LV.overlay) _back = document.activeElement; LV.overlay = LV.live = true; LV.card = card; bump(); };
 export const openLogOverlay = () => showOverlay(false);
-const closeLogOverlay = () => { LV.overlay = false; bump(); const b = _back; _back = null;
+// …and that Stop stops even with the Settings card open underneath, which keeps a viewer mounted — so it cannot wait for the
+// last unmount (q189 SPA-1: the card streamed on, polling every 1.5 s, after the operator pressed Stop)
+const closeLogOverlay = () => { if (!LV.card) { closeReq(); LV.live = false; }
+  LV.overlay = false; bump(); const b = _back; _back = null;
   setTimeout(() => { const el = b && b.isConnected ? b : document.querySelector(".lv-fs"); if (el) el.focus(); }, 0); };   // the card's icon is drawn anew
 export function LogOverlay() {
   const [, setV] = useState(0);

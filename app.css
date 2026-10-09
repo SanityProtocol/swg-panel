@@ -4736,5 +4736,9 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
   .lv-row .lv-markt{grid-area:msg;white-space:normal}
   .lv-stream{height:62vh}
   .lv-q{max-width:none;flex-basis:100%}
+  /* the level chips (and the range presets) wrap as pills: one row needs 380–460 px with three-digit counts, and kept whole
+     it pushed the card past the screen and hid Debug / «Отладка» (q189 SPA-4) */
+  .lv-levels{flex-wrap:wrap;gap:6px;border:0;border-radius:0;overflow:visible}
+  .lv-lvb{border:1px solid var(--line-solid);border-radius:var(--r-sm)}
 }
 @media (prefers-reduced-motion:reduce){.lv-stream{scroll-behavior:auto}}
