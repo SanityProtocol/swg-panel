@@ -11,7 +11,9 @@
  * [2] V-FEAT-B F-2 — "Block everywhere" (and a route through an exit or a node) said torrents from "programs running on it" are
  *     dropped / blocked. Measured: a client on the server itself with encryption forced got 8 peers and 2.3 MB in 60 s with no
  *     counter moving, and µTP on a flow past its 4th packet got through. Both hints now say a program on the server is stopped
- *     only when its handshakes are unencrypted; "Each interface decides" keeps "not checked".
+ *     only when its handshakes are unencrypted; "Each interface decides" keeps "not checked". And "Block everywhere" said games
+ *     are not affected, which nothing measured (the false-positive runs: browsing 60 sites a minute, a 100-connection page, a
+ *     video call, nested AWG, a proxy client): it says web browsing and video calls (round 2).
  * [3] V-FEAT-A F5 — the raw fork id "samosvalishe" on operator screens (the node's badge row, the manage sheet's title and its
  *     gear's tooltip; also the pending card, the delete sheet, the front tag's tooltip, the "Connected via" bubbles, a device's
  *     transport row and the flow map's hover). Every one now prints forkLabel — "hackdiaz-dev" — and keeps the id for its
@@ -43,10 +45,11 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   nixosoff: ["js/screen-settings.js", 'docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker" && n.platform !== "nixos"),\n                nixos: (Store.nodes || []).some(n => n.kind === "docker" && n.platform === "nixos") })}</div>`',
              'docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker") })}</div>`'],
   confirm: ["js/screen-settings.js", 'T("Logging — off: swg\'s stored logs are deleted")', 'T("Logging — off: the stored logs are deleted")'],
-  p2pblock: ["js/screen-settings.js", 'block: T("Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web, calls and games are not affected."),',
+  p2pblock: ["js/screen-settings.js", 'block: T("Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web browsing and video calls are not affected."),',
              'block: T("Torrent traffic is dropped on every way out of this server: its interfaces, traffic other nodes send out through it, and programs running on it. Web, calls and games are not affected."),'],
   p2proute: ["js/screen-settings.js", 'Traffic other nodes send out through this server is blocked. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through.", { v1 })',
              'Traffic other nodes send out through this server, and programs running on it, are blocked.", { v1 })'],
+  games: ["js/screen-settings.js", 'gets through. Web browsing and video calls are not affected."),', 'gets through. Web, calls and games are not affected."),'],
   tag: ["js/screen-nodes.js", '" muted" : "")}>${forkLabel(turnFork(tp.service))}</span>`;', '" muted" : "")}>${turnFork(tp.service)}</span>`;'],
   bubble: ["js/ui.js", "const tf = turnFork(r.viaTurn), tn = forkLabel(tf), tc = turnColor(tf),", "const tf = turnFork(r.viaTurn), tn = tf, tc = turnColor(tf),"],
   title: ["js/turn.js", "turnSheetTitle(forkLabel(turnFork(svc)), title)", "turnSheetTitle(turnFork(svc), title)"],
@@ -145,7 +148,7 @@ console.log("\n[2] the torrent policy's hints say what happens to a program on t
 const H = (() => { try { return SS.P2P_HINT(); } catch (e) { return {}; } })();
 const routedOf = v => { try { return H.routed(v); } catch (e) { return "THREW " + e.message; } };
 const ONLY = "A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through.";
-const BLOCK = "Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. " + ONLY + " Web, calls and games are not affected.";
+const BLOCK = "Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. " + ONLY + " Web browsing and video calls are not affected.";
 const ROUTED = "Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server is blocked. " + ONLY;
 check("[2] Block everywhere: a program on the server is stopped only by an unencrypted handshake (and has its Russian)",
       SET.includes("block: T(" + JSON.stringify(BLOCK) + ")") && ruHas(BLOCK) && H.block === T(BLOCK)
@@ -153,6 +156,9 @@ check("[2] Block everywhere: a program on the server is stopped only by an unenc
 check("[2] a route through an exit or a node: the same, and the route's target in it (and its Russian)",
       SET.includes("T(" + JSON.stringify(ROUTED) + ", { v1 })") && ruHas(ROUTED) && routedOf("WARP") === T(ROUTED, { v1: "WARP" })
       && /через WARP\./.test(routedOf("WARP")) && /зашифрованная проходит/.test(routedOf("WARP")), routedOf("WARP"));
+check("[2] Block everywhere promises only what was measured — web browsing and video calls, no games — «Сайты и видеозвонки не затрагиваются.»",
+      / Web browsing and video calls are not affected\.$/.test(BLOCK) && !Object.values(JS).some(s => /games are not affected/.test(s))
+      && / Сайты и видеозвонки не затрагиваются\.$/.test(H.block || "") && !/игры/.test(H.block || ""), H.block);
 check("[2] …and the card shows that hint for a route", SET.includes("${routed ? P2P_HINT().routed(p2pTarget(curRec, exits, node)) : P2P_HINT()[cur]}"), "");
 check("[2] \"Each interface decides\" keeps what was true: programs on the server are not checked",
       /programs running on it, are not checked/.test(SET) && H.iface === T("Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked."));
