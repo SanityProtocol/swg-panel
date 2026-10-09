@@ -984,6 +984,37 @@ export function awgOmitIssue(d, template) {
     return T("Every field is - — leave at least one, or use WireGuard interfaces.");
   return "";
 }
+// The panel's rules for a save that takes a line off (swg-panel-server awg_rules R1, R3–R5), judged on the set that save leaves:
+// the record under the cells (a blank cell keeps the record's — the update merges), "-" taking the line off; the 3.x keys only
+// on a 3.1 interface. The panel's own sentences. The Edit sheet holds Save on them: a refusal used to close the sheet, and every
+// other edit in it went with it (q189 SPA-3).
+export function awgSaveRule(cells, rec, where, gen3) {
+  const set = {};
+  for (const k of AWG_ORDER) {
+    const c = String((cells || {})[k] ?? "").trim(), v = c || String((rec || {})[k] ?? "").trim();
+    if ((gen3 || !AWG3_KEYS.includes(k)) && v && !awgIsNone(c)) set[k] = v;
+  }
+  const S = ["S1", "S2", "S3", "S4"], j = ["Jc", "Jmin", "Jmax"].filter(k => k in set).length;
+  if (!Object.keys(set).length) return T("{v1} would have no AmneziaWG field left — make it a WireGuard interface instead", { v1: where });
+  if (j && j < 3) return T("{v1}: Jc, Jmin and Jmax go together — set all three, or all three to none", { v1: where });
+  if ("HeaderProtectionKey" in set && !S.every(k => k in set))
+    return T("{v1}: header protection needs S1–S4 — {v2} cannot be none while it is on", { v1: where, v2: S.filter(k => !(k in set)).join(", ") });
+  if (/^\d+$/.test(set.S1 || "") && /^\d+$/.test(set.S2 || "") && +set.S1 + 56 === +set.S2)
+    return T("{v1}: S2 must not be S1 + 56 — the two handshake messages would be the same size", { v1: where });
+  return "";
+}
+// …and the one a mesh link's own template meets beside awgOmitIssue's two (swg-panel-server mesh_omit_s_refusal): an AmneziaWG 3.1
+// link needs S1–S4, so an S set to none — in the link's template, or in the fleet's where the link's leaves it blank (the panel's
+// mesh_template layering) — refuses the save. `gen` is the link's type in force.
+export function meshSNone(own, gen, node, peer) {
+  if (gen !== "3.1") return "";
+  const fleet = (Store.panelSettings || {}).mesh_awg || {}, o = own || {};
+  const om = ["S1", "S2", "S3", "S4"].filter(k => awgIsNone(o[k]) || (awgIsNone(fleet[k]) && !String(o[k] ?? "").trim()));
+  if (!om.length) return "";
+  const [a, b] = [node, peer].sort();
+  return T("{v1}: AmneziaWG 3.1 links need S1–S4 for header protection — the mesh AWG params set {v2} to none",
+           { v1: Store.nodeName(a) + " ↔ " + Store.nodeName(b), v2: om.join(", ") });
+}
 // W1 (A2): RandomTrailers on without ContentPaddingAddition is allowed, and pads every small packet about five times over.
 export const awgW1 = (d, rtOn) => rtOn && awgIsNone((d || {}).ContentPaddingAddition)
   ? T("ContentPaddingAddition is none while RandomTrailers is on — every small packet is padded about five times over.") : "";
@@ -1720,6 +1751,9 @@ export function ConnectionEditSheet({ node, iface }) {
   const quotaErr = (() => { const q = Number(quota); return (!Number.isInteger(q) || q < 5 || q > QUOTA_MAX) ? T("CPU cap must be between {v1} and {v2}", { v1: "5", v2: String(QUOTA_MAX) }) : ""; })();
   const connDirty = dialSrc !== (meta.dial_src || "") || dialEp !== (meta.dial_endpoint || "")
     || relayOn !== relayOn0 || quota !== quota0 || relink;   // enable Save only when something actually changed
+  // the panel's "-" rules for this link's template (awg_template_refusal, mesh_omit_s_refusal), judged when the door judges them:
+  // Save waits on them — the sheet closed on the refusal, and the type, AWG, dial and relay edits went with it (q189 SPA-3)
+  const awgRule = (awgChanged && awgOmitIssue(awgSet, true)) || (relink && meshSNone(awgSet, typeSet || typeDflt, node, peer)) || "";
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
   const allMeta = Store.describe[node] || {};
   const carried = Object.keys(allMeta).filter(k => !allMeta[k].system
@@ -1739,7 +1773,7 @@ export function ConnectionEditSheet({ node, iface }) {
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg") + awg3Cls(node, k)} ...${awg3Tip(node, k)}>${k}</span>`;
   const peerNm = html`<b style=${"color:" + Store.nodeColor(peer)}>${Store.nodeName(peer)}</b>`;
   return html`<${Sheet} title=${T("Connection to {v1}", { v1: Store.nodeName(peer) })} width=${680} onClose=${closeModal}
-      foot=${footRow({ onCancel: closeModal, disabled: nodeDown || !connDirty || !!quotaErr, title: nodeDown ? T("{v1} isn't reporting — reconnect it before changing this link", { v1: Store.nodeName(node) }) : (quotaErr || (!connDirty ? T("No changes to save") : "")), onAction: saveDial, action: T("Save") })}>
+      foot=${footRow({ onCancel: closeModal, disabled: nodeDown || !connDirty || !!quotaErr || !!awgRule, title: nodeDown ? T("{v1} isn't reporting — reconnect it before changing this link", { v1: Store.nodeName(node) }) : (quotaErr || awgRule || (!connDirty ? T("No changes to save") : "")), onAction: saveDial, action: T("Save") })}>
     <div class="conncard">
       <div class="conncard-top">
         <span class=${"iftype " + proto}>${T("System {v1}", { v1: proto.toUpperCase() })}</span>
@@ -1775,7 +1809,8 @@ export function ConnectionEditSheet({ node, iface }) {
       after=${(nrec.mesh_gen_reasons || []).filter(r => r.iface === iface).map(r => html`<div class="hint warnish" key=${r.iface}>${srvText(r.msg)}</div>`)}/>
       <${MeshAwgParams} title=${T("This link's AWG params")} eff=${typeSet || typeDflt} value=${awgSet} onChange=${setAwgPick}
         placeholders=${meshAwgHints(live)} ph3=${ph3}
-        about=${T("Both ends of this link use these. A blank cell takes the fleet's default in Settings → Mesh, else a fresh value when the link is rebuilt.")}/></div>
+        about=${T("Both ends of this link use these. A blank cell takes the fleet's default in Settings → Mesh, else a fresh value when the link is rebuilt.")}/>
+      ${awgRule && awgRule !== awgOmitIssue(awgSet, true) ? html`<p class="hint awg-omit-hint err">${awgRule}</p>` : null}</div>
     <div class="row2" style="margin-top:14px">
       <div class="field"><label>${T("Dial source IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— {node}'s IP", { node: Store.nodeName(node) })}</span></label>
         <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto=${T("Auto (default route)")}/></div>
@@ -1963,13 +1998,15 @@ export function EditIfaceSheet({ node, iface }) {
     ? T("{v1} cannot hold an empty AmneziaWG field yet — it is offline or needs an update", { v1: Store.nodeName(node) })
     : !meta.awg_exact && !Object.keys(((((_snapN.interfaces || {})[iface] || {}).meta || {}).awg_params) || {}).length
       ? T("{v1}: wait for the node to report this interface, then set a field to none", { v1: iface }) : "";
-  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo;
   // The AmneziaWG version (docs/AWG3-PLAN.md §7.7): an AmneziaWG interface that is not a mesh link. Flipping it and pressing Save
   // opens the switch window; the reason the panel would refuse either way greys that side (an older node can do neither).
   const genWas = awgGen(node, iface) || "2.0";
   const genSw = isAwg && !meta.system && (meta.tool || "awg") === "awg";
   const [gen, setGen0] = useState(genWas);
   const genChanged = genSw && gen !== genWas;
+  // …and the rules a save that takes a line off must keep (the panel's awg_rules, on the set it would leave): Save waits on them too
+  const omitRule = isAwg && AWG_ORDER.some(k => awgIsNone(awg[k])) ? awgSaveRule(awg, meta.awg_params, iface, gen === "3.1") : "";
+  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo || omitRule;
   // Flipped to 3.1 before a Save: the 3.1 cells appear at once, holding what the switch would give them (Settings' 3.1
   // defaults over Amnezia's), so they are set in the same Save — never saved, reopened and saved again. A cell the operator
   // already typed is kept. Header protection and trailers stay the panel's: the key is born on the node's switch.
@@ -2159,7 +2196,7 @@ export function EditIfaceSheet({ node, iface }) {
         <div class="awg-cols">${AWG_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]}
           class=${awgIsNone(awg[k]) ? "awg-none" : null} ...${meta.awg_exact && (meta.awg_params || {})[k] == null ? { placeholder: T("val|none") } : {}}
           onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div>
-        <p class=${"hint awg-omit-hint" + (awgOmitIssue(awg) ? " err" : "")}>${awgOmitIssue(awg) || T("Type - in a cell to remove that line — every device re-imports, as with any change here outside I1–I5.")}</p>
+        <p class=${"hint awg-omit-hint" + (awgOmitIssue(awg) || omitRule ? " err" : "")}>${awgOmitIssue(awg) || omitRule || T("Type - in a cell to remove that line — every device re-imports, as with any change here outside I1–I5.")}</p>
         ${/* The 3.1 set as a fifth group — while the sheet says 3.1, the moment the switch is flipped too (setGen fills it), so
               one Save switches with the values wanted. HeaderProtectionKey and RandomTrailers
               change only through the switch (an editable key was a one-keystroke way to cut every client with no window), so
