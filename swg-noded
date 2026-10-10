@@ -7492,7 +7492,12 @@ def _ensure_mech_block(mech, res, scan_allow=()):
         for S in sorted(meters):                                  # FLAGGED-scanner set — over-rate (200/s) AND sweep src IPs land here, timeout-expiring
             lines.append("  set " + _mech_flagged(S) + " { typeof ip saddr; flags timeout; }")
         if meters and _sa:                                        # trusted sources never counted as scanners (our fleet management sweeps like malware — SCAN-GUARD-PLAN); only with a portscan subnet, else the set has no rule
-            lines.append("  set scanallow { typeof ip saddr; flags interval; elements = { " + ", ".join(_sa) + " } }")
+            # ⚠️ AUTO-MERGE, OR ONE OVERLAP REFUSES THE WHOLE TABLE. A host and its range (10.10.0.4/32 + 10.10.0.0/24) is a
+            # list the panel accepts, and an interval set without auto-merge refuses it ("conflicting intervals specified",
+            # nft 1.0.2 → 1.1.3). The batch is atomic: a live node kept its old table, and one with none yet (fresh, rebooted,
+            # flushed) ran with no SMTP / QUIC / port-scan drop at all. auto-merge loads the union (1.8.9 final-candidate
+            # round, SG-NFT F1).
+            lines.append("  set scanallow { typeof ip saddr; flags interval; auto-merge; elements = { " + ", ".join(_sa) + " } }")
         if meters:                                                # scan guard: the hunted management ports (one shared set) + the private-destination guard + per-subnet (src . dst) window memory
             lines.append("  set scanports { type inet_proto . inet_service; flags interval; elements = { " + ", ".join(SCAN_PORTS) + " } }")
             # PRIVATE / INTERNAL destinations are not a public sweep — a user reaching their own LAN, a CGNAT address, a

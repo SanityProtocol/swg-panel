@@ -20,22 +20,30 @@ existing `portscan` mechanism (same subnets); its only new wire input is `scan_a
       source that re-hits the SAME few servers never crosses it (the seen-set counts a destination once per window)
   [5] the reader (_block_activity) still finds a flagged scanner in @pscf with the scan rules present — the extra
       `add @pscf…` on rule (b) and the `add @scs_…`/scanallow lines do not confuse the per-subnet attribution
+  [8] an allowlist with OVERLAPPING entries — a host and its range, 10.10.0.0/24 + 10.10.0.4/32, which the panel stores
+      as typed — renders a table REAL nft accepts: `nft -c`, then a live load in a throwaway network namespace, and the
+      loaded @scanallow holds the union: 10.10.0.9 (only the /24) and 10.10.0.4 (the /32) are in it, 10.10.1.4 is not.
+      Without auto-merge every nft from 1.0.2 to 1.1.3 refuses the whole table ("conflicting intervals specified"), and a
+      node with no table yet ran with no SMTP / QUIC / port-scan drop at all (1.8.9 final-candidate round, SG-NFT F1)
 
-Hermetic: swg-noded imported, `run` stubbed (mirrors tests/mech_portscan_burst_selftest.py). The packets themselves are
-the rig's job (root, netns): .campaign/rigs/portscan-burst-rig.sh, cell `scandist`.
+[1]–[7] are hermetic: swg-noded imported, `run` stubbed (mirrors tests/mech_portscan_burst_selftest.py). [8] alone runs the
+real nft, as root or through `sudo -n`, inside `unshare --net` (the namespace dies with the command; the host's ruleset is
+never read or written); without either it is SKIPPED, and says so — never passed. The packets themselves are the rig's
+job (root, netns): .campaign/rigs/portscan-burst-rig.sh, cell `scandist`.
 Run: python3 tests/mech_scan_guard_selftest.py
-     --perturb   four plants, each on its own: the allowlist guard dropped from rule (b), the flag-renew turned into a
-                 plain add, the scan rules moved AFTER the 200/s meter, the version not bumped — each must turn its
-                 own check red. Prints "PERTURB OK", exit 0 (exit 1 if a plant stayed green).
+     --perturb   five plants, each on its own: the flag's renew turned into a plain add, the allowlist guard dropped,
+                 scanallow built with no allowlist, the private-destination guard removed, the scanallow set without
+                 auto-merge — each must turn its own check red. Prints "PERTURB OK", exit 0 (exit 1 if a plant stayed
+                 green); a plant whose check was SKIPPED is named as such.
 """
-import importlib.machinery, importlib.util, os, re, sys, tempfile, types
+import importlib.machinery, importlib.util, os, re, subprocess, sys, tempfile, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 os.environ["SWG_NO_REEXEC"] = "1"
 
-FAILS = []
+FAILS, SKIPS = [], []
 def check(name, cond, detail=""):
     print(("  PASS " if cond else "  FAIL ") + name + (("  — " + str(detail)) if detail and not cond else ""))
     if not cond:
@@ -68,6 +76,27 @@ class FakeNft:
 # 10.8.0.0/24 runs smtp + portscan, 10.9.0.0/24 portscan only, 10.12.0.0/24 quic only (no scan guard there).
 MECH = {"10.8.0.0/24": ["smtp", "portscan"], "10.9.0.0/24": ["portscan"], "10.12.0.0/24": ["quic"]}
 ALLOW = ["10.10.0.4/32"]
+ALLOW_OVERLAP = ["10.10.0.0/24", "10.10.0.4/32"]   # [8]: a host and its range
+
+def live_load(text):
+    """[8]'s real nft, in a namespace of its own: `nft -c`, a live load, @scanallow listed back and three addresses looked
+    up in it. Returns (stdout, stderr), or (None, why) when there is no root / `sudo -n` / unshare / nft to run it."""
+    path = os.path.join(tempfile.mkdtemp(), "mech.nft")
+    open(path, "w").write(text)
+    script = ('command -v nft >/dev/null || { echo NONFT; exit 0; }; '
+              'nft -c -f "$1"; echo "C=$?"; nft -f "$1"; echo "F=$?"; nft list set inet swg_mech scanallow; '
+              'for a in 10.10.0.9 10.10.0.4 10.10.1.4; do '
+              'nft get element inet swg_mech scanallow "{ $a }" >/dev/null 2>&1 && echo "IN $a" || echo "OUT $a"; done')
+    pre = [] if os.geteuid() == 0 else ["sudo", "-n"]
+    try:
+        r = subprocess.run(pre + ["unshare", "--net", "sh", "-c", script, "sh", path], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, str(e)[:120]
+    if "NONFT" in r.stdout:
+        return None, "nft is not installed"
+    if "C=" not in r.stdout:
+        return None, ((r.stderr or r.stdout).strip().splitlines() or ["rc %d" % r.returncode])[0][:120]
+    return r.stdout, r.stderr
 
 def render(N, mech=MECH, allow=ALLOW):
     nft = FakeNft(); N.run = nft.run
@@ -210,6 +239,22 @@ def run_checks(N, label=""):
     check("[7] private/internal destinations excluded — @priv set exists and both scan rules carry `ip daddr != @priv`",
           priv_ok, {"set": "set priv {" in text, "a": a_rule[:1], "b": b_rule[:1]})
 
+    # [8] an OVERLAPPING allowlist through REAL nft (SG-NFT F1). The batch is atomic, so one refused set is no table at
+    # all on a node that had none; the render must load and the loaded set must still hold each entry's addresses.
+    out, err = live_load(render(N, allow=ALLOW_OVERLAP))
+    name8 = "[8] an overlapping allowlist (10.10.0.0/24 + 10.10.0.4/32) loads in real nft and @scanallow holds the union"
+    if out is None:
+        SKIPS.append("[8]")
+        print("  SKIP " + name8 + "  — real nft cannot run here (no root, no `sudo -n`, or no unshare / nft): " + str(err))
+    else:
+        c, f = re.search(r"C=(\d+)", out), re.search(r"F=(\d+)", out)
+        kept = re.search(r"elements = \{([^}]*)\}", out)
+        check(name8,
+              c.group(1) == "0" and bool(f) and f.group(1) == "0" and "IN 10.10.0.9" in out and "IN 10.10.0.4" in out
+              and "OUT 10.10.1.4" in out,
+              {"nft -c": c.group(1), "nft -f": f.group(1) if f else "?", "kept": kept.group(1).strip() if kept else None,
+               "lookup": re.findall(r"(?:IN|OUT) [\d.]+", out), "nft": [l.strip() for l in (err or "").splitlines() if "Error" in l][:1]})
+
 SRC = open(NODED).read()
 if "--perturb" in sys.argv:
     # The version bump (v7) is gated by tests/mech_portscan_burst_selftest.py [2]; here we plant the scan-guard's own
@@ -227,21 +272,27 @@ if "--perturb" in sys.argv:
         "private-destination guard removed":
             ('lines.append("  set priv { typeof ip daddr; flags interval; elements = { 10.0.0.0/8',
              'lines.append("  set privX { typeof ip daddr; flags interval; elements = { 10.0.0.0/8', "[7]"),
+        "scanallow without auto-merge":
+            ('set scanallow { typeof ip saddr; flags interval; auto-merge; elements = { " + ", ".join(_sa)',
+             'set scanallow { typeof ip saddr; flags interval; elements = { " + ", ".join(_sa)', "[8]"),
     }
-    bad = []
+    bad, skipped = [], []
     for name, (a, b, want) in plants.items():
         if SRC.count(a) != 1:
             print("PERTURB FAILED — anchor for %r not in swg-noded exactly once (found %d)" % (name, SRC.count(a))); sys.exit(1)
-        FAILS.clear()
+        FAILS.clear(); SKIPS.clear()
         print("-- plant: " + name)
         run_checks(load(SRC.replace(a, b)))
         if not any(f.startswith(want) for f in FAILS):
-            bad.append(name)
+            (skipped if want in SKIPS else bad).append(name)
     print()
-    print("PERTURB OK — every plant turned its check red" if not bad else "PERTURB FAILED — stayed green: " + ", ".join(bad))
+    print("PERTURB FAILED — stayed green: " + ", ".join(bad) if bad else
+          "PERTURB OK — every plant that could run turned its check red; SKIPPED (real nft needs root or `sudo -n`): "
+          + ", ".join(skipped) if skipped else "PERTURB OK — every plant turned its check red")
     sys.exit(1 if bad else 0)
 
 run_checks(load(SRC))
 print()
-print("ALL PASS" if not FAILS else "%d FAIL" % len(FAILS))
+print(("ALL PASS" + (" — SKIPPED: %s (real nft needs root or `sudo -n`)" % ", ".join(SKIPS) if SKIPS else "")) if not FAILS
+      else "%d FAIL" % len(FAILS))
 sys.exit(1 if FAILS else 0)
