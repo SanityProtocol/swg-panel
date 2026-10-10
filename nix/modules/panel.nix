@@ -913,8 +913,9 @@ in
 
       # ⚠️ The container arm needs the poll and the native arm does not, and this is measured, not
       # defensive: the panel container writes the trigger through a bind mount, and inotify does not
-      # cross one — a host `.path` unit never sees that write. install-docker.sh reaches the same
-      # conclusion and retires its `.path` for exactly this reason. The stamp file in the rebuild
+      # cross one — a host `.path` unit never sees that write. (⚠️ Not so on Docker: there a host `.path`
+      # unit does see it, measured 2026-10-10; this arm's backend was not re-measured, and its poll does
+      # not depend on the answer.) The stamp file in the rebuild
       # script is what stops the two triggers from running it twice.
       systemd.timers.swg-update = mkIf (cfg.selfUpdate.enable && cfg.delivery == "container") {
         description = "poll for a swg-panel update request (the panel writes it across a bind mount)";

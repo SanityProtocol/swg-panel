@@ -119,8 +119,8 @@ let
     # looped because the version was still behind.
     export NIX_CONFIG="extra-experimental-features = nix-command flakes"
 
-    # Idempotence, for the polling timer the container arm needs (inotify does not cross a bind
-    # mount, so a `.path` unit never sees the write a container makes to the trigger). Stamp BEFORE
+    # Idempotence: on the container arm a polling timer and the `.path` unit can both start this for one
+    # request (the node and panel modules say why that arm polls). Stamp BEFORE
     # rebuilding, never after: a rebuild restarts this very host's services, and a stamp written
     # afterwards would be missed by a run that was interrupted — which then loops for ever.
     #

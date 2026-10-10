@@ -1649,9 +1649,10 @@ EOF
 
 # swg-netctl: the privileged network/TLS helper. The unprivileged panel can't bind low ports, edit its
 # own unit, or run acme.sh — it drops a validated JSON request into a queue only IT can write, and this
-# root helper drains it. A .path watch fires instantly on bare-metal; a slow timer is the fallback (a
-# docker container's write to a bind-mounted queue wouldn't cross to a host inotify watch — that path is
-# wired in a later phase). Requests/results carry no secrets; the helper reads the CF token itself.
+# root helper drains it. A .path watch fires instantly; a 10 s timer is the fallback for a watch that died. (A Docker
+# panel's host drainer, swg-netctl-docker, watches its bind-mounted queue the same way: the host's inotify sees the
+# container's write — a bind mount is the same inode, measured 2026-10-10.) Requests/results carry no secrets; the
+# helper reads the CF token itself.
 write_netctl(){
   [ -f "$SRC/swg-netctl" ] || return 0
   run mkdir -p "$PREFIX/usr/local/bin"; cp "$SRC/swg-netctl" "$PREFIX/usr/local/bin/swg-netctl"; chmod 755 "$PREFIX/usr/local/bin/swg-netctl"
@@ -1728,7 +1729,7 @@ mk_update_unit(){
   # that branch, since nothing else on the box records which one it was.
   _swg_ref="${SWG_REF:-main}"
   swg_update_wrapper_text "$_swg_ref" | writef_atomic /usr/local/bin/swg-update 755   # the one text (lib/common.sh)
-  # A docker container's write to a bind-mounted trigger does NOT cross to a host .path/inotify watch, so we POLL.
+  # The triggers are POLLED (lib/common.sh write_docker_updater says why, and why not a .path watch).
   # FIXED unit names + a COMPREHENSIVE trigger list mean a bare panel and a docker node on the SAME box write
   # IDENTICAL units — no collision, no runaway. (install-docker writes the exact same files.)
   swg_update_check_text | writef /usr/local/bin/swg-update-check 755   # the one text (lib/common.sh)

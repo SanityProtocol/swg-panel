@@ -17,8 +17,9 @@ between the two nodes until its TTL ran out: measured on two real nodes (.campai
       priority, plus a stale one ahead of them or behind them — are rebuilt in order once, and the next passes write
       nothing. A teardown capped at 8 deletions left 9 in place, re-added the rest behind them, signed a backstop behind
       its exit rule as drift, and rebuilt the band on every pass (nixos, 17 rules at 7000: CPU re-qualification
-      FLEET-2). The stale rule behind the band catches ANY cap below the rule count (it is never reached); ahead of it,
-      an odd cap removes it with whole pairs and converges by luck (verify round 1, V3-F1).
+      FLEET-2). The stale rule behind the band catches ANY cap below the rule count: it survives the first pass, so the
+      second writes again (caps 9–16 reach it in pass 2, cap 8 in pass 3); ahead of it, an odd cap removes it with whole
+      pairs and converges by luck (verify round 1, V3-F1).
 
 Hermetic: `run()` is a recorder; the rest of `reconcile_cascade` is stopped at its iptables step.
 Run: python3 tests/cascade_reflect_backstop_selftest.py            (0 = pass)

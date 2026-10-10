@@ -1469,9 +1469,10 @@ write_docker_updater(){
   swg_update_wrapper_text "$_swg_ref" > /usr/local/bin/swg-update.new   # the one text (above)
   chmod 755 /usr/local/bin/swg-update.new
   mv -f /usr/local/bin/swg-update.new /usr/local/bin/swg-update   # see the rename note above — NEVER `cat >`
-  # The trigger files are written by the panel/node CONTAINER through a bind mount, and inotify does NOT cross that
-  # bind mount — a host `.path` unit (PathModified) NEVER sees the container's write. So we POLL the trigger mtimes
-  # from the host instead (stat across the bind mount works — it's a shared inode). A timer runs this every 30s.
+  # The trigger files are written by the panel/node CONTAINER through a bind mount, and the host POLLS their mtimes (stat
+  # across the bind mount — a shared inode). A timer runs this every 30s. ⚠️ This said a host `.path` unit NEVER sees the
+  # container's write; on Docker it does (measured 2026-10-10 on a Docker node: PathModified fired on a create, an in-place
+  # rewrite and a rename made inside the container). The poll stays: it does not depend on that, and 30 s is fine here.
   swg_update_check_docker_text > /usr/local/bin/swg-update-check   # the one text (above)
   chmod 755 /usr/local/bin/swg-update-check
   swg_update_docker_service_text > /etc/systemd/system/swg-update.service

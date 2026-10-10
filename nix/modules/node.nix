@@ -450,7 +450,8 @@ in
 
       # Container arm only, and measured rather than defensive: the daemon writes the trigger through
       # a bind mount, and inotify does not cross one — the `.path` unit above never sees that write.
-      # install-docker.sh retires its own `.path` for exactly this reason.
+      # ⚠️ Not so on Docker: there a host `.path` unit does see a container's write (measured 2026-10-10);
+      # this arm's backend was not re-measured, and its poll does not depend on the answer.
       systemd.timers.swg-node-update = mkIf (cfg.selfUpdate.enable && cfg.delivery == "container") {
         description = "poll for a swg-node update request (the daemon writes it across a bind mount)";
         wantedBy = [ "timers.target" ];
