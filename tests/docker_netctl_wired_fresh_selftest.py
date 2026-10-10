@@ -84,9 +84,11 @@ check("the .path watches this install's queue",
       os.path.isfile(os.path.join(SD, "swg-netctl-docker.path")) and
       ("DirectoryNotEmpty=%s/data/lib/netctl/queue" % inst) in open(os.path.join(SD, "swg-netctl-docker.path")).read())
 _gd = os.path.join(SD, "swg-netctl-docker.service.d", "swg-due.conf")
-check("…and its idle gate: the drainer starts only when this install's queue holds something (docs/CPU-PLAN.md A3)",
+check("…and its idle gate: the drainer starts only when this install's queue holds something — the queue under the unit's own "
+      "SWG_DOCKER_DIR (docs/CPU-PLAN.md A3)",
       os.access(os.path.join(BIN, "swg-netctl-due"), os.X_OK) and os.path.isfile(_gd)
-      and ("--queue-only %s/data/lib/netctl/queue;" % inst) in open(_gd).read(), os.listdir(SD))
+      and '--queue-only "$${SWG_DOCKER_DIR:-/opt/swg-panel-docker}/data/lib/netctl/queue"' in open(_gd).read()
+      and ("Environment=SWG_DOCKER_DIR=%s\n" % inst) in open(os.path.join(SD, "swg-netctl-docker.service")).read(), os.listdir(SD))
 
 print("\n[2] it is the source tree's drainer")
 check("byte-identical to docker/swg-netctl-docker",

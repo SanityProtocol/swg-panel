@@ -10,7 +10,9 @@ day, more than the panel itself spent on hel-infra (2026-10-09). An ExecConditio
       loop) —, for settings saved since the last run, for a stamp that is missing, junk or past due, and for a clock that
       went back; it skips only an idle tick. The Docker form asks the queue only.
   [2] The drop-in fails OPEN: systemd skips a start on any exit from 1 to 254, so only the gate's explicit 1 may skip — a
-      gate that is missing, broken or killed runs the helper, as before the gate existed.
+      gate that is missing, broken or killed runs the helper, as before the gate existed. It names no path: the gate gets
+      the state dir (the queue) from the unit's own SWG_STATE_DIR (SWG_DOCKER_DIR), under the helper's (the drainer's) own
+      default, so the two cannot disagree.
   [3] The stamp, through swg-netctl's real main(): the next own work is the journal refresh, Debug's end or the budget's
       retry, whichever comes first; its mtime is a second before the run read the settings, so a save made while the run
       was reading them is still newer than it; a dry run writes nothing; no settings still writes one.
@@ -25,6 +27,7 @@ Run: python3 tests/netctl_idle_gate_selftest.py   (0 = pass)
      nodot        the gate does not count dotfiles (the path watch fires on them: a loop)
      clockback    the gate trusts a due time far ahead (a clock that went back stalls the helper's own work)
      failclosed   the drop-in runs the gate bare (a missing gate stops the helper for good)
+     pathdrift    the drop-in's default state dir is not the helper's (a box without SWG_STATE_DIR: the gate reads elsewhere)
      stampnow     the stamp's mtime is when it was written (a save during the run is missed for up to 5 min)
      noretry      the stamp ignores the budget's retry time (a failed journald restart waits 5 min, not 1)
      nodebug      the stamp ignores Debug's end (the caps stay lifted up to 5 min after it)
@@ -52,8 +55,9 @@ SRC = {k: open(p, encoding="utf-8").read() for k, p in FILES.items()}
 PLANTS = {
     "nodot": ("common", "shopt -s nullglob dotglob\n", "shopt -s nullglob\n"),
     "clockback": ("common", "(( now >= due || due - now > 600 )) && exit 0", "(( now >= due )) && exit 0"),
-    "failclosed": ("common", "ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due $1; [ \\$\\$? -eq 1 ] && exit 1; exit 0'",
-                   "ExecCondition=/usr/local/bin/swg-netctl-due $1"),
+    "failclosed": ("common", "ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due \"$${SWG_STATE_DIR:-/var/lib/swg-panel}\"; [ $$? -eq 1 ] && exit 1; exit 0'",
+                   "ExecCondition=/usr/local/bin/swg-netctl-due /var/lib/swg-panel"),
+    "pathdrift": ("common", '\"$${SWG_STATE_DIR:-/var/lib/swg-panel}\"', '\"$${SWG_STATE_DIR:-/var/lib/swg}\"'),
     "stampnow": ("netctl", "os.utime(DUE_STAMP + \".tmp\", (read_at - 1, read_at - 1))", "os.utime(DUE_STAMP + \".tmp\", None)"),
     "noretry": ("netctl", "    if retry and retry > read_at:\n", "    if False:\n"),
     "nodebug": ("netctl", "        if until > read_at:\n", "        if False:\n"),
@@ -168,7 +172,8 @@ print("\n[2] the drop-in: only the gate's explicit 1 skips the start")
 
 
 def exec_condition(dropin, gate_path):
-    """the ExecCondition command line, as systemd runs it: argv split on its quotes, `$$` → `$`"""
+    """the ExecCondition command line, as systemd runs it: argv split on its quotes, `$$` → `$` (the shell expands what is left
+    from the unit's environment)"""
     line = [l for l in dropin.splitlines() if l.startswith("ExecCondition=")]
     assert len(line) == 1, dropin
     cmd = line[0][len("ExecCondition="):].replace("/usr/local/bin/swg-netctl-due", gate_path)
@@ -177,11 +182,29 @@ def exec_condition(dropin, gate_path):
     return [a.replace("$$", "$") for a in argv]
 
 
-for name, args in (("swg-netctl.service", ("swg_netctl_due_dropin_text", ST)),
-                   ("swg-netctl-docker.service", ("swg_netctl_docker_due_dropin_text", DQ))):
-    dropin = render("%s %s" % args)
-    check("[2] %s: the drop-in names the gate with its argument" % name,
-          "/usr/local/bin/swg-netctl-due" in dropin and args[1] in dropin, dropin)
+HELPER_DEFAULT = re.search(r'^STATE_DIR = os\.environ\.get\("SWG_STATE_DIR", "([^"]+)"\)', SRC["netctl"], re.M).group(1)
+DRAINER_DEFAULT = re.search(r'^DIR = os\.environ\.get\("SWG_DOCKER_DIR", "([^"]+)"\)',
+                            open(os.path.join(ROOT, "docker", "swg-netctl-docker"), encoding="utf-8").read(), re.M).group(1)
+DK = os.path.join(T, "dk")
+for name, fname, var, val, want_set, want_unset in (
+        ("swg-netctl.service", "swg_netctl_due_dropin_text", "SWG_STATE_DIR", ST, [ST], [HELPER_DEFAULT]),
+        ("swg-netctl-docker.service", "swg_netctl_docker_due_dropin_text", "SWG_DOCKER_DIR", DK,
+         ["--queue-only", DK + "/data/lib/netctl/queue"], ["--queue-only", DRAINER_DEFAULT + "/data/lib/netctl/queue"])):
+    dropin = render(fname)
+    check("[2] %s: the drop-in names the gate, and no path — the same text on every box" % name,
+          "/usr/local/bin/swg-netctl-due" in dropin and render(fname + " /some/where") == dropin, dropin)
+    seen = os.path.join(T, "gate-argv")
+    rec = os.path.join(T, "rec-gate")
+    open(rec, "w").write('#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\nexit 1\n' % seen)
+    os.chmod(rec, 0o755)
+    env = {k: v for k, v in os.environ.items() if k not in ("SWG_STATE_DIR", "SWG_DOCKER_DIR")}
+    subprocess.run(exec_condition(dropin, rec), env=dict(env, **{var: val}), capture_output=True, text=True, timeout=10)
+    got_set = open(seen).read().splitlines()
+    subprocess.run(exec_condition(dropin, rec), env=env, capture_output=True, text=True, timeout=10)
+    got_unset = open(seen).read().splitlines()
+    check("[2] %s: the gate reads the unit's %s — and, without one, the %s's own default" % (
+          name, var, "helper" if var == "SWG_STATE_DIR" else "drainer"),
+          got_set == want_set and got_unset == want_unset, (got_set, got_unset))
     fake = os.path.join(T, "fake-gate")
     for what, body, want in (("exits 1 (idle)", "exit 1", 1), ("exits 0 (work)", "exit 0", 0),
                              ("is broken (exit 2)", "exit 2", 0), ("is killed", "kill -9 $$", 0), ("is missing", None, 0)):
@@ -191,7 +214,8 @@ for name, args in (("swg-netctl.service", ("swg_netctl_due_dropin_text", ST)),
             open(fake, "w").write("#!/bin/sh\n%s\n" % body)
             os.chmod(fake, 0o755)
         try:
-            rc = subprocess.run(exec_condition(dropin, fake), capture_output=True, text=True, timeout=10).returncode
+            rc = subprocess.run(exec_condition(dropin, fake), env=dict(env, **{var: val}), capture_output=True, text=True,
+                                timeout=10).returncode
         except FileNotFoundError:
             rc = 203                                   # what systemd gets when the exec itself fails (EXEC) — a "skip"
         check("[2] %s: a gate that %s → %s" % (name, what, "skip (1)" if want else "run (0)"), rc == want, rc)
@@ -291,10 +315,10 @@ for k in ("host", "docker", "update", "uninstall", "netctl"):
 wn = fn(SRC["host"], "write_netctl")
 check("[4] install-host.sh's write_netctl renders both from lib/common.sh (the gate by rename: it may be running)",
       "swg_netctl_due_text | writef_atomic /usr/local/bin/swg-netctl-due 755" in wn
-      and 'swg_netctl_due_dropin_text "$STATE_DIR" | writef "/etc/systemd/system/swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN"' in wn, wn[-600:])
+      and 'swg_netctl_due_dropin_text | writef "/etc/systemd/system/swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN"' in wn, wn[-600:])
 wd = fn(SRC["docker"], "wire_docker_netctl")
-check("[4] install-docker.sh's wire_docker_netctl heals the gate for its own queue",
-      'netctl_gate_heal swg-netctl-docker.service "$(swg_netctl_docker_due_dropin_text "$INSTALL_DIR/data/lib/netctl/queue")"' in wd)
+check("[4] install-docker.sh's wire_docker_netctl heals the gate (its queue: the unit's SWG_DOCKER_DIR)",
+      'netctl_gate_heal swg-netctl-docker.service "$(swg_netctl_docker_due_dropin_text)"' in wd)
 U = SRC["update"]
 check("[4] update.sh heals the gate after the helper's own heal, and the Docker gate after the Docker helper's",
       re.search(r"^  ensure_netctl_helper .*\n  ensure_netctl_gate ", U, re.M) is not None
@@ -334,8 +358,8 @@ check("[5] missing: the gate and the drop-in are written, systemd reloaded, and 
       and "daemon-reload" in calls and "DID_UPDATE=yes" in r.stdout, (r.returncode, r.stderr, calls))
 check("[5] …the gate is executable and is this release's text", os.access(os.path.join(R, "bin", "swg-netctl-due"), os.X_OK)
       and open(os.path.join(R, "bin", "swg-netctl-due")).read() == gate_text)
-check("[5] …the drop-in names this box's state dir", "/usr/local/bin/swg-netctl-due /var/lib/swg-panel;" in open(DROP).read()
-      .replace(R + "/bin", "/usr/local/bin"))
+check("[5] …the drop-in is this release's text", open(DROP).read().replace(R + "/bin", "/usr/local/bin")
+      == render("swg_netctl_due_dropin_text"))
 os.remove(os.path.join(R, "calls"))
 r, calls = heal(R, "ensure_netctl_gate")
 check("[5] a second run writes nothing and changes nothing", r.returncode == 0 and "DID_UPDATE=no" in r.stdout and not calls,
@@ -354,8 +378,9 @@ r, calls = heal(R2, "ensure_netctl_docker_gate node")
 check("[5] Docker: a node profile gets no gate", not os.listdir(os.path.join(R2, "bin")))
 r, calls = heal(R2, "ensure_netctl_docker_gate master")
 dd = os.path.join(R2, "sd", "swg-netctl-docker.service.d", "swg-due.conf")
-check("[5] Docker: a panel-bearing profile gets the queue-only gate on its own queue",
-      os.path.isfile(dd) and "--queue-only /opt/swg-panel-docker/data/lib/netctl/queue;" in open(dd).read(), r.stderr)
+check("[5] Docker: a panel-bearing profile gets the queue-only gate",
+      os.path.isfile(dd) and open(dd).read().replace(R2 + "/bin", "/usr/local/bin") == render("swg_netctl_docker_due_dropin_text"),
+      r.stderr)
 
 # ── [6] removal ────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[6] the gate goes with the last unit that runs it")
