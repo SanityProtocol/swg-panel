@@ -573,7 +573,11 @@ check("[6] …'moved' is judged against what the last pass APPLIED, which the re
 check("[6] …and the routing pass is still triggered by last_route_sig, which the reverify clears to force it",
       "if (_route_sig != last_route_sig or" in SRC["noded"])
 wg = re.findall(r'host_sh\("wg show [^\n]*', SRC["noded"])
-check("[6] reads of a server's device (gone while it is stopped) are probes", wg and all("probe=True" in w for w in wg), wg)
+wd = re.findall(r'_dump_of\(\["wg"\], iface\)', SRC["noded"])          # the WDTT server's key and dump: the pass's `wg show all
+_run = SRC["noded"][SRC["noded"].find("\ndef run("):]                 # dump` (CPU-PLAN B3), else that read alone through run()
+_run = _run[:_run.find("\ndef ", 1)]
+check("[6] reads of a server's device (gone while it is stopped) are probes — or read through run(), which logs nothing",
+      len(wg) + len(wd) >= 2 and all("probe=True" in w for w in wg) and "log(" not in _run, (wg, wd))
 ap = SRC["noded"][SRC["noded"].find('apply_panel_settings(reply.get("panel"))'):]
 check("[6] a new level is followed in the same pass the sync applied it", ap[:400].count("_log_follow(node_cfg)") == 1)
 
