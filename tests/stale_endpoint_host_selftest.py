@@ -21,6 +21,10 @@ What this drives, through the REAL `_node_issues`:
   [4] "the node did not report any addresses" is not evidence of staleness
   [5] auto (empty) raises nothing — that is the healthy state this whole field starts in
   [6] the panel does NOT silently rewrite it: an operator may have pinned an address deliberately
+  [7] on a node that reports `turn_bind_any` (1.8.9) the line is worded for NAT (1.8.9 qualification PANEL-5): such a
+      node listens on every address for a host it does not carry, so its new turn-proxies start, and behind NAT (a
+      router, a cloud's 1:1 NAT) the address clients dial is never on the box — it is still named, without "will fail
+      to start" or "no longer", and the sentence has its Russian. [1] is a node older than that (it binds as typed).
 
 Hermetic: no network, no state; `_node_issues` is called directly.
 
@@ -28,8 +32,9 @@ Run: python3 tests/stale_endpoint_host_selftest.py     (0 = pass)
      --perturb       drops the check entirely (how it shipped) — expects RED in [1]
      --perturb-name  drops the _is_ip guard — expects RED in [3], the false alarm that would fire on
                      every install whose endpoint_host is a domain
+     --perturb-nat   the old sentence on every node again (PANEL-5) — expects RED in [7]
 """
-import os, sys, types
+import json, os, sys, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -38,6 +43,8 @@ PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-serv
 PLANTS = {
     "--perturb": ('    if _eh and nips and _is_ip(_eh) and _eh not in nips:', '    if False:'),
     "--perturb-name": ('if _eh and nips and _is_ip(_eh) and _eh not in nips:', 'if _eh and nips and _eh not in nips:'),
+    "--perturb-nat": ('"otherwise clients cannot reach this node", v1=_eh) if snap.get("turn_bind_any") else\n',
+                      '"otherwise clients cannot reach this node", v1=_eh) if False else\n'),
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
 
@@ -59,10 +66,10 @@ exec(compile(src.split("\nif __name__ ==")[0], "swg-panel-server", "exec"), P.__
 
 LIVE, DEAD = "82.24.110.35", "46.17.99.41"
 
-def issues(endpoint_host, node_ips):
+def issues(endpoint_host, node_ips, bind_any=False, keys=False):
     c = {"endpoint_host": endpoint_host}
-    snap = {"node_ips": list(node_ips), "node_ifaces": []}
-    return [str(i.get("error") or "") for i in P._node_issues(c, snap)]
+    snap = {"node_ips": list(node_ips), "node_ifaces": [], **({"turn_bind_any": True} if bind_any else {})}
+    return [str(i.get("error_key" if keys else "error") or "") for i in P._node_issues(c, snap)]
 
 def said(msgs):
     return [mm for mm in msgs if "no longer on this node" in mm]
@@ -100,6 +107,25 @@ print("\n[6] a health check reports; it does not rewrite what configs dial")
 c = {"endpoint_host": DEAD}
 P._node_issues(c, {"node_ips": [LIVE], "node_ifaces": []})
 check("[6] the node record is left exactly as the operator has it", c["endpoint_host"] == DEAD, c)
+
+# ── [7] a 1.8.9 node: the line is worded for NAT ──────────────────────────────────────────────────
+print("\n[7] a node that reports turn_bind_any (1.8.9): worded for NAT (PANEL-5)")
+PUB, PRIV = "203.0.113.9", "192.168.88.10"          # behind 1:1 NAT: clients dial PUB, the box carries PRIV
+dial = lambda msgs: [mm for mm in msgs if "the address clients dial (" in mm]
+msgs = issues(PUB, [PRIV], bind_any=True)
+check("[7] the address clients dial that is not on the box is still named — a departed address is not lost",
+      len(dial(msgs)) == 1 and PUB in dial(msgs)[0], msgs)
+check("[7] …without \"will fail to start\" (the node listens on every address for it) or \"no longer\" (behind NAT it never was)",
+      dial(msgs) and not any("fail to start" in mm or "no longer" in mm for mm in dial(msgs)), msgs)
+check("[7] …saying it is fine behind NAT that forwards it, and what it costs otherwise",
+      dial(msgs) and "behind NAT" in dial(msgs)[0] and "cannot reach" in dial(msgs)[0], msgs)
+check("[7] the address the node reports still raises nothing", dial(issues(LIVE, [LIVE], bind_any=True)) == [],
+      issues(LIVE, [LIVE], bind_any=True))
+check("[7] a node older than that keeps the old sentence (it binds the host as typed, so a new turn-proxy fails)",
+      any("fail to start" in mm for mm in dial(issues(PUB, [PRIV]))), issues(PUB, [PRIV]))
+KEY = next(iter(dial(issues(PUB, [PRIV], bind_any=True, keys=True))), "")
+ru = open(os.path.join(ROOT, "js", "lang", "ru.js"), encoding="utf-8").read()
+check("[7] the sentence has its Russian line (js/lang/ru.js)", bool(KEY) and ("  " + json.dumps(KEY, ensure_ascii=False) + ":") in ru, KEY)
 
 if MODE:
     if FAILS:

@@ -9238,7 +9238,13 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
     # say", which must never read as "every address is stale" ([[lesson-detection-failure-fail-safe]]).
     _eh = (c.get("endpoint_host") or "").strip()
     if _eh and nips and _is_ip(_eh) and _eh not in nips:
-        issues.append(perr("the address clients dial ({v1}) is no longer on this node — new turn-proxies "
+        # On a node that reports `turn_bind_any` (1.8.9) a new turn-proxy starts all the same — it listens on every address
+        # for a host the box does not carry (swg-noded turn_bind) — and behind NAT (a router, a cloud's 1:1 NAT) the address
+        # clients dial is never on the box. So there the line names both cases, NAT and a lost address; only an older node
+        # binds the host as typed and fails (1.8.9 qualification PANEL-5).
+        issues.append(perr("the address clients dial ({v1}) is not on this node — fine behind NAT that forwards it here; "
+                           "otherwise clients cannot reach this node", v1=_eh) if snap.get("turn_bind_any") else
+                      perr("the address clients dial ({v1}) is no longer on this node — new turn-proxies "
                            "are created with it and will fail to start", v1=_eh))
     # …and the servers already BOUND to an address that has gone. A turn-proxy in this state announces
     # itself by crash-looping (see the flapping check below), but the self-contained kinds and the exits
@@ -9248,8 +9254,15 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
     # restarted onto the new address, so the records and reality disagreed with nothing saying so.
     # Same guards as above, and for the same reasons: an IP literal only (these fields take a hostname
     # too), and only when the node actually reported addresses to compare against.
-    _bound = [("WDTT", w.get("iface") or "?", w.get("listen")) for w in (snap.get("wdtt") or []) if isinstance(w, dict)]
-    _bound += [("csqtt", q.get("iface") or "?", q.get("listen")) for q in (snap.get("csqtt") or []) if isinstance(q, dict)]
+    # ⚠️ WHAT A WDTT / csqtt SERVER BINDS IS THE NODE'S `bind`, NOT `listen` (1.8.9 qualification PANEL-5). Since 4eec67e
+    # `listen` is the host clients DIAL — behind NAT an address the box never carries, for which the node binds every
+    # address (swg-noded turn_bind) and reports that as `bind`. Read as a bind, `listen` said "bound to <the NAT's
+    # address>, which is no longer on this node" for ever while every client worked, and invited the "fix" — the private
+    # address — that breaks them all. `listen` is the bind only on a node that sends no `bind` (before 1.8.9); a `bind`
+    # that is not a string is not read (no noded sends one, and the strip below would fail /api/state for every operator).
+    _at = lambda r: r["bind"] if isinstance(r.get("bind"), str) else r.get("listen")
+    _bound = [("WDTT", w.get("iface") or "?", _at(w)) for w in (snap.get("wdtt") or []) if isinstance(w, dict)]
+    _bound += [("csqtt", q.get("iface") or "?", _at(q)) for q in (snap.get("csqtt") or []) if isinstance(q, dict)]
     # Exits are the one source whose REPORTED record carries no dial_src — the node echoes back id/device/
     # provider/up/error only — so this reads the panel's own stored value, which is what it pushes to the node.
     _bound += [("exit", (x.get("label") or x.get("id") or "?"), x.get("dial_src"))

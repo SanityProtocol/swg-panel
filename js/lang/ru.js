@@ -3384,6 +3384,7 @@ export const STR = {
   // «перезапусков: N» — the count after a colon, so it never has to agree with a noun (3 перезапуска / 5 перезапусков)
   "{v1}: crash-looping — {v2} restarts in {v3} min": "{v1}: падает по кругу — перезапусков за {v3} мин: {v2}",
   "the address clients dial ({v1}) is no longer on this node — new turn-proxies are created with it and will fail to start": "адрес, на который подключаются клиенты ({v1}), больше не принадлежит этой ноде — новые turn-прокси создаются с ним и не смогут запуститься",
+  "the address clients dial ({v1}) is not on this node — fine behind NAT that forwards it here; otherwise clients cannot reach this node": "адрес, на который подключаются клиенты ({v1}), не принадлежит этой ноде — за NAT, который пробрасывает его сюда, это нормально; иначе клиенты не могут подключиться к этой ноде",
   "{v1} {v2} is bound to {v3}, which is no longer on this node": "{v1} {v2} привязан к {v3} — этого адреса больше нет на ноде",
   "{v1}: interface missing on the node (restore available)": "{v1}: интерфейс отсутствует на ноде (доступно восстановление)",
   "AmneziaWG kernel module not built/loaded — awg interfaces run on the slower fallback datapath; update the node to rebuild the module": "Модуль ядра AmneziaWG не собран или не загружен — awg-интерфейсы работают на более медленном резервном датапасе в пользовательском пространстве; обновите ноду, чтобы пересобрать модуль",
