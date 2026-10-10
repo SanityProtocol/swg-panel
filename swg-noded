@@ -4397,25 +4397,101 @@ def _reach_generation(plan, g):
             "counters": [_reach_counter(n) for n in plan["ifaces"]]}
 
 
+# ── NAMED nft COUNTERS, READ OVER NETLINK (docs/CPU-PLAN.md B5a) ─────────────────────────────────────────────────────────
+# `nft -j list counters table T` cost 66–90 ms on swgt whatever T held — the nft CLI loads and merges every set of the ruleset
+# before it lists anything — for a handful of named counters, on every pass (P2P's torrent count) and every routing pass
+# (device access). One NFT_MSG_GETOBJ dump, filtered to the table and the counter type, reads the same objects in ~0.1 ms
+# (measured on swgt 2026-10-10: the same names, the CLI's values between two netlink reads). Values are u64 INTEGERS, never
+# floats (the panel's sync refuses a non-finite number anywhere in the body). Anything unexpected — no socket, EPERM, an
+# error reply, a table that answers with no counters (missing, or not ours) — is None, and the caller reads them with nft
+# exactly as before.
+_NL_COUNTERS = {"warned": False}
+
+
+def _nl_attrs(buf, off, end):
+    while off + 4 <= end:
+        alen, atyp = struct.unpack_from("=HH", buf, off)
+        if alen < 4:
+            return
+        yield atyp & 0x3fff, buf[off + 4:off + alen]
+        off += (alen + 3) & ~3
+
+
+def _nft_counters(table, family=1):
+    """{name: (packets, bytes)} of every named counter in the inet <table> — or None (read them with nft instead)."""
+    def attr(t, data):
+        a = struct.pack("=HH", 4 + len(data), t) + data
+        return a + b"\0" * ((4 - len(a) % 4) % 4)
+    body = struct.pack("=BBH", family, 0, 0) + attr(1, table.encode() + b"\0") + attr(3, struct.pack(">I", 1))
+    msg = struct.pack("=LHHLL", 16 + len(body), (10 << 8) | 19, 0x1 | 0x300, 1, 0) + body   # NFTA_OBJ_TABLE, _TYPE=counter
+    out, s = {}, None
+    try:
+        s = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 12)                            # NETLINK_NETFILTER
+        s.settimeout(2)
+        s.sendto(msg, (0, 0))
+        while True:
+            d = s.recv(1 << 16)
+            off = 0
+            while off + 16 <= len(d):
+                ln, typ = struct.unpack_from("=LH", d, off)
+                if ln < 16:
+                    raise ValueError("short netlink message")
+                if typ == 3:                                                                   # NLMSG_DONE
+                    return out or None
+                if typ == 2:                                                                   # NLMSG_ERROR
+                    if struct.unpack_from("=i", d, off + 16)[0]:
+                        return None
+                    return out or None
+                name, pk, by = None, 0, 0
+                for t, v in _nl_attrs(d, off + 20, off + ln):
+                    if t == 2:                                                                 # NFTA_OBJ_NAME
+                        name = v.rstrip(b"\0").decode()
+                    elif t == 4:                                                               # NFTA_OBJ_DATA
+                        for t2, v2 in _nl_attrs(v, 0, len(v)):
+                            if t2 == 1:
+                                by = struct.unpack(">Q", v2[:8])[0]                            # NFTA_COUNTER_BYTES
+                            elif t2 == 2:
+                                pk = struct.unpack(">Q", v2[:8])[0]                            # NFTA_COUNTER_PACKETS
+                if name is not None:
+                    out[name] = (pk, by)
+                off += (ln + 3) & ~3
+    except (OSError, ValueError, struct.error, UnicodeDecodeError) as e:
+        if not _NL_COUNTERS["warned"]:
+            _NL_COUNTERS["warned"] = True
+            log(LOG_WARNING, "nft counters: netlink could not read them (%s) — reading them with nft instead", e)
+        return None
+    finally:
+        if s is not None:
+            s.close()
+
+
 def _reach_read_counters():
     """{interface: packets} for EVERY interface counter in the table — one fork, O(counters) output (§10.1 M3) — or None when the
     table is not there. All of them, not only the enforced: an interface that left the plan keeps its counter until the pass that
     swapped it out has read and deleted it — or, when that fails, until the next declare — and its count must survive either
     (§16 B2)."""
-    r = run(["nft", "-j", "list", "counters", "table", "inet", REACH_NFT_TABLE])
-    if r.returncode != 0:
-        return None
+    nl = _nft_counters(REACH_NFT_TABLE)
+    if nl is not None:
+        items = [(n, pk) for n, (pk, _by) in nl.items()]
+    else:
+        r = run(["nft", "-j", "list", "counters", "table", "inet", REACH_NFT_TABLE])
+        if r.returncode != 0:
+            return None
+        items = []
+        with contextlib.suppress(ValueError, TypeError, AttributeError):
+            for ent in json.loads(r.stdout or "{}").get("nftables") or []:
+                c = ent.get("counter") if isinstance(ent, dict) else None
+                if c:
+                    items.append((c.get("name"), c.get("packets")))
     out = {}
-    with contextlib.suppress(ValueError, TypeError, AttributeError):
-        for ent in json.loads(r.stdout or "{}").get("nftables") or []:
-            c = ent.get("counter") if isinstance(ent, dict) else None
-            m = re.match(r"^c([0-9a-f]{2,30})$", str((c or {}).get("name") or ""))
-            if not m:
-                continue
-            with contextlib.suppress(ValueError, UnicodeDecodeError):
-                name = bytes.fromhex(m.group(1)).decode()
-                if _SHARE_IFNAME_RE.match(name):
-                    out[name] = int(c.get("packets") or 0)
+    for cname, pk in items:
+        m = re.match(r"^c([0-9a-f]{2,30})$", str(cname or ""))
+        if not m:
+            continue
+        with contextlib.suppress(ValueError, UnicodeDecodeError, TypeError):
+            name = bytes.fromhex(m.group(1)).decode()
+            if _SHARE_IFNAME_RE.match(name):
+                out[name] = int(pk or 0)
     return out
 
 
@@ -11756,9 +11832,14 @@ def _block_activity():
             # TWO TARGETED READS, not `list table`: the table also holds the fan-out meter (an element per client that opened
             # a high-port flow, each with its limit state) and the flow sets — dumping and parsing all that on every report
             # cost more than it saved, and an nft that cannot render a meter in JSON would have lost the counts outright.
-            cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")
-            out.setdefault("*", {})["torrent"] = sum(int(o["counter"].get("packets", 0)) for o in cj.get("nftables", [])
-                                                     if "counter" in o and o["counter"].get("name") in ("bt_tcp", "bt_utp", "dht", "udptrk", "fan_flag"))
+            _bt = ("bt_tcp", "bt_utp", "dht", "udptrk", "fan_flag")
+            nl = _nft_counters(P2P_NFT_TABLE)                     # one netlink dump, ~0.1 ms (B5a); nft as before if it fails
+            if nl is not None:
+                out.setdefault("*", {})["torrent"] = sum(nl[n][0] for n in _bt if n in nl)
+            else:
+                cj = json.loads(run(["nft", "-j", "list", "counters", "table", "inet", P2P_NFT_TABLE]).stdout or "{}")
+                out.setdefault("*", {})["torrent"] = sum(int(o["counter"].get("packets", 0)) for o in cj.get("nftables", [])
+                                                         if "counter" in o and o["counter"].get("name") in _bt)
     with contextlib.suppress(Exception):                          # …and WHO, read on its own: a failed count must not lose the names
         if _P2P["on"]:
             sj = json.loads(run(["nft", "-j", "list", "set", "inet", P2P_NFT_TABLE, "flag"]).stdout or "{}")
