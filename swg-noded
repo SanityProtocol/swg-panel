@@ -1811,7 +1811,10 @@ def _attach_turn_wg_sports(tp):
     even when several proxies front the SAME interface (else it'd guess the first). Transport-agnostic (the
     proxy→wg side is always a normal connected socket); grouped by owning unit via /proc/<pid>/cgroup. Best-effort."""
     with contextlib.suppress(Exception):
-        if not tp:
+        # Not on a Docker node: its proxies are sibling containers, each in its own pid namespace, so nothing noded's
+        # container can read names a socket's owner — `ss -p` printed no pid for any of svo-im's 204 loopback connections
+        # (2026-10-10) and this was always empty there. Asking cost two `ss` a pass for it.
+        if not tp or TURN_DOCKER:
             return
         by_svc = _turn_wg_sports_proc(sorted({t.get("service") for t in tp if t.get("service")}))
         if by_svc is None:                                   # no unified cgroup hierarchy here: ask ss, as before
