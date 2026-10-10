@@ -33,6 +33,7 @@ Run: python3 tests/log_live_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
      idleparse    with nothing open, a log post's body is still unpacked and parsed (plan §32 #4)
      replyalways  an idle reply carries `logs`              replyall     a request reaches nodes it does not name
+     scanallow    an idle reply carries scan_allow:[] (the port-scan guard's allowlist, when empty) → not byte-identical
      nodetoken    the log POST checks the node token in the node store (parses it)    nokey   any key is accepted
      anonparse    an anonymous log post is read, unpacked and parsed before any check (q189 F1)
      anytoken     any token reads as a node's                notoks       the sync does not hand its token to the request
@@ -94,6 +95,8 @@ PLANTS = {   # (program, anchor, replacement)
                  "(len(t) if t.isascii() else 6 * len(t))"),
     "replyalways": ("panel", '''                                **({"logs": _live} if _live else {}),''',
                     '''                                "logs": _live or [],'''),
+    "scanallow": ("panel", '''                                          **({"scan_allow": _ps.get("scan_allow")} if _ps.get("scan_allow") else {}),''',
+                  '''                                          "scan_allow": (_ps.get("scan_allow") or []),'''),
     "replyall": ("panel", '''            if nid in rec["nodeset"]:\n                rec["sent"].setdefault(nid, now)''',
                  '''            if True:\n                rec["sent"].setdefault(nid, now)'''),
     "idleparse": ("panel", '''        if not _LIVE_REQS and not _RANGE_REQS:          # nothing open''',
