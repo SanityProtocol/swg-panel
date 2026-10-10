@@ -107,6 +107,7 @@ import json
 import mmap
 import os
 import re
+import resource
 import secrets
 import shlex
 import select
@@ -1142,6 +1143,7 @@ def collect_health(proc_root="/proc", mounts=None, statvfs=os.statvfs):
 # answer is "the command succeeded". A COUNT rather than a set of pids because that is the whole question —
 # "could any zombie on this box belong to a run() in flight" — and `subprocess.run` does not hand out the pid.
 _RUN_INFLIGHT = 0
+_RUN_SPAWNS = 0     # every process run() has started — the pass's accounting line reports the difference (docs/CPU-PLAN.md B0)
 _RUN_LOCK = threading.Lock()
 
 
@@ -1149,9 +1151,10 @@ def run(args, input_text=None, timeout=20, env=None):
     # Fail-safe: a MISSING binary (e.g. `nft` on a node/image without nftables) must never crash a caller —
     # return a non-zero result like a normal command failure so callers handle it (smart routing then no-ops
     # instead of taking down the sync loop). Same for a timeout.
-    global _RUN_INFLIGHT
+    global _RUN_INFLIGHT, _RUN_SPAWNS
     with _RUN_LOCK:
         _RUN_INFLIGHT += 1
+        _RUN_SPAWNS += 1
     try:
         return subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout, env=env)
     except (FileNotFoundError, PermissionError) as e:
@@ -1161,6 +1164,13 @@ def run(args, input_text=None, timeout=20, env=None):
     finally:
         with _RUN_LOCK:
             _RUN_INFLIGHT -= 1
+
+
+def _children_cpu_s():
+    """CPU seconds of every child this process has waited for (user + system) — the pass's accounting line. Process-wide:
+    a background thread's children count in the pass they were reaped in."""
+    ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return ru.ru_utime + ru.ru_stime
 
 
 # ── Is that pid a LIVE process? ───────────────────────────────────────────────────────────────
@@ -1637,10 +1647,7 @@ def _attach_turn_wg_sports(tp):
             return
         by_svc = {}
         for proto in ("-t", "-u"):
-            try:
-                r = subprocess.run(["ss", "-Hnp", proto, "state", "established"], capture_output=True, text=True, timeout=5)
-            except Exception:
-                continue
+            r = run(["ss", "-Hnp", proto, "state", "established"], timeout=5)   # never raises: a failure reads as no lines
             for line in (r.stdout or "").splitlines():
                 mp = re.search(r"pid=(\d+)", line)
                 loop = re.findall(r"127\.0\.0\.1:(\d+)", line)   # LOCAL then PEER, both loopback on a proxy→wg conn
@@ -23342,6 +23349,8 @@ def main():
     threading.Thread(target=_mesh_probe_loop, args=(node_cfg,), daemon=True).start()
     while True:
         t0 = time.time()
+        _acct = (time.process_time(), _children_cpu_s(), _RUN_SPAWNS)   # the pass's accounting line, at its end (Debug)
+        _routing_why = "-"
         _LOOP["n"] += 1                             # new loop → per-loop caches (nft table render) refresh
         _reap_orphans()                             # PID 1 in a container inherits orphans nothing else collects
         _cap_serverlogs()                           # docker: bound each supervised server's log, panel or no panel
@@ -23550,6 +23559,10 @@ def main():
                 _route_moved = _route_sig != last_desired_sig
                 if (_route_sig != last_route_sig or _iface_churn or _routed_devs_moved()
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
+                    # What opened it, for the pass's accounting line (Debug) — by elimination, so the trigger above is
+                    # read once, exactly as before; a device that moved while the safety window was also due reads "timer".
+                    _routing_why = ("route_sig" if _route_sig != last_route_sig else "iface_churn" if _iface_churn
+                                    else "timer" if (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S else "devs_moved")
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
                     nr = {"changed": 0, "errors": []}
                     # Networks: after the ACL (D14, `reconcile` above), before the cascade, which copies what `main`
@@ -23694,6 +23707,9 @@ def main():
         _iv = 1.0 if _busy else interval            # download finishes entirely between two 5s posts → pending→updated)
         if _LOOP["n"] == 1:                         # the first pass is the rest of startup (a failed sync still ends here)
             _release_startup_memory()
+        with contextlib.suppress(Exception):        # what the pass cost: its processes, its own CPU, its children's
+            log(LOG_DEBUG, "pass %d: routing=%s, %d spawns, own %d ms, children %d ms", _LOOP["n"], _routing_why,
+                _RUN_SPAWNS - _acct[2], (time.process_time() - _acct[0]) * 1000, (_children_cpu_s() - _acct[1]) * 1000)
         time.sleep(max(0.5, _iv - (time.time() - t0)))
 
 
