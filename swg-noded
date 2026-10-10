@@ -1241,6 +1241,8 @@ def _pass_cached(key, read):
 _HOST_PATH_PREFIX = "export PATH=/run/current-system/sw/bin:$PATH\n"   # host_sh's docker helper puts it first
 _READ_SYSTEMCTL = frozenset(("is-active", "is-enabled", "is-failed", "show", "status", "--version", "list-units", "list-unit-files", "cat"))
 _READ_IPTABLES = frozenset(("-S", "-L", "-C", "-nL", "-vnL", "-nvL", "--list", "--list-rules", "--check"))
+_WRITE_IPTABLES = frozenset(("-A", "-I", "-D", "-R", "-F", "-Z", "-N", "-X", "-P", "-E", "--append", "--insert", "--delete",
+                             "--replace", "--flush", "--zero", "--new-chain", "--delete-chain", "--policy", "--rename-chain"))
 
 
 def _sh_is_read(cmd):
@@ -1278,8 +1280,8 @@ def _is_read(args):
         return bool(rest) and rest[0] in ("show", "showconf", "pubkey")
     if prog == "nft":
         return bool(words) and words[0] == "list" and "-f" not in rest
-    if prog in ("iptables", "ip6tables"):
-        return any(a in _READ_IPTABLES for a in rest)
+    if prog in ("iptables", "ip6tables"):                   # a write's flag wins: a rule's own values never make it a read
+        return not any(a in _WRITE_IPTABLES for a in rest) and any(a in _READ_IPTABLES for a in rest)
     if prog in ("iptables-save", "ip6tables-save", "ss", "cat"):
         return True
     if prog == "systemctl":
@@ -1295,7 +1297,9 @@ def run(args, input_text=None, timeout=20, env=None):
     # Fail-safe: a MISSING binary (e.g. `nft` on a node/image without nftables) must never crash a caller —
     # return a non-zero result like a normal command failure so callers handle it (smart routing then no-ops
     # instead of taking down the sync loop). Same for a timeout. A spawn that is not a read forgets the pass's reads
-    # (_is_read) — after it ran, so a read the main thread made meanwhile is not kept either.
+    # (_is_read) — after it ran, so every read made after the write is fresh. A read already under way on the main thread
+    # when another thread's write lands may still be kept: as if it had been made just before the write, which the next
+    # pass reads afresh.
     global _RUN_INFLIGHT, _RUN_SPAWNS
     with _RUN_LOCK:
         _RUN_INFLIGHT += 1
@@ -1785,15 +1789,17 @@ def _service_of_pid(pid):
         return ""
 
 
-_LOOP4 = ("0100007F", "7F000001")   # 127.0.0.1 as /proc/net/{tcp,udp} print it: little- and big-endian hosts
+_LO4_HEX = ("0100007F", "7F000001")   # 127.0.0.1 as /proc/net/udp prints it: little- and big-endian hosts
 
 
 def _turn_wg_sports_proc(svcs):
-    """{service: {port}} — the 127.0.0.1 source ports of each turn-proxy unit's ESTABLISHED TCP and connected UDP sockets
-    whose peer is 127.0.0.1 too (the proxy→wg connections), read from /proc: the unit's cgroup → its pids → their socket
-    inodes → /proc/net/tcp and udp. What `ss -Hnp -t|-u state established` gave the caller, without walking every fd of
-    every process on the box for it — 16 ms of CPU a pass on swgt (docs/CPU-PLAN.md B9). None when the cgroups are not
-    systemd's unified hierarchy at /sys/fs/cgroup (cgroup v1, a container's own namespace): the caller asks `ss` then."""
+    """{service: {port}} — the 127.0.0.1 source ports of each turn-proxy unit's connected UDP sockets whose peer is 127.0.0.1
+    too: its connections to the WireGuard interface behind it (`-connect 127.0.0.1:<wg port>`), read from /proc — the
+    unit's cgroup → its pids → their socket inodes → /proc/net/udp. UDP only: WireGuard speaks nothing else, so this side is
+    UDP whatever the proxy's own transport (a TCP-mode proxy's TCP is to VK's relay, never to a loopback peer), and the
+    panel looks these ports up as WireGuard endpoints. What `ss -Hnp state established` gave, without walking every fd of
+    every process on the box for it — `ss -p` twice a pass, 16 ms of CPU on swgt (docs/CPU-PLAN.md B9). None when the
+    cgroups are not systemd's unified hierarchy at /sys/fs/cgroup (cgroup v1): the caller asks `ss` then."""
     if not os.path.isdir("/sys/fs/cgroup/system.slice"):
         return None
     owner = {}
@@ -1812,21 +1818,20 @@ def _turn_wg_sports_proc(svcs):
                             owner[ln[8:-1]] = svc
     out = {}
     if owner:
-        for path in ("/proc/net/tcp", "/proc/net/udp"):     # sl local rem st tx:rx tr:tm retrnsmt uid timeout inode …
-            with open(path) as f:
-                for ln in f:
-                    c = ln.split()
-                    if (len(c) > 9 and c[3] == "01" and c[9] in owner and c[1][:8] in _LOOP4 and c[2][:8] in _LOOP4
-                            and c[1][8:9] == ":"):
-                        out.setdefault(owner[c[9]], set()).add(str(int(c[1][9:], 16)))
+        with open("/proc/net/udp") as f:                    # sl local rem st tx:rx tr:tm retrnsmt uid timeout inode …
+            for ln in f:
+                c = ln.split()                              # st 01 = connected (TCP_ESTABLISHED, as the kernel prints it)
+                if (len(c) > 9 and c[3] == "01" and c[9] in owner and c[1][:8] in _LO4_HEX and c[2][:8] in _LO4_HEX
+                        and c[1][8:9] == ":"):
+                    out.setdefault(owner[c[9]], set()).add(str(int(c[1][9:], 16)))
     return out
 
 
 def _attach_turn_wg_sports(tp):
     """Attach wg_sports — the localhost SOURCE ports this proxy uses to reach its wg backend. A wg peer that came
     in via a proxy has endpoint 127.0.0.1:<one of these ports>, so the panel can tell WHICH proxy a client used
-    even when several proxies front the SAME interface (else it'd guess the first). Transport-agnostic (the
-    proxy→wg side is always a normal connected socket); grouped by owning unit via /proc/<pid>/cgroup. Best-effort."""
+    even when several proxies front the SAME interface (else it'd guess the first). The proxy→wg side is a connected UDP
+    socket whatever the proxy's own transport (see _turn_wg_sports_proc); grouped by owning unit. Best-effort."""
     with contextlib.suppress(Exception):
         # Not on a Docker node: its proxies are sibling containers, each in its own pid namespace, so nothing noded's
         # container can read names a socket's owner — `ss -p` printed no pid for any of svo-im's 204 loopback connections
@@ -1834,18 +1839,17 @@ def _attach_turn_wg_sports(tp):
         if not tp or TURN_DOCKER:
             return
         by_svc = _turn_wg_sports_proc(sorted({t.get("service") for t in tp if t.get("service")}))
-        if by_svc is None:                                   # no unified cgroup hierarchy here: ask ss, as before
+        if by_svc is None:                                   # no unified cgroup hierarchy here: ask ss (UDP, as above)
             by_svc = {}
-            for proto in ("-t", "-u"):
-                r = run(["ss", "-Hnp", proto, "state", "established"], timeout=5)   # never raises: a failure reads as no lines
-                for line in (r.stdout or "").splitlines():
-                    mp = re.search(r"pid=(\d+)", line)
-                    loop = re.findall(r"127\.0\.0\.1:(\d+)", line)   # LOCAL then PEER, both loopback on a proxy→wg conn
-                    if not mp or len(loop) < 2:
-                        continue
-                    svc = _service_of_pid(mp.group(1))
-                    if svc:
-                        by_svc.setdefault(svc, set()).add(loop[0])   # loop[0] = LOCAL = the source port wg sees as the endpoint
+            r = run(["ss", "-Hnp", "-u", "state", "established"], timeout=5)   # never raises: a failure reads as no lines
+            for line in (r.stdout or "").splitlines():
+                mp = re.search(r"pid=(\d+)", line)
+                loop = re.findall(r"127\.0\.0\.1:(\d+)", line)   # LOCAL then PEER, both loopback on a proxy→wg conn
+                if not mp or len(loop) < 2:
+                    continue
+                svc = _service_of_pid(mp.group(1))
+                if svc:
+                    by_svc.setdefault(svc, set()).add(loop[0])   # loop[0] = LOCAL = the source port wg sees as the endpoint
         for t in tp:
             svc = t.get("service") or ""
             if svc in by_svc:
@@ -10021,11 +10025,11 @@ def _exit_handshake(rec, dev):
     # broken exit goes GREEN AGAIN with no IP and no latency beside it. Reported from the field in that
     # state. "Could not tell" must not resolve to "fine": see the fall-through at the end.
     for cmd in _exit_clis(rec, dev):
-        r = _dump_of(cmd, dev)                     # its peer lines carry what `latest-handshakes` prints (B3)
+        r = _dump_of(cmd, dev)                     # the pass's dump (B3): its peer lines carry what `latest-handshakes` printed
         if getattr(r, "returncode", 1) != 0:
             continue
-        for ln in ("%s\t%s" % (f[0], f[4]) for f in (l.split("\t") for l in (r.stdout or "").splitlines()[1:]) if len(f) >= 5):
-            parts = ln.split()
+        for f in (ln.split("\t") for ln in (r.stdout or "").splitlines()[1:]):
+            parts = [f[0], f[4]] if len(f) >= 5 else []   # <public key> <latest handshake>, a `latest-handshakes` line
             if len(parts) >= 2 and parts[1].isdigit():
                 ts = int(parts[1])
                 # ⚠️ THE FLOOR IS 1, AND IT IS LOAD-BEARING. 0 is the sentinel for NEVER, so an age that can
@@ -10186,7 +10190,8 @@ def _exit_probe_all(devs):
             _exit_resolve(dev, rec)              # nothing crossed: where does its endpoint's NAME point now? (the caller acts)
     ths = [threading.Thread(target=one, args=(d, r), daemon=True) for d, r in devs]
     if ths:
-        _exit_tls()                              # (re)built here, on the caller's thread: the probes only read it
+        with contextlib.suppress(Exception):     # (re)built here, on the caller's thread: the probes only read it — and one
+            _exit_tls()                          # that cannot be built is each probe's own error, reported as before
     for t in ths:
         t.start()
     end = time.monotonic() + EXIT_PROBE_BOUND_S
