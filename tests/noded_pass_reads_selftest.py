@@ -75,6 +75,8 @@ N.log = lambda *a, **k: None
 
 # ── [1] the classifier ────────────────────────────────────────────────────────────────────────────────────────────────
 print("[1] what is a read")
+HELPER = ["docker", "run", "--rm", "--privileged", "--pid=host", "--network", "none", "--entrypoint", "nsenter", "img",
+          "-t", "1", "-m", "-u", "-i", "-n", "-p", "--"]                 # host_sh's helper on a docker node: its command decides
 READS = [["ip", "-4", "-o", "addr", "show"], ["ip", "-d", "link", "show", "wgx-1"], ["ip", "-o", "link", "show", "dev", "wg1"],
          ["ip", "route", "get", "1.1.1.1"], ["ip", "rule", "show"], ["ip", "route", "show", "table", "7000"],
          ["wg", "show", "wg1", "dump"], ["awg", "show", "interfaces"], ["wg", "pubkey"],
@@ -85,7 +87,8 @@ READS = [["ip", "-4", "-o", "addr", "show"], ["ip", "-d", "link", "show", "wgx-1
          ["systemctl", "show", "-p", "ControlGroup", "--value", "swg-relay.slice"], ["systemctl", "is-active", "--quiet", "u"],
          ["ipset", "list", "-name"], ["docker", "ps", "--format", "x"], ["docker", "inspect", "-f", "x", "c"],
          ["sh", "-c", "ip -4 route show default 2>/dev/null"], ["sh", "-c", "systemctl is-active x 2>/dev/null"],
-         ["sudo", "-n", "sh", "-c", "wg show x dump"]]
+         ["sudo", "-n", "sh", "-c", "wg show x dump"]] + [
+         HELPER + ["sh", "-c", "export PATH=/run/current-system/sw/bin:$PATH\nsystemctl is-active x 2>/dev/null"]]
 WRITES = [["ip", "route", "replace", "default", "dev", "x", "table", "7001"], ["ip", "rule", "add", "from", "10.0.0.0/24", "lookup", "7001"],
           ["ip", "rule", "del", "pref", "7000"], ["ip", "link", "del", "swg_x"], ["ip", "-4", "-force", "-batch", "-"],
           ["wg", "set", "wg1", "peer", "x", "remove"], ["nft", "-f", "-"], ["nft", "-c", "-f", "-"],
@@ -97,7 +100,8 @@ WRITES = [["ip", "route", "replace", "default", "dev", "x", "table", "7001"], ["
           ["docker", "rm", "-f", "x"], ["sh", "-c", "sleep 1.5; systemctl is-active x"],
           ["sh", "-c", "systemctl enable --now x >/dev/null 2>&1"], ["sh", "-c", "cat a | grep b"],
           ["sudo", "-n", "sh", "-c", "wg set x peer y remove"], ["systemd-run", "--scope", "/opt/swg-agent/swg-agent"],
-          ["/opt/swg-agent/swg-agent"], ["sysctl", "-w", "x=1"], ["modprobe", "amneziawg"], ["kill", "-HUP", "1"], ["curl", "-s", "x"]]
+          ["/opt/swg-agent/swg-agent"], ["sysctl", "-w", "x=1"], ["modprobe", "amneziawg"], ["kill", "-HUP", "1"], ["curl", "-s", "x"],
+          HELPER + ["sh", "-c", "export PATH=/run/current-system/sw/bin:$PATH\nsystemctl restart x"]]
 bad_r = [a for a in READS if not N._is_read(a)]
 bad_w = [a for a in WRITES if N._is_read(a)]
 check("[1] every read the node makes is a read (%d)" % len(READS), not bad_r, bad_r)

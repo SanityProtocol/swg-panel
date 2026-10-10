@@ -560,7 +560,8 @@ check("[6] …and the probe's is Debug", "D host_sh rc=3" in hb.getvalue(), hb.g
 N.log_set(N.LOG_INFO)
 probes = re.findall(r'host_sh\("systemctl is-active [^\n]*', SRC["noded"])
 check("[6] every per-sync `systemctl is-active` probe is marked a probe (the two verifies end in `| tail`, rc 0)",
-      all("probe=True" in p for p in probes if "sleep 1.5" not in p) and len(probes) >= 5, probes)
+      all("probe=True" in p for p in probes if "sleep 1.5" not in p) and len(probes) >= 3, probes)   # the per-sync ones are one
+                                                                                  # `systemctl show` now (_unit_states: run(), no warning path)
 rl = SRC["noded"][SRC["noded"].find("_errs = (r['errors']"):]
 rl = rl[:rl.find("reconcile: +%s")]
 check("[6] reconcile summary: an interface re-set, and routing applied for a MOVED desired state, are Info",
