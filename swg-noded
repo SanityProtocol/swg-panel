@@ -539,13 +539,30 @@ def awg_params(info):
     return out
 
 
+_PUBKEYS = {}    # sha256(private key) -> its public key — see _pubkey_of (no private key is kept)
+
+
+def _pubkey_of(cmd, priv):
+    """The public key of a private key, derived with `<cmd> pubkey` once per key, not once per pass: it is pure key math,
+    and a down interface's meta and every Docker WDTT server's report asked for it on every pass. "" when it cannot be
+    derived (asked again the next time)."""
+    h = hashlib.sha256(priv.encode()).digest()
+    pub = _PUBKEYS.get(h)
+    if pub is None:
+        pub = (run(cmd + ["pubkey"], input_text=priv + "\n").stdout or "").strip()
+        if pub:
+            if len(_PUBKEYS) >= 64:
+                _PUBKEYS.clear()
+            _PUBKEYS[h] = pub
+    return pub
+
+
 def derive_pubkey(cmd, priv):
     """Server public key from a private key (used when the interface is down / dump is empty)."""
     if not priv:
         return None
     try:
-        out = run((cmd or ["awg"]) + ["pubkey"], input_text=priv + "\n").stdout.strip()
-        return out or None
+        return _pubkey_of(cmd or ["awg"], priv) or None
     except Exception:
         return None
 
@@ -20548,7 +20565,7 @@ def _wdtt_server_pub(iface):
         pb = _hex_to_b64(priv)
         if pb:
             with contextlib.suppress(Exception):
-                return (run(_wgcmd(["wg"]) + ["pubkey"], input_text=pb + "\n").stdout or "").strip()   # _wgcmd(["wg"]) → ["awg"] on docker
+                return _pubkey_of(_wgcmd(["wg"]), pb)       # _wgcmd(["wg"]) → ["awg"] on docker; derived once per key
         return ""
     r = _dump_of(["wg"], iface)                    # the dump's first line: private key, PUBLIC KEY, port, fwmark (B3)
     return ((r.stdout or "").split("\n", 1)[0].split("\t") + ["", ""])[1].strip() if r.returncode == 0 else ""
