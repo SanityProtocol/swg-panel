@@ -12311,7 +12311,7 @@ def sample_cats():
 # Correct for multi-hop by construction: at an ENTRY forwarded traffic goes iface→mesh (both tunnels, no `-o
 # <wan>` match), so only DIRECT client traffic counts; at an EXIT the mesh iface forwards to the WAN
 # (`-i swg_… -o <wan>`), so the relayed volume is attributed to the node that actually reaches the internet.
-INET_SAMPLE_EVERY_S = 5    # match the client/mesh lanes' 5s cadence — a mangle-table iptables-save is ~1-3ms (geo sets live in a separate nft table), measured negligible on a 1-CPU node
+INET_SAMPLE_EVERY_S = 5    # match the client/mesh lanes' 5s cadence — one chain's `iptables -S -v`, a few ms however big mangle is
 SWG_INET_TABLE = "mangle"        # count in MANGLE FORWARD, not filter — see reconcile_inet_chain
 SWG_INET_CHAIN = "SWG_INET"      # our own chain, jumped from mangle FORWARD: counts tunnel↔wan bytes
 _INET = {"t": 0.0, "cum": None, "rate": {"up": 0.0, "down": 0.0}, "drate": {}}   # `drate` = the same rate split per EXIT DEVICE (§5.3)
@@ -13699,8 +13699,8 @@ def reconcile_inet_chain(node_cfg, exit_devs=()):
 
 def read_inet_bytes():
     """Cumulative internet-forwarded bytes from the SWG_INET chain counters (see reconcile_inet_chain), as
-    `{"up": …, "down": …, "dev": {<exit device>: {"up": …, "down": …}}}`. One cheap
-    `iptables-save -c -t mangle`. None → unreadable / chain not built yet.
+    `{"up": …, "down": …, "dev": {<exit device>: {"up": …, "down": …}}}`. One `iptables -S SWG_INET -v`: the
+    chain alone (see sample_catk). None → unreadable / chain not built yet.
 
     TWO READINGS OF ONE CHAIN, and it stays one read. The node TOTAL sums every `swg-inet-*` line, the
     exit-tagged ones included — decision 11: sending an interface out through an exit does not make the
@@ -13717,21 +13717,13 @@ def read_inet_bytes():
     `swg-inet-*` line there was. Deleted rather than implemented: the totals must cover the whole chain, and a
     filter that silently did nothing is worse than no filter. The set now has exactly one home,
     `inet_managed_ifaces`."""
-    r = _pass_cached("iptables-save-c:" + SWG_INET_TABLE, lambda: run(["iptables-save", "-c", "-t", SWG_INET_TABLE]))
+    r = run(["iptables", "-t", SWG_INET_TABLE, "-S", SWG_INET_CHAIN, "-v"])
     if r.returncode != 0 or not r.stdout:
         return None
     up = down = 0
     dev = {}
-    for ln in r.stdout.splitlines():
-        if "swg-inet-" not in ln:
-            continue
-        m = re.match(r"\[\d+:(\d+)\]\s+-A\s+" + SWG_INET_CHAIN + r"\b(.*)", ln)
-        if not m:
-            continue
-        by = int(m.group(1))
-        c = re.search(r'--comment "?swg-inet-(up|dn):([^"\s]*)', m.group(2))
-        if not c:
-            continue
+    for c in re.finditer(r'--comment "?swg-inet-(up|dn):([^"\s]*)"?.* -c \d+ (\d+)', r.stdout):
+        by = int(c.group(3))
         k = "up" if c.group(1) == "up" else "down"
         if k == "up":
             up += by
@@ -13748,8 +13740,8 @@ def sample_inet(node_cfg, now):
     INET_SAMPLE_EVERY_S. First read only sets the baseline (rate stays 0 until the next sample).
 
     Refreshes the per-exit-device split at the same moment, off the same read — `sample_exit()` hands that
-    back. Splitting them into two sampled functions would mean two `iptables-save`s of one chain a few
-    milliseconds apart, whose totals would then not even agree."""
+    back. Splitting them into two sampled functions would mean two reads of one chain a few milliseconds
+    apart, whose totals would then not even agree."""
     if _INET["cum"] is not None and (now - _INET["t"]) < INET_SAMPLE_EVERY_S:
         return _INET["rate"]
     # SAME set as the chain, via the same function. It used to be node interfaces only, so a node serving
@@ -13807,7 +13799,7 @@ def sample_exit():
 # count-only (no verdict → no datapath effect). Merged into cat_rate alongside the nft catcount cats.
 SWG_CATK_CHAIN = "SWG_CATK"
 CATK_SAMPLE_EVERY_S = 5
-_CATK = {"t": 0.0, "cum": None, "rate": {}}
+_CATK = {"t": 0.0, "cum": None, "rate": {}, "on": False}   # on: reconcile_catk_chain built a chain to read
 
 
 def reconcile_catk_chain(cats):
@@ -13816,6 +13808,7 @@ def reconcile_catk_chain(cats):
     Drift-gated on the category set; best-effort (a node without iptables/ipset just no-ops)."""
     T = "mangle"
     want = sorted(set(c for c in (cats or []) if c and c != "all"))
+    _CATK["on"] = bool(want)                               # sample_catk reads the chain only while there is one
     have = run(["iptables", "-t", T, "-nL", SWG_CATK_CHAIN]).returncode == 0
     if not want:
         if have:
@@ -13844,21 +13837,18 @@ def sample_catk():
     now = time.time()
     if _CATK["cum"] is not None and (now - _CATK["t"]) < CATK_SAMPLE_EVERY_S:
         return dict(_CATK["rate"])
-    r = _pass_cached("iptables-save-c:mangle", lambda: run(["iptables-save", "-c", "-t", "mangle"]))
-    if r.returncode != 0 or not r.stdout:
-        return dict(_CATK["rate"])                          # no iptables → leave last known
-    if "swg-catk-" not in r.stdout:                         # chain gone (mode changed) → clear
-        _CATK["cum"] = {}; _CATK["rate"] = {}; _CATK["t"] = now
-        return {}
+    if not _CATK["on"]:                                     # no Kernel-SNI category here: no chain, and no spawn to learn it
+        _CATK["cum"] = None; _CATK["rate"] = {}             # None: the first read once there is one is a baseline — the
+        return {}                                           # chain outlives a restart, and its total is no 5 s rate
+    # ⚠️ THE CHAIN ALONE, never `iptables-save` of the table: mangle also holds every Kernel-SNI string rule, and a dump
+    # renders them all — 110 ms of CPU every 5 s at 10 825 rules, under 10 ms for this chain (iptables-nft fetches the
+    # chain it is asked for; CPU re-qualification V2-O2). The same for read_inet_bytes.
+    r = run(["iptables", "-t", "mangle", "-S", SWG_CATK_CHAIN, "-v"])
+    if r.returncode != 0:
+        return dict(_CATK["rate"])                          # unreadable for now → leave last known
     cum = {}
-    for ln in r.stdout.splitlines():
-        m = re.match(r"\[\d+:(\d+)\]\s+-A\s+" + SWG_CATK_CHAIN + r"\b(.*)", ln)
-        if not m:
-            continue
-        mm = re.search(r"swg-catk-(up|dn):(\S+)", m.group(2))
-        if not mm:
-            continue
-        cum.setdefault(mm.group(2).strip('"'), {"up": 0, "dn": 0})[mm.group(1)] += int(m.group(1))
+    for m in re.finditer(r'--comment "?swg-catk-(up|dn):([^"\s]+)"?.* -c \d+ (\d+)', r.stdout or ""):
+        cum.setdefault(m.group(2), {"up": 0, "dn": 0})[m.group(1)] += int(m.group(3))
     prev, pt = _CATK["cum"], _CATK["t"]
     if prev is not None and now > pt:                       # counter reset (rebuild) → clamp negative delta to 0
         dt = now - pt

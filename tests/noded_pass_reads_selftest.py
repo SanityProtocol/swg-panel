@@ -11,7 +11,8 @@ not a known read clears it.
       again; another thread reads fresh; a timeout / missing tool / missing socket is never kept.
   [3] The sites share: the snapshot's interface dump and the reconciler's (`_iface_dump`, `current_listen_port`) are one read,
       an agent op between them makes it two; `_node_addrs` and the candidates share `ip -4 addr`; the inet and Kernel SNI
-      samplers share one `iptables-save`; the snapshot's and the inventory's turn proxies are one `load_turn_proxies`.
+      samplers read their own chains, never a dump of mangle (tests/mangle_chain_reads_selftest.py); the snapshot's and the
+      inventory's turn proxies are one `load_turn_proxies`.
   [4] The WDTT / csqtt units: one `systemctl show` for all of them, read like `is-active` (same words), and a unit outside the
       set — or a batch that could not be read — asked on its own; the verifies that wait for a unit still poll it fresh.
   [5] Relay: `systemctl --version` asked once per process (a timeout asked again), docker's answer kept a minute on success
@@ -191,9 +192,10 @@ check("[3] …and an agent op between them makes it a fresh read", sum("dump" in
 CALLS.clear()
 N._node_addrs(); N._node_addrs()
 check("[3] `ip -4 addr` once for the snapshot's readers", sum("addr" in c for c in CALLS) == 1, CALLS)
-check("[3] the inet and Kernel SNI samplers read one `iptables-save -c -t mangle` (one key: the same table)",
-      N.SWG_INET_TABLE == "mangle" and SRC.count('_pass_cached("iptables-save-c:mangle"') == 1
-      and SRC.count('_pass_cached("iptables-save-c:" + SWG_INET_TABLE') == 1)
+check("[3] the inet and Kernel SNI samplers read their own chains (`iptables -S <chain> -v`), never a dump of mangle",
+      "iptables-save-c:" not in SRC and N._is_read(["iptables", "-t", "mangle", "-S", "SWG_CATK", "-v"])
+      and SRC.count('run(["iptables", "-t", SWG_INET_TABLE, "-S", SWG_INET_CHAIN, "-v"])') == 1
+      and SRC.count('run(["iptables", "-t", "mangle", "-S", SWG_CATK_CHAIN, "-v"])') == 1)
 check("[3] the snapshot's turn proxies and the inventory's are one load (one key)",
       SRC.count('_pass_cached("turn-proxies", load_turn_proxies)') == 2)
 N.subprocess = subprocess

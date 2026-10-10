@@ -58,9 +58,9 @@ class R:
 
 
 class Iptables:
-    """Just enough of iptables to hold rules: -N/-F/-A on one chain, -S to render, iptables-save -c to
-    render with counters. Byte counts come from `self.bytes[comment]`, so a test can put traffic on one
-    rule and see where it surfaces."""
+    """Just enough of iptables to hold rules: -N/-F/-A on one chain, -S to render, -S -v (and iptables-save -c) to
+    render with counters — `-S -v` as iptables-nft prints it, the `-c <pkts> <bytes>` pair last. Byte counts come from
+    `self.bytes[comment]`, so a test can put traffic on one rule and see where it surfaces."""
 
     def __init__(self):
         self.exists = False
@@ -101,6 +101,11 @@ class Iptables:
         if "-S" in c:
             if c[c.index("-S") + 1] == "FORWARD":
                 return R(0, ("-A FORWARD -j " + CHAIN) if self.jumped else "-P FORWARD ACCEPT")
+            if "-v" in c:
+                if not self.exists:
+                    return R(1)
+                return R(0, "-N %s\n" % CHAIN + "".join("%s -c %d %d\n" % ((self._render(a),) + self.bytes.get(self._comment(a), (0, 0)))
+                                                        for a in self.rules))
             return R(0, "\n".join(self._render(a) for a in self.rules))
         if "-I" in c:
             self.jumped = True; return R(0)
