@@ -14,14 +14,17 @@ between the two nodes until its TTL ran out: measured on two real nodes (.campai
   [4] a forward-only node issues no prohibit rule at all
   [5] a band with more rules at one priority than a fixed cap converges: on a kernel model of `ip rule` (same-priority
       rules kept in the order they were added, an identical add refused), 8 exit subnets on one table — 16 rules at one
-      priority, plus a stale one ahead of them — are rebuilt in order once, and the next passes write nothing. A teardown
-      capped at 8 deletions left 9 in place, re-added the rest behind them, signed a backstop behind its exit rule as
-      drift, and rebuilt the band on every pass (nixos, 17 rules at 7000: CPU re-qualification FLEET-2).
+      priority, plus a stale one ahead of them or behind them — are rebuilt in order once, and the next passes write
+      nothing. A teardown capped at 8 deletions left 9 in place, re-added the rest behind them, signed a backstop behind
+      its exit rule as drift, and rebuilt the band on every pass (nixos, 17 rules at 7000: CPU re-qualification
+      FLEET-2). The stale rule behind the band catches ANY cap below the rule count (it is never reached); ahead of it,
+      an odd cap removes it with whole pairs and converges by luck (verify round 1, V3-F1).
 
 Hermetic: `run()` is a recorder; the rest of `reconcile_cascade` is stopped at its iptables step.
 Run: python3 tests/cascade_reflect_backstop_selftest.py            (0 = pass)
      --perturb   stops signing the backstop (an upgraded node would then never install it) and expects RED on [1], [2].
      --plant cap8   the teardown deletes at most 8 rules per priority again; expects RED on [5].
+     --plant cap1   the teardown deletes one rule per priority (a bare `ip rule del pref N`); expects RED on [5].
 """
 import importlib.machinery, importlib.util, os, re, sys, tempfile
 
@@ -32,8 +35,8 @@ PERTURB = "--perturb" in sys.argv
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else None
 if PLANT:
     _src = open(NODED, encoding="utf-8").read()
-    _a, _b = {"cap8": ("            for _ in range(4096):\n                if run([\"ip\", \"rule\", \"del\", \"pref\", str(pri)])",
-                       "            for _ in range(8):\n                if run([\"ip\", \"rule\", \"del\", \"pref\", str(pri)])")}[PLANT]
+    _a = "            for _ in range(4096):\n                if run([\"ip\", \"rule\", \"del\", \"pref\", str(pri)])"
+    _b = {"cap8": _a.replace("range(4096)", "range(8)"), "cap1": _a.replace("range(4096)", "range(1)")}[PLANT]
     assert _src.count(_a) == 1, "plant anchor not unique/absent — this run would measure nothing: " + PLANT
     NODED = os.path.join(tempfile.mkdtemp(prefix="backstop-"), "swg-noded")
     open(NODED, "w", encoding="utf-8").write(_src.replace(_a, _b))
@@ -179,26 +182,29 @@ EX8 = [{"table": X, "subnet": s_, "via_iface": LEG} for s_ in SUBS]
 _band = []
 for s_ in SUBS:
     _band += [(X, "to %s iif %s prohibit" % (s_, LEG)), (X, "to %s lookup %d" % (s_, X))]
-K = Kernel([(X, "fwmark %#x lookup %d" % (X, X))] + _band)   # a stale fwmark rule ahead of a healthy band: drift
-K.tables[str(X)] = {s_: LEG for s_ in SUBS}
-N.run = K
-per = []
-for _ in range(4):
-    del K.writes[:]
-    try:
-        N.reconcile_cascade({"interfaces": {}}, {"forward": [], "exit": EX8, "devexit": []}, None, "", nets=())
-    except Stop:
-        pass
-    per.append(len(K.writes))
-order = [b for p, b in K.rules if p == X]
-_late = [s_ for s_ in SUBS if "to %s lookup %d" % (s_, X) in order and "to %s iif %s prohibit" % (s_, LEG) in order
-         and order.index("to %s iif %s prohibit" % (s_, LEG)) > order.index("to %s lookup %d" % (s_, X))]
-check("the first pass rebuilds the drifted band (17 rules at one priority, one of them stale)", per[0] > 0, per)
-check("…and the next three passes write nothing: the band converged", per[1:] == [0, 0, 0], per)
-check("every backstop sits ahead of its exit rule, the stale rule is gone, nothing is doubled",
-      not _late and len(order) == 16 and len(set(order)) == 16 and not any("fwmark" in b for b in order), {"late": _late, "order": order})
-check("the live band reads as the plan wants it", N._cascade_live_sig([str(X)]) == N._cascade_want_sig([], EX8, [], ()),
-      sorted(N._cascade_live_sig([str(X)]) ^ N._cascade_want_sig([], EX8, [], ())))
+_stale = (X, "fwmark %#x lookup %d" % (X, X))                # a rule no plan wants: drift
+for where, rules in (("ahead of", [_stale] + _band), ("behind", _band + [_stale])):
+    K = Kernel(rules)
+    K.tables[str(X)] = {s_: LEG for s_ in SUBS}
+    N.run = K
+    per = []
+    for _ in range(4):
+        del K.writes[:]
+        try:
+            N.reconcile_cascade({"interfaces": {}}, {"forward": [], "exit": EX8, "devexit": []}, None, "", nets=())
+        except Stop:
+            pass
+        per.append(len(K.writes))
+    order = [b for p, b in K.rules if p == X]
+    _late = [s_ for s_ in SUBS if "to %s lookup %d" % (s_, X) in order and "to %s iif %s prohibit" % (s_, LEG) in order
+             and order.index("to %s iif %s prohibit" % (s_, LEG)) > order.index("to %s lookup %d" % (s_, X))]
+    check("stale rule %s the band: the first pass rebuilds it (17 rules at one priority)" % where, per[0] > 0, per)
+    check("…and the next three passes write nothing: the band converged", per[1:] == [0, 0, 0], per)
+    check("…every backstop sits ahead of its exit rule, the stale rule is gone, nothing is doubled",
+          not _late and len(order) == 16 and len(set(order)) == 16 and not any("fwmark" in b for b in order),
+          {"late": _late, "order": order})
+    check("…the live band reads as the plan wants it", N._cascade_live_sig([str(X)]) == N._cascade_want_sig([], EX8, [], ()),
+          sorted(N._cascade_live_sig([str(X)]) ^ N._cascade_want_sig([], EX8, [], ())))
 
 print("")
 if PLANT:
