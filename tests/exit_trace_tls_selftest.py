@@ -9,11 +9,13 @@ on swgt — and the trace built one per exit per pass: with four exits, a quarte
       real TLS path through the tunnel.
   [3] An hour on, the next pass builds a fresh one (a CA bundle the box updated is in use within the hour).
   [4] It is built on the caller's thread, before the probes start: concurrent probes never race to build it.
+  [5] One that cannot be built does not throw out of the probes: each probe reports why, as before.
 
 Run: python3 tests/exit_trace_tls_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
      perprobe     the trace builds its own context again
      forever      the context is never rebuilt
+     prewarmraise the caller's build throws out of the probes
 """
 import http.client, importlib.machinery, importlib.util, os, ssl, sys, tempfile, threading
 
@@ -34,6 +36,9 @@ PLANTS = {
     "perprobe": ('''        c = _Bound("www.cloudflare.com", 443, timeout=10, context=_exit_tls())''',
                  '''        c = _Bound("www.cloudflare.com", 443, timeout=10, context=ssl.create_default_context())'''),
     "forever": ('''    if _EXIT_TLS["ctx"] is None or now - _EXIT_TLS["at"] >= 3600:''', '''    if _EXIT_TLS["ctx"] is None:'''),
+    "prewarmraise": ('''        with contextlib.suppress(Exception):     # (re)built here, on the caller's thread: the probes only read it — and one
+            _exit_tls()''', '''        if True:
+            _exit_tls()'''),
 }
 if PLANT:
     a, b = PLANTS[PLANT]
@@ -109,6 +114,25 @@ check("[4] every build ran on the thread that started the probes", set(BUILT) ==
 BUILT.clear()
 N._exit_probe_all([])
 check("[4] a pass with no exits builds nothing", not BUILT, BUILT)
+
+# ── [5] a context that cannot be built ───────────────────────────────────────────────────────────────────────────────
+print("\n[5] a context that cannot be built")
+
+
+def broken_cdc(*a, **k):
+    raise ssl.SSLError("no CA bundle")
+
+
+ssl.create_default_context = broken_cdc
+N._EXIT_TLS.update(ctx=None, at=0.0)
+try:
+    got = N._exit_probe_all(DEVS)
+    escaped = None
+except Exception as e:
+    got, escaped = {}, e
+check("[5] nothing throws out of the probes", escaped is None, escaped)
+check("[5] …each probe reports why, as before", len(got) == 4 and all("CA bundle" in str((v[0] or {}).get("err") or "") for v in got.values()),
+      got)
 
 ssl.create_default_context, http.client.HTTPSConnection.__init__ = _real_cdc, _real_init
 import shutil

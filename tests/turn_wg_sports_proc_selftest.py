@@ -2,13 +2,15 @@
 """Self-test — a turn proxy's loopback source ports, read from /proc, not `ss -Hnp` (docs/CPU-PLAN.md B9).
 
 `wg_sports` tells the panel WHICH proxy a client came through: a wg peer reached through a proxy has the endpoint
-127.0.0.1:<a source port of that proxy's connection to wg>. `ss -Hnp -t|-u state established` walks every fd of every
-process on the box to name each socket's owner — 16 ms of CPU a pass on swgt, for two proxies. The unit's own cgroup names
-its pids, their fds name their sockets, /proc/net/tcp and udp give each socket's addresses.
+127.0.0.1:<a source port of that proxy's connection to wg>. That connection is UDP whatever the proxy's own transport —
+WireGuard speaks nothing else; a TCP-mode proxy's TCP is to VK's relay — and the panel looks the ports up as WireGuard
+endpoints. `ss -Hnp state established` walked every fd of every process on the box to name each socket's owner — 16 ms of
+CPU a pass on swgt, for two proxies. The unit's own cgroup names its pids, their fds name their sockets, /proc/net/udp gives
+each socket's addresses.
 
-  [1] The same answer as the ss path, on one box: an established TCP pair and a connected UDP socket on loopback (counted);
-      an unconnected UDP socket, a connection to a non-loopback peer, another process's loopback socket (not counted);
-      the ports as the same sorted strings.
+  [1] The same answer as the ss path, on one box: a connected UDP socket on loopback (counted); a TCP connection on
+      loopback (not a WireGuard endpoint), a DNS query to 127.0.0.53, an unconnected UDP socket, a connection to a remote
+      peer, another process's loopback socket (not counted); the ports as the same sorted strings.
   [2] A unit that is not running has no cgroup: no ports, and no `ss`.
   [3] No unified cgroup hierarchy (cgroup v1, a container's own namespace): `ss`, exactly as before.
   [4] 127.0.0.1 as a big-endian host prints it.
@@ -16,9 +18,10 @@ its pids, their fds name their sockets, /proc/net/tcp and udp give each socket's
       from noded's container — nothing is asked (it was always empty there).
 
 Run: python3 tests/turn_wg_sports_proc_selftest.py   (0 = pass)
-  --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
-     anystate     a socket in any state counts (an unconnected UDP socket included)
+  --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught). (No plant drops the connected-state
+  test: a UDP socket has a peer only while connected, so the loopback-peer test already holds it.)
      anypeer      a loopback source port counts whatever the peer
+     tcpfile      TCP sockets are read (a port that is never a WireGuard endpoint is reported)
      stoppedss    a unit that is not running sends the caller to `ss`
      dockerss     a Docker node asks `ss` again
 """
@@ -38,8 +41,8 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
-    "anystate": ("""                    if (len(c) > 9 and c[3] == "01" and c[9] in owner""", """                    if (len(c) > 9 and c[9] in owner"""),
-    "anypeer": ("""and c[1][:8] in _LOOP4 and c[2][:8] in _LOOP4""", """and c[1][:8] in _LOOP4"""),
+    "anypeer": ("""and c[1][:8] in _LO4_HEX and c[2][:8] in _LO4_HEX""", """and c[1][:8] in _LO4_HEX"""),
+    "tcpfile": ("""        with open("/proc/net/udp") as f:""", """        with open("/proc/net/tcp") as f:"""),
     "dockerss": ('''        if not tp or TURN_DOCKER:''', '''        if not tp:'''),
     "stoppedss": ("""            continue                                         # not running: no cgroup, no sockets""",
                   """            return None"""),
@@ -73,15 +76,16 @@ def hexip(ip, big=False):
 def box(big=False):
     """A box: two proxy units, their pids and sockets, and one other process. sockets: inode → (proto, local, peer, state)."""
     socks = {
-        "1001": ("tcp", ("127.0.0.1", 41234), ("127.0.0.1", 51820), "01"),    # A → wg over TCP, established   ✓
+        "1001": ("tcp", ("127.0.0.1", 41234), ("127.0.0.1", 51820), "01"),    # A: a TCP pair on loopback       ✗ (not wg)
         "1002": ("udp", ("127.0.0.1", 50000), ("127.0.0.1", 51820), "01"),    # A → wg over UDP, connected     ✓
         "1003": ("udp", ("0.0.0.0", 56004), ("0.0.0.0", 0), "07"),            # A's listener: unconnected      ✗
         "1004": ("tcp", ("127.0.0.1", 6000), ("127.0.0.1", 51820), "06"),     # A: TIME_WAIT                   ✗
+        "1005": ("udp", ("127.0.0.1", 50777), ("127.0.0.53", 53), "01"),     # A asks systemd-resolved (DNS)  ✗
         "2001": ("udp", ("127.0.0.1", 50123), ("127.0.0.1", 51821), "01"),    # B → wg                         ✓
         "2002": ("tcp", ("127.0.0.1", 39999), ("203.0.113.9", 443), "01"),    # B → a remote peer              ✗
         "9001": ("udp", ("127.0.0.1", 50555), ("127.0.0.1", 51820), "01"),    # another process's loopback     ✗
     }
-    fds = {"300": ["1001", "1002", "1003", "1004"], "301": [], "400": ["2001", "2002"], "900": ["9001"]}
+    fds = {"300": ["1001", "1002", "1003", "1004", "1005"], "301": [], "400": ["2001", "2002"], "900": ["9001"]}
     procs = {A: ["300", "301"], B: ["400"]}
     files, links, dirs = {}, {}, {"/sys/fs/cgroup/system.slice"}
     for svc, pids in procs.items():
@@ -160,27 +164,28 @@ fast = sports()
 check("[1] read from /proc: no `ss`", not SS_CALLS, SS_CALLS)
 install(files, links, set(), ss, cg)                          # the same box, the ss path forced
 slow = sports()
-check("[1] CONTROL: the ss path ran", len(SS_CALLS) == 2, SS_CALLS)
-check("[1] the same ports per proxy as ss gives — sorted strings", fast == slow == {A: ["41234", "50000"], B: ["50123"]}, (fast, slow))
+check("[1] CONTROL: the ss path ran — one `ss`, UDP", SS_CALLS == ["ss -Hnp -u state established"], SS_CALLS)
+check("[1] the same ports per proxy as ss gives — sorted strings", fast == slow == {A: ["50000"], B: ["50123"]}, (fast, slow))
+check("[1] a TCP pair on loopback is no WireGuard endpoint: not reported", "41234" not in str(fast))
 
 # ── [2] a unit that is not running ────────────────────────────────────────────────────────────────────────────────────
 print("\n[2] a unit that is not running")
 install(files, links, dirs, ss, cg)
 got = sports((A, B, "vk-turn-proxy-stopped-56010"))
-check("[2] no cgroup: no ports for it, the others as before, and no `ss`", got == {A: ["41234", "50000"], B: ["50123"],
+check("[2] no cgroup: no ports for it, the others as before, and no `ss`", got == {A: ["50000"], B: ["50123"],
       "vk-turn-proxy-stopped-56010": None} and not SS_CALLS, (got, SS_CALLS))
 
 # ── [3] no unified hierarchy ──────────────────────────────────────────────────────────────────────────────────────────
 print("\n[3] no unified cgroup hierarchy")
 install(files, links, set(), ss, cg)
 got = sports()
-check("[3] `ss`, exactly as before", len(SS_CALLS) == 2 and got == {A: ["41234", "50000"], B: ["50123"]}, (got, SS_CALLS))
+check("[3] `ss` (UDP), as before", len(SS_CALLS) == 1 and got == {A: ["50000"], B: ["50123"]}, (got, SS_CALLS))
 
 # ── [4] a big-endian host ─────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[4] a big-endian host")
 install(*box(big=True))
 got = sports()
-check("[4] 127.0.0.1 printed big-endian is loopback too", got == {A: ["41234", "50000"], B: ["50123"]} and not SS_CALLS, got)
+check("[4] 127.0.0.1 printed big-endian is loopback too", got == {A: ["50000"], B: ["50123"]} and not SS_CALLS, got)
 
 # ── [5] a Docker node ─────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] a Docker node")

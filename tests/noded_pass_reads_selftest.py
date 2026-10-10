@@ -23,6 +23,7 @@ Run: python3 tests/noded_pass_reads_selftest.py   (0 = pass)
      noclear      a write does not clear the cache (a read after it is stale)
      nftadd       `nft add` is taken for a read
      shsemi       a `sh -c` with `;` is taken for a read
+     iptany       an iptables write is taken for a read when one of its values reads like a read flag (`--comment -S`)
      threadcache  another thread's read is cached
      keep127      a missing tool's answer is cached
      verifycached _csqtt_verify asks the cache (its wait would never see the unit come up)
@@ -44,8 +45,9 @@ def check(name, cond, detail=""):
 
 PLANTS = {
     "nopass": ("    if hit is not None and hit[0] == _LOOP[\"n\"]:", "    if hit is not None:"),
-    "noclear": ("        if _PASS and not (read if read is not None else _is_read(args)):\n            _PASS.clear()",
-                "        pass"),
+    "noclear": ("        if _PASS and not _is_read(args):\n            _PASS.clear()", "        pass"),
+    "iptany": ("        return not any(a in _WRITE_IPTABLES for a in rest) and any(a in _READ_IPTABLES for a in rest)",
+               "        return any(a in _READ_IPTABLES for a in rest)"),
     "nftadd": ("        return bool(words) and words[0] == \"list\" and \"-f\" not in rest",
                "        return bool(words) and words[0] in (\"list\", \"add\") and \"-f\" not in rest"),
     "shsemi": ("    if re.search(r\"[;&|<>`$(){}\\n]\", c):\n        return False", "    if False:\n        return False"),
@@ -95,6 +97,8 @@ WRITES = [["ip", "route", "replace", "default", "dev", "x", "table", "7001"], ["
           ["nft", "add", "element", "inet", "swg_smart", "s", "{ 1.2.3.4 }"], ["nft", "delete", "table", "inet", "x"],
           ["nft", "flush", "set", "inet", "t", "s"], ["iptables", "-t", "mangle", "-D", "PREROUTING", "-j", "SWGK"],
           ["iptables", "-t", "nat", "-A", "POSTROUTING", "-j", "SNAT"], ["iptables", "-t", "mangle", "-X", "SWGK"],
+          ["iptables", "-t", "mangle", "-A", "SWGK", "-m", "comment", "--comment", "-S", "-j", "RETURN"],
+          ["iptables", "-t", "mangle", "-L", "-Z", "SWG_INET"],
           ["iptables-restore", "--noflush"], ["systemctl", "daemon-reload"], ["systemctl", "restart", "x"],
           ["ipset", "create", "x", "hash:ip", "-exist"], ["ipset", "destroy", "x"], ["docker", "run", "--rm", "x"],
           ["docker", "rm", "-f", "x"], ["sh", "-c", "sleep 1.5; systemctl is-active x"],
