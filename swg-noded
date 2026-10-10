@@ -7468,7 +7468,7 @@ def _ensure_mech_block(mech, res, scan_allow=()):
             return
         _sa = sorted({str(a).strip() for a in (scan_allow or []) if str(a).strip()})   # never-flag source CIDRs (our fleet management — measured to sweep like malware, SCAN-GUARD-PLAN)
         _scan = {"sa": _sa, "sp": list(SCAN_PORTS), "b": SCAN_B, "wu": SCAN_WIN_UNIT, "ws": SCAN_WIN_S} if meters else {}   # scan-guard config folded in so a future port-list/threshold/allowlist edit forces the one-time rebuild; it means nothing without a portscan subnet, so a node that runs none carries none of it
-        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "scan": _scan, "v": 7}, sort_keys=True).encode()).hexdigest()   # v7: scan guard — distinct-destination sweep flag on management ports + never-flag allowlist; v6: explicit burst on the port-scan meter; v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
+        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "scan": _scan, "v": 8}, sort_keys=True).encode()).hexdigest()   # v8: `ct state new` right after the subnet in every rule that has it (an established packet reads its conntrack state and bails before any set lookup / fib); v7: scan guard — distinct-destination sweep flag on management ports + never-flag allowlist; v6: explicit burst on the port-scan meter; v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
         sigf = os.path.join(GEO_DIR, ".mech.sig")
         cur = ""
         with contextlib.suppress(OSError):
@@ -7532,19 +7532,22 @@ def _ensure_mech_block(mech, res, scan_allow=()):
         # sweeper is cut on these ports without spending the generic bucket. The (src.dst) seen-set gates the meter so a
         # destination counts once per window (distinct destinations, not connections); a flagged source is dropped at (a)
         # before (b), so it cannot keep filling the set (bounded; a full set fails OPEN for the meter, like swg_p2p's).
-        # Matches are ordered cheapest-bail-first: @scanports (one set lookup) drops a :443 flow before anything else,
-        # `ct state new` drops an established flow, and only a NEW scan-port flow reaches the @scanallow set lookup and
-        # the `fib` route lookup. In (a) the fib is behind the flagged-set test, so a route lookup happens only for a
-        # flagged source; in (b) it is ahead of the counter, because a connection to the NODE'S OWN service (local
-        # daddr, e.g. the node's sshd) must not be counted as a swept destination.
+        # Matches are ordered cheapest-bail-first: `ct state new` right after the subnet — a read of the packet's conntrack
+        # state, no lookup — drops every ESTABLISHED packet, nearly all of the traffic; then @scanports (one set lookup)
+        # drops a new :443 flow, and only a NEW scan-port flow reaches the @scanallow set lookup and the `fib` route lookup.
+        # ⚠️ With @scanports first, every established packet of a portscan subnet paid two pipapo lookups, one per rule:
+        # 200,002 per 100,000 packets, +213 ns a packet on one flow (1.8.9 final-candidate round, SG-BEH F2). In (a) the
+        # fib is behind the flagged-set test, so a route lookup happens only for a flagged source; in (b) it is ahead of
+        # the counter, because a connection to the NODE'S OWN service (local daddr, e.g. the node's sshd) must not be
+        # counted as a swept destination.
         _na = "ip saddr != @scanallow " if _sa else ""
         if meters:
             for S in sorted(meters):                              # (a) a source ALREADY flagged → drop its new PUBLIC scan-port connections and RENEW
-                lines.append("    ip saddr " + S + " meta l4proto . th dport @scanports ct state new " + _na +         # the flag (update, not add: a persistent sweeper stays
+                lines.append("    ip saddr " + S + " ct state new meta l4proto . th dport @scanports " + _na +         # the flag (update, not add: a persistent sweeper stays
                              "ip saddr @" + _mech_flagged(S) + " ip daddr != @priv fib daddr type != local update @" + _mech_flagged(S) +   # cut; one that stops is released ~600 s
                              " { ip saddr timeout 600s } counter drop")                                               # after its last attempt). priv/fib only for a flagged source; its INTERNAL access is untouched.
             for S in sorted(meters):                              # (b) count DISTINCT PUBLIC destinations; past SCAN_B in the window flag the
-                lines.append("    ip saddr " + S + " meta l4proto . th dport @scanports ct state new " + _na +         # source (→ the same @pscf the panel attributes) and drop this packet.
+                lines.append("    ip saddr " + S + " ct state new meta l4proto . th dport @scanports " + _na +         # source (→ the same @pscf the panel attributes) and drop this packet.
                              "ip daddr != @priv fib daddr type != local ip saddr . ip daddr != @" + _mech_scanseen(S) + # priv + fib BEFORE the count: a private / internal / node-local destination is not a public sweep.
                              " add @" + _mech_scanseen(S) + " { ip saddr . ip daddr timeout " + str(SCAN_WIN_S) + "s } "
                              "meter " + _mech_scanmeter(S) + " { ip saddr limit rate over " + str(SCAN_B) + "/" + SCAN_WIN_UNIT +
@@ -7557,8 +7560,11 @@ def _ensure_mech_block(mech, res, scan_allow=()):
         # retransmit each), 5–57 flows with QUIC, 19–128 when the device asks an outside resolver (A + AAAA); 64 still lost
         # 11, 100 none. 200 = one second of the rate: twice one device's need, for a household behind one address. A scan still
         # meets the same 200/s: ~200 probes more once, then it is cut and flagged as before.
+        # `ct state new` first here too: with it behind `fib` (and behind @scanallow when there is an allowlist), every
+        # established packet paid a route lookup — and an interval lookup — before bailing (SG-BEH N3: the fib since before
+        # the scan guard; N4). Same verdicts.
         for S in sorted(meters):                                  # per-SOURCE new-connection rate limit (scans / brute-force). Over-rate
-            lines.append("    ip saddr " + S + " " + _na + "fib daddr type != local ct state new meter " + _mech_meter(S) +   # a trusted source (→ @scanallow) is never flagged by ANY
+            lines.append("    ip saddr " + S + " ct state new " + _na + "fib daddr type != local meter " + _mech_meter(S) +   # a trusted source (→ @scanallow) is never flagged by ANY
                          " { ip saddr limit rate over 200/second burst 200 packets } add @" + _mech_flagged(S) + " { ip saddr timeout 600s } counter drop")   # portscan rule — the 200/s cap included, so it never shows as a scanner
         lines += ["  }", "}"]
         with contextlib.suppress(OSError):

@@ -25,16 +25,21 @@ existing `portscan` mechanism (same subnets); its only new wire input is `scan_a
       loaded @scanallow holds the union: 10.10.0.9 (only the /24) and 10.10.0.4 (the /32) are in it, 10.10.1.4 is not.
       Without auto-merge every nft from 1.0.2 to 1.1.3 refuses the whole table ("conflicting intervals specified"), and a
       node with no table yet ran with no SMTP / QUIC / port-scan drop at all (1.8.9 final-candidate round, SG-NFT F1)
+  [9] every rule with `ct state new` has it right after `ip saddr <subnet>`, with an allowlist and without: an ESTABLISHED
+      packet bails on its conntrack state before any set lookup, fib or allowlist. With @scanports first in (a) and (b)
+      every established packet of a portscan subnet paid two pipapo lookups (SG-BEH F2: 200,002 per 100,000 packets, +213
+      ns a packet); with fib and @scanallow first in the 200/s rule, a route lookup and an interval lookup (N3, N4)
 
-[1]–[7] are hermetic: swg-noded imported, `run` stubbed (mirrors tests/mech_portscan_burst_selftest.py). [8] alone runs the
-real nft, as root or through `sudo -n`, inside `unshare --net` (the namespace dies with the command; the host's ruleset is
+[1]–[7] and [9] are hermetic: swg-noded imported, `run` stubbed (mirrors tests/mech_portscan_burst_selftest.py). [8] alone runs
+the real nft, as root or through `sudo -n`, inside `unshare --net` (the namespace dies with the command; the host's ruleset is
 never read or written); without either it is SKIPPED, and says so — never passed. The packets themselves are the rig's
 job (root, netns): .campaign/rigs/portscan-burst-rig.sh, cell `scandist`.
 Run: python3 tests/mech_scan_guard_selftest.py
-     --perturb   five plants, each on its own: the flag's renew turned into a plain add, the allowlist guard dropped,
+     --perturb   eight plants, each on its own: the flag's renew turned into a plain add, the allowlist guard dropped,
                  scanallow built with no allowlist, the private-destination guard removed, the scanallow set without
-                 auto-merge — each must turn its own check red. Prints "PERTURB OK", exit 0 (exit 1 if a plant stayed
-                 green); a plant whose check was SKIPPED is named as such.
+                 auto-merge, `ct state new` back behind @scanports in (a) and in (b) and behind fib in the 200/s rule —
+                 each must turn its own check red. Prints "PERTURB OK", exit 0 (exit 1 if a plant stayed green); a plant
+                 whose check was SKIPPED is named as such.
 """
 import importlib.machinery, importlib.util, os, re, subprocess, sys, tempfile, types
 
@@ -255,6 +260,18 @@ def run_checks(N, label=""):
               {"nft -c": c.group(1), "nft -f": f.group(1) if f else "?", "kept": kept.group(1).strip() if kept else None,
                "lookup": re.findall(r"(?:IN|OUT) [\d.]+", out), "nft": [l.strip() for l in (err or "").splitlines() if "Error" in l][:1]})
 
+    # [9] `ct state new` right after the subnet in every rule that has it (SG-BEH F2, N3, N4) — 3 rules per portscan subnet,
+    # 2 subnets, rendered with the allowlist and without.
+    n9, bad9 = 0, []
+    for t9 in (text, render(N, allow=[])):
+        for l in lines_of(t9):
+            if "ct state new" in l:
+                n9 += 1
+                if not re.match(r"ip saddr \S+ ct state new ", l):
+                    bad9.append(l[:100])
+    check("[9] `ct state new` comes right after `ip saddr <subnet>` in every rule that has it, with an allowlist and without",
+          n9 == 12 and not bad9, {"rules": n9, "out of order": bad9[:3]})
+
 SRC = open(NODED).read()
 if "--perturb" in sys.argv:
     # The version bump (v7) is gated by tests/mech_portscan_burst_selftest.py [2]; here we plant the scan-guard's own
@@ -275,6 +292,15 @@ if "--perturb" in sys.argv:
         "scanallow without auto-merge":
             ('set scanallow { typeof ip saddr; flags interval; auto-merge; elements = { " + ", ".join(_sa)',
              'set scanallow { typeof ip saddr; flags interval; elements = { " + ", ".join(_sa)', "[8]"),
+        "(a) checks @scanports before ct state new":
+            (' ct state new meta l4proto . th dport @scanports " + _na +         # the flag',
+             ' meta l4proto . th dport @scanports ct state new " + _na +         # the flag', "[9]"),
+        "(b) checks @scanports before ct state new":
+            (' ct state new meta l4proto . th dport @scanports " + _na +         # source',
+             ' meta l4proto . th dport @scanports ct state new " + _na +         # source', "[9]"),
+        "the 200/s rule checks fib (and the allowlist) before ct state new":
+            (' ct state new " + _na + "fib daddr type != local meter "',
+             ' " + _na + "fib daddr type != local ct state new meter "', "[9]"),
     }
     bad, skipped = [], []
     for name, (a, b, want) in plants.items():
