@@ -9,17 +9,17 @@ no legitimate user touched these ports at all, and the only legit high-fan-out s
 existing `portscan` mechanism (same subnets); its only new wire input is `scan_allow`.
 
   [1] with portscan on + an allowlist, `_ensure_mech_block` renders, PER portscan subnet, two rules BEFORE the 200/s
-      meter: (a) a flagged source's new scan-port connections dropped and its flag RENEWED (`update @pscf…`), (b) a
-      distinct-destination meter (`rate over <B>/<unit> burst <B>`) gated by the (src.dst) seen-set, flagging into the
-      same @pscf the panel reads — both carrying `ip saddr != @scanallow`; the shared @scanports and @scanallow sets
-      and the per-subnet (src.dst) seen-set exist; the untouched 200/s meter is still last
+      meter: (a) a source in its own sweep flag (@scf) has its new scan-port connections dropped and BOTH flags RENEWED
+      (`update @scf… update @pscf…`), (b) a distinct-destination meter (`rate over <B>/<unit> burst <B>`) gated by the
+      (src.dst) seen-set, flagging into @scf and the same @pscf the panel reads — both carrying `ip saddr != @scanallow`;
+      the shared @scanports and @scanallow sets and the per-subnet seen-set and @scf exist; the 200/s meter is still last
   [2] no allowlist → no @scanallow set and no `!= @scanallow` guard on the scan rules (nothing to exempt)
   [3] a node with NO portscan subnet (smtp only) builds no scan sets or rules even when an allowlist is sent — the
       allowlist means nothing without the guard — and still carries the v7 signature
   [4] the meter is a token bucket: SCAN_B distinct destinations pass, the next in the window is over (→ flagged); a
       source that re-hits the SAME few servers never crosses it (the seen-set counts a destination once per window)
   [5] the reader (_block_activity) still finds a flagged scanner in @pscf with the scan rules present — the extra
-      `add @pscf…` on rule (b) and the `add @scs_…`/scanallow lines do not confuse the per-subnet attribution
+      `add @pscf…` on rule (b) and the `add @scs_…`/scanallow/@scf lines do not confuse the per-subnet attribution
   [8] an allowlist with OVERLAPPING entries — a host and its range, 10.10.0.0/24 + 10.10.0.4/32, which the panel stores
       as typed — renders a table REAL nft accepts: `nft -c`, then a live load in a throwaway network namespace, and the
       loaded @scanallow holds the union: 10.10.0.9 (only the /24) and 10.10.0.4 (the /32) are in it, 10.10.1.4 is not.
@@ -29,17 +29,26 @@ existing `portscan` mechanism (same subnets); its only new wire input is `scan_a
       packet bails on its conntrack state before any set lookup, fib or allowlist. With @scanports first in (a) and (b)
       every established packet of a portscan subnet paid two pipapo lookups (SG-BEH F2: 200,002 per 100,000 packets, +213
       ns a packet); with fib and @scanallow first in the 200/s rule, a route lookup and an interval lookup (N3, N4)
+ [10] on the real kernel: a source the 200/s meter (c) flagged — 3000 new UDP flows to a PRIVATE address, no scan port —
+      still reaches 3 PUBLIC servers on :22 1.2 s later (3 of 3), is in @pscf and named by the reader, and is not in @scf.
+      Rule (a) used to cut by @pscf, so that user lost SSH / RDP / databases everywhere for 600 s, renewed by each retry:
+      0 of 3 (SG-BEH F1, its cell c2a)
+ [11] on the real kernel: a source that sweeps 16 public servers on :22 gets 15 through, the 16th trips (b) and lands in
+      BOTH @scf and @pscf (the panel's attribution); with both flags cut to 30 s by hand, its next try to a new server is
+      dropped by (a) and both flags are back near 600 s; the reader names it
 
-[1]–[7] and [9] are hermetic: swg-noded imported, `run` stubbed (mirrors tests/mech_portscan_burst_selftest.py). [8] alone runs
-the real nft, as root or through `sudo -n`, inside `unshare --net` (the namespace dies with the command; the host's ruleset is
-never read or written); without either it is SKIPPED, and says so — never passed. The packets themselves are the rig's
-job (root, netns): .campaign/rigs/portscan-burst-rig.sh, cell `scandist`.
+[1]–[7] and [9] are hermetic: swg-noded imported, `run` stubbed (mirrors tests/mech_portscan_burst_selftest.py). [8], [10] and
+[11] run the real nft / kernel, as root or through `sudo -n`, inside `unshare --net` (the namespaces die with the command; the
+host's ruleset is never read or written; the router has only connected routes, the far end is TEST-NET-2 and answers nothing);
+without either they are SKIPPED, and say so — never passed. The full cell set is the rig's job (root, netns):
+.campaign/rigs/portscan-burst-rig.sh.
 Run: python3 tests/mech_scan_guard_selftest.py
-     --perturb   eight plants, each on its own: the flag's renew turned into a plain add, the allowlist guard dropped,
+     --perturb   eleven plants, each on its own: the flag's renew turned into a plain add, the allowlist guard dropped,
                  scanallow built with no allowlist, the private-destination guard removed, the scanallow set without
-                 auto-merge, `ct state new` back behind @scanports in (a) and in (b) and behind fib in the 200/s rule —
-                 each must turn its own check red. Prints "PERTURB OK", exit 0 (exit 1 if a plant stayed green); a plant
-                 whose check was SKIPPED is named as such.
+                 auto-merge, `ct state new` back behind @scanports in (a) and in (b) and behind fib in the 200/s rule,
+                 (a) cutting by @pscf again, (b) not adding to @pscf, (a) not renewing @pscf — each must turn its own check
+                 red. Prints "PERTURB OK", exit 0 (exit 1 if a plant stayed green); a plant whose check was SKIPPED is
+                 named as such.
 """
 import importlib.machinery, importlib.util, os, re, subprocess, sys, tempfile, types
 
@@ -103,6 +112,106 @@ def live_load(text):
         return None, ((r.stderr or r.stdout).strip().splitlines() or ["rc %d" % r.returncode])[0][:120]
     return r.stdout, r.stderr
 
+# [10] [11] on the real kernel: the router is the `unshare --net` namespace itself, the client and the far end two more held
+# by `unshare -n sleep 60` (they end by themselves; killed by PID at the end). Only connected routes, no default, no link
+# but the two veth pairs: nothing leaves. The far end (TEST-NET-2 198.51.100.2-30 public, 10.60.0.2 private) answers
+# nothing and counts each client's :22 SYNs in its raw prerouting. The table is the rendered one, loaded as is.
+RIG = r'''
+set -u
+T=$1; CPID=""; FPID=""
+trap '[ -n "$CPID" ] && kill $CPID 2>/dev/null; [ -n "$FPID" ] && kill $FPID 2>/dev/null' EXIT
+for t in nft ip nsenter python3; do command -v $t >/dev/null || { echo "NOTOOL $t"; exit 0; }; done
+unshare -n sleep 60 & CPID=$!
+unshare -n sleep 60 & FPID=$!
+me=$(readlink /proc/self/ns/net)
+for i in $(seq 100); do [ "$(readlink /proc/$CPID/ns/net)" != "$me" ] && [ "$(readlink /proc/$FPID/ns/net)" != "$me" ] && break; sleep 0.02; done
+ip link add rc0 type veth peer name c0 && ip link set c0 netns $CPID && ip link add rf0 type veth peer name f0 && ip link set f0 netns $FPID \
+  && ip link set lo up && ip addr add 10.8.0.1/24 dev rc0 && ip addr add 198.51.100.1/24 dev rf0 && ip addr add 10.60.0.1/24 dev rf0 \
+  && ip link set rc0 up && ip link set rf0 up && sysctl -qw net.ipv4.ip_forward=1 \
+  && nsenter -t $CPID -n sh -c 'ip link set lo up && ip addr add 10.8.0.2/24 dev c0 && ip addr add 10.8.0.3/24 dev c0 && ip link set c0 up && ip route add default via 10.8.0.1' \
+  && nsenter -t $FPID -n sh -c 'ip link set lo up && ip addr add 10.60.0.2/24 dev f0 && for i in $(seq 2 30); do ip addr add 198.51.100.$i/24 dev f0; done && ip link set f0 up' \
+  || { echo "SETUP-FAILED net"; exit 0; }
+[ -z "$(ip -4 route show default)" ] && [ "$(ip -br link | awk '{sub(/@.*/, "", $1); print $1}' | sort | tr '\n' ' ')" = "lo rc0 rf0 " ] \
+  || { echo "SETUP-FAILED isolation"; exit 0; }
+nft -f "$T" || { echo "SETUP-FAILED mech"; exit 0; }
+nsenter -t $FPID -n nft -f - <<'NFT' || { echo "SETUP-FAILED sink"; exit 0; }
+table inet cnt {
+  counter s2 { }
+  counter s3 { }
+  chain p { type filter hook prerouting priority raw; policy accept;
+    ip saddr 10.8.0.2 tcp dport 22 tcp flags & (syn|ack) == syn counter name s2 drop
+    ip saddr 10.8.0.3 tcp dport 22 tcp flags & (syn|ack) == syn counter name s3 drop
+    meta l4proto udp drop
+  }
+}
+NFT
+SEND='
+import socket, sys, time
+src, what = sys.argv[1], sys.argv[2]
+if what == "flood":
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind((src, 0))
+    for p in range(20000, 23000):
+        s.sendto(b"s", ("10.60.0.2", p))
+else:
+    ks = []
+    for a in what.split(","):
+        k = socket.socket(socket.AF_INET, socket.SOCK_STREAM); k.bind((src, 0)); k.setblocking(False)
+        try:
+            k.connect((a, 22))
+        except OSError:
+            pass
+        ks.append(k)
+    time.sleep(0.4)
+    for k in ks:
+        k.close()
+'
+send() { nsenter -t $CPID -n python3 -c "$SEND" "$@"; }
+cnt() { nsenter -t $FPID -n nft list counter inet cnt $1 | grep -o 'packets [0-9]*' | grep -o '[0-9]*'; }
+sets() { echo "== scf$1"; nft list set inet swg_mech scf_10_8_0_0_24 2>&1; echo "== pscf$1"; nft list set inet swg_mech pscf_10_8_0_0_24 2>&1; }
+send 10.8.0.2 flood; sleep 1.2
+send 10.8.0.2 198.51.100.2,198.51.100.3,198.51.100.4; sleep 0.3
+echo "== S2 $(cnt s2)"
+send 10.8.0.3 $(seq -s, -f 198.51.100.%g 5 20); sleep 0.3
+echo "== S3A $(cnt s3)"; sets A
+for s in scf_10_8_0_0_24 pscf_10_8_0_0_24; do
+  nft delete element inet swg_mech $s "{ 10.8.0.3 }" 2>/dev/null; nft add element inet swg_mech $s "{ 10.8.0.3 timeout 30s }" 2>/dev/null
+done
+send 10.8.0.3 198.51.100.21; sleep 0.3
+echo "== S3B $(cnt s3)"; sets B
+echo "== LISTING"; nft list table inet swg_mech
+echo "== END"
+'''
+
+def live_rig(text):
+    """Run RIG on the rendered table: {section: text} ("S2", "S3A", "S3B" counts; "scfA"/"pscfA"/"scfB"/"pscfB" set listings;
+    "LISTING" the whole table), or (None, why) when it cannot run here — no root / `sudo -n` / unshare / tools."""
+    path = os.path.join(tempfile.mkdtemp(), "mech.nft")
+    open(path, "w").write(text)
+    pre = [] if os.geteuid() == 0 else ["sudo", "-n"]
+    try:
+        r = subprocess.run(pre + ["unshare", "--net", "bash", "-s", path], input=RIG, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, str(e)[:120]
+    if "== END" not in r.stdout:
+        return None, ((r.stdout + r.stderr).strip().splitlines() or ["rc %d" % r.returncode])[-1][:160]
+    sec, cur = {}, None
+    for l in r.stdout.splitlines():
+        if l.startswith("== "):
+            cur, _, v = l[3:].partition(" ")
+            sec[cur] = v
+        elif cur:
+            sec[cur] += "\n" + l
+    return sec, ""
+
+def has(settext, ip):
+    m = re.search(r"elements = \{([^}]*)\}", settext or "")
+    return bool(m) and re.search(r"(?<![\d.])" + re.escape(ip) + r"(?![\d.])", m.group(1)) is not None
+
+def expires(settext, ip):
+    m = re.search(re.escape(ip) + r" timeout \S+ expires ((?:\d+(?:ms|[dhms]))+)", settext or "")
+    return None if not m else sum(int(n) * {"d": 86400, "h": 3600, "m": 60, "s": 1, "ms": 0.001}[u]
+                                  for n, u in re.findall(r"(\d+)(ms|[dhms])", m.group(1)))
+
 def render(N, mech=MECH, allow=ALLOW):
     nft = FakeNft(); N.run = nft.run
     N._ensure_mech_block(mech, {"changed": 0, "errors": []}, scan_allow=allow)
@@ -128,13 +237,16 @@ def run_checks(N, label=""):
     text = render(N)
     L = lines_of(text)
     # the two scan-rule lines + the 200/s line, for 10.8.0.0/24
-    a_rule = [l for l in L if l.startswith("ip saddr 10.8.0.0/24") and "@scanports" in l and "update @pscf_10_8_0_0_24" in l]
+    a_rule = [l for l in L if l.startswith("ip saddr 10.8.0.0/24") and "@scanports" in l and "ip saddr @scf_10_8_0_0_24" in l
+              and "update @scf_10_8_0_0_24" in l and "update @pscf_10_8_0_0_24" in l]       # (a) cuts by its own flag, renews it and @pscf
     b_rule = [l for l in L if l.startswith("ip saddr 10.8.0.0/24") and "@scanports" in l and "meter scm_10_8_0_0_24" in l]
     c_rule = [l for l in L if l.startswith("ip saddr 10.8.0.0/24") and "meter psc_10_8_0_0_24" in l]
     unit = N.SCAN_WIN_UNIT; B = N.SCAN_B
-    meter_ok = bool(b_rule) and ("limit rate over %d/%s burst %d packets" % (B, unit, B)) in b_rule[0]
+    meter_ok = (bool(b_rule) and ("limit rate over %d/%s burst %d packets" % (B, unit, B)) in b_rule[0]
+                and "add @scf_10_8_0_0_24 { ip saddr timeout 600s } add @pscf_10_8_0_0_24" in b_rule[0])   # (b) flags into both
     sets_ok = ("set scanports {" in text and "set scanallow {" in text
                and "set scs_10_8_0_0_24 {" in text and "set scs_10_9_0_0_24 {" in text
+               and "set scf_10_8_0_0_24 {" in text and "set scf_10_9_0_0_24 {" in text
                and "10.10.0.4/32" in text)
     # order: both scan rules for a subnet come BEFORE its 200/s meter
     def idx(sub, needle):
@@ -168,7 +280,7 @@ def run_checks(N, label=""):
         sig3 = open(os.path.join(N.GEO_DIR, ".mech.sig")).read()
     # rebuild forced from a v6 holder → proves v7 is what it writes now
     check("[3] no portscan subnet → no scan sets/rules even with an allowlist; smtp drop still there",
-          ("scanports" not in t3 and "scanallow" not in t3 and "scm_" not in t3 and "scs_" not in t3
+          ("scanports" not in t3 and "scanallow" not in t3 and "scm_" not in t3 and "scs_" not in t3 and "scf_" not in t3
            and "@mps_10_8_0_0_24" in t3 and sig3 != ""), t3[:200])
 
     # [4] the meter as a token bucket (rate SCAN_B per window, burst SCAN_B). Window → seconds for the sim.
@@ -210,11 +322,18 @@ def run_checks(N, label=""):
 \t\telements = { 10.8.0.44 . 45.1.2.3 timeout 59m }
 \t}
 
+\tset scf_10_8_0_0_24 {
+\t\ttypeof ip saddr
+\t\tsize 65535
+\t\tflags dynamic,timeout
+\t\telements = { 10.8.0.44 timeout 10m expires 9m }
+\t}
+
 \tchain pre {
 \t\ttype filter hook prerouting priority mangle - 10; policy accept;
-\t\tip saddr 10.8.0.0/24 ip saddr != @scanallow meta l4proto . th dport @scanports fib daddr type != local ct state new ip saddr @pscf_10_8_0_0_24 update @pscf_10_8_0_0_24 { ip saddr timeout 600s } counter packets 7 bytes 420 drop
-\t\tip saddr 10.8.0.0/24 ip saddr != @scanallow meta l4proto . th dport @scanports fib daddr type != local ct state new ip saddr . ip daddr != @scs_10_8_0_0_24 add @scs_10_8_0_0_24 { ip saddr . ip daddr timeout 3600s } meter scm_10_8_0_0_24 { ip saddr limit rate over 15/hour burst 15 packets } add @pscf_10_8_0_0_24 { ip saddr timeout 600s } counter packets 1 bytes 60 drop
-\t\tip saddr 10.8.0.0/24 fib daddr type != local ct state new meter psc_10_8_0_0_24 size 65535 { ip saddr limit rate over 200/second burst 200 packets } add @pscf_10_8_0_0_24 { ip saddr timeout 600s } counter packets 0 bytes 0 drop
+\t\tip saddr 10.8.0.0/24 ct state new meta l4proto . th dport @scanports ip saddr != @scanallow ip saddr @scf_10_8_0_0_24 ip daddr != @priv fib daddr type != local update @scf_10_8_0_0_24 { ip saddr timeout 10m } update @pscf_10_8_0_0_24 { ip saddr timeout 10m } counter packets 7 bytes 420 drop
+\t\tip saddr 10.8.0.0/24 ct state new meta l4proto . th dport @scanports ip saddr != @scanallow ip daddr != @priv fib daddr type != local ip saddr . ip daddr != @scs_10_8_0_0_24 add @scs_10_8_0_0_24 { ip saddr . ip daddr timeout 1h } meter scm_10_8_0_0_24 size 65535 { ip saddr limit rate over 15/hour burst 15 packets } add @scf_10_8_0_0_24 { ip saddr timeout 10m } add @pscf_10_8_0_0_24 { ip saddr timeout 10m } counter packets 1 bytes 60 drop
+\t\tip saddr 10.8.0.0/24 ct state new ip saddr != @scanallow fib daddr type != local meter psc_10_8_0_0_24 size 65535 { ip saddr limit rate over 200/second burst 200 packets } add @pscf_10_8_0_0_24 { ip saddr timeout 10m } counter packets 0 bytes 0 drop
 \t}
 }
 """
@@ -224,7 +343,7 @@ def run_checks(N, label=""):
     N.run = run5
     N._P2P["on"] = False
     act = N._block_activity()
-    check("[5] the reader names the swept-flagged scanner on its subnet (scanallow/scs lines don't confuse it)",
+    check("[5] the reader names the swept-flagged scanner on its subnet (scanallow/scs/scf lines don't confuse it)",
           act.get("10.8.0.0/24", {}).get("scan_ips") == ["10.8.0.44"], act.get("10.8.0.0/24"))
 
     # [6] consistency: a trusted source is exempt from EVERY portscan rule — the 200/s meter too — so it is never
@@ -272,14 +391,41 @@ def run_checks(N, label=""):
     check("[9] `ct state new` comes right after `ip saddr <subnet>` in every rule that has it, with an allowlist and without",
           n9 == 12 and not bad9, {"rules": n9, "out of order": bad9[:3]})
 
+    # [10] [11] the two flags on the real kernel (SG-BEH F1, its cell c2a): one RIG run, two sources on 10.8.0.0/24, and the
+    # reader (_block_activity) on the table as the kernel lists it after both — what the panel attributes.
+    sec, why = live_rig(text)
+    n10 = "[10] a 200/s-flagged source keeps its NEW public :22 — 3 of 3 through after a UDP burst — and is still attributed in @pscf"
+    n11 = "[11] a SWEEP-flagged source is cut by (a) — 15 of 16 through, then none — flagged in @scf and @pscf, both renewed by its next try"
+    if sec is None:
+        SKIPS.extend(["[10]", "[11]"])
+        for n in (n10, n11):
+            print("  SKIP " + n + "  — the real kernel cannot be driven here (no root, no `sudo -n`, or no unshare / tools): " + str(why))
+    else:
+        def run_l(args, input_text=None, timeout=20):
+            out = sec.get("LISTING", "") if args[:5] == ["nft", "list", "table", "inet", "swg_mech"] else ""
+            return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+        N.run = run_l
+        N._P2P["on"] = False
+        who = (N._block_activity().get("10.8.0.0/24") or {}).get("scan_ips") or []
+        check(n10, sec.get("S2", "").strip() == "3" and has(sec.get("pscfA"), "10.8.0.2") and not has(sec.get("scfA"), "10.8.0.2")
+              and "10.8.0.2" in who,
+              {"through": sec.get("S2"), "in @pscf": has(sec.get("pscfA"), "10.8.0.2"), "in @scf": has(sec.get("scfA"), "10.8.0.2"), "reader": who})
+        e_scf, e_pscf = expires(sec.get("scfB"), "10.8.0.3"), expires(sec.get("pscfB"), "10.8.0.3")
+        check(n11, sec.get("S3A", "").strip() == "15" and sec.get("S3B", "").strip() == "15"
+              and has(sec.get("scfA"), "10.8.0.3") and has(sec.get("pscfA"), "10.8.0.3")
+              and (e_scf or 0) > 60 and (e_pscf or 0) > 60 and "10.8.0.3" in who,
+              {"through (16 / +1)": (sec.get("S3A"), sec.get("S3B")),
+               "in @scf / @pscf": (has(sec.get("scfA"), "10.8.0.3"), has(sec.get("pscfA"), "10.8.0.3")),
+               "expires after the cut try, s (set to 30)": (e_scf, e_pscf), "reader": who})
+
 SRC = open(NODED).read()
 if "--perturb" in sys.argv:
     # The version bump (v7) is gated by tests/mech_portscan_burst_selftest.py [2]; here we plant the scan-guard's own
     # shape. Each anchor must appear in swg-noded exactly once.
     plants = {
         "flag not renewed (update → add) in rule (a)":
-            (' fib daddr type != local update @" + _mech_flagged(S) +',
-             ' fib daddr type != local add @" + _mech_flagged(S) +', "[1]"),
+            (' fib daddr type != local update @" + _mech_scanflag(S) +',
+             ' fib daddr type != local add @" + _mech_scanflag(S) +', "[1]"),
         "allowlist guard dropped from the scan rules":
             ('_na = "ip saddr != @scanallow " if _sa else ""',
              '_na = ""  # if _sa', "[1]"),
@@ -301,6 +447,15 @@ if "--perturb" in sys.argv:
         "the 200/s rule checks fib (and the allowlist) before ct state new":
             (' ct state new " + _na + "fib daddr type != local meter "',
              ' " + _na + "fib daddr type != local ct state new meter "', "[9]"),
+        "(a) cuts by @pscf — the 200/s meter's flag — again":
+            ('"ip saddr @" + _mech_scanflag(S) + " ip daddr != @priv',
+             '"ip saddr @" + _mech_flagged(S) + " ip daddr != @priv', "[10]"),
+        "(b) does not add the swept source to @pscf (the panel never names it)":
+            (' packets } add @" + _mech_scanflag(S) + " { ip saddr timeout 600s } add @" + _mech_flagged(S) + " { ip saddr timeout 600s } counter drop")',
+             ' packets } add @" + _mech_scanflag(S) + " { ip saddr timeout 600s } counter drop")', "[11]"),
+        "(a) does not renew @pscf":
+            ('" { ip saddr timeout 600s } update @" + _mech_flagged(S) + " { ip saddr timeout 600s } counter drop")',
+             '" { ip saddr timeout 600s } counter drop")', "[11]"),
     }
     bad, skipped = [], []
     for name, (a, b, want) in plants.items():

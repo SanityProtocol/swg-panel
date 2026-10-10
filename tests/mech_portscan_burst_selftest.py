@@ -8,7 +8,7 @@ flows, 5 of 40) — and one handshake put the client in @pscf, where the panel n
 shape (Chrome netlogs of six sites: 1–10 SYNs lost a page at burst 5, 19–128 flows with QUIC and an outside resolver).
 
   [1] every meter rule swg-noded writes carries `limit rate over 200/second burst 200 packets` — the rate unchanged
-  [2] a node that holds the v7 table (intact, its signature current for v7) rebuilds it once, then stays a no-op
+  [2] a node that holds the v8 table (intact, its signature current for v8) rebuilds it once, then stays a no-op
   [3] the token bucket that rule describes, fed real bursts: a 10-packet handshake, 16 and 40 parallel flows, three handshake
       tries 5 s apart, and theverge.com's page load (TCP + QUIC + outside DNS, the worst of the six) → nothing dropped
   [4] …and a scan (3000 ports flat out) is still cut — no more than burst + 1 % through — and the rate holds over time
@@ -17,7 +17,7 @@ shape (Chrome netlogs of six sites: 1–10 SYNs lost a page at burst 5, 19–128
 
 Hermetic: swg-noded imported, `run` stubbed. The packets themselves are the rig's job (root, netns).
 Run: python3 tests/mech_portscan_burst_selftest.py
-     --perturb   two plants, each on its own: the burst removed (→ [1] [3] red), the signature left at v7 (→ [2] red);
+     --perturb   two plants, each on its own: the burst removed (→ [1] [3] red), the signature left at v8 (→ [2] red);
                  prints "PERTURB OK", exit 0 (exit 1 if a plant stayed green)
 """
 import importlib.machinery, importlib.util, os, re, sys, tempfile, types
@@ -113,7 +113,7 @@ def run_checks(N, label=""):
     import hashlib, json
     portsets = {"10.12.0.0/24": ["udp . 443"], "10.8.0.0/24": ["tcp . 25"]}
     _scan = {"sa": [], "sp": list(N.SCAN_PORTS), "b": N.SCAN_B, "wu": N.SCAN_WIN_UNIT, "ws": N.SCAN_WIN_S}
-    prev = hashlib.sha256(json.dumps({"p": portsets, "m": ["10.8.0.0/24", "10.9.0.0/24"], "scan": _scan, "v": 7}, sort_keys=True).encode()).hexdigest()
+    prev = hashlib.sha256(json.dumps({"p": portsets, "m": ["10.8.0.0/24", "10.9.0.0/24"], "scan": _scan, "v": 8}, sort_keys=True).encode()).hexdigest()
     open(os.path.join(N.GEO_DIR, ".mech.sig"), "w").write(prev)
     nft.loads.clear()
     N._ensure_mech_block(MECH, {"changed": 0, "errors": []})
@@ -180,7 +180,7 @@ def run_checks(N, label=""):
 SRC = open(NODED).read()
 if "--perturb" in sys.argv:
     plants = {"the burst removed": (" burst 200 packets }", " }", "[1]"),
-              "the signature not bumped (left at v7)": ('"v": 8}', '"v": 7}', "[2]")}
+              "the signature not bumped (left at v8)": ('"v": 9}', '"v": 8}', "[2]")}
     bad = []
     for name, (a, b, want) in plants.items():
         if SRC.count(a) != 1:
