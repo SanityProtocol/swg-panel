@@ -6997,7 +6997,7 @@ export const STR = {
   "{v1}: not filtered yet on {v2} — waiting for the provider catalog, or for this node's update.": "{v1}: пока не фильтруется на {v2} — ждёт каталог провайдеров или обновление ноды.",
   "Load AmneziaWG 3.1 · {name}": "Загрузить AmneziaWG 3.1 · {name}",
   "Load now": "Загрузить сейчас",
-  "Every AmneziaWG interface on {name} restarts on the new kernel module. Connected devices lose traffic for about 15 seconds while they reconnect; nothing else changes. Or leave it: the module loads at the next reboot.": "Все интерфейсы AmneziaWG на {name} перезапустятся на новом модуле ядра. Подключённые устройства примерно на 15 секунд потеряют трафик, пока переподключаются; больше ничего не меняется. Или оставьте как есть: модуль загрузится при следующей перезагрузке.",
+  "Every AmneziaWG interface on {name} restarts on the new kernel module. Connected devices lose traffic for about 15 seconds while they reconnect; nothing else changes. Or leave it: the module loads at the next reboot if the kernel accepts it; the node page says why when it does not.": "Все интерфейсы AmneziaWG на {name} перезапустятся на новом модуле ядра. Подключённые устройства примерно на 15 секунд потеряют трафик, пока переподключаются; больше ничего не меняется. Или оставьте как есть: модуль загрузится при следующей перезагрузке, если ядро его примет; если не примет, страница ноды скажет почему.",
   "Loading the AmneziaWG module on {name}…": "Загружается модуль AmneziaWG на {name}…",
   "the kernel module is the host's — load it on the host": "модуль ядра принадлежит хосту — загрузите его на хосте",
   "the AmneziaWG kernel module is not loaded": "модуль ядра AmneziaWG не загружен",

@@ -7,29 +7,40 @@
  *     colour, and the button again (the node still has 3.1 to load)
  * [5] a result older than an hour is no longer shown
  * [6] the switch carries the line where it knows the node (create form, Edit sheet) — not in Settings' preset
+ * [7] the button's confirm promises the next reboot only if the kernel accepts it, and says the node page tells why when it
+ *     does not — FP-3's words for the two sibling sentences (1.8.9 qualification W5: Secure Boot without the enrolled key, a
+ *     build for another kernel) — in English and in its Russian line
  *
- * Run: node tests/spa_awg_load_selftest.mjs     --perturb pending|age|field   plants one and expects RED.
+ * Run: node tests/spa_awg_load_selftest.mjs     --perturb pending|age|field|promise   plants one and expects RED.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { ROOT, check, done } from "./spa_env.mjs";
+import { ROOT, spa, check, done } from "./spa_env.mjs";
 
 const MODE = process.argv.includes("--perturb") ? process.argv[process.argv.indexOf("--perturb") + 1] : null;
 const PLANTS = {
   pending: ['  if (pending) return html`<div class="hint warnish">', '  if (false) return html`<div class="hint warnish">'],
   age: ["st.msg && (st.age || 0) < 3600 ? srvText(st.msg)", "st.msg ? srvText(st.msg)"],
   field: ['    ${nrec ? html`<${AwgLoadLine} node=${node} nrec=${nrec}/>` : null}\n', ""],
+  promise: ['Or leave it: the module loads at the next reboot if the kernel accepts it; the node page says why when it does not.", { name })',
+            'Or leave it: the module loads at the next reboot.", { name })'],   // W5: the unconditional promise back
 };
 let IF, made = null;
 if (MODE) {
   const s = fs.readFileSync(path.join(ROOT, "js", "iface.js"), "utf8");
   const [a, b] = PLANTS[MODE];
   if (s.split(a).length !== 2) { console.log("ANCHOR MISSING for " + MODE); process.exit(1); }
-  made = path.join(ROOT, "js", "__perturb_awgload_iface.js"); fs.writeFileSync(made, s.replace(a, b));
+  // ⚠️ IN A DIRECTORY OF ITS OWN, its siblings by absolute URL (the very modules the real iface.js imports, ui.js's modal stack
+  // included): written into js/, the planted copy was a file a gate copying the tree meanwhile could list, one `git add -A`
+  // from shipping (1.8.9 qualification GATES-14).
+  made = fs.mkdtempSync(path.join(os.tmpdir(), "awgload-"));
+  const JS_URL = pathToFileURL(path.join(ROOT, "js") + path.sep).href;
+  fs.writeFileSync(path.join(made, "iface.mjs"), s.replace(a, b).replace(/(\bfrom\s*)(["'])\.\//g, (m, f, q) => f + q + JS_URL));
 }
-try { IF = await import(pathToFileURL(made || path.join(ROOT, "js", "iface.js")).href); }
-finally { if (made) { try { fs.unlinkSync(made); } catch (_) { /* gone */ } } }
+try { IF = await import(pathToFileURL(made ? path.join(made, "iface.mjs") : path.join(ROOT, "js", "iface.js")).href); }
+finally { if (made) fs.rmSync(made, { recursive: true, force: true }); }
 
 const texts = n => { const out = []; const walk = x => { if (Array.isArray(x)) x.forEach(walk); else if (typeof x === "string") out.push(x);
   else if (x && typeof x === "object" && x.props) walk(x.props.children); }; walk(n); return out.join(" "); };
@@ -63,4 +74,24 @@ const withNode = IF.AwgGenField({ value: "2.0", onChange: () => {}, was: "2.0", 
 check("create form / Edit sheet: the line is there", kids(withNode).some(x => x.type === IF.AwgLoadLine || (x.type && x.type.name === "AwgLoadLine")));
 const preset = IF.AwgGenField({ value: "2.0", onChange: () => {}, label: "x", hint: "y" });
 check("Settings' preset: not there", !kids(preset).some(x => x.type && x.type.name === "AwgLoadLine"));
+console.log("\n[7] the confirm (1.8.9 qualification W5)");
+// The button pressed, and the confirm it opens read off the real modal stack (ui.js); an untranslated T() returns its key, so the
+// name "{name}" gives the confirm's own catalog key, and js/lang/ru.js its Russian line.
+const UI = await spa("ui.js");
+const RU = (await spa("lang/ru.js")).STR;
+let top = null;
+UI.setModalRenderer(st => { top = st[st.length - 1] || null; });
+const btnOf = n => { let b = null; const walk = x => { if (b) return; if (Array.isArray(x)) x.forEach(walk);
+  else if (x && typeof x === "object" && x.props) { if (x.type === "button" && x.props.onClick) b = x; else walk(x.props.children); } };
+  walk(n); return b; };
+const confirmOf = name => { UI.clearModalStack(); top = null; const b = btnOf(L({ name, awg31_loadable: true }));
+  if (b) b.props.onClick(); return (top && top.props) || {}; };
+const c7 = confirmOf("msk");
+check("Load now opens its confirm", c7.title === "Load AmneziaWG 3.1 · msk" && typeof c7.body === "string", c7.title);
+check("…which promises the next reboot only if the kernel accepts it, and says the node page tells why when it does not (FP-3's words)",
+      typeof c7.body === "string" && c7.body.endsWith("Or leave it: the module loads at the next reboot if the kernel accepts it; the node page says why when it does not."),
+      c7.body);
+const k7 = confirmOf("{name}").body || "";
+check("…and its Russian line says the same", /модуль загрузится при следующей перезагрузке, если ядро его примет; если не примет, страница ноды скажет почему\.$/
+      .test(RU[k7] || ""), RU[k7] || "no Russian line for: " + k7);
 done(!!MODE, MODE);

@@ -1016,7 +1016,7 @@ export function AwgLoadLine({ node, nrec }) {
   const res = st && st.msg && (st.age || 0) < 3600 ? srvText(st.msg) : "";
   if (!nrec || (!nrec.awg31_loadable && !pending && !res)) return null;
   const ask = () => openConfirm({ title: T("Load AmneziaWG 3.1 · {name}", { name }), confirmLabel: T("Load now"), warn: true,
-    body: T("Every AmneziaWG interface on {name} restarts on the new kernel module. Connected devices lose traffic for about 15 seconds while they reconnect; nothing else changes. Or leave it: the module loads at the next reboot.", { name }),
+    body: T("Every AmneziaWG interface on {name} restarts on the new kernel module. Connected devices lose traffic for about 15 seconds while they reconnect; nothing else changes. Or leave it: the module loads at the next reboot if the kernel accepts it; the node page says why when it does not.", { name }),
     onConfirm: async () => { const r = await api.awgLoad({ id: node }); if (!r.ok) return toast(srvText(r) || T("Failed"), "err"); await Store.poll(); } });
   if (pending) return html`<div class="hint warnish">${T("Loading the AmneziaWG module on {name}…", { name })}</div>`;
   return html`<div class="awgload">${res ? html`<div class=${"hint" + (st.state !== "done" ? " err" : "")}>${res}</div>` : null}${nrec.awg31_loadable
