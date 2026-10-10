@@ -21295,6 +21295,7 @@ TURN_SOCK_BUF_MAX = 25165824      # 24 MiB — what the forks' own enableBBR() a
 TURN_SOCK_BUF_MIN = 4194304       # 4 MiB — below this the cap is not worth writing; the default 208 KiB is the bug
 SOCK_BUF_CONF = "/etc/sysctl.d/99-swg-turn.conf"
 _SOCK_BUF_NOTED = set()
+_SOCK_BUF_TRIED = {}    # key -> (the cap a raise did not take for, when): tried again an hour later (see _turn_sock_bufs)
 
 def _turn_sock_target(listeners=1):
     """How large a per-socket cap this box can afford, given how many turn-family listeners it runs.
@@ -21341,12 +21342,19 @@ def _turn_sock_bufs(listeners=1):
             cur = int(open(path).read().strip() or 0)
         except (OSError, ValueError):
             continue                                   # no /proc (odd container) → nothing to do, nothing to say
-        if cur < want:
+        # ⚠️ ONE TRY AN HOUR, NOT ONE A PASS. This runs on every pass that carries a turn-family listener, and where the
+        # raise cannot take — a Docker node's container mounts /proc/sys read-only — it was two `sysctl -w` a pass, for ever
+        # (svo-im, 2026-10-10: 212992 read back every time). A raise that did not take is tried again for that cap an hour
+        # later (a /proc/sys made writable, a sysctl installed), and at once for a larger one.
+        tried = _SOCK_BUF_TRIED.get(key)
+        if cur < want and not (tried and tried[0] >= want and time.monotonic() - tried[1] < 3600):
             run(["sysctl", "-q", "-w", "net.core.%s=%d" % (key, want)])
             try:                                       # read back: in a container /proc/sys is usually read-only
                 new = int(open(path).read().strip() or 0)   # and `sysctl -w` no-ops in SILENCE
             except (OSError, ValueError):
                 new = cur
+            if new < want:
+                _SOCK_BUF_TRIED[key] = (want, time.monotonic())
             if key not in _SOCK_BUF_NOTED:
                 _SOCK_BUF_NOTED.add(key)
                 if new >= want:
