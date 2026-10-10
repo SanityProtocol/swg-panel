@@ -2204,9 +2204,12 @@ awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did 
   # a killed compiler or assembler ("Killed signal") — fails the same way, and was given up for good on that alone (1.8.9
   # qualification IN-15, on a VM); it is tried again instead, whatever errors of its own it left (cc1's located "fatal
   # error: error writing to …"). A driver's `gcc: fatal error:` has no location and is not a compile failure either.
+  # …and modpost's `ERROR: modpost: ` is one too (1.8.9 qualification R2 INST-4): it compiled, but calls a symbol
+  # this kernel does not export, or keeps in a namespace the module does not import. Read as the box's, it was removed,
+  # never recorded and built again on every update and install. (modpost's own write on a full disk is a perror, no ERROR.)
   [ -e "$(_awg_kbuild)" ] && have dpkg-query || return 1
   case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*|iH*) ;; *) return 1;; esac
-  grep -qsE ': error: |:[0-9]+: fatal error: ' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log \
+  grep -qsE ': error: |:[0-9]+: fatal error: |^ERROR: modpost: ' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log \
     && ! grep -qsE 'No space left on device|Killed signal|internal compiler error: Killed' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log; }
 awg_dkms_pending(){ case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*|iH*) return 0;; esac; return 1; }
 awg_dkms_give_up(){ # [transient] — after that: leave the package manager clean, keep the tools, remember what did not compile
@@ -2423,8 +2426,8 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # A module that did not COMPILE — cloned, headers here, the compiler's own `error:` in the log, no module file: remember
   # the commit, so no update compiles it again, and drop the DKMS registration this run made (a tree that cannot build
   # would only fail again on every kernel install). A clone a slow link cut off, or a missing tool, is NOT that, and is
-  # tried again next time.
-  if ! $DRYRUN && [ "$_cloned" = yes ] && [ -e "$(_awg_kbuild)" ] && ! awg_mod_built && grep -q ': error: ' "$w/mod.log" 2>/dev/null; then
+  # tried again next time. modpost's `ERROR: modpost: ` (a symbol this kernel does not export) counts too — R2 INST-4.
+  if ! $DRYRUN && [ "$_cloned" = yes ] && [ -e "$(_awg_kbuild)" ] && ! awg_mod_built && grep -qE ': error: |^ERROR: modpost: ' "$w/mod.log" 2>/dev/null; then
     [ -n "$_head" ] && awg_fail_note src "$_head"
     if [ "${_reg:-no}" = yes ]; then
       local _v; _v="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$w/mod/src/dkms.conf" 2>/dev/null)"

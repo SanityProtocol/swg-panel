@@ -31,19 +31,28 @@ every later `apt install` on the box ended in "E: Sub-process /usr/bin/dpkg retu
       on the module still loaded), and tells its caller only once the package is gone; update.sh's heal then closes with
       that — not "AmneziaWG healed — running the slower USERSPACE datapath" and "install matching linux-headers", neither
       true there (the headers were installed, the compiler had run out of memory); the package follow's note, likewise
+  [4f] (1.8.9 qualification R2 INST-4) a module that COMPILES and fails at modpost — a symbol this kernel does not export
+      (`ERROR: modpost: "…" […] undefined!`), or exports in a namespace the module does not import — is a compile failure:
+      removed + recorded, not built again (read as the box's, it was removed, never recorded and built again on every
+      update and install). The make.log lines are kbuild's own, captured on 6.17.0-1032-oem. CONTROL: a full disk under
+      modpost (its perror, `amneziawg.mod.c: No space left on device` — no `ERROR: modpost:`) is still the box's
   [5] awg_build_from_source, driven: upstream still at the commit that did not compile → no clone, no compile; moved on →
-      it builds
+      it builds. (INST-4) Its own build failing at modpost: the commit recorded and the DKMS registration this run made
+      dropped, as for the compiler's own error (CONTROL); a killed compiler is not recorded (CONTROL)
   [6] update.sh: the heal answers in one line when nothing new can be tried, and both routes ask the record
 
 Run: python3 tests/awg_module_failed_selftest.py      (0 = pass)
-     --perturb   awg_dkms_compile_failed judges without the build log again (52aa9c4) → RED on [4b] (and [4d]: it had both)
-     --perturb-fatal   …reads `: error: ` alone again (84e36bf) → RED on [4b]'s dropped header only
+     --perturb   awg_dkms_compile_failed judges without the build log again (52aa9c4) → RED on [4b] (and [4d]: it had both;
+                 + [4f]'s full-disk CONTROL)
+     --perturb-fatal   …drops gcc's located `fatal error:` again (84e36bf read `: error: ` alone) → RED on [4b]'s dropped header only
      --perturb-veto    …judges a located `fatal error:` without asking whether the box cut the build short → RED on [4b]
      --perturb-stale   …asks for no module file for this kernel again (e66018f) → RED on [4d] only
      --perturb-lock    the give-up as e66018f shipped it: no lock wait, the version recorded whatever the removal did → RED on [4c] only
      --perturb-transient  a half-configured build the box cut short is left as it is again (q189-int2) → RED on [4b] (+ [4e]'s
-                       give-up checks, which drive that path)
+                       give-up checks and [4f]'s full-disk CONTROL, which drive that path)
      --perturb-words   the words as q189-int3 shipped them (lib's line, no AWG_GAVE_UP, the heal's usual close) → RED on [4e] only
+     --perturb-modpost      awg_dkms_compile_failed without modpost's `ERROR: modpost:` again (6cd65eb9) → RED on [4f] only
+     --perturb-modpost-src  the source route's matcher without it again (6cd65eb9) → RED on [5]'s modpost check only
 """
 import os, re, subprocess, sys, tempfile
 
@@ -92,13 +101,15 @@ PERTURB_FATAL = "--perturb-fatal" in sys.argv[1:]
 PERTURB_VETO = "--perturb-veto" in sys.argv[1:]
 PERTURB_STALE = "--perturb-stale" in sys.argv[1:]
 PERTURB_LOCK = "--perturb-lock" in sys.argv[1:]
+PERTURB_MODPOST = "--perturb-modpost" in sys.argv[1:]
+PERTURB_MODPOST_SRC = "--perturb-modpost-src" in sys.argv[1:]
 T = tempfile.mkdtemp(prefix="awgfail-")
 os.makedirs(T + "/bin"); os.makedirs(T + "/mods/7.0.0-38-generic/build")
 KV = "1.0.0-0~202609140848+4569c4c~ubuntu26.04.1"
 FUNCS = grab_all("awg_fail_get", "awg_fail_note", "awg_module_head", "awg_src_retry_due", "awg_pkg_retry_due", "awg_nothing_new", "awg_mod_built",
                  "_awg_kbuild", "awg_dkms_compile_failed", "awg_dkms_pending", "awg_dkms_give_up", "awg_ppa_module_install")
 _LOGS = '"${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log'
-_ERR = "grep -qsE ': error: |:[0-9]+: fatal error: ' " + _LOGS
+_ERR = "grep -qsE ': error: |:[0-9]+: fatal error: |^ERROR: modpost: ' " + _LOGS
 _VETO = " && ! grep -qsE 'No space left on device|Killed signal|internal compiler error: Killed' " + _LOGS
 if PERTURB:   # the judgement as 52aa9c4 shipped it: half-configured + no module file, whatever the build log says
     _old = _ERR + _VETO
@@ -107,12 +118,15 @@ if PERTURB:   # the judgement as 52aa9c4 shipped it: half-configured + no module
 if PERTURB_STALE:   # as e66018f shipped it: a module file for this kernel, any module file, means "it compiled"
     assert FUNCS.count(_ERR + _VETO) == 1, "perturbation anchor missing — would FALSE-PASS"
     FUNCS = FUNCS.replace(_ERR + _VETO, "! awg_mod_built && " + _ERR + _VETO)
-if PERTURB_FATAL:   # as 84e36bf shipped it: `: error: ` alone
+if PERTURB_FATAL:   # gcc's located `fatal error:` dropped again (84e36bf read `: error: ` alone)
     assert FUNCS.count(_ERR) == 1, "perturbation anchor missing — would FALSE-PASS"
-    FUNCS = FUNCS.replace(_ERR, "grep -qsE ': error: ' " + _LOGS)
+    FUNCS = FUNCS.replace(_ERR, "grep -qsE ': error: |^ERROR: modpost: ' " + _LOGS)
 if PERTURB_VETO:    # a located `fatal error:` counted even where the box cut the build short
     assert FUNCS.count(_VETO) == 1, "perturbation anchor missing — would FALSE-PASS"
     FUNCS = FUNCS.replace(_VETO, "")
+if PERTURB_MODPOST:   # as 6cd65eb9 shipped it: modpost's `ERROR: modpost:` is not a compile failure
+    assert FUNCS.count(_ERR) == 1, "perturbation anchor missing — would FALSE-PASS"
+    FUNCS = FUNCS.replace(_ERR, "grep -qsE ': error: |:[0-9]+: fatal error: ' " + _LOGS)
 MAKELOG = T + "/dkms/amneziawg/1.0.0/build/make.log"
 def makelog(text):
     """DKMS's build log for the last attempt (None: there is none)."""
@@ -140,6 +154,18 @@ KILLED_AS = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86
              "/var/lib/dkms/amneziawg/1.0.0/build/device.c:530:1: fatal error: error writing to -: Broken pipe\n"
              "compilation terminated.\ngcc-13: fatal error: Killed signal terminated program as\n"
              "make[2]: *** [scripts/Makefile.build:243: device.o] Error 1\n")
+# It COMPILED, and modpost refused it (1.8.9 qualification R2 INST-4) — kbuild's own lines, captured on 6.17.0-1032-oem from a
+# module calling udp_lib_get_port (declared in net/udp.h, not exported) and one calling crypto_cipher_setkey (exported in
+# CRYPTO_INTERNAL) without importing the namespace; the paths are DKMS's
+_MP = ("DKMS make.log for amneziawg-1.0.0 for kernel 7.0.0-38-generic (x86_64)\n"
+       "make[1]: Entering directory '/var/lib/dkms/amneziawg/1.0.0/build'\n"
+       "  CC [M]  socket.o\n  LD [M]  amneziawg.o\n  MODPOST Module.symvers\n"
+       "WARNING: modpost: missing MODULE_DESCRIPTION() in amneziawg.o\n%s"
+       "make[3]: *** [/usr/src/linux-headers-7.0.0-38-generic/scripts/Makefile.modpost:147: Module.symvers] Error 1\n"
+       "make[2]: *** [/usr/src/linux-headers-7.0.0-38-generic/Makefile:1967: modpost] Error 2\n")
+MODPOST = _MP % 'ERROR: modpost: "udp_lib_get_port" [amneziawg.ko] undefined!\n'
+MODPOST_NS = _MP % "ERROR: modpost: module amneziawg uses symbol crypto_cipher_setkey from namespace CRYPTO_INTERNAL, but does not import it.\n"
+MODPOST_NOSPACE = _MP % "amneziawg.mod.c: No space left on device\n"   # modpost's own write, the disk full: its perror, no ERROR
 makelog(COMPILE_ERR)
 def sh(body, kernel="7.0.0-38-generic", status="iF ", cand=KV, built=False, extra_env=None):
     stubs = ('have(){ command -v "$1" >/dev/null 2>&1; }\nDRYRUN=false\ninfo(){ echo "INFO $*"; }\nwarn(){ echo "WARN $*"; }\n'
@@ -301,8 +327,30 @@ _fl = [l for l in UP.splitlines() if "module build did not finish on this box" i
 check("(N4) the package follow's note after it: removed for now, tried again — no \"userspace datapath\"",
       len(_fl) == 1 and "removed for now" in _fl[0] and "userspace" not in _fl[0], _fl)
 
+print("\n[4f] a module that COMPILES and fails at modpost is a compile failure too (1.8.9 qualification R2 INST-4)")
+for name, log in (("a symbol this kernel does not export (`ERROR: modpost: \"…\" […] undefined!`)", MODPOST),
+                  ("a symbol in a namespace the module does not import", MODPOST_NS)):
+    reset(); makelog(log)
+    r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
+    rec = open(T + "/awg-module-failed").read() if os.path.exists(T + "/awg-module-failed") else ""
+    check("(INST-4) %s → said as not compiling here, the packages removed (dpkg left clean), the version recorded — never "
+          "\"did not finish on this box\"" % name, "RC1" in r.stdout and "does not compile on kernel 7.0.0-38-generic" in r.stdout
+          and "apt-get remove -y" in c and "pkg=" + KV in rec and "did not finish on this box" not in r.stdout, r.stdout + c + rec)
+    r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
+    check("(INST-4) %s → …and the next run does not build it again" % name,
+          "RC1" in r.stdout and "amneziawg-dkms amneziawg-tools" not in c and "not rebuilding" in r.stdout, r.stdout + c)
+reset(); makelog(MODPOST_NOSPACE)
+r = sh('awg_ppa_module_install && echo RC0 || echo RC1'); c = calls()
+check("CONTROL: the disk full under modpost (its perror, no `ERROR: modpost:`) → removed for now (dpkg left clean), NOT recorded, "
+      "said as not finished", "RC1" in r.stdout and "apt-get remove -y" in c and not os.path.exists(T + "/awg-module-failed")
+      and "does not compile" not in r.stdout and "did not finish on this box" in r.stdout, r.stdout + c)
+
 print("\n[5] awg_build_from_source, driven")
 SRCF = grab_all("awg_build_from_source")
+_SRC_ERR = "grep -qE ': error: |^ERROR: modpost: ' \"$w/mod.log\""
+if PERTURB_MODPOST_SRC:   # as 6cd65eb9 shipped it: the compiler's `: error: ` only
+    assert SRCF.count(_SRC_ERR) == 1, "perturbation anchor missing — would FALSE-PASS"
+    SRCF = SRCF.replace(_SRC_ERR, "grep -q ': error: ' \"$w/mod.log\"")
 def build(head):
     body = ('awg_tools_drive_3x(){ return 0; }\nawg_tools_old_why(){ :; }\nmodprobe(){ return 1; }\ndepmod(){ :; }\nensure_awg_headers_follow(){ :; }\n'
             'have(){ case "$1" in git|make|awg|awg-quick|dkms|modprobe) return 0;; *) command -v "$1" >/dev/null 2>&1;; esac; }\n'
@@ -317,6 +365,32 @@ check("upstream moved on → it is cloned and built", "CLONE https://github.com/
 rec = open(T + "/awg-module-failed").read() if os.path.exists(T + "/awg-module-failed") else ""
 check("a clone that failed (a slow link cut it off) is NOT recorded as a commit that does not compile",
       "src=b72bb7a6cccc" not in rec, rec)
+# (INST-4) its own build failing: the clone is there, DKMS's build of it failed (dkms says only where its log is), and the plain
+# `make` beside it writes kbuild's lines into mod.log
+def build_failed(log):
+    open(T + "/kbuild.log", "w").write(log.split("\n", 1)[1])   # kbuild's lines, without DKMS's header
+    body = ('awg_tools_drive_3x(){ return 0; }\nawg_tools_old_why(){ :; }\nmodprobe(){ return 1; }\nensure_awg_headers_follow(){ :; }\n'
+            'have(){ case "$1" in git|make|awg|awg-quick|dkms|modprobe) return 0;; *) command -v "$1" >/dev/null 2>&1;; esac; }\n'
+            'awg_mod_key_rejected(){ return 1; }\nawg_compat_patch(){ :; }\ndkms(){ :; }\nawg_module_head(){ echo d00dfeed1234; }\n'
+            'git_clone_depth1(){ echo "CLONE $1" >> "$T/calls"; mkdir -p "$2/src"; '
+            'printf \'PACKAGE_NAME="amneziawg"\\nPACKAGE_VERSION="1.0.0"\\n\' > "$2/src/dkms.conf"; }\n'
+            'awg_dkms_register_dir(){ echo "REGISTER $1" >> "$T/calls"; printf "Error! Bad return status for module build on kernel: '
+            '7.0.0-38-generic (x86_64)\\nConsult /var/lib/dkms/amneziawg/1.0.0/build/make.log for more information.\\n"; return 10; }\n'
+            'run(){ echo "RUN $*" >> "$T/calls"; case "$1" in make) cat "$T/kbuild.log"; return 2;; esac; }\n') + SRCF + \
+           'awg_build_from_source && echo RC0 || echo RC1\n'
+    return sh(body)
+for name, log, recorded in (("(INST-4 src) its build failing at modpost (`ERROR: modpost: \"…\" […] undefined!`)", MODPOST, True),
+                        ("CONTROL: its build failing on the compiler's own error", COMPILE_ERR, True),
+                        ("CONTROL: its compiler killed (OOM)", KILLED, False)):
+    reset(); r = build_failed(log); c = calls()
+    rec = open(T + "/awg-module-failed").read() if os.path.exists(T + "/awg-module-failed") else ""
+    if recorded:
+        check("%s → the commit recorded, and the DKMS registration this run made dropped (no rebuild at every kernel install)" % name,
+              "RC1" in r.stdout and "REGISTER" in c and "src=d00dfeed1234" in rec and "RUN dkms remove -m amneziawg -v 1.0.0 --all" in c,
+              r.stdout + c + rec)
+    else:
+        check("%s → NOT recorded: tried again next time" % name, "RC1" in r.stdout and "REGISTER" in c and "src=d00dfeed1234" not in rec,
+              r.stdout + c + rec)
 
 print("\n[6] update.sh")
 check("the heal answers in one line when nothing new can be tried",
@@ -339,7 +413,7 @@ if "--perturb-words" in sys.argv[1:]:
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if "--perturb-transient" in sys.argv[1:]:   # [4e]'s give-up checks drive the same path: red with it
     _red = [f for f in FAILS if "removed for now" in f or f.startswith("(N4)")]
-    print("perturb: %s" % ("RED as it must be (%d), all [4b] + [4e]'s give-up" % len(_red) if _red and len(_red) == len(FAILS)
+    print("perturb: %s" % ("RED as it must be (%d), all [4b] + [4e]'s give-up + [4f]'s CONTROL" % len(_red) if _red and len(_red) == len(FAILS)
                            else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB_STALE or PERTURB_LOCK:
@@ -354,10 +428,16 @@ if PERTURB_FATAL or PERTURB_VETO:
     print("perturb: %s" % ("RED as it must be (%d), all [4b]" % len(_red) if _red and len(_red) == len(FAILS)
                            else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
+if PERTURB_MODPOST or PERTURB_MODPOST_SRC:
+    _p = "(INST-4 src) " if PERTURB_MODPOST_SRC else "(INST-4) "
+    _red = [f for f in FAILS if f.startswith(_p)]
+    print("perturb: %s" % ("RED as it must be (%d), all %s" % (len(_red), "[5]'s modpost check" if PERTURB_MODPOST_SRC else "[4f]")
+                           if _red and len(_red) == len(FAILS) else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB:   # 52aa9c4 had both defects: the build log unread ([4b]) and any module file read as "it compiled" ([4d])
     _red = [f for f in FAILS if "NOT recorded" in f or "tries it again" in f or f.startswith("half-configured + the compiler")
             or f.startswith("(N4)")]   # [4e]'s give-up checks drive the transient path this plant takes away
-    print("perturb: %s" % ("RED as it must be (%d), all [4b] + [4d]'s stale module + [4e]'s give-up" % len(_red) if _red and len(_red) == len(FAILS)
+    print("perturb: %s" % ("RED as it must be (%d), all [4b] + [4d]'s stale module + [4e]'s give-up + [4f]'s CONTROL" % len(_red) if _red and len(_red) == len(FAILS)
                            else "NOT CAUGHT" if not FAILS else "ALSO red elsewhere: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 print("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), FAILS))
