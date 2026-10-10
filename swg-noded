@@ -9888,6 +9888,23 @@ def _exit_handshake(rec, dev):
     return None
 
 
+_EXIT_TLS = {"ctx": None, "at": 0.0}    # the exit traces' TLS context and when it was built — see _exit_tls
+
+
+def _exit_tls():
+    """The TLS context every exit trace uses: built once an hour, not once per probe.
+
+    `ssl.create_default_context()` parses the whole system CA bundle each time it is called — 121 certificates, 15.5 ms of
+    CPU on swgt (2026-10-10) — and the trace built one per exit per pass: a quarter of the node's own CPU with four exits
+    (perf, docs/CPU-PLAN.md B8). One context serves every probe: shared across threads and passes as any HTTPS client
+    shares one; a client context resumes no session it is not handed, so each probe is still a full handshake and its
+    `rtt_ms` the same number; rebuilt hourly, so a CA bundle the box updated is in use within the hour."""
+    now = time.monotonic()
+    if _EXIT_TLS["ctx"] is None or now - _EXIT_TLS["at"] >= 3600:
+        _EXIT_TLS.update(ctx=ssl.create_default_context(), at=now)
+    return _EXIT_TLS["ctx"]
+
+
 def _exit_trace(dev):
     """§7.2 — GET /cdn-cgi/trace THROUGH the tunnel: one call proves the tunnel is up, that traffic really
     takes it, and whether a WARP+ key took effect.
@@ -9920,7 +9937,7 @@ def _exit_trace(dev):
         # handshake, so it reads high next to `ping` and is the honest number for what routing through here
         # will feel like. Reported in ms.
         _t0 = time.monotonic()
-        c = _Bound("www.cloudflare.com", 443, timeout=10, context=ssl.create_default_context())
+        c = _Bound("www.cloudflare.com", 443, timeout=10, context=_exit_tls())
         c.request("GET", "/cdn-cgi/trace", headers={"Host": "www.cloudflare.com", "User-Agent": "swg-noded"})
         kv = dict(l.split("=", 1) for l in c.getresponse().read().decode().strip().splitlines() if "=" in l)
         return {"ip": kv.get("ip", ""), "warp": kv.get("warp", ""), "loc": kv.get("loc", ""),
@@ -10016,6 +10033,8 @@ def _exit_probe_all(devs):
         if not (tr or {}).get("ip") and rch is not True:
             _exit_resolve(dev, rec)              # nothing crossed: where does its endpoint's NAME point now? (the caller acts)
     ths = [threading.Thread(target=one, args=(d, r), daemon=True) for d, r in devs]
+    if ths:
+        _exit_tls()                              # (re)built here, on the caller's thread: the probes only read it
     for t in ths:
         t.start()
     end = time.monotonic() + EXIT_PROBE_BOUND_S
