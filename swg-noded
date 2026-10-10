@@ -1681,7 +1681,7 @@ def _ensure_turn_capture(ports):
     turn listen ports. Runs in swg-noded's netns → bare-metal + host-net docker see all turn traffic; a bridge-net
     node is isolated (best-effort: works if docker preserves the peer src, else the SNAT gateway is filtered on read)."""
     want = sorted({int(p) for p in ports if str(p).isdigit()})
-    exists = run(["nft", "list", "table", "inet", TURN_CAP_TABLE]).returncode == 0
+    exists = _nft_kept(["nft", "list", "table", "inet", TURN_CAP_TABLE]).returncode == 0   # rc only: kept (B4)
     sigf = os.path.join(STATE_DIR, ".turn-cap-sig")
     prev = ""
     with contextlib.suppress(Exception):
@@ -1708,7 +1708,8 @@ def _ensure_turn_capture(ports):
              "ct direction original ct state established update @peers { ip saddr . th dport }"])
         with contextlib.suppress(OSError):
             os.makedirs(STATE_DIR, exist_ok=True); open(sigf, "w").write(TURN_CAP_SIG)
-    out = run(["nft", "list", "set", "inet", TURN_CAP_TABLE, "ports"]).stdout or ""   # sync @ports to the wanted list (drift-gated)
+    out = _nft_kept(["nft", "list", "set", "inet", TURN_CAP_TABLE, "ports"]).stdout or ""   # sync @ports to the wanted list (drift-gated;
+    # only this function writes @ports, so its elements change only with the generation id — kept: B4)
     m = re.search(r"elements = \{([^}]*)\}", out)
     cur = {int(x) for x in re.findall(r"\d+", m.group(1))} if m else set()
     if cur != set(want):
@@ -4545,6 +4546,33 @@ def _nft_genid():
     return None
 
 
+_NFT_KEPT = {}     # nft argv -> (the generation id read before that read, its result) — see _nft_kept
+
+
+def _nft_absent(r):
+    """nft's answer that the table, chain or set asked for is not there (rc 1, ENOENT's text). In a locale that translates
+    that text it is not recognised, and the read is simply not kept (noded runs with C.UTF-8 on the fleet's boxes)."""
+    return r.returncode == 1 and "No such file or directory" in (r.stderr or "")
+
+
+def _nft_kept(args, structural=True):
+    """`run(args)` for an nft read made every pass, kept across passes while the ruleset's generation id is the one read
+    before it (docs/CPU-PLAN.md B4). structural=True keeps any answer: for a reader that takes from it nothing the datapath
+    changes by itself — no counter, no element of a set a rule fills, no expiry. structural=False keeps only "not there":
+    a read of counters is fresh every pass, but a table that does not exist stays absent until a transaction makes it."""
+    key = " ".join(args)
+    gen = _nft_genid()
+    hit = _NFT_KEPT.get(key)
+    if gen is not None and hit is not None and hit[0] == gen:
+        return hit[1]
+    r = run(args)
+    if gen is not None and ((structural and r.returncode == 0) or _nft_absent(r)):
+        _NFT_KEPT[key] = (gen, r)
+    else:
+        _NFT_KEPT.pop(key, None)
+    return r
+
+
 def _reach_read_counters():
     """{interface: packets} for EVERY interface counter in the table — one fork, O(counters) output (§10.1 M3) — or None when the
     table is not there. All of them, not only the enforced: an interface that left the plan keeps its counter until the pass that
@@ -5421,8 +5449,9 @@ def _smart_table():
             pairs = re.findall(r"counter (c_[a-z0-9_]+) \{\s*packets \d+ bytes (\d+)", out)
             cnames, cbytes = [c for c, _ in pairs], _smart_cat_bytes(pairs)
         # Kept with the id read BEFORE the render: a commit at any moment after that read — during the render too — leaves
-        # the id past it, so the next pass renders again whatever this text caught.
-        keep = r.returncode == 0 and gen is not None and not _smart_live(out)
+        # the id past it, so the next pass renders again whatever this text caught. No table is an answer kept as well (a
+        # node with no smart routing asked every pass).
+        keep = gen is not None and ((r.returncode == 0 and not _smart_live(out)) or _nft_absent(r))
         _SMART_TABLE.update(n=_LOOP["n"], rc=r.returncode, out=out, counts=counts, setnames=setnames, bytes=cbytes,
                             gen=gen if keep else None, cnames=cnames)
     return _SMART_TABLE
@@ -11983,7 +12012,7 @@ def _block_activity():
                 out.setdefault("*", {})["torrent_ips"] = [str(i) for i in ips]   # the panel maps IP → peer → user ("who" bubble)
     mech = ""                                                     # swg_mech, read ONCE for both uses below (it was read twice a report)
     with contextlib.suppress(Exception):
-        mech = run(["nft", "list", "table", "inet", "swg_mech"]).stdout or ""
+        mech = _nft_kept(["nft", "list", "table", "inet", "swg_mech"], structural=False).stdout or ""
     with contextlib.suppress(Exception):                          # scan: the FLAGGED-scanner set per subnet — only over-rate src IPs
         for sub, fset in re.findall(r"ip saddr (" + IP + r")[^\n]*?add @(pscf_\S+)", mech):   # source) + their IPs → per-user attribution
             with contextlib.suppress(Exception):
@@ -12007,7 +12036,7 @@ def _block_activity():
             if sub and pk:
                 out.setdefault(sub.group(1), {})["mech"] = int(pk.group(1))
     with contextlib.suppress(Exception):                          # blocked: cumulative packets dropped to a content-block set,
-        pre = run(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "prerouting"]).stdout or ""   # summed per source subnet
+        pre = _nft_kept(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "prerouting"], structural=False).stdout or ""   # summed per source subnet
         _bsw = {x[0] for c2, lst in ((_SHADOW["v"] or {}).get("by_target") or {}).items() if str(c2).startswith("blku") for x in lst}
         for ln in pre.splitlines():                               # rule: ip saddr <sub> ip daddr @cat_blku_… counter packets N … drop
             _m = re.search(r"@catl?_(sw_[0-9a-f]{10})\b", ln) if _bsw else None   # …or a block list's shadow (_smart_shadows)
@@ -12025,7 +12054,7 @@ def _block_activity():
             if pk:                                                # only ever sums `blocked` across keys
                 out.setdefault("*", {})["blocked"] = out.get("*", {}).get("blocked", 0) + int(pk.group(1))
     with contextlib.suppress(Exception):                          # …and the same refusal of a RELAYED connection, which early demux
-        inp = run(["nft", "list", "chain", "inet", RELAY_TABLE, "inp"]).stdout or ""   # delivers to the relay's input chain (_relay_nft)
+        inp = _nft_kept(["nft", "list", "chain", "inet", RELAY_TABLE, "inp"], structural=False).stdout or ""   # delivers to the relay's input chain (_relay_nft)
         for ln in inp.splitlines():
             pk = re.search(r"counter packets (\d+)", ln) if ("== %#010x" % SNI_BLOCK_MARK) in ln else None
             if pk:
@@ -12036,7 +12065,8 @@ def _block_activity():
 def _smart_forward():
     """The smart table's `forward` chain as nft lists it, read once a pass: its rules' anonymous counters are what
     smart_status (the SNI first-hit resets) and _block_activity (refusals by name) report — "" when it is not there."""
-    return _pass_cached("nft-smart-forward", lambda: run(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "forward"])).stdout or ""
+    return _pass_cached("nft-smart-forward", lambda: _nft_kept(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "forward"],
+                                                               structural=False)).stdout or ""
 
 
 def _blk_domains_read():
