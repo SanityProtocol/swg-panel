@@ -550,6 +550,49 @@ def derive_pubkey(cmd, priv):
         return None
 
 
+# ── EVERY LINK AND EVERY INTERFACE DUMP, ONE READ EACH PER PASS (docs/CPU-PLAN.md B3) ─────────────────────────────────────
+# Each reader asked per device — `ip -d link show <dev>` for the kind, `ip -o link show dev <dev>` for the MTU, the
+# candidates' `ip -d -o link show <dev>`, `<tool> show <dev> dump` per interface, `latest-handshakes` per exit, `wg show
+# <dev> dump` and `public-key` per WDTT server: ~50 processes a pass on swgt. One `ip -d -o link show` and one
+# `<tool> show all dump` per pass carry all of it: a device's line, an interface's dump lines without the `all` form's
+# leading name column — the bytes `<tool> show <dev> dump` prints. A device or interface the batch does not hold is read
+# on its own, exactly as before, so a down interface's `down` (that read's stderr, which the panel's mesh auto-start
+# acts on) is the same text.
+def _all_links():
+    """{device: its `ip -d -o link show` line} for every link, read once per pass — None when it could not be read."""
+    r = _pass_cached("ip-d-o-link", lambda: run(["ip", "-d", "-o", "link", "show"]))
+    if r.returncode != 0:
+        return None
+    out = {}
+    for ln in (r.stdout or "").splitlines():
+        m = re.match(r"^\d+:\s+([^:@\s]+)(?:@\S*)?:\s", ln)
+        if m:
+            out[m.group(1)] = ln
+    return out
+
+
+def _all_dumps(cmd):
+    """{interface: what `<cmd> show <interface> dump` prints} from one `<cmd> show all dump` per pass — None when it could
+    not be read."""
+    r = _pass_cached("all-dump:" + " ".join(cmd), lambda: run(cmd + ["show", "all", "dump"]))
+    if r.returncode != 0:
+        return None
+    lines = {}
+    for ln in (r.stdout or "").splitlines():
+        name, sep, rest = ln.partition("\t")
+        if sep:
+            lines.setdefault(name, []).append(rest)
+    return {k: "\n".join(v) + "\n" for k, v in lines.items()}
+
+
+def _dump_of(cmd, iface):
+    """`<cmd> show <iface> dump` — the interface's lines of the pass's `show all dump`, else that read on its own."""
+    d = _all_dumps(cmd)
+    if d is not None and iface in d:
+        return subprocess.CompletedProcess(cmd + ["show", iface, "dump"], 0, d[iface], "")
+    return run(cmd + ["show", iface, "dump"])
+
+
 def _link_kind(iface):
     """What the KERNEL says this device is: "awg" (amneziawg), "wg" (wireguard), or "" if it cannot say.
 
@@ -560,7 +603,11 @@ def _link_kind(iface):
     itself. Empty for a DOWN interface (no device to ask), where the caller falls back to the record.
     """
     with contextlib.suppress(Exception):
-        r = _pass_cached("ip-d-link:" + iface, lambda: run(["ip", "-d", "link", "show", iface]))
+        links = _all_links()
+        if links is not None:                       # the device's line of the pass's read; absent = no such device
+            r = subprocess.CompletedProcess([], 0 if iface in links else 1, links.get(iface, ""), "")
+        else:
+            r = _pass_cached("ip-d-link:" + iface, lambda: run(["ip", "-d", "link", "show", iface]))
         if r.returncode == 0:
             toks = (r.stdout or "").split()
             if "amneziawg" in toks:
@@ -616,7 +663,11 @@ def iface_mtu(iface, info=None):
     parsed [Interface] section (build_meta has one); pass it to avoid re-reading the conf."""
     if iface:
         try:
-            r = _pass_cached("ip-o-link:" + iface, lambda: run(["ip", "-o", "link", "show", "dev", iface]))
+            links = _all_links()
+            if links is not None:
+                r = subprocess.CompletedProcess([], 0 if iface in links else 1, links.get(iface, ""), "")
+            else:
+                r = _pass_cached("ip-o-link:" + iface, lambda: run(["ip", "-o", "link", "show", "dev", iface]))
             if r.returncode == 0:
                 m = re.search(r"\bmtu (\d+)\b", r.stdout or "")
                 if m:
@@ -9818,10 +9869,10 @@ def _exit_handshake(rec, dev):
     # broken exit goes GREEN AGAIN with no IP and no latency beside it. Reported from the field in that
     # state. "Could not tell" must not resolve to "fine": see the fall-through at the end.
     for cmd in _exit_clis(rec, dev):
-        r = run(cmd + ["show", dev, "latest-handshakes"])
+        r = _dump_of(cmd, dev)                     # its peer lines carry what `latest-handshakes` prints (B3)
         if getattr(r, "returncode", 1) != 0:
             continue
-        for ln in (r.stdout or "").splitlines():
+        for ln in ("%s\t%s" % (f[0], f[4]) for f in (l.split("\t") for l in (r.stdout or "").splitlines()[1:]) if len(f) >= 5):
             parts = ln.split()
             if len(parts) >= 2 and parts[1].isdigit():
                 ts = int(parts[1])
@@ -15631,7 +15682,9 @@ def iface_candidates(node_cfg):
         proto = "awg" if (conf and _conf_is_awg(conf)) else "wg"
         if not conf:
             with contextlib.suppress(Exception):
-                if "amneziawg" in (run(["ip", "-d", "-o", "link", "show", name]).stdout or ""):
+                _links = _all_links()
+                if "amneziawg" in ((_links.get(name) or "") if _links is not None
+                                   else (run(["ip", "-d", "-o", "link", "show", name]).stdout or "")):
                     proto = "awg"
         port = 0; peers = 0; up = False; ent_peers = []; awg_live = False
         # Try BOTH tools, preferred one first. `wg` and `awg` each only speak to their own datapath, and the proto
@@ -15640,7 +15693,7 @@ def iface_candidates(node_cfg):
         # Whichever tool answers is also the authoritative proto.
         for _tool in (["awg"], ["wg"]) if proto == "awg" else (["wg"], ["awg"]):
             with contextlib.suppress(Exception):
-                r = run(_wgcmd(_tool) + ["show", name, "dump"])
+                r = _dump_of(_wgcmd(_tool), name)
                 if r.returncode == 0 and (r.stdout or "").strip():
                     lines = r.stdout.strip().splitlines(); f0 = lines[0].split("\t")
                     if len(f0) >= 3:
@@ -16318,7 +16371,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
         cmd = _wgcmd(ic.get("cmd", ["awg"]))
         try:                                        # one bad interface must never kill the whole snapshot
-            _r = _pass_cached("dump:%s:%s" % (cmd[0], iface), lambda: run(cmd + ["show", iface, "dump"]))
+            _r = _pass_cached("dump:%s:%s" % (cmd[0], iface), lambda: _dump_of(cmd, iface))
             if _r.returncode != 0:                  # interface isn't up — flag it, but still surface its
                 try:                                # intended config from the .conf (subnet/awg/port/pubkey)
                     conf_text = open(ic["conf"]).read()
@@ -16535,7 +16588,7 @@ def _iface_dump(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = _wgcmd(ic.get("cmd", ["awg"]))
     try:
-        r = _pass_cached("dump:%s:%s" % (cmd[0], iface), lambda: run(cmd + ["show", iface, "dump"]))
+        r = _pass_cached("dump:%s:%s" % (cmd[0], iface), lambda: _dump_of(cmd, iface))
         if r.returncode != 0:
             return None
         return parse_dump(r.stdout)
@@ -16616,7 +16669,7 @@ def current_listen_port(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = _wgcmd(ic.get("cmd", ["awg"]))
     try:
-        r = _pass_cached("dump:%s:%s" % (cmd[0], iface), lambda: run(cmd + ["show", iface, "dump"]))
+        r = _pass_cached("dump:%s:%s" % (cmd[0], iface), lambda: _dump_of(cmd, iface))
         if r.returncode == 0:
             iface_line, _ = parse_dump(r.stdout)
             if len(iface_line) > 2 and str(iface_line[2]).isdigit():
@@ -20335,7 +20388,8 @@ def _wdtt_server_pub(iface):
             with contextlib.suppress(Exception):
                 return (run(_wgcmd(["wg"]) + ["pubkey"], input_text=pb + "\n").stdout or "").strip()   # _wgcmd(["wg"]) → ["awg"] on docker
         return ""
-    return (host_sh("wg show " + shlex.quote(iface) + " public-key 2>/dev/null", probe=True).stdout or "").strip()
+    r = _dump_of(["wg"], iface)                    # the dump's first line: private key, PUBLIC KEY, port, fwmark (B3)
+    return ((r.stdout or "").split("\n", 1)[0].split("\t") + ["", ""])[1].strip() if r.returncode == 0 else ""
 
 def _wdtt_panel_fetch(fork, dest, want_sha, tag="wdtt"):
     """Fetch a fork's patched WDTT binary from the panel mirror (reuses the turn-binary endpoint keyed by the fork's
@@ -21564,7 +21618,8 @@ def wdtt_snapshot():
         if NODE_KIND == "docker":
             _, hs = _wdtt_uapi(iface)
         else:
-            _wgdump = (host_sh("wg show " + shlex.quote(iface) + " dump 2>/dev/null", probe=True).stdout or "")
+            _wd = _dump_of(["wg"], iface)          # the pass's `wg show all dump` (B3); on its own when it is not there
+            _wgdump = (_wd.stdout or "") if _wd.returncode == 0 else ""
             for _ln in _wgdump.splitlines()[1:]:
                 _f = _ln.split("\t")
                 if len(_f) >= 5:
