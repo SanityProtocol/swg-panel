@@ -7436,7 +7436,10 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
             cur = open(sigf).read().strip()
         # ⚠️ "ok" ONLY FOR A TABLE IN FORCE. The state was set before the load, so a load the kernel refused reported a running
         # guard while nothing was blocked — with 1.8.8's torrent chain already retired (1.8.9 qualification NR-2).
-        if have.returncode == 0 and cur == sig and " drop" in (have.stdout or ""):
+        # In force = a RULE that drops: nft ends a rule's line with its verdict. Not the word — the table's own `counter dropped {}`
+        # holds " drop" too, and `nft flush table` keeps it while deleting every rule: a guard flushed in place read as in force,
+        # said "ok" and was never rebuilt (1.8.9 qualification R2 NODED-1).
+        if have.returncode == 0 and cur == sig and " drop\n" in (have.stdout or ""):
             retire()
             _P2P.update(on=True, state="ok" if ih else "degraded", detail="")
             return

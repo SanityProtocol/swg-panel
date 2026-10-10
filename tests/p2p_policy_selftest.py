@@ -9,7 +9,8 @@
   [5] chain ORDER — traffic to the node itself and replies are never judged; held flows die before the packet gate;
       a blocked user's drop precedes the direct mark
   [6] no `@ih` (old kernel): no signature rules, state "degraded" — fan-out still runs
-  [7] the gate: a second pass with the same answer loads nothing; a table flushed in place (no drop) is rebuilt
+  [7] the gate: a second pass with the same answer loads nothing; a table flushed in place (its rules gone, its counter
+      objects kept, as the real kernel lists it — `counter dropped {` still holds the word " drop") is rebuilt
   [8] the torrent port-hint is gone from swg_mech; activity reads swg_p2p's counters into "*"
   [11] host-readable keys: only `typeof ip saddr|ip daddr|th dport` and concatenations (nft_host_readable_selftest)
   [9] the old SWGP chain + swgp_src ipset are torn down once per process
@@ -64,6 +65,11 @@
        a kernel that refuses the new table keeps the old guard, not none
   [28] 1.8.9 qualification NR-8: the pass reads swg_p2p TERSE (`nft -t`, no set elements — @fanseen alone holds up to 65 535,
        MBs a pass on a busy node) for its " drop" test; never the full dump
+  [30] 1.8.9 qualification R2 NODED-1: "in force" is a RULE that drops, not the word — `nft flush table` deletes every rule and
+       keeps the table's own `counter dropped {}`, and the word test read that guard as running ("ok", never rebuilt, 1.8.8's
+       SWGP retired on it). Where `sudo -n` exists, every variant (block / strict / direct / route / legacy / no @ih × log /
+       no log) is loaded on the real kernel in a throwaway namespace: its intact listing reads in force (no reload on every
+       pass), and its listing flushed in place is rebuilt
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
      --perturb    plant each old behaviour in turn → every one must go RED (exit 0 when all are caught)
@@ -83,8 +89,9 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "rule-in-band": ("P2P_RULE_PRI = 6880 ", "P2P_RULE_PRI = 7050 "),
     "porthint":     ('            if "smtp" in cats:     els.append("tcp . 25")\n',
                      '            if "smtp" in cats:     els.append("tcp . 25")\n            if "torrents" in cats: els += ["udp . 6881-6889", "tcp . 6881-6889"]\n'),
-    "gate-memo":    ('if have.returncode == 0 and cur == sig and " drop" in (have.stdout or ""):\n            retire()\n            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")\n            return\n        _P2P["tbl"] = True',
+    "gate-memo":    ('if have.returncode == 0 and cur == sig and " drop\\n" in (have.stdout or ""):\n            retire()\n            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")\n            return\n        _P2P["tbl"] = True',
                      'if have.returncode == 0 and cur == sig:\n            retire()\n            _P2P.update(on=True, state="ok" if ih else "degraded", detail="")\n            return\n        _P2P["tbl"] = True'),   # retire(): 3e882502
+    "drop-word":    ('cur == sig and " drop\\n" in (have.stdout or ""):', 'cur == sig and " drop" in (have.stdout or ""):'),   # NODED-1: the word, which `counter dropped {}` holds too
     "rule-poll":    ('    if not on and _P2P["rule"] is False:\n        return\n', ''),
     "ctid-key":     ('"  set flag { typeof ip saddr; flags timeout; size 65535; }",', '"  set flag { typeof ip saddr; flags timeout; size 65535; }", "  set p2p_ct { typeof ct id; flags timeout; }",'),
     "probe-1line":  ('P2P_PROBE = "table inet swg_p2p_probe {\\n  chain c {\\n    meta l4proto udp @ih,0,64 0x0000041727101980 counter\\n  }\\n}\\n"',
@@ -342,6 +349,48 @@ def _wire_bridge(table):
     return None if "FLAG" not in out else out
 
 
+# [30] each table as _ensure_p2p loaded it, in a throwaway namespace: listed as the pass reads it (`nft -t list table`), then
+# flushed in place — `nft flush table` deletes every rule and keeps the chains, sets and named counters — and listed again.
+# {("INTACT" | "FLUSHED", i): the listing as nft printed it}; a table the kernel refuses has neither. None = could not set up.
+WIRE_FLUSH = r'''set -u
+nft list tables >/dev/null || { echo SETUP-FAILED nft; exit 0; }
+echo "=== READY -1"
+i=0
+for f in "$@"; do
+  if nft -f "$f"; then
+    echo "=== INTACT $i"; nft -t list table inet swg_p2p
+    nft flush table inet swg_p2p
+    echo "=== FLUSHED $i"; nft -t list table inet swg_p2p
+    nft delete table inet swg_p2p
+  fi
+  i=$((i + 1))
+done
+'''
+
+
+def _wire_flush(tables):
+    import subprocess as sp
+    names = []
+    for t in tables:
+        with tempfile.NamedTemporaryFile("w", suffix=".nft", delete=False) as f:
+            f.write(t)
+        names.append(f.name)
+    try:
+        r = sp.run(["sudo", "-n", "unshare", "-n", "bash", "-s"] + names, input=WIRE_FLUSH, capture_output=True, text=True, timeout=60)
+    except Exception:
+        return None
+    finally:
+        for n in names:
+            os.unlink(n)
+    out, cur = {}, None
+    for ln in (r.stdout or "").splitlines(keepends=True):     # each line keeps its own end: the pass's test reads " drop\n"
+        if ln.startswith("=== "):
+            cur = (ln.split()[1], int(ln.split()[2])); out[cur] = ""
+        elif cur:
+            out[cur] += ln
+    return out if ("READY", -1) in out else None
+
+
 # What nft prints when the kernel refuses one rule of a batch — here the hit line's `log` on a kernel without nft_log /
 # nf_log_syslog. `nft -f` is one transaction: the whole table goes with that rule (shown on the real kernel in q189 NR-2).
 REFUSED = ("/dev/stdin:30:5-62: Error: Could not process rule: No such file or directory\n"
@@ -426,9 +475,15 @@ def run_checks(src):
     m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
     n2 = sum(1 for a, _ in b.cmds if a[:2] == ["nft", "-f"] and a[2] == "-")
     ok(n2 == n, "[7] same answer → nothing loaded")
-    b.tables["swg_p2p"] = "table inet swg_p2p {\n  chain cls {\n  }\n}\n"          # flushed in place
+    # flushed in place, as the real kernel lists it ([30] reads the real one): every rule gone, the chains, sets and named
+    # counters kept — `counter dropped {` among them, so the word " drop" is still in the listing (NODED-1)
+    b.tables["swg_p2p"] = ("table inet swg_p2p {\n" + "".join("\tcounter %s {\n\t\tpackets 0 bytes 0\n\t}\n\n" % c for c in
+                           ("bt_tcp", "bt_utp", "dht", "udptrk", "fan_flag", "dropped", "held"))
+                           + "\tchain hit {\n\t}\n\n\tchain cls {\n\t\ttype filter hook prerouting priority mangle + 5; policy accept;\n\t}\n}\n")
     m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
-    ok(" drop" in b.tables["swg_p2p"], "[7] a flushed table is rebuilt")
+    n3 = sum(1 for a, _ in b.cmds if a[:2] == ["nft", "-f"] and a[2] == "-")
+    ok(n3 == n2 + 1 and m._P2P["state"] == "ok",
+       "[7] a table flushed in place (its rules gone, its counter objects kept) is rebuilt, not read as running (%d loads)" % (n3 - n2))
 
     # [8] port-hint gone; activity
     m, b = fresh()
@@ -836,6 +891,52 @@ def run_checks(src):
     ok(lists and all(a[:3] == ["nft", "-t", "list"] for a in lists),
        "[28] swg_p2p is read terse (`nft -t list table`, no @fanseen elements) for its drop test — never the full dump: %s"
        % sorted(set(" ".join(a[:3]) for a in lists)))
+
+    # [30] NODED-1 — in force is a RULE that drops, judged on the listing the real kernel prints. Each variant as _ensure_p2p
+    # builds it (one module; each variant its own box, sig file, level and mesh link nets), loaded on the real kernel
+    m30, ST30 = load(src), {"10.67.0.0/24": ["torrents"]}
+    def at(v):
+        m30.run, m30.GEO_DIR, m30._P2P["ih"] = v["b"].run, v["geo"], None    # @ih asked of this variant's box again
+        m30.log_level = (lambda: m30.LOG_INFO) if v["log"] else (lambda: m30.LOG_WARNING)
+        m30._p2p_link_nets = lambda cfg: list(v["nofan"])
+        return v
+    V30 = []
+    for name, p2p, mech, ih, nofan in (("block", {"action": "block"}, {}, True, ["10.255.0.2/31"]),
+                                       ("block strict", {"action": "block"}, ST30, True, []),
+                                       ("direct", {"action": "direct"}, {}, True, ["10.255.0.2/31"]),
+                                       ("route", {"action": "route", "entry": E}, ST30, True, []),
+                                       ("legacy", None, ST30, True, []),
+                                       ("no @ih", {"action": "block"}, {}, False, [])):
+        for lg in (True, False):
+            v = at({"name": "%s, %s" % (name, "log" if lg else "no log"), "p2p": p2p, "mech": mech, "b": Box(ih=ih),
+                    "geo": tempfile.mkdtemp(), "log": lg, "nofan": nofan, "state": "ok" if ih else "degraded"})
+            m30._ensure_p2p(p2p, mech, {}, {"changed": 0, "errors": []})
+            v["text"] = v["b"].tables.get("swg_p2p", "")
+            V30.append(v)
+    ok(len({v["text"] for v in V30 if v["text"]}) == 12, "[30] twelve different tables built (%d)" % len({v["text"] for v in V30}))
+    if _sp23.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and _sp23.run(["which", "unshare"], capture_output=True).returncode == 0:
+        got = _wire_flush([v["text"] for v in V30])
+        if got is None:
+            print("  SKIPPED [30] real-kernel flush — the throwaway namespace could not be set up here")
+        for i, v in enumerate(V30 if got is not None else ()):
+            intact, flushed = got.get(("INTACT", i)), got.get(("FLUSHED", i))
+            ok(intact and flushed and " drop" in flushed,
+               "[30] %s: the real kernel loads it, and its flush keeps the counter objects (the word \" drop\" is still listed)" % v["name"])
+            if not (intact and flushed):
+                continue
+            at(v); n = p2p_loads(v["b"])
+            v["b"].tables["swg_p2p"] = intact
+            m30._ensure_p2p(v["p2p"], v["mech"], {}, {"changed": 0, "errors": []})
+            ok(p2p_loads(v["b"]) == n and m30._P2P["state"] == v["state"],
+               "[30] %s: the table as the real kernel lists it is in force — nothing reloaded on the next pass (%d loads, %r)"
+               % (v["name"], p2p_loads(v["b"]) - n, m30._P2P["state"]))
+            v["b"].tables["swg_p2p"] = flushed
+            m30._ensure_p2p(v["p2p"], v["mech"], {}, {"changed": 0, "errors": []})
+            ok(p2p_loads(v["b"]) == n + 1 and m30._P2P["state"] == v["state"],
+               "[30] %s: flushed in place on the real kernel, it is rebuilt — not read as running (%d loads, %r)"
+               % (v["name"], p2p_loads(v["b"]) - n, m30._P2P["state"]))
+    else:
+        print("  SKIPPED [30] real-kernel flush — no `sudo -n` here")
     return fails
 
 
