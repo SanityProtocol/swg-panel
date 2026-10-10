@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Self-test — swg-netctl's idle gate: the helper starts only when it has work (docs/CPU-PLAN.md, Part A).
 
-swg-netctl.service starts on every tick of a 10 s timer (the path watch can die unseen, the panel waits as little as 15–60 s
-for some answers, and on Docker the timer is the drainer), and every tick was a whole Python start: 80–140 ms of CPU, 8 640 a
+swg-netctl.service starts on every tick of a 10 s timer (the path watch can die unseen, and the panel waits as little as
+15–60 s for some answers; the Docker drainer likewise), and every tick was a whole Python start: 80–140 ms of CPU, 8 640 a
 day, more than the panel itself spent on hel-infra (2026-10-09). An ExecCondition now runs a gate of bash builtins first.
 
   [1] The gate's decisions: it runs the helper for any entry in the queue — dotfiles and directories too, exactly what the
@@ -17,7 +17,9 @@ day, more than the panel itself spent on hel-infra (2026-10-09). An ExecConditio
       Debug's end or the budget's retry, whichever comes first; its mtime is the mtime of the settings version the run read,
       a second before the read at the latest, so a save made while the run was reading them is still newer than it, and so
       is a version the panel renamed into place after a slow fsync (its mtime is when it was written, which can be before
-      the run read the old one); a dry run writes nothing; no settings still writes one.
+      the run read the old one); copied in nanoseconds, so the real gate skips beside the version the run read, whatever
+      its sub-second mtime (a float rounded half of them below their version: Python every tick); a dry run writes
+      nothing; no settings still writes one.
   [4] One text each: the installers and update.sh render the gate and its drop-ins from lib/common.sh and nowhere else; the
       heal runs after the helper's own; an update that replaces the helper removes the stamp (the new build runs next tick).
   [5] update.sh's heal writes the gate and the drop-in when missing, nothing on a second run, rewrites an older text, writes
@@ -36,6 +38,8 @@ Run: python3 tests/netctl_idle_gate_selftest.py   (0 = pass)
      failclosed   the drop-in runs the gate bare (a missing gate stops the helper for good)
      pathdrift    the drop-in's default state dir is not the helper's (a box without SWG_STATE_DIR: the gate reads elsewhere)
      stampnow     the stamp's mtime is when it was written (a save during the run is missed for up to 5 min)
+     floatmtime   the stamp's mtime is set through a float (half the versions read newer than their stamp: every tick runs)
+     floatread    the version's mtime is read as a float (the same, from the other side)
      noretry      the stamp ignores the budget's retry time (a failed journald restart waits 5 min, not 1)
      nodebug      the stamp ignores Debug's end (the caps stay lifted up to 5 min after it)
      healonce     update.sh writes the gate only when missing (an older release's text stays for ever)
@@ -62,7 +66,8 @@ SRC = {k: open(p, encoding="utf-8").read() for k, p in FILES.items()}
 PLANTS = {
     "nodot": ("common", "shopt -s nullglob dotglob\n", "shopt -s nullglob\n"),
     "clockback": ("common", "(( now >= due || at > now + 1 )) && exit 0", "(( now >= due )) && exit 0"),
-    "readat": ("netctl", "    mt = read_at - 1 if seen is None else min(read_at - 1, seen)\n", "    mt = read_at - 1\n"),
+    "readat": ("netctl", "    mt = int((read_at - 1) * 1e9) if seen is None else min(int((read_at - 1) * 1e9), seen)\n",
+               "    mt = int((read_at - 1) * 1e9)\n"),
     "lead0": ("common", "[[ $due =~ ^[1-9][0-9]{0,17}$ && $at =~ ^[1-9][0-9]{0,17}$ ]] || exit 0",
               "[[ $due =~ ^[0-9]+$ && $at =~ ^[0-9]+$ ]] || exit 0"),
     "noexec": ("common", '  [ -x /usr/local/bin/swg-netctl-due ] && [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" = "$(swg_netctl_due_text)" ] \\',
@@ -73,7 +78,9 @@ PLANTS = {
     "failclosed": ("common", "ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due \"$${SWG_STATE_DIR:-/var/lib/swg-panel}\"; [ $$? -eq 1 ] && exit 1; exit 0'",
                    "ExecCondition=/usr/local/bin/swg-netctl-due /var/lib/swg-panel"),
     "pathdrift": ("common", '\"$${SWG_STATE_DIR:-/var/lib/swg-panel}\"', '\"$${SWG_STATE_DIR:-/var/lib/swg}\"'),
-    "stampnow": ("netctl", "os.utime(DUE_STAMP + \".tmp\", (mt, mt))", "os.utime(DUE_STAMP + \".tmp\", None)"),
+    "stampnow": ("netctl", "os.utime(DUE_STAMP + \".tmp\", ns=(mt, mt))", "os.utime(DUE_STAMP + \".tmp\", None)"),
+    "floatmtime": ("netctl", "os.utime(DUE_STAMP + \".tmp\", ns=(mt, mt))", "os.utime(DUE_STAMP + \".tmp\", (mt / 1e9, mt / 1e9))"),
+    "floatread": ("netctl", "os.fstat(f.fileno()).st_mtime_ns", "int(os.fstat(f.fileno()).st_mtime * 1e9)"),
     "noretry": ("netctl", "    if retry and retry > read_at:\n", "    if False:\n"),
     "nodebug": ("netctl", "        if until > read_at:\n", "        if False:\n"),
     "healonce": ("common", '  [ "$(cat "$d/$SWG_NETCTL_DUE_DROPIN" 2>/dev/null)" = "$2" ] && return 0\n',
@@ -325,8 +332,8 @@ os.utime(PSF, (_old, _old))
 t1 = time.time()
 M.main(["swg-netctl", "run"])
 mt1 = os.stat(DUE).st_mtime
-check("[3] the stamp's mtime is the version the run read (saved 30 s ago), not a second before the read",
-      abs(mt1 - _old) < 0.01, (mt1, _old, t1))
+check("[3] the stamp's mtime is the version the run read (saved 30 s ago), not a second before the read — to the nanosecond",
+      os.stat(DUE).st_mtime_ns == os.stat(PSF).st_mtime_ns, (os.stat(DUE).st_mtime_ns, os.stat(PSF).st_mtime_ns, t1))
 shutil.copy(DUE, STAMP); os.utime(STAMP, (mt1, mt1))
 for n in os.listdir(Q):
     os.remove(os.path.join(Q, n))
@@ -348,6 +355,24 @@ MD = load(dry=True)
 MD.run = M.run
 rc, due, mt, t0 = tick({"log_level": "info"}, mod=MD)
 check("[3] a dry run writes no stamp", due is None, due)
+# end to end: the real gate on the helper's own stamp, beside the settings version that run read, at sub-second mtimes
+# as the panel's saves have them — the steady state must skip whatever the nanoseconds (LC F1: a float rounded half of
+# them below their version, and that box ran Python on every tick until a save happened to round the other way)
+GATE_N = os.path.join(T, "bin", "swg-netctl-due-n")
+open(GATE_N, "w").write(gate_text.replace("/run/swg-netctl.due", DUE))
+os.chmod(GATE_N, 0o755)
+RESTART_RC[0] = 0
+_rnd = __import__("random").Random(189)
+_ran = []
+for _ in range(48):
+    json.dump({"log_level": "info"}, open(PSF, "w"))
+    _v = (int(time.time()) - 60) * 10 ** 9 + _rnd.randrange(10 ** 9)
+    os.utime(PSF, ns=(_v, _v))
+    M.main(["swg-netctl", "run"])
+    if subprocess.run([GATE_N, NST], capture_output=True, text=True, timeout=10).returncode != 1:
+        _ran.append((_v, os.stat(DUE).st_mtime_ns))
+check("[3] the next tick after a run is skipped for 48 of 48 sub-second settings mtimes (the stamp carries the version's "
+      "mtime to the nanosecond)", not _ran, _ran[:4])
 
 # ── [4] one text each ──────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[4] the texts live in lib/common.sh only")
