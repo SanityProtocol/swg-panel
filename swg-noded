@@ -1768,6 +1768,43 @@ def _service_of_pid(pid):
         return ""
 
 
+_LOOP4 = ("0100007F", "7F000001")   # 127.0.0.1 as /proc/net/{tcp,udp} print it: little- and big-endian hosts
+
+
+def _turn_wg_sports_proc(svcs):
+    """{service: {port}} — the 127.0.0.1 source ports of each turn-proxy unit's ESTABLISHED TCP and connected UDP sockets
+    whose peer is 127.0.0.1 too (the proxy→wg connections), read from /proc: the unit's cgroup → its pids → their socket
+    inodes → /proc/net/tcp and udp. What `ss -Hnp -t|-u state established` gave the caller, without walking every fd of
+    every process on the box for it — 16 ms of CPU a pass on swgt (docs/CPU-PLAN.md C1). None when the cgroups are not
+    systemd's unified hierarchy at /sys/fs/cgroup (cgroup v1, a container's own namespace): the caller asks `ss` then."""
+    if not os.path.isdir("/sys/fs/cgroup/system.slice"):
+        return None
+    owner = {}
+    for svc in svcs:
+        try:
+            with open("/sys/fs/cgroup/system.slice/%s.service/cgroup.procs" % svc) as f:
+                pids = f.read().split()
+        except OSError:
+            continue                                         # not running: no cgroup, no sockets
+        for pid in pids:
+            with contextlib.suppress(OSError):
+                for fd in os.listdir("/proc/%s/fd" % pid):
+                    with contextlib.suppress(OSError):
+                        ln = os.readlink("/proc/%s/fd/%s" % (pid, fd))
+                        if ln.startswith("socket:["):
+                            owner[ln[8:-1]] = svc
+    out = {}
+    if owner:
+        for path in ("/proc/net/tcp", "/proc/net/udp"):     # sl local rem st tx:rx tr:tm retrnsmt uid timeout inode …
+            with open(path) as f:
+                for ln in f:
+                    c = ln.split()
+                    if (len(c) > 9 and c[3] == "01" and c[9] in owner and c[1][:8] in _LOOP4 and c[2][:8] in _LOOP4
+                            and c[1][8:9] == ":"):
+                        out.setdefault(owner[c[9]], set()).add(str(int(c[1][9:], 16)))
+    return out
+
+
 def _attach_turn_wg_sports(tp):
     """Attach wg_sports — the localhost SOURCE ports this proxy uses to reach its wg backend. A wg peer that came
     in via a proxy has endpoint 127.0.0.1:<one of these ports>, so the panel can tell WHICH proxy a client used
@@ -1776,17 +1813,19 @@ def _attach_turn_wg_sports(tp):
     with contextlib.suppress(Exception):
         if not tp:
             return
-        by_svc = {}
-        for proto in ("-t", "-u"):
-            r = run(["ss", "-Hnp", proto, "state", "established"], timeout=5)   # never raises: a failure reads as no lines
-            for line in (r.stdout or "").splitlines():
-                mp = re.search(r"pid=(\d+)", line)
-                loop = re.findall(r"127\.0\.0\.1:(\d+)", line)   # LOCAL then PEER, both loopback on a proxy→wg conn
-                if not mp or len(loop) < 2:
-                    continue
-                svc = _service_of_pid(mp.group(1))
-                if svc:
-                    by_svc.setdefault(svc, set()).add(loop[0])   # loop[0] = LOCAL = the source port wg sees as the endpoint
+        by_svc = _turn_wg_sports_proc(sorted({t.get("service") for t in tp if t.get("service")}))
+        if by_svc is None:                                   # no unified cgroup hierarchy here: ask ss, as before
+            by_svc = {}
+            for proto in ("-t", "-u"):
+                r = run(["ss", "-Hnp", proto, "state", "established"], timeout=5)   # never raises: a failure reads as no lines
+                for line in (r.stdout or "").splitlines():
+                    mp = re.search(r"pid=(\d+)", line)
+                    loop = re.findall(r"127\.0\.0\.1:(\d+)", line)   # LOCAL then PEER, both loopback on a proxy→wg conn
+                    if not mp or len(loop) < 2:
+                        continue
+                    svc = _service_of_pid(mp.group(1))
+                    if svc:
+                        by_svc.setdefault(svc, set()).add(loop[0])   # loop[0] = LOCAL = the source port wg sees as the endpoint
         for t in tp:
             svc = t.get("service") or ""
             if svc in by_svc:
