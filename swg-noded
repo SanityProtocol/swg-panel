@@ -13718,6 +13718,8 @@ def read_inet_bytes():
     filter that silently did nothing is worse than no filter. The set now has exactly one home,
     `inet_managed_ifaces`."""
     r = run(["iptables", "-t", SWG_INET_TABLE, "-S", SWG_INET_CHAIN, "-v"])
+    if r.returncode == 1:                              # iptables ran: no such chain — nothing counted, as a dump without
+        return {"up": 0, "down": 0, "dev": {}}         # its lines read
     if r.returncode != 0 or not r.stdout:
         return None
     up = down = 0
@@ -13844,8 +13846,11 @@ def sample_catk():
     # renders them all — 110 ms of CPU every 5 s at 10 825 rules, under 10 ms for this chain (iptables-nft fetches the
     # chain it is asked for; CPU re-qualification V2-O2). The same for read_inet_bytes.
     r = run(["iptables", "-t", "mangle", "-S", SWG_CATK_CHAIN, "-v"])
+    if r.returncode == 1:                                   # iptables ran: no such chain (another tool removed it) → clear,
+        _CATK["cum"] = None; _CATK["rate"] = {}             # as a dump without its lines did; the next pass rebuilds it
+        return {}
     if r.returncode != 0:
-        return dict(_CATK["rate"])                          # unreadable for now → leave last known
+        return dict(_CATK["rate"])                          # a timeout / no iptables → leave last known
     cum = {}
     for m in re.finditer(r'--comment "?swg-catk-(up|dn):([^"\s]+)"?.* -c \d+ (\d+)', r.stdout or ""):
         cum.setdefault(m.group(2), {"up": 0, "dn": 0})[m.group(1)] += int(m.group(3))
