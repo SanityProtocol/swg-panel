@@ -574,10 +574,13 @@ def derive_pubkey(cmd, priv):
 # `<tool> show all dump` per pass carry all of it: a device's line, an interface's dump lines without the `all` form's
 # leading name column — the bytes `<tool> show <dev> dump` prints. A device or interface the batch does not hold is read
 # on its own, exactly as before, so a down interface's `down` (that read's stderr, which the panel's mesh auto-start
-# acts on) is the same text.
+# acts on) is the same text. ⚠️ A batch that fails is kept failed for the pass, and waits 5 s, not 20 (code review): `show
+# all dump` asks every userspace device's socket, so one wedged wireguard-go / amneziawg-go / WDTT server that accepts and
+# never answers made every reader run the batch again into its 20 s timeout — minutes a pass, where a per-device read only
+# ever waited on the wedged device itself. Its readers fall back to their own reads at once.
 def _all_links():
     """{device: its `ip -d -o link show` line} for every link, read once per pass — None when it could not be read."""
-    r = _pass_cached("ip-d-o-link", lambda: run(["ip", "-d", "-o", "link", "show"]))
+    r = _pass_cached("ip-d-o-link", lambda: run(["ip", "-d", "-o", "link", "show"], timeout=5), keep_failures=True)
     if r.returncode != 0:
         return None
     out = {}
@@ -591,7 +594,7 @@ def _all_links():
 def _all_dumps(cmd):
     """{interface: what `<cmd> show <interface> dump` prints} from one `<cmd> show all dump` per pass — None when it could
     not be read."""
-    r = _pass_cached("all-dump:" + " ".join(cmd), lambda: run(cmd + ["show", "all", "dump"]))
+    r = _pass_cached("all-dump:" + " ".join(cmd), lambda: run(cmd + ["show", "all", "dump"], timeout=5), keep_failures=True)
     if r.returncode != 0:
         return None
     lines = {}
@@ -1221,21 +1224,28 @@ _RUN_LOCK = threading.Lock()
 # looked. Any spawn that is not a known READ (`_is_read`) — a write by this node, from any thread — forgets every one of
 # them, so a read after a write is a fresh read: the classifier fails toward reading again, never toward a stale answer.
 # Never kept: another thread's read (the probe threads read traffic that must be fresh), a timeout, a missing tool or
-# socket (rc 124 / 126 / 127). Opt-in at the measured hot reads only: a loop that polls a read until it changes must
-# never see a cached answer, so nothing is cached that was not chosen.
+# socket (rc 124 / 126 / 127) — except a batch's (keep_failures: B3), whose readers each fall back to their own read, so a
+# batch that failed is not asked again by every one of them. Opt-in at the measured hot reads only: a loop that polls a read
+# until it changes must never see a cached answer, so nothing is cached that was not chosen.
 _PASS = {}                 # key → (the pass it was read in, the result)
 
 
-def _pass_cached(key, read):
+def _pass_cached(key, read, keep_failures=False):
     if threading.current_thread() is not threading.main_thread():
         return read()
     hit = _PASS.get(key)
     if hit is not None and hit[0] == _LOOP["n"]:
         return hit[1]
     v = read()
-    if getattr(v, "returncode", 0) not in (124, 126, 127):
+    if keep_failures or getattr(v, "returncode", 0) not in (124, 126, 127):
         _PASS[key] = (_LOOP["n"], v)
     return v
+
+
+def _pass_forget(prefix):
+    """Drop this pass's reads under `prefix`: the next reader reads again (something since changed what they hold)."""
+    for k in [k for k in _PASS if k.startswith(prefix)]:
+        _PASS.pop(k, None)
 
 
 _HOST_PATH_PREFIX = "export PATH=/run/current-system/sw/bin:$PATH\n"   # host_sh's docker helper puts it first
@@ -1795,21 +1805,21 @@ _LO4_HEX = ("0100007F", "7F000001")   # 127.0.0.1 as /proc/net/udp prints it: li
 def _turn_wg_sports_proc(svcs):
     """{service: {port}} — the 127.0.0.1 source ports of each turn-proxy unit's connected UDP sockets whose peer is 127.0.0.1
     too: its connections to the WireGuard interface behind it (`-connect 127.0.0.1:<wg port>`), read from /proc — the
-    unit's cgroup → its pids → their socket inodes → /proc/net/udp. UDP only: WireGuard speaks nothing else, so this side is
-    UDP whatever the proxy's own transport (a TCP-mode proxy's TCP is to VK's relay, never to a loopback peer), and the
-    panel looks these ports up as WireGuard endpoints. What `ss -Hnp state established` gave, without walking every fd of
-    every process on the box for it — `ss -p` twice a pass, 16 ms of CPU on swgt (docs/CPU-PLAN.md B9). None when the
-    cgroups are not systemd's unified hierarchy at /sys/fs/cgroup (cgroup v1): the caller asks `ss` then."""
-    if not os.path.isdir("/sys/fs/cgroup/system.slice"):
-        return None
+    processes whose cgroup names the unit (_service_of_pid: how 1.8.8 named a socket's owner, in any slice, cgroup v1 or v2,
+    a container's hierarchy or the host's) → their socket inodes → /proc/net/udp. UDP only: WireGuard speaks nothing else,
+    so this side is UDP whatever the proxy's own transport (a TCP-mode proxy's TCP is to VK's relay, never to a loopback
+    peer), and the panel looks these ports up as WireGuard endpoints. What `ss -Hnp state established` gave, without
+    walking every fd of every process on the box for it — `ss -p` twice a pass, 16 ms of CPU on swgt (docs/CPU-PLAN.md B9);
+    one small read per process here."""
+    want = set(svcs)
     owner = {}
-    for svc in svcs:
-        try:
-            with open("/sys/fs/cgroup/system.slice/%s.service/cgroup.procs" % svc) as f:
-                pids = f.read().split()
-        except OSError:
-            continue                                         # not running: no cgroup, no sockets
-        for pid in pids:
+    with contextlib.suppress(OSError):
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            svc = _service_of_pid(pid)
+            if svc not in want:
+                continue
             with contextlib.suppress(OSError):
                 for fd in os.listdir("/proc/%s/fd" % pid):
                     with contextlib.suppress(OSError):
@@ -1839,17 +1849,6 @@ def _attach_turn_wg_sports(tp):
         if not tp or TURN_DOCKER:
             return
         by_svc = _turn_wg_sports_proc(sorted({t.get("service") for t in tp if t.get("service")}))
-        if by_svc is None:                                   # no unified cgroup hierarchy here: ask ss (UDP, as above)
-            by_svc = {}
-            r = run(["ss", "-Hnp", "-u", "state", "established"], timeout=5)   # never raises: a failure reads as no lines
-            for line in (r.stdout or "").splitlines():
-                mp = re.search(r"pid=(\d+)", line)
-                loop = re.findall(r"127\.0\.0\.1:(\d+)", line)   # LOCAL then PEER, both loopback on a proxy→wg conn
-                if not mp or len(loop) < 2:
-                    continue
-                svc = _service_of_pid(mp.group(1))
-                if svc:
-                    by_svc.setdefault(svc, set()).add(loop[0])   # loop[0] = LOCAL = the source port wg sees as the endpoint
         for t in tp:
             svc = t.get("service") or ""
             if svc in by_svc:
@@ -4532,6 +4531,14 @@ def _nft_cli_only():
     return os.environ.get("SWG_NFT_CLI_ONLY") == "1"
 
 
+def _nl_refused(why):
+    """Say once that nftables cannot be read over netlink here (the kernel refuses without CAP_NET_ADMIN with an error
+    reply, not at socket()): the node then reads it with nft, keeping nothing across passes — more CPU, same answers."""
+    if not _NL_COUNTERS["warned"]:
+        _NL_COUNTERS["warned"] = True
+        log(LOG_WARNING, "nftables over netlink: %s — reading it with nft instead, nothing kept across passes", why)
+
+
 def _nl_attrs(buf, off, end):
     while off + 4 <= end:
         alen, atyp = struct.unpack_from("=HH", buf, off)
@@ -4565,7 +4572,9 @@ def _nft_counters(table, family=1):
                 if typ == 3:                                                                   # NLMSG_DONE
                     return out or None
                 if typ == 2:                                                                   # NLMSG_ERROR
-                    if struct.unpack_from("=i", d, off + 16)[0]:
+                    err = struct.unpack_from("=i", d, off + 16)[0]
+                    if err:
+                        _nl_refused("the kernel refused a counter read (%s)" % os.strerror(-err))
                         return None
                     return out or None
                 name, pk, by = None, 0, 0
@@ -4582,9 +4591,7 @@ def _nft_counters(table, family=1):
                     out[name] = (pk, by)
                 off += (ln + 3) & ~3
     except (OSError, ValueError, struct.error, UnicodeDecodeError) as e:
-        if not _NL_COUNTERS["warned"]:
-            _NL_COUNTERS["warned"] = True
-            log(LOG_WARNING, "nft counters: netlink could not read them (%s) — reading them with nft instead", e)
+        _nl_refused("could not read counters (%s)" % e)
         return None
     finally:
         if s is not None:
@@ -4614,8 +4621,10 @@ def _nft_genid():
             for t, v in _nl_attrs(d, 20, ln):
                 if t == 1 and len(v) >= 4:                                                     # NFTA_GEN_ID
                     return struct.unpack(">I", v[:4])[0]
-    except (OSError, ValueError, struct.error):
-        pass
+        if typ == 2 and len(d) >= 20 and struct.unpack_from("=i", d, 16)[0]:                  # NLMSG_ERROR
+            _nl_refused("the kernel refused the generation id (%s)" % os.strerror(-struct.unpack_from("=i", d, 16)[0]))
+    except (OSError, ValueError, struct.error) as e:
+        _nl_refused("could not read the generation id (%s)" % e)
     finally:
         if s is not None:
             s.close()
@@ -10530,6 +10539,8 @@ def reconcile_exits(desired, res):
         # WireGuard is lazy and a tunnel nothing has ever sent through has never handshaken. Probed together
         # (_exit_probe_all), judged here in this thread, in order: _EXIT_HEALTH is only ever touched by this loop.
         _pr = _exit_probe_all([(dev, rec) for _s, _x, dev, _p, rec, _e, _b in _slots])
+        if _slots:                                     # the handshakes below come from the pass's dump (B3): one taken before
+            _pass_forget("all-dump:")                  # these probes would miss a first handshake they made (_exit_handshake)
         for _s, xid, dev, prov, rec, err, _blob_err in _slots:
             tr, _rch, _png = _pr.get(dev) or ({}, None, None)
             _got = _EXIT_RESOLVED.pop(dev, None)       # a lookup's answer, from this pass's probe or a late one
@@ -11743,7 +11754,9 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
                                                      "destroy swgk_TTL\n" % (ttl, setn))
         if r.returncode != 0:
             res["errors"].append("kernel-sni: learned-IP lifetime not applied to %s: %s" % (setn, (r.stderr or "").strip()[:80]))
-    if stored == sig and (hooked or not (entries or arr_ents)):   # steady state: keep the ipsets alive (they hold learned IPs — NEVER flush here)
+    # Steady: the hook in place while Kernel SNI runs, and NOT in place while it does not — a hook that came back after the
+    # teardown stamped "gone" (a boot-time restore of rules saved while it ran) is torn down again (code review, D1's stamp).
+    if stored == sig and (hooked if (entries or arr_ents) else not hooked):   # keep the ipsets alive (they hold learned IPs — NEVER flush here)
         for c in want_cats:
             run(["ipset", "create", _xts_setname(c), "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])
         _xts_reap(want_cats, want_srcs)                        # …and retry any reap the last rebuild could not finish
@@ -12116,8 +12129,9 @@ def _block_activity():
         _bsw = {x[0] for c2, lst in ((_SHADOW["v"] or {}).get("by_target") or {}).items() if str(c2).startswith("blku") for x in lst}
         # Read only where there is something to count: a table whose structure holds no Block set (and no Block list's shadow)
         # has no line below to match — its rule counters were read every pass for nothing (CPU-PLAN B4).
+        _st = _smart_table()                                       # (a render that failed says nothing: read as before)
         pre = (_nft_kept(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "prerouting"], structural=False).stdout or ""
-               if (_bsw or "blku" in _smart_table()["out"]) else "")   # summed per source subnet
+               if (_bsw or _st["rc"] != 0 or "blku" in _st["out"]) else "")   # summed per source subnet
         for ln in pre.splitlines():                               # rule: ip saddr <sub> ip daddr @cat_blku_… counter packets N … drop
             _m = re.search(r"@catl?_(sw_[0-9a-f]{10})\b", ln) if _bsw else None   # …or a block list's shadow (_smart_shadows)
             if ("blku" not in ln and not (_m and _m.group(1) in _bsw)) or "drop" not in ln:
@@ -12145,8 +12159,10 @@ def _block_activity():
 def _smart_forward():
     """The smart table's `forward` chain as nft lists it, read once a pass: its rules' anonymous counters are what
     smart_status (the SNI first-hit resets) and _block_activity (refusals by name) report — "" when it is not there, and
-    without a read when the table's structure holds no `reject` rule (both are one): nothing there to count."""
-    if "reject" not in _smart_table()["out"]:
+    without a read when the table's structure holds no `reject` rule (both are one): nothing there to count. A render that
+    failed says nothing about it: the chain is read as before."""
+    _t = _smart_table()
+    if _t["rc"] == 0 and "reject" not in _t["out"]:
         return ""
     return _pass_cached("nft-smart-forward", lambda: _nft_kept(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "forward"],
                                                                structural=False)).stdout or ""

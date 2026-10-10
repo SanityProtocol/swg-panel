@@ -191,6 +191,7 @@ services:
       SWG_TURN_IMAGE: "${SWG_TURN_IMAGE:-ghcr.io/sanityprotocol/swg-node:${SWG_IMAGE_TAG:-latest}}"  # image swg-noded runs each turn-proxy container from
       SWG_HOST_NODE_DIR: "${SWG_HOST_NODE_DIR:-}"   # absolute HOST path of ./data/node — for bind-mounting the turn binary into its container
       SWG_TURN_MIRROR: "${SWG_TURN_MIRROR:-}"   # OPT-IN: space-separated GitHub proxy prefix(es) to fall back to if the direct release download fails (you must trust them to serve the right binary)
+      SWG_NFT_CLI_ONLY: "${SWG_NFT_CLI_ONLY:-}"   # 1 = read nftables through the nft CLI only, as 1.8.8 did (no netlink, nothing kept across passes) — a way back; leave unset
       # Interfaces are OPTIONAL — by default the node comes up with none and is managed from the panel
       # (Interfaces → Load new interface). Set NODE_IFACE for a single bootstrap interface, or NODE_IFACES for several:
       NODE_IFACE: "${NODE_IFACE:-}"       # bootstrap interface name; blank = none (add interfaces from the panel)
