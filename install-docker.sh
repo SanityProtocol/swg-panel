@@ -1906,6 +1906,7 @@ Description=poll the swg-panel docker netctl queue (fallback for the path watch)
 [Timer]
 OnActiveSec=10s
 OnUnitActiveSec=10s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target

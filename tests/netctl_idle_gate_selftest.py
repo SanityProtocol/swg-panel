@@ -23,7 +23,10 @@ day, more than the panel itself spent on hel-infra (2026-10-09). An ExecConditio
   [4] One text each: the installers and update.sh render the gate and its drop-ins from lib/common.sh and nowhere else; the
       heal runs after the helper's own; an update that replaces the helper removes the stamp (the new build runs next tick).
   [5] update.sh's heal writes the gate and the drop-in when missing, nothing on a second run, rewrites an older text, writes
-      nothing for a unit that is not there, and only says what it would do on a dry run.
+      nothing for a unit that is not there, and only says what it would do on a dry run. The ticks it relies on are on
+      time: every swg-netctl / swg-netctl-docker timer text carries AccuracySec=1s, and the heal adds it to an older
+      release's timer once (systemd's default 1 min let a quiet box's 10 s ticks drift to 35 s — CPU re-qualification
+      AB-F1), never to a timer whose AccuracySec an operator set.
   [6] The gate goes with the last unit that runs it (lib/common.sh netctl_gate_reap, uninstall.sh rm_netctl_gate_if_last).
 
 Run: python3 tests/netctl_idle_gate_selftest.py   (0 = pass)
@@ -44,6 +47,9 @@ Run: python3 tests/netctl_idle_gate_selftest.py   (0 = pass)
      nodebug      the stamp ignores Debug's end (the caps stay lifted up to 5 min after it)
      healonce     update.sh writes the gate only when missing (an older release's text stays for ever)
      keepstamp    an update replaces the helper and leaves the stamp (the new build's log work waits up to 5 min)
+     noacc        install-host.sh's timer has no AccuracySec (its ticks drift with whatever else wakes PID 1)
+     nomigrate    update.sh leaves an older release's timer without AccuracySec
+     operatoracc  update.sh adds AccuracySec to a timer that has an operator's own
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tempfile, threading, time
 
@@ -86,6 +92,9 @@ PLANTS = {
     "healonce": ("common", '  [ "$(cat "$d/$SWG_NETCTL_DUE_DROPIN" 2>/dev/null)" = "$2" ] && return 0\n',
                  '  [ -f "$d/$SWG_NETCTL_DUE_DROPIN" ] && return 0\n'),
     "keepstamp": ("update", "      run rm -f /run/swg-netctl.due   #", "      : run rm -f /run/swg-netctl.due   #"),
+    "noacc": ("host", "[Timer]\nOnActiveSec=10s\nOnUnitActiveSec=10s\nAccuracySec=1s\n", "[Timer]\nOnActiveSec=10s\nOnUnitActiveSec=10s\n"),
+    "nomigrate": ("update", "  sed -i '/^\\[Timer\\]$/a AccuracySec=1s' \"$t\"\n", "  :\n"),
+    "operatoracc": ("update", "  grep -q '^AccuracySec=' \"$t\" && return 0\n", ""),
 }
 if PLANT:
     f, a, b = PLANTS[PLANT]
@@ -398,7 +407,7 @@ check("[4] …and so does a re-install (install-host.sh write_netctl)",
 
 # ── [5] update.sh's heal ───────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] update.sh's heal")
-HEAL = fn(U, "ensure_netctl_gate") + fn(U, "ensure_netctl_docker_gate")
+HEAL = fn(U, "ensure_timer_on_time") + fn(U, "ensure_netctl_gate") + fn(U, "ensure_netctl_docker_gate")
 
 
 def heal(root, call, dry=False):
@@ -461,6 +470,36 @@ dd = os.path.join(R2, "sd", "swg-netctl-docker.service.d", "swg-due.conf")
 check("[5] Docker: a panel-bearing profile gets the queue-only gate",
       os.path.isfile(dd) and open(dd).read().replace(R2 + "/bin", "/usr/local/bin") == render("swg_netctl_docker_due_dropin_text"),
       r.stderr)
+
+# the ticks on time (AB-F1)
+for k in ("host", "update", "docker"):
+    n_all = SRC[k].count("OnUnitActiveSec=10s\n")
+    check("[5] %s: every netctl timer text carries AccuracySec=1s (%d)" % (os.path.basename(FILES[k]), n_all),
+          n_all >= 1 and SRC[k].count("OnUnitActiveSec=10s\nAccuracySec=1s\n") == n_all)
+OLD_TIMER = "[Unit]\nDescription=poll for swg-netctl requests (fallback for the path watch)\n\n[Timer]\nOnActiveSec=10s\n" \
+            "OnUnitActiveSec=10s\n\n[Install]\nWantedBy=timers.target\n"
+for unit, call in (("swg-netctl", "ensure_netctl_gate"), ("swg-netctl-docker", "ensure_netctl_docker_gate master")):
+    RT = os.path.join(T, "acc-" + unit)
+    os.makedirs(os.path.join(RT, "sd")); os.makedirs(os.path.join(RT, "bin"))
+    open(os.path.join(RT, "sd", unit + ".service"), "w").write("[Service]\n")
+    TM = os.path.join(RT, "sd", unit + ".timer")
+    open(TM, "w").write(OLD_TIMER)
+    r, calls = heal(RT, call, dry=True)
+    check("[5] %s: dry run — says it would add AccuracySec, writes nothing" % unit,
+          ("[skip] %s.timer: AccuracySec=1s" % unit) in r.stdout and open(TM).read() == OLD_TIMER, (r.stdout, r.stderr))
+    r, calls = heal(RT, call)
+    t = open(TM).read()
+    check("[5] %s: an older release's timer gets AccuracySec=1s once, in [Timer], and is restarted" % unit,
+          r.returncode == 0 and t.count("AccuracySec=") == 1 and "[Timer]\nAccuracySec=1s\n" in t
+          and ("systemctl restart %s.timer" % unit) in calls and "DID_UPDATE=yes" in r.stdout, (t, calls, r.stderr))
+    os.remove(os.path.join(RT, "calls"))
+    r, calls = heal(RT, call)
+    check("[5] %s: a second run leaves the timer alone" % unit, open(TM).read() == t and ("restart %s.timer" % unit) not in calls,
+          calls)
+    own = OLD_TIMER.replace("OnUnitActiveSec=10s\n", "OnUnitActiveSec=10s\nAccuracySec=5s\n")
+    open(TM, "w").write(own)
+    r, calls = heal(RT, call)
+    check("[5] %s: a timer whose AccuracySec an operator set is theirs" % unit, open(TM).read() == own, open(TM).read())
 
 # ── [6] removal ────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[6] the gate goes with the last unit that runs it")

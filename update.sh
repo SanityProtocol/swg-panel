@@ -570,6 +570,7 @@ Description=poll for swg-netctl requests (fallback for the path watch)
 [Timer]
 OnActiveSec=10s
 OnUnitActiveSec=10s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target
@@ -581,6 +582,21 @@ EOF
   ok "swg-netctl root helper provisioned — Access & subscription-address changes will work now"
 }
 
+# HEAL: the tick the idle gate relies on, on time. systemd's default AccuracySec=1min fires a 10 s tick whenever PID 1 next
+# wakes for something else: on a quiet box 15–35 s apart, and a settings save, Debug's end and a request with the path
+# watch dead all wait for a tick — the gated helper woke PID 1 far less than the old one, so its ticks drifted where the
+# old one's had not (CPU re-qualification AB-F1). Added to a timer that has no AccuracySec; one an operator set is theirs.
+ensure_timer_on_time(){   # <timer unit>
+  local t="/etc/systemd/system/$1"
+  [ -f "$t" ] && grep -q '^\[Timer\]$' "$t" || return 0
+  grep -q '^AccuracySec=' "$t" && return 0
+  if $DRYRUN; then echo "    [skip] $1: AccuracySec=1s (its ticks on time)"; return 0; fi
+  sed -i '/^\[Timer\]$/a AccuracySec=1s' "$t"
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl restart "$1" 2>/dev/null || true
+  DID_UPDATE=yes; note "$1: ticks on time (AccuracySec=1s)"
+}
+
 # HEAL: swg-netctl's idle gate (lib/common.sh netctl_gate_heal) — the helper starts on every 10 s tick but runs only when
 # it has work. Written when MISSING OR DIFFERENT, outside the heal contract's "never rewrite" on purpose, like
 # ensure_update_unit_docker: the gate and its drop-in are ours entirely (nothing an operator sets), and a box must not
@@ -590,6 +606,7 @@ ensure_netctl_gate(){
     $DRYRUN && [ -f "$SRC/swg-netctl" ] && echo "    [skip] swg-netctl idle gate: /usr/local/bin/swg-netctl-due + swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN (with the helper)"
     return 0
   fi
+  ensure_timer_on_time swg-netctl.timer
   local want; want="$(swg_netctl_due_dropin_text)"
   netctl_gate_current swg-netctl.service "$want" && return 0
   if $DRYRUN; then echo "    [skip] swg-netctl idle gate: /usr/local/bin/swg-netctl-due + swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi
@@ -1692,6 +1709,7 @@ Description=poll the swg-panel docker netctl queue (fallback for the path watch)
 [Timer]
 OnActiveSec=10s
 OnUnitActiveSec=10s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target
@@ -1742,6 +1760,7 @@ Description=poll the swg-panel docker netctl queue (fallback for the path watch)
 [Timer]
 OnActiveSec=10s
 OnUnitActiveSec=10s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target
@@ -1762,6 +1781,7 @@ ensure_netctl_docker_gate(){
     $DRYRUN && echo "    [skip] swg-netctl-docker idle gate: /usr/local/bin/swg-netctl-due + swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN (with the helper)"
     return 0
   fi
+  ensure_timer_on_time swg-netctl-docker.timer
   local want; want="$(swg_netctl_docker_due_dropin_text)"
   netctl_gate_current swg-netctl-docker.service "$want" && return 0
   if $DRYRUN; then echo "    [skip] swg-netctl-docker idle gate: /usr/local/bin/swg-netctl-due + swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi
