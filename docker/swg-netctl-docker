@@ -513,6 +513,26 @@ def _handle(verb, args):
     return True, "no-op (%s handled in-container)" % verb   # cert verbs etc.
 
 
+def _sweep_queue():
+    """Clear what is in the queue and is not a request — the way bare-metal swg-netctl clears it (process_queue): everything
+    but a `.json` and a `.json.tmp` younger than a minute (the panel writing one; a write takes milliseconds, so an older
+    one was abandoned — an enqueue that failed after creating it). Left there, any of it keeps the .path unit's
+    DirectoryNotEmpty true, which starts this drainer again after every run, and its idle gate sees work on every tick."""
+    now = time.time()
+    for name in os.listdir(QUEUE):
+        if name.endswith(".json"):
+            continue
+        p = os.path.join(QUEUE, name)
+        with contextlib.suppress(OSError):
+            st = os.lstat(p)                                  # never follows a symlink: unlink removes the link itself
+            if name.endswith(".json.tmp") and now - st.st_mtime <= 60:
+                continue
+            if not stat.S_ISDIR(st.st_mode):
+                os.unlink(p)
+            elif shutil.rmtree.avoids_symlink_attacks:
+                shutil.rmtree(p)
+
+
 def main():
     if not os.path.isdir(QUEUE):
         return
@@ -526,6 +546,7 @@ def main():
         _qst = os.stat(QUEUE)
     except OSError:
         return
+    _sweep_queue()
     for name in sorted(os.listdir(QUEUE)):
         if not name.endswith(".json"):
             continue
