@@ -163,7 +163,9 @@ CALLS.clear()
 
 def fake2(args, input_text=None, timeout=20, env=None, read=None):
     CALLS.append(" ".join(args))
-    if "dump" in args:
+    if args[1:] == ["show", "all", "dump"]:
+        out = "".join("wg1\t" + l for l in DUMP.splitlines(True))     # the `all` form: the interface's name first (B3)
+    elif "dump" in args:
         out = DUMP
     elif args[:2] == ["iptables-save", "-c"]:
         out = "*mangle\nCOMMIT\n"
@@ -177,7 +179,7 @@ N._LOOP["n"] = 200
 CFG = {"interfaces": {"wg1": {"cmd": ["wg"], "conf": os.path.join(T, "wg1.conf")}}}
 open(CFG["interfaces"]["wg1"]["conf"], "w").write("[Interface]\nListenPort = 51820\n")
 N._iface_dump(CFG, "wg1"); N.current_listen_port(CFG, "wg1"); N._iface_dump(CFG, "wg1")
-check("[3] the reconciler's dumps of one interface are one read", sum("dump" in c for c in CALLS) == 1, CALLS)
+check("[3] the reconciler's dumps of one interface are one read (the pass's `show all dump`)", sum("dump" in c for c in CALLS) == 1, CALLS)
 N.run(["/opt/swg-agent/swg-agent"])                                   # an agent op
 N._iface_dump(CFG, "wg1")
 check("[3] …and an agent op between them makes it a fresh read", sum("dump" in c for c in CALLS) == 2, CALLS)

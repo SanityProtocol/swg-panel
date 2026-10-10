@@ -79,7 +79,11 @@ print("[1] the handshake age can never be mistaken for the NEVER sentinel")
 KEY = "ZtVPNeJM8Gsneelu4sijDrDz3AVt7uZb9IbtK71Q6xc="
 N._link_kind = lambda dev: "wg"
 def _hs(ts):
-    N.run = lambda cmd, **kw: R(0, "%s\t%s\n" % (KEY, ts))
+    """One reading of the exit's handshake age — one per pass, as the node takes it (a pass's reads are shared, CPU-PLAN B2),
+    from the device's dump: its peer line carries the handshake time (B3: what `latest-handshakes` printed)."""
+    N._LOOP["n"] += 1
+    dump = "PRIV\tPUB\t0\toff\n%s\t(none)\t1.2.3.4:51820\t0.0.0.0/0\t%s\t0\t0\toff\n" % (KEY, ts)
+    N.run = lambda cmd, **kw: R(0, dump if cmd[-1] == "dump" and "all" not in cmd else "")
     return N._exit_handshake({}, "wgx-test")
 
 now = int(time.time())
@@ -90,6 +94,7 @@ check("an older handshake still reads its real age", 40 <= _hs(now - 42) <= 44, 
 # `max(0, …)` turned that into "this peer has never answered" too.
 check("a clock that stepped backwards is not 'never' either", _hs(now + 30) == 1, _hs(now + 30))
 check("0 STILL MEANS NEVER — the sentinel is not what was wrong", _hs(0) == 0, _hs(0))
+N._LOOP["n"] += 1
 N.run = lambda cmd, **kw: R(1, "", "Unable to access interface: Operation not supported")
 check("a device neither tool can read reports 'cannot say', not 'never'",
       N._exit_handshake({}, "wgx-test") is None, N._exit_handshake({}, "wgx-test"))
