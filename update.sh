@@ -587,7 +587,7 @@ EOF
 # keep an older release's text — present is not current. The units themselves are not touched.
 ensure_netctl_gate(){
   [ -f /etc/systemd/system/swg-netctl.service ] || return 0
-  local want; want="$(swg_netctl_due_dropin_text "${STATE_DIR:-/var/lib/swg-panel}")"
+  local want; want="$(swg_netctl_due_dropin_text)"
   netctl_gate_current swg-netctl.service "$want" && return 0
   if $DRYRUN; then echo "    [skip] swg-netctl idle gate: /usr/local/bin/swg-netctl-due + swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi
   netctl_gate_heal swg-netctl.service "$want"
@@ -1756,7 +1756,7 @@ EOF
 ensure_netctl_docker_gate(){
   case "${1:-}" in host|master|host-node) ;; *) return 0;; esac
   [ -f /etc/systemd/system/swg-netctl-docker.service ] || return 0
-  local want; want="$(swg_netctl_docker_due_dropin_text "$DOCKER_DIR/data/lib/netctl/queue")"
+  local want; want="$(swg_netctl_docker_due_dropin_text)"
   netctl_gate_current swg-netctl-docker.service "$want" && return 0
   if $DRYRUN; then echo "    [skip] swg-netctl-docker idle gate: /usr/local/bin/swg-netctl-due + swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi
   netctl_gate_heal swg-netctl-docker.service "$want"

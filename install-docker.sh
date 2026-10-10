@@ -1911,7 +1911,7 @@ WantedBy=timers.target
 EOF
   # The idle gate (lib/common.sh): the timer still starts the unit every 10 s — here it is the drainer — but the
   # Python drainer runs only when the queue holds something.
-  netctl_gate_heal swg-netctl-docker.service "$(swg_netctl_docker_due_dropin_text "$INSTALL_DIR/data/lib/netctl/queue")"
+  netctl_gate_heal swg-netctl-docker.service "$(swg_netctl_docker_due_dropin_text)"
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable --now swg-netctl-docker.path >/dev/null 2>&1 || warn "couldn't enable swg-netctl-docker.path"
   systemctl enable --now swg-netctl-docker.timer >/dev/null 2>&1 || warn "couldn't enable swg-netctl-docker.timer"

@@ -843,20 +843,25 @@ printf -v now '%(%s)T' -1
 exit 1
 GATE
 }
-swg_netctl_due_dropin_text(){   # <state dir> → swg-netctl.service's drop-in, on stdout
-  cat <<EOF
+# The drop-ins name no path: an ExecCondition runs with its unit's environment, so the gate reads the state dir (the queue)
+# from the same SWG_STATE_DIR (SWG_DOCKER_DIR) the helper (the drainer) runs with, under the same default — the two cannot
+# disagree, and the text is the same on every box. (`$$` is systemd's literal `$`: the shell expands it, not systemd.)
+swg_netctl_due_dropin_text(){   # swg-netctl.service's drop-in, on stdout
+  cat <<'EOF'
 [Service]
-# The idle gate (lib/common.sh swg_netctl_due_text). Only its explicit 1 skips the start: a gate that is missing, broken
-# or killed runs the helper, as before the gate existed.
-ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due $1; [ \$\$? -eq 1 ] && exit 1; exit 0'
+# The idle gate (lib/common.sh swg_netctl_due_text), on the state dir this unit's helper uses (its SWG_STATE_DIR, under the
+# helper's own default). Only the gate's explicit 1 skips the start: a gate that is missing, broken or killed runs the
+# helper, as before the gate existed.
+ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due "$${SWG_STATE_DIR:-/var/lib/swg-panel}"; [ $$? -eq 1 ] && exit 1; exit 0'
 EOF
 }
-swg_netctl_docker_due_dropin_text(){   # <queue dir> → swg-netctl-docker.service's drop-in, on stdout
-  cat <<EOF
+swg_netctl_docker_due_dropin_text(){   # swg-netctl-docker.service's drop-in, on stdout
+  cat <<'EOF'
 [Service]
-# The idle gate (lib/common.sh swg_netctl_due_text): the drainer runs when its queue holds something. Only the gate's
-# explicit 1 skips the start: a gate that is missing, broken or killed runs the drainer, as before the gate existed.
-ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due --queue-only $1; [ \$\$? -eq 1 ] && exit 1; exit 0'
+# The idle gate (lib/common.sh swg_netctl_due_text): the drainer runs when its queue holds something — the queue under this
+# unit's SWG_DOCKER_DIR, under the drainer's own default. Only the gate's explicit 1 skips the start: a gate that is
+# missing, broken or killed runs the drainer, as before the gate existed.
+ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due --queue-only "$${SWG_DOCKER_DIR:-/opt/swg-panel-docker}/data/lib/netctl/queue"; [ $$? -eq 1 ] && exit 1; exit 0'
 EOF
 }
 # The writer install-docker.sh and update.sh share (install-host.sh renders the same texts through its writef): the gate
