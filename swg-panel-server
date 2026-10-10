@@ -18600,6 +18600,10 @@ def exit_cfg_sig(rec):
     return hashlib.sha256(json.dumps(mat, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
 
+# The fields the panel's sync loop and escrow doors write onto an imported WARP exit — never the operator's.
+_EXIT_ESCROW_KEYS = ("key_blob", "key_blob_prev", "key_restore", "key_restore_pub", "key_restore_at")
+
+
 def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=(), gws=None, wan=""):
     """Clean a node's exit list → [{id, label, producer, device, enabled, killswitch, …}]. (clean, error).
     Adopted entries also carry `egress_ip`; imported ones carry `provider`/`licence`/`dial_src`/`profile`.
@@ -18785,6 +18789,19 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
         # is a device the operator already runs, and the node is sent nothing to apply for it.
         if prod == "imported":
             out["cfg_sig"] = exit_cfg_sig(out)
+        # ⚠️ THE ESCROW RIDES OVER FROM THE STORED RECORD, BY ID — and only from there. `exits` is a full-list
+        # replace and `out` is rebuilt from a fixed set of keys, so ANY save of the list (a rename, a new exit,
+        # a deleted one) dropped every exit's sealed key, the displaced key kept for "go back to the old
+        # address", and an in-flight restore. The current key is re-sealed on the next sync, so the loss was
+        # silent; the displaced one is not reported by anything and was gone for good. Never from the request:
+        # these are written by the sync loop and the escrow doors, and a body must not be able to arm a restore.
+        # A WARP account only — a profile is not escrowed, and switching an exit to one ends the account.
+        _old = known.get(eid) or {}
+        if out.get("provider") == "warp" and _old.get("producer") == "imported" \
+                and str(_old.get("provider") or "warp") != "profile":
+            for _k in _EXIT_ESCROW_KEYS:
+                if _k in _old:
+                    out[_k] = _old[_k]
         clean.append(out)
     return clean, None
 
