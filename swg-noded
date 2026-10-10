@@ -1170,6 +1170,7 @@ def _pass_cached(key, read):
     return v
 
 
+_HOST_PATH_PREFIX = "export PATH=/run/current-system/sw/bin:$PATH\n"   # host_sh's docker helper puts it first
 _READ_SYSTEMCTL = frozenset(("is-active", "is-enabled", "is-failed", "show", "status", "--version", "list-units", "list-unit-files", "cat"))
 _READ_IPTABLES = frozenset(("-S", "-L", "-C", "-nL", "-vnL", "-nvL", "--list", "--list-rules", "--check"))
 
@@ -1197,6 +1198,11 @@ def _is_read(args):
         return _is_read(rest)
     if prog == "sh":
         return len(rest) == 2 and rest[0] == "-c" and _sh_is_read(rest[1])
+    if prog in ("docker", "podman") and "nsenter" in rest and "--" in rest:   # host_sh's helper: its command decides
+        inner = rest[rest.index("--") + 1:]
+        if len(inner) == 3 and inner[:2] == ["sh", "-c"]:
+            return _sh_is_read(inner[2].split("\n", 1)[1] if inner[2].startswith(_HOST_PATH_PREFIX) else inner[2])
+        return False
     words = [a for a in rest if not a.startswith("-")]
     if prog == "ip":
         return "-batch" not in rest and len(words) >= 2 and words[1] in ("show", "list", "get")
@@ -1217,12 +1223,11 @@ def _is_read(args):
     return False
 
 
-def run(args, input_text=None, timeout=20, env=None, read=None):
+def run(args, input_text=None, timeout=20, env=None):
     # Fail-safe: a MISSING binary (e.g. `nft` on a node/image without nftables) must never crash a caller —
     # return a non-zero result like a normal command failure so callers handle it (smart routing then no-ops
-    # instead of taking down the sync loop). Same for a timeout. `read`: what the caller knows about the argv
-    # (host_sh's `sh -c`); None = ask _is_read. A write forgets the pass's reads — after it ran, so a read the main
-    # thread made meanwhile is not kept either.
+    # instead of taking down the sync loop). Same for a timeout. A spawn that is not a read forgets the pass's reads
+    # (_is_read) — after it ran, so a read the main thread made meanwhile is not kept either.
     global _RUN_INFLIGHT, _RUN_SPAWNS
     with _RUN_LOCK:
         _RUN_INFLIGHT += 1
@@ -1236,7 +1241,7 @@ def run(args, input_text=None, timeout=20, env=None, read=None):
     finally:
         with _RUN_LOCK:
             _RUN_INFLIGHT -= 1
-        if _PASS and not (read if read is not None else _is_read(args)):
+        if _PASS and not _is_read(args):
             _PASS.clear()
 
 
@@ -18479,14 +18484,14 @@ def host_sh(cmd, timeout=90, probe=False):
         # exist, so this is inert. Prepended with a NEWLINE, not "; ", so a cmd that opens with a
         # comment or a heredoc is unaffected. Kept in its OWN variable so the failure logs below
         # still show the caller's command, not 47 characters of prefix.
-        _wrapped = "export PATH=/run/current-system/sw/bin:$PATH\n" + cmd
+        _wrapped = _HOST_PATH_PREFIX + cmd
         # --network none: nsenter -n puts the command in the HOST's network anyway, and a helper on the default bridge
         # cost a veth pair per call — created, renamed, attached, torn down — which is what the kernel, networkd, udev
         # and dockerd logged for every one of them (svo-im 10-05: one helper per ~36 s, ~60 % of its main journal).
         args = ["docker", "run", "--rm", "--privileged", "--pid=host", "--network", "none", "--entrypoint", "nsenter",
                 HELPER_IMAGE, "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", _wrapped]
     try:
-        r = run(args, timeout=timeout, read=_sh_is_read(cmd))   # the docker helper's argv says nothing: the command does
+        r = run(args, timeout=timeout)
     except Exception as e:                              # e.g. 'docker' not found, or a timeout
         log(LOG_ERR, "host_sh EXC: " + str(e) + " :: " + cmd[:160])
         class _R:                                       # synthesize a failed result so callers see it
