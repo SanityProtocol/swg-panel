@@ -13,9 +13,11 @@ day, more than the panel itself spent on hel-infra (2026-10-09). An ExecConditio
       gate that is missing, broken or killed runs the helper, as before the gate existed. It names no path: the gate gets
       the state dir (the queue) from the unit's own SWG_STATE_DIR (SWG_DOCKER_DIR), under the helper's (the drainer's) own
       default, so the two cannot disagree.
-  [3] The stamp, through swg-netctl's real main(): the next own work is the journal refresh, Debug's end or the budget's
-      retry, whichever comes first; its mtime is a second before the run read the settings, so a save made while the run
-      was reading them is still newer than it; a dry run writes nothing; no settings still writes one.
+  [3] The stamp, through swg-netctl's real main(): `<due> <the run's time>` — the next own work is the journal refresh,
+      Debug's end or the budget's retry, whichever comes first; its mtime is the mtime of the settings version the run read,
+      a second before the read at the latest, so a save made while the run was reading them is still newer than it, and so
+      is a version the panel renamed into place after a slow fsync (its mtime is when it was written, which can be before
+      the run read the old one); a dry run writes nothing; no settings still writes one.
   [4] One text each: the installers and update.sh render the gate and its drop-ins from lib/common.sh and nowhere else; the
       heal runs after the helper's own; an update that replaces the helper removes the stamp (the new build runs next tick).
   [5] update.sh's heal writes the gate and the drop-in when missing, nothing on a second run, rewrites an older text, writes
@@ -25,7 +27,12 @@ day, more than the panel itself spent on hel-infra (2026-10-09). An ExecConditio
 Run: python3 tests/netctl_idle_gate_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
      nodot        the gate does not count dotfiles (the path watch fires on them: a loop)
-     clockback    the gate trusts a due time far ahead (a clock that went back stalls the helper's own work)
+     clockback    the gate ignores the stamp's run time lying ahead (a clock that went back stalls the helper's own work)
+     readat       the stamp's mtime is a second before the read, not the version read (a slow-fsync save is missed for 5 min)
+     lead0        the gate takes a number with a leading zero (bash reads it as octal, fails, and the gate skips)
+     noexec       update.sh takes a gate that lost its exec bit for current (sh answers 126: Python every tick, silently)
+     reinstall    a re-install replaces the helper and leaves the stamp (the new build's log work waits up to 5 min)
+     drygate      uninstall's dry run never lists the gate (the units it removes are still on disk)
      failclosed   the drop-in runs the gate bare (a missing gate stops the helper for good)
      pathdrift    the drop-in's default state dir is not the helper's (a box without SWG_STATE_DIR: the gate reads elsewhere)
      stampnow     the stamp's mtime is when it was written (a save during the run is missed for up to 5 min)
@@ -54,11 +61,19 @@ FILES = {k: os.path.join(ROOT, f) for k, f in (("common", "lib/common.sh"), ("ne
 SRC = {k: open(p, encoding="utf-8").read() for k, p in FILES.items()}
 PLANTS = {
     "nodot": ("common", "shopt -s nullglob dotglob\n", "shopt -s nullglob\n"),
-    "clockback": ("common", "(( now >= due || due - now > 600 )) && exit 0", "(( now >= due )) && exit 0"),
+    "clockback": ("common", "(( now >= due || at > now + 1 )) && exit 0", "(( now >= due )) && exit 0"),
+    "readat": ("netctl", "    mt = read_at - 1 if seen is None else min(read_at - 1, seen)\n", "    mt = read_at - 1\n"),
+    "lead0": ("common", "[[ $due =~ ^[1-9][0-9]{0,17}$ && $at =~ ^[1-9][0-9]{0,17}$ ]] || exit 0",
+              "[[ $due =~ ^[0-9]+$ && $at =~ ^[0-9]+$ ]] || exit 0"),
+    "noexec": ("common", '  [ -x /usr/local/bin/swg-netctl-due ] && [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" = "$(swg_netctl_due_text)" ] \\',
+               '  [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" = "$(swg_netctl_due_text)" ] \\'),
+    "reinstall": ("host", "  $DRYRUN || rm -f /run/swg-netctl.due   # the idle gate runs the new build",
+                  "  : $DRYRUN || rm -f /run/swg-netctl.due   # the idle gate runs the new build"),
+    "drygate": ("uninstall", "case $a in bare-gone) bare=0;; docker-gone) dock=0;; esac", "case $a in nothing) ;; esac"),
     "failclosed": ("common", "ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due \"$${SWG_STATE_DIR:-/var/lib/swg-panel}\"; [ $$? -eq 1 ] && exit 1; exit 0'",
                    "ExecCondition=/usr/local/bin/swg-netctl-due /var/lib/swg-panel"),
     "pathdrift": ("common", '\"$${SWG_STATE_DIR:-/var/lib/swg-panel}\"', '\"$${SWG_STATE_DIR:-/var/lib/swg}\"'),
-    "stampnow": ("netctl", "os.utime(DUE_STAMP + \".tmp\", (read_at - 1, read_at - 1))", "os.utime(DUE_STAMP + \".tmp\", None)"),
+    "stampnow": ("netctl", "os.utime(DUE_STAMP + \".tmp\", (mt, mt))", "os.utime(DUE_STAMP + \".tmp\", None)"),
     "noretry": ("netctl", "    if retry and retry > read_at:\n", "    if False:\n"),
     "nodebug": ("netctl", "        if until > read_at:\n", "        if False:\n"),
     "healonce": ("common", '  [ "$(cat "$d/$SWG_NETCTL_DUE_DROPIN" 2>/dev/null)" = "$2" ] && return 0\n',
@@ -120,8 +135,9 @@ def gate(*args):
     return subprocess.run([GATE] + list(args), capture_output=True, text=True, timeout=10).returncode
 
 
-def stamp(due, mtime=None):
-    open(STAMP, "w").write("%s\n" % due)
+def stamp(due, mtime=None, at=None, raw=None):
+    """the helper's stamp: `<due> <the run's time>` (a run 50 s ago by default), or a raw text"""
+    open(STAMP, "w").write(raw if raw is not None else "%s %s\n" % (due, int(time.time()) - 50 if at is None else at))
     if mtime is not None:
         os.utime(STAMP, (mtime, mtime))
 
@@ -149,13 +165,21 @@ idle(); os.utime(SETTINGS, None)
 check("[1] settings saved after the stamp → run", gate(ST) == 0)
 idle(); os.remove(STAMP)
 check("[1] no stamp (the first tick since boot) → run", gate(ST) == 0)
-for junk in ("abc", "", "12a", "-5"):
+for junk in ("abc", "", "12a", "-5", "0", "0%d" % (int(time.time()) + 300)):
     idle(); stamp(junk, time.time() - 50)
     check("[1] a junk stamp %r → run" % junk, gate(ST) == 0)
+idle(); stamp(None, time.time() - 50, raw="%d %s\n" % (int(time.time()) + 300, "0" + str(int(time.time()) - 50)))
+check("[1] a run time with a leading zero (bash would read it as octal and fail) → run", gate(ST) == 0)
+idle(); stamp(None, time.time() - 50, raw="%d\n" % (int(time.time()) + 300))
+check("[1] an older build's stamp (the due time alone) → run", gate(ST) == 0)
 idle(); stamp(int(time.time()) - 1, time.time() - 50)
 check("[1] the helper's own work is due → run", gate(ST) == 0)
-idle(); stamp(int(time.time()) + 3600, time.time() - 50)
-check("[1] a due time far ahead (the clock went back) → run", gate(ST) == 0)
+idle(); stamp(int(time.time()) + 270, time.time() - 50, at=int(time.time()) + 30)
+check("[1] the run that wrote the stamp lies 30 s ahead (the clock went back) → run", gate(ST) == 0)
+idle(); stamp(int(time.time()) + 3600, time.time() - 50, at=int(time.time()) + 3300)
+check("[1] …and an hour ahead → run", gate(ST) == 0)
+idle(); stamp(int(time.time()) + 300, time.time() - 50, at=int(time.time()))
+check("[1] CONTROL: a stamp written this very second is no clock step → skipped", gate(ST) == 1)
 idle(); shutil.rmtree(os.path.join(ST, "netctl"))
 check("[1] no queue directory at all, nothing due → skipped (the path watch does not fire on it either)", gate(ST) == 1)
 os.makedirs(Q)
@@ -276,13 +300,15 @@ def tick(settings, restart_rc=0, mod=None):
     rc = (mod or M).main(["swg-netctl", "run"])
     if not os.path.exists(DUE):
         return rc, None, None, t0
-    return rc, int(open(DUE).read()), os.stat(DUE).st_mtime, t0
+    return rc, int(open(DUE).read().split()[0]), os.stat(DUE).st_mtime, t0
 
 
 rc, due, mt, t0 = tick({"log_level": "info"})
 check("[3] a plain run: the next own work is the journal refresh, 5 min on", rc == 0 and due is not None and
       int(t0) + 299 <= due <= int(t0) + 301, (rc, due, t0))
-check("[3] …its mtime is a second before the run read the settings", mt is not None and t0 - 1.5 <= mt <= t0 - 0.5, (mt, t0))
+check("[3] …its mtime is a second before the run read the settings (saved just now)", mt is not None and t0 - 1.5 <= mt <= t0 - 0.5,
+      (mt, t0))
+check("[3] …and its second number is the run's time", int(open(DUE).read().split()[1]) in (int(t0), int(t0) + 1), open(DUE).read())
 # a save the run did not see: settings written the instant the run read them (its start, t0) — older than the stamp's
 # write, newer than the time it read them
 shutil.copy(DUE, STAMP); os.utime(STAMP, (mt, mt))
@@ -290,6 +316,22 @@ for n in os.listdir(Q):
     os.remove(os.path.join(Q, n))
 os.utime(SETTINGS, (t0, t0))
 check("[3] a save made while the run was reading the settings is still newer than the stamp → the next tick runs",
+      gate(ST) == 0)
+# the panel's atomic write: a version's mtime is when its temporary file was written, and its rename can land after a run
+# read the old one (a slow fsync) — that version must be newer than the stamp all the same
+json.dump({"log_level": "info"}, open(PSF, "w"))
+_old = time.time() - 30
+os.utime(PSF, (_old, _old))
+t1 = time.time()
+M.main(["swg-netctl", "run"])
+mt1 = os.stat(DUE).st_mtime
+check("[3] the stamp's mtime is the version the run read (saved 30 s ago), not a second before the read",
+      abs(mt1 - _old) < 0.01, (mt1, _old, t1))
+shutil.copy(DUE, STAMP); os.utime(STAMP, (mt1, mt1))
+for n in os.listdir(Q):
+    os.remove(os.path.join(Q, n))
+os.utime(SETTINGS, (t1 - 10, t1 - 10))             # written 10 s before the run read the old version, renamed in after it
+check("[3] a version written before the run's read and renamed in after it (a slow fsync) is newer → the next tick runs",
       gate(ST) == 0)
 until = int(time.time()) + 120
 rc, due, mt, t0 = tick({"log_level": "info", "log_debug_until": until})
@@ -325,6 +367,9 @@ check("[4] update.sh heals the gate after the helper's own heal, and the Docker 
       and re.search(r'^  ensure_netctl_docker "\$prof" .*\n  ensure_netctl_docker_gate "\$prof"', U, re.M) is not None)
 check("[4] an update that replaces the helper removes the stamp (the new build runs on the next tick)",
       re.search(r'run cp "\$SRC/swg-netctl" /usr/local/bin/swg-netctl;.*\n      run rm -f /run/swg-netctl\.due', U) is not None)
+check("[4] …and so does a re-install (install-host.sh write_netctl)",
+      re.search(r'cp "\$SRC/swg-netctl" "\$PREFIX/usr/local/bin/swg-netctl";.*\n  \$DRYRUN \|\| rm -f /run/swg-netctl\.due', SRC["host"])
+      is not None)
 
 # ── [5] update.sh's heal ───────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] update.sh's heal")
@@ -337,7 +382,9 @@ def heal(root, call, dry=False):
     os.makedirs(stub, exist_ok=True)
     open(os.path.join(stub, "systemctl"), "w").write('#!/bin/sh\necho "systemctl $*" >> "%s/calls"\n' % root)
     os.chmod(os.path.join(stub, "systemctl"), 0o755)
-    script = ('set -euo pipefail\nDRYRUN=%s; DID_UPDATE=no; STATE_DIR=/var/lib/swg-panel; DOCKER_DIR=/opt/swg-panel-docker\n'
+    os.makedirs(os.path.join(root, "src"), exist_ok=True)
+    open(os.path.join(root, "src", "swg-netctl"), "w").write("#!/usr/bin/env python3\n")
+    script = ('set -euo pipefail\nDRYRUN=%s; DID_UPDATE=no; STATE_DIR=/var/lib/swg-panel; DOCKER_DIR=/opt/swg-panel-docker; SRC=' + root + '/src\n'
               'NOTES=(); note(){ NOTES+=("$*"); }\n%s%s\necho "DID_UPDATE=$DID_UPDATE"\n') % ("true" if dry else "false", lib, call)
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30,
                        env=dict(os.environ, PATH=stub + os.pathsep + os.environ["PATH"]))
@@ -364,12 +411,20 @@ os.remove(os.path.join(R, "calls"))
 r, calls = heal(R, "ensure_netctl_gate")
 check("[5] a second run writes nothing and changes nothing", r.returncode == 0 and "DID_UPDATE=no" in r.stdout and not calls,
       (r.stdout, calls))
+os.chmod(os.path.join(R, "bin", "swg-netctl-due"), 0o644)                    # lost its exec bit (a restore without modes)
+r, calls = heal(R, "ensure_netctl_gate")
+check("[5] a gate that lost its exec bit is not current: rewritten, executable again",
+      "DID_UPDATE=yes" in r.stdout and os.access(os.path.join(R, "bin", "swg-netctl-due"), os.X_OK), (r.stdout, r.stderr))
 open(DROP, "w").write("[Service]\nExecCondition=/usr/local/bin/swg-netctl-due /var/lib/swg-panel\n")   # an older release's text
 r, calls = heal(R, "ensure_netctl_gate")
 check("[5] an older release's drop-in is rewritten (present is not current)",
       "[ $$? -eq 1 ]" in open(DROP).read() and "DID_UPDATE=yes" in r.stdout, open(DROP).read())
 R2 = os.path.join(T, "heal2")
 os.makedirs(os.path.join(R2, "sd")); os.makedirs(os.path.join(R2, "bin"))
+r, calls = heal(R2, "ensure_netctl_gate; ensure_netctl_docker_gate master", dry=True)
+check("[5] dry run on a box whose units are not there yet (the helpers' heals would write them): the gates are listed too",
+      "[skip] swg-netctl idle gate" in r.stdout and "[skip] swg-netctl-docker idle gate" in r.stdout
+      and not os.listdir(os.path.join(R2, "bin")), r.stdout)
 r, calls = heal(R2, "ensure_netctl_gate; ensure_netctl_docker_gate master")
 check("[5] no unit, nothing written (a node-only box, a Docker box without the bare helper)",
       r.returncode == 0 and not os.listdir(os.path.join(R2, "bin")) and not os.listdir(os.path.join(R2, "sd")), os.listdir(R2))
@@ -406,6 +461,10 @@ for who, call, extra in (("lib/common.sh", "netctl_gate_reap", ""), ("uninstall.
     check("[6] %s: kept while the bare helper's unit is there" % who, reap(RR, ["swg-netctl.service"], call, extra))
     check("[6] %s: kept while the Docker drainer's unit is there" % who, reap(RR, ["swg-netctl-docker.service"], call, extra))
     check("[6] %s: removed with the last of them" % who, not reap(RR, [], call, extra))
+check("[6] uninstall.sh's dry run (the units it removes still on disk) lists the gate all the same",
+      not reap(RR, ["swg-netctl.service", "swg-netctl-docker.service"], "rm_netctl_gate_if_last bare-gone docker-gone", unf))
+check("[6] …and keeps it while a unit that run keeps is there",
+      reap(RR, ["swg-netctl.service", "swg-netctl-docker.service"], "rm_netctl_gate_if_last bare-gone", unf))
 TB = fn(C, "teardown_bare_panel")
 check("[6] a bare→Docker convert's teardown removes both drop-ins and reaps the gate",
       '"/etc/systemd/system/swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN"' in TB and "netctl_gate_reap" in TB)
