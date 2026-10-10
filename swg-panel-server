@@ -35756,6 +35756,15 @@ def main():
                 os.chmod(os.path.join(Handler.deps["stats_dir"], _f), 0o640)
     with contextlib.suppress(OSError):
         os.chmod(os.path.join(Handler.deps["stats_dir"], "offenders.json"), 0o640)
+    # …and a write an older build's panel died in left its temporary copy (`<file>.tmp.<8 hex>`, atomic_write) at 0644,
+    # with the same PSKs, never renamed and never removed: gone once it is a minute old (a live write takes milliseconds).
+    with contextlib.suppress(OSError):
+        for _f in os.listdir(Handler.deps["stats_dir"]):
+            if re.match(r".+\.tmp\.[0-9a-f]{8}$", _f):
+                with contextlib.suppress(OSError):
+                    _p = os.path.join(Handler.deps["stats_dir"], _f)
+                    if time.time() - os.lstat(_p).st_mtime > 60:
+                        os.unlink(_p)
     if isinstance(_ofm, dict):
         Handler.deps["_offenders"] = {m: {ip: list(e) for ip, e in (d or {}).items()
                                           if isinstance(e, (list, tuple)) and len(e) >= 3}

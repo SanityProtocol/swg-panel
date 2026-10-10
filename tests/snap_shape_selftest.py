@@ -41,7 +41,8 @@ expects the malformed shapes to sail through.  Each of --perturb-meta, --perturb
 and --perturb-shape (a whole row of the table), --perturb-bad, --perturb-ifacelist and --perturb-said PANEL-1c's,
 --perturb-bigfloat and --perturb-bigint PANEL-1d's, --perturb-mirror644 and --perturb-live644 the mirror's mode (it
 carries every peer's PSK: 0640, group swg, never world-readable — CPU re-qualification N2), --perturb-startmode the start's
-fix of an older build's 0644
+fix of an older build's 0644, --perturb-offstart the same for offenders.json, --perturb-tmpsweep the removal of an
+interrupted write's stale temporary copy (0644, the same PSKs)
 (exit 0 when caught).
 """
 import atexit, copy, importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time
@@ -83,6 +84,8 @@ PLANTS = {
                   "atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o644)"),
     "startmode": ('                os.chmod(os.path.join(Handler.deps["stats_dir"], _f), 0o640)\n',
                   '                pass\n'),
+    "offstart": ('        os.chmod(os.path.join(Handler.deps["stats_dir"], "offenders.json"), 0o640)\n', '        pass\n'),
+    "tmpsweep": ('                        os.unlink(_p)\n', '                        pass\n'),
     "live644": ('atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o640)',
                 'atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o644)'),
 }
@@ -429,6 +432,12 @@ try:
     _ms["generated_at"] = 10 ** 400
     open(_mf, "w").write(json.dumps(_ms))
     os.chmod(_mf, 0o644)                           # …and with an older build's mode
+    _off = os.path.join(STATS, "offenders.json")
+    open(_off, "w").write("{}"); os.chmod(_off, 0o644)
+    _stale = os.path.join(STATS, "stats-%s.json.tmp.0123abcd" % Q)    # a write an older panel died in, hours ago
+    open(_stale, "w").write("{}"); os.chmod(_stale, 0o644); os.utime(_stale, (time.time() - 3600,) * 2)
+    _fresh = os.path.join(STATS, "live-%s.json.tmp.89abcdef" % Q)     # one that may be a live write: kept
+    open(_fresh, "w").write("[]")
     proc.terminate()
     try:                                           # a stop is no measurement: wait it out, then make sure of it
         proc.wait(timeout=60)
@@ -440,6 +449,9 @@ try:
     check("[8] a restarted panel comes up over a mirror holding it", up, "" if up else open(_log.name).read()[-300:])
     check("[8] …and gives an older build's 0644 mirror this build's 0640 at its start (an offline node's is never rewritten)",
           oct(os.stat(_mf).st_mode & 0o777) == "0o640", oct(os.stat(_mf).st_mode & 0o777))
+    check("[8] …offenders.json too", oct(os.stat(_off).st_mode & 0o777) == "0o640", oct(os.stat(_off).st_mode & 0o777))
+    check("[8] …removes an interrupted write's temporary copy an hour old (0644, the same PSKs), keeps a fresh one",
+          not os.path.exists(_stale) and os.path.exists(_fresh), (os.path.exists(_stale), os.path.exists(_fresh)))
     _o = others() if up else None
     check("[8] …and answers: A's and B's syncs 200 with `desired`, /api/state 200 as JSON",
           _o == ((200, True), (200, True), (200, True)), _o)

@@ -1122,6 +1122,9 @@ in
         "d ${stateDir}/subs 0750 swgpanel swg -"
         "d ${stateDir}/subs/blobs 0750 swgpanel swg -"
         "d ${cfg.statsDir} 2775 swgpanel swg -"
+        # The same for the node mirrors: the container arm wrote them as root, and since they are 0640 (they carry the
+        # peers' PSKs) an offline node's would stay unreadable to the native panel and swgsub after a flip until it synced.
+        "Z ${cfg.statsDir} - swgpanel swg -"
         # swg-sub's own TLS material, reachable by the user that actually serves it. `z` adjusts what
         # is there and creates nothing, because who WRITES these differs by arm: on the container arm
         # the panel image copies the panel certificate in here as root:root 0600, and after a flip
