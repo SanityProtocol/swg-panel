@@ -86,6 +86,7 @@ READS = [["ip", "-4", "-o", "addr", "show"], ["ip", "-d", "link", "show", "wgx-1
          ["nft", "list", "set", "inet", "swg_turn", "peers"], ["iptables", "-t", "mangle", "-S"],
          ["iptables", "-w", "2", "-t", "mangle", "-C", "PREROUTING", "-j", "SWGK"], ["iptables", "-t", "mangle", "-nL", "SWG_INET"],
          ["iptables-save", "-c", "-t", "mangle"], ["ss", "-Hnp", "-t", "state", "established"], ["systemctl", "--version"],
+         ["ping", "-n", "-q", "-I", "swg_x", "-c", "20", "-i", "0.2", "-s", "1200", "-W", "2", "10.0.0.1"],
          ["systemctl", "show", "-p", "ControlGroup", "--value", "swg-relay.slice"], ["systemctl", "is-active", "--quiet", "u"],
          ["ipset", "list", "-name"], ["docker", "ps", "--format", "x"], ["docker", "inspect", "-f", "x", "c"],
          ["sh", "-c", "ip -4 route show default 2>/dev/null"], ["sh", "-c", "systemctl is-active x 2>/dev/null"],

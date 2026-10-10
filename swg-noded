@@ -1282,7 +1282,7 @@ def _is_read(args):
         return bool(words) and words[0] == "list" and "-f" not in rest
     if prog in ("iptables", "ip6tables"):                   # a write's flag wins: a rule's own values never make it a read
         return not any(a in _WRITE_IPTABLES for a in rest) and any(a in _READ_IPTABLES for a in rest)
-    if prog in ("iptables-save", "ip6tables-save", "ss", "cat"):
+    if prog in ("iptables-save", "ip6tables-save", "ss", "cat", "ping"):   # ping: the mesh probes' thread, every few seconds
         return True
     if prog == "systemctl":
         return bool(words or rest) and (words[0] if words else rest[0]) in _READ_SYSTEMCTL or rest[:1] == ["--version"]
