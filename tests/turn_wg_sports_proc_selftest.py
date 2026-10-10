@@ -5,14 +5,15 @@
 127.0.0.1:<a source port of that proxy's connection to wg>. That connection is UDP whatever the proxy's own transport —
 WireGuard speaks nothing else; a TCP-mode proxy's TCP is to VK's relay — and the panel looks the ports up as WireGuard
 endpoints. `ss -Hnp state established` walked every fd of every process on the box to name each socket's owner — 16 ms of
-CPU a pass on swgt, for two proxies. The unit's own cgroup names its pids, their fds name their sockets, /proc/net/udp gives
-each socket's addresses.
+CPU a pass on swgt, for two proxies. Now: the processes whose cgroup names the unit (1.8.8's attribution, `_service_of_pid`,
+in any cgroup layout), their fds, /proc/net/udp.
 
-  [1] The same answer as the ss path, on one box: a connected UDP socket on loopback (counted); a TCP connection on
-      loopback (not a WireGuard endpoint), a DNS query to 127.0.0.53, an unconnected UDP socket, a connection to a remote
-      peer, another process's loopback socket (not counted); the ports as the same sorted strings.
-  [2] A unit that is not running has no cgroup: no ports, and no `ss`.
-  [3] No unified cgroup hierarchy (cgroup v1, a container's own namespace): `ss`, exactly as before.
+  [1] The ports per proxy on one box: a connected UDP socket on loopback (counted); a TCP connection on loopback (not a
+      WireGuard endpoint), a DNS query to 127.0.0.53, an unconnected UDP socket, a connection to a remote peer, another
+      process's loopback socket (not counted); the ports as the same sorted strings; no `ss`.
+  [2] A unit that is not running has no process: no ports.
+  [3] Any cgroup layout (code review): a unit in a slice of its own, a cgroup v1 box, a container whose hierarchy is the
+      host's (lxc.payload…) — each found by its cgroup path, as 1.8.8 found it.
   [4] 127.0.0.1 as a big-endian host prints it.
   [5] A Docker node: its proxies are sibling containers in their own pid namespaces, so no socket's owner can be named
       from noded's container — nothing is asked (it was always empty there).
@@ -22,7 +23,7 @@ Run: python3 tests/turn_wg_sports_proc_selftest.py   (0 = pass)
   test: a UDP socket has a peer only while connected, so the loopback-peer test already holds it.)
      anypeer      a loopback source port counts whatever the peer
      tcpfile      TCP sockets are read (a port that is never a WireGuard endpoint is reported)
-     stoppedss    a unit that is not running sends the caller to `ss`
+     oneslice     the owner is looked for in systemd's system.slice of a v2 hierarchy only (a unit elsewhere goes unseen)
      dockerss     a Docker node asks `ss` again
 """
 import builtins, importlib.machinery, importlib.util, io, os, subprocess, sys, tempfile, threading, types
@@ -43,9 +44,9 @@ def check(name, cond, detail=""):
 PLANTS = {
     "anypeer": ("""and c[1][:8] in _LO4_HEX and c[2][:8] in _LO4_HEX""", """and c[1][:8] in _LO4_HEX"""),
     "tcpfile": ("""        with open("/proc/net/udp") as f:""", """        with open("/proc/net/tcp") as f:"""),
+    "oneslice": ("""            m = re.search(r"(vk-turn-proxy-[^/\\s.]+)", f.read())""",
+                 """            m = re.search(r"^0::/system\\.slice/(vk-turn-proxy-[^/\\s.]+)", f.read())"""),
     "dockerss": ('''        if not tp or TURN_DOCKER:''', '''        if not tp:'''),
-    "stoppedss": ("""            continue                                         # not running: no cgroup, no sockets""",
-                  """            return None"""),
 }
 if PLANT:
     a, b = PLANTS[PLANT]
@@ -66,6 +67,7 @@ sys.excepthook, threading.excepthook = sys.__excepthook__, threading.__excepthoo
 N.log = lambda *a, **k: None
 
 A, B = "vk-turn-proxy-WINGS-N-56004", "vk-turn-proxy-samosvalishe-56007"
+C, V1, LX = "vk-turn-proxy-own-56010", "vk-turn-proxy-v1-56011", "vk-turn-proxy-lxc-56012"
 
 
 def hexip(ip, big=False):
@@ -74,7 +76,7 @@ def hexip(ip, big=False):
 
 
 def box(big=False):
-    """A box: two proxy units, their pids and sockets, and one other process. sockets: inode → (proto, local, peer, state)."""
+    """A box: proxy units, their processes (by cgroup) and sockets, and one other process."""
     socks = {
         "1001": ("tcp", ("127.0.0.1", 41234), ("127.0.0.1", 51820), "01"),    # A: a TCP pair on loopback       ✗ (not wg)
         "1002": ("udp", ("127.0.0.1", 50000), ("127.0.0.1", 51820), "01"),    # A → wg over UDP, connected     ✓
@@ -83,13 +85,18 @@ def box(big=False):
         "1005": ("udp", ("127.0.0.1", 50777), ("127.0.0.53", 53), "01"),     # A asks systemd-resolved (DNS)  ✗
         "2001": ("udp", ("127.0.0.1", 50123), ("127.0.0.1", 51821), "01"),    # B → wg                         ✓
         "2002": ("tcp", ("127.0.0.1", 39999), ("203.0.113.9", 443), "01"),    # B → a remote peer              ✗
+        "5001": ("udp", ("127.0.0.1", 50501), ("127.0.0.1", 51822), "01"),    # C (its own slice) → wg         ✓
+        "6001": ("udp", ("127.0.0.1", 50601), ("127.0.0.1", 51823), "01"),    # V1 (cgroup v1 box) → wg        ✓
+        "7001": ("udp", ("127.0.0.1", 50701), ("127.0.0.1", 51824), "01"),    # LX (lxc, host hierarchy) → wg  ✓
         "9001": ("udp", ("127.0.0.1", 50555), ("127.0.0.1", 51820), "01"),    # another process's loopback     ✗
     }
-    fds = {"300": ["1001", "1002", "1003", "1004", "1005"], "301": [], "400": ["2001", "2002"], "900": ["9001"]}
-    procs = {A: ["300", "301"], B: ["400"]}
-    files, links, dirs = {}, {}, {"/sys/fs/cgroup/system.slice"}
-    for svc, pids in procs.items():
-        files["/sys/fs/cgroup/system.slice/%s.service/cgroup.procs" % svc] = "".join(p + "\n" for p in pids)
+    fds = {"300": ["1001", "1002", "1003", "1004", "1005"], "301": [], "400": ["2001", "2002"], "500": ["5001"],
+           "600": ["6001"], "700": ["7001"], "900": ["9001"]}
+    cg = {"300": "0::/system.slice/%s.service\n" % A, "301": "0::/system.slice/%s.service\n" % A,
+          "400": "0::/system.slice/%s.service\n" % B, "500": "0::/swg-turn.slice/%s.service\n" % C,
+          "600": "12:pids:/system.slice/%s.service\n1:name=systemd:/system.slice/%s.service\n" % (V1, V1),
+          "700": "0::/lxc.payload.c1/system.slice/%s.service\n" % LX, "900": "0::/system.slice/other.service\n"}
+    files, links = {}, {"/proc": {p: None for p in list(fds) + ["self", "net", "sys"]}}
     for pid, inos in fds.items():
         links["/proc/%s/fd" % pid] = {str(i + 3): "socket:[%s]" % ino for i, ino in enumerate(inos)}
         links["/proc/%s/fd" % pid]["0"] = "/dev/null"
@@ -100,21 +107,13 @@ def box(big=False):
                 rows.append("%4d: %s:%04X %s:%04X %s 00000000:00000000 00:00000000 00000000     0        0 %s 2 0000000000000000 0"
                             % (k, hexip(lo[0], big), lo[1], hexip(pe[0], big), pe[1], st, ino))
         files["/proc/net/%s" % proto] = "\n".join(rows) + "\n"
-    # what `ss -Hnp -t|-u state established` prints for the same box (state filter: no State column)
-    owner = {ino: pid for pid, inos in fds.items() for ino in inos}
-    ss = {"-t": "", "-u": ""}
-    for ino, (pr, lo, pe, st) in sorted(socks.items()):
-        if st == "01":
-            ss["-t" if pr == "tcp" else "-u"] += "0      0      %s:%d      %s:%d users:((\"proxy\",pid=%s,fd=5))\n" % (lo[0], lo[1], pe[0], pe[1], owner[ino])
-    cg = {pid: "0::/system.slice/%s.service\n" % svc for svc, pids in procs.items() for pid in pids}
-    cg["900"] = "0::/system.slice/other.service\n"
-    return files, links, dirs, ss, cg
+    return files, links, cg
 
 
 SS_CALLS = []
 
 
-def install(files, links, dirs, ss, cg):
+def install(files, links, cg):
     real_open = builtins.open
 
     def fake_open(path, *a, **k):
@@ -139,13 +138,11 @@ def install(files, links, dirs, ss, cg):
 
     fos = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
     fos.listdir, fos.readlink = listdir, readlink
-    fos.path = types.SimpleNamespace(**{k: getattr(os.path, k) for k in dir(os.path) if not k.startswith("__")})
-    fos.path.isdir = lambda p: p in dirs
     N.open, N.os = fake_open, fos
 
     def fake_run(args, input_text=None, timeout=20, env=None):
         SS_CALLS.append(" ".join(args))
-        return subprocess.CompletedProcess(args, 0, ss.get(args[2], "") if args[0] == "ss" else "", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
     N.run = fake_run
 
 
@@ -156,40 +153,36 @@ def sports(svcs=(A, B)):
     return {t["service"]: t.get("wg_sports") for t in tp}
 
 
-# ── [1] the same answer as ss ─────────────────────────────────────────────────────────────────────────────────────────
-print("[1] the same answer as the ss path, on one box")
-files, links, dirs, ss, cg = box()
-install(files, links, dirs, ss, cg)
-fast = sports()
-check("[1] read from /proc: no `ss`", not SS_CALLS, SS_CALLS)
-install(files, links, set(), ss, cg)                          # the same box, the ss path forced
-slow = sports()
-check("[1] CONTROL: the ss path ran — one `ss`, UDP", SS_CALLS == ["ss -Hnp -u state established"], SS_CALLS)
-check("[1] the same ports per proxy as ss gives — sorted strings", fast == slow == {A: ["50000"], B: ["50123"]}, (fast, slow))
-check("[1] a TCP pair on loopback is no WireGuard endpoint: not reported", "41234" not in str(fast))
+# ── [1] one box ───────────────────────────────────────────────────────────────────────────────────────────────────────
+print("[1] the ports per proxy on one box")
+install(*box())
+got = sports()
+check("[1] each proxy's connected UDP sockets to wg on loopback — sorted strings", got == {A: ["50000"], B: ["50123"]}, got)
+check("[1] a TCP pair on loopback is no WireGuard endpoint, nor a DNS query to 127.0.0.53: not reported",
+      "41234" not in str(got) and "50777" not in str(got), got)
+check("[1] another process's loopback socket is not a proxy's", "50555" not in str(got), got)
+check("[1] no `ss`", not SS_CALLS, SS_CALLS)
 
 # ── [2] a unit that is not running ────────────────────────────────────────────────────────────────────────────────────
 print("\n[2] a unit that is not running")
-install(files, links, dirs, ss, cg)
-got = sports((A, B, "vk-turn-proxy-stopped-56010"))
-check("[2] no cgroup: no ports for it, the others as before, and no `ss`", got == {A: ["50000"], B: ["50123"],
-      "vk-turn-proxy-stopped-56010": None} and not SS_CALLS, (got, SS_CALLS))
+got = sports((A, B, "vk-turn-proxy-stopped-56020"))
+check("[2] no process: no ports for it, the others as before", got == {A: ["50000"], B: ["50123"], "vk-turn-proxy-stopped-56020": None},
+      got)
 
-# ── [3] no unified hierarchy ──────────────────────────────────────────────────────────────────────────────────────────
-print("\n[3] no unified cgroup hierarchy")
-install(files, links, set(), ss, cg)
-got = sports()
-check("[3] `ss` (UDP), as before", len(SS_CALLS) == 1 and got == {A: ["50000"], B: ["50123"]}, (got, SS_CALLS))
+# ── [3] any cgroup layout ─────────────────────────────────────────────────────────────────────────────────────────────
+print("\n[3] any cgroup layout")
+got = sports((C, V1, LX))
+check("[3] a unit in a slice of its own, on a cgroup v1 box, in a container on the host's hierarchy: each found",
+      got == {C: ["50501"], V1: ["50601"], LX: ["50701"]}, got)
 
 # ── [4] a big-endian host ─────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[4] a big-endian host")
 install(*box(big=True))
 got = sports()
-check("[4] 127.0.0.1 printed big-endian is loopback too", got == {A: ["50000"], B: ["50123"]} and not SS_CALLS, got)
+check("[4] 127.0.0.1 printed big-endian is loopback too", got == {A: ["50000"], B: ["50123"]}, got)
 
 # ── [5] a Docker node ─────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] a Docker node")
-install(files, links, set(), ss, cg)                          # its container: no unified hierarchy of its own
 N.TURN_DOCKER = True
 got = sports()
 check("[5] nothing asked, nothing attached (it never could be)", not SS_CALLS and got == {A: None, B: None}, (got, SS_CALLS))

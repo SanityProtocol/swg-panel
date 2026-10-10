@@ -5,7 +5,8 @@
       every such node and tore everything down every time — `-D PREROUTING`, `-F` / `-X SWGK`, `iptables -S`, `ipset list`
       twice — because the teardown removed its own stamp, so the next pass read "drift". Now gone is stamped like any other
       state: the first pass tears down, the next ones do not; a teardown that fails (the chain still there) keeps the stamp
-      away, so the next pass tries again; a later rebuild (Kernel SNI switched on) still happens.
+      away, so the next pass tries again; a later rebuild (Kernel SNI switched on) still happens; and a hook that comes back
+      after "gone" (a boot-time restore of rules saved while Kernel SNI ran) is torn down again (code review).
   [2] D2, a custom rule's raw CIDRs: the set is `interval; auto-merge`, so adjacent ones merge into fewer elements than the
       list has, and a gate on the list's length added them again on every routing pass. Now the gate is the count the last
       add left, read back: added once; again when the list changes or the set lost elements (a reboot); never on a refused
@@ -21,6 +22,7 @@ Run: python3 tests/steady_routing_writes_selftest.py   (0 = pass)
      d1blind     the teardown stamps "gone" without looking (a failed teardown is never retried)
      d2length    the old gate on the list's length (a merging list is added on every pass)
      d2refused   a refused add records the read-back count (the list is never loaded)
+     rehook      steady while Kernel SNI is off whatever the hook says (a hook that came back stays for ever)
 """
 import importlib.machinery, importlib.util, ipaddress, os, re, subprocess, sys, tempfile, threading
 
@@ -47,6 +49,8 @@ PLANTS = {
             if have >= done[1]:
                 continue                                       # what our last add left is all still there
         elif not done and have >= len(cl):''', '''        if have >= len(cl):'''),
+    "rehook": ('''    if stored == sig and (hooked if (entries or arr_ents) else not hooked):''',
+               '''    if stored == sig and (hooked or not (entries or arr_ents)):'''),
     "d2refused": ('''        if ok:                                                 # a refused add records nothing''',
                   '''        if True:                                                 # a refused add records nothing'''),
 }
@@ -146,6 +150,12 @@ K.update(x_fails=False)
 teardown_pass()
 wd, cd = teardown_pass()
 check("[1] …and once it succeeds, the passes after it write nothing", not wd and "SWGK" not in K["chains"], (wd, K["chains"]))
+K.update(chains={"SWGK"}, hooked=True)                       # the hook comes back after "gone": a boot-time restore of saved rules
+wb, cb = teardown_pass()
+check("[1] a hook that came back after the teardown is torn down on the next pass", any("-D PREROUTING" in c for c in cb)
+      and not K["hooked"] and "SWGK" not in K["chains"], (cb, K))
+wa, ca = teardown_pass()
+check("[1] …and the passes after it write nothing again", not wa, wa)
 
 # ── [2] D2 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[2] a custom rule's raw CIDRs")

@@ -8,8 +8,10 @@ equal on swgt's kernel, 2026-10-10: same names, the CLI's values between two net
   [1] The request: NFT_MSG_GETOBJ (19) on NFNL_SUBSYS_NFTABLES, a dump, NFTA_OBJ_TABLE = the table, NFTA_OBJ_TYPE = counter.
   [2] The reply, built here as the kernel sends it (several messages per datagram, nested NFTA_OBJ_DATA, NLMSG_DONE): every
       counter's name, packets and bytes, as u64 INTEGERS (a float anywhere in the sync body could be refused by the panel).
-  [3] Anything unexpected is None — and the callers then read with nft exactly as before: no socket (EPERM), an error reply,
-      a table that answers with no counters (missing), a truncated message. Said once.
+  [3] Anything unexpected is None — and the callers then read with nft exactly as before: the kernel's refusal (an error
+      REPLY, EPERM without CAP_NET_ADMIN — it does not refuse the socket itself), no socket, a table that answers with no
+      counters (missing: the kernel sends DONE alone), a truncated message. A refusal is said once, for the counters and the
+      generation id together (code review: the kernel's error reply was silent).
   [4] The callers: P2P's torrent sum and device access's per-interface packets are the same numbers from netlink as from the
       nft JSON; device access still answers None for a missing table (through nft).
   [5] SWG_NFT_CLI_ONLY=1 (the way back to 1.8.8's reads, and what the selftests that model the kernel through run() set):
@@ -21,6 +23,7 @@ Run: python3 tests/nft_netlink_counters_selftest.py   (0 = pass)
      emptyok      a table that answers with no counters is taken as "no counters" (a missing table never reads None)
      swap         bytes and packets read the other way round
      clionly      SWG_NFT_CLI_ONLY is not honoured
+     quietrefusal the kernel's error reply is not said
 """
 import importlib.machinery, importlib.util, json, os, struct, subprocess, sys, tempfile, threading
 
@@ -43,6 +46,8 @@ PLANTS = {
     "emptyok": ('''                if typ == 3:                                                                   # NLMSG_DONE
                     return out or None''', '''                if typ == 3:                                                                   # NLMSG_DONE
                     return out'''),
+    "quietrefusal": ('''                        _nl_refused("the kernel refused a counter read (%s)" % os.strerror(-err))''',
+                     '''                        pass'''),
     "clionly": ('''def _nft_cli_only():
     return os.environ.get("SWG_NFT_CLI_ONLY") == "1"''', '''def _nft_cli_only():
     return False'''),
@@ -145,14 +150,24 @@ check("[2] a dump spread over datagrams", N._nft_counters("swg_p2p") == {"a": (1
 
 # ── [3] anything unexpected is None ───────────────────────────────────────────────────────────────────────────────────
 print("\n[3] anything unexpected → None (the caller reads with nft)")
-with_sock(FakeSock([], fail=PermissionError(1, "Operation not permitted")))
 LOGS.clear()
-check("[3] no socket (EPERM)", N._nft_counters("swg_p2p") is None)
-check("[3] …said once", sum("netlink could not read" in l for l in LOGS) == 1, LOGS)
-N._nft_counters("swg_p2p")
-check("[3] …and only once", sum("netlink could not read" in l for l in LOGS) == 1, LOGS)
+with_sock(FakeSock([err(-1)]))                                   # what the kernel answers without CAP_NET_ADMIN: EPERM, a reply
+check("[3] the kernel's refusal (an error reply, EPERM)", N._nft_counters("swg_p2p") is None)
+check("[3] …said once", sum("nftables over netlink" in l and "refused" in l for l in LOGS) == 1, LOGS)
 with_sock(FakeSock([err(-1)]))
-check("[3] an error reply", N._nft_counters("swg_p2p") is None)
+N._nft_counters("swg_p2p")
+_g = struct.pack("=LHHLL", 36, 2, 0, 1, 0) + struct.pack("=i", -1) + b"\0" * 16
+with_sock(FakeSock([_g]))
+g3 = N._nft_genid()
+check("[3] …and only once, the generation id's refusal included (it is the same refusal); no id, nothing kept",
+      sum("nftables over netlink" in l for l in LOGS) == 1 and g3 is None, LOGS)
+N._NL_COUNTERS["warned"] = False
+LOGS.clear()
+with_sock(FakeSock([_g]))
+N._nft_genid()
+check("[3] the generation id's refusal alone is said too", sum("nftables over netlink" in l for l in LOGS) == 1, LOGS)
+with_sock(FakeSock([], fail=PermissionError(1, "Operation not permitted")))
+check("[3] no socket at all", N._nft_counters("swg_p2p") is None)
 with_sock(FakeSock([DONE]))
 check("[3] a table that answers with no counters (a missing one) — nft decides", N._nft_counters("no_such") is None)
 with_sock(FakeSock([obj_msg("dht", 1, 1)[:30]]))

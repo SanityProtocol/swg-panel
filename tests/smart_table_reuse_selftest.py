@@ -19,6 +19,7 @@ id — except the per-category byte counters, read over netlink (B5a), and the S
       chain's counter every pass even while the render is kept; that chain is read ONCE a pass for both its readers.
   [7] The chains read for their rule counters are read only where the table's structure has something to count: `prerouting`
       with a Block set (or a Block list's shadow) in it, `forward` with a `reject` rule — else no process, the same report.
+      A render that failed (a timeout, an nft error) says nothing about it: both are read, as before (code review).
 
 Run: python3 tests/smart_table_reuse_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
@@ -28,6 +29,8 @@ Run: python3 tests/smart_table_reuse_selftest.py   (0 = pass)
      resetstable     smart_status reads the reset counter from the (possibly kept) render
      preall          `prerouting` is read with no Block set in the table
      fwdall          `forward` is read with no `reject` rule in the table
+     failedpre       a failed render skips `prerouting` (the blocked counts 1.8.8 reported are lost)
+     failedfwd       a failed render skips `forward`
 """
 import importlib.machinery, importlib.util, json, os, re, subprocess, sys, tempfile, threading
 
@@ -50,10 +53,13 @@ PLANTS = {
     "nolive": ('''    return "expires " in out or "add @" in out or "update @" in out or " meter " in out''', '''    return False'''),
     "afterid": ('''                            gen=gen if keep else None, cnames=cnames)''',
                 '''                            gen=_nft_genid() if keep else None, cnames=cnames)'''),
-    "preall": ('''               if (_bsw or "blku" in _smart_table()["out"]) else "")''', '''               if True else "")'''),
-    "fwdall": ('''    if "reject" not in _smart_table()["out"]:
+    "preall": ('''               if (_bsw or _st["rc"] != 0 or "blku" in _st["out"]) else "")''', '''               if True else "")'''),
+    "fwdall": ('''    if _t["rc"] == 0 and "reject" not in _t["out"]:
         return ""''', '''    if False:
         return ""'''),
+    "failedpre": ('''               if (_bsw or _st["rc"] != 0 or "blku" in _st["out"]) else "")''',
+                  '''               if (_bsw or "blku" in _st["out"]) else "")'''),
+    "failedfwd": ('''    if _t["rc"] == 0 and "reject" not in _t["out"]:''', '''    if "reject" not in _t["out"]:'''),
     "resetstable": ('''    resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\\d+)", _smart_forward()))''',
                     '''    resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\\d+)", t["out"]))'''),
 }
@@ -104,6 +110,8 @@ CALLS = []
 def fake_run(args, input_text=None, timeout=20, env=None):
     c = " ".join(args)
     CALLS.append(c)
+    if c == "nft list table inet swg_smart" and K.get("render_rc"):
+        return subprocess.CompletedProcess(args, K["render_rc"], "", "timeout")
     if c == "nft list table inet swg_smart":
         if K["commit_during"]:                               # another writer commits while nft is reading the ruleset
             K["gen"], K["commit_during"] = [K["gen"][-1] + 1], False
@@ -257,6 +265,15 @@ s7, pr, fw = chains(render(extra_rule="\t\tip saddr 10.8.0.0/24 ip daddr @cat_bl
 check("[7] a Block set: `prerouting` is read", pr == 1, CALLS)
 s7, pr, fw = chains(render().replace(" reject with tcp reset", " accept"))
 check("[7] no `reject` rule (no SNI engine): `forward` is not read, and no resets", fw == 0 and s7["resets"] == 0, (fw, s7["resets"]))
+K["table"], K["render_rc"], K["gen"] = render(), 124, [K["gen"][0] + 1]       # the render times out; the mech tier is on
+_mech = N._MECH_ON["subs"]
+N._MECH_ON["subs"] = 1
+N._LOOP["n"] += 1
+CALLS.clear()
+N.smart_status()
+check("[7] a render that failed says nothing about the chains: both are read, as before",
+      "nft list chain inet swg_smart prerouting" in CALLS and "nft list chain inet swg_smart forward" in CALLS, CALLS)
+K["render_rc"], N._MECH_ON["subs"] = None, _mech
 
 import shutil
 shutil.rmtree(T, ignore_errors=True)

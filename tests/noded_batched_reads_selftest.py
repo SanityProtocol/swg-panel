@@ -15,12 +15,18 @@ and 22 links, no difference).
   [4] The exit's handshake age comes from the dump's peer lines (what `latest-handshakes` printed); the WDTT server's public
       key from the dump's first line.
   [5] One pass: any number of readers, one `show all dump` per tool and one `ip -d -o link show`.
+  [6] A batch that fails — `show all dump` asks every userspace device, and a wedged one never answers — is asked ONCE in
+      the pass, and waits 5 s, not 20; every reader then reads its own interface (code review: each re-ran the batch into
+      its timeout, minutes a pass, where a per-device read only ever waited on the wedged device itself).
+  [7] The exits' handshakes come from a dump taken after this pass's probes (they can make a first handshake).
 
 Run: python3 tests/noded_batched_reads_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
      keepname     the slice keeps the `all` form's name column
      emptydown    an interface missing from the batch reads as an empty, successful dump (its `down` text is lost)
      vethname     the link parser keeps the `@peer` suffix in the name
+     batchretry   a failed batch is asked again by every reader
+     staleexit    the exits' handshakes are read from the dump taken before the probes
 """
 import importlib.machinery, importlib.util, os, subprocess, sys, tempfile, threading
 
@@ -43,6 +49,10 @@ PLANTS = {
         return subprocess.CompletedProcess(cmd + ["show", iface, "dump"], 0, d[iface], "")''',
                   '''    if d is not None:
         return subprocess.CompletedProcess(cmd + ["show", iface, "dump"], 0, d.get(iface, ""), "")'''),
+    "batchretry": ('''lambda: run(cmd + ["show", "all", "dump"], timeout=5), keep_failures=True)''',
+                   '''lambda: run(cmd + ["show", "all", "dump"], timeout=5))'''),
+    "staleexit": ('''            _pass_forget("all-dump:")                  # these probes would miss a first handshake they made (_exit_handshake)''',
+                  '''            pass'''),
     "vethname": ('''        m = re.match(r"^\\d+:\\s+([^:@\\s]+)(?:@\\S*)?:\\s", ln)''', '''        m = re.match(r"^\\d+:\\s+([^:\\s]+):\\s", ln)'''),
 }
 if PLANT:
@@ -75,11 +85,13 @@ LINKS = ("1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mo
          "6: awg2: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1376 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/none  promiscuity 0 \\    amneziawg addrgenmode none\n"
          "9: veth1a2b@if8: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT\\    link/ether 02:42:ac:11:00:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0 \\    veth\n")
 CALLS = []
+TIMEOUTS = {}
 STATE = {"all_rc": 0, "links_rc": 0}
 
 
 def fake(args, input_text=None, timeout=20, env=None):
     CALLS.append(" ".join(args))
+    TIMEOUTS[" ".join(args)] = timeout
     if args[1:] == ["show", "all", "dump"]:
         return subprocess.CompletedProcess(args, STATE["all_rc"], ALL[args[0]] if not STATE["all_rc"] else "", "")
     if len(args) == 4 and args[1] == "show" and args[3] == "dump":
@@ -151,6 +163,30 @@ for _ in range(3):
     N._link_kind("wg1"); N.iface_mtu("awg2"); N._link_kind("awg2")
 check("[5] one `show all dump` per tool and one `ip -d -o link show`, however many readers",
       sorted(CALLS) == sorted(["wg show all dump", "awg show all dump", "ip -d -o link show"]), CALLS)
+
+# ── [6] a batch that fails ───────────────────────────────────────────────────────────────────────────────────────────
+print("\n[6] a batch that fails")
+N._LOOP["n"] = 7; CALLS.clear(); STATE["all_rc"] = 124
+for _ in range(3):
+    a1, a9 = N._dump_of(["wg"], "wg1"), N._dump_of(["wg"], "wg9")
+check("[6] a batch that timed out is asked once in the pass, however many readers",
+      sum(c == "wg show all dump" for c in CALLS) == 1, CALLS)
+check("[6] …and waits 5 s, not 20", TIMEOUTS.get("wg show all dump") == 5, TIMEOUTS)
+check("[6] …and each reader reads its own interface, the same answer", a1.stdout == WG1 and a9.stdout == EMPTY
+      and "wg show wg1 dump" in CALLS, CALLS)
+STATE["all_rc"] = 0
+
+# ── [7] the exits' handshakes ────────────────────────────────────────────────────────────────────────────────────────
+print("\n[7] the exits' handshakes")
+N._LOOP["n"] = 8; CALLS.clear()
+N._dump_of(["wg"], "wg1")                                   # the snapshot's read, before the exit probes
+N._pass_forget("all-dump:")
+N._dump_of(["wg"], "wg1")                                   # the handshakes, after them
+check("[7] what the probes change is read again: forgetting the batch makes the next reader read it afresh",
+      sum(c == "wg show all dump" for c in CALLS) == 2, CALLS)
+_i = SRC.index("_pr = _exit_probe_all(")
+check("[7] the exit reconcile forgets the pass's dumps right after its probes, before its loop reads a handshake",
+      '_pass_forget("all-dump:")' in SRC[_i:SRC.index("for _s, xid, dev, prov, rec, err, _blob_err in _slots:", _i)])
 
 import shutil
 shutil.rmtree(T, ignore_errors=True)
