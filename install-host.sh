@@ -1682,6 +1682,10 @@ Environment=SWG_ETC_DIR=${ETC_DIR}
 Environment=LE_WORKING_DIR=${ACME_HOME}
 EOF
   if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-netctl.service.d/$SWG_LOG_NS_DROPIN" 644; else swg_log_ns_clear; fi
+  # The idle gate (lib/common.sh): the timer below still starts the unit every 10 s, but the helper runs only for a
+  # request, a settings save or its own due time — an idle tick costs bash builtins, not a Python start.
+  swg_netctl_due_text | writef_atomic /usr/local/bin/swg-netctl-due 755
+  swg_netctl_due_dropin_text "$STATE_DIR" | writef "/etc/systemd/system/swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN" 644
   writef /etc/systemd/system/swg-netctl.path 644 <<EOF
 [Unit]
 Description=watch for swg-netctl requests from the panel

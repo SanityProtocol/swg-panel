@@ -581,6 +581,20 @@ EOF
   ok "swg-netctl root helper provisioned — Access & subscription-address changes will work now"
 }
 
+# HEAL: swg-netctl's idle gate (lib/common.sh netctl_gate_heal) — the helper starts on every 10 s tick but runs only when
+# it has work. Written when MISSING OR DIFFERENT, outside the heal contract's "never rewrite" on purpose, like
+# ensure_update_unit_docker: the gate and its drop-in are ours entirely (nothing an operator sets), and a box must not
+# keep an older release's text — present is not current. The units themselves are not touched.
+ensure_netctl_gate(){
+  [ -f /etc/systemd/system/swg-netctl.service ] || return 0
+  local want; want="$(swg_netctl_due_dropin_text "${STATE_DIR:-/var/lib/swg-panel}")"
+  netctl_gate_current swg-netctl.service "$want" && return 0
+  if $DRYRUN; then echo "    [skip] swg-netctl idle gate: /usr/local/bin/swg-netctl-due + swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi
+  netctl_gate_heal swg-netctl.service "$want"
+  [ "$NETCTL_GATE_CHANGED" = 1 ] && { systemctl daemon-reload 2>/dev/null || true; }
+  DID_UPDATE=yes; note "swg-netctl: idle gate written (an idle tick no longer starts the helper)"
+}
+
 # repark_bare_panel — a PARKED bare panel (bare_panel_parked, lib/common.sh: disabled, a docker panel live beside it)
 # that something STARTED anyway is stopped again, with its swg-sub, which is kept from starting at boot. The something
 # is 1.8.7's update.sh: it restarted swg-panel-server unconditionally and enabled + restarted swg-sub, so a box that
@@ -1737,6 +1751,19 @@ EOF
   ok "docker address helper healed — one-click address changes will work now"
 }
 
+# HEAL: the docker address helper's idle gate — the same gate as ensure_netctl_gate's, asking the queue only (the drainer
+# has no work of its own). Written when missing or different, for the same reason. Panel-bearing profiles only.
+ensure_netctl_docker_gate(){
+  case "${1:-}" in host|master|host-node) ;; *) return 0;; esac
+  [ -f /etc/systemd/system/swg-netctl-docker.service ] || return 0
+  local want; want="$(swg_netctl_docker_due_dropin_text "$DOCKER_DIR/data/lib/netctl/queue")"
+  netctl_gate_current swg-netctl-docker.service "$want" && return 0
+  if $DRYRUN; then echo "    [skip] swg-netctl-docker idle gate: /usr/local/bin/swg-netctl-due + swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi
+  netctl_gate_heal swg-netctl-docker.service "$want"
+  [ "$NETCTL_GATE_CHANGED" = 1 ] && { systemctl daemon-reload 2>/dev/null || true; }
+  DID_UPDATE=yes; note "docker address helper: idle gate written (an idle tick no longer starts the drainer)"
+}
+
 rescue_container_confs(){   # $1 = compose profile
   # RESCUE any interface conf still living in the container's OWN /etc/wireguard before a recreate destroys it.
   # Only /etc/amnezia/amneziawg is a bind-mount; an interface created by an agent older than the container-aware
@@ -1891,6 +1918,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     # (first-time provisioning of the binary + trigger units is done by install-host.sh).
     if [ -f /usr/local/bin/swg-netctl ] && [ -f "$SRC/swg-netctl" ]; then
       run cp "$SRC/swg-netctl" /usr/local/bin/swg-netctl; run chmod 755 /usr/local/bin/swg-netctl; ok "swg-netctl refreshed"
+      run rm -f /run/swg-netctl.due   # the idle gate then runs the new build on the next tick, its log work with it
       # Heal the trigger unit on older installs: without StartLimitIntervalSec=0 the .path watcher trips
       # systemd's 5-starts-per-10s limit under a normal Access apply (issue-cert+set-listen+restart) and fails
       # permanently, degrading applies to the 10s timer (~50s). Add the override + clear any failed state.
@@ -1913,6 +1941,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   # NEW SERVICE? add its ensure_<svc> here (and a matching writer in the installer) so update heals it too.
   repark_bare_panel      # a parked panel an older update started beside the docker one → stopped again (+ swg-sub)
   ensure_netctl_helper   # swg-netctl privileged helper (+ queue dirs + trigger units)
+  ensure_netctl_gate     # …and its idle gate (written when missing or different — see there)
   if log_ns_build /usr/local/bin/swg-netctl; then   # HEAL: swg's own journal on a current box (a unit added since, a lost file)
     ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
   fi
@@ -2298,6 +2327,7 @@ PYDRIFT
     fi
   fi
   ensure_netctl_docker "$prof"   # HEAL: install the docker address helper if a panel-bearing host lacks it
+  ensure_netctl_docker_gate "$prof"   # …and its idle gate (written when missing or different — see there)
   ensure_update_unit_docker "$prof"   # HEAL: install the docker one-click self-update wiring if a panel-bearing host lacks it
   # ⚠️ PANEL-BEARING PROFILES ONLY, both. On a node-only box these created the four empty panel files swg-sub masks
   # (data/etc/auth among them, 0 bytes) at the first update, and the next update found ".env + data/lib" there and wrote

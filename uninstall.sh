@@ -43,6 +43,9 @@ die(){  echo "$(c '0;31')✗ $*$(c 0)" >&2; exit 1; }
 b(){ printf '\033[1m%s\033[0m' "$*"; }
 run(){ if $DRYRUN; then echo "    [dry] $*"; else "$@"; fi; }
 rmrf(){ local p; for p in "$@"; do if [ -e "$p" ] || [ -L "$p" ]; then run rm -rf "$p"; fi; done; }
+# swg-netctl's idle gate (lib/common.sh netctl_gate_reap) goes with the last netctl unit that runs it; each unit's drop-in
+# goes with its .service.d.
+rm_netctl_gate_if_last(){ [ -e "$SD/swg-netctl.service" ] || [ -e "$SD/swg-netctl-docker.service" ] || rmrf /usr/local/bin/swg-netctl-due; return 0; }
 # Drop a directory only once nothing is left in it. Used where a `rm -rf` would take a file this run
 # deliberately KEPT — a foreign interface's .conf and its keys living in the same directory as ours.
 rmdir_if_empty(){ local d="$1"
@@ -301,6 +304,7 @@ rm_panel(){
   if [ -n "$_mine" ]; then rmrf "$_pdd/zz-swg-update.conf" "$_pdd/swg-ns.conf" "$_pdd/swg-journal.conf"; info "  Kept your own drop-in(s) for the panel — $_pdd: ${_mine% } (a re-install picks them up)"
   else rmrf "$_pdd"; fi
   docker_running swg-panel || rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+  rm_netctl_gate_if_last
   rm_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
   rm_updater_if_last bare-gone   # the one-click updater: shared with a docker install, so it goes only with the last of them
   # ⚠️ A DANGLING ENABLEMENT SYMLINK OUTLIVES ITS UNIT FILE, and `systemctl disable` CANNOT clear it: it
@@ -889,6 +893,7 @@ rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
     [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true
   done
   rmrf "$SD/swg-netctl-docker.service" "$SD/swg-netctl-docker.service.d" "$SD/swg-netctl-docker.path" "$SD/swg-netctl-docker.timer" /usr/local/bin/swg-netctl-docker
+  rm_netctl_gate_if_last
   run systemctl daemon-reload 2>/dev/null || true
   if docker_running swg-node; then
     [ "$DELP" = yes ] && { _rm_panel_data; info "  Removed the panel data; node interface configs untouched."; } \
@@ -1139,6 +1144,7 @@ rm_netctl(){   # a leftover swg-netctl (e.g. after a docker convert) with no bar
     done
     rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
   fi
+  rm_netctl_gate_if_last
   run systemctl daemon-reload; ok "swg-netctl removed"
 }
 # Host-side remnants of a DOCKER or converted install that no container remover owns: swg-sub's own tls dir and its

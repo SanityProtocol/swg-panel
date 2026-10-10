@@ -809,6 +809,82 @@ lc_teardown_baremetal(){
   swg_log_teardown swg-node swg-relay@.service vk-turn-proxy-.service swg-wdtt-.service swg-csqtt-.service   # (see there)
   systemctl daemon-reload 2>/dev/null || true
   rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent /var/log/swg-agent; }
+# ── swg-netctl's IDLE GATE: the helper starts only when it has work ─────────────────────────────────────────────────────
+# swg-netctl.service starts on every tick of a 10 s timer, and it must: the path watch can die unseen (the panel shows the
+# helper down only when both are down), the panel waits as little as 15–60 s for some answers (_RENEW_PICKUP_S), and on
+# Docker the timer drains the queue. But a tick with nothing to do was a whole Python start — 80–140 ms of CPU, 8 640 a
+# day, more than the panel itself spends (hel-infra, 2026-10-09). An ExecCondition runs this gate first: bash builtins,
+# ~1.5 ms. It lets the helper run for a request, for settings saved since its last run, or when its own work is due (the
+# time it wrote to /run/swg-netctl.due: Debug's end, the budget's retry, the journal size's refresh), and skips the start
+# otherwise; the Docker drainer has no work of its own, so its gate asks the queue only. The drop-in maps every exit but an
+# explicit 1 to "run": systemd skips a start on ANY exit from 1 to 254, so a gate that is missing (127) or broken (2) would
+# otherwise stop the root helper for good, silently. ONE text each, written by install-host.sh / install-docker.sh and
+# healed by update.sh (docs/CPU-PLAN.md, Part A).
+SWG_NETCTL_DUE_DROPIN=swg-due.conf
+swg_netctl_due_text(){ cat <<'GATE'
+#!/bin/bash
+# swg-netctl-due <state dir> | --queue-only <queue dir> — the idle gate of swg-netctl.service and swg-netctl-docker.service
+# (lib/common.sh), run by their ExecCondition before every start. Exit 1: nothing to do, the start is skipped. Exit 0: run.
+# Builtins only: it runs on every 10 s tick.
+shopt -s nullglob dotglob
+if [ "${1:-}" = --queue-only ]; then
+  [ -n "${2:-}" ] || exit 0
+  q=("$2"/*); (( ${#q[@]} )) && exit 0
+  exit 1
+fi
+[ -n "${1:-}" ] || exit 0
+S=$1 D=/run/swg-netctl.due
+q=("$S"/netctl/queue/*); (( ${#q[@]} )) && exit 0        # any entry, dotfiles too: exactly what the path watch fires on
+[[ -r $D && ! $S/panel-settings.json -nt $D ]] || exit 0  # the first tick since boot, or settings saved since a run read them
+read -r due < "$D" || exit 0
+[[ $due =~ ^[0-9]+$ ]] || exit 0
+printf -v now '%(%s)T' -1
+(( now >= due || due - now > 600 )) && exit 0             # the helper's own work is due — or the clock went back
+exit 1
+GATE
+}
+swg_netctl_due_dropin_text(){   # <state dir> → swg-netctl.service's drop-in, on stdout
+  cat <<EOF
+[Service]
+# The idle gate (lib/common.sh swg_netctl_due_text). Only its explicit 1 skips the start: a gate that is missing, broken
+# or killed runs the helper, as before the gate existed.
+ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due $1; [ \$\$? -eq 1 ] && exit 1; exit 0'
+EOF
+}
+swg_netctl_docker_due_dropin_text(){   # <queue dir> → swg-netctl-docker.service's drop-in, on stdout
+  cat <<EOF
+[Service]
+# The idle gate (lib/common.sh swg_netctl_due_text): the drainer runs when its queue holds something. Only the gate's
+# explicit 1 skips the start: a gate that is missing, broken or killed runs the drainer, as before the gate existed.
+ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due --queue-only $1; [ \$\$? -eq 1 ] && exit 1; exit 0'
+EOF
+}
+# The writer install-docker.sh and update.sh share (install-host.sh renders the same texts through its writef): the gate
+# when it is missing or different — by rename, since it may be running — then <unit>'s drop-in when missing or different.
+# Both are ours entirely (nothing an operator sets), so a different text is an older release's and is rewritten: present
+# is not current (1.8.8 qualification N12). Only for a unit that exists. NETCTL_GATE_CHANGED=1 when the drop-in was written
+# (the caller daemon-reloads).
+netctl_gate_heal(){   # <unit> <drop-in text>
+  local d="/etc/systemd/system/$1.d"; NETCTL_GATE_CHANGED=0
+  [ -f "/etc/systemd/system/$1" ] || return 0
+  if [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" != "$(swg_netctl_due_text)" ]; then
+    swg_netctl_due_text > /usr/local/bin/swg-netctl-due.new && chmod 755 /usr/local/bin/swg-netctl-due.new \
+      && mv -f /usr/local/bin/swg-netctl-due.new /usr/local/bin/swg-netctl-due
+  fi
+  [ "$(cat "$d/$SWG_NETCTL_DUE_DROPIN" 2>/dev/null)" = "$2" ] && return 0
+  mkdir -p "$d" && printf '%s\n' "$2" > "$d/$SWG_NETCTL_DUE_DROPIN" && NETCTL_GATE_CHANGED=1
+  return 0
+}
+netctl_gate_current(){   # <unit> <drop-in text> → 0 when netctl_gate_heal would write nothing
+  [ -f "/etc/systemd/system/$1" ] || return 0
+  [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" = "$(swg_netctl_due_text)" ] \
+    && [ "$(cat "/etc/systemd/system/$1.d/$SWG_NETCTL_DUE_DROPIN" 2>/dev/null)" = "$2" ]
+}
+netctl_gate_reap(){   # the gate goes with the last unit that runs it
+  [ -e /etc/systemd/system/swg-netctl.service ] || [ -e /etc/systemd/system/swg-netctl-docker.service ] \
+    || rm -f /usr/local/bin/swg-netctl-due
+  return 0
+}
 # teardown_bare_panel — stop + remove the bare-metal panel (units + proxy vhost + binary), then move its STATE
 # dirs aside (already staged into data/) so the box no longer reads as a bare panel and a later convert-back
 # Remove the DOCKER address helper (swg-netctl-docker.*) — the mirror of what teardown_bare_panel does to the
@@ -828,6 +904,7 @@ remove_docker_netctl(){
   rm -f /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer \
         /etc/systemd/system/swg-netctl-docker.path /usr/local/bin/swg-netctl-docker
   rm -rf /etc/systemd/system/swg-netctl-docker.service.d   # its log level drop-in (docker_host_log_dropins) goes with it
+  netctl_gate_reap                                          # …and the idle gate, unless the bare helper still runs it
   systemctl daemon-reload >/dev/null 2>&1 || true; }
 
 # restages cleanly. Used by the bare→docker host/master convert (install-docker.sh, at the atomic switch).
@@ -848,6 +925,8 @@ teardown_bare_panel(){
   done
   rm -f /etc/systemd/system/swg-sub.service /etc/systemd/system/swg-netctl.service /etc/systemd/system/swg-netctl.path /etc/systemd/system/swg-netctl.timer /usr/local/bin/swg-netctl \
         /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+  rm -f "/etc/systemd/system/swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN" "/etc/systemd/system/swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN"
+  netctl_gate_reap                                          # the idle gate goes with the units that ran it
   rm -rf /opt/swg-sub
   rm -f /etc/systemd/system/swg-panel-server.service /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /usr/local/bin/swg-update
   rm -rf /etc/systemd/system/swg-panel-server.service.d

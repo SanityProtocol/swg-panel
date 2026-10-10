@@ -1715,10 +1715,11 @@ def mb_of(conf):
 
 
 def log_budget(ps):
-    """Every tick, after the queue (a journald restart must never hold an Access request): the namespace's size and
+    """Every run, after the queue (a journald restart must never hold an Access request): the namespace's size and
     storage — Off stores nothing, and removes what was stored, since journald's Storage=none keeps the files it has —
     then the status for the panel. A steady box compares a string and writes nothing. This helper starts afresh every
-    tick, so the last status is its memory: what failed, and when to try again. `ps`: the settings this tick read."""
+    run, so the last status is its memory: what failed, and when to try again (returned: the gate's stamp wakes the
+    helper for it). `ps`: the settings this run read."""
     if DRYRUN:
         return
     mb, off = log_budget_mb(ps), log_level() == LOG_OFF
@@ -1753,6 +1754,36 @@ def log_budget(ps):
         if retry:
             doc["want"], doc["retry"] = want, retry
     _write_log_status(doc)
+    return retry
+
+
+# ── the idle gate's stamp (lib/common.sh swg_netctl_due_text; docs/CPU-PLAN.md A2) ───────────────────────────────────────
+# The timer still starts this unit every 10 s, but its ExecCondition runs the helper only for a request in the queue,
+# settings newer than this stamp, or the time written in it: when this helper next has work of its own — Debug's end, the
+# budget's retry, the journal size's refresh for the panel (DUE_EVERY_S). Its mtime is a second before this run read the
+# settings, so a save that landed while the run was reading them is still newer and the next tick runs again. A stamp
+# that is missing, unreadable or past due runs the helper: the gate fails toward running, never toward a skipped request.
+DUE_STAMP = os.environ.get("SWG_NETCTL_DUE") or "/run/swg-netctl.due"
+DUE_EVERY_S = 300
+
+
+def write_due(read_at, ps, retry):
+    """The next time this helper has work of its own, for the idle gate. `read_at`: when this run read the settings;
+    `ps`: what it read (None: nothing usable); `retry`: the budget's retry time, if one is pending. Never raises."""
+    if DRYRUN:
+        return
+    due = int(read_at) + DUE_EVERY_S
+    with contextlib.suppress(Exception):
+        until = int((ps or {}).get("log_debug_until") or 0)    # -1 = until changed: no end to wait for
+        if until > read_at:
+            due = min(due, until)
+    if retry and retry > read_at:
+        due = min(due, int(retry))
+    with contextlib.suppress(OSError):
+        with open(DUE_STAMP + ".tmp", "w") as f:
+            f.write("%d\n" % due)
+        os.utime(DUE_STAMP + ".tmp", (read_at - 1, read_at - 1))
+        os.replace(DUE_STAMP + ".tmp", DUE_STAMP)
 
 
 def _status_dir():
@@ -1873,17 +1904,20 @@ def main(argv):
         print("usage: swg-netctl run | <verb> <args...>", file=sys.stderr)
         return 2
     ps = None
+    read_at = time.time()                            # BEFORE the read: a save after it is newer than the gate's stamp
     if not DRYRUN:                                   # a dry run is asked for at a terminal: it always prints
         with contextlib.suppress(Exception):         # never kept from the queue: a value the panel never writes is
             ps = log_from_settings()                 # read as no settings at all
     if argv[1] == "run":
-        if ps is not None:                           # no settings this tick: what is applied stays (HE-3)
+        retry = None
+        if ps is not None:                           # no settings this run: what is applied stays (HE-3)
             with contextlib.suppress(Exception):
-                log_dropins()                        # every tick, before the idle return: Debug's expiry lands here
+                log_dropins()                        # every run, before the idle return: Debug's expiry lands here
         process_queue()
         if ps is not None:
             with contextlib.suppress(Exception):
-                log_budget(ps)                       # …and the budget, AFTER the queue: a journald restart holds nothing
+                retry = log_budget(ps)               # …and the budget, AFTER the queue: a journald restart holds nothing
+        write_due(read_at, ps, retry)                # when the idle gate runs this helper again without a request
         return 0
     try:
         msg = dispatch(argv[1], argv[2:])
