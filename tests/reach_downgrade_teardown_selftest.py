@@ -31,6 +31,7 @@ Run: python3 tests/reach_downgrade_teardown_selftest.py     (0 = pass)
      --perturb-heal       update.sh no longer heals the drop-in                   → RED on [1]
 """
 import os, re, shlex, shutil, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODE = "capable" if "--perturb" in sys.argv else next((a[len("--perturb-"):] for a in sys.argv[1:] if a.startswith("--perturb-")), "")

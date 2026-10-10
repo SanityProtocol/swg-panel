@@ -21,6 +21,7 @@ Run: python3 tests/docker_node_stop_kept_selftest.py        (0 = pass)
      --perturb   two plants, each on its own — each must turn its own check red
 """
 import importlib.machinery, importlib.util, json, os, re, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

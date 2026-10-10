@@ -53,6 +53,7 @@ Run: python3 tests/spa_render_selftest.py      (0 = pass)
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

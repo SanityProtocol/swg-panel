@@ -12,12 +12,15 @@ equal on swgt's kernel, 2026-10-10: same names, the CLI's values between two net
       a table that answers with no counters (missing), a truncated message. Said once.
   [4] The callers: P2P's torrent sum and device access's per-interface packets are the same numbers from netlink as from the
       nft JSON; device access still answers None for a missing table (through nft).
+  [5] SWG_NFT_CLI_ONLY=1 (the way back to 1.8.8's reads, and what the selftests that model the kernel through run() set):
+      no socket is opened — no counter over netlink, no generation id — and the callers read with nft.
 
 Run: python3 tests/nft_netlink_counters_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
      float        the counters are read as doubles
      emptyok      a table that answers with no counters is taken as "no counters" (a missing table never reads None)
      swap         bytes and packets read the other way round
+     clionly      SWG_NFT_CLI_ONLY is not honoured
 """
 import importlib.machinery, importlib.util, json, os, struct, subprocess, sys, tempfile, threading
 
@@ -40,6 +43,9 @@ PLANTS = {
     "emptyok": ('''                if typ == 3:                                                                   # NLMSG_DONE
                     return out or None''', '''                if typ == 3:                                                                   # NLMSG_DONE
                     return out'''),
+    "clionly": ('''def _nft_cli_only():
+    return os.environ.get("SWG_NFT_CLI_ONLY") == "1"''', '''def _nft_cli_only():
+    return False'''),
     "swap": ('''                            if t2 == 1:
                                 by = struct.unpack(">Q", v2[:8])[0]''', '''                            if t2 == 2:
                                 by = struct.unpack(">Q", v2[:8])[0]'''),
@@ -194,6 +200,23 @@ check("[4] device access: the same per-interface packets from netlink as from nf
 REACH_CLI = None
 with_sock(FakeSock([DONE]))
 check("[4] …and a missing table is still None (nft says so)", N._reach_read_counters() is None)
+
+# ── [5] SWG_NFT_CLI_ONLY=1 ────────────────────────────────────────────────────────────────────────────────────────────
+print("\n[5] SWG_NFT_CLI_ONLY=1")
+os.environ["SWG_NFT_CLI_ONLY"] = "1"
+FakeSock.sent = []
+with_sock(FakeSock([obj_msg("dht", 3, 300) + DONE]))
+a = N._nft_counters("swg_p2p")
+_gen = struct.pack("=BBH", 0, 0, 0) + nla(1, struct.pack(">I", 99))            # NFT_MSG_NEWGEN, NFTA_GEN_ID = 99
+with_sock(FakeSock([struct.pack("=LHHLL", 16 + len(_gen), (10 << 8) | 15, 0, 1, 0) + _gen]))
+g = N._nft_genid()
+check("[5] no socket is opened: no counter over netlink, no generation id", a is None and g is None and not FakeSock.sent,
+      (a, g, FakeSock.sent[:1]))
+RUNS.clear()
+t5 = N._block_activity().get("*", {}).get("torrent")
+check("[5] …and the callers read with nft, the same numbers", t5 == 7 + 11 + 13 + 17 + 19 and any("list counters" in r for r in RUNS),
+      (t5, RUNS))
+del os.environ["SWG_NFT_CLI_ONLY"]
 
 import shutil
 shutil.rmtree(T, ignore_errors=True)

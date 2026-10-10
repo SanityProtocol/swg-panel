@@ -22,6 +22,7 @@ built as if it had never been told about exits) and expects the checks to FAIL â
 until the red one is reachable.
 """
 import ast, importlib.machinery, importlib.util, inspect, os, re, sys
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

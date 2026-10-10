@@ -50,6 +50,7 @@ Hermetic. Run: python3 tests/network_share_selftest.py            (0 = pass)
      --perturb-retry    stops declaring after a refused swap and expects RED on [16].
 """
 import importlib.machinery, importlib.util, inspect, ipaddress, json, os, re, sys, tempfile, time
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

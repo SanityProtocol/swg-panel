@@ -26,6 +26,7 @@ The other three things it covers:
 Run:  python3 tests/hybrid_patterns_selftest.py          (exit 0 = all pass)
 """
 import importlib.machinery, importlib.util, json, os, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(HERE, "..", "swg-panel-server")

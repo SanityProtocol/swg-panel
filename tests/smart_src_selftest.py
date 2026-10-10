@@ -60,6 +60,7 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/smart_src_selftest.py   (0 
      sc2 the swg-sni map is never rebuilt while its inputs and file look unchanged (an edit the stat cannot see never heals)
 """
 import hashlib, importlib.machinery, ipaddress, importlib.util, json, os, shutil, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

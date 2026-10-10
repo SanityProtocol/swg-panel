@@ -33,6 +33,7 @@ Hermetic. Run: python3 tests/forcedns_spare_selftest.py   (0 = pass)
      nochange   a Block added with no name change leaves dnsmasq "unchanged"                 [7]
 """
 import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

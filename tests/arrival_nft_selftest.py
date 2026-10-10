@@ -36,6 +36,7 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/arrival_nft_selftest.py   (
      dd   the devexit report is not deduplicated for arrivals (~50 KB a sync at 30 nodes)
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)

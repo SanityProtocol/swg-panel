@@ -52,6 +52,7 @@ Also, not tied to rows (a 1.8.7 bug found by P1b, D6): an IP-learning change rea
 with them, Reset routing empties them, and a node leaving Kernel SNI drops them in the same pass.
 """
 import importlib.machinery, importlib.util, ipaddress, json, os, shutil, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

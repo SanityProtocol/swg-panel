@@ -30,6 +30,7 @@ Hermetic (the panel's fetches go to a dead proxy). Run: python3 tests/catalog_ca
      --perturb-held   the manifest takes a provider list's tiers from the catalog alone again → RED in [2c]
 """
 import http.client, importlib.machinery, importlib.util, json, os, re, socket, subprocess, sys, tempfile, time
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

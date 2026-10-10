@@ -21,6 +21,7 @@ Run: python3 tests/mech_portscan_burst_selftest.py
                  prints "PERTURB OK", exit 0 (exit 1 if a plant stayed green)
 """
 import importlib.machinery, importlib.util, os, re, sys, tempfile, types
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

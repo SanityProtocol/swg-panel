@@ -45,6 +45,7 @@ and --perturb-shape (a whole row of the table), --perturb-bad, --perturb-ifaceli
 import atexit, copy, importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time
 import traceback
 import urllib.error, urllib.request
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

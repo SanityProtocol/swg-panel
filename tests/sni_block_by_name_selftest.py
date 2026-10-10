@@ -44,6 +44,7 @@ Hermetic: no nft, no root, no network. Run: python3 tests/sni_block_by_name_self
      inpcount   the blocked counter skips the relay's input refusal                           [10]
 """
 import hashlib, importlib.machinery, importlib.util, json, os, shutil, socket, struct, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

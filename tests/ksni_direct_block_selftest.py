@@ -40,6 +40,7 @@ Run: python3 tests/ksni_direct_block_selftest.py   (0 = pass)
                 directzero  a Direct marks 0 (counted as uncategorised as well as its category) [9]
 """
 import importlib.machinery, importlib.util, ipaddress, os, socket, struct, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

@@ -70,6 +70,7 @@ Hermetic. Run: python3 tests/device_reach_selftest.py            (0 = pass)
      --perturb-held     calls any table whose counters read "held" (the pre-F-P3a rule) and expects RED on the F-P3a checks in [12b] and [15].
 """
 import copy, importlib.machinery, importlib.util, inspect, ipaddress, json, os, re, shutil, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
