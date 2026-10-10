@@ -12,12 +12,15 @@ its pids, their fds name their sockets, /proc/net/tcp and udp give each socket's
   [2] A unit that is not running has no cgroup: no ports, and no `ss`.
   [3] No unified cgroup hierarchy (cgroup v1, a container's own namespace): `ss`, exactly as before.
   [4] 127.0.0.1 as a big-endian host prints it.
+  [5] A Docker node: its proxies are sibling containers in their own pid namespaces, so no socket's owner can be named
+      from noded's container — nothing is asked (it was always empty there).
 
 Run: python3 tests/turn_wg_sports_proc_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
      anystate     a socket in any state counts (an unconnected UDP socket included)
      anypeer      a loopback source port counts whatever the peer
      stoppedss    a unit that is not running sends the caller to `ss`
+     dockerss     a Docker node asks `ss` again
 """
 import builtins, importlib.machinery, importlib.util, io, os, subprocess, sys, tempfile, threading, types
 
@@ -37,6 +40,7 @@ def check(name, cond, detail=""):
 PLANTS = {
     "anystate": ("""                    if (len(c) > 9 and c[3] == "01" and c[9] in owner""", """                    if (len(c) > 9 and c[9] in owner"""),
     "anypeer": ("""and c[1][:8] in _LOOP4 and c[2][:8] in _LOOP4""", """and c[1][:8] in _LOOP4"""),
+    "dockerss": ('''        if not tp or TURN_DOCKER:''', '''        if not tp:'''),
     "stoppedss": ("""            continue                                         # not running: no cgroup, no sockets""",
                   """            return None"""),
 }
@@ -177,6 +181,14 @@ print("\n[4] a big-endian host")
 install(*box(big=True))
 got = sports()
 check("[4] 127.0.0.1 printed big-endian is loopback too", got == {A: ["41234", "50000"], B: ["50123"]} and not SS_CALLS, got)
+
+# ── [5] a Docker node ─────────────────────────────────────────────────────────────────────────────────────────────────
+print("\n[5] a Docker node")
+install(files, links, set(), ss, cg)                          # its container: no unified hierarchy of its own
+N.TURN_DOCKER = True
+got = sports()
+check("[5] nothing asked, nothing attached (it never could be)", not SS_CALLS and got == {A: None, B: None}, (got, SS_CALLS))
+N.TURN_DOCKER = False
 
 import shutil
 shutil.rmtree(T, ignore_errors=True)
