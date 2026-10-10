@@ -4516,6 +4516,35 @@ def _nft_counters(table, family=1):
             s.close()
 
 
+# ── THE RULESET'S GENERATION ID (docs/CPU-PLAN.md B4, B5b) ────────────────────────────────────────────────────────────────
+# Every committed nftables change — noded's own, another tool's, iptables-nft's — bumps one number per network namespace, and
+# NFT_MSG_GETGEN reads it in ~0.01 ms. A text read between two equal readings of it is the ruleset at that id, and stays the
+# ruleset for as long as the id does — for everything a transaction writes. Not for what the datapath changes on its own (a
+# set an `add @` / `update @` rule or a meter fills, an element whose timeout runs out, a counter): a reader that keeps a
+# text says why none of that is in what it takes from it. The id to keep a text with is the one read BEFORE the read of it:
+# a commit at any moment after — during the read too — moves the id past it, and the next pass reads again. None (no socket,
+# an error reply — EPERM without CAP_NET_ADMIN) means nothing is kept: every reader reads as before.
+def _nft_genid():
+    """The nftables generation id of this network namespace, or None."""
+    s = None
+    try:
+        s = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 12)                            # NETLINK_NETFILTER
+        s.settimeout(2)
+        s.sendto(struct.pack("=LHHLL", 20, (10 << 8) | 16, 0x1, 1, 0) + struct.pack("=BBH", 0, 0, 0), (0, 0))   # NFT_MSG_GETGEN
+        d = s.recv(1 << 16)
+        ln, typ = struct.unpack_from("=LH", d, 0)
+        if typ == (10 << 8) | 15 and 20 <= ln <= len(d):                                      # NFT_MSG_NEWGEN
+            for t, v in _nl_attrs(d, 20, ln):
+                if t == 1 and len(v) >= 4:                                                     # NFTA_GEN_ID
+                    return struct.unpack(">I", v[:4])[0]
+    except (OSError, ValueError, struct.error):
+        pass
+    finally:
+        if s is not None:
+            s.close()
+    return None
+
+
 def _reach_read_counters():
     """{interface: packets} for EVERY interface counter in the table — one fork, O(counters) output (§10.1 M3) — or None when the
     table is not there. All of them, not only the enforced: an interface that left the plan keeps its counter until the pass that
@@ -5329,7 +5358,24 @@ def _smart_shadowed(domains, pats, shw):
 
 
 _LOOP = {"n": 0}                       # reconcile-loop counter — drives per-loop caches (bumped at the top of main's loop)
-_SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set(), "bytes": {}}
+_SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set(), "bytes": {}, "gen": None, "cnames": []}
+
+
+def _smart_live(out):
+    """True when this render holds something the datapath changes by itself — an element with an expiry, a set an `add @` /
+    `update @` rule or a meter fills: it is then not kept across passes. Substring tests: 0.28 ms on swgt's 2 862 lines, where
+    one regex for the same cost 3.6 ms (2026-10-10)."""
+    return "expires " in out or "add @" in out or "update @" in out or " meter " in out
+
+
+def _smart_cat_bytes(pairs):
+    """{cat: {"up", "dn"}} from (counter name, bytes) in order — the per-category destination counters `c_<cat>_<up|dn>`."""
+    out = {}
+    for name, by in pairs:
+        mm = re.match(r"c_(.+)_(up|dn)$", name)
+        if mm:
+            out.setdefault(mm.group(1), {"up": 0, "dn": 0})[mm.group(2)] = int(by)
+    return out
 
 
 def _smart_table():
@@ -5338,11 +5384,27 @@ def _smart_table():
     geoip category like cat_ru) and the element-count parse (regex + split over that text) are O(set size), so
     doing them once instead of twice halves that cost. Nothing mutates the table between those two callers
     within a loop, so the shared result is current; the next loop bumps _LOOP and re-renders. Returns the
-    cache dict: ["rc"], ["out"] (raw), ["counts"] {set:element_count}, ["setnames"] {set}."""
+    cache dict: ["rc"], ["out"] (raw), ["counts"] {set:element_count}, ["setnames"] {set}.
+
+    ⚠️ AND ONCE PER RULESET, NOT ONCE PER PASS, while nothing in it moves by itself (docs/CPU-PLAN.md B5b). The render cost
+    55 ms of nft every pass on swgt — 63 % of the node's nft CPU — and its parse is O(every element). What is taken from it
+    — the chains, their rules, the sets and how many elements each holds — changes only through a transaction, which bumps
+    the generation id; the per-category byte counters are the one value that moves with traffic, and they are read over
+    netlink (B5a). So a pass whose generation id is still the one the render was taken at keeps it and refreshes the bytes
+    alone: `out` then carries an earlier pass's counter values, and nothing reads a value from it (smart_status takes the
+    SNI reset count from the `forward` chain read every pass). Never kept: a render whose contents the datapath changes by
+    itself (_smart_live) — Hybrid SNI's learned `catl_` sets once anything is learned: such a node renders every pass, as
+    before."""
     if _SMART_TABLE["n"] != _LOOP["n"]:
+        gen = _nft_genid()
+        if gen is not None and gen == _SMART_TABLE["gen"]:
+            nl = _nft_counters(SMART_NFT_TABLE) if _SMART_TABLE["cnames"] else {}
+            if nl is not None and all(c in nl for c in _SMART_TABLE["cnames"]):
+                _SMART_TABLE.update(n=_LOOP["n"], bytes=_smart_cat_bytes((c, nl[c][1]) for c in _SMART_TABLE["cnames"]))
+                return _SMART_TABLE
         r = run(["nft", "list", "table", "inet", SMART_NFT_TABLE])
         out = r.stdout or ""
-        counts, setnames, cbytes = {}, set(), {}
+        counts, setnames, cbytes, cnames = {}, set(), {}, []
         if r.returncode == 0:
             setnames = set(re.findall(r"set (\S+) {", out))
             counts = {c: 0 for c in setnames}
@@ -5356,11 +5418,13 @@ def _smart_table():
             # DESTINATION STATS (free harvest): per-category named counters `counter c_<cat>_<up|dn> { packets P
             # bytes B }` — cumulative bytes since the counter object was created (survives chain rebuilds). See
             # _ensure_smart_nft's forward count chain. cat is the sanitised category id (== _smart_setname minus cat_).
-            for cm in re.finditer(r"counter (c_[a-z0-9_]+) \{\s*packets \d+ bytes (\d+)", out):
-                mm = re.match(r"c_(.+)_(up|dn)$", cm.group(1))
-                if mm:
-                    cbytes.setdefault(mm.group(1), {"up": 0, "dn": 0})[mm.group(2)] = int(cm.group(2))
-        _SMART_TABLE.update(n=_LOOP["n"], rc=r.returncode, out=out, counts=counts, setnames=setnames, bytes=cbytes)
+            pairs = re.findall(r"counter (c_[a-z0-9_]+) \{\s*packets \d+ bytes (\d+)", out)
+            cnames, cbytes = [c for c, _ in pairs], _smart_cat_bytes(pairs)
+        # Kept with the id read BEFORE the render: a commit at any moment after that read — during the render too — leaves
+        # the id past it, so the next pass renders again whatever this text caught.
+        keep = r.returncode == 0 and gen is not None and not _smart_live(out)
+        _SMART_TABLE.update(n=_LOOP["n"], rc=r.returncode, out=out, counts=counts, setnames=setnames, bytes=cbytes,
+                            gen=gen if keep else None, cnames=cnames)
     return _SMART_TABLE
 
 
@@ -9384,7 +9448,7 @@ def _learned_reset_now(res, why):
             with contextlib.suppress(OSError):
                 os.unlink(os.path.join(GEO_DIR, fn))
     run(["nft", "delete", "table", "inet", SMART_NFT_TABLE])    # rebuilt from cache below (same pass)
-    _SMART_TABLE["n"] = -1                                      # invalidate the per-loop table cache so _ensure_smart_nft re-renders
+    _SMART_TABLE.update(n=-1, gen=None)                         # invalidate the per-loop table cache so _ensure_smart_nft re-renders
     p = _SNI_PROC.get("p")                                      # restart the userspace reader → its in-memory learned/seen clears
     if p and p.poll() is None:
         with contextlib.suppress(Exception): p.terminate()
@@ -9449,7 +9513,7 @@ def _apply_full_reset(reset_val, res):
                 os.unlink(os.path.join(GEO_DIR, fn))
     # 2) drop the nft smart table (all sets + chains + mark rules) → rebuilt below
     run(["nft", "delete", "table", "inet", SMART_NFT_TABLE])
-    _SMART_TABLE["n"] = -1                                      # invalidate the per-loop table cache so _ensure_smart_nft re-renders (sees it gone) and RECREATES it this same pass
+    _SMART_TABLE.update(n=-1, gen=None)                         # invalidate the per-loop table cache so _ensure_smart_nft re-renders (sees it gone) and RECREATES it this same pass
     # 3) drop the kernel-SNI iptables chain + destroy the learned ipsets
     run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", "SWGK"])
     run(["iptables", "-t", "mangle", "-F", "SWGK"]); run(["iptables", "-t", "mangle", "-X", "SWGK"])
@@ -11955,7 +12019,7 @@ def _block_activity():
                 out.setdefault(sub.group(1), {})
                 out[sub.group(1)]["blocked"] = out[sub.group(1)].get("blocked", 0) + int(pk.group(1))
     with contextlib.suppress(Exception):                          # …and connections refused BY NAME (D1/D3): the one forward rule that
-        fwd = run(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "forward"]).stdout or ""   # resets SNI_BLOCK_MARK. It has no
+        fwd = _smart_forward()                                    # resets SNI_BLOCK_MARK. It has no
         for ln in fwd.splitlines():                               # source subnet (the mark says who was refused), so it is reported
             pk = re.search(r"counter packets (\d+)", ln) if ("%#010x" % SNI_BLOCK_MARK) in ln else None   # under "*": the panel
             if pk:                                                # only ever sums `blocked` across keys
@@ -11967,6 +12031,12 @@ def _block_activity():
             if pk:
                 out.setdefault("*", {})["blocked"] = out.get("*", {}).get("blocked", 0) + int(pk.group(1))
     return out
+
+
+def _smart_forward():
+    """The smart table's `forward` chain as nft lists it, read once a pass: its rules' anonymous counters are what
+    smart_status (the SNI first-hit resets) and _block_activity (refusals by name) report — "" when it is not there."""
+    return _pass_cached("nft-smart-forward", lambda: run(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "forward"])).stdout or ""
 
 
 def _blk_domains_read():
@@ -12059,7 +12129,8 @@ def smart_status():
         return {**base, "active": False, "sets": {}, "rules": 0, "resets": 0,
                 **({"block": _block_activity()} if (_MECH_ON["subs"] or _P2P["on"]) else {})}
     rules = len(_SMART_MARK_RE.findall(t["out"]))
-    resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\d+)", t["out"]))   # SNI first-hit RSTs
+    resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\d+)", _smart_forward()))   # SNI first-hit RSTs:
+    # the rules live in `forward`, read fresh every pass — the table's render may be an earlier pass's (_smart_table)
     return {**base, "active": rules > 0,                        # a shadow set repeats its claimer's hosts, a src_ set holds devices: neither is a destination
             "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}|src_[0-9a-f]{12}|lg|ar|cln|catd_\S+|dnsok", k)}, "rules": rules,
             "bytes": dict(t["bytes"]), "resets": resets,   # bytes: {cat:{up,dn}} cumulative destination stats
