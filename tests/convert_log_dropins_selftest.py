@@ -35,11 +35,11 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
 
-LIBF = ["teardown_bare_panel", "lc_teardown_baremetal", "remove_docker_netctl", "swg_log_ns_clear"]
+LIBF = ["teardown_bare_panel", "lc_teardown_baremetal", "remove_docker_netctl", "swg_log_ns_clear", "netctl_gate_reap"]
 LIBSRC = os.path.join(ROOT, "lib/common.sh")
 if "swg_log_teardown(){" in open(LIBSRC).read():
     LIBF.append("swg_log_teardown")
-r = subprocess.run(["bash", "-c", 'source "$1" >/dev/null 2>&1; declare -f "${@:2}"; echo "SWG_LOG_NS_DROPIN=$SWG_LOG_NS_DROPIN"', "_",
+r = subprocess.run(["bash", "-c", 'source "$1" >/dev/null 2>&1; declare -f "${@:2}"; echo "SWG_LOG_NS_DROPIN=$SWG_LOG_NS_DROPIN"; echo "SWG_NETCTL_DUE_DROPIN=$SWG_NETCTL_DUE_DROPIN"', "_",
                     LIBSRC] + LIBF, capture_output=True, text=True)
 assert all((n + " ()") in r.stdout for n in LIBF), "could not read %s from lib/common.sh" % LIBF
 LIB = r.stdout
@@ -89,6 +89,7 @@ BARE = {SD + "swg-panel-server.service": "x", SD + "swg-panel-server.service.d/s
         SD + "swg-sub.service": "x", SD + "swg-sub.service.d/swg-ns.conf": NS_P,
         SD + "swg-sub.service.d/operator.conf": "[Service]\nNice=5\n",
         SD + "swg-netctl.service": "x", SD + "swg-netctl.service.d/swg-ns.conf": NS_P,
+        SD + "swg-netctl.service.d/swg-due.conf": "[Service]\nExecCondition=x\n", "usr/local/bin/swg-netctl-due": "x",
         SD + "swg-update.service": "x", SD + "swg-update.service.d/swg-ns.conf": NS_P,
         RD + "swg-netctl.service.d/swg-log.conf": LVL, RD + "swg-update.service.d/swg-log.conf": LVL,
         "run/systemd/journald@swg-panel.conf.d/swg.conf": "[Journal]\nSystemMaxUse=100M\n",
@@ -116,6 +117,8 @@ check("…swg-update.service.d is gone with it (the Docker one-click's unit gets
       not os.path.isdir(os.path.join(ur, SD + "swg-update.service.d")), L)
 check("…an operator's own drop-in beside them stays", SD + "swg-sub.service.d/operator.conf" in L, L)
 check("…swg-logs stays while the bare node is still here", "usr/local/bin/swg-logs" in L, L)
+check("…and swg-netctl's idle gate: its drop-in, and the gate itself once no unit runs it (docs/CPU-PLAN.md A4)",
+      SD + "swg-netctl.service.d/swg-due.conf" not in L and "usr/local/bin/swg-netctl-due" not in L, L)
 
 print("\n[2] …then the node's teardown")
 r = run(ur, "lc_teardown_baremetal vk-turn-proxy-wings-56000; echo DONE")
@@ -137,13 +140,16 @@ ur = tree({SD + "swg-update.service": "x", SD + "swg-update.timer": "x",
            SD + "swg-update.service.d/swg-log.conf": "[Service]\nLogLevelMax=notice\nSyslogLevel=notice\n",
            SD + "swg-netctl-docker.service": "x", SD + "swg-netctl-docker.timer": "x",
            SD + "swg-netctl-docker.service.d/swg-log.conf": "[Service]\nLogLevelMax=notice\nSyslogLevel=notice\n",
-           SD + "swg-update.service.d/operator.conf": "[Service]\nNice=5\n", "usr/local/bin/swg-update": "x"})
+           SD + "swg-update.service.d/operator.conf": "[Service]\nNice=5\n", "usr/local/bin/swg-update": "x",
+           SD + "swg-netctl-docker.service.d/swg-due.conf": "[Service]\nExecCondition=x\n", "usr/local/bin/swg-netctl-due": "x",
+           SD + "swg-netctl.service": "x"})   # the bare helper the convert installs beside it
 r = run(ur, "retire_docker_updater; remove_docker_netctl; echo DONE")
 L = left(ur)
 check("the static swg-update.service.d/swg-log.conf is gone (it masked the bare netctl's level drop-in of that name)",
       "DONE" in r.stdout and SD + "swg-update.service.d/swg-log.conf" not in L, (L, r.stderr[-300:]))
 check("…swg-netctl-docker's drop-in dir with its unit", not os.path.isdir(os.path.join(ur, SD + "swg-netctl-docker.service.d")), L)
 check("…an operator's own drop-in stays", SD + "swg-update.service.d/operator.conf" in L, L)
+check("…the idle gate stays: the bare helper the convert installed runs it too", "usr/local/bin/swg-netctl-due" in L, L)
 
 print("")
 if PERTURB:

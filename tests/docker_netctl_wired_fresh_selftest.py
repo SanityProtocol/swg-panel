@@ -41,6 +41,14 @@ if PERTURB:
     assert blk, "perturbation anchor missing — this run would FALSE-PASS"
     fn = fn[:blk.start()] + '  local drainer="$INSTALL_DIR/docker/swg-netctl-docker"\n' + fn[blk.end():]
 
+# The idle gate it writes comes from lib/common.sh (docs/CPU-PLAN.md A3): those functions, lifted the same way.
+common = open(os.path.join(ROOT, "lib", "common.sh"), encoding="utf-8").read()
+for name in ("swg_netctl_due_text", "swg_netctl_docker_due_dropin_text", "netctl_gate_heal"):
+    g = re.search(r"^%s\(\)\{[^\n]*\n.*?\n\}\n" % name, common, re.S | re.M)
+    assert g, name + " missing from lib/common.sh — this run would FALSE-PASS"
+    fn = g.group(0) + fn
+fn = "SWG_NETCTL_DUE_DROPIN=swg-due.conf\n" + fn
+
 T = tempfile.mkdtemp(prefix="netctlwire-")
 SD, BIN, STUB = os.path.join(T, "systemd"), os.path.join(T, "usrlocalbin"), os.path.join(T, "stub")
 for d in (SD, BIN, STUB):
@@ -75,6 +83,10 @@ check("…with its .service, .path and .timer",
 check("the .path watches this install's queue",
       os.path.isfile(os.path.join(SD, "swg-netctl-docker.path")) and
       ("DirectoryNotEmpty=%s/data/lib/netctl/queue" % inst) in open(os.path.join(SD, "swg-netctl-docker.path")).read())
+_gd = os.path.join(SD, "swg-netctl-docker.service.d", "swg-due.conf")
+check("…and its idle gate: the drainer starts only when this install's queue holds something (docs/CPU-PLAN.md A3)",
+      os.access(os.path.join(BIN, "swg-netctl-due"), os.X_OK) and os.path.isfile(_gd)
+      and ("--queue-only %s/data/lib/netctl/queue;" % inst) in open(_gd).read(), os.listdir(SD))
 
 print("\n[2] it is the source tree's drainer")
 check("byte-identical to docker/swg-netctl-docker",
