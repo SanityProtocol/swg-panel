@@ -586,7 +586,10 @@ EOF
 # ensure_update_unit_docker: the gate and its drop-in are ours entirely (nothing an operator sets), and a box must not
 # keep an older release's text — present is not current. The units themselves are not touched.
 ensure_netctl_gate(){
-  [ -f /etc/systemd/system/swg-netctl.service ] || return 0
+  if [ ! -f /etc/systemd/system/swg-netctl.service ]; then   # a dry run: the helper's heal above only said it would write it
+    $DRYRUN && [ -f "$SRC/swg-netctl" ] && echo "    [skip] swg-netctl idle gate: /usr/local/bin/swg-netctl-due + swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN (with the helper)"
+    return 0
+  fi
   local want; want="$(swg_netctl_due_dropin_text)"
   netctl_gate_current swg-netctl.service "$want" && return 0
   if $DRYRUN; then echo "    [skip] swg-netctl idle gate: /usr/local/bin/swg-netctl-due + swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi
@@ -1755,7 +1758,10 @@ EOF
 # has no work of its own). Written when missing or different, for the same reason. Panel-bearing profiles only.
 ensure_netctl_docker_gate(){
   case "${1:-}" in host|master|host-node) ;; *) return 0;; esac
-  [ -f /etc/systemd/system/swg-netctl-docker.service ] || return 0
+  if [ ! -f /etc/systemd/system/swg-netctl-docker.service ]; then   # a dry run: the helper's heal above only said it would write it
+    $DRYRUN && echo "    [skip] swg-netctl-docker idle gate: /usr/local/bin/swg-netctl-due + swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN (with the helper)"
+    return 0
+  fi
   local want; want="$(swg_netctl_docker_due_dropin_text)"
   netctl_gate_current swg-netctl-docker.service "$want" && return 0
   if $DRYRUN; then echo "    [skip] swg-netctl-docker idle gate: /usr/local/bin/swg-netctl-due + swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi

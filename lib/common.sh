@@ -835,11 +835,11 @@ fi
 [ -n "${1:-}" ] || exit 0
 S=$1 D=/run/swg-netctl.due
 q=("$S"/netctl/queue/*); (( ${#q[@]} )) && exit 0        # any entry, dotfiles too: exactly what the path watch fires on
-[[ -r $D && ! $S/panel-settings.json -nt $D ]] || exit 0  # the first tick since boot, or settings saved since a run read them
-read -r due < "$D" || exit 0
-[[ $due =~ ^[0-9]+$ ]] || exit 0
+[[ -r $D && ! $S/panel-settings.json -nt $D ]] || exit 0  # the first tick since boot, or settings newer than the version a run read
+read -r due at < "$D" || exit 0                           # `<due> <the time of the run that wrote it>`
+[[ $due =~ ^[1-9][0-9]{0,17}$ && $at =~ ^[1-9][0-9]{0,17}$ ]] || exit 0
 printf -v now '%(%s)T' -1
-(( now >= due || due - now > 600 )) && exit 0             # the helper's own work is due — or the clock went back
+(( now >= due || at > now + 1 )) && exit 0                # the helper's own work is due — or the clock went back past that run
 exit 1
 GATE
 }
@@ -867,12 +867,13 @@ EOF
 # The writer install-docker.sh and update.sh share (install-host.sh renders the same texts through its writef): the gate
 # when it is missing or different — by rename, since it may be running — then <unit>'s drop-in when missing or different.
 # Both are ours entirely (nothing an operator sets), so a different text is an older release's and is rewritten: present
-# is not current (1.8.8 qualification N12). Only for a unit that exists. NETCTL_GATE_CHANGED=1 when the drop-in was written
+# is not current (1.8.8 qualification N12) — nor is a gate that lost its exec bit, which sh then answers 126 for, and runs
+# the helper every tick (fail-open, the saving gone without a sign). Only for a unit that exists. NETCTL_GATE_CHANGED=1 when the drop-in was written
 # (the caller daemon-reloads).
 netctl_gate_heal(){   # <unit> <drop-in text>
   local d="/etc/systemd/system/$1.d"; NETCTL_GATE_CHANGED=0
   [ -f "/etc/systemd/system/$1" ] || return 0
-  if [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" != "$(swg_netctl_due_text)" ]; then
+  if [ ! -x /usr/local/bin/swg-netctl-due ] || [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" != "$(swg_netctl_due_text)" ]; then
     swg_netctl_due_text > /usr/local/bin/swg-netctl-due.new && chmod 755 /usr/local/bin/swg-netctl-due.new \
       && mv -f /usr/local/bin/swg-netctl-due.new /usr/local/bin/swg-netctl-due
   fi
@@ -882,7 +883,7 @@ netctl_gate_heal(){   # <unit> <drop-in text>
 }
 netctl_gate_current(){   # <unit> <drop-in text> → 0 when netctl_gate_heal would write nothing
   [ -f "/etc/systemd/system/$1" ] || return 0
-  [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" = "$(swg_netctl_due_text)" ] \
+  [ -x /usr/local/bin/swg-netctl-due ] && [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" = "$(swg_netctl_due_text)" ] \
     && [ "$(cat "/etc/systemd/system/$1.d/$SWG_NETCTL_DUE_DROPIN" 2>/dev/null)" = "$2" ]
 }
 netctl_gate_reap(){   # the gate goes with the last unit that runs it

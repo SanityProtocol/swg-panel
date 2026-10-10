@@ -44,8 +44,14 @@ b(){ printf '\033[1m%s\033[0m' "$*"; }
 run(){ if $DRYRUN; then echo "    [dry] $*"; else "$@"; fi; }
 rmrf(){ local p; for p in "$@"; do if [ -e "$p" ] || [ -L "$p" ]; then run rm -rf "$p"; fi; done; }
 # swg-netctl's idle gate (lib/common.sh netctl_gate_reap) goes with the last netctl unit that runs it; each unit's drop-in
-# goes with its .service.d.
-rm_netctl_gate_if_last(){ [ -e "$SD/swg-netctl.service" ] || [ -e "$SD/swg-netctl-docker.service" ] || rmrf /usr/local/bin/swg-netctl-due; return 0; }
+# goes with its .service.d. The arguments name the units the caller has just removed (bare-gone, docker-gone): a dry run
+# leaves them on disk, and must still list the gate.
+rm_netctl_gate_if_last(){
+  local a bare=1 dock=1; for a in "$@"; do case $a in bare-gone) bare=0;; docker-gone) dock=0;; esac; done
+  { [ $bare = 1 ] && [ -e "$SD/swg-netctl.service" ]; } || { [ $dock = 1 ] && [ -e "$SD/swg-netctl-docker.service" ]; } \
+    || rmrf /usr/local/bin/swg-netctl-due
+  return 0
+}
 # Drop a directory only once nothing is left in it. Used where a `rm -rf` would take a file this run
 # deliberately KEPT — a foreign interface's .conf and its keys living in the same directory as ours.
 rmdir_if_empty(){ local d="$1"
@@ -303,8 +309,9 @@ rm_panel(){
        /var/lib/swg-netctl
   if [ -n "$_mine" ]; then rmrf "$_pdd/zz-swg-update.conf" "$_pdd/swg-ns.conf" "$_pdd/swg-journal.conf"; info "  Kept your own drop-in(s) for the panel — $_pdd: ${_mine% } (a re-install picks them up)"
   else rmrf "$_pdd"; fi
-  docker_running swg-panel || rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
-  rm_netctl_gate_if_last
+  if docker_running swg-panel; then rm_netctl_gate_if_last bare-gone
+  else rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+       rm_netctl_gate_if_last bare-gone docker-gone; fi
   rm_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
   rm_updater_if_last bare-gone   # the one-click updater: shared with a docker install, so it goes only with the last of them
   # ⚠️ A DANGLING ENABLEMENT SYMLINK OUTLIVES ITS UNIT FILE, and `systemctl disable` CANNOT clear it: it
@@ -893,7 +900,7 @@ rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
     [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true
   done
   rmrf "$SD/swg-netctl-docker.service" "$SD/swg-netctl-docker.service.d" "$SD/swg-netctl-docker.path" "$SD/swg-netctl-docker.timer" /usr/local/bin/swg-netctl-docker
-  rm_netctl_gate_if_last
+  rm_netctl_gate_if_last docker-gone
   run systemctl daemon-reload 2>/dev/null || true
   if docker_running swg-node; then
     [ "$DELP" = yes ] && { _rm_panel_data; info "  Removed the panel data; node interface configs untouched."; } \
@@ -1132,19 +1139,22 @@ rm_netctl(){   # a leftover swg-netctl (e.g. after a docker convert) with no bar
   # matched swg-netctl-docker.service — leaving an ACTIVE .timer polling a queue for a panel that was gone.
   # ⚠️ …but only a family whose panel is GONE (asked now, after the panel components ran): a docker panel that is
   # still here — kept by this run — keeps its own helper, and a bare panel likewise.
+  local _gone=""                                                  # what this run removes, for the gate's reap (a dry run keeps it)
   if [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ]; then
     for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service; do
       [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true   # one at a time: a multi-unit disable aborts wholesale on the first missing unit
     done
     rmrf $SD/swg-netctl.service $SD/swg-netctl.service.d $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl
+    _gone="$_gone bare-gone"
   fi
   if ! docker_running swg-panel; then
     for _nc in swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
       [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true
     done
     rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+    _gone="$_gone docker-gone"
   fi
-  rm_netctl_gate_if_last
+  rm_netctl_gate_if_last $_gone
   run systemctl daemon-reload; ok "swg-netctl removed"
 }
 # Host-side remnants of a DOCKER or converted install that no container remover owns: swg-sub's own tls dir and its

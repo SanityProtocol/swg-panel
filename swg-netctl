@@ -1512,6 +1512,9 @@ LOG_DROPIN_FILE = "swg-log.conf"
 LOG_TIMER_UNITS = ("swg-netctl.service", "swg-update.service")
 
 
+_SETTINGS_SEEN = {"mtime": None}   # the mtime of the panel-settings.json version this run read — write_due stamps the gate with it
+
+
 def log_from_settings():
     """The fleet's level from panel-settings.json (root reads it directly, as _load_access_tls does): the base level,
     plus Debug while `log_debug_until` is -1 (until changed) or still ahead. Computed on every run, so Debug's expiry
@@ -1523,6 +1526,7 @@ def log_from_settings():
     1e999) raises before anything is set: main keeps what is applied then too."""
     try:
         with open(os.path.join(STATE_DIR, "panel-settings.json")) as f:
+            _SETTINGS_SEEN["mtime"] = os.fstat(f.fileno()).st_mtime   # the version read, whatever replaces it meanwhile
             ps = json.load(f)
     except (OSError, ValueError):
         return None
@@ -1760,9 +1764,12 @@ def log_budget(ps):
 # ── the idle gate's stamp (lib/common.sh swg_netctl_due_text; docs/CPU-PLAN.md A2) ───────────────────────────────────────
 # The timer still starts this unit every 10 s, but its ExecCondition runs the helper only for a request in the queue,
 # settings newer than this stamp, or the time written in it: when this helper next has work of its own — Debug's end, the
-# budget's retry, the journal size's refresh for the panel (DUE_EVERY_S). Its mtime is a second before this run read the
-# settings, so a save that landed while the run was reading them is still newer and the next tick runs again. A stamp
-# that is missing, unreadable or past due runs the helper: the gate fails toward running, never toward a skipped request.
+# budget's retry, the journal size's refresh for the panel (DUE_EVERY_S). Written as `<due> <the run's time>`: a run that
+# lies in the future means the clock went back, and the gate runs the helper. Its mtime is the mtime of the settings
+# version this run read — a second before the read at the latest — so every later version is newer: one the panel renamed
+# into place after a slow fsync too, whose mtime is when it was written, possibly before this run read the old one; and a
+# save in the same second as the read, on a filesystem that keeps whole seconds. A stamp that is missing, unreadable or
+# past due runs the helper: the gate fails toward running, never toward a skipped request.
 DUE_STAMP = os.environ.get("SWG_NETCTL_DUE") or "/run/swg-netctl.due"
 DUE_EVERY_S = 300
 
@@ -1779,10 +1786,12 @@ def write_due(read_at, ps, retry):
             due = min(due, until)
     if retry and retry > read_at:
         due = min(due, int(retry))
+    seen = _SETTINGS_SEEN["mtime"]
+    mt = read_at - 1 if seen is None else min(read_at - 1, seen)
     with contextlib.suppress(OSError):
         with open(DUE_STAMP + ".tmp", "w") as f:
-            f.write("%d\n" % due)
-        os.utime(DUE_STAMP + ".tmp", (read_at - 1, read_at - 1))
+            f.write("%d %d\n" % (due, int(read_at)))
+        os.utime(DUE_STAMP + ".tmp", (mt, mt))
         os.replace(DUE_STAMP + ".tmp", DUE_STAMP)
 
 

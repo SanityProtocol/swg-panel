@@ -1655,6 +1655,7 @@ EOF
 write_netctl(){
   [ -f "$SRC/swg-netctl" ] || return 0
   run mkdir -p "$PREFIX/usr/local/bin"; cp "$SRC/swg-netctl" "$PREFIX/usr/local/bin/swg-netctl"; chmod 755 "$PREFIX/usr/local/bin/swg-netctl"
+  $DRYRUN || rm -f /run/swg-netctl.due   # the idle gate runs the new build on the next tick, its log work with it (as update.sh)
   # queue/ — panel-owned so ONLY the panel can enqueue (group swg can't write); status/ — root-written, group-readable by the panel.
   mkdir -p "$PREFIX$STATE_DIR/netctl/queue" "$PREFIX$STATE_DIR/netctl/status"
   run chown "$PANEL_USER:swg" "$STATE_DIR/netctl" "$STATE_DIR/netctl/queue"; run chmod 750 "$STATE_DIR/netctl" "$STATE_DIR/netctl/queue"
