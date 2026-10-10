@@ -560,7 +560,7 @@ def _link_kind(iface):
     itself. Empty for a DOWN interface (no device to ask), where the caller falls back to the record.
     """
     with contextlib.suppress(Exception):
-        r = run(["ip", "-d", "link", "show", iface])
+        r = _pass_cached("ip-d-link:" + iface, lambda: run(["ip", "-d", "link", "show", iface]))
         if r.returncode == 0:
             toks = (r.stdout or "").split()
             if "amneziawg" in toks:
@@ -616,7 +616,7 @@ def iface_mtu(iface, info=None):
     parsed [Interface] section (build_meta has one); pass it to avoid re-reading the conf."""
     if iface:
         try:
-            r = run(["ip", "-o", "link", "show", "dev", iface])
+            r = _pass_cached("ip-o-link:" + iface, lambda: run(["ip", "-o", "link", "show", "dev", iface]))
             if r.returncode == 0:
                 m = re.search(r"\bmtu (\d+)\b", r.stdout or "")
                 if m:
@@ -1146,11 +1146,83 @@ _RUN_INFLIGHT = 0
 _RUN_SPAWNS = 0     # every process run() has started — the pass's accounting line reports the difference (docs/CPU-PLAN.md B0)
 _RUN_LOCK = threading.Lock()
 
+# ── WHAT A PASS READS, READ ONCE (docs/CPU-PLAN.md B2) ─────────────────────────────────────────────────────────────────────
+# The snapshot and the reconcilers each read the same live state for themselves — the same `ip -4 addr`, interface dump,
+# unit state, turn record, `iptables-save` — two or three times a pass. A read that opts in (`_pass_cached`) is made once
+# per pass on the main thread and shared: the freshness `_SMART_TABLE` already gives, what the pass found when it first
+# looked. Any spawn that is not a known READ (`_is_read`) — a write by this node, from any thread — forgets every one of
+# them, so a read after a write is a fresh read: the classifier fails toward reading again, never toward a stale answer.
+# Never kept: another thread's read (the probe threads read traffic that must be fresh), a timeout, a missing tool or
+# socket (rc 124 / 126 / 127). Opt-in at the measured hot reads only: a loop that polls a read until it changes must
+# never see a cached answer, so nothing is cached that was not chosen.
+_PASS = {}                 # key → (the pass it was read in, the result)
 
-def run(args, input_text=None, timeout=20, env=None):
+
+def _pass_cached(key, read):
+    if threading.current_thread() is not threading.main_thread():
+        return read()
+    hit = _PASS.get(key)
+    if hit is not None and hit[0] == _LOOP["n"]:
+        return hit[1]
+    v = read()
+    if getattr(v, "returncode", 0) not in (124, 126, 127):
+        _PASS[key] = (_LOOP["n"], v)
+    return v
+
+
+_READ_SYSTEMCTL = frozenset(("is-active", "is-enabled", "is-failed", "show", "status", "--version", "list-units", "list-unit-files", "cat"))
+_READ_IPTABLES = frozenset(("-S", "-L", "-C", "-nL", "-vnL", "-nvL", "--list", "--list-rules", "--check"))
+
+
+def _sh_is_read(cmd):
+    """A `sh -c` string that is ONE plain read (a trailing `2>/dev/null` allowed) — anything with a shell operator in it
+    is treated as a write."""
+    c = cmd[:-len(" 2>/dev/null")] if cmd.endswith(" 2>/dev/null") else cmd
+    if re.search(r"[;&|<>`$(){}\n]", c):
+        return False
+    try:
+        return _is_read(shlex.split(c))
+    except ValueError:
+        return False
+
+
+def _is_read(args):
+    """Does this argv only READ? An explicit list, kept short: anything it does not name is treated as a write."""
+    if not args:
+        return False
+    prog, rest = os.path.basename(str(args[0])), [str(a) for a in args[1:]]
+    if prog == "sudo":                                    # `sudo -n <argv>`: the argv decides
+        while rest and rest[0].startswith("-"):
+            rest = rest[1:]
+        return _is_read(rest)
+    if prog == "sh":
+        return len(rest) == 2 and rest[0] == "-c" and _sh_is_read(rest[1])
+    words = [a for a in rest if not a.startswith("-")]
+    if prog == "ip":
+        return "-batch" not in rest and len(words) >= 2 and words[1] in ("show", "list", "get")
+    if prog in ("wg", "awg"):
+        return bool(rest) and rest[0] in ("show", "showconf", "pubkey")
+    if prog == "nft":
+        return bool(words) and words[0] == "list" and "-f" not in rest
+    if prog in ("iptables", "ip6tables"):
+        return any(a in _READ_IPTABLES for a in rest)
+    if prog in ("iptables-save", "ip6tables-save", "ss", "cat"):
+        return True
+    if prog == "systemctl":
+        return bool(words or rest) and (words[0] if words else rest[0]) in _READ_SYSTEMCTL or rest[:1] == ["--version"]
+    if prog == "ipset":
+        return bool(rest) and rest[0] in ("list", "-L", "-list")
+    if prog in ("docker", "podman"):
+        return bool(words) and words[0] in ("ps", "inspect", "version", "info", "logs", "images")
+    return False
+
+
+def run(args, input_text=None, timeout=20, env=None, read=None):
     # Fail-safe: a MISSING binary (e.g. `nft` on a node/image without nftables) must never crash a caller —
     # return a non-zero result like a normal command failure so callers handle it (smart routing then no-ops
-    # instead of taking down the sync loop). Same for a timeout.
+    # instead of taking down the sync loop). Same for a timeout. `read`: what the caller knows about the argv
+    # (host_sh's `sh -c`); None = ask _is_read. A write forgets the pass's reads — after it ran, so a read the main
+    # thread made meanwhile is not kept either.
     global _RUN_INFLIGHT, _RUN_SPAWNS
     with _RUN_LOCK:
         _RUN_INFLIGHT += 1
@@ -1164,6 +1236,8 @@ def run(args, input_text=None, timeout=20, env=None):
     finally:
         with _RUN_LOCK:
             _RUN_INFLIGHT -= 1
+        if _PASS and not (read if read is not None else _is_read(args)):
+            _PASS.clear()
 
 
 def _children_cpu_s():
@@ -1591,7 +1665,7 @@ def _turn_peer_ips():
     (elements look like `203.0.113.9 . 56006 expires …`), filtered to genuine remote peers (drops the SNAT
     gateway + non-routable artifacts)."""
     m = {}
-    out = run(["nft", "list", "set", "inet", TURN_CAP_TABLE, "peers"]).stdout or ""
+    out = _pass_cached("turn-peers", lambda: run(["nft", "list", "set", "inet", TURN_CAP_TABLE, "peers"])).stdout or ""
     mm = re.search(r"elements = \{(.*)\}", out, re.S)
     if mm:
         for el in mm.group(1).split(","):
@@ -1871,7 +1945,7 @@ def _node_addrs():
     list_node_ips / _ip_ifaces / _ifaces. One `ip -o addr show` instead of three per snapshot."""
     out = []
     try:
-        raw = run(["ip", "-4", "-o", "addr", "show"]).stdout
+        raw = _pass_cached("ip-4-addr", lambda: run(["ip", "-4", "-o", "addr", "show"])).stdout
     except Exception:
         return out
     for ln in raw.splitlines():
@@ -12038,12 +12112,25 @@ def _relay_capable():
             return False, "this container has no host data directory mapped (SWG_HOST_NODE_DIR)"
         if not SWG_TURN_IMAGE:
             return False, "this container was installed without a runner image (SWG_TURN_IMAGE)"
-        if run(["docker", "version", "--format", "{{.Server.Version}}"]).returncode != 0:
-            return False, "this container cannot reach the docker socket"
+        # Asked twice a pass (the snapshot, the relay watchdog): an answer that worked is kept for a minute, one that
+        # did not is asked again — a daemon coming back is seen on the next pass.
+        if time.time() - _RELAY_CAP["docker_ok_at"] >= 60:
+            if run(["docker", "version", "--format", "{{.Server.Version}}"]).returncode != 0:
+                return False, "this container cannot reach the docker socket"
+            _RELAY_CAP["docker_ok_at"] = time.time()
         return True, ""
-    if run(["systemctl", "--version"]).returncode != 0:
+    if _RELAY_CAP["systemd"] is None:                   # systemd does not come or go under a running daemon
+        _r = run(["systemctl", "--version"])
+        if _r.returncode == 124:                        # a timeout says nothing about it: asked again next time
+            return False, "this node has no systemd to run the relay under"
+        _RELAY_CAP["systemd"] = _r.returncode == 0
+    if not _RELAY_CAP["systemd"]:
         return False, "this node has no systemd to run the relay under"
     return True, ""
+
+
+_RELAY_CAP = {"systemd": None, "docker_ok_at": 0.0}
+_RELAY_CG = {"path": "", "at": 0.0}                    # the relay slice's cgroup path (_relay_quota_effective)
 
 
 def _relay_sock(iface):
@@ -12825,6 +12912,8 @@ def _relay_supervise(want, quota_pct, res):
     unit_dir = UNIT_DIR_PERSIST if unit_dir_persists() else UNIT_DIR_RUNTIME
     unit_path, unit_text = os.path.join(unit_dir, "swg-relay@.service"), _relay_unit_text()
     slice_path, slice_text = os.path.join(unit_dir, RELAY_SLICE), _relay_slice_text(quota_pct)
+    if want and not _RELAY_CG["path"]:
+        _RELAY_CG["at"] = 0.0                          # the slice comes up with its first instance: look for its cgroup at once
     envs = {i: (os.path.join(RELAY_ENV_DIR, i + ".env"), _relay_env_text(i, e)) for i, e in want.items()}
     # ⚠️ WORK OUT WHAT WOULD CHANGE BEFORE CHANGING IT, THEN PULL THE DIVERT BEFORE BOUNCING WHAT IT POINTS
     # AT. Writing first and restarting first leaves the tproxy rule aimed at a process that is going away,
@@ -13087,7 +13176,16 @@ def _relay_quota_effective():
                 n = int(r.stdout.strip())
                 if n > 0: tot += n / 1e9; seen = True
         return int(round(tot * 100)) if seen else None
-    cg = (run(["systemctl", "show", "-p", "ControlGroup", "--value", RELAY_SLICE]).stdout or "").strip()
+    # The slice's cgroup path is fixed by its name while it exists: asked of systemd once, then the limit is read from
+    # the cgroup files on every call (no process). Not there yet (no relay ever ran): asked again at most once a minute,
+    # and at once when the relay sets its slice up (_relay_units_ensure clears it).
+    cg = _RELAY_CG["path"]
+    if not cg and time.time() - _RELAY_CG["at"] >= 60:
+        cg = (run(["systemctl", "show", "-p", "ControlGroup", "--value", RELAY_SLICE]).stdout or "").strip()
+        _RELAY_CG.update(path=cg, at=time.time())
+    if cg and not os.path.isdir("/sys/fs/cgroup" + cg) and not os.path.isdir("/sys/fs/cgroup/cpu" + cg):
+        _RELAY_CG.update(path="", at=0.0)              # the slice went away: ask again next time
+        cg = ""
     if not cg:
         return None
     try:                                                     # cgroup v2: "<quota|max> <period>" in us
@@ -13256,7 +13354,7 @@ def read_inet_bytes():
     `swg-inet-*` line there was. Deleted rather than implemented: the totals must cover the whole chain, and a
     filter that silently did nothing is worse than no filter. The set now has exactly one home,
     `inet_managed_ifaces`."""
-    r = run(["iptables-save", "-c", "-t", SWG_INET_TABLE])
+    r = _pass_cached("iptables-save-c:" + SWG_INET_TABLE, lambda: run(["iptables-save", "-c", "-t", SWG_INET_TABLE]))
     if r.returncode != 0 or not r.stdout:
         return None
     up = down = 0
@@ -13383,7 +13481,7 @@ def sample_catk():
     now = time.time()
     if _CATK["cum"] is not None and (now - _CATK["t"]) < CATK_SAMPLE_EVERY_S:
         return dict(_CATK["rate"])
-    r = run(["iptables-save", "-c", "-t", "mangle"])
+    r = _pass_cached("iptables-save-c:mangle", lambda: run(["iptables-save", "-c", "-t", "mangle"]))
     if r.returncode != 0 or not r.stdout:
         return dict(_CATK["rate"])                          # no iptables → leave last known
     if "swg-catk-" not in r.stdout:                         # chain gone (mode changed) → clear
@@ -15413,7 +15511,7 @@ def iface_candidates(node_cfg):
     names = set(names_wdtt)                                  # unadopted local WDTT instances are candidates too
     for tool in (["wg"], ["awg"]):                           # kernel + any userspace socket the CLI can read
         with contextlib.suppress(Exception):
-            r = run(_wgcmd(tool) + ["show", "interfaces"])
+            r = _pass_cached("ifaces:" + _wgcmd(tool)[0], lambda: run(_wgcmd(tool) + ["show", "interfaces"]))
             if r.returncode == 0:
                 names.update((r.stdout or "").split())
     for _d in WG_SOCK_DIRS:                                  # userspace wireguard-go the CLI can't read
@@ -15434,7 +15532,7 @@ def iface_candidates(node_cfg):
                     names.add(f[:-5])                        # ".conf" is 5 chars — [:-4] leaves a trailing dot
     ipmap = {}
     with contextlib.suppress(Exception):
-        for ln in (run(["ip", "-4", "-o", "addr", "show"]).stdout or "").splitlines():
+        for ln in (_pass_cached("ip-4-addr", lambda: run(["ip", "-4", "-o", "addr", "show"])).stdout or "").splitlines():
             p = ln.split()
             if len(p) >= 4 and p[2] == "inet":
                 ipmap.setdefault(p[1], p[3])
@@ -16134,7 +16232,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
         cmd = _wgcmd(ic.get("cmd", ["awg"]))
         try:                                        # one bad interface must never kill the whole snapshot
-            _r = run(cmd + ["show", iface, "dump"])
+            _r = _pass_cached("dump:%s:%s" % (cmd[0], iface), lambda: run(cmd + ["show", iface, "dump"]))
             if _r.returncode != 0:                  # interface isn't up — flag it, but still surface its
                 try:                                # intended config from the .conf (subnet/awg/port/pubkey)
                     conf_text = open(ic["conf"]).read()
@@ -16182,7 +16280,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             log(LOG_WARNING, f"snapshot: skipping {iface}: {e}")
             continue
     _addrs = _node_addrs()                         # one `ip -o addr show`, shared by the three derived views below
-    _tps = load_turn_proxies()
+    _tps = _pass_cached("turn-proxies", load_turn_proxies)   # …and write_inventory's, later in the pass
     _tflags = {}                                   # Axis-1: per-fork flag discovery (`<binary> -h`), only where the panel manages turn (that's the only place the settings UI shows). Cached per (fork,version).
     if TURN_MANAGE:
         for _tp in _tps:
@@ -16351,7 +16449,7 @@ def _iface_dump(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = _wgcmd(ic.get("cmd", ["awg"]))
     try:
-        r = run(cmd + ["show", iface, "dump"])
+        r = _pass_cached("dump:%s:%s" % (cmd[0], iface), lambda: run(cmd + ["show", iface, "dump"]))
         if r.returncode != 0:
             return None
         return parse_dump(r.stdout)
@@ -16432,7 +16530,7 @@ def current_listen_port(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = _wgcmd(ic.get("cmd", ["awg"]))
     try:
-        r = run(cmd + ["show", iface, "dump"])
+        r = _pass_cached("dump:%s:%s" % (cmd[0], iface), lambda: run(cmd + ["show", iface, "dump"]))
         if r.returncode == 0:
             iface_line, _ = parse_dump(r.stdout)
             if len(iface_line) > 2 and str(iface_line[2]).isdigit():
@@ -16981,7 +17079,7 @@ def _inventory_now(node_cfg):
            "ifaces": sorted((node_cfg.get("interfaces") or {}).keys()),
            "units": [], "containers": []}
     with contextlib.suppress(Exception):
-        _turn = [tp.get("service") for tp in load_turn_proxies() if tp.get("service")]
+        _turn = [tp.get("service") for tp in _pass_cached("turn-proxies", load_turn_proxies) if tp.get("service")]
         if NODE_KIND == "docker":
             # This model runs turn proxies as SIBLING containers and the fork servers as its own children —
             # the children die with it, so only the containers outlive this process.
@@ -18120,7 +18218,7 @@ def orphan_mesh_links(node_cfg, owned, staged=()):
     # simple "just list them" version a silent no-op.
     for _tool in (["awg"], ["wg"]):
         with contextlib.suppress(Exception):
-            r = run(_wgcmd(_tool) + ["show", "interfaces"])
+            r = _pass_cached("ifaces:" + _wgcmd(_tool)[0], lambda: run(_wgcmd(_tool) + ["show", "interfaces"]))
             if r.returncode != 0:
                 continue
             for n in (r.stdout or "").split():
@@ -18313,6 +18411,40 @@ def _host_sh_available():
     return _HOST_SH_CAP["ok"]
 
 
+def _unit_active(svc):
+    """What `systemctl is-active <svc>` answers, for the units this node's WDTT and csqtt servers run as — read for all of
+    them in ONE `systemctl show` per pass (docs/CPU-PLAN.md B3): the snapshot and the reconcilers each asked per server,
+    through `sh -c`, four processes per server per pass. Same words: ActiveState is what is-active prints, a unit that
+    does not exist reads "inactive" in both. A unit outside the pass's set, or a batch that could not be read, is asked
+    on its own, as before. For the snapshot and the reconcilers' decisions only — a verify that waits for a unit to come
+    up polls it fresh (_csqtt_verify, the install verifies). Bare metal and NixOS: a docker node asks its own children."""
+    units = sorted({_wdtt_svc(i) for i in (_wdtt_load() or {})} | {_csqtt_svc(i) for i in (_csqtt_load() or {})})
+    if svc in units:
+        states = _pass_cached("unit-state:" + " ".join(units), lambda: _unit_states(units))
+        full = svc if svc.endswith(".service") else svc + ".service"
+        if full in states:
+            return states[full]
+    return (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null", probe=True).stdout or "").strip()
+
+
+def _unit_states(units):
+    """{unit id (with .service): ActiveState} from one `systemctl show`; {} when it could not be read."""
+    r = run(["systemctl", "show", "-p", "Id", "-p", "ActiveState", "--"] + list(units))
+    out = {}
+    if r.returncode != 0:
+        return out
+    cur = {}
+    for ln in (r.stdout or "").splitlines() + [""]:
+        if not ln.strip():
+            if cur.get("Id"):
+                out[cur["Id"]] = cur.get("ActiveState", "")
+            cur = {}
+            continue
+        k, _, v = ln.partition("=")
+        cur[k] = v
+    return out
+
+
 def host_sh(cmd, timeout=90, probe=False):
     """Run a shell command on the HOST. Bare-metal: directly. Docker: via a one-shot privileged
     --pid=host helper through the mounted docker socket — nsenter into PID 1 so the command runs in
@@ -18354,7 +18486,7 @@ def host_sh(cmd, timeout=90, probe=False):
         args = ["docker", "run", "--rm", "--privileged", "--pid=host", "--network", "none", "--entrypoint", "nsenter",
                 HELPER_IMAGE, "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", _wrapped]
     try:
-        r = run(args, timeout=timeout)
+        r = run(args, timeout=timeout, read=_sh_is_read(cmd))   # the docker helper's argv says nothing: the command does
     except Exception as e:                              # e.g. 'docker' not found, or a timeout
         log(LOG_ERR, "host_sh EXC: " + str(e) + " :: " + cmd[:160])
         class _R:                                       # synthesize a failed result so callers see it
@@ -21144,7 +21276,7 @@ def reconcile_wdtt(want, remove=None):
             # counts as running: it is what a backing-off restart looks like, and starting it again would only
             # reset the backoff this build just added.
             if (NODE_KIND != "docker" and _wdtt_present(iface) and not bool(inst.get("stopped"))
-                    and (host_sh("systemctl is-active " + shlex.quote(_wdtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip()
+                    and _unit_active(_wdtt_svc(iface))
                         not in ("active", "activating", "reloading")):
                 host_sh(sc_enable_now(_wdtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
@@ -21313,7 +21445,7 @@ def wdtt_snapshot():
         if NODE_KIND == "docker":
             active = "active" if _wdtt_docker_alive(iface) else "inactive"
         else:
-            active = (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null", probe=True).stdout or "").strip()
+            active = _unit_active(svc)
         _rawinfo = _wdtt_raw(inst)          # (listen, iface, addr) when this instance runs a RAW listener
         _rawon = bool(_rawinfo)
         if inst.get("fork", "amurcanov") == "ildarmaga":
@@ -22862,7 +22994,7 @@ def reconcile_csqtt(want, remove=None):
             # reconcile_wdtt — Restart=on-failure does not come back from a clean stop, and `present` was all
             # reconcile looked at).
             if (NODE_KIND != "docker" and _csqtt_present(iface) and not bool(inst.get("stopped"))
-                    and (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip()
+                    and _unit_active(_csqtt_svc(iface))
                         not in ("active", "activating", "reloading")):
                 host_sh(sc_enable_now(_csqtt_svc(iface)) + " >/dev/null 2>&1")
                 res["changed"] += 1
@@ -22897,8 +23029,7 @@ def csqtt_snapshot():
         # docker: the supervised child IS the service. Asking systemd here used to answer from the HOST, which on a
         # converted master still had the old units running — so the panel was told "active" for servers this node
         # was not running, beside an empty password store it could not read. Two wrong answers that agreed.
-        active = ("active" if _csqtt_docker_pid(iface) else "inactive") if NODE_KIND == "docker" else \
-                 (host_sh("systemctl is-active " + shlex.quote(svc) + " 2>/dev/null", probe=True).stdout or "").strip()
+        active = ("active" if _csqtt_docker_pid(iface) else "inactive") if NODE_KIND == "docker" else _unit_active(svc)
         pj = _csqtt_read_store(_csqtt_dir(iface))   # passwords.json (<=2.0.1) or csqtt.db (2.1.5+)
         pwds, devs = {}, {}
         for did, d in (pj.get("devices") or {}).items():
