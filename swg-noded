@@ -4520,7 +4520,16 @@ def _reach_generation(plan, g):
 # floats (the panel's sync refuses a non-finite number anywhere in the body). Anything unexpected — no socket, EPERM, an
 # error reply, a table that answers with no counters (missing, or not ours) — is None, and the caller reads them with nft
 # exactly as before.
+#
+# SWG_NFT_CLI_ONLY=1 (the unit's `Environment=`, or the container's environment) reads nftables through the nft CLI
+# only, as 1.8.8 did: no named counter over netlink, no generation id, so nothing is kept across passes (B4, B5b). A way
+# back, without a downgrade, for a kernel that disagrees with what they assume — and what a selftest that models the kernel
+# through run() sets, so the host's own ruleset never leaks into it.
 _NL_COUNTERS = {"warned": False}
+
+
+def _nft_cli_only():
+    return os.environ.get("SWG_NFT_CLI_ONLY") == "1"
 
 
 def _nl_attrs(buf, off, end):
@@ -4534,6 +4543,8 @@ def _nl_attrs(buf, off, end):
 
 def _nft_counters(table, family=1):
     """{name: (packets, bytes)} of every named counter in the inet <table> — or None (read them with nft instead)."""
+    if _nft_cli_only():
+        return None
     def attr(t, data):
         a = struct.pack("=HH", 4 + len(data), t) + data
         return a + b"\0" * ((4 - len(a) % 4) % 4)
@@ -4590,6 +4601,8 @@ def _nft_counters(table, family=1):
 # an error reply — EPERM without CAP_NET_ADMIN) means nothing is kept: every reader reads as before.
 def _nft_genid():
     """The nftables generation id of this network namespace, or None."""
+    if _nft_cli_only():
+        return None
     s = None
     try:
         s = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 12)                            # NETLINK_NETFILTER
