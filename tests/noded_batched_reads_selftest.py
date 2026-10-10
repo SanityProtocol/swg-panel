@@ -27,6 +27,7 @@ Run: python3 tests/noded_batched_reads_selftest.py   (0 = pass)
      vethname     the link parser keeps the `@peer` suffix in the name
      batchretry   a failed batch is asked again by every reader
      staleexit    the exits' handshakes are read from the dump taken before the probes
+     forgetfailed a batch that failed is asked again after the probes (a wedged device: a second timeout in the pass)
 """
 import importlib.machinery, importlib.util, os, subprocess, sys, tempfile, threading
 
@@ -51,8 +52,9 @@ PLANTS = {
         return subprocess.CompletedProcess(cmd + ["show", iface, "dump"], 0, d.get(iface, ""), "")'''),
     "batchretry": ('''lambda: run(cmd + ["show", "all", "dump"], timeout=5), keep_failures=True)''',
                    '''lambda: run(cmd + ["show", "all", "dump"], timeout=5))'''),
-    "staleexit": ('''            _pass_forget("all-dump:")                  # these probes would miss a first handshake they made (_exit_handshake)''',
+    "staleexit": ('''            _pass_forget("all-dump:", keep_failed=True)   # these probes would miss a first handshake they made (_exit_handshake)''',
                   '''            pass'''),
+    "forgetfailed": ('''        if not (keep_failed and getattr(_PASS[k][1], "returncode", 0) != 0):''', '''        if True:'''),
     "vethname": ('''        m = re.match(r"^\\d+:\\s+([^:@\\s]+)(?:@\\S*)?:\\s", ln)''', '''        m = re.match(r"^\\d+:\\s+([^:\\s]+):\\s", ln)'''),
 }
 if PLANT:
@@ -186,7 +188,14 @@ check("[7] what the probes change is read again: forgetting the batch makes the 
       sum(c == "wg show all dump" for c in CALLS) == 2, CALLS)
 _i = SRC.index("_pr = _exit_probe_all(")
 check("[7] the exit reconcile forgets the pass's dumps right after its probes, before its loop reads a handshake",
-      '_pass_forget("all-dump:")' in SRC[_i:SRC.index("for _s, xid, dev, prov, rec, err, _blob_err in _slots:", _i)])
+      '_pass_forget("all-dump:", keep_failed=True)' in SRC[_i:SRC.index("for _s, xid, dev, prov, rec, err, _blob_err in _slots:", _i)])
+N._LOOP["n"] = 9; CALLS.clear(); STATE["all_rc"] = 124
+N._dump_of(["wg"], "wg1")
+N._pass_forget("all-dump:", keep_failed=True)
+N._dump_of(["wg"], "wg1")
+check("[7] …but a batch that failed stays failed (a wedged device would only time it out again)",
+      sum(c == "wg show all dump" for c in CALLS) == 1, CALLS)
+STATE["all_rc"] = 0
 
 import shutil
 shutil.rmtree(T, ignore_errors=True)

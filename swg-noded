@@ -1242,10 +1242,12 @@ def _pass_cached(key, read, keep_failures=False):
     return v
 
 
-def _pass_forget(prefix):
-    """Drop this pass's reads under `prefix`: the next reader reads again (something since changed what they hold)."""
+def _pass_forget(prefix, keep_failed=False):
+    """Drop this pass's reads under `prefix`: the next reader reads again (something since changed what they hold). With
+    keep_failed a read that failed stays failed: a batch a wedged device timed out would only time out again."""
     for k in [k for k in _PASS if k.startswith(prefix)]:
-        _PASS.pop(k, None)
+        if not (keep_failed and getattr(_PASS[k][1], "returncode", 0) != 0):
+            _PASS.pop(k, None)
 
 
 _HOST_PATH_PREFIX = "export PATH=/run/current-system/sw/bin:$PATH\n"   # host_sh's docker helper puts it first
@@ -10540,7 +10542,7 @@ def reconcile_exits(desired, res):
         # (_exit_probe_all), judged here in this thread, in order: _EXIT_HEALTH is only ever touched by this loop.
         _pr = _exit_probe_all([(dev, rec) for _s, _x, dev, _p, rec, _e, _b in _slots])
         if _slots:                                     # the handshakes below come from the pass's dump (B3): one taken before
-            _pass_forget("all-dump:")                  # these probes would miss a first handshake they made (_exit_handshake)
+            _pass_forget("all-dump:", keep_failed=True)   # these probes would miss a first handshake they made (_exit_handshake)
         for _s, xid, dev, prov, rec, err, _blob_err in _slots:
             tr, _rch, _png = _pr.get(dev) or ({}, None, None)
             _got = _EXIT_RESOLVED.pop(dev, None)       # a lookup's answer, from this pass's probe or a late one
