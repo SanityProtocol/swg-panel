@@ -12,17 +12,31 @@ between the two nodes until its TTL ran out: measured on two real nodes (.campai
       listed AFTER the exit rule — where it can never match — is drift; a listing without it is drift
   [3] the rebuild issues the backstop before the exit rule, with the leg, the subnet and the priority
   [4] a forward-only node issues no prohibit rule at all
+  [5] a band with more rules at one priority than a fixed cap converges: on a kernel model of `ip rule` (same-priority
+      rules kept in the order they were added, an identical add refused), 8 exit subnets on one table — 16 rules at one
+      priority, plus a stale one ahead of them — are rebuilt in order once, and the next passes write nothing. A teardown
+      capped at 8 deletions left 9 in place, re-added the rest behind them, signed a backstop behind its exit rule as
+      drift, and rebuilt the band on every pass (nixos, 17 rules at 7000: CPU re-qualification FLEET-2).
 
 Hermetic: `run()` is a recorder; the rest of `reconcile_cascade` is stopped at its iptables step.
 Run: python3 tests/cascade_reflect_backstop_selftest.py            (0 = pass)
      --perturb   stops signing the backstop (an upgraded node would then never install it) and expects RED on [1], [2].
+     --plant cap8   the teardown deletes at most 8 rules per priority again; expects RED on [5].
 """
-import importlib.machinery, importlib.util, os, sys
+import importlib.machinery, importlib.util, os, re, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
+PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else None
+if PLANT:
+    _src = open(NODED, encoding="utf-8").read()
+    _a, _b = {"cap8": ("            for _ in range(4096):\n                if run([\"ip\", \"rule\", \"del\", \"pref\", str(pri)])",
+                       "            for _ in range(8):\n                if run([\"ip\", \"rule\", \"del\", \"pref\", str(pri)])")}[PLANT]
+    assert _src.count(_a) == 1, "plant anchor not unique/absent — this run would measure nothing: " + PLANT
+    NODED = os.path.join(tempfile.mkdtemp(prefix="backstop-"), "swg-noded")
+    open(NODED, "w", encoding="utf-8").write(_src.replace(_a, _b))
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -41,6 +55,7 @@ if PERTURB:
     N._cascade_want_sig = lambda *a, **k: {t for t in _want(*a, **k) if not t.startswith("R|backstop|")}
 
 CP = N.subprocess.CompletedProcess
+REAL = {k: getattr(N, k) for k in ("_cascade_live_sig", "_live_band_prios")}
 X = N.SWG_RT_BASE + 5
 S, LEG = "10.8.0.0/24", "swg_n"
 EXIT = [{"table": X, "subnet": S, "via_iface": LEG}]
@@ -108,7 +123,87 @@ calls = rebuild({"forward": [{"table": X, "subnet": S, "via_iface": LEG}], "exit
 check("no prohibit rule", not any("prohibit" in c for c in calls if c[:3] == ["ip", "rule", "add"]),
       [c for c in calls if c[:3] == ["ip", "rule", "add"]])
 
+print("\n[5] a band with more rules at one priority than any fixed cap converges")
+
+
+class Kernel:
+    """`ip rule` / `ip route` as the kernel keeps them: rules by priority, same-priority rules in the order they were
+    added; an add identical to a rule present is refused (EEXIST); `del pref N` removes the first rule at N."""
+
+    def __init__(self, rules):
+        self.rules, self.tables, self.writes = list(rules), {}, []
+
+    def __call__(self, a, input_text=None, timeout=20):
+        if a[:3] == ["ip", "rule", "show"]:
+            return CP(a, 0, "".join("%d:\tfrom all %s\n" % (p, b) if not b.startswith("from ") else "%d:\t%s\n" % (p, b)
+                                    for p, b in self.rules), "")
+        if a[:3] == ["ip", "rule", "del"] and a[3] == "pref":
+            self.writes.append(a)
+            for k, (p, _) in enumerate(self.rules):
+                if p == int(a[4]):
+                    del self.rules[k]
+                    return CP(a, 0, "", "")
+            return CP(a, 2, "", "RTNETLINK answers: No such file or directory")
+        if a[:3] == ["ip", "rule", "add"]:
+            self.writes.append(a)
+            i = a.index("priority"); p = int(a[i + 1]); sel = a[3:i]
+            if "lookup" in sel:                          # iproute2's own order: selectors, then the action
+                j = sel.index("lookup"); sel = sel[:j] + sel[j + 2:] + sel[j:j + 2]
+            if "iif" in sel:                              # `to S iif L prohibit`, as `ip rule show` spells it
+                j = sel.index("iif"); sel = [t for k, t in enumerate(sel) if k not in (j, j + 1)]
+                sel = sel[:2] + ["iif", a[3 + a[3:i].index("iif") + 1]] + sel[2:]
+            body = " ".join(sel)
+            if (p, body) in self.rules:
+                return CP(a, 2, "", "RTNETLINK answers: File exists")
+            at = max([k + 1 for k, (q, _) in enumerate(self.rules) if q <= p] or [0])
+            self.rules.insert(at, (p, body))
+            return CP(a, 0, "", "")
+        if a[:3] == ["ip", "route", "flush"]:
+            self.writes.append(a)
+            self.tables[a[4]] = {}
+            return CP(a, 0, "", "")
+        if a[:3] == ["ip", "route", "replace"]:
+            self.writes.append(a)
+            t = a[a.index("table") + 1]
+            self.tables.setdefault(t, {})[a[3]] = a[a.index("dev") + 1]
+            return CP(a, 0, "", "")
+        if a[:4] == ["ip", "route", "show", "table"]:
+            return CP(a, 0, "".join("%s dev %s scope link \n" % kv for kv in self.tables.get(a[4], {}).items()), "")
+        return CP(a, 0, "", "")
+
+
+for k, v in REAL.items():
+    setattr(N, k, v)
+SUBS = ["10.%d.0.0/24" % (60 + k) for k in range(8)]
+EX8 = [{"table": X, "subnet": s_, "via_iface": LEG} for s_ in SUBS]
+_band = []
+for s_ in SUBS:
+    _band += [(X, "to %s iif %s prohibit" % (s_, LEG)), (X, "to %s lookup %d" % (s_, X))]
+K = Kernel([(X, "fwmark %#x lookup %d" % (X, X))] + _band)   # a stale fwmark rule ahead of a healthy band: drift
+K.tables[str(X)] = {s_: LEG for s_ in SUBS}
+N.run = K
+per = []
+for _ in range(4):
+    del K.writes[:]
+    try:
+        N.reconcile_cascade({"interfaces": {}}, {"forward": [], "exit": EX8, "devexit": []}, None, "", nets=())
+    except Stop:
+        pass
+    per.append(len(K.writes))
+order = [b for p, b in K.rules if p == X]
+_late = [s_ for s_ in SUBS if "to %s lookup %d" % (s_, X) in order and "to %s iif %s prohibit" % (s_, LEG) in order
+         and order.index("to %s iif %s prohibit" % (s_, LEG)) > order.index("to %s lookup %d" % (s_, X))]
+check("the first pass rebuilds the drifted band (17 rules at one priority, one of them stale)", per[0] > 0, per)
+check("…and the next three passes write nothing: the band converged", per[1:] == [0, 0, 0], per)
+check("every backstop sits ahead of its exit rule, the stale rule is gone, nothing is doubled",
+      not _late and len(order) == 16 and len(set(order)) == 16 and not any("fwmark" in b for b in order), {"late": _late, "order": order})
+check("the live band reads as the plan wants it", N._cascade_live_sig([str(X)]) == N._cascade_want_sig([], EX8, [], ()),
+      sorted(N._cascade_live_sig([str(X)]) ^ N._cascade_want_sig([], EX8, [], ())))
+
 print("")
+if PLANT:
+    print(("--plant %s: CAUGHT (%d red)" % (PLANT, len(FAILS))) if FAILS else "--plant %s: NOTHING FAILED" % PLANT)
+    sys.exit(0 if FAILS else 1)
 if PERTURB:
     ok_ = len(FAILS) > 0
     print(("perturbed: the unsigned backstop was CAUGHT (%d red) — an upgraded node would never install it" % len(FAILS))

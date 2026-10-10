@@ -10868,7 +10868,12 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             _RPF["needed"] = True
             _RPF["bad"] = sorted(_bad)
         for pri in band:                                       # teardown our whole band (rules + tables)
-            for _ in range(8):                                 # del-until-absent (a priority may carry several rules)
+            # ⚠️ DEL-UNTIL-ABSENT MEANS ALL OF THEM. A priority carries a backstop + exit rule pair per exit subnet, and
+            # a fwmark rule: 17 at 7000 on a node exiting 8 subnets. A cap of 8 left the rest in place, the deleted ones
+            # came back at the end, a backstop behind its exit rule signs as drift — and the band was torn down and
+            # rebuilt on every pass, a ~100 ms gap in it each time (nixos, CPU re-qualification FLEET-2). The bound only
+            # stops a `del` that keeps answering 0 without deleting anything.
+            for _ in range(4096):
                 if run(["ip", "rule", "del", "pref", str(pri)]).returncode != 0:
                     break
         for tbl in _band_tables(band):                         # …and only the priorities that ARE tables
