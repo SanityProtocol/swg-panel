@@ -6129,20 +6129,42 @@ def _smart_geo_refresh(categories, set_counts, res, additive=()):
             res["errors"].append("smart geo " + cat + ": " + str(e)[:120])
 
 
+_CIDR_LOADED = {}   # set name → (its CIDR list's signature, the live count read back right after our last add)
+
+
 def _smart_load_cidrs(cidrs_map, set_counts, res):
     """Custom-rule raw IPs/CIDRs → ADDED into their nft set directly. The set ALSO fills from dnsmasq for the
     rule's domain half, so we add elements (never flush, which would wipe the dnsmasq-resolved IPs). Add-only +
-    gated on the live element count, so steady state is a no-op; a post-reboot empty set re-loads them."""
+    gated on the live element count, so steady state is a no-op; a post-reboot empty set re-loads them.
+
+    ⚠️ THE GATE IS THE COUNT OUR LAST ADD LEFT, READ BACK — not the list's length. The set is `interval; auto-merge`, so
+    adjacent or overlapping CIDRs merge into fewer elements than the list has, a count that never reaches its length:
+    the list was added again on every routing pass, each add a ruleset write (docs/CPU-PLAN.md D2) — the trap
+    `_nft_load_set` already read the count back for. Loaded again when the list changes or the set lost elements (a
+    reboot, a flush); more is normal, dnsmasq adds the domain half's addresses. With nothing recorded yet (a restart),
+    the old test decides: a list the set already covers is not re-added."""
     for cat, cl in (cidrs_map or {}).items():
         cl = [c for c in (cl or []) if c]
         if not cl:
             continue
         sn = _smart_setname(cat)
-        if set_counts.get(sn, 0) >= len(cl):                   # already present (count covers them) → skip the churn
-            continue
+        sig = hashlib.sha1("\n".join(sorted(cl)).encode()).hexdigest()[:16]
+        have, done = set_counts.get(sn, 0), _CIDR_LOADED.get(sn)
+        if done and done[0] == sig:
+            if have >= done[1]:
+                continue                                       # what our last add left is all still there
+        elif not done and have >= len(cl):
+            continue                                           # nothing recorded yet, and the set covers the list
+        ok = True
         for i in range(0, len(cl), 2000):
             if run(["nft", "add", "element", "inet", SMART_NFT_TABLE, sn, "{ " + ", ".join(cl[i:i + 2000]) + " }"]).returncode == 0:
                 res["changed"] += 1
+            else:
+                ok = False
+        if ok:                                                 # a refused add records nothing: the next pass tries again
+            _CIDR_LOADED[sn] = (sig, _nft_set_count(sn))
+        else:
+            _CIDR_LOADED.pop(sn, None)
 
 
 # ── GeoSite host tier: per-category DOMAIN lists, fetched/cached EXACTLY like the geoip tier above but feeding
@@ -11362,8 +11384,15 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
         for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
             run(["ipset", "destroy", setn])
         _xts_reap([])                                          # …and the selections' sets
+        # ⚠️ GONE IS A STATE, STAMPED LIKE ANY OTHER: the empty plan's signature, once the chain is really gone. Removing the
+        # stamp here read as drift on the next routing pass, which tore everything down again — `-D PREROUTING`, `-F`/`-X
+        # SWGK`, `iptables -S`, `ipset list` twice, on every routing pass of every node not running Kernel SNI (docs/CPU-PLAN.md
+        # D1). A chain still there (the teardown failed) keeps the stamp away, so the next pass tries again.
         with contextlib.suppress(OSError):
-            os.remove(sigf)
+            if run(["iptables", "-t", "mangle", "-S", CHAIN]).returncode != 0:
+                os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
+            else:
+                os.remove(sigf)
         return []
     _xts_reap(want_cats, want_srcs)
     _ok = [True]
