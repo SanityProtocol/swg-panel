@@ -652,9 +652,14 @@ _swg_left(){ local f
            "$SD"/swg-update.service "$SD"/swg-relay@.service "$SD"/vk-turn-proxy-*.service "$SD"/swg-wdtt-*.service "$SD"/swg-csqtt-*.service; do
     [ -e "$f" ] && return 0; done
   docker_running swg-panel || docker_running swg-node; }
+# ⚠️ AN /etc/swg-panel HOLDING ONLY THE RELAY'S DIR, OR NOTHING, IS NO DATA. swg-noded makes /etc/swg-panel/relay on a node
+# that relayed a link, and rm_node (rm_leftovers on a converted box) takes the relay dir, not the parent — on a master
+# swg-noded, running until rm_node stops it, even writes its env back after rm_panel deleted the panel's data. Read as kept,
+# a FULL uninstall kept the swg-node journal (turn-proxy client addresses, SNI names at Debug) for good, "with the data"
+# (1.8.9 qualification R2 INST-3).
 _data_kept(){ [ "${KEEP_OWN_DROPINS:-no}" = yes ] || [ "${DOCKER_DATA_DEL:-}" = no ] || [ "${DOCKER_KEEP_CONFS:-}" = yes ] && return 0
   $DRYRUN && return 1
-  [ -d /var/lib/swg-panel ] || [ -d /etc/swg-panel ] || [ -d "$DOCKER_DIR/data" ]; }
+  [ -d /var/lib/swg-panel ] || [ -n "$(ls -A /etc/swg-panel 2>/dev/null | grep -vx relay)" ] || [ -d "$DOCKER_DIR/data" ]; }
 rm_log_journals(){ local f d ns u mid had=""
   _swg_left && return 0
   for f in "$SD"/*.d/swg-ns.conf "$SD"/*.d/swg-log.conf "$SD"/*.d/swg-journal.conf "$SD"/*.d/swg-restart.conf \

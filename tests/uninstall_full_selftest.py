@@ -49,6 +49,15 @@ refuse any path outside the box, and such an escape fails the section that made 
   [16] systemd < 254: the restart back-off swg-noded writes in the three family dirs (swg-restart.conf, D12-1) — rm_node no
       longer says it "keeps" a dir that holds only that file (the end of the run takes both); an operator's own drop-in
       there is still said and kept
+  [23] a bare node that relayed a mesh link, FULL: rm_node takes /etc/swg-panel/relay and leaves the /etc/swg-panel the
+      relay made, empty — read as kept data, it kept the swg-node journal (turn-proxy client addresses, SNI names at Debug)
+      and said "kept with the data", with no data on the box (1.8.9 qualification R2 INST-3). Now the journal goes, said
+      under Removed
+  [24] …a bare master with the relay, FULL with the panel's data deleted: swg-noded, running until rm_node stops it, writes
+      its relay env back after rm_panel took /etc/swg-panel (it holds the last relay intent while the panel is gone) — the
+      journals go all the same
+  [25] CONTROL: a panel's own files in /etc/swg-panel (install.conf, its certificate) beside the relay's dir — kept data:
+      the journal stays with them, said under Kept
 
 Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      SWG_UNINSTALL=<file>   run it against another uninstall.sh
@@ -74,6 +83,8 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-dial    a turn proxy listed by its bind (as shipped) → RED on [21]'s first check only
      --perturb-live    rm_wdtt tears down a WDTT interface the Docker node runs (as shipped) → RED on [22]'s survival check only
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
+     --perturb-relaydir  any /etc/swg-panel read as kept data (as 6cd65eb9 shipped it) → RED on [23] [24]'s journal checks only
+     --perturb-etcdata   /etc/swg-panel never read as kept data (the over-broad fix) → RED on [25] only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
 
@@ -84,7 +95,8 @@ FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--
                                          "--perturb-ppa", "--perturb-go", "--perturb-key", "--perturb-srcppa", "--perturb-www",
                                          "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg",
                                          "--perturb-engine", "--perturb-d123", "--perturb-orphan", "--perturb-6880",
-                                         "--perturb-turnconf", "--perturb-dial", "--perturb-live")}
+                                         "--perturb-turnconf", "--perturb-dial", "--perturb-live", "--perturb-relaydir",
+                                         "--perturb-etcdata")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -146,6 +158,11 @@ if FLAGS["--perturb-live"]:
     plant('  local live=no; docker_running swg-node && [ -d "$DOCKER_DIR/data/node/wdtt/$iface" ] && live=yes\n', '  local live=no\n')
 if FLAGS["--perturb-image"]:
     plant('  [ -n "$img" ] || { _tag="$(sed -n ', '  false && { _tag="$(sed -n ')
+_DK = '  [ -d /var/lib/swg-panel ] || [ -n "$(ls -A /etc/swg-panel 2>/dev/null | grep -vx relay)" ] || [ -d "$DOCKER_DIR/data" ]; }'
+if FLAGS["--perturb-relaydir"]:
+    plant(_DK, '  [ -d /var/lib/swg-panel ] || [ -d /etc/swg-panel ] || [ -d "$DOCKER_DIR/data" ]; }')
+if FLAGS["--perturb-etcdata"]:
+    plant(_DK, '  [ -d /var/lib/swg-panel ] || [ -d "$DOCKER_DIR/data" ]; }')
 
 T = tempfile.mkdtemp(prefix="unin-full-")
 
@@ -171,6 +188,16 @@ def wr(n, items):
     open(os.path.join(FX, n), "w").write("".join(x + "\n" for x in items))
 def escape(p):
     return p.startswith("/") and not os.path.realpath(p).startswith(os.path.realpath(BOX) + "/") and p != "/dev/null"
+# swg-noded RUNNING (a box whose fx holds noded.relay): before each command the run makes, one of its passes writes back the
+# relay env it holds — with the panel gone it keeps the last relay intent, and _relay_write makedirs the dir and writes the
+# file on change — until rm_node's `systemctl disable --now swg-noded` stops it (its last pass lands as it stops)
+if os.path.exists(os.path.join(FX, "noded.relay")) and not os.path.exists(os.path.join(FX, "noded.stopped")):
+    for i in ls("noded.relay"):
+        p = os.path.join(BOX, "etc/swg-panel/relay", i + ".env")
+        if not os.path.exists(p):
+            os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "w").write("RELAY_PORT=5629\n")
+    if name == "systemctl" and "--now" in a and "swg-noded" in a:
+        open(os.path.join(FX, "noded.stopped"), "w").close()
 if name in ("rm", "rmdir", "cp", "mv", "mkdir", "chmod", "ln", "touch"):
     bad = [x for x in a if not x.startswith("-") and escape(x)]
     if bad:
@@ -734,6 +761,47 @@ rc, out, calls, esc = run(box, "--yes", env=FULL)
 check("[22] …and with the Docker node removed in the same run, wdtt0 (left in the host's netns) goes with the unit",
       "wdtt0" not in fx(box, "ip.links"), (fx(box, "ip.links"), out[-800:]))
 
+# ── a node that relayed a mesh link (1.8.9 qualification R2 INST-3) ─────────────────────────────────────────────────────
+# swg-noded makes /etc/swg-panel/relay for swg-relay's env files — on a node, all /etc/swg-panel ever holds. The journals: the
+# box's machine id and swg-node's namespace (swg-panel's too on a master), with their history.
+RELAY = {"etc/swg-panel/relay/awg0.env": "RELAY_PORT=5629\n", "etc/machine-id": "MID\n",
+         "var/log/journal/MID.swg-node/system.journal": "HISTORY"}
+GONE_J = "swg's own journals (%s) — the box's main journal untouched"   # rm_log_journals' line under Removed
+KEPT_J = "swg's own journals (%s) — kept with the data"                  # …and under Kept
+etc_left = lambda box: sorted(os.path.relpath(os.path.join(dp, f), box) + ("/" if f in ds else "")
+                              for dp, ds, fs in os.walk(os.path.join(box, "etc/swg-panel")) for f in fs + ds)
+
+print("\n[23] a bare node that relayed a mesh link, FULL (1.8.9 qualification R2 INST-3)")
+box = mkbox("relay-node", dict(BARE_NODE, **RELAY), BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[23] the run stays inside its box", not esc, esc)
+check("[23] the swg-node journal goes, said under Removed — never \"kept with the data\" over the empty /etc/swg-panel the relay made",
+      not here(box, "var/log/journal/MID.swg-node") and GONE_J % "swg-node" in out and "kept with the data" not in out,
+      (here(box, "var/log/journal/MID.swg-node"), here(box, "etc/swg-panel"), etc_left(box), out[-900:]))
+
+print("\n[24] …a bare master with the relay, FULL, the panel's data deleted — swg-noded still running until rm_node stops it")
+MRELAY = dict(BARE_NODE, **RELAY, **{"etc/systemd/system/swg-panel-server.service": "[Service]\n", "opt/swg-panel/swg-panel-server": "x",
+                                   "etc/swg-panel/install.conf": "PANEL_DOMAIN=192.168.77.9\n", "var/lib/swg-panel/users.json": "{}",
+                                   "var/log/journal/MID.swg-panel/system.journal": "HISTORY"})
+box = mkbox("relay-master", MRELAY, dict(BARE_FX, **{"noded.relay": "awg0\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[24] the run stays inside its box", not esc, esc)
+check("[24] (the race) swg-noded wrote its relay env back after rm_panel took /etc/swg-panel — it stands again as noded stops",
+      etc_left(box) == ["etc/swg-panel/relay/", "etc/swg-panel/relay/awg0.env"], etc_left(box))
+check("[24] both journals go, said under Removed — the relay's dir alone is no kept data",
+      not here(box, "var/log/journal/MID.swg-node") and not here(box, "var/log/journal/MID.swg-panel")
+      and GONE_J % "swg-panel, swg-node" in out and "kept with the data" not in out, (etc_left(box), out[-900:]))
+
+print("\n[25] CONTROL: a panel's own files in /etc/swg-panel beside the relay's dir")
+box = mkbox("relay-kept", dict(BARE_NODE, **RELAY, **{"etc/swg-panel/install.conf": "PANEL_DOMAIN=192.168.77.9\n",
+                                                      "etc/swg-panel/tls/cert.pem": "C"}), BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[25] the run stays inside its box", not esc, esc)
+_j = os.path.join(box, "var/log/journal/MID.swg-node/system.journal")
+check("[25] CONTROL: /etc/swg-panel holding a panel's own files (install.conf, its certificate) is kept data — the swg-node "
+      "journal stays with its history, said under Kept",
+      os.path.exists(_j) and open(_j).read() == "HISTORY" and KEPT_J % "swg-node" in out, (etc_left(box), out[-900:]))
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
@@ -748,7 +816,8 @@ if PERTURBED:
             "--perturb-engine": ("[17] the summary of [1]'s",), "--perturb-d123": ("[18] WDTT_DATA_DEL", "[19] …and with CSQTT_DATA_DEL=y"),
             "--perturb-orphan": ("[19] the csqtt password store", "[19] …and with CSQTT_DATA_DEL=y"),
             "--perturb-6880": ("[20] `6880",), "--perturb-turnconf": ("[20] /etc/sysctl.d/99-swg-turn.conf",),
-            "--perturb-dial": ("[21] a proxy behind NAT",), "--perturb-live": ("[22] the LIVE Docker node's wdtt0",)}
+            "--perturb-dial": ("[21] a proxy behind NAT",), "--perturb-live": ("[22] the LIVE Docker node's wdtt0",),
+            "--perturb-relaydir": ("[23] the swg-node journal goes", "[24] both journals go"), "--perturb-etcdata": ("[25] CONTROL",)}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
