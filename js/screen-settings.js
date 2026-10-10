@@ -1952,6 +1952,11 @@ export function PanelSettingsScreen() {
   const logMbPDirty = () => logMbP !== String(ps.log_mb_panel || 100);
   // On unless an operator has switched it off — which closes these networks rather than merely hiding them.
   const [showLans, setShowLans] = useState(ps.show_node_lans !== false);
+  // Scan-guard never-flag list (SCAN-GUARD-PLAN): source IPs/ranges the port-scan guard skips — our own fleet
+  // management reaches many servers the way a scanner does. One per line; a bare IP is normalised to /32, matching
+  // the server, so an unedited field reads clean against the stored list.
+  const [scanAllow, setScanAllow] = useState((ps.scan_allow || []).join("\n"));
+  const normScanAllow = s => [...new Set(String(s || "").split(/[\s,]+/).filter(Boolean).map(t => (t.includes("/") || t.includes(":")) ? t : t + "/32"))];
   const [meshGen, setMeshGen] = useState(ps.mesh_awg_gen || "2.0");   // the type new mesh links are made as (2.0 | 3.1 | wg)
   const [meshMode, setMeshMode] = useState(ps.mesh_mode || "auto");   // which node pairs get a mesh link (auto | full | demand)
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: customTargets(l) })));
@@ -2341,6 +2346,7 @@ export function PanelSettingsScreen() {
         top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
         expiry_warn_days: Math.max(0, Math.min(365, parseInt(warnDays) || 3)),
         show_node_lans: showLans,
+        scan_allow: normScanAllow(scanAllow),
         mesh_mode: meshMode,
         mesh_awg_gen: meshGen,
         reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
@@ -2427,6 +2433,9 @@ export function PanelSettingsScreen() {
     }
     setMsg(null); setSaved(Date.now() + 4000);   // green "All settings saved" flash in the header
     await Store.poll();
+    // Re-seed the scan-guard allowlist from the server's CANONICAL form (it masks host bits, drops dupes), so a CIDR
+    // typed with host bits — 10.0.0.1/24 → 10.0.0.0/24 — does not leave the section showing unsaved changes for ever.
+    setScanAllow((((Store.panelSettings) || {}).scan_allow || []).join("\n"));
     const fresh = Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)]));
     setNodeEdits(fresh); setOrig(fresh);
     } catch (e) {
@@ -2454,6 +2463,7 @@ export function PanelSettingsScreen() {
     // Two changes share this section, so the line names the one that actually moved rather than reporting
     // "mesh defaults" for a disclosure toggle that is not one.
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
+    if (normScanAllow(scanAllow).join(",") !== (ps.scan_allow || []).join(",")) out.push(T("Port-scan guard — trusted sources updated"));
     if (meshMode !== (ps.mesh_mode || "auto")) out.push(T("Mesh links — {v1}", { v1: meshModeLabel(meshMode, ps.mesh_auto_max) }));
     if (meshGen !== (ps.mesh_awg_gen || "2.0")) out.push(T("Mesh link type → {v1}, for new links", { v1: meshGenLabel(meshGen) }));
     if (glDirty("links") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || !eq(meshTpl(awgSet ? awg : {}), meshTpl(ps.mesh_awg)))) out.push(T("System mesh defaults"));
@@ -2628,7 +2638,7 @@ const sectionLabel = k => ({
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (dispDirty() || tzDirty() || dataDirty()) :
     sec === "logs" ? (logDirty() || logMbPDirty()) :
-    sec === "mesh" ? showLans !== (ps.show_node_lans !== false) :
+    sec === "mesh" ? (showLans !== (ps.show_node_lans !== false) || normScanAllow(scanAllow).join(",") !== (ps.scan_allow || []).join(",")) :
     sec === "links" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || !eq(meshTpl(awgSet ? awg : {}), meshTpl(ps.mesh_awg)) || meshMode !== (ps.mesh_mode || "auto") || meshGen !== (ps.mesh_awg_gen || "2.0")) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
@@ -3433,6 +3443,12 @@ const sectionLabel = k => ({
             </div>`)}
             ${!(Store.nodes || []).some(n => (n.lans || []).length) ? html`<p class="hint" style="margin:0">${T("No node reports sitting on a private network.")}</p>` : null}
           </div>
+          ${/* SCAN-GUARD-PLAN: fleet-wide, so it sits with the other fleet-wide network policy here (outside the node
+                picker). The port-scan guard flags a source that sweeps many servers on management ports; our own
+                management box does the same by nature, so it is named here to be left alone. */""}
+          <div class="seclabel lanfleet-head"><span>${T("Trusted sources")}</span></div>
+          <p class="hint" style="margin:0 0 8px">${T("Addresses the port-scan guard never flags. A management box that reaches many servers looks like a scanner to it — name it here to leave it alone. One IP or range a line; a bare IP means that one host. Everything else is still checked.")}</p>
+          <textarea class="ta" rows="3" spellcheck="false" autocomplete="off" placeholder="10.0.0.0/24&#10;198.51.100.7" value=${scanAllow} onInput=${e => setScanAllow(e.target.value)}></textarea>
         </div>` : null}
         <div class="setfoot">
           ${section === "access"

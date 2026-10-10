@@ -17762,6 +17762,7 @@ PANEL_SETTINGS_DEFAULTS = {
     # contradicted each other). Turning it back on only un-hides: it never re-opens a private network on your behalf.
     # The fleet list in Settings → Network stays visible either way — it is where the switch lives.
     "show_node_lans": True,
+    "scan_allow": [],   # SCAN-GUARD-PLAN: source IPs/CIDRs the port-scan guard never flags (our own fleet management sweeps like malware). Validated + enforced per-node as @scanallow.
     # Which node pairs get a mesh link: "auto" (a full mesh up to MESH_AUTO_FULL_MAX nodes, on demand above), "full" or
     # "demand". See the on-demand block above reconcile_mesh.
     "mesh_mode": "auto",
@@ -23881,6 +23882,40 @@ def api(method, path, qs, body, deps):
             cur["history_resolution"] = _hr if _hr in LEDGER_STEPS else LEDGER_STEP_DEFAULT
         if "show_node_lans" in incoming:
             cur["show_node_lans"] = incoming["show_node_lans"] is not False    # default is on; only an explicit false turns it off
+        if "scan_allow" in incoming:          # SCAN-GUARD-PLAN: source IPs/CIDRs the scan-sweep guard never flags (our own fleet
+            # management sweeps the fleet the same way malware sweeps the internet — measured 2026-10-10). A list, or a
+            # string split on commas/whitespace. Normalised to IPv4 CIDRs; the unparseable and the dangerously broad are
+            # NAMED, not swallowed. A /32 is one host; < /16 would exempt whole swathes and quietly gut the guard, so it
+            # is refused. An empty list clears the allowlist.
+            _raw = incoming["scan_allow"]
+            _items = _raw if isinstance(_raw, list) else re.split(r"[\s,]+", str(_raw or ""))
+            _allow, _bad, _broad = [], [], []
+            _over = 0
+            for _it in _items:
+                _it = str(_it or "").strip()
+                if not _it:
+                    continue
+                try:
+                    _net = ipaddress.ip_network(_it, strict=False)
+                except Exception:
+                    _bad.append(_it[:40]); continue
+                if _net.version != 4:         # the guard's sets are IPv4 (`ip saddr`); a v6 entry never matches and risks the node's older nft
+                    _bad.append(_it[:40]); continue
+                if _net.prefixlen < 16:        # 0.0.0.0/0 … /15 would exempt far too much — a footgun, not an allowlist
+                    _broad.append(str(_net)); continue
+                _c = str(_net)
+                if _c in _allow:
+                    continue
+                if len(_allow) >= 256:        # a sanity cap nobody reaches — REFUSED (not silently truncated), so the operator knows the list wasn't fully saved
+                    _over += 1; continue
+                _allow.append(_c)
+            if _bad:
+                return 400, {"ok": False, **perr("Not a valid IPv4 address or range: {v1}", v1=", ".join(_bad[:5])), "code": "bad_request"}
+            if _broad:
+                return 400, {"ok": False, **perr("Too broad for a never-flag list (use /16 or narrower): {v1}", v1=", ".join(_broad[:5])), "code": "bad_request"}
+            if _over:
+                return 400, {"ok": False, **perr("Too many trusted sources — {v1} over the limit of 256.", v1=str(_over)), "code": "bad_request"}
+            cur["scan_allow"] = _allow
         # Settings → Logs. Sent only when the Logging card changed: `log_debug` is a DURATION, and re-sending it with an
         # unrelated save would restart a running Debug's clock. The deadline is set by this panel's clock, never the
         # browser's.
@@ -33356,6 +33391,7 @@ class Handler(BaseHTTPRequestHandler):
                                           # leaves the client's DNS (incl. DoH) untouched by design.
                                           "block_doh": (node.get("routing_mode") or "kernel") == "forcedns",
                                           "mech": _blk_mech,   # {subnet: [mechanism ids]} → node builds the FREE L4/rate drops (smtp/quic/portscan) + doh; "torrents" = strict subnets
+                                          "scan_allow": (_ps.get("scan_allow") or []),   # SCAN-GUARD-PLAN: source CIDRs the scan-sweep guard never flags (our fleet management — measured to sweep like malware). Node-wide; a node too old to read it keeps today's behaviour.
                                           # the node-wide P2P policy; None = iface (the node keeps the per-interface mechanism alone)
                                           # route: the entry cascade_plan lowered ({table, via_iface, subnets}) — none when it could
                                           # not be lowered, which the node runs as block (fail closed) and reports

@@ -103,19 +103,22 @@ def run_checks(N, label=""):
     check("[1] one meter per port-scan subnet, each `rate over 200/second burst 200 packets`",
           len(meters) == 2 and all(r == "200" and b == "200" for _, r, b in meters), meters)
 
-    # [2] the v5 table on a node: exactly what this code wrote before the burst, its v5 signature stored
+    # [2] a node holding the PREVIOUS-version table (same shape, sig version one back) rebuilds once to the current
+    # one. The stored sig is computed the way the code does it now (scan-guard config folded in), only the version
+    # is a step back — so a code change that forgets to bump the version is caught (the plant below reverts it).
     nft = FakeNft(); N.run = nft.run
     N._ensure_mech_block(MECH, {"changed": 0, "errors": []})
     nft.table = nft.table.replace(" burst 200 packets", "")
     import hashlib, json
     portsets = {"10.12.0.0/24": ["udp . 443"], "10.8.0.0/24": ["tcp . 25"]}
-    v5 = hashlib.sha256(json.dumps({"p": portsets, "m": ["10.8.0.0/24", "10.9.0.0/24"], "v": 5}, sort_keys=True).encode()).hexdigest()
-    open(os.path.join(N.GEO_DIR, ".mech.sig"), "w").write(v5)
+    _scan = {"sa": [], "sp": list(N.SCAN_PORTS), "b": N.SCAN_B, "wu": N.SCAN_WIN_UNIT, "ws": N.SCAN_WIN_S}
+    prev = hashlib.sha256(json.dumps({"p": portsets, "m": ["10.8.0.0/24", "10.9.0.0/24"], "scan": _scan, "v": 6}, sort_keys=True).encode()).hexdigest()
+    open(os.path.join(N.GEO_DIR, ".mech.sig"), "w").write(prev)
     nft.loads.clear()
     N._ensure_mech_block(MECH, {"changed": 0, "errors": []})
     rebuilt = len(nft.loads) == 1 and "burst 200 packets" in nft.loads[0] and nft.loads[0].startswith("delete table inet swg_mech")
     N._ensure_mech_block(MECH, {"changed": 0, "errors": []})
-    check("[2] a node holding the v5 table rebuilds it once (delete + load in one transaction), then stays a no-op",
+    check("[2] a node holding the previous-version table rebuilds it once (delete + load in one transaction), then stays a no-op",
           rebuilt and len(nft.loads) == 1, (len(nft.loads), nft.loads[:1]))
 
     rate = int(meters[0][1]) if meters else 200
@@ -176,7 +179,7 @@ def run_checks(N, label=""):
 SRC = open(NODED).read()
 if "--perturb" in sys.argv:
     plants = {"the burst removed": (" burst 200 packets }", " }", "[1]"),
-              "the signature left at v5": ('"v": 6}', '"v": 5}', "[2]")}
+              "the signature not bumped (left at v6)": ('"v": 7}', '"v": 6}', "[2]")}
     bad = []
     for name, (a, b, want) in plants.items():
         if SRC.count(a) != 1:

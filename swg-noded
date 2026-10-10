@@ -6999,8 +6999,28 @@ def _mech_flagged(subnet):
     return "pscf_" + re.sub(r"[^0-9a-z]", "_", subnet.lower())  # per-subnet FLAGGED-scanner set: only over-rate src IPs land here (self-expiring)
 def _mech_ports(subnet):
     return "mps_" + re.sub(r"[^0-9a-z]", "_", subnet.lower())   # valid nft id for the per-subnet (proto.port) drop set
+def _mech_scanseen(subnet):
+    return "scs_" + re.sub(r"[^0-9a-z]", "_", subnet.lower())   # per-subnet (src . dst) pairs met this window — the scan-sweep counter's memory
+def _mech_scanmeter(subnet):
+    return "scm_" + re.sub(r"[^0-9a-z]", "_", subnet.lower())   # per-subnet distinct-destination rate meter (the scan-sweep flag)
 
-def _ensure_mech_block(mech, res):
+# Scan guard (docs/SCAN-GUARD-PLAN.md). A SWEEP is one source reaching many DIFFERENT servers on a management port; a
+# real admin re-hits a known handful. Measured on production 2026-10-10: malware swept 27–35 distinct :22 hosts an hour
+# (46–60 /24s, never revisiting, 5–15 new hosts/sec); NO legitimate user touched these ports at all, and the only legit
+# high-fan-out source was our own fleet management (→ scan_allow, exempted — it sweeps the fleet the same way). SCAN_PORTS
+# is the hunted set (80/443 EXCLUDED — browsing fans out there, a separate tier); a source over SCAN_B distinct
+# destinations in the window is flagged (into the same @pscf the panel already attributes) and its new connections to
+# these ports dropped until it stops. Rides the existing `portscan` mechanism — same subnets, no new wire key but the
+# optional allowlist. Rate is a token bucket so SCAN_WIN is an nft time unit, SCAN_WIN_S its matching seconds (seen-set).
+SCAN_PORTS = ("tcp . 22", "tcp . 2222", "tcp . 23", "tcp . 3389", "tcp . 5900", "tcp . 5901", "tcp . 445",
+              "tcp . 139", "tcp . 135", "tcp . 1433", "tcp . 3306", "tcp . 5432", "tcp . 6379", "tcp . 27017",
+              "tcp . 9200", "tcp . 5984", "tcp . 11211", "tcp . 2375", "tcp . 2376", "tcp . 8291", "tcp . 8728",
+              "udp . 161", "udp . 1900", "udp . 11211", "udp . 389", "udp . 19")
+SCAN_B = 15                 # distinct destinations in the window before a source is flagged (prod-measured: malware 27–35/h, legit users 0)
+SCAN_WIN_UNIT = "hour"      # nft limit-rate time unit for the meter
+SCAN_WIN_S = 3600           # the matching window in seconds, for the (src.dst) seen-set timeout
+
+def _ensure_mech_block(mech, res, scan_allow=()):
     """Per-interface FREE traffic/abuse mechanism drops in the `swg_mech` table (PREROUTING hook — see the
     warning at the chain below; mirrors _ensure_doh_block).
     mech = {subnet: [mechanism ids]}. EVERY rule is O(1) / offload-safe. To keep the datapath cheap the deterministic
@@ -7031,7 +7051,9 @@ def _ensure_mech_block(mech, res):
             with contextlib.suppress(OSError):
                 os.unlink(os.path.join(GEO_DIR, ".mech.sig"))
             return
-        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "v": 6}, sort_keys=True).encode()).hexdigest()   # v6: explicit burst on the port-scan meter; v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
+        _sa = sorted({str(a).strip() for a in (scan_allow or []) if str(a).strip()})   # never-flag source CIDRs (our fleet management — measured to sweep like malware, SCAN-GUARD-PLAN)
+        _scan = {"sa": _sa, "sp": list(SCAN_PORTS), "b": SCAN_B, "wu": SCAN_WIN_UNIT, "ws": SCAN_WIN_S} if meters else {}   # scan-guard config folded in so a future port-list/threshold/allowlist edit forces the one-time rebuild; it means nothing without a portscan subnet, so a node that runs none carries none of it
+        sig = hashlib.sha256(json.dumps({"p": portsets, "m": sorted(meters), "scan": _scan, "v": 7}, sort_keys=True).encode()).hexdigest()   # v7: scan guard — distinct-destination sweep flag on management ports + never-flag allowlist; v6: explicit burst on the port-scan meter; v5: torrent port-hint retired (swg_p2p); v4: +counter on the drops (observability); v3: forward hook -> prerouting (relay divert bypasses forward); v2: +pscf flagged-scanner set
         sigf = os.path.join(GEO_DIR, ".mech.sig")
         cur = ""
         with contextlib.suppress(OSError):
@@ -7052,8 +7074,20 @@ def _ensure_mech_block(mech, res):
         lines.append("table inet " + MECH_NFT_TABLE + " {")
         for S, els in sorted(portsets.items()):
             lines.append("  set " + _mech_ports(S) + " { type inet_proto . inet_service; flags interval; elements = { " + ", ".join(els) + " } }")
-        for S in sorted(meters):                                  # FLAGGED-scanner set — only over-rate src IPs are added, timeout-expiring
+        for S in sorted(meters):                                  # FLAGGED-scanner set — over-rate (200/s) AND sweep src IPs land here, timeout-expiring
             lines.append("  set " + _mech_flagged(S) + " { typeof ip saddr; flags timeout; }")
+        if meters and _sa:                                        # trusted sources never counted as scanners (our fleet management sweeps like malware — SCAN-GUARD-PLAN); only with a portscan subnet, else the set has no rule
+            lines.append("  set scanallow { typeof ip saddr; flags interval; elements = { " + ", ".join(_sa) + " } }")
+        if meters:                                                # scan guard: the hunted management ports (one shared set) + the private-destination guard + per-subnet (src . dst) window memory
+            lines.append("  set scanports { type inet_proto . inet_service; flags interval; elements = { " + ", ".join(SCAN_PORTS) + " } }")
+            # PRIVATE / INTERNAL destinations are not a public sweep — a user reaching their own LAN, a CGNAT address, a
+            # mesh peer or an internal service on :22 must not count toward (or be cut by) the scan guard (its job is the
+            # PUBLIC scanning that gets a node hoster-blocked). Same ranges as swg_p2p's `priv`. `fib type != local` only
+            # excludes the node ITSELF, so without this the whole private space counted. (The prod measurement saw only
+            # public destinations — its capture excluded private — so this narrows the guard, never widens it.)
+            lines.append("  set priv { typeof ip daddr; flags interval; elements = { 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } }")
+            for S in sorted(meters):
+                lines.append("  set " + _mech_scanseen(S) + " { type ipv4_addr . ipv4_addr; flags timeout; size 65535; }")
         # ⚠️ PREROUTING, NOT FORWARD — AND THE PRIORITY IS PART OF THE RULE. A TPROXY divert makes a packet
         # LOCAL at prerouting, so it never reaches the forward hook: blocking that lives there is silently
         # switched off for every accelerated interface, with the operator's block list still showing enabled.
@@ -7071,6 +7105,30 @@ def _ensure_mech_block(mech, res):
         # mandate is about per-packet SCANNING; a counter on a terminal drop rule is not that.
         for S in sorted(portsets):                                # ONE port-drop rule per subnet (all its port mechanisms)
             lines.append("    ip saddr " + S + " fib daddr type != local meta l4proto . th dport @" + _mech_ports(S) + " counter drop")
+        # ⚠️ SCAN GUARD (docs/SCAN-GUARD-PLAN.md) — a SWEEP is one source reaching many DIFFERENT servers on a management
+        # port; a real user re-hits a known handful. Measured on prod 2026-10-10: malware swept 27–35 distinct :22 hosts
+        # an hour (46–60 /24s, never revisiting); no legit USER touched these ports, and the only legit high-fan-out
+        # source was our own fleet management (→ @scanallow, exempted). Two rules, BEFORE the 200/s meter so a flagged
+        # sweeper is cut on these ports without spending the generic bucket. The (src.dst) seen-set gates the meter so a
+        # destination counts once per window (distinct destinations, not connections); a flagged source is dropped at (a)
+        # before (b), so it cannot keep filling the set (bounded; a full set fails OPEN for the meter, like swg_p2p's).
+        # Matches are ordered cheapest-bail-first: @scanports (one set lookup) drops a :443 flow before anything else,
+        # `ct state new` drops an established flow, and only a NEW scan-port flow reaches the @scanallow set lookup and
+        # the `fib` route lookup. In (a) the fib is behind the flagged-set test, so a route lookup happens only for a
+        # flagged source; in (b) it is ahead of the counter, because a connection to the NODE'S OWN service (local
+        # daddr, e.g. the node's sshd) must not be counted as a swept destination.
+        _na = "ip saddr != @scanallow " if _sa else ""
+        if meters:
+            for S in sorted(meters):                              # (a) a source ALREADY flagged → drop its new PUBLIC scan-port connections and RENEW
+                lines.append("    ip saddr " + S + " meta l4proto . th dport @scanports ct state new " + _na +         # the flag (update, not add: a persistent sweeper stays
+                             "ip saddr @" + _mech_flagged(S) + " ip daddr != @priv fib daddr type != local update @" + _mech_flagged(S) +   # cut; one that stops is released ~600 s
+                             " { ip saddr timeout 600s } counter drop")                                               # after its last attempt). priv/fib only for a flagged source; its INTERNAL access is untouched.
+            for S in sorted(meters):                              # (b) count DISTINCT PUBLIC destinations; past SCAN_B in the window flag the
+                lines.append("    ip saddr " + S + " meta l4proto . th dport @scanports ct state new " + _na +         # source (→ the same @pscf the panel attributes) and drop this packet.
+                             "ip daddr != @priv fib daddr type != local ip saddr . ip daddr != @" + _mech_scanseen(S) + # priv + fib BEFORE the count: a private / internal / node-local destination is not a public sweep.
+                             " add @" + _mech_scanseen(S) + " { ip saddr . ip daddr timeout " + str(SCAN_WIN_S) + "s } "
+                             "meter " + _mech_scanmeter(S) + " { ip saddr limit rate over " + str(SCAN_B) + "/" + SCAN_WIN_UNIT +
+                             " burst " + str(SCAN_B) + " packets } add @" + _mech_flagged(S) + " { ip saddr timeout 600s } counter drop")
         # ⚠️ THE BURST IS WRITTEN OUT. Left unsaid, nft gives a limit `burst 5 packets`: one address could open 5 connections
         # in a row, then one per 5 ms — and every packet of an unanswered UDP flow is `ct state new`, so a nested AmneziaWG
         # handshake (5 I + 4 junk + init = 10 packets) lost 6–10 on every try and never connected (measured on msk-shadow,
@@ -7080,8 +7138,8 @@ def _ensure_mech_block(mech, res):
         # 11, 100 none. 200 = one second of the rate: twice one device's need, for a household behind one address. A scan still
         # meets the same 200/s: ~200 probes more once, then it is cut and flagged as before.
         for S in sorted(meters):                                  # per-SOURCE new-connection rate limit (scans / brute-force). Over-rate
-            lines.append("    ip saddr " + S + " fib daddr type != local ct state new meter " + _mech_meter(S) +   # sources are recorded in the flagged set (→ real
-                         " { ip saddr limit rate over 200/second burst 200 packets } add @" + _mech_flagged(S) + " { ip saddr timeout 600s } counter drop")   # scanner attribution, self-decaying)
+            lines.append("    ip saddr " + S + " " + _na + "fib daddr type != local ct state new meter " + _mech_meter(S) +   # a trusted source (→ @scanallow) is never flagged by ANY
+                         " { ip saddr limit rate over 200/second burst 200 packets } add @" + _mech_flagged(S) + " { ip saddr timeout 600s } counter drop")   # portscan rule — the 200/s cap included, so it never shows as a scanner
         lines += ["  }", "}"]
         with contextlib.suppress(OSError):
             os.makedirs(GEO_DIR, exist_ok=True)
@@ -10634,7 +10692,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     if host_engine not in ("sni_user", "sni_kernel") and (smart or {}).get("block_doh"):
         _doh_observe |= set(_subs)
     _ensure_doh_block(sorted(_doh_observe - _doh_strict), sorted(_doh_strict), res)
-    _ensure_mech_block(_mech, res)                            # FREE traffic/abuse L4/rate drops (smtp/quic/portscan)
+    _ensure_mech_block(_mech, res, scan_allow=(smart or {}).get("scan_allow") or [])   # FREE traffic/abuse L4/rate drops (smtp/quic/portscan) + scan-sweep guard (never-flag allowlist)
     _ensure_p2p((smart or {}).get("p2p"), _mech, node_cfg, res)   # P2P policy: node-wide, every egress (P2P-POLICY-PLAN P1)
     return res
 
