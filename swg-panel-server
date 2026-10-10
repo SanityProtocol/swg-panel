@@ -31602,8 +31602,8 @@ class Handler(BaseHTTPRequestHandler):
         stats_dir = Handler.deps.get("stats_dir")
         if stats_dir and snap and stats_disk_ok(stats_dir):   # skip the non-essential stats/RRD writes on a full disk
             sf = node.get("stats_file", f"stats-{nid}.json")
-            with contextlib.suppress(Exception):
-                atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o644)
+            with contextlib.suppress(Exception):   # 0640, group swg (the dir's setgid): swg-sub reads it, and it carries
+                atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o640)   # each peer's PSK — no other user
             cpu, mem, disk = health_pcts(snap.get("health")) or (HRRD_NA, HRRD_NA, HRRD_NA)
             agg = snap_aggregates(snap, node)        # rx/tx (total) + awg/mesh split + peer counts, panel-derived
             rx, tx = agg["rx"], agg["tx"]            # == snap_traffic — total across every iface
@@ -31621,7 +31621,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(buf) > LIVE_MAX:
                 del buf[:len(buf) - LIVE_MAX]
             with contextlib.suppress(Exception):
-                atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o644)
+                atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o640)
             # Per-PAIR mesh history for the flow-map ranges: each mesh link's directional rate, stored in a tiny
             # per-pair ring (reuses the node ring — rx slot = a→b, tx slot = b→a). Throttled per pair (≤1/min) so
             # both link ends dedup onto one write and it stays negligible. Panel-derived → no node change.
@@ -31730,7 +31730,7 @@ class Handler(BaseHTTPRequestHandler):
                     if now_i - _olast >= 30:
                         Handler.deps["_off_last_w"] = now_i
                         with contextlib.suppress(Exception):
-                            atomic_write(os.path.join(stats_dir, "offenders.json"), json.dumps(_off), mode=0o644)
+                            atomic_write(os.path.join(stats_dir, "offenders.json"), json.dumps(_off), mode=0o640)
             # PER-CATEGORY BLOCKED SITES (SNI mode): the node ships a bounded top-K of blocked HOSTNAMES (swg-sni saw the
             # SNI at block time); the PANEL buckets each into its content category (bisecting the sorted source lists it
             # already owns — no list in RAM, no node/datapath change). We ring the DISTINCT SITE COUNT per category as a
@@ -35748,6 +35748,14 @@ def main():
             Handler.deps["live_samples"][_nid] = [tuple(s) for s in _lb if isinstance(s, (list, tuple)) and len(s) >= 6][-LIVE_MAX:]
     # restore the offender first/last-seen map so ranged "who" bubbles survive a restart/update (mirrors offenders.json)
     _ofm = load_json(os.path.join(Handler.deps["stats_dir"], "offenders.json"), None)
+    # The mirrors are 0640 (they carry PSKs and who did what); one an older build wrote 0644 is rewritten only when its
+    # node syncs again — an offline node's never — so they take this build's mode here, once a start.
+    for _nid, _c in Handler.deps["nodes"].items():
+        for _f in (_c.get("stats_file", f"stats-{_nid}.json"), f"live-{_nid}.json"):
+            with contextlib.suppress(OSError):
+                os.chmod(os.path.join(Handler.deps["stats_dir"], _f), 0o640)
+    with contextlib.suppress(OSError):
+        os.chmod(os.path.join(Handler.deps["stats_dir"], "offenders.json"), 0o640)
     if isinstance(_ofm, dict):
         Handler.deps["_offenders"] = {m: {ip: list(e) for ip, e in (d or {}).items()
                                           if isinstance(e, (list, tuple)) and len(e) >= 3}

@@ -39,7 +39,9 @@ Run: python3 tests/snap_shape_selftest.py (0 = pass).  --perturb makes the sanit
 expects the malformed shapes to sail through.  Each of --perturb-meta, --perturb-listen, --perturb-forward,
 --perturb-turnproxies, --perturb-door and --perturb-snapnum takes out one PANEL-1 line, --perturb-overflow PANEL-1b's,
 and --perturb-shape (a whole row of the table), --perturb-bad, --perturb-ifacelist and --perturb-said PANEL-1c's,
---perturb-bigfloat and --perturb-bigint PANEL-1d's
+--perturb-bigfloat and --perturb-bigint PANEL-1d's, --perturb-mirror644 and --perturb-live644 the mirror's mode (it
+carries every peer's PSK: 0640, group swg, never world-readable — CPU re-qualification N2), --perturb-startmode the start's
+fix of an older build's 0644
 (exit 0 when caught).
 """
 import atexit, copy, importlib.machinery, importlib.util, json, os, re, shutil, socket, subprocess, sys, tempfile, time
@@ -77,6 +79,12 @@ PLANTS = {
     "bigint": ('    if len(s.lstrip("-")) > 100:\n', "    if False:\n"),
     "snapnum": ("    return n if math.isfinite(n) else None\n", "    return n\n"),
     "overflow": ("except (TypeError, ValueError, OverflowError):", "except (TypeError, ValueError):"),   # PANEL-1b
+    "mirror644": ("atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o640)",
+                  "atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o644)"),
+    "startmode": ('                os.chmod(os.path.join(Handler.deps["stats_dir"], _f), 0o640)\n',
+                  '                pass\n'),
+    "live644": ('atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o640)',
+                'atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o644)'),
 }
 TMP = tempfile.mkdtemp(prefix="snap-shape-")
 atexit.register(shutil.rmtree, TMP, True)          # every exit, an early one too
@@ -407,6 +415,10 @@ try:
             stored = fh.read()
         check("[7] %s: 200, and stored exactly as the node sent it (%d bytes)" % (label, len(stored)),
               qc == 200 and stored == json.dumps(snap), (qc, len(stored), len(json.dumps(snap))))
+    _modes = {f: oct(os.stat(os.path.join(STATS, f)).st_mode & 0o777) for f in ("stats-%s.json" % Q, "live-%s.json" % Q)
+              if os.path.exists(os.path.join(STATS, f))}
+    check("[7] the mirror and its live samples are 0640 — the mirror carries every peer's PSK; swg-sub reads it as group swg",
+          len(_modes) == 2 and set(_modes.values()) == {"0o640"}, _modes)
 
     print("\n[8] PANEL-1b — a generated_at past a double's range (10**400), stored: the panel starts again over it")
     qc = sync(Q, dict(GOOD[Q], generated_at=10 ** 400))[0]
@@ -416,6 +428,7 @@ try:
     _ms = json.load(open(_mf))
     _ms["generated_at"] = 10 ** 400
     open(_mf, "w").write(json.dumps(_ms))
+    os.chmod(_mf, 0o644)                           # …and with an older build's mode
     proc.terminate()
     try:                                           # a stop is no measurement: wait it out, then make sure of it
         proc.wait(timeout=60)
@@ -425,6 +438,8 @@ try:
     proc = _boot()                                 # its warm start reads the mirror that sync left
     up = _up(proc)
     check("[8] a restarted panel comes up over a mirror holding it", up, "" if up else open(_log.name).read()[-300:])
+    check("[8] …and gives an older build's 0644 mirror this build's 0640 at its start (an offline node's is never rewritten)",
+          oct(os.stat(_mf).st_mode & 0o777) == "0o640", oct(os.stat(_mf).st_mode & 0o777))
     _o = others() if up else None
     check("[8] …and answers: A's and B's syncs 200 with `desired`, /api/state 200 as JSON",
           _o == ((200, True), (200, True), (200, True)), _o)
