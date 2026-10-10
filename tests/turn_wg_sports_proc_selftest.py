@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-test — a turn proxy's loopback source ports, read from /proc, not `ss -Hnp` (docs/CPU-PLAN.md C1).
+"""Self-test — a turn proxy's loopback source ports, read from /proc, not `ss -Hnp` (docs/CPU-PLAN.md B9).
 
 `wg_sports` tells the panel WHICH proxy a client came through: a wg peer reached through a proxy has the endpoint
 127.0.0.1:<a source port of that proxy's connection to wg>. `ss -Hnp -t|-u state established` walks every fd of every

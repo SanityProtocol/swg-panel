@@ -1792,7 +1792,7 @@ def _turn_wg_sports_proc(svcs):
     """{service: {port}} — the 127.0.0.1 source ports of each turn-proxy unit's ESTABLISHED TCP and connected UDP sockets
     whose peer is 127.0.0.1 too (the proxy→wg connections), read from /proc: the unit's cgroup → its pids → their socket
     inodes → /proc/net/tcp and udp. What `ss -Hnp -t|-u state established` gave the caller, without walking every fd of
-    every process on the box for it — 16 ms of CPU a pass on swgt (docs/CPU-PLAN.md C1). None when the cgroups are not
+    every process on the box for it — 16 ms of CPU a pass on swgt (docs/CPU-PLAN.md B9). None when the cgroups are not
     systemd's unified hierarchy at /sys/fs/cgroup (cgroup v1, a container's own namespace): the caller asks `ss` then."""
     if not os.path.isdir("/sys/fs/cgroup/system.slice"):
         return None
