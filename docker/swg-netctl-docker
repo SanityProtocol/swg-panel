@@ -8,8 +8,9 @@ change a published port. This is the Docker equivalent: it drains the SAME reque
 queue the panel already writes (drop-in compatible — the panel needs no change) and
 maps each verb to a `docker compose` action on the host.
 
-Polled by swg-netctl-docker.timer, NOT a .path unit: a host inotify watch never
-sees the container's write to a bind-mounted queue file, so we poll the dir.
+Started by swg-netctl-docker.path (DirectoryNotEmpty: the host's inotify sees the
+container's write — a bind mount is the same inode; measured, 8 of 8 within 60 ms)
+and by swg-netctl-docker.timer every 10 s, which covers a watch that died.
 
 Request  (queue/<id>.json):  {"id","verb","args":[...],"nonce"}   — written by the panel
 Result   (status/<id>.json): {"status":"ok"|"error","message":...} — read by the panel's _netctl_wait

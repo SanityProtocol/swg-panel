@@ -136,5 +136,7 @@ if [ -f /etc/systemd/system/swg-netctl.service ]; then
     printf '   start: result=%-15s cpu=%s ms\n' "$(systemctl show swg-netctl.service -p Result --value)" \
       "$(( $(systemctl show swg-netctl.service -p CPUUsageNSec --value 2>/dev/null || echo 0) / 1000000 ))"
   done
-  [ -r /run/swg-netctl.due ] && echo "   stamp: next own work in $(( $(cat /run/swg-netctl.due) - $(date +%s) )) s"
+  if read -r due at < /run/swg-netctl.due 2>/dev/null; then        # `<due> <the run's time>` (5d07661f)
+    echo "   stamp: next own work in $(( ${due:-0} - $(date +%s) )) s, written $(( $(date +%s) - ${at:-0} )) s ago"
+  fi
 fi

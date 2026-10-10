@@ -1864,8 +1864,9 @@ wire_host_updater
 # The Docker root helper for ADDRESS changes (mirrors the updater above). A bare-metal panel runs unprivileged and
 # delegates host jobs (rebind a listener, restart swg-sub) to swg-netctl; Docker has no swg-netctl, and a container
 # can't `docker compose` the host. So the panel container writes the SAME netctl request to data/lib/netctl/queue,
-# and THIS host unit drains that queue into `docker compose` actions (restart / recreate a service). Polled, not a
-# .path unit — inotify never sees the container's write across a bind mount. Panel-bearing profiles only.
+# and THIS host unit drains that queue into `docker compose` actions (restart / recreate a service). Started by a
+# .path unit (the host's inotify sees the container's write: a bind mount is the same inode) and by a 10 s timer, which
+# covers a watch that died. Panel-bearing profiles only.
 wire_docker_netctl(){
   case "$PROFILE" in host|master|host-node) ;; *) return 0;; esac
   # ⚠️ FROM THE SOURCE TREE, like update.sh's ensure_netctl_docker. It used to look only in $INSTALL_DIR/docker/,
