@@ -12113,8 +12113,11 @@ def _block_activity():
             if sub and pk:
                 out.setdefault(sub.group(1), {})["mech"] = int(pk.group(1))
     with contextlib.suppress(Exception):                          # blocked: cumulative packets dropped to a content-block set,
-        pre = _nft_kept(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "prerouting"], structural=False).stdout or ""   # summed per source subnet
         _bsw = {x[0] for c2, lst in ((_SHADOW["v"] or {}).get("by_target") or {}).items() if str(c2).startswith("blku") for x in lst}
+        # Read only where there is something to count: a table whose structure holds no Block set (and no Block list's shadow)
+        # has no line below to match — its rule counters were read every pass for nothing (CPU-PLAN B4).
+        pre = (_nft_kept(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "prerouting"], structural=False).stdout or ""
+               if (_bsw or "blku" in _smart_table()["out"]) else "")   # summed per source subnet
         for ln in pre.splitlines():                               # rule: ip saddr <sub> ip daddr @cat_blku_… counter packets N … drop
             _m = re.search(r"@catl?_(sw_[0-9a-f]{10})\b", ln) if _bsw else None   # …or a block list's shadow (_smart_shadows)
             if ("blku" not in ln and not (_m and _m.group(1) in _bsw)) or "drop" not in ln:
@@ -12141,7 +12144,10 @@ def _block_activity():
 
 def _smart_forward():
     """The smart table's `forward` chain as nft lists it, read once a pass: its rules' anonymous counters are what
-    smart_status (the SNI first-hit resets) and _block_activity (refusals by name) report — "" when it is not there."""
+    smart_status (the SNI first-hit resets) and _block_activity (refusals by name) report — "" when it is not there, and
+    without a read when the table's structure holds no `reject` rule (both are one): nothing there to count."""
+    if "reject" not in _smart_table()["out"]:
+        return ""
     return _pass_cached("nft-smart-forward", lambda: _nft_kept(["nft", "list", "chain", "inet", SMART_NFT_TABLE, "forward"],
                                                                structural=False)).stdout or ""
 

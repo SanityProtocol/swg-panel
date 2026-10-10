@@ -17,6 +17,8 @@ id — except the per-category byte counters, read over netlink (B5a), and the S
   [5] No table: read every pass, as before. The two invalidations (a table torn down for a rebuild) render again.
   [6] smart_status — what a node POSTs (I2): kept or rendered, the same sets, rules and active; `resets` follows the forward
       chain's counter every pass even while the render is kept; that chain is read ONCE a pass for both its readers.
+  [7] The chains read for their rule counters are read only where the table's structure has something to count: `prerouting`
+      with a Block set (or a Block list's shadow) in it, `forward` with a `reject` rule — else no process, the same report.
 
 Run: python3 tests/smart_table_reuse_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
@@ -24,6 +26,8 @@ Run: python3 tests/smart_table_reuse_selftest.py   (0 = pass)
      nolive          a render holding expiring elements / datapath-filled sets is kept
      afterid         the render is kept with an id read after it (a commit during the render would be missed)
      resetstable     smart_status reads the reset counter from the (possibly kept) render
+     preall          `prerouting` is read with no Block set in the table
+     fwdall          `forward` is read with no `reject` rule in the table
 """
 import importlib.machinery, importlib.util, json, os, re, subprocess, sys, tempfile, threading
 
@@ -46,6 +50,10 @@ PLANTS = {
     "nolive": ('''    return "expires " in out or "add @" in out or "update @" in out or " meter " in out''', '''    return False'''),
     "afterid": ('''                            gen=gen if keep else None, cnames=cnames)''',
                 '''                            gen=_nft_genid() if keep else None, cnames=cnames)'''),
+    "preall": ('''               if (_bsw or "blku" in _smart_table()["out"]) else "")''', '''               if True else "")'''),
+    "fwdall": ('''    if "reject" not in _smart_table()["out"]:
+        return ""''', '''    if False:
+        return ""'''),
     "resetstable": ('''    resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\\d+)", _smart_forward()))''',
                     '''    resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\\d+)", t["out"]))'''),
 }
@@ -231,6 +239,24 @@ K["gen"] = [51]
 s3, rc_, _ = status()
 check("[6] a render of the same state reports the same document", rc_ == 1 and json.dumps(s3, sort_keys=False) == json.dumps(s2, sort_keys=False),
       (s3, s2))
+
+# ── [7] reads where there is something to count ─────────────────────────────────────────────────────────────────────
+print("\n[7] the chains read for their counters")
+
+
+def chains(table):
+    K["table"], K["gen"] = table, [K["gen"][0] + 1]
+    s7, _, fw = status()
+    return s7, sum(c == "nft list chain inet swg_smart prerouting" for c in CALLS), fw
+
+
+s7, pr, fw = chains(render())
+check("[7] no Block set in the table: `prerouting` is not read (no line of it could count)", pr == 0, CALLS)
+check("[7] …a `reject` rule: `forward` is read (the resets)", fw == 1 and s7["resets"] == 9, (fw, s7["resets"]))
+s7, pr, fw = chains(render(extra_rule="\t\tip saddr 10.8.0.0/24 ip daddr @cat_blku_x counter packets 3 bytes 9 drop\n"))
+check("[7] a Block set: `prerouting` is read", pr == 1, CALLS)
+s7, pr, fw = chains(render().replace(" reject with tcp reset", " accept"))
+check("[7] no `reject` rule (no SNI engine): `forward` is not read, and no resets", fw == 0 and s7["resets"] == 0, (fw, s7["resets"]))
 
 import shutil
 shutil.rmtree(T, ignore_errors=True)
