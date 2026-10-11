@@ -228,6 +228,11 @@ try:
       const field = (sh, label) => [...sh.querySelectorAll('.field')].find(f => ((f.querySelector('label') || {}).textContent || '').trim() === label);
       const openDisc = async (sh, re) => { const d = [...sh.querySelectorAll('button')].find(b => /^▸/.test(b.textContent.trim()) && re.test(b.textContent)); if (d) { d.click(); await sleep(500); } };
       const save = () => sheet().querySelector('.sheet-foot .btn-primary');
+      // After a Save, until the sheet is gone or says why it stayed — never a fixed wait: a loaded machine (the gates run
+      // six at a time beside VMs) answered after the 2.5 s this slept, and the accepted save read as a sheet left open.
+      // A Save that sends nothing still ends open and silent, 20 s later.
+      const settled = async (ms = 20000) => { const t0 = Date.now();
+        while (Date.now() - t0 < ms) { await sleep(150); const sh = sheet(); if (!sh || sh.querySelector('.formmsg.err')) return; } };
     """
     def iface_round(tab, mtu):
         return ev_mod(tab, "iface", HELP + """
@@ -236,7 +241,7 @@ try:
           await openDisc(sh, /MTU/);
           const dnsI = field(sh, 'DNS').querySelector('input'), mtuI = field(sh, 'MTU').querySelector('input');
           typeInto(dnsI, '9.9.9.9'); typeInto(mtuI, %s); await sleep(300);
-          save().click(); await sleep(2500);
+          save().click(); await settled();
           sh = sheet();
           return { open: !!sh && /awg0/.test((sh.querySelector('h3') || {}).textContent || ''),
                    msg: sh ? [...sh.querySelectorAll('.formmsg.err')].map(e => e.textContent.trim()) : [],
@@ -283,7 +288,7 @@ try:
           await sleep(400);
           const b = save(); const enabled = !!b && !b.disabled;
           if (enabled) b.click();
-          await sleep(2500);
+          await settled();
           sh = sheet();
           const t31b = sh && [...sh.querySelectorAll('.meshgen button[role=radio]')].find(b => b.textContent.trim() === 'AWG 3.1');
           const s4b = sh && [...sh.querySelectorAll('label.awg-f')].find(l => (l.querySelector('span') || {}).textContent === 'S4');
@@ -323,7 +328,7 @@ try:
             %s
             await sleep(400);
             const b = save(); const enabled = !!b && !b.disabled; if (enabled) b.click();
-            await sleep(2500);
+            await settled();
             sh = sheet();
             const ti = sh && fieldRx(sh, /^Title/), pa = sh && fieldRx(sh, /ExecStart/);
             return { enabled, open: !!sh && /proxy/.test((sh.querySelector('h3') || {}).textContent || ''),
