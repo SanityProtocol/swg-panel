@@ -15,6 +15,7 @@
  *      --perturb   provName hands every label back as sent → RED
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { check, done, ROOT } from "./spa_env.mjs";
@@ -28,9 +29,13 @@ if (PERTURB) {
   const src = fs.readFileSync(file, "utf8");
   const a = 'export function provName(p) { return p.id === "curated" ? T("Curated") : (p.label || p.id); }';
   if (src.split(a).length !== 2) { console.log("ANCHOR MISSING — would FALSE-PASS"); process.exit(1); }
-  file = path.join(ROOT, "js", ".routing-perturbed-prov.mjs");
-  fs.writeFileSync(file, src.replace(a, "export function provName(p) { return p.label || p.id; }"));
-  process.on("exit", () => { try { fs.unlinkSync(file); } catch (_) { /* gone */ } });
+  // The copy lives OUTSIDE the served tree — a killed run must never leave a broken routing.js in js/ — and reaches its
+  // siblings by their absolute URLs: the same modules (one Store) the test itself imports.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spa-geo-prov-"));
+  const base = pathToFileURL(path.join(ROOT, "js")).href + "/";
+  file = path.join(dir, "routing.mjs");
+  fs.writeFileSync(file, src.replace(a, "export function provName(p) { return p.label || p.id; }").replaceAll('from "./', 'from "' + base));
+  process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* gone */ } });
 }
 const I = await import(pathToFileURL(path.join(ROOT, "js", "i18n.js")).href);
 await I.loadLang();

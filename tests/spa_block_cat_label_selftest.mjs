@@ -24,6 +24,7 @@
  *      --perturb-list   blistText hands every list name and description back untouched → RED
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -57,9 +58,13 @@ if (PERTURB || LIST) {
   const src = fs.readFileSync(file, "utf8");
   const a = PERTURB ? "export const blockCatLabel = label => (" : "export const blistText = s => (";
   if (src.split(a).length !== 2) { console.log("ANCHOR MISSING — would FALSE-PASS"); process.exit(1); }
-  file = path.join(ROOT, "js", ".routing-perturbed.mjs");
-  fs.writeFileSync(file, src.replace(a, PERTURB ? "export const blockCatLabel = label => label || (" : "export const blistText = s => s || ("));
-  process.on("exit", () => { try { fs.unlinkSync(file); } catch (_) { /* gone */ } });
+  // OUTSIDE the served tree (a killed run must never leave a broken routing.js in js/), its siblings by absolute URL
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spa-block-cat-"));
+  const base = pathToFileURL(path.join(ROOT, "js")).href + "/";
+  file = path.join(dir, "routing.mjs");
+  fs.writeFileSync(file, src.replace(a, PERTURB ? "export const blockCatLabel = label => label || (" : "export const blistText = s => s || (")
+                           .replaceAll('from "./', 'from "' + base));
+  process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* gone */ } });
 }
 const I = await import(pathToFileURL(path.join(ROOT, "js", "i18n.js")).href);
 await I.loadLang();
