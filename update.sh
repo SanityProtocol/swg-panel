@@ -585,8 +585,8 @@ EOF
 # HEAL: the tick the idle gate relies on, on time. systemd's default AccuracySec=1min fires a 10 s tick whenever PID 1 next
 # wakes for something else, and a settings save, Debug's end and a request with the path watch dead all wait for a tick.
 # In the CPU re-qualification's 6-hour soak (AB-F1) the gated helper's ticks came a median 15 s and up to 35 s apart, the
-# old helper's 12 / 16 s: both drift, the gated one more, since it wakes PID 1 far less. Added to a timer that has no
-# AccuracySec; one an operator set is theirs.
+# old helper's a median 12 s and up to 16 s: both drift, the gated one more, since it wakes PID 1 far less. Added to a
+# timer that has no AccuracySec; one an operator set is theirs.
 ensure_timer_on_time(){   # <timer unit>
   local t="/etc/systemd/system/$1"
   [ -f "$t" ] && grep -q '^\[Timer\]$' "$t" || return 0
@@ -1776,7 +1776,8 @@ EOF
 }
 
 # HEAL: the docker address helper's idle gate — the same gate as ensure_netctl_gate's, asking the queue only (the drainer
-# has no work of its own). Written when missing or different, for the same reason. Panel-bearing profiles only.
+# has no work of its own). Written when missing or different, for the same reason. Panel-bearing profiles only. Like
+# ensure_netctl_gate, it gives the drainer's timer AccuracySec=1s first (ensure_timer_on_time).
 ensure_netctl_docker_gate(){
   case "${1:-}" in host|master|host-node) ;; *) return 0;; esac
   if [ ! -f /etc/systemd/system/swg-netctl-docker.service ]; then   # a dry run: the helper's heal above only said it would write it
