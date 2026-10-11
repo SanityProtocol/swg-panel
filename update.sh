@@ -1682,10 +1682,21 @@ ensure_netctl_docker(){   # HEAL (install-if-missing) the docker address helper 
   # mounted data/lib/netctl/queue and THIS host unit drains them into compose actions (restart / rebind
   # swg-sub on an address change). Missing on older/partial docker installs → one-click address changes fall
   # back to a manual restart. HEAL CONTRACT: install only the missing pieces (binary + .service + .timer),
-  # never rewrite existing ones; enable the watch + timer. Templates MUST mirror install-docker.sh's wire_docker_netctl.
+  # never rewrite an existing unit; enable the watch + timer. Templates MUST mirror install-docker.sh's wire_docker_netctl.
+  # The binary is code, not configuration: it follows the release (below).
   case "${1:-}" in host|master|host-node) ;; *) return 0;; esac    # panel-bearing profiles only
   local drainer="$SRC/docker/swg-netctl-docker"
   [ -f "$drainer" ] || return 0
+  # ⚠️ THE DRAINER FOLLOWS THE RELEASE. Installed only when missing, a box updated from 1.8.8 kept 1.8.8's drainer behind
+  # 1.8.9's idle gate — without dace39ce's queue sweep, the strays the gate relies on it clearing (1.8.9 qualification
+  # P3, docker-pristine: 10 of 10 updates). Written beside and renamed in — install(1) rewrites a file in place, and the
+  # timer may start the drainer at any moment: it never reads half a file.
+  if [ -x /usr/local/bin/swg-netctl-docker ] && ! cmp -s "$drainer" /usr/local/bin/swg-netctl-docker; then
+    if $DRYRUN; then echo "    [skip] install this release's /usr/local/bin/swg-netctl-docker (it differs)"
+    elif install -m755 "$drainer" /usr/local/bin/swg-netctl-docker.new && mv -f /usr/local/bin/swg-netctl-docker.new /usr/local/bin/swg-netctl-docker; then
+      DID_UPDATE=yes; note "docker address helper: this release's drainer"
+    else rm -f /usr/local/bin/swg-netctl-docker.new; warn "couldn't install this release's /usr/local/bin/swg-netctl-docker — the old drainer stays"; fi
+  fi
   if [ -x /usr/local/bin/swg-netctl-docker ] && [ -f /etc/systemd/system/swg-netctl-docker.service ] \
      && [ -f /etc/systemd/system/swg-netctl-docker.timer ]; then
     if grep -q '^OnUnitActiveSec=1s' /etc/systemd/system/swg-netctl-docker.timer 2>/dev/null \
