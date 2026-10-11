@@ -62,8 +62,14 @@ if (PERTURB || LIST) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spa-block-cat-"));
   const base = pathToFileURL(path.join(ROOT, "js")).href + "/";
   file = path.join(dir, "routing.mjs");
-  fs.writeFileSync(file, src.replace(a, PERTURB ? "export const blockCatLabel = label => label || (" : "export const blistText = s => s || (")
-                           .replaceAll('from "./', 'from "' + base));
+  const copy = src.replace(a, PERTURB ? "export const blockCatLabel = label => label || (" : "export const blistText = s => s || (")
+                  .replaceAll('from "./', 'from "' + base);
+  // A specifier the rewrite does not know (single quotes, "../", a dynamic import, import.meta.url) would resolve against
+  // the temp dir and fail the import — a crash, which must never read as the plant caught: stop as a dead plant instead.
+  if (/(?:from\s*|import\s*\(\s*)['"]\.{1,2}\/|import\.meta\.url/.test(copy)) {
+    console.log("ANCHOR MISSING — the perturbed copy keeps a relative import: this run would FALSE-PASS"); process.exit(1);
+  }
+  fs.writeFileSync(file, copy);
   process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* gone */ } });
 }
 const I = await import(pathToFileURL(path.join(ROOT, "js", "i18n.js")).href);
