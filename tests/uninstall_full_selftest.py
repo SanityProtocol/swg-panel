@@ -85,6 +85,9 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-image   its image is not read from the .env → RED on [1]'s own-nft check only
      --perturb-relaydir  any /etc/swg-panel read as kept data (as 6cd65eb9 shipped it) → RED on [23] [24]'s journal checks only
      --perturb-etcdata   /etc/swg-panel never read as kept data (the over-broad fix) → RED on [25] only
+     --perturb-runns     the journal namespaces' sockets stay in /run (as shipped) → RED on [26]'s namespace and nothing-left checks only
+     --perturb-runrest   the probe's sockets, swg-netctl's due stamp and swg-agent's lock stay (as shipped) → RED on [26]'s
+                         probe, stamp, lock and nothing-left checks and [27]'s probe check only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
 
@@ -96,7 +99,7 @@ FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--
                                          "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg",
                                          "--perturb-engine", "--perturb-d123", "--perturb-orphan", "--perturb-6880",
                                          "--perturb-turnconf", "--perturb-dial", "--perturb-live", "--perturb-relaydir",
-                                         "--perturb-etcdata")}
+                                         "--perturb-etcdata", "--perturb-runns", "--perturb-runrest")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -163,6 +166,12 @@ if FLAGS["--perturb-relaydir"]:
     plant(_DK, '  [ -d /var/lib/swg-panel ] || [ -d /etc/swg-panel ] || [ -d "$DOCKER_DIR/data" ]; }')
 if FLAGS["--perturb-etcdata"]:
     plant(_DK, '  [ -d /var/lib/swg-panel ] || [ -d "$DOCKER_DIR/data" ]; }')
+if FLAGS["--perturb-runns"]:
+    plant('      rmrf "/run/systemd/journal.$ns"   # its sockets, stopped above: systemd leaves their files (RemoveOnStop=no)\n', "")
+if FLAGS["--perturb-runrest"]:
+    plant(" /etc/sudoers.d/swg-agent /run/swg-agent.lock\n", " /etc/sudoers.d/swg-agent\n")
+    plant("    || rmrf /usr/local/bin/swg-netctl-due /run/swg-netctl.due\n", "    || rmrf /usr/local/bin/swg-netctl-due\n")
+    plant("  rmrf /run/systemd/journal.swg-probe   # the probe's sockets: systemd leaves a stopped socket unit's files (RemoveOnStop=no)\n", "")
 
 T = tempfile.mkdtemp(prefix="unin-full-")
 
@@ -802,6 +811,40 @@ check("[25] CONTROL: /etc/swg-panel holding a panel's own files (install.conf, i
       "journal stays with its history, said under Kept",
       os.path.exists(_j) and open(_j).read() == "HISTORY" and KEPT_J % "swg-node" in out, (etc_left(box), out[-900:]))
 
+print("\n[26] a bare master, FULL: what swg leaves in /run goes too (1.8.9 qualification P3, the uninstall cell's U-1)")
+# tmpfs, gone at the next boot — but a FULL uninstall that says nothing of swg is left leaves nothing: the journal
+# namespaces' sockets (their units are stopped, and systemd leaves a stopped socket unit's files: RemoveOnStop=no), the
+# install-time probe's, swg-netctl's due stamp (1.8.9) and swg-agent's lock.
+RUNLEFT = {"run/systemd/journal.%s/%s" % (ns, f): "" for ns in ("swg-panel", "swg-node", "swg-probe")
+           for f in ("socket", "stdout", "dev-log", "io.systemd.journal")}
+RUNLEFT.update({"run/swg-netctl.due": "1760000000\n", "run/swg-agent.lock": ""})
+JOURN = {"etc/machine-id": "MID\n", "var/log/journal/MID.swg-panel/system.journal": "HISTORY",
+         "var/log/journal/MID.swg-node/system.journal": "HISTORY"}
+NETCTL = {"etc/systemd/system/swg-netctl.service": "[Service]\n", "usr/local/bin/swg-netctl-due": "#!/bin/sh\n"}
+run_left = lambda box: sorted(os.path.relpath(os.path.join(dp, f), box) for dp, ds, fs in os.walk(os.path.join(box, "run"))
+                              for f in fs + ds if "swg" in f)
+box = mkbox("run-left", dict(MASTER, **JOURN, **NETCTL, **RUNLEFT), BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[26] the run stays inside its box", not esc, esc)
+check("[26] the journal namespaces' sockets go with their journals (swg-panel, swg-node)",
+      not here(box, "run/systemd/journal.swg-panel") and not here(box, "run/systemd/journal.swg-node")
+      and not here(box, "var/log/journal/MID.swg-node"), run_left(box))
+check("[26] the install-time probe's sockets go", not here(box, "run/systemd/journal.swg-probe"), run_left(box))
+check("[26] swg-netctl's due stamp goes with its gate", not here(box, "run/swg-netctl.due") and not here(box, "usr/local/bin/swg-netctl-due"))
+check("[26] swg-agent's lock goes with the node", not here(box, "run/swg-agent.lock"))
+check("[26] nothing of swg's is left in /run", run_left(box) == [], run_left(box))
+
+print("\n[27] CONTROL: the data kept — swg-node's journal stays, and its sockets with it; the probe's go all the same")
+box = mkbox("run-kept", dict(BARE_NODE, **{"etc/swg-panel/install.conf": "PANEL_DOMAIN=192.168.77.9\n", "etc/swg-panel/tls/cert.pem": "C",
+                                           "etc/machine-id": "MID\n", "var/log/journal/MID.swg-node/system.journal": "HISTORY"},
+                            **{k: v for k, v in RUNLEFT.items() if "swg-panel" not in k and "netctl" not in k}), BARE_FX)
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[27] the run stays inside its box", not esc, esc)
+check("[27] CONTROL: swg-node's journal is kept with the data, and its sockets stay with it",
+      here(box, "var/log/journal/MID.swg-node/system.journal") and here(box, "run/systemd/journal.swg-node/stdout")
+      and KEPT_J % "swg-node" in out, (run_left(box), out[-600:]))
+check("[27] …the probe's sockets go all the same", not here(box, "run/systemd/journal.swg-probe"), run_left(box))
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
@@ -817,7 +860,10 @@ if PERTURBED:
             "--perturb-orphan": ("[19] the csqtt password store", "[19] …and with CSQTT_DATA_DEL=y"),
             "--perturb-6880": ("[20] `6880",), "--perturb-turnconf": ("[20] /etc/sysctl.d/99-swg-turn.conf",),
             "--perturb-dial": ("[21] a proxy behind NAT",), "--perturb-live": ("[22] the LIVE Docker node's wdtt0",),
-            "--perturb-relaydir": ("[23] the swg-node journal goes", "[24] both journals go"), "--perturb-etcdata": ("[25] CONTROL",)}
+            "--perturb-relaydir": ("[23] the swg-node journal goes", "[24] both journals go"), "--perturb-etcdata": ("[25] CONTROL",),
+            "--perturb-runns": ("[26] the journal namespaces' sockets", "[26] nothing of swg's"),
+            "--perturb-runrest": ("[26] the install-time probe's", "[26] swg-netctl's due stamp", "[26] swg-agent's lock",
+                                  "[26] nothing of swg's", "[27] …the probe's")}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)

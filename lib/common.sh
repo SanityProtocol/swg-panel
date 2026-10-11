@@ -2962,6 +2962,7 @@ _swg_log_ns_run_probe(){   # → 0 when a throwaway unit ran with LogNamespace=s
   if [ -n "$u" ]; then systemctl stop $u >/dev/null 2>&1 || true; fi   # first: a namespace journald writes its directory again as it exits
   mid="$(cat /etc/machine-id 2>/dev/null || true)"
   if [ -n "$mid" ]; then rm -rf "/var/log/journal/$mid.swg-probe" "/run/log/journal/$mid.swg-probe" 2>/dev/null || true; fi
+  rm -rf /run/systemd/journal.swg-probe 2>/dev/null || true   # its sockets: systemd leaves a stopped socket unit's files
   return "$rc"; }
 swg_log_ns_ok(){ local d t="" v
   for d in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do

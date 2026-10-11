@@ -43,13 +43,13 @@ die(){  echo "$(c '0;31')✗ $*$(c 0)" >&2; exit 1; }
 b(){ printf '\033[1m%s\033[0m' "$*"; }
 run(){ if $DRYRUN; then echo "    [dry] $*"; else "$@"; fi; }
 rmrf(){ local p; for p in "$@"; do if [ -e "$p" ] || [ -L "$p" ]; then run rm -rf "$p"; fi; done; }
-# swg-netctl's idle gate (lib/common.sh netctl_gate_reap) goes with the last netctl unit that runs it; each unit's drop-in
-# goes with its .service.d. The arguments name the units the caller has just removed (bare-gone, docker-gone): a dry run
+# swg-netctl's idle gate (lib/common.sh netctl_gate_reap) and its stamp (/run/swg-netctl.due) go with the last netctl unit
+# that runs it; each unit's drop-in goes with its .service.d. The arguments name the units the caller has just removed (bare-gone, docker-gone): a dry run
 # leaves them on disk, and must still list the gate.
 rm_netctl_gate_if_last(){
   local a bare=1 dock=1; for a in "$@"; do case $a in bare-gone) bare=0;; docker-gone) dock=0;; esac; done
   { [ $bare = 1 ] && [ -e "$SD/swg-netctl.service" ]; } || { [ $dock = 1 ] && [ -e "$SD/swg-netctl-docker.service" ]; } \
-    || rmrf /usr/local/bin/swg-netctl-due
+    || rmrf /usr/local/bin/swg-netctl-due /run/swg-netctl.due
   return 0
 }
 # Drop a directory only once nothing is left in it. Used where a `rm -rf` would take a file this run
@@ -678,6 +678,7 @@ rm_log_journals(){ local f d ns u mid had=""
     [ -e "$f" ] || continue; rmrf "$f"; [ -z "$(ls -A "${f%/*}" 2>/dev/null)" ] && run rmdir "${f%/*}"; done
   for d in "$SD"/swg-*.d "$SD"/vk-turn-proxy-*.d; do [ -d "$d" ] && [ -z "$(ls -A "$d" 2>/dev/null)" ] && run rmdir "$d"; done
   rmrf /usr/local/bin/swg-logs /var/lib/swg-log-ns /var/lib/swg-log-ns.lock   # + the journal-namespace probe answer the installers keep (IN-11)
+  rmrf /run/systemd/journal.swg-probe   # the probe's sockets: systemd leaves a stopped socket unit's files (RemoveOnStop=no)
   mid="$(cat /etc/machine-id 2>/dev/null || true)"
   for ns in swg-panel swg-node; do
     [ -n "$mid" ] && { [ -e "/var/log/journal/$mid.$ns" ] || [ -e "/run/log/journal/$mid.$ns" ]; } && had="${had:+$had, }$ns"; done
@@ -688,6 +689,7 @@ rm_log_journals(){ local f d ns u mid had=""
       u="$(systemctl list-units --all --plain --no-legend "systemd-journald@$ns.*" "systemd-journald-varlink@$ns.*" 2>/dev/null | awk '{print $1}')"
       [ -n "$u" ] && { run systemctl stop $u 2>/dev/null || true; }   # loaded → stopped, sockets with it
       rmrf "/run/systemd/journald@$ns.conf.d" "/etc/systemd/journald@$ns.conf" "/etc/systemd/journald@$ns.conf.d"
+      rmrf "/run/systemd/journal.$ns"   # its sockets, stopped above: systemd leaves their files (RemoveOnStop=no)
       [ -n "$mid" ] && rmrf "/var/log/journal/$mid.$ns" "/run/log/journal/$mid.$ns"
     done
     [ -n "$had" ] && DID_REMOVE+=("swg's own journals ($had) — the box's main journal untouched")
@@ -731,7 +733,7 @@ rm_node(){
   info "  removing the panel's system mesh links"
   remove_ifaces /etc/amnezia/amneziawg awg-quick mesh
   remove_ifaces /etc/wireguard        wg-quick  mesh
-  rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /var/lib/swg-recovery /etc/sudoers.d/swg-agent
+  rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /var/lib/swg-recovery /etc/sudoers.d/swg-agent /run/swg-agent.lock
   rmrf /etc/swg-agent   # turn-proxy.json here is just a panel-facing record; a kept turn-proxy keeps running
   # The AppArmor grant the installer added so the wg CLI could read userspace interface sockets is a
   # policy change we made to this box, so it goes back when we do. It lives INSIDE a file the
