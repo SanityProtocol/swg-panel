@@ -1677,25 +1677,35 @@ ensure_panel_unit_warn(){   # DETECT + WARN only — never recreate. The panel u
   warn "    sudo bash -c \"$_p\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/$_r/bootstrap.sh)\" -- host"
 }
 
-ensure_netctl_docker(){   # HEAL (install-if-missing) the docker address helper on a panel-bearing docker host.
+ensure_netctl_docker(){   # the docker address helper on a panel-bearing docker host: units HEALED if missing, the drainer at this release.
   # On docker the panel container can't `docker compose` the host, so it writes netctl requests to the bind-
   # mounted data/lib/netctl/queue and THIS host unit drains them into compose actions (restart / rebind
   # swg-sub on an address change). Missing on older/partial docker installs → one-click address changes fall
-  # back to a manual restart. HEAL CONTRACT: install only the missing pieces (binary + .service + .timer),
+  # back to a manual restart. HEAL CONTRACT for the units: install only the missing ones (.service + .path + .timer),
   # never rewrite an existing unit; enable the watch + timer. Templates MUST mirror install-docker.sh's wire_docker_netctl.
-  # The binary is code, not configuration: it follows the release (below).
+  # The drainer itself is code, not configuration: it follows the release (below), and is installed when missing.
   case "${1:-}" in host|master|host-node) ;; *) return 0;; esac    # panel-bearing profiles only
   local drainer="$SRC/docker/swg-netctl-docker"
   [ -f "$drainer" ] || return 0
   # ⚠️ THE DRAINER FOLLOWS THE RELEASE. Installed only when missing, a box updated from 1.8.8 kept 1.8.8's drainer behind
-  # 1.8.9's idle gate — without dace39ce's queue sweep, the strays the gate relies on it clearing (1.8.9 qualification
-  # P3, docker-pristine: 10 of 10 updates). Written beside and renamed in — install(1) rewrites a file in place, and the
-  # timer may start the drainer at any moment: it never reads half a file.
-  if [ -x /usr/local/bin/swg-netctl-docker ] && ! cmp -s "$drainer" /usr/local/bin/swg-netctl-docker; then
-    if $DRYRUN; then echo "    [skip] install this release's /usr/local/bin/swg-netctl-docker (it differs)"
-    elif install -m755 "$drainer" /usr/local/bin/swg-netctl-docker.new && mv -f /usr/local/bin/swg-netctl-docker.new /usr/local/bin/swg-netctl-docker; then
+  # 1.8.9's idle gate — without dace39ce's queue sweep, which clears the strays the gate relies on being gone (1.8.9
+  # qualification P3, docker-pristine: 10 of 10 updates). Compared by sha256 (coreutils, on every box). Written beside and
+  # renamed in: install(1) unlinks the path and creates it again, 0600 until the copy is done, so a start the 10 s timer
+  # made in that moment would find no drainer, or one it cannot run. A .new a killed update left goes first.
+  local nd=/usr/local/bin/swg-netctl-docker
+  $DRYRUN || rm -f "$nd.new"
+  if [ -x "$nd" ] && [ "$(sha256sum < "$drainer")" != "$(sha256sum < "$nd")" ]; then
+    if $DRYRUN; then echo "    [skip] install this release's $nd (it differs)"
+    elif install -m755 "$drainer" "$nd.new" && mv -f "$nd.new" "$nd"; then
       DID_UPDATE=yes; note "docker address helper: this release's drainer"
-    else rm -f /usr/local/bin/swg-netctl-docker.new; warn "couldn't install this release's /usr/local/bin/swg-netctl-docker — the old drainer stays"; fi
+      # an older drainer could leave a stray that re-fired the path watch until systemd stopped it (start-limit-hit); this
+      # one clears strays, so the watch is armed again (the 10 s timer drained in the meantime)
+      systemctl reset-failed swg-netctl-docker.path swg-netctl-docker.service 2>/dev/null || true
+      systemctl restart swg-netctl-docker.path 2>/dev/null || true
+    else
+      rm -f "$nd.new"; warn "couldn't install this release's $nd — the old drainer stays"
+      note "docker address helper: this release's drainer could NOT be installed — the old one stays (run the update again)"
+    fi
   fi
   if [ -x /usr/local/bin/swg-netctl-docker ] && [ -f /etc/systemd/system/swg-netctl-docker.service ] \
      && [ -f /etc/systemd/system/swg-netctl-docker.timer ]; then
@@ -2366,7 +2376,7 @@ PYDRIFT
       note "docker-compose.yml: $_dn shipped item(s) MISSING (older than this release — re-run the installer to restage)"
     fi
   fi
-  ensure_netctl_docker "$prof"   # HEAL: install the docker address helper if a panel-bearing host lacks it
+  ensure_netctl_docker "$prof"   # the docker address helper: healed if a panel-bearing host lacks it, its drainer at this release
   ensure_netctl_docker_gate "$prof"   # …and its idle gate (written when missing or different — see there)
   ensure_update_unit_docker "$prof"   # HEAL: install the docker one-click self-update wiring if a panel-bearing host lacks it
   # ⚠️ PANEL-BEARING PROFILES ONLY, both. On a node-only box these created the four empty panel files swg-sub masks

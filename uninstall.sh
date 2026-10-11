@@ -312,7 +312,7 @@ rm_panel(){
   if [ -n "$_mine" ]; then rmrf "$_pdd/zz-swg-update.conf" "$_pdd/swg-ns.conf" "$_pdd/swg-journal.conf"; info "  Kept your own drop-in(s) for the panel — $_pdd: ${_mine% } (a re-install picks them up)"
   else rmrf "$_pdd"; fi
   if docker_running swg-panel; then rm_netctl_gate_if_last bare-gone
-  else rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+  else rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker /usr/local/bin/swg-netctl-docker.new
        rm_netctl_gate_if_last bare-gone docker-gone; fi
   rm_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
   rm_updater_if_last bare-gone   # the one-click updater: shared with a docker install, so it goes only with the last of them
@@ -908,7 +908,7 @@ rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
   for _nc in swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
     [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true
   done
-  rmrf "$SD/swg-netctl-docker.service" "$SD/swg-netctl-docker.service.d" "$SD/swg-netctl-docker.path" "$SD/swg-netctl-docker.timer" /usr/local/bin/swg-netctl-docker
+  rmrf "$SD/swg-netctl-docker.service" "$SD/swg-netctl-docker.service.d" "$SD/swg-netctl-docker.path" "$SD/swg-netctl-docker.timer" /usr/local/bin/swg-netctl-docker /usr/local/bin/swg-netctl-docker.new
   rm_netctl_gate_if_last docker-gone
   run systemctl daemon-reload 2>/dev/null || true
   if docker_running swg-node; then
@@ -1160,7 +1160,7 @@ rm_netctl(){   # a leftover swg-netctl (e.g. after a docker convert) with no bar
     for _nc in swg-netctl-docker.path swg-netctl-docker.timer swg-netctl-docker.service; do
       [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true
     done
-    rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+    rmrf $SD/swg-netctl-docker.service $SD/swg-netctl-docker.service.d $SD/swg-netctl-docker.path $SD/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker /usr/local/bin/swg-netctl-docker.new
     _gone="$_gone docker-gone"
   fi
   rm_netctl_gate_if_last $_gone

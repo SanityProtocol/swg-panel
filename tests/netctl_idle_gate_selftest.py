@@ -28,6 +28,12 @@ day, more than the panel itself spent on hel-infra (2026-10-09). An ExecConditio
       release's timer once (systemd's default 1 min let a quiet box's 10 s ticks drift to 35 s — CPU re-qualification
       AB-F1), never to a timer whose AccuracySec an operator set.
   [6] The gate goes with the last unit that runs it (lib/common.sh netctl_gate_reap, uninstall.sh rm_netctl_gate_if_last).
+  [7] update.sh brings the Docker drainer (/usr/local/bin/swg-netctl-docker) to this release (1.8.9 qualification B-1:
+      installed only when missing, a box updated from 1.8.8 kept 1.8.8's drainer behind this gate, without dace39ce's queue
+      sweep): 1.8.8's drainer (pinned) is replaced byte for byte, its units untouched, its path watch re-armed, the update
+      saying so; a current one is left alone; a .new a killed update left goes; a dry run changes nothing; a failed write
+      keeps the old drainer and says so in the summary; a node gets nothing; the installer renames it in too, and every
+      remover takes a stray .new.
 
 Run: python3 tests/netctl_idle_gate_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED on its own check (exit 0 when caught):
@@ -38,6 +44,10 @@ Run: python3 tests/netctl_idle_gate_selftest.py   (0 = pass)
      noexec       update.sh takes a gate that lost its exec bit for current (sh answers 126: Python every tick, silently)
      reinstall    a re-install replaces the helper and leaves the stamp (the new build's log work waits up to 5 min)
      drygate      uninstall's dry run never lists the gate (the units it removes are still on disk)
+     drainkept    the drainer is installed only when missing again (B-1)
+     drainstale   a .new a killed update left stays
+     drainquiet   a failed drainer write says nothing in the summary
+     drainarm     the path watch is not re-armed after the drainer is replaced
      failclosed   the drop-in runs the gate bare (a missing gate stops the helper for good)
      pathdrift    the drop-in's default state dir is not the helper's (a box without SWG_STATE_DIR: the gate reads elsewhere)
      stampnow     the stamp's mtime is when it was written (a save during the run is missed for up to 5 min)
@@ -51,7 +61,7 @@ Run: python3 tests/netctl_idle_gate_selftest.py   (0 = pass)
      nomigrate    update.sh leaves an older release's timer without AccuracySec
      operatoracc  update.sh adds AccuracySec to a timer that has an operator's own
 """
-import importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tempfile, threading, time
+import importlib.machinery, importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -95,6 +105,10 @@ PLANTS = {
     "noacc": ("host", "[Timer]\nOnActiveSec=10s\nOnUnitActiveSec=10s\nAccuracySec=1s\n", "[Timer]\nOnActiveSec=10s\nOnUnitActiveSec=10s\n"),
     "nomigrate": ("update", "  sed -i '/^\\[Timer\\]$/a AccuracySec=1s' \"$t\"\n", "  :\n"),
     "operatoracc": ("update", "  grep -q '^AccuracySec=' \"$t\" && return 0\n", ""),
+    "drainkept": ("update", '  if [ -x "$nd" ] && [ "$(sha256sum < "$drainer")" != "$(sha256sum < "$nd")" ]; then\n', "  if false; then\n"),
+    "drainstale": ("update", '  $DRYRUN || rm -f "$nd.new"\n', ""),
+    "drainquiet": ("update", '      note "docker address helper: this release\'s drainer could NOT be installed — the old one stays (run the update again)"\n', ""),
+    "drainarm": ("update", "      systemctl restart swg-netctl-docker.path 2>/dev/null || true\n", ""),
 }
 if PLANT:
     f, a, b = PLANTS[PLANT]
@@ -534,6 +548,85 @@ check("[6] a bare→Docker convert's teardown removes both drop-ins and reaps th
       '"/etc/systemd/system/swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN"' in TB and "netctl_gate_reap" in TB)
 check("[6] a Docker→bare convert's helper removal reaps the gate (kept while the bare helper runs it)",
       "netctl_gate_reap" in fn(C, "remove_docker_netctl"))
+
+# ── [7] update.sh: the Docker drainer follows the release (1.8.9 qualification B-1) ──────────────────────────────────────
+print("\n[7] update.sh brings the Docker drainer to this release")
+EN = fn(U, "ensure_netctl_docker")
+NEW_DR = open(os.path.join(ROOT, "docker", "swg-netctl-docker"), "rb").read()
+_old = subprocess.run(["git", "-C", ROOT, "show", "e58d2a96:docker/swg-netctl-docker"], capture_output=True)   # 1.8.8, pinned
+OLD_DR = _old.stdout if _old.returncode == 0 and _old.stdout else b"#!/usr/bin/env python3\n# an older release's drainer\n"
+check("[7] 1.8.8's drainer (pinned, e58d2a96) is not this release's — else [7] proves nothing", OLD_DR != NEW_DR)
+UNITS7 = {"swg-netctl-docker.service": "[Service]\nType=oneshot\nExecStart=/usr/local/bin/swg-netctl-docker\n",
+          "swg-netctl-docker.path": "[Path]\nDirectoryNotEmpty=/opt/swg-panel-docker/data/lib/netctl/queue\n",
+          "swg-netctl-docker.timer": "[Timer]\nOnActiveSec=10s\nOnUnitActiveSec=10s\nAccuracySec=1s\n"}
+
+
+def refresh(name, drainer, dry=False, profile="master", stale=False, readonly=False):
+    """ensure_netctl_docker lifted verbatim, as update.sh runs it (set -euo pipefail), on a Docker panel's host as an update
+    finds it: `drainer` installed (None: none), its three units in place. → (result, the box, systemctl's calls)."""
+    root = os.path.join(T, "drain-" + name)
+    for d in ("sd", "bin", "stub", "src/docker", "docker"):
+        os.makedirs(os.path.join(root, d), exist_ok=True)
+    for n, t in UNITS7.items():
+        open(os.path.join(root, "sd", n), "w").write(t)
+    open(os.path.join(root, "src", "docker", "swg-netctl-docker"), "wb").write(NEW_DR)
+    if drainer is not None:
+        open(os.path.join(root, "bin", "swg-netctl-docker"), "wb").write(drainer); os.chmod(os.path.join(root, "bin", "swg-netctl-docker"), 0o755)
+    if stale:
+        open(os.path.join(root, "bin", "swg-netctl-docker.new"), "wb").write(b"#!/bin/sh\n# half")
+    open(os.path.join(root, "stub", "systemctl"), "w").write('#!/bin/sh\necho "systemctl $*" >> %s\n' % shlex.quote(root + "/calls"))
+    os.chmod(os.path.join(root, "stub", "systemctl"), 0o755)
+    lib = EN.replace("/etc/systemd/system", root + "/sd").replace("/usr/local/bin", root + "/bin")
+    script = ("set -euo pipefail\nDRYRUN=%s; DID_UPDATE=no; SRC=%s; DOCKER_DIR=%s\nNOTES=(); note(){ NOTES+=(\"$*\"); }\n"
+              "info(){ :; }; ok(){ :; }; warn(){ echo \"WARN $*\" >&2; }\n%sensure_netctl_docker %s\n"
+              "echo \"DID_UPDATE=$DID_UPDATE\"; for n in ${NOTES[@]+\"${NOTES[@]}\"}; do echo \"NOTE $n\"; done\n") % (
+              "true" if dry else "false", shlex.quote(root + "/src"), shlex.quote(root + "/docker"), lib, profile)
+    if readonly:
+        os.chmod(os.path.join(root, "bin"), 0o555)
+    try:
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60,
+                           env=dict(os.environ, PATH=os.path.join(root, "stub") + os.pathsep + os.environ["PATH"]))
+    finally:
+        os.chmod(os.path.join(root, "bin"), 0o755)
+    calls = open(os.path.join(root, "calls")).read() if os.path.exists(os.path.join(root, "calls")) else ""
+    return r, root, calls
+
+
+rd = lambda root, f="bin/swg-netctl-docker": open(os.path.join(root, f), "rb").read() if os.path.exists(os.path.join(root, f)) else None
+units_kept = lambda root: all(open(os.path.join(root, "sd", n)).read() == t for n, t in UNITS7.items())
+r, B, calls = refresh("updated", OLD_DR)
+check("[7] a box updated from 1.8.8: the drainer is this release's, byte for byte, executable, no .new beside it",
+      r.returncode == 0 and rd(B) == NEW_DR and os.access(os.path.join(B, "bin/swg-netctl-docker"), os.X_OK)
+      and not os.path.exists(os.path.join(B, "bin/swg-netctl-docker.new")), (r.returncode, r.stderr[-300:]))
+check("[7] …its units untouched (the heal never rewrites a unit), and the update says so",
+      units_kept(B) and "DID_UPDATE=yes" in r.stdout and "NOTE docker address helper: this release's drainer" in r.stdout, r.stdout)
+check("[7] …its path watch re-armed (an older drainer's stray may have stopped it: start-limit-hit)",
+      "systemctl reset-failed swg-netctl-docker.path swg-netctl-docker.service" in calls and "systemctl restart swg-netctl-docker.path" in calls, calls)
+r, B, calls = refresh("current", NEW_DR)
+check("[7] a current drainer: nothing written, nothing said, the watch left alone",
+      r.returncode == 0 and rd(B) == NEW_DR and "DID_UPDATE=no" in r.stdout and "NOTE" not in r.stdout and "restart" not in calls,
+      (r.stdout, calls))
+r, B, calls = refresh("stale", NEW_DR, stale=True)
+check("[7] a .new a killed update left goes, even when the drainer is current",
+      r.returncode == 0 and not os.path.exists(os.path.join(B, "bin/swg-netctl-docker.new")), os.listdir(os.path.join(B, "bin")))
+r, B, calls = refresh("dry", OLD_DR, dry=True, stale=True)
+check("[7] a dry run: the old drainer and the stray .new stay, nothing is written, it says what it would do",
+      r.returncode == 0 and rd(B) == OLD_DR and rd(B, "bin/swg-netctl-docker.new") == b"#!/bin/sh\n# half"
+      and "[skip] install this release's" in r.stdout and "restart" not in calls, (r.stdout, calls))
+r, B, calls = refresh("fail", OLD_DR, readonly=True)
+check("[7] a write that fails: the update goes on, the old drainer stays, no .new, and the summary says so",
+      r.returncode == 0 and rd(B) == OLD_DR and not os.path.exists(os.path.join(B, "bin/swg-netctl-docker.new"))
+      and "WARN couldn't install this release's" in r.stderr and "could NOT be installed" in r.stdout and "DID_UPDATE=no" in r.stdout,
+      (r.returncode, r.stdout, r.stderr[-300:]))
+r, B, calls = refresh("node", OLD_DR, profile="node")
+check("[7] a node profile: nothing", r.returncode == 0 and rd(B) == OLD_DR and "NOTE" not in r.stdout, r.stdout)
+check("[7] the installer renames the drainer in too (a re-install over a live panel)",
+      'install -m755 "$drainer" /usr/local/bin/swg-netctl-docker.new && mv -f /usr/local/bin/swg-netctl-docker.new /usr/local/bin/swg-netctl-docker'
+      in fn(SRC["docker"], "wire_docker_netctl"))
+rem = lambda k: len(re.findall(r"/usr/local/bin/swg-netctl-docker(?![.\w-])", SRC[k]))
+check("[7] every remover of the drainer takes a stray .new beside it (uninstall.sh, the converts in lib/common.sh)",
+      all(rem(k) >= 1 and SRC[k].count("/usr/local/bin/swg-netctl-docker.new") == rem(k) for k in ("uninstall", "common")),
+      {k: (rem(k), SRC[k].count("/usr/local/bin/swg-netctl-docker.new")) for k in ("uninstall", "common")})
 
 shutil.rmtree(T, ignore_errors=True)
 print("\n%s — %d failed" % ("RED" if FAILS else "GREEN", len(FAILS)))

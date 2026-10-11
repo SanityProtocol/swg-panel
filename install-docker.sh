@@ -1878,7 +1878,9 @@ wire_docker_netctl(){
   if $DRYRUN; then echo "    [skip] wire the docker address helper (swg-netctl-docker.timer → docker compose restart/up)"; return 0; fi
   [ -f "$drainer" ] || { warn "docker/swg-netctl-docker missing — one-click address changes will fall back to a manual restart"; return 0; }
   mkdir -p "$INSTALL_DIR/data/lib/netctl/queue" "$INSTALL_DIR/data/lib/netctl/status"   # the panel writes requests here (via the data/lib bind mount)
-  install -m755 "$drainer" /usr/local/bin/swg-netctl-docker
+  # written beside and renamed in (as update.sh's refresh): a re-install over a live panel, whose 10 s timer may start the
+  # drainer at any moment, never leaves the path missing or not yet executable
+  install -m755 "$drainer" /usr/local/bin/swg-netctl-docker.new && mv -f /usr/local/bin/swg-netctl-docker.new /usr/local/bin/swg-netctl-docker
   cat > /etc/systemd/system/swg-netctl-docker.service <<EOF
 [Unit]
 Description=swg-panel docker address helper (drains the netctl queue into docker compose actions)
