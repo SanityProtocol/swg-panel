@@ -44,12 +44,12 @@ b(){ printf '\033[1m%s\033[0m' "$*"; }
 run(){ if $DRYRUN; then echo "    [dry] $*"; else "$@"; fi; }
 rmrf(){ local p; for p in "$@"; do if [ -e "$p" ] || [ -L "$p" ]; then run rm -rf "$p"; fi; done; }
 # swg-netctl's idle gate (lib/common.sh netctl_gate_reap) goes with the last netctl unit that runs it; its stamp
-# (/run/swg-netctl.due) with the bare unit, the only one that reads it (the Docker gate is --queue-only); each unit's
-# drop-in goes with its .service.d. The arguments name the units the caller has just removed (bare-gone, docker-gone): a dry run
+# (/run/swg-netctl.due) once no bare unit is left, the only one that reads it (the Docker gate is --queue-only) — a box
+# converted to Docker keeps the stamp its bare netctl wrote until then; each unit's drop-in goes with its .service.d. The arguments name the units the caller has just removed (bare-gone, docker-gone): a dry run
 # leaves them on disk, and must still list the gate.
 rm_netctl_gate_if_last(){
   local a bare=1 dock=1; for a in "$@"; do case $a in bare-gone) bare=0;; docker-gone) dock=0;; esac; done
-  [ $bare = 1 ] || rmrf /run/swg-netctl.due
+  { [ $bare = 1 ] && [ -e "$SD/swg-netctl.service" ]; } || rmrf /run/swg-netctl.due
   { [ $bare = 1 ] && [ -e "$SD/swg-netctl.service" ]; } || { [ $dock = 1 ] && [ -e "$SD/swg-netctl-docker.service" ]; } \
     || rmrf /usr/local/bin/swg-netctl-due
   return 0
@@ -1189,6 +1189,7 @@ rm_leftovers(){
   # Idempotent and safe beside rm_node: both stop the same units, and stopping a stopped slice is a no-op.
   for _u in swg-relay.slice; do [ -e "$SD/$_u" ] && run systemctl stop "$_u" 2>/dev/null || true; done
   rmrf "$SD/swg-relay@.service" "$SD/swg-relay.slice" /etc/swg-panel/relay
+  rmrf /run/swg-relay-*.sock   # the relays' status sockets, as rm_node takes them (outside the unit's RuntimeDirectory)
   run systemctl daemon-reload
   # …and a WDTT / csqtt server's state no unit runs from any more (_fork_orphans), each with rm_wdtt / rm_csqtt's own question
   # and preset; no server of it is left to take down (an interface of that name now is the Docker node's)

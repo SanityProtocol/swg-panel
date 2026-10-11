@@ -90,6 +90,9 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
                          probe, stamp, lock and nothing-left checks and [27]'s probe check only
      --perturb-runrelay  the relay's status sockets stay (as shipped) → RED on [26]'s relay and nothing-left checks only
      --perturb-runupd    update.sh's lock and marker stay (as shipped) → RED on [26]'s update and nothing-left checks only
+     --perturb-stampbare the stamp goes only on bare-gone (round 1's form) → RED on [3]'s stamp check only
+     --perturb-updguard  update.sh's leftovers go though something of swg's is kept → RED on [22]'s lock check only
+     --perturb-leftrelay rm_leftovers keeps the relays' sockets (as shipped) → RED on [28] only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
 
@@ -102,7 +105,7 @@ FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--
                                          "--perturb-engine", "--perturb-d123", "--perturb-orphan", "--perturb-6880",
                                          "--perturb-turnconf", "--perturb-dial", "--perturb-live", "--perturb-relaydir",
                                          "--perturb-etcdata", "--perturb-runns", "--perturb-runrest", "--perturb-runrelay",
-                                         "--perturb-runupd")}
+                                         "--perturb-runupd", "--perturb-stampbare", "--perturb-updguard", "--perturb-leftrelay")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -173,10 +176,16 @@ if FLAGS["--perturb-runns"]:
     plant('      rmrf "/run/systemd/journal.$ns"   # its sockets, stopped above: systemd leaves their files (RemoveOnStop=no)\n', "")
 if FLAGS["--perturb-runrest"]:
     plant(" /etc/sudoers.d/swg-agent /run/swg-agent.lock\n", " /etc/sudoers.d/swg-agent\n")
-    plant("  [ $bare = 1 ] || rmrf /run/swg-netctl.due\n", "")
+    plant('  { [ $bare = 1 ] && [ -e "$SD/swg-netctl.service" ]; } || rmrf /run/swg-netctl.due\n', "")
     plant("  rmrf /run/systemd/journal.swg-probe   # the probe's sockets: systemd leaves a stopped socket unit's files (RemoveOnStop=no)\n", "")
 if FLAGS["--perturb-runrelay"]:
     plant("  rmrf /run/swg-relay-*.sock   # its status sockets: outside the unit's RuntimeDirectory, unlinked only at a relay's next start\n", "")
+if FLAGS["--perturb-stampbare"]:
+    plant('  { [ $bare = 1 ] && [ -e "$SD/swg-netctl.service" ]; } || rmrf /run/swg-netctl.due\n', "  [ $bare = 1 ] || rmrf /run/swg-netctl.due\n")
+if FLAGS["--perturb-updguard"]:
+    plant("rm_update_leftovers(){ _swg_left && return 0; ", "rm_update_leftovers(){ ")
+if FLAGS["--perturb-leftrelay"]:
+    plant("  rmrf /run/swg-relay-*.sock   # the relays' status sockets, as rm_node takes them (outside the unit's RuntimeDirectory)\n", "")
 if FLAGS["--perturb-runupd"]:
     plant("rm_update_leftovers(){ _swg_left && return 0; rmrf /run/swg-update.lock /run/swg-update.running /tmp/swg-update.lock; return 0; }",
           "rm_update_leftovers(){ return 0; }")
@@ -465,7 +474,8 @@ check("nothing was pulled, nothing run from an image", not os.path.exists(os.pat
 print("\n[3] a Docker master: its node's container gone, its panel's still here")
 mfiles = dict(NODE_FILES, **{"opt/swg-panel-docker/.env": ENV_NODE.replace("profile: node", "profile: master")
                              + "PANEL_DOMAIN=192.168.77.9\nPANEL_PASSWORD=x\n",
-                             "opt/swg-panel-docker/data/lib/users.json": "{}", "opt/swg-panel-docker/data/etc/fleet.json": "{}"})
+                             "opt/swg-panel-docker/data/lib/users.json": "{}", "opt/swg-panel-docker/data/etc/fleet.json": "{}",
+                             "run/swg-netctl.due": "1760000000\n"})   # a bare netctl's stamp, from before this box's convert
 box = mkbox("gone-node-master", mfiles, dict(NODE_FX, **{"docker.ps": "swg-panel\n"}))
 rc, out, calls, esc = run(box, "--yes", env=FULL)
 comps = components(out)
@@ -475,6 +485,8 @@ pi = next((k for k, c in enumerate(comps) if c.startswith("Docker panel (swg-pan
 check("the node is offered, BEFORE the panel", ni is not None and pi is not None and ni < pi, comps)
 left = swg_left(box)
 check("nothing of the node is left in the kernel", clean(left), left)
+check("[3] the stamp a bare netctl left goes with the last netctl unit — no bare unit is left (the verify review's F8)",
+      not os.path.lexists(os.path.join(box, "run/swg-netctl.due")))
 check("the panel went too, and the data dir (asked once)", "swg-panel" not in fx(box, "docker.ps")
       and not os.path.exists(os.path.join(box, "opt/swg-panel-docker")) and out.count("Delete the data dir") == 1, out[-2000:])
 
@@ -764,12 +776,14 @@ print("\n[22] a box converted bare → Docker before the convert deleted the bar
 CONV_WDTT = dict(NODE_FILES, **{"etc/systemd/system/swg-wdtt-wdtt0.service": "[Unit]\nDescription=swg-wdtt (amurcanov/proxy-turn-vk-android)\n",
                                 "opt/swg-wdtt/wdtt0/wg-keys.dat": "K", "opt/swg-wdtt/.bin/amurcanov/server": "x",
                                 "opt/swg-panel-docker/data/node/wdtt/wdtt0/wg-keys.dat": "K",   # the instance the container runs
-                                "var/run/wireguard/wdtt0.sock": ""})
+                                "var/run/wireguard/wdtt0.sock": "", "run/swg-update.lock": "", "run/swg-update.running": ""})
 box = mkbox("conv-wdtt-live", CONV_WDTT, dict(NODE_FX, **{"docker.ps": "swg-node\n", "ip.links": NODE_FX["ip.links"] + "wdtt0\n",
             "ipt.nat": NODE_FX["ipt.nat"] + "-A POSTROUTING -s 10.66.66.0/24 -o eth0 -m comment --comment \"swg-egress:wdtt0\" -j MASQUERADE\n"}))
 out, calls, esc = run_tty(box, [(r"Uninstall Docker node", "n"), (r"WDTT-proxy swg-wdtt-wdtt0", "y")], env=dict(FULL, WDTT_DATA_DEL="n"))
 check("[22] the run stays inside its box; the Docker node kept, the stale unit removed",
       not esc and "swg-node" in fx(box, "docker.ps") and not here(box, "etc/systemd/system/swg-wdtt-wdtt0.service"), (esc, out[-1200:]))
+check("[22] update.sh's lock and marker stay while something of swg's is kept — the Docker node (the verify review's F12)",
+      here(box, "run/swg-update.lock") and here(box, "run/swg-update.running"))
 check("[22] the LIVE Docker node's wdtt0 survives — its interface, its SNAT rule and its UAPI socket",
       "wdtt0" in fx(box, "ip.links") and any("swg-egress:wdtt0" in l for l in fx(box, "ipt.nat")) and here(box, "var/run/wireguard/wdtt0.sock"),
       (fx(box, "ip.links"), [l for l in fx(box, "ipt.nat") if "wdtt0" in l], out[-1200:]))
@@ -862,6 +876,16 @@ check("[27] CONTROL: swg-node's journal is kept with the data, and its sockets s
       and KEPT_J % "swg-node" in out, (run_left(box), out[-600:]))
 check("[27] …the probe's sockets go all the same", not here(box, "run/systemd/journal.swg-probe"), run_left(box))
 
+print("\n[28] a box converted to Docker with the bare relay's leftovers: rm_leftovers takes the relays' status sockets too")
+box = mkbox("conv-relay", dict(NODE_FILES, **{"etc/systemd/system/swg-relay@.service": "[Service]\n",
+                                              "etc/systemd/system/swg-relay.slice": "[Slice]\n",
+                                              "etc/swg-panel/relay/awg0.env": "RELAY_PORT=5629\n",
+                                              "run/swg-relay-awg0.sock": ""}), dict(NODE_FX, **{"docker.ps": "swg-node\n"}))
+rc, out, calls, esc = run(box, "--yes", env=FULL)
+check("[28] the run stays inside its box; the bare relay's units gone", not esc and not here(box, "etc/systemd/system/swg-relay@.service"),
+      (esc, out[-600:]))
+check("[28] …and its status socket with them (the verify review's F9)", not here(box, "run/swg-relay-awg0.sock"), run_left(box))
+
 shutil.rmtree(T, ignore_errors=True)
 print("")
 if PERTURBED:
@@ -881,8 +905,11 @@ if PERTURBED:
             "--perturb-runns": ("[26] the journal namespaces' sockets", "[26] nothing of swg's"),
             "--perturb-runrelay": ("[26] the relay's status sockets", "[26] nothing of swg's"),
             "--perturb-runupd": ("[26] update.sh's lock", "[26] nothing of swg's"),
+            "--perturb-stampbare": ("[3] the stamp a bare netctl left",),
+            "--perturb-updguard": ("[22] update.sh's lock and marker stay",),
+            "--perturb-leftrelay": ("[28] …and its status socket",),
             "--perturb-runrest": ("[26] the install-time probe's", "[26] swg-netctl's due stamp", "[26] swg-agent's lock",
-                                  "[26] nothing of swg's", "[27] …the probe's")}
+                                  "[26] nothing of swg's", "[27] …the probe's", "[3] the stamp a bare netctl left")}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
     red = [f for f in FAILS if f.startswith(want)]
     okk = bool(red) and len(red) == len(FAILS)
