@@ -1693,17 +1693,19 @@ ensure_netctl_docker(){   # the docker address helper on a panel-bearing docker 
   # renamed in: install(1) unlinks the path and creates it again, 0600 until the copy is done, so a start the 10 s timer
   # made in that moment would find no drainer, or one it cannot run. A .new a killed update left goes first.
   local nd=/usr/local/bin/swg-netctl-docker
-  $DRYRUN || rm -f "$nd.new"
+  $DRYRUN || rm -f "$nd.new" || true   # a stray that cannot go (a read-only bin) must not stop the update
   if [ -x "$nd" ] && [ "$(sha256sum < "$drainer")" != "$(sha256sum < "$nd")" ]; then
     if $DRYRUN; then echo "    [skip] install this release's $nd (it differs)"
     elif install -m755 "$drainer" "$nd.new" && mv -f "$nd.new" "$nd"; then
       DID_UPDATE=yes; note "docker address helper: this release's drainer"
       # an older drainer could leave a stray that re-fired the path watch until systemd stopped it (start-limit-hit); this
-      # one clears strays, so the watch is armed again (the 10 s timer drained in the meantime)
-      systemctl reset-failed swg-netctl-docker.path swg-netctl-docker.service 2>/dev/null || true
-      systemctl restart swg-netctl-docker.path 2>/dev/null || true
+      # one clears strays, so the watch is armed again — unless the operator disabled it (the 10 s timer drained meanwhile)
+      if systemctl is-enabled --quiet swg-netctl-docker.path 2>/dev/null; then
+        systemctl reset-failed swg-netctl-docker.path swg-netctl-docker.service 2>/dev/null || true
+        systemctl restart swg-netctl-docker.path 2>/dev/null || true
+      fi
     else
-      rm -f "$nd.new"; warn "couldn't install this release's $nd — the old drainer stays"
+      rm -f "$nd.new" || true; DID_FAIL=yes; warn "couldn't install this release's $nd — the old drainer stays"
       note "docker address helper: this release's drainer could NOT be installed — the old one stays (run the update again)"
     fi
   fi

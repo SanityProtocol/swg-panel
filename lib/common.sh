@@ -930,7 +930,8 @@ teardown_bare_panel(){
     systemctl disable --now "$_u" >/dev/null 2>&1 || systemctl stop "$_u" >/dev/null 2>&1 || true
   done
   rm -f /etc/systemd/system/swg-sub.service /etc/systemd/system/swg-netctl.service /etc/systemd/system/swg-netctl.path /etc/systemd/system/swg-netctl.timer /usr/local/bin/swg-netctl \
-        /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker /usr/local/bin/swg-netctl-docker.new
+        /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer /etc/systemd/system/swg-netctl-docker.path \
+        /usr/local/bin/swg-netctl-docker /usr/local/bin/swg-netctl-docker.new   # .path too, as remove_docker_netctl learned (the loop above stops it)
   rm -f "/etc/systemd/system/swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN" "/etc/systemd/system/swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN"
   netctl_gate_reap                                          # the idle gate goes with the units that ran it
   rm -rf /opt/swg-sub
