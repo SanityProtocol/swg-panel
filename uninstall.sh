@@ -43,13 +43,15 @@ die(){  echo "$(c '0;31')✗ $*$(c 0)" >&2; exit 1; }
 b(){ printf '\033[1m%s\033[0m' "$*"; }
 run(){ if $DRYRUN; then echo "    [dry] $*"; else "$@"; fi; }
 rmrf(){ local p; for p in "$@"; do if [ -e "$p" ] || [ -L "$p" ]; then run rm -rf "$p"; fi; done; }
-# swg-netctl's idle gate (lib/common.sh netctl_gate_reap) and its stamp (/run/swg-netctl.due) go with the last netctl unit
-# that runs it; each unit's drop-in goes with its .service.d. The arguments name the units the caller has just removed (bare-gone, docker-gone): a dry run
+# swg-netctl's idle gate (lib/common.sh netctl_gate_reap) goes with the last netctl unit that runs it; its stamp
+# (/run/swg-netctl.due) with the bare unit, the only one that reads it (the Docker gate is --queue-only); each unit's
+# drop-in goes with its .service.d. The arguments name the units the caller has just removed (bare-gone, docker-gone): a dry run
 # leaves them on disk, and must still list the gate.
 rm_netctl_gate_if_last(){
   local a bare=1 dock=1; for a in "$@"; do case $a in bare-gone) bare=0;; docker-gone) dock=0;; esac; done
+  [ $bare = 1 ] || rmrf /run/swg-netctl.due
   { [ $bare = 1 ] && [ -e "$SD/swg-netctl.service" ]; } || { [ $dock = 1 ] && [ -e "$SD/swg-netctl-docker.service" ]; } \
-    || rmrf /usr/local/bin/swg-netctl-due /run/swg-netctl.due
+    || rmrf /usr/local/bin/swg-netctl-due
   return 0
 }
 # Drop a directory only once nothing is left in it. Used where a `rm -rf` would take a file this run
@@ -697,6 +699,10 @@ rm_log_journals(){ local f d ns u mid had=""
   run systemctl daemon-reload 2>/dev/null || true
   return 0
 }
+# …and, once nothing of swg's is left, update.sh's lock (/tmp when /run is not writable) and its in-progress marker (left
+# only by an update that was killed): update.sh runs on every kind of box — the CLI, the panel's Update button, a node
+# updated from the panel — and keeps its lock for the next run.
+rm_update_leftovers(){ _swg_left && return 0; rmrf /run/swg-update.lock /run/swg-update.running /tmp/swg-update.lock; return 0; }
 rm_node(){
   info "Removing swg-node (bare-metal entry server)"
   node_goodbye   # signal the panel before we tear down the config it needs
@@ -714,6 +720,7 @@ rm_node(){
   # Found by checking what a completed uninstall actually left, 1.8.5 qualification.
   run systemctl stop swg-relay.slice 2>/dev/null || true
   rmrf $SD/"swg-relay@.service" $SD/swg-relay.slice /etc/swg-panel/relay
+  rmrf /run/swg-relay-*.sock   # its status sockets: outside the unit's RuntimeDirectory, unlinked only at a relay's next start
   if [ -e $SD/swg-noded.service ]; then run systemctl disable --now swg-noded; fi
   docker_running swg-node || rm_smartdns_redirect   # its dnsmasq just went with it — see rm_smartdns_redirect
   run systemctl unmask dnsmasq 2>/dev/null || true   # install masked the distro dnsmasq (node ran its own); restore it
@@ -1817,6 +1824,7 @@ fi
 
 unpark_kept_panel
 rm_log_journals   # swg's own journals + every log drop-in, once nothing of swg's is left (see there)
+rm_update_leftovers   # …and update.sh's lock
 # Recovery archives from earlier converts/uninstalls (.converted-* / .uninstalled-*). They are OURS, but they are
 # deliberately-kept state — a node token plus interface private keys — and the installer offers them as a recovery
 # list, so they are never deleted without being asked. Default NO; a preset ARCHIVES_DEL=y covers unattended wipes.

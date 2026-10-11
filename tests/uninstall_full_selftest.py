@@ -88,6 +88,8 @@ Run: python3 tests/uninstall_full_selftest.py        (0 = pass)
      --perturb-runns     the journal namespaces' sockets stay in /run (as shipped) → RED on [26]'s namespace and nothing-left checks only
      --perturb-runrest   the probe's sockets, swg-netctl's due stamp and swg-agent's lock stay (as shipped) → RED on [26]'s
                          probe, stamp, lock and nothing-left checks and [27]'s probe check only
+     --perturb-runrelay  the relay's status sockets stay (as shipped) → RED on [26]'s relay and nothing-left checks only
+     --perturb-runupd    update.sh's lock and marker stay (as shipped) → RED on [26]'s update and nothing-left checks only
 """
 import json, os, re, shutil, stat, subprocess, sys, tempfile
 
@@ -99,7 +101,8 @@ FLAGS = {f: f in sys.argv[1:] for f in ("--perturb-gone", "--perturb-image", "--
                                          "--perturb-aa", "--perturb-aatext", "--perturb-rl", "--perturb-rlown", "--perturb-keepmsg",
                                          "--perturb-engine", "--perturb-d123", "--perturb-orphan", "--perturb-6880",
                                          "--perturb-turnconf", "--perturb-dial", "--perturb-live", "--perturb-relaydir",
-                                         "--perturb-etcdata", "--perturb-runns", "--perturb-runrest")}
+                                         "--perturb-etcdata", "--perturb-runns", "--perturb-runrest", "--perturb-runrelay",
+                                         "--perturb-runupd")}
 PERTURBED = any(FLAGS.values())
 
 FAILS = []
@@ -170,13 +173,18 @@ if FLAGS["--perturb-runns"]:
     plant('      rmrf "/run/systemd/journal.$ns"   # its sockets, stopped above: systemd leaves their files (RemoveOnStop=no)\n', "")
 if FLAGS["--perturb-runrest"]:
     plant(" /etc/sudoers.d/swg-agent /run/swg-agent.lock\n", " /etc/sudoers.d/swg-agent\n")
-    plant("    || rmrf /usr/local/bin/swg-netctl-due /run/swg-netctl.due\n", "    || rmrf /usr/local/bin/swg-netctl-due\n")
+    plant("  [ $bare = 1 ] || rmrf /run/swg-netctl.due\n", "")
     plant("  rmrf /run/systemd/journal.swg-probe   # the probe's sockets: systemd leaves a stopped socket unit's files (RemoveOnStop=no)\n", "")
+if FLAGS["--perturb-runrelay"]:
+    plant("  rmrf /run/swg-relay-*.sock   # its status sockets: outside the unit's RuntimeDirectory, unlinked only at a relay's next start\n", "")
+if FLAGS["--perturb-runupd"]:
+    plant("rm_update_leftovers(){ _swg_left && return 0; rmrf /run/swg-update.lock /run/swg-update.running /tmp/swg-update.lock; return 0; }",
+          "rm_update_leftovers(){ return 0; }")
 
 T = tempfile.mkdtemp(prefix="unin-full-")
 
 # ── the box: every absolute path the uninstaller names moves under it ──────────────────────────────────────────────────
-_ROOTS = ("/opt/", "/etc/", "/var/", "/srv/", "/root/", "/run/", "/usr/local/bin/", "/usr/local/lib/", "/usr/src/", "/usr/bin/awg",
+_ROOTS = ("/opt/", "/etc/", "/var/", "/srv/", "/root/", "/run/", "/tmp/", "/usr/local/bin/", "/usr/local/lib/", "/usr/src/", "/usr/bin/awg",
           "/usr/share/man/", "/lib/systemd/", "/usr/lib/systemd/", "/lib/modules/", "/lib/sysctl.d/", "/usr/lib/sysctl.d/")
 _RE = re.compile(r"(?<![\w./])(" + "|".join(re.escape(r) for r in _ROOTS) + ")")
 def rooted(text, box):
@@ -812,17 +820,22 @@ check("[25] CONTROL: /etc/swg-panel holding a panel's own files (install.conf, i
       os.path.exists(_j) and open(_j).read() == "HISTORY" and KEPT_J % "swg-node" in out, (etc_left(box), out[-900:]))
 
 print("\n[26] a bare master, FULL: what swg leaves in /run goes too (1.8.9 qualification P3, the uninstall cell's U-1)")
-# tmpfs, gone at the next boot — but a FULL uninstall that says nothing of swg is left leaves nothing: the journal
-# namespaces' sockets (their units are stopped, and systemd leaves a stopped socket unit's files: RemoveOnStop=no), the
-# install-time probe's, swg-netctl's due stamp (1.8.9) and swg-agent's lock.
+# tmpfs, gone at the next boot — but a FULL uninstall that says nothing of swg is left leaves nothing. EVERY path swg's
+# programs and scripts write under /run that outlives them (the inventory of 2026-10-11 — a grep of every program, script
+# and lib/ for /run and /var/run; the userspace WireGuard / AmneziaWG sockets go with their interfaces, the relay's
+# RuntimeDirectory with its unit): the journal namespaces' sockets (their units are stopped, and systemd leaves a stopped
+# socket unit's files: RemoveOnStop=no), the install-time probe's, swg-netctl's due stamp (1.8.9), swg-agent's lock, the
+# relay's status sockets, update.sh's lock (/tmp when /run is not writable) and its in-progress marker.
 RUNLEFT = {"run/systemd/journal.%s/%s" % (ns, f): "" for ns in ("swg-panel", "swg-node", "swg-probe")
            for f in ("socket", "stdout", "dev-log", "io.systemd.journal")}
-RUNLEFT.update({"run/swg-netctl.due": "1760000000\n", "run/swg-agent.lock": ""})
+RUNLEFT.update({"run/swg-netctl.due": "1760000000\n", "run/swg-agent.lock": "", "run/swg-relay-awg0.sock": "",
+                "run/swg-relay-swg_88930e42.sock": "", "run/swg-update.lock": "", "run/swg-update.running": "",
+                "tmp/swg-update.lock": ""})
 JOURN = {"etc/machine-id": "MID\n", "var/log/journal/MID.swg-panel/system.journal": "HISTORY",
          "var/log/journal/MID.swg-node/system.journal": "HISTORY"}
 NETCTL = {"etc/systemd/system/swg-netctl.service": "[Service]\n", "usr/local/bin/swg-netctl-due": "#!/bin/sh\n"}
-run_left = lambda box: sorted(os.path.relpath(os.path.join(dp, f), box) for dp, ds, fs in os.walk(os.path.join(box, "run"))
-                              for f in fs + ds if "swg" in f)
+run_left = lambda box: sorted(os.path.relpath(os.path.join(dp, f), box) for top in ("run", "tmp")
+                              for dp, ds, fs in os.walk(os.path.join(box, top)) for f in fs + ds if "swg" in f)
 box = mkbox("run-left", dict(MASTER, **JOURN, **NETCTL, **RUNLEFT), BARE_FX)
 rc, out, calls, esc = run(box, "--yes", env=FULL)
 check("[26] the run stays inside its box", not esc, esc)
@@ -832,7 +845,11 @@ check("[26] the journal namespaces' sockets go with their journals (swg-panel, s
 check("[26] the install-time probe's sockets go", not here(box, "run/systemd/journal.swg-probe"), run_left(box))
 check("[26] swg-netctl's due stamp goes with its gate", not here(box, "run/swg-netctl.due") and not here(box, "usr/local/bin/swg-netctl-due"))
 check("[26] swg-agent's lock goes with the node", not here(box, "run/swg-agent.lock"))
-check("[26] nothing of swg's is left in /run", run_left(box) == [], run_left(box))
+check("[26] the relay's status sockets go with the relay", not here(box, "run/swg-relay-awg0.sock")
+      and not here(box, "run/swg-relay-swg_88930e42.sock"), run_left(box))
+check("[26] update.sh's lock and marker go once nothing of swg's is left", not here(box, "run/swg-update.lock")
+      and not here(box, "run/swg-update.running") and not here(box, "tmp/swg-update.lock"), run_left(box))
+check("[26] nothing of swg's is left in /run — every path of the inventory above", run_left(box) == [], run_left(box))
 
 print("\n[27] CONTROL: the data kept — swg-node's journal stays, and its sockets with it; the probe's go all the same")
 box = mkbox("run-kept", dict(BARE_NODE, **{"etc/swg-panel/install.conf": "PANEL_DOMAIN=192.168.77.9\n", "etc/swg-panel/tls/cert.pem": "C",
@@ -862,6 +879,8 @@ if PERTURBED:
             "--perturb-dial": ("[21] a proxy behind NAT",), "--perturb-live": ("[22] the LIVE Docker node's wdtt0",),
             "--perturb-relaydir": ("[23] the swg-node journal goes", "[24] both journals go"), "--perturb-etcdata": ("[25] CONTROL",),
             "--perturb-runns": ("[26] the journal namespaces' sockets", "[26] nothing of swg's"),
+            "--perturb-runrelay": ("[26] the relay's status sockets", "[26] nothing of swg's"),
+            "--perturb-runupd": ("[26] update.sh's lock", "[26] nothing of swg's"),
             "--perturb-runrest": ("[26] the install-time probe's", "[26] swg-netctl's due stamp", "[26] swg-agent's lock",
                                   "[26] nothing of swg's", "[27] …the probe's")}
     want = tuple(p for f, on in FLAGS.items() if on for p in sect[f])
