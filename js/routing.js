@@ -357,10 +357,13 @@ export function CatalogRow({ it, added, onPick }) {
         : html`<${DescInfo} text=${catDescOf(it.id)}/>`}</div>
   </button>`;
 }
+// A Geo-data provider's name as shown. The panel's own provider is a word, not a name: the registry sends it as
+// "Curated", and it is shown in the operator's language; every other provider's label is a proper name, shown as sent.
+export function provName(p) { return p.id === "curated" ? T("Curated") : (p.label || p.id); }
 export function provLabelOf(c) {
   const pid = providerOf(c);
   if (!pid) return "";
-  return ((Store.catalogProviders || []).find(p => p.id === pid) || {}).label || (pid === "curated" ? T("Curated") : pid);
+  return provName((Store.catalogProviders || []).find(p => p.id === pid) || { id: pid });
 }
 // Each provider gets a distinct colour (default palette + a Panel-settings per-mode override, like turn forks).
 export const CAT_PROVIDER_DEFAULTS = { mc: { color: "#5B8FF9", colorL: "#2C6FD6" }, v2: { color: "#61DDAA", colorL: "#1E9E6E" },

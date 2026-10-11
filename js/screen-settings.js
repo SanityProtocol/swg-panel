@@ -45,7 +45,7 @@ import {
   AsnHint, BlockListPicker, CAT_PROVIDER_DEFAULTS, DescInfo, FleetAssign, HostHealth, ListInfo,
   MODE_META, ModeTabs, NewBlockCatSheet, ProvTag, blockCatDisabled, blockSrcOk, capBadges, catCap, catDescOf,
   blistText, blockCatLabel, catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
-  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitLabel, exitOptionGroups, fleetRuleCats, provLabelOf, providerColor, providerUsage, reportDropped,
+  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitLabel, exitOptionGroups, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
 } from "./routing.js";
@@ -1893,9 +1893,9 @@ export function PanelSettingsScreen() {
     const u = v ? null : providerUsage(p.id);
     if (!u || !u.rules) return setProvEnabled(m => ({ ...m, [p.id]: v }));
     openConfirm({
-      title: T("Turn off {v1}?", { v1: p.label }), warn: true, confirmLabel: T("Turn it off"),
+      title: T("Turn off {v1}?", { v1: provName(p) }), warn: true, confirmLabel: T("Turn it off"),
       body: Trich("*{v1}* is used by {v2} on {v3}. Turning it off hides its lists and stops those rules routing on every node — the rules themselves stay, and start working again when you turn it back on. Nothing reaches the fleet until you save.", {
-        v1: p.label, v2: plural(u.rules, "prep|rule"), v3: plural(u.ifaces, "prep|interface") }),
+        v1: provName(p), v2: plural(u.rules, "prep|rule"), v3: plural(u.ifaces, "prep|interface") }),
       onConfirm: () => setProvEnabled(m => ({ ...m, [p.id]: false })),
     });
   };
@@ -3034,11 +3034,11 @@ const sectionLabel = k => ({
               title=${p.status === "downloading" ? T("Fetching this provider's catalog — cancel to stop waiting")
                 : on ? T("Enabled — its lists are selectable") : T("Off — its lists are hidden and deactivated on nodes")}
               onChange=${v => setProvOn(p, v)}/>`}
-            <${ThemedSwatch} val=${provColors[p.id]} title=${T("{v1} tag colour", { v1: p.label })} onChange=${nv => setProvColors(c => ({ ...c, [p.id]: nv }))}
-              sample=${(c) => html`<span class="sw-sample" style=${"--pc:" + c}>${p.label}</span>`}/>
+            <${ThemedSwatch} val=${provColors[p.id]} title=${T("{v1} tag colour", { v1: provName(p) })} onChange=${nv => setProvColors(c => ({ ...c, [p.id]: nv }))}
+              sample=${(c) => html`<span class="sw-sample" style=${"--pc:" + c}>${provName(p)}</span>`}/>
             <div class="bprov-meta">
               <div class="bprov-top">
-                <span class="prov-name" style=${"color:" + pickThemed(provColors[p.id], _provColDefault(p.id).dark, _provColDefault(p.id).light)}>${p.label}</span>
+                <span class="prov-name" style=${"color:" + pickThemed(provColors[p.id], _provColDefault(p.id).dark, _provColDefault(p.id).light)}>${provName(p)}</span>
                 <span class="prov-tiers">${capBadges({ host: (p.tiers || []).includes("host"), ip: (p.tiers || []).includes("ip") })}</span>
                 ${/* How far this switch reaches, stated before it is thrown (§6.4). Counts every rule that
                       NAMES one of this provider's lists, across wg/awg interfaces and the self-contained kinds.
@@ -3060,7 +3060,7 @@ const sectionLabel = k => ({
               if (s === "uptodate") return flashing ? html`<span class="prov-st ok"><${Ic} i="check"/> ${T("up to date")}</span>` : null;
               if (s === "failed" || p.error) return html`<${Fragment}><span class="prov-st err" title=${srvText(p) || ""}><${Ic} i="warn"/> ${p.last_updated ? T("update failed") : T("download failed")}</span><button class="btn btn-mini" style="margin-left:8px" onClick=${() => retryProvider(p.id)}>${T("Retry")}</button></>`;
               return null; })()}
-            ${p.builtin ? null : html`<a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${T("Open {v1}", { v1: T("{v1} on GitHub", { v1: p.label }) })}>${(p.url || "").replace(/^https?:\/\/github\.com\//, "")}</a>`}
+            ${p.builtin ? null : html`<a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${T("Open {v1}", { v1: T("{v1} on GitHub", { v1: provName(p) }) })}>${(p.url || "").replace(/^https?:\/\/github\.com\//, "")}</a>`}
           </div>`; })}${!_provReg.length ? html`<div class="hint">${T("Loading providers…")}</div>` : null}
             <div class=${"provrow bprow" + (customEnabled ? "" : " off")}>
               <${Switch} on=${customEnabled} title=${customEnabled ? T("On — you can create custom lists") : T("Off — the Custom lists section is hidden")} onChange=${v => setCustomEnabled(v)}/>
