@@ -6426,7 +6426,7 @@ export const STR = {
     "DNS-серверы через запятую (-dns-servers). Пусто = умолчание приложения.",
   "Connections": "Соединения",
   "Credential group size": "Размер группы учёток",
-  "Curated": "Подобранный",
+  "Curated": "Подборка",
   "Custom DNS": "Свой DNS",
   "DNS mode": "Режим DNS",
   "Debug logging": "Подробный лог",
