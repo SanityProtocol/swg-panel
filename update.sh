@@ -583,9 +583,10 @@ EOF
 }
 
 # HEAL: the tick the idle gate relies on, on time. systemd's default AccuracySec=1min fires a 10 s tick whenever PID 1 next
-# wakes for something else: on a quiet box 15–35 s apart, and a settings save, Debug's end and a request with the path
-# watch dead all wait for a tick — the gated helper woke PID 1 far less than the old one, so its ticks drifted where the
-# old one's had not (CPU re-qualification AB-F1). Added to a timer that has no AccuracySec; one an operator set is theirs.
+# wakes for something else, and a settings save, Debug's end and a request with the path watch dead all wait for a tick.
+# In the CPU re-qualification's 6-hour soak (AB-F1) the gated helper's ticks came a median 15 s and up to 35 s apart, the
+# old helper's 12 / 16 s: both drift, the gated one more, since it wakes PID 1 far less. Added to a timer that has no
+# AccuracySec; one an operator set is theirs.
 ensure_timer_on_time(){   # <timer unit>
   local t="/etc/systemd/system/$1"
   [ -f "$t" ] && grep -q '^\[Timer\]$' "$t" || return 0
@@ -600,7 +601,8 @@ ensure_timer_on_time(){   # <timer unit>
 # HEAL: swg-netctl's idle gate (lib/common.sh netctl_gate_heal) — the helper starts on every 10 s tick but runs only when
 # it has work. Written when MISSING OR DIFFERENT, outside the heal contract's "never rewrite" on purpose, like
 # ensure_update_unit_docker: the gate and its drop-in are ours entirely (nothing an operator sets), and a box must not
-# keep an older release's text — present is not current. The units themselves are not touched.
+# keep an older release's text — present is not current. The service unit file is not touched (the gate is a drop-in);
+# its timer is, first: ensure_timer_on_time gives it AccuracySec=1s.
 ensure_netctl_gate(){
   if [ ! -f /etc/systemd/system/swg-netctl.service ]; then   # a dry run: the helper's heal above only said it would write it
     $DRYRUN && [ -f "$SRC/swg-netctl" ] && echo "    [skip] swg-netctl idle gate: /usr/local/bin/swg-netctl-due + swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN (with the helper)"

@@ -1699,9 +1699,10 @@ Unit=swg-netctl.service
 [Install]
 WantedBy=paths.target
 EOF
-  # AccuracySec=1s: systemd's default (1 min) fires a 10 s tick whenever PID 1 next wakes for something else — on a quiet
-  # box 15–35 s apart, and a settings save, Debug's end and a request with the path watch dead all wait for a tick (CPU
-  # re-qualification AB-F1). update.sh ensure_timer_on_time adds it to a timer an older release wrote.
+  # AccuracySec=1s: systemd's default (1 min) fires a 10 s tick whenever PID 1 next wakes for something else — ticks a
+  # median 15 s and up to 35 s apart in the CPU re-qualification's soak (AB-F1) — and a settings save, Debug's end and a
+  # request with the path watch dead all wait for a tick. update.sh ensure_timer_on_time adds it to a timer an older
+  # release wrote.
   writef /etc/systemd/system/swg-netctl.timer 644 <<EOF
 [Unit]
 Description=poll for swg-netctl requests (fallback for the path watch)
