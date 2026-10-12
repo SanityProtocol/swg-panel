@@ -53,8 +53,8 @@ def load(name, path, src=None):
 N = load("swgnoded", NODED)
 psrc = open(PANEL).read()
 if PERTURB:
-    assert psrc.count('        if _dp.get("fallback"):\n') == 1
-    psrc = psrc.replace('        if _dp.get("fallback"):\n', '        if False:\n')
+    assert psrc.count('        elif _dp.get("fallback"):\n') == 1, "perturbation anchor missing — would FALSE-PASS"
+    psrc = psrc.replace('        elif _dp.get("fallback"):\n', '        elif False:\n')
 P = load("swgpanel", PANEL, psrc)
 
 KR = os.uname().release
