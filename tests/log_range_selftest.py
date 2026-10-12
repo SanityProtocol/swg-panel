@@ -921,11 +921,14 @@ console.log(JSON.stringify(r));
               and "${h(LogOverlay)}" in appjs and "lg.onclick = openLogOverlay" in appjs
               and "return LV.overlay ? html`<${LogViewer} overlay/>` : null;" in s and "onClick=${closeLogOverlay}" in s, "")
         tk = s[s.index("async function tick()"):s.index("\n}", s.index("async function tick()"))]
+        guard = tk.split("\n")[1]   # tick()'s guard, its first line: the later `!LV.live` (the close of a stream opened
+        #                            meanwhile) is not what keeps it from asking, and kept the plant autostart green
         ol = s[s.index("export function openLogs("):s.index("\n}", s.index("export function openLogs("))]
         check("[13] Settings → Logs asks nothing until Start; the header button and a deep link are the ask, and a deep link "
               "opens over the page it was on (never Settings underneath)",
-              "!LV.live" in tk and "LV.overlay = LV.live = true" in s and "openLogOverlay();" in ol and "goSettings" not in s
-              and 'T("Start live log")' in s, (tk[:160], ol))
+              "!LV.live" in guard and guard.rstrip().endswith("return;") and "LV.overlay = LV.live = true" in s
+              and "openLogOverlay();" in ol and "goSettings" not in s
+              and 'T("Start live log")' in s, (guard, ol))
         check("[13] full screen keeps the focus: Tab or a click cannot reach the page under it (a sheet, list or bubble over "
               "it can), and Exit gives the focus back to what opened it",
               'document.addEventListener("focusin", f);' in s and 'e.target.closest(".lv-full,.overlay,.ddpop,.deppop' in s
