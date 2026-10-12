@@ -54,7 +54,7 @@ PLANTS = {
     "shsemi": ("    if re.search(r\"[;&|<>`$(){}\\n]\", c):\n        return False", "    if False:\n        return False"),
     "threadcache": ("    if threading.current_thread() is not threading.main_thread():\n        return read()\n    hit = _PASS.get(key)",
                     "    hit = _PASS.get(key)"),
-    "keep127": ("    if getattr(v, \"returncode\", 0) not in (124, 126, 127):", "    if True:"),
+    "keep127": ("    if keep_failures or getattr(v, \"returncode\", 0) not in (124, 126, 127):", "    if True:"),
     "verifycached": ('''        if (host_sh("systemctl is-active " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null", probe=True).stdout or "").strip() == "active":''',
                      '''        if _unit_active(_csqtt_svc(iface)) == "active":'''),
 }
