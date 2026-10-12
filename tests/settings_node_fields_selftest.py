@@ -89,7 +89,9 @@ if PERTURB:
     _cut = 'if (!eq(e.exits, o.exits)) fl.push(T("external exits"));'
     assert _cut in diff_blk, "perturbation anchor missing — this run would FALSE-PASS"
     diff_blk = diff_blk.replace(_cut, "")
-diffed = set(re.findall(r"\be\.([a-z][a-z0-9_]*)", diff_blk))
+# A field is named in the diff when the draft is compared with the original — `e.x` read as an argument of another line
+# (the torrents line reads `e.exits`, 70d2c081) is not that, and kept `exits` "named" with its own line cut out.
+diffed = set(re.findall(r"\be\.([a-z][a-z0-9_]*)", diff_blk)) & set(re.findall(r"\bo\.([a-z][a-z0-9_]*)", diff_blk))
 
 check("nFields was read at all (%d fields)" % len(nfields), len(nfields) >= 10, sorted(nfields))
 check("SECF was read at all", len(secf) >= 10, sorted(secf))
