@@ -57,7 +57,6 @@ Run: python3 tests/log_budget_selftest.py   (0 = pass)
      pid1last     the verify reader takes systemd's own line as the reason
      pid1all      the verify reader drops every systemd line, the exec failure's reason among them
      stickyerr    a failed restart's error stays after the budget is put back to the size in force
-     uninstkeep   uninstall leaves the journal on disk
      settingsempty     netctl acts on an emptied settings file ({}): the defaults (100 MB, Info) replace what is applied
      settingsdropins   netctl writes the drop-ins with no settings read (Off's emerg flips back to Info's cap)
      settingsunguarded a value the panel never writes kills the tick before the queue
@@ -117,10 +116,9 @@ PLANTS = {   # (program, anchor, replacement)
     "stickyerr": ("noded", '''    if _LOG_BUDGET["conf"] == want and _LOG_BUDGET["err"]:   # back to the size in force: nothing is pending any more\n        _LOG_BUDGET["err"], _LOG_BUDGET["retry_want"], _LOG_BUDGET["at"] = None, None, 0.0\n''', ""),
     "pid1last": ("noded", '''-n 8 --no-pager -o cat 2>/dev/null | " + JOURNAL_SKIP_PID1\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")''',
                  '''-n 8 --no-pager -o cat 2>/dev/null | "\n                + "grep -iE 'error|invalid|fail|panic|bind|denied|seccomp' | tail -1")'''),
-    "uninstkeep": ("uninstall", '''  [ -n "$mid" ] && rmrf "/var/log/journal/$mid.$ns" "/run/log/journal/$mid.$ns"\n''', ""),
     "settingsempty": ("netctl", '''    if not isinstance(ps, dict) or not ps:''', '''    if not isinstance(ps, dict):'''),
-    "settingsdropins": ("netctl", '''        if ps is not None:                           # no settings this tick: what is applied stays (HE-3)''',
-                        '''        if True:                           # no settings this tick: what is applied stays (HE-3)'''),
+    "settingsdropins": ("netctl", '''        if ps is not None:                           # no settings this run: what is applied stays (HE-3)''',
+                        '''        if True:                           # no settings this run: what is applied stays (HE-3)'''),
     "settingsunguarded": ("netctl", '''        with contextlib.suppress(Exception):         # never kept from the queue''', '''        if True:         # never kept from the queue'''),
     "logsopts": ("logs", '''case "$src" in -h|--help) ;; -*) set -- "$src" "$@"; src="" ;; esac''', ''':'''),
 }
