@@ -15585,39 +15585,43 @@ def _pin_lookup(owner, repo, tags):
 
 def _turn_warm_pins(deps, refresh=False):
     """Find the release of every running server version not pinned yet (by tag, one small request per spelling; a
-    version no release names, or a failing lookup, is retried hourly). `refresh` (the hourly pass) re-reads the pinned
-    ones too — a release captured mid-upload gains its late installers — and drops pins no server runs any more.
+    version no release names, or a lookup GitHub refuses, is retried hourly). `refresh` (the hourly pass, run only when
+    GitHub answered) re-reads the pinned ones too — a release captured mid-upload gains its late installers — and drops
+    the versions no server runs any more; a 5-minute pass only adds, so one snapshot missing a row unpublishes nothing.
     True when what serve.json publishes changed — the caller saves the cache and rewrites serve.json."""
     global _PIN_WANTED
     wanted = _pin_wanted(deps)
-    changed = wanted != _PIN_WANTED
+    gone = [k for k in _RELEASE_PIN if k[2] not in wanted.get(k[:2], ())] if refresh else []
+    for k in gone:
+        _RELEASE_PIN.pop(k, None)                     # no server runs this version any more
+    if not refresh:
+        wanted = {k: set(_PIN_WANTED.get(k, ())) | set(wanted.get(k, ())) for k in set(_PIN_WANTED) | set(wanted)}
+    changed = bool(gone) or wanted != _PIN_WANTED
     now = time.time()
-    for k in ([k for k in _RELEASE_PIN if k[2] not in wanted.get(k[:2], ())] if refresh else []):
-        _RELEASE_PIN.pop(k, None)                     # no server runs this version any more (hourly: one snapshot missing a row drops nothing)
-        changed = True
-    for (owner, repo), vers in wanted.items():
-        for v in sorted(vers):
-            key = (owner, repo, v)
-            if key in _RELEASE_PIN and not refresh:
-                continue
-            if key not in _RELEASE_PIN and now - _PIN_TRIED.get(key, 0) < 3600:
-                continue
-            ov = [t for (f, ver), t in _PIN_TAG_OVERRIDE.items() if ver == v and turn_fork_owner(f) == owner + "/" + repo]
-            known = [(_RELEASE_PIN.get(key) or {}).get("tag")] if key in _RELEASE_PIN else []   # a refresh asks its own tag, once
-            try:
-                rec = _pin_lookup(owner, repo, [t for t in known if t] or ov or _pin_tags(v))
-            except urllib.error.HTTPError:
-                _PIN_TRIED[key] = now                 # GitHub answered (a rate limit, a deleted repository): an hour's rest
-                continue
-            except Exception:
-                continue                              # no network yet (a boot before egress): no verdict — the next pass asks
-            if rec is None:
-                _PIN_TRIED[key] = now                 # no such release: the latest stands in, as it always did
-                if _RELEASE_PIN.pop(key, None) is not None:
-                    changed = True
-            elif rec != _RELEASE_PIN.get(key):
-                _RELEASE_PIN[key] = rec
+    for key in [(o, r, v) for (o, r), vers in wanted.items() for v in sorted(vers)]:
+        owner, repo, v = key
+        if key in _RELEASE_PIN and not refresh:
+            continue
+        if key not in _RELEASE_PIN and now - _PIN_TRIED.get(key, 0) < 3600:
+            continue
+        kt = (_RELEASE_PIN.get(key) or {}).get("tag")   # a refresh asks the pin's own tag, once
+        tags = [kt] if kt else ([t for (f, ver), t in _PIN_TAG_OVERRIDE.items()
+                                 if ver == v and turn_fork_owner(f) == owner + "/" + repo] or _pin_tags(v))
+        try:
+            rec = _pin_lookup(owner, repo, tags)
+        except urllib.error.HTTPError:
+            _PIN_TRIED[key] = now                     # GitHub answered (a rate limit, a deleted repository): an hour's rest
+            continue
+        except Exception:
+            break                                     # no network (a boot before egress, GitHub blocked): no verdict, and
+                                                      # one timeout per pass, not one per version — the next pass asks
+        if rec is None:
+            _PIN_TRIED[key] = now                     # no such release: the latest stands in, as it always did
+            if _RELEASE_PIN.pop(key, None) is not None:
                 changed = True
+        elif rec != _RELEASE_PIN.get(key):
+            _RELEASE_PIN[key] = rec
+            changed = True
     _PIN_WANTED = wanted                              # one rebind: a serve.json build meanwhile sees the old set or the new
     return changed
 
@@ -15710,7 +15714,7 @@ def _turn_warm_assets_loop(deps):
         resolved = 0
         try:
             resolved = _turn_warm_assets()
-            if (pins(True) or resolved):
+            if (pins(bool(resolved)) or resolved):   # the refresh (and its prune) only when GitHub answered
                 _release_cache_save(deps)   # persist so the NEXT restart serves these assets immediately (no cold-start empty bubbles)
             flush()
         except Exception:
