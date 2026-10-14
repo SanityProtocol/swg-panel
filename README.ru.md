@@ -582,7 +582,6 @@ swgPanel использует несколько прекрасных проек
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — оригинал
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
 - [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (ранее samosvalishe — прокси, установленные из samosvalishe, продолжают работать и теперь обновляются из репозитория hack-diaz)
-- [Moroka8](https://github.com/Moroka8/vk-turn-proxy) и [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy) — скрыты в панели с 1.8.9 (без изменений в апстриме с середины 2026 года); уже работающие прокси продолжают работать
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — самодостаточный VPN-сервер, владеющий своими ключами, который панель запускает как интерфейс, и приложения, которыми подключаются люди:
@@ -592,7 +591,6 @@ swgPanel использует несколько прекрасных проек
 - [Endlad2](https://github.com/Endlad2/LaLune)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
-- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android) — репозиторий удалён; скрыт в панели с 1.8.9, уже работающие серверы продолжают работать
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 

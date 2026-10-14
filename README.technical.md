@@ -566,7 +566,6 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
 - [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe)
-- [Moroka8](https://github.com/Moroka8/vk-turn-proxy) and [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy) — hidden in the panel since 1.8.9
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
@@ -576,7 +575,6 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [Endlad2](https://github.com/Endlad2/LaLune)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
-- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android) — repository deleted; hidden in the panel since 1.8.9
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 
