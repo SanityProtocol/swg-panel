@@ -5635,7 +5635,7 @@ def migrate_provider_defaults(nodes_path, panel_settings_path):
 
 
 def migrate_enabled_turn_forks(nodes_path, panel_settings_path, stats_dir):
-    """One-time: keep a fork the fleet ALREADY runs from vanishing out of the install-a-fork picker.
+    """One-time: keep a fork the fleet ALREADY runs in enabled_turn_forks (the install picker's list, and the Overview's).
 
     enabled_turn_forks filters that picker AND the Overview traffic-by-fork chart (which, unlike the picker, shows a
     hidden fork it lists). The built-in default keeps the forks hidden on 2026-10-14 (MYSOREZ, Moroka8, xxcipherx), so
@@ -15046,7 +15046,7 @@ TURN_SERVERS = {
     # 2/INVALIDARGUMENT on an unknown flag. Turning this on against that binary does not degrade — it kills the
     # service outright, which is exactly what happened on the test node. Add `"raw": True,` back in the SAME
     # change that publishes 1.5.40-2, never before. (Same rule as CSQTT_BUILDS; see the note there.)
-    "ildarmaga":    {"raw": True, "default_client": "pwdttilg", "label": "ildarmaga",  "product": "WDTT",      "owner": "ildarmaga/wdtt",                  "kind": "wdtt", "client_dns": "1.1.1.1", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#5B8DEF", "light": "#2563EB"}, "clients": ["pwdttilg", "pwdtt", "wdttapp", "qwdtt", "wdttplus", "xxcipher", "vkturnproxy", "qwdttleg"], "reload": "sighup",
+    "ildarmaga":    {"raw": True, "label": "ildarmaga",  "product": "WDTT",      "owner": "ildarmaga/wdtt",                  "kind": "wdtt", "client_dns": "1.1.1.1", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#5B8DEF", "light": "#2563EB"}, "clients": ["pwdttilg", "pwdtt", "wdttapp", "qwdtt", "wdttplus", "xxcipher", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      # richer server: multi-user panel + subscription + Xray + Telegram bot; its native desktop client is the ildarmaga PWDTT build (sub-URL / base64)
                      "settings": [], "client_settings": []},
     "wdttplus":     {"label": "Ivan4537",   "product": "WDTT-Plus", "owner": "Ivan4537/WDTT-Plus",              "kind": "wdtt", "client_dns": "1.1.1.1", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#F0705E", "light": "#D9432E"}, "clients": ["wdttplus", "wdttapp", "qwdtt", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
@@ -15055,7 +15055,7 @@ TURN_SERVERS = {
     "xxcipherx":    {"label": "XXcipherX",  "product": "WDTT",      "owner": "XXcipherX/proxy-turn-vk-android", "kind": "wdtt", "client_dns": "1.1.1.1", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#E24FC4", "light": "#B01E96"}, "clients": ["xxcipher", "wdttapp", "qwdtt", "wdttplus", "pwdtt", "pwdttilg", "vkturnproxy", "qwdttleg"], "reload": "sighup",
                      # XXcipherX fork: video-masquerade obfuscation + no-captcha; audio mode is amurcanov-compatible
                      "settings": [], "client_settings": []},
-    "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "raw": True, "default_client": "qwdtt", "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "client_dns": "8.8.8.8", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
+    "qwdtt":        {"label": "SpaceNeuroX", "product": "qWDTT",    "raw": True, "owner": "SpaceNeuroX/proxy-turn-vk-android", "kind": "wdtt", "client_dns": "8.8.8.8", "wrap": "", "keyflag": "-password", "protocols": ["wg"], "color": {"dark": "#FACC15", "light": "#A16207"}, "clients": ["qwdtt", "qwdttleg", "wdttapp", "wdttplus", "xxcipher", "pwdtt", "pwdttilg", "vkturnproxy"], "reload": "sighup",
                      # qWDTT: the actively-developed WDTT fork (amurcanov's own is frozen). Same DTLS+WRAP-A wire and
                      # the same passwords.json store, so every WDTT client and all our WDTT machinery apply unchanged;
                      # what differs is server FEATURES (multi-device passwords, downlink pacing, an experimental raw-IP
@@ -15087,17 +15087,23 @@ TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "anton48", "ildarmaga", "w
                      "samosvalishe", "cacggghp", "xxcipherx", "qwdtt"]   # operator order (csqtt sits under amurcanov — same author).
 # The tail is pinned by hand: xxcipherx, then qwdtt LAST. The hidden fork (cacggghp) sits before them so the
 # pinned pair stays at the bottom of every operator list even if it is ever un-hidden.
-# Forks kept in the catalog (so a deployed instance still resolves its label/colour) but HIDDEN from the operator
-# UI — the settings toggle list, the install/enable picker, the interface Setup-proxy dropdown, and the fork
-# colour pickers all skip these. Purely cosmetic gating; nothing about a running proxy changes.
+# Forks kept in the catalog (so a deployed instance still resolves its label/colour) but HIDDEN: no install/enable
+# picker or Setup-proxy dropdown offers them, and Settings → Turn proxies lists one only while a node still runs it
+# (no picker switch: its users' app, client knobs, version and colour stay editable). They also decide the apps the
+# visible forks offer (_turn_compat, _turn_cli_authors). A running proxy itself is untouched.
 # MYSOREZ, Moroka8 and xxcipherx joined on the operator's word (2026-10-14): MYSOREZ and Moroka8 have not moved
-# upstream since July / June 2026, and XXcipherX deleted its repository (we still build its pinned source).
+# upstream since July / June 2026, and XXcipherX deleted its repository (its pinned commit is still fetchable through
+# amurcanov/proxy-turn-vk-android's fork network — forks/wdtt/xxcipherx/build.sh).
 TURN_HIDDEN_FORKS = {"cacggghp", "MYSOREZ", "Moroka8", "xxcipherx"}
 # Client apps hidden the same way (operator, 2026-10-14): the MYSOREZ Android app, and XXcipherX's, whose download
 # is gone with its repository. A hidden app is offered only by the hidden forks that already offered it — the
 # users of a proxy those still run keep the app they have — and by no visible fork: _turn_compat drops it there,
 # so the Settings pickers and the sub page fall back to the fork's next app, a saved default naming it included.
 TURN_HIDDEN_CLIENTS = {"mysorez", "xxcipher"}
+# …and an app whose download is GONE (its repository deleted) is offered by no fork at all, a hidden one included: a
+# running xxcipherx server's users get the next WDTT app (every WDTT app speaks every WDTT server's wire), never a link
+# to nothing — while the MYSOREZ app, alive upstream, stays with the hidden forks that use it, and on Client rosters.
+TURN_GONE_CLIENTS = {"xxcipher"}
 
 # A client APP's knob schema is defined once (on its NATIVE server's client_settings) and shared wherever that app
 # is offered — so the Clients tab edits it in ONE place. Maps each client id → the server that natively runs it.
@@ -15212,9 +15218,9 @@ _TURN_CLI_AUTHORS = {
 }
 def _turn_compat(sid):
     """A fork's client compat map as offered: a visible fork offers no hidden app (TURN_HIDDEN_CLIENTS); a hidden
-    fork keeps its whole map, so the users of a proxy it still runs keep their app."""
-    c = _TURN_CLIENT_COMPAT.get(sid, {})
-    return c if sid in TURN_HIDDEN_FORKS else {k: v for k, v in c.items() if k not in TURN_HIDDEN_CLIENTS}
+    fork keeps its map, so the users of a proxy it still runs keep their app — but no fork offers a gone one."""
+    drop = TURN_GONE_CLIENTS if sid in TURN_HIDDEN_FORKS else TURN_HIDDEN_CLIENTS
+    return {k: v for k, v in _TURN_CLIENT_COMPAT.get(sid, {}).items() if k not in drop}
 def _turn_cli_authors(sid):
     """The CLI builds offered for a fork, native first — a visible fork offers no hidden fork's build."""
     a = _TURN_CLI_AUTHORS.get(sid, ["samosvalishe"])
@@ -15229,7 +15235,8 @@ _CLIENT_SOURCES = {
                     {"owner": "hackdiaz-dev", "repo": "free-turn-proxy", "branch": "master", "path": "docs/flags.md"}],
     "mysorez":     [{"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/models/Configs.kt"},
                     {"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/data/AppPreferences.kt"}],
-    "sidecar":     [{"owner": "Moroka8", "repo": "vk-turn-proxy", "branch": "main", "path": "pkg/clientcore/main.go"}],
+    # the CLI the visible forks hand out is hack-diaz's free-turn client (Moroka8's build is withdrawn with its fork, 2026-10-14)
+    "sidecar":     [{"owner": "hackdiaz-dev", "repo": "free-turn-proxy", "branch": "master", "path": "internal/config/cliflags.go"}],
     # WDTT-family CLIENT apps — previously watched by NOTHING (which is how qWDTT's Raw mode + csqtt reached us by
     # word of mouth instead of a drift alert). Commit-drift watch only: only qWDTT declares a knob,
     # so there is no per-field diff yet (no _CLIENT_FIELD_MAP entry) — a change to the app's SettingsStore raises a
@@ -15242,8 +15249,6 @@ _CLIENT_SOURCES = {
     "wdttplus":    [{"owner": "Ivan4537", "repo": "WDTT-Plus", "branch": "main", "path": "app/src/main/java/com/wdtt/plus/SettingsStore.kt"}],
     # Same split here: ConnectionProfileParser is what decides whether our vkturnproxy:// payload imports
     # (it requires peerAddress plus useWrapA/useWrapS), and it is not in SettingsStore.
-    "xxcipher":    [{"owner": "XXcipherX", "repo": "proxy-turn-vk-android", "branch": "main-new", "path": "app/src/main/java/com/wdtt/client/SettingsStore.kt"},
-                    {"owner": "XXcipherX", "repo": "proxy-turn-vk-android", "branch": "main-new", "path": "app/src/main/java/com/wdtt/client/ConnectionProfile.kt"}],
     # NOT core/profiles.go, which this watched for a long time while containing no link code at all — a watch
     # that cannot fire reads as coverage and is worse than none. parseWdttUrl is the accept/reject decision.
     "pwdtt":       [{"owner": "luminescq", "repo": "PWDTT", "branch": "main", "path": "frontend/src/lib/utils/wdttLink.ts"}],
@@ -15500,6 +15505,8 @@ def _turn_warm_assets():
     resolved = 0
     for _cat in (TURN_CLIENTS, WG_APPS):              # turn forks AND the plain WG/AWG apps share the resolver
       for cid, c in _cat.items():
+        if cid in TURN_GONE_CLIENTS:
+            continue                                  # its repository is gone: an hourly 404, and no fork offers it
         for oskind, links in (c.get("platforms") or {}).items():
             owner, repo = _gh_owner_repo((links or {}).get("github"))
             if not owner:
@@ -16076,8 +16083,8 @@ def _turn_roster_check(seed=True):
     out = {}
     seeded = False
     for cid in TURN_CLIENTS:
-        if cid in TURN_HIDDEN_CLIENTS:
-            continue                                    # hidden (TURN_HIDDEN_CLIENTS): out of the Client rosters sheet too
+        if cid in TURN_GONE_CLIENTS:
+            continue                                    # its repository is gone: nothing to watch, and no row
         srcs = _client_sources(cid)
         if not srcs:
             # A client nobody watches used to be dropped from the report entirely, so the roster read as full
@@ -16171,9 +16178,9 @@ def turn_catalog_view(pins=False):
     """The turn catalog as the SPA + swg-sub consume it: servers in display order + the clients map (each client
     carries its own `settings` schema + `native_fork`, so the Clients tab edits an app's knobs once). RAW — colour
     overrides (turn_fork_colors) and the install-picker filter (enabled_turn_forks) stay in the consumers."""
-    return {"servers": [{"id": sid, "compat": _turn_compat(sid),
+    return {"servers": [{"id": sid, "compat": cm,
                          # per (this fork, client) schema — the mysorez app's knobs depend on which core THIS fork loads
-                         "client_schemas": {cid: _client_schema_for(sid, cid) for cid in _turn_compat(sid)},
+                         "client_schemas": {cid: _client_schema_for(sid, cid) for cid in cm},
                          # per-author CLI builds (native first) for the picker — N/A for a self-contained kind (its clients are fixed, not catalog-driven), so no dead default
                          "cli_authors": ([] if TURN_SERVERS[sid].get("kind") == "wdtt" else _turn_cli_authors(sid)),
                          # WDTT forks are OUR versioned builds — ship the published versions (newest first) so the SPA shows current + rollback targets
@@ -16185,7 +16192,7 @@ def turn_catalog_view(pins=False):
                                               else keyless_share_capable(sid, "raw", _csqtt_current_version())}
                             if TURN_SERVERS[sid].get("kind") in ("wdtt", "csqtt") else {}),
                          "hidden": sid in TURN_HIDDEN_FORKS,   # in the catalog (deployed instances still resolve label/colour) but skipped by every operator-facing fork list
-                         **TURN_SERVERS[sid]} for sid in TURN_SERVER_ORDER],
+                         **TURN_SERVERS[sid]} for sid, cm in ((s, _turn_compat(s)) for s in TURN_SERVER_ORDER)],
             "clients": {cid: {**c, "platforms": _client_platforms_resolved(c, pins),
                               "settings": _client_schema(cid), "native_fork": _CLIENT_NATIVE_FORK.get(cid)}
                         for cid, c in TURN_CLIENTS.items()}}
@@ -17898,7 +17905,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "turn_enabled": True,
     # which turn-proxy forks are offered in the "install a fork" dropdown (by fork id; the fork set itself lives
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
-    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "qwdtt"],   # + csqtt (raw-TUN self-contained kind) + qwdtt (the live WDTT fork)
+    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8", "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "qwdtt"],   # + csqtt (raw-TUN self-contained kind) + qwdtt (the live WDTT fork); MYSOREZ/Moroka8/xxcipherx are hidden since 2026-10-14 — no picker offers them, whatever this says
     # RAW-IP mode on a NEW qWDTT server. On by default: it is ~6x the WireGuard path through the same relay, and
     # the server keeps its normal WireGuard listener either way, so a peer that shouldn't use raw simply doesn't.
     # Per-instance the operator can still switch it off; this only decides what a freshly created one starts with.

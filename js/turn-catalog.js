@@ -61,7 +61,6 @@ export function turnForkList() {
       wdtt_versions: Array.isArray(s.wdtt_versions) ? s.wdtt_versions : [],   // published builds; EMPTY = nothing a node could install yet
       reach_vouched: s.reach_vouched === true,   // DEVICE ACCESS §11.2 F4: the build a create installs proves a device's owner (else the create sheet warns)
       awg3: s.awg3 !== false,   // can its app carry AmneziaWG 3.1? The catalog says false for WINGS-N only; absent = yes (docs/AWG3-PLAN.md D-apps)
-      default_client: s.default_client || "",   // the fork's own preferred app, when the rank would pick another
       client_dns: s.client_dns || "",   // the DNS a WDTT / csqtt server hands its clients when the panel sets none (docs/DNS-SETTINGS-PLAN.md §3.3)
       cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));
   return TURN_FORKS_FALLBACK;

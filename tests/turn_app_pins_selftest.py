@@ -21,7 +21,7 @@ Hermetic. Run: python3 tests/turn_app_pins_selftest.py   (0 = pass)
      --perturb        _pin_tags keeps our build suffix (2.1.9-4 never finds v2.1.9) → RED in [1], [3], [4]
      --perturb-repo   _pin_wanted takes every server, its app's repository or not → RED in [2]
 """
-import importlib.machinery, importlib.util, json, os, sys, tempfile
+import atexit, importlib.machinery, importlib.util, json, os, shutil, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -36,6 +36,7 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 TMP = tempfile.mkdtemp(prefix="apppins-")
+atexit.register(shutil.rmtree, TMP, True)   # the copied panel is ~4.6 MB, and the nightly runs this five times
 src = open(SERVER, encoding="utf-8").read()
 def plant(a, b, what):
     global src

@@ -572,7 +572,8 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const fCnt = fk => (turnRanged && !_selfFork(fk))
     ? { on: Math.round((fRanged[sanF(fk)] || {}).pon || 0), tot: Math.round((fRanged[sanF(fk)] || {}).ptot || 0) }
     : { on: (fLive[fk] || {}).on || 0, tot: (fLive[fk] || {}).tot || 0 };
-  const forks = [...enSet].filter(fk => { const t = fTraf(fk), c = fCnt(fk); return (t.rx + t.tx) > 0 || c.tot > 0; });
+  const _fo = turnForkList().map(f => f.id), _fi = fk => { const i = _fo.indexOf(fk); return i < 0 ? _fo.length : i; };   // the catalog's operator order
+  const forks = [...enSet].filter(fk => { const t = fTraf(fk), c = fCnt(fk); return (t.rx + t.tx) > 0 || c.tot > 0; }).sort((a, b) => _fi(a) - _fi(b));
   const turnFmt = turnRanged ? fmtBytes : rate;
   const turnCenter = (rx, tx) => { const [d, u] = dlul(rx, tx); const ds = "↓ " + turnFmt(d), us = "↑ " + turnFmt(u);
     const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(11, dfs - 3);

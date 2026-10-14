@@ -87,7 +87,7 @@ subscription and no one else sitting in the middle of your traffic.
   apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
 - **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a
   turn-proxy fronts a tunnel you already have, a **WDTT** server *is* the tunnel — create it like any
-  other interface, pick one of five forks, and hand people a password instead of a key. Its config
+  other interface, pick one of four forks, and hand people a password instead of a key. Its config
   lands on their subscription page next to everything else, app download included.
 - **csqtt servers too.** The same idea on a newer, faster datapath — create it like any other interface
   and hand out a password. Note that **csqtt is free for personal use only**; running one commercially

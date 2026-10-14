@@ -169,6 +169,7 @@
   // A fork's shown name is its catalog label, never the internal id (they differ where a fork changed hands: samosvalishe → hack-diaz).
   function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }
   if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);   // {fork} in a server name is the name (q189 HE-8)
+  if (window.SWGTurn && SWGTurn.setCliAuthors) SWGTurn.setCliAuthors(function (f) { var s = turnServer(f); return s && s.cli_authors; });   // the served CLI builds
   function forkRank(f) { var s = turnServers(); if (s && s.length) { for (var i = 0; i < s.length; i++) if (s[i].id === f) return i; return s.length; } var j = FORK_ORDER_FALLBACK.indexOf(f); return j < 0 ? FORK_ORDER_FALLBACK.length : j; }
   // WireGuard-only forks (the client can't front AmneziaWG) — from the catalog server's `protocols` (no "awg"); so
   // such a fork isn't offered for an AWG peer. The fallback mirrors the panel's old TURN_WG_ONLY.
@@ -293,7 +294,7 @@
     // compat band first, then the one-tap (autostart) apps ahead of paste/QR-only ones, then alphabetical — mirrors the panel picker.
     ranked.sort(function (a, b) { return rank(a) - rank(b) || ((autostartOf(b) ? 1 : 0) - (autostartOf(a) ? 1 : 0)) || (a < b ? -1 : a > b ? 1 : 0); });
     // A WDTT fork's system default is its own app, the top of this rank (until 2026-10-14 XXcipherX's one-tap app
-    // stood in where a fork's own could not open one-tap; its repository is gone — the panel's sysDefaultKey agrees).
+    // stood in where a fork's own could not open one-tap; its repository is gone — the panel's picker agrees).
     for (var k = 0; k < ranked.length; k++) { var r2 = build(ranked[k]); if (r2) return withCli(r2, cliAuthors[0]); }
     // 3) legacy fallback: the fork's own clients list order — ONLY when there's no compat map (serve.json predating
     //    `compat`). With a compat map present, step 2 already decided; never resurrect a client the compat map omits.

@@ -5313,6 +5313,8 @@ export const STR = {
   "tag|pending": "ожидает",
   "tag|unsaved": "не сохр.",
   "tag|orphan": "сирота",
+  "tag|hidden": "скрыт",
+  "No longer offered for new proxies — listed while a node still runs it": "Больше не предлагается для новых прокси — показан, пока он работает на какой-нибудь ноде",
   "hdr|Encrypted DNS": "Шифрованный DNS",
   "The Encryption Vault is locked, so this peer's stored config can't be read. Unlock it to show the QR — the config has not been lost.": "Хранилище ключей заблокировано, поэтому сохранённый конфиг этого пира не прочитать. Разблокируйте его, чтобы показать QR — конфиг не потерян.",
   "This config was encrypted with a previous encryption key and can no longer be opened. Re-issue this peer to give it a fresh config and QR.": "Этот конфиг зашифрован предыдущим ключом шифрования и больше не открывается. Перевыпустите пир, чтобы получить новый конфиг и QR.",

@@ -35,6 +35,8 @@ Fixture — node q-node, three deployments per device:
       XXcipherX's app, which stood in for it, is hidden with its deleted repository — and its Start shows the import steps
   [9] an app whose own tunnel is WireGuard only (VK TURN Proxy on iOS, `awg: false`) is never handed out for an AmneziaWG
       interface behind a proxy; the WireGuard interface's proxy still offers it; FreeTurn keeps the AmneziaWG one on Android
+  [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ) keeps its users' app: its Android cell offers the MYSOREZ app,
+      hidden from every visible fork (hack-diaz's cells on the same interface do not offer it)
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): the csqtt server
       runs 2.1.9-4, 2.5.0 is the latest — the CSQTT app's get-app bubble offers v2.1.9 and says it matches this server; La
       Lune (another author's app) and the WDTT cell (a version no resolved release names) keep the latest, as before
@@ -51,6 +53,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-netswitch  serves a sub.js whose networks page carries a Connections button again → RED on [5]
      --perturb-forkname   serves a sub.js that names a fork by its internal id again → RED on [6]
      --perturb-awgapp     serves a sub.js that hands VK TURN Proxy to an AmneziaWG interface again → RED on [9]
+     --perturb-hiddenmap  serves a catalog where a hidden fork drops its hidden apps too → RED on [10]
      --perturb-pin        serves a sub.js that hands out the latest release whatever the server runs → RED on [8]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
@@ -74,7 +77,8 @@ P_FORKNAME = "--perturb-forkname" in sys.argv
 P_XXSUB = "--perturb-xxsub" in sys.argv
 P_PIN = "--perturb-pin" in sys.argv
 P_AWGAPP = "--perturb-awgapp" in sys.argv
-PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP
+P_HIDDENMAP = "--perturb-hiddenmap" in sys.argv
+PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -107,6 +111,8 @@ def load(name, path):
     return m
 
 P = load("swgpanel_subrender", PANEL)
+if P_HIDDENMAP:   # a hidden fork loses its hidden apps too (its running proxy's users lose theirs)
+    P.TURN_GONE_CLIENTS = set(P.TURN_HIDDEN_CLIENTS)
 if P_XXSUB:   # the app back in every WDTT fork's compat (the catalog before 2026-10-14) — the sub's substitution below needs it
     P.TURN_HIDDEN_CLIENTS = set()
 # [8] the csqtt server runs 2.1.9-4: its release (v2.1.9) is resolved — as _turn_warm_pins leaves it — while 2.5.0 is the latest
@@ -166,7 +172,9 @@ J("stats/stats-n1.json", {"interfaces": {
     "csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"}],
     "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"}],
     "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64},
-                     {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64}],
+                     {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64},
+                     # [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ, hidden 2026-10-14)
+                     {"service": "vk-turn-proxy-MYSOREZ-3", "listen": "0.0.0.0:56102", "connect": "127.0.0.1:51830", "wrap_key": "m" * 64}],
     "net_carried": ["192.168.50.0/24"]})
 
 SEAL = r"""
@@ -231,7 +239,7 @@ if P_PIN:
     perturbed_web("      if (!pin || !m || !srv || m[1] !== srv.owner) return links;", "      return links;", "a server's own app following its version")
 if P_XXSUB:
     perturbed_web("""    // A WDTT fork's system default is its own app, the top of this rank (until 2026-10-14 XXcipherX's one-tap app
-    // stood in where a fork's own could not open one-tap; its repository is gone — the panel's sysDefaultKey agrees).
+    // stood in where a fork's own could not open one-tap; its repository is gone — the panel's picker agrees).
 """, """    if (srv && srv.kind === "wdtt" && ranked.length && !autostartOf(ranked[0]) && ranked.indexOf("xxcipher") >= 0) {
       var xcd = build("xxcipher"); if (xcd) return xcd;
     }
@@ -399,6 +407,13 @@ try:
     check("[2] the turn-proxy cell's author word is translated wherever one renders (RU)", tp and all(" by " not in c["by"] for c in tp),
           [c["by"] for os_ in ALL_OS for c in turn_cells(renders[(os_, "ru")]) if c["by"]])
 
+    # [10] a hidden fork a node still runs keeps its whole app map (operator, 2026-10-14: "hidden like cacggghp")
+    an = turn_cells(renders[("android", "en")])
+    check("[10] Android: the MYSOREZ proxy (hidden fork, still running) offers its users the MYSOREZ app",
+          any((c["tag"] or "").startswith("MYSOREZ · VK TURN Proxy") for c in an), [c["tag"] for c in an])
+    check("[10] …while hack-diaz's cells (a visible fork) do not offer that hidden app",
+          not [c for c in an if (c["tag"] or "").startswith("hack-diaz") and "MYSOREZ" in (c["tag"] or "")], [c["tag"] for c in an])
+
     # [9] an app whose own tunnel is WireGuard only (anton48's VK TURN Proxy, `awg: false`) is never handed out for an AmneziaWG
     #     interface behind a proxy — the app itself warns that AmneziaWG keys cannot work (the review of 356a08f9, F3)
     ios = turn_cells(renders[("ios", "en")])
@@ -413,7 +428,7 @@ try:
     # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hack-diaz (GitHub: hackdiaz-dev) carries them
     # on, but the id stays (it is in every node's unit names) — so the id must never reach the visitor
     fp = [(os_, lang, c) for os_ in ALL_OS for lang in ("en", "ru") for c in turn_cells(renders[(os_, lang)])
-          if (c["role"] or "") in ("AWG", "WG")]
+          if (c["role"] or "") in ("AWG", "WG") and not (c["tag"] or "").startswith("MYSOREZ")]   # [10]'s proxy is another fork
     check("[6] the samosvalishe-fronted cell's badge names hack-diaz on every OS and language",
           fp and all("hack-diaz" in (c["tag"] or "") for _o, _l, c in fp), [(o, l, c["tag"]) for o, l, c in fp])
     leak = [(os_, lang, c["text"][:120]) for os_ in ALL_OS for lang in ("en", "ru") for p in renders[(os_, lang)]["pages"]
@@ -424,11 +439,11 @@ try:
     #     (operator, 2026-10-14) — the WDTT cell on Android now hands out amurcanov's WDTT, which imports by paste
     tab, _ = render("u1", "android", "en")
     wc = [c for p in renders[("android", "en")]["pages"] for c in p["cells"] if "WDTT" in (c["tag"] or "")]
-    check("[7] the WDTT cell's Android app is amurcanov's own, never XXcipherX's (hidden)",
-          wc and all("amurcanov" in (c["tag"] or "") and "XXcipherX" not in (c["tag"] or "") for c in wc), [c["tag"] for c in wc])
+    check("[7] the WDTT cell's Android app is amurcanov's own WDTT (no cross-author app, never XXcipherX's)",
+          wc and all((c["tag"] or "") == "amurcanov · WDTT" and not c["by"] for c in wc), [(c["tag"], c["by"]) for c in wc])
     res, clip, steps, navs = start_on(tab, "turn", "WDTT")
-    check("[7] …and its Start copies the link and shows the import steps (the app opens no scheme), firing nothing",
-          res == "clicked" and steps and not navs, (res, navs, steps))
+    check("[7] …and its Start copies the wdtt:// link and shows the import steps (the app opens no scheme), firing nothing",
+          res == "clicked" and steps and not navs and any(x.startswith("wdtt://") for x in clip), (res, navs, steps, [x[:20] for x in clip]))
     tab.close()
     serve = json.load(open(os.path.join(D, "subs", "serve.json")))
     serve["turn_client_default"] = {"csqtt": {"android": "lalune"}, "amurcanov": {"android": "wdttplus"}}

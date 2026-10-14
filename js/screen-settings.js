@@ -2022,6 +2022,9 @@ export function PanelSettingsScreen() {
   // (docs/CSQTT-LINES-PLAN.md) has its own build, latest and hold: it updates from the header badge and the fork's
   // "Version, rollback" panel, and must not read here as a 2.1 server behind 2.1's newest build.
   const csqttOtherLine = w => !!(w && w.kind === "csqtt" && w.line && w.line !== "2.1");
+  // the rows of Settings → Turn proxies: every visible fork, and a hidden one while a node still runs it — so the operator
+  // keeps its users' app, client knobs, version and colour (MYSOREZ, Moroka8, xxcipherx, hidden 2026-10-14)
+  const settingsForks = () => turnForkList().filter(f => !f.hidden || forkNodeStates(f.id, true).length);
   const forkVersions = (fid, all) => { const v = new Set();
     for (const snap of Object.values(Store.stats || {})) {
       for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version);
@@ -2054,12 +2057,13 @@ export function PanelSettingsScreen() {
   };
   const [turnCheck, setTurnCheck] = useState({});   // {forkId: {status:'checking'|'uptodate'|'update', latest}}
   const checkTurnUpdates = async () => {
-    // the visible forks only — the rows that show a result (a hidden fork's lookup was a GitHub request, of 60 an hour, for nothing)
-    setTurnCheck(Object.fromEntries(turnForksVisible().map(f => [f.id, { status: "checking" }])));
-    const r = await api.turnCheckUpdates({ forks: turnForksVisible().map(f => ({ id: f.id, owner: f.owner })) });
+    // the forks with a row only (a hidden fork no node runs has none: its lookup was a curl of up to ~25 s for nothing)
+    const rows = settingsForks();
+    setTurnCheck(Object.fromEntries(rows.map(f => [f.id, { status: "checking" }])));
+    const r = await api.turnCheckUpdates({ forks: rows.map(f => ({ id: f.id, owner: f.owner })) });
     const latest = (r && r.ok && r.data.latest) || {};
     const next = {};
-    for (const f of turnForksVisible()) {
+    for (const f of rows) {
       const lt = latest[f.id] || "", dep = forkVersions(f.id);
       next[f.id] = (lt && dep.length && dep.some(v => v !== lt)) ? { status: "update", latest: lt } : { status: "uptodate" };
     }
@@ -2924,10 +2928,12 @@ const sectionLabel = k => ({
           <div class="seclabel turnhead" style="margin-top:0">${T("Turn proxies")}<span class="grow"></span>
             <label class="swt" title=${turnEnabledS ? T("Turn proxies are on") : T("Turn proxies are off")}><input type="checkbox" checked=${turnEnabledS} onChange=${e => setTurnEnabledS(e.target.checked)}/><span class="track"></span><span class="knob"></span></label></div>
           ${!turnEnabledS ? html`<p class="hint" style="margin:0 0 12px"><b class="warntext">${T("Turn proxies are off.")}</b> ${T("Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.")}</p>`
-            : html`<p class="hint" style="margin:0 0 12px">${Trich("Which forks appear in the *{v1}* picker when you add a proxy to a node, and each fork's colour. Unticking one only *hides it from that list* — it never touches proxies you've already deployed. {v2}", { v1: T("Install a fork"), v2: turnForks.size === 0 ? html`<b>${T("No forks are enabled — the install picker will be empty.")}</b>` : null })}</p>`}
+            : html`<p class="hint" style="margin:0 0 12px">${Trich("Which forks appear in the *{v1}* picker when you add a proxy to a node, and each fork's colour. Unticking one only *hides it from that list* — it never touches proxies you've already deployed. {v2}", { v1: T("Install a fork"), v2: !turnForksVisible().some(f => turnForks.has(f.id)) ? html`<b>${T("No forks are enabled — the install picker will be empty.")}</b>` : null })}</p>`}
           ${html`<${Fragment}>
-          <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${turnForksVisible().map(f => { const fcol = pickThemed(forkColors[f.id], f.color, f.colorL); return html`<div class=${"cl-row" + (turnForks.has(f.id) ? "" : " off")} key=${f.id}>
-            <${Switch} on=${turnForks.has(f.id)} title=${T("Offer {v1}", { v1: T("{v1} in the install picker", { v1: f.label }) })} onChange=${v => setTurnForks(s => { const n = new Set(s); v ? n.add(f.id) : n.delete(f.id); return n; })}/>
+          <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${settingsForks().map(f => { const fcol = pickThemed(forkColors[f.id], f.color, f.colorL); return html`<div class=${"cl-row" + (f.hidden || turnForks.has(f.id) ? "" : " off")} key=${f.id}>
+            ${f.hidden   // a hidden fork a node still runs: no install-picker switch (it is offered nowhere) — its row stays for its apps, version and colour
+              ? html`<span class="tg tg-off" title=${T("No longer offered for new proxies — listed while a node still runs it")}>${T("tag|hidden")}</span>`
+              : html`<${Switch} on=${turnForks.has(f.id)} title=${T("Offer {v1}", { v1: T("{v1} in the install picker", { v1: f.label }) })} onChange=${v => setTurnForks(s => { const n = new Set(s); v ? n.add(f.id) : n.delete(f.id); return n; })}/>`}
             <${ThemedSwatch} val=${forkColors[f.id]} title=${T("Colour for {v1}", { v1: f.label })} onChange=${nv => setForkColors(c => ({ ...c, [f.id]: nv }))}
               sample=${(c) => html`<span class="tg tg-turn" style=${"--tfc:" + c}>${f.label}</span>`}/>
             <a class=${"tf-name tf-" + f.id} href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" style=${"color:" + fcol} title=${"github.com/" + f.owner}>${f.label}</a>

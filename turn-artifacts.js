@@ -152,6 +152,8 @@
   // ── a fork's NAME for an end user ({fork} in a server-name template): each page hands its catalog's (q189 HE-8 —
   // "samosvalishe 56005" was the raw id of a fork renamed hack-diaz). Identity until a page sets it.
   var forkName = function (f) { return f; };
+  // ── the CLI builds a fork's catalog offers (its cli_authors, native first) — each page hands its own; none = the table ──
+  var cliAuthorsOf = function () { return null; };
 
   // ── fork id from a service name (vk-turn-proxy-<fork>-<port>) ──
   function label(service) {
@@ -609,8 +611,11 @@
     // you), and samosvalishe's -obf-profile even reaches rtpopus2/3 relays the Moroka8 CLI (v1 -wrap only) can't. Each
     // author carries the command in ITS OWN flag syntax; a plain fork (empty key) just drops the obf flag. Compat matrix.
     var rawExtra = String((cs || {}).rawFlags || "").split(/[\r\n]+/).map(function (s) { return s.trim(); }).filter(Boolean).join(" ");   // admin-added extra CLI flags
-    var authorForks = ({ Moroka8: ["Moroka8", "samosvalishe"], samosvalishe: ["samosvalishe", "Moroka8"],
-      anton48: ["samosvalishe", "Moroka8"], MYSOREZ: ["MYSOREZ"] })[fork] || ["samosvalishe"];   // plain forks + WINGS: the universal free-turn CLI (plain)
+    // the page's catalog decides (its cli_authors: a hidden fork's build is withdrawn from the visible forks — operator,
+    // 2026-10-14); this table is only the fallback for a page without one
+    var served = cliAuthorsOf(fork);
+    var authorForks = (Array.isArray(served) && served.length) ? served : (({ Moroka8: ["Moroka8", "samosvalishe"], samosvalishe: ["samosvalishe", "Moroka8"],
+      anton48: ["samosvalishe", "Moroka8"], MYSOREZ: ["MYSOREZ"] })[fork] || ["samosvalishe"]);   // plain forks + WINGS: the universal free-turn CLI (plain)
     function authorCmd(a) {
       var link = (a === "MYSOREZ") ? " -vk " : (a === "samosvalishe") ? " -links " : " -vk-link ", obf = "";
       if (tp.wrap_key) {
@@ -780,5 +785,6 @@
   // key can match — the fork and author are proper nouns. Expose the PARTS so the panel can put them through a
   // placeholder string instead, the way it already does for every other composed sentence.
   function clientMeta(enc) { var m = CLIENT_META[enc]; return m ? { app: m.app, platform: m.platform, author: m.author } : null; }
-  root.SWGTurn = { setForkLabel: function (fn) { if (typeof fn === "function") forkName = fn; }, vkLinkCaps: VK_LINK_CAPS, artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
+  root.SWGTurn = { setForkLabel: function (fn) { if (typeof fn === "function") forkName = fn; },
+    setCliAuthors: function (fn) { if (typeof fn === "function") cliAuthorsOf = fn; }, vkLinkCaps: VK_LINK_CAPS, artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
 })(typeof window !== "undefined" ? window : this);

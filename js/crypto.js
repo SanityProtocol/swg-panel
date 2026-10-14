@@ -1064,6 +1064,7 @@ function _b64ToBytes(b64) { try { const s = atob(String(b64 || "").trim()); cons
 export function turnArtifact(baseConf, tp, vkLink, vkLinks, asClient, os) {
   const fork = turnFork(tp.service);
   if (SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);   // {fork} in a server name is the catalog's name (q189 HE-8)
+  if (SWGTurn.setCliAuthors) SWGTurn.setCliAuthors(f => ((((Store.turnCatalog || {}).servers) || []).find(x => x.id === f) || {}).cli_authors);   // the served CLI builds
   // Every client (the server's own OR a cross-fork one) gets the admin's saved values for THIS (server, client, OS); the encoder
   // fills anything unset with the app's own default. `os` omitted → the client's primary platform (config-gen has
   // no device context yet; the sub page can pass the visitor's OS later).

@@ -737,19 +737,22 @@ export function rawOwnerOn(node, iface) {
 }
 export function turnEnabled() { return !(Store.panelSettings && Store.panelSettings.turn_enabled === false); }
 // the forks offered in the "install a fork" picker — toggled in Panel settings → Turn proxies. Disabling a fork
-// only hides it here; deployed proxies are untouched. Default (setting unset) = WINGS-N + anton48.
+// only hides it here; deployed proxies are untouched. A hidden fork in this list is offered nowhere all the same.
 // The forks offered in the install picker before settings load / on a panel with no stored list. MUST mirror
 // PANEL_SETTINGS_DEFAULTS["enabled_turn_forks"] server-side; it lived as three separate literals and two of them
 // had fallen behind, hiding wdttplus and xxcipherx — two of the four WDTT servers we build and publish.
 export const TURN_FORKS_DEFAULT = ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8",
                             "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "qwdtt"];
-// The enabled fork ids, hidden forks included: the Overview's traffic-by-fork row reads this, so a proxy of a hidden
-// fork that a node still runs keeps its traffic there (the server seeds a deployed hidden fork into the stored list).
+// The enabled fork ids — the stored list (else the default) — and every HIDDEN fork, which has no switch to tick: the
+// Overview's traffic-by-fork row reads this, so a proxy of a hidden fork a node still runs keeps its traffic there
+// whatever the stored list says. The pickers filter hidden forks out again (enabledTurnForks).
 export function enabledTurnForkIds() {
   // Mirror of PANEL_SETTINGS_DEFAULTS["enabled_turn_forks"] server-side — used before settings load, and on a
   // panel with no stored list. It was missing wdttplus and xxcipherx, so two of the four WDTT server forks we
   // build and publish were hidden from every picker until the operator ticked them by hand.
-  return new Set((Store.panelSettings && Store.panelSettings.enabled_turn_forks) || TURN_FORKS_DEFAULT);
+  const ids = new Set((Store.panelSettings && Store.panelSettings.enabled_turn_forks) || TURN_FORKS_DEFAULT);
+  for (const f of turnForkList()) if (f.hidden) ids.add(f.id);
+  return ids;
 }
 // `keep` = a fork an adopt sheet detected on the box: offered even when hidden, so adopting keeps the fork it runs.
 export function enabledTurnForks(keep) {
@@ -1003,18 +1006,10 @@ export function pickerEntries(f, os) {
   // ones — so the sub hands out a clickable app by default wherever the band offers one. No per-app hardcoding.
   return out.sort((a, b) => rank(a) - rank(b) || ((b.autostart ? 1 : 0) - (a.autostart ? 1 : 0)) || ((b.native ? 1 : 0) - (a.native ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
 }
-// The system default (before any operator choice) for a fork/OS: the WDTT fork's own app — the top-ranked entry,
-// unless the catalog names one (default_client). Returns an entry KEY, or null to fall back to the top-ranked entry.
-// (Until 2026-10-14 a WDTT fork whose own app cannot open one-tap handed out XXcipherX's instead; its repository is
-// gone, so the operator made each fork's own app the default — the sub page's rank says the same.)
-export function sysDefaultKey(f, entries) {
-  const es = entries || [];
-  if (!(f && f.kind === "wdtt") || !es.length) return null;
-  // qWDTT's app can't be deep-linked (its manifest registers no BROWSABLE scheme — only .qwdtt/.conf file opens),
-  // yet it is the app that fork's users want, and Start already falls back to copy + steps.
-  if (f.default_client) { const own = es.find(e => e.cid === f.default_client); if (own) return own.key; }
-  return null;
-}
+// The system default (before any operator choice) for a fork/OS is the top-ranked entry — a WDTT fork's own app, as
+// on the sub page. (Until 2026-10-14 a WDTT fork whose own app cannot open one-tap handed out XXcipherX's instead; its
+// repository is gone, so the operator made each fork's own app the default. The catalog's default_client went with
+// it: both forks that set it named their only native app, which the rank already puts first.)
 // The OS-picker order (matches the sub page). Each fork row shows one platform button per OS that has a client.
 const _TURN_OS = [["android", "Android"], ["ios", "iOS"], ["windows", "Windows"], ["macos", "macOS"], ["linux", "Linux"]];
 // For a fork, the BEST client per OS (native app > friendly app > native sidecar > … , from pickerEntries' rank) →
@@ -1025,11 +1020,11 @@ export function turnForkPlatforms(f) {
   return _TURN_OS.map(([os, label]) => {
     const es = pickerEntries(f, os);
     if (!es.length) return { os, label, disabled: true };   // no connectable client for this OS → greyed, unclickable (not hidden)
-    const sd = defs[os], sk = sysDefaultKey(f, es);
+    const sd = defs[os];
     // Deliberately withheld on this OS → ghost the chip like "no app", but keep it CLICKABLE: unlike a platform
     // with nothing to offer, this one has apps and the operator may want to start offering it again.
     if (sd === NONE_KEY) return { os, label, notOffered: true };
-    const e = (sd && es.find(x => x.key === sd)) || (sk && es.find(x => x.key === sk)) || es[0];   // SAVED default (matches the settings picker) · else the WDTT system default · else the top-ranked. e.obf = obf label or "" for plain
+    const e = (sd && es.find(x => x.key === sd)) || es[0];   // SAVED default (matches the settings picker) · else the top-ranked. e.obf = obf label or "" for plain
     return { os, label, native: !!e.native, obf: !!e.obf, isCli: !!e.isCli, name: e.name, author: e.author, color: e.color, coreFork: e.coreFork || null, obfLabel: e.obf || "" };
   });
 }
@@ -1081,7 +1076,7 @@ export function useTurnClients(fork, commitRef, initialOs) {
   const noneEntry = (o) => ({ key: NONE_KEY, cid: null, none: true, isCli: false, native: false, obf: "",
                               autostart: false, coreFork: null, author: "", color: "",
                               name: T("Not offered on {v1}", { v1: (_OS_TABS.find(([x]) => x === o) || [])[1] || o }) });
-  const validDefault = (o) => { const sd = savedDefault(o), es = byOs[o] || []; if (sd === NONE_KEY) return NONE_KEY; if (sd && es.some(e => e.key === sd)) return sd; return sysDefaultKey(f, es) || ((es[0] || {}).key || null); };
+  const validDefault = (o) => { const sd = savedDefault(o), es = byOs[o] || []; if (sd === NONE_KEY) return NONE_KEY; if (sd && es.some(e => e.key === sd)) return sd; return (es[0] || {}).key || null; };
   const selEntry = (o) => { const es = byOs[o] || []; if (!es.length) return null; const k = sel[o] !== undefined ? sel[o] : validDefault(o); if (k === NONE_KEY) return noneEntry(o); return es.find(x => x.key === k) || es[0]; };   // the chosen entry for ANY os (each OS button shows its own)
   const selKey = sel[os] !== undefined ? sel[os] : validDefault(os);
   const e = selKey === NONE_KEY ? noneEntry(os) : (entries.find(x => x.key === selKey) || entries[0] || null);
