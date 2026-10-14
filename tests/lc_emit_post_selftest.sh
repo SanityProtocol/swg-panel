@@ -63,11 +63,13 @@ run(){ # <name> <mode> <state…> — the POST(s) under a hard stop, so the old 
   for x in "$@"; do c="$c lc_emit_post $x;"; done
   SBX="$d" timeout 60 bash -c "$(declare -f panel_req lc_emit_post); LC_URL=$LC_URL LC_TOKEN=$LC_TOKEN LC_VERIFY=$LC_VERIFY LC_FP=$LC_FP;$c" > "$d/out" 2>&1
   echo $(( ($(date +%s%N) - s) / 1000000 )) > "$d/ms"; }
-# every case runs side by side (the terminal ones take up to their full 25 s)
-run hang6 hang updating & run hang25 hang updated & run refuse refuse updating & run ok ok updated &
-run slow6 slow reinstalling & run slow25 slow updated & run pin pin reinstalling reinstalled-updated &
-run reject reject updating & run http500 http500 updating & run reject25 reject updated & run forbid403 forbid updated & wait
+# every case runs side by side (the terminal ones take up to their full 25 s). The checks time them on the wall clock, so a
+# host that froze while they ran (a VM booting in a parallel lane of the nightly plant sweep, 2026-10-14: hang6 took 10.2 s
+# for one 6 s attempt) failed them with nothing wrong in lc_emit_post. A ticker stamps the clock every 0.2 s beside them; a
+# round that failed while it saw a gap over 1 s is run again, up to three rounds. A round with no stall is final, so a real
+# regression (every --perturb) still fails the first time; a host stalled in all three says so under its FAILs.
 ms(){ cat "$T/$1/ms"; }; n(){ grep -c . "$T/$1/calls"; }
+judge(){ FAILS=0
 check "[1] hang, in-progress: gave up within 6 s (+1 s slack) and said so" "$([ "$(ms hang6)" -le 7000 ] && grep -q "couldn't reach the panel" "$T/hang6/out"; echo $?)" "took $(ms hang6) ms, $(n hang6) POSTs: $(tr '\n' ' ' < "$T/hang6/calls")"
 check "[2] hang, terminal: gave up within 25 s (+1 s slack)" "$([ "$(ms hang25)" -le 26000 ]; echo $?)" "took $(ms hang25) ms, $(n hang25) POSTs: $(tr '\n' ' ' < "$T/hang25/calls")"
 check "[2] …and its last attempt got only the time that was left" "$([ "$(tail -1 "$T/hang25/calls" | sed 's/^max=\([0-9]*\).*/\1/')" -lt 6 ]; echo $?)" "$(tr '\n' ' ' < "$T/hang25/calls")"
@@ -85,4 +87,18 @@ for x in reject reject25 forbid403; do
   check "[9] a refusal ($x): ONE attempt, no wait, no \"up to …s\" line — one line that says what it answered" "$([ "$(n $x)" = 1 ] && [ "$(ms $x)" -lt 1500 ] && ! grep -q "up to" "$T/$x/out" && [ "$(grep -c . "$T/$x/out")" = 1 ] && grep -q "it does not accept this node's key" "$T/$x/out"; echo $?)" "$(n $x) POSTs in $(ms $x) ms: $(cat "$T/$x/out")"
 done
 check "[9] …while HTTP 500 is still retried (a panel mid-restart may answer one)" "$([ "$(n http500)" -ge 4 ]; echo $?)" "$(n http500) POSTs"
+}
+for round in 1 2 3; do
+  run hang6 hang updating & run hang25 hang updated & run refuse refuse updating & run ok ok updated &
+  run slow6 slow reinstalling & run slow25 slow updated & run pin pin reinstalling reinstalled-updated &
+  run reject reject updating & run http500 http500 updating & run reject25 reject updated & run forbid403 forbid updated &
+  cpids="$(jobs -p)"; ( while :; do date +%s%N; sleep 0.2; done ) > "$T/ticks" & tick=$!
+  wait $cpids; kill "$tick"; wait "$tick" 2>/dev/null
+  judge > "$T/verdict"
+  st=$(awk 'NR > 1 { g = ($1 - p) / 1000000; if (g > m) m = g } { p = $1 } END { printf "%d", m }' "$T/ticks")
+  [ "$FAILS" -gt 0 ] && [ "$st" -gt 1000 ] && [ "$round" -lt 3 ] || break
+  echo "  (round $round: the host stalled ${st} ms while the cases ran — their timings say nothing about lc_emit_post; running them again)"
+done
+cat "$T/verdict"
+[ "$FAILS" -gt 0 ] && [ "$st" -gt 1000 ] && echo "  (the host stalled in every round, ${st} ms in the last — these timings could not be measured)"
 echo; [ "$FAILS" = 0 ] && echo "GREEN — 0 failed" || echo "RED — $FAILS failed"; [ "$FAILS" = 0 ]

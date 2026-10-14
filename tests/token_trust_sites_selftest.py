@@ -29,6 +29,8 @@ panel at 127.0.0.1 whose certificate the test controls, per connection:
 Run: python3 tests/token_trust_sites_selftest.py     (0 = pass)
      --perturb-site <n>   the n-th token-bearing call (the order of [0]) sends with `"no" ""` — round 8's mutation → RED
      --perturb-lc <n>     the n-th trust assignment loses it: LC_FP="" (or LC_VERIFY=no where it carries no pin) → RED
+     --perturb-site, --perturb-lc with no number: every call / every assignment in turn, each run on its own (the plant
+                          sweep runs each flag bare — it cannot know a site's number; it read both BROKEN, 2026-10-12)
      --perturb            every site and every assignment in turn, each run on its own — each must go red
 """
 import glob, hashlib, http.server, json, os, re, shlex, socket, ssl, subprocess, sys, tempfile, threading, time
@@ -169,22 +171,27 @@ CALLS0, LCS0 = census(SRC)
 
 # ── the mutations ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def _nth(flag, total):
-    """the <n> a --perturb-site / --perturb-lc names — REFUSED when it is missing, not a number or out of range: without one
-    nothing was planted, and the run read ALL PASS as if it were a perturbation that had gone green (round 10)"""
+    """the <n> a --perturb-site / --perturb-lc names — "all" when none follows; REFUSED when it is not a number or out of
+    range: nothing was planted, and the run read ALL PASS as if it were a perturbation that had gone green (round 10)"""
     if flag not in ARGS:
         return None
     i = ARGS.index(flag) + 1
     v = ARGS[i] if i < len(ARGS) else ""
+    if v == "" or v.startswith("--"):
+        return "all"                     # bare: the whole family, each mutation on its own (below)
     if not re.fullmatch(r"\d+", v) or int(v) >= total:
         print("%s needs the number of a site, 0–%d in the order of [0] (or --perturb for every one): %r is not one — "
               "nothing was planted, and this run would FALSE-PASS" % (flag, total - 1, v))
         sys.exit(3)
     return int(v)
 MUT_SITE, MUT_LC = _nth("--perturb-site", len(CALLS0)), _nth("--perturb-lc", len(LCS0))
-if "--perturb" in ARGS:
+if "--perturb" in ARGS or "all" in (MUT_SITE, MUT_LC):
+    every = "--perturb" in ARGS
     rows, bad = [], []
-    for kind, n, what in ([("--perturb-site", i, "%s: %s" % (c[0], " ".join(c[2].split())[:90])) for i, c in enumerate(CALLS0)]
-                          + [("--perturb-lc", i, "%s: %s" % (c[0], c[2][:90])) for i, c in enumerate(LCS0)]):
+    for kind, n, what in ([("--perturb-site", i, "%s: %s" % (c[0], " ".join(c[2].split())[:90])) for i, c in enumerate(CALLS0)
+                           if every or MUT_SITE == "all"]
+                          + [("--perturb-lc", i, "%s: %s" % (c[0], c[2][:90])) for i, c in enumerate(LCS0)
+                             if every or MUT_LC == "all"]):
         r = subprocess.run([sys.executable, os.path.abspath(__file__), kind, str(n)], capture_output=True, text=True, timeout=900)
         red = r.returncode == 0 and "RED as expected" in r.stdout
         state = "RED   " if red else ("BROKEN" if "Traceback" in r.stderr + r.stdout else "GREEN ")
