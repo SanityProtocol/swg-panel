@@ -556,6 +556,12 @@ check("\"Networks this user can reach\": the vouched keyless device reaches the 
 
 print("\n[15] the capability table promises only published builds")
 for fork, paths in P.KEYLESS_SHARE_BUILDS.items():
+    if fork != "csqtt" and fork not in P.WDTT_BUILDS:
+        # a fork whose builds were WITHDRAWN (xxcipherx, 2026-10-14): nothing is published to promise, and the table
+        # still vouches the version a node may go on running — keyless_share_capable judges the node's own version
+        check("%s: builds withdrawn — the table vouches what nodes may still run, a hidden fork" % fork,
+              (P.TURN_SERVERS.get(fork) or {}) and fork in P.TURN_HIDDEN_FORKS, fork)
+        continue
     published = {v for v, _t in (P.CSQTT_BUILDS if fork == "csqtt" else (P.WDTT_BUILDS.get(fork) or []))}
     for path, vers in paths.items():
         check("%s %s: a known path, every version published %s" % (fork, path, list(vers)),

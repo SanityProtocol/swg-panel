@@ -1472,7 +1472,9 @@ WDTT_BUILDS = {                               # fork id -> [(author_version, our
     # 1.5.0-3 just drops the flag (docs/DNS-SETTINGS-PLAN.md §3.5).
     "ildarmaga": [("1.5.0-4",  "wdtt-ildarmaga-1.5.0-4"),  ("1.5.0-3",  "wdtt-ildarmaga-1.5.0-3"),  ("1.5.40-2", "wdtt-ildarmaga-1.5.40-2"), ("1.5.40",   "wdtt-ildarmaga-1.5.40")],
     "wdttplus":  [("18-2",     "wdtt-wdttplus-18-2"),      ("18",       "wdtt-wdttplus-18"),        ("15",       "wdtt-wdttplus-15")],
-    "xxcipherx": [("2.0.0.72", "wdtt-xxcipherx-2.0.0.72"), ("2.0.0.70", "wdtt-xxcipherx-2.0.0.70")],
+    # xxcipherx: NO builds since 2026-10-14 (the operator: hidden, its releases removed from GitHub, archived locally in
+    # ~/swg-archive/wdtt-xxcipherx). Not listed → no `ver` reaches a node (desired_wdtt_for_node), so a server already
+    # running keeps the binary it has and is never sent after a download that no longer exists.
     # qWDTT: built from SpaceNeuroX @854a72fe ("Release 1.4.1"), now a published release like the rest — a node
     # on a fresh install has no panel mirror to pull from, so mirror-only meant the fork simply did not work there.
     "qwdtt":     [("1.4.3-4",  "wdtt-qwdtt-1.4.3-4"),      ("1.4.3-3",  "wdtt-qwdtt-1.4.3-3"),      ("1.4.3-2",  "wdtt-qwdtt-1.4.3-2"),      ("1.4.3",    "wdtt-qwdtt-1.4.3"),        ("1.4.1",    "wdtt-qwdtt-1.4.1")],

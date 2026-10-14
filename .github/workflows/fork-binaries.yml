@@ -23,7 +23,7 @@ on:
         description: which fork to build
         required: true
         type: choice
-        options: [amneziawg-go, wdtt-amurcanov, wdtt-ildarmaga, wdtt-wdttplus, wdtt-xxcipherx, qwdtt, csqtt]
+        options: [amneziawg-go, wdtt-amurcanov, wdtt-ildarmaga, wdtt-wdttplus, qwdtt, csqtt]
       publish:
         description: "publish a release (leave OFF to build + verify only)"
         required: false
@@ -62,7 +62,6 @@ jobs:
             wdtt-amurcanov) script=forks/wdtt/build.sh;              asset=server-linux       ; kind=go   ;;
             wdtt-ildarmaga) script=forks/wdtt/ildarmaga/build.sh;    asset=server-linux       ; kind=go   ;;
             wdtt-wdttplus)  script=forks/wdtt/wdttplus/build.sh;     asset=server-linux       ; kind=go   ;;
-            wdtt-xxcipherx) script=forks/wdtt/xxcipherx/build.sh;    asset=server-linux       ; kind=go   ;;
             qwdtt)          script=forks/qwdtt/build.sh;             asset=server-linux       ; kind=go   ;;
             csqtt)          script=forks/csqtt/build.sh;             asset=server-linux       ; kind=rust ;;
             *) echo "unknown fork ${{ inputs.fork }}" >&2; exit 1 ;;

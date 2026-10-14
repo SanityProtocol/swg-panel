@@ -54,7 +54,8 @@ if PERTURB_CLI:
     plant("    return a if sid in TURN_HIDDEN_FORKS else [x for x in a if x not in TURN_HIDDEN_FORKS]\n", "    return a\n",
           "every CLI build offered")
 if PERTURB_ROSTER:
-    plant("        if cid in TURN_GONE_CLIENTS:\n            continue", "        if False:\n            continue", "the roster lists every app")
+    plant("        if cid in TURN_GONE_CLIENTS:\n            continue                                    # its repository is gone: nothing to watch, and no row",
+          "        if False:\n            continue", "the roster lists every app")
 if PERTURB_GONE:
     plant('TURN_GONE_CLIENTS = {"xxcipher"}\n', "TURN_GONE_CLIENTS = set()\n", "a gone app kept by its hidden fork")
 SRV = os.path.join(TMP, "swg-panel-server")
