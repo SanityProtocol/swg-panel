@@ -286,7 +286,7 @@ cannot link.
 
 ## Subscriptions & access control
 
-**Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, hack-diaz, Moroka8, cacggghp, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **WDTT** peers appear in the same turn group with their import link (or QR, for the apps that scan one) and a per-OS **get the app** row resolved from the client you set as that fork's default. **Off by default** — enable it in **Settings → Subscriptions**.
+**Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, hack-diaz, anton48, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **WDTT** peers appear in the same turn group with their import link (or QR, for the apps that scan one) and a per-OS **get the app** row resolved from the client you set as that fork's default. **Off by default** — enable it in **Settings → Subscriptions**.
 
 - **Key custody.** The per-user **unlock key rides in the URL `#fragment`** — never sent to the server. The panel stores only **ciphertext** (encrypted config blobs) plus a public token map (`subs/users.json` = `{token_sha}`); the SK-wrapped unlock keys sit in a separate `subs/escrow.json` the sub surface can't read. A compromise of the internet-facing page yields only ciphertext, never a private key (this is why plaintext `store_configs` was dropped).
 - **Isolation.** `swg-sub` is its own process/container running as a dedicated low-privilege user: it mounts panel state `:ro` and **masks** every secret it must never open (`auth`, `panel-settings.json`, `subs/vault.json`, `subs/escrow.json`, the TLS key) with `/dev/null` + `tmpfs`. No login, write, or node code.
@@ -566,8 +566,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
 - [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe)
-- [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
-- [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
+- [Moroka8](https://github.com/Moroka8/vk-turn-proxy) and [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy) — hidden in the panel since 1.8.9
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
@@ -577,7 +576,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [Endlad2](https://github.com/Endlad2/LaLune)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
-- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
+- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android) — repository deleted; hidden in the panel since 1.8.9
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 

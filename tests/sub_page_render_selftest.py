@@ -23,7 +23,7 @@ Fixture — node q-node, three deployments per device:
   [3] Start on the csqtt cell: La Lune on Android fires the csqtt:// link (one tap, like the CSQTT app — the reference, measured
       in the same run) with no import steps, and copies the link so it outlives an install detour; desktop csqtt apps (La
       Lune/FOCSQ on Linux, FOCSQ on Windows) copy the link and show the steps, firing nothing (a desktop scheme dead-ends).
-      A control proves the probe SEES a scheme link fire (the WDTT cell's one-tap Android app)
+      A control proves the probe SEES a scheme link fire (the WDTT cell's one-tap Android app, WDTT-Plus by the operator's choice)
   [4] the console is clean on every render (no exception, no console.error)
   [5] Connections is a desktop button only (operator, 2026-09-17). On a phone no page carries one — not the networks page
       (Cara's office router carries 192.168.50.0/24 on the node, open to everyone there), not a blocked device's page (Anna's
@@ -31,6 +31,8 @@ Fixture — node q-node, three deployments per device:
       subscription on a desktop window shows the one Connections button in its header
   [6] a fork is named by its catalog label, never its id: the samosvalishe proxy's cell says hack-diaz (its repos moved,
       the id stays in every node's unit names), and no cell on any OS or language says samosvalishe
+  [7] a WDTT fork's own app is its default (operator, 2026-10-14): the WDTT cell on Android hands out amurcanov's WDTT —
+      XXcipherX's app, which stood in for it, is hidden with its deleted repository — and its Start shows the import steps
 
 Needs google-chrome (or $CHROME) and node (seals the fixture secret). A missing browser is a FAIL, never a skip: a gate that
 cannot run has not passed.
@@ -43,6 +45,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-copy       serves a sub.js whose one-tap csqtt Start no longer copies the link → RED on [3]
      --perturb-netswitch  serves a sub.js whose networks page carries a Connections button again → RED on [5]
      --perturb-forkname   serves a sub.js that names a fork by its internal id again → RED on [6]
+     --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
 """
@@ -61,7 +64,8 @@ P_TABS = "--perturb-tabs" in sys.argv
 P_COPY = "--perturb-copy" in sys.argv
 P_NETSW = "--perturb-netswitch" in sys.argv
 P_FORKNAME = "--perturb-forkname" in sys.argv
-PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME
+P_XXSUB = "--perturb-xxsub" in sys.argv
+PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -94,6 +98,8 @@ def load(name, path):
     return m
 
 P = load("swgpanel_subrender", PANEL)
+if P_XXSUB:   # the app back in every WDTT fork's compat (the catalog before 2026-10-14) — the sub's substitution below needs it
+    P.TURN_HIDDEN_CLIENTS = set()
 catalog = P.turn_catalog_view()
 if P_AUTO:
     _ll = ((catalog.get("clients") or {}).get("lalune") or {}).get("platforms", {}).get("android")
@@ -195,6 +201,13 @@ if P_BY:
 if P_FORKNAME:
     perturbed_web("function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }",
                   "function forkLabel(f) { return f; }", "a fork named by its catalog label")
+if P_XXSUB:
+    perturbed_web("""    // A WDTT fork's system default is its own app, the top of this rank (until 2026-10-14 XXcipherX's one-tap app
+    // stood in where a fork's own could not open one-tap; its repository is gone — the panel's sysDefaultKey agrees).
+""", """    if (srv && srv.kind === "wdtt" && ranked.length && !autostartOf(ranked[0]) && ranked.indexOf("xxcipher") >= 0) {
+      var xcd = build("xxcipher"); if (xcd) return xcd;
+    }
+""", "a WDTT fork's own app as its default")
 
 sock = socket.socket(); sock.bind(("127.0.0.1", 0)); PORT = sock.getsockname()[1]; sock.close()
 env = dict(os.environ, SWG_SUB_FLEET=D + "/fleet.json", SWG_SUB_WEB=WEB, SWG_SUB_HOST="127.0.0.1", SWG_SUB_PORT=str(PORT),
@@ -368,13 +381,25 @@ try:
             for c in p["cells"] if "samosvalishe" in (c["text"] or "")]
     check("[6] …and no cell anywhere says samosvalishe", not leak, leak[:3])
 
-    # [3] Start on the csqtt cell
+    # [7] a WDTT fork's own app is its default: XXcipherX's one-tap app stood in for amurcanov's until its repository went
+    #     (operator, 2026-10-14) — the WDTT cell on Android now hands out amurcanov's WDTT, which imports by paste
     tab, _ = render("u1", "android", "en")
+    wc = [c for p in renders[("android", "en")]["pages"] for c in p["cells"] if "WDTT" in (c["tag"] or "")]
+    check("[7] the WDTT cell's Android app is amurcanov's own, never XXcipherX's (hidden)",
+          wc and all("amurcanov" in (c["tag"] or "") and "XXcipherX" not in (c["tag"] or "") for c in wc), [c["tag"] for c in wc])
     res, clip, steps, navs = start_on(tab, "turn", "WDTT")
-    check("[3] control: Start on a one-tap app (the WDTT cell's Android default) is SEEN firing its scheme link — the probe can pass",
-          res == "clicked" and any(u.startswith("vkturnproxy://") for u in navs) and not steps, (res, navs, steps))
+    check("[7] …and its Start copies the link and shows the import steps (the app opens no scheme), firing nothing",
+          res == "clicked" and steps and not navs, (res, navs, steps))
     tab.close()
     serve = json.load(open(os.path.join(D, "subs", "serve.json")))
+    serve["turn_client_default"] = {"csqtt": {"android": "lalune"}, "amurcanov": {"android": "wdttplus"}}
+    J("subs/serve.json", serve)
+    # [3] Start on the csqtt cell
+    tab, _ = render("u1", "android", "en")
+    res, clip, steps, navs = start_on(tab, "turn", "WDTT-Plus")
+    check("[3] control: Start on a one-tap app (the WDTT cell's operator-chosen WDTT-Plus) is SEEN firing its scheme link — the probe can pass",
+          res == "clicked" and any(u.startswith("wdtt://") for u in navs) and not steps, (res, navs, steps))
+    tab.close()
     serve["turn_client_default"] = {}                   # the reference: Android's own csqtt app, amurcanov's CSQTT (autostart)
     J("subs/serve.json", serve)
     tab, _ = render("u1", "android", "en")

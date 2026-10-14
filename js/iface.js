@@ -363,7 +363,7 @@ export function AdoptCsqttSheet({ node, c }) {
 
 export function AdoptDormantWdttSheet({ node, d, nrec }) {
   useStore();
-  const forks = enabledTurnForks().filter(f => f.kind === "wdtt");
+  const forks = enabledTurnForks(d.fork).filter(f => f.kind === "wdtt");
   const [fork, setFork] = useState(d.fork || (forks[0] || {}).id || "amurcanov");
   const [iface, setIface] = useState(nextWdttName(node));
   // Ports the node managed to recover (the unit's ExecStart, the fork's own store) are used as-is, so an
@@ -440,7 +440,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
   useStore();
   const w = cand.wdtt || {};
   const wd = !!cand.wdtt_hint;                                  // the node positively identified a WDTT server here
-  const forks = enabledTurnForks().filter(f => f.kind === "wdtt");
+  const forks = enabledTurnForks(w.fork).filter(f => f.kind === "wdtt");
   // Preselect from the node's EVIDENCE (live obfuscation params / a WDTT server process), never from which tool
   // happened to answer a dump — that lies on a box where the amneziawg module backs plain WireGuard too.
   const [type, setType] = useState(cand.type_hint === "wdtt" ? "wdtt" : cand.type_hint === "awg" ? "awg" : "wg");

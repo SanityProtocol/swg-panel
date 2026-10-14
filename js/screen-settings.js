@@ -2054,11 +2054,12 @@ export function PanelSettingsScreen() {
   };
   const [turnCheck, setTurnCheck] = useState({});   // {forkId: {status:'checking'|'uptodate'|'update', latest}}
   const checkTurnUpdates = async () => {
-    setTurnCheck(Object.fromEntries(turnForkList().map(f => [f.id, { status: "checking" }])));
-    const r = await api.turnCheckUpdates({ forks: turnForkList().map(f => ({ id: f.id, owner: f.owner })) });
+    // the visible forks only — the rows that show a result (a hidden fork's lookup was a GitHub request, of 60 an hour, for nothing)
+    setTurnCheck(Object.fromEntries(turnForksVisible().map(f => [f.id, { status: "checking" }])));
+    const r = await api.turnCheckUpdates({ forks: turnForksVisible().map(f => ({ id: f.id, owner: f.owner })) });
     const latest = (r && r.ok && r.data.latest) || {};
     const next = {};
-    for (const f of turnForkList()) {
+    for (const f of turnForksVisible()) {
       const lt = latest[f.id] || "", dep = forkVersions(f.id);
       next[f.id] = (lt && dep.length && dep.some(v => v !== lt)) ? { status: "update", latest: lt } : { status: "uptodate" };
     }

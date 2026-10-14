@@ -734,13 +734,18 @@ export function turnEnabled() { return !(Store.panelSettings && Store.panelSetti
 // had fallen behind, hiding wdttplus and xxcipherx — two of the four WDTT servers we build and publish.
 export const TURN_FORKS_DEFAULT = ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8",
                             "amurcanov", "ildarmaga", "wdttplus", "xxcipherx", "csqtt", "qwdtt"];
-export function enabledTurnForks() {
-  const en = Store.panelSettings && Store.panelSettings.enabled_turn_forks;
+// The enabled fork ids, hidden forks included: the Overview's traffic-by-fork row reads this, so a proxy of a hidden
+// fork that a node still runs keeps its traffic there (the server seeds a deployed hidden fork into the stored list).
+export function enabledTurnForkIds() {
   // Mirror of PANEL_SETTINGS_DEFAULTS["enabled_turn_forks"] server-side — used before settings load, and on a
   // panel with no stored list. It was missing wdttplus and xxcipherx, so two of the four WDTT server forks we
   // build and publish were hidden from every picker until the operator ticked them by hand.
-  const set = new Set(en || TURN_FORKS_DEFAULT);
-  return turnForkList().filter(f => set.has(f.id) && !f.hidden);   // hidden (dead) forks never appear in operator pickers
+  return new Set((Store.panelSettings && Store.panelSettings.enabled_turn_forks) || TURN_FORKS_DEFAULT);
+}
+// `keep` = a fork an adopt sheet detected on the box: offered even when hidden, so adopting keeps the fork it runs.
+export function enabledTurnForks(keep) {
+  const set = enabledTurnForkIds();
+  return turnForkList().filter(f => (set.has(f.id) && !f.hidden) || (keep && f.id === keep));   // hidden (dead) forks never appear in operator pickers
 }
 
 // ═══════════ Typed turn-proxy settings (Axis 1) ═══════════
@@ -989,20 +994,17 @@ export function pickerEntries(f, os) {
   // ones — so the sub hands out a clickable app by default wherever the band offers one. No per-app hardcoding.
   return out.sort((a, b) => rank(a) - rank(b) || ((b.autostart ? 1 : 0) - (a.autostart ? 1 : 0)) || ((b.native ? 1 : 0) - (a.native ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
 }
-// The system default (before any operator choice) for a fork/OS: the WDTT family standardises on a ONE-TAP app.
-// Keep the top compat/autostart pick when it already opens one-tap (a fork's own clickable app — Ivan4537's WDTT-Plus,
-// XXcipherX's own), else substitute xxcipher (the fleet-standard clickable WDTT client) where it's offered (Android).
-// Returns an entry KEY, or null to fall back to the top-ranked entry. Only the WDTT family is standardised.
+// The system default (before any operator choice) for a fork/OS: the WDTT fork's own app — the top-ranked entry,
+// unless the catalog names one (default_client). Returns an entry KEY, or null to fall back to the top-ranked entry.
+// (Until 2026-10-14 a WDTT fork whose own app cannot open one-tap handed out XXcipherX's instead; its repository is
+// gone, so the operator made each fork's own app the default — the sub page's rank says the same.)
 export function sysDefaultKey(f, entries) {
   const es = entries || [];
   if (!(f && f.kind === "wdtt") || !es.length) return null;
-  // A fork may name its own preferred app in the catalog (default_client). That wins over the one-tap rule
-  // below: qWDTT's app can't be deep-linked (its manifest registers no BROWSABLE scheme — only .qwdtt/.conf
-  // file opens), yet it is the app that fork's users want, and Start already falls back to copy + steps.
+  // qWDTT's app can't be deep-linked (its manifest registers no BROWSABLE scheme — only .qwdtt/.conf file opens),
+  // yet it is the app that fork's users want, and Start already falls back to copy + steps.
   if (f.default_client) { const own = es.find(e => e.cid === f.default_client); if (own) return own.key; }
-  if (es[0].autostart) return es[0].key;                    // already one-tap (e.g. the fork's own app) → keep it
-  const xc = es.find(e => e.cid === "xxcipher");            // top pick can't one-tap (e.g. amurcanov's wdttapp) → xxcipher
-  return xc ? xc.key : null;
+  return null;
 }
 // The OS-picker order (matches the sub page). Each fork row shows one platform button per OS that has a client.
 const _TURN_OS = [["android", "Android"], ["ios", "iOS"], ["windows", "Windows"], ["macos", "macOS"], ["linux", "Linux"]];

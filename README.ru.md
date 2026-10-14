@@ -61,7 +61,7 @@ swgPanel — это панель управления для запуска со
 
 - **Одна страница, чтобы управлять всем.** Добавляйте серверы, добавляйте пользователей, раздавайте доступ — всё из веб-панели.
 - **Доступ в виде QR-кода.** Создайте человека, покажите ему QR — он сканирует его в приложении WireGuard/AmneziaWG. Никаких конфиг-файлов, которые нужно пересылать по почте.
-- **Подписки — персональная ссылка для каждого пользователя.** Вместо разового QR каждый получает свою страницу **swgSub**: удобную для телефона ссылку с конфигом и QR для каждого сервера, где он есть — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg) и TURN-прокси-форки вроде [WINGS-N](screenshots/sub-wings-n.jpg), [hack-diaz](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg), [anton48](screenshots/sub-anton48.jpg) и других — плюс бейджи протокола/реле, светлая/тёмная тема и копирование / скачивание / отправка в одно касание. Ключ расшифровки живёт в `#fragment` ссылки, поэтому сервер хранит только шифротекст и никогда не видит чужие приватные ключи. [Как их настроить ↓](#подписки-и-контроль-доступа)
+- **Подписки — персональная ссылка для каждого пользователя.** Вместо разового QR каждый получает свою страницу **swgSub**: удобную для телефона ссылку с конфигом и QR для каждого сервера, где он есть — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg) и TURN-прокси-форки вроде [WINGS-N](screenshots/sub-wings-n.jpg), [hack-diaz](screenshots/sub-samosvalishe.jpg), [anton48](screenshots/sub-anton48.jpg) и других — плюс бейджи протокола/реле, светлая/тёмная тема и копирование / скачивание / отправка в одно касание. Ключ расшифровки живёт в `#fragment` ссылки, поэтому сервер хранит только шифротекст и никогда не видит чужие приватные ключи. [Как их настроить ↓](#подписки-и-контроль-доступа)
 - **Приостановка доступа в один клик.** Заблокируйте человека — или только одно из его устройств — мгновенно, не удаляя. Его туннели останавливаются, а страница подписки гаснет; разблокировка восстанавливает доступ с теми же ключами, ничего перевыпускать не нужно.
 - **Смотрите, что происходит, в реальном времени.** Кто онлайн, сколько скачивают, какие серверы загружены — обновление каждые несколько секунд.
 - **Один или несколько серверов.** Разместите серверы в разных странах; человек может переключаться между ними при сбое.
@@ -123,7 +123,6 @@ swgPanel — это панель управления для запуска со
   <a href="screenshots/sub-wireguard.jpg"><img src="screenshots/sub-wireguard.jpg" alt="Подписка WireGuard" width="150"></a>
   <a href="screenshots/sub-amneziawg.jpg"><img src="screenshots/sub-amneziawg.jpg" alt="Подписка AmneziaWG" width="150"></a>
   <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="Подписка WINGS-N" width="150"></a>
-  <a href="screenshots/sub-moroka8.jpg"><img src="screenshots/sub-moroka8.jpg" alt="Подписка Moroka8" width="150"></a>
   <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="Подписка samosvalishe" width="150"></a>
   <a href="screenshots/sub-anton48.jpg"><img src="screenshots/sub-anton48.jpg" alt="Подписка anton48" width="150"></a>
   <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="Подписка cacggghp" width="150"></a>
@@ -583,8 +582,7 @@ swgPanel использует несколько прекрасных проек
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — оригинал
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
 - [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (ранее samosvalishe — прокси, установленные из samosvalishe, продолжают работать и теперь обновляются из репозитория hack-diaz)
-- [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
-- [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
+- [Moroka8](https://github.com/Moroka8/vk-turn-proxy) и [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy) — скрыты в панели с 1.8.9 (без изменений в апстриме с середины 2026 года); уже работающие прокси продолжают работать
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — самодостаточный VPN-сервер, владеющий своими ключами, который панель запускает как интерфейс, и приложения, которыми подключаются люди:
@@ -594,7 +592,7 @@ swgPanel использует несколько прекрасных проек
 - [Endlad2](https://github.com/Endlad2/LaLune)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
-- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
+- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android) — репозиторий удалён; скрыт в панели с 1.8.9, уже работающие серверы продолжают работать
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 

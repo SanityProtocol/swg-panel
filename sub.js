@@ -262,7 +262,8 @@
     // silently resolve to some other app instead.
     if (def === "none") return null;
     if (def) {
-      if (def.indexOf("sidecar@") === 0) { if (compat.sidecar || !hasCompat) { var d0 = build("sidecar"); if (d0) return withCli(d0, def.split("@")[1]); } }
+      // a CLI build is honoured only while this fork still offers its author (a hidden fork's build is withdrawn)
+      if (def.indexOf("sidecar@") === 0) { if ((compat.sidecar && cliAuthors.indexOf(def.split("@")[1]) >= 0) || !hasCompat) { var d0 = build("sidecar"); if (d0) return withCli(d0, def.split("@")[1]); } }
       else if (clients[def] && (compat[def] || !hasCompat)) { var d = build(def); if (d) return d; }
     }
     // 2) no (valid) default → the compat-ranked top app for this OS (matches the panel picker's default ordering):
@@ -277,11 +278,8 @@
     for (var id in clients) if (compat[id] && has(clients[id].platforms && clients[id].platforms[os])) ranked.push(id);
     // compat band first, then the one-tap (autostart) apps ahead of paste/QR-only ones, then alphabetical — mirrors the panel picker.
     ranked.sort(function (a, b) { return rank(a) - rank(b) || ((autostartOf(b) ? 1 : 0) - (autostartOf(a) ? 1 : 0)) || (a < b ? -1 : a > b ? 1 : 0); });
-    // WDTT family system default = a ONE-TAP app. If the top pick can't open one-tap (e.g. amurcanov's wdttapp),
-    // substitute xxcipher (the fleet-standard clickable WDTT client) where offered; a fork's own clickable app (Ivan4537) stays.
-    if (srv && srv.kind === "wdtt" && ranked.length && !autostartOf(ranked[0]) && ranked.indexOf("xxcipher") >= 0) {
-      var xcd = build("xxcipher"); if (xcd) return xcd;
-    }
+    // A WDTT fork's system default is its own app, the top of this rank (until 2026-10-14 XXcipherX's one-tap app
+    // stood in where a fork's own could not open one-tap; its repository is gone — the panel's sysDefaultKey agrees).
     for (var k = 0; k < ranked.length; k++) { var r2 = build(ranked[k]); if (r2) return withCli(r2, cliAuthors[0]); }
     // 3) legacy fallback: the fork's own clients list order — ONLY when there's no compat map (serve.json predating
     //    `compat`). With a compat map present, step 2 already decided; never resurrect a client the compat map omits.

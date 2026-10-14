@@ -5637,10 +5637,10 @@ def migrate_provider_defaults(nodes_path, panel_settings_path):
 def migrate_enabled_turn_forks(nodes_path, panel_settings_path, stats_dir):
     """One-time: keep a fork the fleet ALREADY runs from vanishing out of the install-a-fork picker.
 
-    enabled_turn_forks filters that picker AND the Overview traffic-by-fork chart. The built-in default is every
-    VISIBLE fork (the catalog minus TURN_HIDDEN_FORKS), so what this can still add is a HIDDEN fork — cacggghp —
-    that a node actually runs: without the seed those proxies would go on serving traffic while
-    disappearing from both the picker and the chart. (A fork a node runs that is no longer in the catalog at all is
+    enabled_turn_forks filters that picker AND the Overview traffic-by-fork chart (which, unlike the picker, shows a
+    hidden fork it lists). The built-in default keeps the forks hidden on 2026-10-14 (MYSOREZ, Moroka8, xxcipherx), so
+    what this can still add is a hidden fork outside it — cacggghp — that a node actually runs: without the seed
+    those proxies would go on serving traffic while disappearing from the chart. (A fork a node runs that is no longer in the catalog at all is
     seeded too, but only the chart can show it — the picker lists catalog forks only.) Seed enabled_turn_forks with the forks a node
     ALREADY runs (from the persisted snapshot mirrors), unioned with the defaults, so nothing already deployed goes
     stale. This is purely a panel-UI setting — it NEVER touches deployed proxies, node desired sets, or any config a
@@ -15088,7 +15088,14 @@ TURN_SERVER_ORDER = ["WINGS-N", "amurcanov", "csqtt", "anton48", "ildarmaga", "w
 # Forks kept in the catalog (so a deployed instance still resolves its label/colour) but HIDDEN from the operator
 # UI — the settings toggle list, the install/enable picker, the interface Setup-proxy dropdown, and the fork
 # colour pickers all skip these. Purely cosmetic gating; nothing about a running proxy changes.
-TURN_HIDDEN_FORKS = {"cacggghp"}
+# MYSOREZ, Moroka8 and xxcipherx joined on the operator's word (2026-10-14): MYSOREZ and Moroka8 have not moved
+# upstream since July / June 2026, and XXcipherX deleted its repository (we still build its pinned source).
+TURN_HIDDEN_FORKS = {"cacggghp", "MYSOREZ", "Moroka8", "xxcipherx"}
+# Client apps hidden the same way (operator, 2026-10-14): the MYSOREZ Android app, and XXcipherX's, whose download
+# is gone with its repository. A hidden app is offered only by the hidden forks that already offered it — the
+# users of a proxy those still run keep the app they have — and by no visible fork: _turn_compat drops it there,
+# so the Settings pickers and the sub page fall back to the fork's next app, a saved default naming it included.
+TURN_HIDDEN_CLIENTS = {"mysorez", "xxcipher"}
 
 # A client APP's knob schema is defined once (on its NATIVE server's client_settings) and shared wherever that app
 # is offered — so the Clients tab edits it in ONE place. Maps each client id → the server that natively runs it.
@@ -15201,6 +15208,15 @@ _TURN_CLI_AUTHORS = {
     "cacggghp":     ["samosvalishe"],              # plain forks + WINGS: the universal free-turn CLI (plain)
     "WINGS-N":      ["samosvalishe"],
 }
+def _turn_compat(sid):
+    """A fork's client compat map as offered: a visible fork offers no hidden app (TURN_HIDDEN_CLIENTS); a hidden
+    fork keeps its whole map, so the users of a proxy it still runs keep their app."""
+    c = _TURN_CLIENT_COMPAT.get(sid, {})
+    return c if sid in TURN_HIDDEN_FORKS else {k: v for k, v in c.items() if k not in TURN_HIDDEN_CLIENTS}
+def _turn_cli_authors(sid):
+    """The CLI builds offered for a fork, native first — a visible fork offers no hidden fork's build."""
+    a = _TURN_CLI_AUTHORS.get(sid, ["samosvalishe"])
+    return a if sid in TURN_HIDDEN_FORKS else [x for x in a if x not in TURN_HIDDEN_FORKS]
 # The upstream GitHub file(s) each client's config/link schema is CURATED from (see the turn-client-config-sources
 # notes). The roster-check button fetches these and flags drift vs the last-acknowledged commit — it can't
 # auto-translate heterogeneous source (Python/Kotlin/Go/Markdown) into a schema, so it surfaces "changed" for review.
@@ -15962,6 +15978,8 @@ def _turn_roster_check(seed=True):
     out = {}
     seeded = False
     for cid in TURN_CLIENTS:
+        if cid in TURN_HIDDEN_CLIENTS:
+            continue                                    # hidden (TURN_HIDDEN_CLIENTS): out of the Client rosters sheet too
         srcs = _client_sources(cid)
         if not srcs:
             # A client nobody watches used to be dropped from the report entirely, so the roster read as full
@@ -16055,11 +16073,11 @@ def turn_catalog_view():
     """The turn catalog as the SPA + swg-sub consume it: servers in display order + the clients map (each client
     carries its own `settings` schema + `native_fork`, so the Clients tab edits an app's knobs once). RAW — colour
     overrides (turn_fork_colors) and the install-picker filter (enabled_turn_forks) stay in the consumers."""
-    return {"servers": [{"id": sid, "compat": _TURN_CLIENT_COMPAT.get(sid, {}),
+    return {"servers": [{"id": sid, "compat": _turn_compat(sid),
                          # per (this fork, client) schema — the mysorez app's knobs depend on which core THIS fork loads
-                         "client_schemas": {cid: _client_schema_for(sid, cid) for cid in _TURN_CLIENT_COMPAT.get(sid, {})},
+                         "client_schemas": {cid: _client_schema_for(sid, cid) for cid in _turn_compat(sid)},
                          # per-author CLI builds (native first) for the picker — N/A for a self-contained kind (its clients are fixed, not catalog-driven), so no dead default
-                         "cli_authors": ([] if TURN_SERVERS[sid].get("kind") == "wdtt" else _TURN_CLI_AUTHORS.get(sid, ["samosvalishe"])),
+                         "cli_authors": ([] if TURN_SERVERS[sid].get("kind") == "wdtt" else _turn_cli_authors(sid)),
                          # WDTT forks are OUR versioned builds — ship the published versions (newest first) so the SPA shows current + rollback targets
                          "wdtt_versions": [v for v, _ in _wdtt_versions(sid)],
                          # DEVICE ACCESS §11.2 F4 — does the build a CREATE installs prove which user a device belongs to? The create
@@ -24116,8 +24134,8 @@ def api(method, path, qs, body, deps):
                 fk = str(fk)
                 if fk not in TURN_SERVERS or not isinstance(osmap_in, dict):
                     continue
-                compat = _TURN_CLIENT_COMPAT.get(fk, {})
-                cli_authors = _TURN_CLI_AUTHORS.get(fk, ["samosvalishe"])
+                compat = _turn_compat(fk)                # a hidden app (TURN_HIDDEN_CLIENTS) is no default a visible fork can save
+                cli_authors = _turn_cli_authors(fk)
                 fout = {}
                 for osk, cidv in list(osmap_in.items())[:8]:
                     osk = str(osk); cidv = str(cidv)

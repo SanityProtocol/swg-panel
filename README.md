@@ -59,7 +59,7 @@ subscription and no one else sitting in the middle of your traffic.
 
 - **One page to run everything.** Add servers, add users, hand out access — all from the web panel.
 - **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
-- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [hack-diaz](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys. [How to set them up ↓](#subscriptions--access-control)
+- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [hack-diaz](screenshots/sub-samosvalishe.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys. [How to set them up ↓](#subscriptions--access-control)
 - **Suspend access in one click.** Block a person — or just one of their devices — instantly, without deleting them. Their tunnels stop and their subscription page goes dark; unblock to restore with the same keys, nothing to re-issue.
 - **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
 - **Single or multiple servers.** Put servers in different countries; a person can fail over between them.
@@ -119,7 +119,6 @@ subscription and no one else sitting in the middle of your traffic.
   <a href="screenshots/sub-wireguard.jpg"><img src="screenshots/sub-wireguard.jpg" alt="WireGuard subscription" width="150"></a>
   <a href="screenshots/sub-amneziawg.jpg"><img src="screenshots/sub-amneziawg.jpg" alt="AmneziaWG subscription" width="150"></a>
   <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="WINGS-N subscription" width="150"></a>
-  <a href="screenshots/sub-moroka8.jpg"><img src="screenshots/sub-moroka8.jpg" alt="Moroka8 subscription" width="150"></a>
   <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="samosvalishe subscription" width="150"></a>
   <a href="screenshots/sub-anton48.jpg"><img src="screenshots/sub-anton48.jpg" alt="anton48 subscription" width="150"></a>
   <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="cacggghp subscription" width="150"></a>
@@ -555,8 +554,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
 - [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe — proxies installed from samosvalishe keep running, and now update from hack-diaz's repository)
-- [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
-- [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
+- [Moroka8](https://github.com/Moroka8/vk-turn-proxy) and [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy) — hidden in the panel since 1.8.9 (no upstream change since mid-2026); proxies already running keep working
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
@@ -566,7 +564,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [Endlad2](https://github.com/Endlad2/LaLune)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
-- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
+- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android) — the repository was deleted; hidden in the panel since 1.8.9, servers already running keep working
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 

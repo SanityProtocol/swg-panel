@@ -41,7 +41,7 @@ import {
   CAT_UNCAT_COLOR, blockCatLabel, catLabelOf, dashRankColor, fmtCount, isBlockCat,
 } from "./routing.js";
 import {
-  enabledTurnForks, turnEnabled,
+  enabledTurnForkIds, turnEnabled,
 } from "./turn.js";
 import {
   openNodeCreate,
@@ -532,7 +532,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   //    ranged = the per-(node,fork) RRD (hist.turn). The fork's interface tags come from its live peers. Turn has
   //    no per-fork history until a node has been reporting, so on a range with no rows it falls back to live. ──
   const turnOn = turnEnabled();
-  const enSet = new Set(turnOn ? enabledTurnForks().map(f => f.id) : []);
+  const enSet = turnOn ? enabledTurnForkIds() : new Set();   // hidden forks included: a proxy a node still runs keeps its traffic here
   const sanF = s => String(s).replace(/[^A-Za-z0-9_]/g, "_");
   const fLive = {};   // fork → { rx, tx, on, tot } aggregated across every node/instance of that fork
   if (turnOn) sPeers.forEach(p => p.targets.forEach(t => {
