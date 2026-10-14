@@ -33,6 +33,9 @@ Fixture — node q-node, three deployments per device:
       the id stays in every node's unit names), and no cell on any OS or language says samosvalishe
   [7] a WDTT fork's own app is its default (operator, 2026-10-14): the WDTT cell on Android hands out amurcanov's WDTT —
       XXcipherX's app, which stood in for it, is hidden with its deleted repository — and its Start shows the import steps
+  [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): the csqtt server
+      runs 2.1.9-4, 2.5.0 is the latest — the CSQTT app's get-app bubble offers v2.1.9 and says it matches this server; La
+      Lune (another author's app) and the WDTT cell (a version no resolved release names) keep the latest, as before
 
 Needs google-chrome (or $CHROME) and node (seals the fixture secret). A missing browser is a FAIL, never a skip: a gate that
 cannot run has not passed.
@@ -45,6 +48,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-copy       serves a sub.js whose one-tap csqtt Start no longer copies the link → RED on [3]
      --perturb-netswitch  serves a sub.js whose networks page carries a Connections button again → RED on [5]
      --perturb-forkname   serves a sub.js that names a fork by its internal id again → RED on [6]
+     --perturb-pin        serves a sub.js that hands out the latest release whatever the server runs → RED on [8]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -65,7 +69,8 @@ P_COPY = "--perturb-copy" in sys.argv
 P_NETSW = "--perturb-netswitch" in sys.argv
 P_FORKNAME = "--perturb-forkname" in sys.argv
 P_XXSUB = "--perturb-xxsub" in sys.argv
-PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB
+P_PIN = "--perturb-pin" in sys.argv
+PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -100,7 +105,15 @@ def load(name, path):
 P = load("swgpanel_subrender", PANEL)
 if P_XXSUB:   # the app back in every WDTT fork's compat (the catalog before 2026-10-14) — the sub's substitution below needs it
     P.TURN_HIDDEN_CLIENTS = set()
-catalog = P.turn_catalog_view()
+# [8] the csqtt server runs 2.1.9-4: its release (v2.1.9) is resolved — as _turn_warm_pins leaves it — while 2.5.0 is the latest
+PIN_APK = "https://github.com/amurcanov/csqtt/releases/download/v2.1.9/csqtt-v2.1.9.apk"
+P._RELEASE_INFO[("amurcanov", "csqtt")] = {"tag": "v2.5.0", "page": "https://github.com/amurcanov/csqtt/releases/tag/v2.5.0",
+    "assets": [{"name": "csqtt-v2.5.0.apk", "url": "https://github.com/amurcanov/csqtt/releases/download/v2.5.0/csqtt-v2.5.0.apk"}]}
+P._PLATFORM_ASSET[("amurcanov", "csqtt", "android")] = P._RELEASE_INFO[("amurcanov", "csqtt")]["assets"][0]["url"]
+P._RELEASE_PIN[("amurcanov", "csqtt", "2.1.9-4")] = {"tag": "v2.1.9", "page": "https://github.com/amurcanov/csqtt/releases/tag/v2.1.9",
+    "assets": [{"name": "csqtt-v2.1.9.apk", "url": PIN_APK}]}
+P._PIN_WANTED = {("amurcanov", "csqtt"): {"2.1.9-4"}}
+catalog = P.turn_catalog_view(pins=True)   # serve.json's catalog, as write_sub_serve builds it
 if P_AUTO:
     _ll = ((catalog.get("clients") or {}).get("lalune") or {}).get("platforms", {}).get("android")
     if not isinstance(_ll, dict) or not _ll.get("autostart"):
@@ -143,6 +156,8 @@ b64 = lambda n: base64.b64encode(os.urandom(n)).decode()
 J("stats/stats-n1.json", {"interfaces": {
         "awg0": {"meta": {"public_key": b64(32), "listen_port": 51820, "endpoint": "203.0.113.7:51820", "subnet": "10.8.0.0/24", "awg_params": AWG}},
         "awg1": {"meta": {"public_key": b64(32), "listen_port": 51821, "endpoint": "203.0.113.7:51821", "subnet": "10.9.0.0/24", "awg_params": AWG}}},
+    "csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"}],
+    "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"}],
     "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64}],
     "net_carried": ["192.168.50.0/24"]})
 
@@ -201,6 +216,8 @@ if P_BY:
 if P_FORKNAME:
     perturbed_web("function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }",
                   "function forkLabel(f) { return f; }", "a fork named by its catalog label")
+if P_PIN:
+    perturbed_web("      if (!pin || !m || !srv || m[1] !== srv.owner) return links;", "      return links;", "a server's own app following its version")
 if P_XXSUB:
     perturbed_web("""    // A WDTT fork's system default is its own app, the top of this rank (until 2026-10-14 XXcipherX's one-tap app
     // stood in where a fork's own could not open one-tap; its repository is gone — the panel's sysDefaultKey agrees).
@@ -394,6 +411,39 @@ try:
     serve = json.load(open(os.path.join(D, "subs", "serve.json")))
     serve["turn_client_default"] = {"csqtt": {"android": "lalune"}, "amurcanov": {"android": "wdttplus"}}
     J("subs/serve.json", serve)
+    # [8] the CSQTT app follows the csqtt server's version (the operator's default for csqtt on Android is La Lune → cleared)
+    def bubble(tab, badge_has):
+        return tab.ev(r"""(() => {
+          const pg = [...document.querySelectorAll('section.ppage')].find(p => p.getAttribute('data-mode') === 'turn');
+          if (!pg) return null;
+          const cells = [...pg.querySelectorAll('.scell')];
+          const i = cells.findIndex(c => ((c.querySelector('.scell-tag') || {}).textContent || '').includes(%s));
+          if (i < 0) return null;
+          pg._seek(i, null);
+          const btn = cells[i].querySelector('.scell-getapp-btn') || pg.querySelector('.scell-getapp-btn');
+          if (!btn) return 'no button';
+          btn.click();
+          const b = document.querySelector('.dl-bubble');
+          return b ? {ver: (b.querySelector('.dl-bubble-ver') || {}).textContent || '', links: [...b.querySelectorAll('a')].map(a => a.href)} : 'no bubble';
+        })()""" % json.dumps(badge_has))
+    serve = json.load(open(os.path.join(D, "subs", "serve.json")))
+    serve["turn_client_default"] = {}
+    J("subs/serve.json", serve)
+    tab, _ = render("u1", "android", "en")
+    bb = bubble(tab, "CSQTT")
+    check("[8] the CSQTT app's bubble offers v2.1.9 — the release the server runs — and says it matches this server",
+          isinstance(bb, dict) and "v2.1.9" in bb["ver"] and "matches this server" in bb["ver"] and PIN_APK in bb["links"]
+          and not any("v2.5.0" in u for u in bb["links"]), bb)
+    wb = bubble(tab, "WDTT")
+    check("[8] control: the WDTT cell (1.2.4-3, no release resolved for it) keeps the latest — no 'matches' line",
+          isinstance(wb, dict) and "matches this server" not in wb["ver"], wb)
+    tab.close()
+    serve["turn_client_default"] = {"csqtt": {"android": "lalune"}, "amurcanov": {"android": "wdttplus"}}   # [3]'s control below needs WDTT-Plus
+    J("subs/serve.json", serve)
+    tab, _ = render("u1", "android", "en")
+    lb = bubble(tab, "La Lune")
+    check("[8] control: La Lune, another author's app on the same server, is not pinned", isinstance(lb, dict) and "matches this server" not in lb["ver"], lb)
+    tab.close()
     # [3] Start on the csqtt cell
     tab, _ = render("u1", "android", "en")
     res, clip, steps, navs = start_on(tab, "turn", "WDTT-Plus")

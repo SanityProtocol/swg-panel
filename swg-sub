@@ -443,6 +443,9 @@ class State:
             out[nid] = {"ifaces": apply_iface_meta(cfg, node_describe(snap)),
                         "turn": snap.get("turn_proxies") or [],
                         "pub_host": node_public_host(snap),   # reported public IP → WDTT link host when endpoint_host is unset
+                        # each WDTT / csqtt server's RUNNING version, by interface → the page offers the app release it names
+                        "tver": {x["iface"]: str(x.get("version") or "") for x in (snap.get("wdtt") or []) + (snap.get("csqtt") or [])
+                                 if isinstance(x, dict) and x.get("iface")},
                         # the networks this node ROUTES right now (swg-noded net_carried) — what the page may promise a user
                         "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else []}
         return out
@@ -765,6 +768,7 @@ def read_data(state, token):
                     "type": "wdtt",
                     "wdtt": {"password": p.get("wdtt_password") or "",
                              "fork": inst.get("fork") or "amurcanov",   # which WDTT fork → resolve the right per-OS client + encoder
+                             "version": ((describe.get(t.get("node")) or {}).get("tver") or {}).get(t.get("iface")) or "",
 
                              "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
                                                or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
@@ -789,6 +793,7 @@ def read_data(state, token):
                               "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
                                                 or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                               "port": port,
+                              "version": ((describe.get(t.get("node")) or {}).get("tver") or {}).get(t.get("iface")) or "",
                               "vk_hash": (p.get("vk_hash") or "").strip()},
                     "primary": _role_of(t),
                 })
@@ -799,7 +804,7 @@ def read_data(state, token):
             lp = meta.get("listen_port")
             # turn-proxies forwarding to THIS interface (same test as the admin's turnProxiesFor: the proxy
             # connects to the iface's listen port). Only non-secret client-config material rides along.
-            turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key")}
+            turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key"), "version": tp.get("version") or ""}
                     for tp in (nd.get("turn") or []) if isinstance(tp, dict) and lp and _port_of(tp.get("connect")) == lp]
             _wgty = "awg" if awg else (t.get("type") or "wg")
             # THIS deployment's client-config customisation over the peer-wide one over the interface's live

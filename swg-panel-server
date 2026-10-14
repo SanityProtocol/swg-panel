@@ -4347,7 +4347,7 @@ def write_sub_serve(deps, base_alt=""):
            "turn_server_defaults": (ps.get("turn_server_defaults") or {}),   # per-fork server-flag defaults (pre-fill new proxies)
            # the turn catalog (server→client/app/scheme/store metadata) so swg-sub can offer download/open-app
            # buttons without a hardcoded fork table. Non-secret (public app links + wire-format identity only).
-           "turn_catalog": turn_catalog_view(),
+           "turn_catalog": turn_catalog_view(pins=True),   # + each running server's own app release (the sub page's alone)
            "wg_catalog": wg_catalog_view(),   # WG/AWG client apps + per-OS resolved installer (the sub's download bubble)
            "iface_colors": (ps.get("iface_colors") or {}),
            # per-node colours (keyed by node id) so the sub renders each server name in its panel colour
@@ -15516,7 +15516,80 @@ def _turn_warm_assets():
                 _PLATFORM_ASSET[(owner, repo, oskind)] = u
     return resolved
 
-def _client_platforms_resolved(c):
+# ---- the release a RUNNING server's version names (operator, 2026-10-14) ------------------------------------------
+# An app published from the server's own repository follows the server, not the latest release: a csqtt 2.1.9 server
+# hands out the CSQTT app 2.1.9 even after 2.5 is out (amurcanov's WDTT, WDTT-Plus, qWDTT, ildarmaga's PWDTT, the
+# free-turn CLI by hack-diaz likewise). Apps by other authors keep their own versioning and stay on latest, and so
+# does a version no release names (ildarmaga's 1.5.0: all its tags are CI rebuilds of one commit) — as before.
+_RELEASE_PIN = {}        # (owner, repo, server version) -> {tag, page, assets} — a release, once found, does not move
+_PIN_WANTED = {}         # (owner, repo) -> {server versions the fleet runs} — what the catalog publishes pins for
+_PIN_TRIED = {}          # (owner, repo, server version) -> when a lookup last found nothing (retried hourly)
+
+def _pin_tags(version):
+    """Release tags a server version may name, most exact first: upstream's tag as reported ("v4.0.3"), or our build
+    of it — "<upstream>-<N>" (csqtt 2.1.9-4 → v2.1.9, WDTT-Plus 18-2 → v18)."""
+    v = str(version or "").strip()
+    out = []
+    for x in (v, re.sub(r"-\d+$", "", v)):
+        for t in ((x,) if x.startswith("v") else ("v" + x, x)):
+            if x and t not in out:
+                out.append(t)
+    return out
+
+def _pin_wanted(deps):
+    """{(owner, repo): {version}} for every turn-family server the fleet runs whose repository also publishes an app."""
+    app_repos = {_gh_owner_repo((links or {}).get("github")) for c in TURN_CLIENTS.values()
+                 for links in (c.get("platforms") or {}).values()}
+    out = {}
+    for fork, _kind, _nid, _ifc, ver in _turn_deployed(deps):
+        orp = tuple(str((TURN_SERVERS.get(fork.split("@", 1)[0]) or {}).get("owner") or "").split("/", 1))
+        if ver and len(orp) == 2 and orp in app_repos:
+            out.setdefault(orp, set()).add(ver)
+    return out
+
+def _gh_releases(owner, repo):
+    """The repository's releases (newest first, up to 100) as [{tag, page, assets}] — one request; None on error."""
+    try:
+        url = "https://api.github.com/repos/%s/%s/releases?per_page=100" % (quote(owner), quote(repo))
+        hdr = {"User-Agent": "swg-panel", "Accept": "application/vnd.github+json"}
+        tok = os.environ.get("SWG_GH_TOKEN", "").strip()
+        if tok:
+            hdr["Authorization"] = "Bearer " + tok
+        with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    return [{"tag": x.get("tag_name"), "page": x.get("html_url"),
+             "assets": [{"name": a.get("name"), "url": a.get("browser_download_url")}
+                        for a in (x.get("assets") or []) if a.get("browser_download_url")]}
+            for x in (data if isinstance(data, list) else []) if isinstance(x, dict) and x.get("tag_name")]
+
+def _turn_warm_pins(deps):
+    """Find the release of every running server version not resolved yet (one releases list per repository; a miss is
+    retried hourly). True when what the catalog publishes changed — the caller rewrites serve.json."""
+    global _PIN_WANTED
+    wanted = _pin_wanted(deps)
+    changed = wanted != _PIN_WANTED
+    now = time.time()
+    for (owner, repo), vers in wanted.items():
+        todo = [v for v in vers if (owner, repo, v) not in _RELEASE_PIN and now - _PIN_TRIED.get((owner, repo, v), 0) >= 3600]
+        if not todo:
+            continue
+        rels = _gh_releases(owner, repo)
+        if rels is None:
+            continue                                  # unreachable: no verdict, try again next pass
+        by_tag = {x["tag"]: x for x in rels}
+        for v in todo:
+            hit = next((by_tag[t] for t in _pin_tags(v) if t in by_tag), None)
+            if hit:
+                _RELEASE_PIN[(owner, repo, v)] = hit
+                changed = True
+            else:
+                _PIN_TRIED[(owner, repo, v)] = now     # no such release: latest stands in, as it always did
+    _PIN_WANTED = wanted                              # one rebind: a catalog read meanwhile sees the old set or the new
+    return changed
+
+def _client_platforms_resolved(c, pins=False):
     """A client's `platforms` with, per OS, the resolved best installer (`url`), the latest-release page (`page`), its
     version (`tag`), and the FULL latest-release asset list (`assets`) for the download bubble. Leaves `.github` as the
     fallback page; any OS whose repo hasn't resolved yet just keeps its original links."""
@@ -15533,6 +15606,13 @@ def _client_platforms_resolved(c):
                 links["page"] = info.get("page") or links.get("github")
                 links["tag"] = info.get("tag")
                 links["assets"] = info.get("assets") or []
+            # the release each running server version of this repository names → the sub page hands that one out
+            # (serve.json only: the SPA never reads them, and /api/state carries this catalog every 5 s)
+            pinned = {v: _RELEASE_PIN[(owner, repo, v)] for v in sorted(_PIN_WANTED.get((owner, repo)) or ())
+                      if (owner, repo, v) in _RELEASE_PIN} if pins else {}
+            if pinned:
+                links["pins"] = {v: {"tag": x.get("tag"), "page": x.get("page"), "assets": x.get("assets") or [],
+                                     "url": _match_os_asset(x.get("assets"), oskind)} for v, x in pinned.items()}
         out[oskind] = links
     return out
 
@@ -15546,7 +15626,8 @@ def _release_cache_save(deps):
     (owner,repo[,os]) → 'owner/repo[/os]' strings for JSON."""
     with contextlib.suppress(Exception):
         data = {"release_info": {o + "/" + r: v for (o, r), v in _RELEASE_INFO.items()},
-                "platform_asset": {o + "/" + r + "/" + osk: u for (o, r, osk), u in _PLATFORM_ASSET.items()}}
+                "platform_asset": {o + "/" + r + "/" + osk: u for (o, r, osk), u in _PLATFORM_ASSET.items()},
+                "release_pin": {o + "/" + r + "/" + v: x for (o, r, v), x in _RELEASE_PIN.items()}}
         p = _release_cache_path(deps); tmp = p + ".tmp"
         with open(tmp, "w") as f:
             json.dump(data, f)
@@ -15563,26 +15644,41 @@ def _release_cache_load(deps):
         for k, u in (data.get("platform_asset") or {}).items():
             o, r, osk = k.rsplit("/", 2)
             _PLATFORM_ASSET[(o, r, osk)] = u
+        for k, x in (data.get("release_pin") or {}).items():
+            o, r, v = k.split("/", 2)
+            _RELEASE_PIN[(o, r, v)] = x
 
 def _turn_warm_assets_loop(deps):
+    def flush():
+        # flush the freshly-resolved asset URLs into subs/serve.json so swg-sub serves them (the boot write ran
+        # before the warm finished). Preserve any active dual-base grace (base_alt) rather than clearing it.
+        ba = ""
+        with contextlib.suppress(Exception):
+            ba = ((json.load(open(_sub_serve_path(deps))).get("serve") or {}).get("base_alt") or "")
+        write_sub_serve(deps, base_alt=ba)
     while True:
         resolved = 0
         try:
             resolved = _turn_warm_assets()
-            if resolved:
+            _turn_warm_pins(deps)
+            if resolved or _RELEASE_PIN:
                 _release_cache_save(deps)   # persist so the NEXT restart serves these assets immediately (no cold-start empty bubbles)
-            # flush the freshly-resolved asset URLs into subs/serve.json so swg-sub serves them (the boot write ran
-            # before the warm finished). Preserve any active dual-base grace (base_alt) rather than clearing it.
-            ba = ""
-            with contextlib.suppress(Exception):
-                ba = ((json.load(open(_sub_serve_path(deps))).get("serve") or {}).get("base_alt") or "")
-            write_sub_serve(deps, base_alt=ba)
+            flush()
         except Exception:
             pass
         # A pass that resolved NOTHING = GitHub was unreachable (network not up yet at boot, or a blip). Retry in a
         # couple of minutes instead of leaving the sub's download bubbles empty for a full hour; once anything
-        # resolves, settle into the hourly refresh.
-        time.sleep(3600 if resolved else 120)
+        # resolves, settle into the hourly refresh. Between those, every 5 minutes: a server updated or rolled back
+        # to a version not resolved yet gets its release (one request per repository), not an hour of the latest.
+        until = time.time() + (3600 if resolved else 120)
+        while time.time() < until:
+            time.sleep(min(300, max(1, until - time.time())))
+            if time.time() >= until:
+                break
+            with contextlib.suppress(Exception):
+                if _turn_warm_pins(deps):
+                    _release_cache_save(deps)
+                    flush()
 
 def _turn_p4_refresh(cid, roster):
     """NETWORK. Snapshot-on-change across BOTH the parseable schema-sources (→ field inventory) and the value-sources
@@ -16069,7 +16165,7 @@ def _turn_roster_ack(cid):
     _turn_roster_save(roster)
     return files
 
-def turn_catalog_view():
+def turn_catalog_view(pins=False):
     """The turn catalog as the SPA + swg-sub consume it: servers in display order + the clients map (each client
     carries its own `settings` schema + `native_fork`, so the Clients tab edits an app's knobs once). RAW — colour
     overrides (turn_fork_colors) and the install-picker filter (enabled_turn_forks) stay in the consumers."""
@@ -16088,7 +16184,7 @@ def turn_catalog_view():
                             if TURN_SERVERS[sid].get("kind") in ("wdtt", "csqtt") else {}),
                          "hidden": sid in TURN_HIDDEN_FORKS,   # in the catalog (deployed instances still resolve label/colour) but skipped by every operator-facing fork list
                          **TURN_SERVERS[sid]} for sid in TURN_SERVER_ORDER],
-            "clients": {cid: {**c, "platforms": _client_platforms_resolved(c),
+            "clients": {cid: {**c, "platforms": _client_platforms_resolved(c, pins),
                               "settings": _client_schema(cid), "native_fork": _CLIENT_NATIVE_FORK.get(cid)}
                         for cid, c in TURN_CLIENTS.items()}}
 def wg_catalog_view():

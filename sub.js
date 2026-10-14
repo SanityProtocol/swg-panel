@@ -39,7 +39,7 @@
       dlShort: "Download", enlarge: "Tap to enlarge", share: "Share",
       getApp: "Get {app}", getAppBy: "Get {app} by {author} manually", getAppManual: "Get {app} manually", by: " by {author}",
       getWgClient: "WireGuard clients", getAwgClient: "AmneziaWG clients",
-      dlOpenPage: "Open {host}({app}) downloads page", dlLatest: "Latest release · {ver}",
+      dlOpenPage: "Open {host}({app}) downloads page", dlLatest: "Latest release · {ver}", dlPinned: "Release {ver} · matches this server",
       start: "Start", startOpen: "Start — opens {app}", startGet: "Start — installs {app} if you don't have it",
       startHow: "Open the app, or install it?", startOpenApp: "Open {app}", startHaveIt: "I already have it", startGetApp: "Get {app}", startNeedIt: "Install it",
       vpnCopied: "Link copied — paste it into Amnezia VPN",
@@ -101,7 +101,7 @@
       dlShort: "Скачать", enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
       getApp: "Установить {app}", getAppBy: "Скачать {app} от {author} вручную", getAppManual: "Установить {app} вручную", by: " от {author}",
       getWgClient: "Клиенты WireGuard", getAwgClient: "Клиенты AmneziaWG",
-      dlOpenPage: "Открыть страницу загрузок {host}({app})", dlLatest: "Последняя версия · {ver}",
+      dlOpenPage: "Открыть страницу загрузок {host}({app})", dlLatest: "Последняя версия · {ver}", dlPinned: "Версия {ver} · как у этого сервера",
       start: "Старт", startOpen: "Старт — откроет {app}", startGet: "Старт — установит {app}, если его нет",
       startHow: "Открыть приложение или установить?", startOpenApp: "Открыть {app}", startHaveIt: "Уже установлено", startGetApp: "Установить {app}", startNeedIt: "Установить",
       vpnCopied: "Ссылка скопирована — вставьте её в Amnezia VPN",
@@ -225,14 +225,25 @@
     + '<circle cx="20.4" cy="12.4" r="1.8"/>'
     + '<rect x="6" y="14.2" width="2.2" height="3.2" rx="1.1"/><rect x="14" y="14.2" width="2.2" height="3.2" rx="1.1"/>'
     + '<path d="M3.2 12.6 L.9 11.6 L2.1 13.9 Z"/></svg>';
-  function turnGetApp(forkId) {
+  // `ver` = the server's RUNNING version (the cell's deployment): an app published from the server's own repository
+  // follows it — the release that version names (the panel's `pins`), not the latest (operator, 2026-10-14).
+  function turnGetApp(forkId, ver) {
     var srv = turnServer(forkId), clients = ((_lastData && _lastData.turn_catalog) || {}).clients || {};
     var os = subOs();
     function has(links) { return links && (links.url || links.github || links.play || links.appstore); }
+    function pinned(links) {
+      var pin = ver && links.pins && links.pins[ver];
+      var m = /^https?:\/\/github\.com\/([^\/]+\/[^\/#?]+)/.exec(links.github || "");
+      if (!pin || !m || !srv || m[1] !== srv.owner) return links;   // another author's app keeps its own versioning
+      var out = {}; for (var k in links) out[k] = links[k];
+      out.url = pin.url || ""; out.page = pin.page || links.page; out.tag = pin.tag || ""; out.assets = pin.assets || []; out.pinned = true;
+      return out;
+    }
     // Build the resolved-app record for one client id on the visitor's OS (null if it doesn't ship for this OS).
     function build(cid) {
       var cl = clients[cid], links = cl && cl.platforms && cl.platforms[os];   // this OS only — no cross-OS fallback
       if (!has(links)) return null;
+      links = pinned(links);
       // Attribute the download to the app's REAL author — the explicit `author` field wins over `native_fork` (which
       // only pins the client to a server fork for schema resolution, e.g. pwdtt→ildarmaga even though it's luminescq's).
       // Mirrors the panel's turnClientAuthor rule so Settings and the sub page agree.
@@ -244,7 +255,8 @@
                autostart: !!links.autostart,    // per-app-per-OS: Start opens the app via its URL scheme (else copy-link + import steps)
                instructions: links.instructions || "",   // optional per-app-per-OS import text (overrides the generic hint)
                file: file, fileName: urlFileName(file), page: page,
-               tag: links.tag || "", assets: links.assets || [] };   // assets = LATEST release's files → the bubble
+               tag: links.tag || "", assets: links.assets || [],   // assets = the release's files → the bubble (LATEST, or this server's)
+               pinned: !!links.pinned };
     }
     // a CLI resolves to ONE build (the author the admin picked, else the fork's native/first CLI) — carried as .cliAuthor
     var cliAuthors = (srv && srv.cli_authors) || ["samosvalishe"];
@@ -800,7 +812,7 @@
       var head = el("a", "dl-bubble-head"); head.href = ga.page; head.target = "_blank"; head.rel = "noopener";
       head.textContent = t("dlOpenPage").replace("{host}", isGithub ? "GitHub " : "").replace("{app}", ga.app) + " ↗";
       b.appendChild(head);
-      if (ga.tag) b.appendChild(el("div", "dl-bubble-ver", t("dlLatest").replace("{ver}", ga.tag)));
+      if (ga.tag) b.appendChild(el("div", "dl-bubble-ver", t(ga.pinned ? "dlPinned" : "dlLatest").replace("{ver}", ga.tag)));
     }
     var list = el("div", "dl-bubble-list");
     if (ga.wgItems) {   // WG/AWG two-target rows: [logo + name] → downloads page · [⬇] → best direct installer for this OS
@@ -1802,7 +1814,7 @@
         // links) are the TURN credential. One app (CSQTT), which scans the QR.
         var cd = it.csqtt, cfc = ifaceColor("csqtt");
         // raw VK inputs → csqttArtifact combines/strips/dedupes them (same one place the operator app uses)
-        var cga = turnGetApp("csqtt");   // the operator's per-OS default csqtt client (CSQTT) → download / Start
+        var cga = turnGetApp("csqtt", cd.version);   // the operator's per-OS default csqtt client (CSQTT) → download / Start (this server's release)
         // …and its encoder: on iOS that is anton48's VK TURN Proxy, which is handed its own vkturnproxy:// link —
         // it reads a csqtt:// one too, but keeps only the first VK call link of it.
         var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
@@ -1849,7 +1861,7 @@
         // password + VK link + endpoint. Per-OS client: iOS → anton48 VK TURN Proxy (WRAP-A), else → WDTT app / PWDTT.
         var wd = it.wdtt, wfork = wd.fork || "amurcanov", wfc = forkColor(wfork);
         var wclients = ((_lastData && _lastData.turn_catalog) || {}).clients || {};
-        var wga = turnGetApp(wfork);   // the operator's per-OS default client for THIS fork → encoder + app name + download
+        var wga = turnGetApp(wfork, wd.version);   // the operator's per-OS default client for THIS fork → encoder + app name + download (this server's release)
         var wasClient = (wga && wga.enc) ? wga.enc : ((subOs() === "ios") ? "anton48" : "wdtt");
         var wclientQR = !!(wga && wclients[wga.cid] && wclients[wga.cid].qr);   // only some clients scan a QR; the rest import a pasted link
         // SETTINGS SPLIT: qWDTT is the one WDTT-family app whose link carries a client knob (`workers`), so the
@@ -1913,7 +1925,7 @@
       } else {
       var tp = it.tp, forkId = SWGTurn.fork(tp.service);
       var fc = forkColor(forkId);                                               // the panel's colour for this fork
-      var ga = turnGetApp(forkId);   // resolves the client for the VISITOR'S OS (also drives the get-app row / Start button below)
+      var ga = turnGetApp(forkId, tp.version);   // resolves the client for the VISITOR'S OS (also drives the get-app row / Start button below) — this proxy's release
       // Encode the artifact for the app we actually RESOLVED for this OS (its encoder), not the fork's NATIVE app — so
       // the config always matches the app shown. A Moroka8 relay reached via anton48's VK TURN Proxy on iOS must get the
       // vkturnproxy:// deeplink, NOT a sidecar CLI command that GUI can't run; on desktop the same fork resolves to the
