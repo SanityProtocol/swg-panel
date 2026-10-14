@@ -15541,6 +15541,8 @@ def _turn_warm_assets():
 _RELEASE_PIN = {}        # (owner, repo, server version) -> {tag, page, assets, url:{os: installer}} — refreshed hourly
 _PIN_WANTED = {}         # (owner, repo) -> {server versions the fleet runs} — what serve.json publishes pins for
 _PIN_TRIED = {}          # (owner, repo, server version) -> when a lookup last gave no pin (retried hourly)
+_PIN_SEEN = {}           # (owner, repo, server version) -> when a snapshot last showed a server running it
+_PIN_KEEP = 3600         # a version unseen this long is retired: its pin leaves serve.json and the cache
 # A build label that does NOT name its upstream source. ildarmaga's "1.5.40" / "1.5.40-2" were source 1.5.0 + our patch
 # (forks/wdtt/ildarmaga/README.md) — reading them as upstream v1.5.40 would offer a PWDTT that is not this server's.
 _PIN_TAG_OVERRIDE = {("ildarmaga", "1.5.40"): "v1.5.0", ("ildarmaga", "1.5.40-2"): "v1.5.0"}
@@ -15585,19 +15587,25 @@ def _pin_lookup(owner, repo, tags):
 
 def _turn_warm_pins(deps, refresh=False):
     """Find the release of every running server version not pinned yet (by tag, one small request per spelling; a
-    version no release names, or a lookup GitHub refuses, is retried hourly). `refresh` (the hourly pass, run only when
-    GitHub answered) re-reads the pinned ones too — a release captured mid-upload gains its late installers — and drops
-    the versions no server runs any more; a 5-minute pass only adds, so one snapshot missing a row unpublishes nothing.
+    version no release names, or a lookup GitHub refuses, is retried hourly). `refresh` (the hourly pass) re-reads the
+    pinned ones too — a release captured mid-upload gains its late installers. A version is retired only when no
+    snapshot has shown it for _PIN_KEEP: a row one sync misses (a WDTT restart, a node posting late, the nodes not yet
+    back after a panel restart) unpublishes nothing.
     True when what serve.json publishes changed — the caller saves the cache and rewrites serve.json."""
     global _PIN_WANTED
-    wanted = _pin_wanted(deps)
-    gone = [k for k in _RELEASE_PIN if k[2] not in wanted.get(k[:2], ())] if refresh else []
-    for k in gone:
-        _RELEASE_PIN.pop(k, None)                     # no server runs this version any more
-    if not refresh:
-        wanted = {k: set(_PIN_WANTED.get(k, ())) | set(wanted.get(k, ())) for k in set(_PIN_WANTED) | set(wanted)}
-    changed = bool(gone) or wanted != _PIN_WANTED
     now = time.time()
+    for (o, r), vers in _pin_wanted(deps).items():
+        for v in vers:
+            _PIN_SEEN[(o, r, v)] = now
+    for k in [k for k, t in _PIN_SEEN.items() if now - t >= _PIN_KEEP]:
+        _PIN_SEEN.pop(k, None)                        # no server has run this version for an hour: retired
+    wanted = {}
+    for o, r, v in _PIN_SEEN:
+        wanted.setdefault((o, r), set()).add(v)
+    gone = [k for k in _RELEASE_PIN if k not in _PIN_SEEN]
+    for k in gone:
+        _RELEASE_PIN.pop(k, None)
+    changed = bool(gone) or wanted != _PIN_WANTED
     for key in [(o, r, v) for (o, r), vers in wanted.items() for v in sorted(vers)]:
         owner, repo, v = key
         if key in _RELEASE_PIN and not refresh:
@@ -15688,6 +15696,7 @@ def _release_cache_load(deps):
             o, r, v = k.split("/", 2)
             if isinstance(x, dict) and isinstance(x.get("url"), dict):   # a b1bb5d34 cache entry has no per-OS url: re-resolve it
                 _RELEASE_PIN[(o, r, v)] = x
+                _PIN_SEEN[(o, r, v)] = time.time()   # seen as of the restart: published until the nodes report, an hour at most
 
 _SUB_SERVE_LOCK = threading.RLock()   # serve.json's base_alt read-then-write vs the dual-base grace's writers
 
@@ -15714,7 +15723,7 @@ def _turn_warm_assets_loop(deps):
         resolved = 0
         try:
             resolved = _turn_warm_assets()
-            if (pins(bool(resolved)) or resolved):   # the refresh (and its prune) only when GitHub answered
+            if (pins(True) or resolved):
                 _release_cache_save(deps)   # persist so the NEXT restart serves these assets immediately (no cold-start empty bubbles)
             flush()
         except Exception:

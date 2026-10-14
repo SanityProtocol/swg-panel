@@ -16,11 +16,12 @@ subscriber is handed (the page half is sub_page_render_selftest [8]).
       within the hour; a failing lookup (rate limit, a deleted repository) is rested an hour too, never asked every pass;
       no network (a boot before egress, GitHub blocked) rests nothing and stops the pass at its first lookup (one
       timeout per pass, not one per version); the hourly refresh re-reads a pin (a release captured mid-upload gains its
-      late installers) and a version no server runs any more is dropped — a 5-minute pass only adds, so a snapshot
-      missing a row unpublishes nothing, and the loop runs the refresh only when GitHub answered
+      late installers), asking its own tag once; a version is retired only after an hour no snapshot shows it — a row
+      one sync misses unpublishes nothing, on a 5-minute pass or the hourly one
   [4] serve.json's catalog carries the pins once per (repository, version) at its top, no client or OS copy; the
       catalog /api/state carries every 5 s has none, and that call site asks for none
-  [5] the release cache: pins survive a restart; a b1bb5d34 entry (no per-OS url) is dropped at load, so it is resolved again
+  [5] the release cache: pins survive a restart and are published by the first pass, before any node reports again; a
+      b1bb5d34 entry (no per-OS url) is dropped at load, so it is resolved again
   [6] swg-sub: a subscriber is handed only the pins of versions its own servers run (_own_pins), and a node snapshot of
       any shape yields its servers' running versions without an exception (_running_versions)
 
@@ -29,7 +30,7 @@ Hermetic. Run: python3 tests/turn_app_pins_selftest.py   (0 = pass)
      --perturb-repo   _pin_wanted takes every server, its app's repository or not → RED in [2]
      --perturb-own    swg-sub hands every subscriber the whole fleet's pins → RED in [6]
      --perturb-offline a network error skips one version, not the pass (a timeout per version) → RED in [3]
-     --perturb-union  a 5-minute pass publishes this snapshot's versions only (a missed row unpublished) → RED in [3]
+     --perturb-seen   a version is retired the first pass it is unseen (a missed row unpublished) → RED in [3], [5]
 """
 import atexit, importlib.machinery, importlib.util, io, json, os, re, shutil, sys, tempfile, urllib.error, urllib.parse
 
@@ -41,8 +42,8 @@ PERTURB = "--perturb" in sys.argv
 PERTURB_REPO = "--perturb-repo" in sys.argv
 PERTURB_OWN = "--perturb-own" in sys.argv
 PERTURB_OFFLINE = "--perturb-offline" in sys.argv
-PERTURB_UNION = "--perturb-union" in sys.argv
-PERTURBED = PERTURB or PERTURB_REPO or PERTURB_OWN or PERTURB_OFFLINE or PERTURB_UNION
+PERTURB_SEEN = "--perturb-seen" in sys.argv
+PERTURBED = PERTURB or PERTURB_REPO or PERTURB_OWN or PERTURB_OFFLINE or PERTURB_SEEN
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -73,7 +74,7 @@ def load(name, path):
 P = load("swgpanel_apppins", planted(SERVER, ([('    for x in (v, re.sub(r"-\\d+$", "", v)):\n', "    for x in (v,):\n", "our build suffix kept")] if PERTURB else [])
                                           + ([("        if ver and orp in app_repos:\n", "        if ver:\n", "every server wanted")] if PERTURB_REPO else [])
                                           + ([("            break                                     # no network", "            continue  #", "a lookup per version offline")] if PERTURB_OFFLINE else [])
-                                          + ([("    if not refresh:\n        wanted = {k: set(_PIN_WANTED", "    if False:\n        wanted = {k: set(_PIN_WANTED", "a 5-minute pass unpublishes")] if PERTURB_UNION else [])))
+                                          + ([("if now - t >= _PIN_KEEP]:", "if t < now]:", "retired when unseen once")] if PERTURB_SEEN else [])))
 S = load("swgsub_apppins", planted(SUB, [("for repo, vs in pins.items() if isinstance(vs, dict) and any(v in mine for v in vs)}}",
                                           "for repo, vs in pins.items() if isinstance(vs, dict)} if False else pins}",
                                           "every subscriber gets the fleet's pins")] if PERTURB_OWN else []))
@@ -154,7 +155,7 @@ P._turn_warm_pins(deps); n1 = len(CALLS); P._turn_warm_pins(deps); n2 = len(CALL
 check("[3] a failing lookup (403) is rested an hour like a miss — asked once, not every pass",
       n1 >= 1 and n2 == n1 and ("ildarmaga", "wdtt", "1.5.99-1") in P._PIN_TRIED, (n1, n2, sorted(key(P._PIN_TRIED))))
 DOWN.clear(); P._PIN_TRIED.clear(); CALLS.clear(); NET["up"] = False
-held = {k: P._RELEASE_PIN.pop(k) for k in [("amurcanov", "csqtt", "2.1.9-4"), ("Ivan4537", "WDTT-Plus", "18-2")]}
+held = {k: P._RELEASE_PIN.pop(k, None) for k in [("amurcanov", "csqtt", "2.1.9-4"), ("Ivan4537", "WDTT-Plus", "18-2")]}
 P._turn_warm_pins(deps)
 check("[3] no network: one lookup, then the pass stops (one timeout per pass, not one per version), and nothing is rested",
       len(CALLS) == 1 and not P._PIN_TRIED, (CALLS, sorted(key(P._PIN_TRIED))))
@@ -165,7 +166,7 @@ REL[("hackdiaz-dev", "free-turn-proxy", "v4.0.3")] = A("client-linux-amd64", "cl
 ch3 = P._turn_warm_pins(deps, refresh=True)
 check("[3] the hourly refresh re-reads a pin: a late Windows installer appears", ch3 is True and
       pin("hackdiaz-dev", "free-turn-proxy", "v4.0.3").get("url", {}).get("windows") == "https://dl/client-windows-amd64.exe", pin("hackdiaz-dev", "free-turn-proxy", "v4.0.3"))
-deps2 = {"node_snaps": {"n1": {"csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"}]}}}
+deps2 = {"node_snaps": {"n1": {"csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"}]}}}   # the other rows missed
 before, vbefore = set(P._RELEASE_PIN), P._turn_pins_view()
 ch5 = P._turn_warm_pins(deps2)
 check("[3] a 5-minute pass drops nothing when a snapshot misses a row (a WDTT restart mid-sync)", set(P._RELEASE_PIN) == before,
@@ -173,14 +174,19 @@ check("[3] a 5-minute pass drops nothing when a snapshot misses a row (a WDTT re
 check("[3] …and unpublishes nothing: serve.json's pins stay, no rewrite", P._turn_pins_view() == vbefore and ch5 is False,
       ({r: sorted(v) for r, v in P._turn_pins_view().items()}, ch5))
 CALLS.clear()
-ch4 = P._turn_warm_pins(deps2, refresh=True)
-check("[3] the hourly refresh asks a pin's own tag once (no -N spellings first)", CALLS == ["/repos/amurcanov/csqtt/releases/tags/v2.1.9"], CALLS)
-check("[3] …and drops a version no server runs any more, and says so",
-      ch4 is True and set(P._RELEASE_PIN) == {("amurcanov", "csqtt", "2.1.9-4")}, sorted(key(P._RELEASE_PIN)))
-
-src = open(SERVER, encoding="utf-8").read()
-check("[3] the loop runs the refresh (and its prune) only on a pass where GitHub answered — offline it retries every 2 min",
-      "            if (pins(bool(resolved)) or resolved):" in src and "pins(True)" not in src, "")
+P._turn_warm_pins(deps2, refresh=True)
+check("[3] the hourly refresh drops nothing either while a version was seen within the hour (F24)",
+      set(P._RELEASE_PIN) == before and P._turn_pins_view() == vbefore, sorted(key(P._RELEASE_PIN)))
+check("[3] …and asks a pin's own tag once (no -N spellings first)",
+      CALLS.count("/repos/amurcanov/csqtt/releases/tags/v2.1.9") == 1 and not any("2.1.9-4" in c for c in CALLS), CALLS)
+CSQ, IMG = ("amurcanov", "csqtt", "2.1.9-4"), ("Ivan4537", "WDTT-Plus", "18-2")
+for k in P._PIN_SEEN:
+    if k != CSQ:
+        P._PIN_SEEN[k] -= 3601 if k != IMG else 3500   # unseen for an hour; WDTT-Plus for 58 minutes
+ch4 = P._turn_warm_pins(deps2)
+check("[3] a version no snapshot has shown for an hour is retired, and the pass says so; one seen 58 minutes ago stays",
+      ch4 is True and set(P._RELEASE_PIN) == {CSQ, IMG} and set(P._turn_pins_view()) == {"amurcanov/csqtt", "Ivan4537/WDTT-Plus"},
+      sorted(key(P._RELEASE_PIN)))
 
 print("\n[4] what serve.json publishes")
 P._RELEASE_INFO[("amurcanov", "csqtt")] = {"tag": "v2.5.0", "page": "p250", "assets": [{"name": "CSQTT-2.5.0.apk", "url": "u250"}]}
@@ -196,6 +202,7 @@ check("[4] …and no client or OS carries a copy; the CSQTT app's own latest is 
       not any("pins" in (x or {}) for c in sv["clients"].values() for x in (c.get("platforms") or {}).values())
       and sv["clients"]["csqttapp"]["platforms"]["android"].get("url") == "u250", "")
 check("[4] the catalog /api/state carries every 5 s has no pins", "pins" not in P.turn_catalog_view(), "")
+src = open(SERVER, encoding="utf-8").read()
 check("[4] …the /api/state call site asks for none, and only serve.json's does",
       re.search(r'"turn_catalog": turn_catalog_view\(\),\s+# single-source', src) is not None
       and src.count("turn_catalog_view(pins=True)") == 1 and '"turn_catalog": turn_catalog_view(pins=True),' in src, "")
@@ -209,9 +216,13 @@ P._release_cache_load(cdeps)
 check("[5] pins survive a restart", P._RELEASE_PIN == saved and ("amurcanov", "csqtt", "2.1.9-4") in P._RELEASE_PIN, sorted(key(P._RELEASE_PIN)))
 cp = P._release_cache_path(cdeps); c = json.load(open(cp))
 c["release_pin"]["amurcanov/csqtt/2.0.0-1"] = {"tag": "v2.0.0", "page": "p", "assets": []}   # b1bb5d34's shape: no url
-json.dump(c, open(cp, "w")); P._RELEASE_PIN.clear(); P._release_cache_load(cdeps)
+json.dump(c, open(cp, "w")); P._RELEASE_PIN.clear(); P._PIN_SEEN.clear(); P._PIN_WANTED = {}; P._release_cache_load(cdeps)
 check("[5] a b1bb5d34 cache entry (no per-OS url) is dropped at load — resolved again, never published unusable",
       ("amurcanov", "csqtt", "2.0.0-1") not in P._RELEASE_PIN and P._RELEASE_PIN == saved, sorted(key(P._RELEASE_PIN)))
+chb = P._turn_warm_pins({"node_snaps": {}})          # the boot pass: no node has reported yet
+check("[5] the first pass after a restart publishes the cached pins before any node reports again",
+      chb is True and P._turn_pins_view().get("amurcanov/csqtt", {}).get("2.1.9-4", {}).get("tag") == "v2.1.9",
+      {r: sorted(v) for r, v in P._turn_pins_view().items()})
 
 print("\n[6] swg-sub")
 peers = [{"targets": [{"type": "csqtt", "csqtt": {"version": "2.1.9-4"}},
