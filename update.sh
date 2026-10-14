@@ -2064,6 +2064,7 @@ if ! $NODE_ONLY && docker_stack_live; then
       sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 || true
       turn_sock_buf_host   # the turn-family listeners' socket-buffer caps: the container cannot raise them either
       [ "$TURN_SOCK_BUF_CHANGED" = 1 ] && note "UDP socket-buffer caps raised on the host for turn-family listeners (99-swg-turn.conf; servers pick them up on their next restart)"
+      [ "$TURN_SOCK_BUF_LOW" = 1 ] && note "UDP socket-buffer caps could not be raised on this host (net.core.{r,w}mem_max) — csqtt handshakes may fail under load"
     fi ;;
   esac
   # migrate existing docker panels: the panel matches a master's co-located node by the HOST hostname, which it

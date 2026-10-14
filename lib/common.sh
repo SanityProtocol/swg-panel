@@ -3034,32 +3034,38 @@ swg_journal_heal(){   # → SWG_JOURNAL_CHANGED = 1 when it was written (the cal
   mkdir -p "$d" && printf '%s\n' "$want" > "$d/$SWG_JOURNAL_DROPIN" && SWG_JOURNAL_CHANGED=1
   return 0
 }
-turn_sock_buf_host(){   # a Docker node's socket-buffer caps, raised and persisted on the HOST → 0; TURN_SOCK_BUF_CHANGED=1 when it acted
+turn_sock_buf_host(){   # a Docker node's socket-buffer caps, raised and persisted on the HOST → 0; TURN_SOCK_BUF_CHANGED=1 when a running
+  # cap rose, TURN_SOCK_BUF_LOW=1 when one is still below the size (the raise did not take — say so, not "raised")
   # swg-noded raises net.core.{r,w}mem_max for the turn-family listeners (csqtt asks for 16 MiB) and persists them in
   # /etc/sysctl.d/99-swg-turn.conf — from a container it can do neither: /proc/sys is read-only there, and these caps
   # are the host's, not the container's network namespace's. Sized as swg-noded's _turn_sock_target for up to four
   # listeners (udp_mem's ceiling / 8, TURN_SOCK_BUF_MIN..MAX); the drop-in holds that size, as noded's does, and the
   # running cap is only ever raised — a higher value set now is left alone. Never fails: both callers run set -e.
-  local f=/etc/sysctl.d/99-swg-turn.conf pages want k cur low="" body
-  TURN_SOCK_BUF_CHANGED=0
+  local f=/etc/sysctl.d/99-swg-turn.conf pages want k cur keys="" low="" body
+  TURN_SOCK_BUF_CHANGED=0; TURN_SOCK_BUF_LOW=0
   pages="$(awk '{print $3}' /proc/sys/net/ipv4/udp_mem 2>/dev/null)" || pages=""
   case "$pages" in ''|*[!0-9]*) want=4194304;; *) want=$(( pages * 4096 / 8 ));; esac
   [ "$want" -gt 25165824 ] && want=25165824
   [ "$want" -lt 4194304 ] && want=4194304
-  body="# swg-panel: socket-buffer caps for turn-family listeners (WDTT forks / csqtt / turn-proxies), on the HOST:
-# a Docker node cannot raise them itself (read-only /proc/sys). Written by install-docker.sh / update.sh.
-net.core.rmem_max = $want
-net.core.wmem_max = $want"
-  if [ "$(cat "$f" 2>/dev/null)" != "$body" ]; then
-    { mkdir -p /etc/sysctl.d && printf '%s\n' "$body" > "$f.tmp" && mv -f "$f.tmp" "$f"; } 2>/dev/null \
-      && TURN_SOCK_BUF_CHANGED=1 || rm -f "$f.tmp" 2>/dev/null || true
-  fi
-  for k in rmem_max wmem_max; do                      # the running caps: raised whenever below, written file or not
+  for k in rmem_max wmem_max; do
     cur="$(cat "/proc/sys/net/core/$k" 2>/dev/null)" || cur=""
-    case "$cur" in ''|*[!0-9]*) continue;; esac       # no such key here (a non-init netns): nothing to raise
-    [ "$cur" -lt "$want" ] && low="$low $k"
+    case "$cur" in ''|*[!0-9]*) continue;; esac       # no such key here (a non-init netns): nothing to raise or persist
+    keys="$keys $k"; [ "$cur" -lt "$want" ] && low="$low $k"
   done
-  for k in $low; do sysctl -q -w "net.core.$k=$want" >/dev/null 2>&1 || true; TURN_SOCK_BUF_CHANGED=1; done
+  [ -n "$keys" ] || return 0                          # a drop-in naming absent keys would fail systemd-sysctl every boot
+  body="# swg-panel: socket-buffer caps for turn-family listeners (WDTT forks / csqtt / turn-proxies), on the HOST:
+# a Docker node cannot raise them itself (read-only /proc/sys). Written by install-docker.sh / update.sh."
+  for k in $keys; do body="$body
+net.core.$k = $want"; done
+  if [ "$(cat "$f" 2>/dev/null)" != "$body" ]; then
+    { mkdir -p /etc/sysctl.d && printf '%s\n' "$body" > "$f.tmp" && mv -f "$f.tmp" "$f"; } 2>/dev/null || rm -f "$f.tmp" 2>/dev/null || true
+  fi
+  for k in $low; do                                   # the running caps: raised whenever below, written drop-in or not
+    sysctl -q -w "net.core.$k=$want" >/dev/null 2>&1 || true
+    cur="$(cat "/proc/sys/net/core/$k" 2>/dev/null)" || cur=""   # read back: a read-only /proc/sys no-ops in silence
+    case "$cur" in ''|*[!0-9]*) cur=0;; esac
+    if [ "$cur" -ge "$want" ]; then TURN_SOCK_BUF_CHANGED=1; else TURN_SOCK_BUF_LOW=1; fi
+  done
   return 0
 }
 

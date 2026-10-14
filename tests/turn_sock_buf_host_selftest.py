@@ -9,18 +9,22 @@ host's — so it warned on every start, and its "wrote … survives a reboot" li
       call it, against a stand-in /proc/sys and /etc/sysctl.d (sysctl stubbed onto it): sized as swg-noded's
       _turn_sock_target for up to four listeners — udp_mem's ceiling / 8 between swg-noded's own TURN_SOCK_BUF_MIN and
       _MAX (read from swg-noded, not copied), the floor when udp_mem cannot be read; both keys written and raised; a
-      second run does nothing; a key the host lacks (a non-init netns) or an unwritable /etc/sysctl.d never aborts the
-      script and prints nothing — the running caps are still raised
+      second run does nothing; a host without the keys (a non-init netns) gets no drop-in naming them (systemd-sysctl
+      would fail on it every boot) and no claim; an unwritable /etc/sysctl.d never aborts the script and prints nothing —
+      the running caps are still raised; a raise that does not take (read back) is reported LOW, never "raised"; a
+      drop-in rewritten only for its header is no raise
   [2] the drop-in holds the size, as swg-noded's does; the running cap is only raised — a higher value set now is left
       alone (and not persisted); a drop-in already right with a running cap below it is raised again (a later sysctl
       file or tool lowered it)
-  [3] the call sites: install-docker.sh's node/master networking step and update.sh's node-bearing Docker profiles
+  [3] the call sites: install-docker.sh's node/master networking step and update.sh's node-bearing Docker profiles,
+      each saying "raised" only for a raise and that the caps could not be raised when one did not take
   [4] swg-noded in a container names the host fix (the update, or sysctl -w on the host) and never persists into its
       own /etc; a bare-metal node still persists
 
 Run: python3 tests/turn_sock_buf_host_selftest.py   (0 = pass)
      --perturb          the helper lowers a running cap set higher → RED in [2]
      --perturb-persist  swg-noded persists inside a container again → RED in [4]
+     --perturb-readback a raise is claimed without reading the cap back → RED in [1]
 """
 import atexit, json, os, re, shutil, subprocess, sys, tempfile
 
@@ -28,6 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
 PERTURB_PERSIST = "--perturb-persist" in sys.argv
+PERTURB_READBACK = "--perturb-readback" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -47,15 +52,18 @@ common = open(os.path.join(ROOT, "lib", "common.sh"), encoding="utf-8").read()
 m = re.search(r"^turn_sock_buf_host\(\)\{.*?^\}\n", common, re.S | re.M)
 fn = m.group(0) if m else ""
 if PERTURB:
-    fn = plant(fn, '    [ "$cur" -lt "$want" ] && low="$low $k"\n', '    low="$low $k"\n', "a running cap set higher lowered")
+    fn = plant(fn, '    keys="$keys $k"; [ "$cur" -lt "$want" ] && low="$low $k"\n', '    keys="$keys $k"; low="$low $k"\n', "a running cap set higher lowered")
+if PERTURB_READBACK:
+    fn = plant(fn, '    if [ "$cur" -ge "$want" ]; then TURN_SOCK_BUF_CHANGED=1; else TURN_SOCK_BUF_LOW=1; fi\n',
+               '    TURN_SOCK_BUF_CHANGED=1\n', "a raise claimed without reading it back")
 PROC, ETC, BIN = os.path.join(TMP, "proc"), os.path.join(TMP, "etc"), os.path.join(TMP, "bin")
 fn = fn.replace("/proc/sys/", PROC + "/").replace("/etc/sysctl.d", ETC)
 os.makedirs(BIN)
-open(os.path.join(BIN, "sysctl"), "w").write('#!/bin/sh\necho "$*" >> "%s/sysctl.calls"\nkv="$3"; k="${kv%%%%=*}"; k="${k#net.core.}"\n'
-                                             'printf "%%s\\n" "${kv#*=}" > "%s/net/core/$k"\n' % (TMP, PROC))
+open(os.path.join(BIN, "sysctl"), "w").write('#!/bin/sh\necho "$*" >> "%s/sysctl.calls"\n[ -e "%s/ro" ] && exit 1\nkv="$3"; k="${kv%%%%=*}"; k="${k#net.core.}"\n'
+                                             'printf "%%s\\n" "${kv#*=}" > "%s/net/core/$k"\n' % (TMP, TMP, PROC))
 os.chmod(os.path.join(BIN, "sysctl"), 0o755)
 
-def run(udp_mem, rmem=212992, wmem=212992, fresh=True, ro_etc=False):
+def run(udp_mem, rmem=212992, wmem=212992, fresh=True, ro_etc=False, ro_proc=False):
     if fresh:
         shutil.rmtree(PROC, True); shutil.rmtree(ETC, True)
         with __import__("contextlib").suppress(FileNotFoundError):
@@ -70,10 +78,14 @@ def run(udp_mem, rmem=212992, wmem=212992, fresh=True, ro_etc=False):
             os.remove(PROC + "/net/core/" + k)
     if ro_etc:
         os.makedirs(ETC, exist_ok=True); os.chmod(ETC, 0o555)
-    out = subprocess.run(["bash", "-c", "set -euo pipefail\n" + fn + '\nif false; then :; else turn_sock_buf_host; fi; echo "changed=$TURN_SOCK_BUF_CHANGED"'],
+    if ro_proc:
+        open(os.path.join(TMP, "ro"), "w").close()
+    out = subprocess.run(["bash", "-c", "set -euo pipefail\n" + fn + '\nif false; then :; else turn_sock_buf_host; fi; echo "changed=$TURN_SOCK_BUF_CHANGED low=$TURN_SOCK_BUF_LOW"'],
                          capture_output=True, text=True, env=dict(os.environ, PATH=BIN + ":" + os.environ["PATH"]))
     if ro_etc:
         os.chmod(ETC, 0o755)
+    with __import__("contextlib").suppress(FileNotFoundError):
+        os.remove(os.path.join(TMP, "ro"))
     run.err = out.stderr.strip()
     conf = ETC + "/99-swg-turn.conf"
     body = open(conf).read() if os.path.exists(conf) else ""
@@ -92,9 +104,9 @@ check("[1] the helper's bounds and divisor are swg-noded's (TURN_SOCK_BUF_MIN/MA
       "want=%d" % nmin in fn and "-gt %d ] && want=%d" % (nmax, nmax) in fn and "-lt %d ] && want=%d" % (nmin, nmin) in fn
       and "pages * 4096 / 8 " in fn and "max(8, 2 * max(1, int(listeners or 1)))" in nd, (nmin, nmax))
 check("[1] svo-im's udp_mem (89124 pages) → both caps 24 MiB, written and raised",
-      v == {"rmem_max": nmax, "wmem_max": nmax} and o == "changed=1" and run.live == v and "-w net.core.wmem_max" in calls, (o, v, calls))
+      v == {"rmem_max": nmax, "wmem_max": nmax} and o == "changed=1 low=0" and run.live == v and "-w net.core.wmem_max" in calls, (o, v, calls))
 o2, v2, calls2 = run("44562 59418 89124", 25165824, 25165824, fresh=False)
-check("[1] a second run writes nothing (changed=0, no sysctl)", o2 == "changed=0" and calls2 == calls, (o2, calls2))
+check("[1] a second run writes nothing (changed=0, no sysctl)", o2 == "changed=0 low=0" and calls2 == calls, (o2, calls2))
 o, v, _ = run("10000 15000 20000")
 check("[1] a small box: udp_mem's ceiling / 8 (20000 pages → 10240000)", v == {"rmem_max": 10240000, "wmem_max": 10240000}, v)
 o, v, _ = run("2000 3000 4000")
@@ -102,11 +114,22 @@ check("[1] a tiny box: the 4 MiB floor", v == {"rmem_max": 4194304, "wmem_max": 
 o, v, _ = run(None)
 check("[1] udp_mem unreadable: the floor, not the maximum", v == {"rmem_max": 4194304, "wmem_max": 4194304}, v)
 o, v, _ = run("44562 59418 89124", rmem=None, wmem=None)
-check("[1] no net.core keys on this host (a non-init netns): set -e survives, nothing printed, the drop-in still written",
-      o == "changed=1" and not run.err and v.get("wmem_max") == 25165824, (o, run.err))
-o, v, calls = run("44562 59418 89124", ro_etc=True)
-check("[1] /etc/sysctl.d unwritable: set -e survives, nothing printed, the running caps still raised",
-      o == "changed=1" and not run.err and not v and run.live == {"rmem_max": 25165824, "wmem_max": 25165824}, (o, run.err, run.live))
+check("[1] no net.core keys on this host (a non-init netns): set -e survives, nothing printed, no drop-in, no claim",
+      o == "changed=0 low=0" and not run.err and not os.path.exists(ETC + "/99-swg-turn.conf"), (o, run.err, v))
+if os.geteuid() == 0:
+    print("  SKIP [1] /etc/sysctl.d unwritable — root ignores the directory mode this stands in with")
+else:
+    o, v, calls = run("44562 59418 89124", ro_etc=True)
+    check("[1] /etc/sysctl.d unwritable: set -e survives, nothing printed, the running caps still raised",
+          o == "changed=1 low=0" and not run.err and not v and run.live == {"rmem_max": 25165824, "wmem_max": 25165824}, (o, run.err, run.live))
+o, v, calls = run("44562 59418 89124", ro_proc=True)
+check("[1] a raise that does not take (read back 212992): reported LOW, never \"raised\"",
+      o == "changed=0 low=1" and run.live == {"rmem_max": 212992, "wmem_max": 212992}, (o, run.live))
+run("44562 59418 89124")
+open(ETC + "/99-swg-turn.conf", "w").write("# hand-written on svo-im\nnet.core.rmem_max = 25165824\nnet.core.wmem_max = 25165824\n")
+o, v, calls = run("44562 59418 89124", 25165824, 25165824, fresh=False)
+check("[1] a drop-in rewritten only for its header is no raise (nothing printed as raised)", o == "changed=0 low=0"
+      and v == {"rmem_max": 25165824, "wmem_max": 25165824}, (o, v))
 
 print("\n[2] only raises")
 o, v, calls = run("44562 59418 89124", rmem=268435456)
@@ -116,17 +139,18 @@ check("[2] a running 256 MiB rmem_max is left alone and not persisted (the drop-
 run("44562 59418 89124")
 o, v, calls = run("44562 59418 89124", rmem=212992, wmem=212992, fresh=False)
 check("[2] the drop-in already right, the running caps lowered since (a later sysctl file): raised again",
-      run.live == {"rmem_max": 25165824, "wmem_max": 25165824} and o == "changed=1", (run.live, o))
+      run.live == {"rmem_max": 25165824, "wmem_max": 25165824} and o == "changed=1 low=0", (run.live, o))
 
 print("\n[3] the call sites")
 inst = open(os.path.join(ROOT, "install-docker.sh"), encoding="utf-8").read()
 upd = open(os.path.join(ROOT, "update.sh"), encoding="utf-8").read()
 blk = inst[inst.find('if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then'):inst.find("# ── turn-proxy management")]
-check("[3] install-docker.sh: the node/master networking step raises them (host and bridge alike)",
-      "else turn_sock_buf_host;" in blk and blk.count("turn_sock_buf_host") == 1, "")
+check("[3] install-docker.sh: the node/master networking step raises them (host and bridge alike), and says when it could not",
+      "  else turn_sock_buf_host\n" in blk and blk.count("turn_sock_buf_host") == 1
+      and '[ "$TURN_SOCK_BUF_LOW" = 1 ] && warn "UDP socket-buffer caps could not be raised' in blk, "")
 case = upd[upd.find('  case "$prof" in node|master|host-node)'):upd.find("  # migrate existing docker panels")]
 check("[3] update.sh: every node-bearing Docker profile, so svo-im-like nodes are healed by an update",
-      "      turn_sock_buf_host" in case, "")
+      "      turn_sock_buf_host" in case and '[ "$TURN_SOCK_BUF_LOW" = 1 ] && note "UDP socket-buffer caps could not be raised' in case, "")
 
 print("\n[4] swg-noded in a container")
 if PERTURB_PERSIST:
@@ -140,9 +164,9 @@ check("[4] …and a container never persists into its own /etc; bare metal still
 
 if FAILS:
     print("\n%d FAIL" % len(FAILS))
-    if PERTURB or PERTURB_PERSIST:
+    if PERTURB or PERTURB_PERSIST or PERTURB_READBACK:
         print("PERTURB OK — %d check(s) went red" % len(FAILS)); sys.exit(0)
     sys.exit(1)
 print("\nALL PASS")
-if PERTURB or PERTURB_PERSIST:
+if PERTURB or PERTURB_PERSIST or PERTURB_READBACK:
     print("PERTURB NOT CAUGHT — nothing went red"); sys.exit(1)
