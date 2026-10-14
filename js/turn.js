@@ -660,7 +660,7 @@ export function TurnManageSheet({ node, tp }) {
       <div>${T("Changing any field rewrites the unit's ExecStart on the node and restarts it.")}</div>
       <div>${Trich("The parameters below are placed verbatim after `-connect` — wrap key, wrap mode, any flags the fork supports.")}</div>
     </div>
-    <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${turnFork(svc)} autocomplete="off"/></div>
+    <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${forkLabel(turnFork(svc))} autocomplete="off"/></div>
     <div class="row2">
       <div class="field"><label>${T("Endpoint host / IP")}</label>
         <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>

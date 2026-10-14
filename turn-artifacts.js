@@ -150,7 +150,7 @@
   }
 
   // ── a fork's NAME for an end user ({fork} in a server-name template): each page hands its catalog's (q189 HE-8 —
-  // "samosvalishe 56005" was the raw id of a fork renamed hackdiaz-dev). Identity until a page sets it.
+  // "samosvalishe 56005" was the raw id of a fork renamed hack-diaz). Identity until a page sets it.
   var forkName = function (f) { return f; };
 
   // ── fork id from a service name (vk-turn-proxy-<fork>-<port>) ──
@@ -419,7 +419,7 @@
   var CLIENT_META = {
     wingsv:   { app: "WINGS V",        platform: "Android", author: "WINGS-N" },
     anton48:  { app: "VK TURN Proxy",  platform: "iOS",     author: "anton48" },
-    freeturn: { app: "FreeTurn",       platform: "Android", author: "hackdiaz-dev" },
+    freeturn: { app: "FreeTurn",       platform: "Android", author: "hack-diaz" },
     vktgz:    { app: "VK TURN Proxy",  platform: "Android", author: "MYSOREZ" }
   };
   // A server name may be a TEMPLATE. The sheet that sets it is per (fork, OS), so one literal string names every

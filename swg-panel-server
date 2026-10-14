@@ -14998,7 +14998,7 @@ TURN_SERVERS = {
     # then "поддержка amneziawg 3.1" (v3.3.0) and "собственный iface для awg" (v3.3.2). ⚠️ This is a capability claim about
     # SOMEBODY ELSE'S binary, and there is no per-fork version gate yet ([[client-version-compat-matrix]] is designed, not
     # built) — so an operator still running < 3.2.0 is offered AWG interfaces this list now says it can carry.
-    "samosvalishe": {"label": "hackdiaz-dev", "owner": "hackdiaz-dev/free-turn-proxy",   "wrap": "-obf-profile rtpopus", "keyflag": "-obf-key",  "protocols": ["wg", "awg"], "color": {"dark": "#E0A85F", "light": "#C07A1E"}, "clients": ["freeturn", "mysorez", "vkturnproxy", "sidecar"],   "reload": "restart",
+    "samosvalishe": {"label": "hack-diaz", "owner": "hackdiaz-dev/free-turn-proxy",   "wrap": "-obf-profile rtpopus", "keyflag": "-obf-key",  "protocols": ["wg", "awg"], "color": {"dark": "#E0A85F", "light": "#C07A1E"}, "clients": ["freeturn", "mysorez", "vkturnproxy", "sidecar"],   "reload": "restart",
                      "settings": [{"key": "obf_profile", "flag": "-obf-profile", "type": "enum", "values": ["none", "rtpopus", "rtpopus2", "rtpopus3"], "default": "rtpopus", "label": "Obfuscation profile", "help": "rtpopus* dress the traffic as an RTP/Opus call; none = plain. Must match the FreeTurn client."},
                                   {"key": "obf_key", "flag": "-obf-key", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Obfuscation key", "help": "64 hex chars — must match the FreeTurn client."}],
                      "client_settings": [{"key": "n", "type": "int", "default": "", "label": "Streams", "help": "Parallel TURN streams (-n). Blank = the app's default (10)."},

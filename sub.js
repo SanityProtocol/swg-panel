@@ -166,7 +166,7 @@
   var FORK_ORDER_FALLBACK = ["cacggghp", "WINGS-N", "samosvalishe", "Moroka8", "anton48"];
   function turnServers() { return (_lastData && _lastData.turn_catalog && _lastData.turn_catalog.servers) || null; }
   function turnServer(f) { var s = turnServers() || []; for (var i = 0; i < s.length; i++) if (s[i].id === f) return s[i]; return null; }
-  // A fork's shown name is its catalog label, never the internal id (they differ where a fork changed hands: samosvalishe → hackdiaz-dev).
+  // A fork's shown name is its catalog label, never the internal id (they differ where a fork changed hands: samosvalishe → hack-diaz).
   function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }
   if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);   // {fork} in a server name is the name (q189 HE-8)
   function forkRank(f) { var s = turnServers(); if (s && s.length) { for (var i = 0; i < s.length; i++) if (s[i].id === f) return i; return s.length; } var j = FORK_ORDER_FALLBACK.indexOf(f); return j < 0 ? FORK_ORDER_FALLBACK.length : j; }

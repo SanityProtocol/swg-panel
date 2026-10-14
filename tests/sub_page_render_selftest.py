@@ -29,7 +29,7 @@ Fixture — node q-node, three deployments per device:
       (Cara's office router carries 192.168.50.0/24 on the node, open to everyone there), not a blocked device's page (Anna's
       old tablet) — and the networks page's heading opens the picker instead, as a device's title does. Control: the same
       subscription on a desktop window shows the one Connections button in its header
-  [6] a fork is named by its catalog label, never its id: the samosvalishe proxy's cell says hackdiaz-dev (its repos moved,
+  [6] a fork is named by its catalog label, never its id: the samosvalishe proxy's cell says hack-diaz (its repos moved,
       the id stays in every node's unit names), and no cell on any OS or language says samosvalishe
 
 Needs google-chrome (or $CHROME) and node (seals the fixture secret). A missing browser is a FAIL, never a skip: a gate that
@@ -358,12 +358,12 @@ try:
     check("[2] the turn-proxy cell's author word is translated wherever one renders (RU)", tp and all(" by " not in c["by"] for c in tp),
           [c["by"] for os_ in ALL_OS for c in turn_cells(renders[(os_, "ru")]) if c["by"]])
 
-    # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hackdiaz-dev carries them
+    # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hack-diaz (GitHub: hackdiaz-dev) carries them
     # on, but the id stays (it is in every node's unit names) — so the id must never reach the visitor
     fp = [(os_, lang, c) for os_ in ALL_OS for lang in ("en", "ru") for c in turn_cells(renders[(os_, lang)])
           if (c["role"] or "") in ("AWG", "WG")]
-    check("[6] the samosvalishe-fronted cell's badge names hackdiaz-dev on every OS and language",
-          fp and all("hackdiaz-dev" in (c["tag"] or "") for _o, _l, c in fp), [(o, l, c["tag"]) for o, l, c in fp])
+    check("[6] the samosvalishe-fronted cell's badge names hack-diaz on every OS and language",
+          fp and all("hack-diaz" in (c["tag"] or "") for _o, _l, c in fp), [(o, l, c["tag"]) for o, l, c in fp])
     leak = [(os_, lang, c["text"][:120]) for os_ in ALL_OS for lang in ("en", "ru") for p in renders[(os_, lang)]["pages"]
             for c in p["cells"] if "samosvalishe" in (c["text"] or "")]
     check("[6] …and no cell anywhere says samosvalishe", not leak, leak[:3])

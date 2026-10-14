@@ -16,7 +16,8 @@
  *     video call, nested AWG, a proxy client): it says web browsing and video calls (round 2).
  * [3] V-FEAT-A F5 — the raw fork id "samosvalishe" on operator screens (the node's badge row, the manage sheet's title and its
  *     gear's tooltip; also the pending card, the delete sheet, the front tag's tooltip, the "Connected via" bubbles, a device's
- *     transport row and the flow map's hover). Every one now prints forkLabel — "hackdiaz-dev" — and keeps the id for its
+ *     transport row and the flow map's hover; the manage sheet's Title placeholder, which an untitled proxy goes by — the operator,
+ *     2026-10-14). Every one now prints forkLabel — "hack-diaz" — and keeps the id for its
  *     colour; turnLabel (the id) is used nowhere outside turn-catalog.js.
  * [4] V-FEAT-A F6 — the Disguise picker said a restart brings devices back "within a few seconds". Measured 15.2–15.4 s (the
  *     devices still on their old set come back on WireGuard's own rekey after silence): it now says about 15 seconds.
@@ -33,7 +34,7 @@
  *
  * The real js/i18n.js with the real Russian catalog; the real modules (screen-settings, screen-nodes, ui, iface, mimic).
  * Run: node tests/spa_screen_claims_selftest.mjs
- *      --perturb <offhint | nixosoff | confirm | p2pblock | p2proute | games | tag | bubble | title | fewsec | artifactname | subhook | p2pold | nixhint>   one fix undone → RED
+ *      --perturb <offhint | nixosoff | confirm | p2pblock | p2proute | games | tag | bubble | title | placeholder | fewsec | artifactname | subhook | p2pold | nixhint>   one fix undone → RED
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -56,6 +57,7 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   tag: ["js/screen-nodes.js", '" muted" : "")}>${forkLabel(turnFork(tp.service))}</span>`;', '" muted" : "")}>${turnFork(tp.service)}</span>`;'],
   bubble: ["js/ui.js", "const tf = turnFork(r.viaTurn), tn = forkLabel(tf), tc = turnColor(tf),", "const tf = turnFork(r.viaTurn), tn = tf, tc = turnColor(tf),"],
   title: ["js/turn.js", "turnSheetTitle(forkLabel(turnFork(svc)), title)", "turnSheetTitle(turnFork(svc), title)"],
+  placeholder: ["js/turn.js", "placeholder=${forkLabel(turnFork(svc))} autocomplete", "placeholder=${turnFork(svc)} autocomplete"],
   artifactname: ["turn-artifacts.js", 'return k === "fork" ? String(forkName(String(fork || "")) || fork || "") :',
                  'return k === "fork" ? String(fork || "") :'],
   subhook: ["sub.js", "  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);", ""],
@@ -172,12 +174,12 @@ check("[2] no other sentence on any screen says programs running on the server a
 
 // ── [3] fork names ──────────────────────────────────────────────────────────────────────────────────────────────────────
 console.log("\n[3] a turn proxy's fork is shown by its name, never by the id in its service name (V-FEAT-A F5)");
-const SVC = "vk-turn-proxy-samosvalishe-51823", LBL = "hackdiaz-dev";
-check("[3] the catalog's fallback names samosvalishe hackdiaz-dev (what every check below expects)",
+const SVC = "vk-turn-proxy-samosvalishe-51823", LBL = "hack-diaz";
+check("[3] the catalog's fallback names samosvalishe hack-diaz (what every check below expects)",
       TC.forkLabel("samosvalishe") === LBL && TC.turnFork(SVC) === "samosvalishe", TC.forkLabel("samosvalishe"));
 const shows = v => { const all = flat(v) + " " + attrs(v).join(" "); return all.includes(LBL) && !/samosvalishe/i.test(flat(v)); };
 const tag = SN.TurnTag("n1", { service: SVC, listen: "0.0.0.0:51823" });
-check("[3] the node's badge row: «hackdiaz-dev», coloured by the fork's id (tf-samosvalishe)",
+check("[3] the node's badge row: «hack-diaz», coloured by the fork's id (tf-samosvalishe)",
       flat(tag) === LBL && /\btf-samosvalishe\b/.test(tag.props.class), [flat(tag), tag.props.class]);
 const tc = TC.turnColor("samosvalishe");
 const dot = UI.connDot({ online: true, viaTurn: SVC, node: "n1" });
@@ -190,6 +192,8 @@ const TU = JS["turn.js"];
 check("[3] the manage sheet's title and its gear's tooltip name the fork by forkLabel",
       TU.includes("turnSheetTitle(forkLabel(turnFork(svc)), title)") && TU.includes('T("Version, rollback & server defaults for {v1}", { v1: forkLabel(turnFork(svc)) })')
       && !/turnSheetTitle\(turnFork\(/.test(TU), "");
+check("[3] …and its Title field's placeholder, the name an untitled proxy goes by",
+      TU.includes('placeholder=${forkLabel(turnFork(svc))} autocomplete="off"') && !/placeholder=\$\{turnFork\(/.test(TU), "");
 check("[3] …and so do the delete sheet and a pending card", TU.includes("<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>")
       && TU.includes('<span class="ifname">${forkLabel(turnFork(s))}</span>'), "");
 check("[3] …the front tag's tooltip, a device's transport row and the flow map's hover",
@@ -229,7 +233,7 @@ const nameOf = () => { const s5 = JSON.stringify(SWT.artifact(CONF5, { service: 
   try { return JSON.parse(Buffer.from(decodeURIComponent(m5[1]).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")).name; }
   catch (e) { return "(undecodable) " + s5.slice(0, 120); } };
 if (SWT.setForkLabel) SWT.setForkLabel(TC.forkLabel);       // what each page does with its own catalog
-check("[5] a FreeTurn user's server name from \"{fork} {port}\" reads «hackdiaz-dev 56005»", nameOf() === "hackdiaz-dev 56005", nameOf());
+check("[5] a FreeTurn user's server name from \"{fork} {port}\" reads «hack-diaz 56005»", nameOf() === "hack-diaz 56005", nameOf());
 const SUB = read("sub.js");
 check("[5] both pages hand turn-artifacts their catalog's name (the sub page, the SPA's turnArtifact)",
       SUB.includes("  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);")

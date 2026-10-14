@@ -59,7 +59,7 @@ subscription and no one else sitting in the middle of your traffic.
 
 - **One page to run everything.** Add servers, add users, hand out access — all from the web panel.
 - **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
-- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [hackdiaz-dev](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys. [How to set them up ↓](#subscriptions--access-control)
+- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [hack-diaz](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys. [How to set them up ↓](#subscriptions--access-control)
 - **Suspend access in one click.** Block a person — or just one of their devices — instantly, without deleting them. Their tunnels stop and their subscription page goes dark; unblock to restore with the same keys, nothing to re-issue.
 - **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
 - **Single or multiple servers.** Put servers in different countries; a person can fail over between them.
@@ -554,7 +554,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [hackdiaz-dev](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe — proxies installed from samosvalishe keep running, and now update from hackdiaz-dev)
+- [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe — proxies installed from samosvalishe keep running, and now update from hack-diaz's repository)
 - [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
 - [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
