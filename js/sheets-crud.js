@@ -187,10 +187,10 @@ export function TargetFrontBadge({ node, iface, peer, dim }) {
     const cfg = (nrec.wdtt_cfg || {})[iface] || {};
     const live = ((Store.stats[node] || {}).wdtt || []).find(w => w && w.iface === iface) || {};
     const fork = cfg.fork || live.fork || "";
-    const label = shownTitle("w|" + node + "|" + iface, String(cfg.title || live.title || "").trim()) || fork;
+    const label = shownTitle("w|" + node + "|" + iface, String(cfg.title || live.title || "").trim()) || forkLabel(fork);
     if (!label) return null;
     const col = turnColor(fork) || WDTT_COLOR;
-    return html`<span class=${"tg tgt-front" + (dim ? " dim" : "")} style=${"--tgc:" + col} title=${T("WDTT server") + (fork ? " · " + fork : "")}>${label}</span>`;
+    return html`<span class=${"tg tgt-front" + (dim ? " dim" : "")} style=${"--tgc:" + col} title=${T("WDTT server") + (fork ? " · " + forkLabel(fork) : "")}>${label}</span>`;
   }
   const tps = turnProxiesFor(node, iface);
   if (!tps.length) return null;
@@ -2050,7 +2050,7 @@ export function RebuildOutcome({ d, preview }) {
   const addrLabel = a => {
     const p = String(a.path || "").split(".");
     const port = portOfAddr(a.from);
-    const svc = n => String(n || "").replace(/^vk-turn-proxy-/, "").replace(/-\d+$/, "");
+    const svc = n => forkLabel(turnFork(String(n || "")));   // the fork's name, never the id in its service name
     if (p[0] === "turn" && p.length >= 3) return svc(p.slice(1, -1).join(".")) + port + " " + T("word|endpoint");
     if ((p[0] === "wdtt" || p[0] === "csqtt") && p.length >= 3) return p[1] + port + " " + T("word|endpoint");
     if (p[0] === "ifaces" && p[2] === "endpoint_host") return p[1] + port + " " + T("word|endpoint");

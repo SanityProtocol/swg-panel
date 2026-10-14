@@ -5104,6 +5104,8 @@ export const STR = {
   "Queued — the node creates these one at a time": "В очереди — нода создаёт их по одному",
   "Listen IP is required.": "Нужен адрес прослушивания.",
   "Forward-to must be host:port.": "Пересылать нужно в виде хост:порт.",
+  "That interface is no longer on this node — pick another.": "Этого интерфейса больше нет на ноде — выберите другой.",
+  "{v1} · CLI client (desktop)": "{v1} · CLI-клиент (компьютер)",
   "Failed to save the title.": "Не удалось сохранить название.",
   "Random 64-hex key copied — paste it into the parameters":
     "Случайный ключ из 64 знаков скопирован — вставьте его в параметры",

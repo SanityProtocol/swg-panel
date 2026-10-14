@@ -123,7 +123,7 @@ swgPanel — это панель управления для запуска со
   <a href="screenshots/sub-wireguard.jpg"><img src="screenshots/sub-wireguard.jpg" alt="Подписка WireGuard" width="150"></a>
   <a href="screenshots/sub-amneziawg.jpg"><img src="screenshots/sub-amneziawg.jpg" alt="Подписка AmneziaWG" width="150"></a>
   <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="Подписка WINGS-N" width="150"></a>
-  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="Подписка samosvalishe" width="150"></a>
+  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="Подписка hack-diaz" width="150"></a>
   <a href="screenshots/sub-anton48.jpg"><img src="screenshots/sub-anton48.jpg" alt="Подписка anton48" width="150"></a>
   <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="Подписка cacggghp" width="150"></a>
 </p>
@@ -581,7 +581,7 @@ swgPanel использует несколько прекрасных проек
 
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — оригинал
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (ранее samosvalishe — прокси, установленные из samosvalishe, продолжают работать и теперь обновляются из репозитория hack-diaz)
+- [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (ранее samosvalishe — прокси, установленные из samosvalishe, продолжают работать и теперь обновляются из его нового репозитория, hackdiaz-dev/free-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — самодостаточный VPN-сервер, владеющий своими ключами, который панель запускает как интерфейс, и приложения, которыми подключаются люди:

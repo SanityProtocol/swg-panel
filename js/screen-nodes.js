@@ -699,7 +699,7 @@ export function NodeDetail({ node: rawName }) {
               : html`<span class="tg tg-cand" title=${T("On the node, not managed by the panel")}><${Ic} i="warn"/>${T("tag|orphan")}</span>`}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${d.config_dir}</span></div>
-            <div class="ifrow"><span class="l">${T("Fork")}</span><span class="r">${d.fork || html`<span class="faint">${T("value|unknown")}</span>`}</span></div>
+            <div class="ifrow"><span class="l">${T("Fork")}</span><span class="r">${d.fork ? forkLabel(d.fork) : html`<span class="faint">${T("value|unknown")}</span>`}</span></div>
             <div class="ifrow"><span class="l">${T("Ports")}</span><span class="r addr">${d.listen_port
               ? html`${d.listen_port}${d.wg_port ? " · " + d.wg_port : ""}`
               : html`<span class="faint">${T("set on adopt")}</span>`}</span></div>

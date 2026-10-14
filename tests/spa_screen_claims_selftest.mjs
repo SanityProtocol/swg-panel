@@ -34,7 +34,7 @@
  *
  * The real js/i18n.js with the real Russian catalog; the real modules (screen-settings, screen-nodes, ui, iface, mimic).
  * Run: node tests/spa_screen_claims_selftest.mjs
- *      --perturb <offhint | nixosoff | confirm | p2pblock | p2proute | games | tag | bubble | title | placeholder | fewsec | artifactname | subhook | p2pold | nixhint>   one fix undone → RED
+ *      --perturb <offhint | nixosoff | confirm | p2pblock | p2proute | games | tag | bubble | title | placeholder | restore | frontwdtt | dormant | dlname | logsrc | fewsec | artifactname | subhook | p2pold | nixhint>   one fix undone → RED
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -57,7 +57,12 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   tag: ["js/screen-nodes.js", '" muted" : "")}>${forkLabel(turnFork(tp.service))}</span>`;', '" muted" : "")}>${turnFork(tp.service)}</span>`;'],
   bubble: ["js/ui.js", "const tf = turnFork(r.viaTurn), tn = forkLabel(tf), tc = turnColor(tf),", "const tf = turnFork(r.viaTurn), tn = tf, tc = turnColor(tf),"],
   title: ["js/turn.js", "turnSheetTitle(forkLabel(turnFork(svc)), title)", "turnSheetTitle(turnFork(svc), title)"],
-  placeholder: ["js/turn.js", "placeholder=${forkLabel(turnFork(svc))} autocomplete", "placeholder=${turnFork(svc)} autocomplete"],
+  placeholder: ["js/turn.js", "placeholder=${forkLabel(fork)} autocomplete", "placeholder=${fork} autocomplete"],
+  restore: ["js/sheets-crud.js", "const svc = n => forkLabel(turnFork(String(n || \"\")));", "const svc = n => turnFork(String(n || \"\"));"],
+  frontwdtt: ["js/sheets-crud.js", 'String(cfg.title || live.title || "").trim()) || forkLabel(fork);', 'String(cfg.title || live.title || "").trim()) || fork;'],
+  dormant: ["js/screen-nodes.js", "${d.fork ? forkLabel(d.fork) :", "${d.fork ? d.fork :"],
+  dlname: ["js/peer-ui.js", 'base + "-" + forkLabel(a.fork) +', 'base + "-" + a.fork +'],
+  logsrc: ["js/logview.js", 'if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));', 'if (false) return "";'],
   artifactname: ["turn-artifacts.js", 'return k === "fork" ? String(forkName(String(fork || "")) || fork || "") :',
                  'return k === "fork" ? String(fork || "") :'],
   subhook: ["sub.js", "  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);", ""],
@@ -192,8 +197,24 @@ const TU = JS["turn.js"];
 check("[3] the manage sheet's title and its gear's tooltip name the fork by forkLabel",
       TU.includes("turnSheetTitle(forkLabel(turnFork(svc)), title)") && TU.includes('T("Version, rollback & server defaults for {v1}", { v1: forkLabel(turnFork(svc)) })')
       && !/turnSheetTitle\(turnFork\(/.test(TU), "");
+// any spelling of the name (forkLabel(fork) / forkLabel(turnFork(svc))); and no Title field anywhere takes a raw fork id
+const RAWPH = /placeholder=\$\{(?:turnFork\([^)]*\)|fork|f\.id|d\.fork|w\.fork)\}/;
 check("[3] …and its Title field's placeholder, the name an untitled proxy goes by",
-      TU.includes('placeholder=${forkLabel(turnFork(svc))} autocomplete="off"') && !/placeholder=\$\{turnFork\(/.test(TU), "");
+      /placeholder=\$\{forkLabel\((?:fork|turnFork\(svc\))\)\}/.test(TU) && !Object.values(JS).some(src => RAWPH.test(src)),
+      Object.entries(JS).filter(([, src]) => RAWPH.test(src)).map(([f]) => f));
+// the review of 356a08f9 (F5, F6, F9–F13): the other places an id still stood in for the name
+const SC = JS["sheets-crud.js"], PU = JS["peer-ui.js"], IFJ = JS["iface.js"], LVJ = JS["logview.js"], SNJ = JS["screen-nodes.js"];
+check("[3] …Restore / Migrate's address rows name a turn proxy by forkLabel (F5)",
+      SC.includes("const svc = n => forkLabel(turnFork(String(n || \"\")));"), "");
+check("[3] …an untitled WDTT server's front badge and its tooltip (F11)",
+      SC.includes('String(cfg.title || live.title || "").trim()) || forkLabel(fork);') && SC.includes('(fork ? " · " + forkLabel(fork) : "")'), "");
+check("[3] …the orphan WDTT card's Fork row (F10)", SNJ.includes("${d.fork ? forkLabel(d.fork) :"), "");
+check("[3] …both adopt sheets' \"Detected …\" hints (F9)",
+      IFJ.includes("{ v1: forkLabel(d.fork) }") && IFJ.includes("{ v1: forkLabel(w.fork), v2:"), "");
+check("[3] …a turn config's downloaded file name (F12) and a CLI config's title, translated (F6)",
+      PU.includes('base + "-" + forkLabel(a.fork) +') && PU.includes('T("{v1} · CLI client (desktop)", { v1: forkLabel(a.fork) })'), "");
+check("[3] …Settings → Logs: a VK turn proxy by its fork's name and port, in the picker and on every line (F13)",
+      LVJ.includes('label: kind === "turn" ? vkShown(n) : n') && LVJ.includes('if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));'), "");
 check("[3] …and so do the delete sheet and a pending card", TU.includes("<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>")
       && TU.includes('<span class="ifname">${forkLabel(turnFork(s))}</span>'), "");
 check("[3] …the front tag's tooltip, a device's transport row and the flow map's hover",
@@ -233,7 +254,7 @@ const nameOf = () => { const s5 = JSON.stringify(SWT.artifact(CONF5, { service: 
   try { return JSON.parse(Buffer.from(decodeURIComponent(m5[1]).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")).name; }
   catch (e) { return "(undecodable) " + s5.slice(0, 120); } };
 if (SWT.setForkLabel) SWT.setForkLabel(TC.forkLabel);       // what each page does with its own catalog
-check("[5] a FreeTurn user's server name from \"{fork} {port}\" reads «hack-diaz 56005»", nameOf() === "hack-diaz 56005", nameOf());
+check("[5] a FreeTurn user's server name from \"{fork} {port}\" reads «" + LBL + " 56005»", nameOf() === LBL + " 56005", nameOf());
 const SUB = read("sub.js");
 check("[5] both pages hand turn-artifacts their catalog's name (the sub page, the SPA's turnArtifact)",
       SUB.includes("  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);")

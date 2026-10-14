@@ -415,7 +415,7 @@ export function AdoptDormantWdttSheet({ node, d, nrec }) {
       ? Trich("Ports recovered from its password store — its clients already dial these. The *subnet* is never written to disk, so set that below.")
       : T("Not running, so its ports and subnet can't be read from the server — set them here.")}</div>
     <div class="row2">
-      <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/><div class="hint">${d.fork ? Trich("Detected *{v1}* from its files", { v1: d.fork }) : T("Pick the fork this install is")}</div></div>
+      <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/><div class="hint">${d.fork ? Trich("Detected *{v1}* from its files", { v1: forkLabel(d.fork) }) : T("Pick the fork this install is")}</div></div>
       <div class="field"><label>${T("Interface name")}</label><input class=${nameErr ? "bad" : ""} value=${iface} onInput=${e => setIface(e.target.value)} placeholder="wdtt1"/>${nameErr ? html`<div class="hint err">${nameErr}</div>` : null}</div>
     </div>
     <div class="row2">
@@ -545,7 +545,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
     <div class="row2">
       ${type === "wdtt" ? html`<div class="field"><label>${T("Server fork")}</label>
         <${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/>
-        <div class="hint">${w.fork ? Trich("Detected *{v1}*{v2} — change only if wrong", { v1: w.fork, v2: w.store ? " (" + w.store + ")" : "" }) : T("Pick the fork this server runs")}</div>
+        <div class="hint">${w.fork ? Trich("Detected *{v1}*{v2} — change only if wrong", { v1: forkLabel(w.fork), v2: w.store ? " (" + w.store + ")" : "" }) : T("Pick the fork this server runs")}</div>
       </div>` : null}
       <div class="field"><label>${T("Endpoint host / IP")}</label><${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname"/><div class="hint">${T("What clients dial")}</div></div>
       ${type === "wdtt" ? null

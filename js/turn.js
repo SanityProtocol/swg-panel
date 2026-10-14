@@ -562,7 +562,10 @@ export function TurnManageSheet({ node, tp }) {
   const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
   const hideAwg3 = forkSupportsAwg(fork) && !forkSupportsAwg3(fork) && allIfaces.some(i => i.awg3);
   const conPort = con.includes(":") ? con.slice(con.lastIndexOf(":") + 1) : con;
-  const match = ifaces.find(i => i.port === conPort);
+  const conHost = con.includes(":") ? con.slice(0, con.lastIndexOf(":")) : "";
+  // only a LOCAL target is one of this node's interfaces: "10.0.0.5:51820" is a custom target that happens to share
+  // a port, and must not open as the local wg0 (a Save would have rewritten it to 127.0.0.1)
+  const match = /^(127\.0\.0\.1|localhost)?$/.test(conHost) ? ifaces.find(i => i.port === conPort) : null;
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
   const [custom, setCustom] = useState(con || "127.0.0.1:");
   const [params, setParams] = useState(tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : ""));   // i18n-keys: CLI flags — the operator types these
@@ -602,7 +605,12 @@ export function TurnManageSheet({ node, tp }) {
     if (!/^\d+$/.test(lport.trim())) return fail(T("Listen port must be a number."));
     let connect;
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail(T("Forward-to must be host:port.")); }
-    else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
+    else {
+      const fi = ifaces.find(i => i.name === fwd);
+      if (!fi) return fail(T("That interface is no longer on this node — pick another."));   // left the report while the sheet was open
+      // the interface it already forwards to keeps its saved spelling ("localhost:51820"), so a title edit stays title-only
+      connect = (match && fwd === match.name) ? con : "127.0.0.1:" + fi.port;
+    }
     const newListen = lhost + ":" + lport.trim();
     // title-only change → OPTIMISTIC: a cosmetic panel-side label, so close immediately + save in the background
     // (no status, no node round-trip, the proxy keeps running). Other field changes go the proper pending route.
@@ -629,7 +637,8 @@ export function TurnManageSheet({ node, tp }) {
     copy(Array.from(a, b => b.toString(16).padStart(2, "0")).join(""), T("Random 64-hex key copied — paste it into the parameters"));
   };
   // enable Save only when something would actually change (any field, or the inline client picker) — mirrors save()'s own diff
-  const _mConnect = isCustom ? custom.trim() : (((ifaces.find(i => i.name === fwd)) || {}).port ? "127.0.0.1:" + ifaces.find(i => i.name === fwd).port : (tp.connect || ""));
+  const _mConnect = isCustom ? custom.trim() : (match && fwd === match.name) ? con   // the same rule save() applies
+    : (((ifaces.find(i => i.name === fwd)) || {}).port ? "127.0.0.1:" + ifaces.find(i => i.name === fwd).port : (tp.connect || ""));
   const turnDirty = (lhost + ":" + lport.trim()) !== (tp.listen || "")
     || _mConnect !== (tp.connect || "")
     || params.trim() !== origParams.trim()
@@ -660,7 +669,7 @@ export function TurnManageSheet({ node, tp }) {
       <div>${T("Changing any field rewrites the unit's ExecStart on the node and restarts it.")}</div>
       <div>${Trich("The parameters below are placed verbatim after `-connect` — wrap key, wrap mode, any flags the fork supports.")}</div>
     </div>
-    <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${forkLabel(turnFork(svc))} autocomplete="off"/></div>
+    <div class="field"><label>${T("col|Title")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${forkLabel(fork)} autocomplete="off"/></div>
     <div class="row2">
       <div class="field"><label>${T("Endpoint host / IP")}</label>
         <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>

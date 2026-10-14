@@ -629,7 +629,9 @@ export function TurnConfigSheet({ peer, t, conf }) {
   const fi = Math.min(selFork, order.length - 1); const fork = order[fi];
   const list = byFork[fork]; const ii = Math.min(inst[fork] || 0, list.length - 1); const cur = list[ii];
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  const allClients = turnClientsFor(fork);   // already compat-matrix-only and compat-ranked (see turnClientsFor); it drops dead pairings such as anton48 + VK-TURN-by-MYSOREZ, matching Settings and the sub page
+  // already compat-matrix-only and compat-ranked (see turnClientsFor); it drops dead pairings such as anton48 + VK-TURN-by-MYSOREZ, matching
+  // Settings and the sub page — and, on an AmneziaWG interface, an app whose own tunnel is WireGuard only (`awg: false`), as the sub page does
+  const allClients = turnClientsFor(fork).filter(c => !(t.type === "awg" && (cmap[c.id] || {}).awg === false));
   const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
   const osList = _OS_TABS.map(([o]) => o).filter(o => allClients.some(c => osOf(c).includes(o)));   // OSes this fork's apps cover
   const curOs = (selOs[fork] && osList.includes(selOs[fork])) ? selOs[fork] : (osList[0] || "");
@@ -692,7 +694,7 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
       ${a.qr ? html`<button class="btn btn-mini" onClick=${() => setView(v => v === "qr" ? "text" : "qr")}><${Ic} i=${qrView ? "doc" : "qr"}/> ${qrView ? T("Show config") : T("Show QR")}</button>` : null}
       <span class="grow"></span>
       <button class="btn btn-mini" disabled=${!ready} onClick=${() => qrView ? copyQrImage(text, T("QR image")) : copy(text, a.uri ? T("Link copied") : T("Config copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
-      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""), a.ext)}><${Ic} i="download"/> ${T("Download .{v1}", { v1: a.ext || "conf" })}</button>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + forkLabel(a.fork) + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""), a.ext)}><${Ic} i="download"/> ${T("Download .{v1}", { v1: a.ext || "conf" })}</button>
     </div>
   </div>`;
 }
@@ -1296,8 +1298,8 @@ export function clientHandoff(cl, cid, qr, os) {
 }
 export function artLabel(a) {
   const m = (typeof SWGTurn !== "undefined" && SWGTurn.clientMeta) ? SWGTurn.clientMeta(a.enc) : null;
-  // no app (the desktop CLI): turn-artifacts composed "<fork id> · CLI client (desktop)" — the id is not a name (forkLabel)
-  if (!m) return a.fork && String(a.label || "").startsWith(a.fork + " ") ? forkLabel(a.fork) + a.label.slice(a.fork.length) : T(a.label || "");
+  // no app (the desktop CLI): turn-artifacts composed "<fork id> · CLI client (desktop)" — the id is not a name (forkLabel), and the words are ours to translate
+  if (!m) return a.fork ? T("{v1} · CLI client (desktop)", { v1: forkLabel(a.fork) }) : T(a.label || "");
   return T("{v1} via {v2} ({v3}) by {v4}", { v1: forkLabel(a.fork), v2: m.app, v3: m.platform + (a.labelMode || ""), v4: forkLabel(m.author) });
 }
 export function wdttArtInput(peer, t) {

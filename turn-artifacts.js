@@ -419,7 +419,7 @@
   var CLIENT_META = {
     wingsv:   { app: "WINGS V",        platform: "Android", author: "WINGS-N" },
     anton48:  { app: "VK TURN Proxy",  platform: "iOS",     author: "anton48" },
-    freeturn: { app: "FreeTurn",       platform: "Android", author: "hack-diaz" },
+    freeturn: { app: "FreeTurn",       platform: "Android", author: "samosvalishe" },   // a fork id, as the others: artLabel names it (forkLabel)
     vktgz:    { app: "VK TURN Proxy",  platform: "Android", author: "MYSOREZ" }
   };
   // A server name may be a TEMPLATE. The sheet that sets it is per (fork, OS), so one literal string names every

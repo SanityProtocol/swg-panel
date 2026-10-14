@@ -33,6 +33,8 @@ Fixture — node q-node, three deployments per device:
       the id stays in every node's unit names), and no cell on any OS or language says samosvalishe
   [7] a WDTT fork's own app is its default (operator, 2026-10-14): the WDTT cell on Android hands out amurcanov's WDTT —
       XXcipherX's app, which stood in for it, is hidden with its deleted repository — and its Start shows the import steps
+  [9] an app whose own tunnel is WireGuard only (VK TURN Proxy on iOS, `awg: false`) is never handed out for an AmneziaWG
+      interface behind a proxy; the WireGuard interface's proxy still offers it; FreeTurn keeps the AmneziaWG one on Android
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): the csqtt server
       runs 2.1.9-4, 2.5.0 is the latest — the CSQTT app's get-app bubble offers v2.1.9 and says it matches this server; La
       Lune (another author's app) and the WDTT cell (a version no resolved release names) keep the latest, as before
@@ -48,6 +50,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-copy       serves a sub.js whose one-tap csqtt Start no longer copies the link → RED on [3]
      --perturb-netswitch  serves a sub.js whose networks page carries a Connections button again → RED on [5]
      --perturb-forkname   serves a sub.js that names a fork by its internal id again → RED on [6]
+     --perturb-awgapp     serves a sub.js that hands VK TURN Proxy to an AmneziaWG interface again → RED on [9]
      --perturb-pin        serves a sub.js that hands out the latest release whatever the server runs → RED on [8]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
@@ -70,7 +73,8 @@ P_NETSW = "--perturb-netswitch" in sys.argv
 P_FORKNAME = "--perturb-forkname" in sys.argv
 P_XXSUB = "--perturb-xxsub" in sys.argv
 P_PIN = "--perturb-pin" in sys.argv
-PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN
+P_AWGAPP = "--perturb-awgapp" in sys.argv
+PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -138,7 +142,9 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                      "p1": {"id": "p1", "user_id": "u1", "title": "laptop", "csqtt_password": "pw1csqtt", "wdtt_password": "pw1wdtt",
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
                                         {"node": "n1", "iface": "wdtt1", "type": "wdtt"},
-                                        {"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.2/32"}]},
+                                        {"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.2/32"},
+                                        # [9] a plain WireGuard interface behind a second hack-diaz proxy
+                                        {"node": "n1", "iface": "wg0", "type": "wg", "ip": "10.7.0.2/32"}]},
                      "p2": {"id": "p2", "user_id": "u2", "title": "phone", "csqtt_password": "pw2csqtt",
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
                                         {"node": "n1", "iface": "awg1", "type": "awg", "ip": "10.9.0.2/32"}]},
@@ -155,10 +161,12 @@ AWG = {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": 0, "S2": 0, "H1": 1, "H2": 2, "H3"
 b64 = lambda n: base64.b64encode(os.urandom(n)).decode()
 J("stats/stats-n1.json", {"interfaces": {
         "awg0": {"meta": {"public_key": b64(32), "listen_port": 51820, "endpoint": "203.0.113.7:51820", "subnet": "10.8.0.0/24", "awg_params": AWG}},
-        "awg1": {"meta": {"public_key": b64(32), "listen_port": 51821, "endpoint": "203.0.113.7:51821", "subnet": "10.9.0.0/24", "awg_params": AWG}}},
+        "awg1": {"meta": {"public_key": b64(32), "listen_port": 51821, "endpoint": "203.0.113.7:51821", "subnet": "10.9.0.0/24", "awg_params": AWG}},
+        "wg0": {"meta": {"public_key": b64(32), "listen_port": 51830, "endpoint": "203.0.113.7:51830", "subnet": "10.7.0.0/24"}}},
     "csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"}],
     "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"}],
-    "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64}],
+    "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64},
+                     {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64}],
     "net_carried": ["192.168.50.0/24"]})
 
 SEAL = r"""
@@ -216,6 +224,9 @@ if P_BY:
 if P_FORKNAME:
     perturbed_web("function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }",
                   "function forkLabel(f) { return f; }", "a fork named by its catalog label")
+if P_AWGAPP:
+    perturbed_web("      if (!has(links) || (awg && cl.awg === false)) return null;", "      if (!has(links)) return null;",
+                  "a WireGuard-only app kept off an AmneziaWG interface")
 if P_PIN:
     perturbed_web("      if (!pin || !m || !srv || m[1] !== srv.owner) return links;", "      return links;", "a server's own app following its version")
 if P_XXSUB:
@@ -387,6 +398,17 @@ try:
     tp = [c for os_ in ALL_OS for c in turn_cells(renders[(os_, "ru")]) if (c["role"] or "") in ("AWG", "WG") and c["by"]]
     check("[2] the turn-proxy cell's author word is translated wherever one renders (RU)", tp and all(" by " not in c["by"] for c in tp),
           [c["by"] for os_ in ALL_OS for c in turn_cells(renders[(os_, "ru")]) if c["by"]])
+
+    # [9] an app whose own tunnel is WireGuard only (anton48's VK TURN Proxy, `awg: false`) is never handed out for an AmneziaWG
+    #     interface behind a proxy — the app itself warns that AmneziaWG keys cannot work (the review of 356a08f9, F3)
+    ios = turn_cells(renders[("ios", "en")])
+    check("[9] iOS: no AmneziaWG cell offers VK TURN Proxy (the AWG proxy has no iOS app, so it shows no card)",
+          not [c for c in ios if (c["role"] or "") == "AWG" and "VK TURN Proxy" in (c["tag"] or "")], [(c["role"], c["tag"]) for c in ios])
+    check("[9] …while the WireGuard interface's proxy still does", any((c["role"] or "") == "WG" and "VK TURN Proxy" in (c["tag"] or "") for c in ios),
+          [(c["role"], c["tag"]) for c in ios])
+    check("[9] control: on Android the AmneziaWG proxy keeps its cell (FreeTurn carries AmneziaWG)",
+          any((c["role"] or "") == "AWG" and "FreeTurn" in (c["tag"] or "") for c in turn_cells(renders[("android", "en")])),
+          [(c["role"], c["tag"]) for c in turn_cells(renders[("android", "en")])])
 
     # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hack-diaz (GitHub: hackdiaz-dev) carries them
     # on, but the id stays (it is in every node's unit names) — so the id must never reach the visitor

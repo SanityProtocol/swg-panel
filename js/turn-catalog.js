@@ -18,15 +18,15 @@ import { pickThemed } from "./theme.js";
 // keyflag,color,colorL,protocols}); this array is only the boot/offline FALLBACK (and a mixed-version safety
 // net if the panel predates the catalog). Keep it in step with TURN_SERVERS. `protocols` (a fork missing "awg"
 // is WireGuard-only) supersedes the old TURN_WG_ONLY set. See docs/TURN-PROXY-OVERHAUL-PLAN.md.
-// WireGuard-only rationale: anton48 (iOS) has no AmneziaWG fields; samosvalishe = free-turn-proxy's FreeTurn app
-// (integrated plain-WG client). WINGS-N is app-integrated but DOES support awg; the sidecar forks relay UDP transparently.
+// WireGuard-only rationale: anton48 (iOS) has no AmneziaWG fields. samosvalishe (hack-diaz) carries AmneziaWG since
+// free-turn-proxy v3.2.0, as TURN_SERVERS says. WINGS-N is app-integrated but DOES support awg; the sidecar forks relay UDP transparently.
 // Order mirrors the panel's TURN_SERVER_ORDER (cacggghp + WINGS-N pinned, then by server+app stars). This is
 // only the boot/offline fallback; the served catalog is authoritative.
 export const TURN_FORKS_FALLBACK = [
   { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#5FB0E0", colorL: "#2C7EC0", protocols: ["wg", "awg"], hidden: true },
   { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0", colorL: "#9B4FC7", protocols: ["wg", "awg"] },
   { id: "MYSOREZ", label: "MYSOREZ", owner: "MYSOREZ/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#4FC7B4", colorL: "#12897A", protocols: ["wg", "awg"], hidden: true },
-  { id: "samosvalishe", label: "hack-diaz", owner: "hackdiaz-dev/free-turn-proxy", wrap: "-obf-profile rtpopus", keyflag: "-obf-key", color: "#E0A85F", colorL: "#C07A1E", protocols: ["wg"] },
+  { id: "samosvalishe", label: "hack-diaz", owner: "hackdiaz-dev/free-turn-proxy", wrap: "-obf-profile rtpopus", keyflag: "-obf-key", color: "#E0A85F", colorL: "#C07A1E", protocols: ["wg", "awg"] },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F", colorL: "#8E8420", protocols: ["wg"] },
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A", colorL: "#C24468", protocols: ["wg", "awg"], hidden: true },
 ];

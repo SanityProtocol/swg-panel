@@ -172,7 +172,7 @@
   function forkRank(f) { var s = turnServers(); if (s && s.length) { for (var i = 0; i < s.length; i++) if (s[i].id === f) return i; return s.length; } var j = FORK_ORDER_FALLBACK.indexOf(f); return j < 0 ? FORK_ORDER_FALLBACK.length : j; }
   // WireGuard-only forks (the client can't front AmneziaWG) — from the catalog server's `protocols` (no "awg"); so
   // such a fork isn't offered for an AWG peer. The fallback mirrors the panel's old TURN_WG_ONLY.
-  var TURN_WG_ONLY_FALLBACK = { anton48: 1, samosvalishe: 1 };
+  var TURN_WG_ONLY_FALLBACK = { anton48: 1 };   // samosvalishe (hack-diaz) carries AmneziaWG since free-turn-proxy v3.2.0, as the catalog says
   function turnWgOnly(f) { var s = turnServer(f); if (s && s.protocols) return s.protocols.indexOf("awg") < 0; return !!TURN_WG_ONLY_FALLBACK[f]; }
 
   // AXIS-3: the client-app install link for a server fork, from the panel's turn_catalog (server → clients[0] →
@@ -193,8 +193,8 @@
   }
   // Rank a turn-proxy fork by the class of the client it resolves to for THIS visitor — matching the panel picker:
   // native app · friendly app · native sidecar · friendly sidecar · plain (so the "best" connection sorts first).
-  function turnCellRank(forkId) {
-    var ga = turnGetApp(forkId); if (!ga) return 9;
+  function turnCellRank(forkId, awg) {
+    var ga = turnGetApp(forkId, null, awg); if (!ga) return 9;
     var srv = turnServer(forkId), compat = (srv && srv.compat) || {};
     var isCli = ga.cid === "sidecar" || ga.enc === "sidecar";
     var cls = isCli ? (compat.sidecar || "native") : (compat[ga.cid] || "");
@@ -209,8 +209,8 @@
   // Does the client we resolve for THIS visitor connect WITHOUT obfuscation? Plain = the fork's normal transport,
   // which VK throttles → slower. A plain fork (cacggghp) is always plain; an obfuscated fork is plain only
   // for a cross-fork "plain"-class client. Same rule as the panel picker, so the turtle matches the admin view.
-  function turnCellPlain(forkId) {
-    var ga = turnGetApp(forkId); if (!ga || !ga.cid) return false;
+  function turnCellPlain(forkId, awg) {
+    var ga = turnGetApp(forkId, null, awg); if (!ga || !ga.cid) return false;
     var compat = (turnServer(forkId) || {}).compat || {};
     var isCli = ga.cid === "sidecar";
     var cls = isCli ? (compat.sidecar || "") : (compat[ga.cid] || "");
@@ -227,7 +227,9 @@
     + '<path d="M3.2 12.6 L.9 11.6 L2.1 13.9 Z"/></svg>';
   // `ver` = the server's RUNNING version (the cell's deployment): an app published from the server's own repository
   // follows it — the release that version names (the panel's `pins`), not the latest (operator, 2026-10-14).
-  function turnGetApp(forkId, ver) {
+  // `awg` = the deployment is an AmneziaWG interface: an app whose own tunnel is WireGuard only (`awg: false` in the
+  // catalog — anton48's VK TURN Proxy on iOS) is never handed out for it; the next app is, or none.
+  function turnGetApp(forkId, ver, awg) {
     var srv = turnServer(forkId), clients = ((_lastData && _lastData.turn_catalog) || {}).clients || {};
     var os = subOs();
     function has(links) { return links && (links.url || links.github || links.play || links.appstore); }
@@ -242,7 +244,7 @@
     // Build the resolved-app record for one client id on the visitor's OS (null if it doesn't ship for this OS).
     function build(cid) {
       var cl = clients[cid], links = cl && cl.platforms && cl.platforms[os];   // this OS only — no cross-OS fallback
-      if (!has(links)) return null;
+      if (!has(links) || (awg && cl.awg === false)) return null;
       links = pinned(links);
       // Attribute the download to the app's REAL author — the explicit `author` field wins over `native_fork` (which
       // only pins the client to a server fork for schema resolution, e.g. pwdtt→ildarmaga even though it's luminescq's).
@@ -1822,7 +1824,7 @@
         // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
         // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
         // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
-        var csfork = cd.fork || "amurcanov";
+        var csfork = forkLabel(cd.fork || "csqtt");   // the catalog's name (amurcanov), never a copy of it here
         var cffork = forkColor("csqtt");   // the csqtt FORK colour (catalog key "csqtt"), distinct from the iface colour cfc
         var cAppName = (cga && (cga.productName || cga.app)) || "CSQTT";
         var ctag = el("span", "scell-tag");
@@ -1925,7 +1927,7 @@
       } else {
       var tp = it.tp, forkId = SWGTurn.fork(tp.service);
       var fc = forkColor(forkId);                                               // the panel's colour for this fork
-      var ga = turnGetApp(forkId, tp.version);   // resolves the client for the VISITOR'S OS (also drives the get-app row / Start button below) — this proxy's release
+      var ga = turnGetApp(forkId, tp.version, it.tgt.type === "awg");   // resolves the client for the VISITOR'S OS (also drives the get-app row / Start button below) — this proxy's release
       // Encode the artifact for the app we actually RESOLVED for this OS (its encoder), not the fork's NATIVE app — so
       // the config always matches the app shown. A Moroka8 relay reached via anton48's VK TURN Proxy on iOS must get the
       // vkturnproxy:// deeplink, NOT a sidecar CLI command that GUI can't run; on desktop the same fork resolves to the
@@ -1974,7 +1976,7 @@
       if (!isBackup) role.style.color = ifaceColor(tgt.type);
       srvRow.appendChild(role);
       // Plain (unobfuscated) → the fork's normal transport, which VK throttles: mark it slow with a brand-coloured turtle.
-      if (turnCellPlain(forkId)) { var slow = el("span", "scell-slow"); slow.title = t("slowPlain"); slow.innerHTML = TURTLE_SVG; srvRow.appendChild(slow); }
+      if (turnCellPlain(forkId, it.tgt.type === "awg")) { var slow = el("span", "scell-slow"); slow.title = t("slowPlain"); slow.innerHTML = TURTLE_SVG; srvRow.appendChild(slow); }
       // AXIS-3: "Get the app" install link under the badge — for a first-time user who doesn't have the client app
       // yet. Shown only when the fork's client has a published app link (CLI sidecar forks have none). Complements
       // the bar's "Open in app": open if you have it, get it if you don't (never branch on install-state — can't detect).
@@ -2142,10 +2144,10 @@
         (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service), k = tp.service || tp.listen;
           if (seen[k]) return;
           if (isAwg && turnWgOnly(f)) return;   // a WireGuard-only fork can't front this AmneziaWG interface
-          if (!turnGetApp(f)) return;           // no client app for the visitor's OS → hide this deployment entirely (no card, no dot)
+          if (!turnGetApp(f, null, isAwg)) return;   // no client app for the visitor's OS (and this interface) → hide this deployment entirely (no card, no dot)
           seen[k] = 1; tps.push({ tp: tp, f: f }); });
         // listen is the tiebreak so two relays of one fork keep a fixed order between polls instead of swapping.
-        tps.sort(function (a, b) { return turnCellRank(a.f) - turnCellRank(b.f) || forkRank(a.f) - forkRank(b.f)
+        tps.sort(function (a, b) { return turnCellRank(a.f, isAwg) - turnCellRank(b.f, isAwg) || forkRank(a.f) - forkRank(b.f)
                  || String(a.tp.listen || "").localeCompare(String(b.tp.listen || "")); });   // client-priority, then canonical fork order
         var nfork = {}; tps.forEach(function (x) { nfork[x.f] = (nfork[x.f] || 0) + 1; });
         tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp, dupFork: nfork[x.f] > 1 }); });

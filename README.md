@@ -119,7 +119,7 @@ subscription and no one else sitting in the middle of your traffic.
   <a href="screenshots/sub-wireguard.jpg"><img src="screenshots/sub-wireguard.jpg" alt="WireGuard subscription" width="150"></a>
   <a href="screenshots/sub-amneziawg.jpg"><img src="screenshots/sub-amneziawg.jpg" alt="AmneziaWG subscription" width="150"></a>
   <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="WINGS-N subscription" width="150"></a>
-  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="samosvalishe subscription" width="150"></a>
+  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="hack-diaz subscription" width="150"></a>
   <a href="screenshots/sub-anton48.jpg"><img src="screenshots/sub-anton48.jpg" alt="anton48 subscription" width="150"></a>
   <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="cacggghp subscription" width="150"></a>
 </p>
@@ -553,7 +553,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe — proxies installed from samosvalishe keep running, and now update from hack-diaz's repository)
+- [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe — proxies installed from samosvalishe keep running, and now update from its new repository, hackdiaz-dev/free-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:

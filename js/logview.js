@@ -16,6 +16,7 @@ import { T, plural, fmtNum, locale } from "./i18n.js";
 import { Store, api, useStore } from "./store.js";
 import { Ic, Popover, Portal, usePopup } from "./ui.js";
 import { downloadConf } from "./crypto.js";
+import { turnForkList } from "./turn-catalog.js";
 import { fmtBytes } from "./util.js";
 import { h } from "preact";
 import { useState, useRef, useEffect, useLayoutEffect } from "preact/hooks";
@@ -191,7 +192,7 @@ function sourceLists(nodeIds) {
     for (const w of s.wdtt || []) if (w && w.iface) turn.wdtt.add(w.iface);
     for (const c of s.csqtt || []) if (c && c.iface) turn.csqtt.add(c.iface);
   }
-  const items = (kind, set) => [...set].sort().map(n => ({ id: kind + ":" + n, label: n }));
+  const items = (kind, set) => [...set].sort().map(n => ({ id: kind + ":" + n, label: kind === "turn" ? vkShown(n) : n }));
   const one = id => ({ id, label: srcLabel(id) });
   const out = {};
   if (nodeIds.includes(LOG_PANEL)) out.panel = { label: T("Panel"), groups: [{ id: "panel", items: (panelBare() ? PANEL_KINDS : ["panel"]).map(one) }] };
@@ -419,7 +420,11 @@ function Hi({ text, q }) {
 
 // a line's source as the stream shows it: a mesh link by the node at its other end, not by its generated name
 let _shown = { d: null, m: new Map() };
-const srcShown = l => { if (!l.src.startsWith("mesh:")) return l.src;
+// a VK turn proxy by its fork's name and port ("hack-diaz:51823"), not the id in its service name; a WDTT / csqtt
+// interface (no catalog fork before its port) stays as it is
+const vkShown = n => { const m = /^(.+)-(\d+)$/.exec(n), f = m && turnForkList().find(x => x.id === m[1]); return f ? (f.label || f.id) + ":" + m[2] : n; };
+const srcShown = l => { if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));
+  if (!l.src.startsWith("mesh:")) return l.src;
   if (_shown.d !== Store.describe) _shown = { d: Store.describe, m: new Map() };      // once per link per poll
   const k = l.nid + "|" + l.src;
   if (!_shown.m.has(k)) { const peer = (Store.ifaceMeta(l.nid, l.src.slice(5)) || {}).link_node;
