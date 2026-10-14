@@ -565,7 +565,7 @@ export function TurnManageSheet({ node, tp }) {
   const conHost = con.includes(":") ? con.slice(0, con.lastIndexOf(":")) : "";
   // only a LOCAL target is one of this node's interfaces: "10.0.0.5:51820" is a custom target that happens to share
   // a port, and must not open as the local wg0 (a Save would have rewritten it to 127.0.0.1)
-  const match = /^(127\.0\.0\.1|localhost)?$/.test(conHost) ? ifaces.find(i => i.port === conPort) : null;
+  const match = /^(127(\.\d{1,3}){3}|localhost|\[::1\]|::1|0\.0\.0\.0)?$/.test(conHost) ? ifaces.find(i => i.port === conPort) : null;
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
   const [custom, setCustom] = useState(con || "127.0.0.1:");
   const [params, setParams] = useState(tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : ""));   // i18n-keys: CLI flags — the operator types these

@@ -147,8 +147,14 @@ ch3 = P._turn_warm_pins(deps, refresh=True)
 check("[3] the hourly refresh re-reads a pin: a late Windows installer appears", ch3 is True and
       pin("hackdiaz-dev", "free-turn-proxy", "v4.0.3").get("url", {}).get("windows") == "https://dl/client-windows-amd64.exe", pin("hackdiaz-dev", "free-turn-proxy", "v4.0.3"))
 deps2 = {"node_snaps": {"n1": {"csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"}]}}}
-ch4 = P._turn_warm_pins(deps2)
-check("[3] a version no server runs any more is dropped, and the pass says so",
+before = set(P._RELEASE_PIN)
+P._turn_warm_pins(deps2)
+check("[3] a 5-minute pass drops nothing when a snapshot misses a row (a WDTT restart mid-sync)", set(P._RELEASE_PIN) == before,
+      sorted(key(P._RELEASE_PIN)))
+CALLS.clear()
+ch4 = P._turn_warm_pins(deps2, refresh=True)
+check("[3] the hourly refresh asks a pin's own tag once (no -N spellings first)", CALLS == ["/repos/amurcanov/csqtt/releases/tags/v2.1.9"], CALLS)
+check("[3] …and drops a version no server runs any more, and says so",
       ch4 is True and set(P._RELEASE_PIN) == {("amurcanov", "csqtt", "2.1.9-4")}, sorted(key(P._RELEASE_PIN)))
 
 print("\n[4] what serve.json publishes")

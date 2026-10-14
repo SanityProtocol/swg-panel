@@ -214,7 +214,7 @@ check("[3] …both adopt sheets' \"Detected …\" hints (F9)",
 check("[3] …a turn config's downloaded file name (F12) and a CLI config's title, translated (F6)",
       PU.includes('base + "-" + forkLabel(a.fork) +') && PU.includes('T("{v1} · CLI client (desktop)", { v1: forkLabel(a.fork) })'), "");
 check("[3] …Settings → Logs: a VK turn proxy by its fork's name and port, in the picker and on every line (F13)",
-      LVJ.includes('label: kind === "turn" ? vkShown(n) : n') && LVJ.includes('if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));'), "");
+      LVJ.includes('label: vk ? vkShown(n) : n') && LVJ.includes('items("turn", turn[k], k === "vk")') && LVJ.includes('if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));'), "");
 check("[3] …and so do the delete sheet and a pending card", TU.includes("<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>")
       && TU.includes('<span class="ifname">${forkLabel(turnFork(s))}</span>'), "");
 check("[3] …the front tag's tooltip, a device's transport row and the flow map's hover",

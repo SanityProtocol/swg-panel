@@ -631,7 +631,7 @@ export function TurnConfigSheet({ peer, t, conf }) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
   // already compat-matrix-only and compat-ranked (see turnClientsFor); it drops dead pairings such as anton48 + VK-TURN-by-MYSOREZ, matching
   // Settings and the sub page — and, on an AmneziaWG interface, an app whose own tunnel is WireGuard only (`awg: false`), as the sub page does
-  const allClients = turnClientsFor(fork).filter(c => !(t.type === "awg" && (cmap[c.id] || {}).awg === false));
+  const allClients = turnClientsFor(fork).filter(c => !(targetType(t) === "awg" && (cmap[c.id] || {}).awg === false));   // the iface's real kind, not the roster's stored type
   const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
   const osList = _OS_TABS.map(([o]) => o).filter(o => allClients.some(c => osOf(c).includes(o)));   // OSes this fork's apps cover
   const curOs = (selOs[fork] && osList.includes(selOs[fork])) ? selOs[fork] : (osList[0] || "");

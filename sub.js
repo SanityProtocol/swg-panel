@@ -237,6 +237,7 @@
     function pinned(links) {
       var m = /^https?:\/\/github\.com\/([^\/]+\/[^\/#?]+)/.exec(links.github || "");
       if (!ver || !m || !srv || m[1] !== srv.owner) return links;   // another author's app keeps its own versioning
+      ver = String(ver).trim();   // the panel keys pins by the trimmed version
       var pin = ((((_lastData && _lastData.turn_catalog) || {}).pins || {})[srv.owner] || {})[ver];
       var u = pin && pin.url && pin.url[os];
       if (!u) return links;   // no release for this version — or none of its files is this OS's installer: the latest, as before

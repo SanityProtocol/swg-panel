@@ -192,7 +192,7 @@ function sourceLists(nodeIds) {
     for (const w of s.wdtt || []) if (w && w.iface) turn.wdtt.add(w.iface);
     for (const c of s.csqtt || []) if (c && c.iface) turn.csqtt.add(c.iface);
   }
-  const items = (kind, set) => [...set].sort().map(n => ({ id: kind + ":" + n, label: kind === "turn" ? vkShown(n) : n }));
+  const items = (kind, set, vk) => [...set].sort().map(n => ({ id: kind + ":" + n, label: vk ? vkShown(n) : n }));
   const one = id => ({ id, label: srcLabel(id) });
   const out = {};
   if (nodeIds.includes(LOG_PANEL)) out.panel = { label: T("Panel"), groups: [{ id: "panel", items: (panelBare() ? PANEL_KINDS : ["panel"]).map(one) }] };
@@ -204,7 +204,7 @@ function sourceLists(nodeIds) {
       { id: "mesh", label: T("Mesh links"), wild: "mesh:*", items: [...mesh].sort((a, b) => a[1].localeCompare(b[1])).map(([n, l]) => ({ id: "mesh:" + n, label: l, hint: l === n ? "" : n })) },
       { id: "fw", label: T("Firewall and kernel"), items: [one("p2p"), { id: "kernel", label: srcLabel("kernel"), hint: T("the whole kernel log") }] },
     ] };
-    out.turn = { label: T("Turn proxies"), wild: "turn:*", groups: TURN_KINDS.map(([k, l]) => ({ id: k, label: l, items: items("turn", turn[k]) })).filter(g => g.items.length) };
+    out.turn = { label: T("Turn proxies"), wild: "turn:*", groups: TURN_KINDS.map(([k, l]) => ({ id: k, label: l, items: items("turn", turn[k], k === "vk") })).filter(g => g.items.length) };
     out.iface = { label: T("Interfaces"), wild: "iface:*", groups: [{ id: "iface", items: items("iface", ifc) }] };
   }
   // a whole group (or list) the servers report nothing of yet is still choosable: its wildcard stands in for it
@@ -422,7 +422,17 @@ function Hi({ text, q }) {
 let _shown = { d: null, m: new Map() };
 // a VK turn proxy by its fork's name and port ("hack-diaz:51823"), not the id in its service name; a WDTT / csqtt
 // interface (no catalog fork before its port) stays as it is
-const vkShown = n => { const m = /^(.+)-(\d+)$/.exec(n), f = m && turnForkList().find(x => x.id === m[1]); return f ? (f.label || f.id) + ":" + m[2] : n; };
+// (a WDTT / csqtt interface named "<fork>-<n>" is no VK proxy: only a turn-kind fork maps; legacy "main" is cacggghp, as
+// turnFork says; memoised per catalog — the stream re-renders thousands of lines every poll)
+let _vk = { c: null, m: new Map() };
+const vkShown = n => {
+  if (_vk.c !== Store.turnCatalog) _vk = { c: Store.turnCatalog, m: new Map() };
+  if (!_vk.m.has(n)) {
+    const m = /^(.+)-(\d+)$/.exec(n), id = m && (m[1] === "main" ? "cacggghp" : m[1]);
+    const f = id && turnForkList().find(x => x.id === id && x.kind !== "wdtt" && x.kind !== "csqtt");
+    _vk.m.set(n, f ? (f.label || f.id) + ":" + m[2] : n);
+  }
+  return _vk.m.get(n); };
 const srcShown = l => { if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));
   if (!l.src.startsWith("mesh:")) return l.src;
   if (_shown.d !== Store.describe) _shown = { d: Store.describe, m: new Map() };      // once per link per poll

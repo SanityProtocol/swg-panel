@@ -475,7 +475,7 @@ def _running_versions(snap):
         xs = snap.get(k)
         for x in (xs.values() if isinstance(xs, dict) else xs if isinstance(xs, list) else ()):
             if isinstance(x, dict) and isinstance(x.get("iface"), str):
-                out[x["iface"]] = str(x.get("version") or "")
+                out[x["iface"]] = str(x.get("version") or "").strip()
     return out
 
 
@@ -832,7 +832,7 @@ def read_data(state, token):
             lp = meta.get("listen_port")
             # turn-proxies forwarding to THIS interface (same test as the admin's turnProxiesFor: the proxy
             # connects to the iface's listen port). Only non-secret client-config material rides along.
-            turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key"), "version": tp.get("version") or ""}
+            turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key"), "version": str(tp.get("version") or "").strip()}
                     for tp in (nd.get("turn") or []) if isinstance(tp, dict) and lp and _port_of(tp.get("connect")) == lp]
             _wgty = "awg" if awg else (t.get("type") or "wg")
             # THIS deployment's client-config customisation over the peer-wide one over the interface's live

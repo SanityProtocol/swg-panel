@@ -5638,6 +5638,8 @@ def migrate_provider_defaults(nodes_path, panel_settings_path):
 
 def migrate_enabled_turn_forks(nodes_path, panel_settings_path, stats_dir):
     """One-time: keep a fork the fleet ALREADY runs in enabled_turn_forks (the install picker's list, and the Overview's).
+    Since 2026-10-14 the Overview holds every HIDDEN fork anyway (enabledTurnForkIds), so what this still adds there is a
+    fork no longer in the catalog at all; the rest below is the history of why it was written.
 
     enabled_turn_forks filters that picker AND the Overview traffic-by-fork chart (which, unlike the picker, shows a
     hidden fork it lists). The built-in default keeps the forks hidden on 2026-10-14 (MYSOREZ, Moroka8, xxcipherx), so
@@ -15590,8 +15592,8 @@ def _turn_warm_pins(deps, refresh=False):
     wanted = _pin_wanted(deps)
     changed = wanted != _PIN_WANTED
     now = time.time()
-    for k in [k for k in _RELEASE_PIN if k[2] not in wanted.get(k[:2], ())]:
-        _RELEASE_PIN.pop(k, None)                     # no server runs this version any more
+    for k in ([k for k in _RELEASE_PIN if k[2] not in wanted.get(k[:2], ())] if refresh else []):
+        _RELEASE_PIN.pop(k, None)                     # no server runs this version any more (hourly: one snapshot missing a row drops nothing)
         changed = True
     for (owner, repo), vers in wanted.items():
         for v in sorted(vers):
@@ -15601,11 +15603,14 @@ def _turn_warm_pins(deps, refresh=False):
             if key not in _RELEASE_PIN and now - _PIN_TRIED.get(key, 0) < 3600:
                 continue
             ov = [t for (f, ver), t in _PIN_TAG_OVERRIDE.items() if ver == v and turn_fork_owner(f) == owner + "/" + repo]
+            known = [(_RELEASE_PIN.get(key) or {}).get("tag")] if key in _RELEASE_PIN else []   # a refresh asks its own tag, once
             try:
-                rec = _pin_lookup(owner, repo, ov or _pin_tags(v))
-            except Exception:
-                _PIN_TRIED[key] = now                 # rate limit, network, a deleted repository: no verdict, an hour's rest
+                rec = _pin_lookup(owner, repo, [t for t in known if t] or ov or _pin_tags(v))
+            except urllib.error.HTTPError:
+                _PIN_TRIED[key] = now                 # GitHub answered (a rate limit, a deleted repository): an hour's rest
                 continue
+            except Exception:
+                continue                              # no network yet (a boot before egress): no verdict — the next pass asks
             if rec is None:
                 _PIN_TRIED[key] = now                 # no such release: the latest stands in, as it always did
                 if _RELEASE_PIN.pop(key, None) is not None:
@@ -15677,7 +15682,8 @@ def _release_cache_load(deps):
             _PLATFORM_ASSET[(o, r, osk)] = u
         for k, x in (data.get("release_pin") or {}).items():
             o, r, v = k.split("/", 2)
-            _RELEASE_PIN[(o, r, v)] = x
+            if isinstance(x, dict) and isinstance(x.get("url"), dict):   # a b1bb5d34 cache entry has no per-OS url: re-resolve it
+                _RELEASE_PIN[(o, r, v)] = x
 
 _SUB_SERVE_LOCK = threading.RLock()   # serve.json's base_alt read-then-write vs the dual-base grace's writers
 
