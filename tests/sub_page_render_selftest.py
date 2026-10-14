@@ -37,9 +37,10 @@ Fixture — node q-node, three deployments per device:
       interface behind a proxy; the WireGuard interface's proxy still offers it; FreeTurn keeps the AmneziaWG one on Android
   [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ) keeps its users' app: its Android cell offers the MYSOREZ app,
       hidden from every visible fork (hack-diaz's cells on the same interface do not offer it)
-  [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): the csqtt server
-      runs 2.1.9-4, 2.5.0 is the latest — the CSQTT app's get-app bubble offers v2.1.9 and says it matches this server; La
-      Lune (another author's app) and the WDTT cell (a version no resolved release names) keep the latest, as before
+  [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
+      2.1.9-4 while 2.5.0 is the latest — the CSQTT app's bubble offers v2.1.9 and says it matches; amurcanov's WDTT 1.2.4-3
+      → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
+      is not handed the CLI release's Android binary (another repository's app keeps its own versioning)
 
 Needs google-chrome (or $CHROME) and node (seals the fixture secret). A missing browser is a FAIL, never a skip: a gate that
 cannot run has not passed.
@@ -55,6 +56,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-awgapp     serves a sub.js that hands VK TURN Proxy to an AmneziaWG interface again → RED on [9]
      --perturb-hiddenmap  serves a catalog where a hidden fork drops its hidden apps too → RED on [10]
      --perturb-pin        serves a sub.js that hands out the latest release whatever the server runs → RED on [8]
+     --perturb-guard      serves a sub.js that pins any app of a server, its repository or not → RED on [8]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -78,7 +80,8 @@ P_XXSUB = "--perturb-xxsub" in sys.argv
 P_PIN = "--perturb-pin" in sys.argv
 P_AWGAPP = "--perturb-awgapp" in sys.argv
 P_HIDDENMAP = "--perturb-hiddenmap" in sys.argv
-PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP
+P_GUARD = "--perturb-guard" in sys.argv
+PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -115,14 +118,23 @@ if P_HIDDENMAP:   # a hidden fork loses its hidden apps too (its running proxy's
     P.TURN_GONE_CLIENTS = set(P.TURN_HIDDEN_CLIENTS)
 if P_XXSUB:   # the app back in every WDTT fork's compat (the catalog before 2026-10-14) — the sub's substitution below needs it
     P.TURN_HIDDEN_CLIENTS = set()
-# [8] the csqtt server runs 2.1.9-4: its release (v2.1.9) is resolved — as _turn_warm_pins leaves it — while 2.5.0 is the latest
+# [8] each server's own release, as _turn_warm_pins leaves it (2.5.0 is csqtt's latest): csqtt 2.1.9-4 → v2.1.9,
+# amurcanov's WDTT 1.2.4-3 → v1.2.4, the hack-diaz proxies' v4.0.3 → its CLI release (which also carries an Android binary)
 PIN_APK = "https://github.com/amurcanov/csqtt/releases/download/v2.1.9/csqtt-v2.1.9.apk"
+WDTT_APK = "https://github.com/amurcanov/proxy-turn-vk-android/releases/download/v1.2.4/WDTT-universal.apk"
+CLI_LIN = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.0.3/client-linux-amd64"
+CLI_AND = "https://github.com/hackdiaz-dev/free-turn-proxy/releases/download/v4.0.3/client-android-arm64"
 P._RELEASE_INFO[("amurcanov", "csqtt")] = {"tag": "v2.5.0", "page": "https://github.com/amurcanov/csqtt/releases/tag/v2.5.0",
     "assets": [{"name": "csqtt-v2.5.0.apk", "url": "https://github.com/amurcanov/csqtt/releases/download/v2.5.0/csqtt-v2.5.0.apk"}]}
 P._PLATFORM_ASSET[("amurcanov", "csqtt", "android")] = P._RELEASE_INFO[("amurcanov", "csqtt")]["assets"][0]["url"]
-P._RELEASE_PIN[("amurcanov", "csqtt", "2.1.9-4")] = {"tag": "v2.1.9", "page": "https://github.com/amurcanov/csqtt/releases/tag/v2.1.9",
-    "assets": [{"name": "csqtt-v2.1.9.apk", "url": PIN_APK}]}
-P._PIN_WANTED = {("amurcanov", "csqtt"): {"2.1.9-4"}}
+def _pin(tag, page, urls):
+    return {"tag": tag, "page": page, "assets": [{"name": u.rsplit("/", 1)[1], "url": u} for u in urls.values()], "url": urls}
+P._RELEASE_PIN[("amurcanov", "csqtt", "2.1.9-4")] = _pin("v2.1.9", "https://github.com/amurcanov/csqtt/releases/tag/v2.1.9", {"android": PIN_APK})
+P._RELEASE_PIN[("amurcanov", "proxy-turn-vk-android", "1.2.4-3")] = _pin("v1.2.4", "https://github.com/amurcanov/proxy-turn-vk-android/releases/tag/v1.2.4", {"android": WDTT_APK})
+P._RELEASE_PIN[("hackdiaz-dev", "free-turn-proxy", "v4.0.3")] = _pin("v4.0.3", "https://github.com/hackdiaz-dev/free-turn-proxy/releases/tag/v4.0.3",
+                                                                     {"linux": CLI_LIN, "android": CLI_AND})
+P._PIN_WANTED = {("amurcanov", "csqtt"): {"2.1.9-4"}, ("amurcanov", "proxy-turn-vk-android"): {"1.2.4-3"},
+                 ("hackdiaz-dev", "free-turn-proxy"): {"v4.0.3"}}
 catalog = P.turn_catalog_view(pins=True)   # serve.json's catalog, as write_sub_serve builds it
 if P_AUTO:
     _ll = ((catalog.get("clients") or {}).get("lalune") or {}).get("platforms", {}).get("android")
@@ -171,10 +183,10 @@ J("stats/stats-n1.json", {"interfaces": {
         "wg0": {"meta": {"public_key": b64(32), "listen_port": 51830, "endpoint": "203.0.113.7:51830", "subnet": "10.7.0.0/24"}}},
     "csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"}],
     "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"}],
-    "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64},
-                     {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64},
+    "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64, "version": "v4.0.3"},
+                     {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64, "version": "v4.0.3"},
                      # [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ, hidden 2026-10-14)
-                     {"service": "vk-turn-proxy-MYSOREZ-3", "listen": "0.0.0.0:56102", "connect": "127.0.0.1:51830", "wrap_key": "m" * 64}],
+                     {"service": "vk-turn-proxy-MYSOREZ-3", "listen": "0.0.0.0:56102", "connect": "127.0.0.1:51830", "wrap_key": "m" * 64, "version": "v4.0.3"}],
     "net_carried": ["192.168.50.0/24"]})
 
 SEAL = r"""
@@ -236,7 +248,10 @@ if P_AWGAPP:
     perturbed_web("      if (!has(links) || (awg && cl.awg === false)) return null;", "      if (!has(links)) return null;",
                   "a WireGuard-only app kept off an AmneziaWG interface")
 if P_PIN:
-    perturbed_web("      if (!pin || !m || !srv || m[1] !== srv.owner) return links;", "      return links;", "a server's own app following its version")
+    perturbed_web("      var u = pin && pin.url && pin.url[os];", "      var u = null;", "a server's own app following its version")
+if P_GUARD:
+    perturbed_web("      if (!ver || !m || !srv || m[1] !== srv.owner) return links;", "      if (!ver || !m || !srv) return links;",
+                  "only an app from the server's own repository follows it")
 if P_XXSUB:
     perturbed_web("""    // A WDTT fork's system default is its own app, the top of this rank (until 2026-10-14 XXcipherX's one-tap app
     // stood in where a fork's own could not open one-tap; its repository is gone — the panel's picker agrees).
@@ -326,21 +341,25 @@ def console_errors(tab):
             bad.append("log: %s %s" % (ent.get("source"), (ent.get("text") or "")[:160]))
     return bad
 
+def seek_js(mode, badge_has):
+    """The page script both probes open with: find the `mode` page and seek it to the cell whose badge contains `badge_has`."""
+    return r"""const pg = [...document.querySelectorAll('section.ppage')].find(p => p.getAttribute('data-mode') === %s);
+      if (!pg) return 'no page';
+      const cells = [...pg.querySelectorAll('.scell')];
+      const i = cells.findIndex(c => ((c.querySelector('.scell-tag') || {}).textContent || '').includes(%s));
+      if (i < 0) return 'no cell';
+      pg._seek(i, null);""" % (json.dumps(mode), json.dumps(badge_has))
+
 def start_on(tab, mode, badge_has):
     """Click Start on the cell of `mode` whose badge contains `badge_has`; return (clipboard writes, overlay steps, navigations)."""
     n0 = len(tab.mine("Page.frameRequestedNavigation"))
     c0 = len(tab.mine("Runtime.bindingCalled"))
     res = tab.ev(r"""(() => {
-      const pg = [...document.querySelectorAll('section.ppage')].find(p => p.getAttribute('data-mode') === %s);
-      if (!pg) return 'no page';
-      const cells = [...pg.querySelectorAll('.scell')];
-      const i = cells.findIndex(c => ((c.querySelector('.scell-tag') || {}).textContent || '').includes(%s));
-      if (i < 0) return 'no cell';
-      pg._seek(i, null);
+      %s
       pg.querySelector('.pbtn-start').click();
       // read the steps NOW: the handler shows them synchronously, and a one-tap fallback may replace this document soon after
       return {res: 'clicked', steps: [...document.querySelectorAll('.ph-overlay .ph-step')].map(s => s.textContent)};
-    })()""" % (json.dumps(mode), json.dumps(badge_has)))
+    })()""" % seek_js(mode, badge_has))
     steps = res.get("steps") if isinstance(res, dict) else []
     res = res.get("res") if isinstance(res, dict) else res
     tab.br.pump(1.6)                                     # past fireDeepLink's 1 s "did the app take over" beat
@@ -448,38 +467,38 @@ try:
     serve = json.load(open(os.path.join(D, "subs", "serve.json")))
     serve["turn_client_default"] = {"csqtt": {"android": "lalune"}, "amurcanov": {"android": "wdttplus"}}
     J("subs/serve.json", serve)
-    # [8] the CSQTT app follows the csqtt server's version (the operator's default for csqtt on Android is La Lune → cleared)
+    # [8] an app from the server's own repository follows the server's running version
     def bubble(tab, badge_has):
         return tab.ev(r"""(() => {
-          const pg = [...document.querySelectorAll('section.ppage')].find(p => p.getAttribute('data-mode') === 'turn');
-          if (!pg) return null;
-          const cells = [...pg.querySelectorAll('.scell')];
-          const i = cells.findIndex(c => ((c.querySelector('.scell-tag') || {}).textContent || '').includes(%s));
-          if (i < 0) return null;
-          pg._seek(i, null);
+          %s
           const btn = cells[i].querySelector('.scell-getapp-btn') || pg.querySelector('.scell-getapp-btn');
           if (!btn) return 'no button';
           btn.click();
           const b = document.querySelector('.dl-bubble');
           return b ? {ver: (b.querySelector('.dl-bubble-ver') || {}).textContent || '', links: [...b.querySelectorAll('a')].map(a => a.href)} : 'no bubble';
-        })()""" % json.dumps(badge_has))
+        })()""" % seek_js("turn", badge_has))
+    pinned = lambda b, tag, url: isinstance(b, dict) and tag in b["ver"] and "matches this server" in b["ver"] and url in b["links"]
     serve = json.load(open(os.path.join(D, "subs", "serve.json")))
-    serve["turn_client_default"] = {}
+    keep_default = serve["turn_client_default"]
+    serve["turn_client_default"] = {}   # the CSQTT app itself (the operator's Android default for csqtt is La Lune)
     J("subs/serve.json", serve)
     tab, _ = render("u1", "android", "en")
     bb = bubble(tab, "CSQTT")
-    check("[8] the CSQTT app's bubble offers v2.1.9 — the release the server runs — and says it matches this server",
-          isinstance(bb, dict) and "v2.1.9" in bb["ver"] and "matches this server" in bb["ver"] and PIN_APK in bb["links"]
-          and not any("v2.5.0" in u for u in bb["links"]), bb)
-    wb = bubble(tab, "WDTT")
-    check("[8] control: the WDTT cell (1.2.4-3, no release resolved for it) keeps the latest — no 'matches' line",
-          isinstance(wb, dict) and "matches this server" not in wb["ver"], wb)
+    check("[8] the CSQTT app's bubble offers v2.1.9 — the release the server runs, though 2.5.0 is the latest — and says it matches",
+          pinned(bb, "v2.1.9", PIN_APK) and not any("v2.5.0" in u for u in bb["links"]), bb)
+    wb = bubble(tab, "amurcanov · WDTT")
+    check("[8] the WDTT cell (amurcanov 1.2.4-3) offers its own app's v1.2.4 — the WDTT server's version reaches the page",
+          pinned(wb, "v1.2.4", WDTT_APK), wb)
+    fb = bubble(tab, "hack-diaz · FreeTurn")
+    check("[8] FreeTurn on a hack-diaz proxy is NOT handed the CLI release's Android binary: its repository is not the server's",
+          isinstance(fb, dict) and "matches this server" not in fb["ver"] and CLI_AND not in fb["links"], fb)
     tab.close()
-    serve["turn_client_default"] = {"csqtt": {"android": "lalune"}, "amurcanov": {"android": "wdttplus"}}   # [3]'s control below needs WDTT-Plus
+    serve["turn_client_default"] = keep_default
     J("subs/serve.json", serve)
-    tab, _ = render("u1", "android", "en")
-    lb = bubble(tab, "La Lune")
-    check("[8] control: La Lune, another author's app on the same server, is not pinned", isinstance(lb, dict) and "matches this server" not in lb["ver"], lb)
+    tab, _ = render("u1", "linux", "en")
+    lb = bubble(tab, "hack-diaz · Sidecar")
+    check("[8] the hack-diaz CLI on Linux offers v4.0.3, the proxy's own release — a turn proxy's version reaches the page",
+          pinned(lb, "v4.0.3", CLI_LIN), lb)
     tab.close()
     # [3] Start on the csqtt cell
     tab, _ = render("u1", "android", "en")

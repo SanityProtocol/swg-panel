@@ -1,33 +1,41 @@
 #!/usr/bin/env python3
 """Self-test: an app published from a server's own repository follows the version that server RUNS (operator,
-2026-10-14) — a csqtt 2.1.9 server hands out the CSQTT app 2.1.9, not 2.5 once 2.5 is out. The panel half: which
-servers want a release, which tag a version names, the lookup, and what the catalog publishes (the sub page half is
-sub_page_render_selftest [8]).
+2026-10-14) — a csqtt 2.1.9 server hands out the CSQTT app 2.1.9, not 2.5 once 2.5 is out. The panel and swg-sub halves:
+which servers want a release, which tag a version names, the lookup, what serve.json publishes and what each
+subscriber is handed (the page half is sub_page_render_selftest [8]).
 
   [1] _pin_tags: upstream's own tag as reported (a turn proxy's "v4.0.3"), and our "<upstream>-<N>" build of it
-      (csqtt 2.1.9-4 → v2.1.9, WDTT-Plus 18-2 → v18, ildarmaga 1.5.40-2 → v1.5.40), most exact first
+      (csqtt 2.1.9-4 → v2.1.9, WDTT-Plus 18-2 → v18), most exact first
   [2] _pin_wanted, over a fleet's snapshots: a server whose repository also publishes an app (csqtt, amurcanov's WDTT,
-      WDTT-Plus, a hack-diaz proxy — the free-turn CLI) is wanted with its running version; a server whose app lives
-      elsewhere (WINGS-N, anton48) is not; a csqtt 2.5 line ("csqtt@2.5") resolves to csqtt's repository
-  [3] _turn_warm_pins with GitHub stubbed: ONE releases list per repository; a version a release names is pinned (csqtt
-      2.1.9-4 → v2.1.9 though v2.5.0 is newer), one none names (ildarmaga's 1.5.0-4) is not, and is not asked again within the hour; nothing is asked when everything
-      is resolved; an unreachable GitHub gives no verdict (asked again next pass); a changed fleet says "changed"
-  [4] the catalog: the CSQTT app carries pins for the running versions only — the release's page, tag, assets and this
-      OS's installer (the hack-diaz CLI: per OS) — while its own latest stays as it was; an app from another repository
-      carries none; a version no server runs any more is not published
-  [5] the release cache: pins survive a restart (_release_cache_save → _release_cache_load)
+      WDTT-Plus, ildarmaga, a hack-diaz proxy — the free-turn CLI) is wanted with its running version; a server whose app
+      lives elsewhere (WINGS-N, anton48) is not; csqtt's 2.5 line ("csqtt@2.5") resolves to csqtt's repository; a stray
+      value in a snapshot (a non-string fork) raises nothing
+  [3] _turn_warm_pins, GitHub stubbed by tag: the release a version names is pinned with each OS's installer decided
+      once (csqtt 2.1.9-4 → v2.1.9 though v2.5.0 is newer); a build label that does not name its source follows the
+      override (ildarmaga 1.5.40-2 → v1.5.0, never v1.5.40); a version no release names is not, and is not asked again
+      within the hour; a failing lookup (rate limit, a deleted repository) is rested an hour too, never asked every pass;
+      the hourly refresh re-reads a pin (a release captured mid-upload gains its late installers) and a version no
+      server runs any more is dropped
+  [4] serve.json's catalog carries the pins once per (repository, version) at its top, no client or OS copy; the
+      catalog /api/state carries every 5 s has none, and that call site asks for none
+  [5] the release cache: pins survive a restart
+  [6] swg-sub: a subscriber is handed only the pins of versions its own servers run (_own_pins), and a node snapshot of
+      any shape yields its servers' running versions without an exception (_running_versions)
 
 Hermetic. Run: python3 tests/turn_app_pins_selftest.py   (0 = pass)
      --perturb        _pin_tags keeps our build suffix (2.1.9-4 never finds v2.1.9) → RED in [1], [3], [4]
      --perturb-repo   _pin_wanted takes every server, its app's repository or not → RED in [2]
+     --perturb-own    swg-sub hands every subscriber the whole fleet's pins → RED in [6]
 """
-import atexit, importlib.machinery, importlib.util, json, os, shutil, sys, tempfile
+import atexit, importlib.machinery, importlib.util, io, json, os, re, shutil, sys, tempfile, urllib.error, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
+SUB = os.environ.get("SWG_SUB") or os.path.join(ROOT, "swg-sub")
 PERTURB = "--perturb" in sys.argv
 PERTURB_REPO = "--perturb-repo" in sys.argv
+PERTURB_OWN = "--perturb-own" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -37,30 +45,34 @@ def check(name, cond, detail=""):
 
 TMP = tempfile.mkdtemp(prefix="apppins-")
 atexit.register(shutil.rmtree, TMP, True)   # the copied panel is ~4.6 MB, and the nightly runs this five times
-src = open(SERVER, encoding="utf-8").read()
-def plant(a, b, what):
-    global src
-    if src.count(a) != 1:
-        print("PERTURB FAILED — %s: the anchor is not in the panel exactly once (%d)" % (what, src.count(a))); sys.exit(1)
-    src = src.replace(a, b)
-    print("(perturbed: %s — this run must FAIL)" % what)
-if PERTURB:
-    plant('    for x in (v, re.sub(r"-\\d+$", "", v)):\n', "    for x in (v,):\n", "our build suffix kept")
-if PERTURB_REPO:
-    plant("        if ver and len(orp) == 2 and orp in app_repos:\n", "        if ver and len(orp) == 2:\n", "every server wanted")
-SRV = os.path.join(TMP, "swg-panel-server")
-open(SRV, "w", encoding="utf-8").write(src)
-loader = importlib.machinery.SourceFileLoader("swgpanel_apppins", SRV)
-P = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgpanel_apppins", loader))
-try:
-    loader.exec_module(P)
-except SystemExit:
-    pass
+def planted(path, plants):
+    src = open(path, encoding="utf-8").read()
+    for a, b, what in plants:
+        if src.count(a) != 1:
+            print("PERTURB FAILED — %s: the anchor is not there exactly once (%d)" % (what, src.count(a))); sys.exit(1)
+        src = src.replace(a, b)
+        print("(perturbed: %s — this run must FAIL)" % what)
+    out = os.path.join(TMP, os.path.basename(path))
+    open(out, "w", encoding="utf-8").write(src)
+    return out
+def load(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    m = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    try:
+        loader.exec_module(m)
+    except SystemExit:
+        pass
+    return m
+P = load("swgpanel_apppins", planted(SERVER, ([('    for x in (v, re.sub(r"-\\d+$", "", v)):\n', "    for x in (v,):\n", "our build suffix kept")] if PERTURB else [])
+                                          + ([("        if ver and orp in app_repos:\n", "        if ver:\n", "every server wanted")] if PERTURB_REPO else [])))
+S = load("swgsub_apppins", planted(SUB, [("for repo, vs in pins.items() if isinstance(vs, dict) and any(v in mine for v in vs)}}",
+                                          "for repo, vs in pins.items() if isinstance(vs, dict)} if False else pins}",
+                                          "every subscriber gets the fleet's pins")] if PERTURB_OWN else []))
+key = lambda d: {"|".join(k): v for k, v in d.items()}
 
 print("[1] the tag a version names")
 check("[1] csqtt 2.1.9-4 → v2.1.9 (after the exact forms)", P._pin_tags("2.1.9-4") == ["v2.1.9-4", "2.1.9-4", "v2.1.9", "2.1.9"], P._pin_tags("2.1.9-4"))
 check("[1] WDTT-Plus 18-2 → v18", "v18" in P._pin_tags("18-2"), P._pin_tags("18-2"))
-check("[1] ildarmaga 1.5.40-2 → v1.5.40", "v1.5.40" in P._pin_tags("1.5.40-2"), P._pin_tags("1.5.40-2"))
 check("[1] a turn proxy's own tag stays as reported", P._pin_tags("v4.0.3") == ["v4.0.3"], P._pin_tags("v4.0.3"))
 check("[1] no version, no tag", P._pin_tags("") == [], P._pin_tags(""))
 
@@ -69,7 +81,8 @@ deps = {"node_snaps": {
     "n1": {"csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"},
                      {"iface": "csqtt2", "fork": "csqtt", "line": "2.5", "version": "2.5.0-1"}],
            "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"},
-                    {"iface": "wdtt2", "fork": "ildarmaga", "version": "1.5.0-4"}],
+                    {"iface": "wdtt2", "fork": "ildarmaga", "version": "1.5.40-2"},
+                    {"iface": "wdtt3", "fork": "ildarmaga", "version": "1.5.99-1"}],
            "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-56007", "version": "v4.0.3"},
                             {"service": "vk-turn-proxy-WINGS-N-56010", "version": "v3.0.0"},
                             {"service": "vk-turn-proxy-anton48-56011", "version": "srtp-build440"}]},
@@ -77,84 +90,113 @@ deps = {"node_snaps": {
 W = P._pin_wanted(deps)
 check("[2] csqtt (both lines), amurcanov's WDTT, ildarmaga, WDTT-Plus and the hack-diaz proxy, each with its running version",
       W == {("amurcanov", "csqtt"): {"2.1.9-4", "2.5.0-1"}, ("amurcanov", "proxy-turn-vk-android"): {"1.2.4-3"},
-            ("ildarmaga", "wdtt"): {"1.5.0-4"}, ("Ivan4537", "WDTT-Plus"): {"18-2"},
+            ("ildarmaga", "wdtt"): {"1.5.40-2", "1.5.99-1"}, ("Ivan4537", "WDTT-Plus"): {"18-2"},
             ("hackdiaz-dev", "free-turn-proxy"): {"v4.0.3"}}, {"/".join(k): sorted(v) for k, v in W.items()})
 check("[2] WINGS-N and anton48 (their apps live in other repositories) want nothing",
       ("WINGS-N", "vk-turn-proxy") not in W and ("anton48", "vk-turn-proxy") not in W, sorted("/".join(k) for k in W))
+try:
+    P._pin_wanted({"node_snaps": {"n1": {"wdtt": [{"iface": "w1", "fork": 5, "version": "1"}]}}})
+    ok = True
+except Exception as e:
+    ok = repr(e)
+check("[2] a stray value in a snapshot (a non-string fork) raises nothing", ok is True, ok)
 
 print("\n[3] the lookup")
-CALLS = []
-REL = {("amurcanov", "csqtt"): [{"tag": "v2.5.0", "page": "p250", "assets": [{"name": "csqtt-v2.5.0.apk", "url": "u250"}]},
-                                 {"tag": "v2.1.9", "page": "p219", "assets": [{"name": "csqtt-v2.1.9.apk", "url": "u219"}]}],
-       ("amurcanov", "proxy-turn-vk-android"): [{"tag": "v1.2.4", "page": "p124", "assets": []}],
-       ("ildarmaga", "wdtt"): [{"tag": "v1.5.76", "page": "p76", "assets": []}],
-       ("Ivan4537", "WDTT-Plus"): [{"tag": "v20", "page": "p20", "assets": []}, {"tag": "v18", "page": "p18", "assets": []}],
-       ("hackdiaz-dev", "free-turn-proxy"): [{"tag": "v4.0.4", "page": "p404", "assets": []},
-                                             {"tag": "v4.0.3", "page": "p403", "assets": [{"name": "client-linux-amd64", "url": "l403"},
-                                                                                          {"name": "client-windows-amd64.exe", "url": "w403"},
-                                                                                          {"name": "server-linux-amd64", "url": "s403"}]}]}
-P._gh_releases = lambda o, r: (CALLS.append((o, r)), REL.get((o, r)))[1]
+def A(*names):
+    return [{"name": n, "browser_download_url": "https://dl/" + n} for n in names]
+REL = {("amurcanov", "csqtt", "v2.5.0"): A("CSQTT-2.5.0.apk"), ("amurcanov", "csqtt", "v2.1.9"): A("CSQTT-universal.apk"),
+       ("amurcanov", "proxy-turn-vk-android", "v1.2.4"): A("WDTT-universal.apk"),
+       ("ildarmaga", "wdtt", "v1.5.0"): A("pwdtt-client-linux-amd64", "pwdtt-client-windows-amd64.exe"),
+       ("ildarmaga", "wdtt", "v1.5.40"): A("pwdtt-client-linux-amd64-NOT-THIS-SERVER"),
+       ("Ivan4537", "WDTT-Plus", "v18"): A("WDTT-Plus-v18-universal-release.apk"),
+       ("hackdiaz-dev", "free-turn-proxy", "v4.0.3"): A("client-linux-amd64", "server-linux-amd64")}
+CALLS, DOWN = [], set()
+def api(path):
+    m = re.match(r"/repos/([^/]+)/([^/]+)/releases/tags/(.+)$", path)
+    CALLS.append(path)
+    o, r, t = m.group(1), m.group(2), urllib.parse.unquote(m.group(3))
+    if (o, r) in DOWN:
+        raise urllib.error.HTTPError(path, 403, "rate limited", {}, io.BytesIO(b""))
+    if (o, r, t) not in REL:
+        raise urllib.error.HTTPError(path, 404, "Not Found", {}, io.BytesIO(b""))
+    return {"tag_name": t, "html_url": "page/" + t, "assets": REL[(o, r, t)]}
+P._gh_api = api
 ch = P._turn_warm_pins(deps)
-check("[3] one releases list per repository", sorted(CALLS) == sorted(W), CALLS)
-check("[3] the versions a release names are pinned: csqtt 2.1.9-4 → v2.1.9 and 2.5.0-1 → v2.5.0, amurcanov 1.2.4-3 → v1.2.4, WDTT-Plus 18-2 → v18, hack-diaz v4.0.3",
-      P._RELEASE_PIN.get(("amurcanov", "csqtt", "2.1.9-4"), {}).get("tag") == "v2.1.9"
-      and P._RELEASE_PIN.get(("amurcanov", "csqtt", "2.5.0-1"), {}).get("tag") == "v2.5.0"
-      and P._RELEASE_PIN.get(("amurcanov", "proxy-turn-vk-android", "1.2.4-3"), {}).get("tag") == "v1.2.4"
-      and P._RELEASE_PIN.get(("Ivan4537", "WDTT-Plus", "18-2"), {}).get("tag") == "v18"
-      and P._RELEASE_PIN.get(("hackdiaz-dev", "free-turn-proxy", "v4.0.3"), {}).get("tag") == "v4.0.3",
-      {"|".join(k): v.get("tag") for k, v in P._RELEASE_PIN.items()})
-check("[3] …and the one none names is not (ildarmaga 1.5.0-4: its tags are v1.5.x CI rebuilds) — the latest stands in",
-      ("ildarmaga", "wdtt", "1.5.0-4") not in P._RELEASE_PIN, "")
-check("[3] the pass says the catalog changed", ch is True, ch)
+pin = lambda o, r, v: P._RELEASE_PIN.get((o, r, v)) or {}
+check("[3] csqtt 2.1.9-4 → v2.1.9 with its Android installer, though v2.5.0 is newer; amurcanov 1.2.4-3 → v1.2.4; WDTT-Plus 18-2 → v18; hack-diaz v4.0.3",
+      pin("amurcanov", "csqtt", "2.1.9-4").get("tag") == "v2.1.9" and pin("amurcanov", "csqtt", "2.1.9-4").get("url", {}).get("android") == "https://dl/CSQTT-universal.apk"
+      and pin("amurcanov", "proxy-turn-vk-android", "1.2.4-3").get("tag") == "v1.2.4" and pin("Ivan4537", "WDTT-Plus", "18-2").get("tag") == "v18"
+      and pin("hackdiaz-dev", "free-turn-proxy", "v4.0.3").get("tag") == "v4.0.3", {k: v.get("tag") for k, v in key(P._RELEASE_PIN).items()})
+check("[3] each OS's installer decided once, per OS — the CLI's Linux client, never its server; no OS without one",
+      pin("hackdiaz-dev", "free-turn-proxy", "v4.0.3").get("url") == {"linux": "https://dl/client-linux-amd64"}, pin("hackdiaz-dev", "free-turn-proxy", "v4.0.3").get("url"))
+check("[3] ildarmaga 1.5.40-2 (source 1.5.0 + our patch) follows its override to v1.5.0, never upstream v1.5.40",
+      pin("ildarmaga", "wdtt", "1.5.40-2").get("tag") == "v1.5.0", pin("ildarmaga", "wdtt", "1.5.40-2"))
+check("[3] a version no release names is not pinned (ildarmaga 1.5.99-1); csqtt 2.5.0-1 is, once v2.5.0 exists",
+      ("ildarmaga", "wdtt", "1.5.99-1") not in P._RELEASE_PIN and pin("amurcanov", "csqtt", "2.5.0-1").get("tag") == "v2.5.0", "")
+check("[3] the pass says serve.json changed", ch is True, ch)
 CALLS.clear()
 ch2 = P._turn_warm_pins(deps)
-check("[3] the next pass asks nothing (the misses wait an hour) and changes nothing", not CALLS and ch2 is False, (CALLS, ch2))
-P._PIN_TRIED.clear()
-P._gh_releases = lambda o, r: (CALLS.append((o, r)), None)[1]
-P._turn_warm_pins(deps)
-check("[3] an hour on, the misses are asked again — and an unreachable GitHub leaves no verdict (asked again next pass)",
-      CALLS == [("ildarmaga", "wdtt")] and not P._PIN_TRIED, (CALLS, P._PIN_TRIED))
-P._gh_releases = lambda o, r: (CALLS.append((o, r)), REL.get((o, r)))[1]
+check("[3] the next 5-minute pass asks nothing (pins kept, the miss rests an hour) and changes nothing", not CALLS and ch2 is False, (CALLS, ch2))
+P._PIN_TRIED.clear(); CALLS.clear(); DOWN.add(("ildarmaga", "wdtt"))
+P._turn_warm_pins(deps); n1 = len(CALLS); P._turn_warm_pins(deps); n2 = len(CALLS)
+check("[3] a failing lookup (403) is rested an hour like a miss — asked once, not every pass",
+      n1 >= 1 and n2 == n1 and ("ildarmaga", "wdtt", "1.5.99-1") in P._PIN_TRIED, (n1, n2, sorted(key(P._PIN_TRIED))))
+DOWN.clear()
+REL[("hackdiaz-dev", "free-turn-proxy", "v4.0.3")] = A("client-linux-amd64", "client-windows-amd64.exe")   # the late upload
+ch3 = P._turn_warm_pins(deps, refresh=True)
+check("[3] the hourly refresh re-reads a pin: a late Windows installer appears", ch3 is True and
+      pin("hackdiaz-dev", "free-turn-proxy", "v4.0.3").get("url", {}).get("windows") == "https://dl/client-windows-amd64.exe", pin("hackdiaz-dev", "free-turn-proxy", "v4.0.3"))
 deps2 = {"node_snaps": {"n1": {"csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"}]}}}
-check("[3] a fleet that changed says so (the sub's serve.json is rewritten)", P._turn_warm_pins(deps2) is True, "")
+ch4 = P._turn_warm_pins(deps2)
+check("[3] a version no server runs any more is dropped, and the pass says so",
+      ch4 is True and set(P._RELEASE_PIN) == {("amurcanov", "csqtt", "2.1.9-4")}, sorted(key(P._RELEASE_PIN)))
 
-print("\n[4] what the catalog publishes")
-P._RELEASE_INFO[("amurcanov", "csqtt")] = {"tag": "v2.5.0", "page": "p250", "assets": [{"name": "csqtt-v2.5.0.apk", "url": "u250"}]}
+print("\n[4] what serve.json publishes")
+P._RELEASE_INFO[("amurcanov", "csqtt")] = {"tag": "v2.5.0", "page": "p250", "assets": [{"name": "CSQTT-2.5.0.apk", "url": "u250"}]}
 P._PLATFORM_ASSET[("amurcanov", "csqtt", "android")] = "u250"
+P._PIN_TRIED.clear()
 P._turn_warm_pins(deps)
-cl = P.turn_catalog_view(pins=True)["clients"]
-an = (cl.get("csqttapp") or {}).get("platforms", {}).get("android") or {}
-check("[4] the CSQTT app on Android: its latest is still 2.5.0", an.get("tag") == "v2.5.0" and an.get("url") == "u250", an)
-pins = an.get("pins") or {}
-check("[4] …and it carries the pin of the version the fleet runs: v2.1.9, its page, its assets, its Android installer",
-      set(pins) == {"2.1.9-4", "2.5.0-1"} and pins["2.1.9-4"].get("tag") == "v2.1.9" and pins["2.1.9-4"].get("page") == "p219"
-      and pins["2.1.9-4"].get("url") == "u219" and pins["2.1.9-4"].get("assets") == [{"name": "csqtt-v2.1.9.apk", "url": "u219"}], pins)
-sc = (cl.get("sidecar") or {}).get("platforms", {})
-check("[4] each OS gets its own installer from the pinned release (the hack-diaz CLI v4.0.3: Linux's binary, Windows' .exe — never the server's)",
-      ((sc.get("linux") or {}).get("pins") or {}).get("v4.0.3", {}).get("url") == "l403"
-      and ((sc.get("windows") or {}).get("pins") or {}).get("v4.0.3", {}).get("url") == "w403", {o: (x or {}).get("pins") for o, x in sc.items()})
-other = [cid for cid, c in cl.items() if cid not in ("csqttapp", "wdttapp", "wdttplus", "pwdttilg", "sidecar")
-         and any((x or {}).get("pins") for x in (c.get("platforms") or {}).values())]
-check("[4] no app from another repository carries a pin (La Lune, FOCSQ, FreeTurn, VK TURN Proxy, …)", not other, other)
-P._turn_warm_pins({"node_snaps": {}})
-check("[4] a version no server runs any more is not published", not ((P.turn_catalog_view(pins=True)["clients"]["csqttapp"]["platforms"]["android"]).get("pins")), "")
+sv = P.turn_catalog_view(pins=True)
+pins = sv.get("pins") or {}
+check("[4] the pins once per repository and version, at the catalog's top",
+      set(pins.get("amurcanov/csqtt") or {}) == {"2.1.9-4", "2.5.0-1"} and pins["amurcanov/csqtt"]["2.1.9-4"]["tag"] == "v2.1.9"
+      and pins["amurcanov/csqtt"]["2.1.9-4"]["url"] == {"android": "https://dl/CSQTT-universal.apk"}, {k: sorted(v) for k, v in pins.items()})
+check("[4] …and no client or OS carries a copy; the CSQTT app's own latest is still 2.5.0",
+      not any("pins" in (x or {}) for c in sv["clients"].values() for x in (c.get("platforms") or {}).values())
+      and sv["clients"]["csqttapp"]["platforms"]["android"].get("url") == "u250", "")
+check("[4] the catalog /api/state carries every 5 s has no pins", "pins" not in P.turn_catalog_view(), "")
+src = open(SERVER, encoding="utf-8").read()
+check("[4] …the /api/state call site asks for none, and only serve.json's does",
+      re.search(r'"turn_catalog": turn_catalog_view\(\),\s+# single-source', src) is not None
+      and src.count("turn_catalog_view(pins=True)") == 1 and '"turn_catalog": turn_catalog_view(pins=True),' in src, "")
 
-check("[4] /api/state's catalog (every 5 s, the SPA's) carries no pins", not any((x or {}).get("pins") for c in P.turn_catalog_view()["clients"].values()
-      for x in (c.get("platforms") or {}).values()), "")
 print("\n[5] the release cache")
 cdeps = {"nodes_path": os.path.join(TMP, "nodes.json")}
 P._release_cache_save(cdeps)
 saved = dict(P._RELEASE_PIN)
 P._RELEASE_PIN.clear()
 P._release_cache_load(cdeps)
-check("[5] pins survive a restart", P._RELEASE_PIN == saved and ("amurcanov", "csqtt", "2.1.9-4") in P._RELEASE_PIN,
-      sorted("|".join(k) for k in P._RELEASE_PIN))
+check("[5] pins survive a restart", P._RELEASE_PIN == saved and ("amurcanov", "csqtt", "2.1.9-4") in P._RELEASE_PIN, sorted(key(P._RELEASE_PIN)))
+
+print("\n[6] swg-sub")
+peers = [{"targets": [{"type": "csqtt", "csqtt": {"version": "2.1.9-4"}},
+                      {"type": "awg", "turn": [{"service": "vk-turn-proxy-samosvalishe-1", "version": "v4.0.3"}]}]}]
+cat = {"servers": [], "pins": {"amurcanov/csqtt": {"2.1.9-4": {"tag": "v2.1.9"}, "2.5.0-1": {"tag": "v2.5.0"}},
+                                "hackdiaz-dev/free-turn-proxy": {"v4.0.3": {"tag": "v4.0.3"}},
+                                "Ivan4537/WDTT-Plus": {"18-2": {"tag": "v18"}}}}
+own = S._own_pins(cat, peers).get("pins")
+check("[6] a subscriber is handed only its own servers' versions (csqtt 2.1.9-4, hack-diaz v4.0.3) — not 2.5.0-1 or WDTT-Plus 18-2 run elsewhere",
+      own == {"amurcanov/csqtt": {"2.1.9-4": {"tag": "v2.1.9"}}, "hackdiaz-dev/free-turn-proxy": {"v4.0.3": {"tag": "v4.0.3"}}}, own)
+rv = S._running_versions({"wdtt": {"w1": {"iface": "w1", "version": "18-2"}, "bad": 5},
+                          "csqtt": [{"iface": ["x"]}, {"iface": "c1", "version": "2.1.9-4"}, "junk"]})
+check("[6] any snapshot shape yields the running versions, a stray value skipped (a map of records, a non-string iface, junk)",
+      rv == {"w1": "18-2", "c1": "2.1.9-4"}, rv)
 
 if FAILS:
     print("\n%d FAIL" % len(FAILS))
-    if PERTURB or PERTURB_REPO:
+    if PERTURB or PERTURB_REPO or PERTURB_OWN:
         print("PERTURB OK — %d check(s) went red" % len(FAILS)); sys.exit(0)
     sys.exit(1)
 print("\nALL PASS")
-if PERTURB or PERTURB_REPO:
+if PERTURB or PERTURB_REPO or PERTURB_OWN:
     print("PERTURB NOT CAUGHT — nothing went red"); sys.exit(1)

@@ -90,7 +90,9 @@ Corresponding Source.
 
 The turn-proxy forks are **not** built or redistributed by us. A node downloads each fork's own release binary
 directly from its author's GitHub releases, so those projects distribute their own work and their licences apply
-between you and them. They are credited in the READMEs; the panel shows which fork each proxy runs.
+between you and them. They are credited in the READMEs — except the forks hidden in the panel since 1.8.9, which a
+node may still run: [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy) and
+[MYSOREZ/vk-turn-proxy](https://github.com/MYSOREZ/vk-turn-proxy). The panel shows which fork each proxy runs.
 
 ---
 

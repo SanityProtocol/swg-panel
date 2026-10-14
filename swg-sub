@@ -444,11 +444,39 @@ class State:
                         "turn": snap.get("turn_proxies") or [],
                         "pub_host": node_public_host(snap),   # reported public IP → WDTT link host when endpoint_host is unset
                         # each WDTT / csqtt server's RUNNING version, by interface → the page offers the app release it names
-                        "tver": {x["iface"]: str(x.get("version") or "") for x in (snap.get("wdtt") or []) + (snap.get("csqtt") or [])
-                                 if isinstance(x, dict) and x.get("iface")},
+                        "tver": _running_versions(snap),
                         # the networks this node ROUTES right now (swg-noded net_carried) — what the page may promise a user
                         "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else []}
         return out
+
+
+def _own_pins(cat, peers_out):
+    """The catalog with only the pins of versions THIS subscriber's servers run: serve.json carries the whole fleet's,
+    and which builds run on other people's servers is not theirs to read."""
+    pins = cat.get("pins")
+    if not isinstance(pins, dict):
+        return cat
+    mine = set()
+    for po in peers_out:
+        for tg in (po.get("targets") or []):
+            for k in ("wdtt", "csqtt"):
+                if isinstance(tg.get(k), dict) and tg[k].get("version"):
+                    mine.add(tg[k]["version"])
+            mine.update(tp.get("version") for tp in (tg.get("turn") or []) if isinstance(tp, dict) and tp.get("version"))
+    return {**cat, "pins": {repo: {v: x for v, x in vs.items() if v in mine}
+                            for repo, vs in pins.items() if isinstance(vs, dict) and any(v in mine for v in vs)}}
+
+
+def _running_versions(snap):
+    """{iface: running version} of a node's WDTT and csqtt servers — any shape a snapshot carries (a list, or a map of
+    records) and nothing else: a stray value is skipped, never an exception inside every subscription's describe()."""
+    out = {}
+    for k in ("wdtt", "csqtt"):
+        xs = snap.get(k)
+        for x in (xs.values() if isinstance(xs, dict) else xs if isinstance(xs, list) else ()):
+            if isinstance(x, dict) and isinstance(x.get("iface"), str):
+                out[x["iface"]] = str(x.get("version") or "")
+    return out
 
 
 # ── networks this user can reach (docs/NETWORKS-PLAN.md §18) ──
@@ -756,6 +784,7 @@ def read_data(state, token):
             _ty = (t.get("type") or "wg")
             if _ty in ("wdtt", "csqtt") and _ty in _hide:
                 continue
+            nd = describe.get(t.get("node")) or {}
             if (t.get("type") or "") == "wdtt":
                 # WDTT peer: keyless. Its client link carries only the WRAP password (roster) + the node's public
                 # host + the instance's DTLS/WG ports (from the node store, NOT a snapshot). No WG meta / no `sec`.
@@ -768,7 +797,7 @@ def read_data(state, token):
                     "type": "wdtt",
                     "wdtt": {"password": p.get("wdtt_password") or "",
                              "fork": inst.get("fork") or "amurcanov",   # which WDTT fork → resolve the right per-OS client + encoder
-                             "version": ((describe.get(t.get("node")) or {}).get("tver") or {}).get(t.get("iface")) or "",
+                             "version": (nd.get("tver") or {}).get(t.get("iface")) or "",
 
                              "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
                                                or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
@@ -793,12 +822,11 @@ def read_data(state, token):
                               "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
                                                 or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                               "port": port,
-                              "version": ((describe.get(t.get("node")) or {}).get("tver") or {}).get(t.get("iface")) or "",
+                              "version": (nd.get("tver") or {}).get(t.get("iface")) or "",
                               "vk_hash": (p.get("vk_hash") or "").strip()},
                     "primary": _role_of(t),
                 })
                 continue
-            nd = describe.get(t.get("node")) or {}
             meta = (nd.get("ifaces") or {}).get(t.get("iface")) or {}
             awg = meta.get("awg_params") or {}
             lp = meta.get("listen_port")
@@ -861,7 +889,7 @@ def read_data(state, token):
             "turn_fork_colors": subs.get("turn_fork_colors") or {}, "iface_colors": subs.get("iface_colors") or {},
             "turn_client_default": subs.get("turn_client_default") or {},   # admin's END-USER default app per (fork, OS) → the page hands out THIS app instead of the compat-ranked top one
             "turn_client_settings": subs.get("turn_client_settings") or {},   # SETTINGS SPLIT: admin's per-fork client (app) values → the sub page generates configs with them (encoder fills any unset with defaults)
-            "turn_catalog": subs.get("turn_catalog") or {},   # AXIS-3: server→client/app/scheme/store metadata so the page can offer "Get the app" install links (public app links only, no secrets)
+            "turn_catalog": _own_pins(subs.get("turn_catalog") or {}, peers_out),   # AXIS-3: server→client/app/scheme/store metadata so the page can offer "Get the app" install links (public app links only, no secrets)
             "wg_catalog": subs.get("wg_catalog") or {},   # WG/AWG client apps + per-OS resolved installer (download bubble): body → downloads page, icon → direct file
             "node_colors": subs.get("node_colors") or {},   # per-node colour so each server name renders in its panel colour
             "langs": {"enabled": langs.get("enabled") or ["en"], "default": langs.get("default") or "en"}}

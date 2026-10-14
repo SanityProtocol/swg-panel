@@ -235,11 +235,13 @@
     var os = subOs();
     function has(links) { return links && (links.url || links.github || links.play || links.appstore); }
     function pinned(links) {
-      var pin = ver && links.pins && links.pins[ver];
       var m = /^https?:\/\/github\.com\/([^\/]+\/[^\/#?]+)/.exec(links.github || "");
-      if (!pin || !m || !srv || m[1] !== srv.owner) return links;   // another author's app keeps its own versioning
+      if (!ver || !m || !srv || m[1] !== srv.owner) return links;   // another author's app keeps its own versioning
+      var pin = ((((_lastData && _lastData.turn_catalog) || {}).pins || {})[srv.owner] || {})[ver];
+      var u = pin && pin.url && pin.url[os];
+      if (!u) return links;   // no release for this version — or none of its files is this OS's installer: the latest, as before
       var out = {}; for (var k in links) out[k] = links[k];
-      out.url = pin.url || ""; out.page = pin.page || links.page; out.tag = pin.tag || ""; out.assets = pin.assets || []; out.pinned = true;
+      out.url = u; out.page = pin.page || links.page; out.tag = pin.tag || ""; out.assets = pin.assets || []; out.pinned = true;
       return out;
     }
     // Build the resolved-app record for one client id on the visitor's OS (null if it doesn't ship for this OS).
