@@ -17,7 +17,8 @@ subscriber is handed (the page half is sub_page_render_selftest [8]).
       no network (a boot before egress, GitHub blocked) rests nothing and stops the pass at its first lookup (one
       timeout per pass, not one per version); the hourly refresh re-reads a pin (a release captured mid-upload gains its
       late installers), asking its own tag once; a version is retired only after an hour no snapshot shows it — a row
-      one sync misses unpublishes nothing, on a 5-minute pass or the hourly one
+      one sync misses unpublishes nothing, on a 5-minute pass or the hourly one (a monotonic clock: a boot-time step
+      moves nothing); the loop runs the refresh — every pin re-asked — hourly, never on its 2-minute retries
   [4] serve.json's catalog carries the pins once per (repository, version) at its top, no client or OS copy; the
       catalog /api/state carries every 5 s has none, and that call site asks for none
   [5] the release cache: pins survive a restart and are published by the first pass, before any node reports again; a
@@ -74,7 +75,7 @@ def load(name, path):
 P = load("swgpanel_apppins", planted(SERVER, ([('    for x in (v, re.sub(r"-\\d+$", "", v)):\n', "    for x in (v,):\n", "our build suffix kept")] if PERTURB else [])
                                           + ([("        if ver and orp in app_repos:\n", "        if ver:\n", "every server wanted")] if PERTURB_REPO else [])
                                           + ([("            break                                     # no network", "            continue  #", "a lookup per version offline")] if PERTURB_OFFLINE else [])
-                                          + ([("if now - t >= _PIN_KEEP]:", "if t < now]:", "retired when unseen once")] if PERTURB_SEEN else [])))
+                                          + ([("if seen - t >= _PIN_KEEP]:", "if t < seen]:", "retired when unseen once")] if PERTURB_SEEN else [])))
 S = load("swgsub_apppins", planted(SUB, [("for repo, vs in pins.items() if isinstance(vs, dict) and any(v in mine for v in vs)}}",
                                           "for repo, vs in pins.items() if isinstance(vs, dict)} if False else pins}",
                                           "every subscriber gets the fleet's pins")] if PERTURB_OWN else []))
@@ -188,6 +189,12 @@ check("[3] a version no snapshot has shown for an hour is retired, and the pass 
       ch4 is True and set(P._RELEASE_PIN) == {CSQ, IMG} and set(P._turn_pins_view()) == {"amurcanov/csqtt", "Ivan4537/WDTT-Plus"},
       sorted(key(P._RELEASE_PIN)))
 
+src = open(SERVER, encoding="utf-8").read()
+check("[3] the loop refreshes (every pin re-asked) only on the hourly pass — a rate-limited panel's 2-minute retries ask none",
+      "            if (pins(bool(resolved)) or resolved):" in src and "pins(True)" not in src, "")
+check("[3] the last-seen clock is monotonic, at the pass and at the cache load",
+      "    seen = time.monotonic()" in src and "_PIN_SEEN[(o, r, v)] = time.monotonic()" in src and "_PIN_SEEN[(o, r, v)] = time.time()" not in src, "")
+
 print("\n[4] what serve.json publishes")
 P._RELEASE_INFO[("amurcanov", "csqtt")] = {"tag": "v2.5.0", "page": "p250", "assets": [{"name": "CSQTT-2.5.0.apk", "url": "u250"}]}
 P._PLATFORM_ASSET[("amurcanov", "csqtt", "android")] = "u250"
@@ -202,7 +209,6 @@ check("[4] …and no client or OS carries a copy; the CSQTT app's own latest is 
       not any("pins" in (x or {}) for c in sv["clients"].values() for x in (c.get("platforms") or {}).values())
       and sv["clients"]["csqttapp"]["platforms"]["android"].get("url") == "u250", "")
 check("[4] the catalog /api/state carries every 5 s has no pins", "pins" not in P.turn_catalog_view(), "")
-src = open(SERVER, encoding="utf-8").read()
 check("[4] …the /api/state call site asks for none, and only serve.json's does",
       re.search(r'"turn_catalog": turn_catalog_view\(\),\s+# single-source', src) is not None
       and src.count("turn_catalog_view(pins=True)") == 1 and '"turn_catalog": turn_catalog_view(pins=True),' in src, "")
