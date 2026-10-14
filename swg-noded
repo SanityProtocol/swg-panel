@@ -21439,10 +21439,14 @@ def _turn_sock_bufs(listeners=1):
                 _SOCK_BUF_NOTED.add(key)
                 if new >= want:
                     log(LOG_INFO, "net.core.%s: %d -> %d (turn-family listeners; applies on their next restart)", key, cur, new)
+                elif NODE_KIND == "docker":
+                    log(LOG_WARNING, "net.core.%s is %d and a container cannot raise it — the host's: run the update "
+                          "(it writes %s there), or sysctl -w net.core.%s=%d on the host", key, cur, SOCK_BUF_CONF, key, want)
                 else:
                     log(LOG_WARNING, "net.core.%s is %d and could not be raised (read-only /proc/sys?) — turn-family DTLS "
                           "handshakes may fail under load", key, cur)
-    _turn_sock_persist(want)
+    if NODE_KIND != "docker":                          # a container's /etc/sysctl.d is its own: never applied, lost on recreate
+        _turn_sock_persist(want)
 
 
 def _turn_sock_persist(want):

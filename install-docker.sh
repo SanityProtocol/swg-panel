@@ -1320,6 +1320,8 @@ PYHOST
   else
     ok "bridge networking — publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml, then '$COMPOSE --profile $PROFILE up -d'"
   fi
+  if $DRYRUN; then echo "    [skip] raise the host's UDP socket-buffer caps for turn-family listeners (/etc/sysctl.d/99-swg-turn.conf)"
+  else turn_sock_buf_host; [ "$TURN_SOCK_BUF_CHANGED" = 1 ] && ok "UDP socket-buffer caps raised on the host for turn-family listeners (/etc/sysctl.d/99-swg-turn.conf)"; fi
 
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
   # Approach B: turn-proxies are managed from the PANEL (they run as sibling swg-turn-* containers). No prompt —

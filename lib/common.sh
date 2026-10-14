@@ -3039,6 +3039,31 @@ swg_journal_heal(){   # → SWG_JOURNAL_CHANGED = 1 when it was written (the cal
 # fleet's level, so the drop-in is static: LogLevelMax=notice drops those lines, SyslogLevel=notice keeps the units' own
 # output (rare: a line when they act). swg-update only where no bare-metal panel shares the unit — that panel's
 # swg-netctl writes its level-following drop-in under /run, which a same-named file here would mask.
+turn_sock_buf_host(){   # a Docker node's socket-buffer caps, raised and persisted on the HOST → 0; TURN_SOCK_BUF_CHANGED=1 when written
+  # swg-noded raises net.core.{r,w}mem_max for the turn-family listeners (csqtt asks for 16 MiB) and persists them in
+  # /etc/sysctl.d/99-swg-turn.conf — from a container it can do neither: /proc/sys is read-only there, and these caps
+  # are the host's, not the container's network namespace's. Sized as swg-noded's _turn_sock_target for up to four
+  # listeners (udp_mem's ceiling / 8, between 4 and 24 MiB); only raises — a higher value the operator set is kept.
+  local f=/etc/sysctl.d/99-swg-turn.conf pages want k cur v body=""
+  TURN_SOCK_BUF_CHANGED=0
+  pages="$(awk '{print $3}' /proc/sys/net/ipv4/udp_mem 2>/dev/null)"
+  case "$pages" in ''|*[!0-9]*) want=4194304;; *) want=$(( pages * 4096 / 8 ));; esac
+  [ "$want" -gt 25165824 ] && want=25165824
+  [ "$want" -lt 4194304 ] && want=4194304
+  for k in rmem_max wmem_max; do
+    cur="$(cat "/proc/sys/net/core/$k" 2>/dev/null)"; case "$cur" in ''|*[!0-9]*) cur=0;; esac
+    v=$want; [ "$cur" -gt "$v" ] && v=$cur
+    body="${body}net.core.$k = $v"$'\n'
+  done
+  body="# swg-panel: socket-buffer caps for turn-family listeners (WDTT forks / csqtt / turn-proxies), on the HOST:
+# a Docker node cannot raise them itself (read-only /proc/sys). Written by install-docker.sh / update.sh.
+$body"
+  [ "$(cat "$f" 2>/dev/null)"$'\n' = "$body" ] && return 0
+  mkdir -p /etc/sysctl.d 2>/dev/null && printf '%s' "$body" > "$f" 2>/dev/null || return 0
+  sysctl -q -p "$f" >/dev/null 2>&1 || true
+  TURN_SOCK_BUF_CHANGED=1
+}
+
 docker_host_log_dropins(){   # → 0; DOCKER_LOG_DROPINS_CHANGED = how many were written (the caller daemon-reloads)
   local u f want; DOCKER_LOG_DROPINS_CHANGED=0
   want="$(printf '[Service]\nLogLevelMax=notice\nSyslogLevel=notice')"
