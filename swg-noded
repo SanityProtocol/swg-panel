@@ -22033,16 +22033,41 @@ def _csqtt_webport(listen):
     except Exception:
         return 46002
 
-def _csqtt_desired_body(passwords):
+_CSQTT_APP_ROUTING_LISTS = ("packages", "domains", "ips")
+_CSQTT_APP_ROUTING_MODES = {"apps_mode": ("all", "except", "only"), "domains_mode": ("direct", "tunnel"),
+                            "ips_mode": ("direct", "tunnel")}
+
+def _csqtt_app_routing(r):
+    """The panel's App routing (a 2.5 server's one rule, docs/CSQTT-APP-ROUTING-PLAN.md), only its known keys and types —
+    the panel validated the content; this keeps a malformed record from reaching the server's desired.json."""
+    if not isinstance(r, dict):
+        return None
+    out = {k: (r.get(k) if r.get(k) in ok else ok[0]) for k, ok in _CSQTT_APP_ROUTING_MODES.items()}
+    for k in _CSQTT_APP_ROUTING_LISTS:
+        out[k] = [str(x) for x in (r.get(k) or []) if isinstance(x, str) and x][:500]
+    out["template_domains"] = bool(r.get("template_domains"))
+    return out
+
+def _csqtt_desired_body(passwords, app_routing=None):
     """csqtt desired.json = a LIST of panel-owned password records (matches the Rust patch's SwgDesiredFile).
-    NOTE the shape differs from WDTT's dict-keyed-by-password body."""
+    NOTE the shape differs from WDTT's dict-keyed-by-password body. `app_routing` (2.5's one rule for every password) is
+    written ONLY when set, so a server without it keeps the file it always had — no rewrite, no SIGHUP, on an update."""
     out = []
     for pw, e in (passwords or {}).items():
         e = e or {}
-        out.append({"password": pw, "expires_at": int(e.get("expires_at") or 0),
-                    "vk_hash": str(e.get("vk_hash") or ""), "name": str(e.get("name") or ""),
-                    "is_deactivated": bool(e.get("is_deactivated"))})
-    return json.dumps({"passwords": out})
+        rec = {"password": pw, "expires_at": int(e.get("expires_at") or 0),
+               "vk_hash": str(e.get("vk_hash") or ""), "name": str(e.get("name") or ""),
+               "is_deactivated": bool(e.get("is_deactivated"))}
+        # a password's own App routing overrides the server's (2.5.0+): present → its own rule, and an all-default one
+        # means NO rule for it; absent → the server's. Only when the panel sends one — the file is otherwise unchanged.
+        if isinstance(e.get("app_routing"), dict):
+            rec["app_routing"] = _csqtt_app_routing(e["app_routing"])
+        out.append(rec)
+    body = {"passwords": out}
+    ar = _csqtt_app_routing(app_routing) if app_routing else None   # {} at the server level is no rule (not an empty one)
+    if ar:
+        body["app_routing"] = ar
+    return json.dumps(body)
 
 def _csqtt_env_text(inst):
     cfgdir = _csqtt_dir(inst["iface"])
@@ -22233,7 +22258,7 @@ def _csqtt_write_cfgdir(inst, binshared, binp, cfgdir):
         if os.path.islink(binp) or os.path.exists(binp): os.remove(binp)
         os.symlink(binshared, binp)
     with open(cfgdir + "/csqtt.env", "w") as f: f.write(_csqtt_env_text(inst))
-    with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(inst.get("passwords")) + "\n")
+    with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(inst.get("passwords"), inst.get("app_routing")) + "\n")
 
 # ── Docker run-model (mirror of the WDTT one above) ──────────────────────────────────────────────────────────
 # A container has no systemd, so on a docker node swg-noded runs each csqtt server as a SUPERVISED CHILD PROCESS
@@ -22625,11 +22650,11 @@ def _csqtt_install(inst):
     host_sh("systemctl daemon-reload; " + sc_enable_now(_csqtt_svc(iface)) + " >/dev/null 2>&1")
     return _csqtt_verify(iface)
 
-def _csqtt_reconcile_desired(iface, passwords):
-    """Write the panel's desired password set + SIGHUP the server → applied with no restart / no tunnel drop."""
+def _csqtt_reconcile_desired(iface, passwords, app_routing=None):
+    """Write the panel's desired password set (+ App routing) + SIGHUP the server → applied with no restart / no tunnel drop."""
     cfgdir = _csqtt_dir(iface)
     try:
-        with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(passwords) + "\n")
+        with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(passwords, app_routing) + "\n")
     except Exception as e:
         return ("desired write failed: " + str(e))[:160]
     if NODE_KIND == "docker":
@@ -22641,13 +22666,13 @@ def _csqtt_reconcile_desired(iface, passwords):
     w = host_sh("systemctl kill -s HUP " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null || true")
     return "" if w.returncode == 0 else (w.stderr or w.stdout or "reconcile failed").strip()[:160]
 
-def _csqtt_desired_changed(iface, passwords):
+def _csqtt_desired_changed(iface, passwords, app_routing=None):
     try:
         with open(_csqtt_dir(iface) + "/desired.json") as f:
             cur = f.read().strip()
     except Exception:
         return True
-    return cur != _csqtt_desired_body(passwords).strip()
+    return cur != _csqtt_desired_body(passwords, app_routing).strip()
 
 def _csqtt_params_changed(prev, inst):
     return ((prev.get("listen") or "") != (inst.get("listen") or "")
@@ -23381,8 +23406,8 @@ def reconcile_csqtt(want, remove=None):
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                     res["changed"] += 1
-                if _pw_seen and _csqtt_desired_changed(iface, inst.get("passwords")):
-                    err = _csqtt_reconcile_desired(iface, inst.get("passwords"))
+                if _pw_seen and _csqtt_desired_changed(iface, inst.get("passwords"), inst.get("app_routing")):
+                    err = _csqtt_reconcile_desired(iface, inst.get("passwords"), inst.get("app_routing"))
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                     res["changed"] += 1

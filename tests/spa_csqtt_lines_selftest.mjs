@@ -16,6 +16,8 @@
  *      the same record is a switch again
  *  [8] the fork badge names the line the server RUNS (operator, 2026-10-16: "amurcanov 2.5", no line of its own) — during a
  *      switch still the running one, and 2.1 for a node that reports no line
+ *  [9] App routing (2.5): the sheet's form → the record the panel stores — "every app" drops the app list, the built-in
+ *      list is a direct list (dropped in tunnel mode), lists split on lines or commas; a stored rule round-trips the form
  *
  * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen> plants one regression, expects RED.
  */
@@ -32,6 +34,7 @@ const PLANTS = {
   refuse: ["turn.js", "    ...(id !== value && !can.includes(id) ? {", "    ...(false ? {"],
   failed: ["turn.js", "  const failed = c.line_failed && c.line_failed.line === want ? c.line_failed : null;", "  const failed = c.line_failed || null;"],
   runline: ["turn.js", "  return seen ? s.run : s.want;", "  return s.want;"],
+  artpl: ["turn.js", "template_domains: a.domains_mode === \"direct\" && !!a.template_domains,", "template_domains: !!a.template_domains,"],
   runseen: ["turn.js", "  return seen ? s.run : s.want;", "  return s.run;"],
   stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
           "export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;"],
@@ -125,5 +128,15 @@ check("[8] mid-switch (asked 2.5, runs 2.1): the badge says what runs, 2.1", TU.
 check("[8] a node that reports no line: 2.1", TU.csqttRunLine("nnew", "o") === "2.1", TU.csqttRunLine("nnew", "o"));
 Store.nodes[0].csqtt_cfg.g = { line: "2.5" };   // configured 2.5, not in the node's report (awaiting restore, a stale node)
 check("[8] a 2.5 server the node does not report: its configured 2.5, never 2.1", TU.csqttRunLine("nnew", "g") === "2.5", TU.csqttRunLine("nnew", "g"));
+
+// [9]
+const f9 = { apps_mode: "all", packages: "com.a", domains_mode: "tunnel", domains: "a.ru\n b.ru ,c.ru", template_domains: true, ips_mode: "direct", ips: "" };
+const b9 = TU.arBody(f9);
+check("[9] every app: no app list", JSON.stringify(b9.packages) === "[]", b9);
+check("[9] the built-in list is dropped in tunnel mode", b9.template_domains === false, b9);
+check("[9] lists split on lines and commas, trimmed", JSON.stringify(b9.domains) === '["a.ru","b.ru","c.ru"]', b9.domains);
+const rec9 = { apps_mode: "except", packages: ["org.telegram.messenger"], domains_mode: "direct", domains: ["ya.ru"], template_domains: true, ips_mode: "direct", ips: ["10.0.0.0/8"] };
+check("[9] a stored rule round-trips the form", JSON.stringify(TU.arBody(TU.arInit({ app_routing: rec9 }))) === JSON.stringify(rec9), TU.arBody(TU.arInit({ app_routing: rec9 })));
+check("[9] no stored rule: every app, direct, empty", JSON.stringify(TU.arBody(TU.arInit({}))) === JSON.stringify({ apps_mode: "all", packages: [], domains_mode: "direct", domains: [], template_domains: false, ips_mode: "direct", ips: [] }));
 
 done(!!MODE, MODE || "");

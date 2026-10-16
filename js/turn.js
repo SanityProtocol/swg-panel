@@ -2633,6 +2633,45 @@ export function CsqttDeleteSheet({ node, iface }) {
   <//>`;
 }
 
+// ── csqtt 2.5 App routing (docs/CSQTT-APP-ROUTING-PLAN.md) — one rule for every user of the server, which the server
+// hands each user's CSQTT app when it connects. "direct" = what is listed bypasses the tunnel; "tunnel" = only what is
+// listed uses it. The lists are edited as text, one entry a line; the panel validates and normalises them.
+const AR_LINES = s => String(s || "").split(/[\n,]+/).map(x => x.trim()).filter(Boolean);
+export const arInit = cfg => { const a = (cfg && cfg.app_routing) || {};
+  return { apps_mode: a.apps_mode || "all", domains_mode: a.domains_mode || "direct", ips_mode: a.ips_mode || "direct",
+           template_domains: !!a.template_domains,
+           packages: (a.packages || []).join("\n"), domains: (a.domains || []).join("\n"), ips: (a.ips || []).join("\n") }; };
+export const arBody = a => ({ apps_mode: a.apps_mode, packages: a.apps_mode === "all" ? [] : AR_LINES(a.packages),
+  domains_mode: a.domains_mode, domains: AR_LINES(a.domains), template_domains: a.domains_mode === "direct" && !!a.template_domains,
+  ips_mode: a.ips_mode, ips: AR_LINES(a.ips) });
+const arSummary = a => { const b = arBody(a), on = [];
+  if (b.apps_mode !== "all") on.push(T("Apps"));
+  if (b.domains.length || b.domains_mode === "tunnel") on.push(T("Domains"));
+  if (b.template_domains) on.push(T("built-in list"));
+  if (b.ips.length || b.ips_mode === "tunnel") on.push(T("Addresses"));
+  return on.length ? on.join(", ") : html`<span class="faint">${T("val|none")}</span>`; };
+function AppRoutingFields({ value: a, onChange }) {
+  const set = (k, v) => onChange({ ...a, [k]: v });
+  const list = (k, ph, hint) => html`<textarea class="ta" rows="3" spellcheck="false" autocomplete="off" placeholder=${ph}
+      value=${a[k]} onInput=${e => set(k, e.target.value)}></textarea><div class="hint">${hint}</div>`;
+  const where = [{ value: "direct", label: T("These go direct") }, { value: "tunnel", label: T("Only these use the tunnel") }];
+  return html`<div class="hint" style="margin:0 0 10px">${T("Sent to every user's CSQTT app when it connects. What you list goes straight to the internet instead of through the tunnel — or, if you pick the other mode, only what you list uses the tunnel. A change reaches each user at their next connect.")}</div>
+    <div class="field"><label>${T("Apps")}</label>
+      <${Dropdown} value=${a.apps_mode} onChange=${v => set("apps_mode", v)} ariaLabel=${T("Apps")} options=${[
+        { value: "all", label: T("Every app uses the tunnel") }, { value: "except", label: T("Every app except these") },
+        { value: "only", label: T("Only these apps") }]}/>
+      ${a.apps_mode === "all" ? null : list("packages", "org.telegram.messenger", T("Android app IDs, one per line — the part after id= in the app's Google Play link."))}</div>
+    <div class="field"><label>${T("Domains")}</label>
+      <${Dropdown} value=${a.domains_mode} onChange=${v => set("domains_mode", v)} ariaLabel=${T("Domains")} options=${where}/>
+      ${list("domains", "ya.ru\ngosuslugi.ru", T("One per line. Subdomains are included."))}
+      ${a.domains_mode === "direct" ? html`<div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+        <${Switch} on=${a.template_domains} onChange=${v => set("template_domains", v)}/>
+        <span>${T("Also the built-in list of Russian sites (about 500 domains)")}</span></div>` : null}</div>
+    <div class="field"><label>${T("Addresses")}</label>
+      <${Dropdown} value=${a.ips_mode} onChange=${v => set("ips_mode", v)} ariaLabel=${T("Addresses")} options=${where}/>
+      ${list("ips", "10.0.0.0/8\n192.168.1.10", T("One IP address or range per line."))}</div>`;
+}
+
 export function openEditCsqtt(node, iface) { openModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`); }
 export function EditCsqttSheet({ node, iface }) {
   useStore();
@@ -2648,10 +2687,13 @@ export function EditCsqttSheet({ node, iface }) {
   const [disc, setDisc] = useState({ routing: true, filters: false });
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
+  const [ar, setAr] = useState(() => arInit(cfg));                   // App routing — a 2.5 server's
+  const is25 = csqttRunLine(node, iface) === "2.5";
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
     // sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept
-    const r = await sheetSend(() => api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...dns.body, ...egressBody(eg) }), errMsg(setMsg), setBusy);
+    const r = await sheetSend(() => api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...dns.body, ...egressBody(eg),
+      ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);
     if (!r.ok) return;
     Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     reportDropped(r); Store.poll();   // §5.4
@@ -2687,6 +2729,9 @@ export function EditCsqttSheet({ node, iface }) {
       open=${disc.filters} onToggle=${() => tog("filters")}>
       <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
     <//>
+    ${is25 ? html`<${Disclosure} title=${T("App routing")} summary=${arSummary(ar)} open=${disc.approuting} onToggle=${() => tog("approuting")}>
+      <${AppRoutingFields} value=${ar} onChange=${setAr}/>
+    <//>` : null}
     ${/* ⚠️ THESE SHEETS HAD NO "Advanced settings" AT ALL, and `wan_iface` is a real per-instance field for
           them — the node runs the same `_egress_des` ladder for a WDTT/csqtt subnet as for an interface.
           Moving the pin under Advanced without giving them one would have deleted the control for this

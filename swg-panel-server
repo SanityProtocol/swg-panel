@@ -19364,6 +19364,66 @@ def _apply_egress_mode(rec, body, nodes, nid, deps):
     return None, None
 
 
+# ── csqtt 2.5 App routing (docs/CSQTT-APP-ROUTING-PLAN.md) ────────────────────────────────────────────────────────────
+# One routing rule per server, which the 2.5 server hands each user's app on connect: which apps, domains and addresses go
+# straight to the internet instead of through the tunnel ("direct" — the default), or the reverse ("only these use the
+# tunnel"). Upstream checks nothing, so the panel does — above all that an "only these" list is never empty, which would
+# send nothing at all through the tunnel.
+_AR_PKG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+_AR_HOST_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_AR_MAX = 500
+
+def _validate_app_routing(v):
+    """(record or None, perr dict or None). None = no rule (absent, or everything at its default)."""
+    if v is None or v == {}:
+        return None, None
+    if not isinstance(v, dict):
+        return None, perr("App routing: not a valid setting")
+    def lst(k):
+        x = v.get(k) or []
+        if isinstance(x, str):
+            x = x.replace(",", "\n").split("\n")
+        return [str(i).strip() for i in x if str(i).strip()] if isinstance(x, list) else []
+    apps = v.get("apps_mode") or "all"
+    dmode = v.get("domains_mode") or "direct"
+    imode = v.get("ips_mode") or "direct"
+    if apps not in ("all", "except", "only") or dmode not in ("direct", "tunnel") or imode not in ("direct", "tunnel"):
+        return None, perr("App routing: not a valid setting")
+    pk = list(dict.fromkeys(lst("packages"))) if apps != "all" else []
+    dm = list(dict.fromkeys(d.lower().lstrip("*").lstrip(".").rstrip(".") for d in lst("domains")))
+    ips = list(dict.fromkeys(lst("ips")))
+    if len(pk) > _AR_MAX:
+        return None, perr("App routing: at most {v1} apps", v1=_AR_MAX)
+    if len(dm) > _AR_MAX:
+        return None, perr("App routing: at most {v1} domains", v1=_AR_MAX)
+    if len(ips) > _AR_MAX:
+        return None, perr("App routing: at most {v1} addresses", v1=_AR_MAX)
+    for x in pk:
+        if not _AR_PKG_RE.match(x):
+            return None, perr("App routing: {v1} is not an Android app ID (like org.telegram.messenger)", v1=x[:80])
+    for x in dm:
+        if not _AR_HOST_RE.match(x):
+            return None, perr("App routing: {v1} is not a domain", v1=x[:80])
+    for x in ips:
+        try:
+            ipaddress.ip_network(x, strict=False)
+        except ValueError:
+            return None, perr("App routing: {v1} is not an IP address or range", v1=x[:80])
+    # "only these" with nothing listed sends NOTHING through the tunnel — refused, never stored
+    if apps == "only" and not pk:
+        return None, perr("App routing: list at least one app to send through the tunnel")
+    if dmode == "tunnel" and not dm:
+        return None, perr("App routing: list at least one domain to send through the tunnel")
+    if imode == "tunnel" and not ips:
+        return None, perr("App routing: list at least one address to send through the tunnel")
+    tpl = bool(v.get("template_domains")) and dmode == "direct"   # the built-in list is a direct list
+    rec = {"apps_mode": apps, "packages": pk, "domains_mode": dmode, "domains": dm, "template_domains": tpl,
+           "ips_mode": imode, "ips": ips}
+    if apps == "all" and not dm and not tpl and dmode == "direct" and not ips and imode == "direct":
+        return None, None                            # everything at its default: no rule
+    return rec, None
+
+
 def _validate_block(block, panel_settings):
     """Clean an interface's active block-category list → known block-category ids only, in order, deduped.
     Unknown/removed ids are DROPPED (never an error) so a category deleted on the Block-lists screen can't lock
@@ -23791,7 +23851,8 @@ def api(method, path, qs, body, deps):
                         # routing / filters. Config fields only — never the owner password / minted access passwords.
                         "csqtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
-                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns", "dns_orig", "bind_ip", "line") if k in ov}
+                                                                    "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns", "dns_orig", "bind_ip", "line",
+                                                                    "app_routing") if k in ov}
                                       for ifn, ov in _c.items()},
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
@@ -29328,6 +29389,14 @@ def api(method, path, qs, body, deps):
         # one bit keyed to node_cfg["interfaces"] — a self-contained kind (WDTT and csqtt alike) doesn't get it.
         if "block" in body:
             inst["block"] = _validate_block(body.get("block"), deps.get("panel_settings"))
+        if "app_routing" in body:                    # 2.5's App routing: one rule for every user of the server
+            _ar, _are = _validate_app_routing(body.get("app_routing"))
+            if _are:
+                return 400, {"ok": False, **_are, "code": "bad_request"}
+            if _ar:
+                inst["app_routing"] = _ar
+            else:
+                inst.pop("app_routing", None)
         _rv = reach_level_set(inst, body)            # device access (§10.4) — `inst` is a copy, so a refusal changes nothing
         if _rv:
             return 400, {"ok": False, **_rv, "code": "bad_request"}
