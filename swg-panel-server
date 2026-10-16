@@ -1511,9 +1511,9 @@ CSQTT_BUILDS = [("2.1.9-4", "csqtt-2.1.9-4"), ("2.1.9-3", "csqtt-2.1.9-3"), ("2.
 # keeping its users — a separate thing from the build list above, which is the 2.1 line's. Display order; each
 # line's builds newest first. The CSQTT_BUILDS rule holds per line: a line is listed only once a build of it is
 # PUBLISHED, because every entry is a promise the node can fetch it.
-#   SWG_CSQTT_STANDIN="2.5=2.1.9-3" lists a STAND-IN line made of builds that already exist, so the whole switch
-#   path can be run before the real release (test panels only). Unset — the default — there is one line, and the
-#   panel, every node reply and the SPA are exactly what they were before lines.
+#   SWG_CSQTT_STANDIN="<line>=<published build>" lists a STAND-IN line made of builds that already exist, so a switch path
+#   can be run before a real release (test panels only; it played 2.5 until csqtt-2.5.0, 2026-10-16). It never replaces a
+#   released line, and a node runs only the lines its noded knows (CSQTT_KNOWN_LINES) — a new line needs a noded change.
 CSQTT_DEFAULT_LINE = "2.1"
 # 2.5: amurcanov 2.5.0 with the swg-panel integration ported (release csqtt-2.5.0, 2026-10-16). A new protocol — a 2.1 app
 # cannot reach a 2.5 server, nor a 2.5 app a 2.1 one (catalog csqtt_lines decides which apps each server is offered).
@@ -1524,7 +1524,7 @@ def _csqtt_standin(spec):
     line = line.strip()
     known = dict(CSQTT_BUILDS)
     builds = [(v.strip(), known[v.strip()]) for v in vers.split(",") if v.strip() in known]
-    if _CSQTT_LINE_RE.match(line) and line not in CSQTT_LINES and builds:   # never over a real line (2.1, or 2.5 once released)
+    if _CSQTT_LINE_RE.match(line) and line not in CSQTT_LINES and builds:   # never over a released line (2.1, 2.5)
         CSQTT_LINES[line] = builds
 _csqtt_standin(os.environ.get("SWG_CSQTT_STANDIN", ""))
 def _csqtt_line_of(rec):                      # an instance record's line (absent / unknown = 2.1: every pre-lines server)
@@ -6227,9 +6227,12 @@ KEYLESS_SHARE_BUILDS = {
                                                   # 1.5.0-4 (28aba26f, 2026-09-25): .campaign/rigs/keyless-ildarmaga-wg-q.sh — the
                                                   # unpatched qWDTT client (same wire), 1.5.0-3 as the control: T1–T7 pass on both,
                                                   # and the -dns value reaches the client's config at start and after a SIGHUP
-    "csqtt":     {"raw": ("2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
+    "csqtt":     {"raw": ("2.5.0", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
                                                   # 2.1.9 fails both; 2.1.9-3 (eb86d752) and 2.1.9-4 (e7f76fd2) the same on their published bytes,
-                                                  # 2026-09-25 — a moved password keeps its address
+                                                  # 2026-09-25 — a moved password keeps its address. 2.5.0 (line 2.5, 71adc550 = the published
+                                                  # bytes, 2026-10-16, .campaign/rigs/csqtt25.sh): reach, IPv4 spoof +0 and IPv6 uplink +0 at the
+                                                  # TUN, deactivate and revoke cut the live session and refuse the reconnect, the address stable
+                                                  # across reconnects; no borrow to refuse — 2.5 has no devices, the address is the password's
 }
 
 

@@ -29,6 +29,7 @@ recipe and the patch are in this repository, so any release can be reproduced an
 | WDTT — XXcipherX (no longer distributed since 2026-10-14; for the builds nodes may still run) | XXcipherX/proxy-turn-vk-android (deleted 2026-10; the pinned commit: [source tarball](https://codeload.github.com/amurcanov/proxy-turn-vk-android/tar.gz/b44df2d4acb2b30bdab1dff2b6bad083294d4df8), through the fork network) | **GPL-3.0** | `b44df2d4` (v2.0.0.72) | [`forks/wdtt/xxcipherx/`](forks/wdtt/xxcipherx/) | `wdtt-xxcipherx-2.0.0.72` (withdrawn) |
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `fae121ef` (v1.4.3) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.3-4` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
+| csqtt 2.5 | amurcanov's 2.5.0 source, received from the author (not yet public; the source of the server binaries in his 2.5.0 app) | **PolyForm Noncommercial 1.0.0** (as upstream) | 2.5.0 | [`forks/csqtt/`](forks/csqtt/) (the port is published with the source) | `csqtt-2.5.0` |
 | amneziawg-go (userspace AmneziaWG datapath — bare-metal nodes' fallback) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
 
 Each row names the newest release; older builds of a fork stay published as rollback targets.

@@ -21,7 +21,7 @@ A REAL panel process (temp state, scratch port, no auth) offering the released l
                  would ask the node to switch it to 2.1)
   [9] default    the released lines are on offer; a stand-in never replaces a real line (2.1, or the released 2.5) and
                  one naming an unpublished build adds nothing
-  [10] unoffered a server recorded on a line this panel does not offer (the stand-in unset, a panel rolled back) gets
+  [10] unoffered a server recorded on a line this panel does not offer (a stand-in line dropped, a panel rolled back) gets
                  no line and no build — the node keeps what runs — and the mirror records such a line as it runs
   code review (2026-10-08):
   [11] running   during a pending/failed switch (record 2.5, the node runs 2.1) the version endpoints act on the line
@@ -230,13 +230,14 @@ try:
 
     section("[7] the mirror's needed-set")
     P.Handler.deps = {"stats_dir": stats}
+    _real25 = P.CSQTT_LINES["2.5"]
     P.CSQTT_LINES["2.5"] = [("2.5.0-1", "csqtt-2.5.0-1")]
     json.dump({"x|fork:csqtt@2.5": {"tag": "2.5.0-0"}}, open(P.TURN_HOLDS_PATH, "w"))
     need = (P._turn_bins_needed() or {}).get(P.CSQTT_MIRROR_OWNER) or set()
     check("2.5's current build is needed", "2.5.0-1" in need, need)
     check("2.1's current build is needed", "2.1.9-4" in need, need)
     check("a 2.5 hold is needed", "2.5.0-0" in need, need)
-    P.CSQTT_LINES["2.5"] = [("2.5.0", "csqtt-2.5.0")]
+    P.CSQTT_LINES["2.5"] = _real25
 
     section("[8] the T-18 mirror records the running line")
     rows = [{"iface": "csqtt1", "kind": "csqtt", "fork": "csqtt", "line": "2.5", "version": "2.5.0", "max_passwords": 500, "params": ""},

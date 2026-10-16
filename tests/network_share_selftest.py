@@ -562,7 +562,9 @@ for fork, paths in P.KEYLESS_SHARE_BUILDS.items():
         check("%s: builds withdrawn — the table vouches what nodes may still run, a hidden fork" % fork,
               (P.TURN_SERVERS.get(fork) or {}) and fork in P.TURN_HIDDEN_FORKS, fork)
         continue
-    published = {v for v, _t in (P.CSQTT_BUILDS if fork == "csqtt" else (P.WDTT_BUILDS.get(fork) or []))}
+    # csqtt: every LINE's builds (docs/CSQTT-LINES-PLAN.md) — CSQTT_BUILDS is 2.1's alone, and judging by it left 2.5.0 out
+    lines = (list(P.CSQTT_LINES.values()) if fork == "csqtt" else [P.WDTT_BUILDS.get(fork) or [("", "")]])
+    published = {v for _b in lines for v, _t in _b}
     for path, vers in paths.items():
         check("%s %s: a known path, every version published %s" % (fork, path, list(vers)),
               path in ("wg", "raw") and vers and all(v in published for v in vers), published)
@@ -570,9 +572,10 @@ for fork, paths in P.KEYLESS_SHARE_BUILDS.items():
     # build every WDTT-Plus device on it was unvouched — Nobody at "Same user and their groups", never a share source — with
     # nothing anywhere failing. A new build of a vouched fork is vouched (rig run on the published asset) in the change that
     # publishes it, or this goes red and says so.
-    newest = (P.CSQTT_BUILDS if fork == "csqtt" else (P.WDTT_BUILDS.get(fork) or [("", "")]))[0][0]
-    check("%s: the newest published build (%s) is vouched on every path the fork is" % (fork, newest),
-          all(newest in vers for vers in paths.values()), paths)
+    for _b in lines:   # each line's newest: a server switched to a line runs that line's newest build
+        newest = _b[0][0]
+        check("%s: the newest published build (%s) is vouched on every path the fork is" % (fork, newest),
+              all(newest in vers for vers in paths.values()), paths)
 check("ildarmaga RAW is never in the table", "raw" not in (P.KEYLESS_SHARE_BUILDS.get("ildarmaga") or {}))
 
 print("\n[16] §16 — the shared table")

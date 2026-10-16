@@ -16,6 +16,26 @@ swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
+## csqtt 2.5.0 (published 2026-10-16)
+
+`csqtt-2.5.0` is amurcanov's 2.5.0 with this integration ported to it. The 2.5.0 source came from the author directly and is
+not public yet: its server inputs hash to the build record inside his 2.5.0 Android app, so it is the source of that app's
+server binaries. The ported patch and the recipe for it are published here once the author publishes the source — a patch
+carries lines of his code. Until then this file and `build.sh` describe the 2.1.9 line only.
+
+- **A new protocol.** A 2.1 app cannot connect to a 2.5 server, nor a 2.5 app to a 2.1 one (both directions refused on the
+  rig). The panel offers each server only apps of its line.
+- **Built into 2.5:** no devices — the address is the password's own, so one config works on several devices and no
+  password can borrow another's address; the uplink source check is upstream's own.
+- **Ported:** `--iface`, `--tun-addr`, `--no-web`, `--desired` as in 2.1.9-4. `--max-passwords` is accepted and does
+  nothing: 2.5 has no password limit. `--no-nat` now stops 2.5's own host changes at start (host-wide sysctls, `FORWARD` /
+  `MASQUERADE`, the TCPMSS purge). Under `--desired` IPv6 uplink is dropped, and the pre-tunnel path gets the source check
+  upstream leaves out. Removing or deactivating a password cuts its live sessions.
+- Rig (`.campaign/rigs/csqtt25.sh`, a real 2.5 client through a local TURN relay, the published amd64 bytes): reach,
+  IPv4 spoof and IPv6 uplink dropped, roster change, stable address, deactivate and revoke cut, two instances, `--no-nat`
+  leaves the host alone; a 2.1.9-4 store opens on 2.5 and back with users, passwords and traffic (addresses change).
+- Static musl (cargo-zigbuild, Rust 1.97.1, zig 0.15.2): amd64 `71adc550…`, arm64 `c5939728…` (built, not run).
+
 ## Keyless source-integrity fixes (build 2.1.9-2, 2026-09-14)
 
 For a csqtt instance to be a **share source** for a restricted network, a packet's source address must prove
