@@ -31,6 +31,7 @@ import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDro
 import { IfaceThroughput, RangedHistory, lossColor } from "./charts.js";
 import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, subFeatureOn,
          ensureVaultUnlocked, wdttResealForNode } from "./crypto.js";
+import { idnHost } from "./idn.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
@@ -2434,10 +2435,12 @@ export function CsqttVersionField({ node, value, onChange }) {
 // Ask before a switch: the server restarts, its users keep their passwords, and every device needs the new line's app.
 function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
   const n = ghostPeers(node, iface).length;
+  const arOn = !!((((Store.nodes || []).find(x => x.id === node) || {}).csqtt_cfg || {})[iface] || {}).app_routing;
   pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: to })} confirmLabel=${T("Switch to {v1}", { v1: to })} warn=${true}
     body=${n ? T("The server restarts on csqtt {v1}. Its {v2} keep their passwords, but every device needs the csqtt {v1} app: a csqtt {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
       : T("The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: to, v2: from })}
-    note=${!n || to === CSQTT_DEFAULT_LINE ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.", { v1: to })}</p>`}
+    note=${to === CSQTT_DEFAULT_LINE ? (arOn ? html`<p class="hint">${T("Its App routing is removed: csqtt {v1} has none.", { v1: to })}</p>` : null)
+      : !n ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.", { v1: to })}</p>`}
     onConfirm=${onConfirm}/>`);
 }
 
@@ -2636,19 +2639,20 @@ export function CsqttDeleteSheet({ node, iface }) {
 // ── csqtt 2.5 App routing (docs/CSQTT-APP-ROUTING-PLAN.md) — one rule for every user of the server, which the server
 // hands each user's CSQTT app when it connects. "direct" = what is listed bypasses the tunnel; "tunnel" = only what is
 // listed uses it. The lists are edited as text, one entry a line; the panel validates and normalises them.
-const AR_LINES = s => String(s || "").split(/[\n,]+/).map(x => x.trim()).filter(Boolean);
+const AR_LINES = s => String(s || "").split(/[\s,;]+/).filter(Boolean);   // the app's own separators
 export const arInit = cfg => { const a = (cfg && cfg.app_routing) || {};
   return { apps_mode: a.apps_mode || "all", domains_mode: a.domains_mode || "direct", ips_mode: a.ips_mode || "direct",
            template_domains: !!a.template_domains,
-           packages: (a.packages || []).join("\n"), domains: (a.domains || []).join("\n"), ips: (a.ips || []).join("\n") }; };
+           packages: (a.packages || []).join("\n"), domains: (a.domains || []).map(idnHost).join("\n"), ips: (a.ips || []).join("\n") }; };
 export const arBody = a => ({ apps_mode: a.apps_mode, packages: a.apps_mode === "all" ? [] : AR_LINES(a.packages),
   domains_mode: a.domains_mode, domains: AR_LINES(a.domains), template_domains: a.domains_mode === "direct" && !!a.template_domains,
   ips_mode: a.ips_mode, ips: AR_LINES(a.ips) });
-const arSummary = a => { const b = arBody(a), on = [];
-  if (b.apps_mode !== "all") on.push(T("Apps"));
-  if (b.domains.length || b.domains_mode === "tunnel") on.push(T("Domains"));
-  if (b.template_domains) on.push(T("built-in list"));
-  if (b.ips.length || b.ips_mode === "tunnel") on.push(T("Addresses"));
+const AR_ANY = s => /[^\s,;.*]/.test(s || "");                     // a list that names something (cheap, every render)
+const arSummary = a => { const on = [];
+  if (a.apps_mode === "only" || (a.apps_mode === "except" && AR_ANY(a.packages))) on.push(T("Apps"));
+  if (AR_ANY(a.domains) || a.domains_mode === "tunnel") on.push(T("Domains"));
+  if (a.domains_mode === "direct" && a.template_domains) on.push(T("built-in list"));
+  if (AR_ANY(a.ips) || a.ips_mode === "tunnel") on.push(T("Addresses"));
   return on.length ? on.join(", ") : html`<span class="faint">${T("val|none")}</span>`; };
 function AppRoutingFields({ value: a, onChange }) {
   const set = (k, v) => onChange({ ...a, [k]: v });
@@ -2668,7 +2672,7 @@ function AppRoutingFields({ value: a, onChange }) {
         <span>${T("Also the built-in list of Russian sites (about 500 domains)")}</span></div>` : null}</div>
     <div class="field"><label>${T("Addresses")}</label>
       <${Dropdown} value=${a.ips_mode} onChange=${v => set("ips_mode", v)} ariaLabel=${T("Addresses")} options=${where}/>
-      ${list("ips", "10.0.0.0/8\n192.168.1.10", T("One IP address or range per line."))}</div>`;
+      ${list("ips", "149.154.160.0/20\n91.108.4.0-91.108.7.255", T("One IPv4 address, network or range (a-b) per line."))}</div>`;
 }
 
 export function openEditCsqtt(node, iface) { openModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`); }
@@ -2687,7 +2691,7 @@ export function EditCsqttSheet({ node, iface }) {
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
   const [ar, setAr] = useState(() => arInit(cfg));                   // App routing — a 2.5 server's
-  const is25 = csqttRunLine(node, iface) === "2.5";
+  const is25 = cfg.line === "2.5";                                    // the line it is set to (a switch drops the rule)
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
     // sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept

@@ -56,6 +56,9 @@ and every command that could delete a link is refused by a guard (the test fails
                       reason, a new build or the operator's Restart (install) is walked at once, two servers asking for one
                       build walk it once (csq-install, csq-reconf, csq-restart)
   [26] WDTT           the same for a WDTT install and reconfigure (wdtt-install, wdtt-reconf)
+  csqtt 2.5 App routing (review of a897a710..fa484d42, F22):
+  [27] approuting     the panel's rule reaches a running server's desired.json on a sync, and leaves it when removed
+                      (ar-reconcile); an install / reconfigure writes it too (ar-cfgdir)
 
 Run: python3 tests/csqtt_lines_node_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
@@ -102,6 +105,9 @@ PLANTS = {   # name: (section, anchor, replacement)
     "onepass": ("[12]", "_sw_pass[0] or time.monotonic() < _CSQTT_FETCH_LATER.get((_line, _want_ver), 0))", "time.monotonic() < _CSQTT_FETCH_LATER.get((_line, _want_ver), 0))"),
     "restart": ("[13]", "and not inst.get(\"stopped\") and not _switched:\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)", "and not inst.get(\"stopped\"):\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)"),
     "curver": (("[14]", "[17]", "[19]"), "                _run_ver = _want_ver if _line == _cur else (inst.get(\"cur_ver\") or \"\").strip()", "                _run_ver = _want_ver if _line == _cur else \"\""),
+    "ar-reconcile": ("[27]", 'inst.get("passwords"), inst.get("app_routing")):\n                    err = _csqtt_reconcile_desired(iface, inst.get("passwords"), inst.get("app_routing"))',
+                     'inst.get("passwords")):\n                    err = _csqtt_reconcile_desired(iface, inst.get("passwords"))'),
+    "ar-cfgdir": ("[27]", '_csqtt_desired_body(inst.get("passwords"), inst.get("app_routing")) + "\\n")', '_csqtt_desired_body(inst.get("passwords")) + "\\n")'),
     "nover": ("[15]", "    if not ver and line != CSQTT_DEFAULT_LINE:\n", "    if False:\n"),
     "ifaces": ("[16]", "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]"),
     "build": (("[8]", "[16]"), "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return list(want or {})"),   # one function, two sections
@@ -294,6 +300,18 @@ try:
     check("no switch is attempted", SWITCHES == [], SWITCHES)
     check("the 2.1 ver is not applied to the 2.5 server", UPDATES == [], UPDATES)
     check("the record keeps line 2.5", (N._csqtt_load().get("lo") or {}).get("line") == "2.5", N._csqtt_load().get("lo"))
+
+    section("[27] App routing reaches desired.json")
+    AR27 = {"apps_mode": "all", "packages": [], "domains_mode": "direct", "domains": ["ya.ru"], "template_domains": False,
+            "ips_mode": "direct", "ips": []}
+    dj = lambda d: json.load(open(d + "/desired.json"))
+    N.reconcile_csqtt({"lo": want("lo", ver="2.1.9-4", app_routing=AR27)})
+    check("a sync writes the rule into the running server's desired.json", dj(N._csqtt_dir("lo")).get("app_routing") == AR27, dj(N._csqtt_dir("lo")))
+    N.reconcile_csqtt({"lo": want("lo", ver="2.1.9-4")})
+    check("…and a sync without it takes it out", "app_routing" not in dj(N._csqtt_dir("lo")), dj(N._csqtt_dir("lo")))
+    _d27 = os.path.join(TMP, "ar27"); os.makedirs(_d27)
+    N._csqtt_write_cfgdir(dict(want("ar27", app_routing=AR27), iface="ar27"), "/bin/true", _d27 + "/server", _d27)
+    check("an install / reconfigure writes it too", dj(_d27).get("app_routing") == AR27, dj(_d27))
 
     section("[7] a failed switch is memoed")
     rec21 = dict(rec_lo, line="2.1"); N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))

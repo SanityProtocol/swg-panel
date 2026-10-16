@@ -2,15 +2,15 @@
 """Self-test: csqtt 2.5 App routing, the panel's and the node's halves (docs/CSQTT-APP-ROUTING-PLAN.md).
 
 One routing rule per server, which the 2.5 server hands each user's app on connect: apps / domains / addresses that go
-direct (bypass the tunnel), or the reverse ("only these use the tunnel"); the server binary also takes a per-password
-override (the panel does not send one yet).
+direct (bypass the tunnel), or the reverse ("only these use the tunnel"). The panel stores what the app itself keeps
+(rust-client sni.rs parse_direct_domains / parse_ip_rules) and refuses what it would drop.
 
   [1] panel _validate_app_routing: lists from text or arrays, deduped, domains lower-cased with "*."/"." stripped; every
       refusal (a bad app ID / domain / address, a cap); "only these" with an EMPTY list is refused for apps, domains and
       addresses (it would send nothing through the tunnel); the built-in list only in direct mode; all-defaults = no rule
   [2] delivery: csqtt_cfg (the SPA's) publishes app_routing, the node's reply carries it as stored
-  [3] node desired.json: byte-identical without a rule (no rewrite, no SIGHUP on an update); carries the server's rule;
-      only its known keys and types; a per-password override passes through, an empty one kept (= no rule for it)
+  [3] node desired.json: byte-identical without a rule (no rewrite, no SIGHUP on an update); carries the server's rule,
+      its known keys only; a rule of the wrong shape is dropped whole (the server would reject the file)
   [4] node drift: a rule added, changed or removed is a change; the same rule is not
 
 Hermetic. Run: python3 tests/csqtt_app_routing_selftest.py   (0 = pass)
@@ -25,14 +25,14 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 
-P_PLANTS = {"--perturb-norm": ("""        ips.append(str(n) if (n.prefixlen != n.max_prefixlen) else str(n.network_address))""",
-                               """        ips.append(x)"""),
+P_PLANTS = {"--perturb-norm": ("""                ips.append(str(n) if n.prefixlen < 32 else str(n.network_address))""",
+                               """                ips.append(x)"""),
             "--perturb-empty": ('''    if apps == "only" and not pk:
         return None, perr("App routing: list at least one app to send through the tunnel")''', '''    if False:
         pass''')}
-N_PLANTS = {"--perturb-always": ('''    ar = _csqtt_app_routing(app_routing) if app_routing else None   # {} at the server level is no rule (not an empty one)
+N_PLANTS = {"--perturb-always": ('''    ar = _csqtt_app_routing(app_routing)
     if ar:
-        body["app_routing"] = ar''', '''    body["app_routing"] = _csqtt_app_routing(app_routing or {})''')}
+        body["app_routing"] = ar''', '''    body["app_routing"] = _csqtt_app_routing(app_routing)''')}
 MODE = next((a for a in sys.argv[1:] if a in P_PLANTS or a in N_PLANTS), None)
 
 FAILS = []
@@ -59,10 +59,10 @@ V = P._validate_app_routing
 
 print("[1] the panel's validation")
 rec, err = V({"apps_mode": "except", "packages": "org.telegram.messenger\ncom.x\ncom.x", "domains": "*.YA.ru, .vk.com.",
-              "template_domains": True, "ips": ["10.0.0.0/8", "2001:db8::/32", "192.168.1.10"]})
+              "template_domains": True, "ips": ["10.0.0.0/8", "10.9.0.1-10.9.0.9", "192.168.1.10"]})
 check("lists from text or arrays, deduped; domains lower-cased, *. / . stripped",
       err is None and rec["packages"] == ["org.telegram.messenger", "com.x"] and rec["domains"] == ["ya.ru", "vk.com"]
-      and rec["ips"] == ["10.0.0.0/8", "2001:db8::/32", "192.168.1.10"] and rec["template_domains"] is True, (rec, err))
+      and rec["ips"] == ["10.0.0.0/8", "10.9.0.1-10.9.0.9", "192.168.1.10"] and rec["template_domains"] is True, (rec, err))
 for bad, key in (({"apps_mode": "except", "packages": ["telegram"]}, "Android app ID"),
                  ({"domains": ["bad_dom!"]}, "is not a domain"),
                  ({"ips": ["10.0.0.0/33"]}, "IP address or range"),
@@ -86,14 +86,26 @@ check("addresses are stored normalised (host bits cleared, netmask form as a pre
       e is None and r["ips"] == ["192.168.1.0/24", "10.0.0.0/8", "10.1.2.3"], (r, e))
 r, e = V({"domains": ["1.2.3.4"]})
 check("an address under Domains is refused, pointing to Addresses", r is None and e and "Addresses" in e["error"], (r, e))
-for x in ("0.0.0.0/0", "::/0"):
-    r, e = V({"ips": [x]})
+for x in (["0.0.0.0/0"], ["0.0.0.0/1", "128.0.0.0/1"], ["0.0.0.0-255.255.255.255"]):
+    r, e = V({"ips": x})
     check("%s as direct is refused (everything outside the tunnel)" % x, r is None and e and "outside the tunnel" in e["error"], (r, e))
 check("…while as a tunnel-only address it is allowed", V({"ips_mode": "tunnel", "ips": ["0.0.0.0/0"]})[1] is None)
 check("every app except none is every app: no rule", V({"apps_mode": "except", "packages": []}) == (None, None))
 for bad in ("com.1app", "com._x", "a." + "b" * 300):
     r, e = V({"apps_mode": "except", "packages": [bad]})
     check("app ID %s… refused" % bad[:12], r is None and e and "Android app ID" in e["error"], (r, e))
+# review of a897a710..fa484d42: the app's own grammar (F1, F2, F4, F6, F7, F9, F14–F16, F19)
+for bad, key in (({"domains": ["*.ru"]}, "is not a domain"), ({"domains": ["рф"]}, "is not a domain"),
+                 ({"domains": ["ß.de"]}, "is not a domain"), ({"domains": ["foo.123"]}, "is not a domain"),
+                 ({"domains": ["ya.ru\n."]}, "is not a domain"), ({"domains": ["10.0.0.256"]}, "Addresses"),
+                 ({"ips": ["2001:db8::/32"]}, "IPv4"), ({"ips": ["fe80::1%x"]}, "IPv4"), ({"ips": ["10.0.0.9-10.0.0.1"]}, "IP address or range"),
+                 ({"domains": {"ya.ru": 1}}, "not a valid setting"), ({"domains": [None]}, "not a valid setting"),
+                 ({"template_domains": "false"}, "not a valid setting"), ({"domains": ["d%d.ru" % i for i in range(501)] * 2}, "at most")):
+    r, e = V(bad)
+    check("refused: %s → %s" % (str(bad)[:40], key), r is None and e and key in e["error"], (r, e))
+r, e = V({"domains": "www.google.com https://ya.ru/x vk.com:443"})
+check("www. dropped (the app applies the parent), a link's host kept, whitespace splits",
+      e is None and r["domains"] == ["google.com", "ya.ru", "vk.com"], (r, e))
 
 print("[2] delivery")
 check("csqtt_cfg publishes app_routing", '"bind_ip", "line",\n' in open(PANEL).read() and '"app_routing") if k in ov}' in open(PANEL).read())
@@ -114,16 +126,10 @@ check("no rule: byte-identical to the body before App routing",
       plain == json.dumps({"passwords": [{"password": "p1", "expires_at": 0, "vk_hash": "", "name": "alice", "is_deactivated": False},
                                          {"password": "p2", "expires_at": 0, "vk_hash": "", "name": "", "is_deactivated": False}]}), plain)
 check("…and None / {} for the rule is the same", N._csqtt_desired_body(PW, None) == plain and N._csqtt_desired_body(PW, {}) == plain)
-withr = json.loads(N._csqtt_desired_body(PW, dict(AR, bogus=1, packages=["org.telegram.messenger", 7])))
-check("the server's rule is carried, its known keys and types only",
-      withr.get("app_routing") == dict(AR, packages=["org.telegram.messenger"]), withr.get("app_routing"))
-own = json.loads(N._csqtt_desired_body({"p1": {"app_routing": {"apps_mode": "only", "packages": ["com.x"]}}, "p2": {"app_routing": {}}, "p3": {}}))
-o = {x["password"]: x for x in own["passwords"]}
-check("a per-password override passes through", (o["p1"].get("app_routing") or {}).get("packages") == ["com.x"], o["p1"])
-check("a list given as a string is no list (never one entry a character)",
-      json.loads(N._csqtt_desired_body({}, {"apps_mode": "except", "packages": "com.x", "domains": 5}))["app_routing"]["packages"] == [])
-check("…an empty one is kept (no rule for that password), an absent one stays absent",
-      o["p2"].get("app_routing", {}).get("apps_mode") == "all" and "app_routing" not in o["p3"], o)
+withr = json.loads(N._csqtt_desired_body(PW, dict(AR, bogus=1)))
+check("the server's rule is carried, its known keys only", withr.get("app_routing") == AR, withr.get("app_routing"))
+for bad in (dict(AR, packages="com.x"), dict(AR, domains=["ya.ru", 7]), dict(AR, apps_mode="sometimes"), "x"):
+    check("a rule of the wrong shape is dropped whole: %s" % str(bad)[:50], "app_routing" not in json.loads(N._csqtt_desired_body(PW, bad)))
 
 print("[4] the node's drift check")
 TMP = tempfile.mkdtemp(prefix="csqtt-ar-")

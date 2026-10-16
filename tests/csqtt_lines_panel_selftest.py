@@ -29,11 +29,14 @@ A REAL panel process (temp state, scratch port, no auth) offering the released l
                  build as `cur_ver` so it keeps getting updates
   [12] offline   a hold for a server on a line this panel does not offer is refused, saying why (no build of that
                  line is listed here); no 2.1 hold results
+  [13] app routing  /api/csqtt/set on a 2.5 server stores the validated rule (normalised), refuses a bad one leaving the
+                 stored rule, removes it on an all-defaults one; a switch to 2.1 drops it and a 2.1 server stores none
 
 Run: python3 tests/csqtt_lines_panel_selftest.py   (0 = pass)
      --perturb <name>  plants one regression and expects RED on its section:
                        g1 [1] · refuse [3] · publish [4] · holdkey [5] · split [6] · needed [7] · mirror [8] ·
-                       override [9] · unoffered [10] · runline / runline-get / curver [11] · refuseoff [12]
+                       override [9] · unoffered [10] · runline / runline-get / curver [11] · refuseoff [12] ·
+                       arstore / arclear / ar21 [13]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
@@ -60,6 +63,10 @@ PLANTS = {
                 "        _vl = (_csqtt_line_of(((nodes[nid].get(\"csqtt\")) or {}).get(iface))"),
     "curver": ("[11]", "            if _run and _run != _line and _run in CSQTT_LINES:", "            if False:"),
     "refuseoff": ("[12]", "        if _vl not in CSQTT_LINES:\n            # a server on a line", "        if False:\n            # a server on a line"),
+    "arstore": ("[13]", "            _ar, _are = _validate_app_routing(body.get(\"app_routing\"))",
+                "            _ar, _are = body.get(\"app_routing\"), None"),
+    "arclear": ("[13]", "            else:\n                inst.pop(\"app_routing\", None)\n", "            else:\n                pass\n"),
+    "ar21": ("[13]", "            inst.pop(\"app_routing\", None)            # 2.1 has no App routing", "            pass                                     # 2.1 has no App routing"),
     "mirror": (("[8]", "[10]"), "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
 }
 MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
@@ -288,6 +295,24 @@ try:
     check("refused", code == 400 and "isn't a version" in json.dumps(r), (code, r))
     holds = json.load(open(os.path.join(state, "turn-holds.json")))
     check("…and no 2.1 hold was set by it", "nnew|fork:csqtt" not in holds, holds)
+
+    section("[13] App routing through /api/csqtt/set")
+    put_csqtt("nnew", "csqtt6", dict(C1, tun_addr="10.66.96.1/24", listen="0.0.0.0:46060", line="2.5"))
+    rec6 = lambda: (nodes()["nnew"].get("csqtt") or {}).get("csqtt6") or {}
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt6", "app_routing": {"domains": "www.ya.ru vk.com", "ips": ["192.168.1.10/24"]}})
+    ar = rec6().get("app_routing") or {}
+    check("a 2.5 server stores the rule as the app applies it", code == 200 and ar.get("domains") == ["ya.ru", "vk.com"]
+          and ar.get("ips") == ["192.168.1.0/24"], (code, r, ar))
+    check("…and the node's reply carries it", (sync("nnew").get("csqtt6") or {}).get("app_routing") == ar, ar)
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt6", "app_routing": {"ips": ["2001:db8::/32"]}})
+    check("a bad rule is a 400 and the stored one stays", code == 400 and rec6().get("app_routing") == ar, (code, r, rec6().get("app_routing")))
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt6", "app_routing": {"apps_mode": "all"}})
+    check("an all-defaults rule removes it", code == 200 and "app_routing" not in rec6(), (code, rec6()))
+    req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt6", "app_routing": {"domains": ["ya.ru"]}})
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt6", "line": "2.1"})
+    check("a switch to 2.1 drops the rule (2.1 has none; never kept hidden)", code == 200 and "app_routing" not in rec6(), (code, rec6()))
+    code, r = req("/api/csqtt/set", {"node": "nnew", "iface": "csqtt6", "app_routing": {"domains": ["ya.ru"]}})
+    check("a 2.1 server stores none", code == 200 and "app_routing" not in rec6(), (code, rec6()))
 finally:
     proc.terminate()
     try: proc.wait(5)

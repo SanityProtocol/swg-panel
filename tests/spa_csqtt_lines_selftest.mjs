@@ -137,6 +137,8 @@ check("[9] the built-in list is dropped in tunnel mode", b9.template_domains ===
 check("[9] lists split on lines and commas, trimmed", JSON.stringify(b9.domains) === '["a.ru","b.ru","c.ru"]', b9.domains);
 const rec9 = { apps_mode: "except", packages: ["org.telegram.messenger"], domains_mode: "direct", domains: ["ya.ru"], template_domains: true, ips_mode: "direct", ips: ["10.0.0.0/8"] };
 check("[9] a stored rule round-trips the form", JSON.stringify(TU.arBody(TU.arInit({ app_routing: rec9 }))) === JSON.stringify(rec9), TU.arBody(TU.arInit({ app_routing: rec9 })));
+check("[9] a stored punycode domain is shown as typed (and saves back the same)", TU.arInit({ app_routing: { domains: ["xn--c1aapkosapc.xn--p1ai"] } }).domains === "госуслуги.рф");
+check("[9] whitespace splits a list as the app does", JSON.stringify(TU.arBody({ ...TU.arInit({}), domains: "ya.ru vk.com\tok.ru" }).domains) === '["ya.ru","vk.com","ok.ru"]');
 check("[9] no stored rule: every app, direct, empty", JSON.stringify(TU.arBody(TU.arInit({}))) === JSON.stringify({ apps_mode: "all", packages: [], domains_mode: "direct", domains: [], template_domains: false, ips_mode: "direct", ips: [] }));
 
 done(!!MODE, MODE || "");
