@@ -7045,7 +7045,6 @@ export const STR = {
   "built-in list": "встроенный список",
   "These go direct": "Эти — напрямую",
   "Only these use the tunnel": "Через туннель — только эти",
-  "Sent to every user's CSQTT app when it connects. What you list goes straight to the internet instead of through the tunnel — or, if you pick the other mode, only what you list uses the tunnel. A change reaches each user at their next connect.": "Отправляется в приложение CSQTT каждого пользователя при подключении. Перечисленное идёт в интернет напрямую, а не через туннель — или, в другом режиме, через туннель идёт только перечисленное. Изменение дойдёт до пользователя при его следующем подключении.",
   "Every app uses the tunnel": "Все приложения — через туннель",
   "Every app except these": "Все приложения, кроме этих",
   "Only these apps": "Только эти приложения",

@@ -29,7 +29,7 @@ recipe and the patch are in this repository, so any release can be reproduced an
 | WDTT — XXcipherX (no longer distributed since 2026-10-14; for the builds nodes may still run) | XXcipherX/proxy-turn-vk-android (deleted 2026-10; the pinned commit: [source tarball](https://codeload.github.com/amurcanov/proxy-turn-vk-android/tar.gz/b44df2d4acb2b30bdab1dff2b6bad083294d4df8), through the fork network) | **GPL-3.0** | `b44df2d4` (v2.0.0.72) | [`forks/wdtt/xxcipherx/`](forks/wdtt/xxcipherx/) | `wdtt-xxcipherx-2.0.0.72` (withdrawn) |
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `fae121ef` (v1.4.3) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.3-4` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
-| csqtt 2.5 | amurcanov's 2.5.0 source, received from the author (not yet public; the source of the server binaries in his 2.5.0 app) | **PolyForm Noncommercial 1.0.0** (as upstream) | 2.5.0 | [`forks/csqtt/`](forks/csqtt/) (the port is published with the source) | `csqtt-2.5.0` |
+| csqtt 2.5 | amurcanov's 2.5.0 source, received from the author (not yet public; the source of the server binaries in his 2.5.0 app) | **PolyForm Noncommercial 1.0.0** (as upstream) | 2.5.0 | [`forks/csqtt/`](forks/csqtt/) (the port is published with the source) | `csqtt-2.5.0` ¶ |
 | amneziawg-go (userspace AmneziaWG datapath — bare-metal nodes' fallback) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
 
 Each row names the newest release; older builds of a fork stay published as rollback targets.
@@ -47,6 +47,11 @@ binary we publish is a GPL binary and the source offer below covers it. Separate
 not a distinguishing identifier: upstream's tags `v1.5.2` through `v1.5.40` **all point at commit `ef697994`**,
 whose own message is "docs: changelog for v1.5.0". The commit is what pins our build, so from `1.5.0-3` on we label
 the release by that source; the earlier `1.5.40` releases were built from the same commit.
+
+¶ **csqtt 2.5.0 is the exception to the promise above, for now.** It is built from amurcanov's 2.5.0 source, which he
+has not published yet: he gave it to us directly, and it is the exact source of the server binaries inside his 2.5.0
+app. Our port of the integration carries lines of that code, so it is published here together with his source — until
+then this release cannot be reproduced or diffed from this repository. Its sha256 sums are in the release notes.
 
 ### Source for the GPL binaries
 

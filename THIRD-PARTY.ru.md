@@ -34,7 +34,7 @@
 | WDTT — XXcipherX (больше не распространяется с 2026-10-14; для сборок, которые ещё могут работать на нодах) | XXcipherX/proxy-turn-vk-android (удалён в 2026-10; закреплённый коммит: [архив исходников](https://codeload.github.com/amurcanov/proxy-turn-vk-android/tar.gz/b44df2d4acb2b30bdab1dff2b6bad083294d4df8), через сеть форков) | **GPL-3.0** | `b44df2d4` (v2.0.0.72) | [`forks/wdtt/xxcipherx/`](forks/wdtt/xxcipherx/) | `wdtt-xxcipherx-2.0.0.72` (отозван) |
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `fae121ef` (v1.4.3) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.3-4` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
-| csqtt 2.5 | исходники 2.5.0 от amurcanov, полученные от автора (ещё не опубликованы; из них собраны серверные бинарники его приложения 2.5.0) | **PolyForm Noncommercial 1.0.0** (как в upstream) | 2.5.0 | [`forks/csqtt/`](forks/csqtt/) (порт публикуется вместе с исходниками) | `csqtt-2.5.0` |
+| csqtt 2.5 | исходники 2.5.0 от amurcanov, полученные от автора (ещё не опубликованы; из них собраны серверные бинарники его приложения 2.5.0) | **PolyForm Noncommercial 1.0.0** (как в upstream) | 2.5.0 | [`forks/csqtt/`](forks/csqtt/) (порт публикуется вместе с исходниками) | `csqtt-2.5.0` ¶ |
 | amneziawg-go (датапас AmneziaWG в пользовательском пространстве — запасной вариант bare-metal-нод) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
 
 В каждой строке указан самый новый релиз; более старые сборки форка остаются опубликованными для отката.
@@ -53,6 +53,11 @@
 **все указывают на коммит `ef697994`**, в сообщении которого написано «docs: changelog for v1.5.0». Сборку
 фиксирует именно коммит, поэтому начиная с `1.5.0-3` мы называем релиз по этому исходнику; прежние релизы `1.5.40`
 собраны из того же коммита.
+
+¶ **csqtt 2.5.0 — пока исключение из обещания выше.** Он собран из исходников amurcanov версии 2.5.0, которые автор ещё
+не опубликовал: он передал их нам напрямую, и из них собраны серверные бинарники в его приложении 2.5.0. Наш порт
+интеграции содержит строки этого кода, поэтому он публикуется здесь вместе с исходниками автора — до тех пор этот релиз
+нельзя воспроизвести или сравнить по этому репозиторию. Его суммы sha256 приведены в описании релиза.
 
 ### Исходники к бинарникам под GPL
 

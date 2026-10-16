@@ -2652,11 +2652,10 @@ const arSummary = a => { const b = arBody(a), on = [];
   return on.length ? on.join(", ") : html`<span class="faint">${T("val|none")}</span>`; };
 function AppRoutingFields({ value: a, onChange }) {
   const set = (k, v) => onChange({ ...a, [k]: v });
-  const list = (k, ph, hint) => html`<textarea class="ta" rows="3" spellcheck="false" autocomplete="off" placeholder=${ph}
+  const list = (k, ph, hint) => html`<textarea class="ta" rows="3" spellcheck="false" autocomplete="off" placeholder=${ph} style="margin-top:8px"
       value=${a[k]} onInput=${e => set(k, e.target.value)}></textarea><div class="hint">${hint}</div>`;
   const where = [{ value: "direct", label: T("These go direct") }, { value: "tunnel", label: T("Only these use the tunnel") }];
-  return html`<div class="hint" style="margin:0 0 10px">${T("Sent to every user's CSQTT app when it connects. What you list goes straight to the internet instead of through the tunnel — or, if you pick the other mode, only what you list uses the tunnel. A change reaches each user at their next connect.")}</div>
-    <div class="field"><label>${T("Apps")}</label>
+  return html`<div class="field"><label>${T("Apps")}</label>
       <${Dropdown} value=${a.apps_mode} onChange=${v => set("apps_mode", v)} ariaLabel=${T("Apps")} options=${[
         { value: "all", label: T("Every app uses the tunnel") }, { value: "except", label: T("Every app except these") },
         { value: "only", label: T("Only these apps") }]}/>
