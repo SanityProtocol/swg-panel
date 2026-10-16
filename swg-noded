@@ -22733,8 +22733,14 @@ _CSQTT_STOREPROBE = {}         # cfgdir -> (at, (users, store_found))
 _CSQTT_STORE_MAX = 8 << 20     # a probe, not a backup — a store bigger than this is answered after adoption
 _CSQTT_DB_FILES = ("csqtt.db", "csqtt.db-wal", "csqtt.db-shm")   # WAL mode: the store is three files, never one
 
-def _csqtt_read_store(cfgdir):
+def _csqtt_read_store(cfgdir, line=""):
     """The csqtt runtime store, in the passwords.json SHAPE {"passwords": {...}, "devices": {...}}.
+
+    2.5 has no devices: the address is the password's own (`passwords.ip`), and its store has no `device_id` column
+    and no `devices` table — selecting them failed the whole read, so a 2.5 server reported an empty store. Which
+    one holds the address is decided by the LINE that runs (`line`), not by the columns: a store that visited 2.5
+    keeps a stale `ip` column under 2.1, and one that visited 2.1 a stale `devices` table under 2.5. A store
+    without `device_id` can only be device-less, whatever the line.
 
     csqtt <=2.0.1 kept passwords.json. 2.1.5 moved to SQLite `csqtt.db` (WAL) and, on first start, imports the
     JSON and DELETES it — so a node that only knew the JSON reported an empty store for every instance the
@@ -22760,14 +22766,23 @@ def _csqtt_read_store(cfgdir):
         import sqlite3
         c = sqlite3.connect(dbp, timeout=5)
         try:
-            for pw, did, exp, up, dn, deact, name, vkh in c.execute(
-                    "SELECT password, device_id, expires_at, up_bytes, down_bytes, is_deactivated, name, vk_hash "
-                    "FROM passwords"):
-                pwds[str(pw)] = {"device_id": did or "", "expires_at": exp or 0,
-                                 "up_bytes": up or 0, "down_bytes": dn or 0,
-                                 "is_deactivated": bool(deact), "name": name or "", "vk_hash": vkh or ""}
-            for did, ip, pub in c.execute("SELECT device_id, ip, pub_key FROM devices"):
-                devs[str(did)] = {"ip": ip or "", "pub_key": pub or ""}   # NO priv_key
+            cols = {r[1] for r in c.execute("PRAGMA table_info(passwords)")}
+            if (line or "2.1") == "2.1" and "device_id" in cols:
+                for pw, did, exp, up, dn, deact, name, vkh in c.execute(
+                        "SELECT password, device_id, expires_at, up_bytes, down_bytes, is_deactivated, name, vk_hash "
+                        "FROM passwords"):
+                    pwds[str(pw)] = {"device_id": did or "", "expires_at": exp or 0,
+                                     "up_bytes": up or 0, "down_bytes": dn or 0,
+                                     "is_deactivated": bool(deact), "name": name or "", "vk_hash": vkh or ""}
+                for did, ip, pub in c.execute("SELECT device_id, ip, pub_key FROM devices"):
+                    devs[str(did)] = {"ip": ip or "", "pub_key": pub or ""}   # NO priv_key
+            else:
+                for pw, ip, exp, up, dn, deact, name, vkh in c.execute(
+                        "SELECT password, ip, expires_at, up_bytes, down_bytes, is_deactivated, name, vk_hash "
+                        "FROM passwords"):
+                    pwds[str(pw)] = {"device_id": "", "ip": ip or "", "expires_at": exp or 0,
+                                     "up_bytes": up or 0, "down_bytes": dn or 0,
+                                     "is_deactivated": bool(deact), "name": name or "", "vk_hash": vkh or ""}
         finally:
             c.close()
     return {"passwords": pwds, "devices": devs}
@@ -23425,7 +23440,8 @@ def csqtt_snapshot():
         # converted master still had the old units running — so the panel was told "active" for servers this node
         # was not running, beside an empty password store it could not read. Two wrong answers that agreed.
         active = ("active" if _csqtt_docker_pid(iface) else "inactive") if NODE_KIND == "docker" else _unit_active(svc)
-        pj = _csqtt_read_store(_csqtt_dir(iface))   # passwords.json (<=2.0.1) or csqtt.db (2.1.5+)
+        _rl = _csqtt_cut_line(iface) or _csqtt_running_line(iface) or _csqtt_line_of(inst)   # a cut switch is being rolled back to its marker's line
+        pj = _csqtt_read_store(_csqtt_dir(iface), _rl)   # passwords.json (<=2.0.1) or csqtt.db (2.1.5+, by line)
         pwds, devs = {}, {}
         for did, d in (pj.get("devices") or {}).items():
             d = d or {}
@@ -23443,10 +23459,9 @@ def csqtt_snapshot():
             online = _raw_online("csqtt:" + iface, pw, _rs, _ts, _nowt, _alive)   # held for the grace — see _raw_online
             pwds[pw] = {"device_id": e.get("device_id", ""), "up_bytes": up, "down_bytes": dn,
                         "is_deactivated": bool(e.get("is_deactivated")), "expires_at": e.get("expires_at", 0),
-                        "ip": _dev.get("ip", ""), "online": online, "rx_speed": _rs, "tx_speed": _ts}
+                        "ip": e.get("ip") or _dev.get("ip", ""), "online": online, "rx_speed": _rs, "tx_speed": _ts}
         _rxb, _txb, _rxs, _txs = _wdtt_iface_traffic(iface)   # TUN aggregate throughput (same reader as a wg iface)
         _own = _turn_own_dns(_csqtt_dir(iface))   # what csqtt itself remembers (its DB)
-        _rl = _csqtt_cut_line(iface) or _csqtt_running_line(iface) or _csqtt_line_of(inst)   # a cut switch is being rolled back to its marker's line
         out.append({"iface": iface, "service": svc, "active": active, "listen": inst.get("listen", ""),
                     "bind": _env_listen(_csqtt_dir(iface) + "/csqtt.env"),   # what the server binds (turn_bind) — "" unknown
                     "bind_ip": inst.get("bind_ip", ""),   # the operator's Listen on, so a panel mirroring this record keeps it
