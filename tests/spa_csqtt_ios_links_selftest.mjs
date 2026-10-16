@@ -14,9 +14,12 @@
  *   [3] CONTROL: the csqtt:// link is unchanged — with no client, and with the csqtt encoder
  *   [4] the panel card's helper picks the link by the CLIENT's encoder, from the catalog the panel serves
  *   [5] the csqtt server's client list still offers the iOS app (so the card's Alternatives sheet can show it)
+ *   [6] …but only apps of the server's csqtt LINE (2.1 and 2.5 do not speak to each other): a 2.5 server offers the CSQTT
+ *       app alone, a 2.1 one every app, and a node that reports no line (2.1) the whole list as before
  *
  * Run: node tests/spa_csqtt_ios_links_selftest.mjs
  *      --perturb   routes the iOS client back to the csqtt:// link — expects RED in [1] [2] [4].
+ *      --perturb-line  serves a catalog whose apps declare no csqtt line — expects RED in [6].
  */
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -24,7 +27,8 @@ import path from "node:path";
 import vm from "node:vm";
 import { spa, check, done, ROOT } from "./spa_env.mjs";
 
-const PERTURB = process.argv.includes("--perturb");
+const PERTURB_LINE = process.argv.includes("--perturb-line");
+const PERTURB = process.argv.includes("--perturb") || PERTURB_LINE;
 
 let src = readFileSync(path.join(ROOT, "turn-artifacts.js"), "utf8");
 const ANCHOR = '    if (asClient === "anton48" || asClient === "vkturnproxy") {\n      // anton48\'s iOS VK TURN Proxy reads a csqtt:// link too';
@@ -33,7 +37,7 @@ if (src.split(ANCHOR).length - 1 !== 1) {
   console.log("ANCHOR MISSING OR NOT UNIQUE — this run would FALSE-PASS");
   process.exit(1);
 }
-if (PERTURB) src = src.replace(ANCHOR, '    if (false) {\n      //');
+if (PERTURB && !PERTURB_LINE) src = src.replace(ANCHOR, '    if (false) {\n      //');
 // turn-artifacts.js is a classic script: evaluate it into the SAME global the SPA modules read SWGTurn from.
 vm.runInThisContext(src, { filename: "turn-artifacts.js" });
 const SWGTurn = globalThis.SWGTurn;
@@ -48,7 +52,8 @@ print(json.dumps(m.turn_catalog_view()))`, path.join(ROOT, "swg-panel-server")],
 if (py.status !== 0) { console.log("could not load the catalog from swg-panel-server:\n" + py.stderr); process.exit(1); }
 const { Store } = await spa("store.js");
 Store.turnCatalog = JSON.parse(py.stdout);
-const { csqttClientCfg, wdttClientIds } = await spa("peer-ui.js");
+if (PERTURB_LINE) Object.values(Store.turnCatalog.clients).forEach(c => { delete c.csqtt_lines; });
+const { csqttClientCfg, wdttClientIds, csqttClientIds } = await spa("peer-ui.js");
 
 const J = "https://vk.ru/call/join/";
 const INP = { host: "1.2.3.4", port: 46000, password: "p@ss", vk_hash: "AAA",
@@ -87,4 +92,11 @@ const ids = wdttClientIds("csqtt");
 check("CSQTT is the default", ids[0] === "csqttapp", ids);
 check("VK TURN Proxy is an alternative", ids.includes("vkturnproxy"), ids);
 
-done(PERTURB, "iOS client routed back to csqtt://");
+console.log("\n[6] only apps of the server's csqtt line");
+const ids25 = csqttClientIds({ fork: "csqtt", line: "2.5" });
+check("a 2.5 server: the CSQTT app alone", JSON.stringify(ids25) === JSON.stringify(["csqttapp"]), ids25);
+const ids21 = csqttClientIds({ fork: "csqtt", line: "2.1" });
+check("a 2.1 server: every app, the iOS one included", ["csqttapp", "focsq", "lalune", "vkturnproxy"].every(i => ids21.includes(i)), ids21);
+check("a node that reports no line: the fork's whole list", JSON.stringify(csqttClientIds({ fork: "csqtt" })) === JSON.stringify(ids), csqttClientIds({ fork: "csqtt" }));
+
+done(PERTURB, PERTURB_LINE ? "apps declare no csqtt line" : "iOS client routed back to csqtt://");

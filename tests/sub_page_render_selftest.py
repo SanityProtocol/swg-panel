@@ -37,6 +37,10 @@ Fixture — node q-node, three deployments per device:
       interface behind a proxy; the WireGuard interface's proxy still offers it; FreeTurn keeps the AmneziaWG one on Android
   [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ) keeps its users' app: its Android cell offers the MYSOREZ app,
       hidden from every visible fork (hack-diaz's cells on the same interface do not offer it)
+  [11] csqtt 2.1 and 2.5 do not speak to each other: a 2.5 server (Dana's csqtt2, line 2.5) is offered only an app of its
+      line — on Android the CSQTT app, though the operator's default is La Lune (2.1 only), and on iOS nothing (VK TURN Proxy
+      speaks 2.1); her 2.1 server keeps both. Once the CSQTT app's release is of the other line (no 2.5 release yet), the
+      2.5 server offers no app at all rather than one that cannot connect; the line reaches the page through swg-sub
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while 2.5.0 is the latest — the CSQTT app's bubble offers v2.1.9 and says it matches; amurcanov's WDTT 1.2.4-3
       → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
@@ -57,11 +61,13 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-hiddenmap  serves a catalog where a hidden fork drops its hidden apps too → RED on [10]
      --perturb-pin        serves a sub.js that hands out the latest release whatever the server runs → RED on [8]
      --perturb-guard      serves a sub.js that pins any app of a server, its repository or not → RED on [8]
+     --perturb-line       serves a sub.js that offers a csqtt server an app of another line → RED on [11]
+     --perturb-ownline    serves a sub.js that offers the CSQTT app of the other line when no release of the server's is out → RED on [11]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
 """
-import base64, fcntl, hashlib, importlib.machinery, importlib.util, json, os, secrets, select, shutil, socket, subprocess, sys
+import base64, fcntl, hashlib, importlib.machinery, importlib.util, json, os, re, secrets, select, shutil, socket, subprocess, sys
 import tempfile, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -81,7 +87,10 @@ P_PIN = "--perturb-pin" in sys.argv
 P_AWGAPP = "--perturb-awgapp" in sys.argv
 P_HIDDENMAP = "--perturb-hiddenmap" in sys.argv
 P_GUARD = "--perturb-guard" in sys.argv
-PERTURB = P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+P_LINE = "--perturb-line" in sys.argv
+P_OWNLINE = "--perturb-ownline" in sys.argv
+PERTURB = (P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+           or P_LINE or P_OWNLINE)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -155,7 +164,8 @@ J("subs/serve.json", {"enabled": True, "turn_enabled": True, "turn_catalog": cat
                       "turn_client_default": {"csqtt": {"android": "lalune"}},
                       "languages": {"enabled": ["en", "ru"], "default": "en"}})
 VK = ["https://vk.ru/call/join/AAAAbbbbCCCCddddEEEEffffGGGGhhhh1234567890", "https://vk.ru/call/join/ZZZZyyyyXXXXwwwwVVVVuuuuTTTTssss0987654321"]
-J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name": "Boris", "vk_links": VK[:1]}, "u3": {"name": "Cara"}},
+J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name": "Boris", "vk_links": VK[:1]}, "u3": {"name": "Cara"},
+                           "u4": {"name": "Dana", "vk_links": VK[:1]}},
                  "peers": {
                      "p1": {"id": "p1", "user_id": "u1", "title": "laptop", "csqtt_password": "pw1csqtt", "wdtt_password": "pw1wdtt",
                             "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
@@ -169,11 +179,15 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                      # [5] a router fronting a LAN, open to everyone on the node — Anna and Boris each get a networks page
                      "p3": {"id": "p3", "user_id": "u3", "title": "office router", "created_at": 1, "routes": ["192.168.50.0/24"],
                             "targets": [{"node": "n1", "iface": "awg1", "type": "awg", "ip": "10.9.0.5/32"}]},
+                     # [11] a device on a 2.1 server (csqtt1) and a 2.5 one (csqtt2)
+                     "p5": {"id": "p5", "user_id": "u4", "title": "tablet", "csqtt_password": "pw5csqtt",
+                            "targets": [{"node": "n1", "iface": "csqtt1", "type": "csqtt"},
+                                        {"node": "n1", "iface": "csqtt2", "type": "csqtt"}]},
                      # [5] a blocked device: its page is a dead end with the device's name as the picker's trigger
                      "p4": {"id": "p4", "user_id": "u1", "title": "old tablet", "disabled": True,
                             "targets": [{"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.9/32"}]}}})
 J("nodes.json", {"n1": {"name": "q-node", "endpoint_host": "203.0.113.7",
-                        "csqtt": {"csqtt1": {"listen": "0.0.0.0:56002"}},
+                        "csqtt": {"csqtt1": {"listen": "0.0.0.0:56002"}, "csqtt2": {"listen": "0.0.0.0:56003"}},
                         "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001}}}})
 AWG = {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": 0, "S2": 0, "H1": 1, "H2": 2, "H3": 3, "H4": 4}
 b64 = lambda n: base64.b64encode(os.urandom(n)).decode()
@@ -181,7 +195,8 @@ J("stats/stats-n1.json", {"interfaces": {
         "awg0": {"meta": {"public_key": b64(32), "listen_port": 51820, "endpoint": "203.0.113.7:51820", "subnet": "10.8.0.0/24", "awg_params": AWG}},
         "awg1": {"meta": {"public_key": b64(32), "listen_port": 51821, "endpoint": "203.0.113.7:51821", "subnet": "10.9.0.0/24", "awg_params": AWG}},
         "wg0": {"meta": {"public_key": b64(32), "listen_port": 51830, "endpoint": "203.0.113.7:51830", "subnet": "10.7.0.0/24"}}},
-    "csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"}],
+    "csqtt": [{"iface": "csqtt1", "fork": "csqtt", "version": "2.1.9-4"},   # an older node's row: no line (2.1, filters nothing)
+              {"iface": "csqtt2", "fork": "csqtt", "version": "2.5.0", "line": "2.5"}],
     "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"}],
     "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64, "version": "v4.0.3"},
                      {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64, "version": "v4.0.3"},
@@ -198,7 +213,7 @@ const all = new Uint8Array(12 + ct.length); all.set(iv); all.set(ct, 12);
 console.log(Buffer.from(all).toString('base64'));
 """
 users_sub, links = {}, {}
-for uid, pid in (("u1", "p1"), ("u2", "p2")):
+for uid, pid in (("u1", "p1"), ("u2", "p2"), ("u4", "p5")):
     key, token = os.urandom(32), secrets.token_urlsafe(24)
     sec = subprocess.run(["node", "--input-type=module", "-e", SEAL, key.hex(), json.dumps({"k": b64(32), "p": b64(32)})],
                          capture_output=True, text=True, timeout=60).stdout.strip()
@@ -226,7 +241,13 @@ def perturbed_web(old, new, what):
         f.write(src.replace(old, new))
 
 if P_MACOS:
-    perturbed_web('if (!turnGetApp("csqtt")) return;', "", "the csqtt client-for-this-OS guard")
+    perturbed_web('if (!turnGetApp("csqtt", (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;', "", "the csqtt client-for-this-OS guard")
+if P_LINE:
+    perturbed_web('      if (lineGate && (cl.csqtt_lines || ["2.1"]).indexOf(line) < 0) return null;   // this app speaks another csqtt line\n', "",
+                  "the csqtt line filter")
+if P_OWNLINE:
+    perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && verLine(links.tag) && verLine(links.tag) !== line) return null;\n', "",
+                  "the own app's release-line guard")
 if P_TABS:
     perturbed_web("groups = groups.filter(function (m) { return firstOf[m]; });", "", "the tabs-only-for-groups-with-a-page filter")
 if P_COPY:
@@ -563,6 +584,39 @@ try:
         check("[5] …and a tap on it opens the picker", tab.ev("!!document.querySelector('.cp-overlay .cp-panel')"),
               tab.ev("[...document.body.children].map(e => e.className).slice(-4)"))
     check("[4] console clean — phone and desktop renders with a networks page", not console_errors(tab), console_errors(tab)[:3])
+    tab.close()
+
+    # [11] csqtt 2.1 and 2.5 do not speak to each other: a server is offered only apps of its line
+    serve = json.load(open(os.path.join(D, "subs", "serve.json")))
+    serve["turn_client_default"] = {"csqtt": {"android": "lalune"}}
+    J("subs/serve.json", serve)
+    def _plain(c):   # the cell's text + link; an iOS vkturnproxy:// link carries the server inside base64
+        t = (c["text"] or "") + (c["payload"] or "")
+        for b in re.findall(r"vkturnproxy://import\?data=([A-Za-z0-9_-]+)", t):
+            try:
+                t += base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)).decode("utf-8", "replace")
+            except Exception:
+                pass
+        return t
+    on = lambda r, port: [c for c in turn_cells(r) if port in _plain(c)]
+    tab, rd = render("u4", "android", "en")
+    c25, c21 = on(rd, "56003"), on(rd, "56002")
+    check("[11] Android, the 2.5 server: the CSQTT app, not the operator's default La Lune (it speaks 2.1)",
+          len(c25) == 1 and "CSQTT" in (c25[0]["tag"] or "") and "La Lune" not in (c25[0]["tag"] or ""), [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+    check("[11] …the 2.1 server beside it keeps La Lune", len(c21) == 1 and "La Lune" in (c21[0]["tag"] or ""), [c["tag"] for c in c21])
+    tab.close()
+    tab, rd = render("u4", "ios", "en")
+    check("[11] iOS: no cell for the 2.5 server (VK TURN Proxy speaks 2.1), while the 2.1 server keeps its iPhone cell",
+          not on(rd, "56003") and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+    tab.close()
+    # the CSQTT app's release is of the other line (no 2.5 release out): the 2.5 server is offered nothing, not a 2.1 app
+    ca = serve["turn_catalog"]["clients"]["csqttapp"]["platforms"]["android"]
+    ca.update({"tag": "v2.1.9", "url": PIN_APK, "page": "https://github.com/amurcanov/csqtt/releases/tag/v2.1.9",
+               "assets": [{"name": "csqtt-v2.1.9.apk", "url": PIN_APK}]})
+    J("subs/serve.json", serve)
+    tab, rd = render("u4", "android", "en")
+    check("[11] with only a 2.1 release of the CSQTT app, the 2.5 server has no cell (no app of its line), the 2.1 one keeps La Lune",
+          not on(rd, "56003") and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
     tab.close()
 finally:
     br.close()

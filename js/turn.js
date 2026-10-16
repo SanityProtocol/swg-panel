@@ -2393,10 +2393,12 @@ export const CSQTT_DEFAULT_LINE = "2.1";
 export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || "").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };
 export const csqttLinesOn = () => (Store.csqttLines || []).length > 1;
 const csqttNodeLines = node => (Store.stats[node] || {}).csqtt_lines || [CSQTT_DEFAULT_LINE];
-// What each version means to the people on it. 2.5's note stands until P0 measures which client apps reach it.
-const csqttLineNote = l => l === CSQTT_DEFAULT_LINE ? T("Stable. Every client app connects, iPhone included.")
-  : T("New and less tested. The iPhone app (Anton48) may not connect to it.");
-const csqttLineIos = l => l === CSQTT_DEFAULT_LINE;
+// What each version means to the people on it.
+// csqtt 2.1 and 2.5 do not speak to each other, either way (csqtt25 rig, 2026-10-16): an app connects only to a server
+// of its own line. A switch keeps the users and their passwords, but every device needs the app of the new line; the
+// iPhone app (Anton48) and the other third-party apps speak 2.1 only.
+const csqttLineNote = l => l === CSQTT_DEFAULT_LINE ? T("Stable. For the csqtt {v1} apps, iPhone included.", { v1: l })
+  : T("Needs the csqtt {v1} app on every device. No {v2} app connects to it, the iPhone app included.", { v1: l, v2: CSQTT_DEFAULT_LINE });
 // The switch as the node reports it: `want` = what the panel asked, `run` = what the server runs, `failed` = why the
 // node put it back (it reverts a version that will not start, and waits for a Restart or a new build to try again).
 // `blocked` = asked for a version this node cannot run (a record carried to an older node): it never moves until the
@@ -2421,13 +2423,13 @@ export function CsqttVersionField({ node, value, onChange }) {
     <${Dropdown} value=${value} onChange=${onChange} options=${opts} ariaLabel=${T("Version")}/>
     <div class="hint">${old ? T("Update this node to run another csqtt version.") : csqttLineNote(value)}</div></div>`;
 }
-// Ask before a switch: the server restarts and every user on it reconnects once. Same configs, same passwords.
+// Ask before a switch: the server restarts, its users keep their passwords, and every device needs the new line's app.
 function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
   const n = ghostPeers(node, iface).length;
-  pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: to })} confirmLabel=${T("Switch to {v1}", { v1: to })} warn=${!csqttLineIos(to)}
-    body=${n ? T("The server restarts on csqtt {v1} and its {v2} reconnect once. Their configs stay the same. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
+  pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: to })} confirmLabel=${T("Switch to {v1}", { v1: to })} warn=${true}
+    body=${n ? T("The server restarts on csqtt {v1}. Its {v2} keep their passwords, but every device needs the csqtt {v1} app: a csqtt {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
       : T("The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: to, v2: from })}
-    note=${csqttLineIos(to) ? null : html`<p class="hint">${T("iPhone users on the Anton48 app may lose access until you switch back.")}</p>`}
+    note=${to === CSQTT_DEFAULT_LINE ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.", { v1: to })}</p>`}
     onConfirm=${onConfirm}/>`);
 }
 

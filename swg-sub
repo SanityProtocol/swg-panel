@@ -445,6 +445,8 @@ class State:
                         "pub_host": node_public_host(snap),   # reported public IP → WDTT link host when endpoint_host is unset
                         # each WDTT / csqtt server's RUNNING version, by interface → the page offers the app release it names
                         "tver": _running_versions(snap),
+                        # each csqtt server's running LINE (2.1 / 2.5), by interface → the page offers only apps of that line
+                        "tline": _running_lines(snap),
                         # the networks this node ROUTES right now (swg-noded net_carried) — what the page may promise a user
                         "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else []}
         return out
@@ -477,6 +479,14 @@ def _running_versions(snap):
             if isinstance(x, dict) and isinstance(x.get("iface"), str):
                 out[x["iface"]] = str(x.get("version") or "").strip()
     return out
+
+
+def _running_lines(snap):
+    """{iface: running line} of a node's csqtt servers. "" when the node does not say (an older node: one line, 2.1)."""
+    xs = snap.get("csqtt")
+    return {x["iface"]: str(x.get("line") or "").strip()
+            for x in (xs.values() if isinstance(xs, dict) else xs if isinstance(xs, list) else ())
+            if isinstance(x, dict) and isinstance(x.get("iface"), str)}
 
 
 # ── networks this user can reach (docs/NETWORKS-PLAN.md §18) ──
@@ -823,6 +833,7 @@ def read_data(state, token):
                                                 or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                               "port": port,
                               "version": (nd.get("tver") or {}).get(t.get("iface")) or "",
+                              "line": (nd.get("tline") or {}).get(t.get("iface")) or "",
                               "vk_hash": (p.get("vk_hash") or "").strip()},
                     "primary": _role_of(t),
                 })

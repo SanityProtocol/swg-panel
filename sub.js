@@ -230,7 +230,9 @@
   // follows it — the release that version names (the panel's `pins`), not the latest (operator, 2026-10-14).
   // `awg` = the deployment is an AmneziaWG interface: an app whose own tunnel is WireGuard only (`awg: false` in the
   // catalog — anton48's VK TURN Proxy on iOS) is never handed out for it; the next app is, or none.
-  function turnGetApp(forkId, ver, awg) {
+  // `line` — a csqtt server's running line (2.1 / 2.5): the two do not speak to each other, so only an app of the server's
+  // line is offered. "" (an older node, which runs 2.1 only) filters nothing.
+  function turnGetApp(forkId, ver, awg, line) {
     var srv = turnServer(forkId), clients = ((_lastData && _lastData.turn_catalog) || {}).clients || {};
     var os = subOs();
     function has(links) { return links && (links.url || links.github || links.play || links.appstore); }
@@ -246,10 +248,17 @@
       return out;
     }
     // Build the resolved-app record for one client id on the visitor's OS (null if it doesn't ship for this OS).
+    function verLine(v) { var m = /(\d+)\.(\d+)/.exec(String(v || "")); return m ? m[1] + "." + m[2] : ""; }
     function build(cid) {
       var cl = clients[cid], links = cl && cl.platforms && cl.platforms[os];   // this OS only — no cross-OS fallback
       if (!has(links) || (awg && cl.awg === false)) return null;
+      var lineGate = !!line && forkId === "csqtt";
+      if (lineGate && (cl.csqtt_lines || ["2.1"]).indexOf(line) < 0) return null;   // this app speaks another csqtt line
       links = pinned(links);
+      // The server's own app follows the server through its release pin. With no release of this server's line yet, the
+      // fallback is the latest release — the OTHER line's app, which cannot connect: offer nothing rather than it.
+      var own = /^https?:\/\/github\.com\/([^\/]+\/[^\/#?]+)/.exec(links.github || "");
+      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && verLine(links.tag) && verLine(links.tag) !== line) return null;
       // Attribute the download to the app's REAL author — the explicit `author` field wins over `native_fork` (which
       // only pins the client to a server fork for schema resolution, e.g. pwdtt→ildarmaga even though it's luminescq's).
       // Mirrors the panel's turnClientAuthor rule so Settings and the sub page agree.
@@ -1820,7 +1829,7 @@
         // links) are the TURN credential. One app (CSQTT), which scans the QR.
         var cd = it.csqtt, cfc = ifaceColor("csqtt");
         // raw VK inputs → csqttArtifact combines/strips/dedupes them (same one place the operator app uses)
-        var cga = turnGetApp("csqtt", cd.version);   // the operator's per-OS default csqtt client (CSQTT) → download / Start (this server's release)
+        var cga = turnGetApp("csqtt", cd.version, false, cd.line);   // the operator's per-OS default csqtt client (CSQTT) → download / Start (this server's release)
         // …and its encoder: on iOS that is anton48's VK TURN Proxy, which is handed its own vkturnproxy:// link —
         // it reads a csqtt:// one too, but keeps only the first VK call link of it.
         var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
@@ -2138,7 +2147,7 @@
           // every OS, so its encoder fallback is honest) a csqtt link on macOS named an app that does not exist there —
           // "amurcanov · CSQTT", a link and nothing to open it with. turnGetApp also answers "none" (the operator's
           // "don't offer on this OS") with nothing, so that choice keeps hiding it too.
-          if (!turnGetApp("csqtt")) return;
+          if (!turnGetApp("csqtt", (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;
           items.push({ tgt: tt, csqtt: tt.csqtt || {} }); return;
         }
         var seen = {}, tps = [], isAwg = (tt.type === "awg");

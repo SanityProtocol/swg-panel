@@ -1347,7 +1347,7 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   const col = Store.nodeColor(t.node); const dnode = Store.nodeName(t.node);
   const inp = csqttArtInput(peer, t);
   const rb = ((Store.stats[t.node] || {}).csqtt || []).find(x => x && x.iface === t.iface) || {};
-  const clientIds = wdttClientIds(rb.fork || "csqtt");   // same ordering as WDTT: [0] = the fork's own app (CSQTT)
+  const clientIds = csqttClientIds(rb);   // same ordering as WDTT: [0] = the fork's own app (CSQTT); only apps of the server's line
   const dc = csqttClientCfg(inp, clientIds[0] || "csqttapp");
   // the link is complete, but only because the panel-wide fallback filled it in — see vkOwnHash
   const vkFallbackHere = !vkOwnHash(peer, (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null);
@@ -1397,6 +1397,12 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
 export function wdttClientIds(fork) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
   return turnClientsFor(fork).map(c => c.id).filter(cid => cmap[cid]);
+}
+// The apps a csqtt server can be reached with: its fork's, minus those of another csqtt line — 2.1 and 2.5 do not speak
+// to each other (csqtt_lines in the catalog; absent = 2.1 only). A node that reports no line runs 2.1 and filters nothing.
+export function csqttClientIds(rb) {
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  return wdttClientIds(rb.fork || "csqtt").filter(cid => !rb.line || (cmap[cid].csqtt_lines || ["2.1"]).includes(rb.line));
 }
 export function wdttClientCfg(w, cid, fork, os) {
   const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
@@ -1480,7 +1486,7 @@ export function WdttConfigSheet({ peer, t, kind }) {
   const rb = ((Store.stats[t.node] || {})[cs ? "csqtt" : "wdtt"] || []).find(x => x && x.iface === t.iface) || {};
   const fork = rb.fork || (cs ? "csqtt" : "amurcanov");
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  const all = wdttClientIds(fork).map(id => ({ id, ...(cmap[id] || {}) }));
+  const all = (cs ? csqttClientIds(rb) : wdttClientIds(fork)).map(id => ({ id, ...(cmap[id] || {}) }));
   const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
   const osList = _OS_TABS.map(([o]) => o).filter(o => all.some(c => osOf(c).includes(o)));
   const [os, setOs] = useState(osList[0] || "android");

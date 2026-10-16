@@ -14851,7 +14851,7 @@ TURN_CLIENTS = {
                                                                                                    "linux":   {"name": "WINGS DeX", "github": "https://github.com/WINGS-N/WINGSV_DeX/releases"}}},
     # awg False: its own tunnel is WireGuard only — the app says so itself when a link carries AmneziaWG keys
     # (ConnectionLinkImport.swift), so it is never handed out for an AmneziaWG interface behind a proxy (sub.js turnGetApp)
-    "vkturnproxy": {"name": "VK TURN Proxy",  "encoder": "anton48",  "scheme": "vkturnproxy://", "qr": False, "awg": False, "platforms": {"ios": {"github": "https://github.com/anton48/vk-turn-proxy-ios/releases", "appstore": "https://testflight.apple.com/join/ANm6cmDv", "autostart": True}}},   # iOS has no App Store listing; the app installs via TestFlight (the .ipa in Releases needs self-signing → advanced only)
+    "vkturnproxy": {"name": "VK TURN Proxy",  "encoder": "anton48", "csqtt_lines": ["2.1"],  "scheme": "vkturnproxy://", "qr": False, "awg": False, "platforms": {"ios": {"github": "https://github.com/anton48/vk-turn-proxy-ios/releases", "appstore": "https://testflight.apple.com/join/ANm6cmDv", "autostart": True}}},   # iOS has no App Store listing; the app installs via TestFlight (the .ipa in Releases needs self-signing → advanced only)
     "freeturn":    {"name": "FreeTurn",       "encoder": "freeturn", "scheme": "freeturn://",    "platforms": {"android": {"github": "https://github.com/hackdiaz-dev/turn-proxy-android/releases", "autostart": True}}},
     "mysorez":     {"name": "VK TURN Proxy",  "encoder": "vktgz",    "scheme": None,             "platforms": {"android": {"github": "https://github.com/MYSOREZ/vk-turn-proxy-android/releases"}}},
     "sidecar":     {"name": "Sidecar",         "encoder": "sidecar",  "scheme": None,             "platforms": {   # the Go CLI ("sidecar" = a helper binary run beside WireGuard): hackdiaz-dev/free-turn-proxy ships client-<os>-<arch>; flags match the shared vk-turn-proxy family, so it drives cacggghp/Moroka8 relays too (per-author builds offered)
@@ -14865,7 +14865,11 @@ TURN_CLIENTS = {
     #   `qwdtt://config?…&pass=<pw last>`             (qWDTT / PWDTT native — password can't be misread)
     #   `vkturnproxy://import?data=<b64url>`           (anton48 iOS native, WRAP-A)  ← the existing "vkturnproxy" entry
     "wdttapp":     {"name": "WDTT",  "author": "amurcanov",  "encoder": "wdtt",  "scheme": "wdtt://", "qr": False,  "platforms": {"android": {"github": "https://github.com/amurcanov/proxy-turn-vk-android/releases"}}},   # amurcanov's canonical Android app (colon wdtt://)
-    "csqttapp":    {"name": "CSQTT", "author": "amurcanov",  "encoder": "csqtt", "scheme": "csqtt://", "qr": False,  "platforms": {"android": {"github": "https://github.com/amurcanov/csqtt/releases", "autostart": True}}},   # amurcanov's CSQTT Android app (csqtt://connect v2 — see turn-artifacts.js csqttArtifact). autostart: its MainActivity registers a BROWSABLE csqtt:// intent-filter → Start fires the deeplink (one-tap), QR/copy stay as fallback
+    # csqtt_lines: the csqtt server LINES an app connects to (docs/CSQTT-LINES-PLAN.md). 2.1 and 2.5 do not speak to each
+    # other either way (csqtt25 rig, 2026-10-16), so a server of a line its app lacks offers that app nowhere (sub page,
+    # peer card, Alternatives). Absent = 2.1 only: every app predating 2.5 speaks 2.1. amurcanov's own app follows the
+    # server through the release pins, so it has both — and is offered only once a release of the server's line exists.
+    "csqttapp":    {"name": "CSQTT", "author": "amurcanov",  "encoder": "csqtt", "csqtt_lines": ["2.1", "2.5"], "scheme": "csqtt://", "qr": False,  "platforms": {"android": {"github": "https://github.com/amurcanov/csqtt/releases", "autostart": True}}},   # amurcanov's CSQTT Android app (csqtt://connect v2 — see turn-artifacts.js csqttArtifact). autostart: its MainActivity registers a BROWSABLE csqtt:// intent-filter → Start fires the deeplink (one-tap), QR/copy stay as fallback
     # csqtt on the DESKTOP. amurcanov ships Android only, so until these there was no desktop csqtt client at all and a
     # desktop user of a csqtt server was offered nothing. Both are forks of amurcanov's own core — verified by git blob
     # hash, not by their README: `shared/wire_protocol.rs`, `protocol.rs` and `turn_core.rs` are byte-identical to the
@@ -14886,10 +14890,10 @@ TURN_CLIENTS = {
     # ⚙️ DECIDED 2026-09-17, on the real app (1.8.7 qualification PART 3): FOCSQ gets the SAME csqtt:// link as every csqtt
     # client, hashes included, and NO separate "add this VK link" step — its developer is adding link hashes (a hashes
     # field on the server profile). Do not build a paste block around it; drop this note once FOCSQ reads them.
-    "focsq":       {"name": "FOCSQ", "author": "luminescq", "color": {"dark": "#7C5CFF", "light": "#5B3FD9"}, "encoder": "csqtt", "scheme": "csqtt://", "qr": False, "platforms": {   # Rust + Flutter desktop; NO macOS exists, not even in CI
+    "focsq":       {"name": "FOCSQ", "author": "luminescq", "color": {"dark": "#7C5CFF", "light": "#5B3FD9"}, "encoder": "csqtt", "csqtt_lines": ["2.1"], "scheme": "csqtt://", "qr": False, "platforms": {   # Rust + Flutter desktop; NO macOS exists, not even in CI
                        "windows": {"github": "https://github.com/luminescq/focsq/releases"},
                        "linux":   {"github": "https://github.com/luminescq/focsq/releases"}}},
-    "lalune":      {"name": "La Lune", "author": "Endlad2", "color": {"dark": "#E3C567", "light": "#9A7B12"}, "encoder": "csqtt", "scheme": "csqtt://", "qr": False, "platforms": {   # Go + Wails; the README's iOS row is unbuilt (every iOS CI run has failed, and it only ever uploaded an unsigned artifact)
+    "lalune":      {"name": "La Lune", "author": "Endlad2", "color": {"dark": "#E3C567", "light": "#9A7B12"}, "encoder": "csqtt", "csqtt_lines": ["2.1"], "scheme": "csqtt://", "qr": False, "platforms": {   # Go + Wails; the README's iOS row is unbuilt (every iOS CI run has failed, and it only ever uploaded an unsigned artifact)
                        "windows": {"github": "https://github.com/Endlad2/LaLune/releases"},
                        "linux":   {"github": "https://github.com/Endlad2/LaLune/releases"},
                        "android": {"github": "https://github.com/Endlad2/LaLune/releases", "autostart": True}}},   # one-tap: see the decision above
