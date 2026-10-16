@@ -103,6 +103,14 @@ for bad, key in (({"domains": ["*.ru"]}, "is not a domain"), ({"domains": ["рф
                  ({"template_domains": "false"}, "not a valid setting"), ({"domains": ["d%d.ru" % i for i in range(501)] * 2}, "at most")):
     r, e = V(bad)
     check("refused: %s → %s" % (str(bad)[:40], key), r is None and e and key in e["error"], (r, e))
+# verify of fa484d42..b782d868 (F56, F58)
+r, e = V({"domains": ["xn--e1aybc.xn--p1ai", "xn--zca.de", "xn--pple-43d.com"]})
+check("a domain given as its wire name (punycode) is stored as given — the sheet may send one back",
+      e is None and r["domains"] == ["xn--e1aybc.xn--p1ai", "xn--zca.de", "xn--pple-43d.com"], (r, e))
+check("…an xn-- label that does not decode is refused", (V({"domains": ["xn--zz.ru"]})[1] or {}).get("error", "").find("is not a domain") > 0)
+r, e = V({"domains": "ya.ru;vk.com", "packages": "org.a.b;org.c.d", "apps_mode": "only", "ips": "1.2.3.4;5.6.7.8"})
+check("\";\" separates entries, as in the app", e is None and r["domains"] == ["ya.ru", "vk.com"] and r["packages"] == ["org.a.b", "org.c.d"]
+      and r["ips"] == ["1.2.3.4", "5.6.7.8"], (r, e))
 r, e = V({"domains": "www.google.com https://ya.ru/x vk.com:443"})
 check("www. dropped (the app applies the parent), a link's host kept, whitespace splits",
       e is None and r["domains"] == ["google.com", "ya.ru", "vk.com"], (r, e))

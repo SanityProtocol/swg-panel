@@ -48,7 +48,7 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 PLANTS = {
     "g1": ("[1]", "        elif _line != CSQTT_DEFAULT_LINE:\n            _cver = \"\"", "        elif False:\n            _cver = \"\""),
     "refuse": ("[3]", "                if _ln not in (_lsnap.get(\"csqtt_lines\") or []):", "                if False:"),
-    "publish": ("[4]", "\"dns_orig\", \"bind_ip\", \"line\") if k in ov}", "\"dns_orig\", \"bind_ip\") if k in ov}"),
+    "publish": ("[4]", "\"dns_orig\", \"bind_ip\", \"line\",\n", "\"dns_orig\", \"bind_ip\",\n"),
     "holdkey": (("[5]", "[11]"), "    return \"fork:csqtt\" if line == CSQTT_DEFAULT_LINE else \"fork:csqtt@\" + line",
                 "    return \"fork:csqtt\""),
     "split": ("[6]", "                if _cl and _cl != CSQTT_DEFAULT_LINE:\n                    _cf += \"@\" + _cl\n",

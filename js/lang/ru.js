@@ -7050,6 +7050,8 @@ export const STR = {
   "Only these apps": "Только эти приложения",
   "Android app IDs, one per line — the part after id= in the app's Google Play link.": "Идентификаторы приложений Android, по одному в строке — часть после id= в ссылке на приложение в Google Play.",
   "One per line. Subdomains are included.": "По одному в строке. Поддомены включаются.",
+  "Remove App routing?": "Удалить маршрутизацию приложений?",
+  "Remove and save": "Удалить и сохранить",
   "Its App routing is removed: csqtt {v1} has none.": "Маршрутизация приложений этого сервера удаляется: в csqtt {v1} её нет.",
   "Also the built-in list of Russian sites (about 500 domains)": "И встроенный список российских сайтов (около 500 доменов)",
   "One IPv4 address, network or range (a-b) per line.": "Один IPv4-адрес, сеть или диапазон (a-b) в строке.",

@@ -2432,6 +2432,8 @@ export function CsqttVersionField({ node, value, onChange }) {
     <${Dropdown} value=${value} onChange=${onChange} options=${opts} ariaLabel=${T("Version")}/>
     <div class="hint">${old ? T("Update this node to run another csqtt version.") : csqttLineNote(value)}</div></div>`;
 }
+// Back on 2.1 with a stored App routing rule, where no switch confirmation runs (2.1 already runs): the rule is dropped.
+export const csqttArDropAsk = (cfg, line, run) => line === CSQTT_DEFAULT_LINE && run === CSQTT_DEFAULT_LINE && !!(cfg && cfg.app_routing);
 // Ask before a switch: the server restarts, its users keep their passwords, and every device needs the new line's app.
 function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
   const n = ghostPeers(node, iface).length;
@@ -2576,6 +2578,11 @@ export function CsqttManageSheet({ node, c: c0 }) {
     const askEndpoint = () => pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
     if (lineDirty && line !== sw.run) { confirmCsqttSwitch(node, iface, sw.run, line, endpointDirty ? askEndpoint : doSave); return; }
+    if (lineDirty && csqttArDropAsk(cfg, line, sw.run)) {   // back to the 2.1 that runs: no switch to confirm, but the rule goes
+      pushModal(html`<${ConfirmSheet} title=${T("Remove App routing?")} confirmLabel=${T("Remove and save")} warn=${true}
+        body=${T("Its App routing is removed: csqtt {v1} has none.", { v1: line })} onConfirm=${endpointDirty ? askEndpoint : doSave}/>`);
+      return;
+    }
     if (endpointDirty) { askEndpoint(); return; }
     if (lineDirty) { doSave(); return; }
     if (paramsDirty || pinDirty) { doSave(); return; }
@@ -2639,7 +2646,7 @@ export function CsqttDeleteSheet({ node, iface }) {
 // ── csqtt 2.5 App routing (docs/CSQTT-APP-ROUTING-PLAN.md) — one rule for every user of the server, which the server
 // hands each user's CSQTT app when it connects. "direct" = what is listed bypasses the tunnel; "tunnel" = only what is
 // listed uses it. The lists are edited as text, one entry a line; the panel validates and normalises them.
-const AR_LINES = s => String(s || "").split(/[\s,]+/).filter(Boolean);   // the panel's list separators (_split_targets)
+const AR_LINES = s => String(s || "").split(/[\s,;]+/).filter(Boolean);   // the app's list separators (the panel's too)
 export const arInit = cfg => { const a = (cfg && cfg.app_routing) || {};
   return { apps_mode: a.apps_mode || "all", domains_mode: a.domains_mode || "direct", ips_mode: a.ips_mode || "direct",
            template_domains: !!a.template_domains,
@@ -2647,7 +2654,7 @@ export const arInit = cfg => { const a = (cfg && cfg.app_routing) || {};
 export const arBody = a => ({ apps_mode: a.apps_mode, packages: AR_LINES(a.packages),   // "every app" ignores the list (panel)
   domains_mode: a.domains_mode, domains: AR_LINES(a.domains), template_domains: a.domains_mode === "direct" && !!a.template_domains,
   ips_mode: a.ips_mode, ips: AR_LINES(a.ips) });
-const AR_ANY = s => /[^\s,.*]/.test(s || "");                     // a list that names something (cheap, every render)
+const AR_ANY = s => /[^\s,;.*]/.test(s || "");                     // a list that names something (cheap, every render)
 const arSummary = a => { const on = [];
   if (a.apps_mode === "only" || (a.apps_mode === "except" && AR_ANY(a.packages))) on.push(T("Apps"));
   if (AR_ANY(a.domains) || a.domains_mode === "tunnel") on.push(T("Domains"));

@@ -19393,7 +19393,7 @@ def _validate_app_routing(v):
         x = v.get(k)
         if not (x is None or isinstance(x, str) or (isinstance(x, list) and all(isinstance(i, str) for i in x))):
             return None, perr("App routing: not a valid setting")   # never str() an item into a name
-        x = list(dict.fromkeys(_split_targets(x)))
+        x = list(dict.fromkeys(_split_targets(x.replace(";", ",") if isinstance(x, str) else x)))   # ";" too, as the app
         if len(x) > _AR_MAX:                         # before any per-entry work
             return None, perr("App routing: at most {v1} %s" % what, v1=_AR_MAX)
         lists[k] = x
@@ -19415,10 +19415,18 @@ def _validate_app_routing(v):
         if ":" in h or (_AR_ADDR_RE.fullmatch(h) and any(c.isdigit() for c in h)):
             return None, perr("App routing: {v1} is an address — list it under Addresses", v1=d[:80])
         try:
-            a = h.encode("idna").decode("ascii") if len(h) <= 253 else ""   # госуслуги.рф → xn--… (the wire name)
-            if a.encode("ascii").decode("idna") != h:
-                a = ""                               # IDNA 2003 maps ß / ς / joiners to another name than browsers send
-        except UnicodeError:
+            if len(h) > 253:
+                a = ""
+            elif h.isascii():                        # already the wire name (typed so, or sent back as stored)
+                a = h
+                for lb in h.split("."):
+                    if lb.startswith("xn--"):
+                        lb[4:].encode("ascii").decode("punycode")   # …whose xn-- labels must decode
+            else:
+                a = h.encode("idna").decode("ascii")   # госуслуги.рф → xn--… (the wire name)
+                if a.encode("ascii").decode("idna") != h:
+                    a = ""                           # IDNA 2003 maps ß / ς / joiners to another name than browsers send
+        except (UnicodeError, ValueError):
             a = ""
         if not ("." in a and len(a) <= 253 and _HOSTNAME_RE.fullmatch(a) and not a.rsplit(".", 1)[1].isdigit()):
             return None, perr("App routing: {v1} is not a domain (a full name, like ya.ru)", v1=d[:80])

@@ -35,6 +35,8 @@ const PLANTS = {
   refuse: ["turn.js", "    ...(id !== value && !can.includes(id) ? {", "    ...(false ? {"],
   failed: ["turn.js", "  const failed = c.line_failed && c.line_failed.line === want ? c.line_failed : null;", "  const failed = c.line_failed || null;"],
   runline: ["turn.js", "  return seen ? s.run : s.want;", "  return s.want;"],
+  ardrop: ["turn.js", "export const csqttArDropAsk = (cfg, line, run) => line === CSQTT_DEFAULT_LINE && run === CSQTT_DEFAULT_LINE && !!(cfg && cfg.app_routing);",
+    "export const csqttArDropAsk = (cfg, line, run) => false;"],
   artpl: ["turn.js", "template_domains: a.domains_mode === \"direct\" && !!a.template_domains,", "template_domains: !!a.template_domains,"],
   runseen: ["turn.js", "  return seen ? s.run : s.want;", "  return s.run;"],
   stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
@@ -139,6 +141,9 @@ const rec9 = { apps_mode: "except", packages: ["org.telegram.messenger"], domain
 check("[9] a stored rule round-trips the form", JSON.stringify(TU.arBody(TU.arInit({ app_routing: rec9 }))) === JSON.stringify(rec9), TU.arBody(TU.arInit({ app_routing: rec9 })));
 check("[9] a stored punycode domain is shown as typed (and saves back the same)", TU.arInit({ app_routing: { domains: ["xn--c1aapkosapc.xn--p1ai"] } }).domains === "госуслуги.рф");
 check("[9] whitespace splits a list as the app does", JSON.stringify(TU.arBody({ ...TU.arInit({}), domains: "ya.ru vk.com\tok.ru" }).domains) === '["ya.ru","vk.com","ok.ru"]');
+check("[9] \";\" separates entries too", JSON.stringify(TU.arBody({ ...TU.arInit({}), domains: "ya.ru;vk.com" }).domains) === '["ya.ru","vk.com"]');
+check("[9] back to the 2.1 that runs with a stored rule: asked (the rule goes)", TU.csqttArDropAsk({ app_routing: { domains: ["ya.ru"] } }, "2.1", "2.1") === true
+      && TU.csqttArDropAsk({}, "2.1", "2.1") === false && TU.csqttArDropAsk({ app_routing: {} }, "2.5", "2.1") === false);
 check("[9] no stored rule: every app, direct, empty", JSON.stringify(TU.arBody(TU.arInit({}))) === JSON.stringify({ apps_mode: "all", packages: [], domains_mode: "direct", domains: [], template_domains: false, ips_mode: "direct", ips: [] }));
 
 done(!!MODE, MODE || "");
