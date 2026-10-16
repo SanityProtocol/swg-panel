@@ -16,8 +16,9 @@
  *      the same record is a switch again
  *  [8] the fork badge names the line the server RUNS (operator, 2026-10-16: "amurcanov 2.5", no line of its own) — during a
  *      switch still the running one, and 2.1 for a node that reports no line
- *  [9] App routing (2.5): the sheet's form → the record the panel stores — "every app" drops the app list, the built-in
- *      list is a direct list (dropped in tunnel mode), lists split on lines or commas; a stored rule round-trips the form
+ *  [9] App routing (2.5): the sheet's form → the record the panel stores — the built-in list is a direct list (dropped in
+ *      tunnel mode), lists split on whitespace or commas; a stored rule round-trips the form ("every app" ignoring the
+ *      app list is the panel's: csqtt_app_routing [1])
  *
  * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen> plants one regression, expects RED.
  */
@@ -132,7 +133,6 @@ check("[8] a 2.5 server the node does not report: its configured 2.5, never 2.1"
 // [9]
 const f9 = { apps_mode: "all", packages: "com.a", domains_mode: "tunnel", domains: "a.ru\n b.ru ,c.ru", template_domains: true, ips_mode: "direct", ips: "" };
 const b9 = TU.arBody(f9);
-check("[9] every app: no app list", JSON.stringify(b9.packages) === "[]", b9);
 check("[9] the built-in list is dropped in tunnel mode", b9.template_domains === false, b9);
 check("[9] lists split on lines and commas, trimmed", JSON.stringify(b9.domains) === '["a.ru","b.ru","c.ru"]', b9.domains);
 const rec9 = { apps_mode: "except", packages: ["org.telegram.messenger"], domains_mode: "direct", domains: ["ya.ru"], template_domains: true, ips_mode: "direct", ips: ["10.0.0.0/8"] };

@@ -105,9 +105,8 @@ PLANTS = {   # name: (section, anchor, replacement)
     "onepass": ("[12]", "_sw_pass[0] or time.monotonic() < _CSQTT_FETCH_LATER.get((_line, _want_ver), 0))", "time.monotonic() < _CSQTT_FETCH_LATER.get((_line, _want_ver), 0))"),
     "restart": ("[13]", "and not inst.get(\"stopped\") and not _switched:\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)", "and not inst.get(\"stopped\"):\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)"),
     "curver": (("[14]", "[17]", "[19]"), "                _run_ver = _want_ver if _line == _cur else (inst.get(\"cur_ver\") or \"\").strip()", "                _run_ver = _want_ver if _line == _cur else \"\""),
-    "ar-reconcile": ("[27]", 'inst.get("passwords"), inst.get("app_routing")):\n                    err = _csqtt_reconcile_desired(iface, inst.get("passwords"), inst.get("app_routing"))',
-                     'inst.get("passwords")):\n                    err = _csqtt_reconcile_desired(iface, inst.get("passwords"))'),
-    "ar-cfgdir": ("[27]", '_csqtt_desired_body(inst.get("passwords"), inst.get("app_routing")) + "\\n")', '_csqtt_desired_body(inst.get("passwords")) + "\\n")'),
+    "ar-reconcile": ("[27]", '_body = _csqtt_desired_body(inst) if _pw_seen', '_body = _csqtt_desired_body(dict(inst, app_routing=None)) if _pw_seen'),
+    "ar-cfgdir": ("[27]", 'f.write(_csqtt_desired_body(inst) + "\\n")', 'f.write(_csqtt_desired_body(dict(inst, app_routing=None)) + "\\n")'),
     "nover": ("[15]", "    if not ver and line != CSQTT_DEFAULT_LINE:\n", "    if False:\n"),
     "ifaces": ("[16]", "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]"),
     "build": (("[8]", "[16]"), "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return list(want or {})"),   # one function, two sections

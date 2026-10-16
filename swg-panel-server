@@ -19391,13 +19391,9 @@ def _validate_app_routing(v):
     lists = {}
     for k, what in (("packages", "apps"), ("domains", "domains"), ("ips", "addresses")):
         x = v.get(k)
-        if x is None:
-            x = []
-        elif isinstance(x, str):
-            x = re.split(r"[\s,;]+", x)
-        elif not isinstance(x, list) or not all(isinstance(i, str) for i in x):
-            return None, perr("App routing: not a valid setting")
-        x = list(dict.fromkeys(i.strip() for i in x if i.strip()))
+        if not (x is None or isinstance(x, str) or (isinstance(x, list) and all(isinstance(i, str) for i in x))):
+            return None, perr("App routing: not a valid setting")   # never str() an item into a name
+        x = list(dict.fromkeys(_split_targets(x)))
         if len(x) > _AR_MAX:                         # before any per-entry work
             return None, perr("App routing: at most {v1} %s" % what, v1=_AR_MAX)
         lists[k] = x

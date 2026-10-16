@@ -2639,15 +2639,15 @@ export function CsqttDeleteSheet({ node, iface }) {
 // ── csqtt 2.5 App routing (docs/CSQTT-APP-ROUTING-PLAN.md) — one rule for every user of the server, which the server
 // hands each user's CSQTT app when it connects. "direct" = what is listed bypasses the tunnel; "tunnel" = only what is
 // listed uses it. The lists are edited as text, one entry a line; the panel validates and normalises them.
-const AR_LINES = s => String(s || "").split(/[\s,;]+/).filter(Boolean);   // the app's own separators
+const AR_LINES = s => String(s || "").split(/[\s,]+/).filter(Boolean);   // the panel's list separators (_split_targets)
 export const arInit = cfg => { const a = (cfg && cfg.app_routing) || {};
   return { apps_mode: a.apps_mode || "all", domains_mode: a.domains_mode || "direct", ips_mode: a.ips_mode || "direct",
            template_domains: !!a.template_domains,
            packages: (a.packages || []).join("\n"), domains: (a.domains || []).map(idnHost).join("\n"), ips: (a.ips || []).join("\n") }; };
-export const arBody = a => ({ apps_mode: a.apps_mode, packages: a.apps_mode === "all" ? [] : AR_LINES(a.packages),
+export const arBody = a => ({ apps_mode: a.apps_mode, packages: AR_LINES(a.packages),   // "every app" ignores the list (panel)
   domains_mode: a.domains_mode, domains: AR_LINES(a.domains), template_domains: a.domains_mode === "direct" && !!a.template_domains,
   ips_mode: a.ips_mode, ips: AR_LINES(a.ips) });
-const AR_ANY = s => /[^\s,;.*]/.test(s || "");                     // a list that names something (cheap, every render)
+const AR_ANY = s => /[^\s,.*]/.test(s || "");                     // a list that names something (cheap, every render)
 const arSummary = a => { const on = [];
   if (a.apps_mode === "only" || (a.apps_mode === "except" && AR_ANY(a.packages))) on.push(T("Apps"));
   if (AR_ANY(a.domains) || a.domains_mode === "tunnel") on.push(T("Domains"));

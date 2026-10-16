@@ -22050,18 +22050,18 @@ def _csqtt_app_routing(r):
         return None
     return dict({k: r[k] for k in _CSQTT_APP_ROUTING_MODES}, **lists, template_domains=r.get("template_domains") is True)
 
-def _csqtt_desired_body(passwords, app_routing=None):
-    """csqtt desired.json = a LIST of panel-owned password records (matches the Rust patch's SwgDesiredFile).
+def _csqtt_desired_body(inst):
+    """A csqtt server record's desired.json: a LIST of panel-owned password records (matches the Rust patch's SwgDesiredFile).
     NOTE the shape differs from WDTT's dict-keyed-by-password body. `app_routing` (2.5's one rule for every password) is
     written ONLY when set, so a server without it keeps the file it always had — no rewrite, no SIGHUP, on an update."""
     out = []
-    for pw, e in (passwords or {}).items():
+    for pw, e in (inst.get("passwords") or {}).items():
         e = e or {}
         out.append({"password": pw, "expires_at": int(e.get("expires_at") or 0),
                     "vk_hash": str(e.get("vk_hash") or ""), "name": str(e.get("name") or ""),
                     "is_deactivated": bool(e.get("is_deactivated"))})
     body = {"passwords": out}
-    ar = _csqtt_app_routing(app_routing)
+    ar = _csqtt_app_routing(inst.get("app_routing"))
     if ar:
         body["app_routing"] = ar
     return json.dumps(body)
@@ -22255,7 +22255,7 @@ def _csqtt_write_cfgdir(inst, binshared, binp, cfgdir):
         if os.path.islink(binp) or os.path.exists(binp): os.remove(binp)
         os.symlink(binshared, binp)
     with open(cfgdir + "/csqtt.env", "w") as f: f.write(_csqtt_env_text(inst))
-    with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(inst.get("passwords"), inst.get("app_routing")) + "\n")
+    with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(inst) + "\n")
 
 # ── Docker run-model (mirror of the WDTT one above) ──────────────────────────────────────────────────────────
 # A container has no systemd, so on a docker node swg-noded runs each csqtt server as a SUPERVISED CHILD PROCESS
@@ -22647,11 +22647,11 @@ def _csqtt_install(inst):
     host_sh("systemctl daemon-reload; " + sc_enable_now(_csqtt_svc(iface)) + " >/dev/null 2>&1")
     return _csqtt_verify(iface)
 
-def _csqtt_reconcile_desired(iface, passwords, app_routing=None):
+def _csqtt_reconcile_desired(iface, body):
     """Write the panel's desired password set (+ App routing) + SIGHUP the server → applied with no restart / no tunnel drop."""
     cfgdir = _csqtt_dir(iface)
     try:
-        with open(cfgdir + "/desired.json", "w") as f: f.write(_csqtt_desired_body(passwords, app_routing) + "\n")
+        with open(cfgdir + "/desired.json", "w") as f: f.write(body + "\n")
     except Exception as e:
         return ("desired write failed: " + str(e))[:160]
     if NODE_KIND == "docker":
@@ -22663,13 +22663,13 @@ def _csqtt_reconcile_desired(iface, passwords, app_routing=None):
     w = host_sh("systemctl kill -s HUP " + shlex.quote(_csqtt_svc(iface)) + " 2>/dev/null || true")
     return "" if w.returncode == 0 else (w.stderr or w.stdout or "reconcile failed").strip()[:160]
 
-def _csqtt_desired_changed(iface, passwords, app_routing=None):
+def _csqtt_desired_changed(iface, body):
     try:
         with open(_csqtt_dir(iface) + "/desired.json") as f:
             cur = f.read().strip()
     except Exception:
         return True
-    return cur != _csqtt_desired_body(passwords, app_routing).strip()
+    return cur != body.strip()
 
 def _csqtt_params_changed(prev, inst):
     return ((prev.get("listen") or "") != (inst.get("listen") or "")
@@ -23403,8 +23403,9 @@ def reconcile_csqtt(want, remove=None):
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                     res["changed"] += 1
-                if _pw_seen and _csqtt_desired_changed(iface, inst.get("passwords"), inst.get("app_routing")):
-                    err = _csqtt_reconcile_desired(iface, inst.get("passwords"), inst.get("app_routing"))
+                _body = _csqtt_desired_body(inst) if _pw_seen else ""
+                if _pw_seen and _csqtt_desired_changed(iface, _body):
+                    err = _csqtt_reconcile_desired(iface, _body)
                     if err:
                         res["errors"].append(iface + ": " + err); have[iface] = inst; continue
                     res["changed"] += 1

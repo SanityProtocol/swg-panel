@@ -30,9 +30,9 @@ P_PLANTS = {"--perturb-norm": ("""                ips.append(str(n) if n.prefixl
             "--perturb-empty": ('''    if apps == "only" and not pk:
         return None, perr("App routing: list at least one app to send through the tunnel")''', '''    if False:
         pass''')}
-N_PLANTS = {"--perturb-always": ('''    ar = _csqtt_app_routing(app_routing)
+N_PLANTS = {"--perturb-always": ('''    ar = _csqtt_app_routing(inst.get("app_routing"))
     if ar:
-        body["app_routing"] = ar''', '''    body["app_routing"] = _csqtt_app_routing(app_routing)''')}
+        body["app_routing"] = ar''', '''    body["app_routing"] = _csqtt_app_routing(inst.get("app_routing"))''')}
 MODE = next((a for a in sys.argv[1:] if a in P_PLANTS or a in N_PLANTS), None)
 
 FAILS = []
@@ -121,23 +121,24 @@ check("the node's reply carries app_routing as stored", (rep.get("csqtt1") or {}
 
 print("[3] the node's desired.json")
 PW = {"p1": {"name": "alice"}, "p2": {}}
-plain = N._csqtt_desired_body(PW)
+B = lambda pw, ar=None: N._csqtt_desired_body({"passwords": pw, "app_routing": ar})
+plain = B(PW)
 check("no rule: byte-identical to the body before App routing",
       plain == json.dumps({"passwords": [{"password": "p1", "expires_at": 0, "vk_hash": "", "name": "alice", "is_deactivated": False},
                                          {"password": "p2", "expires_at": 0, "vk_hash": "", "name": "", "is_deactivated": False}]}), plain)
-check("…and None / {} for the rule is the same", N._csqtt_desired_body(PW, None) == plain and N._csqtt_desired_body(PW, {}) == plain)
-withr = json.loads(N._csqtt_desired_body(PW, dict(AR, bogus=1)))
+check("…and None / {} for the rule is the same", B(PW, None) == plain and B(PW, {}) == plain)
+withr = json.loads(B(PW, dict(AR, bogus=1)))
 check("the server's rule is carried, its known keys only", withr.get("app_routing") == AR, withr.get("app_routing"))
 for bad in (dict(AR, packages="com.x"), dict(AR, domains=["ya.ru", 7]), dict(AR, apps_mode="sometimes"), "x"):
-    check("a rule of the wrong shape is dropped whole: %s" % str(bad)[:50], "app_routing" not in json.loads(N._csqtt_desired_body(PW, bad)))
+    check("a rule of the wrong shape is dropped whole: %s" % str(bad)[:50], "app_routing" not in json.loads(B(PW, bad)))
 
 print("[4] the node's drift check")
 TMP = tempfile.mkdtemp(prefix="csqtt-ar-")
 N._csqtt_dir = lambda iface: TMP
-open(os.path.join(TMP, "desired.json"), "w").write(N._csqtt_desired_body(PW, AR) + "\n")
-check("the same rule: no change", N._csqtt_desired_changed("csqtt1", PW, AR) is False)
-check("a changed rule: a change", N._csqtt_desired_changed("csqtt1", PW, dict(AR, domains=["vk.com"])) is True)
-check("the rule removed: a change", N._csqtt_desired_changed("csqtt1", PW, None) is True)
+open(os.path.join(TMP, "desired.json"), "w").write(B(PW, AR) + "\n")
+check("the same rule: no change", N._csqtt_desired_changed("csqtt1", B(PW, AR)) is False)
+check("a changed rule: a change", N._csqtt_desired_changed("csqtt1", B(PW, dict(AR, domains=["vk.com"]))) is True)
+check("the rule removed: a change", N._csqtt_desired_changed("csqtt1", B(PW)) is True)
 
 print("\n" + ("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), ", ".join(FAILS))))
 sys.exit(1 if FAILS else 0)
