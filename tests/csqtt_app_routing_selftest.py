@@ -17,6 +17,7 @@ Hermetic. Run: python3 tests/csqtt_app_routing_selftest.py   (0 = pass)
      --perturb-empty    an "only these" mode with an empty list is stored → RED in [1]
      --perturb-always   desired.json always carries app_routing → RED in [3]
      --perturb-norm     addresses stored as typed → RED in [1]
+     --perturb-idna2003 the whole-name IDNA 2003 codec instead of punycode label by label → RED in [1]
 """
 import json, os, sys, tempfile, types
 
@@ -27,6 +28,8 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 
 P_PLANTS = {"--perturb-norm": ("""                ips.append(str(n) if n.prefixlen < 32 else str(n.network_address))""",
                                """                ips.append(x)"""),
+            "--perturb-idna2003": ("""        a = _ar_wire_name(h) if len(h) <= 253 else \"\"""",
+                                   """        a = h if h.isascii() else h.encode("idna").decode("ascii")"""),
             "--perturb-empty": ('''    if apps == "only" and not pk:
         return None, perr("App routing: list at least one app to send through the tunnel")''', '''    if False:
         pass''')}
@@ -96,7 +99,7 @@ for bad in ("com.1app", "com._x", "a." + "b" * 300):
     check("app ID %s… refused" % bad[:12], r is None and e and "Android app ID" in e["error"], (r, e))
 # review of a897a710..fa484d42: the app's own grammar (F1, F2, F4, F6, F7, F9, F14–F16, F19)
 for bad, key in (({"domains": ["*.ru"]}, "is not a domain"), ({"domains": ["рф"]}, "is not a domain"),
-                 ({"domains": ["ß.de"]}, "is not a domain"), ({"domains": ["foo.123"]}, "is not a domain"),
+                 ({"domains": ["xn--a.ru"]}, "is not a domain"), ({"domains": ["foo.123"]}, "is not a domain"),
                  ({"domains": ["ya.ru\n."]}, "is not a domain"), ({"domains": ["10.0.0.256"]}, "Addresses"),
                  ({"ips": ["2001:db8::/32"]}, "IPv4"), ({"ips": ["fe80::1%x"]}, "IPv4"), ({"ips": ["10.0.0.9-10.0.0.1"]}, "IP address or range"),
                  ({"domains": {"ya.ru": 1}}, "not a valid setting"), ({"domains": [None]}, "not a valid setting"),
@@ -108,6 +111,13 @@ r, e = V({"domains": ["xn--e1aybc.xn--p1ai", "xn--zca.de", "xn--pple-43d.com"]})
 check("a domain given as its wire name (punycode) is stored as given — the sheet may send one back",
       e is None and r["domains"] == ["xn--e1aybc.xn--p1ai", "xn--zca.de", "xn--pple-43d.com"], (r, e))
 check("…an xn-- label that does not decode is refused", (V({"domains": ["xn--zz.ru"]})[1] or {}).get("error", "").find("is not a domain") > 0)
+# verify round 2 (F59–F61): every form the sheet shows a stored name in comes back to it; junk xn-- refused
+r, e = V({"domains": ["ß.de", "straße.de", "xn--pple-43d.рф", "аpple.рф", "Госуслуги.РФ"]})
+check("a name is punycoded label by label as written (ß stays ß, a mixed-script label kept)",
+      e is None and r["domains"] == ["xn--zca.de", "xn--strae-oqa.de", "xn--pple-43d.xn--p1ai", "xn--c1aapkosapc.xn--p1ai"], (r, e))
+for x in ("xn--zca.de", "xn--strae-oqa.de", "xn--pple-43d.xn--p1ai", "xn--c1aapkosapc.xn--p1ai"):
+    shown = ".".join((l[4:].encode().decode("punycode") if l.startswith("xn--") and l != "xn--pple-43d" else l) for l in x.split("."))
+    check("stored %s, shown as %s, saves back unchanged" % (x, shown), V({"domains": [shown]})[0]["domains"] == [x], V({"domains": [shown]}))
 r, e = V({"domains": "ya.ru;vk.com", "packages": "org.a.b;org.c.d", "apps_mode": "only", "ips": "1.2.3.4;5.6.7.8"})
 check("\";\" separates entries, as in the app", e is None and r["domains"] == ["ya.ru", "vk.com"] and r["packages"] == ["org.a.b", "org.c.d"]
       and r["ips"] == ["1.2.3.4", "5.6.7.8"], (r, e))

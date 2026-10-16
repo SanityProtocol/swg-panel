@@ -19376,6 +19376,24 @@ _AR_ADDR_RE = re.compile(r"[0-9./-]+")                                         #
 _AR_MAX = 500
 _AR_ALL4 = [ipaddress.IPv4Network("0.0.0.0/0")]
 
+def _ar_wire_name(h):
+    """A lower-cased name → its wire form, LABEL BY LABEL, or "" if a label is no name: an ASCII label as it is (an xn--
+    one must decode to letters, marks, digits and hyphens, not all ASCII), any other label punycoded as it is written —
+    no IDNA 2003 mapping, which turns ß into ss where browsers send xn--zca. Every form the Edit sheet shows a stored name
+    in (idn.js decodes label by label, keeping a mixed-script one encoded) comes back to the same stored name."""
+    import unicodedata
+    out = []
+    for lb in h.split("."):
+        try:
+            u, ace = (lb[4:].encode("ascii").decode("punycode"), lb) if lb.startswith("xn--") else \
+                     (None, lb) if lb.isascii() else (lb, "xn--" + lb.encode("punycode").decode("ascii"))
+        except (UnicodeError, ValueError):
+            return ""
+        if u is not None and (u.isascii() or not all(c == "-" or unicodedata.category(c)[0] in "LMN" for c in u)):
+            return ""
+        out.append(ace)
+    return ".".join(out)
+
 def _validate_app_routing(v):
     """(record or None, perr dict or None). None = no rule (absent, or everything at its default)."""
     if v is None or v == {}:
@@ -19414,20 +19432,7 @@ def _validate_app_routing(v):
             continue                                 # a bare "*" / "." names nothing
         if ":" in h or (_AR_ADDR_RE.fullmatch(h) and any(c.isdigit() for c in h)):
             return None, perr("App routing: {v1} is an address — list it under Addresses", v1=d[:80])
-        try:
-            if len(h) > 253:
-                a = ""
-            elif h.isascii():                        # already the wire name (typed so, or sent back as stored)
-                a = h
-                for lb in h.split("."):
-                    if lb.startswith("xn--"):
-                        lb[4:].encode("ascii").decode("punycode")   # …whose xn-- labels must decode
-            else:
-                a = h.encode("idna").decode("ascii")   # госуслуги.рф → xn--… (the wire name)
-                if a.encode("ascii").decode("idna") != h:
-                    a = ""                           # IDNA 2003 maps ß / ς / joiners to another name than browsers send
-        except (UnicodeError, ValueError):
-            a = ""
+        a = _ar_wire_name(h) if len(h) <= 253 else ""
         if not ("." in a and len(a) <= 253 and _HOSTNAME_RE.fullmatch(a) and not a.rsplit(".", 1)[1].isdigit()):
             return None, perr("App routing: {v1} is not a domain (a full name, like ya.ru)", v1=d[:80])
         dm.append(a)

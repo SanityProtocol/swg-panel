@@ -2432,8 +2432,10 @@ export function CsqttVersionField({ node, value, onChange }) {
     <${Dropdown} value=${value} onChange=${onChange} options=${opts} ariaLabel=${T("Version")}/>
     <div class="hint">${old ? T("Update this node to run another csqtt version.") : csqttLineNote(value)}</div></div>`;
 }
-// Back on 2.1 with a stored App routing rule, where no switch confirmation runs (2.1 already runs): the rule is dropped.
-export const csqttArDropAsk = (cfg, line, run) => line === CSQTT_DEFAULT_LINE && run === CSQTT_DEFAULT_LINE && !!(cfg && cfg.app_routing);
+// App routing is every line's but 2.1's — as the panel stores it (/api/csqtt/set drops the rule on 2.1). Saving a server
+// onto a line without it, where no switch confirmation runs (that line already runs), asks first: the rule is dropped.
+export const csqttArLine = line => (line || CSQTT_DEFAULT_LINE) !== CSQTT_DEFAULT_LINE;
+export const csqttArDropAsk = (cfg, line) => !csqttArLine(line) && !!(cfg && cfg.app_routing);
 // Ask before a switch: the server restarts, its users keep their passwords, and every device needs the new line's app.
 function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
   const n = ghostPeers(node, iface).length;
@@ -2441,7 +2443,7 @@ function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
   pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: to })} confirmLabel=${T("Switch to {v1}", { v1: to })} warn=${true}
     body=${n ? T("The server restarts on csqtt {v1}. Its {v2} keep their passwords, but every device needs the csqtt {v1} app: a csqtt {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
       : T("The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: to, v2: from })}
-    note=${to === CSQTT_DEFAULT_LINE ? (arOn ? html`<p class="hint">${T("Its App routing is removed: csqtt {v1} has none.", { v1: to })}</p>` : null)
+    note=${!csqttArLine(to) ? (arOn ? html`<p class="hint">${T("Its App routing is removed: csqtt {v1} has none.", { v1: to })}</p>` : null)
       : !n ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.", { v1: to })}</p>`}
     onConfirm=${onConfirm}/>`);
 }
@@ -2578,7 +2580,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     const askEndpoint = () => pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
     if (lineDirty && line !== sw.run) { confirmCsqttSwitch(node, iface, sw.run, line, endpointDirty ? askEndpoint : doSave); return; }
-    if (lineDirty && csqttArDropAsk(cfg, line, sw.run)) {   // back to the 2.1 that runs: no switch to confirm, but the rule goes
+    if (lineDirty && csqttArDropAsk(cfg, line)) {   // back to the 2.1 that runs: no switch to confirm, but the rule goes
       pushModal(html`<${ConfirmSheet} title=${T("Remove App routing?")} confirmLabel=${T("Remove and save")} warn=${true}
         body=${T("Its App routing is removed: csqtt {v1} has none.", { v1: line })} onConfirm=${endpointDirty ? askEndpoint : doSave}/>`);
       return;
@@ -2698,7 +2700,7 @@ export function EditCsqttSheet({ node, iface }) {
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
   const [ar, setAr] = useState(() => arInit(cfg));                   // App routing — a 2.5 server's
-  const is25 = cfg.line === "2.5";                                    // the line it is set to (a switch drops the rule)
+  const is25 = csqttArLine(cfg.line);                                 // the line it is set to (a switch drops the rule)
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
     // sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept
