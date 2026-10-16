@@ -2047,6 +2047,13 @@ def _turn_deployed(deps):
     return out
 
 
+def _wdtt_unbuilt(fork):
+    """A WDTT fork with no build of ours (xxcipherx since 2026-10-14: hidden, its releases gone). A node installs WDTT only
+    from OUR releases, so its upstream tag is nothing it can install: offering it put a row in Server updates whose
+    Update could never do anything, on every server still running the fork (swgt, 2026-10-16)."""
+    return fork not in WDTT_BUILDS and (TURN_SERVERS.get(fork) or {}).get("kind") == "wdtt"
+
+
 def _turn_latest_for(fork):
     """The newest installable version of a fork. Same rule as /api/turn/check-updates — OUR published build for
     the ones we compile, the upstream release tag otherwise — so the header badge and that screen can never
@@ -2055,6 +2062,8 @@ def _turn_latest_for(fork):
         return _wdtt_current_version(fork)
     if fork == "csqtt" or fork.startswith("csqtt@"):
         return _csqtt_current_version(fork.partition("@")[2] or CSQTT_DEFAULT_LINE)
+    if _wdtt_unbuilt(fork):
+        return ""
     owner = turn_fork_owner(fork)
     return _resolve_turn_tag(owner) if owner and "/" in owner else ""
 
@@ -2085,7 +2094,7 @@ def _turn_behind(inst, latest):
     differ, that IS one of our rebuilds; and if either side has no parseable triple, fall back to inequality —
     we cannot order them, and staying silent would hide a real update behind an unusual tag."""
     inst, latest = str(inst or "").strip(), str(latest or "").strip()
-    if not inst or not latest or inst == latest:
+    if not inst or not latest or inst.lstrip("vV") == latest.lstrip("vV"):   # "2.0.0.72" is "v2.0.0.72"
         return False
     a, b = _vtuple(inst.lstrip("vV")), _vtuple(latest.lstrip("vV"))
     if a == (0, 0, 0) or b == (0, 0, 0):
@@ -28707,6 +28716,8 @@ def api(method, path, qs, body, deps):
                 # that was really a formatting difference, and the click did nothing (updateFork walks
                 # snap.turn_proxies, and a csqtt server is not in there).
                 latest[fid] = _csqtt_current_version()
+            elif _wdtt_unbuilt(fid):                    # a WDTT fork we no longer build: nothing installable
+                latest[fid] = ""
             elif "/" in owner:
                 latest[fid] = _resolve_turn_tag(owner)
         return 200, {"ok": True, "data": {"latest": latest}}
