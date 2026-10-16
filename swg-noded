@@ -22044,7 +22044,8 @@ def _csqtt_app_routing(r):
         return None
     out = {k: (r.get(k) if r.get(k) in ok else ok[0]) for k, ok in _CSQTT_APP_ROUTING_MODES.items()}
     for k in _CSQTT_APP_ROUTING_LISTS:
-        out[k] = [str(x) for x in (r.get(k) or []) if isinstance(x, str) and x][:500]
+        v = r.get(k)
+        out[k] = [x for x in v if isinstance(x, str) and x][:500] if isinstance(v, list) else []   # a list, never a string's characters
     out["template_domains"] = bool(r.get("template_domains"))
     return out
 

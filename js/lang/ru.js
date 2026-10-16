@@ -7059,6 +7059,8 @@ export const STR = {
   "App routing: at most {v1} addresses": "Маршрутизация приложений: не больше {v1} адресов",
   "App routing: {v1} is not an Android app ID (like org.telegram.messenger)": "Маршрутизация приложений: {v1} — не идентификатор приложения Android (вроде org.telegram.messenger)",
   "App routing: {v1} is not a domain": "Маршрутизация приложений: {v1} — не домен",
+  "App routing: {v1} is an address — list it under Addresses": "Маршрутизация приложений: {v1} — это адрес, укажите его в разделе «Адреса»",
+  "App routing: {v1} would send everything outside the tunnel": "Маршрутизация приложений: {v1} отправит весь трафик мимо туннеля",
   "App routing: {v1} is not an IP address or range": "Маршрутизация приложений: {v1} — не IP-адрес и не диапазон",
   "App routing: list at least one app to send through the tunnel": "Маршрутизация приложений: укажите хотя бы одно приложение для туннеля",
   "App routing: list at least one domain to send through the tunnel": "Маршрутизация приложений: укажите хотя бы один домен для туннеля",

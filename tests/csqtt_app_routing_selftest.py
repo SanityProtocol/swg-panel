@@ -16,6 +16,7 @@ override (the panel does not send one yet).
 Hermetic. Run: python3 tests/csqtt_app_routing_selftest.py   (0 = pass)
      --perturb-empty    an "only these" mode with an empty list is stored → RED in [1]
      --perturb-always   desired.json always carries app_routing → RED in [3]
+     --perturb-norm     addresses stored as typed → RED in [1]
 """
 import json, os, sys, tempfile, types
 
@@ -24,7 +25,9 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 
-P_PLANTS = {"--perturb-empty": ('''    if apps == "only" and not pk:
+P_PLANTS = {"--perturb-norm": ("""        ips.append(str(n) if (n.prefixlen != n.max_prefixlen) else str(n.network_address))""",
+                               """        ips.append(x)"""),
+            "--perturb-empty": ('''    if apps == "only" and not pk:
         return None, perr("App routing: list at least one app to send through the tunnel")''', '''    if False:
         pass''')}
 N_PLANTS = {"--perturb-always": ('''    ar = _csqtt_app_routing(app_routing) if app_routing else None   # {} at the server level is no rule (not an empty one)
@@ -75,6 +78,22 @@ r, e = V({"domains_mode": "tunnel", "domains": ["work.example"], "template_domai
 check("the built-in list is a direct list: dropped in tunnel mode", e is None and r["template_domains"] is False, (r, e))
 check("everything at its default is no rule (absent)", V({"apps_mode": "all", "packages": ["x.y"]}) == (None, None) and V({}) == (None, None))
 check("the built-in list alone is a rule", (V({"template_domains": True})[0] or {}).get("template_domains") is True)
+# review of a897a710..2b7fe0ee (F3–F7, F9, F10)
+r, e = V({"domains": ["госуслуги.рф", "*", "*."], "ips": ["192.168.1.10/24", "10.0.0.0/255.0.0.0", "10.1.2.3"]})
+check("a Cyrillic domain is stored as punycode; a bare * is skipped, never a blank error",
+      e is None and r["domains"] == ["xn--c1aapkosapc.xn--p1ai"], (r, e))
+check("addresses are stored normalised (host bits cleared, netmask form as a prefix, a host bare)",
+      e is None and r["ips"] == ["192.168.1.0/24", "10.0.0.0/8", "10.1.2.3"], (r, e))
+r, e = V({"domains": ["1.2.3.4"]})
+check("an address under Domains is refused, pointing to Addresses", r is None and e and "Addresses" in e["error"], (r, e))
+for x in ("0.0.0.0/0", "::/0"):
+    r, e = V({"ips": [x]})
+    check("%s as direct is refused (everything outside the tunnel)" % x, r is None and e and "outside the tunnel" in e["error"], (r, e))
+check("…while as a tunnel-only address it is allowed", V({"ips_mode": "tunnel", "ips": ["0.0.0.0/0"]})[1] is None)
+check("every app except none is every app: no rule", V({"apps_mode": "except", "packages": []}) == (None, None))
+for bad in ("com.1app", "com._x", "a." + "b" * 300):
+    r, e = V({"apps_mode": "except", "packages": [bad]})
+    check("app ID %s… refused" % bad[:12], r is None and e and "Android app ID" in e["error"], (r, e))
 
 print("[2] delivery")
 check("csqtt_cfg publishes app_routing", '"bind_ip", "line",\n' in open(PANEL).read() and '"app_routing") if k in ov}' in open(PANEL).read())
@@ -101,6 +120,8 @@ check("the server's rule is carried, its known keys and types only",
 own = json.loads(N._csqtt_desired_body({"p1": {"app_routing": {"apps_mode": "only", "packages": ["com.x"]}}, "p2": {"app_routing": {}}, "p3": {}}))
 o = {x["password"]: x for x in own["passwords"]}
 check("a per-password override passes through", (o["p1"].get("app_routing") or {}).get("packages") == ["com.x"], o["p1"])
+check("a list given as a string is no list (never one entry a character)",
+      json.loads(N._csqtt_desired_body({}, {"apps_mode": "except", "packages": "com.x", "domains": 5}))["app_routing"]["packages"] == [])
 check("…an empty one is kept (no rule for that password), an absent one stays absent",
       o["p2"].get("app_routing", {}).get("apps_mode") == "all" and "app_routing" not in o["p3"], o)
 

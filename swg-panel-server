@@ -19369,7 +19369,7 @@ def _apply_egress_mode(rec, body, nodes, nid, deps):
 # straight to the internet instead of through the tunnel ("direct" — the default), or the reverse ("only these use the
 # tunnel"). Upstream checks nothing, so the panel does — above all that an "only these" list is never empty, which would
 # send nothing at all through the tunnel.
-_AR_PKG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+_AR_PKG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")   # every segment starts with a letter (Android)
 _AR_HOST_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _AR_MAX = 500
 
@@ -19390,8 +19390,32 @@ def _validate_app_routing(v):
     if apps not in ("all", "except", "only") or dmode not in ("direct", "tunnel") or imode not in ("direct", "tunnel"):
         return None, perr("App routing: not a valid setting")
     pk = list(dict.fromkeys(lst("packages"))) if apps != "all" else []
-    dm = list(dict.fromkeys(d.lower().lstrip("*").lstrip(".").rstrip(".") for d in lst("domains")))
-    ips = list(dict.fromkeys(lst("ips")))
+    dm = []
+    for d in lst("domains"):
+        h = d.lower().lstrip("*").lstrip(".").rstrip(".")
+        if not h:
+            continue                                 # a bare "*" / "." names nothing
+        try:
+            h = h.encode("idna").decode("ascii")     # госуслуги.рф → xn--… (the app matches the wire name)
+        except UnicodeError:
+            return None, perr("App routing: {v1} is not a domain", v1=d[:80])
+        try:
+            ipaddress.ip_address(h)
+            return None, perr("App routing: {v1} is an address — list it under Addresses", v1=d[:80])
+        except ValueError:
+            pass
+        dm.append(h)
+    dm = list(dict.fromkeys(dm))
+    ips = []
+    for x in lst("ips"):
+        try:
+            n = ipaddress.ip_network(x, strict=False)   # stored normalised: 192.168.1.10/24 → 192.168.1.0/24
+        except ValueError:
+            return None, perr("App routing: {v1} is not an IP address or range", v1=x[:80])
+        if n.prefixlen == 0 and imode == "direct":
+            return None, perr("App routing: {v1} would send everything outside the tunnel", v1=x[:80])
+        ips.append(str(n) if (n.prefixlen != n.max_prefixlen) else str(n.network_address))
+    ips = list(dict.fromkeys(ips))
     if len(pk) > _AR_MAX:
         return None, perr("App routing: at most {v1} apps", v1=_AR_MAX)
     if len(dm) > _AR_MAX:
@@ -19399,16 +19423,11 @@ def _validate_app_routing(v):
     if len(ips) > _AR_MAX:
         return None, perr("App routing: at most {v1} addresses", v1=_AR_MAX)
     for x in pk:
-        if not _AR_PKG_RE.match(x):
+        if len(x) > 255 or not _AR_PKG_RE.match(x):
             return None, perr("App routing: {v1} is not an Android app ID (like org.telegram.messenger)", v1=x[:80])
     for x in dm:
         if not _AR_HOST_RE.match(x):
             return None, perr("App routing: {v1} is not a domain", v1=x[:80])
-    for x in ips:
-        try:
-            ipaddress.ip_network(x, strict=False)
-        except ValueError:
-            return None, perr("App routing: {v1} is not an IP address or range", v1=x[:80])
     # "only these" with nothing listed sends NOTHING through the tunnel — refused, never stored
     if apps == "only" and not pk:
         return None, perr("App routing: list at least one app to send through the tunnel")
@@ -19419,6 +19438,8 @@ def _validate_app_routing(v):
     tpl = bool(v.get("template_domains")) and dmode == "direct"   # the built-in list is a direct list
     rec = {"apps_mode": apps, "packages": pk, "domains_mode": dmode, "domains": dm, "template_domains": tpl,
            "ips_mode": imode, "ips": ips}
+    if apps == "except" and not pk:
+        apps = rec["apps_mode"] = "all"                # "every app except none" is every app
     if apps == "all" and not dm and not tpl and dmode == "direct" and not ips and imode == "direct":
         return None, None                            # everything at its default: no rule
     return rec, None
