@@ -9,12 +9,15 @@ device row) and 2.5 (no devices: the address is the password's own `passwords.ip
      2.5 reads passwords.ip, 2.1 reads the device rows, never the other line's stale column
   4  a store without device_id is device-less whatever the line says
   5  csqtt_snapshot reports each password's address on both lines
+  6  a 2.1 store 2.5 has not started on yet (a switch not yet run, a stopped server just switched): read through its
+     devices though the line says 2.5 — never an empty store
 
 Schemas are upstream's own (rust-server/model.rs DATABASE_SCHEMA of v2.1.9 and 2.5.0).
 
 Run: python3 tests/csqtt_store_reader_selftest.py   (0 = pass)
      --perturb-line   the reader ignores the line (columns decide)      → RED 3
      --perturb-ip     the snapshot takes the address from devices only → RED 5
+     --perturb-unmigrated  the line alone decides (no `ip` column check) → RED 6
 """
 import os, sys, sqlite3, tempfile, types
 
@@ -23,8 +26,10 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 
 PLANTS = {
-    "--perturb-line": ('            if (line or "2.1") == "2.1" and "device_id" in cols:\n',
+    "--perturb-line": ('            if "device_id" in cols and ((line or "2.1") == "2.1" or "ip" not in cols):\n',
                        '            if "device_id" in cols:\n'),
+    "--perturb-unmigrated": ('            if "device_id" in cols and ((line or "2.1") == "2.1" or "ip" not in cols):\n',
+                             '            if "device_id" in cols and (line or "2.1") == "2.1":\n'),
     "--perturb-ip": ('                        "ip": e.get("ip") or _dev.get("ip", ""), "online": online,',
                      '                        "ip": _dev.get("ip", ""), "online": online,'),
 }
@@ -141,6 +146,10 @@ check("2.1: the device's address", snap.get("csqtt1", {}).get("passwords", {}).g
 check("2.5: the password's address", snap.get("csqtt2", {}).get("passwords", {}).get("pwA", {}).get("ip") == "10.66.68.3",
       snap.get("csqtt2"))
 check("2.5: traffic reported", snap.get("csqtt2", {}).get("passwords", {}).get("pwA", {}).get("up_bytes") == 5)
+
+print("6  a 2.1 store not yet migrated by 2.5")
+s = N._csqtt_read_store(d21, "2.5")
+check("read through its devices, not empty", set(s["passwords"]) == {"pwA", "pwB"} and s["devices"].get("devA", {}).get("ip") == "10.66.68.2", s)
 
 print("\n" + ("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), ", ".join(FAILS))))
 sys.exit(1 if FAILS else 0)

@@ -246,7 +246,7 @@ if P_LINE:
     perturbed_web('      if (lineGate && (cl.csqtt_lines || ["2.1"]).indexOf(line) < 0) return null;   // this app speaks another csqtt line\n', "",
                   "the csqtt line filter")
 if P_OWNLINE:
-    perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && verLine(links.tag) && verLine(links.tag) !== line) return null;\n', "",
+    perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;\n', "",
                   "the own app's release-line guard")
 if P_TABS:
     perturbed_web("groups = groups.filter(function (m) { return firstOf[m]; });", "", "the tabs-only-for-groups-with-a-page filter")
@@ -616,6 +616,14 @@ try:
     J("subs/serve.json", serve)
     tab, rd = render("u4", "android", "en")
     check("[11] with only a 2.1 release of the CSQTT app, the 2.5 server has no cell (no app of its line), the 2.1 one keeps La Lune",
+          not on(rd, "56003") and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+    tab.close()
+    # the release is not resolved yet (a cold cache, GitHub rate-limited): no tag — the latest is 2.1's until proven otherwise
+    for k in ("tag", "url", "page", "assets"):
+        ca.pop(k, None)
+    J("subs/serve.json", serve)
+    tab, rd = render("u4", "android", "en")
+    check("[11] with the CSQTT release not resolved yet, the 2.5 server still has no cell — its releases page leads to the 2.1 app",
           not on(rd, "56003") and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
     tab.close()
 finally:

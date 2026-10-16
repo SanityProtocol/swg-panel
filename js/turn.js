@@ -2429,7 +2429,7 @@ function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
   pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: to })} confirmLabel=${T("Switch to {v1}", { v1: to })} warn=${true}
     body=${n ? T("The server restarts on csqtt {v1}. Its {v2} keep their passwords, but every device needs the csqtt {v1} app: a csqtt {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
       : T("The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: to, v2: from })}
-    note=${to === CSQTT_DEFAULT_LINE ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.", { v1: to })}</p>`}
+    note=${!n || to === CSQTT_DEFAULT_LINE ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.", { v1: to })}</p>`}
     onConfirm=${onConfirm}/>`);
 }
 

@@ -22740,7 +22740,7 @@ def _csqtt_read_store(cfgdir, line=""):
     and no `devices` table — selecting them failed the whole read, so a 2.5 server reported an empty store. Which
     one holds the address is decided by the LINE that runs (`line`), not by the columns: a store that visited 2.5
     keeps a stale `ip` column under 2.1, and one that visited 2.1 a stale `devices` table under 2.5. A store
-    without `device_id` can only be device-less, whatever the line.
+    without `device_id` can only be device-less, whatever the line; one without `ip` is 2.1's, whatever the line.
 
     csqtt <=2.0.1 kept passwords.json. 2.1.5 moved to SQLite `csqtt.db` (WAL) and, on first start, imports the
     JSON and DELETES it — so a node that only knew the JSON reported an empty store for every instance the
@@ -22767,7 +22767,9 @@ def _csqtt_read_store(cfgdir, line=""):
         c = sqlite3.connect(dbp, timeout=5)
         try:
             cols = {r[1] for r in c.execute("PRAGMA table_info(passwords)")}
-            if (line or "2.1") == "2.1" and "device_id" in cols:
+            # 2.5 adds `ip` when it first starts on a 2.1 store: until then (a switch not yet started, or a stopped server
+            # just switched) the store is still 2.1's, read through its devices.
+            if "device_id" in cols and ((line or "2.1") == "2.1" or "ip" not in cols):
                 for pw, did, exp, up, dn, deact, name, vkh in c.execute(
                         "SELECT password, device_id, expires_at, up_bytes, down_bytes, is_deactivated, name, vk_hash "
                         "FROM passwords"):

@@ -258,7 +258,9 @@
       // The server's own app follows the server through its release pin. With no release of this server's line yet, the
       // fallback is the latest release — the OTHER line's app, which cannot connect: offer nothing rather than it.
       var own = /^https?:\/\/github\.com\/([^\/]+\/[^\/#?]+)/.exec(links.github || "");
-      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && verLine(links.tag) && verLine(links.tag) !== line) return null;
+      // A release not resolved yet (no tag) is the latest, which is 2.1's unless proven otherwise: only a 2.1 server takes it.
+      var relLine = verLine(links.tag) || "2.1";
+      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;
       // Attribute the download to the app's REAL author — the explicit `author` field wins over `native_fork` (which
       // only pins the client to a server fork for schema resolution, e.g. pwdtt→ildarmaga even though it's luminescq's).
       // Mirrors the panel's turnClientAuthor rule so Settings and the sub page agree.
