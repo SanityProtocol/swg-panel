@@ -1515,7 +1515,9 @@ CSQTT_BUILDS = [("2.1.9-4", "csqtt-2.1.9-4"), ("2.1.9-3", "csqtt-2.1.9-3"), ("2.
 #   path can be run before the real release (test panels only). Unset — the default — there is one line, and the
 #   panel, every node reply and the SPA are exactly what they were before lines.
 CSQTT_DEFAULT_LINE = "2.1"
-CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS}
+# 2.5: amurcanov 2.5.0 with the swg-panel integration ported (release csqtt-2.5.0, 2026-10-16). A new protocol — a 2.1 app
+# cannot reach a 2.5 server, nor a 2.5 app a 2.1 one (catalog csqtt_lines decides which apps each server is offered).
+CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS, "2.5": [("2.5.0", "csqtt-2.5.0")]}
 _CSQTT_LINE_RE = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}$")
 def _csqtt_standin(spec):
     line, _, vers = (spec or "").partition("=")
