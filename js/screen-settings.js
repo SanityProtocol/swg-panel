@@ -1814,6 +1814,9 @@ function confirmHistOff(ok) {
       : T("The panel will keep the traffic detail — each day's figures at the history resolution — for the last 33 days only. None is older than that yet, so nothing is deleted when you save; from then on, each day's detail is deleted once it is 33 days old. Totals for any period are kept."),
     onConfirm: ok });
 }
+// One version, whatever its leading "v": "4.0.3" is "v4.0.3" — the panel's _turn_behind rule, so Settings → Check updates and
+// the header badge / Server updates never disagree about the same server.
+const sameVer = (a, b) => String(a || "").replace(/^[vV]/, "") === String(b || "").replace(/^[vV]/, "");
 export function PanelSettingsScreen() {
   // NOTE: deliberately NOT subscribed to the 5s poll (no useStore) — this is an edit form seeded from a
   // snapshot at mount. Re-rendering every poll re-diffs every controlled input (the source of the checkbox
@@ -2065,7 +2068,7 @@ export function PanelSettingsScreen() {
     const next = {};
     for (const f of rows) {
       const lt = latest[f.id] || "", dep = forkVersions(f.id);
-      next[f.id] = (lt && dep.length && dep.some(v => v !== lt)) ? { status: "update", latest: lt } : { status: "uptodate" };
+      next[f.id] = (lt && dep.length && dep.some(v => !sameVer(v, lt))) ? { status: "update", latest: lt } : { status: "uptodate" };
     }
     setTurnCheck(next);
     setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.status === "update" || v.status === "updating" ? v : {}]))), 5000);   // T("up to date") clears after 5s; "update" (and an update clicked meanwhile) persists
@@ -2082,7 +2085,7 @@ export function PanelSettingsScreen() {
       for (const [fid, v] of Object.entries(c)) {
         if (!v || v.status !== "updating" || !v.until) continue;
         const st = forkNodeStates(fid).filter(s => canTurnAct(s.node));   // a node the update skipped keeps its version — don't wait on it
-        if (st.length && st.every(s => s.version === v.latest && !s.installing)) n[fid] = { status: "updated" };   // i18n-keys
+        if (st.length && st.every(s => sameVer(s.version, v.latest) && !s.installing)) n[fid] = { status: "updated" };   // i18n-keys
         else if (Date.now() > v.until) n[fid] = {};
       }
       return n;

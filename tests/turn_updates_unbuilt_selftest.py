@@ -12,10 +12,13 @@ our rebuilds). Update could never clear it.
       gives our build, a turn proxy its upstream tag
   [3] turn_updates_view over a fleet: no row for the unbuilt fork; the turn proxy behind its tag keeps its row
   [4] /api/turn/check-updates (the Settings check) answers the same: nothing for the unbuilt fork, never asking GitHub
+  [5] Settings → Check updates (the SPA) uses the same "v" rule: its update flag and its "updated" follow both compare
+      through sameVer, which takes "4.0.3" for "v4.0.3" and nothing else (review F1, 2026-10-16)
 
 Hermetic (GitHub stubbed). Run: python3 tests/turn_updates_unbuilt_selftest.py   (0 = pass)
      --perturb-unbuilt   the unbuilt fork falls through to its upstream tag again → RED in [2], [4]
      --perturb-v         a version differing by its "v" alone reads as behind again → RED in [1], [3]
+     --perturb-spa       Settings compares the latest with a plain !== again → RED in [5]
 """
 import os, sys, types
 
@@ -30,7 +33,8 @@ PLANTS = {
                           ''),
     "--perturb-v": ('inst.lstrip("vV") == latest.lstrip("vV"):', 'inst == latest:'),
 }
-MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
+SPA_PLANT = ("dep.some(v => !sameVer(v, lt))", "dep.some(v => v !== lt)")
+MODE = next((a for a in sys.argv[1:] if a in PLANTS or a == "--perturb-spa"), None)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -39,7 +43,7 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 src = open(SERVER, encoding="utf-8").read()
-if MODE:
+if MODE in PLANTS:
     pl = PLANTS[MODE]
     for cut, new in zip(pl[0::2], pl[1::2]):
         # ⚠️ ASSERT THE ANCHOR. A perturbation that matches nothing leaves a clean pass behind.
@@ -100,6 +104,21 @@ except Exception as ex:
 check("answers nothing installable for xxcipherx", code == 200 and lt.get("xxcipherx") == "", (code, lt))
 check("…without asking GitHub", not any("XXcipherX" in a for a in ASKED), ASKED)
 check("…and the proxy's tag as before", lt.get(proxy_fork) == "v4.0.3", lt)
+
+print("[5] Settings → Check updates")
+import re, subprocess
+spa = open(os.path.join(ROOT, "js", "screen-settings.js"), encoding="utf-8").read()
+if MODE == "--perturb-spa":
+    assert spa.count(SPA_PLANT[0]) == 1, "perturbation anchor for --perturb-spa missing — would FALSE-PASS"
+    spa = spa.replace(SPA_PLANT[0], SPA_PLANT[1])
+m = re.search(r"^const sameVer = .*$", spa, re.M)
+check("sameVer is defined", bool(m))
+if m:
+    js = m.group(0) + "\nconsole.log(JSON.stringify([sameVer('4.0.3','v4.0.3'), sameVer('V2.0.0.72','2.0.0.72'), sameVer('4.0.1','v4.0.3'), sameVer('','v1')]))"
+    out = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30).stdout.strip()
+    check("…takes \"4.0.3\" for \"v4.0.3\" and nothing else", out == "[true,true,false,false]", out)
+check("the update flag compares through it", "dep.some(v => !sameVer(v, lt))" in spa)
+check("the \"updated\" follow compares through it", "sameVer(s.version, v.latest)" in spa)
 
 print("\n" + ("ALL PASS" if not FAILS else "FAILED: %d — %s" % (len(FAILS), ", ".join(FAILS))))
 sys.exit(1 if FAILS else 0)
