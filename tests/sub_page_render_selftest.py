@@ -590,8 +590,17 @@ try:
     serve = json.load(open(os.path.join(D, "subs", "serve.json")))
     serve["turn_client_default"] = {"csqtt": {"android": "lalune"}}
     J("subs/serve.json", serve)
-    def _plain(c):   # the cell's text + link; an iOS vkturnproxy:// link carries the server inside base64
+    UNSEAL = r"""const l = process.argv[1].slice(8), b = Buffer.from(l.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+      const kh = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('csqtt-chiper-key'));
+      const k = await crypto.subtle.importKey('raw', kh, {name: 'AES-GCM'}, false, ['decrypt']);
+      try { console.log(new TextDecoder().decode(await crypto.subtle.decrypt({name: 'AES-GCM', iv: b.subarray(0, 12)}, k, b.subarray(12)))); }
+      catch (e) { console.log(''); }"""
+    def _unseal(link):   # a csqtt 2.5 link → its payload: the 2.5 app's decoder, in node's Web Crypto ("" = it does not open)
+        return subprocess.run(["node", "--input-type=module", "-e", UNSEAL, link], capture_output=True, text=True, timeout=30).stdout.strip()
+    def _plain(c):   # the cell's text + link; an iOS vkturnproxy:// link carries the server inside base64, a 2.5 csqtt:// one sealed
         t = (c["text"] or "") + (c["payload"] or "")
+        for sl in set(re.findall(r"csqtt://(?!connect)[A-Za-z0-9_-]{40,}", t)):
+            t += " " + _unseal(sl)
         for b in re.findall(r"vkturnproxy://import\?data=([A-Za-z0-9_-]+)", t):
             try:
                 t += base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)).decode("utf-8", "replace")
@@ -599,15 +608,28 @@ try:
                 pass
         return t
     on = lambda r, port: [c for c in turn_cells(r) if port in _plain(c)]
+    # Dana's device has two csqtt servers: csqtt1 (no line reported → 2.1) and csqtt2 (2.5). A 2.5 cell is a QR, so its link is not
+    # in the DOM as text: cells are told apart by their app, and "no cell for the 2.5 server" is a COUNT (one cell, the 2.1 one) —
+    # never the absence of a port in text a QR cell does not carry.
     tab, rd = render("u4", "android", "en")
-    c25, c21 = on(rd, "56003"), on(rd, "56002")
+    cells = turn_cells(rd)
+    c25 = [c for c in cells if "CSQTT" in (c["tag"] or "")]
+    c21 = on(rd, "56002")
     check("[11] Android, the 2.5 server: the CSQTT app, not the operator's default La Lune (it speaks 2.1)",
-          len(c25) == 1 and "CSQTT" in (c25[0]["tag"] or "") and "La Lune" not in (c25[0]["tag"] or ""), [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+          len(cells) == 2 and len(c25) == 1 and "La Lune" not in (c25[0]["tag"] or ""), [(c["tag"], (c["text"] or "")[:60]) for c in cells])
     check("[11] …the 2.1 server beside it keeps La Lune", len(c21) == 1 and "La Lune" in (c21[0]["tag"] or ""), [c["tag"] for c in c21])
+    check("[11] …the 2.5 server shown as a QR (the 2.5 app scans one), while the 2.1 server's plain link has none",
+          len(c25) == 1 and c25[0]["qr"] and len(c21) == 1 and not c21[0]["qr"], [(c["tag"], c["qr"]) for c in cells])
+    res, clip, steps, navs = start_on(tab, "turn", "amurcanov · CSQTT")
+    sealed = next((x for x in list(clip) + list(navs) if x.startswith("csqtt://") and not x.startswith("csqtt://connect")), "")
+    p25 = _unseal(sealed) if sealed else ""
+    check("[11] its Start hands out the SEALED link (the 2.5 app takes no other), which opens to its connect payload",
+          p25.startswith("connect?v=2&host=203.0.113.7&peer=56003&password=pw5csqtt"), (res, [x[:40] for x in clip], [x[:40] for x in navs], p25))
     tab.close()
     tab, rd = render("u4", "ios", "en")
+    cells = turn_cells(rd)
     check("[11] iOS: no cell for the 2.5 server (VK TURN Proxy speaks 2.1), while the 2.1 server keeps its iPhone cell",
-          not on(rd, "56003") and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+          len(cells) == 1 and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in cells])
     tab.close()
     # the CSQTT app's release is of the other line (no 2.5 release out): the 2.5 server is offered nothing, not a 2.1 app
     ca = serve["turn_catalog"]["clients"]["csqttapp"]["platforms"]["android"]
@@ -616,7 +638,7 @@ try:
     J("subs/serve.json", serve)
     tab, rd = render("u4", "android", "en")
     check("[11] with only a 2.1 release of the CSQTT app, the 2.5 server has no cell (no app of its line), the 2.1 one keeps La Lune",
-          not on(rd, "56003") and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+          len(turn_cells(rd)) == 1 and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
     tab.close()
     # the release is not resolved yet (a cold cache, GitHub rate-limited): no tag — the latest is 2.1's until proven otherwise
     for k in ("tag", "url", "page", "assets"):
@@ -624,7 +646,7 @@ try:
     J("subs/serve.json", serve)
     tab, rd = render("u4", "android", "en")
     check("[11] with the CSQTT release not resolved yet, the 2.5 server still has no cell — its releases page leads to the 2.1 app",
-          not on(rd, "56003") and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
+          len(turn_cells(rd)) == 1 and len(on(rd, "56002")) == 1, [(c["tag"], (c["text"] or "")[:60]) for c in turn_cells(rd)])
     tab.close()
 finally:
     br.close()

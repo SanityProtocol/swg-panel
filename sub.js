@@ -1835,7 +1835,7 @@
         // …and its encoder: on iOS that is anton48's VK TURN Proxy, which is handed its own vkturnproxy:// link —
         // it reads a csqtt:// one too, but keeps only the first VK call link of it.
         var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
-          vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, cga && cga.enc);
+          vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, cga && cga.enc, cd.line);   // 2.5 → the sealed link + a QR
         // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
         // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
         // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
@@ -1864,14 +1864,20 @@
         }
         if (cga) { ctrl.dlAppUrl = cga.file; ctrl.dlAppFile = cga.fileName; ctrl.dlAppName = cga.app; ctrl.dlAppPage = cga.page; node.appendChild(getAppRow(cga)); }
         ctrl.cliApp = false; ctrl.vktgz = false;         // csqtt client is an app, never a CLI/VKTGZ flow
-        ctrl.payload = cart.text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
-        ctrl.isLink = true; ctrl.hasQR = false; ctrl.cmd = null; ctrl.wrapCfg = true;   // no scanner in the CSQTT app yet → hand out the csqtt:// link itself
-        ctrl.openUri = cart.text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
-        // A one-tap csqtt app (the CSQTT app, La Lune on Android) is handed the link by the scheme — AND it is copied, so a
-        // visitor sent to install the app first still has the link when they come back to it.
-        ctrl.copyOnOpen = true;
-        ctrl.view = "qr";
-        draw();
+        // 2.1: no scanner in its apps → the csqtt:// link itself; 2.5: its app scans one → a QR (cart.qr), the link sealed
+        // asynchronously (Web Crypto) — the same draw-then-apply as a turn proxy's buildAsync artifact.
+        var capply = function (text) {
+          ctrl.payload = text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
+          ctrl.isLink = true; ctrl.hasQR = !!cart.qr; ctrl.cmd = null; ctrl.wrapCfg = true;
+          ctrl.openUri = text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
+          // A one-tap csqtt app (the CSQTT app, La Lune on Android) is handed the link by the scheme — AND it is copied, so a
+          // visitor sent to install the app first still has the link when they come back to it.
+          ctrl.copyOnOpen = true;
+          ctrl.view = "qr";
+          draw();
+        };
+        if (cart.text != null) capply(cart.text);
+        else { draw(); Promise.resolve().then(cart.buildAsync).then(capply).catch(function (e) { ctrl.ready = false; stage.innerHTML = ""; stage.appendChild(el("div", "cfg-fail", (e && e.message) || t("cantGen"))); if (ctrl.notify) ctrl.notify(); }); }
       } else if (it.wdtt) {
         // A WDTT peer, rendered as a cell IN the Turn group (WDTT is a VK-TURN-family server). It's keyless: the
         // server owns its WireGuard + mints the client keypair via GETCONF, so the link carries only the WRAP

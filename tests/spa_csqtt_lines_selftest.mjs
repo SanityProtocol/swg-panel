@@ -14,6 +14,8 @@
  *  [7] q189 SPA-11 — a record naming a line the panel no longer offers (a stand-in line taken away) reads as the panel reads
  *      it (_csqtt_line_of: 2.1, what the node is sent): the card is not "switching" for ever; with the line back on offer
  *      the same record is a switch again
+ *  [8] the fork badge names the line the server RUNS (operator, 2026-10-16: "amurcanov 2.5", no line of its own) — during a
+ *      switch still the running one, and 2.1 for a node that reports no line
  *
  * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale> plants one regression, expects RED.
  */
@@ -29,6 +31,8 @@ const PLANTS = {
   unoffered: ["turn.js", "  if (!csqttLinesOn() && value === CSQTT_DEFAULT_LINE) return null;", "  if (!csqttLinesOn()) return null;"],
   refuse: ["turn.js", "    ...(id !== value && !can.includes(id) ? {", "    ...(false ? {"],
   failed: ["turn.js", "  const failed = c.line_failed && c.line_failed.line === want ? c.line_failed : null;", "  const failed = c.line_failed || null;"],
+  runline: ["turn.js", "export const csqttRunLine = (node, iface) => csqttSwitchState(node, iface).run;",
+            "export const csqttRunLine = (node, iface) => csqttSwitchState(node, iface).want;"],
   stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
           "export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;"],
 };
@@ -112,5 +116,12 @@ check("[7] …and csqttLineOf reads it as the panel does", TU.csqttLineOf({ line
 Store.csqttLines = ["2.1", "2.5"];
 const s7b = TU.csqttSwitchState("nnew", "s");
 check("[7] with 2.5 back on offer, the same record is a switch again", s7b.want === "2.5" && s7b.switching, s7b);
+
+// [8]
+Store.nodes = [{ id: "nnew", csqtt_cfg: { r: { line: "2.5" }, m: { line: "2.5" } } }];
+Store.stats = { nnew: { csqtt_lines: ["2.1", "2.5"], csqtt: [{ iface: "r", line: "2.5" }, { iface: "m", line: "2.1" }, { iface: "o" }] } };
+check("[8] a server on 2.5: its badge says 2.5", TU.csqttRunLine("nnew", "r") === "2.5", TU.csqttRunLine("nnew", "r"));
+check("[8] mid-switch (asked 2.5, runs 2.1): the badge says what runs, 2.1", TU.csqttRunLine("nnew", "m") === "2.1", TU.csqttRunLine("nnew", "m"));
+check("[8] a node that reports no line: 2.1", TU.csqttRunLine("nnew", "o") === "2.1", TU.csqttRunLine("nnew", "o"));
 
 done(!!MODE, MODE || "");

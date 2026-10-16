@@ -2412,6 +2412,9 @@ export function csqttSwitchState(node, iface) {
   const blocked = moving && !csqttNodeLines(node).includes(want);
   return { want, run, failed, blocked, switching: moving && !blocked };
 }
+// The line a csqtt server RUNS, for its fork badge ("amurcanov 2.5"): the two lines speak different protocols, so the
+// version is part of what the server is — shown in the badge rather than on a line of its own (operator, 2026-10-16).
+export const csqttRunLine = (node, iface) => csqttSwitchState(node, iface).run;
 export function CsqttVersionField({ node, value, onChange }) {
   if (!csqttLinesOn() && value === CSQTT_DEFAULT_LINE) return null;
   const can = csqttNodeLines(node);
@@ -2506,8 +2509,7 @@ export function CsqttCard({ node, c, reorder }) {
       ${tag}
     </div>
     <div class="ifcard-rows">
-      <div class="ifrow"><span class="l">${T("CSQTT fork")}</span><span class="r">amurcanov</span></div>
-      ${csqttLinesOn() || sw.run !== CSQTT_DEFAULT_LINE ? html`<div class="ifrow"><span class="l">${T("Version")}</span><span class="r">csqtt ${sw.run}</span></div>` : null}
+      <div class="ifrow"><span class="l">${T("CSQTT fork")}</span><span class="r">${forkLabel(c.fork || "csqtt")} ${sw.run}</span></div>
       <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
       <div class="ifrow"><span class="l">${T("Forwards to")}</span><span class="r"><a class="tg tg-csqtt" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(c.iface)} onClick=${e => e.stopPropagation()}>${c.iface}</a></span></div>
     </div></div>`;

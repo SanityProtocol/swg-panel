@@ -735,7 +735,42 @@
   // Format is authoritative from the app's own CsqttLinkTest.kt: host = server IP (IPv6 gets bracketed by the app on
   // read, so we just URL-encode it), peer = the DTLS listen port, password URL-encoded, hashes = VK call hashes joined
   // by '+' (a literal '+' inside a hash is %2B-escaped), max 6, omitted when there are none. `c` = {host,port,password,hashes[]}.
-  function csqttArtifact(c, asClient) {
+  // ── csqtt 2.5+ link: the same connect payload, SEALED. The 2.5 app accepts only this form (it rejects the plain
+  // csqtt://connect?… link 2.1 takes): csqtt:// + base64url(iv ‖ AES-256-GCM(payload) ‖ tag), the key SHA-256 of a fixed
+  // seed, the iv the first 12 bytes of HMAC-SHA256(key, payload) — so one payload is one link. Mirrors the 2.5 server's
+  // own encrypt_csqtt_link (rust-server/web_panel.rs) and the app's decoder ("csqtt-chiper-key", AES/GCM/NoPadding).
+  // The payload's escaping is the server's url_encode: everything but A–Z a–z 0–9 - _ . ~ as %XX (encodeURIComponent
+  // would leave !'()* bare). Web Crypto is async, so this artifact is a buildAsync one.
+  var CSQTT_LINK_SEED = "csqtt-chiper-key";   // sic — the authors' spelling, byte for byte
+  function csqttUrlEnc(v) {
+    var b = new TextEncoder().encode(String(v == null ? "" : v)), out = "";
+    for (var i = 0; i < b.length; i++) {
+      var x = b[i];
+      out += ((x >= 48 && x <= 57) || (x >= 65 && x <= 90) || (x >= 97 && x <= 122) || x === 45 || x === 95 || x === 46 || x === 126)
+        ? String.fromCharCode(x) : "%" + (x < 16 ? "0" : "") + x.toString(16).toUpperCase();
+    }
+    return out;
+  }
+  function csqttSeal(payload) {
+    var sub = typeof crypto !== "undefined" && crypto.subtle;
+    if (!sub) return Promise.reject(new Error("this browser can't build a csqtt 2.5 link (no Web Crypto — open the page over HTTPS)"));
+    var enc = new TextEncoder(), pt = enc.encode(payload);
+    return sub.digest("SHA-256", enc.encode(CSQTT_LINK_SEED)).then(function (kh) {
+      return Promise.all([sub.importKey("raw", kh, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+                          sub.importKey("raw", kh, { name: "AES-GCM" }, false, ["encrypt"])]);
+    }).then(function (ks) {
+      return sub.sign("HMAC", ks[0], pt).then(function (mac) {
+        var iv = new Uint8Array(mac).slice(0, 12);
+        return sub.encrypt({ name: "AES-GCM", iv: iv }, ks[1], pt).then(function (ct) {
+          var all = new Uint8Array(12 + ct.byteLength); all.set(iv); all.set(new Uint8Array(ct), 12);
+          var bin = ""; for (var i = 0; i < all.length; i++) bin += String.fromCharCode(all[i]);
+          return "csqtt://" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        });
+      });
+    });
+  }
+  // `line` — the csqtt line the server runs ("" / "2.1" = the plain link every 2.1 app takes; 2.5 = the sealed one).
+  function csqttArtifact(c, asClient, line) {
     c = c || {};
     // TURN-credential hashes: the peer's own vk_hash + every VK call link on the user (each stripped to its bare
     // hash), deduped, max 6. One place — both the operator app and the sub page pass raw {vk_hash, vk_links} and
@@ -765,6 +800,15 @@
     }
     hs = hs.slice(0, VK_LINK_CAPS.csqtt);
     var vkMissing = hs.length === 0;   // VK hashes are the TURN credential; a link without them only works for a self-test
+    if (line && line !== "2.1") {
+      // 2.5: the sealed link, and a QR — the 2.5 app scans one. `src` is the payload it seals: what the link IS, for a
+      // caller that must tell two links apart before the async seal resolves.
+      var p25 = "connect?v=2&host=" + csqttUrlEnc(c.host) + "&peer=" + (parseInt(c.port, 10) || 46000)
+        + (c.password ? "&password=" + csqttUrlEnc(c.password) : "") + (hs.length ? "&hashes=" + hs.map(csqttUrlEnc).join("+") : "");
+      return { fork: "csqtt", app: "CSQTT", label: "CSQTT (csqtt://connect)", ext: "txt", uri: true, qr: true,
+        vkMissing: vkMissing, hint: "Open the csqtt:// link in your csqtt app, or paste it in.", src: p25,
+        buildAsync: function () { return csqttSeal(p25); } };
+    }
     var qp = ["v=2", "host=" + encodeURIComponent(String(c.host || "")),
               "peer=" + (parseInt(c.port, 10) || ""), "password=" + encodeURIComponent(String(c.password || ""))];
     if (hs.length) qp.push("hashes=" + hs.map(function (h) { return h.replace(/\+/g, "%2B"); }).join("+"));

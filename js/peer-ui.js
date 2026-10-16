@@ -1331,14 +1331,33 @@ export function csqttArtInput(peer, t) {
   const host = (_lh && _lh !== "0.0.0.0" ? _lh : "") || (nrec.endpoint_host || "").trim() || _pub;   // bind wins (see above); never 0.0.0.0 — a dead link
   const port = String(rb.listen || "").split(":").pop() || "46000";
   // Raw VK inputs — csqttArtifact strips/dedupes/caps them into the link's `hashes` (one place, shared with the sub page).
-  return { host, port, password: peer.csqtt_password || "", vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) || [] };
+  return { host, port, password: peer.csqtt_password || "", vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) || [],
+           line: rb.line || "" };   // the line the server RUNS: 2.5 takes a sealed link (+ a QR), 2.1 the plain one
 }
 // One client's link, by its catalog id: the encoder decides. csqtt apps take the csqtt:// link; anton48's iOS
 // VK TURN Proxy is handed its own vkturnproxy:// one, because it reads only the first VK hash of a csqtt:// link.
 export function csqttClientCfg(inp, cid) {
   const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
-  const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp, cl.encoder || "csqtt") : null;
-  return { cl, art, uri: art && art.text, qr: !!(art && art.qr) };   // the encoder decides — the CSQTT app can't scan yet
+  const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp, cl.encoder || "csqtt", inp.line) : null;
+  return { cl, art, uri: art && art.text, qr: !!(art && art.qr) };   // the encoder decides; a 2.5 link is a QR, a 2.1 one is not
+}
+// csqttClientCfg for a component: a 2.5 link is sealed with Web Crypto, so it arrives a tick later — `uri` is null and
+// `pending` true until then. Keyed by the payload the link seals (`art.src`), so a stale link is never shown for a new one.
+// `inp` null → nothing (lets a component call it unconditionally, as hooks must be).
+export function useCsqttCfg(inp, cid) {
+  const dc = inp ? csqttClientCfg(inp, cid) : { cl: {}, art: null, uri: null, qr: false };
+  const src = dc.art && dc.art.text == null && dc.art.buildAsync ? (dc.art.src || "") : null;
+  const [sealed, setSealed] = useState({ src: null, uri: null, err: null });
+  useEffect(() => {
+    if (src == null) return;
+    let ok = true;
+    Promise.resolve().then(dc.art.buildAsync).then(u => { if (ok) setSealed({ src, uri: u, err: null }); })
+      .catch(e => { if (ok) setSealed({ src, uri: null, err: (e && e.message) || T("couldn't generate") }); });
+    return () => { ok = false; };
+  }, [src]);
+  if (src == null) return dc;
+  const mine = sealed.src === src;
+  return { ...dc, uri: mine ? sealed.uri : null, pending: !mine, err: mine ? sealed.err : null };
 }
 export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   useStore();
@@ -1348,7 +1367,7 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   const inp = csqttArtInput(peer, t);
   const rb = ((Store.stats[t.node] || {}).csqtt || []).find(x => x && x.iface === t.iface) || {};
   const clientIds = csqttClientIds(rb);   // same ordering as WDTT: [0] = the fork's own app (CSQTT); only apps of the server's line
-  const dc = csqttClientCfg(inp, clientIds[0] || "csqttapp");
+  const dc = useCsqttCfg(inp, clientIds[0] || "csqttapp");
   // the link is complete, but only because the panel-wide fallback filled it in — see vkOwnHash
   const vkFallbackHere = !vkOwnHash(peer, (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null);
   // An UNASSIGNED peer has no user, so the half of this note about "their subscription page" and "set a VK link
@@ -1370,7 +1389,7 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
     <div class=${"deploy-body" + (uri && !dc.qr ? " deploy-body-stack" : "")   /* no scanner → the link stacks, same as a WDTT link card */}>
       ${primary === "backup" ? html`<span class="qr-primary qr-backup">${T("Backup")}</span>`
         : primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
-      ${!uri ? html`<div class="qr-none">${T("csqtt link unavailable — the server isn't reporting yet.")}</div>`
+      ${!uri ? html`<div class="qr-none">${dc.pending ? T("generating…") : dc.err || T("csqtt link unavailable — the server isn't reporting yet.")}</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<${LinkBox} uri=${uri}/>`}
       ${bare ? null : html`<div class="dmeta">
@@ -1517,7 +1536,8 @@ export function WdttConfigSheet({ peer, t, kind }) {
 }
 export function WdttCfgItem({ w, cid, base, fork, os, kind }) {
   const cs = kind === "csqtt";
-  const dc = cs ? csqttClientCfg(w, cid) : wdttClientCfg(w, cid, fork, os); const uri = dc.uri;
+  const dcs = useCsqttCfg(cs ? w : null, cid);   // called either way — a hook
+  const dc = cs ? dcs : wdttClientCfg(w, cid, fork, os); const uri = dc.uri;
   const copied = cs ? T("csqtt link copied") : T("WDTT link copied");
   const [view, setView] = useState(dc.qr ? "qr" : "text");
   const taRef = useRef(null);
@@ -1526,7 +1546,7 @@ export function WdttCfgItem({ w, cid, base, fork, os, kind }) {
   const qrView = dc.qr && view === "qr";
   return html`<div class="turncfg-item">
     <div class="turncfg-head"><span class="tcf-label">${clientHandoff(dc.cl, cid, dc.qr, os)}</span></div>
-    ${!uri ? html`<div class="qr-none">${cs ? T("csqtt link unavailable — the server isn't reporting yet.") : T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
+    ${!uri ? html`<div class="qr-none">${dc.pending ? T("generating…") : dc.err ? dc.err : cs ? T("csqtt link unavailable — the server isn't reporting yet.") : T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
       : qrView ? html`<div class="turncfg-qr"><${QR} conf=${uri} label=${dc.cl.name || cid}/></div>`
       : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => { e.target.select(); copy(uri, copied); }}>${uri}</textarea>
           <button class="cmd-copy" title=${T("Copy link")} onClick=${() => copy(uri, copied)}><${Ic} i="copy"/></button></div>`}
