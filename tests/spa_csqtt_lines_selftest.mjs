@@ -17,7 +17,7 @@
  *  [8] the fork badge names the line the server RUNS (operator, 2026-10-16: "amurcanov 2.5", no line of its own) — during a
  *      switch still the running one, and 2.1 for a node that reports no line
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale> plants one regression, expects RED.
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -31,8 +31,8 @@ const PLANTS = {
   unoffered: ["turn.js", "  if (!csqttLinesOn() && value === CSQTT_DEFAULT_LINE) return null;", "  if (!csqttLinesOn()) return null;"],
   refuse: ["turn.js", "    ...(id !== value && !can.includes(id) ? {", "    ...(false ? {"],
   failed: ["turn.js", "  const failed = c.line_failed && c.line_failed.line === want ? c.line_failed : null;", "  const failed = c.line_failed || null;"],
-  runline: ["turn.js", "export const csqttRunLine = (node, iface) => csqttSwitchState(node, iface).run;",
-            "export const csqttRunLine = (node, iface) => csqttSwitchState(node, iface).want;"],
+  runline: ["turn.js", "  return seen ? s.run : s.want;", "  return s.want;"],
+  runseen: ["turn.js", "  return seen ? s.run : s.want;", "  return s.run;"],
   stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
           "export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;"],
 };
@@ -123,5 +123,7 @@ Store.stats = { nnew: { csqtt_lines: ["2.1", "2.5"], csqtt: [{ iface: "r", line:
 check("[8] a server on 2.5: its badge says 2.5", TU.csqttRunLine("nnew", "r") === "2.5", TU.csqttRunLine("nnew", "r"));
 check("[8] mid-switch (asked 2.5, runs 2.1): the badge says what runs, 2.1", TU.csqttRunLine("nnew", "m") === "2.1", TU.csqttRunLine("nnew", "m"));
 check("[8] a node that reports no line: 2.1", TU.csqttRunLine("nnew", "o") === "2.1", TU.csqttRunLine("nnew", "o"));
+Store.nodes[0].csqtt_cfg.g = { line: "2.5" };   // configured 2.5, not in the node's report (awaiting restore, a stale node)
+check("[8] a 2.5 server the node does not report: its configured 2.5, never 2.1", TU.csqttRunLine("nnew", "g") === "2.5", TU.csqttRunLine("nnew", "g"));
 
 done(!!MODE, MODE || "");

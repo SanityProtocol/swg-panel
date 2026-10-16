@@ -54,7 +54,7 @@ def check(name, ok, detail=""):
 ALLOWED_CHUNKS = {
     "product, protocol and parameter names": {
         "AmneziaWG", "WireGuard", "WDTT", "CSQTT", "wdtt", "wg", "awg", "WG", "AWG 2.0", "AWG 3.1", "RAW", "VK", "QR",
-        "DNS", "MTU", "IP", "AS", "HeaderProtectionKey", "RandomTrailers", "nginx", "Caddy", "amurcanov",
+        "DNS", "MTU", "IP", "AS", "HeaderProtectionKey", "RandomTrailers", "nginx", "Caddy",
         "swg", "Panel",                                   # the brand, "swgPanel", split for its two colours
         "docker",                                         # the run-model tag beside a node's name (log budget table)
         "csqtt",                                          # "csqtt 2.5" — a server's csqtt version line (turn.js, 1.8.9)

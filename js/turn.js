@@ -2414,7 +2414,12 @@ export function csqttSwitchState(node, iface) {
 }
 // The line a csqtt server RUNS, for its fork badge ("amurcanov 2.5"): the two lines speak different protocols, so the
 // version is part of what the server is — shown in the badge rather than on a line of its own (operator, 2026-10-16).
-export const csqttRunLine = (node, iface) => csqttSwitchState(node, iface).run;
+// A server the node does not report (awaiting restore, adopting, a stale node) runs nothing to read: its configured line.
+export const csqttRunLine = (node, iface) => {
+  const s = csqttSwitchState(node, iface);
+  const seen = ((Store.stats[node] || {}).csqtt || []).some(x => x && x.iface === iface);
+  return seen ? s.run : s.want;
+};
 export function CsqttVersionField({ node, value, onChange }) {
   if (!csqttLinesOn() && value === CSQTT_DEFAULT_LINE) return null;
   const can = csqttNodeLines(node);
