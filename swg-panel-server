@@ -6238,7 +6238,7 @@ KEYLESS_SHARE_BUILDS = {
                                                   # and the -dns value reaches the client's config at start and after a SIGHUP
     "csqtt":     {"raw": ("2.5.0", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
                                                   # 2.1.9 fails both; 2.1.9-3 (eb86d752) and 2.1.9-4 (e7f76fd2) the same on their published bytes,
-                                                  # 2026-09-25 — a moved password keeps its address. 2.5.0 (line 2.5, 71adc550 = the published
+                                                  # 2026-09-25 — a moved password keeps its address. 2.5.0 (line 2.5, 8911aa11 = the published
                                                   # bytes, 2026-10-16, .campaign/rigs/csqtt25.sh): reach, IPv4 spoof +0 and IPv6 uplink +0 at the
                                                   # TUN, deactivate and revoke cut the live session and refuse the reconnect, the address stable
                                                   # across reconnects; no borrow to refuse — 2.5 has no devices, the address is the password's

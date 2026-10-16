@@ -31,10 +31,14 @@ carries lines of his code. Until then this file and `build.sh` describe the 2.1.
   nothing: 2.5 has no password limit. `--no-nat` now stops 2.5's own host changes at start (host-wide sysctls, `FORWARD` /
   `MASQUERADE`, the TCPMSS purge). Under `--desired` IPv6 uplink is dropped, and the pre-tunnel path gets the source check
   upstream leaves out. Removing or deactivating a password cuts its live sessions.
+- **App routing:** `desired.json` takes `app_routing` (apps, domains, addresses that go direct — or only these through the
+  tunnel — and the built-in Russian list), one routing rule for every password, which 2.5 hands each user's app on connect;
+  a password's own `app_routing` overrides it (an all-default one = no rule for it). Rig: the rule reaches the client, and
+  none once removed.
 - Rig (`.campaign/rigs/csqtt25.sh`, a real 2.5 client through a local TURN relay, the published amd64 bytes): reach,
   IPv4 spoof and IPv6 uplink dropped, roster change, stable address, deactivate and revoke cut, two instances, `--no-nat`
   leaves the host alone; a 2.1.9-4 store opens on 2.5 and back with users, passwords and traffic (addresses change).
-- Static musl (cargo-zigbuild, Rust 1.97.1, zig 0.15.2): amd64 `71adc550…`, arm64 `c5939728…` (built, not run).
+- Static musl (cargo-zigbuild, Rust 1.97.1, zig 0.15.2): amd64 `8911aa11…`, arm64 `eb3297fd…` (built, not run).
 
 ## Keyless source-integrity fixes (build 2.1.9-2, 2026-09-14)
 
