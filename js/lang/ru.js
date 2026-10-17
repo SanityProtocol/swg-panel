@@ -6880,6 +6880,10 @@ export const STR = {
   "The escrowed key could not be put back — the node has kept the one it has.": "Ключ из хранилища вернуть не удалось — нода оставила тот, что у неё есть.",
   "It reports: {v1}": "Она сообщает: {v1}",
   "Try again from a browser that can open the vault; if this node was rebuilt since the key was sealed, the escrow has to be re-sealed to it.": "Повторите из браузера, который может открыть хранилище; если ноду пересобирали после запечатывания ключа, хранилище нужно перезапечатать под неё.",
+  "This exit's server doesn't answer ping, so its latency can't be measured. The tunnel itself works.":
+    "Сервер этого выхода не отвечает на ping, поэтому задержку измерить нельзя. Сам туннель работает.",
+  "This exit's server doesn't answer ping, so its latency can't be measured.":
+    "Сервер этого выхода не отвечает на ping, поэтому задержку измерить нельзя.",
   "Round trip from this node to the exit's own server.": "Круговая задержка от этой ноды до собственного сервера выхода.",
   "Round trip from this node to the exit's own server. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.": "Круговая задержка от этой ноды до собственного сервера выхода. Запрос через туннель к публичному сайту занимает {v1} мс — но туда входит и то, насколько далёк сам сайт.",
   // ── AmneziaWG 3.1 (docs/AWG3-PLAN.md §7.7): the version switch, its window, the 3.1 badges' tooltip, the Settings preset ──

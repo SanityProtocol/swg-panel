@@ -4350,7 +4350,11 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                 hover, where it answers the different question it actually answers. An em dash when the node
                 cannot measure it: an invented number is worse than an absent one. */""}
           <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}
-            title=${Number.isFinite((l.trace || {}).rtt_ms)
+            title=${/* An up exit whose ping came back empty (null — an older node sends no field at all): its server does not answer
+                     ICMP, as a firewalled VPS often does, and the dash alone read as "custom exits have no latency" (operator, 2026-10-17). */""}${l.up && l.ping_ms === null
+              ? ((l.trace || {}).ip ? T("This exit's server doesn't answer ping, so its latency can't be measured. The tunnel itself works.")
+                : T("This exit's server doesn't answer ping, so its latency can't be measured."))
+              : Number.isFinite((l.trace || {}).rtt_ms)
               ? T("Round trip from this node to the exit's own server. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.", { v1: (l.trace || {}).rtt_ms })
               : T("Round trip from this node to the exit's own server.")}>
             ${Number.isFinite(l.ping_ms)
