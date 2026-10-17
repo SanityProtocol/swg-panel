@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Self-test: a custom list never takes an id a rule already means something by (operator 2026-10-17).
 
-A rule names its custom list by id in `category`. So a list saved with the id "all" was stored as the catch-all — every
-rule naming it became "Everything else" — "custom" / "tld" are read before any list, custom_<10 hex> is an inline rule's set id, and a curated preset's id ("google") is that preset. The browser sends no id for a new list, so only an API caller can
-send one; the save mints such an id the way it mints a duplicate's and reports it (`id_reserved`). A list ALREADY stored
-keeps its id whatever it is: its rules route by it, and re-minting would re-point or orphan them. Driven through api() as the browser drives it.
+A rule names its custom list by id in `category`. So a list saved with the id "all" was read two ways — the node routed
+the list, the SPA showed its rules as "Everything else" — "custom" / "tld" are read by the validator before any list,
+custom_<10 hex> is an inline rule's set id, and a curated preset's id ("google") is that preset to the SPA. The browser
+sends no id for a new list, so only an API caller can send one; the save mints such an id the way it mints a duplicate's
+and reports it (`id_reserved`).
+
+A list ALREADY stored keeps its id, whatever it is: re-minting it would re-point or orphan the rules naming it. That keeps
+a stored "all" read two ways and a stored "custom" / "tld" unreachable, as they were (API-only, none known; the operator's
+choice, round 4). This gate checks only that no stored id is touched — not how a rule naming one resolves.
+Driven through api() as the browser drives it.
 
 Run:  python3 tests/custom_list_reserved_id_selftest.py   (exit 0 = all pass)
   --perturb       the reserved-id check is taken out of the save; expects RED (exit 0 when caught)
@@ -68,10 +74,10 @@ for n, i in enumerate(kept, start=len(reserved)):
     check("%r keeps it" % i, by_title.get("List %d" % n) == i, by_title.get("List %d" % n))
 check("every list was saved (none dropped)", st == 200 and len(by_title) == len(asked), (st, len(by_title)))
 check("…and no two share an id", len(set(by_title.values())) == len(by_title), by_title)
-print("[a list ALREADY stored keeps its id, whatever it is — its rules are never re-pointed or orphaned]")
+print("[a list ALREADY stored keeps its id, whatever it is — nothing re-minted, nothing said]")
 _st = [L(0, curated), L(1, "all"), L(2, "tld"), L(3, "custom_0123456789")]
 st2, by2, drop2 = save(_st, stored=_st)
-for n, i in enumerate(["%s" % curated, "all", "tld", "custom_0123456789"]):
+for n, i in enumerate(l["id"] for l in _st):
     check("a stored %r list re-saved keeps its id, nothing said" % i,
           st2 == 200 and by2.get("List %d" % n) == i and not any(d.get("entry") == i for d in drop2), (by2, drop2))
 
