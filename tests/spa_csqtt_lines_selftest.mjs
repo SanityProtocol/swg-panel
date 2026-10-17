@@ -21,10 +21,10 @@
  *      app list is the panel's: csqtt_app_routing [1])
  *  [10] the csqtt interface sheet offers the Version too (operator, 2026-10-17), on the csqtt server's line, saved with
  *      the same questions as the csqtt-proxy modal (one askCsqttLine for both, both branches run here off the real modal
- *      stack), and App routing follows the picked line; dirty against the version it opened on (the poll moving the record
- *      is not an edit), and it starts from the csqtt-proxy sheet's unsaved pick
+ *      stack), and App routing follows the picked line; both sheets hold only a PICK (useCsqttPick): untouched, the field
+ *      follows the polled record and nothing is sent; the csqtt-proxy sheet hands only a real pick to the interface sheet
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo> plants one regression, expects RED.
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -46,7 +46,8 @@ const PLANTS = {
   ifver: ["turn.js", "      <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>\n    </div>", "    </div>"],
   ifline: ["turn.js", "      ...(lineDirty ? { line } : {}), ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);",
            "      ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);"],
-  ifopen: ["turn.js", "  const lineDirty = line !== lineAt;", "  const lineDirty = line !== csqttLineOf(cfg);"],
+  ifopen: ["turn.js", "  const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);", "  const { line, setLine, lineDirty } = useCsqttPick(cfg);"],
+  pickdirty: ["turn.js", "line = picked || cur; return { line, lineDirty: line !== cur }; };", "line = picked || cur; return { line, lineDirty: !!picked }; };"],
   ifpick: ["turn.js", " pick=${lineDirty ? line : null}/>", "/>"],
   askgo: ["turn.js", "      body=${T(\"Its App routing is removed: csqtt {v1} has none.\", { v1: line })} onConfirm=${go}/>`);",
           "      body=${T(\"Its App routing is removed: csqtt {v1} has none.\", { v1: line })} onConfirm=${() => {}}/>`);"],
@@ -166,10 +167,17 @@ check("[10] the Version sits on the csqtt server's line (one row2)", /T\("csqtt 
 check("[10] a changed version is sent with the save", sheet.includes("...(lineDirty ? { line } : {})"));
 check("[10] …after the same questions as the csqtt-proxy modal", sheet.includes("if (lineDirty && askCsqttLine(sw, node, iface, cfg, line, doSave)) return;")
       && TSRC.includes("if (lineDirty && askCsqttLine(sw, node, iface, cfg, line, endpointDirty ? askEndpoint : doSave)) return;"));
-check("[10] dirty against the version it opened on, not the polled record", sheet.includes("const lineDirty = line !== lineAt;")
-      && sheet.includes("const [lineAt] = useState(() => csqttLineOf(cfg));"));
-check("[10] the csqtt-proxy sheet hands its unsaved pick to the interface sheet", TSRC.includes("<${EditCsqttSheet} node=${node} iface=${iface} pick=${lineDirty ? line : null}/>")
-      && sheet.includes("const [line, setLine] = useState(() => pick || lineAt);"));
+check("[10] both sheets hold a pick, not a copy of the record", sheet.includes("const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);")
+      && TSRC.includes("  const { line, setLine, lineDirty } = useCsqttPick(cfg);   // the csqtt version"));
+check("[10] the csqtt-proxy sheet hands its unsaved pick to the interface sheet", TSRC.includes("<${EditCsqttSheet} node=${node} iface=${iface} pick=${lineDirty ? line : null}/>"));
+// the pick against the record, as the hook reads it on every render (csqttPickState; the hook adds only the state)
+Store.csqttLines = ["2.1", "2.5"];
+const p1 = TU.csqttPickState(null, { line: "2.5" });
+check("[10] untouched, the record moved to 2.5 by the poll: the field shows 2.5 and nothing is sent", p1.line === "2.5" && !p1.lineDirty, p1);
+const p2 = TU.csqttPickState("2.1", { line: "2.5" });
+check("[10] 2.1 picked over a 2.5 record: shown and sent", p2.line === "2.1" && p2.lineDirty, p2);
+const p3 = TU.csqttPickState("2.5", { line: "2.5" });
+check("[10] picked what the record already says (another tab got there first): nothing to send", p3.line === "2.5" && !p3.lineDirty, p3);
 check("[10] …and the node's notices about the last switch", sheet.includes("<${CsqttLineNotices} sw=${sw} dirty=${lineDirty}/>"));
 check("[10] App routing follows the picked line", sheet.includes("const is25 = csqttArLine(lineDirty ? line : cfg.line);"));
 Store.nodes = [{ id: "nnew", csqtt_cfg: { q: { line: "2.5", app_routing: { domains: ["ya.ru"] } }, z: {} } }];

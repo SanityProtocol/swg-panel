@@ -2460,6 +2460,15 @@ export function askCsqttLine(sw, node, iface, cfg, line, go) {
   }
   return false;
 }
+// The Version a sheet edits. Only what the operator PICKED is held: untouched, the field follows the record as the poll
+// moves it (another tab, an adopt), and only a pick that differs from the record is a change to send. Holding the value
+// the sheet opened with instead either sent it back over a newer record or kept showing a version the server no longer
+// runs. `pick` = a pick handed over from the sheet this one was opened from.
+export const csqttPickState = (picked, cfg) => { const cur = csqttLineOf(cfg), line = picked || cur; return { line, lineDirty: line !== cur }; };
+export function useCsqttPick(cfg, pick) {
+  const [picked, setLine] = useState(pick || null);
+  return { ...csqttPickState(picked, cfg), setLine };
+}
 // What the node said about the last switch — shown under the Version while nothing new is picked.
 export const CsqttLineNotices = ({ sw, dirty }) => dirty ? null : html`
   ${sw.blocked ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node can't run csqtt {v1}, so the server stays on {v2}. Update the node, or pick {v2}.", { v1: sw.want, v2: sw.run })}</span></div>` : null}
@@ -2576,9 +2585,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
   const titleDirty = title.trim() !== (cfg.title || "").trim();
   const paramsDirty = params.trim() !== (cfg.params || "").trim();
   const pinDirty = pin !== pinCur;
-  const lineCur = csqttLineOf(cfg);
-  const [line, setLine] = useState(lineCur);   // the csqtt version — a switch, confirmed before it goes
-  const lineDirty = line !== lineCur;
+  const { line, setLine, lineDirty } = useCsqttPick(cfg);   // the csqtt version — a switch, confirmed before it goes
   const sw = csqttSwitchState(node, iface);
   const anyDirty = endpointDirty || titleDirty || paramsDirty || pinDirty || lineDirty;   // csqtt IS a raw-IP tunnel — no RAW toggle here
   const wperr = portErrMsg(node, port, [lport]);
@@ -2713,12 +2720,7 @@ export function EditCsqttSheet({ node, iface, pick }) {
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
   const [ar, setAr] = useState(() => arInit(cfg));                   // App routing — a 2.5 server's
-  // The csqtt version, here too (operator, 2026-10-17: no jumping between modals). Dirty against the version the sheet
-  // OPENED on, not the live record: the poll moving the record (another tab, an adopt) must never read as an edit here,
-  // or Save would send the old version back and restart the server onto it.
-  const [lineAt] = useState(() => csqttLineOf(cfg));
-  const [line, setLine] = useState(() => pick || lineAt);
-  const lineDirty = line !== lineAt;
+  const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);   // the csqtt version, here too (operator, 2026-10-17)
   const sw = csqttSwitchState(node, iface);
   const is25 = csqttArLine(lineDirty ? line : cfg.line);              // the line it will run: App routing follows a switch
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
