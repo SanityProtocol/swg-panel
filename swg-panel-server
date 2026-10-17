@@ -24547,7 +24547,11 @@ def api(method, path, qs, body, deps):
                                         "reason": "list_empty"})
                     continue                            # an empty list is dropped
                 lid = re.sub(r"[^a-z0-9_]", "", str(item.get("id") or "").lower())[:24]
-                if not lid or lid in seen:
+                # ⚠️ AN ID A RULE ALREADY MEANS SOMETHING BY is not a list's to take: a rule names its list by id in
+                # `category`, so a list called "all" was stored as the catch-all, "custom…" as an inline rule's set, and a
+                # curated preset's id as that preset. The SPA mints cl_<name>; only an API caller can send one — it is
+                # minted like a duplicate instead.
+                if not lid or lid in seen or lid in SMART_CATEGORIES or lid.startswith("custom"):
                     lid = "cl_" + hashlib.sha1((str(item.get("title")) + "|" + ",".join(doms + cidrs + asns) + "|" + str(len(out_lists))).encode()).hexdigest()[:10]
                 seen.add(lid)
                 dn = list(dict.fromkeys(str(x) for x in (item.get("disabled_nodes") or []) if isinstance(x, str) and x.strip()))[:128]
