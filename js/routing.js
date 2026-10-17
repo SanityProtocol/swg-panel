@@ -139,6 +139,7 @@ export function reportDropped(r) {
     // operator just saved is gone rather than shortened. Same report, its own sentence — "couldn't be
     // read" beside a list TITLE would send them looking for a bad character in the name.
     if ((d || {}).reason === "list_empty") return T("the list {v1} had nothing readable in it — not saved", { v1: e });
+    if ((d || {}).reason === "id_reserved") return T("the list id {v1} already means something to a rule — the list was saved under a new id", { v1: e });
     if ((d || {}).reason !== "unknown_list") return T("{v1} couldn't be read", { v1: e });
     const prov = provLabelOf(e);
     return prov ? T("{v1} is no longer published by {v2}", { v1: catRawId(e), v2: prov })

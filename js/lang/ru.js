@@ -6740,6 +6740,7 @@ export const STR = {
     "Списков пока нет. Стоит завести, когда одни и те же адреса нужны нескольким правилам — иначе впишите их прямо в правило.",
   "Edit this list": "Изменить список",
   // §5.4: a list whose every token was unreadable is not shortened, it is GONE — its own sentence
+  "the list id {v1} already means something to a rule — the list was saved under a new id": "идентификатор списка {v1} уже что-то значит для правила — список сохранён под новым идентификатором",
   "the list {v1} had nothing readable in it — not saved": "в списке {v1} не оказалось ничего читаемого — не сохранён",
   "Show as text — copy it out, paste it in, or edit every target at once": "Показать текстом — скопировать, вставить или отредактировать все адреса сразу",
   // the labelled foot toggle (custom-list sheet) — a pair, so the label always says where you are going

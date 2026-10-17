@@ -24548,14 +24548,17 @@ def api(method, path, qs, body, deps):
                                         "reason": "list_empty"})
                     continue                            # an empty list is dropped
                 lid = re.sub(r"[^a-z0-9_]", "", str(item.get("id") or "").lower())[:24]
-                # ⚠️ AN ID A RULE ALREADY MEANS SOMETHING BY is not a NEW list's to take: a rule names its list by id in
-                # `category`, and the validator reads "tld" and "custom" (and an inline rule's own set id, custom_<hex>…, see
-                # custom_cat_id) before any list, a curated preset's id ("all" among them) as that preset. So a list sent
-                # as "all" was a catch-all. The browser sends no id for a new list (this mints cl_<sha1>) — only an API
-                # caller can send one; it is minted like a duplicate and SAID (`id_reserved`). A list already stored under
-                # such an id keeps it: re-minting it would re-point or orphan every rule naming it, in silence.
-                _reserved = lid not in _cl_was and (lid in SMART_CATEGORIES or lid in ("custom", "tld")
-                                                    or bool(re.fullmatch(r"custom_[0-9a-f_]+", lid)))
+                # ⚠️ AN ID A RULE ALREADY MEANS SOMETHING ELSE BY is not a list's to take. A rule names its list by id in
+                # `category`, and some ids are read before any list: "all" is the catch-all to every reader (isCatchAll,
+                # rulesToRows, the validator's who/aud checks), "custom" an inline rule and "tld" the tld grammar (the
+                # validator and _rule_cat), custom_<10 hex> an inline rule's own set id (custom_cat_id). A list under one of
+                # those is dead or, for "all", read two ways — so it is minted like a duplicate on EVERY save, stored or new.
+                # A curated preset's id ("google") is different: lists are looked up before presets in both the validator and
+                # _rule_cat, so a list already stored under one routes its rules — re-minting it would re-point them at the
+                # preset in silence. Only a NEW one is refused. The browser sends no id for a new list (this mints
+                # cl_<sha1>); only an API caller can send one. A rename is SAID (`id_reserved`).
+                _reserved = (lid in ("all", "custom", "tld") or bool(re.fullmatch(r"custom_[0-9a-f]{10}", lid))
+                             or (lid in SMART_CATEGORIES and lid not in _cl_was))
                 if _reserved:
                     _cl_dropped.append({"entry": lid, "reason": "id_reserved"})
                 if not lid or lid in seen or _reserved:
