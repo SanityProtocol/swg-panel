@@ -2464,10 +2464,13 @@ export function askCsqttLine(sw, node, iface, cfg, line, go) {
 // moves it (another tab, an adopt), and only a pick that differs from the record is a change to send. Holding the value
 // the sheet opened with instead either sent it back over a newer record or kept showing a version the server no longer
 // runs. `pick` = a pick handed over from the sheet this one was opened from.
+// Choosing the version the record already says is no pick at all (the selected row clicked again, or a pick taken back):
+// held, it would read as a change the moment the record moved, and send the old version back over it.
 export const csqttPickState = (picked, cfg) => { const cur = csqttLineOf(cfg), line = picked || cur; return { line, lineDirty: line !== cur }; };
+export const csqttPickOf = (v, cfg) => (v && v !== csqttLineOf(cfg) ? v : null);
 export function useCsqttPick(cfg, pick) {
-  const [picked, setLine] = useState(pick || null);
-  return { ...csqttPickState(picked, cfg), setLine };
+  const [picked, setPicked] = useState(() => csqttPickOf(pick, cfg));
+  return { ...csqttPickState(picked, cfg), setLine: v => setPicked(csqttPickOf(v, cfg)) };
 }
 // What the node said about the last switch — shown under the Version while nothing new is picked.
 export const CsqttLineNotices = ({ sw, dirty }) => dirty ? null : html`

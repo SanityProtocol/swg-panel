@@ -24,7 +24,7 @@
  *      stack), and App routing follows the picked line; both sheets hold only a PICK (useCsqttPick): untouched, the field
  *      follows the polled record and nothing is sent; the csqtt-proxy sheet hands only a real pick to the interface sheet
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty> plants one regression, expects RED.
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -47,6 +47,7 @@ const PLANTS = {
   ifline: ["turn.js", "      ...(lineDirty ? { line } : {}), ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);",
            "      ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);"],
   ifopen: ["turn.js", "  const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);", "  const { line, setLine, lineDirty } = useCsqttPick(cfg);"],
+  picksame: ["turn.js", "export const csqttPickOf = (v, cfg) => (v && v !== csqttLineOf(cfg) ? v : null);", "export const csqttPickOf = (v, cfg) => v || null;"],
   pickdirty: ["turn.js", "line = picked || cur; return { line, lineDirty: line !== cur }; };", "line = picked || cur; return { line, lineDirty: !!picked }; };"],
   ifpick: ["turn.js", " pick=${lineDirty ? line : null}/>", "/>"],
   askgo: ["turn.js", "      body=${T(\"Its App routing is removed: csqtt {v1} has none.\", { v1: line })} onConfirm=${go}/>`);",
@@ -178,6 +179,13 @@ const p2 = TU.csqttPickState("2.1", { line: "2.5" });
 check("[10] 2.1 picked over a 2.5 record: shown and sent", p2.line === "2.1" && p2.lineDirty, p2);
 const p3 = TU.csqttPickState("2.5", { line: "2.5" });
 check("[10] picked what the record already says (another tab got there first): nothing to send", p3.line === "2.5" && !p3.lineDirty, p3);
+// the sequence, as the hook runs it: a pick is stored through csqttPickOf, then the poll moves the record
+const after = (rec0, v, rec1) => TU.csqttPickState(TU.csqttPickOf(v, { line: rec0 }), { line: rec1 });
+const q1 = after("2.1", "2.1", "2.5");
+check("[10] the selected 2.1 clicked again, then another tab moves the record to 2.5: shows 2.5, sends nothing", q1.line === "2.5" && !q1.lineDirty, q1);
+const q2 = after("2.1", "2.5", "2.1");
+check("[10] …while a real pick of 2.5 over 2.1 still stands and is sent", q2.line === "2.5" && q2.lineDirty, q2);
+check("[10] a hand-over of the version the record already says is no pick either", TU.csqttPickOf("2.5", { line: "2.5" }) === null && TU.csqttPickOf(null, {}) === null);
 check("[10] …and the node's notices about the last switch", sheet.includes("<${CsqttLineNotices} sw=${sw} dirty=${lineDirty}/>"));
 check("[10] App routing follows the picked line", sheet.includes("const is25 = csqttArLine(lineDirty ? line : cfg.line);"));
 Store.nodes = [{ id: "nnew", csqtt_cfg: { q: { line: "2.5", app_routing: { domains: ["ya.ru"] } }, z: {} } }];
