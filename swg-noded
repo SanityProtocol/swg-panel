@@ -317,6 +317,22 @@ def _shared_record(name, legacy, env):
     return new
 
 
+def _replace_if_changed(path, text, mode=None):
+    """Write `text` to `path` (tmp + rename) unless the file already holds exactly it. The WDTT, csqtt and exit
+    records are saved on every sync pass and nearly always unchanged: rewriting them cost a settled node a file
+    replacement per record every 5 s (84 a minute on swgt, ~0.7 MiB/min of writes, 2026-10-17) for nothing.
+    A missing or unreadable file is written. Raises what the write raises; the callers decide what that means."""
+    with contextlib.suppress(Exception):
+        with open(path) as f:
+            if f.read() == text:
+                return
+    with open(path + ".tmp", "w") as f:
+        if mode is not None:
+            os.fchmod(f.fileno(), mode)
+        f.write(text)
+    os.replace(path + ".tmp", path)
+
+
 TURN_RECORD = _shared_record("turn-proxy.json", "/etc/swg-agent/turn-proxy.json", "SWG_TURN_RECORD")
 AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
@@ -10495,10 +10511,7 @@ def reconcile_exits(desired, res):
                     res["changed"] += 1
             rec["device"] = dev
             with contextlib.suppress(Exception):
-                with open(sp + ".tmp", "w") as f:
-                    os.fchmod(f.fileno(), 0o600)
-                    json.dump(rec, f)
-                os.replace(sp + ".tmp", sp)
+                _replace_if_changed(sp, json.dumps(rec), 0o600)
             # 3) the conf + the device. Rewritten only when the text changes, so a settled exit costs one read.
             conf = os.path.join(EXIT_DIR, dev + ".conf")
             text = _exit_conf_text(rec)
@@ -20089,10 +20102,7 @@ def _wdtt_load():
 def _wdtt_save(instances):
     with contextlib.suppress(Exception):
         os.makedirs(os.path.dirname(WDTT_RECORD), exist_ok=True)
-        tmp = WDTT_RECORD + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump({"wdtt": list(instances.values())}, f)
-        os.replace(tmp, WDTT_RECORD)
+        _replace_if_changed(WDTT_RECORD, json.dumps({"wdtt": list(instances.values())}))
     return os.path.isfile(WDTT_RECORD)   # the caller reports a failed write: adopt_failed / await_restore /
                                          # panel_managed all live in this file, and losing it silently reverts
                                          # an acknowledged instance to "never acknowledged"
@@ -22021,10 +22031,7 @@ def _csqtt_load():
 def _csqtt_save(insts):
     with contextlib.suppress(Exception):
         os.makedirs(os.path.dirname(CSQTT_RECORD), exist_ok=True)
-        tmp = CSQTT_RECORD + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(insts, f)
-        os.replace(tmp, CSQTT_RECORD)
+        _replace_if_changed(CSQTT_RECORD, json.dumps(insts))
     return os.path.isfile(CSQTT_RECORD)
 
 def _gen_csqtt_password():
