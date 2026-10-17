@@ -6751,6 +6751,7 @@ export const STR = {
   "Rule emptied.": "Правило очищено.",
   "Text discarded — the rule is unchanged.": "Текст отброшен — правило не изменилось.",
   "Back to badges — reads every line and turns it into a target. Escape discards instead.": "Обратно в плашки — каждая строка станет адресом. Escape — отбросить.",
+  "For all traffic, use “Everything else” below the rules": "Для всего трафика используйте «Всё остальное» под правилами",
   "No list called {v1} on this panel": "На этой панели нет списка {v1}",
   "Add this list to the rule": "Добавить этот список в правило",
   "{v1} list — the panel resolves it and every node routing it pulls the same copy.": "Список {v1} — панель его разворачивает, и каждая нода, которая его маршрутизирует, тянет одну и ту же копию.",

@@ -129,11 +129,12 @@ export function rulesToRows(rules) {
   let catchAll = null;
   for (const rule of (rules || [])) {
     if (!rule || typeof rule !== "object") continue;
-    // last-match semantics live in its own control. THE ONE THE NODE RUNS: the first that is on. The plan skips a
-    // switched-off catch-all and lowers every other in order, and the node's first match makes the first of them win
-    // (`_lower`; `derive_default_exit` reads the same one), so the control shows that one. Any other catch-all — from the
-    // API, an old list, or a row typed as `list:all` — routes nothing, and is gone from every save that passes through here
-    // (this editor, and the node's Settings, which re-sends its list through normRules).
+    // last-match semantics live in its own control. THE FIRST THAT IS ON — the one the node runs whenever it can lower: the
+    // plan skips a switched-off catch-all and lowers the rest in list order, and the node's first match makes the first
+    // that lowered win (`_lower`; `derive_default_exit` reads the same one). A later one routes only when an earlier one
+    // cannot lower (a node that is gone or not linked). A list holds more than one only from the API or an old list — a
+    // typed `list:all` is refused (readToken) — and every save through here (this editor; the node's Settings, which
+    // re-sends its list through normRules) keeps only the one shown, as it kept only the last one before.
     if (isCatchAll(rule)) { if (!catchAll && ruleOn(rule)) catchAll = rule; continue; }
     if (isLegacy(rule)) {                                    // opaque here, and must not be merged THROUGH
       rows.push({ _gid: newGid(), enabled: rule.enabled !== false, action: rule.action || "exit",
@@ -212,6 +213,9 @@ export function readToken(tok, opts) {
   if (!t) return null;
   const m = /^list:(.+)$/i.exec(t);
   if (m) { const id = m[1].trim();          // `.+` is greedy, so a provider's own colon survives verbatim
+    // `all` IS NOT A LIST, it is "Everything else". As a badge it stored a catch-all mid-list (rowsToRules writes
+    // {category:"all"}), which the node runs first-match — every rule below it dead while the footer said otherwise.
+    if (id.toLowerCase() === "all") return { bad: t, why: "catch_all" };
     return knownList(id) ? { b: { t: "list", id } } : { bad: t, why: "unknown_list" }; }
   const c = classify(t);
   if (c.kind === "invalid" || !allowKind(c.kind)) return { bad: t, why: "target" };

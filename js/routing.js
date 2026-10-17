@@ -1795,7 +1795,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     const rest = [...bad.map(b => b.raw), ...overCap].join(" ");
     if (added.length || editing) { onChange(next); setEditing(null); }
     setQ(rest);                                            // both kinds of leftover stay in the box, editable
-    const msg = bad.length ? (bad[0].why === "unknown_list" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
+    const msg = bad.length ? (bad[0].why === "catch_all" ? T("For all traffic, use “Everything else” below the rules")
+                              : bad[0].why === "unknown_list" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
                                                             : T("{v1} was not added", { v1: bad[0].raw }))
       : overCap.length ? capSay()
       : added.length ? T("Added {v1}", { v1: added.join(", ") })
@@ -2064,7 +2065,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
       // longer described the rule, and the next trip through it deleted the 100 it could no longer see.
       // Nothing is applied while anything is unusable; the draft stays whole and says which line is wrong.
       const msg = bad.length
-        ? (bad[0].why === "unknown_list" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
+        ? (bad[0].why === "catch_all" ? T("For all traffic, use “Everything else” below the rules")
+          : bad[0].why === "unknown_list" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
                                          : T("{v1} was not added", { v1: bad[0].raw }))
         : capSay();
       setSay(msg); setPending({ text: msg, forQ: null });

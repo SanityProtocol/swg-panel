@@ -7,26 +7,29 @@
  * Run: node tests/node_list_rows_selftest.mjs   (0 = pass)
  *   --perturb   adoptRows rebuilds from the rules whenever the held rows differ (the prune path gone) and expects RED
  *   --perturb-catchall   rulesToRows takes the last catch-all, on or off (the editor then shows one the node skips) — RED
+ *   --perturb-listall    readToken accepts `list:all` as a list badge (a catch-all stored mid-list) — RED
  */
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
 const PERTURB_CA = process.argv.includes("--perturb-catchall");
-const PERTURB = process.argv.includes("--perturb") || PERTURB_CA;
+const PERTURB_LA = process.argv.includes("--perturb-listall");
+const PERTURB = process.argv.includes("--perturb") || PERTURB_CA || PERTURB_LA;
 let RR = "../js/rulerows.js";
 if (PERTURB) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nlr-"));
   for (const f of fs.readdirSync("js")) if (f.endsWith(".js")) fs.copyFileSync(path.join("js", f), path.join(tmp, f));
   const src = fs.readFileSync(path.join(tmp, "rulerows.js"), "utf8");
-  const [cut, put] = PERTURB_CA ? ["if (isCatchAll(rule)) { if (!catchAll && ruleOn(rule)) catchAll = rule; continue; }",
+  const [cut, put] = PERTURB_LA ? ['    if (id.toLowerCase() === "all") return { bad: t, why: "catch_all" };\n', ""]
+                   : PERTURB_CA ? ["if (isCatchAll(rule)) { if (!catchAll && ruleOn(rule)) catchAll = rule; continue; }",
                                     "if (isCatchAll(rule)) { catchAll = rule; continue; }"]
                                  : ["    if (same(pr)) return pr;", ""];
   if (src.split(cut).length !== 2) { console.log("✗ perturbation anchor missing — this run would FALSE-PASS"); process.exit(2); }
   fs.writeFileSync(path.join(tmp, "rulerows.js"), src.replace(cut, put));
   RR = pathToFileURL(path.join(tmp, "rulerows.js")).href;
 }
-const { adoptRows, rulesToRows, rowsToRules } = await import(RR);
+const { adoptRows, rulesToRows, rowsToRules, readToken } = await import(RR);
 let fails = 0;
 const check = (name, ok, detail) => { console.log((ok ? "  PASS " : "  FAIL ") + name + (ok ? "" : "  — " + String(JSON.stringify(detail)).slice(0, 300))); if (!ok) fails++; };
 
@@ -58,6 +61,10 @@ check("a switched-off catch-all before one that is on: the control shows the one
       (rulesToRows([caOff, caOn]).catchAll || {}).action === "direct", rulesToRows([caOff, caOn]).catchAll);
 check("…one that is on before one that is off: the first, not the last", (rulesToRows([caOn, caOff]).catchAll || {}).action === "direct",
       rulesToRows([caOn, caOff]).catchAll);
+for (const tok of ["list:all", "LIST:All", "list: all"])
+  check(`a typed ${JSON.stringify(tok)} is refused as "Everything else", never a list badge (it would store a catch-all mid-list)`,
+        (readToken(tok) || {}).why === "catch_all" && !(readToken(tok) || {}).b, readToken(tok));
+check("…and a real list id still reads as a list", ((readToken("list:ads") || {}).b || {}).id === "ads", readToken("list:ads"));
 check("only a switched-off catch-all: nothing said (the plan lowers none)", rulesToRows([caOff]).catchAll === null, rulesToRows([caOff]).catchAll);
 if (PERTURB) { console.log(fails ? `\nperturbed: CAUGHT (${fails} red)` : "\nperturbed: NOT CAUGHT"); process.exit(fails ? 0 : 1); }
 console.log(fails ? `\n${fails} FAILED` : "\nALL PASS"); process.exit(fails ? 1 : 0);
