@@ -12,7 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { nodeStatusOf, nodeStale } from "./model.js";
+import { awgDict3, nodeStatusOf, nodeStale } from "./model.js";
 import {
   BASE, ago, ipChoices, seen, url, fmtBytes, panelNow, panelNowS,
 } from "./util.js";
@@ -4167,13 +4167,12 @@ const badgeLabel = lbl => String(lbl).endsWith("+")
 // interface badges use (`.iftype.wg` / `.iftype.awg`), so an operator who has learned them upstairs has
 // learned these. `live.awg` is the node's answer about the device it built; a draft has no `live` yet and
 // falls back to the WireGuard colour, which is what every row looked like before. An AmneziaWG 3.1 profile (the stored
-// one holds a HeaderProtectionKey, and the node builds exactly what it is sent) wears the 3.1 interface colour (--awg3).
-// The third element is the badge's hover: the protocol, by name.
-const exitIs31 = ex => !!String((((ex || {}).profile || {}).awg || {}).HeaderProtectionKey || "").trim();
+// one holds a HeaderProtectionKey — awgDict3 — and the node builds exactly what it is sent) wears the 3.1 interface colour
+// (--awg3) and says so on hover, as a 3.1 interface's badges do (tip3).
 const exitBadge = (ex, live) => (ex || {}).provider === "profile"
-  ? ((live || {}).awg
-      ? [exitIs31(ex) ? "exawg exawg3" : "exawg", T("val|Custom"), exitIs31(ex) ? "AmneziaWG 3.1" : "AmneziaWG"]   // i18n-keys: protocol names
-      : ["exwg", T("val|Custom"), (live || {}).up ? "WireGuard" : ""])   // i18n-keys: protocol name
+  ? ((live || {}).awg && awgDict3(((ex || {}).profile || {}).awg)
+      ? ["exawg exawg3", T("val|Custom"), T("AmneziaWG 3.1")]   // i18n-keys: the first of each pair is a CSS class
+      : [(live || {}).awg ? "exawg" : "exwg", T("val|Custom")])
   : (String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
     ? ["warp plus", badgeLabel(T("val|WARP+"))]   // i18n-keys: the first half of each pair is a CSS class, not display text
     : ["warp", T("val|WARP")];

@@ -18738,14 +18738,19 @@ def parse_wg_profile(text):
     # 3.x keys too: dropped, the device came up with S/H/Jc but no header protection, green, and the 3.1 server ignored
     # every handshake. Read the way an interface's are (awg3_check, docs/AWG3-PLAN.md §3): RandomTrailers as `1`, a key at
     # its "unset" 0/off left out, the key and S1–S4 checked (the device would refuse them); DisableCookies is never written
-    # (D-cookies). A 2.0 profile reads exactly as before.
-    _g3 = bool(str(iface.get("headerprotectionkey") or "").strip())
-    _awg = sanitize_awg_params({k: iface.get(k.lower()) for k in AWG_FIELDS}, gen3=_g3)
-    if _g3:
+    # (D-cookies), so it is dropped before it can refuse anything. A 3.1 profile is one whose SANITIZED key is set — `-` is no
+    # key, and 3.x keys without one are not 3.1 (§7.1). A 2.0 profile reads exactly as before.
+    _awg = sanitize_awg_params({k: iface.get(k.lower()) for k in AWG_FIELDS}, gen3=True)
+    _awg.pop("DisableCookies", None)
+    if _awg.get("HeaderProtectionKey"):
         _awg, _e3 = awg3_check(_awg)
         if _e3:
             return None, _e3
-        _awg.pop("DisableCookies", None)
+    else:
+        _awg = {k: v for k, v in _awg.items() if k not in AWG3_FIELDS}
+    # PersistentKeepalive: a 3.1 client config writes it as a range (clientKeepalive, 25 → `25-35`); the node's conf takes
+    # one number, so a range keeps its lower end rather than turning the keepalive off.
+    _ka = re.fullmatch(r"\s*(\d+)\s*(?:-\s*\d+\s*)?", str(peer.get("persistentkeepalive") or ""))
     prof = {"private_key": iface.get("privatekey") or "", "address": addr,
             "mtu": max(576, min(1500, int(iface.get("mtu") or 1280) if str(iface.get("mtu") or "").strip().isdigit() else 1280)),
             "peer_key": peer.get("publickey") or "", "endpoint": peer.get("endpoint") or "",
@@ -18755,9 +18760,7 @@ def parse_wg_profile(text):
             # Measured on msk-main: 126 KiB sent, nothing back, `awg show preshared-keys` → (none).
             # PersistentKeepalive goes with it: an exit behind NAT needs it to stay reachable.
             "psk": peer.get("presharedkey") or "",
-            "keepalive": (int(peer["persistentkeepalive"])
-                          if str(peer.get("persistentkeepalive") or "").strip().isdigit()
-                          and 0 <= int(peer["persistentkeepalive"]) <= 65535 else 0),
+            "keepalive": int(_ka.group(1)) if _ka and int(_ka.group(1)) <= 65535 else 0,
             "awg": _awg}
     if not _WG_KEY_RE.match(prof["private_key"] or ""):
         return None, "the profile has no usable PrivateKey"

@@ -25,7 +25,7 @@ node never brings one up on a datapath older than 3.1.
 
 Run: python3 tests/awg_exit_profile_selftest.py      (0 = pass)
      --perturb          drops the AWG fields at the parser and expects RED.
-     --perturb-gen3     the parser drops a 3.1 profile's 3.x keys again (gen3=False) — RED in [6] [7].
+     --perturb-gen3     the parser drops a 3.1 profile's 3.x keys again (read as 2.0) — RED in [6] [7].
      --perturb-refuse   the exits save no longer asks whether the node can run 3.1 — RED in [8].
      --perturb-node     the node brings a 3.1 exit up on a 2.0 datapath — RED in [9].
      --perturb-spa      the edit box renders the stored keys raw (DisableCookies, RandomTrailers = on) — RED in [7].
@@ -54,12 +54,12 @@ def _plant(src, old, new):
 PSRC = open(PANEL, encoding="utf-8").read()
 NSRC = open(NODED, encoding="utf-8").read()
 SSRC = open(SPA, encoding="utf-8").read()
-_ANCH = '    _awg = sanitize_awg_params({k: iface.get(k.lower()) for k in AWG_FIELDS}, gen3=_g3)'
+_ANCH = '    _awg = sanitize_awg_params({k: iface.get(k.lower()) for k in AWG_FIELDS}, gen3=True)'
 assert PSRC.count(_ANCH) == 1, "anchor missing — this run would FALSE-PASS"
 if PERTURB:
     PSRC = PSRC.replace(_ANCH, "    _awg = {}")
 if PLANT == "gen3":
-    PSRC = _plant(PSRC, _ANCH, _ANCH.replace("gen3=_g3", "gen3=False"))
+    PSRC = _plant(PSRC, '    if _awg.get("HeaderProtectionKey"):\n        _awg, _e3 = awg3_check(_awg)', '    if False:\n        _awg, _e3 = awg3_check(_awg)')
 elif PLANT == "refuse":
     PSRC = _plant(PSRC, 'if gen_snap is not None and _pr["awg"].get("HeaderProtectionKey")', 'if False and _pr["awg"]')
 elif PLANT == "node":
@@ -221,6 +221,13 @@ check("…and every 2.0 key beside them", all(k in a3 for k in ("Jc", "Jmin", "J
 _bad, _be = P.parse_wg_profile(AWG31_CONF.replace(HPK, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="))
 check("an all-zero HeaderProtectionKey is refused (amneziawg-go reads it as off — never a handshake)",
       _bad is None and "HeaderProtectionKey" in str((_be or {}).get("error")), _be)
+_dc, _dce = P.parse_wg_profile(AWG31_CONF.replace("DisableCookies = 1", "DisableCookies = auto"))
+check("a DisableCookies value the panel would not keep anyway refuses nothing", _dc is not None and "DisableCookies" not in _dc["awg"], _dce)
+_om, _ome = P.parse_wg_profile(AWG31_CONF.replace("HeaderProtectionKey = " + HPK, "HeaderProtectionKey = -"))
+check("`HeaderProtectionKey = -` is no key: no 3.x key is kept (not 3.1)",
+      _om is not None and not any(k in _om["awg"] for k in P.AWG3_FIELDS), _om and _om["awg"])
+_kr, _ = P.parse_wg_profile(AWG31_CONF.replace("Endpoint = ", "PersistentKeepalive = 25-35\nEndpoint = "))
+check("a 3.1 client config's keepalive range keeps its lower end (25-35 → 25), not off", (_kr or {}).get("keepalive") == 25, _kr)
 _low, _le = P.parse_wg_profile(AWG31_CONF.replace("S4 = 18\n", "S4 = 8\n"))
 check("S1–S4 under 12 with header protection is refused (the kernel refuses it)",
       _low is None and "S4" in str((_le or {}).get("error")), _le)
@@ -237,7 +244,9 @@ if _bs.returncode == 0:
     finally:
         os.unlink(bpath)
     NOHPK = AWG_CONF.replace("H4 = 3344556677\n", "H4 = 3344556677\nRandomTrailers = 1\nContentPaddingAddition = 10-100\n")
-    for nm, conf in (("an AWG 2.0 profile", AWG_CONF), ("a WireGuard profile", WG_CONF), ("3.x keys without a key", NOHPK)):
+    KA = WG_CONF.replace("Endpoint = ", "PersistentKeepalive = 25\nEndpoint = ")
+    for nm, conf in (("an AWG 2.0 profile", AWG_CONF), ("a WireGuard profile", WG_CONF), ("3.x keys without a key", NOHPK),
+                     ("a whole-number keepalive", KA), ("a keepalive the base turns off", KA.replace("= 25", "= 99999"))):
         check("%s: identical to %s" % (nm, BASE), P.parse_wg_profile(conf) == B.parse_wg_profile(conf),
               (P.parse_wg_profile(conf), B.parse_wg_profile(conf)))
     check("(the defect: %s dropped the 3.1 profile's header protection)" % BASE,
@@ -271,6 +280,10 @@ else:
             _odd = got["out"]["odd"]
             check("a stored set with DisableCookies / RandomTrailers = on renders as a client config does (awgConfLines)",
                   all(l in _odd for l in got["odd"]) and "DisableCookies" not in _odd and "RandomTrailers = on" not in _odd, _odd)
+
+check("the 3.1 exit badge reads the profile through awgDict3 (model.js, the one 3.1 test) and says AmneziaWG 3.1 on hover",
+      'awgDict3(((ex || {}).profile || {}).awg)' in SSRC and '["exawg exawg3", T("val|Custom"), T("AmneziaWG 3.1")]' in SSRC
+      and SSRC.count('title=${bk || ""}') == 2 and "[kind ||" in SSRC)
 
 print("\n[8] the exits save refuses a 3.1 profile the node cannot run — and only a 3.1 profile it changes")
 def snap(module=None, fallback=None, tools=None, gen=True):
