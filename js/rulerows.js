@@ -133,7 +133,8 @@ export function rulesToRows(rules) {
     // plan skips a switched-off catch-all and lowers the rest in list order, and the node's first match makes the first
     // that lowered win (`_lower`; `derive_default_exit` reads the same one). A later one routes only when an earlier one
     // cannot lower (a node that is gone or not linked). A list holds more than one only from the API or an old list — a
-    // typed `list:all` is refused (readToken) — and every save through here (this editor; the node's Settings, which
+    // typed `list:all` is refused on every path (readToken here, knownListId in routing.js for the box's Enter and the
+    // dropdown) — and every save through here (this editor; the node's Settings, which
     // re-sends its list through normRules) keeps only the one shown, as it kept only the last one before.
     if (isCatchAll(rule)) { if (!catchAll && ruleOn(rule)) catchAll = rule; continue; }
     if (isLegacy(rule)) {                                    // opaque here, and must not be merged THROUGH

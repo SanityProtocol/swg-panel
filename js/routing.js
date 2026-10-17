@@ -1517,7 +1517,9 @@ const readToken = (tok, mode, listEditor) => rrReadToken(tok, {
 // is not a refusal, it is a race. So an unloaded catalog means "cannot say", and the token is accepted:
 // the SERVER is the real authority and already drops a category none of the catalog, the custom lists and
 // the built-ins have heard of, reporting it as `unknown_list` (swg-panel-server:10927).
-export const knownListId = id => !!id && (
+// `all` is no list: it is "Everything else" (SMART_CATEGORIES carries it for the catch-all's label). Refused here, so every
+// path that adds a typed list — the box's Enter, the dropdown's "use what you typed", readToken's callers — refuses it.
+export const knownListId = id => !!id && String(id).toLowerCase() !== "all" && (
   SMART_CATEGORIES().some(([c]) => c === id)                                    // a curated preset
   || (Store.panelSettings?.custom_lists || []).some(l => l && l.id === id)      // one the operator wrote
   // ⚠️ THE BENEFIT OF THE DOUBT IS ONLY FOR PROVIDER IDS. A BARE id can always be judged: the curated
@@ -1691,6 +1693,9 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
      offered "Telegram · add this list to the rule" inside the CUSTOM-LIST editor, which cannot hold one.
      Found by clicking, not by reading: both readers were individually correct. */
   const readList = (listTok && !listEditor) ? { id: listTok[1].trim(), ok: knownListId(listTok[1].trim()) } : null;
+  // What a typed list that cannot be added says: `all` is pointed at "Everything else", anything else is no such list.
+  const noList = () => /^all$/i.test((readList || {}).id || "") ? T("For all traffic, use “Everything else” below the rules")
+    : T("No list called {v1} on this panel", { v1: q.trim() });
   const reading = (!listTok && q.trim()) ? classify(q.trim()) : null;     // the "use this" row, when what is typed parses
   // Tier-2 targets on this INTERFACE (§12.1), counted by the parent because the row that is full is not
   // necessarily the row being typed in. Passed as the WHOLE total including this row's, not as "everyone
@@ -1795,8 +1800,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     const rest = [...bad.map(b => b.raw), ...overCap].join(" ");
     if (added.length || editing) { onChange(next); setEditing(null); }
     setQ(rest);                                            // both kinds of leftover stay in the box, editable
-    const msg = bad.length ? (bad[0].why === "catch_all" ? T("For all traffic, use “Everything else” below the rules")
-                              : bad[0].why === "unknown_list" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
+    const msg = bad.length ? (bad[0].why === "catch_all" && !listEditor ? T("For all traffic, use “Everything else” below the rules")
+                              : bad[0].why === "unknown_list" || bad[0].why === "catch_all" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
                                                             : T("{v1} was not added", { v1: bad[0].raw }))
       : overCap.length ? capSay()
       : added.length ? T("Added {v1}", { v1: added.join(", ") })
@@ -2065,8 +2070,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
       // longer described the rule, and the next trip through it deleted the 100 it could no longer see.
       // Nothing is applied while anything is unusable; the draft stays whole and says which line is wrong.
       const msg = bad.length
-        ? (bad[0].why === "catch_all" ? T("For all traffic, use “Everything else” below the rules")
-          : bad[0].why === "unknown_list" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
+        ? (bad[0].why === "catch_all" && !listEditor ? T("For all traffic, use “Everything else” below the rules")
+          : bad[0].why === "unknown_list" || bad[0].why === "catch_all" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
                                          : T("{v1} was not added", { v1: bad[0].raw }))
         : capSay();
       setSay(msg); setPending({ text: msg, forQ: null });
@@ -2093,7 +2098,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
         if (has(id)) removeList(id); else if (listGate(mode, id, node).ok) commitList(id);
         return; }
       if (readList) { if (readList.ok) commitList(readList.id);
-        else { const m = T("No list called {v1} on this panel", { v1: q.trim() }); setSay(m); setPending({ text: m, forQ: q }); }
+        else { const m = noList(); setSay(m); setPending({ text: m, forQ: q }); }
         return; }
       if (readGate && readGate.ok) commitTyped();
       return;
@@ -2264,7 +2269,7 @@ ${/* The reading and its consequence live in the dropdown's "use what you typed"
       ${leftovers ? (pending.text && pending.forQ === q
             ? html`<span class="tf-lint err">${pending.text}</span>` : null)
         : (listEditor && listTok) ? html`<span class="tf-lint err">${T("A list can't contain another list — add its addresses here instead")}</span>`
-        : readList && !readList.ok ? html`<span class="tf-lint err">${T("No list called {v1} on this panel", { v1: q.trim() })}</span>`
+        : readList && !readList.ok ? html`<span class="tf-lint err">${noList()}</span>`
         : reading && reading.kind === "invalid" ? html`<span class="tf-lint err">${targetWhy(reading.why, q)}</span>`
         : reading ? (open ? null : html`<span class="tf-say">${readGate && readGate.ok ? targetSentence(reading.kind, reading.value) : gateReason(readGate || {}, modeLabel)}</span>`)
         : !badges.length ? html`<span class="tf-say">${listEditor ? T("Type an address, IP range, AS number or pattern.")
@@ -2294,7 +2299,7 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
           <${readList.ok ? "button" : "div"} type=${readList.ok ? "button" : null} class=${"tfuse" + (act <= 0 ? " act" : "") + (readList.ok ? "" : " off")}
             onMouseEnter=${() => setAct(0)} onClick=${readList.ok ? () => commitList(readList.id) : null}>
             <span class="tfbadge list"><span class="tfb-lbl">${readList.ok ? catLabelOf(readList.id) : readList.id}</span></span>
-            <span class="tfuse-say">${readList.ok ? T("Add this list to the rule") : T("No list called {v1} on this panel", { v1: q.trim() })}</span>
+            <span class="tfuse-say">${readList.ok ? T("Add this list to the rule") : noList()}</span>
           <//>` : null}
         ${reading && reading.kind !== "invalid" ? html`<div class="catpick-grp">${T("Use what you typed")}</div>
           <${readGate.ok ? "button" : "div"} type=${readGate.ok ? "button" : null} class=${"tfuse" + (act <= 0 ? " act" : "") + (readGate.ok ? "" : " off")}
