@@ -325,6 +325,9 @@ def _replace_if_changed(path, text, mode=None):
     with contextlib.suppress(Exception):
         with open(path) as f:
             if f.read() == text:
+                # the bytes are right but a looser mode is not (a restore, a cp without -p): every rewrite used to fix it
+                if mode is not None and (os.fstat(f.fileno()).st_mode & 0o777) != mode:
+                    os.chmod(path, mode)
                 return
     with open(path + ".tmp", "w") as f:
         if mode is not None:
@@ -10486,10 +10489,7 @@ def reconcile_exits(desired, res):
                     rec = dict(rec, provider="warp", reg_fails=_fails, reg_error=err,
                                reg_next=_now + min(3600, 60 * (2 ** (_fails - 1))))
                     with contextlib.suppress(Exception):
-                        with open(sp + ".tmp", "w") as f:
-                            os.fchmod(f.fileno(), 0o600)
-                            json.dump(rec, f)
-                        os.replace(sp + ".tmp", sp)
+                        _replace_if_changed(sp, json.dumps(rec), 0o600)
                     out.append({"id": xid, "device": dev, "provider": prov, "up": False, "error": err,
                                 "retry_in": int(rec["reg_next"] - _now)})
                     res["errors"].append("exit %s: %s (retry in %ds)" % (xid, err, int(rec["reg_next"] - _now)))

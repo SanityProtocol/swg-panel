@@ -5,17 +5,19 @@ their file each time with the same bytes: measured on swgt 2026-10-17, 7 files, 
 ~0.7 MiB/min of writes from a node with nothing to do. They now go through `_replace_if_changed`, which writes
 only when the text differs. This proves the file is left alone (same inode, same mtime) when nothing changed,
 is still written when something did, when it is missing, and when it is unreadable — and that an exit record
-keeps its 0600 mode.
+keeps its 0600 mode, including one found looser with the right bytes (each rewrite used to tighten it).
 
 Run: python3 tests/record_rewrite_selftest.py      (0 = pass)
-     --perturb   _replace_if_changed writes unconditionally again, and expects RED in [1] [2] [3].
+     --perturb        _replace_if_changed writes unconditionally again, and expects RED in [1] [2] [3].
+     --perturb-mode   its skip path no longer tightens a looser mode, and expects RED in [3].
 """
-import importlib.machinery, importlib.util, json, os, stat, sys, tempfile
+import atexit, importlib.machinery, importlib.util, json, os, shutil, stat, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
+PERTURB_MODE = "--perturb-mode" in sys.argv
 
 FAILS = []
 def check(name, ok, detail=""):
@@ -26,15 +28,20 @@ def check(name, ok, detail=""):
 NSRC = open(NODED, encoding="utf-8").read()
 # ⚠️ ASSERT THE ANCHOR EXISTS BEFORE TOUCHING IT, or a perturbation that matches nothing reads as a clean PASS.
 _SKIP = """            if f.read() == text:
-                return
-    with open(path + ".tmp", "w") as f:"""
+                # the bytes are right but"""
+_MODE = """                    os.chmod(path, mode)
+                return"""
 assert NSRC.count(_SKIP) == 1, "_replace_if_changed's skip anchor missing — this run would FALSE-PASS"
+assert NSRC.count(_MODE) == 1, "_replace_if_changed's mode anchor missing — this run would FALSE-PASS"
 if PERTURB:
-    NSRC = NSRC.replace(_SKIP, """            f.read()
-    with open(path + ".tmp", "w") as f:""")
+    NSRC = NSRC.replace(_SKIP, """            if False:
+                # the bytes are right but""")
+if PERTURB_MODE:
+    NSRC = NSRC.replace(_MODE, """                    pass
+                return""")
 
 npath = NODED
-if PERTURB:
+if PERTURB or PERTURB_MODE:
     _fd, npath = tempfile.mkstemp(suffix=".py", prefix="recrw-", dir=HERE)
     os.write(_fd, NSRC.encode()); os.close(_fd)
 
@@ -46,7 +53,7 @@ def _load(p, n):
     return m
 
 N = _load(npath, "swgnoded")
-if PERTURB:
+if PERTURB or PERTURB_MODE:
     os.unlink(npath)
 
 def ident(p):
@@ -54,6 +61,7 @@ def ident(p):
     return (st.st_ino, st.st_mtime_ns)
 
 tmp = tempfile.mkdtemp(prefix="recrw-")
+atexit.register(shutil.rmtree, tmp, True)          # it holds a sample private key
 
 print("[1] the WDTT and csqtt records")
 N.WDTT_RECORD = os.path.join(tmp, "wdtt.json")
@@ -95,6 +103,7 @@ N.run = lambda cmd, **kw: R(0, "", "")
 N._dev_link_state = lambda d: "up"
 N._link_kind = lambda d: "wg"
 N._exit_down = lambda dev, rec: None
+N._exit_probe_all = lambda devs: {}               # no real trace/reach threads from a gate
 XID = "aabbccdd"
 EX = [{"id": XID, "device": "wgx-" + XID, "provider": "profile", "cfg_sig": "s1",
        "profile": {"private_key": "QFm3Jt5Rrn6f0aX1sVYQK0lZ2p8vJcU7dHwEbNqTsGk=", "address": "10.77.0.2/32",
@@ -113,6 +122,11 @@ if os.path.isfile(sp):
     os.utime(sp, ns=(1, 1)); x0 = ident(sp)
     pass_once(); pass_once()
     check("two more passes with nothing new leave it alone", ident(sp) == x0, (x0, ident(sp)))
+    os.chmod(sp, 0o644)                          # a restore or a cp without -p
+    pass_once()
+    check("a record found 0644 with the right bytes is tightened to 0600", stat.S_IMODE(os.stat(sp).st_mode) == 0o600,
+          oct(os.stat(sp).st_mode))
+    check("…without being rewritten", ident(sp)[0] == x0[0], (x0, ident(sp)))
     os.unlink(sp)
     pass_once()
     check("a record deleted under the node is written again", os.path.isfile(sp))
