@@ -1334,7 +1334,7 @@ export function rowGate(row, mode, node, b) {
    allow-list by name blocks everything. The datapath change was judged not worth it (it would let a Block's first packets out),
    so the rule list says it where the operator builds it. A Block row above it loses nothing; the others are counted. */
 export const catchAllPreemptsNames = (mode, rows, catchAll) => (mode === "sni" || mode === "sni_kernel")
-  && !!catchAll && catchAll.enabled !== false && catchAll.action === "block"
+  && !!catchAll && catchAll.action === "block"          // only a catch-all that is on reaches here (rulesToRows, setCatch)
   && (rows || []).some(r => r.enabled !== false && r.action !== "block" && (r.badges || []).some(b => {
     const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
     return caps ? !!caps.host : !_ipKind(b.kind); }));
