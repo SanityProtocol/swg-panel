@@ -4350,10 +4350,12 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                 hover, where it answers the different question it actually answers. An em dash when the node
                 cannot measure it: an invented number is worse than an absent one. */""}
           <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}
-            title=${/* An up exit whose ping came back empty (null — an older node sends no field at all): its server does not answer
-                     ICMP, as a firewalled VPS often does, and the dash alone read as "custom exits have no latency" (operator, 2026-10-17). */""}${l.up && l.ping_ms === null
-              ? ((l.trace || {}).ip ? T("This exit's server doesn't answer ping, so its latency can't be measured. The tunnel itself works.")
-                : T("This exit's server doesn't answer ping, so its latency can't be measured."))
+            title=${/* An up exit whose ping came back null: no reply reached this node — most often a firewalled VPS that drops ICMP, and
+                     the dash alone read as "custom exits have no latency" (operator, 2026-10-17). ⚠️ `=== null` ON PURPOSE: an older node
+                     sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows. */""}${l.up && l.ping_ms === null
+              ? (Number.isFinite((l.trace || {}).rtt_ms)
+                ? T("No ping reply from the exit's server — it may not answer ping — so its latency can't be measured. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.", { v1: (l.trace || {}).rtt_ms })
+                : T("No ping reply from the exit's server — it may not answer ping — so its latency can't be measured."))
               : Number.isFinite((l.trace || {}).rtt_ms)
               ? T("Round trip from this node to the exit's own server. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.", { v1: (l.trace || {}).rtt_ms })
               : T("Round trip from this node to the exit's own server.")}>

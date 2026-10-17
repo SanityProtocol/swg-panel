@@ -2356,8 +2356,9 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
   // catch-all is not an exit — "Node default (N rules)", as a single default exit reads "Node default (WARP)" (§7.1).
   const _nlist = !nodeScope && Array.isArray((_nrec || {}).default_routing) ? _nrec.default_routing : null;
   const _nfall = _nlist ? _nlist.filter(r => r && r.enabled !== false && r.category !== "all" && r.aud !== "cascaded") : [];
-  // …and where the rest finally goes: the list's own "Everything else", or with none this node's own way out (direct).
-  const _ncatch = _nlist ? _nlist.find(r => r && r.enabled !== false && r.category === "all" && r.aud !== "cascaded") || null : null;
+  // …and where the rest finally goes: the list's own "Everything else", read as the node's editor reads it (rulesToRows),
+  // or with none this node's own way out (direct — destLabelOf's answer for null's empty action).
+  const _ncatch = _nlist ? rulesToRows(_nlist).catchAll : null;
   const exits = (_nrec || {}).exits || [];
   // "" means the node record has not loaded. Kept distinct from "kernel" on purpose: a badge greyed because
   // we could not look up the engine is a lie about the configuration (§4.2).
@@ -2620,7 +2621,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
     </div>
     ${/* D11 — WHAT THE SILENCE FALLS THROUGH TO, where the interface is edited: the node's rules this interface's traffic
           meets (All and own clients), in order, bounded — then the node's own "Everything else". */""}
-    ${!nodeScope && _nlist && !catchAll ? html`<div class="hint rrnote">${T("Node default (Settings ▸ Network ▸ Default exit):")} ${nodeRows.slice(0, 10).map(r => html`<span>${(r.badges || []).slice(0, 3).map(b => b.t === "list" ? catLabelOf(b.id) : targetLabel(b.kind, b.value)).join(", ")}${(r.badges || []).length > 3 ? "…" : ""} → ${destLabelOf(r)}</span> · `)}${nodeRows.length > 10 ? T("…and {v1} more", { v1: nodeRows.length - 10 }) + " · " : ""}<span>${T("everything else")} → ${_ncatch ? destLabelOf(_ncatch) : T("Direct (this node)")}</span></div>` : null}
+    ${!nodeScope && _nlist && !catchAll ? html`<div class="hint rrnote">${T("Node default (Settings ▸ Network ▸ Default exit):")} ${nodeRows.slice(0, 10).map(r => html`<span>${(r.badges || []).slice(0, 3).map(b => b.t === "list" ? catLabelOf(b.id) : targetLabel(b.kind, b.value)).join(", ")}${(r.badges || []).length > 3 ? "…" : ""} → ${destLabelOf(r)}</span> · `)}${nodeRows.length > 10 ? T("…and {v1} more", { v1: nodeRows.length - 10 }) + " · " : ""}<span>${T("everything else")} → ${_ncatch ? (goneDest(destVal(_ncatch)) || {}).label || destLabelOf(_ncatch) : T("Direct (this node)")}</span></div>` : null}
     ${nodeScope && _mode === "sni_kernel" && ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) < 2 && dispRows.some(r => r.aud !== "local")
       ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for traffic cascaded in — only IP addresses and networks apply to it.")}</span></div>` : null}
     ${catchAllPreemptsNames(_mode, dispRows, catchAll) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("“Everything else → Block” stops each new connection before its site name is read, so the rules above that match by site name never take effect: those sites are blocked too. Route them by address (an IP range or a network) instead, or block by name only what you don't want.")}</span></div>` : null}
