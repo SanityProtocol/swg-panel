@@ -24551,13 +24551,17 @@ def api(method, path, qs, body, deps):
                 # ⚠️ A NEW LIST MAY NOT TAKE AN ID A RULE ALREADY MEANS SOMETHING ELSE BY. A rule names its list by id in
                 # `category`, and these ids already mean something there: "all" the catch-all, "custom" an inline rule, "tld"
                 # the tld grammar, a curated preset's id that preset, custom_<10 hex> an inline rule's own set id
-                # (custom_cat_id). Some readers look a list up first and others read the raw category, so a list under one
-                # of them is read inconsistently — which reader wins depends on the reader; rely on none. The browser sends
+                # (custom_cat_id). A list under "custom" or "tld" is never reached: a rule naming "custom" is an inline rule to
+                # every reader, and one naming "tld" is turned into the tld grammar on save (the validator; migrate_tld_rules
+                # did the stored ones once), so none reaches the planner.
+                # Under "all", a preset id or custom_<10 hex> it is read two ways: the node's planner (_rule_cat) looks the
+                # list up first, while other readers take the id's own meaning — for "all" the panel's own planning and the
+                # SPA treat the rule as "Everything else" while the node routes only the list's targets. The browser sends
                 # no id for a new list (this mints cl_<sha1>); only an API caller can send one: it is minted like a
                 # duplicate and SAID (`id_reserved`).
                 # A list ALREADY stored keeps its id, whatever it is: re-minting it would re-point or orphan the rules naming
-                # it, in silence. Such a list stays read inconsistently, as it was — only an API caller could have stored
-                # one, none is known, and it is left as it is on purpose (operator, 2026-10-17, round 4).
+                # it, in silence. Such a list stays unreachable or read two ways, as it was — only an API caller could have
+                # stored one, none is known, and it is left as it is on purpose (operator, 2026-10-17, round 4).
                 _reserved = lid not in _cl_was and (lid in SMART_CATEGORIES or lid in ("custom", "tld")
                                                     or bool(re.fullmatch(r"custom_[0-9a-f]{10}", lid)))
                 if _reserved:

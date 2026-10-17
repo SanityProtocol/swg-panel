@@ -3,12 +3,14 @@
 
 A rule names its custom list by id in `category`, and some ids already mean something there: "all" the catch-all,
 "custom" an inline rule, "tld" the tld grammar, a curated preset's id ("google") that preset, custom_<10 hex> an inline
-rule's own set id. Some readers look a list up first and others read the raw category, so a list under one of them is read
-inconsistently. The browser sends no id for a new list, so only an API caller can send one; the save mints such an id the
-way it mints a duplicate's and reports it (`id_reserved`).
+rule's own set id. A list under "custom" or "tld" is never reached ("custom" is an inline rule to every reader, a "tld" rule is
+turned into the tld grammar on save); under "all",
+a preset id or custom_<10 hex> it is read two ways (the node's planner looks the list up first, other readers take the id's
+own meaning). The browser sends no id for a new list, so only an API caller can send one; the save mints such an id the way
+it mints a duplicate's and reports it (`id_reserved`).
 
 A list ALREADY stored keeps its id, whatever it is: re-minting it would re-point or orphan the rules naming it. Such a list
-stays read inconsistently, as it was (API-only, none known; the operator's choice, round 4). This gate checks only that no
+stays unreachable or read two ways, as it was (API-only, none known; the operator's choice, round 4). This gate checks only that no
 stored id is touched — not how a rule naming one resolves.
 Driven through api() as the browser drives it.
 
