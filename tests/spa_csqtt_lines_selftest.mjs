@@ -20,9 +20,11 @@
  *      tunnel mode), lists split on whitespace or commas; a stored rule round-trips the form ("every app" ignoring the
  *      app list is the panel's: csqtt_app_routing [1])
  *  [10] the csqtt interface sheet offers the Version too (operator, 2026-10-17), on the csqtt server's line, saved with
- *      the same questions as the csqtt-proxy modal (one askCsqttLine for both), and App routing follows the picked line
+ *      the same questions as the csqtt-proxy modal (one askCsqttLine for both, both branches run here off the real modal
+ *      stack), and App routing follows the picked line; dirty against the version it opened on (the poll moving the record
+ *      is not an edit), and it starts from the csqtt-proxy sheet's unsaved pick
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline> plants one regression, expects RED.
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -44,6 +46,10 @@ const PLANTS = {
   ifver: ["turn.js", "      <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>\n    </div>", "    </div>"],
   ifline: ["turn.js", "      ...(lineDirty ? { line } : {}), ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);",
            "      ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);"],
+  ifopen: ["turn.js", "  const lineDirty = line !== lineAt;", "  const lineDirty = line !== csqttLineOf(cfg);"],
+  ifpick: ["turn.js", " pick=${lineDirty ? line : null}/>", "/>"],
+  askgo: ["turn.js", "      body=${T(\"Its App routing is removed: csqtt {v1} has none.\", { v1: line })} onConfirm=${go}/>`);",
+          "      body=${T(\"Its App routing is removed: csqtt {v1} has none.\", { v1: line })} onConfirm=${() => {}}/>`);"],
   stale: ["turn.js", "export const csqttLineOf = cfg => { const l = String((cfg && cfg.line) || \"\").trim(); return (Store.csqttLines || []).includes(l) ? l : CSQTT_DEFAULT_LINE; };",
           "export const csqttLineOf = cfg => (cfg && cfg.line) || CSQTT_DEFAULT_LINE;"],
 };
@@ -158,13 +164,27 @@ check("[10] the interface sheet exists where this gate looks", sheet.length > 50
 const row = (sheet.split('<div class="row2">')[1] || "").split("\n    </div>")[0];
 check("[10] the Version sits on the csqtt server's line (one row2)", /T\("csqtt server"\)/.test(row) && row.includes("<${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>"), row.slice(0, 200));
 check("[10] a changed version is sent with the save", sheet.includes("...(lineDirty ? { line } : {})"));
-check("[10] …after the same questions as the csqtt-proxy modal", sheet.includes("if (lineDirty && askCsqttLine(node, iface, cfg, line, doSave)) return;")
-      && TSRC.includes("if (lineDirty && askCsqttLine(node, iface, cfg, line, endpointDirty ? askEndpoint : doSave)) return;"));
+check("[10] …after the same questions as the csqtt-proxy modal", sheet.includes("if (lineDirty && askCsqttLine(sw, node, iface, cfg, line, doSave)) return;")
+      && TSRC.includes("if (lineDirty && askCsqttLine(sw, node, iface, cfg, line, endpointDirty ? askEndpoint : doSave)) return;"));
+check("[10] dirty against the version it opened on, not the polled record", sheet.includes("const lineDirty = line !== lineAt;")
+      && sheet.includes("const [lineAt] = useState(() => csqttLineOf(cfg));"));
+check("[10] the csqtt-proxy sheet hands its unsaved pick to the interface sheet", TSRC.includes("<${EditCsqttSheet} node=${node} iface=${iface} pick=${lineDirty ? line : null}/>")
+      && sheet.includes("const [line, setLine] = useState(() => pick || lineAt);"));
 check("[10] …and the node's notices about the last switch", sheet.includes("<${CsqttLineNotices} sw=${sw} dirty=${lineDirty}/>"));
 check("[10] App routing follows the picked line", sheet.includes("const is25 = csqttArLine(lineDirty ? line : cfg.line);"));
 Store.nodes = [{ id: "nnew", csqtt_cfg: { q: { line: "2.5", app_routing: { domains: ["ya.ru"] } }, z: {} } }];
 Store.stats = { nnew: { csqtt_lines: ["2.1", "2.5"], csqtt: [{ iface: "q", line: "2.5" }, { iface: "z", line: "2.1" }] } };
-let went = 0;
-check("[10] picking what already runs, nothing to drop: no question", TU.askCsqttLine("nnew", "z", {}, "2.1", () => went++) === false && went === 0);
+const UI = await import(pathToFileURL(path.join(ROOT, "js", "ui.js")).href);
+let top = null; UI.setModalRenderer(st => { top = st[st.length - 1] || null; });
+const ask = (iface, cfg, line) => { UI.clearModalStack(); top = null; let went = 0;
+  const asked = TU.askCsqttLine(TU.csqttSwitchState("nnew", iface), "nnew", iface, cfg, line, () => went++);
+  const p = (top && top.props) || {}; if (p.onConfirm) p.onConfirm(); return { asked, title: p.title, went }; };
+const a1 = ask("z", {}, "2.1");
+check("[10] picking what already runs, nothing to drop: no question, nothing saved by it", !a1.asked && !a1.title && a1.went === 0, a1);
+const a2 = ask("q", Store.nodes[0].csqtt_cfg.q, "2.1");
+check("[10] a switch away from what runs is confirmed, and confirming saves", a2.asked && a2.title === "Switch to csqtt 2.1?" && a2.went === 1, a2);
+Store.stats.nnew.csqtt[0].line = "2.1";   // q now runs 2.1, its record still holds a 2.5 rule
+const a3 = ask("q", Store.nodes[0].csqtt_cfg.q, "2.1");
+check("[10] back to the 2.1 that runs with a rule: asked to remove it, and confirming goes on to the caller's next step", a3.asked && a3.title === "Remove App routing?" && a3.went === 1, a3);
 
 done(!!MODE, MODE || "");

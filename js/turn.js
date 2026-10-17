@@ -2450,8 +2450,8 @@ function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
 // The questions a version change asks before `go` saves it — one place for both sheets that offer the Version (the
 // csqtt-proxy modal and the csqtt interface sheet). A switch away from what runs asks first; going back to the 2.1 that
 // already runs restarts nothing, and asks only when the App routing it cannot keep would go. False = nothing to ask.
-export function askCsqttLine(node, iface, cfg, line, go) {
-  const sw = csqttSwitchState(node, iface);
+// `sw` is the switch state the sheet shows (csqttSwitchState), so the question is about what the operator is looking at.
+export function askCsqttLine(sw, node, iface, cfg, line, go) {
   if (line !== sw.run) { confirmCsqttSwitch(node, iface, sw.run, line, go); return true; }
   if (csqttArDropAsk(cfg, line)) {
     pushModal(html`<${ConfirmSheet} title=${T("Remove App routing?")} confirmLabel=${T("Remove and save")} warn=${true}
@@ -2596,7 +2596,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     // that failed, or one not landed yet) needs no question: nothing restarts that is not already restarting.
     const askEndpoint = () => pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
-    if (lineDirty && askCsqttLine(node, iface, cfg, line, endpointDirty ? askEndpoint : doSave)) return;
+    if (lineDirty && askCsqttLine(sw, node, iface, cfg, line, endpointDirty ? askEndpoint : doSave)) return;
     if (endpointDirty) { askEndpoint(); return; }
     if (lineDirty) { doSave(); return; }
     if (paramsDirty || pinDirty) { doSave(); return; }
@@ -2627,7 +2627,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     <${ListenNotice} st=${lst}/>
     <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
     <${CsqttLineNotices} sw=${sw} dirty=${lineDirty}/>
-    <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
+    <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface} pick=${lineDirty ? line : null}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
       <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this csqtt server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.")}</p>
       <${TurnServerFields} schema=${[]} vals=${{}} setV=${() => {}} extra=${params} setExtra=${setParams} template=${false} wdtt=${true} noHint=${true}/>
@@ -2696,7 +2696,9 @@ function AppRoutingFields({ value: a, onChange }) {
 }
 
 export function openEditCsqtt(node, iface) { openModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`); }
-export function EditCsqttSheet({ node, iface }) {
+// `pick` = a version picked and not yet saved in the csqtt-proxy sheet this one was opened from: it starts there, so a save
+// here (which closes both sheets) carries it instead of dropping it.
+export function EditCsqttSheet({ node, iface, pick }) {
   useStore();
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const cfg = (nrec.csqtt_cfg || {})[iface] || {};
@@ -2711,9 +2713,12 @@ export function EditCsqttSheet({ node, iface }) {
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
   const [ar, setAr] = useState(() => arInit(cfg));                   // App routing — a 2.5 server's
-  const lineCur = csqttLineOf(cfg);
-  const [line, setLine] = useState(lineCur);   // the csqtt version, here too (operator, 2026-10-17: no jumping between modals)
-  const lineDirty = line !== lineCur;
+  // The csqtt version, here too (operator, 2026-10-17: no jumping between modals). Dirty against the version the sheet
+  // OPENED on, not the live record: the poll moving the record (another tab, an adopt) must never read as an edit here,
+  // or Save would send the old version back and restart the server onto it.
+  const [lineAt] = useState(() => csqttLineOf(cfg));
+  const [line, setLine] = useState(() => pick || lineAt);
+  const lineDirty = line !== lineAt;
   const sw = csqttSwitchState(node, iface);
   const is25 = csqttArLine(lineDirty ? line : cfg.line);              // the line it will run: App routing follows a switch
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
@@ -2727,7 +2732,7 @@ export function EditCsqttSheet({ node, iface }) {
   };
   const save = () => { const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
     if (dns.err) return setMsg({ k: "err", t: dns.err });
-    if (lineDirty && askCsqttLine(node, iface, cfg, line, doSave)) return;
+    if (lineDirty && askCsqttLine(sw, node, iface, cfg, line, doSave)) return;
     doSave(); };
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   const notup = c.active !== "active";
