@@ -2353,9 +2353,11 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
   const _dflt = nodeScope ? null : ((_nrec || {}).exits || []).find(x => String(x.id) === String((_nrec || {}).default_exit || "")) || null;
   // D11 — when the node's default is a LIST, an interface's silence falls through to it: this interface's rules first, then
   // the node's (All or own clients) and its "Everything else". So silence is a real choice with a name even when the list's
-  // catch-all is not an exit — "Node default — then this node's N rules" (§7.1).
+  // catch-all is not an exit — "Node default (N rules)", as a single default exit reads "Node default (WARP)" (§7.1).
   const _nlist = !nodeScope && Array.isArray((_nrec || {}).default_routing) ? _nrec.default_routing : null;
   const _nfall = _nlist ? _nlist.filter(r => r && r.enabled !== false && r.category !== "all" && r.aud !== "cascaded") : [];
+  // …and where the rest finally goes: the list's own "Everything else", or with none this node's own way out (direct).
+  const _ncatch = _nlist ? _nlist.find(r => r && r.enabled !== false && r.category === "all" && r.aud !== "cascaded") || null : null;
   const exits = (_nrec || {}).exits || [];
   // "" means the node record has not loaded. Kept distinct from "kernel" on purpose: a badge greyed because
   // we could not look up the engine is a lie about the configuration (§4.2).
@@ -2422,7 +2424,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
     return null;
   };
   const destOpts = (withDefault, held) => { const _gone = goneDest(held); return [
-    ...(withDefault && _nlist ? [{ value: "__dflt__", label: T("Node default — then this node's {v1}", { v1: plural(_nfall.length, "rule") }) }]
+    ...(withDefault && _nlist ? [{ value: "__dflt__", label: T("Node default ({v1})", { v1: plural(_nfall.length, "rule") }) }]
       : withDefault && _dflt ? [{ value: "__dflt__",
       label: T("Node default ({v1})", { v1: _dflt.label || _dflt.device || _dflt.id }) }] : []),
     { value: "direct", label: T("Direct (this node)") },
@@ -2618,9 +2620,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
     </div>
     ${/* D11 — WHAT THE SILENCE FALLS THROUGH TO, where the interface is edited: the node's rules this interface's traffic
           meets (All and own clients), in order, bounded — then the node's own "Everything else". */""}
-    ${!nodeScope && _nlist && !catchAll ? html`<div class="hint rrnote">${T("Then this node's default:")} ${nodeRows.length
-      ? nodeRows.slice(0, 10).map((r, i) => html`${i ? " · " : ""}<span>${(r.badges || []).slice(0, 3).map(b => b.t === "list" ? catLabelOf(b.id) : targetLabel(b.kind, b.value)).join(", ")}${(r.badges || []).length > 3 ? "…" : ""} → ${destLabelOf(r)}</span>`)
-      : T("no rules yet")}${nodeRows.length > 10 ? " " + T("…and {v1} more", { v1: nodeRows.length - 10 }) : ""}</div>` : null}
+    ${!nodeScope && _nlist && !catchAll ? html`<div class="hint rrnote">${T("Node default (Settings ▸ Network ▸ Default exit):")} ${nodeRows.slice(0, 10).map(r => html`<span>${(r.badges || []).slice(0, 3).map(b => b.t === "list" ? catLabelOf(b.id) : targetLabel(b.kind, b.value)).join(", ")}${(r.badges || []).length > 3 ? "…" : ""} → ${destLabelOf(r)}</span> · `)}${nodeRows.length > 10 ? T("…and {v1} more", { v1: nodeRows.length - 10 }) + " · " : ""}<span>${T("everything else")} → ${_ncatch ? destLabelOf(_ncatch) : T("Direct (this node)")}</span></div>` : null}
     ${nodeScope && _mode === "sni_kernel" && ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) < 2 && dispRows.some(r => r.aud !== "local")
       ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for traffic cascaded in — only IP addresses and networks apply to it.")}</span></div>` : null}
     ${catchAllPreemptsNames(_mode, dispRows, catchAll) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("“Everything else → Block” stops each new connection before its site name is read, so the rules above that match by site name never take effect: those sites are blocked too. Route them by address (an IP range or a network) instead, or block by name only what you don't want.")}</span></div>` : null}

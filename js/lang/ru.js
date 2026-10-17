@@ -7124,7 +7124,6 @@ export const STR = {
   "the exit addresses must be given per node": "адреса выхода должны задаваться по узлам",
   // The node's default made smart (ROUTING-PEERS-MESH-PLAN §7.3, §7.4, D2/D9/D11): one rule list for its own clients and the
   // traffic other nodes cascade out through it
-  "Node default — then this node's {v1}": "Как у узла — затем {v1} этого узла",
   "This node's own clients": "Только клиенты этого узла",
   "Traffic cascaded in from other nodes": "Только трафик с других узлов",
   "All — this node's clients and traffic cascaded in": "Все — клиенты этого узла и трафик с других узлов",
@@ -7155,7 +7154,8 @@ export const STR = {
     "{v1} приходят сразу с двух узлов и выходят по собственному маршруту этого узла.",
   "default routing rules": "правила маршрутизации по умолчанию",
   "a more specific rule in this node's default wins these hosts: {toks}": "в правилах этого узла по умолчанию есть более точное — эти адреса забирает оно: {toks}",
-  "Then this node's default:": "Затем правила этого узла по умолчанию:",
+  "Node default (Settings ▸ Network ▸ Default exit):": "Как у ноды (Настройки ▸ Сеть ▸ Выход по умолчанию):",
+  "everything else": "всё остальное",
   "a more specific rule below wins these hosts for the traffic it names: {toks}": "ниже есть более точное правило — для своего трафика эти адреса забирает оно: {toks}",
   "an exit": "выход",
   "default routing exit addresses": "адреса выхода для правил по умолчанию",
