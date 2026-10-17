@@ -2636,6 +2636,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
    difference that decides whether the tunnel works was invisible. */
 .exg-t.exwg{background:color-mix(in srgb,var(--online) 15%,transparent);color:var(--online)}
 .exg-t.exawg{background:color-mix(in srgb,var(--brand) 16%,transparent);color:var(--brand)}
+.exg-t.exawg3{background:color-mix(in srgb,var(--awg3) 15%,transparent);color:var(--awg3)}   /* an AmneziaWG 3.1 profile exit — the 3.1 interface colour */
 /* Not a type — a state, and the only one that means "this row is not real yet". Amber, because it is the
    colour the rest of the panel uses for "not settled". */
 .exg-t.unsaved{background:color-mix(in srgb,var(--fault) 16%,transparent);color:var(--fault)}

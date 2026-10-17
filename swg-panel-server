@@ -13034,9 +13034,10 @@ AWG3_FIELDS = AWG_FIELDS[AWG_FIELDS.index("HeaderProtectionKey"):]
 
 def sanitize_awg_params(raw, gen3=False):
     """Keep only recognised AmneziaWG obfuscation fields with non-empty values, as strings. Empty → {}.
-    The 3.x keys only with `gen3` — an interface's own record. What else passes through here stays 2.0: the panel-wide
-    interface defaults (one HeaderProtectionKey on every interface would be no key at all), mesh_awg (mesh links stay
-    2.0, D-mesh) and an imported exit's profile."""
+    The 3.x keys only with `gen3` — an interface's own record, and a pasted exit profile that carries a HeaderProtectionKey
+    (parse_wg_profile: that profile is 3.1, and its server ignores a handshake without them). What else passes through here
+    stays 2.0: the panel-wide interface defaults (one HeaderProtectionKey on every interface would be no key at all) and
+    mesh_awg (mesh links stay 2.0, D-mesh)."""
     if not isinstance(raw, dict):
         return {}
     out = {}
@@ -18733,7 +18734,18 @@ def parse_wg_profile(text):
     # ever crossed it. Reported from the field: a working AWG config pasted as a custom exit, green, no
     # traffic. Keep the obfuscation here and the node builds an `amneziawg` device instead (`_exit_conf_text`
     # writes them, `_exit_tool` picks awg-quick), which is what the operator's file actually asked for.
-    _awg = sanitize_awg_params({k: iface.get(k.lower()) for k in AWG_FIELDS})
+    # …and an AmneziaWG 3.1 profile (one with a HeaderProtectionKey — §7.1, how an interface is told to be 3.1) keeps its
+    # 3.x keys too: dropped, the device came up with S/H/Jc but no header protection, green, and the 3.1 server ignored
+    # every handshake. Read the way an interface's are (awg3_check, docs/AWG3-PLAN.md §3): RandomTrailers as `1`, a key at
+    # its "unset" 0/off left out, the key and S1–S4 checked (the device would refuse them); DisableCookies is never written
+    # (D-cookies). A 2.0 profile reads exactly as before.
+    _g3 = bool(str(iface.get("headerprotectionkey") or "").strip())
+    _awg = sanitize_awg_params({k: iface.get(k.lower()) for k in AWG_FIELDS}, gen3=_g3)
+    if _g3:
+        _awg, _e3 = awg3_check(_awg)
+        if _e3:
+            return None, _e3
+        _awg.pop("DisableCookies", None)
     prof = {"private_key": iface.get("privatekey") or "", "address": addr,
             "mtu": max(576, min(1500, int(iface.get("mtu") or 1280) if str(iface.get("mtu") or "").strip().isdigit() else 1280)),
             "peer_key": peer.get("publickey") or "", "endpoint": peer.get("endpoint") or "",
@@ -18805,7 +18817,7 @@ def exit_cfg_sig(rec):
 _EXIT_ESCROW_KEYS = ("key_blob", "key_blob_prev", "key_restore", "key_restore_pub", "key_restore_at")
 
 
-def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=(), gws=None, wan=""):
+def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=(), gws=None, wan="", gen_snap=None):
     """Clean a node's exit list → [{id, label, producer, device, enabled, killswitch, …}]. (clean, error).
     Adopted entries also carry `egress_ip`; imported ones carry `provider`/`licence`/`dial_src`/`profile`.
 
@@ -18823,7 +18835,10 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
     removable.
 
     Errors are about SHAPE only (not a list, not an object, a producer that is not one of two), which no
-    operator can reach through the UI."""
+    operator can reach through the UI — and a pasted profile the node cannot use: one that does not parse, or an
+    AmneziaWG 3.1 profile on a node that cannot run 3.1 (`gen_snap`, the node's snapshot — {} when it has none; None, from
+    a caller that saves no profile, asks nothing). That one is asked only of a profile whose AmneziaWG set this save
+    changes, so a stored exit stays savable whatever the node runs now; awg_gen_refusal's perr is the error."""
     if not isinstance(exits, list):
         return None, "exits must be a list"
     known = {str(e.get("id") or ""): e for e in (prev or []) if isinstance(e, dict)}
@@ -18938,6 +18953,12 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
                     _pr, _perr = parse_wg_profile(_txt)
                     if _perr:
                         return None, _perr
+                    # A 3.1 profile on a node whose datapath or tools are older comes up green and carries nothing —
+                    # the 3.x keys would be ignored, or refused at `up`. The device is a new one: no `iface`.
+                    if gen_snap is not None and _pr["awg"].get("HeaderProtectionKey") and _pr["awg"] != _kept.get("awg"):
+                        _no3 = awg_gen_refusal(gen_snap, c.get("name") or "this node")
+                        if _no3:
+                            return None, _no3
                     out["profile"] = _pr
                 elif _kept:
                     out["profile"] = _kept
@@ -27708,7 +27729,9 @@ def api(method, path, qs, body, deps):
             _nic = _sn.get("ether_ifaces") or []
             _ex, _err = _validate_exits(body.get("exits"), _c, mesh_prefix=_pf, link_ifaces=_lk,
                                         prev=_c.get("exits") or [], nics=_nic,
-                                        gws=_sn.get("ether_gws"), wan=(_sn.get("wan_iface") or ""))
+                                        gws=_sn.get("ether_gws"), wan=(_sn.get("wan_iface") or ""), gen_snap=_sn)
+            if isinstance(_err, dict):                   # a perr: a 3.1 profile this node cannot run, or a bad 3.x key
+                return 400, {"ok": False, **_err, "code": "bad_request"}
             if _err:
                 _b = {"ok": False, "error": _err, "code": "bad_request"}
                 # ⚠️ THE BROWSER OWNS THE SENTENCES, so hand it the VERDICT, not prose. A refusal used to

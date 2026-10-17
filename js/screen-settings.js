@@ -36,7 +36,7 @@ import {
   ListPager, LIST_PAGE, pageSlice,
 } from "./ui.js";
 import {
-  AWG_ORDER,
+  awgConfLines,
   SUB_LANG_LIST, VaultPromptSheet, downloadConf, ivkSetEscrow, nginxServerBlock, nixDirectTlsBlock, nixProxyBlock,
   ensureVaultUnlocked, ivkResealForNodeBlob, nixUpstream, normPublicUrl, qrDataURL, runConfigMigration, subBaseUrl, subForget, subKeyB64, subRewrap, subSKCached, subUnlock,
   subVaultCreate, urlPortOf, withUrlPort,
@@ -4011,7 +4011,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
         // being created" — which is precisely what this grid did while the picker two clicks away had it
         // right. One lookup, used by both the badge and the health.
         const src = (node.exits || []).find(x => String(x.id) === String(r.id)) || null;
-        const [cls, lbl] = (r._added && !r._src) ? TYPE.unsaved
+        const [cls, lbl, kind] = (r._added && !r._src) ? TYPE.unsaved
           : (r._kind === "warp" || r._kind === "profile")
             ? exitBadge(r, (src || {}).live)
             : (TYPE[r._kind] || TYPE.custom);
@@ -4046,7 +4046,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
             ${why ? html`<span class="exg-bad" title=${why}>${T("val|unusable")}</span>` : null}
           </div>
           <div class="exg-c"><span class=${"exg-t " + cls}
-            title=${[(c || {}).address || "", (c || {}).up === false ? T("not up") : ""].filter(Boolean).join(" · ")}>${lbl}</span></div>
+            title=${[kind || "", (c || {}).address || "", (c || {}).up === false ? T("not up") : ""].filter(Boolean).join(" · ")}>${lbl}</span></div>
           ${/* ⚠️ THE SOURCE THE TRAFFIC LEAVES WITH, and the three categories answer it differently because
                 they are genuinely different questions:
                   IMPORTED   the panel made the device and gave it its address — the tunnel's own inside
@@ -4123,9 +4123,9 @@ function profileText(ex) {
           // plain WireGuard config. Two consequences, the second much worse than the first: the operator
           // cannot see or edit the obfuscation, and the moment they touch this box at all the WG-only text
           // is what gets parsed on save — silently wiping every Jc/S1/H1 the exit needs to work.
-          // AWG_ORDER, the SPA's one ordering, so this box and the node's conf list them the same way.
-          ...AWG_ORDER.filter(k => (p.awg || {})[k] != null && String((p.awg || {})[k]).trim() !== "")
-                      .map(k => k + " = " + p.awg[k]),
+          // awgConfLines, a client config's own lines: AWG_ORDER (the node's conf lists them the same way), the 3.x keys
+          // only beside a HeaderProtectionKey, RandomTrailers as `1`, never DisableCookies — what parse_wg_profile stores.
+          ...awgConfLines(p.awg),
           "", "[Peer]",
           "PublicKey = " + (p.peer_key || ""),
           // The PSK is the profile's second secret and is shown the same way the private key is: a sentinel
@@ -4166,9 +4166,14 @@ const badgeLabel = lbl => String(lbl).endsWith("+")
 // whether the tunnel works at all — was not on the screen anywhere. The two colours are the SAME pair the
 // interface badges use (`.iftype.wg` / `.iftype.awg`), so an operator who has learned them upstairs has
 // learned these. `live.awg` is the node's answer about the device it built; a draft has no `live` yet and
-// falls back to the WireGuard colour, which is what every row looked like before.
+// falls back to the WireGuard colour, which is what every row looked like before. An AmneziaWG 3.1 profile (the stored
+// one holds a HeaderProtectionKey, and the node builds exactly what it is sent) wears the 3.1 interface colour (--awg3).
+// The third element is the badge's hover: the protocol, by name.
+const exitIs31 = ex => !!String((((ex || {}).profile || {}).awg || {}).HeaderProtectionKey || "").trim();
 const exitBadge = (ex, live) => (ex || {}).provider === "profile"
-  ? [(live || {}).awg ? "exawg" : "exwg", T("val|Custom")]
+  ? ((live || {}).awg
+      ? [exitIs31(ex) ? "exawg exawg3" : "exawg", T("val|Custom"), exitIs31(ex) ? "AmneziaWG 3.1" : "AmneziaWG"]   // i18n-keys: protocol names
+      : ["exwg", T("val|Custom"), (live || {}).up ? "WireGuard" : ""])   // i18n-keys: protocol name
   : (String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
     ? ["warp plus", badgeLabel(T("val|WARP+"))]   // i18n-keys: the first half of each pair is a CSS class, not display text
     : ["warp", T("val|WARP")];
@@ -4208,8 +4213,8 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
   // also carries them makes an operator open a modal to flip a switch.
   return html`<${Sheet} title=${v.label || exitDefaultTitle(v)} width=${680} dirtyRef=${dirtyRef} onClose=${onClose}
     headExtra=${html`<span class="exed-hx">
-      ${(() => { const [bc, bl] = exitBadge(v, ((node.exits || []).find(x => String(x.id) === String(ex.id)) || {}).live);
-         return html`<span class=${"exg-t " + bc}>${bl}</span>`; })()}
+      ${(() => { const [bc, bl, bk] = exitBadge(v, ((node.exits || []).find(x => String(x.id) === String(ex.id)) || {}).live);
+         return html`<span class=${"exg-t " + bc} title=${bk || ""}>${bl}</span>`; })()}
       <span class="mono exed-dev">${v.device || ""}</span>
       <span class="grow"></span>
       <span class="exed-used"><${ExitUsedBy} node=${node} id=${ex.id}/></span>
@@ -4339,7 +4344,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
           <div class=${"exg-c clk" + (off ? " dim" : "")} onClick=${() => openEdit(ex)}>
             ${dot(ex)}<span class="mono exg-dev">${ex.device || "—"}</span></div>
           <div class="exg-c clk" onClick=${() => openEdit(ex)}>
-            ${(() => { const [bc, bl] = exitBadge(ex, l); return html`<span class=${"exg-t " + bc}>${bl}</span>`; })()}</div>
+            ${(() => { const [bc, bl, bk] = exitBadge(ex, l); return html`<span class=${"exg-t " + bc} title=${bk || ""}>${bl}</span>`; })()}</div>
           <div class="exg-c clk mono" onClick=${() => openEdit(ex)}>
             ${(l.trace || {}).ip || html`<span class="faint">—</span>`}</div>
           ${/* ⚠️ THE HOP TO THE EXIT'S OWN SERVER, not a request made through it. This first showed the time

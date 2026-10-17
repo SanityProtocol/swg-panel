@@ -10536,9 +10536,13 @@ def reconcile_exits(desired, res):
                 # scratch rather than inheriting the verdict of the one it replaces.
                 _EXIT_HEALTH.pop(dev, None)
                 _EXIT_REDIAL_AT.pop(dev, None); _EXIT_RESOLVED.pop(dev, None)
-                r = _scoped_up(_exit_tool(rec), conf)
-                if r.returncode != 0:
-                    err = err or (r.stderr or "wg-quick up failed").strip()[:160]
+                # An AmneziaWG 3.1 profile on a datapath or tools older than 3.1 is never brought up: the 3.x keys are
+                # refused at `up` or ignored, and an ignored HeaderProtectionKey is a green device the far side never
+                # answers. The panel refuses such a paste; this is the floor for a node that changed after it.
+                _no3 = awg_gen_refusal(dev, _exit_awg(rec))
+                r = None if _no3 else _scoped_up(_exit_tool(rec), conf)
+                if _no3 or r.returncode != 0:
+                    err = err or (_no3 or r.stderr or "wg-quick up failed").strip()[:160]
                     res["errors"].append("exit %s: %s" % (xid, err))
                 else:
                     res["changed"] += 1
