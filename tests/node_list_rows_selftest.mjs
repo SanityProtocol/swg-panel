@@ -6,20 +6,24 @@
  *
  * Run: node tests/node_list_rows_selftest.mjs   (0 = pass)
  *   --perturb   adoptRows rebuilds from the rules whenever the held rows differ (the prune path gone) and expects RED
+ *   --perturb-catchall   rulesToRows takes the last catch-all, on or off (the editor then shows one the node skips) — RED
  */
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
-const PERTURB = process.argv.includes("--perturb");
+const PERTURB_CA = process.argv.includes("--perturb-catchall");
+const PERTURB = process.argv.includes("--perturb") || PERTURB_CA;
 let RR = "../js/rulerows.js";
 if (PERTURB) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nlr-"));
   for (const f of fs.readdirSync("js")) if (f.endsWith(".js")) fs.copyFileSync(path.join("js", f), path.join(tmp, f));
   const src = fs.readFileSync(path.join(tmp, "rulerows.js"), "utf8");
-  const cut = "    if (same(pr)) return pr;";
+  const [cut, put] = PERTURB_CA ? ["if (isCatchAll(rule)) { if (!catchAll && ruleOn(rule)) catchAll = rule; continue; }",
+                                    "if (isCatchAll(rule)) { catchAll = rule; continue; }"]
+                                 : ["    if (same(pr)) return pr;", ""];
   if (src.split(cut).length !== 2) { console.log("✗ perturbation anchor missing — this run would FALSE-PASS"); process.exit(2); }
-  fs.writeFileSync(path.join(tmp, "rulerows.js"), src.replace(cut, ""));
+  fs.writeFileSync(path.join(tmp, "rulerows.js"), src.replace(cut, put));
   RR = pathToFileURL(path.join(tmp, "rulerows.js")).href;
 }
 const { adoptRows, rulesToRows, rowsToRules } = await import(RR);
@@ -48,5 +52,12 @@ const got2 = adoptRows(held, other, new Set([X]));
 check("a draft the rows cannot become is rebuilt from the rules", JSON.stringify(rowsToRules(got2.rows, got2.catchAll)) === JSON.stringify(other), got2);
 check("no held rows: built from the rules", JSON.stringify(rowsToRules(adoptRows(null, draft, new Set([X])).rows, adoptRows(null, draft, new Set([X])).catchAll)) === JSON.stringify(draft));
 
+console.log("[the catch-all the node runs]");
+const caOff = { enabled: false, category: "all", action: "block" }, caOn = { enabled: true, category: "all", action: "direct" };
+check("a switched-off catch-all before one that is on: the control shows the one that is on, as the plan lowers it",
+      (rulesToRows([caOff, caOn]).catchAll || {}).action === "direct", rulesToRows([caOff, caOn]).catchAll);
+check("…one that is on before one that is off: the first, not the last", (rulesToRows([caOn, caOff]).catchAll || {}).action === "direct",
+      rulesToRows([caOn, caOff]).catchAll);
+check("only a switched-off catch-all: nothing said (the plan lowers none)", rulesToRows([caOff]).catchAll === null, rulesToRows([caOff]).catchAll);
 if (PERTURB) { console.log(fails ? `\nperturbed: CAUGHT (${fails} red)` : "\nperturbed: NOT CAUGHT"); process.exit(fails ? 0 : 1); }
 console.log(fails ? `\n${fails} FAILED` : "\nALL PASS"); process.exit(fails ? 1 : 0);

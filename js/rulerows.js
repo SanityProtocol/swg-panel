@@ -129,7 +129,10 @@ export function rulesToRows(rules) {
   let catchAll = null;
   for (const rule of (rules || [])) {
     if (!rule || typeof rule !== "object") continue;
-    if (isCatchAll(rule)) { catchAll = rule; continue; }     // last-match semantics live in its own control
+    // last-match semantics live in its own control. THE ONE THE NODE RUNS: the first that is on — the plan skips a
+    // switched-off catch-all and lowers the first left (`_lower`, `derive_default_exit`), so the control shows that one,
+    // and a list holding others (no screen writes one; the API or an old list can) loses them on its next save here.
+    if (isCatchAll(rule)) { if (!catchAll && ruleOn(rule)) catchAll = rule; continue; }
     if (isLegacy(rule)) {                                    // opaque here, and must not be merged THROUGH
       rows.push({ _gid: newGid(), enabled: rule.enabled !== false, action: rule.action || "exit",
                   node: rule.node || "", exit_id: rule.exit_id || "", locked: true, legacy: rule,

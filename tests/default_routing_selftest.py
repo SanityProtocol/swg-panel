@@ -39,6 +39,7 @@ Run: python3 tests/default_routing_selftest.py   (0 = pass)
      o  every list is lowered as smart for the node's own clients, even one that is only a catch-all (their IPv6/HTTP/3 lost)
      n  a list node with no plan slot gets no "whom it affects" (review #8)
      m  an interface pinned to an unusable exit falls back past the list to the node's own address (review #3)
+     p  `default_exit` is read from the list's first catch-all even when it is switched off (the plan routes by the next)
 """
 import importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -94,6 +95,8 @@ PLANTS = {
         for r in nl:""", """        return True
         nl = _nlist(nid) or []
         for r in nl:"""),
+    "p": ('''    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all" and rule_on(r)), None)''',
+          '''    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all"), None)'''),
     "k": ('''        subs = sorted(S for S in _via if S not in _pinned and S not in _dup''',
           '''        subs = sorted(S for S in _via if S not in _dup'''),
 }
@@ -318,6 +321,12 @@ P.prune_exit_refs(_pr); P.prune_default_exit(_pr); P.derive_default_exit(_pr)
 check("a deleted exit the list names is rewritten to Direct in the list, and `default_exit` follows (never names a ghost)",
       [r["action"] for r in _pr["default_routing"]] == ["direct", "direct"] and "default_exit" not in _pr,
       (_pr["default_routing"], _pr.get("default_exit")))
+# a switched-off catch-all (the API or an old list can hold one): the plan skips it, so the fallback names the next that is on
+_off = fleet(p_list=[{"enabled": False, "category": "all", "action": "dev", "exit_id": X1["id"]},
+                     {"enabled": True, "category": "all", "action": "dev", "exit_id": Y1["id"]}])["n2"]
+P.derive_default_exit(_off)
+check("`default_exit` is the first catch-all that is ON — a switched-off one before it is skipped, as the plan skips it",
+      _off.get("default_exit") == Y1["id"], _off.get("default_exit"))
 # the third review
 _gq = fleet(p_list=[{"enabled": True, "category": "all", "action": "exit", "node": "n1"}])
 _gq["n2"]["links"] = {}                                           # the node it forwards to is not linked (gone, or not yet)
@@ -417,7 +426,8 @@ if PLANT:
     want = {"a": "keeps NO `from S`", "b": "does not run arrivals is sent none", "c": "Auto interface is lowered",
             "d": "silence falls through", "e": "D5 — a SMART arrival", "f": "DERIVED from the catch-all",
             "g": "every arrival subnet gets", "h": "Auto interface is lowered", "i": "never the `local`-only",
-            "j": "silence falls through", "k": "SMART default: the pinned", "l": "review #2", "m": "review #3", "n": "review #8", "o": "plain default for this node's own"}[PLANT]
+            "j": "silence falls through", "k": "SMART default: the pinned", "l": "review #2", "m": "review #3", "n": "review #8", "o": "plain default for this node's own",
+            "p": "first catch-all that is ON"}[PLANT]
     hit = [f for f in FAILS if want in f]
     print("\nPLANT %s: %s" % (PLANT, "CAUGHT — " + " · ".join(hit) if hit else "NOT CAUGHT (the check passed with the defect in)"))
     sys.exit(0 if hit else 1)

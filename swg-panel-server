@@ -19107,8 +19107,10 @@ def derive_default_exit(rec):
     exit, never toward this node's own address. No list → nothing here; the handler writes `default_exit` as it always has."""
     if not isinstance(rec.get("default_routing"), list):
         return
-    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all"), None)
-    xid = str(ca.get("exit_id") or "") if ca and ca.get("action") == "dev" and rule_on(ca) else ""
+    # The catch-all the plan lowers: the first that is ON — `_lower` skips a switched-off one, so a list holding
+    # [off → exit X, on → exit Y] routes by Y, and so must the fallback an older panel or node reads.
+    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all" and rule_on(r)), None)
+    xid = str(ca.get("exit_id") or "") if ca and ca.get("action") == "dev" else ""
     if xid and any(str((x or {}).get("id")) == xid for x in (rec.get("exits") or [])):
         rec["default_exit"] = xid
     else:
