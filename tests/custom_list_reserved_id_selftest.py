@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Self-test: a custom list never takes an id a rule already means something by (operator 2026-10-17).
 
-A rule names its custom list by id in `category`. So a list saved with the id "all" was read two ways — the node routed
-the list, the SPA showed its rules as "Everything else" — "custom" / "tld" are read by the validator before any list,
-custom_<10 hex> is an inline rule's set id, and a curated preset's id ("google") is that preset to the SPA. The browser
-sends no id for a new list, so only an API caller can send one; the save mints such an id the way it mints a duplicate's
-and reports it (`id_reserved`).
+A rule names its custom list by id in `category`, and some ids already mean something there: "all" the catch-all,
+"custom" an inline rule, "tld" the tld grammar, a curated preset's id ("google") that preset, custom_<10 hex> an inline
+rule's own set id. Some readers look a list up first and others read the raw category, so a list under one of them is read
+inconsistently. The browser sends no id for a new list, so only an API caller can send one; the save mints such an id the
+way it mints a duplicate's and reports it (`id_reserved`).
 
-A list ALREADY stored keeps its id, whatever it is: re-minting it would re-point or orphan the rules naming it. That keeps
-a stored "all" read two ways and a stored "custom" / "tld" unreachable, as they were (API-only, none known; the operator's
-choice, round 4). This gate checks only that no stored id is touched — not how a rule naming one resolves.
+A list ALREADY stored keeps its id, whatever it is: re-minting it would re-point or orphan the rules naming it. Such a list
+stays read inconsistently, as it was (API-only, none known; the operator's choice, round 4). This gate checks only that no
+stored id is touched — not how a rule naming one resolves.
 Driven through api() as the browser drives it.
 
 Run:  python3 tests/custom_list_reserved_id_selftest.py   (exit 0 = all pass)

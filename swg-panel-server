@@ -24549,19 +24549,15 @@ def api(method, path, qs, body, deps):
                     continue                            # an empty list is dropped
                 lid = re.sub(r"[^a-z0-9_]", "", str(item.get("id") or "").lower())[:24]
                 # ⚠️ A NEW LIST MAY NOT TAKE AN ID A RULE ALREADY MEANS SOMETHING ELSE BY. A rule names its list by id in
-                # `category`: "all" is the catch-all to the SPA (isCatchAll, rulesToRows), derive_default_exit and the
-                # validator's who/aud checks; "custom" / "tld" are turned into an inline rule / the tld grammar by the
-                # validator before it looks for a list; a curated preset's id is that preset to the SPA; and custom_<10 hex>
-                # is an inline rule's own set id (custom_cat_id) — which a rule still naming a deleted list ships to the node
-                # bare, and which the SPA's labels key by. The browser sends no id for a new list (this mints cl_<sha1>); only
-                # an API caller can send one: it is minted like a duplicate and SAID (`id_reserved`).
-                # A list ALREADY stored keeps its id, whatever it is — re-minting it would re-point or orphan the rules naming
-                # it, in silence. What that keeps differs by id. Under a curated preset's id or custom_<10 hex> the list
-                # routes its rules (the validator and _rule_cat look lists up before presets). Under "all" it is read two
-                # ways: the node routes only the list's targets (_rule_cat finds the list first), while the SPA and
-                # derive_default_exit take the rule as "Everything else". Under "custom" / "tld" no rule reaches it: the
-                # validator reads those first and drops a rule with no targets of its own. Only an API caller could have
-                # stored one, and none is known; they are left as they are on purpose (operator, 2026-10-17, round 4).
+                # `category`, and these ids already mean something there: "all" the catch-all, "custom" an inline rule, "tld"
+                # the tld grammar, a curated preset's id that preset, custom_<10 hex> an inline rule's own set id
+                # (custom_cat_id). Some readers look a list up first and others read the raw category, so a list under one
+                # of them is read inconsistently — which reader wins depends on the reader; rely on none. The browser sends
+                # no id for a new list (this mints cl_<sha1>); only an API caller can send one: it is minted like a
+                # duplicate and SAID (`id_reserved`).
+                # A list ALREADY stored keeps its id, whatever it is: re-minting it would re-point or orphan the rules naming
+                # it, in silence. Such a list stays read inconsistently, as it was — only an API caller could have stored
+                # one, none is known, and it is left as it is on purpose (operator, 2026-10-17, round 4).
                 _reserved = lid not in _cl_was and (lid in SMART_CATEGORIES or lid in ("custom", "tld")
                                                     or bool(re.fullmatch(r"custom_[0-9a-f]{10}", lid)))
                 if _reserved:
