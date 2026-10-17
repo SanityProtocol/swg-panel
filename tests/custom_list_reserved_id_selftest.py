@@ -2,15 +2,13 @@
 """Self-test: a custom list never takes an id a rule already means something by (operator 2026-10-17).
 
 A rule names its custom list by id in `category`. So a list saved with the id "all" was stored as the catch-all — every
-rule naming it became "Everything else" — "custom" / "tld" are read before any list, and a curated preset's id ("google") is that preset. The browser sends no id for a new list, so only an API caller can
+rule naming it became "Everything else" — "custom" / "tld" are read before any list, custom_<10 hex> is an inline rule's set id, and a curated preset's id ("google") is that preset. The browser sends no id for a new list, so only an API caller can
 send one; the save mints such an id the way it mints a duplicate's and reports it (`id_reserved`). A list ALREADY stored
-under a curated preset's id keeps it (lists are looked up before presets, so its rules route by it; re-minting would
-re-point them); one stored as "all" / "custom" / "tld" is re-minted on every save (dead, or for "all" read two ways). An id
-shaped like an inline rule's set id (custom_<hex>) is kept, new or stored: a list's id never reaches a node. Driven through api() as the browser drives it.
+keeps its id whatever it is: its rules route by it, and re-minting would re-point or orphan them. Driven through api() as the browser drives it.
 
 Run:  python3 tests/custom_list_reserved_id_selftest.py   (exit 0 = all pass)
   --perturb       the reserved-id check is taken out of the save; expects RED (exit 0 when caught)
-  --perturb-was   a list already stored under a curated preset's id is re-minted too (its rules re-pointed); expects RED
+  --perturb-was   a list already stored under a reserved id is re-minted too (its rules re-pointed or orphaned); expects RED
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -18,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(HERE, "..", "swg-panel-server")
 PERTURB_WAS = "--perturb-was" in sys.argv
 PERTURB = "--perturb" in sys.argv or PERTURB_WAS
-ANCHOR, PUT = (("or (lid in SMART_CATEGORIES and lid not in _cl_was)", "or lid in SMART_CATEGORIES") if PERTURB_WAS
+ANCHOR, PUT = (("_reserved = lid not in _cl_was and (", "_reserved = (") if PERTURB_WAS
                else ("if not lid or lid in seen or _reserved:", "if not lid or lid in seen:"))
 
 path = os.path.abspath(SERVER)
@@ -56,8 +54,8 @@ def save(lists, stored=None):
     return st, {l["title"]: l["id"] for l in d.get("custom_lists", [])}, (d.get("dropped") or {}).get("entries", [])
 L = lambda n, i: {"id": i, "title": "List %d" % n, "targets": "example%d.com" % n, "enabled": True}
 
-reserved = ["all", "ALL", "custom", "tld", curated]
-kept = ["cl_shop", "my_list", "customers", "customs_ru", "custom_0123456789"]   # a list's id never reaches a node
+reserved = ["all", "ALL", "custom", "tld", "custom_0123456789", curated]
+kept = ["cl_shop", "my_list", "customers", "customs_ru", "custom_de"]   # custom_<not 10 hex> is no set id
 asked = reserved + kept
 st, by_title, drop = save([L(n, i) for n, i in enumerate(asked)])
 print("[a NEW list sent with an id a rule already means something by]")
@@ -70,17 +68,12 @@ for n, i in enumerate(kept, start=len(reserved)):
     check("%r keeps it" % i, by_title.get("List %d" % n) == i, by_title.get("List %d" % n))
 check("every list was saved (none dropped)", st == 200 and len(by_title) == len(asked), (st, len(by_title)))
 check("…and no two share an id", len(set(by_title.values())) == len(by_title), by_title)
-print("[a list ALREADY stored: a curated id keeps it (its rules route by it); all / custom / tld do not]")
+print("[a list ALREADY stored keeps its id, whatever it is — its rules are never re-pointed or orphaned]")
 _st = [L(0, curated), L(1, "all"), L(2, "tld"), L(3, "custom_0123456789")]
 st2, by2, drop2 = save(_st, stored=_st)
-check("a stored %r list re-saved keeps its id, nothing said" % curated,
-      st2 == 200 and by2.get("List 0") == curated and not any(d.get("entry") == curated for d in drop2), (by2, drop2))
-check("a stored \"all\" list is re-minted and said — every reader takes \"all\" as the catch-all",
-      by2.get("List 1", "").startswith("cl_") and {"entry": "all", "reason": "id_reserved"} in drop2, (by2, drop2))
-check("…and so is a stored \"tld\" (a rule naming it is read as the tld grammar, never the list)",
-      by2.get("List 2", "").startswith("cl_") and {"entry": "tld", "reason": "id_reserved"} in drop2, (by2, drop2))
-check("a stored custom_<10 hex> list keeps its id — its rules route by it, and re-minting would orphan them",
-      by2.get("List 3") == "custom_0123456789" and not any(d.get("entry") == "custom_0123456789" for d in drop2), (by2, drop2))
+for n, i in enumerate(["%s" % curated, "all", "tld", "custom_0123456789"]):
+    check("a stored %r list re-saved keeps its id, nothing said" % i,
+          st2 == 200 and by2.get("List %d" % n) == i and not any(d.get("entry") == i for d in drop2), (by2, drop2))
 
 if PERTURB:
     print("\nperturbed: " + ("CAUGHT (%d red)" % len(FAIL) if FAIL else "NOT CAUGHT"))
