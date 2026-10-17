@@ -2447,6 +2447,23 @@ function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
       : !n ? null : html`<p class="hint">${T("The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.", { v1: to })}</p>`}
     onConfirm=${onConfirm}/>`);
 }
+// The questions a version change asks before `go` saves it — one place for both sheets that offer the Version (the
+// csqtt-proxy modal and the csqtt interface sheet). A switch away from what runs asks first; going back to the 2.1 that
+// already runs restarts nothing, and asks only when the App routing it cannot keep would go. False = nothing to ask.
+export function askCsqttLine(node, iface, cfg, line, go) {
+  const sw = csqttSwitchState(node, iface);
+  if (line !== sw.run) { confirmCsqttSwitch(node, iface, sw.run, line, go); return true; }
+  if (csqttArDropAsk(cfg, line)) {
+    pushModal(html`<${ConfirmSheet} title=${T("Remove App routing?")} confirmLabel=${T("Remove and save")} warn=${true}
+      body=${T("Its App routing is removed: csqtt {v1} has none.", { v1: line })} onConfirm=${go}/>`);
+    return true;
+  }
+  return false;
+}
+// What the node said about the last switch — shown under the Version while nothing new is picked.
+export const CsqttLineNotices = ({ sw, dirty }) => dirty ? null : html`
+  ${sw.blocked ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node can't run csqtt {v1}, so the server stays on {v2}. Update the node, or pick {v2}.", { v1: sw.want, v2: sw.run })}</span></div>` : null}
+  ${sw.failed ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Switching to csqtt {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.", { v1: sw.want, v2: sw.failed.why || T("it did not start"), v3: sw.run })}</span></div>` : null}`;
 
 export function CsqttInstanceBody({ node, snap, saveRef, setBusy, setMsg, fail }) {
   const used = (() => {
@@ -2579,12 +2596,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     // that failed, or one not landed yet) needs no question: nothing restarts that is not already restarting.
     const askEndpoint = () => pushModal(html`<${ConfirmSheet} title=${T("Change the endpoint or port?")} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This rewrites every user's link — the endpoint and DTLS port are part of it. Existing users must re-import from their subscription page. The server key and users are kept; the server briefly reconnects.")} onConfirm=${doSave}/>`);
-    if (lineDirty && line !== sw.run) { confirmCsqttSwitch(node, iface, sw.run, line, endpointDirty ? askEndpoint : doSave); return; }
-    if (lineDirty && csqttArDropAsk(cfg, line)) {   // back to the 2.1 that runs: no switch to confirm, but the rule goes
-      pushModal(html`<${ConfirmSheet} title=${T("Remove App routing?")} confirmLabel=${T("Remove and save")} warn=${true}
-        body=${T("Its App routing is removed: csqtt {v1} has none.", { v1: line })} onConfirm=${endpointDirty ? askEndpoint : doSave}/>`);
-      return;
-    }
+    if (lineDirty && askCsqttLine(node, iface, cfg, line, endpointDirty ? askEndpoint : doSave)) return;
     if (endpointDirty) { askEndpoint(); return; }
     if (lineDirty) { doSave(); return; }
     if (paramsDirty || pinDirty) { doSave(); return; }
@@ -2614,8 +2626,7 @@ export function CsqttManageSheet({ node, c: c0 }) {
     <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
     <${ListenNotice} st=${lst}/>
     <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
-    ${sw.blocked && !lineDirty ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("This node can't run csqtt {v1}, so the server stays on {v2}. Update the node, or pick {v2}.", { v1: sw.want, v2: sw.run })}</span></div>` : null}
-    ${sw.failed && !lineDirty ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Switching to csqtt {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.", { v1: sw.want, v2: sw.failed.why || T("it did not start"), v3: sw.run })}</span></div>` : null}
+    <${CsqttLineNotices} sw=${sw} dirty=${lineDirty}/>
     <div class="field"><label>${T("Forwards to")}</label><div class="ro-field ro-act"><span class="mono">${iface} · ${c.tun_addr || "raw TUN"}</span> <span class="faint ro-note" title=${T("— self-contained (its own raw-IP tunnel)")}>${T("— self-contained (its own raw-IP tunnel)")}</span><button class="btn btn-mini" disabled=${blocked} title=${T("Egress, routing & filters")} onClick=${() => pushModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`)}><${Ic} i="pencil"/> ${T("Edit interface")}</button></div></div>
     <${Disclosure} title=${T("Server parameters")} summary=${html`<span class="faint">${T("tag|advanced")}</span>`} open=${srvOpen} onToggle=${() => setSrvOpen(o => !o)}>
       <p class="hint" style="margin:0 0 12px">${T("Extra command-line flags for this csqtt server. It's self-contained — its real config lives per interface — so there's little here beyond advanced flags.")}</p>
@@ -2700,18 +2711,24 @@ export function EditCsqttSheet({ node, iface }) {
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
   const [ar, setAr] = useState(() => arInit(cfg));                   // App routing — a 2.5 server's
-  const is25 = csqttArLine(cfg.line);                                 // the line it is set to (a switch drops the rule)
+  const lineCur = csqttLineOf(cfg);
+  const [line, setLine] = useState(lineCur);   // the csqtt version, here too (operator, 2026-10-17: no jumping between modals)
+  const lineDirty = line !== lineCur;
+  const sw = csqttSwitchState(node, iface);
+  const is25 = csqttArLine(lineDirty ? line : cfg.line);              // the line it will run: App routing follows a switch
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
     // sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept
     const r = await sheetSend(() => api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...dns.body, ...egressBody(eg),
-      ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);
+      ...(lineDirty ? { line } : {}), ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);
     if (!r.ok) return;
     Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     reportDropped(r); Store.poll();   // §5.4
   };
   const save = () => { const ee = egressSaveBlock(eg, emode); if (ee) return setMsg({ k: "err", t: ee });
-    if (dns.err) return setMsg({ k: "err", t: dns.err }); doSave(); };
+    if (dns.err) return setMsg({ k: "err", t: dns.err });
+    if (lineDirty && askCsqttLine(node, iface, cfg, line, doSave)) return;
+    doSave(); };
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   const notup = c.active !== "active";
   const control = (verb, icon, label, title) => html`<button class="btn btn-ghost" style="margin-left:8px"
@@ -2726,9 +2743,13 @@ export function EditCsqttSheet({ node, iface }) {
     <div class="iface-intro"><div>${Trich("*csqtt* owns its own raw-IP tunnel *({iface} · {addr})* and mints each user's address on connect.", { iface, addr: tunAddr || "—" })}</div></div>
     ${/* Same read-only identity row WDTT's edit sheet carries. csqtt has no fork choice and no internal WG
           port — it is a raw-IP datapath — so this is the server and where it listens, and nothing else. */""}
-    <div class="field"><label>${T("csqtt server")}</label>
-      <div class="ro-field" style="display:flex;align-items:center;gap:10px"><span class="mono">${cfg.title || "csqtt"}</span><span class="grow"></span><span class="mono">${oldListen || "—"}</span></div>
-      <div class="hint">${T("Endpoint & listen port are edited from the csqtt-proxy modal.")}</div></div>
+    <div class="row2">
+      <div class="field"><label>${T("csqtt server")}</label>
+        <div class="ro-field" style="display:flex;align-items:center;gap:10px"><span class="mono">${cfg.title || "csqtt"}</span><span class="grow"></span><span class="mono">${oldListen || "—"}</span></div>
+        <div class="hint">${T("Endpoint & listen port are edited from the csqtt-proxy modal.")}</div></div>
+      <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>
+    </div>
+    <${CsqttLineNotices} sw=${sw} dirty=${lineDirty}/>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
     ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
