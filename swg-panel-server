@@ -24521,6 +24521,7 @@ def api(method, path, qs, body, deps):
         cl = incoming.get("custom_lists")               # operator-defined reusable IP/domain lists
         if isinstance(cl, list):
             out_lists, seen = [], set()
+            _cl_was = {str((l or {}).get("id") or "") for l in (cur.get("custom_lists") or []) if isinstance(l, dict)}
             for item in cl[:64]:
                 if not isinstance(item, dict):
                     continue
@@ -24547,11 +24548,17 @@ def api(method, path, qs, body, deps):
                                         "reason": "list_empty"})
                     continue                            # an empty list is dropped
                 lid = re.sub(r"[^a-z0-9_]", "", str(item.get("id") or "").lower())[:24]
-                # ⚠️ AN ID A RULE ALREADY MEANS SOMETHING BY is not a list's to take: a rule names its list by id in
-                # `category`, so a list called "all" was stored as the catch-all, "custom…" as an inline rule's set, and a
-                # curated preset's id as that preset. The SPA mints cl_<name>; only an API caller can send one — it is
-                # minted like a duplicate instead.
-                if not lid or lid in seen or lid in SMART_CATEGORIES or lid.startswith("custom"):
+                # ⚠️ AN ID A RULE ALREADY MEANS SOMETHING BY is not a NEW list's to take: a rule names its list by id in
+                # `category`, and the validator reads "tld" and "custom" (and an inline rule's own set id, custom_<hex>…, see
+                # custom_cat_id) before any list, a curated preset's id ("all" among them) as that preset. So a list sent
+                # as "all" was a catch-all. The browser sends no id for a new list (this mints cl_<sha1>) — only an API
+                # caller can send one; it is minted like a duplicate and SAID (`id_reserved`). A list already stored under
+                # such an id keeps it: re-minting it would re-point or orphan every rule naming it, in silence.
+                _reserved = lid not in _cl_was and (lid in SMART_CATEGORIES or lid in ("custom", "tld")
+                                                    or bool(re.fullmatch(r"custom_[0-9a-f_]+", lid)))
+                if _reserved:
+                    _cl_dropped.append({"entry": lid, "reason": "id_reserved"})
+                if not lid or lid in seen or _reserved:
                     lid = "cl_" + hashlib.sha1((str(item.get("title")) + "|" + ",".join(doms + cidrs + asns) + "|" + str(len(out_lists))).encode()).hexdigest()[:10]
                 seen.add(lid)
                 dn = list(dict.fromkeys(str(x) for x in (item.get("disabled_nodes") or []) if isinstance(x, str) and x.strip()))[:128]
