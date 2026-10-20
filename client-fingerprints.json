@@ -2,26 +2,26 @@
  "clients": {
   "csqttapp": {
    "amurcanov/csqtt@main:app/src/main/java/com/csqtt/client/SettingsStore.kt": {
-    "date": "2026-10-03T01:20:28Z",
-    "sha": "71712b07dbabe16fa43f5a248dc69e1ab9f3a270",
-    "url": "https://github.com/amurcanov/csqtt/commit/71712b07dbabe16fa43f5a248dc69e1ab9f3a270"
+    "date": "2026-10-20T00:37:02Z",
+    "sha": "fd936ef087c34cc46f26111dc2361f43b8b03c07",
+    "url": "https://github.com/amurcanov/csqtt/commit/fd936ef087c34cc46f26111dc2361f43b8b03c07"
    },
    "amurcanov/csqtt@main:app/src/main/java/com/csqtt/client/ui/utils/UiUtils.kt": {
-    "date": "2026-10-03T01:20:28Z",
-    "sha": "71712b07dbabe16fa43f5a248dc69e1ab9f3a270",
-    "url": "https://github.com/amurcanov/csqtt/commit/71712b07dbabe16fa43f5a248dc69e1ab9f3a270"
+    "date": "2026-10-20T00:37:02Z",
+    "sha": "fd936ef087c34cc46f26111dc2361f43b8b03c07",
+    "url": "https://github.com/amurcanov/csqtt/commit/fd936ef087c34cc46f26111dc2361f43b8b03c07"
    }
   },
   "freeturn": {
-   "samosvalishe/free-turn-proxy@master:docs/flags.md": {
+   "hackdiaz-dev/free-turn-proxy@master:docs/flags.md": {
     "date": "2026-09-22T19:33:56Z",
     "sha": "6f84a18b43da17a03fb5fdab2c0d235569a50f9e",
-    "url": "https://github.com/samosvalishe/free-turn-proxy/commit/6f84a18b43da17a03fb5fdab2c0d235569a50f9e"
+    "url": "https://github.com/hackdiaz-dev/free-turn-proxy/commit/6f84a18b43da17a03fb5fdab2c0d235569a50f9e"
    },
-   "samosvalishe/free-turn-proxy@master:docs/uri.md": {
+   "hackdiaz-dev/free-turn-proxy@master:docs/uri.md": {
     "date": "2026-09-22T19:33:56Z",
     "sha": "6f84a18b43da17a03fb5fdab2c0d235569a50f9e",
-    "url": "https://github.com/samosvalishe/free-turn-proxy/commit/6f84a18b43da17a03fb5fdab2c0d235569a50f9e"
+    "url": "https://github.com/hackdiaz-dev/free-turn-proxy/commit/6f84a18b43da17a03fb5fdab2c0d235569a50f9e"
    }
   },
   "mysorez": {
@@ -38,9 +38,9 @@
   },
   "pwdtt": {
    "luminescq/PWDTT@main:frontend/src/lib/utils/wdttLink.ts": {
-    "date": "2026-07-19T21:23:30Z",
-    "sha": "b0229f9e05d8b0691e54c145e445094fb13761a8",
-    "url": "https://github.com/luminescq/PWDTT/commit/b0229f9e05d8b0691e54c145e445094fb13761a8"
+    "date": "2026-09-20T17:16:21Z",
+    "sha": "5e7894dd71a273975882f4074e870100d75e45e9",
+    "url": "https://github.com/luminescq/PWDTT/commit/5e7894dd71a273975882f4074e870100d75e45e9"
    }
   },
   "pwdttilg": {
@@ -75,10 +75,10 @@
    }
   },
   "sidecar": {
-   "Moroka8/vk-turn-proxy@main:pkg/clientcore/main.go": {
-    "date": "2026-06-26T07:10:37Z",
-    "sha": "e87b50a413aa401436d73216e586d4dc47223c5a",
-    "url": "https://github.com/Moroka8/vk-turn-proxy/commit/e87b50a413aa401436d73216e586d4dc47223c5a"
+   "hackdiaz-dev/free-turn-proxy@master:internal/config/cliflags.go": {
+    "date": "2026-09-22T19:33:56Z",
+    "sha": "6f84a18b43da17a03fb5fdab2c0d235569a50f9e",
+    "url": "https://github.com/hackdiaz-dev/free-turn-proxy/commit/6f84a18b43da17a03fb5fdab2c0d235569a50f9e"
    }
   },
   "vkturnproxy": {
@@ -101,20 +101,8 @@
     "sha": "7ed14910e051c5e9fa9ee8eab7f56a6b8707d3df",
     "url": "https://github.com/WINGS-N/WINGSV_DeX/commit/7ed14910e051c5e9fa9ee8eab7f56a6b8707d3df"
    }
-  },
-  "xxcipher": {
-   "XXcipherX/proxy-turn-vk-android@main-new:app/src/main/java/com/wdtt/client/ConnectionProfile.kt": {
-    "date": "2026-07-13T00:40:21Z",
-    "sha": "5138c63ca2d0167d50b040bd2e48312a0bffd9dd",
-    "url": "https://github.com/XXcipherX/proxy-turn-vk-android/commit/5138c63ca2d0167d50b040bd2e48312a0bffd9dd"
-   },
-   "XXcipherX/proxy-turn-vk-android@main-new:app/src/main/java/com/wdtt/client/SettingsStore.kt": {
-    "date": "2026-08-09T10:38:01Z",
-    "sha": "bf5d83b57875951d0eebb398ab5e400c4ca4c65d",
-    "url": "https://github.com/XXcipherX/proxy-turn-vk-android/commit/bf5d83b57875951d0eebb398ab5e400c4ca4c65d"
-   }
   }
  },
- "generated_at": 1791021016,
+ "generated_at": 1792508019,
  "schema": 1
 }
