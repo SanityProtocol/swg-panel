@@ -1,0 +1,689 @@
+#!/usr/bin/env python3
+"""Self-test — csqtt version LINES, the node's half (docs/CSQTT-LINES-PLAN.md §4.2, gates G3–G8).
+
+swg-noded is loaded as a module with its csqtt roots in a temp dir and run in its docker shape, where a server is a
+supervised CHILD PROCESS — so a "binary" here is a shell script that really runs, really dies, and really writes the
+store. Nothing reaches systemd, the network or a real TUN: the one interface the stable-verify needs to see is `lo`,
+and every command that could delete a link is refused by a guard (the test fails rather than touch it).
+
+  [1] slots      2.1 keeps the path every node already has; another line gets its own dir; a line is a path
+                 component, so "../x" and an unknown line are refused
+  [2] switch     2.1 → 2.5 repoints only this server's symlink, copies 2.1's store first, and leaves a sibling
+                 server on 2.1 running untouched (same pid)          (G3)
+  [3] revert     a 2.5 build that writes the store and dies 2 s after starting passes today's _csqtt_verify — the
+                 stable verify catches it, the server is back on 2.1 with 2.1's store, and the result is memoed (G4)
+  [4] rollback   a switch a noded crash cut (its `.switching` marker left) is ROLLED BACK onto 2.1's store copy —
+                 never resumed — and the still-wanted switch runs again, whole, on the next pass (G8)
+  [5] reconfigure a param change on a 2.5 server relinks the 2.5 slot, not 2.1's (G6)
+  [6] absent     a request with no `line` keeps a 2.5 server on 2.5 and does not apply a 2.1 `ver` to it (G7)
+  [7] memo       a switch that would not run is not retried every sync; the operator's Restart retries it, and a
+                 request back to the running line clears it
+  [8] build      a build update on 2.5 restarts only the 2.5 servers (G5)
+  [9] sibling    a switch that brings a NEW build into the 2.5 slot restarts the server already on 2.5 onto it — a
+                 stamp saying "current" over an old inode would leave it on the old build for good
+  [10] copyfail  a store copy that fails (a full disk) never leaves the server stopped: it runs on 2.1 again, the
+                 failure is memoed
+  code review (2026-10-08):
+  [11] markorder a cut switch the panel wants undone lands on 2.1's store copy; a crash INSIDE the copy leaves no
+                 marker (copy, then mark, then relink), so no pass ever rolls back onto an older copy
+  [12] onepass   two servers asking for a switch in one pass: one switches, the other waits a sync
+  [13] restart   a Restart that retries a failed switch restarts the server once, not twice
+  [14] curver    while a switch is memoed, the line the server RUNS still takes the panel's `cur_ver`
+  [15] nover     a versionless fetch never lands in another line's slot (it would be 2.1's build)
+  [16] ifaces    a server not installed yet is not "running" any line, so a build swap does not restart it
+  review of the fixes (2026-10-08):
+  [17] fetchswitched  a switch whose fetch failed restarted nothing: Restart still restarts, cur_ver still applies
+  [18] unknowncur     a request for a line this node does not know keeps the running line's cur_ver
+  [19] runver         while a switch waits, the record's ver is the running line's build (what a self-heal fetches)
+  [20] notpresent     a server whose unit or binary is gone: a memoed switch re-installs what ran with its build; a cut
+                      switch rolls the store back to its copy and re-installs the line it was leaving
+  [21] snapcut        the snapshot reports a cut switch's marker line, the same line the reconcile treats as running
+  [12] also: a build whose fetch failed is walked once per pass (budget), yet spends no switch — a server asking for
+       another build is not starved behind it (starve)
+  1.8.9 qualification NR-4:
+  [22] backoff        a switch whose fetch failed is walked again only after CSQTT_FETCH_RETRY_S, not every sync (each
+                      walk ≈ 90 s with GitHub blackholed, and the node read offline); a new build or the operator's
+                      Restart tries at once (budget, restartretry)
+  1.8.9 qualification NR-3 + FN-2(c):
+  [23] buildbackoff   the BUILD update of what runs (same line) waits a window after a failed fetch too — it walked the
+                      mirrors on every sync; a new build is walked at once
+  [24] dl-direct      the GitHub-direct fetch lands beside the binary and is renamed in: onto a RUNNING server's binary curl
+                      failed ETXTBSY (curl 23, read as "GitHub unreachable") and a running line never updated — REAL: a
+                      running copy of /bin/sleep, the fetch from a file:// URL
+  1.8.9 qualification NODED-3:
+  [25] csqtt          a NEW server's install, and a present server's reconfigure self-heal, walk a build whose fetch failed
+                      once per window too — they walked the mirrors on every sync; the server's card keeps that walk's
+                      reason, a new build or the operator's Restart (install) is walked at once, two servers asking for one
+                      build walk it once (csq-install, csq-reconf, csq-restart)
+  [26] WDTT           the same for a WDTT install and reconfigure (wdtt-install, wdtt-reconf)
+  csqtt 2.5 App routing (review of a897a710..fa484d42, F22):
+  [27] approuting     the panel's rule reaches a running server's desired.json on a sync, and leaves it when removed
+                      (ar-reconcile); an install / reconfigure writes it too (ar-cfgdir)
+
+Run: python3 tests/csqtt_lines_node_selftest.py   (0 = pass)
+     --perturb <name>  plants one regression and expects RED on its section:
+                       reconfigure [5] [25] · absent [6] · stable [3] · rollback [4] · memo [7] · build [8] · sibling [9] ·
+                       copyfail [10] · markorder [11] · onepass [12] · restart [13] · curver [14] · nover [15] · ifaces [16] · fetchswitched [17] · unknowncur [18] · runver [19] · budget [12] [22] ·
+                       notpresent-ver / notpresent-cut / markerkeep / verfallback [20] · snapcut [21] · starve [12] · restartretry [22] ·
+                       buildbackoff [23] · dl-direct [24] · csq-install / csq-reconf / csq-restart [25] · wdtt-install / wdtt-reconf [26]
+"""
+import importlib.machinery, importlib.util, json, os, shutil, sys, tempfile, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
+NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
+
+PLANTS = {   # name: (section, anchor, replacement)
+    "reconfigure": (("[5]", "[25]"), "    line = _csqtt_line_of(inst)\n    binshared = _csqtt_bin_shared(line)\n    if not os.path.exists(binshared):        # same-arch",
+                    "    line = _csqtt_line_of(inst)\n    binshared = _csqtt_bin_shared()\n    if not os.path.exists(binshared):        # same-arch"),
+    "absent": ("[6]", "            if not _line:\n                _line = _cur\n", "            if not _line:\n                _line = CSQTT_DEFAULT_LINE\n"),
+    "stable": (("[3]", "[11]"), "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify_stable(iface)\n",
+               "    err = _csqtt_start_one(dict(inst, line=to)) or _csqtt_verify(iface)\n"),
+    "rollback": (("[4]", "[11]"), "                if _cut:\n                    # A switch away from", "                if False:\n                    # A switch away from"),
+    "memo": (("[7]", "[14]", "[19]", "[20]"), "                inst[\"line_failed\"] = _lf\n", "                pass\n"),
+    "sibling": ("[9]", "        others = [i for i in siblings if i != iface]\n", "        others = []\n"),
+    "copyfail": ("[10]", "        _csqtt_start_one(dict(inst, line=frm)) if not inst.get(\"stopped\") else None\n", "        pass\n"),
+    "markorder": ("[11]", "        _csqtt_store_copy(cfgdir, frm)\n        _csqtt_cut_mark(iface, frm)\n", "        _csqtt_cut_mark(iface, frm)\n        _csqtt_store_copy(cfgdir, frm)\n"),
+    "fetchswitched": (("[12]", "[17]"), "                    _sw_pass[0] = _switched = (not err) or _memo", "                    _sw_pass[0] = _switched = True"),
+    "unknowncur": ("[18]", "                inst[\"ver\"] = (inst.get(\"cur_ver\") or \"\").strip()   # the panel's build for what runs, or none", "                inst.pop(\"ver\", None)"),
+    "budget": (("[12]", "[22]"), "                        _CSQTT_FETCH_LATER[(_line, _want_ver)] = time.monotonic() + CSQTT_FETCH_RETRY_S", "                        pass"),
+    "buildbackoff": ("[23]", "\n                        and time.monotonic() >= _CSQTT_FETCH_LATER.get((_cur, _run_ver), 0)):   # FN-2(c): as a switch waits", "):"),
+    "dl-direct": ("[24]", 'err, tmp = "", dest + ".dl"', 'err, tmp = "", dest'),
+    "csq-install": ("[25]", '        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):\n            return NODE_ERRORS.get(iface) or "the csqtt', '        if False:\n            return NODE_ERRORS.get(iface) or "the csqtt'),
+    "csq-reconf": ("[25]", "        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):   # a failed fetch waits, as _csqtt_install's (NODED-3)\n", "        if False:\n"),
+    "csq-restart": ("[25]", '                    _CSQTT_FETCH_LATER.pop((_csqtt_line_of(inst), (inst.get("ver") or "").strip()), None)\n', "                    pass\n"),
+    "wdtt-install": ("[26]", '        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):\n            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _want_ver or "current")', '        if False:\n            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _want_ver or "current")'),
+    "wdtt-reconf": ("[26]", '        if time.monotonic() < _CSQTT_FETCH_LATER.get(_fk, 0):\n            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _fk[1] or "current")', '        if False:\n            return NODE_ERRORS.get(iface) or "the %s WDTT %s binary could not be fetched a moment ago — tried again within 5 minutes" % (fork, _fk[1] or "current")'),
+    "restartretry": ("[22]", "                    _CSQTT_FETCH_LATER.pop((_line, _want_ver), None)", "                    pass"),
+    "starve": ("[12]", "                    _sw_pass[0] = _switched = (not err) or _memo", "                    _switched = (not err) or _memo; _sw_pass[0] = True"),
+    "markerkeep": ("[20]", "                if not err and _cut:\n                    _csqtt_cut_clear(iface)", "                if _cut:\n                    _csqtt_cut_clear(iface)"),
+    "verfallback": ("[20]", "(inst.get(\"cur_ver\") or \"\").strip() or _csqtt_installed_ver(inst[\"line\"])", "(inst.get(\"cur_ver\") or \"\").strip()"),
+    "notpresent-ver": ("[20]", "                if inst[\"line\"] != _line:\n                    # installing what ran", "                if False:\n                    # installing what ran"),
+    "notpresent-cut": ("[20]", "                    _csqtt_store_restore(_csqtt_dir(iface), _cut)\n                    log(LOG_WARNING", "                    log(LOG_WARNING"),
+    "snapcut": ("[21]", "        _rl = _csqtt_cut_line(iface) or _csqtt_running_line(iface)", "        _rl = _csqtt_running_line(iface)"),
+    "runver": ("[19]", "                if inst.get(\"line\") == _cur:\n", "                if False:\n"),
+    "onepass": ("[12]", "_sw_pass[0] or time.monotonic() < _CSQTT_FETCH_LATER.get((_line, _want_ver), 0))", "time.monotonic() < _CSQTT_FETCH_LATER.get((_line, _want_ver), 0))"),
+    "restart": ("[13]", "and not inst.get(\"stopped\") and not _switched:\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)", "and not inst.get(\"stopped\"):\n                if NODE_KIND == \"docker\":\n                    _csqtt_docker_start(inst)"),
+    "curver": (("[14]", "[17]", "[19]"), "                _run_ver = _want_ver if _line == _cur else (inst.get(\"cur_ver\") or \"\").strip()", "                _run_ver = _want_ver if _line == _cur else \"\""),
+    "ar-reconcile": ("[27]", '_body = _csqtt_desired_body(inst) if _pw_seen', '_body = _csqtt_desired_body(dict(inst, app_routing=None)) if _pw_seen'),
+    "ar-cfgdir": ("[27]", 'f.write(_csqtt_desired_body(inst) + "\\n")', 'f.write(_csqtt_desired_body(dict(inst, app_routing=None)) + "\\n")'),
+    "nover": ("[15]", "    if not ver and line != CSQTT_DEFAULT_LINE:\n", "    if False:\n"),
+    "ifaces": ("[16]", "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return [i for i, r in (want or {}).items() if (_csqtt_running_line(i) or _csqtt_line_of(r)) == line]"),
+    "build": (("[8]", "[16]"), "    return [i for i in (want or {}) if _csqtt_running_line(i) == line]", "    return list(want or {})"),   # one function, two sections
+}
+MODE = sys.argv[sys.argv.index("--perturb") + 1] if "--perturb" in sys.argv else ""
+SECTION = [""]
+FAILS = []
+def section(s):
+    SECTION[0] = s; print(s, flush=True)
+def check(name, cond, detail=""):
+    print(("  PASS " if cond else "  FAIL ") + name + (("  — " + str(detail)[:300]) if detail and not cond else ""), flush=True)
+    if not cond:
+        FAILS.append((SECTION[0], name))
+
+TMP = tempfile.mkdtemp(prefix="csqtt-lines-node-")
+src = open(NODED, encoding="utf-8").read()
+if MODE:
+    _sec, old, new = PLANTS[MODE]
+    assert src.count(old) == 1, "plant anchor for %s matched %d times — this run would measure nothing" % (MODE, src.count(old))
+    src = src.replace(old, new)
+p = os.path.join(TMP, "swg-noded"); open(p, "w", encoding="utf-8").write(src)
+os.environ["SWG_NO_REEXEC"] = "1"
+ld = importlib.machinery.SourceFileLoader("swgnoded_csqtt_lines", p)
+N = importlib.util.module_from_spec(importlib.util.spec_from_loader("swgnoded_csqtt_lines", ld))
+try:
+    ld.exec_module(N)
+except SystemExit:
+    pass
+
+# ── the sandbox ────────────────────────────────────────────────────────────────────────────────────────────────
+N.NODE_KIND = "docker"
+N.CSQTT_ROOT = os.path.join(TMP, "csqtt"); N.CSQTT_BIN_DIR = N.CSQTT_ROOT + "/.bin"
+N.CSQTT_RECORD = os.path.join(TMP, "csqtt.json")
+N._turn_arch = lambda: "amd64"
+N._csqtt_clear_stale_tun = lambda iface: None
+N._csqtt_argv = lambda inst, binp: [binp, N._csqtt_dir(inst["iface"])]
+N._csqtt_adopted_users = lambda *a, **k: {}
+N._csqtt_env_drifted = lambda *a, **k: False
+N.bind_heal_due = lambda *a, **k: False
+def _guard(cmd, *a, **k):
+    if "link" in str(cmd) and "del" in str(cmd):
+        raise AssertionError("the test reached a link delete: " + str(cmd))
+    class R: returncode, stdout, stderr = 0, "", ""
+    return R()
+N.host_sh = _guard
+GOOD = "#!/bin/sh\ntrap '' HUP\nexec sleep 300\n"   # a real csqtt reloads desired.json on SIGHUP — it does not die of it
+DIES = "#!/bin/sh\necho MIGRATED-BY-2.5 > \"$1/csqtt.db\"\nsleep 2\nexit 1\n"
+BUILD = {"2.1": GOOD, "2.5": GOOD}
+FETCHES = []
+def fake_fetch(inst, dest, line="2.1"):
+    FETCHES.append((line, inst.get("ver")))
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    open(dest, "w").write(BUILD[line]); os.chmod(dest, 0o755)
+    N._csqtt_write_ver(inst.get("ver") or "", line)
+    return ""
+REAL_FETCH = N._csqtt_fetch_bin
+N._csqtt_fetch_bin = fake_fetch
+
+def lay(iface, line, store="A"):
+    """A running instance of ours on `line`, its store holding `store`."""
+    d = N._csqtt_dir(iface); os.makedirs(d, exist_ok=True)
+    slot = N._csqtt_bin_shared(line)
+    if not os.path.exists(slot):
+        fake_fetch({"ver": "v" + line}, slot, line)
+    N._csqtt_relink(d + "/server", slot)
+    open(d + "/csqtt.db", "w").write(store + "\n")
+    inst = {"iface": iface, "listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24", "line": line, "panel_managed": True,
+            "pw_seen": True, "passwords": {"pw1": {}}, "password": "owner", "web_pass": "w"}
+    N._csqtt_docker_start(inst)
+    return inst
+def db(iface):
+    return open(N._csqtt_dir(iface) + "/csqtt.db").read().strip()
+def bak(iface, line):
+    f = N._csqtt_store_bak(N._csqtt_dir(iface), line) + "/csqtt.db"
+    return open(f).read().strip() if os.path.exists(f) else None
+def pid(iface):
+    return N._csqtt_docker_pid(iface)
+
+try:
+    section("[1] slots")
+    a = N._csqtt_bin_shared("2.1"); b = N._csqtt_bin_shared("2.5")
+    check("2.1 keeps the legacy path .bin/<arch>/csqtt-server", a == N.CSQTT_BIN_DIR + "/amd64/csqtt-server", a)
+    check("2.5 gets .bin/<arch>/2.5/csqtt-server", b == N.CSQTT_BIN_DIR + "/amd64/2.5/csqtt-server", b)
+    check("a line that is not a dotted version is refused", not N._csqtt_line_ok("../x") and not N._csqtt_line_ok("2.5/..") and not N._csqtt_line_ok(""))
+    check("a well-formed line this node does not know is refused", not N._csqtt_line_ok("9.9"))
+    check("an absent line reads as 2.1", N._csqtt_line_of({}) == "2.1" and N._csqtt_line_of({"line": "../x"}) == "2.1")
+
+    section("[2] switch 2.1 → 2.5")
+    inst = lay("lo", "2.1", "A")
+    sib = lay("csqttsib", "2.1", "S")
+    sib_pid = pid("csqttsib")
+    err, memo = N._csqtt_switch_line(dict(inst), "2.1", "2.5", "2.1.9-3")
+    check("the switch reports success", err == "" and memo is False, err)
+    check("this server now runs the 2.5 slot", N._csqtt_running_line("lo") == "2.5", os.readlink(N._csqtt_dir("lo") + "/server"))
+    check("2.5's slot is stamped with the build the panel named", N._csqtt_installed_ver("2.5") == "2.1.9-3", N._csqtt_installed_ver("2.5"))
+    check("2.1's store was copied before the repoint", bak("lo", "2.1") == "A", bak("lo", "2.1"))
+    check("the sibling server on 2.1 still runs, same pid", pid("csqttsib") == sib_pid and sib_pid, (sib_pid, pid("csqttsib")))
+    check("the sibling still points at 2.1", N._csqtt_running_line("csqttsib") == "2.1")
+
+    section("[3] revert — a 2.5 that writes the store and dies 2 s in")
+    N._csqtt_docker_stop("lo")
+    inst = lay("lo", "2.1", "A")
+    shutil.rmtree(os.path.dirname(N._csqtt_bin_shared("2.5")), ignore_errors=True)
+    BUILD["2.5"] = DIES
+    t0 = time.time()
+    err, memo = N._csqtt_switch_line(dict(inst), "2.1", "2.5", "2.5.0-1")
+    check("the switch fails and says it is memoed", bool(err) and memo is True, (err, memo))
+    check("…and names an exit, not a timeout", "exited" in err or "did not stay up" in err, err)
+    check("the server is back on the 2.1 slot", N._csqtt_running_line("lo") == "2.1")
+    check("2.1's store is back — not the one 2.5 wrote", db("lo") == "A", db("lo"))
+    check("the server runs again on 2.1", bool(pid("lo")))
+    check("the sibling was never touched", pid("csqttsib") == sib_pid)
+    BUILD["2.5"] = GOOD
+
+    section("[4] a switch a crash cut is rolled back, then runs again whole")
+    N._csqtt_docker_stop("lo")
+    inst = lay("lo", "2.1", "A")
+    json.dump({"lo": dict(inst)}, open(N.CSQTT_RECORD, "w"))
+    fake_fetch({"ver": "2.1.9-3"}, N._csqtt_bin_shared("2.5"), "2.5")
+    N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1"); N._csqtt_cut_mark("lo", "2.1")   # the cut pass: copy, mark, relink —
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))      # — then 2.5 ran and rewrote the store
+    open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("MIGRATED-BY-2.5\n")
+    w4 = {"lo": {"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24", "passwords": {"pw1": {}}, "line": "2.5", "ver": "2.1.9-3"}}
+    N.reconcile_csqtt(w4)
+    check("the cut switch is rolled back to 2.1", N._csqtt_running_line("lo") == "2.1", os.readlink(N._csqtt_dir("lo") + "/server"))
+    check("…onto 2.1's own store copy, not the one 2.5 rewrote", db("lo") == "A", db("lo"))
+    check("…the marker is gone and the server runs", not os.path.exists(N._csqtt_cut_path("lo")) and bool(pid("lo")),
+          (os.path.exists(N._csqtt_cut_path("lo")), pid("lo"), (N._csqtt_load().get("lo") or {}).get("stopped")))
+    N.reconcile_csqtt(w4)
+    check("the next pass runs the still-wanted switch, whole", N._csqtt_running_line("lo") == "2.5" and not os.path.exists(N._csqtt_cut_path("lo")),
+          os.readlink(N._csqtt_dir("lo") + "/server"))
+    check("…with a fresh copy of 2.1's store behind it", bak("lo", "2.1") == "A", bak("lo", "2.1"))
+
+    section("[5] reconfigure keeps the line")
+    i25 = dict(inst, line="2.5", params="--x")
+    N._csqtt_reconfigure(i25)
+    check("the symlink still points at the 2.5 slot", N._csqtt_running_line("lo") == "2.5", os.readlink(N._csqtt_dir("lo") + "/server"))
+
+    section("[9] a new build in the slot reaches the server already on it")
+    N._csqtt_docker_stop("lo"); N._csqtt_docker_stop("csqttsib")
+    shutil.rmtree(os.path.dirname(N._csqtt_bin_shared("2.5")), ignore_errors=True)
+    sib25 = lay("csqttsib", "2.5", "S")                      # on 2.5, build "v2.5"
+    inst = lay("lo", "2.1", "A")
+    json.dump({"lo": dict(inst), "csqttsib": dict(sib25)}, open(N.CSQTT_RECORD, "w"))
+    p_before = pid("csqttsib")
+    err, memo = N._csqtt_switch_line(dict(inst), "2.1", "2.5", "2.5.0-9", ["csqttsib", "lo"])
+    check("the switch succeeds", err == "", err)
+    check("the slot carries the new build", N._csqtt_installed_ver("2.5") == "2.5.0-9", N._csqtt_installed_ver("2.5"))
+    check("the server already on 2.5 was restarted onto it", pid("csqttsib") and pid("csqttsib") != p_before, (p_before, pid("csqttsib")))
+
+    section("[10] a store copy that fails")
+    N._csqtt_docker_stop("lo")
+    inst = lay("lo", "2.1", "A")
+    real_copy = N._csqtt_store_copy
+    def boom(*a): raise OSError(28, "No space left on device")
+    N._csqtt_store_copy = boom
+    err, memo = N._csqtt_switch_line(dict(inst), "2.1", "2.5", "2.5.0-9")
+    N._csqtt_store_copy = real_copy
+    check("it reports the copy and memoes it", "copy the store" in err and memo is True, (err, memo))
+    check("the server is still on 2.1", N._csqtt_running_line("lo") == "2.1")
+    check("…and running, not left stopped", bool(pid("lo")))
+
+    # ── the reconcile ─────────────────────────────────────────────────────────────────────────────────────────
+    SWITCHES, UPDATES = [], []
+    real_switch, real_update = N._csqtt_switch_line, N._csqtt_update_binary
+    def rec_switch(inst, frm, to, ver, siblings=(), stopped=()):
+        SWITCHES.append((inst["iface"], frm, to, ver)); return SWITCH_RESULT[0]
+    UPDATE_RESULT = [""]
+    def rec_update(inst, ver, ifaces, line="2.1"):
+        UPDATES.append((ver, tuple(sorted(ifaces)), line))
+        if not UPDATE_RESULT[0]:
+            N._csqtt_write_ver(ver, line)
+        return UPDATE_RESULT[0]
+    N._csqtt_switch_line = rec_switch; N._csqtt_update_binary = rec_update
+    SWITCH_RESULT = [("", False)]
+    def record(**insts):
+        json.dump(insts, open(N.CSQTT_RECORD, "w"))
+    def want(iface, **kw):
+        base = {"listen": "0.0.0.0:46000", "tun_addr": "10.66.67.1/24", "passwords": {"pw1": {}}}
+        base.update(kw); return base
+    rec_lo = dict(inst, line="2.5")
+    rec_lo.pop("params", None)
+
+    section("[6] a request with no line")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))   # committed AND running 2.5
+    record(lo=rec_lo)
+    N._csqtt_write_ver("2.1.9-3", "2.5")
+    del SWITCHES[:], UPDATES[:]
+    N.reconcile_csqtt({"lo": want("lo", ver="2.1.9-4")})
+    check("no switch is attempted", SWITCHES == [], SWITCHES)
+    check("the 2.1 ver is not applied to the 2.5 server", UPDATES == [], UPDATES)
+    check("the record keeps line 2.5", (N._csqtt_load().get("lo") or {}).get("line") == "2.5", N._csqtt_load().get("lo"))
+
+    section("[27] App routing reaches desired.json")
+    AR27 = {"apps_mode": "all", "packages": [], "domains_mode": "direct", "domains": ["ya.ru"], "template_domains": False,
+            "ips_mode": "direct", "ips": []}
+    dj = lambda d: json.load(open(d + "/desired.json"))
+    N.reconcile_csqtt({"lo": want("lo", ver="2.1.9-4", app_routing=AR27)})
+    check("a sync writes the rule into the running server's desired.json", dj(N._csqtt_dir("lo")).get("app_routing") == AR27, dj(N._csqtt_dir("lo")))
+    N.reconcile_csqtt({"lo": want("lo", ver="2.1.9-4")})
+    check("…and a sync without it takes it out", "app_routing" not in dj(N._csqtt_dir("lo")), dj(N._csqtt_dir("lo")))
+    _d27 = os.path.join(TMP, "ar27"); os.makedirs(_d27)
+    N._csqtt_write_cfgdir(dict(want("ar27", app_routing=AR27), iface="ar27"), "/bin/true", _d27 + "/server", _d27)
+    check("an install / reconfigure writes it too", dj(_d27).get("app_routing") == AR27, dj(_d27))
+
+    section("[7] a failed switch is memoed")
+    rec21 = dict(rec_lo, line="2.1"); N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))
+    record(lo=rec21)
+    SWITCH_RESULT[0] = ("the server exited", True)
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-1")})
+    r1 = N._csqtt_load().get("lo") or {}
+    check("the first sync tries the switch", len(SWITCHES) == 1, SWITCHES)
+    check("…records line_failed and stays committed on 2.1", (r1.get("line_failed") or {}).get("line") == "2.5" and r1.get("line") == "2.1", r1)
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-1")})
+    check("the next sync does not retry the same build", len(SWITCHES) == 1, SWITCHES)
+    snaprow = next((c for c in N.csqtt_snapshot() if c.get("iface") == "lo"), {})
+    check("the snapshot reports what runs (2.1) and why the switch failed", snaprow.get("line") == "2.1" and (snaprow.get("line_failed") or {}).get("line") == "2.5", snaprow)
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2")})
+    check("a new build is tried", len(SWITCHES) == 2, SWITCHES)
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", restart=12345)})
+    check("the operator's Restart retries the same build", len(SWITCHES) == 3, SWITCHES)
+    N.reconcile_csqtt({"lo": want("lo", line="2.1", ver="2.1.9-4", restart=12345)})
+    check("a request back to the running line clears line_failed", not (N._csqtt_load().get("lo") or {}).get("line_failed"), N._csqtt_load().get("lo"))
+    SWITCH_RESULT[0] = ("", False)
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", restart=12345)})
+    check("a switch that works commits line 2.5", (N._csqtt_load().get("lo") or {}).get("line") == "2.5", N._csqtt_load().get("lo"))
+
+    section("[8] a build update stays inside its line")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))
+    N._csqtt_relink(N._csqtt_dir("csqttsib") + "/server", N._csqtt_bin_shared("2.1"))
+    record(lo=dict(rec_lo, line="2.5"), csqttsib=dict(sib, line="2.1"))
+    N._csqtt_write_ver("2.5.0-1", "2.5"); N._csqtt_write_ver("2.1.9-4", "2.1")
+    del UPDATES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.1", ver="2.1.9-4", tun_addr="10.66.68.1/24")})
+    check("one update, on line 2.5, restarting only the 2.5 server", UPDATES == [("2.5.0-2", ("lo",), "2.5")], UPDATES)
+
+    section("[11] a cut switch the panel now wants undone; the marker always has a fresh copy behind it")
+    N._csqtt_switch_line, N._csqtt_update_binary = real_switch, real_update
+    N._csqtt_docker_stop("lo")
+    BUILD["2.5"] = GOOD
+    lay("lo", "2.1", "A")
+    N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1"); N._csqtt_cut_mark("lo", "2.1")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5"))
+    open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("MIGRATED-BY-2.5\n")
+    record(lo=dict(rec_lo, line="2.1"))
+    N.reconcile_csqtt({"lo": want("lo", line="2.1", ver="2.1.9-4")})
+    r11 = N._csqtt_load().get("lo") or {}
+    check("asked for 2.1: back on 2.1, on 2.1's store copy", N._csqtt_running_line("lo") == "2.1" and db("lo") == "A", (os.readlink(N._csqtt_dir("lo") + "/server"), db("lo")))
+    check("…committed 2.1, nothing memoed, running", r11.get("line") == "2.1" and not r11.get("line_failed") and bool(pid("lo")), r11)
+    # a crash INSIDE the copy: no marker may exist yet, or the next pass would roll back onto an older copy
+    N._csqtt_docker_stop("lo")
+    inst11 = lay("lo", "2.1", "STALE"); N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1")   # an old copy from some earlier switch
+    open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("LIVE\n")
+    class Crash(BaseException):
+        pass
+    real_copy = N._csqtt_store_copy
+    def crash_copy(*a): raise Crash()
+    N._csqtt_store_copy = crash_copy
+    try:
+        N._csqtt_switch_line(dict(inst11), "2.1", "2.5", "2.1.9-3")
+    except Crash:
+        pass
+    N._csqtt_store_copy = real_copy
+    record(lo=dict(rec_lo, line="2.1"))
+    N.reconcile_csqtt({"lo": want("lo", line="2.1", ver="2.1.9-4")})
+    check("a crash inside the copy leaves no marker — the live store is untouched", db("lo") == "LIVE", db("lo"))
+    N._csqtt_switch_line, N._csqtt_update_binary = rec_switch, rec_update
+
+    section("[12] one switch per pass")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))
+    N._csqtt_relink(N._csqtt_dir("csqttsib") + "/server", N._csqtt_bin_shared("2.1"))
+    record(lo=dict(rec_lo, line="2.1"), csqttsib=dict(sib, line="2.1"))
+    SWITCH_RESULT[0] = ("", False)
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.5", ver="2.5.0-2", tun_addr="10.66.68.1/24")})
+    check("two asked, one switched this pass", [x[0] for x in SWITCHES] == ["lo"], SWITCHES)
+    r12 = N._csqtt_load().get("csqttsib") or {}
+    check("the one that waits keeps 2.1, with no failure memoed", r12.get("line") == "2.1" and not r12.get("line_failed"), r12)
+    del SWITCHES[:]
+    N.reconcile_csqtt({"csqttsib": want("csqttsib", line="2.5", ver="2.5.0-2", tun_addr="10.66.68.1/24")})
+    check("…and switches on the next pass", [x[0] for x in SWITCHES] == ["csqttsib"], SWITCHES)
+    record(lo=dict(rec_lo, line="2.1"), csqttsib=dict(sib, line="2.1"))
+    SWITCH_RESULT[0] = ("the panel's mirror had no build", False)
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.5", ver="2.5.0-2", tun_addr="10.66.68.1/24")})
+    check("two asking for ONE build nobody can fetch: it is walked once per pass", len(SWITCHES) == 1, SWITCHES)
+    record(lo=dict(rec_lo, line="2.1"), csqttsib=dict(sib, line="2.1"))
+    del SWITCHES[:]
+    N._CSQTT_FETCH_LATER.clear()        # a later pass, once 2.5.0-2's backoff ([22]) ran out: it is walked — and fails — again
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2"), "csqttsib": want("csqttsib", line="2.5", ver="2.5.0-3", tun_addr="10.66.68.1/24")})
+    check("…but a failed fetch spends no switch: a server asking for ANOTHER build is not starved", len(SWITCHES) == 2, SWITCHES)
+    SWITCH_RESULT[0] = ("", False)
+    N._CSQTT_FETCH_LATER.clear()
+
+    section("[13] a Restart that retries a failed switch restarts once")
+    N._csqtt_docker_stop("lo"); lay("lo", "2.1", "A")       # alive, so supervision has nothing to relaunch
+    STARTS = []
+    real_start = N._csqtt_docker_start
+    N._csqtt_docker_start = lambda inst: (STARTS.append(inst.get("iface")), real_start(inst))[1]
+    record(lo=dict(rec_lo, line="2.1", restart=1, line_failed={"line": "2.5", "ver": "2.5.0-2", "why": "x"}))
+    SWITCH_RESULT[0] = ("", False)
+    del SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", restart=2)})
+    N._csqtt_docker_start = real_start
+    check("the switch was retried", len(SWITCHES) == 1, SWITCHES)
+    check("…and the restart stamp did not restart it a second time", STARTS.count("lo") == 0, STARTS)
+
+    section("[14] cur_ver while a switch is memoed")
+    N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))
+    N._csqtt_write_ver("2.1.9-3", "2.1")
+    record(lo=dict(rec_lo, line="2.1", line_failed={"line": "2.5", "ver": "2.5.0-2", "why": "x"}))
+    del UPDATES[:], SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4")})
+    check("no switch (memoed)", SWITCHES == [], SWITCHES)
+    check("the 2.1 line it runs takes cur_ver", UPDATES == [("2.1.9-4", ("lo",), "2.1")], UPDATES)
+
+    section("[15] a versionless fetch into another line's slot")
+    N._turn_arch_ok = lambda: True
+    real_pf = N._csqtt_panel_fetch
+    N._csqtt_panel_fetch = lambda dest, sha, tag="csqtt": (open(dest, "w").write("2.1.9-4 binary"), True)[1]   # a mirror that serves its "csqtt" (2.1) build
+    e15 = REAL_FETCH({"ver": ""}, N._csqtt_bin_shared("2.5") + ".probe", "2.5")
+    N._csqtt_panel_fetch = real_pf
+    check("refused, naming the line", "named no csqtt 2.5" in (e15 or ""), e15)
+    check("…and the mirror's 2.1 build did not land in the 2.5 slot", not os.path.exists(N._csqtt_bin_shared("2.5") + ".probe"))
+
+    section("[17] a switch whose fetch fails restarted nothing")
+    N._csqtt_docker_stop("lo"); lay("lo", "2.1", "A"); N._csqtt_write_ver("2.1.9-3", "2.1")
+    record(lo=dict(rec_lo, line="2.1", restart=1))
+    STARTS = []
+    real_start = N._csqtt_docker_start
+    N._csqtt_docker_start = lambda inst: (STARTS.append(inst.get("iface")), real_start(inst))[1]
+    SWITCH_RESULT[0] = ("the panel's mirror had no build", False)
+    del UPDATES[:], SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4", restart=2)})
+    N._csqtt_docker_start = real_start
+    check("the switch was tried", len(SWITCHES) == 1, SWITCHES)
+    check("…so the operator's Restart still restarts it", STARTS.count("lo") == 1, STARTS)
+    check("…and the 2.1 it runs still takes cur_ver", UPDATES == [("2.1.9-4", ("lo",), "2.1")], UPDATES)
+    SWITCH_RESULT[0] = ("", False)
+
+    section("[18] a line the node does not know keeps cur_ver for what runs")
+    N._csqtt_write_ver("2.1.9-3", "2.1")
+    record(lo=dict(rec_lo, line="2.1"))
+    del UPDATES[:], SWITCHES[:]
+    N.reconcile_csqtt({"lo": want("lo", line="2.6", ver="2.6.0-1", cur_ver="2.1.9-4")})
+    check("no switch", SWITCHES == [], SWITCHES)
+    check("the 2.1 it runs takes cur_ver", UPDATES == [("2.1.9-4", ("lo",), "2.1")], UPDATES)
+
+    section("[19] while a switch waits, the record names the RUNNING line's build")
+    record(lo=dict(rec_lo, line="2.1", line_failed={"line": "2.5", "ver": "2.5.0-2", "why": "x"}))
+    N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4")})
+    r19 = N._csqtt_load().get("lo") or {}
+    check("its ver is 2.1's build (a self-heal fetch into the 2.1 slot names it)", r19.get("ver") == "2.1.9-4" and r19.get("line") == "2.1", r19)
+
+    section("[20] a server whose unit or binary is gone")
+    INSTALLS, INSTALL_RESULT = [], [""]
+    real_install = N._csqtt_install
+    N._csqtt_install = lambda inst: (INSTALLS.append((inst.get("line"), inst.get("ver"))), INSTALL_RESULT[0])[1]
+    try:
+        N._csqtt_docker_stop("lo")
+        os.remove(N._csqtt_dir("lo") + "/server")                               # not present
+        record(lo=dict(rec_lo, line="2.1", line_failed={"line": "2.5", "ver": "2.5.0-2", "why": "x"}))
+        N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4")})
+        check("a memoed switch: re-installs what ran (2.1) with ITS build, not the asked 2.5 build", INSTALLS[-1:] == [("2.1", "2.1.9-4")], INSTALLS)
+        N._csqtt_write_ver("2.1.9-2", "2.1")
+        N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2")})
+        check("…with no cur_ver from the panel, the build its slot was stamped with", INSTALLS[-1:] == [("2.1", "2.1.9-2")], INSTALLS)
+        os.makedirs(N._csqtt_dir("lo"), exist_ok=True)
+        open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("A\n"); N._csqtt_store_copy(N._csqtt_dir("lo"), "2.1")
+        N._csqtt_cut_mark("lo", "2.1"); open(N._csqtt_dir("lo") + "/csqtt.db", "w").write("MIGRATED-BY-2.5\n")
+        record(lo=dict(rec_lo, line="2.5"))
+        INSTALL_RESULT[0] = "couldn't fetch"
+        N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4")})
+        check("a cut switch: the store is rolled back to 2.1's copy all the same", db("lo") == "A", db("lo"))
+        check("…it re-installs the line it was leaving, with that line's build", INSTALLS[-1:] == [("2.1", "2.1.9-4")], INSTALLS)
+        check("…and while that install fails, the marker stays (the next pass rolls back again)", os.path.exists(N._csqtt_cut_path("lo")))
+        INSTALL_RESULT[0] = ""
+        N.reconcile_csqtt({"lo": want("lo", line="2.5", ver="2.5.0-2", cur_ver="2.1.9-4")})
+        check("once it installs, the marker is gone", not os.path.exists(N._csqtt_cut_path("lo")) and INSTALLS[-1][0] == "2.1", INSTALLS)
+    finally:
+        N._csqtt_install = real_install
+
+    section("[21] the snapshot during a cut switch")
+    lay("lo", "2.1", "A")
+    try:
+        N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.5")); N._csqtt_cut_mark("lo", "2.1")
+        row = next((c for c in N.csqtt_snapshot() if c.get("iface") == "lo"), {})
+        check("it reports the line being rolled back to (2.1), as the reconcile does", row.get("line") == "2.1", row.get("line"))
+    finally:
+        N._csqtt_cut_clear("lo"); N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1"))
+
+    section("[22] an unfetchable switch is walked once per backoff window, not every sync")
+    class _Clock:                                        # swg-noded's own `time`, its monotonic moved on by hand
+        off = 0.0
+        def __getattr__(self, k): return getattr(time, k)
+        def monotonic(self): return time.monotonic() + self.off
+    clk = _Clock(); N.time = clk
+    try:
+        N._CSQTT_FETCH_LATER.clear()
+        record(lo=dict(rec_lo, line="2.1", restart=5))
+        SWITCH_RESULT[0] = ("couldn't fetch the csqtt binary for amd64 2.5.0-7 — the panel's mirror had none, and GitHub was "
+                            "unreachable from this node: curl: (28) Failed to connect to github.com port 443", False)
+        w22 = lambda **kw: {"lo": want("lo", **dict({"line": "2.5", "ver": "2.5.0-7", "restart": 5}, **kw))}
+        del SWITCHES[:]
+        errs = [N.reconcile_csqtt(w22())["errors"] for _ in range(6)]
+        check("six syncs, ONE walk of the mirrors (each ≈ 90 s with GitHub blackholed)", len(SWITCHES) == 1, SWITCHES)
+        check("…the failure said on the sync that walked; the rest wait quietly, the server on what it runs",
+              any("couldn't switch to csqtt 2.5" in e for e in errs[0]) and not any(errs[1:])
+              and (N._csqtt_load().get("lo") or {}).get("line") == "2.1"
+              and not (N._csqtt_load().get("lo") or {}).get("line_failed"), (errs, N._csqtt_load().get("lo")))
+        clk.off += N.CSQTT_FETCH_RETRY_S + 1
+        N.reconcile_csqtt(w22())
+        check("once the window has run out it is walked again", len(SWITCHES) == 2, SWITCHES)
+        N.reconcile_csqtt(w22())
+        check("…and then waits a window again", len(SWITCHES) == 2, SWITCHES)
+        N.reconcile_csqtt(w22(restart=6))
+        check("the operator's Restart walks it at once", len(SWITCHES) == 3, SWITCHES)
+        N.reconcile_csqtt(w22(restart=6, ver="2.5.0-8"))
+        check("a new build is walked at once", len(SWITCHES) == 4 and SWITCHES[-1][3] == "2.5.0-8", SWITCHES)
+    finally:
+        N.time = time; SWITCH_RESULT[0] = ("", False); N._CSQTT_FETCH_LATER.clear()
+
+    section("[23] the build update of what runs waits a window after a failed fetch, as a switch does (FN-2(c))")
+    clk = _Clock(); N.time = clk
+    try:
+        N._CSQTT_FETCH_LATER.clear()
+        N._csqtt_relink(N._csqtt_dir("lo") + "/server", N._csqtt_bin_shared("2.1")); N._csqtt_write_ver("2.1.9-3", "2.1")
+        record(lo=dict(rec_lo, line="2.1", restart=5))
+        UPDATE_RESULT[0] = ("couldn't fetch the csqtt binary for amd64 2.1.9-4 — the panel's mirror had none, and GitHub was "
+                            "unreachable from this node: curl: (28) Failed to connect to github.com port 443")
+        w23 = lambda **kw: {"lo": want("lo", **dict({"line": "2.1", "ver": "2.1.9-4", "restart": 5}, **kw))}
+        del UPDATES[:]
+        for _ in range(6):
+            N.reconcile_csqtt(w23())
+        check("six syncs, ONE walk of the mirrors for the same line's new build", len(UPDATES) == 1, UPDATES)
+        clk.off += N.CSQTT_FETCH_RETRY_S + 1
+        N.reconcile_csqtt(w23())
+        check("once the window has run out it is walked again", len(UPDATES) == 2, UPDATES)
+        N.reconcile_csqtt(w23(ver="2.1.9-5"))
+        check("a newer build is walked at once", len(UPDATES) == 3 and UPDATES[-1][0] == "2.1.9-5", UPDATES)
+    finally:
+        N.time = time; UPDATE_RESULT[0] = ""; N._CSQTT_FETCH_LATER.clear()
+
+    section("[24] the GitHub-direct fetch never writes onto a RUNNING binary (NR-3) — real: curl, a running process")
+    import hashlib, subprocess
+    _d24 = tempfile.mkdtemp(dir=TMP); _dest = _d24 + "/server"; _new = _d24 + "/new-build"
+    shutil.copy("/bin/sleep", _dest); os.chmod(_dest, 0o755); shutil.copy("/bin/true", _new)
+    _want = hashlib.sha256(open(_new, "rb").read()).hexdigest()
+    _urls = N._turn_dl_urls; N._turn_dl_urls = lambda repo, arch, tag: ["file://" + _new]
+    _pr = subprocess.Popen([_dest, "30"]); time.sleep(0.3)
+    try:
+        okd, why = N._swg_release_get("csqtt-2.1.9-9", "amd64", _dest, _want, "csqtt")
+        check("the new build lands while the old one runs (it was curl 23, ETXTBSY, said as \"GitHub unreachable\")",
+              okd and hashlib.sha256(open(_dest, "rb").read()).hexdigest() == _want and _pr.poll() is None, (okd, why[:120]))
+        check("…and nothing is left beside it", not os.path.exists(_dest + ".dl"), os.listdir(_d24))
+    finally:
+        _pr.kill(); N._turn_dl_urls = _urls
+
+    # NODED-3: the passes are run as the sync loop runs them — each server's error put on its card (NODE_ERRORS[iface])
+    def sync(reconcile, w):
+        res = reconcile(w)
+        for e in res["errors"]:
+            k, _, m = e.partition(": "); N.NODE_ERRORS[k] = m or e
+        return res
+    UNFETCHABLE = (" — the panel's mirror had none, and GitHub was unreachable from this node: curl: (28) Failed to connect to "
+                   "github.com port 443")
+
+    section("[25] csqtt: a NEW server's install, and a reconfigure's self-heal, wait a window after a failed fetch (NODED-3)")
+    clk = _Clock(); N.time = clk
+    FETCHED = []
+    def fail_fetch(inst, dest, line="2.1"):
+        FETCHED.append((inst.get("iface"), line, inst.get("ver")))
+        return "couldn't fetch the csqtt binary for amd64 " + (inst.get("ver") or "") + UNFETCHABLE
+    real_env_drifted = N._csqtt_env_drifted
+    N._csqtt_fetch_bin = fail_fetch
+    try:
+        N._CSQTT_FETCH_LATER.clear(); N.NODE_ERRORS.clear()
+        N._csqtt_docker_stop("lo"); N._csqtt_docker_stop("csqttsib")
+        shutil.rmtree(os.path.dirname(N._csqtt_bin_shared("2.5")), ignore_errors=True)   # 2.5 is on neither the mirror nor GitHub
+        record()
+        w25 = lambda **kw: {"csqttnew": want("csqttnew", **dict({"line": "2.5", "ver": "2.5.0-7", "listen": "0.0.0.0:46025",
+                                                                  "tun_addr": "10.66.25.1/24"}, **kw))}
+        sync(N.reconcile_csqtt, w25())
+        e25 = N.NODE_ERRORS.get("csqttnew", "")
+        check("install: the first sync walks the sources once and says why", FETCHED == [("csqttnew", "2.5", "2.5.0-7")]
+              and "couldn't fetch" in e25, (FETCHED, e25))
+        for _ in range(5):
+            sync(N.reconcile_csqtt, w25())
+        check("…the next five syncs walk nothing (each walk ≈ 90 s with GitHub blackholed)", len(FETCHED) == 1, FETCHED)
+        check("…and the server's card keeps that walk's reason", N.NODE_ERRORS.get("csqttnew") == e25, N.NODE_ERRORS.get("csqttnew"))
+        clk.off += N.CSQTT_FETCH_RETRY_S + 1
+        sync(N.reconcile_csqtt, w25())
+        check("once the window has run out it is walked again", len(FETCHED) == 2, FETCHED)
+        sync(N.reconcile_csqtt, w25(restart=9)); sync(N.reconcile_csqtt, w25(restart=9))
+        check("the operator's Restart walks it at once, once", len(FETCHED) == 3, FETCHED)
+        sync(N.reconcile_csqtt, w25(restart=9, ver="2.5.0-8"))
+        check("a new build is walked at once", len(FETCHED) == 4 and FETCHED[-1][2] == "2.5.0-8", FETCHED)
+        del FETCHED[:]
+        sync(N.reconcile_csqtt, dict(w25(ver="2.5.0-9"), csqttnew2=want("csqttnew2", line="2.5", ver="2.5.0-9", listen="0.0.0.0:46026",
+                                                                        tun_addr="10.66.26.1/24")))
+        check("two new servers asking for one unfetchable build: one walk", len(FETCHED) == 1, FETCHED)
+        # a present server whose line's binary is gone (its stamp left, its link on no slot this box knows — an arch move),
+        # its env drifted: every sync reconfigures it, and the reconfigure's self-heal fetches
+        _odd = os.path.join(TMP, "moved", "csqtt-server"); os.makedirs(os.path.dirname(_odd), exist_ok=True)
+        open(_odd, "w").write(GOOD); os.chmod(_odd, 0o755)
+        N._csqtt_relink(N._csqtt_dir("lo") + "/server", _odd)
+        N._csqtt_write_ver("2.5.0-7", "2.5")
+        record(lo=dict(rec_lo, line="2.5", ver="2.5.0-7"))
+        N._csqtt_env_drifted = lambda *a, **k: True
+        N._CSQTT_FETCH_LATER.clear(); del FETCHED[:]
+        w25r = {"lo": want("lo", line="2.5", ver="2.5.0-7")}
+        sync(N.reconcile_csqtt, w25r)
+        check("reconfigure: the self-heal walks the sources once", FETCHED == [("lo", "2.5", "2.5.0-7")], FETCHED)
+        sync(N.reconcile_csqtt, w25r); sync(N.reconcile_csqtt, w25r)
+        check("…and not on the next syncs", len(FETCHED) == 1, FETCHED)
+    finally:
+        N.time = time; N._csqtt_fetch_bin = fake_fetch; N._csqtt_env_drifted = real_env_drifted; N._CSQTT_FETCH_LATER.clear()
+
+    section("[26] WDTT: a NEW server's install, and a reconfigure's self-heal, wait a window after a failed fetch (NODED-3)")
+    N.WDTT_ROOT = os.path.join(TMP, "wdtt"); N.WDTT_BIN_DIR = N.WDTT_ROOT + "/.bin"; N.WDTT_RECORD = os.path.join(TMP, "wdtt.json")
+    clk = _Clock(); N.time = clk
+    WFETCHED = []
+    def wfail(fork, inst, dest, ver=None):
+        WFETCHED.append((inst.get("iface"), fork, ver if ver is not None else inst.get("ver")))
+        return "couldn't fetch the " + fork + " WDTT binary for amd64" + UNFETCHABLE
+    real_wfetch = N._wdtt_fetch_bin
+    N._wdtt_fetch_bin = wfail
+    try:
+        N._CSQTT_FETCH_LATER.clear(); N.NODE_ERRORS.clear()
+        json.dump({"wdtt": []}, open(N.WDTT_RECORD, "w"))
+        ww = lambda **kw: dict({"listen": "0.0.0.0:56025", "wg_addr": "10.66.27.1/24", "wg_port": 56125, "fork": "amurcanov",
+                                "ver": "1.4.2", "passwords": {}}, **kw)
+        sync(N.reconcile_wdtt, {"wdttnew": ww()})
+        e26 = N.NODE_ERRORS.get("wdttnew", "")
+        check("install: the first sync walks the sources once and says why", WFETCHED == [("wdttnew", "amurcanov", "1.4.2")]
+              and "couldn't fetch" in e26, (WFETCHED, e26))
+        for _ in range(5):
+            sync(N.reconcile_wdtt, {"wdttnew": ww()})
+        check("…the next five syncs walk nothing", len(WFETCHED) == 1, WFETCHED)
+        check("…and the server's card keeps that walk's reason", N.NODE_ERRORS.get("wdttnew") == e26, N.NODE_ERRORS.get("wdttnew"))
+        clk.off += N.CSQTT_FETCH_RETRY_S + 1
+        sync(N.reconcile_wdtt, {"wdttnew": ww()})
+        check("once the window has run out it is walked again", len(WFETCHED) == 2, WFETCHED)
+        sync(N.reconcile_wdtt, {"wdttnew": ww(ver="1.4.3")})
+        check("a new build is walked at once", len(WFETCHED) == 3 and WFETCHED[-1][2] == "1.4.3", WFETCHED)
+        # a present server whose fork's binary is gone (its stamp left), its Listen changed: WDTT keeps the old record while
+        # the reconfigure fails, so every sync reconfigures it, and the reconfigure's self-heal fetches
+        _wd = N._wdtt_dir("wdttold"); os.makedirs(_wd, exist_ok=True)
+        _old = os.path.join(TMP, "moved", "wdtt-server"); open(_old, "w").write(GOOD); os.chmod(_old, 0o755)
+        os.symlink(_old, _wd + "/server")
+        N._wdtt_write_ver("amurcanov", "1.4.9")
+        json.dump({"wdtt": [dict(ww(listen="0.0.0.0:56028", wg_addr="10.66.28.1/24", wg_port=56128, ver="1.4.9"), iface="wdttold",
+                                 password="owner", panel_managed=True, pw_seen=True)]}, open(N.WDTT_RECORD, "w"))
+        N._CSQTT_FETCH_LATER.clear(); del WFETCHED[:]
+        w26r = {"wdttold": ww(listen="0.0.0.0:56029", wg_addr="10.66.28.1/24", wg_port=56128, ver="1.4.9")}
+        sync(N.reconcile_wdtt, w26r)
+        check("reconfigure: the self-heal walks the sources once", WFETCHED == [("wdttold", "amurcanov", "1.4.9")], WFETCHED)
+        sync(N.reconcile_wdtt, w26r); sync(N.reconcile_wdtt, w26r)
+        check("…and not on the next syncs", len(WFETCHED) == 1, WFETCHED)
+    finally:
+        N.time = time; N._wdtt_fetch_bin = real_wfetch; N._CSQTT_FETCH_LATER.clear()
+
+    section("[16] a server not installed yet runs no line")
+    check("_csqtt_ifaces leaves it out", N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5") == [], N._csqtt_ifaces({"csqttnew": {"line": "2.5"}}, "2.5"))
+finally:
+    for i in ("lo", "csqttsib"):
+        try: N._csqtt_docker_stop(i)
+        except Exception: pass
+    shutil.rmtree(TMP, ignore_errors=True)
+
+if MODE:
+    secs = PLANTS[MODE][0] if isinstance(PLANTS[MODE][0], tuple) else (PLANTS[MODE][0],)
+    hit = [n for s, n in FAILS if s.startswith(secs)]
+    stray = sorted({s.split(" ")[0] for s, n in FAILS if not s.startswith(secs)})
+    print("\nperturb %s: %s" % (MODE, ("NOT caught by " + "/".join(secs)) if not hit
+          else ("ALSO red outside its section(s): " + ", ".join(stray)) if stray else ("RED on " + "/".join(secs) + " as expected")))
+    sys.exit(0 if hit and not stray else 1)
+print("\n" + ("ALL PASS" if not FAILS else "%d FAIL: %s" % (len(FAILS), FAILS)))
+sys.exit(1 if FAILS else 0)

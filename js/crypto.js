@@ -16,7 +16,7 @@ import { b64, esc, url, tkey } from "./util.js";
 import { T, Tsplit, srvText } from "./i18n.js";
 import { Store, api, bus } from "./store.js";
 import { Ic, Sheet, Panel, toast, copy, closeModal, pushModal } from "./ui.js";
-import { turnFork, turnForkList } from "./turn-catalog.js";
+import { turnFork, turnForkList, forkLabel } from "./turn-catalog.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef } from "preact/hooks";
 import htm from "htm";
@@ -1063,6 +1063,8 @@ function _b64ToBytes(b64) { try { const s = atob(String(b64 || "").trim()); cons
 // turn-artifacts.js (window.SWGTurn), loaded by both the admin app and the subscription page.
 export function turnArtifact(baseConf, tp, vkLink, vkLinks, asClient, os) {
   const fork = turnFork(tp.service);
+  if (SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);   // {fork} in a server name is the catalog's name (q189 HE-8)
+  if (SWGTurn.setCliAuthors) SWGTurn.setCliAuthors(f => ((((Store.turnCatalog || {}).servers) || []).find(x => x.id === f) || {}).cli_authors);   // the served CLI builds
   // Every client (the server's own OR a cross-fork one) gets the admin's saved values for THIS (server, client, OS); the encoder
   // fills anything unset with the app's own default. `os` omitted → the client's primary platform (config-gen has
   // no device context yet; the sub page can pass the visitor's OS later).
@@ -1207,7 +1209,10 @@ export function rerenderConf(text, node, iface) {
   const awg = meta.awg_params || {};
   const lineRe = k => new RegExp("^([ \\t]*" + k + "[ \\t]*=).*$", "m");
   if (!Object.keys(awg).length) return out;   // no AWG dict to render from (a report without one): leave the block as it is
-  if (!AWG_ORDER.slice(AWG3_FROM).some(k => awg[k] != null || lineRe(k).test(out))) {
+  // …and a 2.0 line the config has while the interface no longer does (a field set to none, docs/AWG-OMIT-AND-MESH-GEN-PLAN.md
+  // A6) takes the same whole-block rebuild below: refreshing only the lines the meta has kept the removed one for ever.
+  if (!AWG_ORDER.slice(AWG3_FROM).some(k => awg[k] != null || lineRe(k).test(out))
+      && !AWG_ORDER.slice(0, AWG3_FROM).some(k => awg[k] == null && lineRe(k).test(out))) {
     for (const k of AWG_ORDER) {
       if (awg[k] == null) continue;
       const re = lineRe(k);

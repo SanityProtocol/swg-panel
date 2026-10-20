@@ -16,6 +16,7 @@ Hermetic: real crypto (the node's own X25519), no network, no wg.
 Run: python3 tests/exit_escrow_selftest.py (0 = pass)
      --perturb  drops the `vault` stamp from the shared seal loop — the bug that makes a panel reset leave
                 every blob unopenable while escrow still reports healthy — and expects RED.
+     --perturb-escrow-carry  stops a save of the exit list carrying `key_blob_prev` and expects RED.
 """
 import importlib.machinery, importlib.util, base64, json, os, secrets, sys, tempfile
 
@@ -183,6 +184,36 @@ _r = {"changed": 0, "errors": []}
 N.reconcile_dial_src({}, _r, extra=[{"endpoint": "127.0.0.1:2408", "dial_src": "203.0.113.10"}])
 check("the exit's dial source is pinned by the SAME function the mesh links use",
       any("route replace" in c and "src 203.0.113.10" in c for c in _calls), _calls)
+
+# ── 4. …and an edit of the exit LIST keeps the escrow ────────────────────────────────────────────
+# ⚠️ `exits` is a full-list replace and `_validate_exits` rebuilt each record from a fixed set of keys, so
+# renaming ANY exit dropped every exit's escrow — the displaced key for good, since nothing re-reports it.
+_ESC = {"key_blob": {"ct": "C1", "pub": "NEW"}, "key_blob_prev": {"ct": "C0", "pub": "OLD"},
+        "key_restore": {"eph": "E", "ct": "C", "mac": "M"}, "key_restore_pub": "OLD", "key_restore_at": 1}
+_PREV = [dict({"id": "aabbccdd", "label": "", "producer": "imported", "provider": "warp", "device": "wgx-aabbccdd"},
+              **_ESC)]
+_carry = P._EXIT_ESCROW_KEYS
+if "--perturb-escrow-carry" in sys.argv:
+    P._EXIT_ESCROW_KEYS = tuple(k for k in _carry if k != "key_blob_prev")
+ex, err = P._validate_exits([{"id": "aabbccdd", "producer": "imported", "provider": "warp", "label": "Renamed"},
+                             {"producer": "adopted", "device": "wgcf"}], {"name": "n1"}, prev=_PREV)
+check("⚠️ a save of the exit list keeps every escrow field of an untouched exit",
+      not err and all(ex[0].get(k) == v for k, v in _ESC.items()), (ex, err))
+ex, err = P._validate_exits([dict({"id": "aabbccdd", "producer": "imported", "provider": "warp"},
+                                  key_restore={"eph": "X", "ct": "X", "mac": "X"})], {"name": "n1"})
+check("…but a request cannot write one — a body must not arm a restore", not err and "key_restore" not in ex[0], ex)
+_PROF = ("[Interface]\nPrivateKey = aGVsbG8taGVsbG8taGVsbG8taGVsbG8taGVsbG8taGU=\nAddress = 10.9.0.2/32\n\n"
+         "[Peer]\nPublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=\nAllowedIPs = 0.0.0.0/0\n"
+         "Endpoint = vps.example.com:51820\n")
+ex, err = P._validate_exits([{"id": "aabbccdd", "producer": "imported", "provider": "profile",
+                              "profile_text": _PROF}], {"name": "n1"}, prev=_PREV)
+check("…and an exit switched to a pasted profile does not inherit a WARP account's escrow",
+      not err and ex[0].get("provider") == "profile" and not any(k in ex[0] for k in _ESC), (ex, err))
+P._EXIT_ESCROW_KEYS = _carry
+if "--perturb-escrow-carry" in sys.argv:
+    if FAILS:
+        print("\nperturbed: a dropped escrow field on save was CAUGHT (%d red)" % len(FAILS)); sys.exit(0)
+    print("\nperturbed: NOTHING FAILED — this gate does not test the escrow carry"); sys.exit(1)
 
 # ── 4. …and the restore has to be REACHABLE, or escrow is a promise the product cannot keep ──────
 # ⚠️ MEASURED ON THE LIVE FLEET, and it made every check above decoration. Delete a WARP exit's key on the

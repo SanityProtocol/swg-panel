@@ -75,6 +75,7 @@ Run: python3 tests/sni_split_hello_selftest.py   (0 = pass)
      wallclock the flusher aims its sleep with the wall clock                       [19]
 """
 import base64, collections, importlib.machinery, importlib.util, os, socket, struct, sys, tempfile, threading, time
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

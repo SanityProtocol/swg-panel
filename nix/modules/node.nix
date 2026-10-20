@@ -431,6 +431,11 @@ in
         serviceConfig = {
           Type = "oneshot";
           ExecStart = rebuild.script;
+          # The container arm starts this every 30 s: systemd's own start/stop lines (info) stay out of the journal, at
+          # every level, while the script's own lines (notice) stay in — as a Docker host's drop-in does (1.8.9
+          # qualification DN-15: ~8,600 lines a day each, Off included)
+          LogLevelMax = "notice";
+          SyslogLevel = "notice";
         } // rebuild.resourceGuard;   # nice/idle-IO/OOM-first — a rebuild must never starve its host
       };
 
@@ -445,7 +450,8 @@ in
 
       # Container arm only, and measured rather than defensive: the daemon writes the trigger through
       # a bind mount, and inotify does not cross one — the `.path` unit above never sees that write.
-      # install-docker.sh retires its own `.path` for exactly this reason.
+      # ⚠️ Not so on Docker: there a host `.path` unit does see a container's write (measured 2026-10-10);
+      # this arm's backend was not re-measured, and its poll does not depend on the answer.
       systemd.timers.swg-node-update = mkIf (cfg.selfUpdate.enable && cfg.delivery == "container") {
         description = "poll for a swg-node update request (the daemon writes it across a bind mount)";
         wantedBy = [ "timers.target" ];
@@ -783,6 +789,12 @@ in
       # in systemd's search path, so without this the template unit simply does not exist.
       systemd.packages = [ pkgs.amneziawg-tools ];
 
+      # `swg-logs noded -f` — swg's journal by source name (plain `journalctl -u swg-noded` shows only systemd's lines
+      # once the daemon logs into its namespace). Just this one command on PATH, not the whole package.
+      environment.systemPackages = [
+        (pkgs.writeShellScriptBin "swg-logs" ''exec ${cfg.package}/bin/swg-logs "$@"'')
+      ];
+
       systemd.tmpfiles.rules = [
         "d ${cfg.stateDir} 0700 root root -"
         "d ${cfg.confDir} 0700 root root -"
@@ -895,6 +907,9 @@ in
           # links carry traffic. Measured on the nixos fleet box (1.8.7 qualification PART 3). It survived because
           # .campaign/nix-path-audit.mjs reads only node-entrypoint.sh, never swg-noded's own commands.
           iputils
+          # `nsenter` — swg-agent's module reload (1.8.9) checks every process's network namespace for an amneziawg device
+          # before `modprobe -r`, which would destroy one in a container; without it that check is skipped in silence.
+          util-linux
         ];
 
         # ⚠️ `wants` as well as `after`: ordering alone does not PULL the secrets unit in, and being
@@ -942,6 +957,13 @@ in
           # unit and leaves the OLD one running — with nothing on screen saying the fix has not
           # taken. An operator hitting the AppArmor refusal is told to restart the daemon; this is why.
           ProtectSystem = true;
+
+          # swg's own journal, held to the budget set in Settings → Logs (docs/LOGS-PLAN.md §2): this unit and what it
+          # runs log into the `swg-node` namespace, whose size swg-noded writes under /run/systemd/journald@swg-node.conf.d
+          # — NixOS ships systemd's journald@ template (checked on the nixos node, systemd 258). The units swg-noded
+          # writes itself get the same namespace from a drop-in it writes beside them. Read with `swg-logs`.
+          # Like any unit setting, it applies when the daemon next starts (see restartIfChanged above).
+          LogNamespace = "swg-node";
         } // lib.optionalAttrs (cfg.tokenFile != null) {
           # The token lands in a per-unit tmpfs the bootstrap reads once through
           # $CREDENTIALS_DIRECTORY, instead of an environment variable the daemon and every

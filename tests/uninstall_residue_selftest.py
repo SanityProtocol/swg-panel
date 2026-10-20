@@ -45,14 +45,14 @@ def plant(src, a, b):
     return src.replace(a, b)
 
 if PERTURB:
-    U = plant(U, "awk '$1>=6890 && $1<=6989'", "awk '$1>=1 && $1<=0'")                                  # [1]
+    U = plant(U, "awk '$1==6880 || ($1>=6890 && $1<=6989)'", "awk '$1>=1 && $1<=0'")                    # [1]
     U = plant(U, " /var/www/acme /usr/local/bin/swg-passwd\n", " /var/www/acme\n")    # [2] (3016459 moved its comment up)
     H = plant(H, '      grep -qsx "${PORT}/tcp" "$ETC_DIR/ufw-added" || echo "${PORT}/tcp" >> "$ETC_DIR/ufw-added"\n',
               '      :\n')                                                                                # [3]
     U = plant(U, "if [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ] \\\n   && [ ! -d /opt/swg-noded ]",
               "if [ ! -d \"$DOCKER_DIR\" ] && [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ] \\\n   && [ ! -d /opt/swg-noded ]")  # [4]
     U = plant(U, "|| { ! $DPANEL && _has_docker_netctl; }", "|| { [ ! -d /opt/swg-panel ] && _has_docker_netctl; }")  # [5]
-    U = plant(U, "  for _d in /etc/amnezia/amneziawg /etc/amnezia /etc/wireguard; do\n", "  for _d in; do\n")  # [6]
+    U = plant(U, "  for _d in /etc/amnezia/amneziawg /etc/amnezia /etc/wireguard /var/www; do\n", "  for _d in; do\n")  # [6]
     U = plant(U, '  if [ "${KEPT_DATAPATH:-false}" = true ]; then\n', '  if [ "${#DID_KEEP[@]}" -gt 0 ]; then\n')  # [7]
 if PERTURB_RECORD:
     U = plant(U, """    if ! $DRYRUN; then
@@ -92,7 +92,8 @@ PRE = ('DRYRUN=false\ninfo(){ echo "INFO $*"; }; ok(){ echo "OK $*"; }; warn(){ 
        'b(){ printf %s "$*"; }\nrun(){ "$@"; }\n')
 
 print("[1] the datapath sweep takes the upstream-mark band too — rules only, never a table of that number")
-rules = ("0:\tfrom all lookup local\n5000:\tfrom all lookup main\n6890:\tfrom all fwmark 0x1aea lookup 7000\n"
+rules = ("0:\tfrom all lookup local\n5000:\tfrom all lookup main\n6880:\tfrom all fwmark 0x40000000 lookup main\n"
+         "6890:\tfrom all fwmark 0x1aea lookup 7000\n"
          "6891:\tfrom 10.18.0.1 fwmark 0x1aeb lookup 7001\n6990:\tfrom all fwmark 0x9c40 lookup 6990\n"
          "7000:\tfrom 10.8.0.0/24 lookup 7000\n32766:\tfrom all lookup main")
 out, calls, _ = bash(PRE + "rmrf(){ :; }\n" + fn(U, "rm_node_netobjects") + "rm_node_netobjects\n",
@@ -101,6 +102,8 @@ out, calls, _ = bash(PRE + "rmrf(){ :; }\n" + fn(U, "rm_node_netobjects") + "rm_
 dels = re.findall(r"^ip rule del pref (\d+)$", calls, re.M)
 flush = re.findall(r"^ip route flush table (\d+)$", calls, re.M)
 check("6890 and 6891 (the upstream band) are deleted", "6890" in dels and "6891" in dels, calls)
+check("…and 6880, the torrent policy's rule under Direct (1.8.9 qualification NR-6) — main is never flushed",
+      "6880" in dels and "main" not in flush and "6880" not in flush, (dels, flush))
 check("…and no `table 6890`/`6891` is flushed — those priorities name no table of ours", "6890" not in flush and "6891" not in flush, flush)
 check("the table band is still swept as before (7000: rule + table)", "7000" in dels and "7000" in flush, calls)
 check("nobody else's rule is touched (0, 5000, 32766), nor the relay's 6990 (rm_node owns it)",
@@ -161,7 +164,7 @@ check("NO record (an older install) → the rule is named, never deleted", "dele
 print("\n[4] 'Leftover swg files' is offered beside a KEPT docker dir, and decides the identities at run time")
 _ga = "(`swgpanel` owns data a convert copied in).\n"
 gate = between(U, _ga,
-               'if ! $DPANEL && ! $DNODE && { [ -f "$DOCKER_DIR/docker-compose.yml" ]')
+               'if ! $DPANEL && ! $DNODE && ! $DNODE_GONE && { [ -f "$DOCKER_DIR/docker-compose.yml" ]')
 gate = gate[len(_ga):]
 kd = tempfile.mkdtemp(prefix="kept-"); os.makedirs(os.path.join(kd, "data", "lib"))
 out, calls, _ = bash('SD=/nonexistent; DOCKER_DIR=%s; DPANEL=false; DNODE=false\n_has_leftovers(){ return 0; }\n'
@@ -169,7 +172,7 @@ out, calls, _ = bash('SD=/nonexistent; DOCKER_DIR=%s; DPANEL=false; DNODE=false\
 check("no bare install left, docker dir KEPT → 'Leftover swg files' is offered", "ADD Leftover swg files" in out, out)
 rl = fn(U, "rm_leftovers")
 def leftovers(docker_live):
-    return bash(PRE + 'SD=/nonexistent; DOCKER_DIR=%s\nrmrf(){ echo "RMRF $*"; }\nufw_forget(){ echo "UFWFORGET $*"; }\n'
+    return bash(PRE + 'SD=/nonexistent; DOCKER_DIR=%s; WDTT_DIR=/nonexistent/wdtt; CSQTT_DIR=/nonexistent/csqtt\nrmrf(){ echo "RMRF $*"; }\nufw_forget(){ echo "UFWFORGET $*"; }\n'
                 'docker_running(){ %s; }\nid(){ return 0; }\n%s rm_leftovers\necho "REMOVED_LEFTOVERS=${REMOVED_LEFTOVERS:-}"\n'
                 % (kd, "return 0" if docker_live else "return 1", rl), {"systemctl": "exit 0", "userdel": "exit 0", "chown": "exit 0"})
 out, calls, _ = leftovers(False)
@@ -195,16 +198,18 @@ for dp, want in (("true", False), ("false", True)):
 print("\n[6] empty interface-config dirs go — only empty, and only when no package owns them")
 emp = between(U, 'if [ "${#DID_REMOVE[@]}" -gt 0 ] && command -v dpkg >/dev/null 2>&1; then', "\n\necho;")
 t = tempfile.mkdtemp(prefix="wgd-")
-for sub in ("amnezia/amneziawg", "wireguard", "wgfull"):
+for sub in ("amnezia/amneziawg", "wireguard", "wgfull", "www"):
     os.makedirs(os.path.join(t, sub))
 open(os.path.join(t, "wgfull", "wg9.conf"), "w").write("x")
-emp2 = emp.replace("/etc/amnezia/amneziawg /etc/amnezia /etc/wireguard", "%s/amnezia/amneziawg %s/amnezia %s/wireguard %s/wgfull" % (t, t, t, t))
+emp2 = emp.replace("/etc/amnezia/amneziawg /etc/amnezia /etc/wireguard /var/www",
+                   "%s/amnezia/amneziawg %s/amnezia %s/wireguard %s/wgfull %s/www" % (t, t, t, t, t))
 assert emp2 != emp or PERTURB
 out, calls, _ = bash(PRE + "DID_REMOVE=(x)\n" + emp2, {"dpkg": '[ "$2" = "%s/wireguard" ] && exit 0; exit 1' % t})
 check("empty + unowned → /etc/amnezia/amneziawg (and then /etc/amnezia) removed",
       not os.path.exists(os.path.join(t, "amnezia", "amneziawg")) and not os.path.exists(os.path.join(t, "amnezia")), os.listdir(t))
 check("empty but a package owns it (dpkg -S answers) → /etc/wireguard KEPT", os.path.isdir(os.path.join(t, "wireguard")))
 check("a dir still holding a file → KEPT", os.path.isdir(os.path.join(t, "wgfull")))
+check("an empty /var/www (the panel's stats and acme dirs went) → removed too (1.8.8 deferred #3c)", not os.path.exists(os.path.join(t, "www")))
 
 print("\n[7] keeping a PACKAGE (or anything that runs no swg datapath) does not skip the datapath sweep")
 loop = between(U, "DID_REMOVE=(); DID_KEEP=(); NOT_DONE=()", "\n# Containers we TOOK")

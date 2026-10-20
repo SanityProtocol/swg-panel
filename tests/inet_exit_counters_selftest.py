@@ -22,6 +22,7 @@ built as if it had never been told about exits) and expects the checks to FAIL �
 until the red one is reachable.
 """
 import ast, importlib.machinery, importlib.util, inspect, os, re, sys
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -57,9 +58,9 @@ class R:
 
 
 class Iptables:
-    """Just enough of iptables to hold rules: -N/-F/-A on one chain, -S to render, iptables-save -c to
-    render with counters. Byte counts come from `self.bytes[comment]`, so a test can put traffic on one
-    rule and see where it surfaces."""
+    """Just enough of iptables to hold rules: -N/-F/-A on one chain, -S to render, -S -v (and iptables-save -c) to
+    render with counters — `-S -v` as iptables-nft prints it, the `-c <pkts> <bytes>` pair last. Byte counts come from
+    `self.bytes[comment]`, so a test can put traffic on one rule and see where it surfaces."""
 
     def __init__(self):
         self.exists = False
@@ -100,6 +101,11 @@ class Iptables:
         if "-S" in c:
             if c[c.index("-S") + 1] == "FORWARD":
                 return R(0, ("-A FORWARD -j " + CHAIN) if self.jumped else "-P FORWARD ACCEPT")
+            if "-v" in c:
+                if not self.exists:
+                    return R(1)
+                return R(0, "-N %s\n" % CHAIN + "".join("%s -c %d %d\n" % ((self._render(a),) + self.bytes.get(self._comment(a), (0, 0)))
+                                                        for a in self.rules))
             return R(0, "\n".join(self._render(a) for a in self.rules))
         if "-I" in c:
             self.jumped = True; return R(0)
@@ -178,28 +184,34 @@ check("…carrying only that device's bytes", got["dev"].get("tun-lab0") == {"up
 
 # ── 5. the sampler: rates, and what happens when a device goes away ──────────────────────────────────
 print("\n[5] sample_inet / sample_exit — deltas off that same read")
+
+
+def _one_pass_sample(now):
+    """One sample per pass, as the node takes them: its reads are shared within a pass (docs/CPU-PLAN.md B2)."""
+    N._LOOP["n"] += 1
+    return N.sample_inet(NODE_CFG, now)
 N._INET.update({"t": 0.0, "cum": None, "rate": {"up": 0.0, "down": 0.0}, "drate": {}})
-r0 = N.sample_inet(NODE_CFG, 100.0)
+r0 = _one_pass_sample(100.0)
 check("first sample sets a baseline only, node rate 0", r0 == {"up": 0.0, "down": 0.0}, r0)
 check("…and no per-exit rate yet either", N.sample_exit() == {}, N.sample_exit())
 IPT.bytes = {"swg-inet-up:wg1": (5, 1000), "swg-inet-dn:wg1": (5, 2000),
              "swg-inet-up:awg2@tun-lab0": (9, 600), "swg-inet-dn:awg2@tun-lab0": (9, 140)}   # +300 up, +100 down
-N.sample_inet(NODE_CFG, 110.0)
+_one_pass_sample(110.0)
 check("per-exit rate is the delta over dt", N.sample_exit() == {"tun-lab0": {"up": 30.0, "down": 10.0}}, N.sample_exit())
 check("node rate moved by the same bytes", N._INET["rate"] == {"up": 30.0, "down": 10.0}, N._INET["rate"])
 IPT.bytes["swg-inet-up:awg2@tun-lab0"] = (9, 100)                                   # counter reset (chain rebuilt)
-N.sample_inet(NODE_CFG, 120.0)
+_one_pass_sample(120.0)
 check("a counter reset clamps to 0, never negative", N.sample_exit().get("tun-lab0", {}).get("up") == 0.0, N.sample_exit())
 IPT.rules = []; IPT.exists = False
 N.reconcile_inet_chain(NODE_CFG, set())                                             # exit deleted
-N.sample_inet(NODE_CFG, 130.0)
+_one_pass_sample(130.0)
 check("a device that left the chain stops being reported", N.sample_exit() == {}, N.sample_exit())
 N.reconcile_inet_chain(NODE_CFG, {"tun-lab9"})
 IPT.bytes = {"swg-inet-up:wg1@tun-lab9": (1, 9_000_000)}
-N.sample_inet(NODE_CFG, 140.0)
+_one_pass_sample(140.0)
 check("a brand-new device reports no rate until it has a baseline", N.sample_exit() == {}, N.sample_exit())
 IPT.bytes["swg-inet-up:wg1@tun-lab9"] = (2, 9_005_000)      # +5000 over 10s — measured FROM the baseline,
-N.sample_inet(NODE_CFG, 150.0)                              # never from zero, or adopting a busy device
+_one_pass_sample(150.0)                              # never from zero, or adopting a busy device
 check("…and a real rate on the next pass", N.sample_exit() == {"tun-lab9": {"up": 500.0, "down": 0.0}},
       N.sample_exit())                                      # would report its whole lifetime as one spike
 snap = N.sample_exit()

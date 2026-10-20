@@ -33,7 +33,7 @@ rd = lambda p: open(os.path.join(ROOT, p)).read()
 lib, dock, upd = rd("lib/common.sh"), rd("Dockerfile.node"), rd("update.sh")
 inst = {f: rd(f) for f in ("install-host.sh", "install-node.sh")}
 FB = '  awg_go_needs_install && { awg_go_pinned || warn "'
-EARLY = "  if have awg && modprobe amneziawg 2>/dev/null; then return 0; fi"
+EARLY = "  if have awg && modprobe amneziawg 2>/dev/null; then"   # the "already working" return (it now also fixes the source, PR #218)
 if PERTURB:
     s = inst["install-node.sh"]; i = s.index(FB); e = s.index("\n", i) + 1; line = s[i:e]; s = s[:i] + s[e:]
     j = s.index(EARLY); j = s.index("\n", j) + 1

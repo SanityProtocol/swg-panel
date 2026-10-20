@@ -7,7 +7,8 @@ A full mesh is N(N-1)/2 links — an interface, a /31 and a port on both ends of
 rule's `node` route over a link (verified 2026-09-18). docs/MESH-ON-DEMAND-PLAN.md.
 
   [1]  the mode in force: auto = full through MESH_AUTO_FULL_MAX nodes, demand above; an explicit choice wins
-  [2]  the need set is a SUPERSET of every pair cascade_plan routes over — randomized fleets, WDTT and csqtt included
+  [2]  the need set is a SUPERSET of every pair cascade_plan routes over — randomized fleets, WDTT and csqtt included, and
+       a node's torrent policy routed through another node (q189 PR-2)
   [3]  demand links exactly the named pairs (a disabled rule names nothing); an explicit full links every pair
   [4]  a retarget links the new pair at once and keeps the old one for the grace; past it the old pair is retired on
        BOTH ends — records, interface overrides, pending creates — and staged for delete; one event names it
@@ -38,8 +39,10 @@ PLANTS = [
      '                    if False:', "every pair the plan routes over is in the need set"),
     ("need-instances", '        recs += [v for k in ("wdtt", "csqtt") for v in (n.get(k) or {}).values() if isinstance(v, dict)]',
      '        recs += []', "…WDTT and csqtt instances included"),
-    ("need-pin", '            if ((((lr.get("relay") or {}).get("mode") or "forward") == "relay")',
-     '            if False and ((((lr.get("relay") or {}).get("mode") or "forward") == "relay")',
+    ("need-p2p", '        if _pp.get("action") == "exit":\n            want(nid, str(_pp.get("node") or ""))',
+     '        if False:\n            want(nid, str(_pp.get("node") or ""))', "…and a torrent policy routed through another node"),
+    ("need-pin", '            if mesh_link_extras(lr):\n                want(nid, peer)',      # the settings that act (f17cc1d)
+     '            if False and mesh_link_extras(lr):\n                want(nid, peer)',
      "a relay-configured link is kept past the grace"),
     ("need-legs", '            want(nid, str((lg or {}).get("peer") or ""))', '            pass',
      "a pair only the last plan names is kept past the grace"),
@@ -47,8 +50,8 @@ PLANTS = [
      "the node door counts the links a node anchors in the mode in force"),
     ("grace", '        if p in need or now_ - _MESH_IDLE.setdefault(p, now_) < MESH_RETIRE_GRACE_S:', '        if p in need:',
      "the old pair is not retired a second before the grace"),
-    ("both-ends", '        for x, y in ((a, b), (b, a)):\n            n = nodes.get(x)', '        for x, y in ((a, b),):\n            n = nodes.get(x)',
-     "past the grace the old pair is gone from BOTH ends"),
+    ("both-ends", '        for x, y in ((a, b), (b, a)):    # retired, not rebuilt', '        for x, y in ((a, b),):    # retired, not rebuilt',
+     "past the grace the old pair is gone from BOTH ends"),     # one teardown, mesh_link_park (f17cc1d)
     ("idle-clear", '    for p in [p for p in _MESH_IDLE if p not in linked or p in need]:', '    for p in []:',
      "flipping back restarts the timer (no early retire)"),
     ("name-pending", '    existing |= set(node.get("delete") or {})', '    existing |= set()',
@@ -160,9 +163,11 @@ def random_fleet(n):
         nodes[nid]["csqtt"] = {"csqtt1": {"tun_addr": "10.41.%d.1/24" % i, "egress_mode": "smart",
                                           "routing": [{"category": "all", "action": "exit", "node": rnd.choice(others)}]}} \
             if rnd.random() < .3 else {}
+        if rnd.random() < .3:                             # its torrent policy: "Route through node Q" (q189 PR-2)
+            nodes[nid]["p2p"] = {"action": "exit", "node": rnd.choice(others)}
         snaps[nid] = {"interfaces": sifs}
     return nodes, snaps
-missing, used_total, inst_used = [], 0, 0
+missing, used_total, inst_used, p2p_used = [], 0, 0, 0
 for trial in range(40):
     nodes, snaps = random_fleet(10)
     P.reconcile_mesh(nodes, snaps, deps("full"))        # every pair linked, so the plan can route over any of them
@@ -170,12 +175,14 @@ for trial in range(40):
     used = {frozenset((nid, lg["peer"])) for nid, pl in plans.items() for lg in (pl.get("_legs") or [])}
     inst_used += sum(1 for nid, pl in plans.items() for lg in (pl.get("_legs") or [])
                      if lg["subnet"].startswith(("10.40.", "10.41.")))
+    p2p_used += sum(1 for nid, pl in plans.items() if pl.get("_p2p"))
     need = P.mesh_need(nodes, deps())                     # config alone — no cas_legs
     used_total += len(used)
     missing += [sorted(p) for p in used - need]
 check("control: the random fleets route over many pairs (%d legs' pairs)" % used_total, used_total > 100, used_total)
 check("every pair the plan routes over is in the need set", not missing, missing[:5])
 check("…WDTT and csqtt instances included", inst_used > 5 and not missing, inst_used)
+check("…and a torrent policy routed through another node", p2p_used > 5 and not missing, [p2p_used, missing[:3]])
 
 
 print("[3] demand links exactly the named pairs")

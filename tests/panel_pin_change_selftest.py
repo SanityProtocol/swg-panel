@@ -73,8 +73,8 @@ if "docker" in PLANTS:    # the shipped Docker path: warn, then decide afresh
 if "goon" in PLANTS:      # the round-6 shape: a kept pin carries on with the run
     C = plant(C, '  exit 1; }\n# panel_ca_ok', '  return 0; }\n# panel_ca_ok')
 if "invisible" in PLANTS: # the round-6 prompt: read -p's prompt sent to /dev/null with its stderr
-    C = plant(C, "    printf '  %s' \"$q\" 2>/dev/null >/dev/tty\n    read -r v </dev/tty 2>/dev/null || v=\"\"\n",
-              '    read -rp "  $q" v </dev/tty 2>/dev/null || v=""\n')
+    C = plant(C, "    printf '  %s' \"$q\" 2>/dev/null >/dev/tty\n    read -r v <\"${SWG_TTY:-/dev/tty}\" 2>/dev/null || v=\"\"\n",   # SWG_TTY: 80d5f71
+              '    read -rp "  $q" v <"${SWG_TTY:-/dev/tty}" 2>/dev/null || v=""\n')
 if "ca" in PLANTS:        # a CA-valid new certificate asked (and pinned) like a self-signed one
     C = plant(C, '  [ -n "$url" ] && panel_ca_ok "$url" && ca=yes\n', '')
 if "tofu" in PLANTS:      # the bare fresh decision re-probes a CA-verified node's panel (and pins a self-signed one)

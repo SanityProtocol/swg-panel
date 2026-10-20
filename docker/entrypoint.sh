@@ -5,6 +5,17 @@
 set -eu
 
 log() { printf '\033[0;36m[entrypoint]\033[0m %s\n' "$*"; }
+# The renewal loop's outcome also goes to the panel's own log file, as `acme: …` lines, so Settings → Logs shows it under
+# the Panel (docs/LOGS-PLAN.md §23.6) — the container log alone is not where the viewer reads. At the panel's level (its
+# base level; Off: nothing — the panel deleted the file), into the file whether or not it is there yet: the panel writes it
+# from its first kept line on, so after Off → Warnings, or a rotation, a quiet panel dropped the renewal warning for days,
+# and at Errors the hourly Info line still went in (1.8.9 qualification DN-10).
+panel_log(){   # <letter E/W/I> <text>
+  local f=/var/lib/swg-panel/log/swg-panel.log lvl
+  lvl="$(sed -n 's/.*"log_level"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' /var/lib/swg-panel/panel-settings.json 2>/dev/null | sed -n 1p)"
+  case "$lvl:$1" in off:*|error:[WI]|warning:I) return 0;; esac
+  mkdir -p "${f%/*}" 2>/dev/null || true; printf '%s %s acme: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >> "$f" 2>/dev/null || true
+}
 
 # ─────────────────────── swg-sub certificate (defined up front) ───────────────────────
 # Defined here so the `sub-cert <domain>` RUNTIME subcommand — swg-netctl-docker calls `entrypoint.sh sub-cert
@@ -353,8 +364,9 @@ fi
 
 # 2b) swg-sub's OWN cert (direct-TLS). Issued via issue_sub_cert() defined at the top of this file. Runs in the
 #     BACKGROUND (`&`): a fresh DNS-01 issue can take ~60s and blocking the panel boot on it would starve a flip's
-#     reachability commit (false auto-revert). The panel serves immediately; swg-sub picks the cert up on its next
-#     (re)start. At RUNTIME the panel-managed path is swg-netctl-docker's issue-cert verb → `entrypoint.sh sub-cert`.
+#     reachability commit (false auto-revert). The panel serves immediately; swg-sub's first start waits for the panel's
+#     serve.json, then for this cert (both waits bounded), so it serves HTTPS from its first listen (1.8.9 qualification
+#     U22-1). At RUNTIME the panel-managed path is swg-netctl-docker's issue-cert verb → `entrypoint.sh sub-cert`.
 # The sub's domain is PANEL-MANAGED (access.sub.url in panel-settings.json), so prefer that over the static install
 # env — otherwise a restart would re-issue for the env default and clobber a cert the UI issued for a different sub
 # host. Env stays the bootstrap for a first boot before any sub address is saved.
@@ -426,12 +438,14 @@ case "${TLS:-selfsigned}" in
         fi
         if [ "$_bad" = no ]; then
           printf 'ok %s\n' "$(date +%s)" > "$ACME_CFG/.renew-status" 2>/dev/null || true
+          panel_log I "renewal check for $PANEL_DOMAIN ok ($(cert_days_left "$SWG_PANEL_TLS_CERT") day(s) left)"
           sleep 43200
         else
           # keep the FIRST failure time across iterations — "failing since" is the fact worth having
           _since="$(sed -n 's/^failing \([0-9]*\).*/\1/p' "$ACME_CFG/.renew-status" 2>/dev/null | head -1)"
           printf 'failing %s %s\n' "${_since:-$(date +%s)}" "$_why" > "$ACME_CFG/.renew-status" 2>/dev/null || true
-          log "WARNING: TLS auto-renewal failed for $PANEL_DOMAIN — retrying in 1h. last: $_why"; sleep 3600
+          log "WARNING: TLS auto-renewal failed for $PANEL_DOMAIN — retrying in 1h. last: $_why"
+          panel_log W "renewal failed for $PANEL_DOMAIN — retrying in 1h: $_why"; sleep 3600
         fi
       done ) &
     log "TLS auto-renewal enabled (acme.sh --cron every 12h; 1h retry on failure; reload via SIGHUP)" ;;

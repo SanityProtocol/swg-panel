@@ -8,20 +8,21 @@
  * above any mount.
  */
 
+import { openLogs, NODE_SOURCES } from "./logview.js";   // the node's live logs, from its page
 import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr, panelNowS } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
 import { pickThemed, NODE_COLOR_DEFAULT, toThemed, themeMode } from "./theme.js";
 import { kindOf, iTypeOf, targetType, nodeStale, nodeStatusOf, lastHeard, ifaceNotUp, wdttOn, ghostIface, ghostPeers, turnDown,
          turnProxiesFor, ifaceIsAwg, kindLabel, platformLabel, candDialPort, scKindByName, awgDict3, awg3Cls, awg3Tip, tip3 } from "./model.js";
-import { turnFork, turnLabel, turnColor, turnForkList, forkProduct, forkPickLabel } from "./turn-catalog.js";
+import { turnFork, turnColor, turnForkList, forkLabel, forkProduct, forkPickLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown,
   Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, openConfirm, ConfirmSheet,
   opTag, procTag, procErr, inProc, procFailed, procSuccess, procAborted, isUpdateState, procInClass,
   dismissNodeProc, dismissHostProc, statusLabel, LogBody, logRaw, useReorder, GRIP_SVG,
   orderById, rowSingle, rowDouble, rowNoSelect, RowError, goSettings, ifaceReady, ifaceWasBusy, ifaceFlash, adoptSeen,
-  trackIfaceOps, StoreOffBanner, ifaceColor, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
+  trackIfaceOps, StoreOffBanner, ifaceColor, meshGenColor, meshGenLabel, dlul, ifopBusy, applyThemeMode, paintThemeBtn,
   rate, awgSwitchTag,
 } from "./ui.js";
 import { T, Trich, Tsplit, plural, pluralWord, srvText, srvVars } from "./i18n.js";
@@ -32,12 +33,12 @@ import { orphCount, OnlinePeersTag, OnlineUsersTag, MeshStat, meshHealth, DropsP
          serviceIssues, recentActivity, evItem, evAction, evClick, evDecorate, dashState, DASH_RANGES, reachSkipText, reachStaleText,
          promotedAt, promotedBy } from "./views.js";
 import { TurnProxiesBlock, turnEnabled, WdttCard, WDTT_COLOR, ForkTag, ifaceTurnBadges, openEditWdtt, openEditCsqtt,
-         openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet } from "./turn.js";
+         openSetupTurn, wdttRecreateFresh, wdttRestoreIdentity, WdttDeleteSheet, csqttRunLine } from "./turn.js";
 import { PeerGrid, NodeRail, NodesRailPanel } from "./grids.js";
 import { IgnoredIfacesCard, openOnboardIface, openEditIface, openConnectionEdit, OrphanRow,
          AdoptIfaceSheet, AdoptDormantWdttSheet, AdoptCsqttSheet } from "./iface.js";
 import { openNodeCreate, openNodeEdit, openNodeRemove, openNodeRecover, openNodeRotate, openNodeRollback, openNodeTransferWatch,
-         openNodeMigrate, openNodeTransfer, unflagNode } from "./sheets-crud.js";
+         openNodeMigrate, openNodeTransfer, unflagNode, bootCmd } from "./sheets-crud.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, openRecreateRekey } from "./peer-actions.js";
 import { h, Fragment } from "preact";
 import { useState, useEffect, useRef, useMemo } from "preact/hooks";
@@ -303,7 +304,7 @@ export function NodeDetail({ node: rawName }) {
     <${NodeRail} active=${name}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${kindLabel(nrec.kind, nrec.runtime)}</span>` : null}${platformPill(nrec)}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}${nrec.superseded_box ? html`<${SupersededTag} n=${nrec} onClick=${() => openNodeRollback(nrec)}/>` : null}${nrec.transfer ? html`<${TransferTag} n=${nrec} onClick=${() => openNodeTransferWatch(nrec)}/>` : null}${nrec.transferred_from ? html`<${ArrivedTag} n=${nrec}/>` : null}<${HealthDot} issues=${nrec.issues}/></div>
+      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title=${T("Update available")}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${kindLabel(nrec.kind, nrec.runtime)}</span>` : null}${platformPill(nrec)}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> ${T("tag|uninstalled")}</span>` : live ? html`<span class="reporting">${T("reporting")}</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> ${T("awaiting enroll")}</span>` : html`<span class="nstat stale"><${Ic} i="info"/> ${T("stale")}</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) && !_CTR_PROC.has(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec), !live && nrec.status === "dangling") : null}${nrec.superseded_box ? html`<${SupersededTag} n=${nrec} onClick=${() => openNodeRollback(nrec)}/>` : null}${nrec.transfer ? html`<${TransferTag} n=${nrec} onClick=${() => openNodeTransferWatch(nrec)}/>` : null}${nrec.transferred_from ? html`<${ArrivedTag} n=${nrec}/>` : null}<${HealthDot} issues=${nrec.issues} i18n=${nrec.issues_i18n}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version && !nrec.uninstalled ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? T("Node is running a newer version than the panel — update the panel to catch up") : ""}>v${nrec.version}</span>` : null}
@@ -321,6 +322,7 @@ export function NodeDetail({ node: rawName }) {
           : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Check status")} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
         <button class="iconbtn" disabled=${blocked} title=${blocked ? T("Unavailable while the node is down / converting") : T("Node settings")} onClick=${() => openNodeEdit(nrec)}><${Ic} i="gear"/></button>
+        <button class="iconbtn" title=${T("This node's live logs")} onClick=${() => openLogs({ nodes: [nrec.id], src: NODE_SOURCES })}><${Ic} i="doc"/></button>
         ${/* T-20: shown for a DOWN node too, and that is the point. It used to hide exactly when it was
               needed — a node locked out by a rotate is by definition not reporting — leaving "Restore or
               migrate" as the only door, which arms a whole rebuild for a box whose only problem is its
@@ -393,6 +395,8 @@ export function NodeDetail({ node: rawName }) {
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("col|Endpoint")}</span><span class="r addr">${(m && m.peer_endpoint) || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Tunnel")}</span><span class="r addr">${(m && m.subnet) || "—"}</span></div>
+            <div class="ifrow"><span class="l">${T("Type")}</span><span class="r">${mp.type_set || mp.awg_set ? html`<span class="faint" style="margin-right:6px">${mp.type_set && mp.awg_set
+              ? T("type and AWG params set on this link") : mp.type_set ? T("set on this link") : T("AWG params set on this link")}</span>` : null}<span class="tg-proto" style=${"--c:" + meshGenColor(mp.type)}>${meshGenLabel(mp.type)}</span></span></div>
             ${(() => {
               // Leg quality, same measurement the mesh bubble shows, on the card that names the link. Latency
               // always (it is the link's defining fact); loss only when it is enough to matter — a "0.0%" row
@@ -695,7 +699,7 @@ export function NodeDetail({ node: rawName }) {
               : html`<span class="tg tg-cand" title=${T("On the node, not managed by the panel")}><${Ic} i="warn"/>${T("tag|orphan")}</span>`}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${d.config_dir}</span></div>
-            <div class="ifrow"><span class="l">${T("Fork")}</span><span class="r">${d.fork || html`<span class="faint">${T("value|unknown")}</span>`}</span></div>
+            <div class="ifrow"><span class="l">${T("Fork")}</span><span class="r">${d.fork ? forkLabel(d.fork) : html`<span class="faint">${T("value|unknown")}</span>`}</span></div>
             <div class="ifrow"><span class="l">${T("Ports")}</span><span class="r addr">${d.listen_port
               ? html`${d.listen_port}${d.wg_port ? " · " + d.wg_port : ""}`
               : html`<span class="faint">${T("set on adopt")}</span>`}</span></div>
@@ -883,7 +887,7 @@ export function NodeDetail({ node: rawName }) {
           const badge = html`<span class="iftype csqtt">CSQTT</span><span class="ifname">${c.iface}</span>`;
           return html`<a key=${"csqtt-if:" + c.iface} class=${"ifcard" + (idim ? " down" : "") + (blocked ? " locked" : "") + it.cls} href=${href} draggable=${false} data-rid=${it.rid}>
             <div class="ifcard-top"><span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.preventDefault()} ...${ifReorder.grip(c.iface)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${(blocked || (_cop && _cop.phase === "busy")) ? badge
-              : html`<button class="ifc-edit" title=${T("Edit csqtt server · {v1}", { v1: c.iface })} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditCsqtt(name, c.iface); }}>${badge}<span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span><${ForkTag} fork=${c.fork || "csqtt"}/>${cconverting
+              : html`<button class="ifc-edit" title=${T("Edit csqtt server · {v1}", { v1: c.iface })} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditCsqtt(name, c.iface); }}>${badge}<span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span><${ForkTag} fork=${c.fork || "csqtt"} suffix=${" " + csqttRunLine(name, c.iface)}/>${cconverting
                 ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
                 : _copTag ? _copTag
                 : !(nrec.csqtt_cfg || {})[c.iface] ? html`<span class="tg tg-pending" title=${T("This panel holds no record of this {v1} server, though the node still has it — so nothing starts it, its users aren't in the roster, and a rebuild can't bring it back. Open it and Reclaim it to take it back, users and all.", { v1: "csqtt" })}><${Ic} i="info"/>${T("tag|unclaimed")}</span>`
@@ -1211,9 +1215,10 @@ export const nodeTurns = node => {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   return orderById(((Store.stats[node] || {}).turn_proxies) || [], nrec.turn_order, tp => tp.service);
 };
-// One turn-proxy badge: fork-coloured, labelled with the fork + the port it answers on.
+// One turn-proxy badge: fork-coloured, labelled with the fork's name — forkLabel, never the id in its service name ("hack-diaz",
+// not "samosvalishe": q189 V-FEAT-A F5).
 export const TurnTag = (node, tp) =>
-  html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(node) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`;
+  html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(node) || turnDown(tp)) ? " muted" : "")}>${forkLabel(turnFork(tp.service))}</span>`;
 
 
 // Node throughput panel: a Peers/Mesh toggle in the header (right-aligned) splits the graph into client (rx−mrx),
@@ -1384,7 +1389,7 @@ export function openUpdateDone(from, to) {
 export function openUpdateModal({ title, side, onConfirm, declarative, cmd, auto }) {
   // `cmd` undefined = "no opinion, use the default"; cmd === "" = "there is no command I can honestly
   // print here", which is not the same thing and must not fall back to the bootstrap one.
-  const full = cmd === undefined ? "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update" : cmd;
+  const full = cmd === undefined ? bootCmd("update") : cmd;   // the sudo-rs-safe one-liner, built in one place
   const go = async () => { closeModal(); await onConfirm(); };
   openModal(html`<${Sheet} title=${title}
     foot=${declarative && !auto
@@ -1455,7 +1460,7 @@ export async function checkForUpdate(e, nodeId) {
       if (!(n && n.outdated)) { Store.nodeUpdFlash = { id: nodeId, until: Date.now() + 5000 }; Store.apply(); setTimeout(() => Store.apply(), 5100); }
     }
     else if (r.data && r.data.panel_outdated) toast(T("Update available — v{ver}", { ver: r.data.latest_remote }), "ok");
-    else if (serviceIssues().length) toast(T("{v1} can be repaired — click “Fix”", { v1: plural(serviceIssues().length, "issue") }), "ok");   // up to date, but self-heals are pending
+    else if (serviceIssues().some(i => i.fix !== false)) toast(T("{v1} can be repaired — click “Fix”", { v1: plural(serviceIssues().filter(i => i.fix !== false).length, "issue") }), "ok");   // up to date, but self-heals are pending
     else { Store.updFlash = Date.now() + 15000; Store.apply(); setTimeout(() => Store.apply(), 15100); }   // panel up to date + healthy → T("up to date") pill (clickable to re-run/repair) for 15s
   } finally { if (btn) btn.classList.remove("checking"); if (!nodeId) { Store.hostChecking = false; Store.apply(); } }
 }
@@ -1513,7 +1518,11 @@ export function hostHoverBubble(anchor, contentFn, onAction) {
     clearTimeout(t);
     if (bub && bub.isConnected) return;                                   // already showing → don't stack
     document.querySelectorAll(".hostupd-bub").forEach(x => x.remove());   // kill any orphan left by a re-render
-    const inner = contentFn(); if (!inner) return;   // no bubble → the anchor keeps its own tooltip
+    // `repaint`: a content function that loads what it shows (the update bubble's changelog) calls it when that lands
+    const bind = () => { if (onAction && bub) bub.querySelectorAll(".hub-act").forEach(b => b.addEventListener("click", ev => {
+      ev.stopPropagation(); ev.preventDefault(); clearTimeout(t); drop(); onAction(); })); };
+    const repaint = () => { if (!bub || !bub.isConnected) return; const h = contentFn(repaint); if (h) { bub.innerHTML = h; bind(); } };
+    const inner = contentFn(repaint); if (!inner) return;   // no bubble → the anchor keeps its own tooltip
     untitle = parkTitles(anchor);
     bub = document.createElement("div");
     bub.className = "deppop hostupd-bub";
@@ -1527,9 +1536,7 @@ export function hostHoverBubble(anchor, contentFn, onAction) {
     bub.addEventListener("mouseleave", later);
     // the in-bubble primary action (e.g. Update) — the whole point on touch, where the anchor's own
     // click is unreachable once the bubble covers it
-    if (onAction) bub.querySelectorAll(".hub-act").forEach(b => b.addEventListener("click", ev => {
-      ev.stopPropagation(); ev.preventDefault(); clearTimeout(t); drop(); onAction();
-    }));
+    bind();
     detach = dismissOnOutsideTap(bub, anchor, () => { clearTimeout(t); drop(); });
   };
   anchor.addEventListener("mouseenter", show);
@@ -1550,9 +1557,29 @@ export function hostHoverBubble(anchor, contentFn, onAction) {
 // one request to OUR OWN panel (which does its own ~1h upstream caching), and only when an operator
 // actually opens the bubble. Nothing polls in the background.
 const CHANGELOG_TTL = 5 * 60 * 1000;
+const CHANGELOG_WANT_RETRY = 30 * 1000;   // a copy without the badge's version is asked for again at most this often
 let _changelogCache = null;   // {entries:[{version,date,notes[]}], current}
 let _changelogAt = 0;         // when it was fetched — stale after CHANGELOG_TTL
 let _changelogIdx = 0;
+let _changelogReq = null;     // the request in flight — both bubbles share it
+// ONE loader for both bubbles. `want` = the version on the update badge: a cached copy that lacks it is fetched again
+// (the panel then asks GitHub again too), so a changelog read before the CDN caught up is not what the bubble keeps
+// showing. Resolves when the cache is as fresh as it is going to get.
+export function loadChangelog(want) {
+  const es = (_changelogCache && _changelogCache.entries) || [];
+  const age = Date.now() - _changelogAt;
+  const has = !want || es.some(e => e.version === want);
+  if (_changelogCache && age <= CHANGELOG_TTL && (has || age < CHANGELOG_WANT_RETRY)) return Promise.resolve(_changelogCache);
+  if (!_changelogReq) _changelogReq = api.changelog(want).then(res => {
+    _changelogCache = (res && res.ok) ? res.data : (_changelogCache || { entries: [] });
+    _changelogAt = Date.now();
+    return _changelogCache;
+  }).finally(() => { _changelogReq = null; });
+  return _changelogReq;
+}
+// The entry for exactly this version, or null — the update bubble never shows "the newest entry" under a version it
+// is not (that was 1.8.8's publish-day bug: the previous release's notes under the new version).
+export const changelogEntry = (version) => ((_changelogCache && _changelogCache.entries) || []).find(e => e.version === version) || null;
 export function versionHoverBubble(anchor) {
   let bub = null, t = null, detach = null, untitle = null;
   const drop = () => { if (untitle) { untitle(); untitle = null; } if (detach) { detach(); detach = null; } if (bub) { bub.remove(); bub = null; } };
@@ -1583,14 +1610,12 @@ export function versionHoverBubble(anchor) {
     bub.addEventListener("mouseenter", () => clearTimeout(t));
     bub.addEventListener("mouseleave", later);
     detach = dismissOnOutsideTap(bub, anchor, () => { clearTimeout(t); drop(); });   // see the note there — touch has no mouseout
+    // Every open starts at the INSTALLED version — the cache may have been filled by the update bubble, which never sets this
+    const atInstalled = () => { const i = ((_changelogCache || {}).entries || []).findIndex(x => x.version === ((_changelogCache || {}).current || ""));
+      _changelogIdx = i >= 0 ? i : 0; };
+    if (_changelogCache) atInstalled();
     paint();
-    if (!_changelogCache || Date.now() - _changelogAt > CHANGELOG_TTL) api.changelog().then(res => {
-      _changelogCache = (res && res.ok) ? res.data : { entries: [] };
-      _changelogAt = Date.now();
-      const i = (_changelogCache.entries || []).findIndex(x => x.version === (_changelogCache.current || ""));
-      _changelogIdx = i >= 0 ? i : 0;
-      if (bub) paint();
-    });
+    if (!_changelogCache || Date.now() - _changelogAt > CHANGELOG_TTL) loadChangelog().then(() => { atInstalled(); if (bub) paint(); });
   };
   anchor.addEventListener("mouseenter", show);
   anchor.addEventListener("mouseleave", later);
@@ -1623,18 +1648,27 @@ export function hubEntryHtml({ titleHtml, date, notes, emptyNote, footer, nav, a
     + `<div class="hub-list">${rows}</div>`
     + (footer ? `<div class="hub-foot">${esc(footer)}</div>` : "");
 }
-export function updBubbleHtml() {
+export function updBubbleHtml(repaint) {
+  const want = Store.latestRemote || "";
+  const e = changelogEntry(want);
+  // Not in hand yet: ask (the shared loader decides whether that is a fetch), and repaint when it lands. Until then
+  // the bubble says it is loading; if the changelog still has no entry for this version, it points to the changelog.
+  let loading = false;
+  if (!e && want) { loading = !_changelogCache || _changelogReq != null || Date.now() - _changelogAt >= CHANGELOG_WANT_RETRY;
+    if (loading) loadChangelog(want).then(() => { if (repaint) repaint(); }); }
   // ⚠️ no `footer` here any more. It read "Click to update this server." — which described the ANCHOR,
   // and the anchor is exactly what this bubble covers on a phone. The button says what it does.
-  return hubEntryHtml({ titleHtml: `What's new in <b>${esc(Store.latestRemote || "?")}</b>`, date: Store.latestRemoteDate,
-    notes: Store.latestRemoteNotes || [], emptyNote: T("See the changelog for what's new."),
+  // ONE translatable sentence with the version bolded in it — split on its own {v} marker so each language keeps its word order
+  const [wnA, wnB] = Tsplit("What's new in {v}", "v");
+  return hubEntryHtml({ titleHtml: `${esc(wnA)}<b>${esc(want || "?")}</b>${esc(wnB)}`, date: e ? e.date : "",
+    notes: e ? e.notes : [], emptyNote: loading ? T("Loading changelog…") : T("See the changelog for what's new."),
     // reuse the keys the catalogue already carries — "Update now" and "Update this server" are both
     // translated, and keeping the wording identical to the rest of the update flow matters more than
     // saving a word in a header ([[panel-i18n-plan]]: sentence = key, so a new phrasing = a new key).
     action: { label: T("Update now"), title: T("Update this server") } });
 }
 export function fixBubbleHtml() {
-  const iss = serviceIssues(); if (!iss.length) return "";
+  const iss = serviceIssues().filter(i => i.fix !== false); if (!iss.length) return "";   // only what the repair repairs
   const head = `<div class="hub-h">${T("{v1} to fix", { v1: plural(iss.length, "issue") })}</div>`;
   const body = iss.map(i => `<div class="hub-row"><span class="hub-dot ${i.sev}"></span><span><b>${esc(i.label)}</b> — ${esc(i.msg)}</span></div>`).join("");
   return head + body + `<div class="hub-foot">${esc(T("Click to review & run the repair."))}</div>`;

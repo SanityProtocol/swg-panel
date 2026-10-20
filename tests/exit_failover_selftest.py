@@ -24,6 +24,13 @@ carry traffic asks `_devexit_state`, which reads `dead` for an up device whose t
       swgt 2026-09-18: one after another, four WARP exits in an outage stretched every pass 5 s → ~55 s, past the
       panel's 30 s offline threshold); a probe that raises or outlasts the bound is no evidence; verdicts stay in the
       calling thread.
+  [8] a tunnel carrying nothing whose endpoint is a NAME is re-pointed when the name moves (a home router on a DDNS
+      name changes IP on every reboot — reported 2026-10-08: the exit went dead and never came back, because
+      WireGuard resolves the name once, at bring-up). Only a name, only on a move, rate-limited, never a carrying one;
+      the lookup in the probe thread, the `wg set` in the calling thread and only for a peer the device has (`set`
+      ADDS a peer it does not find); any family counts as current, a move keeps the family it was dialling or falls
+      back to v4 (never into v6); both CLIs are tried (an amneziawg-go device is a plain `tun` to `ip -d link`); an
+      answer that arrives after the probe bound is acted on the next pass; a rebuilt tunnel starts with no history.
 
 Hermetic: `run()` is stubbed and argv inspected; the probes are injected; nothing touches the network.
 
@@ -36,8 +43,16 @@ Run: python3 tests/exit_failover_selftest.py            (0 = pass)
      --perturb-icmp        a ping takes any echo reply carrying its ident, whoever sent it — RED in [7]
      --perturb-finally     a later exit whose setup raises leaves the earlier ones unjudged — RED in [7]
      --perturb-evidence    a ping that overruns the bound takes the trace + reach evidence with it — RED in [7]
+     --perturb-redial      a dead tunnel never re-resolves its endpoint's name — the shipped behaviour — RED in [5]
+     --perturb-redial-rr   only the name's FIRST address counts as current, so a round-robin name flaps — RED in [8]
+     --perturb-ghost       a device without the peer gets `wg set … peer K endpoint` anyway (which ADDS it) — RED in [8]
+     --perturb-thread      the probe thread re-points the device itself — RED in [5]
+     --perturb-v6          a v4 tunnel whose name answers AAAA alone is moved into v6 — RED in [8]
+     --perturb-clis        only the first CLI is asked (an amneziawg-go device never re-pointed) — RED in [8]
+     --perturb-late        the lookup's answer is not parked for the caller (a late one is lost) — RED in [8]
+     --perturb-rebuild     a rebuilt tunnel inherits the old one's lookup history — RED in [5]
 """
-import importlib.machinery, importlib.util, os, sys, tempfile
+import importlib.machinery, importlib.util, os, sys, tempfile, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -58,6 +73,16 @@ PLANTS = {
     "--perturb-finally": ("    finally:\n        # ⚠️ IN A `finally`: a later exit",
                           "    except BaseException:\n        raise\n    if True:\n        # ⚠️ IN A `finally`: a later exit"),
     "--perturb-evidence": ("        res[dev] = (tr, rch, None)", "        pass"),
+    "--perturb-redial": ("            _exit_resolve(dev, rec)              # nothing crossed", "            pass  #"),
+    "--perturb-redial-rr": ("    if live_ip in ips:", "    if live_ip in ips[:1]:"),
+    "--perturb-ghost": ("    if live is None:\n        return None", "    if live is None:\n        live = \"\""),
+    "--perturb-thread": ("            _exit_resolve(dev, rec)              # nothing crossed",
+                         "            _exit_redial(dev, rec, _exit_resolve(dev, rec))  #"),
+    "--perturb-v6": ("        or next((a for a in ips if not _v6(a)), None)", "        or ips[0]"),
+    "--perturb-clis": ("    for c in _exit_clis(rec, dev):\n        r = run(c + [\"show\", dev, \"endpoints\"])",
+                       "    for c in _exit_clis(rec, dev)[:1]:\n        r = run(c + [\"show\", dev, \"endpoints\"])"),
+    "--perturb-late": ("    _EXIT_RESOLVED[dev] = (time.time(), (host, port, ips))\n", ""),
+    "--perturb-rebuild": ("                _EXIT_REDIAL_AT.pop(dev, None); _EXIT_RESOLVED.pop(dev, None)\n", ""),
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
 
@@ -88,6 +113,14 @@ else:
     N = _load(NODED, "swgnoded")
 P = _load(PANEL, "swgpanel")
 _REAL_PING = N._exit_ping          # the real one, before any section stubs it
+_REAL_RESOLVE, _REAL_REDIAL = N._exit_resolve, N._exit_redial   # likewise — [5] and [7] record the calls instead
+_redialled, _redial_main = [], []                                 # (the real ones would ask a real resolver)
+FOUND = ("h", "1", ["192.0.2.1"])
+def _resolve_stub(dev, rec, *a, **k):          # the real one's contract: the answer is parked for the caller
+    _redialled.append(dev); N._EXIT_RESOLVED[dev] = (__import__("time").time(), FOUND); return FOUND
+N._exit_resolve = _resolve_stub
+N._exit_redial = lambda dev, rec, found, *a, **k: _redial_main.append(
+    (dev, found, threading.current_thread() is threading.main_thread()))
 
 class _R:
     def __init__(s, out="", rc=0): s.stdout, s.stderr, s.returncode = out, "", rc
@@ -239,10 +272,18 @@ _r2 = next(x for x in N._EXITS["list"] if x["id"] == "aabbccdd")
 check("once judged dead, the exit's report carries no_traffic with the reason",
       isinstance(_r2.get("no_traffic"), dict) and _r2["no_traffic"].get("why") == BAD["err"], _r2)
 check("…and the routing reads the same verdict", N._devexit_state(D) == "dead", N._devexit_state(D))
+check("a tunnel carrying nothing asks whether its endpoint's name has moved", _redialled == [D, D], _redialled)
+check("…and the answer is acted on in the CALLING thread, never by a probe that may outlive its pass",
+      _redial_main == [(D, FOUND, True)] * 2, _redial_main)
 _calls.clear()
 N._dev_link_state = lambda d: "up" if any(" up " in x for x in _calls) else "absent"
 N._exit_trace = lambda d: dict(OK)
+_redialled.clear(); _redial_main.clear()
+N._EXIT_REDIAL_AT[D] = 10 ** 10; N._EXIT_RESOLVED[D] = (__import__("time").time(), FOUND)
 N.reconcile_exits(_want, {"changed": 0, "errors": []})
+check("…a carrying one never does (no lookup, no `wg set`)", _redialled == [] and _redial_main == [], (_redialled, _redial_main))
+check("…and a rebuilt tunnel starts with no lookup history (no rate-limit stamp, no parked answer of the old one)",
+      D not in N._EXIT_REDIAL_AT and D not in N._EXIT_RESOLVED, (N._EXIT_REDIAL_AT, N._EXIT_RESOLVED))
 check("a tunnel rebuilt this pass is judged from scratch, not dead by inheritance",
       N._devexit_state(D) == "up" and next(x for x in N._EXITS["list"] if x["id"] == "aabbccdd").get("no_traffic")
       is None, N._EXIT_HEALTH.get(D))
@@ -254,10 +295,13 @@ N.EXIT_DIR = tempfile.mkdtemp()
 N._dev_link_state = lambda d: "up" if any((" up " in x and d in x) for x in _calls) else "absent"
 _SLOW = {"trace": 0.8, "reach": 0.3, "ping": 0.2}          # 1.3 s a device: four in a row = 5.2 s, together ≈ 1.3 s
 _raise, _stall, _judged_in = set(), set(), set()
+_let_go = threading.Event()                                  # a stalled probe is out until the test lets it go (≤ 10 s)
 def _trace7(d):
     if d in _raise:
         raise OSError("probe blew up")
-    _t.sleep(3.0 if d in _stall else _SLOW["trace"]); return dict(BAD)
+    if d in _stall:
+        _let_go.wait(10); return dict(BAD)
+    _t.sleep(_SLOW["trace"]); return dict(BAD)
 N._exit_trace = _trace7
 N._exit_reach = lambda d, *a, **k: (_t.sleep(_SLOW["reach"]), False)[1]
 N._exit_ping = lambda ep, *a, **k: (_t.sleep(_SLOW["ping"]), None)[1]
@@ -272,17 +316,22 @@ _w7 = [{"id": "a%07d" % i, "device": "wgx-a%07d" % i, "provider": "warp"} for i 
 N.reconcile_exits(_w7, {"changed": 0, "errors": []})         # pass 1 builds the four tunnels (their probes included)
 _t0 = _t.time(); N.reconcile_exits(_w7, {"changed": 0, "errors": []}); _dt = _t.time() - _t0
 _rows = {x["id"]: x for x in N._EXITS["list"]}
+# (one after another is 5.2 s of sleeps at least, so the line sits well below it: 2.6 s was crossed under load)
 check("four failing exits: the pass pays one device's timeouts (%.1f s; one after another would be 5.2 s)" % _dt,
-      _dt < 2.6, _dt)
+      _dt < 4.5, _dt)
 check("…every one of them is still reported and judged (dead after its second failing pass)",
       all((_rows.get(x["id"]) or {}).get("no_traffic") for x in _w7) and [x["id"] for x in N._EXITS["list"]] == [x["id"] for x in _w7],
       [(k, v.get("no_traffic")) for k, v in _rows.items()])
 check("…and every verdict was taken in the calling thread (_EXIT_HEALTH is never touched by a probe thread)",
       _judged_in == {True}, _judged_in)
 N._EXIT_HEALTH.clear(); _raise.add("wgx-a0000002"); _stall.add("wgx-a0000003"); N.EXIT_PROBE_BOUND_S = 1.5
+# ⚠️ THE STALLED PROBE IS OUT UNTIL THE PASS HAS RETURNED (10 s at most), not 3 s: the pass had to end within 2.2 s, and
+# under load it took 2.33 (1.8.9 qualification: a three-run stress of the suite). A pass that waits for it waits 10 s.
+_let_go.clear()
 _t0 = _t.time(); N.reconcile_exits(_w7, {"changed": 0, "errors": []}); _dt = _t.time() - _t0
+_let_go.set()
 _rows = {x["id"]: x for x in N._EXITS["list"]}
-check("a probe that raises and one that outlasts the bound cost the pass no more than the bound (%.1f s)" % _dt, _dt < 2.2, _dt)
+check("a probe that raises and one that outlasts the bound cost the pass no more than the bound (%.1f s)" % _dt, _dt < 8, _dt)
 check("…each is no evidence: reported, trace empty, its verdict untouched — the others judged as usual",
       _rows["a0000002"]["trace"] == {} and _rows["a0000003"]["trace"] == {}
       and all(not (N._EXIT_HEALTH.get(d) or {}).get("fails") and not (N._EXIT_HEALTH.get(d) or {}).get("dead")
@@ -341,6 +390,101 @@ finally:
     N.socket, N.select = _real_sock_mod, _real_sel_mod
 check("a ping takes only ITS echo reply, from the server it pinged — not another exit's (%s ms)" % _ms,
       _ms is not None and _ms >= 55, _ms)
+
+# ── 8. a dead tunnel follows its endpoint's NAME ──────────────────────────────────────────────────────────
+KP = "a2V5LWtleS1rZXkta2V5LWtleS1rZXkta2V5LWtleS0="
+_dns, _runs8 = {"ips": ["198.51.100.20"]}, []
+_live8 = {"ep": "198.51.100.10:51820", "key": KP}
+def _gai(host, port, fam, typ):
+    _dns.setdefault("asked", []).append((host, fam))
+    if _dns["ips"] is None:
+        raise OSError("Name or service not known")
+    return [(10 if ":" in ip else 2, typ, 17, "", (ip, port)) for ip in _dns["ips"]]
+def _run8(a, **k):
+    _runs8.append(" ".join(map(str, a)))
+    if a[1:2] == ["show"]:
+        return _R("%s\t%s\n" % (_live8["key"], _live8["ep"]))
+    if a[1:2] == ["set"]:
+        _live8["ep"] = a[-1]
+    return _R("")
+def _cycle(dev, rec, now):
+    return _REAL_REDIAL(dev, rec, _REAL_RESOLVE(dev, rec, now=now))
+_sets = lambda: [x for x in _runs8 if " set " in x]
+_real_run8, _real_kind8 = N.run, N._link_kind
+N.socket = types.SimpleNamespace(getaddrinfo=_gai, AF_INET=2, SOCK_DGRAM=2)
+N.run, N._link_kind = _run8, (lambda d: "awg")
+N._EXIT_REDIAL_AT.clear()
+_rec8 = {"peer_key": KP, "endpoint": "home.keenetic.pro:51820"}
+try:
+    _f1 = _cycle("wgx-home", _rec8, 1000)
+    check("the router's name moved: the live peer is re-pointed at the new address, on the live device (awg, no bounce)",
+          _f1 == "198.51.100.20:51820" and _sets() == ["awg set wgx-home peer %s endpoint 198.51.100.20:51820" % KP]
+          and not any((" down " in x or " up " in x) for x in _runs8), (_f1, _runs8))
+    check("…looked up in both families (the underlay may be v6 though the tunnel is v4-only)",
+          _dns["asked"] == [("home.keenetic.pro", 0)], _dns["asked"])
+    _runs8.clear(); _dns["asked"] = []
+    check("…asked again 10 s later: no lookup at all (at most every EXIT_REDIAL_EVERY_S)",
+          _REAL_RESOLVE("wgx-home", _rec8, now=1010) is None and not _dns["asked"], _dns["asked"])
+    _f3 = _cycle("wgx-home", _rec8, 1040)
+    check("…30 s later the name still says where it dials: looked up, peer untouched (the far side is just down)",
+          len(_dns["asked"]) == 1 and _f3 is None and not _sets(), (_dns, _runs8))
+    _runs8.clear(); _dns["ips"] = ["203.0.113.5", "198.51.100.20"]
+    _f4 = _cycle("wgx-home", _rec8, 1080)
+    check("…a round-robin name that still lists the dialled address: untouched (no flapping between its addresses)",
+          _f4 is None and not _sets(), (_f4, _runs8))
+    _runs8.clear(); _dns["ips"] = None
+    _f5 = _cycle("wgx-home", _rec8, 1120)
+    check("…a name that does not resolve just now: the device keeps what it has", _f5 is None and not _runs8, (_f5, _runs8))
+    _runs8.clear(); _dns["ips"] = ["198.51.100.77"]; _live8["key"] = "b3RoZXItb3RoZXItb3RoZXItb3RoZXItb3RoZXItb3Q="
+    _f5b = _cycle("wgx-home", _rec8, 1160)
+    check("a device that does not have this peer is never `set` — `wg set … peer K endpoint` would ADD it",
+          _f5b is None and not _sets(), (_f5b, _runs8))
+    _live8["key"] = KP
+    _runs8.clear(); _dns["asked"] = []; _dns["ips"] = ["198.51.100.99"]
+    check("an IP-literal endpoint is never looked up — there is no newer answer to get",
+          _REAL_RESOLVE("wgx-lit", {"peer_key": KP, "endpoint": "198.51.100.10:51820"}, now=2000) is None
+          and not _dns["asked"], _dns)
+    _runs8.clear(); _live8["ep"] = "[2001:db8::1]:51820"; _dns["ips"] = ["198.51.100.30", "2001:db8::1"]
+    _f8 = _cycle("wgx-v6", _rec8, 2100)
+    check("a v6 underlay the name still lists is current — not 'moved' to the v4 address beside it",
+          _f8 is None and not _sets(), (_f8, _runs8))
+    _runs8.clear(); _dns["ips"] = ["198.51.100.31", "2001:db8::2"]
+    _f9 = _cycle("wgx-v6", _rec8, 2200)
+    check("…and when it does move, it keeps the family it was dialling ([v6]:port)",
+          _f9 == "[2001:db8::2]:51820", (_f9, _runs8))
+    N._link_kind = lambda d: "wg"; _runs8.clear(); _live8["ep"] = "198.51.100.10:2408"; _dns["ips"] = ["198.51.100.99"]
+    _f7 = _cycle("wgx-wg", {"peer_key": KP, "endpoint": "engage.cloudflareclient.com:2408"}, 3000)
+    check("a WireGuard device is re-pointed with its own tool", _f7 == "198.51.100.99:2408"
+          and _sets() == ["%s set wgx-wg peer %s endpoint 198.51.100.99:2408" % (N._wgcmd(["wg"])[0], KP)], _runs8)
+    # the lookup's answer is parked for the caller, so one that lands after the probe bound is still acted on
+    N._EXIT_RESOLVED.clear(); N._EXIT_REDIAL_AT.clear(); _dns["ips"] = ["198.51.100.40"]
+    _REAL_RESOLVE("wgx-late", _rec8, now=4000)
+    check("a lookup's answer is parked for the calling thread (a late one is acted on the next pass, not lost)",
+          (N._EXIT_RESOLVED.get("wgx-late") or (0, None))[1] == ("home.keenetic.pro", "51820", ["198.51.100.40"]),
+          N._EXIT_RESOLVED)
+    # family: never INTO v6; a v6 tunnel whose name lost its AAAA falls back to v4
+    _runs8.clear(); _live8["ep"] = "198.51.100.10:51820"; _dns["ips"] = ["2001:db8::7"]
+    _f10 = _cycle("wgx-fam", _rec8, 5000)
+    check("a v4 tunnel whose name answers AAAA alone (a DDNS update half done) is NOT moved into v6",
+          _f10 is None and not _sets(), (_f10, _runs8))
+    _runs8.clear(); _live8["ep"] = "[2001:db8::1]:51820"; _dns["ips"] = ["198.51.100.41"]
+    _f11 = _cycle("wgx-fam2", _rec8, 5000)
+    check("…a v6 tunnel whose name lost its AAAA falls back to v4, the family every node has",
+          _f11 == "198.51.100.41:51820", (_f11, _runs8))
+    # an AmneziaWG exit on userspace amneziawg-go: `ip -d link` says `tun`, `wg show` cannot reach it
+    _real_run_inner = _run8
+    def _run_us(a, **k):
+        if a[0] != "awg" and a[1:2] in (["show"], ["set"]):
+            _runs8.append(" ".join(map(str, a))); return _R("", rc=1)
+        return _real_run_inner(a, **k)
+    N.run, N._link_kind = _run_us, (lambda d: "")
+    _runs8.clear(); _live8["ep"] = "198.51.100.10:51820"; _dns["ips"] = ["198.51.100.42"]
+    _f12 = _cycle("wgx-us", {"peer_key": KP, "endpoint": "home.keenetic.pro:51820"}, 6000)
+    check("an amneziawg-go device the kernel cannot name, on a record with no AWG keys: `wg` fails, `awg` re-points it",
+          _f12 == "198.51.100.42:51820" and _sets() == ["awg set wgx-us peer %s endpoint 198.51.100.42:51820" % KP]
+          if N._HAVE_WG else _f12 == "198.51.100.42:51820", _runs8)
+finally:
+    N.socket, N.run, N._link_kind = _real_sock_mod, _real_run8, _real_kind8
 
 # ── 6. the panel ──────────────────────────────────────────────────────────────────────────────────
 def issues(ks):

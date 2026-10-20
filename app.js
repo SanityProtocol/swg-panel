@@ -61,6 +61,7 @@ import {
 import {
   AccountScreen, PanelSettingsScreen,
 } from "./js/screen-settings.js";
+import { LogOverlay, openLogOverlay } from "./js/logview.js";   // the header's Logs button: nothing loads until it is clicked
 
 // Fill the Store's callback slots (see js/store.js). These live above the Store in the module graph, so it
 // cannot import them — it calls back into them instead. Each assignment moves into the owning module as the
@@ -332,7 +333,7 @@ function App() {
       let body;
       const _hl = esc((hostUpdRepairing && ({ updating: T("repairing"), updated: T("repaired"), "update-failed": T("repair failed") }[Store.hostProc]))
                       || procLabel(Store.hostProc) || "");   // a Fix/re-run reads as "repairing…" / "repaired", not "updating"
-      const _healN = serviceIssues().length;   // self-healable issues (missing/broken swg units + AmneziaWG datapath) → the updater repairs them
+      const _healN = serviceIssues().filter(i => i.fix !== false).length;   // self-healable issues (not Secure Boot's: no update enrols a key) (missing/broken swg units + AmneziaWG datapath) → the updater repairs them
       // ⚠️ THE CHECK BUTTON IS "Check status", NOT "check for updates" — it calls checkUpdate() AND
       // Store.poll(), so it re-reads service issues as well as the version, and it toasts about the
       // repairable ones. It was the LAST branch of this chain, so it vanished the moment the panel went
@@ -348,7 +349,7 @@ function App() {
       // Priority: a real upgrade first (updating heals too, so no "Fix" then) → else self-healable issues → else up-to-date / check.
       else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd">${esc(T("update to"))} <b>${esc(Store.latestRemote || "?")}</b></button>`;
       else if (_healN > 0) body = `<button class="livepill updpill fixpill" id="host-fix">${WARN_SVG} ${esc(fixLabel(_healN))}</button>`;
-      else if (Store.updFlash && Date.now() < Store.updFlash) body = `<button class="livepill upd-uptodate" id="host-repair" title="${esc(T("On the latest version — click to re-run the updater anyway (repairs this box: reinstalls missing pieces, re-enables services, rebuilds the datapath / AmneziaWG kernel module)"))}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> ${esc(T("up to date"))}</button>`;
+      else if (Store.updFlash && Date.now() < Store.updFlash) body = `<button class="livepill upd-uptodate" id="host-repair" title="${esc(T("This panel is on the latest version"))}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> ${esc(T("up to date"))}</button>`;
       else body = _checkBtn;
       // Steady = a badge you can act on. NOT the in-flight tags (updating / checking / proc): re-polling
       // there is meaningless or already happening, and the header would flicker spinner↔button. Derived
@@ -374,7 +375,7 @@ function App() {
       slot.innerHTML = body;
       const b = $("#host-upd"); if (b) { b.onclick = updateHost; hostHoverBubble(b, updBubbleHtml, updateHost); }   // version + date + changelog on hover; the bubble's own Update button runs the SAME action (on touch the anchor is underneath it)
       const rp = $("#host-repair"); if (rp) rp.onclick = updateHost;   // up-to-date → still allow a re-run/repair (heals the datapath even with no new version)
-      const fx = $("#host-fix"); if (fx) { fx.onclick = () => openModal(html`<${ServiceIssueSheet} issues=${serviceIssues()}/>`); hostHoverBubble(fx, fixBubbleHtml); }   // the issue(s) on hover; click = review + run the repair
+      const fx = $("#host-fix"); if (fx) { fx.onclick = () => openModal(html`<${ServiceIssueSheet} issues=${serviceIssues().filter(i => i.fix !== false)}/>`); hostHoverBubble(fx, fixBubbleHtml); }   // the issue(s) on hover; click = review + run the repair
       const tu = $("#turn-upd"); if (tu) { tu.onclick = openTurnUpdates; hostHoverBubble(tu, turnUpdBubbleHtml, openTurnUpdates); }   // forks + versions on hover; the bubble's own foot is the action (and reachable on touch, where the anchor is underneath it)
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
       const hx = $("#hostproc-x"); if (hx) hx.onclick = e => { e.stopPropagation(); dismissHostProc(); };
@@ -384,11 +385,13 @@ function App() {
     const acct = $("#acct-btn"); if (acct) acct.onclick = () => doLogout();   // header logout icon → straight to the confirm
     const tb = $("#theme-btn"); if (tb && !tb._wired) { tb._wired = true; tb.onclick = cycleThemeMode; paintThemeBtn(tb); }   // light/dark/auto switch
     const lb = $("#lang-btn"); if (lb && !lb._wired) { lb._wired = true; lb.onclick = cycleLang; paintLangBtn(lb); }            // EN / RU
+    const lg = $("#logs-btn"); if (lg && !lg._wired) { lg._wired = true; lg.hidden = false; lg.onclick = openLogOverlay; }      // the live logs, full screen, from any screen
     const vl = $("#vaultlock-btn");   // padlock: removed from the header by request — kept (wired to lockVault) but always hidden
     if (vl) { vl.hidden = true; if (!vl._wired) { vl._wired = true; vl.onclick = lockVault; } }
   });
 
   return html`<${Fragment}>
+    ${h(LogOverlay)}
     ${h(OldAddrRibbon)}
     ${h(route.fn, params)}
     ${modalStack}
@@ -567,7 +570,7 @@ function paintChrome() {
   const brand = $(".brand"); if (brand) brand.setAttribute("aria-label", T("nav|Overview"));
   const hint = [["#host-tport", T("How this panel is deployed")], ["#vaultlock-btn", T("Lock encryption key")],
                 ["#lang-btn", T("Language")], ["#theme-btn", T("Theme")],
-                ["#panel-settings-btn", T("Panel settings")], ["#acct-btn", T("Log out")]];
+                ["#logs-btn", T("Logs")], ["#panel-settings-btn", T("Panel settings")], ["#acct-btn", T("Log out")]];
   for (const [sel, label] of hint) {
     const el = $(sel);
     if (!el) continue;

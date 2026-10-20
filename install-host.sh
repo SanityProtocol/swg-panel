@@ -17,7 +17,30 @@ HOST_ENDPOINT_IP="${HOST_ENDPOINT_IP:-}" # public IP clients dial for this box's
 _EP_GIVEN="$HOST_ENDPOINT_IP"            # …as the operator GAVE it, before any default fills it (seeds the panel's node record)
 # No terminal (an unattended install, a convert, curl|bash under CI): debconf has nobody to ask and says so — four
 # lines per package ("This frontend requires a controlling tty"). A value already set is left as it is.
-if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default) — no terminal at all, or the background under sudo-rs.
+# ⚠️ NOT UNDER CLASSIC SUDO. It backgrounds the script the same way (≥ 1.9.13 with use_pty: Ubuntu 24.04, Debian 12/13) but
+# brings it to the foreground at that first read, so `curl … | sudo bash` asked its questions there, as in 1.8.8 — taking
+# every background start as unreadable took them all away (1.8.9 qualification IN-2). Which sudo it is: the first sudo up
+# the chain, by its binary's path (sudo-rs, cargo), else by its --version. No sudo above (a job the operator put in the
+# background): the terminal, as ever. /proc/<pid>/stat after the command name: state ppid pgrp session tty_nr tpgid.
+# Without /proc: as before.
+_swg_tty_fg(){ local s f p e i IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"
+  [ "${f[2]:-}" = "${f[5]:-}" ] && return 0; [ "${f[5]:-0}" -gt 0 ] 2>/dev/null || return 1
+  for i in 1 2 3 4; do p="${f[1]:-0}"; [ "$p" -gt 1 ] 2>/dev/null || return 0; e="$(readlink "/proc/$p/exe" 2>/dev/null)" || e=""
+    case "${e##*/}" in sudo*) case "$e" in *sudo-rs*|*cargo*) return 1;; esac
+      case "$("$e" --version 2>/dev/null)" in sudo-rs*) return 1;; esac; return 0;; esac
+    { read -r s <"/proc/$p/stat"; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; done; return 0; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+if [ "$SWG_TTY" = /dev/null ] && [ -z "${SWG_TTY_WARNED:-}" ] && { : </dev/tty; } 2>/dev/null; then   # said once per run
+  printf '%s\n' "! This terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults. To answer them, run: sudo bash -c \"\$(curl -fsSL <bootstrap.sh URL>)\" -- <arguments>" >&2
+  export SWG_TTY_WARNED=1
+fi
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! swg_tty_ok; then export DEBIAN_FRONTEND=noninteractive; fi
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected; master only)
 WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 
@@ -73,6 +96,7 @@ for _a in "$@"; do
   _prev="$_a"
 done
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
+_WROTE=wrote; $DRYRUN && _WROTE="would write"   # a dry run writes the preview copy, not the file it names (1.8.8 deferred #13)
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, dl_turn_bin
 # Refuse on a declaratively managed host BEFORE anything is written — the panel laid down here would
@@ -140,7 +164,7 @@ bringup(){ local tool="$1" ifn="$2" out
   else [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/      /' >&2; return 1; fi; }
 writef(){ # writef <abs_path> <mode>   (content on stdin)
   local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"
-  chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
+  chmod "$m" "$full" 2>/dev/null || true; ok "${_WROTE:-wrote} $p ($m)"; }
 # writef, but the file arrives by RENAME instead of by truncating in place — a NEW inode, not the same one
 # refilled. For a script that can be REPLACED WHILE IT IS RUNNING this is the difference between working and
 # not: /usr/local/bin/swg-update re-bakes itself during the update it is performing, and bash reads a script
@@ -150,7 +174,7 @@ writef(){ # writef <abs_path> <mode>   (content on stdin)
 # leaves a truncated one behind, a rename cannot.)
 writef_atomic(){ # writef_atomic <abs_path> <mode>   (content on stdin)
   local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full.new"
-  chmod "$m" "$full.new" 2>/dev/null || true; mv -f "$full.new" "$full"; ok "wrote $p ($m)"; }
+  chmod "$m" "$full.new" 2>/dev/null || true; mv -f "$full.new" "$full"; ok "${_WROTE:-wrote} $p ($m)"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }   # menu <styled-label> <description>
 key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  a 'mneziawg'           → [a]mneziawg
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd a 'mneziawg (default)'  → [a]mneziawg (default)
@@ -160,11 +184,11 @@ STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo 
 # ⚠️ A TERMINAL, ASKED QUIETLY FIRST. `read … </dev/tty` with none (an unattended run, `</dev/null`, no controlling
 # terminal) makes bash print a raw "line N: /dev/tty: No such device or address" before the read fails and the
 # default is taken — every prompt below then reads as a crash. Same fall-through, without the noise.
-_tty(){ { : </dev/tty; } 2>/dev/null; }
+_tty(){ swg_tty_ok; }
 ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
-  echo; if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; else _notty "$p" "$d"; fi; printf -v "$3" '%s' "${v:-$d}"; }
+  echo; if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$d"; fi; printf -v "$3" '%s' "${v:-$d}"; }
 ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
-  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi
+  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; _pnl; }
 
 # ── input validators (0 = ok) ──
@@ -241,7 +265,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}"; _pnl; return; }; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
-    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
+    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option
@@ -259,7 +283,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
     warn "ignoring invalid $var='${!var}' ($hint)"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
+    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
@@ -446,7 +470,8 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
     case "$exe" in
       *'${SWG_'*)   # EnvironmentFile form — read listen/connect/params out of turn.env
         envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" 2>/dev/null | sed -n 1p)"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
+        lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" 2>/dev/null | sed -n 1p)"   # SWG_DIAL = what clients dial when it differs from the bind (swg-noded turn_bind); SWG_LISTEN is what it binds
+        [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
         con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | sed -n 1p)"
         params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | sed -n 1p)"
         wk="$(printf '%s\n' "$params" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
@@ -526,6 +551,22 @@ $json
 EOF
 }
 
+ensure_wg_tools_once(){ # <awg|wg> [again] — ensure_wg_tools, once per run per tool: the answer cannot change within one, and the
+  # AmneziaWG chain can download and compile for minutes. The install steps asked twice (Datapath tooling, then "for future
+  # interface creation"), so a download that failed or crawled the first time was simply repeated (client report 2026-10-06).
+  # ⚠️ BUT A FAILURE IS NOT FINAL WHERE AN INTERFACE IS STARTED: `again` there tries a tool that failed earlier in the run
+  # once more — a dpkg lock held at the tooling step (unattended-upgrades on a fresh box) is gone by then, and that failure,
+  # kept, left an adopted wg0 DOWN after an rc-0 Docker → bare convert (1.8.9 qualification IN-18; 1.8.8 asked afresh there).
+  # Once per tool per run: a chain that really fails is not repeated for every interface. The closing "for future interface
+  # creation" check asks `again` for wg (one apt attempt; 1.8.8 asked afresh there too) but not for awg: its chain is the
+  # GitHub download + compile the 2026-10-06 memo is for.
+  local _v="_WGT_RC_$1" _a="_WGT_AGAIN_$1" _rc
+  if [ -n "${!_v:-}" ] && { [ "${!_v}" = 0 ] || [ -z "${2:-}" ] || [ -n "${!_a:-}" ]; }; then return "${!_v}"; fi
+  [ -z "${2:-}" ] || printf -v "$_a" '%s' 1
+  ensure_wg_tools "$1" && _rc=0 || _rc=$?
+  printf -v "$_v" '%s' "$_rc"
+  return "$_rc"
+}
 ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent, non-fatal -> 0/1).
   # Success = the CLI is present AND its kernel module actually LOADS. The module part matters: `apt install
   # amneziawg` puts the `awg` tool on disk but the datapath is a DKMS module that must COMPILE against the running
@@ -543,7 +584,10 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # or not — awg-quick needs it on disk the day a reboot lands on a kernel with no module. Only the pinned download
   # here; a Go build for a box whose module works is not worth its cost (ensure_awg_userspace keeps that rung).
   awg_go_needs_install && { awg_go_pinned || warn "AmneziaWG: the pinned userspace fallback could not be fetched — awg interfaces depend on the kernel module alone until an update installs it"; }   # missing, or one of our earlier pinned builds
-  if have awg && modprobe amneziawg 2>/dev/null; then return 0; fi     # already fully working (tool + loadable module)
+  if have awg && modprobe amneziawg 2>/dev/null; then                 # already fully working (tool + loadable module) —
+    $DRYRUN || awg_compat_patch_installed >/dev/null || true          # …its source fixed for the NEXT kernel (PR #218)
+    return 0
+  fi
   # graceful degrade on a non-apt distro (Fedora/RHEL/Arch/Alpine): tell the operator what to install by hand rather
   # than silently limp on with no datapath. The apt paths below stay for Debian/Ubuntu.
   $DRYRUN || have apt-get || { warn "AmneziaWG not installed — no apt-get on this system; install dkms, linux-headers-$(uname -r) and amneziawg-dkms with your package manager, then re-run"; return 1; }
@@ -557,8 +601,7 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
     run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
     ensure_awg_headers_follow || true   # D4: headers for the NEXT kernel too, so DKMS builds it when it arrives
     awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
-    run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
-    build_awg_module
+    awg_ppa_module_install && build_awg_module   # a module that does not compile on this kernel is given up on, not retried
   else
     # Not Ubuntu: the PPA publishes nothing for this system, so none of it is tried (no software-properties-common, no
     # add-apt-repository traceback, no "Unable to locate package amneziawg") — straight to the source build below, the
@@ -568,6 +611,13 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   fi
   $DRYRUN && return 0
   have awg && modprobe amneziawg 2>/dev/null && return 0
+  # Built, and refused for its signing key (Secure Boot): the steps, once, and straight to userspace — a source build
+  # would compile the same module to the same refusal.
+  if have awg && awg_mod_key_rejected; then
+    awg_key_refused_note
+    ensure_awg_userspace && return 0
+    return 1
+  fi
   # The apt path did not get us there — Debian (the PPA is Ubuntu-only), a non-apt distro, or a kernel with
   # no matching headers. Do NOT stop at a warning: build from source, which is the only route to the KERNEL
   # datapath off Ubuntu and is what we want wherever it is possible.
@@ -575,8 +625,13 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # Still no module: no headers for this kernel, or an LXC/OpenVZ guest that cannot load one at all. Fall
   # back to userspace so the node can still serve AmneziaWG — awg-quick picks it up by itself.
   if ensure_awg_userspace; then
+    # ⚠️ …but that is a DATAPATH, not the tools: with no awg / awg-quick nothing brings an AmneziaWG interface up, so it is
+    # a failure — ensure_wg_tools_once keeps it, and the switch's `again` tries once more (a dpkg lock held through the
+    # tooling step is gone by then). Counted a success, the memo kept it and an adopted awg0 + the mesh links stayed DOWN
+    # after an rc-0 Docker → bare convert, "awg-quick: command not found" (1.8.9 qualification F21; 1.8.8 asked afresh)
+    have awg && have awg-quick || return 1   # a datapath, not the tools
     warn "AmneziaWG will run on the SLOWER userspace datapath — no loadable kernel module on $(uname -r).$(
-      have apt-get && awg_tools_drive_3x && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
+      have apt-get && awg_tools_drive_3x && ! [ -e "/lib/modules/$(uname -r)/build" ] && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
     return 0
   fi
   return 1
@@ -589,13 +644,16 @@ build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
   awg_dkms_build_all_kernels   # D4: every installed kernel with headers — an installed-but-not-booted kernel included
   modprobe amneziawg 2>/dev/null && return 0
-  run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  awg_mod_key_rejected && return 1   # built, refused for its key (Secure Boot) — a reinstall would only build it again
+  awg_dkms_reinstall || return 1   # the source fixed again and dpkg finished; given up when it does not compile (lib/common.sh)
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || true
   run modprobe amneziawg 2>/dev/null || true
 }
 ensure_smart_tools(){ # nftables (smart-routing marking, every mode) + dnsmasq (Force-DNS host tier) — idempotent, non-fatal
   have nft     || { run apt-get update -qq || true; run apt-get install -y nftables || true; }
-  have dnsmasq || { run apt-get update -qq || true; run apt-get install -y dnsmasq  || true; }
+  # masked FIRST: its postinst starts it, the start fails on :53 (systemd-resolved) and the first install printed an error
+  # for a unit masked a moment later anyway; a masked unit is not started (1.8.8 deferred #5(b))
+  have dnsmasq || { run apt-get update -qq || true; run systemctl mask dnsmasq 2>/dev/null || true; run apt-get install -y dnsmasq || true; }
   have ipset   || { run apt-get update -qq || true; run apt-get install -y ipset    || true; }   # kernel-SNI mode (xt_string learn → ipset); degrades to userspace SNI if absent
   # the node runs its OWN dnsmasq on loopback:5354 via swg-noded; keep the distro service from ever grabbing :53.
   # mask (not just disable) so an apt postinst can't restart it, and reset-failed so a prior boot's :53 conflict
@@ -652,7 +710,7 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
   for name in "${SPEC_ORDER[@]}"; do
     cmd="${SPEC_CMD[$name]}"; proto="${SPEC_PROTO[$name]}"; port="${SPEC_PORT[$name]}"; subnet="${SPEC_SUBNET[$name]}"
     addr="${SPEC_ADDR[$name]}"; wan="${SPEC_WAN[$name]}"; ep="${SPEC_EP[$name]}"; dir="${SPEC_DIR[$name]}"; conf="$dir/$name.conf"
-    if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
+    if ! ensure_wg_tools_once "$cmd" again; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
     # gateway plumbing: forward + masquerade the tunnel subnet out the WAN (bound to iface lifecycle)
     up="$(nat_hook_up "${subnet}" "${wan}")"   # reap-then-add: one copy whatever was there (lib/common.sh)
     down="$(nat_hook_down "${subnet}" "${wan}")"
@@ -884,7 +942,7 @@ while :; do
     echo "    Running the panel $(b standalone)? Give it a free port, e.g. $(b "${PANEL_HOST_NOPORT}:8443")."
     echo "    Serving it $(b behind) that web server (the next step offers nginx/caddy)? Then $(bb force) is fine."
     printf '  Enter a different URL, or type %s to keep :%s anyway: ' "$(bb force)" "$_pp"
-    read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }   # said, not a blank line
+    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }   # said, not a blank line
     case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
       force|FORCE) _forced="$_pp";;
       "") :;;
@@ -901,7 +959,7 @@ while :; do
   echo "         certificates won't work. ($(b letsencrypt)/$(b selfsigned) on a directly-reachable port is fine.)"
   echo
   printf '  To keep the port %s type %s, or enter a new URL to change: ' "$URL_PORT" "$(bb proceed)"
-  read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }   # said, not a blank line
+  read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }   # said, not a blank line
   case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
     proceed|"") break;;                                           # keep the current port
     *) if _u="$(answer_to_url "$(printf '%s' "$_url_ans" | tr -d '[:space:]')")"; then PANEL_DOMAIN="$_u"   # adopt it; loop re-parses + re-checks
@@ -1089,8 +1147,8 @@ if [ "$HOST_HAS_WG" = yes ]; then
   # surface in the panel as adoption candidates on the node's page, where each is classified WG / AWG / WDTT,
   # adopted as it stands, or ignored (ignored ones are listed under Settings -> Interfaces).
   ensure_smart_tools || true                    # nftables (smart routing, every mode) + dnsmasq (Force-DNS host tier)
-  ensure_wg_tools awg || true                   # AmneziaWG tools + DKMS kernel module (the default interface type)
-  ensure_wg_tools wg  || true                   # plain WireGuard tools too — either type works when created later
+  ensure_wg_tools_once awg || true              # AmneziaWG tools + DKMS kernel module (the default interface type)
+  ensure_wg_tools_once wg  || true              # plain WireGuard tools too — either type works when created later
   choose_ifaces                                 # non-interactive: detect + display + auto-adopt everything found
 fi
 
@@ -1342,6 +1400,9 @@ WantedBy=multi-user.target
 EOF
   # the device-access tables must not outlive a downgrade — see noded_reach_sweep_dropin (lib/common.sh)
   noded_reach_sweep_dropin "$NODED_DIR" | writef "/etc/systemd/system/$NODED_REACH_SWEEP_DROPIN" 644
+  # swg's own journal, held to its budget (lib/common.sh), and the command that reads it
+  if swg_log_ns_ok; then swg_log_ns_text swg-node | writef "/etc/systemd/system/swg-noded.service.d/$SWG_LOG_NS_DROPIN" 644; else swg_log_ns_clear; fi
+  if [ -f "$SRC/swg-logs" ]; then writef /usr/local/bin/swg-logs 755 < "$SRC/swg-logs"; fi
   # A master runs a local node, so it needs the same AppArmor accommodation install-node.sh applies:
   # userspace interfaces (wdtt, csqtt, awg on amneziawg-go) are driven over a UAPI socket in
   # /run/wireguard, which a distribution's wg profile does not permit. No-op without AppArmor.
@@ -1529,6 +1590,10 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+  if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-panel-server.service.d/$SWG_LOG_NS_DROPIN" 644; else swg_log_ns_clear; fi
+  if getent group systemd-journal >/dev/null 2>&1; then   # the live log viewer reads the panel's own journal
+    swg_journal_text | writef "/etc/systemd/system/swg-panel-server.service.d/$SWG_JOURNAL_DROPIN" 644; fi
+  if [ -f "$SRC/swg-logs" ]; then writef /usr/local/bin/swg-logs 755 < "$SRC/swg-logs"; fi   # reads swg's journals (lib/common.sh)
   mk_update_unit                                   # wire one-click host self-update (root, own cgroup)
 }
 
@@ -1579,16 +1644,19 @@ InaccessiblePaths=-${ETC_DIR}/auth -${TLS_DIR} -${STATE_DIR}/subs/vault.json -${
 [Install]
 WantedBy=multi-user.target
 EOF
+  if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-sub.service.d/$SWG_LOG_NS_DROPIN" 644; else swg_log_ns_clear; fi
 }
 
 # swg-netctl: the privileged network/TLS helper. The unprivileged panel can't bind low ports, edit its
 # own unit, or run acme.sh — it drops a validated JSON request into a queue only IT can write, and this
-# root helper drains it. A .path watch fires instantly on bare-metal; a slow timer is the fallback (a
-# docker container's write to a bind-mounted queue wouldn't cross to a host inotify watch — that path is
-# wired in a later phase). Requests/results carry no secrets; the helper reads the CF token itself.
+# root helper drains it. A .path watch fires instantly; a 10 s timer is the fallback for a watch that died. (A Docker
+# panel's host drainer, swg-netctl-docker, watches its bind-mounted queue the same way: the host's inotify sees the
+# container's write — a bind mount is the same inode, measured 2026-10-10.) Requests/results carry no secrets; the
+# helper reads the CF token itself.
 write_netctl(){
   [ -f "$SRC/swg-netctl" ] || return 0
   run mkdir -p "$PREFIX/usr/local/bin"; cp "$SRC/swg-netctl" "$PREFIX/usr/local/bin/swg-netctl"; chmod 755 "$PREFIX/usr/local/bin/swg-netctl"
+  $DRYRUN || rm -f /run/swg-netctl.due   # the idle gate runs the new build on the next tick, its log work with it (as update.sh)
   # queue/ — panel-owned so ONLY the panel can enqueue (group swg can't write); status/ — root-written, group-readable by the panel.
   mkdir -p "$PREFIX$STATE_DIR/netctl/queue" "$PREFIX$STATE_DIR/netctl/status"
   run chown "$PANEL_USER:swg" "$STATE_DIR/netctl" "$STATE_DIR/netctl/queue"; run chmod 750 "$STATE_DIR/netctl" "$STATE_DIR/netctl/queue"
@@ -1615,6 +1683,11 @@ Environment=SWG_ETC_DIR=${ETC_DIR}
 # panel issued at runtime expired silently at 90 days. Pin it; do not rely on HOME.
 Environment=LE_WORKING_DIR=${ACME_HOME}
 EOF
+  if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-netctl.service.d/$SWG_LOG_NS_DROPIN" 644; else swg_log_ns_clear; fi
+  # The idle gate (lib/common.sh): the timer below still starts the unit every 10 s, but the helper runs only for a
+  # request, a settings save or its own due time — an idle tick costs bash builtins, not a Python start.
+  swg_netctl_due_text | writef_atomic /usr/local/bin/swg-netctl-due 755
+  swg_netctl_due_dropin_text | writef "/etc/systemd/system/swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN" 644
   writef /etc/systemd/system/swg-netctl.path 644 <<EOF
 [Unit]
 Description=watch for swg-netctl requests from the panel
@@ -1626,6 +1699,10 @@ Unit=swg-netctl.service
 [Install]
 WantedBy=paths.target
 EOF
+  # AccuracySec=1s: systemd's default (1 min) fires a 10 s tick whenever PID 1 next wakes for something else — ticks a
+  # median 15 s and up to 35 s apart in the CPU re-qualification's soak (AB-F1) — and a settings save, Debug's end and a
+  # request with the path watch dead all wait for a tick. update.sh ensure_timer_on_time adds it to a timer an older
+  # release wrote.
   writef /etc/systemd/system/swg-netctl.timer 644 <<EOF
 [Unit]
 Description=poll for swg-netctl requests (fallback for the path watch)
@@ -1633,6 +1710,7 @@ Description=poll for swg-netctl requests (fallback for the path watch)
 [Timer]
 OnActiveSec=10s
 OnUnitActiveSec=10s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target
@@ -1656,7 +1734,7 @@ mk_update_unit(){
   # that branch, since nothing else on the box records which one it was.
   _swg_ref="${SWG_REF:-main}"
   swg_update_wrapper_text "$_swg_ref" | writef_atomic /usr/local/bin/swg-update 755   # the one text (lib/common.sh)
-  # A docker container's write to a bind-mounted trigger does NOT cross to a host .path/inotify watch, so we POLL.
+  # The triggers are POLLED (lib/common.sh write_docker_updater says why, and why not a .path watch).
   # FIXED unit names + a COMPREHENSIVE trigger list mean a bare panel and a docker node on the SAME box write
   # IDENTICAL units — no collision, no runaway. (install-docker writes the exact same files.)
   swg_update_check_text | writef /usr/local/bin/swg-update-check 755   # the one text (lib/common.sh)
@@ -1668,6 +1746,7 @@ Description=swg-panel one-click self-update (swg programs only)
 Type=oneshot
 ExecStart=/usr/local/bin/swg-update-check
 EOF
+  if swg_log_ns_ok; then swg_log_ns_text swg-panel | writef "/etc/systemd/system/swg-update.service.d/$SWG_LOG_NS_DROPIN" 644; else swg_log_ns_clear; fi
   writef /etc/systemd/system/swg-update.timer 644 <<EOF
 [Unit]
 Description=poll for a swg one-click update request
@@ -1696,6 +1775,16 @@ EOF
 # installed. After an uninstall that kept the data, the re-install started the panel before it wrote swg-sub's unit
 # (below, at the end), so the bind came back only at the panel's NEXT start (1.8.8 qualification, round 8). A unit that
 # is missing is written now (its final text, and its start, come at the end as before); one that exists is left alone.
+# ⚠️ …SO WHETHER THE OPERATOR TURNED swg-sub OFF IS READ HERE, before this run writes its unit: one that existed and was
+# disabled and stopped stays so at the end (1.8.8 deferred #9). Read at the end, the unit written just below looked like
+# one — a FRESH install left swg-sub disabled and stopped, and served no subscription links (1.8.9 qualification F25).
+# ⚠️ …BUT ONE PARKED WITH ITS PANEL COMES BACK WITH IT. A Docker install's guard parks the bare panel and its swg-sub
+# together (guard_second_panel: `disable --now` both); going back to bare re-enables the panel below, and its swg-sub,
+# read as the operator's choice, stayed off "as it was" — every subscription link dead (1.8.9 qualification R2 INST-2).
+# Parked is update.sh's own test (ensure_sub_server: a parked panel's swg-sub is parked with it): one rule for both.
+_sub_off=no; [ -e "$PREFIX/etc/systemd/system/swg-sub.service" ] && ! $DRYRUN && ! systemctl is-enabled --quiet swg-sub 2>/dev/null \
+  && ! systemctl is-active --quiet swg-sub 2>/dev/null \
+  && ! { [ -f "$PREFIX/etc/systemd/system/swg-panel-server.service" ] && bare_panel_parked; } && _sub_off=yes
 if [ -f "$PREFIX$SUB_DIR/swg-sub" ] && [ ! -e "$PREFIX/etc/systemd/system/swg-sub.service" ]; then write_sub_unit; run systemctl daemon-reload; fi
 
 # ───────────────────────── login + TLS + serve mode ─────────────────────────
@@ -1874,6 +1963,17 @@ mk_selfsigned(){ CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key
   if $DRYRUN; then echo "    [skip] openssl self-signed -> $TLS_DIR (CN=$PANEL_DOMAIN)"; : > "$PREFIX$CERT_FULLCHAIN"; : > "$PREFIX$CERT_KEY"
   else run openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$CERT_KEY" -out "$CERT_FULLCHAIN" -subj "/CN=${PANEL_DOMAIN}" -addext "subjectAltName=$(san_for "$PANEL_DOMAIN")"; fi
   cert_perms; if $DRYRUN; then ok "dry run — would create a self-signed certificate for ${PANEL_DOMAIN} (10y)"; else ok "self-signed certificate for ${PANEL_DOMAIN} (10y)"; fi; }
+# ⚠️ AN ISSUANCE THAT FAILED IS RECORDED AS WHAT IS SERVED. install.conf and the panel's Access & TLS settings were written
+# with the mode asked for, before the issuance: after a fallback the summary, Settings and every update said Let's Encrypt
+# (an update: "the certificate renews on its own again") while a self-signed certificate was served, and nothing retried
+# (1.8.8 deferred #6, letsencrypt-ip with :80 closed). Both now say self-signed; the warning says how to ask again.
+tls_fallback_selfsigned(){
+  local asked="$TLS_MODE"; mk_selfsigned; TLS_MODE=selfsigned; $DRYRUN && return 0
+  sed -i 's/^TLS_MODE=.*/TLS_MODE=selfsigned/' "$ETC_DIR/install.conf" 2>/dev/null || true
+  if have python3; then PANEL_DOMAIN="$PANEL_DOMAIN" PANEL_BASE="$PANEL_BASE" PORT="$PORT" TLS_MODE=selfsigned PROXIED=no \
+    seed_access_settings "$STATE_DIR/panel-settings.json" || true
+    chown "$PANEL_USER:swg" "$STATE_DIR/panel-settings.json" 2>/dev/null || true; chmod 600 "$STATE_DIR/panel-settings.json" 2>/dev/null || true; fi
+  warn "recorded as self-signed — to try $asked again once the cause above is fixed: Settings → Access & TLS, or re-run the installer"; }
 reuse_cert(){   # re-install with REUSE_TLS=yes: keep the cert already in $TLS_DIR, no re-issue
   if [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ]; then
     CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; cert_perms; ok "keeping the existing certificate in $TLS_DIR"
@@ -1960,7 +2060,7 @@ obtain_cert_internal(){
             warn "acme.sh exit $rc, but a cert for $PANEL_DOMAIN already exists — installing it."
           else
             acme_clear_unusable "$PANEL_DOMAIN"   # leave nothing that would mask this error next time
-            warn "issuance failed (acme.sh exit $rc) — falling back to a self-signed cert."; mk_selfsigned; return
+            warn "issuance failed (acme.sh exit $rc) — falling back to a self-signed cert."; tls_fallback_selfsigned; return
           fi
         fi
       fi
@@ -1981,12 +2081,12 @@ obtain_cert_internal(){
         warn "acme.sh installs $(b "$PANEL_DOMAIN")'s certificate for another program ($(b "$_foreign")) — leaving that as it is; the panel takes each renewal from acme.sh itself"
         if ! acme_copy_foreign "$PANEL_DOMAIN"; then
           warn "could not copy acme.sh's certificate for $PANEL_DOMAIN — falling back to a self-signed cert."
-          mk_selfsigned; return
+          tls_fallback_selfsigned; return
         fi
       elif ! acme --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
           --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl kill -s HUP swg-panel-server.service 2>/dev/null || true"; then
         warn "acme.sh could not install the certificate for $PANEL_DOMAIN — falling back to a self-signed cert."
-        mk_selfsigned; return
+        tls_fallback_selfsigned; return
       fi
       cert_perms; if $DRYRUN; then ok "dry run — would issue + install a certificate via $TLS_MODE (auto-renews)"; else ok "issued + installed certificate via $TLS_MODE (auto-renews)"; fi;;
     *) die "TLS must be cloudflare|letsencrypt|letsencrypt-ip|selfsigned|skip";;
@@ -2223,7 +2323,7 @@ if [ "${SWG_DEFER_START:-}" != 1 ] && ! $DRYRUN; then
     _bp="$PORT"
     if panel_owns_port "$_bp"; then
       warn "the panel is running (it holds :$_bp) but did not answer $_pu within ${_pw}s"
-      echo "    What went wrong:  journalctl -u swg-panel-server -n 30"
+      echo "    What went wrong:  swg-logs panel -n 30"
     else
       PANEL_UP=no
       _bw="$(ss -lntpH "sport = :$_bp" 2>/dev/null | grep -oE '"[^"]+"' | sed -n 1p | tr -d '"' || true)"
@@ -2237,7 +2337,7 @@ if [ "${SWG_DEFER_START:-}" != 1 ] && ! $DRYRUN; then
           echo "    Give the panel a free loopback port (re-run with PORT=<free port>)."
         fi
       fi
-      echo "    What went wrong:  journalctl -u swg-panel-server -n 30"
+      echo "    What went wrong:  swg-logs panel -n 30"
     fi
   fi
 fi
@@ -2247,7 +2347,12 @@ if [ -f "$PREFIX$SUB_DIR/swg-sub" ]; then   # inert until enabled in Settings �
   # the moment the move then happened, far from the run that caused it (1.8.8 qualification, round 10, F92).
   _subu="$PREFIX/etc/systemd/system/swg-sub.service"; _subu_was="$(cat "$_subu" 2>/dev/null || true)"
   _sub_was_up=no; ! $DRYRUN && systemctl is-active --quiet swg-sub 2>/dev/null && _sub_was_up=yes
-  write_sub_unit; run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-sub || warn "couldn't start swg-sub"
+  # ⚠️ …AND ONE THE OPERATOR DISABLED AND STOPPED STAYS SO, as an update keeps it (F93): a re-install enabled and started it
+  # again — a public listener back on its port, the operator's choice silently replaced (1.8.8 deferred #9). _sub_off was
+  # read before this run wrote the unit (above, F25).
+  write_sub_unit; run systemctl daemon-reload
+  if [ "$_sub_off" = yes ]; then ok "swg-sub left disabled and stopped, as it was (systemctl enable --now swg-sub to serve subscriptions)"
+  else run systemctl enable --quiet $_NOW swg-sub || warn "couldn't start swg-sub"; fi
   if [ "$_sub_was_up" = yes ] && [ "$(cat "$_subu" 2>/dev/null || true)" != "$_subu_was" ]; then
     if run systemctl restart swg-sub; then ok "swg-sub restarted — its unit changed (it listens on ${SUB_BIND}:${SUB_PORT} unless the panel's Settings set another address)"
       # ⚠️ …AND THE PANEL RECORDS WHERE IT LISTENS NOW. The panel was (re)started above, before swg-sub moved: its start

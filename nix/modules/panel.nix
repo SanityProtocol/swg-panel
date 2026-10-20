@@ -894,6 +894,11 @@ in
         serviceConfig = {
           Type = "oneshot";
           ExecStart = rebuild.script;
+          # The container arm starts this every 30 s: systemd's own start/stop lines (info) stay out of the journal, at
+          # every level, while the script's own lines (notice) stay in — as a Docker host's drop-in does (1.8.9
+          # qualification DN-15: ~8,600 lines a day each, Off included)
+          LogLevelMax = "notice";
+          SyslogLevel = "notice";
         } // rebuild.resourceGuard;   # nice/idle-IO/OOM-first — a rebuild must never starve its host
       };
 
@@ -908,8 +913,9 @@ in
 
       # ⚠️ The container arm needs the poll and the native arm does not, and this is measured, not
       # defensive: the panel container writes the trigger through a bind mount, and inotify does not
-      # cross one — a host `.path` unit never sees that write. install-docker.sh reaches the same
-      # conclusion and retires its `.path` for exactly this reason. The stamp file in the rebuild
+      # cross one — a host `.path` unit never sees that write. (⚠️ Not so on Docker: there a host `.path`
+      # unit does see it, measured 2026-10-10; this arm's backend was not re-measured, and its poll does
+      # not depend on the answer.) The stamp file in the rebuild
       # script is what stops the two triggers from running it twice.
       systemd.timers.swg-update = mkIf (cfg.selfUpdate.enable && cfg.delivery == "container") {
         description = "poll for a swg-panel update request (the panel writes it across a bind mount)";
@@ -1116,6 +1122,9 @@ in
         "d ${stateDir}/subs 0750 swgpanel swg -"
         "d ${stateDir}/subs/blobs 0750 swgpanel swg -"
         "d ${cfg.statsDir} 2775 swgpanel swg -"
+        # The same for the node mirrors: the container arm wrote them as root, and since they are 0640 (they carry the
+        # peers' PSKs) an offline node's would stay unreadable to the native panel and swgsub after a flip until it synced.
+        "Z ${cfg.statsDir} - swgpanel swg -"
         # swg-sub's own TLS material, reachable by the user that actually serves it. `z` adjusts what
         # is there and creates nothing, because who WRITES these differs by arm: on the container arm
         # the panel image copies the panel certificate in here as root:root 0600, and after a flip
@@ -1205,6 +1214,9 @@ in
           # primary group being swg — true there, and an assumption worth not inheriting.
           User = "swgpanel";
           Group = "swg";
+          # Settings → Logs' live viewer: the panel reads its own lines in the system journal (it has no namespace on
+          # NixOS), which takes this group (docs/LOGS-PLAN.md §6, §23.6).
+          SupplementaryGroups = [ "systemd-journal" ];
 
           # Root, so it can write into a directory root owns and read the secret. `+` is what makes
           # it root; without it this would run as swgpanel and could read neither.

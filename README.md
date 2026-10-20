@@ -1,13 +1,13 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.8-beta</code></p>
+<p align="center"><code>1.8.9-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.8-beta** — [full changelog](CHANGELOG.md)
-> - **Traffic totals for any stretch of days.** The Peers, Users and Groups screens count every device's traffic through counter restarts, reinstalls and container recreates, over all time or any days you pick. A person's total keeps their deleted and handed-on devices, a group's adds up its members', and days can be counted in your own time zone.
-> - **Routing rules for chosen people.** A routing rule can apply to everyone on an interface or only to chosen people, groups and single devices — a user's new device is covered with no edit — and it can choose the address its traffic leaves by. ⚠️ On Hybrid SNI and Kernel SNI, a Block rule placed below an Exit or Direct rule that covers some of the same destinations no longer stops them after the update — the rule above wins, as the list's order says — so move such a Block above it.
-> - **A server's default can be a rule list.** One list routes the server's interfaces set to Auto, what its smart interfaces leave unsaid, and the traffic other servers send out through it — by site, list or address: out one of its exits, directly, or blocked. A Forward to … rule there sends that traffic one hop further, to a server the first one cannot reach.
-> - **AmneziaWG 3.1.** An AmneziaWG interface can run AmneziaWG 3.1 — header protection, random trailers and Amnezia's 3.1 timings — chosen when you create it or switched either way later, and before a switch the panel lists every device it cuts off until they re-import. Only apps that carry 3.1 connect, and the server's AmneziaWG module and tools must be 3.1 too.
+> **What's new in 1.8.9-beta** — [full changelog](CHANGELOG.md)
+> - **Logs you control.** Settings → Logs sets how much the panel and every server log, gives swg's logs a disk budget of their own, streams any servers and sources live in the panel, and builds one file for any time range, with keys and tokens masked.
+> - **csqtt 2.5, beside 2.1, at full speed.** Each csqtt server runs 2.1 or 2.5 and switches either way, keeping its users. We ship 2.5.1, our build of amurcanov's 2.5.0: QUIC traffic and nested VPNs use every relay stream (downloads 2.1 → 20 Mbit/s in our tests), App routing chooses what bypasses the tunnel, and subscription pages hand out the apps from our own releases. ⚠️ 2.1 and 2.5 don't talk to each other: every device needs the app of its server's version.
+> - **Half the memory, far less CPU and almost no disk writes at rest.** The panel and swg-noded use about half the RAM they did, an idle node about a quarter of the CPU, and an idle server writes a few kilobytes a minute instead of hundreds.
+> - **AmneziaWG.** Load a newer AmneziaWG module without a reboot, pick AmneziaWG 2.0, 3.1 or plain WireGuard per mesh link, disguise a handshake as QUIC or DNS, and see why a module won't load. ⚠️ Updates now upgrade AmneziaWG's packages from the PPA, and torrents are blocked by default on every way out of a server.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -59,7 +59,7 @@ subscription and no one else sitting in the middle of your traffic.
 
 - **One page to run everything.** Add servers, add users, hand out access — all from the web panel.
 - **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
-- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [samosvalishe](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys. [How to set them up ↓](#subscriptions--access-control)
+- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [hack-diaz](screenshots/sub-samosvalishe.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys. [How to set them up ↓](#subscriptions--access-control)
 - **Suspend access in one click.** Block a person — or just one of their devices — instantly, without deleting them. Their tunnels stop and their subscription page goes dark; unblock to restore with the same keys, nothing to re-issue.
 - **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
 - **Single or multiple servers.** Put servers in different countries; a person can fail over between them.
@@ -71,6 +71,15 @@ subscription and no one else sitting in the middle of your traffic.
   interface and switch either way later: the panel first shows who the switch cuts off until they
   re-import, network gateways first, and refuses while a WINGS-N turn proxy points there. A 3.1 interface
   wears a blue badge. [Which apps connect ↓](#a-few-things-worth-knowing)
+- **Leave an AmneziaWG field out, and pick the mesh's protocol.** Type `-` in any AmneziaWG cell — an interface's
+  or the defaults' — and that line is not written at all (a blank cell stays automatic); the servers need this
+  update to hold one. Links between your servers are AmneziaWG 2.0 by default, or 3.1 or plain WireGuard, for the
+  whole fleet or for one link; a pair where one server cannot run 3.1 is linked at 2.0, and its server says why.
+- **Disguise the handshake.** On an AmneziaWG interface, *Edit interface* → *Advanced settings* has **Disguise as**:
+  Off, a QUIC (HTTP/3) packet or a DNS query, drawn fresh each time you pick one, sent before every handshake in
+  place of the built-in set every install uses by default (one pick brings it back). Devices keep working when you
+  change it — each side sends its own — and pick up the new disguise when they next re-import. The panel shows the
+  size and monthly cost of what it sends, and refuses a line some app could not read.
 - **Filter out the junk.** Block ads, trackers, malware, adult content, gambling and more — per server, from
   curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
   which user is behind the torrents and port-scans it flags.
@@ -78,10 +87,11 @@ subscription and no one else sitting in the middle of your traffic.
   apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
 - **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a
   turn-proxy fronts a tunnel you already have, a **WDTT** server *is* the tunnel — create it like any
-  other interface, pick one of five forks, and hand people a password instead of a key. Its config
+  other interface, pick one of four forks, and hand people a password instead of a key. Its config
   lands on their subscription page next to everything else, app download included.
 - **csqtt servers too.** The same idea on a newer, faster datapath — create it like any other interface
-  and hand out a password. Note that **csqtt is free for personal use only**; running one commercially
+  and hand out a password. Each server runs csqtt 2.1 or 2.5 (switchable, keeping its users); a 2.5 server can tell
+  every user's app which apps, domains and addresses skip the tunnel. Note that **csqtt is free for personal use only**; running one commercially
   needs a licence from its author ([details](THIRD-PARTY.md)).
 - **Bring what you already have.** Already running WireGuard, AmneziaWG, WDTT or csqtt on a box by hand? The
   panel finds those servers and offers to **adopt** them — keys, port, subnet and existing users
@@ -110,8 +120,7 @@ subscription and no one else sitting in the middle of your traffic.
   <a href="screenshots/sub-wireguard.jpg"><img src="screenshots/sub-wireguard.jpg" alt="WireGuard subscription" width="150"></a>
   <a href="screenshots/sub-amneziawg.jpg"><img src="screenshots/sub-amneziawg.jpg" alt="AmneziaWG subscription" width="150"></a>
   <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="WINGS-N subscription" width="150"></a>
-  <a href="screenshots/sub-moroka8.jpg"><img src="screenshots/sub-moroka8.jpg" alt="Moroka8 subscription" width="150"></a>
-  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="samosvalishe subscription" width="150"></a>
+  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="hack-diaz subscription" width="150"></a>
   <a href="screenshots/sub-anton48.jpg"><img src="screenshots/sub-anton48.jpg" alt="anton48 subscription" width="150"></a>
   <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="cacggghp subscription" width="150"></a>
 </p>
@@ -158,11 +167,15 @@ Copy the command onto your server and run it. It **asks you a few simple questio
 up, including HTTPS.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)"
 ```
 
 > **Already `root`?** Many fresh Debian/VPS images log you in as root with **no `sudo` installed** — just drop
-> the `sudo` and run `… | bash -s`. (The same applies to every command below.)
+> the leading `sudo` and run `bash -c "$(curl …)" …`. (The same applies to every command below.)
+
+> **Why not `curl … | sudo bash`?** On Ubuntu 26.04 `sudo` is sudo-rs, which runs a piped script in the background
+> of your terminal — the installer then freezes at its first question. Handing the script to `bash -c`, as above,
+> works with every `sudo`.
 
 > **On NixOS?** This command refuses to run, on purpose — it would write into `/opt`, which
 > `nixos-rebuild` neither manages nor sees, and leave you an install your own configuration cannot
@@ -189,13 +202,13 @@ If you chose **Master** above, you already have your first VPN server — you ca
    For a **bare-metal** server:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
+   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- node
    ```
 
    For a **Docker** server:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
+   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
    ```
 
 2. Run that command on the new server. It asks for your panel’s address and the key (both pre-filled if
@@ -360,7 +373,7 @@ before it does anything** and keeps your data safe.
 Run this on any server (panel or VPN server) — it figures out what’s installed and updates it in place,
 keeping all your settings and users:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- update
 ```
 
 **Coming from 1.8.6?** A plain-WireGuard interface you **restored** under 1.8.6 came back as AmneziaWG.
@@ -368,13 +381,25 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 stays that way: its users need the **AmneziaWG** app with the config the panel shows now — or delete the
 interface and create it again as WireGuard.
 
-**Going back to an older version?** On a bare-metal server there is nothing to do. A **Docker** server started on
-an image older than 1.8.7 keeps two firewall tables that version can't manage, and they go on refusing
-connections the panel has since allowed. Remove them on that server (a reboot clears them too):
+**Going back to an older version?** From 1.8.9, on a **bare-metal** server, two things stay: swg's services go on
+logging into the journals 1.8.9 gave them (an older version's `journalctl -u …` shows only systemd's lines; `swg-logs`
+still reads them), and 1.8.9's torrent guard stays in force with its last policy, whatever the older version's card
+says. A reboot ends the guard; once the older version runs, this ends both now:
+```bash
+sudo rm -f /etc/systemd/system/*.service.d/swg-ns.conf && sudo systemctl daemon-reload
+sudo systemctl try-restart 'swg-*.service'        # back to the system journal (a reboot moves them too)
+sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null     # the torrent guard
+```
+A **Docker** server keeps the guard too (the same `nft` / `ip rule` line), and one started on an image older than 1.8.7
+keeps two more firewall tables that version can't manage, which go on refusing connections the panel has since allowed.
+Remove them on that server (a reboot clears them too):
 ```bash
 sudo nft delete table inet swg_reach; sudo nft delete table inet swg_share
 ```
 On NixOS there is a little more — see [Going back to an older build](nix/README.md#going-back-to-an-older-build).
+A server's own mesh AWG params are kept on its links since 1.8.9: an older panel shows none on the server's card, and a
+link it rebuilds gets the fleet's default. Each release's notes in the [changelog](CHANGELOG.md) say what else going back
+from it takes.
 
 ### Backups — automatic, and manual
 
@@ -393,7 +418,7 @@ On NixOS there is a little more — see [Going back to an older build](nix/READM
 - **Rebuilding a VPN server?** Run the recovery helper on it and it finds the server’s leftover identity so
   it rejoins your panel **without re-enrolling**:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s recovery
+  sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- recovery
   ```
 - **Server box gone for good?** When the old machine is truly lost — nothing left to recover from — the
   panel can **rebuild** the node onto fresh hardware from the identity *it* holds: the same public keys, so
@@ -410,13 +435,13 @@ Just re-run the installer asking for the *other* method — it offers **convert 
 To move a server **to bare-metal**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- master
 ```
 
 To move it **to Docker**:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker master
 ```
 
 It stages the new version fully **before** removing the old one, so the switch takes only a few seconds and
@@ -429,7 +454,7 @@ Removes swgPanel, asking about **each piece** first (the panel, a VPN server, th
 turn-proxies) — nothing goes without a yes, and you can keep your users/servers data for a future
 reinstall:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s uninstall
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- uninstall
 ```
 
 ## A few things worth knowing
@@ -527,11 +552,8 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 
 **Turn-proxy forks** — wrap WireGuard/AmneziaWG through VK TURN relays to get past tough blocks:
 
-- [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe](https://github.com/samosvalishe/free-turn-proxy)
-- [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
-- [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
+- [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe — proxies installed from samosvalishe keep running, and now update from its new repository, hackdiaz-dev/free-turn-proxy)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
@@ -541,7 +563,6 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [Endlad2](https://github.com/Endlad2/LaLune)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
-- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 

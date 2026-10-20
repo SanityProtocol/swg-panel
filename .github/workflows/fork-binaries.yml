@@ -23,7 +23,7 @@ on:
         description: which fork to build
         required: true
         type: choice
-        options: [amneziawg-go, wdtt-amurcanov, wdtt-ildarmaga, wdtt-wdttplus, wdtt-xxcipherx, qwdtt, csqtt]
+        options: [amneziawg-go, wdtt-amurcanov, wdtt-ildarmaga, wdtt-wdttplus, qwdtt, csqtt]
       publish:
         description: "publish a release (leave OFF to build + verify only)"
         required: false
@@ -62,7 +62,6 @@ jobs:
             wdtt-amurcanov) script=forks/wdtt/build.sh;              asset=server-linux       ; kind=go   ;;
             wdtt-ildarmaga) script=forks/wdtt/ildarmaga/build.sh;    asset=server-linux       ; kind=go   ;;
             wdtt-wdttplus)  script=forks/wdtt/wdttplus/build.sh;     asset=server-linux       ; kind=go   ;;
-            wdtt-xxcipherx) script=forks/wdtt/xxcipherx/build.sh;    asset=server-linux       ; kind=go   ;;
             qwdtt)          script=forks/qwdtt/build.sh;             asset=server-linux       ; kind=go   ;;
             csqtt)          script=forks/csqtt/build.sh;             asset=server-linux       ; kind=rust ;;
             *) echo "unknown fork ${{ inputs.fork }}" >&2; exit 1 ;;
@@ -175,16 +174,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # English and Russian, with the README's language switch (operator, 2026-10-20: every release in both)
+          sums(){ echo "| $1 | sha256 |"; echo '|---|---|'
+            for f in dl/*; do case "$f" in *.sha256) continue;; esac
+              echo "| \`$(basename "$f")\` | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"; done; }
+          run="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           {
+            echo '<p align="center"><b>English</b> · <a href="#ru">Русский</a></p>'
+            echo; echo '<a name="en"></a>'; echo
             echo "swg-panel build of **${{ inputs.fork }}**, built by CI from \`${GITHUB_SHA:0:12}\`."
             echo
             echo "Toolchain: Go \`${{ env.GO_PIN }}\` / Rust \`${{ env.RUST_PIN }}\`. Upstream commit and patch are pinned in the build script."
             echo
-            echo '| asset | sha256 |'; echo '|---|---|'
-            for f in dl/*; do case "$f" in *.sha256) continue;; esac
-              echo "| \`$(basename "$f")\` | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"; done
+            sums asset
             echo
-            echo "Built by [this run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) with provenance attestation — verify with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`."
+            echo "Built by [this run](${run}) with provenance attestation — verify with \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`."
+            echo; echo '---'; echo; echo '<a name="ru"></a>'
+            echo '<p align="center"><a href="#en">English</a> · <b>Русский</b></p>'
+            echo
+            echo "Сборка **${{ inputs.fork }}** для swg-panel, собрана CI из \`${GITHUB_SHA:0:12}\`."
+            echo
+            echo "Инструменты: Go \`${{ env.GO_PIN }}\` / Rust \`${{ env.RUST_PIN }}\`. Коммит upstream и патч закреплены в скрипте сборки."
+            echo
+            sums файл
+            echo
+            echo "Собрано [этим запуском](${run}) с аттестацией происхождения — проверка: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`."
           } > notes.md
           gh release create "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" \
             --title "${{ inputs.fork }} — ${{ inputs.tag }}" --notes-file notes.md dl/*

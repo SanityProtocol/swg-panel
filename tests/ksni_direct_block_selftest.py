@@ -40,6 +40,7 @@ Run: python3 tests/ksni_direct_block_selftest.py   (0 = pass)
                 directzero  a Direct marks 0 (counted as uncategorised as well as its category) [9]
 """
 import importlib.machinery, importlib.util, ipaddress, os, socket, struct, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -387,7 +388,7 @@ _real_nft = N._ensure_smart_nft
 N._ensure_smart_nft = lambda *a, **k: (_seen.setdefault("nft", []).append(k), {})[1]
 N._ensure_smart_xtstring = lambda host_entries, *a, **k: (_seen.setdefault("xt", []).append([dict(e) for e in host_entries]), [])[1]
 for stub in ("_smart_geo_refresh", "_smart_load_cidrs", "_panel_list_refresh", "_ensure_doh_block", "_ensure_mech_block",
-             "_ensure_torrent_sig", "_ensure_sni_router", "reconcile_catk_chain", "_dnsmasq_refill", "_ensure_smart_dnsmasq"):
+             "_ensure_p2p", "_ensure_sni_router", "reconcile_catk_chain", "_dnsmasq_refill", "_ensure_smart_dnsmasq"):
     setattr(N, stub, lambda *a, **k: None)
 N._smart_domain_refresh = lambda cats, res: ({}, {})
 N._ksni_src_ok = lambda: True
@@ -420,7 +421,7 @@ print("\n[9] the Direct mark")
 m = N.SNI_DIRECT_MARK
 check("not zero — the uncategorised count (`ct mark != 0`) skips it, so a Direct-by-name flow is counted once", m != 0, m)
 check("not a table of the exit band, and no other flag", not (N.SWG_RT_BASE <= m <= N.SWG_RT_MAX)
-      and m not in (N.SNI_RESET_MARK, N.SNI_BLOCK_MARK, N.RELAY_MARK, N.TORRENT_MARK), hex(m))
+      and m not in (N.SNI_RESET_MARK, N.SNI_BLOCK_MARK, N.RELAY_MARK, N.P2P_BIT), hex(m))
 check("even (no `fwmark 0x1/0x1` rule of another tool takes it)", m % 2 == 0, hex(m))
 
 print()

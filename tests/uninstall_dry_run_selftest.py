@@ -16,6 +16,7 @@ ipset, systemctl, wg/awg-quick, userdel, apt-get, ufw, …) a stub that records 
       an empty /etc/swg-agent left behind by an earlier removal
   [2] a Docker files-only box — no swg container, the deployment dir and a leftover turn-proxy container
   [3] a bare master — panel + node, interfaces, an nft table, ipsets, policy rules, a relay
+  [4] a Docker node whose container is gone — its node-confs left (016e13ef offers it as the node it was, not the files)
   Each: no stub call that changes anything, the fake root byte-identical afterwards, and the plan still said ("[dry] …").
 
 Run: python3 tests/uninstall_dry_run_selftest.py     (0 = pass)
@@ -178,12 +179,13 @@ for label, presets in (("--yes, defaults", ()), ("--yes, every destructive quest
     check("[1] (%s) …and the plan still says it: \"[dry] down + delete the leftover host interface awg0\"" % label,
           "[dry] down + delete the leftover host interface awg0" in out and "DRY RUN — nothing was actually removed" in out, out[-1500:])
 
-print("\n[2] a Docker files-only box (no swg container left)")
+print("\n[2] a Docker files-only box (no swg container left, and no node ever ran: no node-confs)")
 box = mkbox("docker-files", {"docker.ps": "", "docker.turn": "swg-turn-a\n", "iptables": IPT},
             {"opt/swg-panel-docker/.env": ENV_NODE, "opt/swg-panel-docker/docker-compose.yml": "services: {}\n",
-             "opt/swg-panel-docker/data/node-confs/awg0.conf": "[Interface]\nAddress = 10.81.1.1/24\n"})
+             "opt/swg-panel-docker/data/users.json": "{}"})
 for label, presets in (("--yes, defaults", ()), ("--yes, every destructive question preset to yes", PRESETS)):
     rc, out, muts, changed = run(box, *presets)
+    check("[2] (%s) offered as the files (the component this box is for)" % label, "Docker deployment (files)" in out, out[-800:])
     check("[2] (%s) no docker compose down, no docker rm -f" % label, not muts, muts)
     check("[2] (%s) the box byte-identical afterwards" % label, not changed, changed)
 
@@ -204,6 +206,16 @@ for label, presets in (("--yes, defaults", ()), ("--yes, every destructive quest
     check("[3] (%s) no call that changes anything" % label, not muts, muts)
     check("[3] (%s) the box byte-identical afterwards" % label, not changed, changed)
     check("[3] (%s) …and the plan is printed ([dry] lines)" % label, out.count("[dry]") >= 10, out[-800:])
+
+print("\n[4] a Docker node whose container is gone (its node-confs left)")
+box = mkbox("docker-node-gone", {"docker.ps": "", "docker.turn": "swg-turn-a\n", "iptables": IPT},
+            {"opt/swg-panel-docker/.env": ENV_NODE, "opt/swg-panel-docker/docker-compose.yml": "services: {}\n",
+             "opt/swg-panel-docker/data/node-confs/awg0.conf": "[Interface]\nAddress = 10.81.1.1/24\n"})
+for label, presets in (("--yes, defaults", ()), ("--yes, every destructive question preset to yes", PRESETS)):
+    rc, out, muts, changed = run(box, *presets)
+    check("[4] (%s) offered as the node it was" % label, "its container is gone" in out, out[-800:])
+    check("[4] (%s) no call that changes anything" % label, not muts, muts)
+    check("[4] (%s) the box byte-identical afterwards" % label, not changed, changed)
 
 shutil.rmtree(T, ignore_errors=True)
 print()

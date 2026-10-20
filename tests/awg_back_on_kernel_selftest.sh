@@ -17,7 +17,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 FAILS=0; check(){ if [ "$2" = 0 ]; then echo "  PASS $1"; else echo "  FAIL $1 ${3:-}"; FAILS=$((FAILS+1)); fi; }
-fn="$(awk '/^awg_kernel_takes\(\)\{/,/^}$/' "$ROOT/update.sh"; awk '/^ensure_awg_back_on_kernel\(\)\{/,/^}$/' "$ROOT/update.sh")"
+fn="$(awk '/^awg_kernel_takes\(\)\{/,/^}$/' "$ROOT/update.sh"; awk '/^ensure_awg_back_on_kernel\(\)\{/,/^}$/' "$ROOT/update.sh"; grep '^awg_blacklisted(){' "$ROOT/lib/common.sh")"   # (the modprobe stub names no blacklist: [11] of secure_boot_dpkg drives one)
 [ -n "$fn" ] || { echo "  FAIL function not found in update.sh"; exit 1; }
 fn="${fn//\/sys\/class\/net/$T/sys}"; fn="${fn//\/etc\/amnezia\/amneziawg/$T/etc-awg}"; fn="${fn//\/etc\/amneziawg/$T/etc-awg2}"; fn="${fn//\/var\/run\/amneziawg/$T/run}"
 # ⚠️ EACH PLANT MUST CHANGE WHAT IT PLANTS INTO — one whose anchor is gone plants nothing and would read green (round 10)

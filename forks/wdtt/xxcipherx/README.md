@@ -1,5 +1,10 @@
 # WDTT server — xxcipherx fork (swg-panel patched build)
 
+> **No longer published (2026-10-14).** XXcipherX deleted its repository and the fork is hidden in the panel; our
+> `wdtt-xxcipherx-*` releases were removed from GitHub (binaries archived off-repo) and the panel lists no build of it.
+> This directory stays as the record of what we built; `build.sh` still fetches the pinned commit by SHA.
+
+
 Third server fork in the WDTT family (`XXcipherX/proxy-turn-vk-android`, the video-masquerade fork of `../` =
 amurcanov). Same `wdtt://` wire, WRAP/GETCONF/DTLS protocol. We build only the Go server at
 `app/src/main/assets/linux-server`; the swg-panel is the control plane.

@@ -36,6 +36,7 @@ Hermetic: no nft, no ip, no root. Run: python3 tests/arrival_nft_selftest.py   (
      dd   the devexit report is not deduplicated for arrivals (~50 KB a sync at 30 nodes)
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -69,8 +70,8 @@ PLANTS = {
     "t2": ('''if re.fullmatch(r"sr\\d+|pb\\d+|sa|pa\\d+", c))):''', '''if re.fullmatch(r"sr\\d+|pb\\d+", c))):'''),
     "reap": ('''        _gone_ax = [c for c in _here_ax if not arr or (c != "sa" and c not in want_pa)]''',
              '''        _gone_ax = [c for c in _here_ax if arr and c != "sa" and c not in want_pa]'''),
-    "t34": ('''    for c in sorted({e["category"] for e in arr_ents}):
-        rules.append(["-A", CHAIN, *_asrc, "-m", "set", "--match-set", _xts_setname(c), "dst", "-j", "RETURN"])''', ''),
+    "t34": ('''    for c in sorted({e["category"] for e in arr_r}):
+        rules.append(["-A", CHAIN, *_asrc, "-m", "set", "--match-set", _xts_setname(c), "dst", "-j", "RETURN"])''', ''),   # arr_r: 498e465
     "kog": ('''        gd = ["!", "-i", e["via_iface"]]''', '''        gd = []'''),
     "rf": ("""            if sn not in have_sets or _ARR_SETS.get(sn) != msig or (mem and not _t["counts"].get(sn, 0)):""",
            """            if sn not in have_sets or _ARR_SETS.get(sn) != msig:"""),
@@ -315,7 +316,7 @@ N._dev_is_ether = lambda dev: False
 cap = {}
 N._ensure_smart_nft = lambda *a, **k: cap.update(k) or {}
 for fn in ("_ensure_fwd_iptables", "_ensure_sni_router", "_ensure_smart_xtstring", "reconcile_catk_chain", "_ensure_smart_dnsmasq",
-           "_dnsmasq_refill", "_ensure_doh_block", "_ensure_mech_block", "_ensure_torrent_sig", "_smart_geo_refresh",
+           "_dnsmasq_refill", "_ensure_doh_block", "_ensure_mech_block", "_ensure_p2p", "_smart_geo_refresh",
            "_smart_load_cidrs", "_panel_list_refresh", "_apply_routing_reset", "_smart_domain_refresh"):
     setattr(N, fn, (lambda *a, **k: ({}, {})) if fn == "_smart_domain_refresh" else (lambda *a, **k: None))
 N.run = lambda a, input_text=None, timeout=20: __import__("subprocess").CompletedProcess(a, 0, "", "")

@@ -36,6 +36,7 @@ Plants — each must turn the run RED; the section named is the one that must ca
 Hermetic. Run: python3 tests/reach_counter_selftest.py            (0 = pass)
 """
 import importlib.machinery, importlib.util, os, shutil, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)

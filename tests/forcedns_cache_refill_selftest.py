@@ -22,6 +22,7 @@ Run: python3 tests/forcedns_cache_refill_selftest.py (0 = pass)
      --perturb-order    the refill runs before the set loads                  → RED on [4]
 """
 import importlib.machinery, importlib.util, os, re, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NODED = os.environ.get("SWG_NODED") or os.path.join(HERE, "..", "swg-noded")

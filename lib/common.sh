@@ -246,7 +246,7 @@ ask_secret(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v rc
     # 2>/dev/null BEFORE >/dev/tty (and on the read): redirections apply left to right, so the other order printed a
     # raw "/dev/tty: No such device or address" whenever there was no terminal to open.
     printf '  %s%s: ' "$p" "${d:+ [$(col "${C_BLUE:-}" 'keep current')]}" 2>/dev/null >/dev/tty || printf '  %s: ' "$p"
-    if read -rs v 2>/dev/null </dev/tty; then rc=0; printf '\n' 2>/dev/null >/dev/tty || echo   # read -s swallows the newline the operator pressed
+    if read -rs v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then rc=0; printf '\n' 2>/dev/null >/dev/tty || echo   # read -s swallows the newline the operator pressed
     else rc=1; v=""   # …and with no terminal the prompt line ended blank (1.8.8 qualification): say what happens instead
       if [ -n "$d" ]; then echo "(no terminal — the saved one is kept)"; else echo "(no terminal — nothing given)"; fi; fi
     v="${v:-$d}"
@@ -288,7 +288,7 @@ node_reconfig_block(){
     echo
     printf '    %-13s %s\n' "SWG Agent"    "$(b 'nano /etc/swg-agent/config.json')"
     printf '    %-13s %s\n' "Restart"      "$(b 'systemctl restart swg-noded')"
-    printf '    %-13s %s\n' "Logs"         "$(b 'journalctl -u swg-noded -f')"
+    printf '    %-13s %s\n' "Logs"         "$(b 'swg-logs noded -f')"
   fi
 }
 
@@ -419,7 +419,7 @@ summary_host_block(){   # <method> <converted?yes|no>
   else
     printf '    %-9s%s\n' "Config"  "$(b /etc/swg-panel/)  (change URL/TLS by re-running the installer)"
     printf '    %-9s%s\n' "Restart" "$(b 'systemctl restart swg-panel-server')"
-    printf '    %-9s%s\n' "Logs"    "$(b 'journalctl -u swg-panel-server -f')"
+    printf '    %-9s%s\n' "Logs"    "$(b 'swg-logs panel -f')"
   fi
   summary_sub_block "$m"    # the subscription surface is part of what a panel install delivers — say where it stands
 }
@@ -570,7 +570,9 @@ PY
     units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
     if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
       for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
+        # what clients dial (SWG_DIAL — set when it is not the bind: a DDNS name, an address behind NAT), else the bind
+        lis="$(sed -n 's/^SWG_DIAL=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
+        [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
         con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | sed -n 1p || true)"
         _sum_turn_row "$svc" "$lis" "$con"; done; fi
     _sum_wdtt_block baremetal
@@ -647,7 +649,10 @@ _lc_inprogress(){ case "$1" in reinstall) echo reinstalling;; convert-bare) echo
 _lc_success(){    case "$1" in reinstall) echo reinstalled;; convert-bare) echo converted-bare;; convert-docker) echo converted-docker;; update) echo updated;; uninstall) echo "";; esac; }
 _lc_prefix(){     case "$1" in convert-*) echo convert;; *) echo "$1";; esac; }   # aborted/failed are op-generic
 lc_emit(){ [ -n "${LC_EMIT:-}" ] && [ -n "${1:-}" ] && "$LC_EMIT" "$1" "${2:-}" || true; }
-lc_handoff(){ LC_HANDOFF=1; }                                  # another script now owns the terminal (convert→installer)
+lc_handoff(){ LC_HANDOFF=1                                      # another script now owns the terminal (convert→installer)
+  # …and exec'd, it never runs our EXIT trap: the log goes now (the tee writes on into the unlinked file) — every bare →
+  # Docker convert left a /tmp copy of the whole install's output behind (1.8.9 qualification LC24 #15b)
+  if [ -n "${LC_LOG:-}" ]; then rm -f "$LC_LOG" 2>/dev/null || true; fi; }
 # The node's TRUST travels with its token: LC_VERIFY (yes = CA verification) and LC_FP (its pinned certificate) — every
 # POST goes through panel_req, which checks the panel on the connection the token is sent on. The caller sets LC_FP
 # wherever the node has a pin (bare: the agent config's panel.fingerprint; Docker: TLS_FINGERPRINT / its learned
@@ -800,8 +805,92 @@ lc_teardown_baremetal(){
     systemctl disable "awg-quick@$n" 2>/dev/null || true; systemctl disable "wg-quick@$n" 2>/dev/null || true
     rm -f "$f"; done
   for s in "$@"; do [ -n "$s" ] || continue; systemctl disable --now "$s" 2>/dev/null || true; rm -f "/etc/systemd/system/$s.service"; done   # migrated host turn-proxies only
-  rm -rf /etc/systemd/system/swg-noded.service /etc/systemd/system/swg-noded.service.d; systemctl daemon-reload 2>/dev/null || true
-  rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent; }
+  rm -rf /etc/systemd/system/swg-noded.service /etc/systemd/system/swg-noded.service.d
+  swg_log_teardown swg-node swg-relay@.service vk-turn-proxy-.service swg-wdtt-.service swg-csqtt-.service   # (see there)
+  systemctl daemon-reload 2>/dev/null || true
+  rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent /var/log/swg-agent; }
+# ── swg-netctl's IDLE GATE: the helper starts only when it has work ─────────────────────────────────────────────────────
+# swg-netctl.service starts on every tick of a 10 s timer, and it must: the path watch can die unseen (the panel shows the
+# helper down only when both are down), the panel waits as little as 15–60 s for some answers (_RENEW_PICKUP_S), and on
+# Docker the timer drains the queue. But a tick with nothing to do was a whole Python start — 80–140 ms of CPU, 8 640 a
+# day, more than the panel itself spends (hel-infra, 2026-10-09). An ExecCondition runs this gate first: bash builtins,
+# ~1.5 ms. It lets the helper run for a request, for settings saved since its last run, or when its own work is due (the
+# time it wrote to /run/swg-netctl.due: Debug's end, the budget's retry, the journal size's refresh), and skips the start
+# otherwise; the Docker drainer has no work of its own, so its gate asks the queue only. The drop-in maps every exit but an
+# explicit 1 to "run": systemd skips a start on ANY exit from 1 to 254, so a gate that is missing (127) or broken (2) would
+# otherwise stop the root helper for good, silently. ONE text each, written by install-host.sh / install-docker.sh and
+# healed by update.sh (docs/CPU-PLAN.md, Part A).
+SWG_NETCTL_DUE_DROPIN=swg-due.conf
+swg_netctl_due_text(){ cat <<'GATE'
+#!/bin/bash
+# swg-netctl-due <state dir> | --queue-only <queue dir> — the idle gate of swg-netctl.service and swg-netctl-docker.service
+# (lib/common.sh), run by their ExecCondition before every start. Exit 1: nothing to do, the start is skipped. Exit 0: run.
+# Builtins only: it runs on every 10 s tick.
+shopt -s nullglob dotglob
+if [ "${1:-}" = --queue-only ]; then
+  [ -n "${2:-}" ] || exit 0
+  q=("$2"/*); (( ${#q[@]} )) && exit 0
+  exit 1
+fi
+[ -n "${1:-}" ] || exit 0
+S=$1 D=/run/swg-netctl.due
+q=("$S"/netctl/queue/*); (( ${#q[@]} )) && exit 0        # any entry, dotfiles too: exactly what the path watch fires on
+[[ -r $D && ! $S/panel-settings.json -nt $D ]] || exit 0  # the first tick since boot, or settings newer than the version a run read
+read -r due at < "$D" || exit 0                           # `<due> <the time of the run that wrote it>`
+[[ $due =~ ^[1-9][0-9]{0,17}$ && $at =~ ^[1-9][0-9]{0,17}$ ]] || exit 0
+printf -v now '%(%s)T' -1
+(( now >= due || at > now + 1 )) && exit 0                # the helper's own work is due — or the clock went back past that run
+exit 1
+GATE
+}
+# The drop-ins name no path: an ExecCondition runs with its unit's environment, so the gate reads the state dir (the queue)
+# from the same SWG_STATE_DIR (SWG_DOCKER_DIR) the helper (the drainer) runs with, under the same default — the two cannot
+# disagree, and the text is the same on every box. (`$$` is systemd's literal `$`: the shell expands it, not systemd.)
+swg_netctl_due_dropin_text(){   # swg-netctl.service's drop-in, on stdout
+  cat <<'EOF'
+[Service]
+# The idle gate (lib/common.sh swg_netctl_due_text), on the state dir this unit's helper uses (its SWG_STATE_DIR, under the
+# helper's own default). Only the gate's explicit 1 skips the start: a gate that is missing, broken or killed runs the
+# helper, as before the gate existed.
+ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due "$${SWG_STATE_DIR:-/var/lib/swg-panel}"; [ $$? -eq 1 ] && exit 1; exit 0'
+EOF
+}
+swg_netctl_docker_due_dropin_text(){   # swg-netctl-docker.service's drop-in, on stdout
+  cat <<'EOF'
+[Service]
+# The idle gate (lib/common.sh swg_netctl_due_text): the drainer runs when its queue holds something — the queue under this
+# unit's SWG_DOCKER_DIR, under the drainer's own default. Only the gate's explicit 1 skips the start: a gate that is
+# missing, broken or killed runs the drainer, as before the gate existed.
+ExecCondition=/bin/sh -c '/usr/local/bin/swg-netctl-due --queue-only "$${SWG_DOCKER_DIR:-/opt/swg-panel-docker}/data/lib/netctl/queue"; [ $$? -eq 1 ] && exit 1; exit 0'
+EOF
+}
+# The writer install-docker.sh and update.sh share (install-host.sh renders the same texts through its writef): the gate
+# when it is missing or different — by rename, since it may be running — then <unit>'s drop-in when missing or different.
+# Both are ours entirely (nothing an operator sets), so a different text is an older release's and is rewritten: present
+# is not current (1.8.8 qualification N12) — nor is a gate that lost its exec bit, which sh then answers 126 for, and runs
+# the helper every tick (fail-open, the saving gone without a sign). Only for a unit that exists. NETCTL_GATE_CHANGED=1 when the drop-in was written
+# (the caller daemon-reloads).
+netctl_gate_heal(){   # <unit> <drop-in text>
+  local d="/etc/systemd/system/$1.d"; NETCTL_GATE_CHANGED=0
+  [ -f "/etc/systemd/system/$1" ] || return 0
+  if [ ! -x /usr/local/bin/swg-netctl-due ] || [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" != "$(swg_netctl_due_text)" ]; then
+    swg_netctl_due_text > /usr/local/bin/swg-netctl-due.new && chmod 755 /usr/local/bin/swg-netctl-due.new \
+      && mv -f /usr/local/bin/swg-netctl-due.new /usr/local/bin/swg-netctl-due
+  fi
+  [ "$(cat "$d/$SWG_NETCTL_DUE_DROPIN" 2>/dev/null)" = "$2" ] && return 0
+  mkdir -p "$d" && printf '%s\n' "$2" > "$d/$SWG_NETCTL_DUE_DROPIN" && NETCTL_GATE_CHANGED=1
+  return 0
+}
+netctl_gate_current(){   # <unit> <drop-in text> → 0 when netctl_gate_heal would write nothing
+  [ -f "/etc/systemd/system/$1" ] || return 0
+  [ -x /usr/local/bin/swg-netctl-due ] && [ "$(cat /usr/local/bin/swg-netctl-due 2>/dev/null)" = "$(swg_netctl_due_text)" ] \
+    && [ "$(cat "/etc/systemd/system/$1.d/$SWG_NETCTL_DUE_DROPIN" 2>/dev/null)" = "$2" ]
+}
+netctl_gate_reap(){   # the gate goes with the last unit that runs it
+  [ -e /etc/systemd/system/swg-netctl.service ] || [ -e /etc/systemd/system/swg-netctl-docker.service ] \
+    || rm -f /usr/local/bin/swg-netctl-due
+  return 0
+}
 # teardown_bare_panel — stop + remove the bare-metal panel (units + proxy vhost + binary), then move its STATE
 # dirs aside (already staged into data/) so the box no longer reads as a bare panel and a later convert-back
 # Remove the DOCKER address helper (swg-netctl-docker.*) — the mirror of what teardown_bare_panel does to the
@@ -819,7 +908,9 @@ remove_docker_netctl(){
     systemctl disable --now "$_u" >/dev/null 2>&1 || systemctl stop "$_u" >/dev/null 2>&1 || true
   done
   rm -f /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer \
-        /etc/systemd/system/swg-netctl-docker.path /usr/local/bin/swg-netctl-docker
+        /etc/systemd/system/swg-netctl-docker.path /usr/local/bin/swg-netctl-docker /usr/local/bin/swg-netctl-docker.new
+  rm -rf /etc/systemd/system/swg-netctl-docker.service.d   # its log level drop-in (docker_host_log_dropins) goes with it
+  netctl_gate_reap                                          # …and the idle gate, unless the bare helper still runs it
   systemctl daemon-reload >/dev/null 2>&1 || true; }
 
 # restages cleanly. Used by the bare→docker host/master convert (install-docker.sh, at the atomic switch).
@@ -839,7 +930,10 @@ teardown_bare_panel(){
     systemctl disable --now "$_u" >/dev/null 2>&1 || systemctl stop "$_u" >/dev/null 2>&1 || true
   done
   rm -f /etc/systemd/system/swg-sub.service /etc/systemd/system/swg-netctl.service /etc/systemd/system/swg-netctl.path /etc/systemd/system/swg-netctl.timer /usr/local/bin/swg-netctl \
-        /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer /usr/local/bin/swg-netctl-docker
+        /etc/systemd/system/swg-netctl-docker.service /etc/systemd/system/swg-netctl-docker.timer /etc/systemd/system/swg-netctl-docker.path \
+        /usr/local/bin/swg-netctl-docker /usr/local/bin/swg-netctl-docker.new   # .path too, as remove_docker_netctl learned (the loop above stops it)
+  rm -f "/etc/systemd/system/swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN" "/etc/systemd/system/swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN"
+  netctl_gate_reap                                          # the idle gate goes with the units that ran it
   rm -rf /opt/swg-sub
   rm -f /etc/systemd/system/swg-panel-server.service /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /usr/local/bin/swg-update
   rm -rf /etc/systemd/system/swg-panel-server.service.d
@@ -848,6 +942,7 @@ teardown_bare_panel(){
   rm -rf /opt/swg-panel /usr/local/bin/swg-panel-server   # remove the bare binary too, else the box still reads as a bare panel (bootstrap won't offer convert-back)
   local _ts _d; _ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
   for _d in /var/lib/swg-panel /etc/swg-panel; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$_ts" 2>/dev/null && seal_archive "$_d.converted-$_ts"; done
+  swg_log_teardown swg-panel swg-sub.service swg-netctl.service swg-update.service   # (see there)
   systemctl daemon-reload >/dev/null 2>&1 || true; }
 
 # ── A RECOVERY ARCHIVE IS ROOT'S ALONE ────────────────────────────────────────────────────────────────────────────────
@@ -1088,8 +1183,9 @@ migrate_csqtt(){
 #   to-docker    the record IS the config (load_turn_proxies returns it as-is on a container node) and swg-noded's
 #                background reconcile recreates each container from it, downloading the binary. Carrying it is enough.
 #   to-baremetal a bare node reads its turn set from the UNITS ON DISK and drops record entries with no unit, so the
-#                record alone shows nothing on the panel until each proxy is re-created. convert.sh's turn_to_bare
-#                writes those units (it downloads the binary per fork); this does not, and says so at the call site.
+#                record alone shows nothing on the panel until each proxy is re-created. install-node.sh's
+#                migrate_docker_turns writes those units (it downloads the binary per fork); this does not, and says so
+#                at the call site.
 migrate_turn_record(){
   local dir="$1" dd="${2:-/opt/swg-panel-docker}" nd="${3:-}" src dst
   [ -n "$nd" ] || nd="$dd/data/node"
@@ -1122,6 +1218,18 @@ stop_bare_csqtt(){
   done
   [ "$n" -gt 0 ] && { systemctl daemon-reload >/dev/null 2>&1 || true; echo "    stopped $n bare-metal csqtt server(s) — the container owns them now"; }
   return 0; }
+# stop_bare_wdtt — the same for the bare WDTT servers: stopped AND their units deleted. They were only disabled, and a unit
+# left behind is what a later uninstall lists as "WDTT (service + interface)" — whose removal deletes the interface, its
+# SNAT rules and its UAPI socket by that name: the Docker node's LIVE WDTT once the convert is done (1.8.9 qualification,
+# FIXER-U). Units only, as before: the config-dir was carried and stays.
+stop_bare_wdtt(){
+  local unit n=0 sd="${SYSTEMD_DIR:-/etc/systemd/system}"
+  for unit in $(ls "$sd"/swg-wdtt-*.service 2>/dev/null || true); do
+    systemctl disable --now "$(basename "$unit" .service)" >/dev/null 2>&1 || true
+    rm -f "$unit"; n=$((n+1))
+  done
+  [ "$n" -gt 0 ] && { systemctl daemon-reload >/dev/null 2>&1 || true; echo "    stopped $n bare-metal WDTT server(s) — the container owns them now"; }
+  return 0; }
 
 # ── turn-proxy: the binary download (GitHub direct, then opt-in mirrors) ──
 
@@ -1129,7 +1237,7 @@ stop_bare_csqtt(){
 # TURN_UNIT_HARDENING). A forwarder only shuffles bytes between two sockets, so confine it hard: a compromised
 # fork binary is contained to its sockets, not root. Injected into the unit's [Service] via $TURN_HARDENING.
 # ⚠️ SystemCallFilter=@system-service is the one that could refuse an odd Go syscall — first suspect if a proxy
-# won't start after install (check `journalctl -u <svc>` for a seccomp kill).
+# won't start after install (check `swg-logs turn <instance>` for a seccomp kill).
 TURN_HARDENING='NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -1362,9 +1470,10 @@ write_docker_updater(){
   swg_update_wrapper_text "$_swg_ref" > /usr/local/bin/swg-update.new   # the one text (above)
   chmod 755 /usr/local/bin/swg-update.new
   mv -f /usr/local/bin/swg-update.new /usr/local/bin/swg-update   # see the rename note above — NEVER `cat >`
-  # The trigger files are written by the panel/node CONTAINER through a bind mount, and inotify does NOT cross that
-  # bind mount — a host `.path` unit (PathModified) NEVER sees the container's write. So we POLL the trigger mtimes
-  # from the host instead (stat across the bind mount works — it's a shared inode). A timer runs this every 30s.
+  # The trigger files are written by the panel/node CONTAINER through a bind mount, and the host POLLS their mtimes (stat
+  # across the bind mount — a shared inode). A timer runs this every 30s. ⚠️ This said a host `.path` unit NEVER sees the
+  # container's write; on Docker it does (measured 2026-10-10 on a Docker node: PathModified fired on a create, an in-place
+  # rewrite and a rename made inside the container). The poll stays: it does not depend on that, and 30 s is fine here.
   swg_update_check_docker_text > /usr/local/bin/swg-update-check   # the one text (above)
   chmod 755 /usr/local/bin/swg-update-check
   swg_update_docker_service_text > /etc/systemd/system/swg-update.service
@@ -1544,7 +1653,7 @@ guard_second_panel(){
   [ -n "$ans" ] && echo "  Abort, stop the other, or keep both [a/s/k]: $(b "$ans")  (given by SWG_OTHER_PANEL — not asked)"
   if [ -z "$ans" ]; then
     printf '  Abort, stop the other, or keep both [a/s/k]: ' 2>/dev/null >/dev/tty || printf '  Abort, stop the other, or keep both [a/s/k]: '
-    read -r ans 2>/dev/null </dev/tty || { echo; echo "  ✗ no interactive input — run from a terminal (ssh -t), or set SWG_OTHER_PANEL=stop|keep|abort"; exit 1; }
+    read -r ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { echo; echo "  ✗ no interactive input — run from a terminal (ssh -t), or set SWG_OTHER_PANEL=stop|keep|abort"; exit 1; }
   fi
   case "$ans" in
     s|S|stop)
@@ -1930,9 +2039,17 @@ host_bindable_ips(){
 # HTTP/1.1 retry turns it back into a working clone. Ubuntu 24.04 (git 2.43 / nghttp2 1.59) never sees it.
 # Costs nothing where HTTP/2 works: the retry is only ever reached after a failure.
 git_clone_depth1(){ # <url> <dest> [<tag or branch>]
-  run env GIT_TERMINAL_PROMPT=0 git clone --depth=1 ${3:+--branch "$3"} "$1" "$2" && return 0
+  # A throttled link gives up instead of crawling: git aborts a transfer under 10 KB/s for 30 s, and the whole clone is
+  # capped at 5 minutes where `timeout` exists. Measured on a home box in Russia (client report 2026-10-06): GitHub at a
+  # crawl, and this clone — whose output goes to a log — left the installer silent for longer than anyone waits.
+  # --foreground: git stays in the installer's process group, so a Ctrl-C reaches it and ends the run — timeout's own group
+  # kept the Ctrl-C from git, and the run carried on once the clone ended (1.8.9 qualification IN-4). A clone that hit the
+  # cap is not tried again over HTTP/1.1: that is the slow link, not the 401 above, and a retry only doubled the wait (IN-21).
+  local _to="" _rc=0; have timeout && _to="timeout --foreground 300"
+  run env GIT_TERMINAL_PROMPT=0 $_to git -c http.lowSpeedLimit=10240 -c http.lowSpeedTime=30 clone --depth=1 ${3:+--branch "$3"} "$1" "$2" && return 0 || _rc=$?
   rm -rf "${2:?}"
-  run env GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 clone --depth=1 ${3:+--branch "$3"} "$1" "$2"
+  [ "$_rc" != 124 ] || return 124
+  run env GIT_TERMINAL_PROMPT=0 $_to git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=10240 -c http.lowSpeedTime=30 clone --depth=1 ${3:+--branch "$3"} "$1" "$2"
 }
 
 # ── the amnezia PPA serves Ubuntu, and only Ubuntu ──────────────────────────────────────────────────────────────────
@@ -2076,10 +2193,240 @@ awg_dkms_register_source(){ # clone upstream and register it — ONLY when no am
   $DRYRUN && { echo "    [skip] register amneziawg with DKMS from source"; return 0; }
   local w rc=1; w="$(mktemp -d)"
   git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/log" 2>&1 \
+    && { awg_compat_patch "$w/mod/src" >>"$w/log" 2>&1 || true; } \
     && awg_dkms_register_dir "$w/mod/src" >>"$w/log" 2>&1 && rc=0
   rm -rf "$w"
   return $rc
 }
+
+# ── a kernel module that does not COMPILE is remembered, not retried ──────────────────────────────────────────────────
+# Ubuntu 26.04's kernel 7.0.0-38 (client report 2026-10-06): upstream's module did not build on it at all, and the
+# installer compiled it four or five times per pass — the package's postinst, `dkms autoinstall` twice, a --reinstall,
+# every kernel, then once more from source — every update did all of it again, and the failed amneziawg-dkms was left
+# half-configured, so every later `apt install` on the box ended in a dpkg error. One record per kernel says what did not
+# compile: the package version (pkg) and the upstream commit (src). The next try waits for a new kernel, a newer
+# package, or a newer upstream commit; a kernel the record does not name has no record at all.
+AWG_MOD_FAILED="${SWG_AWG_MOD_FAILED:-/var/lib/swg-noded/awg-module-failed}"
+awg_fail_get(){ # <pkg|src> — what did not compile on THIS kernel; empty (rc 1) when nothing is recorded for it
+  [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_FAILED" 2>/dev/null)" = "$(uname -r)" ] || return 1
+  local v; v="$(sed -n "s/^$1=//p" "$AWG_MOD_FAILED" 2>/dev/null | sed -n 1p)"; [ -n "$v" ] && printf '%s' "$v"; }
+awg_fail_note(){ # <pkg|src> <value> — this kernel's record gains one fact (a record for another kernel is replaced)
+  $DRYRUN && return 0
+  local k old=""; k="$(uname -r)"
+  [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_FAILED" 2>/dev/null)" = "$k" ] && old="$(grep -v -e '^kernel=' -e "^$1=" "$AWG_MOD_FAILED" 2>/dev/null || true)"
+  mkdir -p "$(dirname "$AWG_MOD_FAILED")" 2>/dev/null || return 0
+  printf 'kernel=%s\n%s%s=%s\n' "$k" "${old:+$old
+}" "$1" "$2" > "$AWG_MOD_FAILED.tmp" 2>/dev/null && mv -f "$AWG_MOD_FAILED.tmp" "$AWG_MOD_FAILED" 2>/dev/null || true; }
+awg_module_head(){ # the commit upstream's kernel module is at now — empty when it cannot be asked (no git, no network)
+  have git || return 0
+  # --foreground: a Ctrl-C ends it at once (IN-4); git's low-speed abort ends a stalled helper, which the cap then misses
+  local t=""; have timeout && t="timeout --foreground 30"
+  $t env GIT_TERMINAL_PROMPT=0 git -c http.lowSpeedLimit=10240 -c http.lowSpeedTime=30 \
+    ls-remote https://github.com/amnezia-vpn/amneziawg-linux-kernel-module HEAD 2>/dev/null | cut -f1 | sed -n 1p; }
+awg_src_retry_due(){ # [<head>] — 0 unless upstream is still the commit that did not compile on THIS kernel (unknown head: not due)
+  local was h; was="$(awg_fail_get src)" || return 0
+  h="${1-$(awg_module_head)}"; [ -n "$h" ] || return 1
+  case "$h" in "$was"*) return 1;; esac; return 0; }
+awg_pkg_retry_due(){ # 0 unless amneziawg-dkms already did not compile on THIS kernel at the version apt would install now
+  local was c; was="$(awg_fail_get pkg)" || return 0
+  c="$(LC_ALL=C apt-cache policy amneziawg-dkms 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p)"   # C: apt translates "Candidate:"
+  [ -n "$c" ] && [ "$c" != "(none)" ] && [ "$c" != "$was" ]; }
+awg_nothing_new(){ # 0 = something did not compile on THIS kernel, and no recorded route has moved since (pkg / upstream)
+  # Asked over the kinds that HAVE a record: a source build records only src, a PPA version without a commit only pkg —
+  # requiring both made the "nothing new" answer unreachable there, and every update "healed" it again.
+  local any=no
+  if awg_fail_get pkg >/dev/null; then any=yes; awg_pkg_retry_due && return 1; fi
+  if awg_fail_get src >/dev/null; then any=yes; awg_src_retry_due && return 1; fi
+  [ "$any" = yes ]; }
+# ── a module the kernel REFUSES for its signature (Secure Boot) — no rebuild helps ─────────────────────────────────────
+# With Secure Boot on, DKMS signs the module with its own key (MOK), and the kernel loads it only once that key is enrolled
+# in the firmware — a step at the box's console, after a reboot. Until then `modprobe` answers "Key was rejected by
+# service", the module counts as BUILT, and every heal rebuilt it (a --reinstall, then a source build) to the same refusal.
+# Said once with the steps, and recorded for this kernel AND this boot, so swg-noded can tell the panel why instead of
+# "update to rebuild". The boot is part of it: enrolling the key takes a reboot, so the record goes stale by itself the moment
+# it could have stopped being true — no step has to remember to delete it.
+AWG_MOD_REFUSED="${SWG_AWG_MOD_REFUSED:-/var/lib/swg-noded/awg-module-refused}"
+awg_mod_key_rejected(){ # 0 = a SIGNED module for THIS kernel exists, and the kernel refuses its signing key
+  awg_mod_built || return 1
+  # An unsigned module is refused too ("Required key not available" on some kernels) — but there is no key to enrol for it,
+  # so it is not this case, and its advice would be wrong.
+  [ -n "$(modinfo -k "$(uname -r)" -F signer amneziawg 2>/dev/null)" ] || return 1
+  local e; e="$(modprobe amneziawg 2>&1 >/dev/null)" && return 1
+  case "$e" in *"Key was rejected"*|*"Required key not available"*) return 0;; esac
+  return 1; }
+awg_mok_key(){ # the certificate that signed THIS kernel's module — the one to enrol. Matched, not guessed: modinfo's sig_key
+  # is the signing certificate's serial (measured on swgt: Ubuntu's dkms signs with shim-signed's MOK.der although its
+  # framework.conf still shows dkms's own mok.pub defaults). Without openssl or a sig_key: the first that exists.
+  local want k s
+  want="$(modinfo -k "$(uname -r)" -F sig_key amneziawg 2>/dev/null | tr -d ':[:space:]' | tr 'a-f' 'A-F' | sed 's/^0*//')"
+  for k in ${SWG_MOK_CANDIDATES:-/var/lib/shim-signed/mok/MOK.der /var/lib/dkms/mok.pub}; do   # (no spaces in these paths)
+    [ -f "$k" ] || continue
+    { [ -n "$want" ] && have openssl; } || { printf '%s' "$k"; return 0; }
+    s="$( { openssl x509 -inform DER -in "$k" -noout -serial 2>/dev/null || openssl x509 -in "$k" -noout -serial 2>/dev/null; } \
+          | sed -n 's/^serial=//p' | tr 'a-f' 'A-F' | sed 's/^0*//')"
+    [ -n "$s" ] && [ "$s" = "$want" ] && { printf '%s' "$k"; return 0; }
+  done
+  return 1; }
+_awg_boot_id(){ cat /proc/sys/kernel/random/boot_id 2>/dev/null; }
+awg_key_refused_here(){ # recorded for THIS kernel, in THIS boot
+  [ "$(sed -n 's/^kernel=//p' "$AWG_MOD_REFUSED" 2>/dev/null)" = "$(uname -r)" ] \
+    && [ "$(sed -n 's/^boot=//p' "$AWG_MOD_REFUSED" 2>/dev/null)" = "$(_awg_boot_id)" ]; }
+awg_key_refused_note(){ # say it with the steps, and record it for swg-noded (kernel, boot, the key's path)
+  local k; k="$(awg_mok_key)" || k=""
+  warn "AmneziaWG: Secure Boot is on, and the kernel refuses the module DKMS built for $(uname -r) — its signing key is not enrolled. Enrol it once: sudo mokutil --import ${k:-<the DKMS signing key>} (choose a one-time password), reboot, and pick “Enroll MOK” on the blue screen at the console. Until then awg interfaces run on the slower userspace datapath; rebuilding the module would not help."
+  $DRYRUN && return 0
+  mkdir -p "$(dirname "$AWG_MOD_REFUSED")" 2>/dev/null || return 0
+  printf 'kernel=%s\nboot=%s\nmok=%s\n' "$(uname -r)" "$(_awg_boot_id)" "$k" > "$AWG_MOD_REFUSED.tmp" 2>/dev/null && mv -f "$AWG_MOD_REFUSED.tmp" "$AWG_MOD_REFUSED" 2>/dev/null || true; }
+awg_mod_built(){ modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1; }   # a module file exists for THIS kernel (loadable or not)
+awg_blacklisted(){ modprobe -c 2>/dev/null | grep -cE '^blacklist[[:space:]]+amneziawg$' >/dev/null; }   # the operator's own (modprobe.d) — -c reads to the end: -q quit at the match, modprobe died of SIGPIPE, and under pipefail the blacklist read as absent
+_awg_kbuild(){ printf '%s' "${SWG_LIB_MODULES:-/lib/modules}/$(uname -r)/build"; }   # this kernel's headers (the gates point it elsewhere)
+awg_dkms_compile_failed(){ # after installing amneziawg-dkms: its own build did not COMPILE for this kernel, with its headers here. 0 = that
+  # — not a missing prerequisite (no headers), and not a module that built but will not load (Secure Boot: the package is
+  # configured): the package's postinst failed, so dpkg holds it half-configured — whatever module file this kernel has
+  # besides (a stale `make install`, a source build beside the package: it hid the failure, and the package stayed
+  # half-configured, recompiled on every update — 1.8.9 qualification IN-12(e)). ⚠️ AND THE COMPILER SAID SO: DKMS's build
+  # log names a compiler error — `: error: `, or gcc's `<file>:<line>:<col>: fatal error:`, a header the newer kernel
+  # dropped (read as a box fault, that one was never given up: the package stayed half-configured between updates, failing
+  # every apt run on the box — FN-1). A build the BOX cut short — a full disk ("No space left on device"),
+  # a killed compiler or assembler ("Killed signal") — fails the same way, and was given up for good on that alone (1.8.9
+  # qualification IN-15, on a VM); it is tried again instead, whatever errors of its own it left (cc1's located "fatal
+  # error: error writing to …"). A driver's `gcc: fatal error:` has no location and is not a compile failure either.
+  # …and modpost's `ERROR: modpost: ` is one too (1.8.9 qualification R2 INST-4): it compiled, but calls a symbol
+  # this kernel does not export, or keeps in a namespace the module does not import. Read as the box's, it was removed,
+  # never recorded and built again on every update and install. (modpost's own write on a full disk is a perror, no ERROR.)
+  [ -e "$(_awg_kbuild)" ] && have dpkg-query || return 1
+  case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*|iH*) ;; *) return 1;; esac
+  grep -qsE ': error: |:[0-9]+: fatal error: |^ERROR: modpost: ' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log \
+    && ! grep -qsE 'No space left on device|Killed signal|internal compiler error: Killed' "${SWG_DKMS_TREE:-/var/lib/dkms}"/amneziawg/*/build/make.log; }
+awg_dkms_pending(){ case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*|iH*) return 0;; esac; return 1; }
+awg_dkms_give_up(){ # [transient] — after that: leave the package manager clean, keep the tools, remember what did not compile
+  # transient: the build did not COMPILE-fail — the box cut it short (a full disk, a compiler killed for memory) — and it is
+  # removed all the same: left half-configured while the fault lasts, every apt run on the box (unattended security upgrades
+  # included) ended in error and built it again. Not recorded: the next update tries again (1.8.9 qualification VERIFY1-B1)
+  local v sha; v="$(dpkg-query -W -f='${Version}' amneziawg-dkms 2>/dev/null)"
+  if [ "${1:-}" = transient ]; then warn "AmneziaWG: the kernel module's build (amneziawg-dkms ${v:-?}) did not finish on this box — not a compile error (a full disk, or a compiler killed for memory) — so the package is removed for now, keeping the package manager usable, and the next update tries again."
+  else warn "AmneziaWG: its kernel module does not compile on kernel $(uname -r) (amneziawg-dkms ${v:-?}) — upstream does not support this kernel yet. The package manager is left clean, and awg interfaces use the userspace datapath; an update tries the module again when a new kernel or a newer AmneziaWG build arrives."; fi
+  # Removed, not left half-configured: every later apt run on the box (ours, the operator's, unattended-upgrades) would
+  # end in a dpkg error over it. --no-install-recommends on the tools: a recommends on the module must not reinstall it.
+  run apt-get remove -y -o DPkg::Lock::Timeout=180 amneziawg-dkms amneziawg >/dev/null 2>&1 || run dpkg --remove --force-remove-reinstreq amneziawg-dkms amneziawg >/dev/null 2>&1 || true
+  have awg || run apt-get install -y --no-install-recommends amneziawg-tools >/dev/null 2>&1 || true
+  # Recorded only once it is gone: a removal that lost dpkg's lock all the same (unattended-upgrades) was recorded as given
+  # up, so no later run tried again, and the package stayed half-configured for good (1.8.9 qualification IN-12(a)).
+  case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in
+    ""|?n*|?c*) ;;
+    *) $DRYRUN || warn "AmneziaWG: amneziawg-dkms could not be removed now (the package manager is busy) — the next update tries again"
+       return 0;;
+  esac
+  # AWG_GAVE_UP=transient: removed, for the caller's last word — a module already loaded keeps serving until a reboot, the
+  # headers are there, so neither "userspace" nor "install linux-headers" holds (1.8.9 qualification VERIFY2-VMB N4)
+  [ "${1:-}" = transient ] && { AWG_GAVE_UP=transient; return 0; }
+  [ -n "$v" ] && awg_fail_note pkg "$v"
+  sha="$(printf '%s' "$v" | sed -n 's/.*+\([0-9a-f]\{7,40\}\)~.*/\1/p')"   # the PPA builds upstream master and names the commit
+  [ -n "$sha" ] && awg_fail_note src "$sha"
+  return 0; }
+awg_ppa_module_install(){ # the package route's install — once: a compile failure is given up on, never retried. 0 = installed and built
+  if ! awg_pkg_retry_due; then
+    info "AmneziaWG: not rebuilding the kernel module — amneziawg-dkms $(awg_fail_get pkg) did not compile on $(uname -r); awg interfaces use the userspace datapath"
+    have awg || run apt-get install -y --no-install-recommends amneziawg-tools || true
+    return 1
+  fi
+  run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
+  $DRYRUN && return 0
+  # its postinst built from the source as shipped; fixed now (PR #218), the half-configured package builds again
+  if awg_compat_patch_installed; then awg_dpkg_recover || true; fi
+  if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi
+  if awg_dkms_pending; then awg_dkms_give_up transient; return 1; fi
+  return 0; }
+awg_dkms_reinstall(){ # the --reinstall fallback (build_awg_module, update.sh's heal). 1 = given up: it does not compile here
+  # The reinstall puts the source back AS SHIPPED — PR #218's fix undone — and its postinst builds that: on a 7.0.0-38 kernel
+  # it failed, and amneziawg-dkms was left half-configured for every later apt run, with nothing after it to recover or give
+  # up (1.8.9 qualification IN-10: a patched module that built but would not load, e.g. in an LXC guest). So, exactly as
+  # awg_ppa_module_install: fix the source again, finish dpkg, and give up on a build that still does not compile.
+  run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  $DRYRUN && return 0
+  if awg_compat_patch_installed; then awg_dpkg_recover || true; fi
+  if awg_dkms_compile_failed; then awg_dkms_give_up; return 1; fi
+  if awg_dkms_pending; then awg_dkms_give_up transient; return 1; fi
+  return 0; }
+
+# ── upstream PR #218, applied to the module's source until upstream ships it ─────────────────────────────────────────────
+# amneziawg-linux-kernel-module picks the old (struct socket *) or new (struct sock *) setup_udp_tunnel_sock /
+# udp_tunnel_sock_release by kernel VERSION — "below 7.1.5 is old". Ubuntu backported the new signature into 7.0.0-38
+# under an unchanged version, so the module stopped compiling there (#259) — and on an ordinary kernel upgrade the failed
+# DKMS build left linux-headers / linux-generic unconfigured: apt broken for the whole box (bivlked/amneziawg-installer
+# #325). PR #218 (open, unmerged) asks the compiler which signature the kernel DECLARES instead of guessing from the
+# number. Applied only where the exact version-gated block is present, never twice; once upstream changes that block
+# this does nothing. tests/awg_compat_patch_selftest.py builds it against Ubuntu 26.04 (7.0.0-38 and an older 7.0),
+# 24.04 and Debian headers and asserts the choice matches each kernel's declaration.
+AWG_COMPAT_MARK="swg-panel: udp_tunnel signature detection (amneziawg-linux-kernel-module PR #218)"
+awg_compat_patch(){ # <module source dir — holds compat/compat.h> → 0 patched now · 2 already patched · 1 not applicable
+  local f="$1/compat/compat.h"
+  [ -f "$f" ] || return 1
+  grep -qF "$AWG_COMPAT_MARK" "$f" 2>/dev/null && return 2
+  have python3 || return 1
+  if $DRYRUN; then echo "    [skip] patch $f (udp_tunnel signature detection)"; return 0; fi
+  SWG_MARK="$AWG_COMPAT_MARK" python3 - "$f" <<'PY'
+import os, sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+old = ("#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)\n"
+       "#include <net/udp_tunnel.h>\n"
+       "#define setup_udp_tunnel_sock(net, sk, sock_cfg) setup_udp_tunnel_sock(net, sk->sk_socket, sock_cfg)\n"
+       "#define udp_tunnel_sock_release(sk) udp_tunnel_sock_release(sk->sk_socket)\n"
+       "#endif\n")
+if s.count(old) != 1:
+    sys.exit(1)
+new = ("/* " + os.environ["SWG_MARK"] + ".\n"
+       " * The kernel's own declaration decides, not LINUX_VERSION_CODE: distros backport the struct sock * form early\n"
+       " * under an unchanged version (Ubuntu 7.0.0-38). Exactly one branch matches; the other folds away. */\n"
+       "#include <net/udp_tunnel.h>\n"
+       "\n"
+       "static inline void __compat_udp_tunnel_sock_release(struct sock *sk)\n"
+       "{\n"
+       "\tif (__builtin_types_compatible_p(typeof(&udp_tunnel_sock_release), void (*)(struct sock *)))\n"
+       "\t\t((void (*)(struct sock *))udp_tunnel_sock_release)(sk);\n"
+       "\telse\n"
+       "\t\t((void (*)(struct socket *))udp_tunnel_sock_release)(sk->sk_socket);\n"
+       "}\n"
+       "\n"
+       "static inline void __compat_setup_udp_tunnel_sock(struct net *net, struct sock *sk,\n"
+       "\t\t\t\t\t\t    struct udp_tunnel_sock_cfg *cfg)\n"
+       "{\n"
+       "\tif (__builtin_types_compatible_p(typeof(&setup_udp_tunnel_sock),\n"
+       "\t\t\t\t\t  void (*)(struct net *, struct sock *, struct udp_tunnel_sock_cfg *)))\n"
+       "\t\t((void (*)(struct net *, struct sock *, struct udp_tunnel_sock_cfg *))setup_udp_tunnel_sock)(net, sk, cfg);\n"
+       "\telse\n"
+       "\t\t((void (*)(struct net *, struct socket *, struct udp_tunnel_sock_cfg *))setup_udp_tunnel_sock)(net, sk->sk_socket, cfg);\n"
+       "}\n"
+       "\n"
+       "#define udp_tunnel_sock_release(sk) __compat_udp_tunnel_sock_release(sk)\n"
+       "#define setup_udp_tunnel_sock(net, sk, cfg) __compat_setup_udp_tunnel_sock(net, sk, cfg)\n")
+tmp = p + ".swg-tmp"
+open(tmp, "w", encoding="utf-8").write(s.replace(old, new))
+os.replace(tmp, p)
+PY
+}
+awg_compat_patch_installed(){ # the source DKMS builds from (/usr/src/amneziawg-*), fixed where it needs it. 0 = fixed in THIS run
+  # Run whether or not today's kernel builds: the box at risk is the one whose module builds NOW and whose NEXT kernel
+  # backports the new API — its kernel upgrade is where the failed DKMS hook would leave apt broken.
+  local d now=1 rc
+  for d in "${SWG_USR_SRC:-/usr/src}"/amneziawg-*/; do
+    [ -f "${d}compat/compat.h" ] || continue
+    rc=0; awg_compat_patch "${d%/}" || rc=$?
+    [ "$rc" = 0 ] || continue
+    now=0; info "AmneziaWG: the module source now asks the kernel which udp_tunnel API it declares (upstream PR #218 — Ubuntu's 7.0.0-38 backports the new one) — ${d%/}"
+  done
+  return $now; }
+awg_dpkg_recover(){ # finish a dpkg run an AmneziaWG build failure left pending (amneziawg-dkms, or the kernel headers whose DKMS
+  # hook stopped) — called right after the source was fixed, so the DKMS build it re-runs now compiles. 0 = nothing pending now
+  have dpkg || return 0
+  [ -n "$(dpkg --audit 2>/dev/null)" ] || return 0
+  info "AmneziaWG: finishing the package configuration a failed module build left pending (dpkg --configure -a)…"
+  # no terminal, and the old config file kept: a pending package's conffile question would wait unseen (IN-12(b))
+  run env DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold --configure -a </dev/null >/dev/null 2>&1 || true
+  [ -z "$(dpkg --audit 2>/dev/null)" ] && return 0
+  warn "AmneziaWG: some packages are still not configured — see \`dpkg --audit\`"
+  return 1; }
 
 awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstream. 0 = tools AND module.
   # Tools first and unconditionally: `awg` + `awg-quick` are what the panel needs to write and bring up a
@@ -2099,7 +2446,7 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # because its template comes from the distro's own wireguard-tools.
   #
   # This alone does NOT heal a box that already has the tools — see ensure_awg_quick_unit in update.sh.
-  local w built=no; w="$(mktemp -d)"
+  local w built=no _reg=no _cloned=no; w="$(mktemp -d)"
   if ! have awg || ! have awg-quick; then
     info "building AmneziaWG tools from source (the amnezia PPA is Ubuntu-only)…"
     # ca-certificates is NOT optional here: without it every https git clone below fails cert verification.
@@ -2134,22 +2481,48 @@ awg_build_from_source(){ # build awg tools (+ the DKMS kernel module) from upstr
   # Tools we did not build (they were already here) may be too old for the master module below: it would load now or at
   # the next boot and take every awg interface down. The caller's next rung, userspace, serves them instead.
   [ "$built" = yes ] || awg_tools_drive_3x || { warn "AmneziaWG: $(awg_tools_old_why) — not building it; awg interfaces use the userspace datapath"; rm -rf "$w"; return 1; }
-  info "building the AmneziaWG kernel module for $(uname -r)…"
+  if awg_mod_key_rejected; then awg_key_refused_note; rm -rf "$w"; return 1; fi   # built, refused for its key: a rebuild changes nothing
+  local _head; _head="$(awg_module_head)"
+  if ! awg_src_retry_due "$_head"; then
+    info "AmneziaWG: upstream's kernel module is still ${_head:0:7}, which did not compile on $(uname -r) — not building it again"
+    rm -rf "$w"; return 1
+  fi
+  info "building the AmneziaWG kernel module for $(uname -r) from source — this can take several minutes on a slow box…"
   have apt-get && run apt-get install -y --no-install-recommends dkms "linux-headers-$(uname -r)" >/dev/null 2>&1
   ensure_awg_headers_follow >/dev/null 2>&1 || true
   if git_clone_depth1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module "$w/mod" >"$w/mod.log" 2>&1; then
+    _cloned=yes
+    awg_compat_patch "$w/mod/src" >>"$w/mod.log" 2>&1 || true   # PR #218, until upstream ships it
     # D4: REGISTER WITH DKMS instead of `make install`. Upstream's `install` is modules_install for the build kernel
     # only, so the next kernel upgrade left the box with no module — on every Debian node, headers or not. DKMS
     # rebuilds it when a kernel is installed. A tree the amnezia package already registered is left to its owner.
-    if have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && awg_dkms_register_dir "$w/mod/src" >>"$w/mod.log" 2>&1; then
+    _reg=no; have dkms && [ -z "$(dkms status amneziawg 2>/dev/null)" ] && _reg=yes   # registered by THIS run, if it fails
+    if [ "$_reg" = yes ] && awg_dkms_register_dir "$w/mod/src" >>"$w/mod.log" 2>&1; then
       :
     else
       { run make -C "$w/mod/src" && run make -C "$w/mod/src" install; } >>"$w/mod.log" 2>&1 || true
     fi
   fi
   run depmod -a >/dev/null 2>&1 || true
+  if modprobe amneziawg 2>/dev/null; then rm -rf "$w"; return 0; fi
+  # Say why, like the tools build above: the log is deleted with the work dir, and the caller's next line ("the SLOWER
+  # userspace datapath") gives no cause. On Ubuntu 26.04's 7.0.0-38 the upstream module does not compile at all.
+  if ! $DRYRUN && awg_mod_key_rejected; then awg_key_refused_note; rm -rf "$w"; return 1; fi   # it built — the kernel refuses its key
+  local _why; _why="$(grep -m1 -iE 'error|fatal|timed out|could not' "$w/mod.log" 2>/dev/null | cut -c1-200)"
+  $DRYRUN || warn "the AmneziaWG kernel module did not build for $(uname -r): ${_why:-no error line in its build log}"
+  # A module that did not COMPILE — cloned, headers here, the compiler's own `error:` in the log, no module file: remember
+  # the commit, so no update compiles it again, and drop the DKMS registration this run made (a tree that cannot build
+  # would only fail again on every kernel install). A clone a slow link cut off, or a missing tool, is NOT that, and is
+  # tried again next time. modpost's `ERROR: modpost: ` (a symbol this kernel does not export) counts too — R2 INST-4.
+  if ! $DRYRUN && [ "$_cloned" = yes ] && [ -e "$(_awg_kbuild)" ] && ! awg_mod_built && grep -qE ': error: |^ERROR: modpost: ' "$w/mod.log" 2>/dev/null; then
+    [ -n "$_head" ] && awg_fail_note src "$_head"
+    if [ "${_reg:-no}" = yes ]; then
+      local _v; _v="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$w/mod/src/dkms.conf" 2>/dev/null)"
+      [ -n "$_v" ] && run dkms remove -m amneziawg -v "$_v" --all >/dev/null 2>&1 || true
+    fi
+  fi
   rm -rf "$w"
-  modprobe amneziawg 2>/dev/null || return 1
+  return 1
 }
 
 # ── AppArmor accommodation for the node's WireGuard tools ───────────────────────────────────────
@@ -2353,10 +2726,15 @@ awg_go_pinned(){ # fetch the pinned amneziawg-go, verify its sha256, install it.
   $DRYRUN && { echo "    [skip] fetch + verify $url"; return 0; }
   have curl && have sha256sum || return 1
   tmp="$(mktemp)"
+  # Said out loud, and given up on fast: this download used to run silently with up to four 180 s attempts, and on a home
+  # box whose link to GitHub crawls (client report 2026-10-06, Russia) the installer sat quiet for minutes right after the
+  # last question — which read as "hangs at the TLS check". A transfer under 20 KB/s for 20 s now aborts (and is retried
+  # twice); a slow-but-moving one still has 180 s.
+  info "downloading the AmneziaWG userspace fallback (amneziawg-go $AWG_GO_TAG) from GitHub — up to a few minutes on a slow link…"
   # GitHub, then the operator's proxy mirrors (SWG_TURN_MIRROR, as for the turn binaries). A mirror is SAFE here, which it
   # is not for those: whatever it serves must match the pin.
   for u in "$url" $(for m in ${SWG_TURN_MIRROR:-}; do printf '%s ' "${m%/}/$url"; done); do
-    if curl -fsSL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 3 "$u" -o "$tmp" \
+    if curl -fsSL --connect-timeout 15 --max-time 180 --speed-limit 20480 --speed-time 20 --retry 2 --retry-delay 3 "$u" -o "$tmp" \
        && printf '%s  %s\n' "$sha" "$tmp" | sha256sum -c - >/dev/null 2>&1; then
       install -m 0755 "$tmp" /usr/local/bin/amneziawg-go || { rm -f "$tmp"; return 1; }   # a verified file that did not land is not "installed"
       rm -f "$tmp"; return 0
@@ -2494,9 +2872,9 @@ panel_pin_changed(){ local old="$1" new="$2" url="${3:-}" v="" ca=no q _on
     echo "  node's traffic presents a different certificate too, and would receive this node's panel token."
     q="Trust the new certificate? (y/N): "
   fi
-  if { : </dev/tty; } 2>/dev/null; then
+  if { [ "${SWG_TTY:-/dev/tty}" = /dev/tty ] && { : </dev/tty; }; } 2>/dev/null; then
     printf '  %s' "$q" 2>/dev/null >/dev/tty
-    read -r v </dev/tty 2>/dev/null || v=""
+    read -r v <"${SWG_TTY:-/dev/tty}" 2>/dev/null || v=""
     case "$v" in [Yy]*)
       if [ "$ca" = yes ]; then PIN_TO_CA=yes; ok "this node verifies the panel's certificate through its CA from now on — the pin is dropped"
       else ok "re-pinned the panel certificate (sha256 ${new:0:16}…)"; fi
@@ -2555,4 +2933,156 @@ except ssl.SSLCertVerificationError as e:
     sys.exit(0 if getattr(e,"verify_code",0) in (9,10) else 1)   # 9 not yet valid, 10 expired
 sys.exit(1)
 PY
+}
+
+# ── swg's own journals (docs/LOGS-PLAN.md §2, §18) ──────────────────────────────────────────────────────────────────
+# Every swg unit logs into a journald namespace of its own — swg-panel (the panel, swg-sub, swg-netctl, swg-update) or
+# swg-node (swg-noded and everything it runs) — so the disk budget set in Settings → Logs caps only swg's lines and never
+# evicts the box's other logs. Set by a DROP-IN, never in the unit: update.sh does not rewrite an existing unit (the
+# operator's edits stay), so only a drop-in reaches every box. Written only where systemd ships journald's namespace
+# template — a unit naming a namespace without it fails to start. A unit moves at its next start. The namespaces' sizes
+# are written at runtime under /run (swg-netctl for swg-panel, swg-noded for swg-node); the units swg-noded writes get
+# their drop-in from swg-noded. Read them with swg-logs.
+SWG_LOG_NS_DROPIN=swg-ns.conf
+# ⚠️ …AND ONLY WHERE A UNIT CAN ACTUALLY RUN IN ONE. The template file is not enough: where systemd runs but mount namespaces
+# are refused (an OpenVZ/Virtuozzo-like container, an LXC that denies unshare), a unit naming a namespace exits
+# 226/NAMESPACE while the same unit with 1.8.8's settings runs — an update would have written the drop-ins and the panel,
+# noded, sub, netctl and update units would not have started again (1.8.9 qualification IN-11, V-LOGS F-3). So a throwaway
+# unit is RUN with one (namespace swg-probe; its journald stopped and its directory removed after) — once, by the first
+# installer or update.sh on the box: root, before the daemons it starts (update.sh runs one at a time, under its lock). The
+# answer is kept for good in /var/lib/swg-log-ns (ok | refused; remove it to ask again) and swg-noded and swg-netctl only
+# read it. Refused:
+# no drop-in is written and any already there goes (swg_log_ns_clear) — the box logs into the main journal exactly as
+# 1.8.8 did, swg-logs reads it there (`--namespace=+` merges the main journal), the budget rows say "Not supported".
+SWG_LOG_NS_PROBE="${SWG_LOG_NS_PROBE:-/var/lib/swg-log-ns}"
+_swg_log_ns_run_probe(){   # → 0 when a throwaway unit ran with LogNamespace=swg-probe; the probe namespace is cleaned up either way
+  local rc=1 u t mid
+  t="$(type -P true 2>/dev/null || true)"; [ -n "$t" ] || t=/bin/true
+  if have systemd-run && timeout 60 systemd-run --wait --quiet --collect -p LogNamespace=swg-probe "$t" >/dev/null 2>&1; then rc=0; fi
+  u="$(systemctl list-units --all --plain --no-legend 'systemd-journald@swg-probe.*' 'systemd-journald-varlink@swg-probe.*' 2>/dev/null | awk '{print $1}' || true)"
+  if [ -n "$u" ]; then systemctl stop $u >/dev/null 2>&1 || true; fi   # first: a namespace journald writes its directory again as it exits
+  mid="$(cat /etc/machine-id 2>/dev/null || true)"
+  if [ -n "$mid" ]; then rm -rf "/var/log/journal/$mid.swg-probe" "/run/log/journal/$mid.swg-probe" 2>/dev/null || true; fi
+  rm -rf /run/systemd/journal.swg-probe 2>/dev/null || true   # its sockets: systemd leaves a stopped socket unit's files
+  return "$rc"; }
+swg_log_ns_ok(){ local d t="" v
+  for d in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+    if [ -e "$d/systemd-journald@.service" ]; then t=1; fi; done
+  [ -n "$t" ] || return 1
+  v="$(cat "$SWG_LOG_NS_PROBE" 2>/dev/null || true)"
+  case "$v" in ok) return 0;; refused) return 1;; esac
+  # a dry run starts no unit, and only root can start one (systemd-run as another user asks polkit): the template answers
+  # there, as it did before the probe — every real caller (an installer, update.sh) is root
+  if ${DRYRUN:-false} || [ "$(id -u)" != 0 ]; then return 0; fi
+  v=refused; if _swg_log_ns_run_probe; then v=ok; fi
+  printf '%s\n' "$v" > "$SWG_LOG_NS_PROBE" 2>/dev/null || true
+  [ "$v" = ok ]; }
+swg_log_ns_clear(){   # [<unit or unit prefix>…] — refused (above): every swg-ns.conf drop-in on the box goes; named: only those
+  # units' (a convert's teardown, swg_log_teardown below). SWG_LOG_NS_CLEARED = how many
+  local f u why=" — this box cannot run a unit in a journal namespace"; SWG_LOG_NS_CLEARED=0
+  if [ $# -gt 0 ]; then why=""; else set -- '*'; fi
+  for u in "$@"; do
+    for f in /etc/systemd/system/$u.d/"$SWG_LOG_NS_DROPIN" /run/systemd/system/$u.d/"$SWG_LOG_NS_DROPIN"; do
+      [ -e "$f" ] || continue
+      if ${DRYRUN:-false}; then echo "    [skip] rm $f$why"; continue; fi
+      if rm -f "$f"; then SWG_LOG_NS_CLEARED=$((SWG_LOG_NS_CLEARED + 1)); fi
+      rmdir "${f%/*}" 2>/dev/null || true
+    done
+  done
+  return 0; }
+# ⚠️ A CONVERT TAKES THE LOG PIECES OF THE UNITS IT REMOVES (1.8.9 qualification IN-6) — teardown_bare_panel and
+# lc_teardown_baremetal removed the units and left them: a bare → Docker convert kept swg-update.service.d/swg-ns.conf, so
+# the Docker one-click's output went only to a swg-panel journal nothing sizes any more (`journalctl -u swg-update` and the
+# compose logs showed nothing), and a host turn proxy the operator kept logged into a swg-node one. Their swg-ns.conf, the
+# level drop-ins swg-netctl / swg-noded keep under /run, the namespace's size there, and swg-logs once no bare swg unit is
+# left — uninstall.sh's rm_log_ns, which cannot be called from here (it does not source this file). The journals stay: a
+# convert keeps the history, an uninstall takes it.
+swg_log_teardown(){   # <namespace> <unit or unit prefix>…
+  local ns="$1" u; shift
+  swg_log_ns_clear "$@"
+  for u in "$@"; do rm -f "/run/systemd/system/$u.d/swg-log.conf"; rmdir "/run/systemd/system/$u.d" 2>/dev/null || true; done
+  rm -rf "/run/systemd/journald@$ns.conf.d"
+  { [ -e /etc/systemd/system/swg-noded.service ] || [ -e /etc/systemd/system/swg-panel-server.service ]; } || rm -f /usr/local/bin/swg-logs
+  return 0; }
+swg_log_ns_text(){ printf '[Service]\nLogNamespace=%s\n' "$1"; }   # <namespace> → the drop-in, on stdout
+# update.sh's form: each <unit> that exists gets its drop-in when it is missing or different. SWG_LOG_NS_CHANGED = how
+# many were written; the caller daemon-reloads before it restarts anything. Where no unit can run in a namespace, every
+# drop-in there goes instead (SWG_LOG_NS_CLEARED).
+swg_log_ns_heal(){   # <namespace> <unit>...
+  local ns="$1" u d want; shift; SWG_LOG_NS_CHANGED=0; SWG_LOG_NS_CLEARED=0
+  swg_log_ns_ok || { swg_log_ns_clear; return 0; }
+  want="$(swg_log_ns_text "$ns")"
+  for u in "$@"; do
+    [ -f "/etc/systemd/system/$u" ] || continue
+    d="/etc/systemd/system/$u.d"
+    [ "$(cat "$d/$SWG_LOG_NS_DROPIN" 2>/dev/null)" = "$want" ] && continue
+    mkdir -p "$d" && printf '%s\n' "$want" > "$d/$SWG_LOG_NS_DROPIN" && SWG_LOG_NS_CHANGED=$((SWG_LOG_NS_CHANGED + 1))
+  done
+  return 0   # set -e callers (update.sh): a drop-in that could not be written is not worth aborting an update for
+}
+# The panel reads its own journal for Settings → Logs' live viewer (docs/LOGS-PLAN.md §6, §23.6): its unit joins
+# systemd-journal by a drop-in of its own — scoped to the service, gone with it. Only where the group exists: a unit naming
+# a group that does not exist fails to start. Takes effect at the panel's next start.
+SWG_JOURNAL_DROPIN=swg-journal.conf
+swg_journal_text(){ printf '[Service]\nSupplementaryGroups=systemd-journal\n'; }
+swg_journal_heal(){   # → SWG_JOURNAL_CHANGED = 1 when it was written (the caller daemon-reloads)
+  local d=/etc/systemd/system/swg-panel-server.service.d want; SWG_JOURNAL_CHANGED=0
+  getent group systemd-journal >/dev/null 2>&1 || return 0
+  [ -f /etc/systemd/system/swg-panel-server.service ] || return 0
+  want="$(swg_journal_text)"
+  [ "$(cat "$d/$SWG_JOURNAL_DROPIN" 2>/dev/null)" = "$want" ] && return 0
+  mkdir -p "$d" && printf '%s\n' "$want" > "$d/$SWG_JOURNAL_DROPIN" && SWG_JOURNAL_CHANGED=1
+  return 0
+}
+turn_sock_buf_host(){   # a Docker node's socket-buffer caps, raised and persisted on the HOST → 0; TURN_SOCK_BUF_CHANGED=1 when a running
+  # cap rose, TURN_SOCK_BUF_LOW=1 when one is still below the size (the raise did not take — say so, not "raised")
+  # swg-noded raises net.core.{r,w}mem_max for the turn-family listeners (csqtt asks for 16 MiB) and persists them in
+  # /etc/sysctl.d/99-swg-turn.conf — from a container it can do neither: /proc/sys is read-only there, and these caps
+  # are the host's, not the container's network namespace's. Sized as swg-noded's _turn_sock_target for up to four
+  # listeners (udp_mem's ceiling / 8, TURN_SOCK_BUF_MIN..MAX); the drop-in holds that size, as noded's does, and the
+  # running cap is only ever raised — a higher value set now is left alone. Never fails: both callers run set -e.
+  local f=/etc/sysctl.d/99-swg-turn.conf pages want k cur keys="" low="" body
+  TURN_SOCK_BUF_CHANGED=0; TURN_SOCK_BUF_LOW=0
+  pages="$(awk '{print $3}' /proc/sys/net/ipv4/udp_mem 2>/dev/null)" || pages=""
+  case "$pages" in ''|*[!0-9]*) want=4194304;; *) want=$(( pages * 4096 / 8 ));; esac
+  [ "$want" -gt 25165824 ] && want=25165824
+  [ "$want" -lt 4194304 ] && want=4194304
+  for k in rmem_max wmem_max; do
+    cur="$(cat "/proc/sys/net/core/$k" 2>/dev/null)" || cur=""
+    case "$cur" in ''|*[!0-9]*) continue;; esac       # no such key here (a non-init netns): nothing to raise or persist
+    keys="$keys $k"; [ "$cur" -lt "$want" ] && low="$low $k"
+  done
+  [ -n "$keys" ] || return 0                          # a drop-in naming absent keys would fail systemd-sysctl every boot
+  body="# swg-panel: socket-buffer caps for turn-family listeners (WDTT forks / csqtt / turn-proxies), on the HOST:
+# a Docker node cannot raise them itself (read-only /proc/sys). Written by install-docker.sh / update.sh."
+  for k in $keys; do body="$body
+net.core.$k = $want"; done
+  if [ "$(cat "$f" 2>/dev/null)" != "$body" ]; then
+    { mkdir -p /etc/sysctl.d && printf '%s\n' "$body" > "$f.tmp" && mv -f "$f.tmp" "$f"; } 2>/dev/null || rm -f "$f.tmp" 2>/dev/null || true
+  fi
+  for k in $low; do                                   # the running caps: raised whenever below, written drop-in or not
+    sysctl -q -w "net.core.$k=$want" >/dev/null 2>&1 || true
+    cur="$(cat "/proc/sys/net/core/$k" 2>/dev/null)" || cur=""   # read back: a read-only /proc/sys no-ops in silence
+    case "$cur" in ''|*[!0-9]*) cur=0;; esac
+    if [ "$cur" -ge "$want" ]; then TURN_SOCK_BUF_CHANGED=1; else TURN_SOCK_BUF_LOW=1; fi
+  done
+  return 0
+}
+
+# Docker hosts: their timer units start a oneshot every 10 s (swg-netctl-docker) and 30 s (swg-update), and systemd's
+# Starting/Finished lines about them were most of a box's journal (P0 T1). There is no swg-netctl here to follow the
+# fleet's level, so the drop-in is static: LogLevelMax=notice drops those lines, SyslogLevel=notice keeps the units' own
+# output (rare: a line when they act). swg-update only where no bare-metal panel shares the unit — that panel's
+# swg-netctl writes its level-following drop-in under /run, which a same-named file here would mask.
+docker_host_log_dropins(){   # → 0; DOCKER_LOG_DROPINS_CHANGED = how many were written (the caller daemon-reloads)
+  local u f want; DOCKER_LOG_DROPINS_CHANGED=0
+  want="$(printf '[Service]\nLogLevelMax=notice\nSyslogLevel=notice')"
+  for u in swg-netctl-docker.service swg-update.service; do
+    [ -f "/etc/systemd/system/$u" ] || continue
+    [ "$u" = swg-update.service ] && [ -e /usr/local/bin/swg-netctl ] && continue
+    f="/etc/systemd/system/$u.d/swg-log.conf"
+    [ "$(cat "$f" 2>/dev/null)" = "$want" ] && continue
+    mkdir -p "${f%/*}" && printf '%s\n' "$want" > "$f" && DOCKER_LOG_DROPINS_CHANGED=$((DOCKER_LOG_DROPINS_CHANGED + 1))
+  done
+  return 0
 }

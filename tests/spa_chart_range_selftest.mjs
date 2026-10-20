@@ -74,16 +74,20 @@ try {
   S.Store.panelSettings = { time_zone_now: { offset: 3 * 3600 } };
 
   console.log("[1] a custom window travels as its key");
-  Object.assign(V.dashState, { range: "custom", from: "2026-09-01", to: "2026-09-15" });
+  // Days inside the charts' reach (today − 32 d … today), counted from its first day — fixed dates age out of it and the
+  // key clamps them (the gate went red on its own ~10-03 with September 1–15 written in).
+  const day = n => { const d = new Date(TR.chartsFirstDay() + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const D1 = day(1), D2 = day(2), D15 = day(15), nd = x => x.replace(/-/g, "");
+  Object.assign(V.dashState, { range: "custom", from: D1, to: D15 });
   const k = V.dashKey();
-  check("the Overview's key names the window's days — two custom windows are two keys", k === "custom:20260901-20260915"
+  check("the Overview's key names the window's days — two custom windows are two keys", k === "custom:" + nd(D1) + "-" + nd(D15)
     && V.isCustomKey(k) && !V.isCustomKey("custom") && !V.isCustomKey("day"), k);
-  Object.assign(V.dashState, { from: "2026-09-02" });
-  check("…so changing only `from` changes the key", V.dashKey() === "custom:20260902-20260915", V.dashKey());
+  Object.assign(V.dashState, { from: D2 });
+  check("…so changing only `from` changes the key", V.dashKey() === "custom:" + nd(D2) + "-" + nd(D15), V.dashKey());
   check("its query names its days; a named range's is what it always was",
-    S.rangeQ(k) === "range=custom&from=2026-09-01&to=2026-09-15" && S.rangeQ("week") === "range=week", S.rangeQ(k));
-  const w = V.rangeWord(k);
-  check("its name is its dates — never the word for live", w && w !== V.rangeWord("live") && /1/.test(w) && /15/.test(w), w);
+    S.rangeQ(k) === "range=custom&from=" + D1 + "&to=" + D15 && S.rangeQ("week") === "range=week", S.rangeQ(k));
+  const w = V.rangeWord(k), dom = x => String(+x.slice(8));
+  check("its name is its dates — never the word for live", w && w !== V.rangeWord("live") && w.includes(dom(D1)) && w.includes(dom(D15)), w);
   check("a custom point is named by its date (and its time unless midnight), months through Intl",
     C.histTime(Date.parse("2026-09-03T00:00:00") / 1000, k) === "September 3"
     && C.histTime(Date.parse("2026-09-03T14:00:00") / 1000, k) === "September 3 14:00"
@@ -100,7 +104,7 @@ try {
   Object.assign(V.dashState, { range: "custom", from: old, to: first });
   check("a window kept from an earlier visit that aged past the charts' reach is read from the first day they hold",
     V.dashKey() === "custom:" + first.replace(/-/g, "") + "-" + first.replace(/-/g, ""), [V.dashKey(), first]);
-  Object.assign(V.dashState, { range: "custom", from: "2026-09-02", to: "2026-09-15" });
+  Object.assign(V.dashState, { range: "custom", from: D2, to: D15 });
   S.Store.nodes = [];
   const nh = N.NodeHealth({ health: { cpu: 10 }, node: "n1", compact: true, range: k,
     nodeHist: { t: [1, 2, 3], cpu: [5, 6, 7], axis: { since: 0, until: 86400, step: 1800 } } });

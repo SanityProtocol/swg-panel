@@ -18,6 +18,7 @@ temp dir, the classifier not launched), and swg-sni's `Classifier` fed a real Cl
 Run: python3 tests/sni_set_regen_selftest.py      --plant nogen | nopurge   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, struct, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

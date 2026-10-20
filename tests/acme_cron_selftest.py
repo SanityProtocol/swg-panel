@@ -389,9 +389,9 @@ check("[4] install-host.sh, update.sh and convert.sh refuse to run on NixOS (dec
 
 # ── [5] CHANGELOG ────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] the CHANGELOG")
-en = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read().split("\n## ")[1]
-ru = open(os.path.join(ROOT, "CHANGELOG.ru.md"), encoding="utf-8").read().split("\n## ")[1]
-check("[5] CHANGELOG.md's current release says it (cron, Let's Encrypt, renewed)",
+en = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read().split("\n## [1.8.8-beta]")[1].split("\n## ")[0]
+ru = open(os.path.join(ROOT, "CHANGELOG.ru.md"), encoding="utf-8").read().split("\n## [1.8.8-beta]")[1].split("\n## ")[0]
+check("[5] CHANGELOG.md's 1.8.8-beta, the release it shipped in, says it (cron, Let's Encrypt, renewed)",
       re.search(r"(?i)without cron[^\n]*never renewed[^\n]*Let's Encrypt|Let's Encrypt[^\n]*(?:\n  [^\n]*){0,3}without cron", en) is not None)
 check("[5] …and CHANGELOG.ru.md's", re.search(r"cron", ru) is not None and re.search(r"Let's Encrypt", ru) is not None
       and re.search(r"(?i)обновля|продлева", ru) is not None)

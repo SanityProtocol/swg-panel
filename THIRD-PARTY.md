@@ -26,12 +26,16 @@ recipe and the patch are in this repository, so any release can be reproduced an
 | WDTT (original) | [amurcanov/proxy-turn-vk-android](https://github.com/amurcanov/proxy-turn-vk-android) | **GPL-3.0** | `51057cc` (v1.2.4) | [`forks/wdtt/`](forks/wdtt/) | `wdtt-amurcanov-1.2.4-3` |
 | WDTT — ildarmaga | [ildarmaga/wdtt](https://github.com/ildarmaga/wdtt) | **GPL-3.0** ‡ | `ef697994` (v1.5.0 ‡) | [`forks/wdtt/ildarmaga/`](forks/wdtt/ildarmaga/) | `wdtt-ildarmaga-1.5.0-3` |
 | WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `b3935b94` (v18) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-18-2` |
-| WDTT — XXcipherX | [XXcipherX/proxy-turn-vk-android](https://github.com/XXcipherX/proxy-turn-vk-android) | **GPL-3.0** | `b44df2d4` (v2.0.0.72) | [`forks/wdtt/xxcipherx/`](forks/wdtt/xxcipherx/) | `wdtt-xxcipherx-2.0.0.72` |
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `fae121ef` (v1.4.3) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.3-4` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
+| csqtt 2.5 | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.1` ¶ |
+| csqtt Android app 2.5 (our build of amurcanov's app) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) `app/` | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | in the release: `csqtt-app-2.5.1.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.1` ¶ |
+| csqtt Android app 2.1.9 (amurcanov's APKs, unmodified) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) v2.1.9 | **PolyForm Noncommercial 1.0.0** | v2.1.9 | — (a mirror: his signed APKs, digests checked) | `csqtt-app-2.1.9` ¶ |
 | amneziawg-go (userspace AmneziaWG datapath — bare-metal nodes' fallback) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |
 
-Each row names the newest release; older builds of a fork stay published as rollback targets.
+Each row names the newest release; older builds of a fork stay published as rollback targets. The XXcipherX WDTT
+server, hidden in the panel since 1.8.9, is no longer offered: we published its builds until 2026-10-14, and their
+recipe and patch stay in [`forks/wdtt/xxcipherx/`](forks/wdtt/xxcipherx/).
 
 § **amneziawg-go is not a patched fork.** It is built from upstream unchanged: the recipe only pins the commit, the Go
 toolchain (go1.27.1) and the build flags, so the binary reproduces byte for byte against the sha256 every installer
@@ -46,6 +50,16 @@ binary we publish is a GPL binary and the source offer below covers it. Separate
 not a distinguishing identifier: upstream's tags `v1.5.2` through `v1.5.40` **all point at commit `ef697994`**,
 whose own message is "docs: changelog for v1.5.0". The commit is what pins our build, so from `1.5.0-3` on we label
 the release by that source; the earlier `1.5.40` releases were built from the same commit.
+
+¶ **csqtt 2.5.1** is our build of amurcanov's published 2.5.0 (`d02da9b`), server and Android app, released "as is"
+by him with his support ended. The server carries the swg-panel integration and the downlink half of a speed fix (a
+small-UDP pin that held bulk QUIC traffic on one relay stream); the app carries the uplink half, its own app ID
+(`net.sanityprotocol.csqtt`) and our signature. The server's release holds its exact source archive, from which both
+binaries rebuild bit for bit (its recipe and patch are also in `forks/csqtt/2.5/`). The app is the one row whose recipe
+is not in this repository: its release holds the patch against `d02da9b`, `Dockerfile.android` and `build-apk.sh`.
+`csqtt-app-2.1.9` mirrors his 2.1.9 app for 2.1 servers, so subscription pages do not depend on his repository. The
+earlier `csqtt-2.5.0` build (his pre-release source; a GitHub release 2026-10-16…20, never in a panel release) was
+withdrawn.
 
 ### Source for the GPL binaries
 
@@ -90,7 +104,9 @@ Corresponding Source.
 
 The turn-proxy forks are **not** built or redistributed by us. A node downloads each fork's own release binary
 directly from its author's GitHub releases, so those projects distribute their own work and their licences apply
-between you and them. They are credited in the READMEs; the panel shows which fork each proxy runs.
+between you and them. They are credited in the READMEs. The panel shows which fork each proxy runs.
+The forks hidden in the panel since 1.8.9 — cacggghp, MYSOREZ and Moroka8 — are no longer offered; a node that still
+runs one keeps it.
 
 ---
 

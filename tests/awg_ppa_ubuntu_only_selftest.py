@@ -108,6 +108,10 @@ for k, v in OSR.items():
     open(os.path.join(T, k), "w").write(v)
 C = SRC["COMMON"]
 LIB = fn(C, "awg_ppa_suite") + fn(C, "awg_os_name") + fn(C, "awg_ppa_add")
+# the package route's install (a module that does not compile is given up on, not retried — its record kept in T)
+LIB += ('AWG_MOD_FAILED=%s/awg-module-failed\n' % T) + "".join(fn(C, n) for n in (
+    "awg_fail_get", "awg_fail_note", "awg_pkg_retry_due", "awg_mod_built", "awg_dkms_compile_failed", "awg_dkms_give_up",
+    "awg_ppa_module_install"))
 
 def bash(script, env=None):
     r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + script], capture_output=True, text=True, env=dict(os.environ, **(env or {})), timeout=60)
@@ -220,9 +224,9 @@ check("[5] no copy of the PPA step outside awg_ppa_add", [h[0] for h in hits] ==
 
 # ── [6] CHANGELOG ────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[6] the CHANGELOG")
-en = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read().split("\n## ")[1]
-ru = open(os.path.join(ROOT, "CHANGELOG.ru.md"), encoding="utf-8").read().split("\n## ")[1]
-check("[6] CHANGELOG.md's current release says it (Debian, the PPA, AmneziaWG)",
+en = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read().split("\n## [1.8.8-beta]")[1].split("\n## ")[0]
+ru = open(os.path.join(ROOT, "CHANGELOG.ru.md"), encoding="utf-8").read().split("\n## [1.8.8-beta]")[1].split("\n## ")[0]
+check("[6] CHANGELOG.md's 1.8.8-beta, the release it shipped in, says it (Debian, the PPA, AmneziaWG)",
       re.search(r"Debian[^\n]*(?:\n  [^\n]*){0,3}PPA|PPA[^\n]*(?:\n  [^\n]*){0,3}Debian", en) is not None and "AmneziaWG" in en)
 check("[6] …and CHANGELOG.ru.md's", re.search(r"Debian", ru) is not None and "PPA" in ru and "AmneziaWG" in ru)
 

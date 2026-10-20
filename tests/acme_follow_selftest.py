@@ -84,7 +84,8 @@ PLANTS = [
      "    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)", "a FIFO in the queue cannot wedge the helper (read O_NONBLOCK, checked on the fd)"),
     ("NETCTL", '        _sweep(qfd, 0, keep=lambda n: n.endswith(".json") or (n.endswith(".json.tmp") and not _older(qfd, n, 60)))',
      "        pass", "the watched queue dir is cleared of what is not a request (an old claim, an abandoned .tmp)"),
-    ("NETCTL", "            _sweep(sfd, 3600)", "            pass", "answers older than an hour are swept (the panel, group-only on status/, cannot delete them)"),
+    ("NETCTL", "            _sweep(sfd, 3600, keep=lambda n: n == LOG_STATUS)", "            pass",     # `keep`: bb1a50d
+     "answers older than an hour are swept (the panel, group-only on status/, cannot delete them)"),
     ("NETCTL", "        if not names:\n            return ", "        if False:\n            return ", "an idle tick (empty queue) does nothing and logs nothing"),
     ("NETCTL", "            if d and (targets & here) and not DRYRUN:", "            if False:",
      "a kept entry that still installs into the PANEL's paths is moved to swg-sub's (else its renewal overwrites the panel)"),
@@ -114,13 +115,16 @@ PLANTS = [
 ]
 
 if "--perturb" in sys.argv:
-    caught, bad = 0, []
-    for key, old, new, must in PLANTS:
+    import concurrent.futures as cf
+
+    def _plant_run(plant):
+        """One plant: a planted copy of its file, this whole gate run against it → (key, must, verdict or stale line)."""
+        key, old, new, must = plant
         src = open(PATHS[key], encoding="utf-8").read()
         edits = list(zip(old, new)) if isinstance(old, (list, tuple)) else [(old, new)]   # several edits = one plant
         stale = [o for o, _n in edits if src.count(o) != 1]
         if stale:
-            bad.append("%s: anchor found %d times (stale plant) — %s" % (key, src.count(stale[0]), must)); continue
+            return key, must, "%s: anchor found %d times (stale plant) — %s" % (key, src.count(stale[0]), must)
         for o, n_ in edits:
             src = src.replace(o, n_)
         with tempfile.NamedTemporaryFile("w", suffix="-plant", delete=False) as f:
@@ -133,10 +137,20 @@ if "--perturb" in sys.argv:
             r = subprocess.CompletedProcess([], 1, (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or ""), "")
             red = True
         os.unlink(f.name)
-        print("  %-13s %s — %s" % (key, "caught" if red else ("CRASHED" if "Traceback" in r.stderr else "NOT CAUGHT"), must[:70]))
-        caught += red
-        if not red:
-            bad.append(must)
+        return key, must, "caught" if red else ("CRASHED" if "Traceback" in r.stderr else "NOT CAUGHT")
+
+    caught, bad = 0, []
+    # ⚠️ FOUR AT A TIME. Each plant is a whole run of this gate (~19 s, most of it its own waits), so 33 one after another
+    # took 633 s — past the perturbation sweep's 600 s cap, where the row read "timeout" and hid a stale plant behind it
+    # (1.8.9 qualification). Each run has its own temp dir and planted copy, nothing is shared; verdicts print in order.
+    with cf.ThreadPoolExecutor(4) as ex:
+        for key, must, v in ex.map(_plant_run, PLANTS):
+            if v not in ("caught", "CRASHED", "NOT CAUGHT"):
+                bad.append(v); continue
+            print("  %-13s %s — %s" % (key, v, must[:70]))
+            caught += v == "caught"
+            if v != "caught":
+                bad.append(must)
     print("%d plants, %d caught" % (len(PLANTS), caught))
     for b_ in bad:
         print("  ✗ " + b_)
@@ -344,6 +358,9 @@ check("helper: IPv6 matches in any spelling", N._cert_covers_host(V6[0], "[2001:
 check("helper: a DNS certificate still matches by name, and is not an IP's",
       N._cert_covers_host(DNS[0], "panel.example.com") and not N._cert_covers_host(DNS[0], IP))
 
+# The panel's log helper (LOGS P1b) for the extracted functions: the line as print() wrote it, priority aside.
+LOGNS = {"log": lambda prio, msg, *a: print((msg % a) if a else msg, flush=True),
+         "LOG_ERR": 3, "LOG_WARNING": 4, "LOG_NOTICE": 5, "LOG_INFO": 6, "LOG_DEBUG": 7}
 # the panel's twin — extracted by name, so the test does not boot a whole panel
 PSRC = open(PATHS["PANEL"], encoding="utf-8").read()
 _mod = ast.parse(PSRC)
@@ -356,6 +373,7 @@ P = {"os": os, "ssl": ssl, "ipaddress": ipaddress, "contextlib": contextlib, "ti
      "_TLS_LOCK": threading.RLock(), "threading": threading,
      "TLS_STATUS": {}, "_ACME_FOLLOW": {}, "_SHORT_LIVED_S": 10 * 86400, "_renew_status": lambda: {},
      "_ACME_FOLLOW_MODES": ("letsencrypt", "letsencrypt-ip", "cloudflare")}
+P.update(LOGNS)
 exec(compile(_code, "swg-panel-server(extract)", "exec"), P)
 check("panel: an IP certificate covers its address", P["_cert_covers"](NEW[0], IP))
 check("panel: …and not another one", not P["_cert_covers"](NEW[0], "198.51.100.7"))
@@ -456,6 +474,7 @@ _RUNS = []
 KN["_acme_follow"] = lambda: _RUNS.append(1)
 _EARLY = []
 KN["_refresh_tls_status"] = lambda **k: _EARLY.append(KN["_FOLLOW_RUN"].locked())
+KN.update(LOGNS)
 exec(compile(_kcode, "swg-panel-server(extract)", "exec"), KN)
 KN["_FOLLOW_RUN"].acquire()                      # a slow follow is running
 threading.Thread(target=KN["_follow_kick_loop"], daemon=True).start()
@@ -838,6 +857,7 @@ Q = {"json": json, "time": time, "threading": threading, "os": os, "contextlib":
      "_refresh_tls_status": lambda *a, **k: None, "_invalidate_state_cache": lambda: None,
      "_declarative_access_refusal": lambda deps: (409, {"ok": False, "code": "declarative"}),
      "_access_cooldown": lambda: (0, "")}
+Q.update(LOGNS)
 exec(compile(_code2, "swg-panel-server(extract)", "exec"), Q)
 DEPS = {"nodes_path": os.path.join(JOBDIR, "nodes.json")}
 def join_jobs():
@@ -936,6 +956,7 @@ check("even the enqueue failing ENDS the job (every step is inside the try)", Q[
 _wcode = "\n\n".join(ast.get_source_segment(PSRC, n) for n in _mod.body
                      if isinstance(n, ast.FunctionDef) and n.name in ("_renew_await", "_netctl_wait"))
 W = {"os": os, "json": json, "time": time, "contextlib": contextlib, "_RENEW_PICKUP_S": 1, "_RENEW_ANSWER_S": 20}
+W.update(LOGNS)
 exec(compile(_wcode, "swg-panel-server(extract)", "exec"), W)
 WDEPS = {"nodes_path": os.path.join(STATE, "nodes.json")}           # the panel's netctl dir = the helper's STATE_DIR/netctl
 os.makedirs(N.QUEUE_DIR, exist_ok=True)
@@ -1055,6 +1076,7 @@ F = {"os": os, "json": json, "contextlib": contextlib, "Handler": _H, "IN_DOCKER
      "_ACME_FOLLOW": {"state": "current", "owner": "other", "install_path": "/root/cert/ip/fullchain.pem"},
      "MANAGED_CERT": NEW[0], "SUB_CERT_PATH": "/nonexistent/fullchain.pem", "_sub_tls_mode": lambda m: m,
      "_netctl_enqueue": lambda deps, verb, args: "rf"}
+F.update(LOGNS)
 exec(compile(_code4, "swg-panel-server(extract)", "exec"), F)
 for label, reply in (("an 'address change in flight' skip", (True, json.dumps({"state": "skipped", "transient": True}))),
                      ("a helper error", (False, "unknown verb 'sync-acme'"))):
@@ -1079,6 +1101,7 @@ print("panel: the certificate Settings reports")
 _code3 = "\n\n".join(ast.get_source_segment(PSRC, n) for n in _mod.body
                      if isinstance(n, ast.FunctionDef) and n.name in ("_status_cert", "_follow_get"))
 C = {"os": os, "TLS_CERT": "", "MANAGED_CERT": NEW[0], "_ACME_FOLLOW": {}, "_TLS_LOCK": threading.RLock()}
+C.update(LOGNS)
 exec(compile(_code3, "swg-panel-server(extract)", "exec"), C)
 check("no acme follow yet: no certificate is reported", C["_status_cert"]() == "")
 C["_ACME_FOLLOW"].update(owner="ours", front="")

@@ -1,13 +1,13 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.8-beta</code></p>
+<p align="center"><code>1.8.9-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.8-beta** — [full changelog](CHANGELOG.md)
-> - **Traffic totals for any stretch of days.** The Peers, Users and Groups screens count every device's traffic through counter restarts, reinstalls and container recreates, over all time or any days you pick. A person's total keeps their deleted and handed-on devices, a group's adds up its members', and days can be counted in your own time zone.
-> - **Routing rules for chosen people.** A routing rule can apply to everyone on an interface or only to chosen people, groups and single devices — a user's new device is covered with no edit — and it can choose the address its traffic leaves by. ⚠️ On Hybrid SNI and Kernel SNI, a Block rule placed below an Exit or Direct rule that covers some of the same destinations no longer stops them after the update — the rule above wins, as the list's order says — so move such a Block above it.
-> - **A server's default can be a rule list.** One list routes the server's interfaces set to Auto, what its smart interfaces leave unsaid, and the traffic other servers send out through it — by site, list or address: out one of its exits, directly, or blocked. A Forward to … rule there sends that traffic one hop further, to a server the first one cannot reach.
-> - **AmneziaWG 3.1.** An AmneziaWG interface can run AmneziaWG 3.1 — header protection, random trailers and Amnezia's 3.1 timings — chosen when you create it or switched either way later, and before a switch the panel lists every device it cuts off until they re-import. Only apps that carry 3.1 connect, and the server's AmneziaWG module and tools must be 3.1 too.
+> **What's new in 1.8.9-beta** — [full changelog](CHANGELOG.md)
+> - **Logs you control.** Settings → Logs sets how much the panel and every server log, gives swg's logs a disk budget of their own, streams any servers and sources live in the panel, and builds one file for any time range, with keys and tokens masked.
+> - **csqtt 2.5, beside 2.1, at full speed.** Each csqtt server runs 2.1 or 2.5 and switches either way, keeping its users. We ship 2.5.1, our build of amurcanov's 2.5.0: QUIC traffic and nested VPNs use every relay stream (downloads 2.1 → 20 Mbit/s in our tests), App routing chooses what bypasses the tunnel, and subscription pages hand out the apps from our own releases. ⚠️ 2.1 and 2.5 don't talk to each other: every device needs the app of its server's version.
+> - **Half the memory, far less CPU and almost no disk writes at rest.** The panel and swg-noded use about half the RAM they did, an idle node about a quarter of the CPU, and an idle server writes a few kilobytes a minute instead of hundreds.
+> - **AmneziaWG.** Load a newer AmneziaWG module without a reboot, pick AmneziaWG 2.0, 3.1 or plain WireGuard per mesh link, disguise a handshake as QUIC or DNS, and see why a module won't load. ⚠️ Updates now upgrade AmneziaWG's packages from the PPA, and torrents are blocked by default on every way out of a server.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -81,20 +81,20 @@ You never edit `users.json` or `nodes.json` by hand — the UI does it.
 
 Four one-liners — each **prompts for whatever it needs**. Choose a method (bare-metal or Docker) per box; mix freely. On **NixOS** there is no one-liner and the installers refuse — see C.
 
-> On a root shell with no `sudo` (common on fresh Debian/VPS images), drop the `sudo` — `… | bash -s …`. bootstrap requires root either way and exits with a clear message if it isn't.
+> On a root shell with no `sudo` (common on fresh Debian/VPS images), drop the `sudo` — `bash -c "$(curl …)" -- …`. bootstrap requires root either way and exits with a clear message if it isn't.
 
 ### A — bare-metal (systemd)
 
 **Panel** — asks the role: master (panel + this box is a node) or host (panel only)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s bare-metal
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- bare-metal
 ```
 
 **Node** — asks for the panel URL + the key from Nodes → Add node
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- node
 ```
 
 ### B — Docker
@@ -102,13 +102,13 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 **Panel** — installs Docker if needed, then asks the role (master: panel + this box is a node, auto-enrolled · host: panel only) and a domain + TLS choice (login auto-generated, change it later in the panel)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker
 ```
 
 **Node** — asks for the panel URL + the key from Nodes → Add node
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
 ```
 
 ### C — NixOS (declarative)
@@ -142,7 +142,7 @@ Open the panel URL, log in, and add entry servers from **Nodes → Add node** �
 **Update** any box later, in place (auto-detects what's installed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- update
 ```
 
 ## Installing the panel
@@ -174,10 +174,13 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 Unattended example (config via env):
 
 ```bash
-sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.net \
-     BASIC_USER=admin BASIC_PASS='…' bash -s bare-metal \
-     < <(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)
+sudo ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.net \
+     BASIC_USER=admin BASIC_PASS='…' \
+     bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- bare-metal
 ```
+
+The variables go **after** `sudo`, as above: sudo drops an environment set in front of it, and Ubuntu 26.04's sudo-rs
+ignores `-E`. (The password this way is logged — see [Security](#security).)
 
 **One panel per box.** If a panel of the *other* method is already running here (a Docker panel when you install bare-metal, or the reverse), the installer stops and asks: **abort** (default), **stop the other** (it is disabled / set to `restart=no` and left stopped — nothing is deleted, and `update.sh` leaves it stopped), or **keep both**. Two panels keep separate servers and settings and both answer at the same address, so the browser shows whichever replies. To *move* between methods, use `bootstrap.sh` with the other method — it converts. Unattended runs answer with `SWG_OTHER_PANEL=abort|stop|keep`; with neither a terminal nor that, the installer refuses.
 
@@ -188,10 +191,10 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
 1. **Nodes → Add node** — give it a name, the public IP/host clients dial, and a colour. You get a **one-time enrollment token** and the exact one-liner.
 2. **On the entry server**, paste that one-liner — it fetches the repo and runs the node installer:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
-     | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
+   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" \
+     -- node -key SECURE_NODE_KEY -host https://panel.example.net
    ```
-   It installs the datapath tooling and starts `swg-noded` — it does **not** ask you to configure anything. Interfaces, turn-proxies, WDTT and csqtt servers are all created from the panel. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
+   It installs the datapath tooling and starts `swg-noded` — it does **not** ask you to configure anything. Interfaces, turn-proxies, WDTT and csqtt servers are all created from the panel. Prefer Docker? The panel shows a `… -- docker node -key … -host …` command too.
 3. Within a few seconds the node turns **online** in the Nodes screen.
 
 **Adopting what the box already runs.** The node scans where wg/awg, WDTT and csqtt normally live — not only where *we* install them — and reports each interface or server install the panel did not create. They appear on the node's page as **candidate** cards with **Adopt** / **Ignore**:
@@ -269,7 +272,7 @@ cascade is one instance, `<iface>`, and each peer node a smart-routing interface
 destination the kernel routes into a mesh link, and a watchdog removes it whenever the relay cannot be proven to be
 accepting what it is handed. Every relay on a node shares one CPU-capped slice.
 
-**Mesh links.** **Settings → Network → Mesh links** decides which node pairs get a link. A **full mesh** links every
+**Mesh links.** **Settings → Mesh → Mesh links** decides which node pairs get a link. A **full mesh** links every
 pair: every leg is measured and a newly chosen forward target works at once, and each node carries one AmneziaWG
 interface, one `/31` and one UDP port per other node. **On demand** links only the pairs a forward or a smart rule's
 exit routes over (plus a link the operator configured — relay, dial address), creates a link in the same sync that
@@ -283,7 +286,7 @@ cannot link.
 
 ## Subscriptions & access control
 
-**Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, samosvalishe, Moroka8, cacggghp, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **WDTT** peers appear in the same turn group with their import link (or QR, for the apps that scan one) and a per-OS **get the app** row resolved from the client you set as that fork's default. **Off by default** — enable it in **Settings → Subscriptions**.
+**Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, hack-diaz, anton48, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **WDTT** peers appear in the same turn group with their import link (or QR, for the apps that scan one) and a per-OS **get the app** row resolved from the client you set as that fork's default. **Off by default** — enable it in **Settings → Subscriptions**.
 
 - **Key custody.** The per-user **unlock key rides in the URL `#fragment`** — never sent to the server. The panel stores only **ciphertext** (encrypted config blobs) plus a public token map (`subs/users.json` = `{token_sha}`); the SK-wrapped unlock keys sit in a separate `subs/escrow.json` the sub surface can't read. A compromise of the internet-facing page yields only ciphertext, never a private key (this is why plaintext `store_configs` was dropped).
 - **Isolation.** `swg-sub` is its own process/container running as a dedicated low-privilege user: it mounts panel state `:ro` and **masks** every secret it must never open (`auth`, `panel-settings.json`, `subs/vault.json`, `subs/escrow.json`, the TLS key) with `/dev/null` + `tmpfs`. No login, write, or node code.
@@ -300,16 +303,16 @@ cannot link.
 **Panel** — Step 1 asks the role, exactly like bare-metal: **master** (panel + this box also runs WG/AWG as a co-located node container, auto-enrolled in one pass) or **host** (panel only). `master` is the default.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker
 ```
 
 **Node** — a separate entry server; asks for the panel URL + the key from **Nodes → Add node** (this is how the `host` role's nodes are deployed)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker node
 ```
 
-Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-user`, `-pass`, `-domain`, `-base`, `-port`, `-tls`, `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`, `-net host|bridge`, `--build` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
+Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-user`, `-pass`, `-domain`, `-base`, `-port`, `-tls`, `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`, `-net host|bridge`, `--build` — e.g. `… -- docker node -key NODE_KEY -host https://panel.example.net`.
 
 **Or by hand** — one compose file, three profiles named after the roles. The `host` and `master` profiles bring up `swg-panel` **and** `swg-sub` (same image, port `8444`, idle until you enable subscriptions); `node` and `master` bring up `swg-node`.
 
@@ -355,13 +358,13 @@ Switch a box's **method** in place: re-run the installer asking for the *other* 
 Run the same one-liner with the other method. **To bare-metal** — a bare role word means bare-metal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- master
 ```
 
 **To Docker** — prefix the role with `docker`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- docker master
 ```
 
 A convert **keeps everything** — the panel's URL, login, roster, nodes and TLS cert, and (for a `master`) the local node's token, interfaces and turn-proxies. It is **copy-first**: the new method is staged in full *before* the old one is torn down, so the only downtime is the few seconds of the atomic switch — nodes self-heal on their next sync.
@@ -412,16 +415,18 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 
 ## Operations
 
-- **Logs:** `journalctl -u swg-panel-server -f` (panel), `journalctl -u swg-noded -f` (node). Docker: `docker compose logs -f`.
+- **Logs:** `swg-logs panel -f` (panel), `swg-logs noded -f` (node), `swg-logs turn <name>`, `swg-logs` for everything — swg writes into journals of its own (`swg-panel`, `swg-node`), each held to the disk budget set in Settings → Logs, so plain `journalctl -u swg-noded` shows only systemd's start/stop lines (and on Debian with rsyslog, swg's lines no longer reach /var/log/syslog). Other options go to journalctl. Docker: `docker compose logs -f`.
+- **Live logs in the panel:** Settings → Logs shows any servers' and sources' lines as one stream, merged by time, with level filters, search, Pause and Download; the node page opens it on that node. Nothing is read on a node unless a viewer is open — the node follows its journal only while asked, and stops within ~20 s after.
+- **Logs over a time range:** Settings → Logs → *Time range…* makes one file of the viewer's servers, sources and levels over the last 15 min to 7 days or a custom window — merged by time, a header saying what is missing and why, keys and tokens masked by default. Each server reads its share (50 MB divided between them; over it, the newest part) once, at low priority, only when asked.
 - **Rotate a node's token:** Nodes → ⋯ → Rotate token, then re-run the install command (or update the node's `config.json`).
 - **Remove a node:** Nodes → Remove. Stop `swg-noded` on the box itself to take it offline.
 - **Back up:** `users.json` + `nodes.json` (under `/var/lib/swg-panel`) are the whole state — copy the directory somewhere off-box and you can rebuild the panel anywhere.
 - **Automatic backups + self-repair:** every write to a critical state file (`users.json`, `nodes.json`, `panel-settings.json`) also drops a timestamped copy beside it — `users.json.bak.<epoch>` — and prunes to the **last 8**. On startup the loader validates each primary and, if one is corrupt/empty (bad shutdown, full disk), **automatically restores the newest good backup** — no operator action. So a backup exists after *every change*, not on a schedule. (Off-box copies are still recommended for whole-host loss.)
-- **Update:** `… | sudo bash -s update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. `--dry-run` previews, `-y`/`--yes` takes every available upgrade unprompted, `-f`/`--force` re-applies components already on the latest version. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
+- **Update:** `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. `--dry-run` previews, `-y`/`--yes` takes every available upgrade unprompted, `-f`/`--force` re-applies components already on the latest version. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
 - **Re-install keeps data:** re-running *any* installer on a box detects the existing install and preserves everything (login, cert, roster, nodes, node token, interfaces, turn-proxies), offering current values as defaults — safe after an interrupted run or to change an option. To start clean, uninstall first.
-- **Recover a node's identity:** a re-installed or converted node persists its enrollment identity to `/var/lib/swg-recovery`, so it can rejoin **without re-enrolling**. Open that menu directly with `… | sudo bash -s recovery` (works even on a box that still has a live node — e.g. to reattach a leftover token after a rebuild).
+- **Recover a node's identity:** a re-installed or converted node persists its enrollment identity to `/var/lib/swg-recovery`, so it can rejoin **without re-enrolling**. Open that menu directly with `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- recovery` (works even on a box that still has a live node — e.g. to reattach a leftover token after a rebuild).
 - **Move the panel:** change its host/port and **pinned nodes auto-re-point** on their next sync — as long as the new address still presents their trusted cert — so a panel migration needs no per-node re-enroll.
-- **Uninstall:** `… | sudo bash -s uninstall` (or `./uninstall.sh`). Lists every installed component — the panel, a bare-metal node, the Docker panel and node containers, AmneziaWG, WireGuard, and **each** turn-proxy server — then loops through and asks to uninstall or keep each one. Nothing is removed without a yes; can keep the roster / node store / Docker data dir for a reinstall. `--yes` removes everything, `--dry-run` previews.
+- **Uninstall:** `sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- uninstall` (or `./uninstall.sh`). Lists every installed component — the panel, a bare-metal node, the Docker panel and node containers, AmneziaWG, WireGuard, and **each** turn-proxy server — then loops through and asks to uninstall or keep each one. Nothing is removed without a yes; can keep the roster / node store / Docker data dir for a reinstall. `--yes` removes everything, `--dry-run` previews.
 
 ## External API & Integrations
 
@@ -534,15 +539,20 @@ Full reference, with a response body for every endpoint: **[API.md](API.md)**.
 - **PSKs** are generated per peer and stored in the roster so every node stays consistent; keep `/var/lib/swg-panel` readable only by the panel user.
 - **Private keys** are generated in your browser and never sent to the panel in the clear. By default (`store_configs: encrypted`) the panel keeps each config as a blob your browser sealed with **your** encryption key, so QR/download stay available while the server cannot read the key; set `store_configs: off` for nothing at rest, and each private key is shown only once at creation. Either way, if a peer's key is lost, re-issue the peer.
 - **API tokens** are read-only and hashed at rest (SHA-256); a leaked token can observe fleet state but never modify it, and disabling the API in **Settings → Integrations** revokes every token immediately.
+- **What a bare-metal panel can read on its own host:** its live log viewer reads swg's journal, so the panel's service runs in the `systemd-journal` group — and that group reads every journal on the host, not only swg's. A panel taken over could read the host's other services' lines too (it already steers every node it manages).
+- **A password given on the command line is logged:** sudo logs the command it runs, so an unattended install given the panel password (`-pass`, `BASIC_PASS=`) leaves it in plaintext in that host's `auth.log` and journal — readable by root, `adm` and `systemd-journal` (the panel's process included, above) — in the `bash -c "$(curl …)"` form and the piped one alike. Let the installer ask for it, or change it under **Settings → Authentication** afterwards.
+- **A WDTT or csqtt server's owner password** is on the server's command line: `ps` shows it to every local account on that server.
 
 ## Troubleshooting
 
-- **A node stays "awaiting enroll" / never connects.** It hasn't synced yet. Check `journalctl -u swg-noded -f` on the node: a `fingerprint mismatch` means the pin is wrong; an HTTP `401` means the token is wrong or was rotated; a connection error means the panel URL/port or firewall is off.
+- **A node stays "awaiting enroll" / never connects.** It hasn't synced yet. Check `swg-logs noded -f` on the node: a `fingerprint mismatch` means the pin is wrong; an HTTP `401` means the token is wrong or was rotated; a connection error means the panel URL/port or firewall is off.
 - **A node is "offline."** It synced before but has gone quiet — check the daemon and the node's outbound network.
 - **Peers don't appear on a node.** Confirm the peer is assigned to that node and that its interface matches one the node actually serves. Reads come from the node's latest snapshot, so a freshly added node needs one sync first.
 - **Browser warns about the certificate.** Expected with `selfsigned`. Use a real cert for production, or accept the warning behind a trusted tunnel.
 - **Client connects (handshake works) but has no internet / `rx` climbs while `tx` stays ~0.** The node is decrypting packets but not routing them out. Interfaces created by the installer set this up automatically; for a hand-made interface, enable forwarding (`net.ipv4.ip_forward=1`) and add a masquerade for the tunnel subnet out the WAN nic (`iptables -t nat -A POSTROUTING -s <subnet> -o <wan> -j MASQUERADE`).
 - **Smart routing doesn't switch instantly — give it a minute or two.** Enabling a list/category or changing its exit is *eventually consistent*, not immediate. The node applies routing on a periodic reconcile (~60s) after pulling the resolved list from the panel, so there's a short delay before matched traffic starts leaving via the new exit — and longer if a connection is already open, since it keeps flowing the old way until it reconnects. Category attribution lags a little further: a destination's IP set fills lazily (as its domains are resolved/seen), so freshly routed traffic can show as **uncategorized** for a bit before it lands in its category. Both converge on their own; nothing is wrong — re-checking after a minute or reconnecting the client speeds it up.
+- **The node says Secure Boot refuses its AmneziaWG module (awg interfaces run on the slower userspace datapath).** DKMS signed the module with its own key, and the firmware does not trust that key yet. Enrol it once on the box: `sudo mokutil --import /var/lib/shim-signed/mok/MOK.der` (Ubuntu; `/var/lib/dkms/mok.pub` on Debian), set a one-time password, reboot, and choose *Enroll MOK* on the blue screen at the console. Updating the node does not help: the module is already built, and the installer stops rebuilding it.
+- **The node says its package manager has unfinished work.** An apt run stopped half-way (often a kernel module that failed to build), and every apt run on the box fails until it is finished. On the node: `sudo dpkg --configure -a`, then `sudo apt-get -f install` if anything is left. The node reports this only after dpkg has been idle for ten minutes, so an update in progress never raises it.
 - **`acme.sh` failed to issue.** `letsencrypt` needs port 80 reachable; if 80 is taken, use `cloudflare` (DNS-01, no port 80).
 
 ## Special thanks
@@ -555,9 +565,7 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 
 - [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
 - [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe](https://github.com/samosvalishe/free-turn-proxy)
-- [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
-- [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
+- [hack-diaz](https://github.com/hackdiaz-dev/free-turn-proxy) (formerly samosvalishe)
 - [anton48](https://github.com/anton48/vk-turn-proxy)
 
 **WDTT** — the self-contained, key-owning VPN server the panel runs as an interface, and the apps people connect with:
@@ -567,7 +575,6 @@ Note that **csqtt is noncommercial-only** — commercial use needs a separate li
 - [Endlad2](https://github.com/Endlad2/LaLune)
 - [ildarmaga](https://github.com/ildarmaga/wdtt)
 - [Ivan4537](https://github.com/Ivan4537/WDTT-Plus)
-- [XXcipherX](https://github.com/XXcipherX/proxy-turn-vk-android)
 - [SpaceNeuroX](https://github.com/SpaceNeuroX/proxy-turn-vk-android)
 - [lebrit](https://github.com/lebrit/qwdtt-legacy-android)
 

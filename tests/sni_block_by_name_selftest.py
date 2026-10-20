@@ -44,6 +44,7 @@ Hermetic: no nft, no root, no network. Run: python3 tests/sni_block_by_name_self
      inpcount   the blocked counter skips the relay's input refusal                           [10]
 """
 import hashlib, importlib.machinery, importlib.util, json, os, shutil, socket, struct, subprocess, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -367,6 +368,7 @@ SECTION[0] = "[9]"
 print("\n[9] the blocked counter")
 N.run = K
 K.m.tables[T]["chains"]["forward"]["rules"][0]["pk"] = 7
+N._LOOP["n"] += 1                                         # one report is one pass: a pass's reads are shared (CPU-PLAN B2/B5b)
 act = N._block_activity()
 check("the forward reset is counted as blocked, under \"*\"", (act.get("*") or {}).get("blocked") == 7, act)
 
@@ -404,6 +406,7 @@ check("the node's own services are never refused here (a refusal mark on a packe
       walk(d="10.188.1.1", mark=(3 << 16) | 0x9998, local=True, dport=8443)["verdict"] == "accept")
 check("…and the self-dial port guard is unchanged", walk(d="10.188.1.1", local=True, dport=5876)["verdict"] == "drop")
 _fpk = K.m.tables[T]["chains"]["forward"]["rules"][0].get("pk", 0)
+N._LOOP["n"] += 1                                         # the next report: a new pass
 act = N._block_activity()
 check("the relayed refusal is counted as blocked with the forward ones (%d + 1), the learn reset is not" % _fpk,
       (act.get("*") or {}).get("blocked") == _fpk + 1, act)

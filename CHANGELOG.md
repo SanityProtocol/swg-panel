@@ -3,6 +3,108 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.9-beta] — 2026-10-20
+
+### Added
+
+- **Log levels.** Settings → Logs sets how much the panel and every server log: Off, Errors, Warnings, Info (the
+  default) or Debug, which can switch itself off after an hour or a day. The sites your users open are no longer logged
+  at the default level.
+- **A disk budget for logs.** swg now writes to journals of its own, capped per server (100 MB by default), so it never
+  pushes out the server's other logs. Read them with the new `swg-logs` command — `swg-logs noded -f`, `swg-logs panel`,
+  `swg-logs turn <name>`; plain `journalctl -u swg-noded` now shows only start and stop lines.
+- **Live logs in the panel.** Settings → Logs streams any servers and sources — the node, smart DNS, relays, turn
+  proxies, WDTT and csqtt servers, interfaces, the kernel — merged by time, with level filters, search and download.
+  Servers read their logs only while someone is watching.
+- **Logs for a time range, as one file.** Pick servers, sources and a period of up to 7 days or your own window, and the
+  panel builds one file, with keys and tokens masked.
+- **csqtt 2.5, beside 2.1.** Each csqtt server runs 2.1 or 2.5, and you can switch it either way, keeping its users and
+  their passwords. The two versions don't talk to each other: every device needs the app of its server's version, and
+  the iPhone app works with 2.1 only. The panel asks before switching, hands out the encrypted links and QR codes the
+  2.5 app needs, and puts a server back on its old version by itself if the new one won't start.
+- **csqtt 2.5.1 — our build, at full speed.** amurcanov released 2.5.0 and ended his support; we ship 2.5.1, his 2.5.0
+  with one fix: QUIC traffic (YouTube, Google) and nested VPNs now use every relay stream instead of one — in our tests
+  downloads went from 2.1 to 20 Mbit/s and uploads from 10 to 20. Its Android app, CSQTT 2.5.1, carries the upload half,
+  resumes the tunnel after a Wi-Fi auto-pause again, and installs beside his app. Subscription pages hand out the csqtt apps (2.1.9 or 2.5.1, by the server's version) from
+  our own releases, so they keep working whatever happens to the original repository.
+- **App routing for csqtt 2.5.** Choose which apps, domains and addresses bypass the tunnel — or which alone use it —
+  optionally with the built-in list of Russian sites. The server sends the rule to each user's app when it connects.
+- **The subscription page offers the app version the server runs**, for apps built from the server's own repository
+  (CSQTT, WDTT and their kin).
+- **Half the memory.** The panel and each server's swg-noded use about half the RAM they did — on our servers the panel
+  went from 134 to about 50 MB and a node from 96 to about 47 MB.
+- **Far less CPU at rest.** On our busiest test servers swg-noded went from about 11 % of one core to about 3 % while
+  nothing changes.
+- **Almost no disk writes at rest.** swg-noded no longer rewrites its unchanged state files every few seconds — an idle
+  server's writes went from hundreds of kilobytes a minute to a few.
+- **AmneziaWG 3.1 without a reboot.** When an update installs a newer AmneziaWG module than the one running, **Load
+  now** restarts the server's AmneziaWG interfaces on it (devices reconnect within about 15 seconds); otherwise it loads
+  at the next reboot.
+- **Mesh links can be AmneziaWG 2.0, 3.1 or plain WireGuard** — as the fleet's default or per link, with AWG
+  parameters per link.
+- **Disguise as.** An AmneziaWG interface can disguise its handshake as a QUIC packet or a DNS query (Edit interface →
+  Advanced settings).
+- **Any AmneziaWG field can be left out** by typing `-` in it.
+- **The node page says why AmneziaWG's module won't load** — Secure Boot, with the steps to enrol its key; a module that
+  doesn't build on that kernel; or an apt run left unfinished.
+- **⚠️ Torrents are blocked by default**, on every way out of a server: its interfaces, traffic other nodes send through
+  it, and programs on the server itself. Encrypted clients are caught too; web, calls and games aren't affected. A server
+  can instead allow them, route them through an exit or another node, or leave it to each interface as before — pick
+  **Each interface decides** to keep the old behaviour (the server's settings → Filters & abuse).
+- **The Port-scan / Brute-force filter catches slow scans** — one client reaching many different servers on SSH, RDP,
+  database or router-admin ports, the kind of abuse that gets a server's network blocked by its host. Exempt your own
+  addresses in Settings → Network → Trusted sources.
+
+### Changed
+
+- **⚠️ Updates upgrade AmneziaWG's packages.** A server that installed AmneziaWG from the PPA used to keep its original
+  build for good; every update now upgrades amneziawg-dkms and amneziawg-tools when the PPA has a newer one. Tools you
+  built yourself and packages held with apt-mark are left alone.
+- **Mesh AWG parameters are set per link.** A server's own mesh AWG parameters moved onto the links they applied to;
+  nothing changes on the wire.
+- **MYSOREZ, Moroka8 and XXcipherX are hidden**, with the MYSOREZ and XXcipherX apps — their development has stopped.
+  Servers already running them keep working. samosvalishe's fork is now shown as hack-diaz.
+
+### Fixed
+
+- **Two server logs could grow until the disk filled** — the SNI classifier's host-name file, and the log of a
+  long-running WDTT or csqtt server in Docker.
+- **A Docker server flooded the system log** with up to 200,000 lines a day from its helper container.
+- **AmneziaWG's module builds on Ubuntu's kernel 7.0.0-38** (Ubuntu 26.04 and 24.04 HWE), and upgrading to that kernel
+  no longer leaves apt broken.
+- **On Ubuntu 26.04 the installer froze at its first question.** Every install command is now
+  `sudo bash -c "$(curl …)" -- …`, which works with any sudo.
+- **A pasted AmneziaWG 3.1 profile works as an exit** — it came up green and carried nothing.
+- **The port-scan filter cut ordinary bursts**: a tunnel running inside another tunnel never came up, and busy pages lost
+  connections. A client may now open 200 connections at once.
+- **A turn server can use any address its clients dial, a DDNS name included** — a home server behind its router used to
+  crash-loop.
+- **Editing a server's exits dropped the WARP keys kept in the vault**, losing the earlier account (since 1.8.6).
+- **A server carrying another server's traffic out to the internet could rebuild its routing every minute**, briefly
+  dropping replies each time.
+- **Re-provisioning a server reset its mesh links' relay and dial settings.**
+- **An iPhone was handed a VK TURN Proxy config for an AmneziaWG interface**, which could never connect.
+- **Typing `list:all` into a routing rule** silently disabled every rule below it.
+- **The panel could delete a turn-proxy, WDTT or csqtt build a server still needed** after a rollback, and never fetch
+  it again.
+- **Right after a release, the update bubble could show the previous release's notes.**
+- **A Docker server's update no longer asks to re-run the installer for nothing** — a Docker node was told its
+  docker-compose.yml lacked the panel's settings. The check now looks only at the services the server runs.
+
+### Security
+
+- **Each server's latest report, which includes every connection's preshared key, was readable by any user on the
+  panel's server.** Now only the panel and the subscription service can read it.
+- **Editing a blocked user (name, note, expiry, VK links) unblocked them.** Their devices went back onto every
+  server while the subscription page still said "disabled". A blocked user now stays blocked until unblocked.
+
+### Upgrading
+
+- **The first update upgrades AmneziaWG on servers that installed it from the PPA.** It takes about a minute and doesn't
+  interrupt traffic; the new module is used after a reboot or **Load now**.
+- **Going back to an older version:** first clear every AmneziaWG field set to `-`, and set the mesh link type back to
+  AmneziaWG 2.0 and re-provision — an older panel can't handle either.
+
 ## [1.8.8-beta] — 2026-09-29
 
 ### Added

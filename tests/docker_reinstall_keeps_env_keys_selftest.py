@@ -32,6 +32,8 @@ Run: python3 tests/docker_reinstall_keeps_env_keys_selftest.py      (0 = pass)
 import os, re, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from _tree_copy import copy_tree  # noqa: E402 — the live tree, minus what other gates remove while it is copied
 PERTURB = "--perturb" in sys.argv
 PERTURB_CONV = "--perturb-conv" in sys.argv
 FAILS = []
@@ -45,8 +47,8 @@ def check(name, cond, detail=""):
 
 T = tempfile.mkdtemp(prefix="dockerenvkeys-")
 SRC = os.path.join(T, "src")
-shutil.copytree(ROOT, SRC, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs",
-                                                         ".campaign", "__pycache__", "forks", "screenshots", ".claude"))
+copy_tree(ROOT, SRC, ignore=shutil.ignore_patterns(".git", "dryrun", "node_modules", "*.png", "scratchpad", "docs",
+                                                  ".campaign", "__pycache__", "forks", "screenshots", ".claude"))
 INST_SH = os.path.join(SRC, "install-docker.sh")
 inst = open(INST_SH, encoding="utf-8").read()
 if PERTURB:

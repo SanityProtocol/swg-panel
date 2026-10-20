@@ -71,6 +71,37 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.ref.outputs.image }}
+      # Where the official base images come from: ECR Public's Docker Hub mirror (the Dockerfiles' default), or Google's
+      # when ECR cannot serve one of them for this arch. Asked of the image index AND this arch's manifest — for two days
+      # in 2026-10 ECR's golang:1.25-bookworm index named an amd64 manifest it answered 404 for, and every swg-node amd64
+      # build failed. Picked BEFORE the build, so a failing build is one build and its own error.
+      - id: base
+        shell: bash        # bash -eo pipefail: a failing inspect must fail its pipeline, not hand jq an empty input
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          imgs=$(sed -n 's|^FROM \(--[^ ]* \)*\${BASE_REGISTRY}/\([^ ]*\).*|\2|p' "$DOCKERFILE")
+          [ -n "$imgs" ] || { echo "::error::no FROM \${BASE_REGISTRY}/… line in $DOCKERFILE"; exit 1; }
+          serves() {   # serves <registry>: every base image's index, and the manifest it names for linux/$ARCH
+            local img d
+            for img in $imgs; do
+              d=$(docker buildx imagetools inspect --raw "$1/$img" | jq -r --arg a "$ARCH" \
+                  'first(.manifests[]? | select(.platform.os == "linux" and .platform.architecture == $a) | .digest) // empty') || return 1
+              [ -n "$d" ] && docker buildx imagetools inspect --raw "$1/${img%%:*}@$d" > /dev/null || return 1
+            done
+          }
+          for reg in public.ecr.aws/docker/library mirror.gcr.io/library; do
+            if serves "$reg"; then
+              echo "registry=$reg" >> "$GITHUB_OUTPUT"
+              if [ "$reg" != public.ecr.aws/docker/library ]; then
+                echo "::warning::ECR Public cannot serve the base images for linux/$ARCH — built from $reg"
+                echo "Base images for linux/$ARCH came from \`$reg\` (ECR Public could not serve them)." >> "$GITHUB_STEP_SUMMARY"
+              fi
+              exit 0
+            fi
+          done
+          echo "::error::neither ECR Public nor mirror.gcr.io serves the base images ($(echo $imgs)) for linux/$ARCH"; exit 1
       # Build this single arch NATIVELY and push it by DIGEST only (no tag) — the merge job
       # below assembles the tagged multi-arch manifest list from all arches' digests.
       - id: build
@@ -80,6 +111,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: BASE_REGISTRY=${{ steps.base.outputs.registry }}
           outputs: type=image,name=${{ steps.ref.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           # cache scoped per image+arch so the four builds never share/clobber a cache; ignore-error
           # so a flaky gha cache ('error writing layer blob') can't fail the publish.

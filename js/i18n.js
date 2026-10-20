@@ -232,6 +232,8 @@ export function srvName(e) {
   if (e && e.verb === "Update requested" && n === "with the panel") return T("with the panel");
   // A peer with no title and no owner is logged under this stand-in (peer_label), not under a name of its own.
   if (e && e.kind === "peer" && n === "unassigned peer") return T("unassigned peer");
+  // the settings sections a Save touched: the SPA's own labels, written in English (OE, 1.8.9: «Subscriptions» on a Russian screen)
+  if (e && e.verb === "Updated panel settings") return n.split(", ").map(x => T(x)).join(", ");
   const m = e && e.verb === "Starting interface" && /^(.+) \(automatic, attempt (\d+) of (\d+)\)$/.exec(n);
   if (m) return `${m[1]} (${T("automatic, attempt {v1} of {v2}", { v1: m[2], v2: m[3] })})`;
   return n;

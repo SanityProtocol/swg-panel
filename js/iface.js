@@ -10,7 +10,7 @@
  * model.js, not a rename hunt. See docs/APP-JS-SPLIT-PLAN.md §5.
  */
 
-import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
+import { T, Trich, Tsplit, plural, pluralWord, srvText, fmtNum } from "./i18n.js";
 import { esc, tkey, seen, dur, ago, fmtBytes, ipOf, ipChoices, portOf, listenAddr, ipPickerVal, V, agoAge} from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
@@ -21,17 +21,18 @@ import {
   cidrNet, nextWdttName, nextCsqttName, ifaceIsAwg, candDialPort, turnIfaceNameError, awgDict3, awgGen, awg3Cls, awg3Tip, tip3, awg31No,
 } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkSupportsAwg, forkOpts, forkLabel } from "./turn-catalog.js";
-import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag } from "./ui.js";
+import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, openConfirm, ConfirmSheet, opTag, procTag, inProc, statusLabel, LogBody, useReorder, GRIP_SVG, orderById, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, goSettings, rowSingle, rowDouble, rowNoSelect, ifopBusy, ifopDone, ifopFail, STATUS_RANK, adoptOrphanPatch, dlul, rateCell, xferCell, typeToConfirm, LIST_PAGE, pageSlice, ListPager, awgSwitchTag, meshGenLabel, meshGenColor } from "./ui.js";
 import { RangedHistory, IfaceThroughput, lossColorMesh } from "./charts.js";
 import { AWG_ORDER, SubAutoNote, ensureVaultUnlocked, ivkResealForNode, subSKCached, subFeatureOn } from "./crypto.js";
 import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle,
          SMART_CAT_LABEL, defaultBlockFor, loadBlockCatalog, reportDropped, rulesSummary, targetLabel } from "./routing.js";
 import { rulesToRows } from "./rulerows.js";
+import { MIMIC_KEYS, MIMIC_PRESETS, MIMIC_BUILTIN_SIZE, mimicOf, mimicCheck, awgFieldCheck, mimicRender, mimicLines, mimicFill, mimicAfter } from "./mimic.js";
 import { orphCount, OnlinePeersTag, peersView, searchMatch, DropsPop, DropsFigure, LossPop, meshHealth, ReachField } from "./views.js";
 import { confirmRestoreInterface, confirmRestoreAllInterfaces, confirmRebuildInterface, brokenIface, openRecreateRekey, fmtDate } from "./peer-actions.js";
 import { TurnProxiesBlock, turnEnabled, WDTT_COLOR, wdttRestoreIdentity, wdttRecreateFresh,
          WdttDeleteSheet, openEditWdtt, CsqttDeleteSheet, openEditCsqtt, ForkTag, shownTitle,
-         enabledTurnForks } from "./turn.js";
+         enabledTurnForks, useListenState, ListenHint, ListenNotice, ListenOnField, turnDialFallback, CsqttVersionField, CSQTT_DEFAULT_LINE, csqttRunLine } from "./turn.js";
 import { PeerGrid, NodeRail } from "./grids.js";
 import { openCreatePeer } from "./sheets-crud.js";
 import { h, Fragment } from "preact";
@@ -250,7 +251,7 @@ export function CandidateIfaceDetail({ node, iface, cand, nrec, ignored, dorm, c
         <//>`}>
       <div class="iface-grid">
         <div class="ig-item"><span class="ig-l">${T("Type")}</span><span class="ig-v">${wd
-          ? html`WDTT${(cand.wdtt && cand.wdtt.fork) ? " · " + cand.wdtt.fork : ""}`
+          ? html`WDTT${(cand.wdtt && cand.wdtt.fork) ? " · " + forkLabel(cand.wdtt.fork) : ""}`
           : cand.type_why
           ? T("looks like {v1}", { v1: (cand.type_hint || "wg").toUpperCase() })
           : ctr
@@ -362,7 +363,7 @@ export function AdoptCsqttSheet({ node, c }) {
 
 export function AdoptDormantWdttSheet({ node, d, nrec }) {
   useStore();
-  const forks = enabledTurnForks().filter(f => f.kind === "wdtt");
+  const forks = enabledTurnForks(d.fork).filter(f => f.kind === "wdtt");
   const [fork, setFork] = useState(d.fork || (forks[0] || {}).id || "amurcanov");
   const [iface, setIface] = useState(nextWdttName(node));
   // Ports the node managed to recover (the unit's ExecStart, the fork's own store) are used as-is, so an
@@ -414,7 +415,7 @@ export function AdoptDormantWdttSheet({ node, d, nrec }) {
       ? Trich("Ports recovered from its password store — its clients already dial these. The *subnet* is never written to disk, so set that below.")
       : T("Not running, so its ports and subnet can't be read from the server — set them here.")}</div>
     <div class="row2">
-      <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/><div class="hint">${d.fork ? Trich("Detected *{v1}* from its files", { v1: d.fork }) : T("Pick the fork this install is")}</div></div>
+      <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/><div class="hint">${d.fork ? Trich("Detected *{v1}* from its files", { v1: forkLabel(d.fork) }) : T("Pick the fork this install is")}</div></div>
       <div class="field"><label>${T("Interface name")}</label><input class=${nameErr ? "bad" : ""} value=${iface} onInput=${e => setIface(e.target.value)} placeholder="wdtt1"/>${nameErr ? html`<div class="hint err">${nameErr}</div>` : null}</div>
     </div>
     <div class="row2">
@@ -439,7 +440,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
   useStore();
   const w = cand.wdtt || {};
   const wd = !!cand.wdtt_hint;                                  // the node positively identified a WDTT server here
-  const forks = enabledTurnForks().filter(f => f.kind === "wdtt");
+  const forks = enabledTurnForks(w.fork).filter(f => f.kind === "wdtt");
   // Preselect from the node's EVIDENCE (live obfuscation params / a WDTT server process), never from which tool
   // happened to answer a dump — that lies on a box where the amneziawg module backs plain WireGuard too.
   const [type, setType] = useState(cand.type_hint === "wdtt" ? "wdtt" : cand.type_hint === "awg" ? "awg" : "wg");
@@ -544,7 +545,7 @@ export function AdoptIfaceSheet({ node, iface, cand, nrec }) {
     <div class="row2">
       ${type === "wdtt" ? html`<div class="field"><label>${T("Server fork")}</label>
         <${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/>
-        <div class="hint">${w.fork ? Trich("Detected *{v1}*{v2} — change only if wrong", { v1: w.fork, v2: w.store ? " (" + w.store + ")" : "" }) : T("Pick the fork this server runs")}</div>
+        <div class="hint">${w.fork ? Trich("Detected *{v1}*{v2} — change only if wrong", { v1: forkLabel(w.fork), v2: w.store ? " (" + w.store + ")" : "" }) : T("Pick the fork this server runs")}</div>
       </div>` : null}
       <div class="field"><label>${T("Endpoint host / IP")}</label><${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname"/><div class="hint">${T("What clients dial")}</div></div>
       ${type === "wdtt" ? null
@@ -647,7 +648,10 @@ export function IfaceDetail({ node: rawNode, iface: rawIface }) {
   // address, H* under DNS, and I* (+ anything else) under MTU. The 3.x keys are not "anything else" — HeaderProtectionKey
   // is no H column entry — they have their own row below (Awg3Row, docs/AWG3-PLAN.md §7.5).
   const ap = (meta && meta.awg_params) || (missIf && missIf.awg_params) || {};
-  const awgGrp = pred => Object.entries(ap).filter(([k]) => pred(k) && !AWG3_KEYS.includes(k)).map(([k, v]) => k + "=" + v);
+  // …and where the record is the whole set (`awg_exact`), a 2.0 field it lacks is NONE — said, faintly, in its column
+  const apNone = meta && meta.awg_exact ? AWG_ORDER.filter(k => !AWG3_KEYS.includes(k) && ap[k] == null) : [];
+  const awgGrp = pred => [...Object.entries(ap).filter(([k]) => pred(k) && !AWG3_KEYS.includes(k)).map(([k, v]) => k + "=" + v),
+    ...apNone.filter(pred).map(k => html`<span class="awg-none-v">${k}=${T("val|none")}</span>`)];
   const awgCols = [awgGrp(k => k[0] === "J"), awgGrp(k => k[0] === "S"), awgGrp(k => k[0] === "H"), awgGrp(k => !"JSH".includes(k[0]))];
   const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
   // one {peer,target} row per peer on this interface, fed to the shared PeerGrid
@@ -850,11 +854,12 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   // A JS comment must stay OUT of the template below: inside an html`` literal it is text — one rendered in this
   // page's header ("// i18n-keys: …", 1.8.8 qualification).
   const kindLabel = isCsq ? "CSQTT" : "WDTT";   // i18n-keys: product names, the same in every language
+  const lineSuffix = isCsq ? " " + csqttRunLine(node, iface) : "";   // "amurcanov 2.5" — the badge carries the csqtt line
   return html`<div class="screen">
     <${NodeRail} active=${node}/>
     <div class="crumb"><a href="#/nodes">${T("col|Nodes")}</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + (isCsq ? "csqtt" : "wdtt")}>${kindLabel}</span><${ForkTag} fork=${fork}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? T("tag|missing") : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/></span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + (isCsq ? "csqtt" : "wdtt")}>${kindLabel}</span><${ForkTag} fork=${fork} suffix=${lineSuffix}/>${adopting ? html`<span class="tg-busy"><${Ic} i="clock"/>${T("tag|adopting")}</span>` : awaiting ? html`<span class="nstat down"><${Ic} i="shield"/> ${missing ? T("tag|missing") : T("awaiting restore")}</span>` : (op && op.phase === "busy") ? html`<span class="tg-busy"><${Ic} i="clock"/>${ifopBusy(op.verb)}</span>` : stopped ? html`<span class="nstat stopped" title=${T("Stopped by you — Start it whenever you're ready")}><${Ic} i="stop"/> ${T("tag|stopped")}</span>` : active ? html`<span class="reporting">${T("tag|running")}</span>` : html`<span class="nstat stale"><${Ic} i="clock"/> ${T("tag|starting")}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${0}/></span></div>
       <div class="grow"></div>
     </div>
     ${adopting ? html`<div class="notice"><${Ic} i="clock"/><span>${Trich("This server is being *taken over* — the node stops the existing one and brings it back up under the panel with its original identity and users. Its controls stay disabled until that finishes.")}</span></div>` : null}
@@ -887,7 +892,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
         <div class="ig-item"><span class="ig-l">${T("col|Endpoint")}</span><span class="ig-v">${w.listen || cfg.listen || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${(isCsq ? (w.tun_addr || cfg.tun_addr) : w.wg_addr) || "—"}</span></div>
         <div class="ig-item"><span class="ig-l">${T("Traffic")}</span><span class="ig-v">${ifTrafficBadge(cfg.egress_mode, cfg.egress_node, node, cfg.exit_id)}</span></div>
-        <div class="ig-item"><span class="ig-l">${T("Fork")}</span><span class="ig-v"><${ForkTag} fork=${fork}/></span></div>
+        <div class="ig-item"><span class="ig-l">${T("Fork")}</span><span class="ig-v"><${ForkTag} fork=${fork} suffix=${lineSuffix}/></span></div>
       </div>
     <//>
 
@@ -967,14 +972,30 @@ function Awg3Row({ ap }) {
 // read-only inputs so they sit in the same box as their neighbours, and `hpkTip` / `rtTip` say why — and the six the panel
 // checks are cells. `placeholders` only where given: Preact writes a null placeholder as placeholder="".
 export const AWG3_EDIT_COLS = [["ContentPaddingAddition", "MaxHandshakeAttempts"], ["RekeyAfterTime", "RekeyTimeout"], ["RejectAfterTime", "KeepaliveTimeout"]];   // i18n-keys: conf key names, as the conf spells them
+// An AmneziaWG field set to none (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A7): "-" typed in a cell — no such line. Stored as "-" in
+// the templates (Settings), sent as "-" by the Edit sheet (the panel removes the key). The panel checks the rules; these mirror
+// the two an operator meets while typing, for the line under the grid (its sentence, not a second rule set).
+export const awgIsNone = v => String(v == null ? "" : v).trim() === "-";
+// The 2.0 grid's four columns (J / S / H / I), drawn by the Edit sheet and by Settings' templates.
+export const AWG_COLS = [["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]];   // i18n-keys: conf key names, as the conf spells them
+export function awgOmitIssue(d, template) {
+  const n = AWG_COLS[0].filter(k => awgIsNone((d || {})[k])).length;
+  if (n && n < 3) return T("Jc, Jmin and Jmax go together — set all three to -, or none of them.");
+  if (template && AWG_ORDER.slice(0, AWG_ORDER.indexOf("HeaderProtectionKey")).every(k => awgIsNone((d || {})[k])))
+    return T("Every field is - — leave at least one, or use WireGuard interfaces.");
+  return "";
+}
+// W1 (A2): RandomTrailers on without ContentPaddingAddition is allowed, and pads every small packet about five times over.
+export const awgW1 = (d, rtOn) => rtOn && awgIsNone((d || {}).ContentPaddingAddition)
+  ? T("ContentPaddingAddition is none while RandomTrailers is on — every small packet is padded about five times over.") : "";
 export function Awg3Grid({ value, onKey, hpk, rt, hpkTip, rtTip, hint, placeholders }) {
   const v = value || {};
   return html`<div class="awg3-cap">${T("AmneziaWG 3.1")}</div>${hint ? html`<p class="hint awg3-hint">${hint}</p>` : null}<div class="awg-cols awg3-cols">
     <div class="awg-col"><label class="awg-f"><span>HeaderProtectionKey</span><input class="awg-ro" readonly value=${hpk} title=${hpkTip}/></label>
       <label class="awg-f"><span>RandomTrailers</span><input class="awg-ro" readonly value=${rt} title=${rtTip}/></label></div>
     ${AWG3_EDIT_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${v[k] == null ? "" : v[k]}
-      ...${placeholders ? { placeholder: placeholders[k] || "" } : {}} onInput=${e => onKey(k, e.target.value)}/></label>`)}</div>`)}
-  </div>`;
+      class=${awgIsNone(v[k]) ? "awg-none" : null} ...${placeholders ? { placeholder: placeholders[k] || "" } : {}} onInput=${e => onKey(k, e.target.value)}/></label>`)}</div>`)}
+  </div>${awgW1(v, !!rt && rt !== "—") ? html`<p class="hint warnish awg-omit-hint">${awgW1(v, true)}</p>` : null}`;
 }
 // Is an S1–S4 in this AWG dict one the panel re-draws on a switch to 3.1 — set and under 12, or not a number (awg3_full)?
 // One test for the switch window and the Edit sheet's 3.1 cells, so the two never say different things about the same values.
@@ -986,7 +1007,23 @@ const awg3Apps = () => T("Only apps that carry AmneziaWG 3.1 can connect: Amnezi
 // `no3` / `no2` are the panel's own reason a switch that way would be refused here (its sentence, never the rule re-derived),
 // which greys that side and is said under it. `was` (the Edit sheet: the saved version) keeps it quiet until the version is being
 // changed — an Edit sheet opened for anything else does not explain AmneziaWG versions every time.
-export function AwgGenField({ value, onChange, no3, no2, label, hint, was }) {
+// "Load now" (docs/AWG31-LOAD-PLAN.md D5): under the switch of a node where an update installed AmneziaWG 3.1 but the kernel
+// module in use is older — the button, then "loading…" until the node answers that press, then its result for an hour. The
+// panel decides it can be offered (`awg31_loadable`) and words the result (`awg_load.msg`); nothing is re-derived here.
+export function AwgLoadLine({ node, nrec }) {
+  const st = (nrec || {}).awg_load || null;
+  const name = (nrec || {}).name || node;
+  const pending = !!st && st.state === "pending";
+  const res = st && st.msg && (st.age || 0) < 3600 ? srvText(st.msg) : "";
+  if (!nrec || (!nrec.awg31_loadable && !pending && !res)) return null;
+  const ask = () => openConfirm({ title: T("Load AmneziaWG 3.1 · {name}", { name }), confirmLabel: T("Load now"), warn: true,
+    body: T("Every AmneziaWG interface on {name} restarts on the new kernel module. Connected devices lose traffic for about 15 seconds while they reconnect; nothing else changes. Or leave it: the module loads at the next reboot if the kernel accepts it; the node page says why when it does not.", { name }),
+    onConfirm: async () => { const r = await api.awgLoad({ id: node }); if (!r.ok) return toast(srvText(r) || T("Failed"), "err"); await Store.poll(); } });
+  if (pending) return html`<div class="hint warnish">${T("Loading the AmneziaWG module on {name}…", { name })}</div>`;
+  return html`<div class="awgload">${res ? html`<div class=${"hint" + (st.state !== "done" ? " err" : "")}>${res}</div>` : null}${nrec.awg31_loadable
+    ? html`<div class="hint"><button type="button" class="linkbtn" onClick=${ask}>${T("Load now")}</button></div>` : null}</div>`;
+}
+export function AwgGenField({ value, onChange, no3, no2, label, hint, was, node, nrec }) {
   label = label || T("AmneziaWG version");
   const why = value === "3.1" ? no2 : no3;
   // ⚠️ THE CREATE FORM NAMES THE APPS (`was == null`: nothing saved yet). The Edit sheet stays quiet on 3.1 because the switch
@@ -999,6 +1036,7 @@ export function AwgGenField({ value, onChange, no3, no2, label, hint, was }) {
       aria-checked=${value === g} class=${(value === g ? "on" : "") + (g === "3.1" ? " sw-awg3" : "")} disabled=${value !== g && !!no}
       title=${value !== g && no ? no : null} onClick=${() => onChange(g)}>${g}</button>`)}</div>
     ${say ? html`<div class="hint">${say}</div>` : null}
+    ${nrec ? html`<${AwgLoadLine} node=${node} nrec=${nrec}/>` : null}
   </div>`;
 }
 // The devices a switch cuts, in their own window (15 a page, a filter once it pages): a list sized by the fleet never renders inline.
@@ -1088,6 +1126,60 @@ function AwgSwitchSheet({ node, iface, to, commit, sent }) {
 }
 const awgTail = " · AWG";   // i18n-keys: a protocol acronym, appended to the already-translated summary
 const natTail = " · NAT";   // …and the NAT source card, which now lives in the same section
+/* The disguise of an AmneziaWG interface (docs/AWG-MIMICRY-PLAN.md §3.1, §5) — what mimicOf reads from I1–I5, as the picker
+   names it, as the Advanced summary names it, and what a failed mimicCheck means. One function per key: a key a ternary picks
+   is never a key (memory i18n-bare-gate). */
+const MIMIC_NAME = { off: () => T("mimic|Off"), quic: () => "QUIC (HTTP/3)", dns: () => T("DNS query"),   // i18n-keys: a protocol name
+  builtin: () => T("Built-in"), custom: () => T("mimic|Custom") };
+const MIMIC_TAIL = { off: () => T("disguise: off"), quic: () => T("disguise: QUIC"), dns: () => T("disguise: DNS"),
+  builtin: () => T("disguise: built-in"), custom: () => T("disguise: custom") };
+const mimicWhy = (k, c) => c.why === "big" ? T("{v1}: a random part is at most 1000 bytes — split it, like <r 1000><r 214>.", { v1: k })
+  : c.why === "c" ? T("{v1}: <c> is gone from AmneziaWG 3.x, and apps refuse the whole config.", { v1: k })
+  : c.why === "t2" ? T("{v1}: <t> appears twice — once per packet at most.", { v1: k })
+  : c.why === "ctl" ? T("{v1}: holds a character apps cannot read — a line break, a tab, or anything outside plain ASCII.", { v1: k })
+  : c.why === "huge" ? T("{v1}: more than one UDP packet can carry (65,507 bytes).", { v1: k })
+  : c.why === "long" ? T("{v1}: longer than 4096 characters.", { v1: k })
+  : T("{v1}: apps cannot read {v2} — use <b 0x…>, <r N>, <rc N>, <rd N> or <t>.", { v1: k, v2: c.tag });
+const MIMIC_BIG = 1232;            // a packet above this may be split on a 1280-byte path (plan §5)
+const MIMIC_MONTH = 30 * 24 * 30;  // handshakes a month for a device that stays connected: one every 2 minutes
+/* The picker and the lines under it. `eff` = the five lines Save would leave (a blank cell keeps the record's: the update
+   merges), `was` = the record's, `port` = the listen port in the form. */
+export function MimicPick({ eff, was, port, peers, restart, bad, onPick }) {
+  const mim = mimicOf(eff), changed = MIMIC_KEYS.some(k => String(eff[k] ?? "") !== String(was[k] ?? ""));
+  const size = ([a, b]) => T("1 packet, {v1}–{v2} bytes", { v1: fmtNum(a), v2: fmtNum(b) });
+  const opts = [
+    { value: "off", label: html`${MIMIC_NAME.off()} <span class="faint">${T("no packets before the handshake")}</span>` },
+    { value: "quic", label: html`${MIMIC_NAME.quic()} <span class="faint">${size(MIMIC_PRESETS.quic.sizes)}</span>` },
+    { value: "dns", label: html`${MIMIC_NAME.dns()} <span class="faint">${size(MIMIC_PRESETS.dns.sizes)}</span>` },
+    { value: "builtin", label: html`${MIMIC_NAME.builtin()} <span class="faint">${plural(MIMIC_BUILTIN_SIZE[0], "packet")}, ${fmtNum(MIMIC_BUILTIN_SIZE[1])} ${pluralWord(MIMIC_BUILTIN_SIZE[1], "byte")}</span>` },
+    ...(mim === "custom" ? [{ value: "custom", label: MIMIC_NAME.custom(), disabled: true }] : []),
+  ];
+  const pk = MIMIC_KEYS.map(k => [k, mimicCheck(eff[k])]).filter(([, c]) => c.ok && c.bytes);
+  const bytes = pk.reduce((n, [, c]) => n + c.bytes, 0), big = pk.find(([, c]) => c.bytes > MIMIC_BIG);
+  const lp = String(port || "").trim(), fit = MIMIC_PRESETS[mim] && MIMIC_PRESETS[mim].port;
+  const line = (t, cls) => html`<p class=${"hint mimic-line" + (cls ? " " + cls : "")}>${t}</p>`;
+  // what Save does to the devices (F1: each side sends its own I1–I5, so nobody is cut; a config carries the new set once issued)
+  const dev = plural(peers, "device"), preset = mim === "quic" || mim === "dns";   // a protocol it looks like
+  const savedLine = () => !peers
+    ? (mim === "off" ? T("Configs issued from now on carry no disguise.") : preset ? T("Configs issued from now on are disguised as {v1}.", { v1: MIMIC_NAME[mim]() })
+      : T("Configs issued from now on carry the I1–I5 below."))
+    : mim === "off" ? T("On Save, devices keep working. Configs issued or re-imported from now on carry no disguise. Devices on this interface keep their current one until re-imported ({v1}).", { v1: dev })
+    : preset ? T("On Save, devices keep working. Configs issued or re-imported from now on are disguised as {v1}. Devices on this interface keep their current disguise until re-imported ({v2}).", { v1: MIMIC_NAME[mim](), v2: dev })
+    : T("On Save, devices keep working. Configs issued or re-imported from now on carry the I1–I5 below. Devices on this interface keep their current ones until re-imported ({v1}).", { v1: dev });
+  return html`<div class="mimic">
+    <div class="mimic-row"><span class="mimic-lbl">${T("Disguise as")}</span>
+      <${Dropdown} className="selwrap mimic-dd" value=${mim} options=${opts} short=${() => MIMIC_NAME[mim]()} ariaLabel=${T("Disguise as")} onChange=${onPick}/></div>
+    ${bad ? line(bad, "err") : html`
+      ${line(pk.length ? T("The disguise sends before each handshake: {v1}, {v2} — about {v3} a month for a device that stays connected.",   // the bytes counted as the packets are: «226 байт», «1 232 байта» (q189 RU pass)
+        { v1: plural(pk.length, "packet"), v2: fmtNum(bytes) + " " + pluralWord(bytes, "byte"), v3: fmtBytes((bytes + 28 * pk.length) * MIMIC_MONTH) }) : T("No packets before the handshake."))}
+      ${big ? line(T("{v1} is {v2} — above 1232 it may be split on a 1280-byte path, and split packets stand out.", { v1: big[0], v2: fmtNum(big[1].bytes) + " " + pluralWord(big[1].bytes, "byte") }), "warnish") : null}
+      ${mim === "builtin" ? line(T("The set every swgPanel install ships, the same on every server.")) : null}
+      ${fit && lp && +lp !== fit ? line(T("QUIC looks most natural on UDP 443 — this interface listens on {v1}.", { v1: lp })) : null}
+      ${mim !== "off" ? line(T("Changes only what the packets before each handshake look like. It does not help where only listed addresses are allowed — a TURN server is the way there.")) : null}
+      ${changed ? line(html`${savedLine()}${restart
+          ? " " + T("The interface restarts; connected devices reconnect in about 15 seconds.") /* measured 15.2–15.4 s, WireGuard's rekey after silence (q189 V-FEAT-A F6) */ : ""}`, "mimic-save") : null}`}
+  </div>`;
+}
 export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
@@ -1133,6 +1225,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const _csqttForks = enabledTurnForks().filter(f => f.kind === "csqtt");
   const csqttOk = turnEnabled() && nrec.turn_manage && nrec.turn_arch_ok !== false && _csqttForks.length > 0;
   const [cfork, setCfork] = useState((_csqttForks[0] || {}).id || "csqtt");
+  const [cline, setCline] = useState(CSQTT_DEFAULT_LINE);   // csqtt version — new servers start on 2.1 (docs/CSQTT-LINES-PLAN.md §8)
   const isCsqtt = proto === "csqtt";
   const _idf = (Store.panelSettings || {}).interface_defaults || {};   // panel-wide new-interface defaults
   // `pre.dns` / `pre.keepalive` — a RECREATE knows what the interface was serving; only a fresh create takes
@@ -1159,6 +1252,10 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
   const _preEp = pre && pre.endpoint;
   const [hostSel, setHostSel] = useState(_preEp ? (ips.includes(_preEp) ? _preEp : "__custom__") : (ips[0] || "__custom__"));
   const [hostCustom, setHostCustom] = useState(_preEp && !ips.includes(_preEp) ? _preEp : "");
+  // A WDTT/csqtt server listens for that host: on it when it lands on the box, else on every address (useListenState) —
+  // or on the one address picked under Listen on.
+  const [pin, setPin] = useState("");
+  const lst = useListenState(node, (isWdtt || isCsqtt) ? ipPickerVal(hostSel, hostCustom) : "", "", "", pin);
   const pickProto = p => {   // switching base re-suggests the name only if the field is still an untouched suggestion
     const untouched = iface === sugAwg || iface === sugWg || iface === sugWdtt || iface === sugCsqtt || !iface.trim();
     if (p !== "existing" && untouched) setIface(p === "wg" ? sugWg : p === "wdtt" ? sugWdtt : p === "csqtt" ? sugCsqtt : sugAwg);
@@ -1239,7 +1336,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       // The form takes the SUBNET (10.8.0.0/24) like wg/awg; the server lives on the first host (.1) — derive it here.
       const _dtlsHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.wdttSet({ node, iface: nm, wg_addr: subnetServerAddr(subnet.trim()), listen: _dtlsHost + ":" + (port.trim() || "56000"),
-        wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
+        wg_port: wgPort.trim() || "56001", fork, block: blk, reach, ...(pin ? { bind_ip: pin } : {}), ...egressBody(eg) });   // carry the routing mode + filters chosen at create time (same as edit)
     } else if (isCsqtt) {
       // csqtt interface: ONE record — writes the same /api/csqtt/set the Turn-proxies card edits. Raw-TUN, so no
       // internal WG port and no fork; takes the SUBNET like wg/awg (server .1 derived), a UDP DTLS listen, a pw cap.
@@ -1249,7 +1346,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       if (maxPw.trim() && !/^\d+$/.test(maxPw.trim())) return fail(T("Max passwords must be a number."));
       const _lHost = ipPickerVal(hostSel, hostCustom).trim() || "0.0.0.0";
       r = await api.csqttSet({ node, iface: nm, tun_addr: subnetServerAddr(subnet.trim()), listen: _lHost + ":" + (port.trim() || "46000"),
-        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...egressBody(eg) });
+        fork: cfork, max_passwords: maxPw.trim() || "500", block: blk, reach, ...(pin ? { bind_ip: pin } : {}), ...(cline !== CSQTT_DEFAULT_LINE ? { line: cline } : {}), ...egressBody(eg) });
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail(T("Interface name is required (no spaces or /)."));
@@ -1327,7 +1424,7 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       </div>
       ${adoptMode ? html`<div class="hint" style="margin-top:8px">${T("Taking over an interface already on the node — its keys and peers are kept.")}</div>` : null}
     </div>
-    ${proto === "awg" && !existing ? html`<${AwgGenField} value=${gen} onChange=${setGen} no3=${no31} no2=""/>` : null}
+    ${proto === "awg" && !existing ? html`<${AwgGenField} value=${gen} onChange=${setGen} no3=${no31} no2="" node=${node} nrec=${nrec}/>` : null}
     ${existing ? html`<${Fragment}>
       ${exWdtt ? html`<div class="notice"><${Ic} i="info"/><span>${Trich("If the node has discovered this server it is quicker to adopt it from its *orphan card* on the node screen — the node has already read its fork, ports and identity. Point at the directory here when it hasn't: an install that was moved, renamed, or is stopped.")}</span></div>` : html`
       <div class="row2">
@@ -1349,21 +1446,26 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
       ${isCsqtt ? html`<div class="row2">
         <div class="field"><label>${T("Endpoint host / IP")}</label>
           <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
-          <div class="hint">${T("What clients dial (over the VK relay)")}</div></div>
+          <${ListenHint} st=${lst} hint=${T("What clients dial (over the VK relay)")} fallback=${turnDialFallback(node)}/></div>
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="46000"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">${T("UDP DTLS listen (outside)")}</div>`}</div>
       </div>
+      <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
+      <${ListenNotice} st=${lst}/>
       <div class="row2">
         <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${cfork} onChange=${v => setCfork(v)} options=${forkOpts(_csqttForks)} ariaLabel=${T("Server fork")}/><div class="hint">${T("Which csqtt server implements this instance")}</div></div>
         <div class="field"><label>${T("Max users")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— optional")}</span></label><input value=${maxPw} onInput=${e => setMaxPw(e.target.value)} placeholder="500"/><div class="hint">${T("Cap on simultaneous access passwords · blank = 500")}</div></div>
-      </div>` : null}
+      </div>
+      <${CsqttVersionField} node=${node} value=${cline} onChange=${setCline}/>` : null}
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — after creating you must publish this port in the node's `docker-compose.yml` ({ports}) and `up -d`, or clients can't reach it. (A host-networking node needs none of this.)", { ports: 'ports: "' + (port || "PORT") + ":" + (port || "PORT") + '/udp"' })}</span></div>` : null}
       ${isWdtt ? html`<div class="row2">
         <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} ariaLabel=${T("Server fork")}
           options=${forkOpts(_wdttForks, f => _forkBuildable(f) ? "" : T("no build published yet"))}/><div class="hint">${T("Which WDTT server implements this instance")}</div></div>
         <div class="field"><label>${T("Endpoint host / IP")}</label>
           <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder=${T("vpn.xyz.com or 203.0.113.7")}/>
-          <div class="hint">${T("What clients dial")}</div></div>
+          <${ListenHint} st=${lst} fallback=${turnDialFallback(node)}/></div>
       </div>
+      <${ListenOnField} node=${node} value=${pin} onChange=${setPin}/>
+      <${ListenNotice} st=${lst}/>
       <div class="row2">
         <div class="field"><label>${T("Listen port")}</label><input class=${pperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/>${pperr ? html`<div class="hint err">${pperr}</div>` : html`<div class="hint">${T("DTLS listen (outside)")}</div>`}</div>
         <div class="field"><label>${T("Internal WG port")}</label><input class=${wgperr ? "bad" : ""} value=${wgPort} onInput=${e => setWgPort(e.target.value)} placeholder="56001"/>${wgperr ? html`<div class="hint err">${wgperr}</div>` : html`<div class="hint">${T("Loopback userspace-WG port (server-internal)")}</div>`}</div>
@@ -1459,6 +1561,106 @@ export function openIfaceEditor(node, iface) {
   if (k === "wdtt") return openEditWdtt(node, iface);
   return openEditIface(node, iface);
 }
+// The 2.0 set — what Settings edits: the interface defaults and mesh_awg stay AmneziaWG 2.0 (docs/AWG3-PLAN.md D-default,
+// D-mesh). Derived from AWG_ORDER, the SPA's one list, instead of a second copy of it.
+export const AWG_KEYS = AWG_ORDER.slice(0, AWG_ORDER.indexOf("HeaderProtectionKey"));
+// client-side AmneziaWG obfuscation generator — mirrors the panel's gen_awg_params (for the "Generate" button)
+export function genAwg() {
+  const r = n => Math.floor(Math.random() * n), w = 15;
+  let s1 = 15 + r(135), s2 = 15 + r(135);
+  while (s2 === s1 || s2 === s1 + 56) s2 = 15 + r(135);
+  const b = [5, 1e9, 2e9, 3e9].map(base => base + r(9e8));
+  return { Jc: 4, Jmin: 40, Jmax: 70, S1: s1, S2: s2, S3: 15 + r(85), S4: 15 + r(85),
+    H1: `${b[0]}-${b[0] + w}`, H2: `${b[1]}-${b[1] + w}`, H3: `${b[2]}-${b[2] + w}`, H4: `${b[3]}-${b[3] + w}`,
+    I1: "<b 0xc000000001><r 64><t>", I2: "<r 24><t>", I3: "<r 32>",
+    I4: "<b 0xc000000001><r 32><t>", I5: "<t><r 48>" };
+}
+/* Placeholder text for an EMPTY cell — what that field becomes when a new interface is created. Derived from
+   genAwg() so the shown constants can never drift from the ones we actually emit. S1-S4 and H1-H4 are the
+   exception: the node rolls those fresh FOR EACH interface, which is a property worth keeping — two
+   interfaces never share a fingerprint, so a censor who learns one server's headers does not thereby
+   recognise the rest. Hence "blank = random" rather than a value. */
+export function awgBlankHints() {
+  const g = genAwg();
+  const out = {};
+  for (const k of AWG_KEYS) out[k] = /^[SH][1-4]$/.test(k) ? T("blank = random") : String(g[k]);
+  return out;
+}
+// labelled grid of the 12 AWG fields — read-only display (node settings) or editable (panel settings). A template: `omit` is
+// the line under it — what "-" means there (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A7) — replaced by the rule a typed "-" breaks.
+export function AwgGrid({ value, onChange, readOnly, placeholders, omit }) {
+  const v = value || {};
+  const issue = !readOnly && omit ? awgOmitIssue(v, true) : "";
+  // J / S / H / I as columns, fields stacked — same layout as the interface AWG display
+  return html`<div class="awg-cols">${AWG_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span>${readOnly
+    ? (awgIsNone(v[k]) ? html`<span class="awg-val awg-none">${T("val|none")}</span>`
+      : html`<span class="awg-val">${v[k] != null && v[k] !== "" ? v[k] : "—"}</span>`)
+    : html`<input value=${v[k] ?? ""} placeholder=${(placeholders || {})[k] || ""} class=${awgIsNone(v[k]) ? "awg-none" : null}
+        onInput=${e => onChange({ ...v, [k]: e.target.value })} spellcheck="false"/>`}</label>`)}</div>`)}</div>${omit
+    ? html`<p class=${"hint awg-omit-hint" + (issue ? " err" : "")}>${issue || omit}</p>` : null}`;
+}
+
+/* The mesh AWG params, in Settings → Mesh (the fleet's default) and on a link's sheet (its own), drawn for the TYPE selected there (`eff`, the
+   draft — so it follows the switch before a Save): WG — no block at all; AWG 2.0 — the 2.0 grid; AWG 3.1 — the 2.0 grid and the
+   six 3.1 fields a 3.1 link takes (plan §8 round 11; a blank cell takes the next layer down, shown as its background text,
+   `ph3`). Values the template holds for fields the type does not use are kept, and one line says so (operator, 2026-10-06:
+   show only what the selected type uses). Generate MERGES: it draws the 2.0 set and, for 3.1, fills the 3.1 cells with what
+   they inherit — it never drops a field it does not draw. */
+export function MeshAwgParams({ title, eff, value, onChange, placeholders, about, ph3 }) {
+  const v = value || {};
+  const set2 = AWG_KEYS.some(k => String(v[k] ?? "").trim() !== ""), set3 = AWG3_EDIT_COLS.flat().some(k => String(v[k] ?? "").trim() !== "");
+  const show3 = eff === "3.1";
+  // what this template still holds that the selected type does not use — kept, and said, never silently in effect
+  const keptLine = eff === "2.0" && set3
+    ? html`<div class="hint">${T("The AmneziaWG 3.1 values set here are kept for AWG 3.1 links — select AWG 3.1 to see them.")}</div>` : null;
+  if (eff === "wg") return null;                 // plain WireGuard has nothing to set: no block at all (operator, 2026-10-06)
+  const isSet = set2 || (show3 && set3);
+  return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> ${title}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
+    <div class="field" style="display:none;margin-top:8px">
+      <${AwgGrid} value=${v} onChange=${onChange} placeholders=${placeholders}
+        omit=${T("Type - in a cell for no such line on the links made from these; a blank cell stays automatic.")}/>
+      <div class="hint" style="margin:8px 0 0">${about}</div>${keptLine}
+      ${show3 ? html`<div style="margin-top:14px"><${Awg3Grid} value=${v} onKey=${(k, x) => onChange({ ...v, [k]: x })} placeholders=${ph3}
+        hpk=${T("val|per link")} rt=${T("val|on")} hpkTip=${T("Each link gets a key of its own.")} rtTip=${T("On for every AmneziaWG 3.1 link.")}
+        hint=${T("What AmneziaWG 3.1 links add to the fields above. A blank cell takes the value shown in it — the mesh default, or the 3.1 defaults in Settings → Interfaces; - for no such line.")}/></div>` : null}
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini"
+        title=${show3 ? T("S and H are drawn fresh; the 3.1 fields take what they inherit (the values shown in them), whose ranges the protocol randomises on its own.") : null}
+        onClick=${() => onChange({ ...v, ...genAwg(), ...(show3 ? Object.fromEntries(AWG3_EDIT_COLS.flat()
+          .filter(k => String(v[k] ?? "").trim() === "" && String((ph3 || {})[k] ?? "").trim())
+          .map(k => [k, ph3[k] === T("val|none") ? "-" : String(ph3[k])])) : {}) })}><${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => onChange(Object.fromEntries(Object.entries(v)
+          .filter(([k]) => !AWG_KEYS.includes(k) && !(show3 && AWG3_EDIT_COLS.flat().includes(k)))))}>${T("Clear (auto)")}</button>` : null}</div>
+    </div></div>`;
+}
+/* A blank 3.1 cell of a mesh template, as background text: the next layer down, field by field — for a node, the panel's mesh
+   template; then the interface 3.1 defaults; then Amnezia's set (the panel's mesh_awg3 walks the same layers). */
+export function mesh3Hints(fromPanel) {
+  const ps = Store.panelSettings || {}, pm = fromPanel ? (ps.mesh_awg || {}) : {}, d = (ps.interface_defaults || {}).awg3_params || {};
+  const one = k => [pm[k], d[k], (ps.awg31_builtin || {})[k]].map(x => String(x ?? "").trim()).find(Boolean) || "";
+  return Object.fromEntries(AWG3_EDIT_COLS.flat().map(k => [k, awgIsNone(one(k)) ? T("val|none") : one(k)]));
+}
+/* A blank cell of a link's mesh AWG grid, as background text: what it is made with — the panel's mesh template where it sets
+   the field (none where it sets "-"), else what the link actually carries (`live`, its record's params), else nothing: auto. */
+export function meshAwgHints(live) {
+  const pt = (Store.panelSettings || {}).mesh_awg || {}; live = live || {};
+  return Object.fromEntries(AWG_KEYS.map(k => [k, awgIsNone(pt[k]) ? T("val|none")
+    : String(pt[k] ?? "").trim() || String(live[k] ?? "").trim()]));
+}
+/** A mesh link type switch (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md B1, §8 round 12): AmneziaWG 2.0, 3.1 or plain WireGuard — the
+ *  fleet's default in Settings → Mesh, and one link's own on its connection sheet, where `inherit` (the default) adds a
+ *  "Default (…)" button, "" in the draft. Each type in its protocol's own colour. The server decides what a link can be. */
+export function MeshGenField({ value, onChange, inherit, hint, label, after }) {
+  const opts = [...(inherit ? [["", T("Default ({v1})", { v1: meshGenLabel(inherit) })]] : []), ...["wg", "2.0", "3.1"].map(g => [g, meshGenLabel(g)])];
+  const eff = value || inherit || "2.0";
+  label = label || T("Mesh link type");
+  return html`<div class="field awggen meshgen"><label>${label}</label>
+    <div class="dpsw awgsw" role="radiogroup" aria-label=${label}>${opts.map(([g, l]) => html`<button type="button" role="radio" key=${g || "inherit"}
+      aria-checked=${value === g} class=${(value === g ? "on " : "") + "sw-proto"} style=${"--c:" + meshGenColor(g || inherit || "2.0")}
+      onClick=${() => onChange(g)}>${l}</button>`)}</div>
+    <div class="hint">${hint}${eff === "3.1" ? " " + T("A pair where either node cannot run AmneziaWG 3.1 is linked at 2.0, and its node says why.") : ""}${
+      eff === "wg" ? " " + T("No obfuscation — DPI can block it across borders.") : ""}</div>${after || null}
+  </div>`;
+}
+
 export function openConnectionEdit(node, iface) { openModal(html`<${ConnectionEditSheet} node=${node} iface=${iface}/>`); }
 // A node↔node mesh link (system interface). Mesh-managed (no create/delete/egress here) — mostly status;
 // the only operator knob is whether this link can carry forwarded user traffic (reserved for Phase 2).
@@ -1480,6 +1682,20 @@ export function ConnectionEditSheet({ node, iface }) {
   const [relayPick, setRelayPick] = useState(null);
   const [quotaPick, setQuotaPick] = useState(null);
   const relayOn = relayPick === null ? relayOn0 : relayPick;
+  // This LINK's own type (plan §8 round 12): "" = the fleet's default. Followed from the server until touched, like the relay.
+  const typeSet0 = ((nrec.mesh_peers || []).find(p => p.peer === peer) || {}).type_set || "";
+  const [typePick, setTypePick] = useState(null);
+  const typeSet = typePick === null ? typeSet0 : typePick;
+  const typeDflt = (Store.panelSettings || {}).mesh_awg_gen || "2.0";
+  // …and its own AWG params (plan §8 round 13): {} = the fleet's default. Same follow-until-touched rule.
+  const awgSet0 = ((nrec.mesh_peers || []).find(p => p.peer === peer) || {}).awg_set || {};
+  const [awgPick, setAwgPick] = useState(null);
+  const awgSet = awgPick === null ? awgSet0 : awgPick;
+  const tplKey = o => JSON.stringify(Object.entries(o || {}).map(([k, x]) => [k, String(x ?? "").trim()]).filter(([, x]) => x).sort());
+  const awgChanged = tplKey(awgSet) !== tplKey(awgSet0);
+  const relink = typeSet !== typeSet0 || awgChanged;             // either rebuilds the link on both ends
+  const live = meta.awg_params || {};                            // what the link carries now: a blank cell's background text
+  const ph3 = (() => { const h = mesh3Hints(true); return Object.fromEntries(AWG3_EDIT_COLS.flat().map(k => [k, String(live[k] ?? "").trim() || h[k]])); })();
   const quota = quotaPick === null ? quota0 : quotaPick;
   const setRelayOn = setRelayPick, setQuota = setQuotaPick;
   const nodeDown = nodeStale(node) || inProc(nrec.proc_status);   // node not reporting / mid re-install → can't apply a dial change
@@ -1487,14 +1703,17 @@ export function ConnectionEditSheet({ node, iface }) {
   const lkLabel = { up: "connected", connecting: "connecting", down: "down" }[lk];
   const proto = (meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
     const Cell = (l, v) => html`<div class="conn-cell"><span class="cl">${l}</span><span class="cv">${v}</span></div>`;
-  const saveDial = () => {
+  // Sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with the type, AWG, dial and relay
+  // edits kept — the sheet used to close first, and the refusal took them all with it.
+  const [busy, setBusy] = useState(false), [saveErr, setSaveErr] = useState("");
+  const saveDial = async () => {
+    const r = await sheetSend(() => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp,
+                                         relay_mode: relayOn ? "relay" : "forward", relay_quota_pct: Number(quota) || 50,
+                                         ...(typeSet !== typeSet0 ? { mesh_awg_gen: typeSet } : {}),   // only a change rebuilds the link
+                                         ...(awgChanged ? { mesh_awg: Object.fromEntries(JSON.parse(tplKey(awgSet))) } : {}) }), setSaveErr, setBusy);
+    if (!r.ok) return;
     closeModal();
-    mutate({
-      key: "conn:" + node + "|" + peer,
-      patch: () => {},
-      call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp,
-                                         relay_mode: relayOn ? "relay" : "forward", relay_quota_pct: Number(quota) || 50 }),
-    });
+    Store.poll().catch(() => {});
   };
   // ⚠️ 90, not 100. The relay is a single event loop, so one core is its structural ceiling anyway; what
   // 100 would mean on a 1-vCPU node is "the relay may have the whole machine". CPUQuota is the only hard
@@ -1502,7 +1721,7 @@ export function ConnectionEditSheet({ node, iface }) {
   const QUOTA_MAX = 90;
   const quotaErr = (() => { const q = Number(quota); return (!Number.isInteger(q) || q < 5 || q > QUOTA_MAX) ? T("CPU cap must be between {v1} and {v2}", { v1: "5", v2: String(QUOTA_MAX) }) : ""; })();
   const connDirty = dialSrc !== (meta.dial_src || "") || dialEp !== (meta.dial_endpoint || "")
-    || relayOn !== relayOn0 || quota !== quota0;   // enable Save only when something actually changed
+    || relayOn !== relayOn0 || quota !== quota0 || relink;   // enable Save only when something actually changed
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
   const allMeta = Store.describe[node] || {};
   const carried = Object.keys(allMeta).filter(k => !allMeta[k].system
@@ -1521,8 +1740,8 @@ export function ConnectionEditSheet({ node, iface }) {
     .filter(x => x.cats.length);
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg") + awg3Cls(node, k)} ...${awg3Tip(node, k)}>${k}</span>`;
   const peerNm = html`<b style=${"color:" + Store.nodeColor(peer)}>${Store.nodeName(peer)}</b>`;
-  return html`<${Sheet} title=${T("Connection to {v1}", { v1: Store.nodeName(peer) })} width=${680} onClose=${closeModal}
-      foot=${footRow({ onCancel: closeModal, disabled: nodeDown || !connDirty || !!quotaErr, title: nodeDown ? T("{v1} isn't reporting — reconnect it before changing this link", { v1: Store.nodeName(node) }) : (quotaErr || (!connDirty ? T("No changes to save") : "")), onAction: saveDial, action: T("Save") })}>
+  return html`<${Sheet} title=${T("Connection to {v1}", { v1: Store.nodeName(peer) })} width=${680} onClose=${closeModal} err=${saveErr}
+      foot=${footRow({ onCancel: closeModal, disabled: busy || nodeDown || !connDirty || !!quotaErr, title: nodeDown ? T("{v1} isn't reporting — reconnect it before changing this link", { v1: Store.nodeName(node) }) : (quotaErr || (!connDirty ? T("No changes to save") : "")), onAction: saveDial, action: T("Save") })}>
     <div class="conncard">
       <div class="conncard-top">
         <span class=${"iftype " + proto}>${T("System {v1}", { v1: proto.toUpperCase() })}</span>
@@ -1552,6 +1771,13 @@ export function ConnectionEditSheet({ node, iface }) {
       </div>
     </div>
     <div style="margin-top:12px"><${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.meshSeries(node, peer, r).then(x => x && x.ok ? x.data : {})}/></div>
+    <div style="margin-top:16px"><${MeshGenField} label=${T("Link type")} value=${typeSet} onChange=${setTypePick} inherit=${typeDflt}
+      hint=${relink ? T("Saving rebuilds this link on both ends — it drops for a few seconds while they reconnect.")
+        : T("This link only, both ends. Default follows the fleet's type in Settings → Mesh.")}
+      after=${(nrec.mesh_gen_reasons || []).filter(r => r.iface === iface).map(r => html`<div class="hint warnish" key=${r.iface}>${srvText(r.msg)}</div>`)}/>
+      <${MeshAwgParams} title=${T("This link's AWG params")} eff=${typeSet || typeDflt} value=${awgSet} onChange=${setAwgPick}
+        placeholders=${meshAwgHints(live)} ph3=${ph3}
+        about=${T("Both ends of this link use these. A blank cell takes the fleet's default in Settings → Mesh, else a fresh value when the link is rebuilt.")}/></div>
     <div class="row2" style="margin-top:14px">
       <div class="field"><label>${T("Dial source IP")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— {node}'s IP", { node: Store.nodeName(node) })}</span></label>
         <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto=${T("Auto (default route)")}/></div>
@@ -1721,12 +1947,31 @@ export function EditIfaceSheet({ node, iface }) {
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
   const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
   const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
+  // The disguise (docs/AWG-MIMICRY-PLAN.md §3.1): read back from I1–I5, never stored by name. A pick fills the five cells once,
+  // here — a render on every poll would redraw its random parts under the operator. A line the record holds goes with "-";
+  // one it never had stays blank. `mimEff` = the lines Save would leave: a blank cell keeps the record's (the update merges).
+  const pickMimic = id => { const f = mimicFill(mimicRender(id), meta.awg_params); setAwg(a => ({ ...a, ...f })); };
+  const mimWas = mimicLines(meta.awg_params), mimEff = mimicAfter(awg, meta.awg_params);
+  // A value the operator changed that the panel would refuse — said under the picker, and Save waits instead of closing on a
+  // save that then fails (F9: an app refuses the whole config; code review 2026-10-08): an I line some app cannot read, any
+  // field outside printable ASCII, and a line taken off ("-") on a node that cannot hold an empty field yet, or before the
+  // node has reported an interface whose set is not whole — the panel's own two refusals (awg_exact_refusal), in its words.
+  const _apT = k => String((meta.awg_params || {})[k] ?? "").trim();
+  const mimBad = isAwg ? AWG_ORDER.filter(k => { const d = String(awg[k] ?? "").trim(); return d && !awgIsNone(d) && d !== _apT(k); })
+    .map(k => [k, awgFieldCheck(k, awg[k])]).find(([, c]) => !c.ok) : null;
+  const _rm = isAwg && AWG_ORDER.some(k => awgIsNone(awg[k]) && (meta.awg_params || {})[k] != null);
+  const _snapN = Store.stats[node] || {};
+  const omitNo = !_rm ? "" : (((_snapN.datapath || {}).awg || {}).exact !== 1)
+    ? T("{v1} cannot hold an empty AmneziaWG field yet — it is offline or needs an update", { v1: Store.nodeName(node) })
+    : !meta.awg_exact && !Object.keys(((((_snapN.interfaces || {})[iface] || {}).meta || {}).awg_params) || {}).length
+      ? T("{v1}: wait for the node to report this interface, then set a field to none", { v1: iface }) : "";
   // The AmneziaWG version (docs/AWG3-PLAN.md §7.7): an AmneziaWG interface that is not a mesh link. Flipping it and pressing Save
   // opens the switch window; the reason the panel would refuse either way greys that side (an older node can do neither).
   const genWas = awgGen(node, iface) || "2.0";
   const genSw = isAwg && !meta.system && (meta.tool || "awg") === "awg";
   const [gen, setGen0] = useState(genWas);
   const genChanged = genSw && gen !== genWas;
+  const mimErr = mimBad ? mimicWhy(mimBad[0], mimBad[1]) : omitNo;
   // Flipped to 3.1 before a Save: the 3.1 cells appear at once, holding what the switch would give them (Settings' 3.1
   // defaults over Amnezia's), so they are set in the same Save — never saved, reopened and saved again. A cell the operator
   // already typed is kept. Header protection and trailers stay the panel's: the key is born on the node's switch.
@@ -1744,24 +1989,22 @@ export function EditIfaceSheet({ node, iface }) {
   const istopped = !!ist.stopped;            // operator stopped it (not a failure)
   const idown = !istopped && ist.down;       // genuinely down
   const notup = !!idown || istopped;         // either way: Save brings it up; footer offers Start
-  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false); const [saveErr, setSaveErr] = useState("");
   const doSave = async (switched) => {
     const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), block: blk, reach, ...egressBody(eg) };
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim();
       if (v && (gen === "3.1" || !AWG3_KEYS.includes(k))) o[k] = v; return o; }, {});
-    // A generation switch is sent from its window, which stays open until the panel answers: a refusal is returned to it.
-    const r0 = switched ? await api.ifaceUpdate({ ...body, awg_gen: gen }) : null;
-    if (r0 && !r0.ok) return r0;
-    // down → "start" (real bring-up); up → "apply" live (no restart). Optimistic: flip the lifecycle +
-    // close the modal(s) NOW so the detail page shows starting/applying the instant Save is pressed.
+    // The panel answers BEFORE the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept —
+    // it used to close first and lose them all. A generation switch is sent from its own window, which shows its refusal there.
+    const r = switched ? await api.ifaceUpdate({ ...body, awg_gen: gen }) : await sheetSend(() => api.ifaceUpdate(body), setSaveErr, setBusy);
+    if (!r || !r.ok) return r;
+    // Accepted: down → "start" (real bring-up); up → "apply" live (no restart) — the lifecycle flips and the sheet closes now.
     const key = node + "|" + iface, verb = notup ? "start" : "apply";
     // A switch is a recreate on the node, whenever it gets there: its tag (awgSwitchTag) stays until the node reports the new
     // version, so it gets no "apply" lifecycle — that one says "applied" after 6 s whatever the node has done.
     if (!(switched && !notup)) Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() };
     Store.apply(); closeAllModals();
     const fail = (m) => { Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 5000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 5100); };
-    const r = r0 || await api.ifaceUpdate(body);
-    if (!r.ok) return fail(srvText(r) || T("save failed"));
     reportDropped(r);   // §5.4: the panel keeps what it can and names what it could not
 
     if (notup) { const r2 = await api.ifaceStart({ node, iface }); if (!r2.ok) return fail(srvText(r2) || T("start failed")); }
@@ -1773,12 +2016,18 @@ export function EditIfaceSheet({ node, iface }) {
     if (genChanged) return pushModal(html`<${AwgSwitchSheet} node=${node} iface=${iface} to=${gen} commit=${() => doSave(true)} sent=${awg}/>`);
     const portChanged = port.trim() !== String(meta.desired_port || meta.listen_port || "");
     const epChanged = host.trim() !== epHost;
-    if (portChanged || epChanged) {           // client-breaking → confirm first (the editor stays open behind it)
+    // …and a line taken off (a cell set to "-") breaks every client the same way (A7) — named in the same window
+    // — but not I1–I5: each side sends its own, so taking one off cuts no device (docs/AWG-MIMICRY-PLAN.md F1; the line under
+    // the disguise picker says what does happen)
+    const awgRm = isAwg ? AWG_ORDER.filter(k => awgIsNone(awg[k]) && (meta.awg_params || {})[k] != null && !MIMIC_KEYS.includes(k)) : [];
+    if (portChanged || epChanged || awgRm.length) {           // client-breaking → confirm first (the editor stays open behind it)
       const what = portChanged && epChanged ? T("endpoint and listen port") : portChanged ? T("listen port") : "endpoint";
-      pushModal(html`<${ConfirmSheet} title=${T("Change {what}?", { what })} confirmLabel=${T("Apply change")} warn=${true}
+      const title = !awgRm.length ? T("Change {what}?", { what }) : (portChanged || epChanged)
+        ? T("Change {what} and remove {v1}?", { what, v1: awgRm.join(", ") }) : T("Remove {v1}?", { v1: awgRm.join(", ") });
+      pushModal(html`<${ConfirmSheet} title=${title} confirmLabel=${T("Apply change")} warn=${true}
         body=${T("This reconfigures the interface on the node. Existing peers will NOT be able to connect using their old configs — you'll need to re-issue and re-distribute the QR codes. The interface's keys and peers are kept.")}
         note=${html`<${SubAutoNote}/>`}
-        onConfirm=${() => { doSave(); }}/>`);
+        onConfirm=${() => doSave()}/>`);
       return;
     }
     doSave();
@@ -1789,7 +2038,9 @@ export function EditIfaceSheet({ node, iface }) {
   const _awgTrim = src => AWG_ORDER.reduce((o, k) => { const v = String((src || {})[k] == null ? "" : (src || {})[k]).trim(); if (v) o[k] = v; return o; }, {});
   const edited = JSON.stringify(_ifBody) !== JSON.stringify(_ifOrig)
     || JSON.stringify([...blk].sort()) !== JSON.stringify([...(meta.block || [])].sort())
-    || (isAwg && JSON.stringify(_awgTrim(awg)) !== JSON.stringify(_awgTrim(meta.awg_params))) || genChanged;
+    // …a cell typed into, not one cleared: the update keeps what a body leaves out (it merges), so a blank cell changes nothing
+    // and must not light Save — "-" is how a line is removed, and the line under the grid says so
+    || (isAwg && Object.entries(_awgTrim(awg)).some(([k, v]) => v !== (_awgTrim(meta.awg_params)[k] || ""))) || genChanged;
   const ifaceDirty = notup || edited;
   // ⚠️ WHAT WAS CHANGED BY A CLICK COUNTS AS A CHANGE TO LOSE. The sheet's own guard sees typed fields only (input/change), so the
   // AmneziaWG version switch, the access level, the exit and its routing rules, the filter chips — all clicks — closed on
@@ -1798,12 +2049,12 @@ export function EditIfaceSheet({ node, iface }) {
   // a down interface's bring-up (`notup`) is not an edit.
   const dirtyRef = useRef(false), closeRef = useRef(null);
   dirtyRef.current = edited;
-  return html`<${Sheet} title=${T("Edit {v1} interface · {v2}", { v1: kindOf(node, iface).toUpperCase(), v2: iface })} width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef}
+  return html`<${Sheet} title=${T("Edit {v1} interface · {v2}", { v1: kindOf(node, iface).toUpperCase(), v2: iface })} width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef} err=${saveErr}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/>${T("Delete")}</button>
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bring this interface up on the node")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> ${T("Start service")}</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Take this interface down on the node (stays down until started)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> ${T("Stop service")}</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title=${T("Bounce this interface's service on the node (down then up)")} onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> ${T("Restart service")}</button><//>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${busy || !!egressSaveBlock(eg, emode) || !!iperr || !!mimErr || !ifaceDirty} title=${iperr || egressSaveBlock(eg, emode) || mimErr || (!ifaceDirty ? T("No changes to save") : "")} onClick=${save}>${T("Save")}</button></>`}>
     <div class="iface-intro"><div>${Trich("Changing the *endpoint* or *port* will break the existing clients' connections; you will need to re-distribute the configs / QR codes.")}</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("This interface is *down* on the node. Change the *Listen port* to a free one and *Save* — the panel will write the new port and restart the interface to bring it up.")}</span></div>` : null}
     ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
@@ -1875,11 +2126,11 @@ export function EditIfaceSheet({ node, iface }) {
     <div class="field ipk-field subnet-row"><label>${T("Host tunnel IP")}</label><span class="ipk-val"><b>${(meta.address || "").split("/")[0] || meta.subnet || "—"}</b> <span class="faint">${T("(set at creation — delete & recreate to change)")}</span></span></div>
     <div class="row2">
       <div class="field"><label>${T("Endpoint host / IP")}</label>
-        <${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder="IP or hostname — e.g. vpn.example.com"/>
+        <${NodeIpPick} ips=${ipChoices(nrec)} value=${host} onChange=${setHost} auto=${T("Auto (node's detected address)")} customPlaceholder=${T("IP or hostname — e.g. vpn.example.com")}/>
         <div class="hint">${T("What clients dial — config-facing only")}</div></div>
       <div class="field"><label>${T("Listen port")}</label><input class=${iperr ? "bad" : ""} value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/>${iperr ? html`<div class="hint err">${iperr}</div>` : html`<div class="hint">${T("Applied to the node (currently {v1})", { v1: meta.listen_port || "—" })}</div>`}</div>
     </div>
-    ${genSw ? html`<${AwgGenField} value=${gen} onChange=${setGen} no3=${no3} no2=${no2} was=${genWas}/>` : null}
+    ${genSw ? html`<${AwgGenField} value=${gen} onChange=${setGen} no3=${no3} no2=${no2} was=${genWas} node=${node} nrec=${nrec}/>` : null}
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg} noRules=${true}/>
     ${eg.mode === "smart" ? html`<${Disclosure} title=${rulesTitle(node)} sumCls="route"
       summary=${rulesSummary(node, eg.rows, eg.catchAll)}
@@ -1892,7 +2143,7 @@ export function EditIfaceSheet({ node, iface }) {
       open=${disc.filters} onToggle=${() => tog("filters")}>
       <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
     <//>
-    <${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS") + (isAwg ? awgTail : "") + (natPinApplies(eg) ? natTail : "")}
+    <${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS") + (isAwg ? awgTail + " · " + MIMIC_TAIL[mimicOf(mimEff)]() : "") + (natPinApplies(eg) ? natTail : "")}
       open=${disc.advanced} onToggle=${() => tog("advanced")}>
       <div class="field secdiv"><label>${isAwg ? T("AmneziaWG settings") : T("WireGuard settings")}</label></div>
       <div class="row2">
@@ -1901,8 +2152,14 @@ export function EditIfaceSheet({ node, iface }) {
       </div>
       <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder=${T("https://8.8.8.8/dns-query, 1.1.1.1")}/><div class="hint">${T("Comma-separated")}</div></div>
       ${isAwg ? html`<div class="field"><label>${T("AmneziaWG parameters")}</label>
-        <div class="hint" style="margin:0 0 8px">${T("Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.")}</div>
-        <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div>
+        <div class="hint" style="margin:0 0 8px">${T("Pushed to the node's interface and rendered into configs/QRs. Existing devices must re-import after a change, except a change of disguise: each side sends its own.")}</div>
+        <${MimicPick} eff=${mimEff} was=${mimWas} port=${port} bad=${mimErr} onPick=${pickMimic}
+          peers=${Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface)).length}
+          restart=${gen === "3.1" || AWG_ORDER.some(k => awgIsNone(awg[k]) && (meta.awg_params || {})[k] != null)}/>
+        <div class="awg-cols">${AWG_COLS.map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]}
+          class=${awgIsNone(awg[k]) ? "awg-none" : null} ...${meta.awg_exact && (meta.awg_params || {})[k] == null ? { placeholder: T("val|none") } : {}}
+          onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div>
+        <p class=${"hint awg-omit-hint" + (awgOmitIssue(awg) ? " err" : "")}>${awgOmitIssue(awg) || T("Type - in a cell to remove that line — every device re-imports, as with any change here outside I1–I5.")}</p>
         ${/* The 3.1 set as a fifth group — while the sheet says 3.1, the moment the switch is flipped too (setGen fills it), so
               one Save switches with the values wanted. HeaderProtectionKey and RandomTrailers
               change only through the switch (an editable key was a one-keystroke way to cut every client with no window), so

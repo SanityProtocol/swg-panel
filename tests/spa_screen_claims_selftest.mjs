@@ -1,0 +1,295 @@
+/* Self-test — four screens stop claiming what does not hold (the 1.8.9 qualification's fix round 2, stop rule 1b). Each was
+ * measured false on a real box; each sentence now says what is true, in English and in Russian.
+ *
+ * [1] DN-2 / NLH-2 (V-LOGS F-2) — the Logs level "Off" said "the logs kept so far are deleted". Measured: swg's own journals
+ *     go (158 MB + 80 MB → 0 files), but a server's system journal keeps the kernel's P2P guard lines with users' addresses, a
+ *     bare-metal turn / relay / WDTT / csqtt unit not restarted since the update still writes there, and in Docker the node
+ *     container's own log keeps every earlier line (Debug's SNI host names included) until it is recreated, while a turn
+ *     container started before Off keeps logging client addresses. The hint now says what Off deletes and what it cannot, for
+ *     the kinds of server the fleet has; the Save confirm line names swg's logs. On NixOS's container arm the node container logs to
+ *     the host's system journal (oci-containers' journald driver), so its own sentence says that, not Docker's (round 2).
+ * [2] V-FEAT-B F-2 — "Block everywhere" (and a route through an exit or a node) said torrents from "programs running on it" are
+ *     dropped / blocked. Measured: a client on the server itself with encryption forced got 8 peers and 2.3 MB in 60 s with no
+ *     counter moving, and µTP on a flow past its 4th packet got through. Both hints now say a program on the server is stopped
+ *     only when its handshakes are unencrypted; "Each interface decides" keeps "not checked". And "Block everywhere" said games
+ *     are not affected, which nothing measured (the false-positive runs: browsing 60 sites a minute, a 100-connection page, a
+ *     video call, nested AWG, a proxy client): it says web browsing and video calls (round 2).
+ * [3] V-FEAT-A F5 — the raw fork id "samosvalishe" on operator screens (the node's badge row, the manage sheet's title and its
+ *     gear's tooltip; also the pending card, the delete sheet, the front tag's tooltip, the "Connected via" bubbles, a device's
+ *     transport row and the flow map's hover; the manage sheet's Title placeholder, which an untitled proxy goes by — the operator,
+ *     2026-10-14). Every one now prints forkLabel — "hack-diaz" — and keeps the id for its
+ *     colour; turnLabel (the id) is used nowhere outside turn-catalog.js.
+ * [4] V-FEAT-A F6 — the Disguise picker said a restart brings devices back "within a few seconds". Measured 15.2–15.4 s (the
+ *     devices still on their old set come back on WireGuard's own rekey after silence): it now says about 15 seconds.
+ * [5] q189 HE-8 — the END USERS' surfaces: a server-name template's {fork} gave "samosvalishe 56005" in users' apps (the
+ *     shared turn-artifacts.js knows no catalog); the sub page's Sidecar title and WDTT chip/zoom printed fork ids, and the
+ *     SPA's WDTT adopt label too. Each page now hands turn-artifacts its catalog's name, and the prints go through forkLabel.
+ * [6] q189 LC24 L4-a — a node left on 1.8.8 under this panel read "Torrents / P2P: blocked" as in force, though its build runs
+ *     no node-wide policy: it is behind the panel and reports none (a current node reports every policy but "each interface
+ *     decides"). The summary now says it is not in force there until the node is updated; a current node, one that reports
+ *     its policy, "each interface decides" and an unsaved choice read as before.
+ * [7] q189 V2-FLEET noticed 4 — Settings told the operator of a NixOS node to re-run a node installer NixOS does not have (the
+ *     self-signed → CA switch, twice) or gave no NixOS way at all (a re-point after an address change): each now says what holds
+ *     there — the configuration.nix option, nixos-rebuild switch, a swg-noded restart — in EN and RU.
+ *
+ * The real js/i18n.js with the real Russian catalog; the real modules (screen-settings, screen-nodes, ui, iface, mimic).
+ * Run: node tests/spa_screen_claims_selftest.mjs
+ *      --perturb <offhint | nixosoff | confirm | p2pblock | p2proute | games | tag | bubble | title | placeholder | restore | frontwdtt | dormant | dlname | logsrc | fewsec | artifactname | subhook | p2pold | nixhint>   one fix undone → RED
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { ROOT, check, done } from "./spa_env.mjs";
+
+const MODE = process.argv.includes("--perturb") ? process.argv[process.argv.indexOf("--perturb") + 1] : null;
+const OLD_OFF = "Nothing is stored, and the logs kept so far are deleted. Failure details go blank: when something breaks, the panel can't say why.";
+const PLANTS = {   // file → [anchor, what it was before the fix]
+  offhint: ["js/screen-settings.js", 'export const logOffHint = ({ bare, docker, nixos }) => [',
+            'export const logOffHint = () => T(' + JSON.stringify(OLD_OFF) + '); const _wasOffHint = ({ bare, docker, nixos }) => ['],
+  nixosoff: ["js/screen-settings.js", 'docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker" && n.platform !== "nixos"),\n                nixos: (Store.nodes || []).some(n => n.kind === "docker" && n.platform === "nixos") })}</div>`',
+             'docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker") })}</div>`'],
+  confirm: ["js/screen-settings.js", 'T("Logging — off: swg\'s stored logs are deleted")', 'T("Logging — off: the stored logs are deleted")'],
+  p2pblock: ["js/screen-settings.js", 'block: T("Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web browsing and video calls are not affected."),',
+             'block: T("Torrent traffic is dropped on every way out of this server: its interfaces, traffic other nodes send out through it, and programs running on it. Web, calls and games are not affected."),'],
+  p2proute: ["js/screen-settings.js", 'Traffic other nodes send out through this server is blocked. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through.", { v1 })',
+             'Traffic other nodes send out through this server, and programs running on it, are blocked.", { v1 })'],
+  games: ["js/screen-settings.js", 'gets through. Web browsing and video calls are not affected."),', 'gets through. Web, calls and games are not affected."),'],
+  tag: ["js/screen-nodes.js", '" muted" : "")}>${forkLabel(turnFork(tp.service))}</span>`;', '" muted" : "")}>${turnFork(tp.service)}</span>`;'],
+  bubble: ["js/ui.js", "const tf = turnFork(r.viaTurn), tn = forkLabel(tf), tc = turnColor(tf),", "const tf = turnFork(r.viaTurn), tn = tf, tc = turnColor(tf),"],
+  title: ["js/turn.js", "turnSheetTitle(forkLabel(turnFork(svc)), title)", "turnSheetTitle(turnFork(svc), title)"],
+  placeholder: ["js/turn.js", "placeholder=${forkLabel(fork)} autocomplete", "placeholder=${fork} autocomplete"],
+  restore: ["js/sheets-crud.js", "const svc = n => forkLabel(turnFork(String(n || \"\")));", "const svc = n => turnFork(String(n || \"\"));"],
+  frontwdtt: ["js/sheets-crud.js", 'String(cfg.title || live.title || "").trim()) || forkLabel(fork);', 'String(cfg.title || live.title || "").trim()) || fork;'],
+  dormant: ["js/screen-nodes.js", "${d.fork ? forkLabel(d.fork) :", "${d.fork ? d.fork :"],
+  dlname: ["js/peer-ui.js", 'base + "-" + forkLabel(a.fork) +', 'base + "-" + a.fork +'],
+  logsrc: ["js/logview.js", 'if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));', 'if (false) return "";'],
+  artifactname: ["turn-artifacts.js", 'return k === "fork" ? String(forkName(String(fork || "")) || fork || "") :',
+                 'return k === "fork" ? String(fork || "") :'],
+  subhook: ["sub.js", "  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);", ""],
+  p2pold: ["js/screen-settings.js", 'export const p2pNotRunHere = (node, rec) => !!node && !!rec && !node.p2p_node',
+           'export const p2pNotRunHere = (node, rec) => false && !!node && !!rec && !node.p2p_node'],
+  nixhint: ["js/screen-settings.js", "recreate the container; on NixOS, set `services.swg-node.panelUrl` in the node's configuration.nix, run `nixos-rebuild switch` and restart `swg-noded`.", "recreate the container."],
+  fewsec: ["js/iface.js", 'T("The interface restarts; connected devices reconnect in about 15 seconds.")',
+           'T("The interface restarts; connected devices reconnect within a few seconds.")'],
+};
+if (MODE && !PLANTS[MODE]) { console.log("unknown perturbation " + MODE); process.exit(2); }
+const read = f => {
+  let s = fs.readFileSync(path.join(ROOT, f), "utf8");
+  if (MODE && PLANTS[MODE][0] === f) {
+    if (s.split(PLANTS[MODE][1]).length !== 2) { console.log("PLANT ANCHOR MISSING — this run would measure nothing: " + MODE); process.exit(1); }
+    s = s.replace(PLANTS[MODE][1], PLANTS[MODE][2]);
+  }
+  return s;
+};
+// a module, or a planted copy of it beside the original (its relative imports, i18n.js included, stay the same instance)
+const made = [];
+async function load(f) {
+  if (!MODE || PLANTS[MODE][0] !== f) return import(pathToFileURL(path.join(ROOT, f)).href);
+  const p = path.join(ROOT, path.dirname(f), "__perturbed_" + path.basename(f));
+  fs.writeFileSync(p, read(f)); made.push(p);
+  return import(pathToFileURL(p).href);
+}
+
+globalThis.localStorage = { getItem: k => (k === "swg-lang" ? "ru" : null), setItem: () => {}, removeItem: () => {} };
+let I, SS, SN, UI, IF, M, TC;
+try {
+  I = await import(pathToFileURL(path.join(ROOT, "js", "i18n.js")).href);
+  await I.loadLang();
+  SS = await load("js/screen-settings.js");
+  SN = await load("js/screen-nodes.js");
+  UI = await load("js/ui.js");
+  IF = await load("js/iface.js");
+  M = await load("js/mimic.js");
+  TC = await load("js/turn-catalog.js");
+} finally { for (const p of made) fs.rmSync(p, { force: true }); }
+const { T } = I;
+check("the Russian catalog is loaded", I.lang() === "ru" && T("Not supported") === "Не поддерживается", T("Not supported"));
+const RU = read("js/lang/ru.js");
+const ruHas = k => RU.includes(JSON.stringify(k) + ":");
+const JS = Object.fromEntries(fs.readdirSync(path.join(ROOT, "js")).filter(f => f.endsWith(".js") && !f.startsWith("__perturbed_"))
+  .map(f => [f, read("js/" + f)]));
+// the text a vnode tree renders, and every attribute value in it (a title is read as much as a label)
+const flat = x => Array.isArray(x) ? x.map(flat).join("") : x && typeof x === "object" && x.props ? flat(x.props.children)
+  : x == null || x === false || x === true ? "" : String(x);
+const attrs = x => Array.isArray(x) ? x.flatMap(attrs) : x && typeof x === "object" && x.props
+  ? [...Object.entries(x.props).filter(([k, v]) => k !== "children" && typeof v === "string").map(([, v]) => v), ...attrs(x.props.children)] : [];
+
+// ── [1] Off ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[1] Logs → Off says what it deletes and what it cannot (DN-2 / NLH-2)");
+const K = {
+  head: "swg's own logs are deleted, and nothing more is kept in them. A server's system journal keeps what it already holds — the kernel's P2P guard lines, with users' addresses, among them.",
+  bare: "On bare metal, a turn proxy, relay or WDTT / csqtt server not restarted since the update still writes there.",
+  docker: "In Docker, each container's own log keeps its lines until the container is recreated; a turn container started before Off goes on logging until its next start.",
+  nixos: "On NixOS, a node's container logs to the host's system journal, which keeps those lines; a turn container started before Off goes on logging until its next start.",
+  tail: "Failure details go blank: when something breaks, the panel can't say why.",
+};
+for (const k of Object.values(K)) check("[1] RU line for “" + k.slice(0, 60) + "…”", ruHas(k), k);
+// a helper missing (the tree before the fix) or throwing is a red check, never a crashed run
+const offFor = a => { try { return SS.logOffHint(a); } catch (e) { return "THREW " + e.message; } };
+const want = parts => parts.map(p => T(K[p])).join(" ");
+check("[1] bare metal only: what goes, the system journal it cannot touch, the units not restarted — no Docker sentence",
+      offFor({ bare: true, docker: false }) === want(["head", "bare", "tail"]), offFor({ bare: true, docker: false }));
+check("[1] Docker only: what goes, the system journal, each container's own log — no bare-metal sentence",
+      offFor({ bare: false, docker: true }) === want(["head", "docker", "tail"]), offFor({ bare: false, docker: true }));
+check("[1] both kinds: all four, in that order", offFor({ bare: true, docker: true }) === want(["head", "bare", "docker", "tail"]),
+      offFor({ bare: true, docker: true }));
+check("[1] a NixOS container node: the host journal keeps its lines — «В NixOS контейнер ноды пишет в системный журнал хоста» — not Docker's sentence",
+      offFor({ bare: false, docker: false, nixos: true }) === want(["head", "nixos", "tail"])
+      && /В NixOS контейнер ноды пишет в системный журнал хоста, и тот хранит эти строки/.test(offFor({ nixos: true })),
+      offFor({ bare: false, docker: false, nixos: true }));
+check("[1] …and all three arms side by side, in order", offFor({ bare: true, docker: true, nixos: true }) === want(["head", "bare", "docker", "nixos", "tail"]), "");
+check("[1] …in Russian: «Собственные логи swg удаляются», «Системный журнал сервера хранит то, что в нём уже есть», «В Docker»",
+      /^Собственные логи swg удаляются/.test(offFor({ bare: true, docker: true })) && /Системный журнал сервера хранит то, что в нём уже есть/.test(offFor({ bare: true, docker: true }))
+      && /В Docker собственный лог каждого контейнера/.test(offFor({ bare: true, docker: true })), offFor({ bare: true, docker: true }));
+check("[1] the old claim is gone from every screen and from the catalog (\"the logs kept so far are deleted\")",
+      !Object.values(JS).some(s => s.includes("the logs kept so far are deleted")) && !RU.includes("the logs kept so far are deleted")
+      && !/kept so far/.test(offFor({ bare: true, docker: true })));
+const SET = JS["screen-settings.js"];
+check("[1] the card asks for the hint with the fleet's kinds: the panel's own (log_panel.docker) and every node's",
+      SET.includes("${logOffHint({") && SET.includes('bare: !(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind !== "docker")')
+      && SET.includes('docker: !!(ps.log_panel || {}).docker || (Store.nodes || []).some(n => n.kind === "docker" && n.platform !== "nixos"),')
+      && SET.includes('nixos: (Store.nodes || []).some(n => n.kind === "docker" && n.platform === "nixos") })}'), "");
+check("[1] the Save confirm line names swg's logs, in both languages",
+      SET.includes('T("Logging — off: swg\'s stored logs are deleted")') && !SET.includes('"Logging — off: the stored logs are deleted"')
+      && T("Logging — off: swg's stored logs are deleted") === "Логирование — выкл: сохранённые логи swg удаляются",
+      T("Logging — off: swg's stored logs are deleted"));
+
+// ── [2] torrents ────────────────────────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[2] the torrent policy's hints say what happens to a program on the server itself (V-FEAT-B F-2)");
+const H = (() => { try { return SS.P2P_HINT(); } catch (e) { return {}; } })();
+const routedOf = v => { try { return H.routed(v); } catch (e) { return "THREW " + e.message; } };
+const ONLY = "A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through.";
+const BLOCK = "Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. " + ONLY + " Web browsing and video calls are not affected.";
+const ROUTED = "Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server is blocked. " + ONLY;
+check("[2] Block everywhere: a program on the server is stopped only by an unencrypted handshake (and has its Russian)",
+      SET.includes("block: T(" + JSON.stringify(BLOCK) + ")") && ruHas(BLOCK) && H.block === T(BLOCK)
+      && /только когда её хендшейки не зашифрованы, — зашифрованная проходит/.test(H.block || ""), H.block);
+check("[2] a route through an exit or a node: the same, and the route's target in it (and its Russian)",
+      SET.includes("T(" + JSON.stringify(ROUTED) + ", { v1 })") && ruHas(ROUTED) && routedOf("WARP") === T(ROUTED, { v1: "WARP" })
+      && /через WARP\./.test(routedOf("WARP")) && /зашифрованная проходит/.test(routedOf("WARP")), routedOf("WARP"));
+check("[2] Block everywhere promises only what was measured — web browsing and video calls, no games — «Сайты и видеозвонки не затрагиваются.»",
+      / Web browsing and video calls are not affected\.$/.test(BLOCK) && !Object.values(JS).some(s => /games are not affected/.test(s))
+      && / Сайты и видеозвонки не затрагиваются\.$/.test(H.block || "") && !/игры/.test(H.block || ""), H.block);
+check("[2] …and the card shows that hint for a route", SET.includes("${routed ? P2P_HINT().routed(p2pTarget(curRec, exits, node)) : P2P_HINT()[cur]}"), "");
+check("[2] \"Each interface decides\" keeps what was true: programs on the server are not checked",
+      /programs running on it, are not checked/.test(SET) && H.iface === T("Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked."));
+const claims = Object.entries(JS).flatMap(([f, s]) => [...s.matchAll(/T\("([^"]*programs running on it[^"]*)"/g)].map(m => [f, m[1]]))
+  .filter(([, k]) => !/are not checked/.test(k));
+check("[2] no other sentence on any screen says programs running on the server are dropped or blocked", !claims.length, claims);
+
+// ── [3] fork names ──────────────────────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[3] a turn proxy's fork is shown by its name, never by the id in its service name (V-FEAT-A F5)");
+const SVC = "vk-turn-proxy-samosvalishe-51823", LBL = "hack-diaz";
+check("[3] the catalog's fallback names samosvalishe hack-diaz (what every check below expects)",
+      TC.forkLabel("samosvalishe") === LBL && TC.turnFork(SVC) === "samosvalishe", TC.forkLabel("samosvalishe"));
+const shows = v => { const all = flat(v) + " " + attrs(v).join(" "); return all.includes(LBL) && !/samosvalishe/i.test(flat(v)); };
+const tag = SN.TurnTag("n1", { service: SVC, listen: "0.0.0.0:51823" });
+check("[3] the node's badge row: «hack-diaz», coloured by the fork's id (tf-samosvalishe)",
+      flat(tag) === LBL && /\btf-samosvalishe\b/.test(tag.props.class), [flat(tag), tag.props.class]);
+const tc = TC.turnColor("samosvalishe");
+const dot = UI.connDot({ online: true, viaTurn: SVC, node: "n1" });
+check("[3] a device's \"Connected via\" dot: the name, in the fork's own colour", shows(dot) && attrs(dot).some(a => a.includes(tc)), [flat(dot), attrs(dot)]);
+const ep = UI.endpointCell({ via: "turn", viaTurn: SVC, online: true, node: "n1", observed: {} });
+check("[3] the endpoint cell's bubble: the name, in the fork's colour", shows(ep) && attrs(ep).some(a => a.includes(tc)), [flat(ep), attrs(ep)]);
+const badge = UI.gridStatusBadge({ online: true, viaTurn: SVC, node: "n1", status: "online" }, { status: "online" });
+check("[3] the status badge's bubble: the name, in the fork's colour", shows(badge) && attrs(badge).some(a => a.includes(tc)), [flat(badge), attrs(badge)]);
+const TU = JS["turn.js"];
+check("[3] the manage sheet's title and its gear's tooltip name the fork by forkLabel",
+      TU.includes("turnSheetTitle(forkLabel(turnFork(svc)), title)") && TU.includes('T("Version, rollback & server defaults for {v1}", { v1: forkLabel(turnFork(svc)) })')
+      && !/turnSheetTitle\(turnFork\(/.test(TU), "");
+// any spelling of the name (forkLabel(fork) / forkLabel(turnFork(svc))); and no Title field anywhere takes a raw fork id
+const RAWPH = /placeholder=\$\{(?:turnFork\([^)]*\)|fork|f\.id|d\.fork|w\.fork)\}/;
+check("[3] …and its Title field's placeholder, the name an untitled proxy goes by",
+      /placeholder=\$\{forkLabel\((?:fork|turnFork\(svc\))\)\}/.test(TU) && !Object.values(JS).some(src => RAWPH.test(src)),
+      Object.entries(JS).filter(([, src]) => RAWPH.test(src)).map(([f]) => f));
+// the review of 356a08f9 (F5, F6, F9–F13): the other places an id still stood in for the name
+const SC = JS["sheets-crud.js"], PU = JS["peer-ui.js"], IFJ = JS["iface.js"], LVJ = JS["logview.js"], SNJ = JS["screen-nodes.js"];
+check("[3] …Restore / Migrate's address rows name a turn proxy by forkLabel (F5)",
+      SC.includes("const svc = n => forkLabel(turnFork(String(n || \"\")));"), "");
+check("[3] …an untitled WDTT server's front badge and its tooltip (F11)",
+      SC.includes('String(cfg.title || live.title || "").trim()) || forkLabel(fork);') && SC.includes('(fork ? " · " + forkLabel(fork) : "")'), "");
+check("[3] …the orphan WDTT card's Fork row (F10)", SNJ.includes("${d.fork ? forkLabel(d.fork) :"), "");
+check("[3] …both adopt sheets' \"Detected …\" hints (F9)",
+      IFJ.includes("{ v1: forkLabel(d.fork) }") && IFJ.includes("{ v1: forkLabel(w.fork), v2:"), "");
+check("[3] …a turn config's downloaded file name (F12) and a CLI config's title, translated (F6)",
+      PU.includes('base + "-" + forkLabel(a.fork) +') && PU.includes('T("{v1} · CLI client (desktop)", { v1: forkLabel(a.fork) })'), "");
+check("[3] …Settings → Logs: a VK turn proxy by its fork's name and port, in the picker and on every line (F13)",
+      LVJ.includes('label: vk ? vkShown(n) : n') && LVJ.includes('items("turn", turn[k], k === "vk")') && LVJ.includes('if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));'), "");
+check("[3] …and so do the delete sheet and a pending card", TU.includes("<${DeleteTurnSheet} node=${node} service=${svc} label=${forkLabel(turnFork(svc))}/>")
+      && TU.includes('<span class="ifname">${forkLabel(turnFork(s))}</span>'), "");
+check("[3] …the front tag's tooltip, a device's transport row and the flow map's hover",
+      JS["sheets-crud.js"].includes('T("Turn-proxy") + (f ? " · " + forkLabel(f) : "")')
+      && JS["peer-ui.js"].includes('style=${"--tfc:" + turnColor(turnFork(lt.viaTurn))}>${forkLabel(turnFork(lt.viaTurn))}</span>')
+      && JS["screen-overview.js"].includes('return s.kind === "turn" ? forkLabel(s.fork) : s.label || s.kind || id; };')
+      && JS["screen-overview.js"].includes('name: sm.kind === "turn" ? forkLabel(sm.fork) : sm.label || sm.kind,'), "");
+const tl = Object.entries(JS).filter(([f, s]) => f !== "turn-catalog.js" && /\bturnLabel\b/.test(s)).map(([f]) => f);
+check("[3] turnLabel — the fork id of a service name — is used nowhere outside turn-catalog.js", !tl.length, tl);
+
+// ── [4] the Disguise restart ────────────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[4] a Disguise change that restarts the interface says about 15 seconds (V-FEAT-A F6)");
+const P0Q = "<b 0xc10000000108><r 8><b 0x000044be><r 1000><r 214>";
+const lines = v => { const out = []; const w = x => { if (Array.isArray(x)) x.forEach(w);
+  else if (x && typeof x === "object" && x.props) { if (x.type === "p") out.push(flat(x.props.children)); w(x.props.children); } }; w(v); return out; };
+const pick = o => IF.MimicPick({ port: "443", peers: 4, restart: false, bad: "", onPick: () => {}, ...o });
+const qL = M.mimicLines({ I1: P0Q }), bL = M.mimicLines(M.MIMIC_BUILTIN);
+const rs = lines(pick({ eff: qL, was: bL, restart: true })).find(l => /Интерфейс перезапустится/.test(l)) || "";
+check("[4] the restart clause: «…переподключатся примерно через 15 секунд.»", /Интерфейс перезапустится; подключённые устройства переподключатся примерно через 15 секунд\.$/.test(rs), rs);
+check("[4] …its English says about 15 seconds, and no Disguise line says a few seconds",
+      JS["iface.js"].includes('T("The interface restarts; connected devices reconnect in about 15 seconds.")')
+      && !JS["iface.js"].includes("reconnect within a few seconds") && ruHas("The interface restarts; connected devices reconnect in about 15 seconds."), "");
+check("[4] …and no restart, no clause", !lines(pick({ eff: qL, was: bL, restart: false })).some(l => /перезапустится/.test(l)));
+
+// ── [5] the end users' surfaces ─────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[5] what END USERS see: the fork's name in their app's server name and on the sub page (HE-8)");
+const vm = await import("node:vm");
+const box = { console, TextEncoder, TextDecoder, Uint8Array, Buffer, atob: x => Buffer.from(x, "base64").toString("binary"),
+              btoa: x => Buffer.from(x, "binary").toString("base64") };
+box.window = box; box.self = box; box.globalThis = box;
+vm.runInNewContext(read("turn-artifacts.js"), box, { filename: "turn-artifacts.js" });
+const SWT = box.SWGTurn;
+const CONF5 = "[Interface]\nPrivateKey = aaaa\nAddress = 10.66.0.5/32\n[Peer]\nPublicKey = bbbb\nEndpoint = 203.0.113.9:51820\nAllowedIPs = 0.0.0.0/0\n";
+const nameOf = () => { const s5 = JSON.stringify(SWT.artifact(CONF5, { service: "vk-turn-proxy-samosvalishe-56005", listen: "203.0.113.9:56005",
+                                                               wrap_key: "k".repeat(64) }, "https://vk.com/call/join/abc", { serverName: "{fork} {port}" }));
+  const m5 = s5.match(/freeturn:\/\/([A-Za-z0-9_\-+/=%]+)/);
+  try { return JSON.parse(Buffer.from(decodeURIComponent(m5[1]).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")).name; }
+  catch (e) { return "(undecodable) " + s5.slice(0, 120); } };
+if (SWT.setForkLabel) SWT.setForkLabel(TC.forkLabel);       // what each page does with its own catalog
+check("[5] a FreeTurn user's server name from \"{fork} {port}\" reads «" + LBL + " 56005»", nameOf() === LBL + " 56005", nameOf());
+const SUB = read("sub.js");
+check("[5] both pages hand turn-artifacts their catalog's name (the sub page, the SPA's turnArtifact)",
+      SUB.includes("  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);")
+      && JS["crypto.js"].includes("if (SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);"), "");
+check("[5] the sub page's Sidecar title and its WDTT chip and zoom print the name, not the id",
+      SUB.includes('(c.forkId ? forkLabel(c.forkId) + " " : "") + "Sidecar"') && SUB.includes('var wsrv = el("span", null, forkLabel(wfork));')
+      && SUB.includes("ctrl.zoomTail = wHasApp ? wAppName : forkLabel(wfork);"), "");
+check("[5] …and the SPA's WDTT adopt label", JS["iface.js"].includes('" · " + forkLabel(cand.wdtt.fork)'), "");
+
+// ── [6] a 1.8.8 node's torrent policy ───────────────────────────────────────────────────────────────────────────────────────
+console.log("\n[6] a node whose build runs no node-wide torrent policy does not read it as in force (LC24 L4-a)");
+const old = { outdated: true, p2p_node: null, p2p_eff: "block" };
+const NR = typeof SS.p2pNotRunHere === "function" ? SS.p2pNotRunHere : () => false;   // a build without it reads every node as before
+check("[6] a 1.8.8 node (behind, reports no policy) with Block in force: not run there", NR(old, { action: "block" }) === true);
+check("[6] …and a route in force on it, the same", NR({ ...old, p2p_eff: "exit" }, { action: "exit", node: "n2" }) === true);
+check("[6] a current node not yet reporting (just saved, a restart): not called old",
+      NR({ ...old, outdated: false }, { action: "block" }) === false);
+check("[6] a node that reports its policy: as before", NR({ ...old, p2p_node: { state: "ok", mode: "block" } }, { action: "block" }) === false);
+check("[6] \"each interface decides\" (what a 1.8.8 node does anyway), and an unsaved choice: as before",
+      NR({ ...old, p2p_eff: "iface" }, { action: "iface" }) === false && NR(old, { action: "iface" }) === false);
+const L4 = "Torrents / P2P: {v1} — not in force on this node until it is updated";
+check("[6] the summary says it, in Russian", ruHas(L4) && /не действует/.test(T(L4, { v1: "x" })), T(L4, { v1: "x" }));
+check("[6] the node form's summary asks p2pNotRunHere for that sentence",
+      JS["screen-settings.js"].includes('summary=${p2pNotRunHere(node, curRec) ? T("' + L4 + '"'), "");
+
+// ── [7] NixOS nodes have no installer ─────────────────────────────────────────────────────────────────────────────────
+console.log("\n[7] what holds on a NixOS node: its configuration.nix option, nixos-rebuild switch, a swg-noded restart (V2-FLEET noticed 4)");
+const SSRC = JS["screen-settings.js"];
+const nixTls = SSRC.split("then re-run the node installer on the nodes that pinned it — on a NixOS node, clear `services.swg-node.panelTlsFingerprint` and set `verifyPanelTls = true` in its configuration.nix, run `nixos-rebuild switch` and restart `swg-noded`.").length - 1;
+check("[7] both self-signed → CA sentences give the NixOS way (clear the pin, verify through the CA)", nixTls === 2, nixTls);
+check("[7] none still sends a NixOS operator to the installer alone", !SSRC.includes("then re-run the node installer on the nodes that pinned it.\")"), "");
+check("[7] the address-change note gives the NixOS way beside bare metal and Docker",
+      SSRC.includes("recreate the container; on NixOS, set `services.swg-node.panelUrl` in the node's configuration.nix, run `nixos-rebuild switch` and restart `swg-noded`."), "");
+const ruNix = RU.split("nixos-rebuild switch").length - 1;
+check("[7] …all three in Russian too (three keys, three translations)",
+      ruNix === 6 && (RU.match(/на ноде NixOS очистите/g) || []).length === 2 && /на NixOS задайте `services\.swg-node\.panelUrl`/.test(RU), ruNix);
+
+done(MODE, MODE || "");

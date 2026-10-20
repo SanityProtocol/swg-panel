@@ -34,7 +34,9 @@ Run: python3 tests/awg_gen_selftest.py      (0 = pass)
      --perturb-exact    the presence compare ignores the flag        → RED in [8]
      --perturb-fwd      the flag is not passed to the agent          → RED in [8]
      --perturb-zero     `= 0` / `= off` lines count as 3.x keys      → RED in [9]
+     --perturb-wrapper  a NixOS `awg` wrapper script is read as itself (2.0) again (q189 DN-20) → RED in [1]
      --perturb-hold     a refused recreate is retried on the backoff → RED in [10]
+     --perturb-sig      the cache ignores a new module/tools on disk → RED in [4]
 """
 import importlib.machinery, importlib.util, os, sys, tempfile
 
@@ -44,17 +46,19 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 
 PLANTS = {
+    "--perturb-wrapper": ("[1]", "    if w and os.path.isfile(w.group(1).decode(errors=\"replace\")):\n", "    if False:\n"),
     "--perturb-gate": ("[6]", "                refused = awg_gen_refusal(iface, awg)\n", "                refused = \"\"\n"),
     "--perturb-create": ("[6]", "        _no3 = awg_gen_refusal(iface, (want or {}).get(\"awg_params\"))   # an AmneziaWG 3 set this node cannot bring up\n",
                          "        _no3 = \"\"\n"),
     "--perturb-map": ("[2]", '("3.1" if v == 3 and m >= 34 else', '("3.1" if v == 3 and m >= 32 else'),
-    "--perturb-exact": ("[8]", "or (want.get(\"awg_params_exact\") and any(k in cur_awg and k not in want_s for k in AWG3_KEYS))):",
-                        "or any(k in cur_awg and k not in want_s for k in AWG3_KEYS)):"),
+    "--perturb-exact": ("[8]", "or (want.get(\"awg_params_exact\") and any(k in cur_awg and k not in want_s for k in AWG_KEYS))):",
+                        "or any(k in cur_awg and k not in want_s for k in AWG_KEYS)):"),
     "--perturb-fwd": ("[8]", "                    if want.get(\"awg_params_exact\"):\n                        payload[\"awg_params_exact\"] = True",
                       "                    if False:\n                        payload[\"awg_params_exact\"] = True"),
     "--perturb-zero": ("[9]", "    return k in AWG3_KEYS and k != \"HeaderProtectionKey\" and str(v).strip().lower() in (\"0\", \"off\")\n",
                        "    return False\n"),
     "--perturb-hold": ("[10]", "                _OP_BACKOFF[akey][1] = float(\"inf\")\n", "                pass\n"),
+    "--perturb-sig": ("[4]", " and _AWG_GEN.get(\"sig\") == sig:", ":"),
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
 
@@ -99,6 +103,17 @@ for label, data, want in (("tools 3.1", b"HeaderProtectionKey RandomTrailers", "
     check("awg %s → %s" % (label, want), N._bin_gen(fake("t" + want, data), *[k.encode() for k in TOOLS]) == want)
 check("a binary that is not there → None (not a guess)", N._bin_gen(os.path.join(TMP, "nope"), b"x", b"y") is None
       and N._bin_gen("", b"x", b"y") is None)
+# q189 DN-20: NixOS — nixpkgs wraps EVERY amneziawg-tools binary (`for f in $out/bin/*; do wrapProgram $f`), so `awg` on PATH
+# is a makeWrapper script; the keys are in the binary it execs, `.awg-wrapped`
+_real = fake(".awg-wrapped", b"HeaderProtectionKey RandomTrailers")
+_wrap = os.path.join(TMP, "awg")
+open(_wrap, "w").write('#! /nix/store/xxxx-bash-5.2p37/bin/bash -e\nPATH=${PATH:+\':\'$PATH\':\'}\nPATH=${PATH/\':\'\'/nix/store/yyyy-procps/bin\'\':\'/\':\'}\n'
+                       'export PATH\nexec -a "$0" "%s"  "$@" \n' % _real)
+check("DN-20: a NixOS `awg` (a makeWrapper script) is read through to the binary it runs — 3.1 tools read as 3.1, not 2.0",
+      N._bin_gen(_wrap, *[k.encode() for k in TOOLS]) == "3.1", N._bin_gen(_wrap, *[k.encode() for k in TOOLS]))
+open(_wrap + "-x", "w").write('#!/bin/sh\nexec /usr/bin/true "$@"\n')
+check("…a script that wraps nothing of the kind is read as itself (2.0 — no keys), as before",
+      N._bin_gen(_wrap + "-x", *[k.encode() for k in TOOLS]) == "2.0")
 
 SECTION[0] = "[2]"
 print("\n[2] the genl answer maps exactly; nothing is rounded up")
@@ -123,15 +138,21 @@ SECTION[0] = "[4]"
 print("\n[4] the report rides every snapshot and is cached")
 calls = []
 N._awg_module_gen = lambda: calls.append(1) or "3.1"
+_sig = {"v": "a"}
+N._awg_gen_sig = lambda: _sig["v"]
 N._AWG_GEN.update(at=0.0, v=None)
 r1 = N.awg_gen_report(now=1000.0); r2 = N.awg_gen_report(now=1200.0); r3 = N.awg_gen_report(now=1400.0)
 check("probed once in 300 s, again after", len(calls) == 2 and r1 == r2 == r3, calls)
-check("the report has exactly module / fallback / tools", set(r1) == {"module", "fallback", "tools"}, r1)
-check("a docker node (no health report) still carries gen", set(N._with_awg_gen({})) == {"awg"}
-      and set(N._with_awg_gen({})["awg"]) == {"gen"})
+_sig["v"] = "b"; N.awg_gen_report(now=1410.0)
+check("…and AT ONCE when what it reads changed on disk (an update installed a module: modules.dep rewritten)", len(calls) == 3, calls)
+check("the report has exactly module / fallback / tools / disk (the module installed, AWG31-LOAD-PLAN D2)",
+      set(r1) == {"module", "fallback", "tools", "disk"}, r1)
+check("a docker node (no health report) still carries gen — and `exact` (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md A4)",
+      set(N._with_awg_gen({})) == {"awg"} and set(N._with_awg_gen({})["awg"]) == {"gen", "exact"}
+      and N._with_awg_gen({})["awg"]["exact"] == 1)
 _h = {"awg": {"needed": True, "ok": False, "fallback": True, "userspace": ["awg0"]}}
-check("…and a bare-metal node's health report is kept as it was, gen beside it",
-      {k: v for k, v in N._with_awg_gen(_h)["awg"].items() if k != "gen"} == _h["awg"])
+check("…and a bare-metal node's health report is kept as it was, gen and exact beside it",
+      {k: v for k, v in N._with_awg_gen(_h)["awg"].items() if k not in ("gen", "exact")} == _h["awg"])
 
 SECTION[0] = "[5]"
 print("\n[5] what a dict needs, and why a node refuses it")

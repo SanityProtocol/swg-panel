@@ -63,6 +63,7 @@ def run_case(plant, want_detect):
             open(os.path.join(sd, f), "w").write("x\n")
     script = f"""#!/bin/bash
 SD={sd!r}
+WDTT_DIR={tmp!r}/opt-swg-wdtt; CSQTT_DIR={tmp!r}/opt-swg-csqtt   # set at the top of uninstall.sh; _fork_orphans globs under them
 REMOVED_LEFTOVERS=false; NEED_NETOBJ_SWEEP=false
 info(){{ :; }}; ok(){{ :; }}; warn(){{ :; }}
 run(){{ :; }}                       # never actually talk to systemd or userdel

@@ -12,6 +12,9 @@ node went stale and the panel showed its mesh down until the node was re-install
        whoami with our token; a certificate no public CA vouches for keeps failing closed; throttled
   [E3] a pin on record that is not a sha256 (round 9b): swg-noded's sync fails closed before connecting, a list pull sends
        nothing either, and the hint says what it is — not "the certificate no longer matches"; colons / upper case: a pin
+  [E4] on a NixOS node (q189 round 3) both hints say what holds there — services.swg-node.panelTlsFingerprint /
+       verifyPanelTls, nixos-rebuild switch, and restart swg-noded on the native arm only — never "re-run the node
+       installer", which a NixOS node does not have; every other node keeps today's two sentences byte for byte
 
 Real TLS servers on 127.0.0.1 with a test CA (trusted via SSL_CERT_FILE / CURL_CA_BUNDLE). No root.
 Run: python3 tests/panel_pin_heal_selftest.py            (0 = pass)
@@ -40,8 +43,25 @@ PLANTS = [
      "    if False:\n        fp = str((panel or {}).get(\"fingerprint\") or \"\")",
      "[E3] …and its hint says the pin on record is not a sha256 fingerprint (not that the certificate changed)", "SWG_NODED", NODED),
 
-    ("stale-hint", "at a terminal \"\n          \"and accept the new certificate when it asks",
-     "— it re-detects the \"\n          \"certificate", "…and what the installer does NOW (round 7): it asks at a terminal; unattended it takes TLS_FINGERPRINT / TLS_VERIFY — never \"re-detects\"",
+    ("stale-hint", "at a terminal and accept the new certificate when it asks",
+     "— it re-detects the certificate", "…and what the installer does NOW (round 7): it asks at a terminal; unattended it takes TLS_FINGERPRINT / TLS_VERIFY — never \"re-detects\"",
+     "SWG_NODED", NODED),
+    # q189 round 3: a NixOS node is told the NixOS way, on both hints; every other node keeps today's sentences
+    ("nixos-gone", "    fix = (\"this NixOS node's pin is \" + nixos(\"the new sha256\") if NODE_PLATFORM == \"nixos\" else",
+     "    fix = (\"this NixOS node's pin is \" + nixos(\"the new sha256\") if False else",
+     "[E4] on a NixOS node a pin mismatch says what holds there — panelTlsFingerprint / verifyPanelTls, nixos-rebuild "
+     "switch, restart swg-noded — and names no installer", "SWG_NODED", NODED),
+    ("nixos-gone-malformed",
+     "        fix = (\"On this NixOS node the pin is \" + nixos(\"the panel's sha256\") if NODE_PLATFORM == \"nixos\" else",
+     "        fix = (\"On this NixOS node the pin is \" + nixos(\"the panel's sha256\") if False else",
+     "[E4] …and so does a pin that is not a sha256 (its own prefix, the panel's sha256, no installer)", "SWG_NODED", NODED),
+    ("nixos-arm", "% (sha, \"\" if NODE_KIND == \"docker\" else \" and restart swg-noded\"))",
+     "% (sha, \" and restart swg-noded\"))",
+     "[E4] …on the container arm the rebuild alone (it restarts the container's unit) — no swg-noded to restart",
+     "SWG_NODED", NODED),
+    ("nixos-leak", "    fix = (\"this NixOS node's pin is \" + nixos(\"the new sha256\") if NODE_PLATFORM == \"nixos\" else",
+     "    fix = (\"this NixOS node's pin is \" + nixos(\"the new sha256\") if True else",
+     "[E4] every other node keeps today's two sentences byte for byte (bare metal, Docker, a Debian label)",
      "SWG_NODED", NODED),
 ]
 
@@ -225,6 +245,50 @@ _hm = _o.getvalue()
 check("[E3] …and its hint says the pin on record is not a sha256 fingerprint (not that the certificate changed)",
       "is not a sha256 fingerprint" in _hm and _bad[:24] in _hm and "no longer matches" not in _hm
       and "TLS_FINGERPRINT=" in _hm and "at a terminal" in _hm, _hm)
+print("swg-noded — the hint on a NixOS node (q189 round 3): there is no installer to re-run")
+# Today's two sentences, frozen: every node that is not NixOS keeps them byte for byte.
+_TODAY = {
+    "tls fingerprint mismatch":
+        "panel TLS: the panel's certificate no longer matches this node's pin, so every sync is refused. If the panel's "
+        "certificate was renewed or replaced on purpose, re-run the node installer on this box at a terminal and accept "
+        "the new certificate when it asks (one a public CA vouches for is then verified, not pinned); unattended it never "
+        "takes a changed certificate — give it TLS_FINGERPRINT=<the new sha256>, or TLS_VERIFY=yes for a CA one. Anything "
+        "else may be an impersonator.",
+    "tls pin malformed":
+        "panel TLS: the pin on record for the panel is not a sha256 fingerprint (\"%s…\"), so every sync is refused and "
+        "nothing is sent — it names no certificate at all. Re-run the node installer on this box at a terminal: it shows "
+        "the certificate the panel presents and asks before pinning it. Unattended, give it TLS_FINGERPRINT=<the panel's "
+        "sha256>, or TLS_VERIFY=yes for one a public CA vouches for." % _bad[:24],
+}
+_plat0 = (N.NODE_PLATFORM, N.NODE_KIND)
+def hint_on(err, platform, kind):
+    N.NODE_PLATFORM, N.NODE_KIND = platform, kind
+    N._PIN_HINT["at"] = 0.0
+    o = io.StringIO()
+    with _cl.redirect_stdout(o):
+        N._pin_mismatch_hint(err, {"fingerprint": _bad})
+    return re.sub(r"^(<\d>|[A-Z] )", "", o.getvalue()).rstrip("\n")
+_NIX = ("services.swg-node.panelTlsFingerprint in its configuration.nix", "verifyPanelTls = true", "nixos-rebuild switch")
+_hn = hint_on("tls fingerprint mismatch", "nixos", "baremetal")
+check("[E4] on a NixOS node a pin mismatch says what holds there — panelTlsFingerprint / verifyPanelTls, nixos-rebuild "
+      "switch, restart swg-noded — and names no installer",
+      all(k in _hn for k in _NIX) and "set it to the new sha256" in _hn and "nixos-rebuild switch and restart swg-noded." in _hn
+      and "no longer matches" in _hn and _hn.endswith("Anything else may be an impersonator.")
+      and "installer" not in _hn and "TLS_FINGERPRINT" not in _hn and "TLS_VERIFY" not in _hn, _hn)
+_hnm = hint_on("tls pin malformed", "nixos", "baremetal")
+check("[E4] …and so does a pin that is not a sha256 (its own prefix, the panel's sha256, no installer)",
+      all(k in _hnm for k in _NIX) and "is not a sha256 fingerprint" in _hnm and _bad[:24] in _hnm
+      and "set it to the panel's sha256" in _hnm and "nixos-rebuild switch and restart swg-noded." in _hnm
+      and "installer" not in _hnm and "TLS_FINGERPRINT" not in _hnm and "TLS_VERIFY" not in _hnm, _hnm)
+_hc = [hint_on(e, "nixos", "docker") for e in _TODAY]
+check("[E4] …on the container arm the rebuild alone (it restarts the container's unit) — no swg-noded to restart",
+      all(all(k in h for k in _NIX) and "then run nixos-rebuild switch." in h and "restart swg-noded" not in h
+          and "installer" not in h for h in _hc), _hc)
+_odd = [(e, p, k) for e in _TODAY for p in ("", "debian") for k in ("baremetal", "docker")
+        if hint_on(e, p, k) != _TODAY[e]]
+check("[E4] every other node keeps today's two sentences byte for byte (bare metal, Docker, a Debian label)",
+      not _odd, [(o, hint_on(*o)) for o in _odd[:1]])
+N.NODE_PLATFORM, N.NODE_KIND = _plat0
 check("no heal machinery remains on the node", not hasattr(N, "_heal_stale_pin") and not hasattr(N, "_cert_proof"))
 ESRC = open(ENTRY, encoding="utf-8").read()
 check("the node container honours no 'retired pin' file", "panel-fp-retired" not in ESRC)

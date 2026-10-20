@@ -43,7 +43,7 @@ assert GUARD_RE.search(SRC), "guard not found in convert.sh — this run would F
 if PERTURB:
     SRC = GUARD_RE.sub("", SRC, count=1)
 if PERTURB_YES:
-    _arm = "  -y|--yes) ASSUME_YES=yes ;;\n"
+    _arm = "  -y|--yes) ;;\n"
     assert _arm in SRC, "the -y arm is not where this expects it — this run would FALSE-PASS"
     SRC = SRC.replace(_arm, "", 1)
 
@@ -91,12 +91,11 @@ print("\n[3b] ⚠️ …INCLUDING the flag bootstrap.sh itself forwards")
 for _f in ("-y", "--yes"):
     rc, out = run("baremetal", "docker", "node", _f)
     check("`%s` gets past argument parsing" % _f, "isn't an option" not in out, out.strip()[-160:])
-# Honoured, not merely tolerated — this script asks its own yes/no questions (the turn-proxy transfer), and
-# a flag that is accepted and then ignored is the same class of bug as one that is dropped.
-check("…and `cyn` answers yes for it instead of reading the tty",
-      '[ "${ASSUME_YES:-no}" = yes ]' in SRC.split("cyn(){")[1].split("\n")[0])
-check("…and the flag is what sets that, not the environment",
-      "-y|--yes) ASSUME_YES=yes" in SRC and "\nASSUME_YES=no\n" in SRC)
+# Accepted, and nothing left for it to answer: convert.sh asks no yes/no question of its own — its turn-proxy transfer
+# questions (`cyn`, ASSUME_YES) belonged to a migration path nothing called, removed in 1.8.9 (IN-5,
+# tests/convert_dead_code_selftest.py). A question added later must answer `-y` again.
+check("…and convert.sh reads no answer from the terminal itself (nothing for `-y` to answer)",
+      not re.search(r'read -r [^\n]*<"\$\{SWG_TTY', SRC), re.findall(r'read -r [^\n]*<"\$\{SWG_TTY[^\n]*', SRC))
 # The forwarding is the reason any of this matters; assert it still happens.
 _boot = open(os.path.join(ROOT, "bootstrap.sh"), encoding="utf-8").read()
 check("…and bootstrap still hands PASS to convert.sh at BOTH call sites",

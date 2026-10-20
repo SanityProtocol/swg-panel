@@ -38,7 +38,8 @@ class Box:
     """One node process: `update_fired` lives as long as it does; the marker file survives it (Docker: data/node)."""
     def __init__(self, state_dir, trig=None, kind="baremetal", start_ok=True):
         self.ns = {"update_fired": "", "os": os, "time": __import__("time"), "STATE_DIR": state_dir,
-                   "NODE_DECLARATIVE": False, "NODE_KIND": kind, "node_cfg": {}, "panel": {}, "print": lambda *a, **k: None}
+                   "NODE_DECLARATIVE": False, "NODE_KIND": kind, "node_cfg": {}, "panel": {}, "print": lambda *a, **k: None,
+                   "log": lambda *a, **k: None, "LOG_ERR": 3, "LOG_WARNING": 4, "LOG_INFO": 6, "LOG_DEBUG": 7}
         self.runs, self.reports, self.trig, self.start_ok = [], [], trig, start_ok
         self.ns["run_self_update"] = lambda cfg, want: (self.runs.append(want.get("at", "no-at")), self.start_ok)[1]
         self.ns["report_proc"] = lambda *a: self.reports.append(a)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # update.sh — update an existing swg-panel install in place, from the latest GitHub code.
 #
-#   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" -- update
 #
 # bootstrap.sh fetches the latest repo and runs this from it. It AUTO-DETECTS which
 # components are installed — covering every shape (bare-metal host / master / node,
@@ -25,7 +25,30 @@ esac; done
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # No terminal (the one-click update, an unattended run): debconf has nobody to ask and says so four lines per package
 # it touches. A value already set is left as it is. Same line as install-host.sh / install-node.sh.
-if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default) — no terminal at all, or the background under sudo-rs.
+# ⚠️ NOT UNDER CLASSIC SUDO. It backgrounds the script the same way (≥ 1.9.13 with use_pty: Ubuntu 24.04, Debian 12/13) but
+# brings it to the foreground at that first read, so `curl … | sudo bash` asked its questions there, as in 1.8.8 — taking
+# every background start as unreadable took them all away (1.8.9 qualification IN-2). Which sudo it is: the first sudo up
+# the chain, by its binary's path (sudo-rs, cargo), else by its --version. No sudo above (a job the operator put in the
+# background): the terminal, as ever. /proc/<pid>/stat after the command name: state ppid pgrp session tty_nr tpgid.
+# Without /proc: as before.
+_swg_tty_fg(){ local s f p e i IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"
+  [ "${f[2]:-}" = "${f[5]:-}" ] && return 0; [ "${f[5]:-0}" -gt 0 ] 2>/dev/null || return 1
+  for i in 1 2 3 4; do p="${f[1]:-0}"; [ "$p" -gt 1 ] 2>/dev/null || return 0; e="$(readlink "/proc/$p/exe" 2>/dev/null)" || e=""
+    case "${e##*/}" in sudo*) case "$e" in *sudo-rs*|*cargo*) return 1;; esac
+      case "$("$e" --version 2>/dev/null)" in sudo-rs*) return 1;; esac; return 0;; esac
+    { read -r s <"/proc/$p/stat"; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; done; return 0; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+if [ "$SWG_TTY" = /dev/null ] && [ -z "${SWG_TTY_WARNED:-}" ] && { : </dev/tty; } 2>/dev/null; then   # said once per run
+  printf '%s\n' "! This terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults. To answer them, run: sudo bash -c \"\$(curl -fsSL <bootstrap.sh URL>)\" -- <arguments>" >&2
+  export SWG_TTY_WARNED=1
+fi
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! swg_tty_ok; then export DEBIAN_FRONTEND=noninteractive; fi
 
 # ───────────────────────── one update at a time ─────────────────────────
 # The panel's one-click writes a trigger that a 30s timer turns into ANOTHER run of this script, so an
@@ -152,7 +175,8 @@ ver_line(){ local label="$1" cur="$2"
 confirm(){ # confirm <prompt> -> 0 yes / 1 no.  --yes or no terminal => yes (you ran update on purpose)
   $ASSUME_YES && return 0
   local v
-  if printf '  %s %s: ' "$1" "${C_BL}(Y/n)${RESET}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then
+  swg_tty_ok || return 0   # cannot be read (no terminal, or sudo-rs's background): yes, as said — no prompt left hanging
+  if printf '  %s %s: ' "$1" "${C_BL}(Y/n)${RESET}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then
     case "$v" in [Nn]*) return 1;; *) return 0;; esac
   else return 0; fi
 }
@@ -169,7 +193,7 @@ col_v(){ printf '%s%s%s' "$C_BLUE" "$*" "$RESET"; }
 APT_DONE=no
 apt_refresh(){ [ "$APT_DONE" = yes ] && return 0; APT_DONE=yes; have apt-get && run apt-get update -qq 2>/dev/null || true; }
 pkg_installed(){ dpkg-query -W -f='${Version}' "$1" 2>/dev/null | sed -n 1p; }   # installed version, or empty
-pkg_candidate(){ apt-cache policy "$1" 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p; }
+pkg_candidate(){ LC_ALL=C apt-cache policy "$1" 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p' | sed -n 1p; }   # C: apt translates "Candidate:" ("Кандидат:" under ru_RU)
 first_pkg(){ local p; for p in "$@"; do [ -n "$(pkg_installed "$p")" ] && { echo "$p"; return 0; }; done; return 1; }
 # pkg_update <label> <pkg…> : auto-check the first installed pkg; prompt y/n only if a newer candidate exists
 pkg_update(){ local label="$1"; shift; local pkg cur cand
@@ -188,7 +212,9 @@ pkg_update(){ local label="$1"; shift; local pkg cur cand
 
 NEW_VER="$(cat "$SRC/VERSION" 2>/dev/null || echo unknown)"
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
-found=0; DID_UPDATE=no; DID_FAIL=no   # DID_FAIL flips to yes on ANY component failure → partial-failure status + exit 1
+# DID_FAIL flips to yes on ANY component failure → partial-failure status + exit 1; AWG_PKG_ROUTE: ensure_awg_pkg_follow owns
+# the amnezia packages here (the datapath summary line says they follow the PPA, not that they were skipped)
+found=0; DID_UPDATE=no; DID_FAIL=no; AWG_PKG_ROUTE=no
 # per-component outcome, printed as a summary at the end — so a multi-component box (e.g. a docker
 # master AND a bare-metal node on the same host) clearly shows EVERY component was considered.
 RESULTS=(); note(){ RESULTS+=("$*"); }
@@ -544,6 +570,7 @@ Description=poll for swg-netctl requests (fallback for the path watch)
 [Timer]
 OnActiveSec=10s
 OnUnitActiveSec=10s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target
@@ -553,6 +580,41 @@ EOF
   systemctl enable --quiet --now swg-netctl.timer 2>/dev/null || warn "couldn't enable swg-netctl.timer"
   DID_UPDATE=yes; note "swg-netctl root helper: provisioned (was missing)"
   ok "swg-netctl root helper provisioned — Access & subscription-address changes will work now"
+}
+
+# HEAL: the tick the idle gate relies on, on time. systemd's default AccuracySec=1min fires a 10 s tick whenever PID 1 next
+# wakes for something else, and a settings save, Debug's end and a request with the path watch dead all wait for a tick.
+# In the CPU re-qualification's 6-hour soak (AB-F1) the gated helper's ticks came a median 15 s and up to 35 s apart, the
+# old helper's a median 12 s and up to 16 s: both drift, the gated one more, since it wakes PID 1 far less. Added to a
+# timer that has no AccuracySec; one an operator set is theirs.
+ensure_timer_on_time(){   # <timer unit>
+  local t="/etc/systemd/system/$1"
+  [ -f "$t" ] && grep -q '^\[Timer\]$' "$t" || return 0
+  grep -q '^AccuracySec=' "$t" && return 0
+  if $DRYRUN; then echo "    [skip] $1: AccuracySec=1s (its ticks on time)"; return 0; fi
+  sed -i '/^\[Timer\]$/a AccuracySec=1s' "$t"
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl restart "$1" 2>/dev/null || true
+  DID_UPDATE=yes; note "$1: ticks on time (AccuracySec=1s)"
+}
+
+# HEAL: swg-netctl's idle gate (lib/common.sh netctl_gate_heal) — the helper starts on every 10 s tick but runs only when
+# it has work. Written when MISSING OR DIFFERENT, outside the heal contract's "never rewrite" on purpose, like
+# ensure_update_unit_docker: the gate and its drop-in are ours entirely (nothing an operator sets), and a box must not
+# keep an older release's text — present is not current. The service unit file is not touched (the gate is a drop-in);
+# its timer is, first: ensure_timer_on_time gives it AccuracySec=1s.
+ensure_netctl_gate(){
+  if [ ! -f /etc/systemd/system/swg-netctl.service ]; then   # a dry run: the helper's heal above only said it would write it
+    $DRYRUN && [ -f "$SRC/swg-netctl" ] && echo "    [skip] swg-netctl idle gate: /usr/local/bin/swg-netctl-due + swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN (with the helper)"
+    return 0
+  fi
+  ensure_timer_on_time swg-netctl.timer
+  local want; want="$(swg_netctl_due_dropin_text)"
+  netctl_gate_current swg-netctl.service "$want" && return 0
+  if $DRYRUN; then echo "    [skip] swg-netctl idle gate: /usr/local/bin/swg-netctl-due + swg-netctl.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi
+  netctl_gate_heal swg-netctl.service "$want"
+  [ "$NETCTL_GATE_CHANGED" = 1 ] && { systemctl daemon-reload 2>/dev/null || true; }
+  DID_UPDATE=yes; note "swg-netctl: idle gate written (an idle tick no longer starts the helper)"
 }
 
 # repark_bare_panel — a PARKED bare panel (bare_panel_parked, lib/common.sh: disabled, a docker panel live beside it)
@@ -846,9 +908,18 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   # route first, then builds from source, and only then falls back to the userspace datapath.
   # Docker nodes run userspace amneziawg-go from their image → skipped by the HAVE_BNODE gate.
   [ "$HAVE_BNODE" = yes ] || return 0
-  local _tools=no _mod=no _hf=0 _rs=0
+  local _tools=no _mod=no _hf=0 _rs=0 _bl=no
   have awg && have awg-quick && _tools=yes
-  { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes
+  # The module source fixed for kernels that backport the new udp_tunnel API (PR #218, lib/common.sh) — on every update, so
+  # a box whose module builds today does not break apt at its next kernel; and one it already broke (an Ubuntu 26.04 box
+  # upgraded onto 7.0.0-38: linux-headers left unconfigured by the failed DKMS hook) is finished here.
+  if ! $DRYRUN && awg_compat_patch_installed; then
+    DID_UPDATE=yes; awg_dpkg_recover || true
+  fi
+  # The operator's own `blacklist amneziawg` (modprobe.d) is a choice, kept: the module is not loaded by name here nor
+  # "healed", and awg interfaces stay where they run — the update loaded it by name and moved awg0 and the mesh back onto
+  # it (1.8.9 qualification VERIFY1-B1; swg-noded stopped in F11). `modprobe -b` says 0 without loading, so it is asked.
+  if awg_blacklisted; then _bl=yes; else { $DRYRUN || modprobe amneziawg 2>/dev/null; } && _mod=yes; fi
   # D1: the pinned userspace fallback, install-if-missing, BEFORE the "already working" return — that return is exactly
   # how a box whose module works never got one, and a reboot onto a kernel without a module then took every awg
   # interface down (docs/AWG-DATAPATH-RESILIENCE-PLAN.md §1).
@@ -858,6 +929,7 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     if awg_go_pinned; then DID_UPDATE=yes; ok "AmneziaWG: userspace fallback installed (pinned $AWG_GO_TAG) — a kernel without a module no longer takes awg interfaces down"
     else note "AmneziaWG: the pinned userspace fallback could not be fetched — awg interfaces depend on the kernel module alone"; fi
   fi
+  if [ "$_bl" = yes ] && [ "$_tools" = yes ]; then note "AmneziaWG: the kernel module is blacklisted on this box (modprobe.d) — left as it is"; return 0; fi
   # D4: a box whose module loads TODAY still needs it for the kernel it boots NEXT. That early return is what let a
   # client's box sail through an update on kernel 138 with 139 installed, no headers for it and no module for it.
   # Install-if-missing only: the headers metapackage, then a DKMS build for every installed kernel that has headers.
@@ -880,6 +952,26 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   fi
   [ "$_tools" = yes ] && [ "$_mod" = yes ] && return 0           # already working → done, silent
   $DRYRUN && return 0
+  # Built, and refused for its signing key (Secure Boot): the steps, and the userspace datapath — no rebuild changes that.
+  # Asked FIRST: an old "did not compile" record beside a module that now builds would answer with the wrong reason.
+  if [ "$_tools" = yes ] && awg_mod_key_rejected; then
+    awg_key_refused_note
+    have amneziawg-go || { ensure_awg_userspace && DID_UPDATE=yes; } || true
+    # ⚠️ "userspace" only when there IS one. With no amneziawg-go either, nothing can bring an awg interface up — a FAILED
+    # update, as the heal's own last branch says it (and 1.8.8 did here); "userspace datapath" and success hid it.
+    if have amneziawg-go; then
+      note "AmneziaWG: userspace datapath — Secure Boot refuses the kernel module until its signing key is enrolled (sudo mokutil --import $(awg_mok_key || echo '<the DKMS key>'), then reboot)"
+    else
+      DID_FAIL=yes; warn "AmneziaWG tools are installed but Secure Boot refuses its kernel module on $(uname -r), and the userspace datapath could not be installed — awg interfaces cannot come up until the key is enrolled (the steps above)"
+    fi
+    return 0
+  fi
+  # Nothing new to try: the module did not compile on this kernel, and neither the package nor upstream has moved since.
+  # Said in one line — every update used to "heal" it again: minutes of compiling, a broken dpkg, "healed" each time.
+  if [ "$_tools" = yes ] && have amneziawg-go && awg_nothing_new; then
+    note "AmneziaWG: userspace datapath — the kernel module does not compile on $(uname -r) yet; tried again when a new kernel or a newer AmneziaWG build arrives"
+    return 0
+  fi
 
   if [ "$_tools" = no ]; then
     info "healing AmneziaWG (its tools are missing on this node — awg interfaces cannot be created or taken over)"
@@ -896,14 +988,15 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
     run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
     ensure_awg_headers_follow || true
     awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
-    run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
-    # `apt install` is a NO-OP when the package is present but its module never built (headers were missing
-    # then), so force a build for the RUNNING kernel — an old kernel with newer headers would otherwise build
-    # for the wrong one and modprobe would still fail.
-    run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
-    modprobe amneziawg 2>/dev/null || { run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null
-                                        run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true
-    run modprobe amneziawg 2>/dev/null || true
+    if awg_ppa_module_install; then   # a module that does not compile on this kernel is given up on, not retried
+      # `apt install` is a NO-OP when the package is present but its module never built (headers were missing
+      # then), so force a build for the RUNNING kernel — an old kernel with newer headers would otherwise build
+      # for the wrong one and modprobe would still fail.
+      run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
+      modprobe amneziawg 2>/dev/null || awg_mod_key_rejected || { awg_dkms_reinstall \
+                                          && run dkms autoinstall -k "$(uname -r)" 2>/dev/null; } || true   # given up: no rebuild
+      run modprobe amneziawg 2>/dev/null || true
+    fi
   elif have apt-get; then
     info "AmneziaWG: building it from source — its packages are published for Ubuntu only, and this is $(awg_os_name)"
     apt_refresh
@@ -918,9 +1011,11 @@ ensure_awg_datapath(){   # HEAL (install-if-missing) a WORKING AmneziaWG on a ba
   if modprobe amneziawg 2>/dev/null; then
     DID_UPDATE=yes; ok "AmneziaWG healed — kernel datapath, awg interfaces can come up now"
     note "AmneziaWG: kernel module ready for $(uname -r)"
+  elif have awg && have awg-quick && have amneziawg-go && [ "${AWG_GAVE_UP:-}" = transient ]; then   # nothing healed (above)
+    DID_UPDATE=yes; note "AmneziaWG: the kernel module's package is removed for now — its build did not finish on this box; the next update tries again"
   elif have awg && have awg-quick && have amneziawg-go; then
     DID_UPDATE=yes; ok "AmneziaWG healed — running the slower USERSPACE datapath (no loadable kernel module)"
-    note "AmneziaWG: userspace (amneziawg-go); $(awg_tools_drive_3x && echo 'install matching linux-headers for the faster kernel module' || awg_tools_old_why)"
+    note "AmneziaWG: userspace (amneziawg-go); $(if awg_key_refused_here; then echo "Secure Boot refuses the kernel module until its signing key is enrolled — see the steps above"; elif awg_fail_get pkg >/dev/null || awg_fail_get src >/dev/null; then echo "the kernel module does not compile on $(uname -r) yet — tried again when a new kernel or a newer AmneziaWG build arrives"; elif awg_tools_drive_3x; then echo 'install matching linux-headers for the faster kernel module'; else awg_tools_old_why; fi)"
   elif have awg && have awg-quick; then
     DID_FAIL=yes; warn "AmneziaWG tools are installed but its kernel module will not load on $(uname -r), and the userspace datapath could not be built — awg interfaces cannot come up"
   else
@@ -941,6 +1036,136 @@ awg_kernel_takes(){ # <conf> — would the loaded kernel module accept this inte
   return $rc
 }
 
+awg_kdevs(){   # the amneziawg KERNEL devices in this network namespace, one per line (amneziawg-go runs a tun — never listed)
+  ip -o link show type amneziawg 2>/dev/null | awk -F': ' '{sub(/@.*/, "", $2); print $2}'
+}
+awg_kdevs_elsewhere(){   # OTHER network namespaces holding an amneziawg device — `modprobe -r` would destroy it there too.
+  # Named ones (`ip netns`) AND every process's (`lsns`): a Docker container's namespace is not named, and an AmneziaWG device
+  # a container made on the host's module (Amnezia's own containers, say) would otherwise go without a word. Prints "?"
+  # when it cannot look (no lsns / nsenter, or either one failing) — the caller must then not unload: it cannot know it cuts
+  # no one. A namespace nsenter could not get into is NOT an empty one (the process lsns named for it may have exited while
+  # others keep it alive): read as empty, `modprobe -r` destroyed its device (1.8.9 qualification, HE-2's twin in swg-agent).
+  # ⚠️ AND ONE NO PROCESS HOLDS: kept by a bind mount alone, it has no PID — it is entered by its mount (lsns's NSFS
+  # column) — and one mounted where this mount namespace does not see it, by PID 1's mount table through PID 1's root.
+  # A row with neither: "?". (lsns -r: one space between columns, an empty column empty, odd characters \x-escaped.)
+  local n me ns pid nsfs t out list ln seen=" "
+  for n in $(ip netns list 2>/dev/null | awk '{print $1}'); do
+    [ -n "$(ip -n "$n" -o link show type amneziawg 2>/dev/null)" ] && echo "$n"
+  done
+  have lsns && have nsenter || { echo "?"; return 0; }
+  me="$(readlink /proc/self/ns/net 2>/dev/null)" || me=""
+  list="$(lsns -t net -n -r -o NS,PID,NSFS 2>/dev/null)" || { echo "?"; return 0; }
+  [ -r /proc/1/mountinfo ] || { echo "?"; return 0; }
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    ns="${ln%% *}"; ln="${ln#* }"; pid="${ln%% *}"; nsfs=""; case "$ln" in *" "*) nsfs="${ln#* }";; esac
+    seen="$seen$ns "; [ "net:[$ns]" != "$me" ] || continue
+    if [ -n "$pid" ]; then t="/proc/$pid/ns/net"; elif [ -n "$nsfs" ]; then t="$nsfs"; else echo "?"; return 0; fi
+    out="$(nsenter --net="$t" ip -o link show type amneziawg 2>/dev/null)" || { echo "?"; return 0; }
+    [ -n "$out" ] && echo "net:[$ns]"
+  done <<< "$list"
+  while read -r ns nsfs; do                                    # PID 1's own nsfs mounts of a network namespace
+    case "$seen" in *" $ns "*) continue;; esac; seen="$seen$ns "; [ "net:[$ns]" != "$me" ] || continue
+    out="$(nsenter --net="/proc/1/root$nsfs" ip -o link show type amneziawg 2>/dev/null)" || { echo "?"; return 0; }
+    [ -n "$out" ] && echo "net:[$ns]"
+  done < <(awk '{ for (i = 6; i < NF; i++) if ($i == "-") break; if ($(i + 1) == "nsfs" && $4 ~ /^net:\[[0-9]+\]$/) { n = $4; gsub(/[^0-9]/, "", n); print n, $5 } }' /proc/1/mountinfo 2>/dev/null)
+  return 0
+}
+awg_src_refresh(){   # refresh the amnezia apt source ALONE — a whole `apt-get update` on every one-click update is not needed here
+  local f d; f="$(ls /etc/apt/sources.list.d/*amnezia* 2>/dev/null | sed -n 1p)"; [ -n "$f" ] || return 1
+  d="$(mktemp -d)" || return 1; ln -s "$f" "$d/" || { rm -rf "$d"; return 1; }   # keeps .list / .sources, so both formats parse
+  run apt-get update -qq -o Dir::Etc::sourcelist=/dev/null -o Dir::Etc::sourceparts="$d" -o APT::Get::List-Cleanup=0 >/dev/null 2>&1
+  local rc=$?; rm -rf "$d"; return $rc
+}
+ensure_awg_pkg_follow(){   # FOLLOW the amnezia packages to the PPA's current build — module AND tools together, the loaded module
+  # untouched unless nothing uses it (docs/AWG31-LOAD-PLAN.md D1). Runs under --no-components too, on purpose: every
+  # one-click update passes that flag, and ensure_awg_datapath is install-if-MISSING, so a node installed before AmneziaWG 3
+  # kept its 2.0 module and tools for good and could never run a 3.1 interface (production, 2026-09-29: dkms and tools from
+  # March, installed in May, never upgraded). Only where the package route owns the datapath: amneziawg-dkms installed and
+  # the `awg` on PATH belonging to amneziawg-tools — tools we did not install are never outrun (a 3.x module that 2.0
+  # tools cannot configure takes every awg interface down at the next boot). Module and tools move in ONE transaction:
+  # 3.1 tools drive the loaded 2.0 module, and the 3.1 module takes 2.0 configurations (AWG3-PLAN §2.3, measured).
+  [ "$HAVE_BNODE" = yes ] || return 0
+  have apt-get && have dpkg-query && have dpkg || return 0
+  local cur cand awgp pk disk loaded
+  # ⚠️ EVERY ASSIGNMENT HERE MUST SURVIVE `set -euo pipefail`: dpkg-query exits 1 for a package that is not installed,
+  # and a bare `cur="$(…)"` then ended the whole update on every node without amneziawg-dkms (plain WireGuard, a
+  # source-built module) — every later step skipped, in silence (1.8.9 code review, reproduced in bash).
+  cur="$(pkg_installed amneziawg-dkms)" || cur=""; [ -n "$cur" ] || return 0
+  awgp="$(command -v awg 2>/dev/null)" || return 0
+  case "$(dpkg -S "$awgp" 2>/dev/null)" in amneziawg-tools:*) ;; *) return 0 ;; esac   # never `| grep -q` under pipefail
+  AWG_PKG_ROUTE=yes
+  if $DRYRUN; then ok "AmneziaWG packages: an update checks the amnezia PPA and follows its build (module and tools together)"; return 0; fi
+  # A build an earlier update could not finish for a reason of the BOX's (a full disk, a killed compiler: not a compiler
+  # error, so not given up — awg_dkms_compile_failed) is left half-configured, at the version it was going to: the version
+  # check below sees nothing newer, so finishing it here IS the retry that run promised. A version given up on was removed:
+  # this never re-runs a build that does not compile.
+  case "$(dpkg-query -W -f='${db:Status-Abbrev}' amneziawg-dkms 2>/dev/null)" in iF*|iU*) if awg_dpkg_recover; then DID_UPDATE=yes; fi ;; esac
+  [ "$APT_DONE" = yes ] || awg_src_refresh || true
+  cand="$(pkg_candidate amneziawg-dkms)" || cand=""
+  { [ -n "$cand" ] && [ "$cand" != "(none)" ] && dpkg --compare-versions "$cand" gt "$cur"; } || return 0
+  awg_pkg_retry_due || return 0   # this very version already did not compile on this kernel — not again
+  # Held on purpose (`apt-mark hold`) → the operator's call: said once per update, never an error every update.
+  case " $(apt-mark showhold 2>/dev/null | tr '\n' ' ') " in *" amneziawg-dkms "*|*" amneziawg-tools "*|*" amneziawg "*)
+    ok "AmneziaWG packages: $cand is available, but they are held (apt-mark hold) — left as they are"; return 0 ;; esac
+  # ⚠️ NO HEADERS, NO UPGRADE. The old package's removal takes its DKMS module out for every kernel before the new one
+  # builds; without this kernel's headers the build fails, the running kernel is left with no module on disk (the next
+  # boot runs on the userspace fallback) and dpkg half-configured. The datapath heal installs the headers metapackage, so
+  # this is the rare box whose headers could not be had — it keeps what works.
+  if [ ! -e "/lib/modules/$(uname -r)/build" ]; then
+    note "AmneziaWG: $cand is available but not installed — this kernel's headers are missing"
+    warn "AmneziaWG: $cand is available, but the headers for this kernel ($(uname -r)) are not installed, so its module could not be built — the packages are left as they are (install linux-headers-$(uname -r), or reboot into a kernel that has them)"
+    return 0
+  fi
+  # ⚠️ NO USERSPACE FALLBACK, NO UPGRADE. The module that works is off disk before the new one builds, and a new build that
+  # does not compile here is given up (removed): a box without amneziawg-go then has NO AmneziaWG datapath after its next
+  # reboot — every awg interface and mesh link down (1.8.9 qualification IN-1, on a VM). With it, that box degrades to
+  # userspace instead. The datapath heal above installs the pinned fallback wherever GitHub or a mirror answers; a box it
+  # could not reach keeps the module that works, and follows once it has one.
+  if ! have amneziawg-go; then
+    note "AmneziaWG: $cand is available but not installed — the userspace fallback (amneziawg-go) is not installed"
+    warn "AmneziaWG: $cand is available, but this box has no userspace fallback (amneziawg-go) — the packages are left as they are: had the new module not compiled here, no AmneziaWG interface would come up after the next reboot (an update that can fetch amneziawg-go, from GitHub or SWG_TURN_MIRROR, installs it and follows)"
+    return 0
+  fi
+  pk="amneziawg-dkms amneziawg-tools"; [ -n "$(pkg_installed amneziawg)" ] && pk="$pk amneziawg"
+  # shellcheck disable=SC2086   # $pk is a word list
+  # The new package ships its source as upstream has it: its own build for this kernel can fail before PR #218's fix is on
+  # it (Ubuntu 7.0.0-38). So the source is fixed and dpkg finished BEFORE the upgrade is judged — and either way after it,
+  # so the next kernel builds too.
+  if ! run env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=180 --only-upgrade $pk >/dev/null 2>&1 \
+     && ! { awg_compat_patch_installed && awg_dpkg_recover; }; then
+    # Its module does not compile here even with the fix: leave dpkg clean and remember this version (the same give-up
+    # the install route takes) — not a half-configured package that ends every later apt run, compiled again each update.
+    if awg_dkms_compile_failed; then
+      awg_dkms_give_up; DID_UPDATE=yes
+      note "AmneziaWG: $cand does not compile on $(uname -r) — removed, userspace datapath; tried again with a newer build or kernel"
+      return 0
+    fi
+    if awg_dkms_pending; then   # the box cut its build short: removed all the same (not recorded) — see awg_dkms_give_up
+      awg_dkms_give_up transient; DID_UPDATE=yes
+      note "AmneziaWG: $cand's module build did not finish on this box — removed for now; tried again on the next update"
+      return 0
+    fi
+    note "AmneziaWG: the package upgrade did not go through — tried again on the next update"
+    warn "AmneziaWG: the amnezia packages could not be upgraded ($cur → $cand) — tried again on the next update"
+    return 0
+  fi
+  awg_compat_patch_installed >/dev/null || true
+  DID_UPDATE=yes; note "AmneziaWG packages: $cur → $cand"
+  disk="$(modinfo -F version amneziawg 2>/dev/null)" || disk=""; loaded="$(cat /sys/module/amneziawg/version 2>/dev/null)" || loaded=""
+  if [ -z "$loaded" ] || [ "$disk" = "$loaded" ]; then ok "AmneziaWG packages updated (kernel module $disk)"; return 0; fi
+  if [ -z "$(awg_kdevs)" ] && [ -z "$(awg_kdevs_elsewhere)" ] && ! awg_blacklisted; then   # nobody on the module → load the new one now, cutting no one
+    if modprobe -r amneziawg 2>/dev/null && modprobe amneziawg 2>/dev/null; then
+      ok "AmneziaWG $disk installed and loaded (no interface was using the kernel module)"; return 0
+    fi
+    modprobe amneziawg 2>/dev/null || true
+    if [ ! -e /sys/module/amneziawg ]; then   # unloaded, and the new one would not load: say what the box runs now
+      warn "AmneziaWG $disk installed, but its kernel module would not load — AmneziaWG interfaces run on the userspace fallback until it does"
+      return 0
+    fi
+  fi
+  ok "AmneziaWG $disk installed — the kernel module in use stays $loaded until the next reboot, or load it now from the panel: Load now under the AmneziaWG version switch of any AmneziaWG interface there (every AmneziaWG client reconnects within about 15 s)"
+}
 ensure_awg_back_on_kernel(){   # SURGICAL — NOT part of the general heal: move AWG interfaces off the userspace fallback.
   # docs/AWG-DATAPATH-RESILIENCE-PLAN.md D3. A node whose module was missing runs every awg interface on amneziawg-go
   # (awg-quick falls back by itself). Once ensure_awg_datapath has made the module load again, nothing moves them back:
@@ -960,6 +1185,7 @@ ensure_awg_back_on_kernel(){   # SURGICAL — NOT part of the general heal: move
   [ "$HAVE_BNODE" = yes ] || return 0
   have awg-quick || return 0
   $DRYRUN && return 0
+  awg_blacklisted && return 0   # the operator's own blacklist: theirs to keep the module out (ensure_awg_datapath)
   modprobe amneziawg 2>/dev/null || return 0
   local d n c conf sock xit _w moved="" stuck="" down="" xmoved="" refused="" xdir="${SWG_NODED_STATE:-/var/lib/swg-noded}/exits"
   for d in /sys/class/net/*; do
@@ -1445,18 +1671,44 @@ ensure_panel_unit_warn(){   # DETECT + WARN only — never recreate. The panel u
   warn "swg-panel-server.service is MISSING — the panel is not managed by systemd and won't survive a reboot."
   warn "Its unit carries your TLS cert/key, port, and login, which an update must not guess. Re-run the host"
   warn "installer to restore it with your real settings:"
-  warn "    curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host"
+  # …from the ref this box follows (main pinned here re-installed main over a dev box: IN-8); a ref other than main rides
+  # INSIDE the string, as bootstrap's own hand-back does — sudo drops SWG_REF in front of it
+  local _r="${SWG_REF:-main}" _p=""; [ "$_r" = main ] || _p="SWG_REF=$(printf '%q' "$_r"); "
+  warn "    sudo bash -c \"$_p\$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/$_r/bootstrap.sh)\" -- host"
 }
 
-ensure_netctl_docker(){   # HEAL (install-if-missing) the docker address helper on a panel-bearing docker host.
+ensure_netctl_docker(){   # the docker address helper on a panel-bearing docker host: units HEALED if missing, the drainer at this release.
   # On docker the panel container can't `docker compose` the host, so it writes netctl requests to the bind-
   # mounted data/lib/netctl/queue and THIS host unit drains them into compose actions (restart / rebind
   # swg-sub on an address change). Missing on older/partial docker installs → one-click address changes fall
-  # back to a manual restart. HEAL CONTRACT: install only the missing pieces (binary + .service + .timer),
-  # never rewrite existing ones; enable the watch + timer. Templates MUST mirror install-docker.sh's wire_docker_netctl.
+  # back to a manual restart. HEAL CONTRACT for the units: install only the missing ones (.service + .path + .timer),
+  # never rewrite an existing unit; enable the watch + timer. Templates MUST mirror install-docker.sh's wire_docker_netctl.
+  # The drainer itself is code, not configuration: it follows the release (below), and is installed when missing.
   case "${1:-}" in host|master|host-node) ;; *) return 0;; esac    # panel-bearing profiles only
   local drainer="$SRC/docker/swg-netctl-docker"
   [ -f "$drainer" ] || return 0
+  # ⚠️ THE DRAINER FOLLOWS THE RELEASE. Installed only when missing, a box updated from 1.8.8 kept 1.8.8's drainer behind
+  # 1.8.9's idle gate — without dace39ce's queue sweep, which clears the strays the gate relies on being gone (1.8.9
+  # qualification P3, docker-pristine: 10 of 10 updates). Compared by sha256 (coreutils, on every box). Written beside and
+  # renamed in: install(1) unlinks the path and creates it again, 0600 until the copy is done, so a start the 10 s timer
+  # made in that moment would find no drainer, or one it cannot run. A .new a killed update left goes first.
+  local nd=/usr/local/bin/swg-netctl-docker
+  $DRYRUN || rm -f "$nd.new" || true   # a stray that cannot go (a read-only bin) must not stop the update
+  if [ -x "$nd" ] && [ "$(sha256sum < "$drainer")" != "$(sha256sum < "$nd")" ]; then
+    if $DRYRUN; then echo "    [skip] install this release's $nd (it differs)"
+    elif install -m755 "$drainer" "$nd.new" && mv -f "$nd.new" "$nd"; then
+      DID_UPDATE=yes; note "docker address helper: this release's drainer"
+      # an older drainer could leave a stray that re-fired the path watch until systemd stopped it (start-limit-hit); this
+      # one clears strays, so the watch is armed again — unless the operator disabled it (the 10 s timer drained meanwhile)
+      if systemctl is-enabled --quiet swg-netctl-docker.path 2>/dev/null; then
+        systemctl reset-failed swg-netctl-docker.path swg-netctl-docker.service 2>/dev/null || true
+        systemctl restart swg-netctl-docker.path 2>/dev/null || true
+      fi
+    else
+      rm -f "$nd.new" || true; DID_FAIL=yes; warn "couldn't install this release's $nd — the old drainer stays"
+      note "docker address helper: this release's drainer could NOT be installed — the old one stays (run the update again)"
+    fi
+  fi
   if [ -x /usr/local/bin/swg-netctl-docker ] && [ -f /etc/systemd/system/swg-netctl-docker.service ] \
      && [ -f /etc/systemd/system/swg-netctl-docker.timer ]; then
     if grep -q '^OnUnitActiveSec=1s' /etc/systemd/system/swg-netctl-docker.timer 2>/dev/null \
@@ -1482,6 +1734,7 @@ Description=poll the swg-panel docker netctl queue (fallback for the path watch)
 [Timer]
 OnActiveSec=10s
 OnUnitActiveSec=10s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target
@@ -1532,6 +1785,7 @@ Description=poll the swg-panel docker netctl queue (fallback for the path watch)
 [Timer]
 OnActiveSec=10s
 OnUnitActiveSec=10s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target
@@ -1542,6 +1796,24 @@ EOF
   systemctl enable --quiet --now swg-netctl-docker.timer 2>/dev/null || warn "couldn't enable swg-netctl-docker.timer"
   DID_UPDATE=yes; note "docker address helper: healed (was missing)"
   ok "docker address helper healed — one-click address changes will work now"
+}
+
+# HEAL: the docker address helper's idle gate — the same gate as ensure_netctl_gate's, asking the queue only (the drainer
+# has no work of its own). Written when missing or different, for the same reason. Panel-bearing profiles only. Like
+# ensure_netctl_gate, it gives the drainer's timer AccuracySec=1s first (ensure_timer_on_time).
+ensure_netctl_docker_gate(){
+  case "${1:-}" in host|master|host-node) ;; *) return 0;; esac
+  if [ ! -f /etc/systemd/system/swg-netctl-docker.service ]; then   # a dry run: the helper's heal above only said it would write it
+    $DRYRUN && echo "    [skip] swg-netctl-docker idle gate: /usr/local/bin/swg-netctl-due + swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN (with the helper)"
+    return 0
+  fi
+  ensure_timer_on_time swg-netctl-docker.timer
+  local want; want="$(swg_netctl_docker_due_dropin_text)"
+  netctl_gate_current swg-netctl-docker.service "$want" && return 0
+  if $DRYRUN; then echo "    [skip] swg-netctl-docker idle gate: /usr/local/bin/swg-netctl-due + swg-netctl-docker.service.d/$SWG_NETCTL_DUE_DROPIN"; return 0; fi
+  netctl_gate_heal swg-netctl-docker.service "$want"
+  [ "$NETCTL_GATE_CHANGED" = 1 ] && { systemctl daemon-reload 2>/dev/null || true; }
+  DID_UPDATE=yes; note "docker address helper: idle gate written (an idle tick no longer starts the drainer)"
 }
 
 rescue_container_confs(){   # $1 = compose profile
@@ -1606,6 +1878,40 @@ ensure_update_unit_docker(){   # HEAL the docker one-click self-update wiring on
   ok "docker one-click self-update wiring healed — the Update button will work now"
 }
 
+ensure_log_ns(){   # <namespace> <unit>... — swg's own journal (lib/common.sh): the drop-ins + swg-logs, written when missing or
+  # different. Called inside an upgrade that goes ahead, BEFORE its restarts (the units it restarts move now; the oneshots,
+  # netctl and update, at their next tick), and from the heal pass only where the build ON DISK sizes the namespace
+  # (log_ns_build): a declined upgrade keeps an old build, whose writers never size it (journald's defaults, 10 % of the disk).
+  if $DRYRUN; then echo "    [skip] LogNamespace=$1 drop-ins for: ${*:2} + /usr/local/bin/swg-logs"; return 0; fi
+  swg_log_ns_heal "$@"
+  if [ "${SWG_LOG_NS_CLEARED:-0}" -gt 0 ]; then   # this box cannot run a unit in a journal namespace (lib/common.sh, IN-11)
+    systemctl daemon-reload || true
+    local _u; for _u in "${@:2}"; do case "$_u" in
+      swg-update.service|swg-netctl.service) systemctl reset-failed "$_u" 2>/dev/null || true;;   # oneshots: their next tick runs
+      *) if systemctl is-failed --quiet "$_u" 2>/dev/null; then systemctl restart "$_u" 2>/dev/null || true; fi;; esac; done
+    DID_UPDATE=yes; note "swg's logs: this box cannot run a unit in a journal namespace — its LogNamespace drop-ins removed"
+    warn "this box cannot run a unit in a journal namespace (mount namespaces are refused here) — swg logs into the main journal, as before 1.8.9"
+  fi
+  if [ "$SWG_LOG_NS_CHANGED" -gt 0 ]; then
+    systemctl daemon-reload || true
+    DID_UPDATE=yes; note "swg's logs: ${*:2} → the $1 journal (read with swg-logs)"
+    ok "swg's logs now go to the $1 journal, held to its budget — \`journalctl -u\` shows only systemd's lines; read them with \`swg-logs\`"
+  fi
+  if [ -f "$SRC/swg-logs" ] && ! cmp -s "$SRC/swg-logs" /usr/local/bin/swg-logs 2>/dev/null; then
+    install -m755 "$SRC/swg-logs" /usr/local/bin/swg-logs || warn "couldn't install /usr/local/bin/swg-logs"
+  fi
+}
+log_ns_build(){ grep -qs 'LOG_NS_CONF' "$1"; }   # <installed program> — does this build write the namespace's size?
+ensure_panel_journal(){   # the panel reads its own journal (Settings → Logs, the live viewer): its unit's drop-in, when missing
+  if $DRYRUN; then echo "    [skip] SupplementaryGroups=systemd-journal drop-in for swg-panel-server"; return 0; fi
+  swg_journal_heal
+  if [ "$SWG_JOURNAL_CHANGED" -gt 0 ]; then
+    systemctl daemon-reload || true
+    DID_UPDATE=yes; note "swg-panel-server reads its own journal (Settings → Logs) from its next start"
+  fi
+  return 0
+}
+
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   found=1; pan_seen=yes; pold="$(oldver "$PANEL_DIR")"
@@ -1616,6 +1922,8 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   ensure_cert_perms
   if should_update "bare-metal swg-panel" "$PANEL_DIR"; then
     info "updating bare-metal swg-panel ($PANEL_DIR)"
+    ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
+    ensure_panel_journal
     for f in swg-panel-server index.html app.css app.js reconcile.js turn-artifacts.js; do
       [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$PANEL_DIR/"
     done
@@ -1662,6 +1970,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     # (first-time provisioning of the binary + trigger units is done by install-host.sh).
     if [ -f /usr/local/bin/swg-netctl ] && [ -f "$SRC/swg-netctl" ]; then
       run cp "$SRC/swg-netctl" /usr/local/bin/swg-netctl; run chmod 755 /usr/local/bin/swg-netctl; ok "swg-netctl refreshed"
+      run rm -f /run/swg-netctl.due   # the idle gate then runs the new build on the next tick, its log work with it
       # Heal the trigger unit on older installs: without StartLimitIntervalSec=0 the .path watcher trips
       # systemd's 5-starts-per-10s limit under a normal Access apply (issue-cert+set-listen+restart) and fails
       # permanently, degrading applies to the 10s timer (~50s). Add the override + clear any failed state.
@@ -1684,6 +1993,11 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   # NEW SERVICE? add its ensure_<svc> here (and a matching writer in the installer) so update heals it too.
   repark_bare_panel      # a parked panel an older update started beside the docker one → stopped again (+ swg-sub)
   ensure_netctl_helper   # swg-netctl privileged helper (+ queue dirs + trigger units)
+  ensure_netctl_gate     # …and its idle gate (written when missing or different — see there)
+  if log_ns_build /usr/local/bin/swg-netctl; then   # HEAL: swg's own journal on a current box (a unit added since, a lost file)
+    ensure_log_ns swg-panel swg-panel-server.service swg-sub.service swg-netctl.service swg-update.service
+  fi
+  if grep -qs 'LIVE_PANEL' "$PANEL_DIR/swg-panel-server"; then ensure_panel_journal; fi   # HEAL: a build with the viewer
   ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
   ensure_acme_renewal    # HEAL: cron + acme.sh's daily renewal entry, the certificate's ONLY renewer (before the client: no cron, no acme.sh)
   ensure_acme_client     # HEAL: the ACME client itself, when TLS_MODE needs it (a convert leaves the state, not the program)
@@ -1704,6 +2018,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   ensure_node_update_ref # HEAL: record the ref this box tracks, so the node's self-update doesn't fall to main
   if should_update "bare-metal swg-node" "$NODED_DIR"; then
     info "updating bare-metal swg-node ($AGENT_DIR + $NODED_DIR)"
+    ensure_log_ns swg-node swg-noded.service   # before the restart below: swg-noded moves into its journal with it
     [ -d "$AGENT_DIR" ] && [ -f "$SRC/swg-agent" ] && { run cp "$SRC/swg-agent" "$AGENT_DIR/"; run chmod 755 "$AGENT_DIR/swg-agent"; }
     if [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-noded" ]; then
       run cp "$SRC/swg-noded" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-noded"
@@ -1720,10 +2035,12 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     else DID_FAIL=yes; warn "couldn't restart swg-noded — it keeps the old ref until restarted: systemctl restart swg-noded"; fi
   fi
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
+  if log_ns_build "$NODED_DIR/swg-noded"; then ensure_log_ns swg-node swg-noded.service; fi   # HEAL, as for the panel
   ensure_noded_no_nnp    # MIGRATE: retract NoNewPrivileges — it blocked the AppArmor transition wg-quick/awg-quick need
   ensure_noded_reach_sweep "$NODED_DIR"   # HEAL: the drop-in that sweeps the device-access tables when an OLDER swg-noded starts
   ensure_wg_apparmor     # HEAL: let the confined wg CLI reach the UAPI sockets (wdtt / csqtt / awg-userspace)
   ensure_awg_datapath    # HEAL: install AmneziaWG if missing, rebuild its module, else userspace
+  ensure_awg_pkg_follow  # FOLLOW: the amnezia packages to the PPA's build (module + tools); load it only where nothing uses it
   ensure_awg_quick_unit  # HEAL: the awg-quick@ template + the per-interface enable, so awg survives a reboot
   ensure_awg_back_on_kernel   # SURGICAL: interfaces left on the userspace fallback go back to the module once it loads
 fi
@@ -1731,6 +2048,10 @@ fi
 # ───────────────────────── Docker (host / node / master) ─────────────────────────
 if ! $NODE_ONLY && docker_stack_live; then
   found=1; doc_seen=yes
+  if ! $DRYRUN; then   # the host timer units' systemd lines (lib/common.sh) — they start every 10–30 s
+    docker_host_log_dropins
+    [ "$DOCKER_LOG_DROPINS_CHANGED" -gt 0 ] && { systemctl daemon-reload 2>/dev/null || true; note "docker host timers: systemd's start/stop lines no longer logged"; }
+  fi
   # which profile is running? prefer the marker install-docker.sh wrote into .env, else sniff containers
   prof="$(docker_profile)"
   if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
@@ -1741,6 +2062,9 @@ if ! $NODE_ONLY && docker_stack_live; then
     if ! $DRYRUN; then
       grep -qs route_localnet /etc/sysctl.d/99-swg-node.conf 2>/dev/null || printf 'net.ipv4.conf.all.route_localnet = 1\n' >> /etc/sysctl.d/99-swg-node.conf 2>/dev/null || true
       sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 || true
+      turn_sock_buf_host   # the turn-family listeners' socket-buffer caps: the container cannot raise them either
+      [ "$TURN_SOCK_BUF_CHANGED" = 1 ] && note "UDP socket-buffer caps raised on the host for turn-family listeners (99-swg-turn.conf; servers pick them up on their next restart)"
+      [ "$TURN_SOCK_BUF_LOW" = 1 ] && note "UDP socket-buffer caps could not be raised on this host (net.core.{r,w}mem_max) — csqtt handshakes may fail under load"
     fi ;;
   esac
   # migrate existing docker panels: the panel matches a master's co-located node by the HOST hostname, which it
@@ -1987,7 +2311,7 @@ PYLG
   #    (hand-published bridge ports, a build: block, custom conf mounts) — but a silent gap becomes a visible
   #    one, on the box where the stale file actually is.
   if [ -f "$SRC/docker-compose.yml" ]; then
-    _drift="$(python3 - "$SRC/docker-compose.yml" "$DOCKER_DIR/docker-compose.yml" 2>/dev/null <<'PYDRIFT'
+    _drift="$(python3 - "$SRC/docker-compose.yml" "$DOCKER_DIR/docker-compose.yml" "$prof" 2>/dev/null <<'PYDRIFT'
 import re, sys
 
 # The installer DISABLES two things by commenting them rather than deleting (host networking): the node's
@@ -1996,8 +2320,9 @@ import re, sys
 _UNCOMMENT = (re.compile(r'^(\s*)#\s{0,3}(- .*)$'), re.compile(r'^(\s*)#\s?((?:ports|sysctls):).*$'))
 
 def tokens(text):
-    """What this compose FILE offers -> {token: owning service}."""
-    out, service, in_services = {}, "", False
+    """What this compose FILE offers -> ({token: the services carrying it}, {service: its profiles})."""
+    out, profiles, service, in_services = {}, {}, "", False
+    add = lambda t, svc: out.setdefault(t, set()).add(svc)    # a set: swg-panel and swg-node share keys
     for raw in text.splitlines():
         line = raw.rstrip()
         for rx in _UNCOMMENT:
@@ -2007,35 +2332,47 @@ def tokens(text):
         if re.match(r'^[a-z-]+:', line):
             in_services = line.startswith("services:"); service = ""
             if line.startswith("x-"):
-                out["anchor:" + line.split(":")[0]] = ""
+                add("anchor:" + line.split(":")[0], "")
             continue
         if in_services and re.match(r'^  [a-z0-9-]+:\s*$', line):
-            service = line.strip().rstrip(":"); out["service:" + service] = service; continue
+            service = line.strip().rstrip(":"); add("service:" + service, service); continue
         m = re.match(r'^\s{6}([A-Z_][A-Z0-9_]*):\s', line)
         if m:
-            out["env:" + m.group(1)] = service; continue
+            add("env:" + m.group(1), service); continue
         m = re.match(r'^\s*-\s*"?([^"#]+?)"?\s*(?:#.*)?$', line)
         if m:
             v = m.group(1).strip()
             if re.search(r':\d+(/(udp|tcp))?$', v) or re.search(r'\}:\$?\{?[A-Za-z_]', v):
-                out["port:" + re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}', r'$\1', v).split(":")[-1]] = service
+                add("port:" + re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}', r'$\1', v).split(":")[-1], service)
             elif v.startswith("./") or v.startswith("/"):
-                out["volume:" + (v.split(":")[1] if ":" in v else v)] = service
+                add("volume:" + (v.split(":")[1] if ":" in v else v), service)
             else:
-                out["opt:" + v.split("=")[0].strip()] = service
+                add("opt:" + v.split("=")[0].strip(), service)
             continue
         m = re.match(r'^\s{4}(security_opt|logging|network_mode|cap_add|devices|sysctls|profiles|restart):', line)
         if m and service:
-            out["key:%s.%s" % (service, m.group(1))] = service
-    return out
+            add("key:%s.%s" % (service, m.group(1)), service)
+            if m.group(1) == "profiles":          # one-line flow list only; any other shape reads [] = filters nothing
+                f = re.match(r'^\s{4}profiles:\s*\[([^\]]*)\]', line)
+                profiles[service] = re.findall(r'[A-Za-z0-9_-]+', f.group(1)) if f else []
+    return out, profiles
 
 try:
-    ship, inst = (tokens(open(p).read()) for p in sys.argv[1:3])
+    (ship, profiles), (inst, _) = (tokens(open(p).read()) for p in sys.argv[1:3])
 except Exception:
     sys.exit(0)                                   # unreadable either side -> say nothing, never block an update
-missing = {t: o for t, o in ship.items() if t not in inst}
-gone = set(o for t, o in missing.items() if t.startswith("service:"))
-rest = sorted(t for t, o in missing.items() if not t.startswith("service:") and o not in gone)
+# Only what THIS update starts: argv[3] is $prof, the profile its own `compose up` takes, so the report and the
+# recreate agree on what the box runs. The file carries every role's services, and a node was told its copy lacked the
+# panel's SWG_PANEL_SUB_BIND / _PORT — keys of a container it never runs (1.8.8, a client's node update).
+# A service with no `profiles:` runs under every profile; an unknown profile, or a `profiles:` this reader cannot parse,
+# filters nothing. A shipped key both services carry (SWG_UPDATE_TRIGGER) counts for each service it runs; the
+# installed side is one set of tokens, so a key present under either service reads as present.
+prof = sys.argv[3] if len(sys.argv) > 3 else ""
+runs = lambda svc: not svc or not prof or prof in (profiles.get(svc) or [prof])
+missing = {t: {o for o in owners if runs(o)} for t, owners in ship.items() if t not in inst}
+missing = {t: owners for t, owners in missing.items() if owners}
+gone = set(o for t, owners in missing.items() if t.startswith("service:") for o in owners)
+rest = sorted(t for t, owners in missing.items() if not t.startswith("service:") and owners - gone)
 if not missing:
     sys.exit(0)
 print("%d|%s|%s" % (len(gone) + len(rest), ",".join(sorted(gone)), " ".join(rest)))
@@ -2057,7 +2394,8 @@ PYDRIFT
       note "docker-compose.yml: $_dn shipped item(s) MISSING (older than this release — re-run the installer to restage)"
     fi
   fi
-  ensure_netctl_docker "$prof"   # HEAL: install the docker address helper if a panel-bearing host lacks it
+  ensure_netctl_docker "$prof"   # the docker address helper: healed if a panel-bearing host lacks it, its drainer at this release
+  ensure_netctl_docker_gate "$prof"   # …and its idle gate (written when missing or different — see there)
   ensure_update_unit_docker "$prof"   # HEAL: install the docker one-click self-update wiring if a panel-bearing host lacks it
   # ⚠️ PANEL-BEARING PROFILES ONLY, both. On a node-only box these created the four empty panel files swg-sub masks
   # (data/etc/auth among them, 0 bytes) at the first update, and the next update found ".env + data/lib" there and wrote
@@ -2095,6 +2433,9 @@ PYDRIFT
     echo
     if confirm "Pull the latest image for $(col_l "docker ($prof)")?"; then
       info "pulling the latest image ($DOCKER_DIR)"
+      # a COMMIT (bootstrap's SWG_COMMIT — going back by commit) moves the scripts, not the containers: said (SOAK-3)
+      if [ -n "${SWG_COMMIT:-}" ] && [ -z "${SWG_IMAGE_TAG:-}" ] && ! grep -qs '^SWG_IMAGE_TAG=[^[:space:]#]' "$DOCKER_DIR/.env"; then
+        warn "updating to commit $(b "$SWG_COMMIT"), but the containers run the published $(b latest) image — for that commit's own, set $(b "SWG_IMAGE_TAG=sha-${SWG_COMMIT:0:7}") in $DOCKER_DIR/.env (kept for every release commit) and re-run"; fi
       if $DRYRUN; then DID_UPDATE=yes; echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d --force-recreate)"; note "docker ($prof): would pull + recreate"
       # --force-recreate: after `pull` updates :latest, a plain `up -d` may just (re)start the EXISTING
       # container on the OLD image (log shows "Started", not "Recreated") — so the node keeps the old
@@ -2144,7 +2485,8 @@ fi
 # bare-metal node → the system package (amneziawg via the amnezia PPA, or wireguard). docker node → the
 # datapath (amneziawg-go) lives in the swg-node image and refreshes with the image pull above.
 if $NO_COMPONENTS && [ "$HAVE_BNODE" = yes ]; then
-  ok "$(col_l "WireGuard / AmneziaWG"): skipped — third-party datapath (--no-components: swg programs only)"
+  if [ "$AWG_PKG_ROUTE" = yes ]; then ok "$(col_l "WireGuard / AmneziaWG"): the AmneziaWG module and tools follow the amnezia PPA (above); other packages skipped (--no-components)"
+  else ok "$(col_l "WireGuard / AmneziaWG"): skipped — third-party datapath (--no-components: swg programs only)"; fi
 elif [ "$HAVE_BNODE" = yes ]; then
   pkg_update "WireGuard / AmneziaWG" amneziawg amneziawg-tools amneziawg-dkms wireguard wireguard-tools
 elif [ "$HAVE_DOCK" = yes ] && [ "$DOCK_PROF" != host ]; then
@@ -2167,6 +2509,8 @@ TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
 turn_check_one(){   # <key> <dir/ holding server+version.txt+repo.txt> <fork|inst>
   local key="$1" d="$2" mode="$3" owner cur latest arch url u svc any=no restart_ok=yes
   owner="$(cat "${d}repo.txt" 2>/dev/null || echo '?')"; cur="$(cat "${d}version.txt" 2>/dev/null || echo '?')"
+  # samosvalishe deleted its repo (2026-10); hackdiaz-dev carries free-turn-proxy on — same releases and assets.
+  [ "$owner" = "samosvalishe/free-turn-proxy" ] && { owner="hackdiaz-dev/free-turn-proxy"; $DRYRUN || printf %s "$owner" > "${d}repo.txt" 2>/dev/null || true; }
   if $DRYRUN; then latest="v0.0.0-latest"
   else sub "checking turn-proxy $(col_l "$key") ($owner) for a newer release on GitHub…"   # network call — say so (and cap it) so it never looks hung
     latest="$(curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$owner/releases/latest" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)"; fi

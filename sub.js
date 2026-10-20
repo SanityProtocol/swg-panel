@@ -39,7 +39,7 @@
       dlShort: "Download", enlarge: "Tap to enlarge", share: "Share",
       getApp: "Get {app}", getAppBy: "Get {app} by {author} manually", getAppManual: "Get {app} manually", by: " by {author}",
       getWgClient: "WireGuard clients", getAwgClient: "AmneziaWG clients",
-      dlOpenPage: "Open {host}({app}) downloads page", dlLatest: "Latest release · {ver}",
+      dlOpenPage: "Open {host}({app}) downloads page", dlLatest: "Latest release · {ver}", dlPinned: "Release {ver} · matches this server",
       start: "Start", startOpen: "Start — opens {app}", startGet: "Start — installs {app} if you don't have it",
       startHow: "Open the app, or install it?", startOpenApp: "Open {app}", startHaveIt: "I already have it", startGetApp: "Get {app}", startNeedIt: "Install it",
       vpnCopied: "Link copied — paste it into Amnezia VPN",
@@ -101,7 +101,7 @@
       dlShort: "Скачать", enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
       getApp: "Установить {app}", getAppBy: "Скачать {app} от {author} вручную", getAppManual: "Установить {app} вручную", by: " от {author}",
       getWgClient: "Клиенты WireGuard", getAwgClient: "Клиенты AmneziaWG",
-      dlOpenPage: "Открыть страницу загрузок {host}({app})", dlLatest: "Последняя версия · {ver}",
+      dlOpenPage: "Открыть страницу загрузок {host}({app})", dlLatest: "Последняя версия · {ver}", dlPinned: "Версия {ver} · как у этого сервера",
       start: "Старт", startOpen: "Старт — откроет {app}", startGet: "Старт — установит {app}, если его нет",
       startHow: "Открыть приложение или установить?", startOpenApp: "Открыть {app}", startHaveIt: "Уже установлено", startGetApp: "Установить {app}", startNeedIt: "Установить",
       vpnCopied: "Ссылка скопирована — вставьте её в Amnezia VPN",
@@ -166,10 +166,14 @@
   var FORK_ORDER_FALLBACK = ["cacggghp", "WINGS-N", "samosvalishe", "Moroka8", "anton48"];
   function turnServers() { return (_lastData && _lastData.turn_catalog && _lastData.turn_catalog.servers) || null; }
   function turnServer(f) { var s = turnServers() || []; for (var i = 0; i < s.length; i++) if (s[i].id === f) return s[i]; return null; }
+  // A fork's shown name is its catalog label, never the internal id (they differ where a fork changed hands: samosvalishe → hack-diaz).
+  function forkLabel(f) { var s = turnServer(f); return (s && s.label) || f; }
+  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);   // {fork} in a server name is the name (q189 HE-8)
+  if (window.SWGTurn && SWGTurn.setCliAuthors) SWGTurn.setCliAuthors(function (f) { var s = turnServer(f); return s && s.cli_authors; });   // the served CLI builds
   function forkRank(f) { var s = turnServers(); if (s && s.length) { for (var i = 0; i < s.length; i++) if (s[i].id === f) return i; return s.length; } var j = FORK_ORDER_FALLBACK.indexOf(f); return j < 0 ? FORK_ORDER_FALLBACK.length : j; }
   // WireGuard-only forks (the client can't front AmneziaWG) — from the catalog server's `protocols` (no "awg"); so
   // such a fork isn't offered for an AWG peer. The fallback mirrors the panel's old TURN_WG_ONLY.
-  var TURN_WG_ONLY_FALLBACK = { anton48: 1, samosvalishe: 1 };
+  var TURN_WG_ONLY_FALLBACK = { anton48: 1 };   // samosvalishe (hack-diaz) carries AmneziaWG since free-turn-proxy v3.2.0, as the catalog says
   function turnWgOnly(f) { var s = turnServer(f); if (s && s.protocols) return s.protocols.indexOf("awg") < 0; return !!TURN_WG_ONLY_FALLBACK[f]; }
 
   // AXIS-3: the client-app install link for a server fork, from the panel's turn_catalog (server → clients[0] →
@@ -190,8 +194,8 @@
   }
   // Rank a turn-proxy fork by the class of the client it resolves to for THIS visitor — matching the panel picker:
   // native app · friendly app · native sidecar · friendly sidecar · plain (so the "best" connection sorts first).
-  function turnCellRank(forkId) {
-    var ga = turnGetApp(forkId); if (!ga) return 9;
+  function turnCellRank(forkId, awg) {
+    var ga = turnGetApp(forkId, null, awg); if (!ga) return 9;
     var srv = turnServer(forkId), compat = (srv && srv.compat) || {};
     var isCli = ga.cid === "sidecar" || ga.enc === "sidecar";
     var cls = isCli ? (compat.sidecar || "native") : (compat[ga.cid] || "");
@@ -206,8 +210,8 @@
   // Does the client we resolve for THIS visitor connect WITHOUT obfuscation? Plain = the fork's normal transport,
   // which VK throttles → slower. A plain fork (cacggghp) is always plain; an obfuscated fork is plain only
   // for a cross-fork "plain"-class client. Same rule as the panel picker, so the turtle matches the admin view.
-  function turnCellPlain(forkId) {
-    var ga = turnGetApp(forkId); if (!ga || !ga.cid) return false;
+  function turnCellPlain(forkId, awg) {
+    var ga = turnGetApp(forkId, null, awg); if (!ga || !ga.cid) return false;
     var compat = (turnServer(forkId) || {}).compat || {};
     var isCli = ga.cid === "sidecar";
     var cls = isCli ? (compat.sidecar || "") : (compat[ga.cid] || "");
@@ -222,14 +226,41 @@
     + '<circle cx="20.4" cy="12.4" r="1.8"/>'
     + '<rect x="6" y="14.2" width="2.2" height="3.2" rx="1.1"/><rect x="14" y="14.2" width="2.2" height="3.2" rx="1.1"/>'
     + '<path d="M3.2 12.6 L.9 11.6 L2.1 13.9 Z"/></svg>';
-  function turnGetApp(forkId) {
+  // `ver` = the server's RUNNING version (the cell's deployment): an app published from the server's own repository
+  // follows it — the release that version names (the panel's `pins`), not the latest (operator, 2026-10-14).
+  // `awg` = the deployment is an AmneziaWG interface: an app whose own tunnel is WireGuard only (`awg: false` in the
+  // catalog — anton48's VK TURN Proxy on iOS) is never handed out for it; the next app is, or none.
+  // `line` — a csqtt server's running line (2.1 / 2.5): the two do not speak to each other, so only an app of the server's
+  // line is offered. "" (an older node, which runs 2.1 only) filters nothing.
+  function turnGetApp(forkId, ver, awg, line) {
     var srv = turnServer(forkId), clients = ((_lastData && _lastData.turn_catalog) || {}).clients || {};
     var os = subOs();
     function has(links) { return links && (links.url || links.github || links.play || links.appstore); }
+    function pinned(links) {
+      var m = /^https?:\/\/github\.com\/([^\/]+\/[^\/#?]+)/.exec(links.github || "");
+      if (!ver || !m || !srv || m[1] !== srv.owner) return links;   // another author's app keeps its own versioning
+      ver = String(ver).trim();   // the panel keys pins by the trimmed version
+      var pin = ((((_lastData && _lastData.turn_catalog) || {}).pins || {})[srv.owner] || {})[ver];
+      var u = pin && pin.url && pin.url[os];
+      if (!u) return links;   // no release for this version — or none of its files is this OS's installer: the latest, as before
+      var out = {}; for (var k in links) out[k] = links[k];
+      out.url = u; out.page = pin.page || links.page; out.tag = pin.tag || ""; out.assets = pin.assets || []; out.pinned = true;
+      return out;
+    }
     // Build the resolved-app record for one client id on the visitor's OS (null if it doesn't ship for this OS).
+    function verLine(v) { var m = /(\d+)\.(\d+)/.exec(String(v || "")); return m ? m[1] + "." + m[2] : ""; }
     function build(cid) {
       var cl = clients[cid], links = cl && cl.platforms && cl.platforms[os];   // this OS only — no cross-OS fallback
-      if (!has(links)) return null;
+      if (!has(links) || (awg && cl.awg === false)) return null;
+      var lineGate = !!line && forkId === "csqtt";
+      if (lineGate && (cl.csqtt_lines || ["2.1"]).indexOf(line) < 0) return null;   // this app speaks another csqtt line
+      links = pinned(links);
+      // The server's own app follows the server through its release pin. With no release of this server's line yet, the
+      // fallback is the latest release — the OTHER line's app, which cannot connect: offer nothing rather than it.
+      var own = /^https?:\/\/github\.com\/([^\/]+\/[^\/#?]+)/.exec(links.github || "");
+      // A release not resolved yet (no tag) is the latest, which is 2.1's unless proven otherwise: only a 2.1 server takes it.
+      var relLine = verLine(links.tag) || "2.1";
+      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;
       // Attribute the download to the app's REAL author — the explicit `author` field wins over `native_fork` (which
       // only pins the client to a server fork for schema resolution, e.g. pwdtt→ildarmaga even though it's luminescq's).
       // Mirrors the panel's turnClientAuthor rule so Settings and the sub page agree.
@@ -241,7 +272,8 @@
                autostart: !!links.autostart,    // per-app-per-OS: Start opens the app via its URL scheme (else copy-link + import steps)
                instructions: links.instructions || "",   // optional per-app-per-OS import text (overrides the generic hint)
                file: file, fileName: urlFileName(file), page: page,
-               tag: links.tag || "", assets: links.assets || [] };   // assets = LATEST release's files → the bubble
+               tag: links.tag || "", assets: links.assets || [],   // assets = the release's files → the bubble (LATEST, or this server's)
+               pinned: !!links.pinned };
     }
     // a CLI resolves to ONE build (the author the admin picked, else the fork's native/first CLI) — carried as .cliAuthor
     var cliAuthors = (srv && srv.cli_authors) || ["samosvalishe"];
@@ -259,7 +291,8 @@
     // silently resolve to some other app instead.
     if (def === "none") return null;
     if (def) {
-      if (def.indexOf("sidecar@") === 0) { if (compat.sidecar || !hasCompat) { var d0 = build("sidecar"); if (d0) return withCli(d0, def.split("@")[1]); } }
+      // a CLI build is honoured only while this fork still offers its author (a hidden fork's build is withdrawn)
+      if (def.indexOf("sidecar@") === 0) { if ((compat.sidecar && cliAuthors.indexOf(def.split("@")[1]) >= 0) || !hasCompat) { var d0 = build("sidecar"); if (d0) return withCli(d0, def.split("@")[1]); } }
       else if (clients[def] && (compat[def] || !hasCompat)) { var d = build(def); if (d) return d; }
     }
     // 2) no (valid) default → the compat-ranked top app for this OS (matches the panel picker's default ordering):
@@ -274,11 +307,8 @@
     for (var id in clients) if (compat[id] && has(clients[id].platforms && clients[id].platforms[os])) ranked.push(id);
     // compat band first, then the one-tap (autostart) apps ahead of paste/QR-only ones, then alphabetical — mirrors the panel picker.
     ranked.sort(function (a, b) { return rank(a) - rank(b) || ((autostartOf(b) ? 1 : 0) - (autostartOf(a) ? 1 : 0)) || (a < b ? -1 : a > b ? 1 : 0); });
-    // WDTT family system default = a ONE-TAP app. If the top pick can't open one-tap (e.g. amurcanov's wdttapp),
-    // substitute xxcipher (the fleet-standard clickable WDTT client) where offered; a fork's own clickable app (Ivan4537) stays.
-    if (srv && srv.kind === "wdtt" && ranked.length && !autostartOf(ranked[0]) && ranked.indexOf("xxcipher") >= 0) {
-      var xcd = build("xxcipher"); if (xcd) return xcd;
-    }
+    // A WDTT fork's system default is its own app, the top of this rank (until 2026-10-14 XXcipherX's one-tap app
+    // stood in where a fork's own could not open one-tap; its repository is gone — the panel's picker agrees).
     for (var k = 0; k < ranked.length; k++) { var r2 = build(ranked[k]); if (r2) return withCli(r2, cliAuthors[0]); }
     // 3) legacy fallback: the fork's own clients list order — ONLY when there's no compat map (serve.json predating
     //    `compat`). With a compat map present, step 2 already decided; never resurrect a client the compat map omits.
@@ -492,7 +522,7 @@
     // .ipa needs self-signing), so both show: "… · TestFlight" then "iOS · IPA".
     if (ga.store) files = [{ name: ga.app + " · " + storeLabel(ga.store), url: ga.store }].concat(files);
     var label = ga.author
-      ? t("getAppBy").replace("{app}", ga.app).replace("{author}", ga.author)
+      ? t("getAppBy").replace("{app}", ga.app).replace("{author}", forkLabel(ga.author))
       : (files.length ? t("getAppManual").replace("{app}", ga.app)   // opens a bubble → "Get <app> manually"
                       : t("getApp").replace("{app}", ga.app) + (platLbl(ga.platform) ? " · " + platLbl(ga.platform) : ""));
     // ALWAYS a dropdown (▾) for consistency — even a page-only app (no direct installer, e.g. the Sidecar CLI) opens
@@ -799,7 +829,7 @@
       var head = el("a", "dl-bubble-head"); head.href = ga.page; head.target = "_blank"; head.rel = "noopener";
       head.textContent = t("dlOpenPage").replace("{host}", isGithub ? "GitHub " : "").replace("{app}", ga.app) + " ↗";
       b.appendChild(head);
-      if (ga.tag) b.appendChild(el("div", "dl-bubble-ver", t("dlLatest").replace("{ver}", ga.tag)));
+      if (ga.tag) b.appendChild(el("div", "dl-bubble-ver", t(ga.pinned ? "dlPinned" : "dlLatest").replace("{ver}", ga.tag)));
     }
     var list = el("div", "dl-bubble-list");
     if (ga.wgItems) {   // WG/AWG two-target rows: [logo + name] → downloads page · [⬇] → best direct installer for this OS
@@ -1135,7 +1165,7 @@
     var done = el("div", "ph-copied"); done.appendChild(iconEl("checks")); done.appendChild(el("span", null, t("cmdCopied")));
     inner.appendChild(done);
     var head = el("div", "ph-head cli-head");
-    head.appendChild(el("span", "ph-title", (c.forkId ? c.forkId + " " : "") + "Sidecar"));
+    head.appendChild(el("span", "ph-title", (c.forkId ? forkLabel(c.forkId) + " " : "") + "Sidecar"));
     inner.appendChild(head);
     var steps = el("div", "ph-steps"), arr = ((t("cliSteps") || {})[subOs()]) || ((t("cliSteps") || {}).linux) || [];
     for (var i = 0; i < arr.length; i++) steps.appendChild(stepEl(arr[i]));
@@ -1148,7 +1178,7 @@
       var col = forkColor(a.fork), owner = ((turnServer(a.fork) || {}).owner) || "";
       var dl = (a.fork === "samosvalishe" && c.dlAppUrl) ? c.dlAppUrl : ("https://github.com/" + owner + "/releases");
       var lnk = el("a", "ph-dl cli-auth-dl"); lnk.href = dl; lnk.style.color = col;
-      lnk.textContent = t("cliDownBy").replace("{author}", a.fork);
+      lnk.textContent = t("cliDownBy").replace("{author}", forkLabel(a.fork));
       lnk.onclick = function (e) { e.preventDefault(); _openUrl(dl); };
       links.appendChild(lnk);
     });
@@ -1247,7 +1277,7 @@
   }
   // The badge's "by <author>" tail. One string in the catalog, not " by " glued on in three cells: those three were
   // English on a Russian page (since 07774a7), because a literal cannot follow the language selector.
-  function tagBy(author) { return el("span", "scell-tag-by", t("by").replace("{author}", author)); }
+  function tagBy(author) { return el("span", "scell-tag-by", t("by").replace("{author}", forkLabel(author))); }
   // A chevron arrow as an inline SVG (built via the DOM so the strict CSP is happy). dir: l/r/u/d.
   function chevronEl(dir) {
     var NS = "http://www.w3.org/2000/svg";
@@ -1801,15 +1831,15 @@
         // links) are the TURN credential. One app (CSQTT), which scans the QR.
         var cd = it.csqtt, cfc = ifaceColor("csqtt");
         // raw VK inputs → csqttArtifact combines/strips/dedupes them (same one place the operator app uses)
-        var cga = turnGetApp("csqtt");   // the operator's per-OS default csqtt client (CSQTT) → download / Start
+        var cga = turnGetApp("csqtt", cd.version, false, cd.line);   // the operator's per-OS default csqtt client (CSQTT) → download / Start (this server's release)
         // …and its encoder: on iOS that is anton48's VK TURN Proxy, which is handed its own vkturnproxy:// link —
         // it reads a csqtt:// one too, but keeps only the first VK call link of it.
         var cart = SWGTurn.csqttArtifact({ host: cd.endpoint_host, port: cd.port, password: cd.password,
-          vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, cga && cga.enc);
+          vk_hash: cd.vk_hash, vk_links: (_lastData && _lastData.vk_links) || [] }, cga && cga.enc, cd.line);   // 2.5 → the sealed link + a QR
         // Badge "<fork> · <app>", + " by <author>" only when the client is CROSS-AUTHOR (author !== fork) — same
         // guard the WDTT/turn cells use. csqtt is a single self-contained fork whose one client (CSQTT) is by the
         // same author (amurcanov), so today it collapses to "amurcanov · CSQTT"; the guard stays for future clients.
-        var csfork = cd.fork || "amurcanov";
+        var csfork = forkLabel(cd.fork || "csqtt");   // the catalog's name (amurcanov), never a copy of it here
         var cffork = forkColor("csqtt");   // the csqtt FORK colour (catalog key "csqtt"), distinct from the iface colour cfc
         var cAppName = (cga && (cga.productName || cga.app)) || "CSQTT";
         var ctag = el("span", "scell-tag");
@@ -1834,21 +1864,27 @@
         }
         if (cga) { ctrl.dlAppUrl = cga.file; ctrl.dlAppFile = cga.fileName; ctrl.dlAppName = cga.app; ctrl.dlAppPage = cga.page; node.appendChild(getAppRow(cga)); }
         ctrl.cliApp = false; ctrl.vktgz = false;         // csqtt client is an app, never a CLI/VKTGZ flow
-        ctrl.payload = cart.text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
-        ctrl.isLink = true; ctrl.hasQR = false; ctrl.cmd = null; ctrl.wrapCfg = true;   // no scanner in the CSQTT app yet → hand out the csqtt:// link itself
-        ctrl.openUri = cart.text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
-        // A one-tap csqtt app (the CSQTT app, La Lune on Android) is handed the link by the scheme — AND it is copied, so a
-        // visitor sent to install the app first still has the link when they come back to it.
-        ctrl.copyOnOpen = true;
-        ctrl.view = "qr";
-        draw();
+        // 2.1: no scanner in its apps → the csqtt:// link itself; 2.5: its app scans one → a QR (cart.qr), the link sealed
+        // asynchronously (Web Crypto) — the same draw-then-apply as a turn proxy's buildAsync artifact.
+        var capply = function (text) {
+          ctrl.payload = text; ctrl.ready = true; ctrl.ext = cart.ext || "txt";
+          ctrl.isLink = true; ctrl.hasQR = !!cart.qr; ctrl.cmd = null; ctrl.wrapCfg = true;
+          ctrl.openUri = text; ctrl.noAutoFire = !(cga && cga.autostart); ctrl.instructions = (cga && cga.instructions) || "";
+          // A one-tap csqtt app (the CSQTT app, La Lune on Android) is handed the link by the scheme — AND it is copied, so a
+          // visitor sent to install the app first still has the link when they come back to it.
+          ctrl.copyOnOpen = true;
+          ctrl.view = "qr";
+          draw();
+        };
+        if (cart.text != null) capply(cart.text);
+        else { draw(); Promise.resolve().then(cart.buildAsync).then(capply).catch(function (e) { ctrl.ready = false; stage.innerHTML = ""; stage.appendChild(el("div", "cfg-fail", (e && e.message) || t("cantGen"))); if (ctrl.notify) ctrl.notify(); }); }
       } else if (it.wdtt) {
         // A WDTT peer, rendered as a cell IN the Turn group (WDTT is a VK-TURN-family server). It's keyless: the
         // server owns its WireGuard + mints the client keypair via GETCONF, so the link carries only the WRAP
         // password + VK link + endpoint. Per-OS client: iOS → anton48 VK TURN Proxy (WRAP-A), else → WDTT app / PWDTT.
         var wd = it.wdtt, wfork = wd.fork || "amurcanov", wfc = forkColor(wfork);
         var wclients = ((_lastData && _lastData.turn_catalog) || {}).clients || {};
-        var wga = turnGetApp(wfork);   // the operator's per-OS default client for THIS fork → encoder + app name + download
+        var wga = turnGetApp(wfork, wd.version);   // the operator's per-OS default client for THIS fork → encoder + app name + download (this server's release)
         var wasClient = (wga && wga.enc) ? wga.enc : ((subOs() === "ios") ? "anton48" : "wdtt");
         var wclientQR = !!(wga && wclients[wga.cid] && wclients[wga.cid].qr);   // only some clients scan a QR; the rest import a pasted link
         // SETTINGS SPLIT: qWDTT is the one WDTT-family app whose link carries a client knob (`workers`), so the
@@ -1863,7 +1899,7 @@
         // Badge "<fork> · <app>", collapsing to just the fork when the app name echoes it — same rule the turn cells use.
         var wHasApp = wAppName && wAppName !== wfork;
         var wtag = el("span", "scell-tag");
-        var wsrv = el("span", null, wfork); wsrv.style.color = wfc; wtag.appendChild(wsrv);
+        var wsrv = el("span", null, forkLabel(wfork)); wsrv.style.color = wfc; wtag.appendChild(wsrv);
         // Colour the app chip by the fork its client is NATIVE to (not the server fork) — same rule the turn cells use,
         // so "AMURCANOV · PWDTT" shows PWDTT in its home fork's colour, not amurcanov's.
         var wAppFork = (wga && wclients[wga.cid] && wclients[wga.cid].native_fork) || wfork;
@@ -1878,7 +1914,7 @@
         wrole.appendChild(el("span", "scell-role-if", "WDTT"));
         if (!wBackup) wrole.style.color = ifaceColor("wdtt");
         srvRow.appendChild(wrole);
-        ctrl.forkId = wfork; ctrl.app = wAppName; ctrl.zoomTail = wHasApp ? wAppName : wfork;
+        ctrl.forkId = wfork; ctrl.app = wAppName; ctrl.zoomTail = wHasApp ? wAppName : forkLabel(wfork);
         if (wart.vkMissing) {                                                   // no VK link yet → the same warning the turn cells show
           var wvkw = el("div", "scell-vk scell-vkwarn");
           wvkw.appendChild(el("div", "scell-vkwarn-t", t("vkMissingT")));
@@ -1912,7 +1948,7 @@
       } else {
       var tp = it.tp, forkId = SWGTurn.fork(tp.service);
       var fc = forkColor(forkId);                                               // the panel's colour for this fork
-      var ga = turnGetApp(forkId);   // resolves the client for the VISITOR'S OS (also drives the get-app row / Start button below)
+      var ga = turnGetApp(forkId, tp.version, it.tgt.type === "awg");   // resolves the client for the VISITOR'S OS (also drives the get-app row / Start button below) — this proxy's release
       // Encode the artifact for the app we actually RESOLVED for this OS (its encoder), not the fork's NATIVE app — so
       // the config always matches the app shown. A Moroka8 relay reached via anton48's VK TURN Proxy on iOS must get the
       // vkturnproxy:// deeplink, NOT a sidecar CLI command that GUI can't run; on desktop the same fork resolves to the
@@ -1926,7 +1962,7 @@
       // app badge: a branded/resolved app name → "{fork} · {app}"; otherwise just "{fork} app". Every fork now resolves
       // to a client for the visitor's OS (cacggghp → VK TURN Proxy on mobile, CLI on desktop), so there's no "no app" case.
       var appInfo = appName ? { badge: appName, kind: "app", app: appName }
-                  : { badge: t("forkApp").replace("{fork}", forkId), kind: "fork", fork: forkId };
+                  : { badge: t("forkApp").replace("{fork}", forkLabel(forkId)), kind: "fork", fork: forkId };
       // badge = just the fork when it echoes its own id (a generic fork like Moroka8 with no app name); "fork · App"
       // when there's a real app name (WINGS V/DeX, FreeTurn, VK TURN Proxy, CLI client)
       var hasAppName = appName && appName !== forkId;
@@ -1936,12 +1972,12 @@
       var appFork = (art && typeof SWGTurn.encoderFork === "function" && SWGTurn.encoderFork(art.enc)) || forkId;
       var appColor = forkColor(appFork);
       // Enlarged-QR caption (peer.title · …): a turn cell names the APP; the main-screen caption keeps the server name.
-      ctrl.zoomTail = hasAppName ? appName : forkId;
+      ctrl.zoomTail = hasAppName ? appName : forkLabel(forkId);
       // Badge = "<server used> · <app>": the server chip in the used fork's colour, the app chip in its native fork's.
       var tag = el("span", "scell-tag");
       // Two relays of the SAME fork on one deployment would otherwise render as two identical badges, leaving
       // the reader to guess which is which. The port is the one thing that always separates them.
-      var srvName = it.dupFork ? (forkId + " :" + String(tp.listen || "").split(":").pop()) : forkId;
+      var srvName = it.dupFork ? (forkLabel(forkId) + " :" + String(tp.listen || "").split(":").pop()) : forkLabel(forkId);
       var srvChip = el("span", null, srvName); srvChip.style.color = fc; tag.appendChild(srvChip);
       if (hasAppName) {
         tag.appendChild(el("span", "scell-tag-sep", " · "));
@@ -1961,7 +1997,7 @@
       if (!isBackup) role.style.color = ifaceColor(tgt.type);
       srvRow.appendChild(role);
       // Plain (unobfuscated) → the fork's normal transport, which VK throttles: mark it slow with a brand-coloured turtle.
-      if (turnCellPlain(forkId)) { var slow = el("span", "scell-slow"); slow.title = t("slowPlain"); slow.innerHTML = TURTLE_SVG; srvRow.appendChild(slow); }
+      if (turnCellPlain(forkId, it.tgt.type === "awg")) { var slow = el("span", "scell-slow"); slow.title = t("slowPlain"); slow.innerHTML = TURTLE_SVG; srvRow.appendChild(slow); }
       // AXIS-3: "Get the app" install link under the badge — for a first-time user who doesn't have the client app
       // yet. Shown only when the fork's client has a published app link (CLI sidecar forks have none). Complements
       // the bar's "Open in app": open if you have it, get it if you don't (never branch on install-state — can't detect).
@@ -1990,7 +2026,7 @@
         var vlist = vall.slice(0, 1);
         var vkw = el("div", "scell-vk");
         var vkLbl = (appInfo.kind === "app") ? t("vkAddApp").replace("{app}", appInfo.app)
-                  : t("vkAddFork").replace("{fork}", appInfo.fork);
+                  : t("vkAddFork").replace("{fork}", forkLabel(appInfo.fork));
         vkw.appendChild(el("span", "scell-vklbl", vkLbl));
         vlist.forEach(function (raw) {
           var vkb = el("button", "scell-vkbtn", raw); vkb.title = t("tapCopy");
@@ -2119,7 +2155,7 @@
           // every OS, so its encoder fallback is honest) a csqtt link on macOS named an app that does not exist there —
           // "amurcanov · CSQTT", a link and nothing to open it with. turnGetApp also answers "none" (the operator's
           // "don't offer on this OS") with nothing, so that choice keeps hiding it too.
-          if (!turnGetApp("csqtt")) return;
+          if (!turnGetApp("csqtt", (tt.csqtt || {}).version, false, (tt.csqtt || {}).line)) return;
           items.push({ tgt: tt, csqtt: tt.csqtt || {} }); return;
         }
         var seen = {}, tps = [], isAwg = (tt.type === "awg");
@@ -2129,10 +2165,10 @@
         (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service), k = tp.service || tp.listen;
           if (seen[k]) return;
           if (isAwg && turnWgOnly(f)) return;   // a WireGuard-only fork can't front this AmneziaWG interface
-          if (!turnGetApp(f)) return;           // no client app for the visitor's OS → hide this deployment entirely (no card, no dot)
+          if (!turnGetApp(f, null, isAwg)) return;   // no client app for the visitor's OS (and this interface) → hide this deployment entirely (no card, no dot)
           seen[k] = 1; tps.push({ tp: tp, f: f }); });
         // listen is the tiebreak so two relays of one fork keep a fixed order between polls instead of swapping.
-        tps.sort(function (a, b) { return turnCellRank(a.f) - turnCellRank(b.f) || forkRank(a.f) - forkRank(b.f)
+        tps.sort(function (a, b) { return turnCellRank(a.f, isAwg) - turnCellRank(b.f, isAwg) || forkRank(a.f) - forkRank(b.f)
                  || String(a.tp.listen || "").localeCompare(String(b.tp.listen || "")); });   // client-priority, then canonical fork order
         var nfork = {}; tps.forEach(function (x) { nfork[x.f] = (nfork[x.f] || 0) + 1; });
         tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp, dupFork: nfork[x.f] > 1 }); });

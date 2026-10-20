@@ -120,27 +120,65 @@ def run_sync(tok, sign=False):
     except Exception as e:
         r.out.append((500, {"error": "%s: %s" % (type(e).__name__, e)}))
     return r.out[-1] if r.out else None
+class _Gate:
+    """_api_lock while sync_while runs: the real RLock, except the sync's own bounded wait (its acquire in _node_sync). That
+    one says it has arrived — authenticated, stamped, about to wait — and holds until the test's go; only then does the
+    real, timed acquire run.
+    ⚠️ ORDER, NOT NAPS. sync_while slept 0.3 s (2.6 s for a legacy node), did `held_do` and gave the 503 cases a 0.5 s
+    wait: under load the sync reached its wait late, or `held_do`'s save (fsync'd) outlasted the wait, and the timed-out
+    sync then judged a store `held_do` had not changed yet — "…when the wait TIMES OUT (503), still no stale stamp" went
+    red under the full suite (1.8.9 qualification; 41 runs in 200, six at a time beside CPU and fsync load)."""
+    def __init__(self, real):
+        self.real, self.arrived, self.go, self.returned = real, threading.Event(), threading.Event(), threading.Event()
+
+    def acquire(self, blocking=True, timeout=-1):
+        if sys._getframe(1).f_code.co_name != "_node_sync":
+            return self.real.acquire(blocking, timeout)
+        self.arrived.set()
+        self.go.wait(120)
+        try:
+            return self.real.acquire(blocking, timeout)
+        finally:
+            self.returned.set()
+
+    def release(self):
+        self.real.release()
+
+    def __enter__(self):
+        self.real.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.real.release()
+
+
 def sync_while(held_do, wait=None, record=None, sign=False):
     """Hold the lock, start a sync, do `held_do` while it waits, then let go (or let it time out)."""
     SDEPS = {"fleet": {}, "nodes_path": NP, "roster_path": RP, "node_snaps": {}, "node_seen": {}, "panel_settings": {}}
     P.Handler.deps = SDEPS
     with P._api_lock:
         P.nodes_save(NP, {"n1": record or {"name": "edge", "token_sha": sha(TOK)}})
-    res, old_wait = [], P.SYNC_LOCK_WAIT
+    res, old_wait, real = [], P.SYNC_LOCK_WAIT, P._api_lock
     if wait is not None:
         P.SYNC_LOCK_WAIT = wait
-    P._api_lock.acquire()
+    gate = P._api_lock = _Gate(real)
+    real.acquire()
     try:
         th = threading.Thread(target=lambda: res.append(run_sync(TOK, sign))); th.start()
-        time.sleep(0.3 if record is None else 2.6)       # stamped and queued on the lock (a legacy one waits out its 2 s upgrade)
+        end = time.time() + 120                          # at its bounded wait (a legacy one past its 2 s upgrade) — or answered
+        while not gate.arrived.wait(0.05) and th.is_alive() and time.time() < end:   # before it (a refused credential)
+            pass
         stamped = "n1" in SDEPS["node_seen"]
         with P._api_lock:                                # re-entrant: what another request does while the sync waits
             held_do()
-        if wait is not None:
-            th.join(wait + 3)
+        if wait is not None:                             # the 503 path: its timed wait runs out with the lock still held
+            gate.go.set()
+            if gate.arrived.is_set():
+                gate.returned.wait(120)
     finally:
-        P._api_lock.release()
-    th.join(15); P.SYNC_LOCK_WAIT = old_wait
+        real.release()
+        gate.go.set()                                    # …otherwise it starts its wait with the lock free again
+    th.join(120); P.SYNC_LOCK_WAIT = old_wait; P._api_lock = real
     return (res[0] if res else None), stamped, "n1" in SDEPS["node_snaps"], "n1" in SDEPS["node_seen"]
 
 def edit():                                              # an operator edit, made while the sync waits

@@ -17,10 +17,10 @@ import { esc, tkey, dur, ago, seen, fmtBytes, ipOf, portOf, orderedTargets, isPr
 import { Store, api, bus, useStore } from "./store.js";
 import { targetType, iTypeOf, kindOf, nodeStale, ghostIface, turnProxiesFor, tgtXfer, isSelfContainedTgt, peerUncategorised } from "./model.js";
 import { go } from "./router.js";
-import { turnFork, turnLabel, turnColor, turnClientColor, turnClientAuthor, turnForkList, forkLabel } from "./turn-catalog.js";
+import { turnFork, turnColor, turnClientColor, turnClientAuthor, turnForkList, forkLabel } from "./turn-catalog.js";
 import {
   Ic, ICON, Tag, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow,
-  Popover, CapList, useCapped, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
+  Popover, CapList, useCapped, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, closeModals, openConfirm,
   openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, rowSingle, rowDouble, rowNoSelect, RowError,
   useAnchoredList, goSettings, LogBody, rateCell, uncatPop, ListPager, LIST_PAGE, pageSlice, modalDepth, tgt3,
 } from "./ui.js";
@@ -629,7 +629,9 @@ export function TurnConfigSheet({ peer, t, conf }) {
   const fi = Math.min(selFork, order.length - 1); const fork = order[fi];
   const list = byFork[fork]; const ii = Math.min(inst[fork] || 0, list.length - 1); const cur = list[ii];
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  const allClients = turnClientsFor(fork);   // already compat-matrix-only and compat-ranked (see turnClientsFor); it drops dead pairings such as anton48 + VK-TURN-by-MYSOREZ, matching Settings and the sub page
+  // already compat-matrix-only and compat-ranked (see turnClientsFor); it drops dead pairings such as anton48 + VK-TURN-by-MYSOREZ, matching
+  // Settings and the sub page — and, on an AmneziaWG interface, an app whose own tunnel is WireGuard only (`awg: false`), as the sub page does
+  const allClients = turnClientsFor(fork).filter(c => !(targetType(t) === "awg" && (cmap[c.id] || {}).awg === false));   // the iface's real kind, not the roster's stored type
   const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
   const osList = _OS_TABS.map(([o]) => o).filter(o => allClients.some(c => osOf(c).includes(o)));   // OSes this fork's apps cover
   const curOs = (selOs[fork] && osList.includes(selOs[fork])) ? selOs[fork] : (osList[0] || "");
@@ -683,7 +685,7 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
     <div class="turncfg-head"><span class="tcf-label">${artLabel(a)}</span></div>
     ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${T(a.hint, a.hintArgs)}</div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
-      : qrView ? (ready ? html`<div class="turncfg-qr"><${QR} conf=${text} label=${a.label}/></div>` : html`<div class="turncfg-qr qr-pending">${T("generating…")}</div>`)
+      : qrView ? (ready ? html`<div class="turncfg-qr"><${QR} conf=${text} label=${artLabel(a)}/></div>` : html`<div class="turncfg-qr qr-pending">${T("generating…")}</div>`)
       : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => { e.target.select(); copy(text, a.uri ? T("Link copied") : T("Config copied")); }}>${ready ? text : T("generating…")}</textarea>
           <button class="cmd-copy" title=${T("Copy")} disabled=${!ready} onClick=${() => copy(text, a.uri ? T("Link copied") : T("Config copied"))}><${Ic} i="copy"/></button></div>`}
     ${a.cmd ? html`<div class="turncfg-cmd"><div class="tokenbox">${a.cmd}</div>
@@ -692,7 +694,7 @@ export function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
       ${a.qr ? html`<button class="btn btn-mini" onClick=${() => setView(v => v === "qr" ? "text" : "qr")}><${Ic} i=${qrView ? "doc" : "qr"}/> ${qrView ? T("Show config") : T("Show QR")}</button>` : null}
       <span class="grow"></span>
       <button class="btn btn-mini" disabled=${!ready} onClick=${() => qrView ? copyQrImage(text, T("QR image")) : copy(text, a.uri ? T("Link copied") : T("Config copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
-      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""), a.ext)}><${Ic} i="download"/> ${T("Download .{v1}", { v1: a.ext || "conf" })}</button>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + forkLabel(a.fork) + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""), a.ext)}><${Ic} i="download"/> ${T("Download .{v1}", { v1: a.ext || "conf" })}</button>
     </div>
   </div>`;
 }
@@ -1206,6 +1208,7 @@ export function UserEditCard({ user, done }) {
   const [tag, setTag] = useState(user.tag || "");
   const [note, setNote] = useState(user.note || "");
   const [expDate, setExpDate] = useState(expiryInputVal(user.expiry || 0));   // subscription expiry (blank = never)
+  const [busy, setBusy] = useState(false), [saveErr, setSaveErr] = useState("");
   const showVk = Store.peersOfUser(user.id).some(p => targetsWantVk(p.targets));   // a peer behind a turn-proxy, or on a WDTT server
   const dirty = name !== (user.name || "") || tag !== (user.tag || "") || note !== (user.note || "") || expDate !== expiryInputVal(user.expiry || 0);   // VK links save on their own (VkLinkField) → not part of this
   const save = async () => {
@@ -1215,12 +1218,11 @@ export function UserEditCard({ user, done }) {
     // clean message instead of a rejected save).
     const maxPeer = Store.peersOfUser(user.id).reduce((m, p) => Math.max(m, +(p.ownExpiry || 0)), 0);
     if (expSec && maxPeer && expSec < maxPeer) { toast(T("Subscription expiry can't be earlier than a peer's expiry ({date}).", { date: fmtDate(maxPeer) }), "err"); return; }
-    done();   // close the editor immediately; the row updates optimistically  (VK links are owned by VkLinkField — saved on their own)
-    mutate({
-      key: "user:" + user.id,
-      patch: s => { const u = s.roster.users[user.id]; if (u) { u.name = name.trim(); u.tag = tag.trim(); u.note = note; u.expiry = expSec; } },
-      call: () => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note, expiry: expSec }),
-    });
+    // Sent before the editor closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept — it used to
+    // close first and lose them. (VK links are owned by VkLinkField — saved on their own.)
+    const r = await sheetSend(() => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note, expiry: expSec }), setSaveErr, setBusy);
+    if (!r.ok) return;
+    done(); Store.poll().catch(() => {});
   };
   const del = () => openConfirm({ title: T("Delete user · {name}", { name: user.name }), confirmLabel: T("Delete user"), danger: true, back: done,
     body: T("Their peers are revoked and become unassigned.") + " " + T("This can't be undone.") + (() => {
@@ -1251,7 +1253,8 @@ export function UserEditCard({ user, done }) {
     <${SubLinkActions} user=${user}/>
     ${showVk ? html`<${VkLinkField} user=${user}/>` : null}
     <${UserNetworksPanel} user=${user}/>
-    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty} onClick=${save}>${T("Save")}</button></div>
+    ${saveErr ? html`<div class="formmsg err" role="alert">${saveErr}</div>` : null}
+    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> ${T("Delete user")}</button><button class="btn btn-warn" onClick=${() => rotateAllUserKeys(user, done)} title=${T("Rotate the keys of every peer this user holds — all configs/links must be re-imported")}><${Ic} i="key"/> ${T("Rotate all keys")}</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>${T("Cancel")}</button><button class="btn btn-primary" disabled=${!dirty || busy} onClick=${save}>${T("Save")}</button></div>
   </div>`;
 }
 
@@ -1295,8 +1298,9 @@ export function clientHandoff(cl, cid, qr, os) {
 }
 export function artLabel(a) {
   const m = (typeof SWGTurn !== "undefined" && SWGTurn.clientMeta) ? SWGTurn.clientMeta(a.enc) : null;
-  if (!m) return T(a.label || "");
-  return T("{v1} via {v2} ({v3}) by {v4}", { v1: a.fork, v2: m.app, v3: m.platform + (a.labelMode || ""), v4: m.author });
+  // no app (the desktop CLI): turn-artifacts composed "<fork id> · CLI client (desktop)" — the id is not a name (forkLabel), and the words are ours to translate
+  if (!m) return a.fork ? T("{v1} · CLI client (desktop)", { v1: forkLabel(a.fork) }) : T(a.label || "");
+  return T("{v1} via {v2} ({v3}) by {v4}", { v1: forkLabel(a.fork), v2: m.app, v3: m.platform + (a.labelMode || ""), v4: forkLabel(m.author) });
 }
 export function wdttArtInput(peer, t) {
   const rb = ((Store.stats[t.node] || {}).wdtt || []).find(w => w && w.iface === t.iface) || {};
@@ -1327,14 +1331,33 @@ export function csqttArtInput(peer, t) {
   const host = (_lh && _lh !== "0.0.0.0" ? _lh : "") || (nrec.endpoint_host || "").trim() || _pub;   // bind wins (see above); never 0.0.0.0 — a dead link
   const port = String(rb.listen || "").split(":").pop() || "46000";
   // Raw VK inputs — csqttArtifact strips/dedupes/caps them into the link's `hashes` (one place, shared with the sub page).
-  return { host, port, password: peer.csqtt_password || "", vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) || [] };
+  return { host, port, password: peer.csqtt_password || "", vk_hash: peer.vk_hash || "", vk_links: userVkLinks(user) || [],
+           line: rb.line || "" };   // the line the server RUNS: 2.5 takes a sealed link (+ a QR), 2.1 the plain one
 }
 // One client's link, by its catalog id: the encoder decides. csqtt apps take the csqtt:// link; anton48's iOS
 // VK TURN Proxy is handed its own vkturnproxy:// one, because it reads only the first VK hash of a csqtt:// link.
 export function csqttClientCfg(inp, cid) {
   const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
-  const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp, cl.encoder || "csqtt") : null;
-  return { cl, art, uri: art && art.text, qr: !!(art && art.qr) };   // the encoder decides — the CSQTT app can't scan yet
+  const art = (typeof SWGTurn !== "undefined" && SWGTurn.csqttArtifact) ? SWGTurn.csqttArtifact(inp, cl.encoder || "csqtt", inp.line) : null;
+  return { cl, art, uri: art && art.text, qr: !!(art && art.qr) };   // the encoder decides; a 2.5 link is a QR, a 2.1 one is not
+}
+// csqttClientCfg for a component: a 2.5 link is sealed with Web Crypto, so it arrives a tick later — `uri` is null and
+// `pending` true until then. Keyed by the payload the link seals (`art.src`), so a stale link is never shown for a new one.
+// `inp` null → nothing (lets a component call it unconditionally, as hooks must be).
+export function useCsqttCfg(inp, cid) {
+  const dc = inp ? csqttClientCfg(inp, cid) : { cl: {}, art: null, uri: null, qr: false };
+  const src = dc.art && dc.art.text == null && dc.art.buildAsync ? (dc.art.src || "") : null;
+  const [sealed, setSealed] = useState({ src: null, uri: null, err: null });
+  useEffect(() => {
+    if (src == null) return;
+    let ok = true;
+    Promise.resolve().then(dc.art.buildAsync).then(u => { if (ok) setSealed({ src, uri: u, err: null }); })
+      .catch(e => { if (ok) setSealed({ src, uri: null, err: (e && e.message) || T("couldn't generate") }); });
+    return () => { ok = false; };
+  }, [src]);
+  if (src == null) return dc;
+  const mine = sealed.src === src;
+  return { ...dc, uri: mine ? sealed.uri : null, pending: !mine, err: mine ? sealed.err : null };
 }
 export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   useStore();
@@ -1343,8 +1366,8 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
   const col = Store.nodeColor(t.node); const dnode = Store.nodeName(t.node);
   const inp = csqttArtInput(peer, t);
   const rb = ((Store.stats[t.node] || {}).csqtt || []).find(x => x && x.iface === t.iface) || {};
-  const clientIds = wdttClientIds(rb.fork || "csqtt");   // same ordering as WDTT: [0] = the fork's own app (CSQTT)
-  const dc = csqttClientCfg(inp, clientIds[0] || "csqttapp");
+  const clientIds = csqttClientIds(rb);   // same ordering as WDTT: [0] = the fork's own app (CSQTT); only apps of the server's line
+  const dc = useCsqttCfg(inp, clientIds[0] || "csqttapp");
   // the link is complete, but only because the panel-wide fallback filled it in — see vkOwnHash
   const vkFallbackHere = !vkOwnHash(peer, (peer.user_id != null) ? (Store.roster.users || {})[peer.user_id] : null);
   // An UNASSIGNED peer has no user, so the half of this note about "their subscription page" and "set a VK link
@@ -1366,7 +1389,7 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
     <div class=${"deploy-body" + (uri && !dc.qr ? " deploy-body-stack" : "")   /* no scanner → the link stacks, same as a WDTT link card */}>
       ${primary === "backup" ? html`<span class="qr-primary qr-backup">${T("Backup")}</span>`
         : primary ? html`<span class="qr-primary">${T("Primary")}</span>` : null}
-      ${!uri ? html`<div class="qr-none">${T("csqtt link unavailable — the server isn't reporting yet.")}</div>`
+      ${!uri ? html`<div class="qr-none">${dc.pending ? T("generating…") : dc.err || T("csqtt link unavailable — the server isn't reporting yet.")}</div>`
         : dc.qr ? html`<${QR} conf=${uri} label=${label}/>`
         : html`<${LinkBox} uri=${uri}/>`}
       ${bare ? null : html`<div class="dmeta">
@@ -1393,6 +1416,12 @@ export function TargetCardCsqtt({ peer: peerProp, t, bare, primary, head }) {
 export function wdttClientIds(fork) {
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
   return turnClientsFor(fork).map(c => c.id).filter(cid => cmap[cid]);
+}
+// The apps a csqtt server can be reached with: its fork's, minus those of another csqtt line — 2.1 and 2.5 do not speak
+// to each other (csqtt_lines in the catalog; absent = 2.1 only). A node that reports no line runs 2.1 and filters nothing.
+export function csqttClientIds(rb) {
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  return wdttClientIds(rb.fork || "csqtt").filter(cid => !rb.line || (cmap[cid].csqtt_lines || ["2.1"]).includes(rb.line));
 }
 export function wdttClientCfg(w, cid, fork, os) {
   const cl = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[cid] || {};
@@ -1476,7 +1505,7 @@ export function WdttConfigSheet({ peer, t, kind }) {
   const rb = ((Store.stats[t.node] || {})[cs ? "csqtt" : "wdtt"] || []).find(x => x && x.iface === t.iface) || {};
   const fork = rb.fork || (cs ? "csqtt" : "amurcanov");
   const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
-  const all = wdttClientIds(fork).map(id => ({ id, ...(cmap[id] || {}) }));
+  const all = (cs ? csqttClientIds(rb) : wdttClientIds(fork)).map(id => ({ id, ...(cmap[id] || {}) }));
   const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
   const osList = _OS_TABS.map(([o]) => o).filter(o => all.some(c => osOf(c).includes(o)));
   const [os, setOs] = useState(osList[0] || "android");
@@ -1507,7 +1536,8 @@ export function WdttConfigSheet({ peer, t, kind }) {
 }
 export function WdttCfgItem({ w, cid, base, fork, os, kind }) {
   const cs = kind === "csqtt";
-  const dc = cs ? csqttClientCfg(w, cid) : wdttClientCfg(w, cid, fork, os); const uri = dc.uri;
+  const dcs = useCsqttCfg(cs ? w : null, cid);   // called either way — a hook
+  const dc = cs ? dcs : wdttClientCfg(w, cid, fork, os); const uri = dc.uri;
   const copied = cs ? T("csqtt link copied") : T("WDTT link copied");
   const [view, setView] = useState(dc.qr ? "qr" : "text");
   const taRef = useRef(null);
@@ -1516,7 +1546,7 @@ export function WdttCfgItem({ w, cid, base, fork, os, kind }) {
   const qrView = dc.qr && view === "qr";
   return html`<div class="turncfg-item">
     <div class="turncfg-head"><span class="tcf-label">${clientHandoff(dc.cl, cid, dc.qr, os)}</span></div>
-    ${!uri ? html`<div class="qr-none">${cs ? T("csqtt link unavailable — the server isn't reporting yet.") : T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
+    ${!uri ? html`<div class="qr-none">${dc.pending ? T("generating…") : dc.err ? dc.err : cs ? T("csqtt link unavailable — the server isn't reporting yet.") : T("WDTT link unavailable — the server isn't reporting yet.")}</div>`
       : qrView ? html`<div class="turncfg-qr"><${QR} conf=${uri} label=${dc.cl.name || cid}/></div>`
       : html`<div class="turncfg-tawrap"><textarea class="turncfg-ta" readonly spellcheck="false" data-noautofocus ref=${taRef} onClick=${e => { e.target.select(); copy(uri, copied); }}>${uri}</textarea>
           <button class="cmd-copy" title=${T("Copy link")} onClick=${() => copy(uri, copied)}><${Ic} i="copy"/></button></div>`}
@@ -1578,7 +1608,7 @@ export function TargetCardWg({ peer: peerProp, t, bare, primary, head }) {
         <div class="row"><span class="k">${T("row|address")}</span><span class="vv">${t.ip || "—"}</span></div>
         <div class="row"><span class="k">${T("row|handshake")}</span><span class="vv">${obs ? seen(obs.handshake_age) : "—"}</span></div>
         <div class="row"><span class="k">${T("row|rate")}</span><span class="vv">${(() => { const xf = tgtXfer(t); return xf ? rateCell(xf.rx_speed, xf.tx_speed) : "—"; })()}</span></div>
-        <div class="row"><span class="k">${T("row|transport")}</span><span class="vv">${lt.viaTurn ? html`${T("via")} <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnLabel(lt.viaTurn))}>${turnLabel(lt.viaTurn)}</span>` : (lt.via === "direct" ? T("tag|direct") : "—")}</span></div>
+        <div class="row"><span class="k">${T("row|transport")}</span><span class="vv">${lt.viaTurn ? html`${T("via")} <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(lt.viaTurn))}>${forkLabel(turnFork(lt.viaTurn))}</span>` : (lt.via === "direct" ? T("tag|direct") : "—")}</span></div>
         ${tps.map(tp => html`<div class="row"><span class="k">${T("turn-proxy")}</span><span class="vv">${tp.listen || "—"}
           ${tp.wrap_key ? html`<${Fragment}> ${T("· key")} <span class="addr">${String(tp.wrap_key).slice(0, 8)}…</span><button class="copybtn" title=${T("Copy wrap key")} onClick=${() => copy(tp.wrap_key, T("Wrap key copied"))}><${Ic} i="copy"/></button></>` : null}</span></div>`)}
       </div>`}

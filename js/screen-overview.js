@@ -16,7 +16,7 @@ import {
   Store, api, bus, useStore,
 } from "./store.js";
 import {
-  turnColor, turnFork, turnForkList, forkNames,
+  turnColor, turnFork, turnForkList, forkNames, forkLabel,
 } from "./turn-catalog.js";
 import {
   targetType, awgDict3, tip3, lastHeard,
@@ -41,7 +41,7 @@ import {
   CAT_UNCAT_COLOR, blockCatLabel, catLabelOf, dashRankColor, fmtCount, isBlockCat,
 } from "./routing.js";
 import {
-  enabledTurnForks, turnEnabled,
+  enabledTurnForkIds, turnEnabled,
 } from "./turn.js";
 import {
   openNodeCreate,
@@ -60,6 +60,15 @@ const html = htm.bind(h);
 
 // `traffic` = this node's client (non-mesh) rx/tx for the SELECTED range — a live rate, or windowed volume
 // when `ranged`. Computed once in Overview (nodeTraffic) so the card agrees with the doughnuts/top-nodes.
+
+// How to read a swg unit's own lines: swg's units log into journals of their own (docs/LOGS-PLAN.md §2), where plain
+// `journalctl -u` shows only systemd's start/stop lines. A NixOS panel has no namespace and no swg-logs.
+const SVC_LOG_SRC = { "swg-panel-server": "panel", "swg-sub": "sub", "swg-netctl": "netctl", "swg-update": "update", "swg-noded": "noded" };
+function svcLogCmd(unit) {
+  const src = SVC_LOG_SRC[String(unit).replace(/\.(service|timer|path)$/, "")];
+  return src && (Store.env || {}).platform !== "nixos" ? "swg-logs " + src + " -e" : "journalctl -u " + unit + " -e";
+}
+
 export function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presence }) {
   const live = Store.recon.nodeStatus[n.id] === "live";
   const snap = Store.stats[n.id];
@@ -523,7 +532,7 @@ export function DashDoughnuts({ selIds, range, hist }) {
   //    ranged = the per-(node,fork) RRD (hist.turn). The fork's interface tags come from its live peers. Turn has
   //    no per-fork history until a node has been reporting, so on a range with no rows it falls back to live. ──
   const turnOn = turnEnabled();
-  const enSet = new Set(turnOn ? enabledTurnForks().map(f => f.id) : []);
+  const enSet = turnOn ? enabledTurnForkIds() : new Set();   // hidden forks included: a proxy a node still runs keeps its traffic here
   const sanF = s => String(s).replace(/[^A-Za-z0-9_]/g, "_");
   const fLive = {};   // fork → { rx, tx, on, tot } aggregated across every node/instance of that fork
   if (turnOn) sPeers.forEach(p => p.targets.forEach(t => {
@@ -563,7 +572,8 @@ export function DashDoughnuts({ selIds, range, hist }) {
   const fCnt = fk => (turnRanged && !_selfFork(fk))
     ? { on: Math.round((fRanged[sanF(fk)] || {}).pon || 0), tot: Math.round((fRanged[sanF(fk)] || {}).ptot || 0) }
     : { on: (fLive[fk] || {}).on || 0, tot: (fLive[fk] || {}).tot || 0 };
-  const forks = [...enSet].filter(fk => { const t = fTraf(fk), c = fCnt(fk); return (t.rx + t.tx) > 0 || c.tot > 0; });
+  const _fo = turnForkList().map(f => f.id), _fi = fk => { const i = _fo.indexOf(fk); return i < 0 ? _fo.length : i; };   // the catalog's operator order
+  const forks = [...enSet].filter(fk => { const t = fTraf(fk), c = fCnt(fk); return (t.rx + t.tx) > 0 || c.tot > 0; }).sort((a, b) => _fi(a) - _fi(b));
   const turnFmt = turnRanged ? fmtBytes : rate;
   const turnCenter = (rx, tx) => { const [d, u] = dlul(rx, tx); const ds = "↓ " + turnFmt(d), us = "↑ " + turnFmt(u);
     const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(11, dfs - 3);
@@ -917,7 +927,7 @@ export function FlowMap2({ selIds, range, hist }) {
   }
   const epPos = id => spos[id] || satpos[id];
   const epR = id => spos[id] ? nR(id) : satR(id);
-  const epName = id => { if (spos[id]) return Store.nodeName(id); const s = sats.find(x => x.id === id) || {}; return s.kind === "turn" ? s.fork : s.label || s.kind || id; };
+  const epName = id => { if (spos[id]) return Store.nodeName(id); const s = sats.find(x => x.id === id) || {}; return s.kind === "turn" ? forkLabel(s.fork) : s.label || s.kind || id; };
   // ── viewBox — fit the frame to the content, then centre it in ONE fixed section (fixed aspect + min frame) so the card
   //    never resizes and sparse diagrams render at a consistent scale instead of being blown up to fill the width. All sizes
   //    (line widths, node/sat dims) are already in reference px, so this single scale carries the whole diagram. ──
@@ -1014,7 +1024,7 @@ export function FlowMap2({ selIds, range, hist }) {
       const occ = flows.filter(f => f.from === hov.id || f.to === hov.id).map(f => { const O = epPos(f.from === hov.id ? f.to : f.from); return O ? Math.atan2(O.y - P.y, O.x - P.x) : null; }).filter(a => a != null);
       spot = bubbleSpot(P, occ, epR(hov.id));
       if (spos[hov.id]) hv = { type: "ep", name: Store.nodeName(hov.id), ib: G.inTot[hov.id], ob: G.outTot[hov.id], sub: "server", col: Store.nodeColor(hov.id) };
-      else { const sm = sats.find(x => x.id === hov.id); if (sm) { const t = satTot[hov.id] || {}; hv = { type: "ep", name: sm.kind === "turn" ? sm.fork : sm.label || sm.kind, ib: t.ib, ob: t.ob, sub: sm.kind === "internet" ? (sm.measured ? "internet · measured" : "internet · estimated") : sm.kind === "turn" ? "turn-proxy" : sm.kind === "exit" ? T("external exit") : sm.kind === "mesh" ? T("fleet nodes not shown") : "clients", col: sm.color }; } }   // i18n-keys: internal fork/service id
+      else { const sm = sats.find(x => x.id === hov.id); if (sm) { const t = satTot[hov.id] || {}; hv = { type: "ep", name: sm.kind === "turn" ? forkLabel(sm.fork) : sm.label || sm.kind, ib: t.ib, ob: t.ob, sub: sm.kind === "internet" ? (sm.measured ? "internet · measured" : "internet · estimated") : sm.kind === "turn" ? "turn-proxy" : sm.kind === "exit" ? T("external exit") : sm.kind === "mesh" ? T("fleet nodes not shown") : "clients", col: sm.color }; } }   // i18n-keys: internal fork/service id
     }
   } else if (hov && hov.fi != null) {
     const f = flows[hov.fi], r = ribbons.find(x => x.idx === hov.fi);
@@ -1112,6 +1122,7 @@ export function ServiceIssueSheet({ issues }) {
   // the generic remedy here meant the operator ran it, saw it succeed, and still had a dead subscription page
   // (Cloudflare 525) with the same alert waiting. Give this issue the remedy that matches it.
   const certOnly = list.every(i => i.id === "subcert");
+  const noUpdate = list.every(i => i.id === "subcert" || i.fix === false);   // nothing here that "Run update" repairs
   const reissue = async () => {
     try { await api.post("/api/access/apply-sub", {}); toast(T("Issuing the subscription certificate…"), "ok"); }
     catch (e) { toast((e && e.message) || T("Failed"), "err"); }
@@ -1124,7 +1135,7 @@ export function ServiceIssueSheet({ issues }) {
         <span class="grow"></span>
         ${list.some(i => i.id === "subcert")
           ? html`<button class="btn btn-primary" onClick=${reissue}>${T("Reissue certificate")}</button>` : null}
-        ${certOnly ? null
+        ${noUpdate ? null
           : html`<button class=${"btn " + (list.some(i => i.id === "subcert") ? "btn-ghost" : "btn-primary")}
                     onClick=${() => { closeModal(); updateHost(); }}>${T("Run update")}</button>`}
       <//>`}>
@@ -1133,11 +1144,13 @@ export function ServiceIssueSheet({ issues }) {
         <div class="svc-head"><span class=${"svc-dot " + i.sev}></span><b>${i.label}</b>
           <span class=${"svc-tag " + i.sev}>${i.sev === "critical" ? T("sev|Critical") : T("sev|Warning")}</span></div>
         <div class="svc-msg">${i.msg}.</div>
-        ${i.unit ? html`<div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>journalctl -u ${i.unit} -e</code></div>`
+        ${i.unit ? html`<div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>${svcLogCmd(i.unit)}</code></div>`
+          : i.fix === false ? html`<div class="svc-cmd"><code>mokutil --sb-state</code> · <code>modprobe amneziawg</code></div>`
           : html`<div class="svc-cmd"><code>dkms status</code> · <code>modprobe amneziawg</code></div>`}
       </div>`)}
       <div class="svc-foot">${certOnly
         ? T("The subscription service is installed — what is missing is its certificate, which only a reissue can create. “Run update” cannot fix this one.")
+        : noUpdate ? T("An update cannot fix this — the key has to be enrolled once at the box's console, after a reboot. Until then awg interfaces stay on the userspace datapath, if it is installed.")
         : T("“Run update” reinstalls anything missing and re-enables the service — the same repair the Update button runs. A service that keeps crashing needs the logs above.")}</div>
     </div>
   <//>`;
@@ -1227,7 +1240,10 @@ export function Protection({ range, bs }) {
   const cov = (d && d.coverage) || {};
   const mech = cov.mechanisms || {};
   const mechKeys = Object.keys(mech);
-  const hasCov = (cov.domains || 0) + (cov.threat_ips || 0) + (cov.categories || 0) + mechKeys.length > 0;
+  // lists the panel could not hand a node its caps for (no provider catalog, an older node): they filter nothing there yet,
+  // so they are said as waiting — never counted as filtering (q189 D12-OBS-1)
+  const waiting = Array.isArray(cov.waiting) ? cov.waiting : [];
+  const hasCov = (cov.domains || 0) + (cov.threat_ips || 0) + (cov.categories || 0) + mechKeys.length + waiting.length > 0;
   const torrents = (d && d.torrents) || 0, scan = (d && d.scan) || 0, reach = (d && d.reach) || 0, blocked = (d && d.blocked) || 0;
   const mechd = (d && d.mech) || 0;   // packets the FREE port rules dropped (SMTP / QUIC / torrent port-hint)
   const who = (d && d.who) || {};   // per-metric attribution {scan:[{user,peers,count}], …} → the hover "who" bubble
@@ -1323,6 +1339,8 @@ export function Protection({ range, bs }) {
         </span>
         ${mechKeys.length ? html`<span class="prot-mech">${mechKeys.map(m => html`<span class="prot-chip" key=${m}>${MECH_LABEL[m] || m}${mech[m] > 1 ? html` <i>×${mech[m]}</i>` : ""}</span>`)}</span>` : null}
       </div>` : null}
+      ${waiting.map(w => html`<div class="hint warnish" style="margin-top:8px" key=${w.label}>${T("{v1}: not filtered yet on {v2} — waiting for the provider catalog, or for this node's update.",
+        { v1: w.label, v2: (w.nodes || []).join(", ") })}</div>`)}
     </div>
   <//>`;
 }

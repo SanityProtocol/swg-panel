@@ -19,7 +19,10 @@
 # (see the stale-device sweep in node-entrypoint.sh). If you want it anyway, it is
 # a host-side decision: install amneziawg-dkms there and recreate the container.
 
-FROM public.ecr.aws/docker/library/golang:1.25-bookworm AS build
+# The official images come from AWS ECR Public's Docker Hub mirror; CI takes them from Google's (mirror.gcr.io/library)
+# when ECR cannot serve one — for two days in 2026-10 its golang:1.25-bookworm index named an amd64 manifest it no longer had.
+ARG BASE_REGISTRY=public.ecr.aws/docker/library
+FROM ${BASE_REGISTRY}/golang:1.25-bookworm AS build
 # The SAME pinned upstream ref as bare metal (lib/common.sh AWG_GO_TAG), built static. This image uses its own Go, so
 # it is the same source as the published bare-metal asset, not the same bytes (that one: forks/amneziawg-go/build.sh).
 ARG AWG_GO_REF=v3.1.20260828
@@ -39,7 +42,7 @@ RUN for i in 1 2 3 4 5; do git clone --depth=1 https://github.com/amnezia-vpn/am
  && make -C amneziawg-tools/src install DESTDIR=/out PREFIX=/usr WITH_BASHCOMPLETION=no WITH_SYSTEMDUNITS=no WITH_WGQUICK=yes \
  && test -x /out/usr/bin/awg && test -x /out/usr/bin/awg-quick
 
-FROM public.ecr.aws/docker/library/python:3.12-slim
+FROM ${BASE_REGISTRY}/python:3.12-slim
 ARG TARGETARCH=amd64
 # util-linux = nsenter (host_sh helper), curl + the static docker CLI = drive host turn-proxy units
 # via the mounted docker.sock when TURN_MANAGE=panel (B1). The daemon is never installed — client only.

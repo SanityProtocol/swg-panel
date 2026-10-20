@@ -29,6 +29,7 @@ Run: python3 tests/add_only_marking_selftest.py        (0 = pass)
      --perturb                                                    plant them all → RED
 """
 import importlib.machinery, importlib.util, json, os, re, subprocess, sys, tempfile, textwrap
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

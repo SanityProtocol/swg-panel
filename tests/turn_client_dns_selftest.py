@@ -162,8 +162,8 @@ for sid, e in P.TURN_SERVERS.items():
     if e.get("kind") in ("wdtt", "csqtt"):
         check("%s has client_dns" % sid, bool(N._turn_dns({"dns": e.get("client_dns")})), e.get("client_dns"))
 psrc = open(PANEL, encoding="utf-8").read()
-check("wdtt_cfg publishes dns + dns_orig", '"raw_port", "raw_iface", "raw_addr", "exit_id", "reach", "dns", "dns_orig") if k in ov}' in psrc)
-check("csqtt_cfg publishes dns + dns_orig", '"title", "params", "exit_id", "reach", "dns", "dns_orig") if k in ov}' in psrc)
+check("wdtt_cfg publishes dns + dns_orig", '"raw_port", "raw_iface", "raw_addr", "exit_id", "reach", "dns", "dns_orig"' in psrc)
+check("csqtt_cfg publishes dns + dns_orig", '"title", "params", "exit_id", "reach", "dns", "dns_orig"' in psrc)
 
 # ── 9 ─────────────────────────────────────────────────────────────────────────────────────────────────────
 print("9  panel / node / SPA agree")
@@ -290,8 +290,8 @@ _binp = os.path.join(TMP, "swapbin"); open(_binp, "w").close()
 N.host_sh = lambda c, *a, **k: (_cmds.append(c), _R())[1]
 N.NODE_KIND = "baremetal"
 N._csqtt_fetch_bin = lambda inst, dest, *a, **k: ""
-N._csqtt_bin_shared = lambda: _binp
-N._csqtt_write_ver = lambda v: None
+N._csqtt_bin_shared = lambda line=N.CSQTT_DEFAULT_LINE: _binp     # (line) since the csqtt versions — a stub with
+N._csqtt_write_ver = lambda v, line=N.CSQTT_DEFAULT_LINE: None     # the old arity crashed this section from 389fd41 on
 N._csqtt_verify = lambda i: (_ver.append(i), "")[1]
 N._csqtt_load = lambda: {"csqtt1": {"stopped": True}, "csqtt2": {}}
 _e = N._csqtt_update_binary({"iface": "csqtt1"}, "2.1.9-4", ["csqtt1", "csqtt2"])

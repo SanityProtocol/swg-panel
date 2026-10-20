@@ -149,6 +149,12 @@
     };
   }
 
+  // ── a fork's NAME for an end user ({fork} in a server-name template): each page hands its catalog's (q189 HE-8 —
+  // "samosvalishe 56005" was the raw id of a fork renamed hack-diaz). Identity until a page sets it.
+  var forkName = function (f) { return f; };
+  // ── the CLI builds a fork's catalog offers (its cli_authors, native first) — each page hands its own; none = the table ──
+  var cliAuthorsOf = function () { return null; };
+
   // ── fork id from a service name (vk-turn-proxy-<fork>-<port>) ──
   function label(service) {
     var s = (service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn";
@@ -415,7 +421,7 @@
   var CLIENT_META = {
     wingsv:   { app: "WINGS V",        platform: "Android", author: "WINGS-N" },
     anton48:  { app: "VK TURN Proxy",  platform: "iOS",     author: "anton48" },
-    freeturn: { app: "FreeTurn",       platform: "Android", author: "samosvalishe" },
+    freeturn: { app: "FreeTurn",       platform: "Android", author: "samosvalishe" },   // a fork id, as the others: artLabel names it (forkLabel)
     vktgz:    { app: "VK TURN Proxy",  platform: "Android", author: "MYSOREZ" }
   };
   // A server name may be a TEMPLATE. The sheet that sets it is per (fork, OS), so one literal string names every
@@ -454,7 +460,7 @@
       if (i > 0 && l.indexOf(":") === i) { host = l.slice(0, i); port = l.slice(i + 1); }
     }
     return tpl.replace(/\{(fork|host|port)\}/g, function (_m, k) {
-      return k === "fork" ? String(fork || "") : (k === "host" ? host : port);
+      return k === "fork" ? String(forkName(String(fork || "")) || fork || "") : (k === "host" ? host : port);
     }).trim();
   }
 
@@ -478,7 +484,26 @@
     { hint: "Import the {v1} core (client-android-arm64 from the {v1} releases) into the VK TURN Proxy app, then scan the QR (Profiles → Import) or paste the VKTGZ: text — the VK call link + endpoint ride inside." },
   ];
 
+  // The address a client dials for this proxy is `tp.listen` — what the operator entered, which the node binds when it
+  // lands on the box and otherwise listens on every address for. A WILDCARD there (a proxy set up on 0.0.0.0) names no
+  // host at all, so the host comes from the interface's own Endpoint instead — the one its plain WireGuard config
+  // carries (interface override → the node's ingress address → its reported IP), with the proxy's port. With no usable
+  // Endpoint the listen is left as it is.
+  var DIAL_WILD = ["", "0.0.0.0", "::", "[::]", "*"];
+  function dialListen(tp, baseConf) {
+    var l = String((tp && tp.listen) || ""), i = l.lastIndexOf(":");
+    if (i < 0 || DIAL_WILD.indexOf(l.slice(0, i)) < 0) return tp;
+    var ep = (String(baseConf || "").match(/^[ \t]*Endpoint[ \t]*=[ \t]*(\S+)/m) || [])[1] || "";
+    var j = ep.lastIndexOf(":"), eh = j >= 0 ? ep.slice(0, j) : ep;
+    if (DIAL_WILD.indexOf(eh) >= 0) return tp;
+    var o = {};
+    for (var k in tp) if (Object.prototype.hasOwnProperty.call(tp, k)) o[k] = tp[k];
+    o.listen = eh + ":" + l.slice(i + 1);
+    return o;
+  }
+
   function artifact(baseConf, tp, vkLink, cs, vkLinks, asClient) {
+    tp = dialListen(tp, baseConf);
     var fork = label(tp.service);
     var enc = asClient || nativeEncoder(fork);            // which client app's encoder to run
     cs = cs || {};                                        // client (app) settings for THIS client (admin-chosen; defaults applied per reader)
@@ -574,7 +599,7 @@
       // carries the proxy endpoint, the rtpopus obfuscation key, and the whole WG config.
       return { fork: fork, app: "FreeTurn", label: clientLabel(fork, "freeturn"), ext: "txt", uri: true, qr: true, vkMissing: vkMissing, enc: enc,
         vk: true, vkLinks: vkList, vkEmbedded: true,   // the freeturn:// link CARRIES the call link in `vk` (verified on a live relay), so the sub must not ask the reader to paste it too
-        hint: "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.",
+        hint: "Scan the QR with the FreeTurn app (hackdiaz-dev/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.",
         text: freeturnLink(tp, baseConf, vkList, cs, fork) };
     }
     // sidecar forks (cacggghp / Moroka8 / unknown): WG dials the local client on :9000
@@ -586,8 +611,11 @@
     // you), and samosvalishe's -obf-profile even reaches rtpopus2/3 relays the Moroka8 CLI (v1 -wrap only) can't. Each
     // author carries the command in ITS OWN flag syntax; a plain fork (empty key) just drops the obf flag. Compat matrix.
     var rawExtra = String((cs || {}).rawFlags || "").split(/[\r\n]+/).map(function (s) { return s.trim(); }).filter(Boolean).join(" ");   // admin-added extra CLI flags
-    var authorForks = ({ Moroka8: ["Moroka8", "samosvalishe"], samosvalishe: ["samosvalishe", "Moroka8"],
-      anton48: ["samosvalishe", "Moroka8"], MYSOREZ: ["MYSOREZ"] })[fork] || ["samosvalishe"];   // plain forks + WINGS: the universal free-turn CLI (plain)
+    // the page's catalog decides (its cli_authors: a hidden fork's build is withdrawn from the visible forks — operator,
+    // 2026-10-14); this table is only the fallback for a page without one
+    var served = cliAuthorsOf(fork);
+    var authorForks = (Array.isArray(served) && served.length) ? served : (({ Moroka8: ["Moroka8", "samosvalishe"], samosvalishe: ["samosvalishe", "Moroka8"],
+      anton48: ["samosvalishe", "Moroka8"], MYSOREZ: ["MYSOREZ"] })[fork] || ["samosvalishe"]);   // plain forks + WINGS: the universal free-turn CLI (plain)
     function authorCmd(a) {
       var link = (a === "MYSOREZ") ? " -vk " : (a === "samosvalishe") ? " -links " : " -vk-link ", obf = "";
       if (tp.wrap_key) {
@@ -707,7 +735,42 @@
   // Format is authoritative from the app's own CsqttLinkTest.kt: host = server IP (IPv6 gets bracketed by the app on
   // read, so we just URL-encode it), peer = the DTLS listen port, password URL-encoded, hashes = VK call hashes joined
   // by '+' (a literal '+' inside a hash is %2B-escaped), max 6, omitted when there are none. `c` = {host,port,password,hashes[]}.
-  function csqttArtifact(c, asClient) {
+  // ── csqtt 2.5+ link: the same connect payload, SEALED. The 2.5 app accepts only this form (it rejects the plain
+  // csqtt://connect?… link 2.1 takes): csqtt:// + base64url(iv ‖ AES-256-GCM(payload) ‖ tag), the key SHA-256 of a fixed
+  // seed, the iv the first 12 bytes of HMAC-SHA256(key, payload) — so one payload is one link. Mirrors the 2.5 server's
+  // own encrypt_csqtt_link (rust-server/web_panel.rs) and the app's decoder ("csqtt-chiper-key", AES/GCM/NoPadding).
+  // The payload's escaping is the server's url_encode: everything but A–Z a–z 0–9 - _ . ~ as %XX (encodeURIComponent
+  // would leave !'()* bare). Web Crypto is async, so this artifact is a buildAsync one.
+  var CSQTT_LINK_SEED = "csqtt-chiper-key";   // sic — the authors' spelling, byte for byte
+  function csqttUrlEnc(v) {
+    var b = new TextEncoder().encode(String(v == null ? "" : v)), out = "";
+    for (var i = 0; i < b.length; i++) {
+      var x = b[i];
+      out += ((x >= 48 && x <= 57) || (x >= 65 && x <= 90) || (x >= 97 && x <= 122) || x === 45 || x === 95 || x === 46 || x === 126)
+        ? String.fromCharCode(x) : "%" + (x < 16 ? "0" : "") + x.toString(16).toUpperCase();
+    }
+    return out;
+  }
+  function csqttSeal(payload) {
+    var sub = typeof crypto !== "undefined" && crypto.subtle;
+    if (!sub) return Promise.reject(new Error("this browser can't build a csqtt 2.5 link (no Web Crypto — open the page over HTTPS)"));
+    var enc = new TextEncoder(), pt = enc.encode(payload);
+    return sub.digest("SHA-256", enc.encode(CSQTT_LINK_SEED)).then(function (kh) {
+      return Promise.all([sub.importKey("raw", kh, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+                          sub.importKey("raw", kh, { name: "AES-GCM" }, false, ["encrypt"])]);
+    }).then(function (ks) {
+      return sub.sign("HMAC", ks[0], pt).then(function (mac) {
+        var iv = new Uint8Array(mac).slice(0, 12);
+        return sub.encrypt({ name: "AES-GCM", iv: iv }, ks[1], pt).then(function (ct) {
+          var all = new Uint8Array(12 + ct.byteLength); all.set(iv); all.set(new Uint8Array(ct), 12);
+          var bin = ""; for (var i = 0; i < all.length; i++) bin += String.fromCharCode(all[i]);
+          return "csqtt://" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        });
+      });
+    });
+  }
+  // `line` — the csqtt line the server runs ("" / "2.1" = the plain link every 2.1 app takes; 2.5 = the sealed one).
+  function csqttArtifact(c, asClient, line) {
     c = c || {};
     // TURN-credential hashes: the peer's own vk_hash + every VK call link on the user (each stripped to its bare
     // hash), deduped, max 6. One place — both the operator app and the sub page pass raw {vk_hash, vk_links} and
@@ -737,6 +800,15 @@
     }
     hs = hs.slice(0, VK_LINK_CAPS.csqtt);
     var vkMissing = hs.length === 0;   // VK hashes are the TURN credential; a link without them only works for a self-test
+    if (line && line !== "2.1") {
+      // 2.5: the sealed link, and a QR — the 2.5 app scans one. `src` is the payload it seals: what the link IS, for a
+      // caller that must tell two links apart before the async seal resolves.
+      var p25 = "connect?v=2&host=" + csqttUrlEnc(c.host) + "&peer=" + (parseInt(c.port, 10) || 46000)
+        + (c.password ? "&password=" + csqttUrlEnc(c.password) : "") + (hs.length ? "&hashes=" + hs.map(csqttUrlEnc).join("+") : "");
+      return { fork: "csqtt", app: "CSQTT", label: "CSQTT (csqtt://connect)", ext: "txt", uri: true, qr: true,
+        vkMissing: vkMissing, hint: "Open the csqtt:// link in your csqtt app, or paste it in.", src: p25,
+        buildAsync: function () { return csqttSeal(p25); } };
+    }
     var qp = ["v=2", "host=" + encodeURIComponent(String(c.host || "")),
               "peer=" + (parseInt(c.port, 10) || ""), "password=" + encodeURIComponent(String(c.password || ""))];
     if (hs.length) qp.push("hashes=" + hs.map(function (h) { return h.replace(/\+/g, "%2B"); }).join("+"));
@@ -757,5 +829,6 @@
   // key can match — the fork and author are proper nouns. Expose the PARTS so the panel can put them through a
   // placeholder string instead, the way it already does for every other composed sentence.
   function clientMeta(enc) { var m = CLIENT_META[enc]; return m ? { app: m.app, platform: m.platform, author: m.author } : null; }
-  root.SWGTurn = { vkLinkCaps: VK_LINK_CAPS, artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
+  root.SWGTurn = { setForkLabel: function (fn) { if (typeof fn === "function") forkName = fn; },
+    setCliAuthors: function (fn) { if (typeof fn === "function") cliAuthorsOf = fn; }, vkLinkCaps: VK_LINK_CAPS, artifact: artifact, clientMeta: clientMeta, fork: label, label: label, nativeEncoder: nativeEncoder, encoderFork: encoderFork, amneziaVpn: amneziaVpnLink, wdttArtifact: wdttArtifact, csqttArtifact: csqttArtifact, stripVkUrl: stripVkUrl };
 })(typeof window !== "undefined" ? window : this);

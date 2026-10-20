@@ -7,8 +7,8 @@
               "blackmatrix7", "Loyalsoldier", "Re-filter"]
   },
   "fork_authors": {
-    "_why": "The handle a turn-proxy fork is published under. These are how an operator finds the build on GitHub.",
-    "names": ["amurcanov", "anton48", "ildarmaga", "samosvalishe", "cacggghp", "Ivan4537",
+    "_why": "The name a turn-proxy fork is published or shown under — its GitHub handle, or the catalog label where the two differ (hack-diaz publishes as hackdiaz-dev). An operator finds the build by them.",
+    "names": ["amurcanov", "anton48", "ildarmaga", "samosvalishe", "hackdiaz-dev", "hack-diaz", "cacggghp", "Ivan4537",
               "Moroka8", "SpaceNeuroX", "MYSOREZ", "XXcipherX", "WINGS-N"]
   },
   "wire_names": {

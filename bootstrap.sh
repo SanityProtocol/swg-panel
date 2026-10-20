@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # bootstrap.sh — fetch swg-panel from GitHub and run the right installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)"
 #       → interactive: pick installation method (bare-metal/docker) + role (master/host/node).
-#   …| sudo bash -s -key NODE_KEY -host https://PANEL    → add a node (a key implies node; asks method).
-#   …| sudo bash -s docker host                          → explicit method + role (skips the prompts).
-#   …| sudo bash -s update                               → update an install in place.
-#   …| sudo bash -s uninstall                            → guided removal.
+#   sudo bash -c "$(curl …)" -- -key NODE_KEY -host https://PANEL   → add a node (a key implies node; asks method).
+#   sudo bash -c "$(curl …)" -- docker host                         → explicit method + role (skips the prompts).
+#   sudo bash -c "$(curl …)" -- update                              → update an install in place.
+#   sudo bash -c "$(curl …)" -- uninstall                           → guided removal.
+#   (Not `curl … | sudo bash -s …`: sudo-rs, Ubuntu 26.04's sudo, runs a piped script in the background of the terminal,
+#   and its first question freezes it — see _swg_tty_fg below. Already root: drop the `sudo`.)
 #
 # Method (bare-metal | docker) × Role (master | host | node) — each is asked only if not already
 # given. A bare role word (host/master/node) means bare-metal; prefix `docker` for the docker path.
@@ -20,7 +22,32 @@
 #                       OTHER method's install: convert it, keep + re-install it as it is, or stop. Unattended runs.
 #
 # Override the source with SWG_REPO / SWG_REF (branch or tag). Anything else is passed through.
+
+# ⚠️ THE WHOLE SCRIPT IS ONE BRACE GROUP, closed on the last line. bash parses a group completely before it runs any of
+# it, so a download cut off mid-way — `bash -c "$(curl …)"` or `curl … | bash`, either way — is a syntax error that runs
+# NOTHING, instead of the first half of an installer.
+{
 set -euo pipefail
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default) — no terminal at all, or the background under sudo-rs.
+# ⚠️ NOT UNDER CLASSIC SUDO. It backgrounds the script the same way (≥ 1.9.13 with use_pty: Ubuntu 24.04, Debian 12/13) but
+# brings it to the foreground at that first read, so `curl … | sudo bash` asked its questions there, as in 1.8.8 — taking
+# every background start as unreadable took them all away (1.8.9 qualification IN-2). Which sudo it is: the first sudo up
+# the chain, by its binary's path (sudo-rs, cargo), else by its --version. No sudo above (a job the operator put in the
+# background): the terminal, as ever. /proc/<pid>/stat after the command name: state ppid pgrp session tty_nr tpgid.
+# Without /proc: as before.
+_swg_tty_fg(){ local s f p e i IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"
+  [ "${f[2]:-}" = "${f[5]:-}" ] && return 0; [ "${f[5]:-0}" -gt 0 ] 2>/dev/null || return 1
+  for i in 1 2 3 4; do p="${f[1]:-0}"; [ "$p" -gt 1 ] 2>/dev/null || return 0; e="$(readlink "/proc/$p/exe" 2>/dev/null)" || e=""
+    case "${e##*/}" in sudo*) case "$e" in *sudo-rs*|*cargo*) return 1;; esac
+      case "$("$e" --version 2>/dev/null)" in sudo-rs*) return 1;; esac; return 0;; esac
+    { read -r s <"/proc/$p/stat"; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; done; return 0; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+SWG_ARGS=("$@")   # as given — the command the warning below hands back is built from them
 # Survive being launched from a directory that no longer exists — common right after an uninstall
 # removed it (the shell stays "in" the deleted dir, getcwd() fails, and git/curl refuse to run).
 # Step into a guaranteed-present directory before doing anything.
@@ -149,7 +176,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" how="${5:-}" v o rc sc pr i
     # set -e that killed the whole script right here: exit 1, not one word on stdout or stderr. Fall back to
     # stdout the way _pnl above already does, so the refusal below is what speaks instead.
     printf '%s' "$pr" 2>/dev/null >/dev/tty || printf '%s' "$pr"
-    if read -r v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
+    if read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; fi
     # REFUSE before the default is applied. This used to sit AFTER `v="${v:-$d}"`, where it could never fire:
     # $d is always a valid option, so the match loop returned the default and went home. A default that answers
     # itself is not a fallback but a decision — this is the prompt that picks bare-metal vs docker, master vs
@@ -172,7 +199,7 @@ ask_yn(){ local p="$1" d="$2" var="$3" v pr   # ask_yn <prompt> <y|n default> <v
   # answered Y to whatever came first. On a box with an interrupted convert that is "Resume the conversion
   # now" [Y/n], which exec's convert.sh: an unattended re-run would have resumed a conversion nobody asked to
   # resume. There is no flag for these, so the only honest remedy is a terminal.
-  read -r v 2>/dev/null </dev/tty || die "no interactive input for '$p' — run this from a terminal (e.g. ssh -t), so it is not answered for you"
+  read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}" || die "no interactive input for '$p' — run this from a terminal (e.g. ssh -t), so it is not answered for you"
   v="${v:-$d}"
   case "$v" in [Yy]*) printf -v "$var" yes;; *) printf -v "$var" no;; esac; _pnl; }
 
@@ -205,6 +232,21 @@ done
 
 [ "$(id -u)" = 0 ] || die "run with sudo (it installs users, units and certs)"
 
+# ⚠️ THE TERMINAL CANNOT BE READ (see _swg_tty_fg above): say so before anything asks, with the command that can — the
+# same arguments in the one form that works under sudo-rs and classic sudo alike (sudo's stdin is the terminal, not a pipe).
+if [ "$SWG_TTY" = /dev/null ] && { : </dev/tty; } 2>/dev/null; then
+  _bs_url="<this bootstrap.sh URL>"
+  [ "$REPO" = https://github.com/SanityProtocol/swg-panel ] && _bs_url="https://raw.githubusercontent.com/SanityProtocol/swg-panel/${REF:-main}/bootstrap.sh"
+  # A ref other than main rides INSIDE the script string: sudo resets the environment, so SWG_REF in front of it would be
+  # dropped, and the URL does not reach the script either — the dev bootstrap would install main (see _ref_from_url).
+  _bs_pre=""; [ -n "${REF:-}" ] && [ "${REF:-}" != main ] && _bs_pre="SWG_REF=$(printf '%q' "$REF"); "
+  _bs_cmd="sudo bash -c \"$_bs_pre\$(curl -fsSL $_bs_url)\" --"
+  for _a in ${SWG_ARGS[@]+"${SWG_ARGS[@]}"}; do _bs_cmd+=" $(printf '%q' "$_a")"; done
+  warn "this terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults, and one that has none stops the run. To answer them, run instead:"
+  echo "    $_bs_cmd" >&2
+  export SWG_TTY_WARNED=1
+fi
+
 # ── refuse on a declaratively managed host, BEFORE the fetch ──
 # The installers this dispatches to carry the real guard (refuse_on_declarative_host, lib/common.sh)
 # and would refuse anyway — but only after this script has downloaded the repo, walked the operator
@@ -221,6 +263,45 @@ if [ -e /etc/NIXOS ] || grep -qsE '^ID="?nixos"?[[:space:]]*$' /etc/os-release; 
     Import the module from this repo and declare it instead — the panel's Nodes screen prints the
     whole services.swg-node block beside the enrolment token. See nix/README.md; nix/adopt.sh moves
     an install that is already on this box, identity intact."
+fi
+
+# ── an update runs OUTSIDE swg-noded's sandbox ──
+# ⚠️ A 1.8.8 swg-noded starts the panel's update with `systemd-run --scope`: another cgroup, but still swg-noded's mount
+# namespace — ProtectSystem=true leaves /usr read-only (swg-logs, the AmneziaWG source patch, apt's package follow: EROFS,
+# dpkg left half-installed) and PrivateTmp's /tmp goes away when the update restarts swg-noded (mktemp fails) — and the
+# run still said "Update complete" (1.8.9 qualification IN-13). This build's swg-noded starts it as a service, but on the
+# day a box updates FROM 1.8.8 the launcher is the old one, and the first new thing it runs is this script. So an update
+# that finds itself in such a sandbox runs this script again — same arguments, same environment — as a transient service
+# PID 1 starts (the host's namespaces), and exits with its code; its output goes where this run's goes (--pipe), so the
+# old launcher's verdict and output tail stay true. Once (SWG_UPDATE_HOP). A namespace that only routes the journal
+# (swg-update.service's LogNamespace=) is no sandbox: /usr writable, the host's /tmp. No systemd-run: said, and on in place.
+_swg_sandboxed(){ local s p
+  s="$(readlink /proc/self/ns/mnt 2>/dev/null)" && p="$(readlink /proc/1/ns/mnt 2>/dev/null)" && [ -n "$p" ] && [ "$s" != "$p" ] || return 1
+  [ -w /usr ] || return 0
+  [ "$(stat -Lc %d:%i /tmp 2>/dev/null)" != "$(stat -Lc %d:%i /proc/1/root/tmp 2>/dev/null)" ]; }
+if [ "$ACTION" = update ] && [ -z "${SWG_UPDATE_HOP:-}" ] && _swg_sandboxed; then
+  _src=""; case "$0" in /*) if [ -f "$0" ]; then _src=file; fi;; esac   # `bash <file>` (1.8.8's launcher), or `bash -c <text>`
+  if [ -z "$_src" ] && [ -n "${BASH_EXECUTION_STRING:-}" ]; then _src=text; fi
+  if [ -n "$_src" ] && [ -d /run/systemd/system ] && command -v systemd-run >/dev/null 2>&1 \
+     && _hop="$(mktemp -d /run/swg-update-hop.XXXXXX)"; then
+    umask 077
+    if [ "$_src" = file ]; then cp "$0" "$_hop/bootstrap.sh"; else printf '%s\n' "$BASH_EXECUTION_STRING" > "$_hop/bootstrap.sh"; fi
+    # the service starts with PID 1's environment: this run's (the panel's turn mirror, a proxy, SWG_REF) fills in what it
+    # lacks — from a file only root reads, not --setenv: a unit's environment is readable by every local user over D-Bus
+    { for _k in $(compgen -e); do
+        case "$_k" in INVOCATION_ID|JOURNAL_STREAM|NOTIFY_SOCKET|SYSTEMD_EXEC_PID|PWD|OLDPWD|SHLVL|_) continue;; esac
+        if [ -n "${!_k+x}" ]; then printf '[ -n "${%s+x}" ] || export %s=%q\n' "$_k" "$_k" "${!_k}"; fi
+      done
+      printf 'export SWG_UPDATE_HOP=1\nbash %q' "$_hop/bootstrap.sh"; printf ' %q' ${SWG_ARGS[@]+"${SWG_ARGS[@]}"}
+      printf '\nrc=$?; rm -rf %q; exit "$rc"\n' "$_hop"; } > "$_hop/run"
+    info "this update runs inside swg-noded's sandbox (/usr read-only, a private /tmp) — running it again as a service, outside it"
+    _rc=0
+    systemd-run --unit swg-self-update --collect --wait --pipe --quiet \
+      --description "swg self-update (run again outside swg-noded's sandbox)" bash "$_hop/run" || _rc=$?
+    rm -rf "$_hop"
+    exit "$_rc"
+  fi
+  warn "this update runs inside a service's sandbox (/usr read-only or a private /tmp) and cannot be run again outside it here — going on in place"
 fi
 
 # ── fetch the repo ──
@@ -308,6 +389,7 @@ if printf '%s' "$REF" | grep -cE '^[0-9a-f]{7,40}$' >/dev/null; then
   # a ref goes into a URL and a shell command — the same character set swg-noded accepts for update_ref, or nothing
   printf '%s' "$_track" | grep -cE '^[A-Za-z0-9._/-]{1,100}$' >/dev/null || _track=""
   export SWG_REF="${_track:-main}"
+  export SWG_COMMIT="$REF"   # …and the commit itself: on Docker the containers do not follow it, and that is said (SOAK-3)
   info "installing commit $REF — this box's Update button keeps following $(b "$SWG_REF")"
 elif need git; then
   if GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"; then
@@ -659,7 +741,7 @@ PY
     while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); _salv_block "$_i" "$_t" "$_u" "$_s"; done <<EOF2
 $_uniq
 EOF2
-    printf "  Number to re-enroll with (or $(b Enter) to skip and set up a new node — you supply a token, panel → Nodes or -key): "; _pick=""; read -r _pick 2>/dev/null </dev/tty || { _pick=""; echo "(no terminal — skipped)"; }
+    printf "  Number to re-enroll with (or $(b Enter) to skip and set up a new node — you supply a token, panel → Nodes or -key): "; _pick=""; read -r _pick 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _pick=""; echo "(no terminal — skipped)"; }
     if printf '%s' "$_pick" | grep -cE '^[0-9]+$' >/dev/null; then
       _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
       salv_tok="$(printf '%s' "$_line" | cut -f1)"; salv_url="$(printf '%s' "$_line" | cut -f2)"; salv_src="$(printf '%s' "$_line" | cut -f3-)"
@@ -714,3 +796,4 @@ case "$METHOD-$ROLE" in
 esac
 info "running $SCRIPT"
 run_script "$SCRIPT" ${PASS[@]+"${PASS[@]}"}
+}   # the end of the brace group opened at the top: reaching this line is how bash knows the download is whole

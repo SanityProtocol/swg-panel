@@ -8,8 +8,9 @@ change a published port. This is the Docker equivalent: it drains the SAME reque
 queue the panel already writes (drop-in compatible — the panel needs no change) and
 maps each verb to a `docker compose` action on the host.
 
-Polled by swg-netctl-docker.timer, NOT a .path unit: a host inotify watch never
-sees the container's write to a bind-mounted queue file, so we poll the dir.
+Started by swg-netctl-docker.path (DirectoryNotEmpty: the host's inotify sees the
+container's write — a bind mount is the same inode; measured, 8 of 8 within 60 ms)
+and by swg-netctl-docker.timer every 10 s, which covers a watch that died.
 
 Request  (queue/<id>.json):  {"id","verb","args":[...],"nonce"}   — written by the panel
 Result   (status/<id>.json): {"status":"ok"|"error","message":...} — read by the panel's _netctl_wait
@@ -513,6 +514,26 @@ def _handle(verb, args):
     return True, "no-op (%s handled in-container)" % verb   # cert verbs etc.
 
 
+def _sweep_queue():
+    """Clear what is in the queue and is not a request — the way bare-metal swg-netctl clears it (process_queue): everything
+    but a `.json` and a `.json.tmp` younger than a minute (the panel writing one; a write takes milliseconds, so an older
+    one was abandoned — an enqueue that failed after creating it). Left there, any of it keeps the .path unit's
+    DirectoryNotEmpty true, which starts this drainer again after every run, and its idle gate sees work on every tick."""
+    now = time.time()
+    for name in os.listdir(QUEUE):
+        if name.endswith(".json"):
+            continue
+        p = os.path.join(QUEUE, name)
+        with contextlib.suppress(OSError):
+            st = os.lstat(p)                                  # never follows a symlink: unlink removes the link itself
+            if name.endswith(".json.tmp") and now - st.st_mtime <= 60:
+                continue
+            if not stat.S_ISDIR(st.st_mode):
+                os.unlink(p)
+            elif shutil.rmtree.avoids_symlink_attacks:
+                shutil.rmtree(p)
+
+
 def main():
     if not os.path.isdir(QUEUE):
         return
@@ -526,6 +547,7 @@ def main():
         _qst = os.stat(QUEUE)
     except OSError:
         return
+    _sweep_queue()
     for name in sorted(os.listdir(QUEUE)):
         if not name.endswith(".json"):
             continue

@@ -14,13 +14,30 @@
  * browser, which proves a behaviour once and prevents nothing. See tests/spa_env.mjs for what the harness
  * is and — more importantly — what it deliberately is not.
  *
+ * …and each group holds what its heading says: a WireGuard profile the operator pasted is imported too, but it is no WARP
+ * account — it was listed under "Exit via WARP" (OE, 1.8.9) and now has a group of its own, named like the button that adds it.
+ *
  * Run: node tests/spa_exitlist_selftest.mjs      --perturb  drops `devices` from the interface picker, the
- * way it shipped, and expects the lists to disagree.
+ * way it shipped, and expects the lists to disagree.  --perturb groups  puts the pasted profile back under WARP.
  */
-import { spa, check, done, FAILS } from "./spa_env.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { spa, check, done, FAILS, ROOT } from "./spa_env.mjs";
 
-const PERTURB = process.argv.includes("--perturb");
-const { exitOptionGroups, exitLabel, exitTypeLabel, exitHealth, exitHealthMark } = await spa("routing.js");
+const GROUPS = process.argv.includes("--perturb") && process.argv[process.argv.indexOf("--perturb") + 1] === "groups";
+const PERTURB = process.argv.includes("--perturb") && !GROUPS;
+let R = await spa("routing.js");
+if (GROUPS) {
+  const src = fs.readFileSync(path.join(ROOT, "js", "routing.js"), "utf8");
+  const a = '  const warp = imp.filter(x => x.provider !== "profile").map(x => mk(x, exitLabel(x, node)));';
+  if (src.split(a).length !== 2) { console.log("PERTURB ANCHOR MISSING: the WARP group's filter"); process.exit(1); }
+  const tmp = path.join(ROOT, "js", "__perturb_exitlist.js");
+  fs.writeFileSync(tmp, src.replace(a, '  const warp = imp.map(x => mk(x, exitLabel(x, node))); const _was = 0;')
+    .replace('  const prof = imp.filter(x => x.provider === "profile").map(x => mk(x, exitLabel(x, node)));', '  const prof = [];'));
+  try { R = await import(pathToFileURL(tmp).href); } finally { fs.unlinkSync(tmp); }
+}
+const { exitOptionGroups, exitLabel, exitTypeLabel, exitHealth, exitHealthMark } = R;
 
 // A node with one of every kind the panel can produce.
 const NODE = {
@@ -96,6 +113,12 @@ for (const name of ["rule destination", "catch-all"]) {
         differ.map(k => `${k}: ${ref[k]} vs ${here[k]}`).join(" · "));
 }
 
+console.log("\n[3b] each group holds what its heading says (OE, 1.8.9)");
+const groupOf = Object.fromEntries(exitOptionGroups(NODE, opts["node default"]).flatMap(g => (g.items || []).map(i => [String(i.value), g.group])));
+check("the WARP accounts are under \"Exit via WARP\"", ["a1", "a2", "a3"].every(id => groupOf[id] === "Exit via WARP"), groupOf);
+check("…and the pasted WireGuard profile is not: \"Exit via a custom config\" (before: under WARP)", groupOf.a4 === "Exit via a custom config", groupOf);
+check("…and the devices keep theirs", ["b1", "b2", "b3"].every(id => groupOf[id] === "Leave by a device"), groupOf);
+
 console.log("\n[4] a row that cannot be chosen is listed, dimmed, and says why");
 const off = { ...NODE, exits: [...NODE.exits, { id: "z1", producer: "adopted", device: "tun-off", label: "Off", enabled: false }] };
 const row = exitOptionGroups(off, { prefix: "" }).flatMap(g => g.items || [g]).find(i => i.value === "z1");
@@ -138,8 +161,6 @@ check("…and draws nothing when there is nothing to say", exitHealthMark(H.ok) 
 // and Active are deliberately absent from the editor sheet ("one click in the grid"), so the grid's hover is
 // the ONLY place either is explained — and both shipped with none, while the latency cell beside them carried
 // two sentences. Two grids render the pair; both are checked, because one is how they drift apart.
-import fs from "node:fs";
-import path from "node:path";
 const SS = fs.readFileSync(path.join(process.env.SPA_ROOT, "js", "screen-settings.js"), "utf8");
 // ⚠️ SLICE THE WHOLE ELEMENT, don't regex to the first keyword. The first version stopped the match at
 // `killswitch` — which in one of the two sites appears BEFORE the title — so it reported a missing title on
@@ -164,4 +185,4 @@ check("the Active sentence is the one an operator needs: the account survives",
 check("the kill-switch sentence names BOTH states, not just the on one",
       /traffic using it is refused\. Off: it falls back/.test(SS));
 
-done(PERTURB, "interface picker without `devices`");
+done(PERTURB || GROUPS, GROUPS ? "the pasted profile back under WARP" : "interface picker without `devices`");

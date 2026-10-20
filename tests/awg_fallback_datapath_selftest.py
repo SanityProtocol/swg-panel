@@ -53,8 +53,8 @@ def load(name, path, src=None):
 N = load("swgnoded", NODED)
 psrc = open(PANEL).read()
 if PERTURB:
-    assert psrc.count('        if _dp.get("fallback"):\n') == 1
-    psrc = psrc.replace('        if _dp.get("fallback"):\n', '        if False:\n')
+    assert psrc.count('        elif _dp.get("fallback"):\n') == 1, "perturbation anchor missing — would FALSE-PASS"
+    psrc = psrc.replace('        elif _dp.get("fallback"):\n', '        elif False:\n')
 P = load("swgpanel", PANEL, psrc)
 
 KR = os.uname().release
@@ -134,7 +134,7 @@ for bad in ({"datapath": ["x"]}, {"datapath": {"awg": True}}, {"datapath": {"awg
         got, ok8 = repr(ex), False
     check("[8] malformed %r → no raise, no letter-by-letter" % (bad,), ok8 and isinstance(got, dict), got)
 check("[6] repairable covers interfaces still on userspace",
-      '_awg_datapath(snap).get("needed") and (not _awg_datapath(snap).get("ok") or _awg_datapath(snap).get("userspace"))' in src)
+      '_awg_datapath(snap).get("needed") and _awg_datapath(snap).get("why") != "key"\n                            and (not _awg_datapath(snap).get("ok") or _awg_datapath(snap).get("userspace"))' in src)
 
 print("\n%s — %d failed" % ("RED" if FAILS else "GREEN", len(FAILS)))
 sys.exit(1 if FAILS else 0)

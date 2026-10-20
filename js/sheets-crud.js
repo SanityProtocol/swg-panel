@@ -16,8 +16,8 @@ import { go } from "./router.js";
 import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
          turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
-import { turnFork, turnColor, turnForkList } from "./turn-catalog.js";
-import { Ic, ICON, Tag, tgt3, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, CapList, capShown, Portal, toast, copy, mutate, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
+import { turnFork, turnColor, turnForkList, forkLabel } from "./turn-catalog.js";
+import { Ic, ICON, Tag, tgt3, Panel, Badge, Sheet, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, Popover, CapList, capShown, Portal, toast, copy, mutate, sheetSend, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, ConfirmSheet, subjectBlocked, statusLabel, LogBody, RowError, useAnchoredList, goSettings, ThemedSwatch, modalDepth, rowSingle, rowDouble, rowNoSelect, rateCell, xferCell, gridStatusBadge, uncatPop, badgeWithReason, blockedReason, statusReason, dlul, typeToConfirm, closeModals, ListPager, LIST_PAGE, pageSlice } from "./ui.js";
 import {
   genKeys, genPSK, buildConf, parseFullConf, downloadConf, getConfig, configOverrides, QR, qrDataURL,
   subFeatureOn, subPublishOrPrompt, ensureVaultUnlocked, subSKCached, VaultPromptSheet, ensurePeerBlob,
@@ -170,6 +170,10 @@ export function allTargets() {
   return out;
 }
 
+// A deployment row's node name ends in an ellipsis when long (app.css .targetopt .nm): its full name as a tooltip then,
+// and only then — asked on hover, when the browser has laid it out.
+const nmTip = e => { const el = e.currentTarget; el.title = el.scrollWidth > el.clientWidth ? el.textContent : ""; };
+
 // What sits IN FRONT of a target interface, as one badge — so a targets grid says what a peer will actually
 // connect through, not just which interface it lands on. Two cases, never both:
 //   WDTT  — the server owns the interface: its operator title, else the fork name, in that fork's colour.
@@ -187,24 +191,24 @@ export function TargetFrontBadge({ node, iface, peer, dim }) {
     const cfg = (nrec.wdtt_cfg || {})[iface] || {};
     const live = ((Store.stats[node] || {}).wdtt || []).find(w => w && w.iface === iface) || {};
     const fork = cfg.fork || live.fork || "";
-    const label = shownTitle("w|" + node + "|" + iface, String(cfg.title || live.title || "").trim()) || fork;
+    const label = shownTitle("w|" + node + "|" + iface, String(cfg.title || live.title || "").trim()) || forkLabel(fork);
     if (!label) return null;
     const col = turnColor(fork) || WDTT_COLOR;
-    return html`<span class=${"tg tgt-front" + (dim ? " dim" : "")} style=${"--tgc:" + col} title=${T("WDTT server") + (fork ? " · " + fork : "")}>${label}</span>`;
+    return html`<span class=${"tg tgt-front" + (dim ? " dim" : "")} style=${"--tgc:" + col} title=${T("WDTT server") + (fork ? " · " + forkLabel(fork) : "")}>${label}</span>`;
   }
   const tps = turnProxiesFor(node, iface);
   if (!tps.length) return null;
-  const one = t => shownTitle("t|" + node + "|" + t.service, t.title) || turnFork(t.service);
+  const one = t => shownTitle("t|" + node + "|" + t.service, t.title) || forkLabel(turnFork(t.service));
   const st = peer ? pubState(peer, "turn") : null;
   // Offline dims this the same way it dims the interface badge beside it — they describe one deployment, so
   // one of them fading while the other stays lit read as a difference in state that isn't there.
   const tag = (body, cls, style, title) => st
     ? html`<button type="button" class=${"tg tgt-front " + pubCls(st, ((cls || "") + (dim ? " dim" : "")).trim())} style=${style} title=${st.title}
-        aria-pressed=${!st.hidden} onClick=${e => { e.preventDefault(); e.stopPropagation(); st.flip(); }}>${body}${st.hidden ? html`<${Ic} i="off"/>` : null}</button>`
+        aria-pressed=${!st.hidden} onClick=${e => { e.preventDefault(); e.stopPropagation(); st.flip(); }}><span class="tgt-ttl">${body}</span>${st.hidden ? html`<${Ic} i="off"/>` : null}</button>`
     : html`<span class=${"tg tgt-front " + (cls || "") + (dim ? " dim" : "")} style=${style} title=${title}>${body}</span>`;
   if (tps.length === 1) {
     const f = turnFork(tps[0].service);
-    return tag(one(tps[0]), "", "--tgc:" + (turnColor(f) || "var(--turn)"), T("Turn-proxy") + (f ? " · " + f : ""));
+    return tag(one(tps[0]), "", "--tgc:" + (turnColor(f) || "var(--turn)"), T("Turn-proxy") + (f ? " · " + forkLabel(f) : ""));
   }
   return html`<${Popover} hoverOnly cls="tgt-frontpop" popCls="tgt-frontbub"
     trigger=${tag(html`<${Fragment}>${T("val|turn")}<b class="turnx">×${tps.length}</b><//>`, "tgt-front-many", "",
@@ -283,7 +287,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
     return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "") + (t.missing ? " missing" : "")}>
       <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
-        <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
+        <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")} onMouseEnter=${nmTip}>${Store.nodeName(t.node)}</span>
         <span class="tp">${t.iface}</span>
         ${t.missing ? html`<span class="topt-missing" title=${T("This interface is gone from the node — uncheck to remove this deployment from the peer")}>${T("tag|missing")}</span>` : null}</label>
       <div class="topt-right hasprim">
@@ -294,7 +298,7 @@ export function TargetPicker({ prefill, exclude, onChange, initial, pubPeer }) {
           // target is seeded straight from the peer, so it never went through toggle and rendered an editable
           // address box for a self-contained server — which mints the client IP itself on connect and can't be told one.
           ? html`<span class="topt-ip faint" title=${T("The server assigns the address on connect")}>${T("val|auto IP")}</span>`
-          : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? T("not a valid IPv4 address") : ""} onInput=${e => setIp(k, e.target.value)}/>` : null)}
+          : (s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || T("address")} title=${s.ip && !V.ipv4(s.ip) ? T("not a valid IPv4 address") : ""} onInput=${e => setIp(k, e.target.value)}/>` : null)}
         ${(s && !t.missing) ? html`<${TargetGear} node=${t.node} iface=${t.iface} kind=${ity} opts=${s.opts} onSave=${v => setOpts(k, v)} readOnly=${!!s.existing}/>` : null}
       </div>
     </div>`;
@@ -1060,7 +1064,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
         const ity = targetType(t);
         const sc = isSelfContainedKind(ity);
         return html`<div class="targetopt sel locked" key=${k}>
-          <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
+          <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")} onMouseEnter=${nmTip}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
           <div class="topt-right hasprim">
             <${RoleToggle} peer=${peer} t=${t} compact=${true}/>
             <${PubTag} peer=${live} src=${ity} label=${ity} dim=${!t.online} gen3=${tgt3(t)}/>
@@ -2050,7 +2054,7 @@ export function RebuildOutcome({ d, preview }) {
   const addrLabel = a => {
     const p = String(a.path || "").split(".");
     const port = portOfAddr(a.from);
-    const svc = n => String(n || "").replace(/^vk-turn-proxy-/, "").replace(/-\d+$/, "");
+    const svc = n => forkLabel(turnFork(String(n || "")));   // the fork's name, never the id in its service name
     if (p[0] === "turn" && p.length >= 3) return svc(p.slice(1, -1).join(".")) + port + " " + T("word|endpoint");
     if ((p[0] === "wdtt" || p[0] === "csqtt") && p.length >= 3) return p[1] + port + " " + T("word|endpoint");
     if (p[0] === "ifaces" && p[2] === "endpoint_host") return p[1] + port + " " + T("word|endpoint");
@@ -2058,6 +2062,9 @@ export function RebuildOutcome({ d, preview }) {
     // another server's rules chose to leave THIS node by that address (`pin.<server>.<interface|default>`)
     if (p[0] === "pin" && p.length >= 3)
       return Store.nodeName(p[1]) + " · " + (p[2] === "default" ? T("Default exit") : p[2]) + " · " + T("As address");
+    // a mesh link's own dial setting naming the old box (`mesh.<server>.<peer>.<dial_src|dial_endpoint>`), the link sheet's words
+    if (p[0] === "mesh" && p.length >= 4)
+      return Store.nodeName(p[1]) + " → " + Store.nodeName(p[2]) + " · " + (p[3] === "dial_src" ? T("Dial source IP") : T("Dial endpoint IP"));
     return { default_egress_ip: T("this node") + " " + T("word|egress"),
              panel_ip: T("word|panel source"),
              mesh_egress_ip: T("word|mesh source"),
@@ -2131,6 +2138,11 @@ export function NodeCreateSheet() {
   <//>`;
 }
 export const BOOTSTRAP_URL = "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh";
+// The one-liner every screen hands out: `sudo bash -c "$(curl …)" -- <args>`, never `curl … | sudo bash -s <args>`. Under the
+// pipe, sudo-rs (Ubuntu 26.04's sudo) runs the script in the background of the terminal and its first question freezes it
+// (bootstrap.sh _swg_tty_fg; client report 2026-10-06). Handed to `bash -c`, sudo's stdin is the terminal — with sudo-rs
+// and classic sudo alike, root or not. transfer_parse (the panel) reads both shapes, so commands already copied still work.
+export const bootCmd = args => `sudo bash -c "$(curl -fsSL ${BOOTSTRAP_URL})" -- ${args}`;
 
 /* Enrolment for a node whose installation is its configuration's. NOT a command — the installer is
    the wrong shape here twice over: it would write into /opt on a host whose own tooling cannot see
@@ -2240,8 +2252,8 @@ export function nixNodeSteps(host, endpoint, token, recovery, mode, reserved) {
    two values, and for a declarative (NixOS) node there is no `-key` in it at all, so an operator had
    nothing to copy and no way to tell which of the offered commands was the right kind.
 
-   Minted here, in the browser, from `location.origin` — deliberately the same source the commands use,
-   so the address in the token is whatever address the operator actually reached this panel on.
+   Minted here, in the browser, from the same address the commands use (NodeTokenSheet's `host`), so the token and the
+   commands can never name two different panels.
 
    It does NOT replace the enrolment token, and the commands below are byte-identical to before: every
    bootstrap.sh already published passes `-key` through verbatim, so a compound value there would fail
@@ -2253,9 +2265,11 @@ function transferToken(host, token) {
 }
 
 export function NodeTokenSheet({ name, token, isNew, kind, platform, endpoint, rebuild }) {
-  const host = `${location.origin}${BASE}`;
-  const bare = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s node -key ${token} -host ${host}`;
-  const docker = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s docker node -key ${token} -host ${host}`;
+  // the address a node dials: the panel's confirmed public one (what every sync tells the fleet), this tab's own only when none is
+  // set — a panel reached through an SSH tunnel or another name handed out a command that pointed nowhere (OE, 1.8.9)
+  const host = String(Store.panelPublicUrl || "").trim().replace(/\/+$/, "") || `${location.origin}${BASE}`;
+  const bare = bootCmd(`node -key ${token} -host ${host}`);
+  const docker = bootCmd(`docker node -key ${token} -host ${host}`);
   const nixos = platform === "nixos";
   const fresh = !kind && !nixos;                       // brand-new node → offer BOTH styles as tabs
   /* …and so does a MIGRATION, which is the one moment changing run model is free. The command used to be
@@ -2429,14 +2443,15 @@ export function NodeEditSheet({ node }) {
   // Only a subnet or PREFIX change re-provisions (re-addresses / renames the iface → rebuild). A port-only
   // change is applied LIVE (the node re-ports in place + peers re-dial), so it needs no re-provision confirm.
   const reprovChanged = ovSub !== (node.mesh_subnet || "") || ovPfx !== (node.mesh_prefix || "");
-  const doSave = () => {
-    closeAllModals();   // close the sheet AND any re-provision confirm stacked on top; optimistic — the card reflects the change immediately
-    mutate({
-      key: "node:" + node.id,
-      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; n.endpoint_host = ingress; n.mesh_port = ovPort; n.mesh_subnet = ovSub; n.mesh_prefix = ovPfx; n.default_egress_ip = defEgress; n.panel_ip = panelIp; n.mesh_egress_ip = meshEgress; } },
-      call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, mesh_port: ovPort,
+  const [busy, setBusy] = useState(false);
+  const doSave = async () => {
+    // Sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept — it used to
+    // close the sheet (and the re-provision confirm on top) first and lose them all. Accepted, both close.
+    const r = await sheetSend(() => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, mesh_port: ovPort,
         mesh_egress_ip: meshEgress, mesh_subnet: ovSub, mesh_prefix: ovPfx, default_egress_ip: defEgress, panel_ip: panelIp }),
-    });
+      t => setMsg(t ? { k: "err", t } : null), setBusy);
+    if (!r.ok) return;
+    closeAllModals(); Store.poll().catch(() => {});
   };
   const save = async () => {
     if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: T("Name: 1–40 chars, letters/digits/-/_ only.") });
@@ -2465,7 +2480,7 @@ export function NodeEditSheet({ node }) {
           <button class="btn btn-ghost" title=${T("Move this node to another server — the panel gives you a command that rebuilds it there from what it holds")} onClick=${() => openNodeMigrate(node)}><${Ic} i="server"/> ${T("Migrate")}</button>
           <button class="btn btn-ghost" title=${T("Hand this node to another panel — the box keeps running exactly as it is and starts syncing there instead")} onClick=${() => (node.transfer ? openNodeTransferWatch(node) : openNodeTransfer(node))}><${Ic} i="link"/> ${T("Transfer")}</button>
           <//>` : null}
-      <//>`, onCancel: closeModal, onAction: save, action: T("Save") })}>
+      <//>`, onCancel: closeModal, disabled: busy, onAction: save, action: T("Save") })}>
     <div class="field"><label>${T("Name")}</label>
       <div class="namerow"><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/>
         <${ThemedSwatch} val=${color} title=${T("Node colour")} onChange=${setColor} sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 16%,transparent);color:" + c}>${name.trim() || node.name || T("tag|node")}</span>`}/></div>
@@ -2854,7 +2869,7 @@ export function NodeRemoveSheet({ node }) {
   const nixos = node.platform === "nixos";
   const uninstall = declarative
     ? (nixos ? "services.swg-node.enable = false;   # then: sudo nixos-rebuild switch" : "")   // i18n-keys: generated Nix — file text, copied verbatim
-    : `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s uninstall`;
+    : bootCmd("uninstall");
   const flag = () => { setFlagged(true); mutate({
     key: "node:" + node.id,
     patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) n.removing = true; },

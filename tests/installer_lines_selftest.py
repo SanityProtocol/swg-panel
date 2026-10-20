@@ -47,18 +47,34 @@ detection, `ip` and the terminal are stubbed.
       yes/no questions took a given answer or the no-terminal default in silence.
   [q] the other prompts with no terminal ended in a blank line, as the secret prompt did (M9): a port that is not
       Cloudflare-proxyable ("…type proceed, or enter a new URL"), a port already in use ("…type force"), both installers;
-      the convert's yes/no (convert.sh cyn) and the bootstrap's re-enroll pick. Each says the answer it took now. So do
+      the bootstrap's re-enroll pick (convert.sh's yes/no, cyn, went with the dead migration path it served — 1.8.9
+      qualification IN-5, tests/convert_dead_code_selftest.py). Each says the answer it took now. So do
       the bare installers' ask / ask_yn helpers, which with no terminal printed nothing at all (a node's dry run took
       "Verify the panel's TLS certificate?" in silence); their ask_valid / ask_choice and the Docker helpers already did.
 
+  [s] (1.8.9 qualification FN-2(a)) the summary lists a bare host turn proxy by the address its clients DIAL (SWG_DIAL —
+      a DDNS name, an address behind NAT), not its bind ("0.0.0.0:56000"); one with no SWG_DIAL by its listen, as before
+
+  [t] (1.8.8 deferred #5(b)) dnsmasq is masked BEFORE its package is installed, in both installers: its postinst started
+      it, the start failed on :53 (systemd-resolved) and the first install printed an error for a unit masked right after
+
+  [u] (1.8.8 deferred #13) a dry run's file lines say "would write <path>" — it writes the preview copy, not the file it
+      names ("✓ wrote /etc/systemd/system/…" read as if the box had been changed); a real run still says "wrote"
+
 Run: python3 tests/installer_lines_selftest.py      (0 = pass)
      --perturb   the shipped lines planted back → RED
+     --perturb-wrote  "wrote" in a dry run again (e66018f) → RED on [u] only
+     --perturb-mask   dnsmasq masked only after its install again (e66018f) → RED on [t] only
+     --perturb-dial   the summary reads SWG_LISTEN alone again (e66018f) → RED on [s] only
 """
 import json, os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
+PERTURB_DIAL = "--perturb-dial" in sys.argv
+PERTURB_MASK = "--perturb-mask" in sys.argv
+PERTURB_WROTE = "--perturb-wrote" in sys.argv
 H = open(os.path.join(ROOT, "install-host.sh"), encoding="utf-8").read()
 N = open(os.path.join(ROOT, "install-node.sh"), encoding="utf-8").read()
 C = open(os.path.join(ROOT, "lib/common.sh"), encoding="utf-8").read()
@@ -138,20 +154,19 @@ if PERTURB:
     H = plant(H, 'if $DRYRUN; then\n  _dsch=https;', 'if false; then\n  _dsch=https;')
     N = plant(N, 'if $DRYRUN; then\n  echo; ok "Dry run of the bare-metal node', 'if false; then\n  echo; ok "Dry run of the bare-metal node')
     # [q] the unattended prompts ended blank again
-    H = plant(H, '    read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }', '    read -r _url_ans 2>/dev/null </dev/tty || _url_ans=force')
-    H = plant(H, '  read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '  read -r _url_ans 2>/dev/null </dev/tty || _url_ans=proceed')
-    D = plant(D, '      read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }', '      read -r _url_ans 2>/dev/null </dev/tty || _url_ans=force')
-    D = plant(D, '    read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '    read -r _url_ans 2>/dev/null </dev/tty || _url_ans=proceed')
-    CV = plant(CV, 'read -r a 2>/dev/null </dev/tty || { a=y; echo "y  (no terminal — default taken)"; };', 'read -r a 2>/dev/null </dev/tty || a=y;')
-    B = plant(B, 'read -r _pick 2>/dev/null </dev/tty || { _pick=""; echo "(no terminal — skipped)"; }', 'read -r _pick 2>/dev/null </dev/tty || _pick=""')
+    H = plant(H, '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }', '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=force')
+    H = plant(H, '  read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '  read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=proceed')
+    D = plant(D, '      read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }', '      read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=force')
+    D = plant(D, '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }', '    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _url_ans=proceed')
+    B = plant(B, 'read -r _pick 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _pick=""; echo "(no terminal — skipped)"; }', 'read -r _pick 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _pick=""')
     B = plant(B, '_pnl(){ printf \'\\n\' 2>/dev/null >/dev/tty || echo; _SWG_NL=1; }', '_pnl(){ printf \'\\n\' >/dev/tty 2>/dev/null || echo; _SWG_NL=1; }')
     B = plant(B, '[ "${!var}" = "$o" ] && { echo "  $p: $(b "$o")  (given — not asked)"; _pnl; return; }; done; fi', '[ "${!var}" = "$o" ] && return; done; fi')
     for _src in ("N", "H"):   # the bare ask / ask_yn took a default in silence again
         _t = globals()[_src]
-        _t = plant(_t, 'if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; else _notty "$p" "$d"; fi;',
-                   '_tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true;')
-        _t = plant(_t, 'if _tty; then read -rp "  $p ($([ "$d" = y ] && echo \'Y/n\' || echo \'y/N\')): " v </dev/tty || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi',
-                   '_tty && read -rp "  $p ($([ "$d" = y ] && echo \'Y/n\' || echo \'y/N\')): " v </dev/tty || true')
+        _t = plant(_t, 'if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$d"; fi;',
+                   '_tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || true;')
+        _t = plant(_t, 'if _tty; then read -rp "  $p ($([ "$d" = y ] && echo \'Y/n\' || echo \'y/N\')): " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi',
+                   '_tty && read -rp "  $p ($([ "$d" = y ] && echo \'Y/n\' || echo \'y/N\')): " v <"${SWG_TTY:-/dev/tty}" || true')
         globals()[_src] = _t
 
 def fn(src, name):
@@ -509,9 +524,6 @@ for src, label in ((H, "install-host.sh"), (D, "install-docker.sh")):
         line = next((l for l in out.splitlines() if "anyway:" in l or "to change:" in l), "")
         check("[q] %s: the %s prompt ends in its answer" % (label, ans),
               line.rstrip().endswith(": %s  (no terminal — default taken)" % ans) and "ANS=%s" % ans in out, out)
-out = run(fn(CV, "cyn") + 'cyn "Transfer these turn-proxies into the bare-metal node?" && echo YES\n', setsid=True)
-check("[q] convert.sh: the yes/no says the yes it took",
-      "Transfer these turn-proxies into the bare-metal node? (Y/n): y  (no terminal — default taken)" in out and "YES" in out, out)
 for src, label in ((N, "install-node.sh"), (H, "install-host.sh")):
     out = run('_tty(){ { : </dev/tty; } 2>/dev/null; }\n' + fn(src, "_notty") + fn(src, "_given") + fn(src, "ask") + fn(src, "ask_yn") +
               'ask "Subscription page hostname" "" SUB_DOMAIN\necho "SUB=[$SUB_DOMAIN]"\n'
@@ -545,7 +557,65 @@ check("[r] uninstall.sh: with no terminal a question says the default it took",
 out = run(AYN + 'KEEP=y; ask_yn "  Keep the configs?" n KEEP; echo "KEEP=$KEEP"\n', setsid=True)
 check("[r] …and a given answer is said as given", "  Keep the configs? yes  (given — not asked)" in out and "KEEP=yes" in out, out)
 
+print("\n[s] the summary names a host turn proxy by what its clients dial (FN-2(a))")
+SNB = fn(C, "summary_node_block")
+_dial = ("        lis=\"$(sed -n 's/^SWG_DIAL=//p' \"/opt/vk-turn-proxy/$inst/turn.env\" 2>/dev/null | sed -n 1p || true)\"\n"
+         "        [ -n \"$lis\" ] || lis=")
+assert SNB.count(_dial) == 1, "the dial read is not where [s] reads it — would FALSE-PASS"
+if PERTURB_DIAL:
+    SNB = SNB.replace(_dial, "        lis=")
+_st = tempfile.mkdtemp(prefix="instl-sum-")
+for _n, _env in (("wings-56000", "SWG_LISTEN=0.0.0.0:56000\nSWG_DIAL=home.ddns.net:56000\nSWG_CONNECT=127.0.0.1:51820\n"),
+                 ("anton-56001", "SWG_LISTEN=203.0.113.7:56001\nSWG_CONNECT=127.0.0.1:51821\n")):
+    os.makedirs(os.path.join(_st, "units"), exist_ok=True); os.makedirs(os.path.join(_st, "opt", _n))
+    open(os.path.join(_st, "units", "vk-turn-proxy-%s.service" % _n), "w").write("x")
+    open(os.path.join(_st, "opt", _n, "turn.env"), "w").write(_env)
+_snb = SNB.replace("/etc/systemd/system/vk-turn-proxy-", _st + "/units/vk-turn-proxy-").replace("/opt/vk-turn-proxy/", _st + "/opt/")
+out = run('_sum_node_ep(){ :; }; _sum_node_purl(){ :; }; _sum_note(){ :; }; _sum_iface_row(){ :; }; _sum_wdtt_block(){ :; }\n'
+          '_sum_csqtt_block(){ :; }; node_reconfig_block(){ :; }; _sum_fwd_iface(){ :; }; _SUM_DDIR=/nonexistent\n%s%s'
+          'summary_node_block baremetal no\n' % (fn(C, "_sum_turn_row"), _snb))
+check("[s] a proxy behind NAT / on a DDNS name: listed by the name its clients dial, not its bind",
+      "vk-turn-proxy-wings-56000 home.ddns.net:56000 → 127.0.0.1:51820" in out and "0.0.0.0:56000" not in out, out)
+check("[s] …one with no dial host of its own: by its listen, as before", "vk-turn-proxy-anton-56001 203.0.113.7:56001 → 127.0.0.1:51821" in out, out)
+
+print("\n[t] dnsmasq is masked before its package is installed (1.8.8 deferred #5(b))")
+for f, src in (("install-node.sh", N), ("install-host.sh", H)):
+    est = fn(src, "ensure_smart_tools")
+    _m = "run systemctl mask dnsmasq 2>/dev/null || true; run apt-get install -y dnsmasq"
+    assert est.count(_m) == 1, "the mask is not where [t] reads it"
+    if PERTURB_MASK:
+        est = est.replace(_m, "run apt-get install -y dnsmasq")
+    out = run('C=$(mktemp)\nhave(){ case "$1" in dnsmasq|nft|ipset) return 1;; *) command -v "$1" >/dev/null 2>&1;; esac; }\n'
+              'run(){ echo "RUN $*" >> "$C"; }\n%sensure_smart_tools\ncat "$C"\n' % est)
+    calls = [l for l in out.splitlines() if l.startswith("RUN ")]
+    im = next((i for i, l in enumerate(calls) if l.startswith("RUN apt-get install -y dnsmasq")), -1)
+    mm = next((i for i, l in enumerate(calls) if l == "RUN systemctl mask dnsmasq"), -1)
+    check("[t] %s: masked before its package is installed" % f, 0 <= mm < im, calls)
+
+print("\n[u] a dry run says it would write the file it names (1.8.8 deferred #13)")
+for f, src in (("install-node.sh", N), ("install-host.sh", H), ("install-docker.sh", D)):
+    m = re.search(r"^_WROTE=wrote; \$DRYRUN && _WROTE=\"would write\"[^\n]*\n", src, re.M)
+    wl = m.group(0) if m else ""
+    if PERTURB_WROTE and wl:
+        wl = "_WROTE=wrote\n"
+    for dry, want in (("true", "OK would write /etc/x.conf (644)"), ("false", "OK wrote /etc/x.conf (644)")):
+        d = tempfile.mkdtemp(prefix="instl-w-")
+        out = run('DRYRUN=%s; PREFIX=%s\n%s%sprintf x | writef /etc/x.conf 644\n' % (dry, d, wl, fn(src, "writef")))
+        check("[u] %s, %s: %r" % (f, "a dry run" if dry == "true" else "a real run", want[3:]), want in out and os.path.exists(d + "/etc/x.conf"), out)
+
 print()
+if PERTURB_WROTE:
+    _red = [x for x in FAILS if x.startswith("[u]")]
+    print("perturb-wrote: %s" % ("RED as it must be (%d), all [u]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
+if PERTURB_MASK:
+    _red = [x for x in FAILS if x.startswith("[t]")]
+    print("perturb-mask: %s" % ("RED as it must be (%d), all [t]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
+if PERTURB_DIAL:
+    _red = [f for f in FAILS if f.startswith("[s]")]
+    print("perturb-dial: %s" % ("RED as it must be (%d), all [s]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if FAILS:
     print("FAIL (%d): %s" % (len(FAILS), "; ".join(FAILS)))
     sys.exit(1)

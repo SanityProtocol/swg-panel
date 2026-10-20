@@ -51,15 +51,19 @@ PROVIDES = {
     "iptables": "iptables", "iptables-save": "iptables", "iptables-restore": "iptables", "ipset": "ipset",
     "wg": "wireguard-tools", "awg": "amneziawg-tools", "curl": "curl", "dnsmasq": "dnsmasq", "conntrack": "conntrack-tools",
     "pgrep": "procps", "pkill": "procps", "kill": "procps", "sysctl": "procps", "ps": "procps",
-    "sh": "bash", "bash": "bash", "id": "coreutils", "modprobe": "kmod", "tar": "gnutar", "openssl": "openssl",
+    "sh": "bash", "bash": "bash", "id": "coreutils", "modprobe": "kmod", "modinfo": "kmod", "tar": "gnutar", "openssl": "openssl",
     "systemctl": "systemd", "systemd-run": "systemd",
     "cat": "coreutils", "base64": "coreutils", "chmod": "coreutils", "mkdir": "coreutils", "sleep": "coreutils", "grep": "gnugrep",
     "rm": "coreutils", "tail": "coreutils", "journalctl": "systemd",
+    "nsenter": "util-linux", "lsns": "util-linux", "awg-quick": "amneziawg-tools", "wg-quick": "wireguard-tools",
 }
 SYSTEMD_APPENDED = {"coreutils", "findutils", "gnugrep", "gnused", "systemd"}
 # Named, not assumed: commands the native unit does not carry, each with the reason it is outside this gate. `docker` is NOT
 # here any more — [7] proves every use of it docker-only instead of excusing the name.
-EXCLUDED = {}
+EXCLUDED = {
+    "dpkg": "dpkg_health asks a box's OWN package manager, only where shutil.which finds it — NixOS has none, and that "
+            "absence is the answer (no `dpkg` key in the snapshot); a container is skipped before it is asked",
+}
 # Functions no native node reaches, each with the reason. [7] accepts a `docker` literal inside one of these.
 DOCKER_ONLY_FUNCS = {
     "_relay_docker_running": "called only by _relay_supervise_docker",
@@ -71,6 +75,7 @@ DOCKER_ONLY_FUNCS = {
     "_dturn_delete": "turn-on-docker only (see _dturn_run)",
     "_dturn_attach_running": "called only under `if TURN_DOCKER`",
     "_dturn_ensure": "called only by _dturn_reconcile, which returns first when not TURN_DOCKER",
+    "_dturn_bind_stale": "called only by _dturn_ensure (see there)",
 }
 SHELL_BUILTINS = {"cd", "exit", "printf", "kill", "echo", "test", "true", "false", "read", "export", "set", "trap", "wait", "command"}
 
@@ -93,6 +98,14 @@ if PERTURB_HOSTSH:
         sys.exit(1)
     src = src.replace(_anchor, '        r = host_sh("docker stop " + shlex.quote(cid) + " >/dev/null 2>&1; :", timeout=60)')
 cmds = set(re.findall(r'\b(?:run|_run|Popen|check_output|call)\(\s*\[\s*"([a-z][a-z0-9._\-]*)"', src))
+# ⚠️ AND swg-agent's: swg-noded execs it as root, so it runs on the SAME PATH — and its commands were outside this gate
+# until 1.8.9's module reload added nsenter / modprobe / modinfo there (nsenter was missing from node.nix: the reload's
+# container-namespace check would have been skipped in silence on every NixOS native node). Only [3]/[5] read these.
+AGENT = os.environ.get("SWG_AGENT") or os.path.join(ROOT, "swg-agent")
+agent_cmds = set(re.findall(r'\b(?:run|_run|Popen|check_output|call)\(\s*\[\s*"([a-z][a-z0-9._\-]*)"', open(AGENT).read()))
+check("[4] the fixture: swg-agent's commands are read too (its module reload's nsenter)", "nsenter" in agent_cmds, sorted(agent_cmds))
+cmds_daemon = set(cmds)
+cmds |= agent_cmds
 check("[4] the fixture: the mesh probe's `ping` is among the daemon's commands", "ping" in cmds, sorted(cmds))
 check("[4] …the parse found a realistic set (nft, ip, iptables, wg)", {"nft", "ip", "iptables", "wg"} <= cmds, sorted(cmds))
 
@@ -112,11 +125,16 @@ for c in sorted(cmds):
 DEB = {"ping": "iputils-ping", "ip": "iproute2", "ss": "iproute2", "tc": "iproute2", "nft": "nftables", "iptables": "iptables",
        "iptables-save": "iptables", "iptables-restore": "iptables", "ipset": "ipset", "wg": "wireguard-tools", "curl": "curl",
        "dnsmasq": "dnsmasq", "pgrep": "procps", "pkill": "procps", "kill": "procps", "sysctl": "procps", "ps": "procps",
-       "conntrack": "conntrack"}
+       "conntrack": "conntrack", "nsenter": "util-linux", "lsns": "util-linux"}
 SLIM_BASE = {"sh", "bash", "id", "tar"}              # dash, bash, coreutils, tar: essential in every Debian slim image
 IMAGE_EXCLUDED = {
+    "journalctl": "swg-agent's _bounce reads it only after an awg-quick@ UNIT failed to start — by_unit is False in a container (_unit_started)",
+    "modprobe": "only in swg-agent's reload-awg-module, which refuses first in a container (the module is the host's)",
+    "modinfo": "the host's modules are not in the image — _awg_disk_gen returns None in a container without calling it",
     "systemctl": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",
     "systemd-run": "no systemd in a container — `run` returns 127 by design there; not measured per call by this gate",
+    "dpkg": "dpkg_health returns None on a docker node before it asks — the image's packages are not the box's",
+    "openssl": "only _awg_mok_match (the Secure Boot key) — node_datapath_health returns {} on a docker node before it",
 }
 df = open(DOCKERFILE).read()
 final = df[df.rindex("\nFROM "):]                   # the runtime stage only — the build stage's packages never ship

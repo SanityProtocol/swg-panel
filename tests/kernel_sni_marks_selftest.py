@@ -209,7 +209,7 @@ print("\n[5] the MARK SPACE is partitioned — and now that these values reach t
 # most likely to move: this panel is meant to grow to large fleets, and widening the band is how a future
 # edit would silently swallow 0x7770 (30576) or 0x9999 (39321). Said once, here, as a rule.
 BAND = range(N.SWG_RT_BASE, N.SWG_RT_MAX + 1)
-FLAGS = {"SNI_RESET_MARK": N.SNI_RESET_MARK, "RELAY_MARK": N.RELAY_MARK, "TORRENT_MARK": N.TORRENT_MARK}
+FLAGS = {"SNI_RESET_MARK": N.SNI_RESET_MARK, "RELAY_MARK": N.RELAY_MARK, "P2P_BIT": N.P2P_BIT}
 check("the exit fwmark band is a bounded range, not open-ended", len(BAND) < 1000, len(BAND))
 for _n, _v in sorted(FLAGS.items()):
     check("%s (%s / %d) is outside the exit fwmark band %d-%d"

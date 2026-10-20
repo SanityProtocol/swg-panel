@@ -16,6 +16,43 @@ swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
+## csqtt 2.5.1 (line 2.5, published 2026-10-20)
+
+`csqtt-2.5.1` is amurcanov's published **2.5.0** (`d02da9b`, released "as is", his support ended) with this integration
+ported to it and one datapath fix, so it carries our own version, the same as our 2.5.1 build of his Android app.
+- **`2.5/csqtt-swgpanel-2.5.1.patch`** — pinned to upstream `d02da9b`; **`2.5/build.sh <out> [amd64|arm64]`** runs
+  `build.sh` with that pin and patch. If his repository is gone it builds the same source from the `csqtt-2.5.1` release's
+  archive (sha256-checked). Bit for bit: in the `csqtt-build:1.97.1` container (Rust 1.97.1, zig 0.15.2,
+  `CARGO_HOME=/tmp/ch`) both paths give the published amd64 `b25bdd47…`; the release archive's own recipe rebuilds amd64
+  `b25bdd47…` and arm64 `9155d017…`. Another toolchain, zig or `CARGO_HOME` gives a different file of the same source.
+- **The fix:** upstream holds any UDP flow that carries a small packet (≤ 300 B) on one relay stream while small packets
+  keep coming. VK caps an allocation near 2 Mbit/s downlink, so a QUIC download or a nested tunnel fell from 20 to 2.1
+  Mbit/s (live, 6 interleaved runs per build). A flow now keeps the pin only while it fits in one stream (3/4 of the stream
+  rate in 250 ms windows, about 1.5 Mbit/s; above it, bulk for 2 s, rotating in 16 KiB bursts), so games, voice calls and
+  DNS stay pinned; a flow above one stream's rate (a video call) is spread, as one stream could not carry it anyway.
+- The earlier `csqtt-2.5.0` (2026-10-16), a build of his pre-release source, never shipped and was withdrawn.
+- **Apps:** `csqtt-app-2.5.1` (our build of his app: the uplink half of the fix, its own app ID) and `csqtt-app-2.1.9`
+  (his 2.1.9 APKs, unmodified) are hosted in this repository; the panel hands a server the app of its line from there.
+
+- **A new protocol.** A 2.1 app cannot connect to a 2.5 server, nor a 2.5 app to a 2.1 one (both directions refused on the
+  rig). The panel offers each server only apps of its line.
+- **Built into 2.5:** no devices — the address is the password's own, so one config works on several devices and no
+  password can borrow another's address; the uplink source check is upstream's own.
+- **Ported:** `--iface`, `--tun-addr`, `--no-web`, `--desired` as in 2.1.9-4. `--max-passwords` is accepted and does
+  nothing: 2.5 has no password limit. `--no-nat` now stops 2.5's own host changes at start (host-wide sysctls, `FORWARD` /
+  `MASQUERADE`, the TCPMSS purge). Under `--desired` IPv6 uplink is dropped, and the pre-tunnel path gets the source check
+  upstream leaves out. Removing or deactivating a password cuts its live sessions.
+- **App routing:** `desired.json` takes `app_routing` (apps, domains, addresses that go direct — or only these through the
+  tunnel — and the built-in Russian list), one routing rule for every password, which 2.5 hands each user's app on connect;
+  a password's own `app_routing` overrides it (an all-default one = no rule for it). Rig: the rule reaches the client, and
+  none once removed.
+- Rig (`.campaign/rigs/csqtt25.sh`, a real 2.5 client through a local TURN relay), on the published 2.5.1 amd64 bytes:
+  reach, IPv4 spoof and IPv6 uplink dropped, roster change, stable address, deactivate and revoke cut, two instances,
+  `--no-nat` leaves the host alone, the 2.1.9-4 ⇄ 2.5 store round trip (addresses change), App routing; the networks rig
+  `--p5c` 21/21. arm64: built, not run.
+
+Below this point the README describes the **2.1 line** (`build.sh`, `csqtt-swgpanel.patch`, builds 2.1.9-2 … -4).
+
 ## Keyless source-integrity fixes (build 2.1.9-2, 2026-09-14)
 
 For a csqtt instance to be a **share source** for a restricted network, a packet's source address must prove

@@ -50,7 +50,7 @@ def plant(a, b):
 
 if PERTURB:
     plant("  docker_running swg-panel || for _nc in swg-netctl-docker.path", "  for _nc in swg-netctl-docker.path")
-    plant("  docker_running swg-panel || rmrf $SD/swg-netctl-docker.service", "  rmrf $SD/swg-netctl-docker.service")
+    plant("  if docker_running swg-panel; then rm_netctl_gate_if_last bare-gone\n", "  if false; then rm_netctl_gate_if_last bare-gone\n")
     plant('  if { [ "${1:-}" != bare-gone ] && { [ -d /opt/swg-panel ] || [ -f "$SD/swg-panel-server.service" ]; }; } \\\n'
           '     || docker_running swg-panel || docker_running swg-node; then return 0; fi\n', "")
     plant('unpark_kept_panel(){\n  local _lbl="" _how="" _why=""\n', 'unpark_kept_panel(){\n  return 0\n')

@@ -14,8 +14,10 @@
 # letsencrypt / cloudflare / cf15 — same options as bare-metal). Nodes run bare-metal
 # (install-node.sh) or as the companion swg-node image (see Dockerfile.node).
 # Base from AWS ECR Public (mirrors Docker Hub official images) to dodge Docker Hub's
-# anonymous pull-rate limit — no account needed. Prebuilt images are also on GHCR (see CI).
-FROM public.ecr.aws/docker/library/python:3.12-slim
+# anonymous pull-rate limit — no account needed. Prebuilt images are also on GHCR (see CI), which takes the base from
+# Google's mirror (BASE_REGISTRY=mirror.gcr.io/library) when ECR cannot serve it.
+ARG BASE_REGISTRY=public.ecr.aws/docker/library
+FROM ${BASE_REGISTRY}/python:3.12-slim
 
 # acme.sh is pinned + installed from its release tarball (not the piped get.acme.sh installer,
 # which exits 0 even when its own download fails — silently shipping an image with no acme.sh;

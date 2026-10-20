@@ -28,6 +28,7 @@ Hermetic. Run: python3 tests/networks_inert_selftest.py            (0 = pass)
       hands `reconcile` the very object it was given, and reports nothing.
 """
 import importlib.machinery, importlib.util, ipaddress, json, os, sys, tempfile, time
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # install-docker.sh — one-line Docker installer for swg-panel.
 #
-#   Panel (host):      … | sudo bash -s docker host   -pass SECRET -domain panel.example.net
-#   Node only:         … | sudo bash -s docker node   -key KEY -host https://panel.example.net -endpoint 203.0.113.7
+#   Panel (host):      sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- docker host   -pass SECRET -domain panel.example.net
+#   Node only:         sudo bash -c "$(curl -fsSL …/bootstrap.sh)" -- docker node   -key KEY -host https://panel.example.net -endpoint 203.0.113.7
 #
 # `docker host` is the panel entry point: Step 1 asks the role — master or host — exactly
 # like bare-metal (install-host.sh):
@@ -27,6 +27,29 @@
 #   -endpoint <ip>  public IP clients dial   (-> NODE_ENDPOINT)
 #   -iface <name>   node interface name      (-> NODE_IFACE, default awg0)
 set -euo pipefail
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default) — no terminal at all, or the background under sudo-rs.
+# ⚠️ NOT UNDER CLASSIC SUDO. It backgrounds the script the same way (≥ 1.9.13 with use_pty: Ubuntu 24.04, Debian 12/13) but
+# brings it to the foreground at that first read, so `curl … | sudo bash` asked its questions there, as in 1.8.8 — taking
+# every background start as unreadable took them all away (1.8.9 qualification IN-2). Which sudo it is: the first sudo up
+# the chain, by its binary's path (sudo-rs, cargo), else by its --version. No sudo above (a job the operator put in the
+# background): the terminal, as ever. /proc/<pid>/stat after the command name: state ppid pgrp session tty_nr tpgid.
+# Without /proc: as before.
+_swg_tty_fg(){ local s f p e i IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"
+  [ "${f[2]:-}" = "${f[5]:-}" ] && return 0; [ "${f[5]:-0}" -gt 0 ] 2>/dev/null || return 1
+  for i in 1 2 3 4; do p="${f[1]:-0}"; [ "$p" -gt 1 ] 2>/dev/null || return 0; e="$(readlink "/proc/$p/exe" 2>/dev/null)" || e=""
+    case "${e##*/}" in sudo*) case "$e" in *sudo-rs*|*cargo*) return 1;; esac
+      case "$("$e" --version 2>/dev/null)" in sudo-rs*) return 1;; esac; return 0;; esac
+    { read -r s <"/proc/$p/stat"; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; done; return 0; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+if [ "$SWG_TTY" = /dev/null ] && [ -z "${SWG_TTY_WARNED:-}" ] && { : </dev/tty; } 2>/dev/null; then   # said once per run
+  printf '%s\n' "! This terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults. To answer them, run: sudo bash -c \"\$(curl -fsSL <bootstrap.sh URL>)\" -- <arguments>" >&2
+  export SWG_TTY_WARNED=1
+fi
 
 # ───────────────────────── config (env or flags) ─────────────────────────
 # Snapshot which of these the CALLER actually provided, BEFORE any default is applied. The .env import below
@@ -95,6 +118,7 @@ DNS="${DNS:-1.1.1.1}"
 DRYRUN=false
 ARGS=("$@"); for a in "${ARGS[@]+"${ARGS[@]}"}"; do [ "$a" = "--dry-run" ] && DRYRUN=true; done
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
+_WROTE=wrote; $DRYRUN && _WROTE="would write"   # a dry run writes the preview copy, not the file it names (1.8.8 deferred #13)
 
 c(){ printf '\033[%sm' "$1"; }
 # data-entry spacing primitives (lib/common.sh is sourced later in this script, but info/warn above use these) —
@@ -127,16 +151,19 @@ ask_tty(){ local v p="$1" d="${2:-}"   # prompt on the terminal (curl|bash keeps
   # NB: this runs in a $() subshell (ask_yn_tty captures it), so it can only READ _SWG_NL, not set it — hence just
   # a flag-aware LEADING blank; the following step/helper supplies the trailing blank (its own leading, flag clear).
   [ -n "${_SWG_NL:-}" ] || printf '\n' 2>/dev/null >/dev/tty || true
-  if printf '  %s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then printf '%s' "${v:-$d}"
-  else printf '%s' "$d"; fi; }
+  # A terminal that cannot be READ (swg_tty_ok — sudo-rs's background) prints no prompt it will not answer: the line says
+  # the default was taken, on the terminal like the prompt would have been, and the value goes back as before.
+  if swg_tty_ok && printf '  %s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null <"${SWG_TTY:-/dev/tty}"; then printf '%s' "${v:-$d}"
+  else printf '  %s: %s  (no terminal — default taken)\n' "$p" "${d:-(blank)}" 2>/dev/null >/dev/tty || true; printf '%s' "$d"; fi; }
 ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (default when blank / no tty)
   v="$(ask_tty "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N'))" "")"
   case "${v:-$d}" in [Yy]*) printf yes;; *) printf no;; esac; }
 rand_pw(){ head -c12 /dev/urandom | base64 | tr -d '/+=' | cut -c1-16; }
-# Is there a terminal to ask on? `curl | sudo bash` keeps one (/dev/tty); `setsid … </dev/null`, cron and CI do not.
+# Is there a terminal to ask on? `sudo bash -c "$(curl …)"` keeps one (/dev/tty) — `curl | sudo bash` under sudo-rs does not
+# (swg_tty_ok, above); `setsid … </dev/null`, cron and CI do not.
 # ⚠️ Without it every `read … </dev/tty` below printed a raw "line 216: /dev/tty: No such device or address" into an
 # unattended log — the redirection fails before the read runs, so a trailing 2>/dev/null never covered it. Probe once.
-HAVE_TTY=no; { : </dev/tty; } 2>/dev/null && HAVE_TTY=yes
+HAVE_TTY=no; swg_tty_ok && HAVE_TTY=yes
 # the value of KEY in an .env file, as compose reads it: first KEY= line, an unquoted value's inline ` # comment`
 # dropped, surrounding quotes stripped. ⚠️ Reading the raw line fed the comment back in as part of the value: every
 # re-install wrote `CONSOLE_PORT=8445   # …   # …` with one more copy of its comment than the last.
@@ -155,9 +182,9 @@ key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole l
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd l 'etsencrypt (default)'  → [l]etsencrypt (default)
 keyg(){ printf '%s[%s]%s%s'   "$C_GREY"        "$1" "$2" "$RESET"; }   # de-emphasised label grey:  keyg n 'one'                → [n]one
 STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # skip the leading blank when a prompt already printed one
-writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
+writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "${_WROTE:-wrote} $p ($m)"; }
 ask(){ local v p="$1" d="${2:-}"; echo
-  if [ "$HAVE_TTY" = yes ]; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; else v=""; _notty "$p" "$d"; fi
+  if [ "$HAVE_TTY" = yes ]; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || v=""; else v=""; _notty "$p" "$d"; fi
   printf -v "$3" '%s' "${v:-$d}"; }
 # no terminal: say which answer was taken for the prompt that could not be shown, so an unattended log still reads
 _notty(){ printf '  %s: %s  %s\n' "$1" "$(b "${2:-(blank)}")" "(no terminal — default taken)"; }
@@ -235,7 +262,7 @@ parse_panel_url(){ local u="$1" hostport rest
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}" "$var"; _pnl; return; }; done; fi
   while :; do
-    if [ "$HAVE_TTY" = yes ] && read -rp "  $p [$(bb "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
+    if [ "$HAVE_TTY" = yes ] && read -rp "  $p [$(bb "$d")]: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option (1-indexed menus)
     for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; _pnl; return; }; done
@@ -247,7 +274,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
   if [ -n "${!var:-}" ]; then "$fn" "${!var}" && { [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!var}" "$var"; _pnl; return; }; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if [ "$HAVE_TTY" = yes ] && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
+    if [ "$HAVE_TTY" = yes ] && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; [ "$HAVE_TTY" = yes ] || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
     [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; _pnl; return; }
@@ -285,16 +312,17 @@ PY
 ) ; return 0; }   # a record line with an empty service would leave the loop non-zero → trips set -e at the bare callers
 # One instance == one container (swg-turn-<fork>-<port>) so the SAME fork can run many times
 # (2× wings, 3× samosvalishe, …) — each on its own port with its own wrap key.
-install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" port inst svc
+install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" pin="${6:-}" port inst svc
   # CONTAINER model: don't install a host systemd unit or download here — just write the turn RECORD.
   # swg-noded materialises it into a sibling container (swg-turn-*) on its next start (it fetches the binary).
+  # `listen` is what clients DIAL; `pin` the operator's "Listen on" (bind_ip), kept only when it is an address.
   port="${listen##*:}"; inst="$fork-$port"; svc="vk-turn-proxy-$inst"
   if $DRYRUN; then echo "    [skip] record turn-proxy $svc ($owner: $listen → $connect) in $TURN_RECORD"
   else
     mkdir -p "$(dirname "$TURN_RECORD")"
-    python3 - "$TURN_RECORD" "$svc" "$owner" "$listen" "$connect" "$extra" <<'PY' || { warn "couldn't write turn record"; return 0; }
+    python3 - "$TURN_RECORD" "$svc" "$owner" "$listen" "$connect" "$extra" "$pin" <<'PY' || { warn "couldn't write turn record"; return 0; }
 import json, sys, re
-p, svc, owner, listen, connect, extra = sys.argv[1:7]
+p, svc, owner, listen, connect, extra, pin = sys.argv[1:8]
 try:
     d = json.load(open(p)); tps = d.get("turn_proxies") if isinstance(d, dict) else None
     tps = tps if isinstance(tps, list) else []
@@ -303,7 +331,8 @@ except Exception:
 tps = [t for t in tps if t.get("service") != svc]
 m = re.search(r"-wrap-key[ =]+(\S+)", extra or "")
 tps.append({"service": svc, "listen": listen, "connect": connect,
-            "params": (extra or "").strip(), "wrap_key": (m.group(1) if m else ""), "owner": owner})
+            "params": (extra or "").strip(), "wrap_key": (m.group(1) if m else ""), "owner": owner,
+            **({"bind_ip": pin} if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", pin or "") else {})})
 json.dump({"turn_proxies": tps}, open(p, "w"))
 PY
   fi
@@ -364,27 +393,33 @@ fwd_resolve(){ local n p x; while read -r n p x; do [ -n "$n" ] && [ "$n" = "$1"
 # the atomic switch tears them down (recorded in MIGRATED_TURNS). Decline ⇒ left on bare-metal (stopped at switch).
 migrate_baremetal_turns(){
   [ "${SWG_CONVERT_DIR:-}" = convert-docker ] || return 0
-  local units u svc owner lis con params envf exe inst
+  local units u svc owner lis con params envf exe inst pin
   units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null)" || true
   [ -n "$units" ] || return 0
   echo; info "Turn-proxies to migrate from the bare-metal node:"; echo
+  # SWG_LISTEN is what the proxy BINDS (swg-noded turn_bind); what clients dial, when it differs, is SWG_DIAL — and the record
+  # keeps the dialled host, as install-node.sh / convert.sh read it. The operator's "Listen on" (SWG_PIN) goes with it as bind_ip.
   for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
-    lis=""; con=""; [ -f "$envf" ] && { lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; }
+    lis=""; con=""; [ -f "$envf" ] && { lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" | sed -n 1p)"; [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"
+                                        con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; }
     printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "${lis:-?}" "${con:-?}"; done
   echo
   # Approach B: auto-carry — always migrate the existing turn-proxies (no prompt). New ones are created from the panel.
   for u in $units; do
-    svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
+    svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"; pin=""
     if [ -f "$envf" ]; then
-      lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" | sed -n 1p)"
+      lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" | sed -n 1p)"; [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | sed -n 1p)"
+      pin="$(sed -n 's/^SWG_PIN=//p' "$envf" | sed -n 1p)"
+      con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | sed -n 1p)"; params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" | sed -n 1p)"
     else
       exe="$(sed -n 's/^ExecStart=//p' "$u" | sed -n 1p)"
       lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"; con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
       params="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}[^ ]*[[:space:]]*\(.*\)$/\1/p')"
     fi
     owner="$(sed -n 's/.*vk-turn-proxy (\([^)]*\)).*/\1/p' "$u" | sed -n 1p)"
+    [ "$owner" = "samosvalishe/free-turn-proxy" ] && owner="hackdiaz-dev/free-turn-proxy"   # repo deleted 2026-10; hackdiaz-dev carries it on
     fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"
-    install_turn_binary "$fork" "$owner" "$lis" "$con" "$params"     # writes the docker turn RECORD (no host unit)
+    install_turn_binary "$fork" "$owner" "$lis" "$con" "$params" "$pin"   # writes the docker turn RECORD (no host unit)
     MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"          # tear the bare unit down at the atomic switch
   done
 }
@@ -648,7 +683,7 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
       echo; warn "port $(col "$C_YEL" ":$_pp") is already in use${_who:+ (by $(col "$C_YEL" "$_who"))} — the panel can't bind it"
       echo "    Give the panel its own port (e.g. $(b "${PANEL_HOST_NOPORT}:8443")), or stop whatever holds it."
       printf '  Enter a different URL, or type %s to publish on :%s anyway: ' "$(bb force)" "$_pp"
-      read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }   # said, not a blank line
+      read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=force; echo "$(b force)  (no terminal — default taken)"; }   # said, not a blank line
       case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
         force|FORCE) _forced="$_pp";;
         "") :;;
@@ -665,7 +700,7 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
     echo "         certificates won't work. ($(b letsencrypt)/$(b selfsigned) on a directly-reachable port is fine.)"
     echo
     printf '  To keep the port %s type %s, or enter a new URL to change: ' "$URL_PORT" "$(bb proceed)"
-    read -r _url_ans 2>/dev/null </dev/tty || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }   # said, not a blank line
+    read -r _url_ans 2>/dev/null <"${SWG_TTY:-/dev/tty}" || { _url_ans=proceed; echo "$(b proceed)  (no terminal — default taken)"; }   # said, not a blank line
     case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
       proceed|"") break;;                                           # keep the current port
       *) if _u="$(answer_to_url "$(printf '%s' "$_url_ans" | tr -d '[:space:]')")"; then PANEL_DOMAIN="$_u"   # adopt it; loop re-parses
@@ -744,7 +779,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
       echo; warn "letsencrypt needs host port $(col "$C_YEL" ':80') for HTTP-01, but it's in use${_w80:+ (by $(col "$C_YEL" "$_w80"))} — issuance will fail"
       echo "    :80 is fixed by ACME (independent of the panel's port). Pick $(key c 'loudflare') (DNS-01), $(key 15 'years cloudflare'), $(key s 'elfsigned'), or $(key n 'one') — or $(bb force) to keep letsencrypt."
       printf '  Select another certificate, or type %s: ' "$(bb force)"
-      read -r _ans80 2>/dev/null </dev/tty || _ans80=force
+      read -r _ans80 2>/dev/null <"${SWG_TTY:-/dev/tty}" || _ans80=force
       _ans80="$(printf '%s' "$_ans80" | tr -d '[:space:]')"
       [ "$_ans80" = force ] && break
       case " $_opts " in *" $_ans80 "*) TLS="$_ans80";; *) TLS=""; warn "enter one of: $_opts — or 'force'";; esac
@@ -1285,6 +1320,11 @@ PYHOST
   else
     ok "bridge networking — publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml, then '$COMPOSE --profile $PROFILE up -d'"
   fi
+  if $DRYRUN; then echo "    [skip] raise the host's UDP socket-buffer caps for turn-family listeners (/etc/sysctl.d/99-swg-turn.conf)"
+  else turn_sock_buf_host
+    [ "$TURN_SOCK_BUF_CHANGED" = 1 ] && ok "UDP socket-buffer caps raised on the host for turn-family listeners (/etc/sysctl.d/99-swg-turn.conf)"
+    [ "$TURN_SOCK_BUF_LOW" = 1 ] && warn "UDP socket-buffer caps could not be raised on this host (net.core.{r,w}mem_max) — csqtt handshakes may fail under load"
+  fi
 
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
   # Approach B: turn-proxies are managed from the PANEL (they run as sibling swg-turn-* containers). No prompt —
@@ -1448,6 +1488,7 @@ if [ -n "${SWG_CARRY_ENV:-}" ] && [ -s "$SWG_CARRY_ENV" ]; then
     match($0, /^[A-Za-z_][A-Za-z0-9_]*=/) { k = substr($0, 1, RLENGTH-1); if (!(k in have)) { print; have[k] = 1 } }' "$SWG_CARRY_ENV")"
   [ -n "$_carried" ] && printf '\n# ───────── kept from the bare-metal drop-ins this box was converted from ─────────\n%s\n' "$_carried" >> "$PREFIX$INSTALL_DIR/.env"
 fi
+if [ -n "${SWG_CARRY_ENV:-}" ] && ! $DRYRUN; then rm -f "$SWG_CARRY_ENV" 2>/dev/null || true; fi   # convert.sh's hand-off: read once (LC24 #15b)
 # …then the converted-from install's own keys (see _CONV_ENV above): the same rule — a key already in the file (written,
 # or kept from the live .env) wins, the operator's line is kept byte for byte, and only the NAMES are printed.
 if [ -n "$_CONV_ENV" ]; then
@@ -1461,7 +1502,7 @@ if [ -n "$_CONV_ENV" ]; then
   fi
 fi
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
-ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
+ok "${_WROTE:-wrote} $INSTALL_DIR/.env (profile $PROFILE)"
 # ⚠️ THE .env NOW NAMES THE PANEL THIS NODE SYNCS WITH, SO ITS LEARNED COPY GOES. docker/node-entrypoint.sh reads
 # data/node/panel-url / -token / -verify / -fp AHEAD of the .env at every start: left behind, a copy from an earlier
 # transfer or re-point overrode the panel this run decided — an address or key given here (-host / -key, typed at the
@@ -1648,7 +1689,13 @@ BUILDFLAG=""; $BUILD && BUILDFLAG=--build   # default pulls prebuilt images from
 # containers would run `latest` — which was false. Ask the file too.
 _pinned_tag(){ [ -n "${SWG_IMAGE_TAG:-}" ] && return 0
   [ -f "$INSTALL_DIR/.env" ] && [ -n "$(sed -n 's/^SWG_IMAGE_TAG=//p' "$INSTALL_DIR/.env" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]*#.*//; s/[[:space:]]*$//')" ]; }
-if ! $BUILD && ! _pinned_tag && [ -n "${SWG_REF:-}" ] && [ "${SWG_REF}" != main ]; then
+# A COMMIT (bootstrap's SWG_COMMIT — a going back by commit) is installed while SWG_REF is the branch the box tracks, so the
+# branch test below stayed silent and the containers ran `latest` while every script said the commit (SOAK-3).
+if ! $BUILD && ! _pinned_tag && [ -n "${SWG_COMMIT:-}" ]; then
+  warn "installing scripts from commit $(b "$SWG_COMMIT"), but the CONTAINERS will run the published $(b latest) image —
+    that commit's own is $(b "sha-${SWG_COMMIT:0:7}") (kept for every release commit): set $(b "SWG_IMAGE_TAG=sha-${SWG_COMMIT:0:7}")
+    in $INSTALL_DIR/.env and re-run, or re-run with $(b --build) to build it from source."
+elif ! $BUILD && ! _pinned_tag && [ -n "${SWG_REF:-}" ] && [ "${SWG_REF}" != main ]; then
   warn "installing scripts from $(b "$SWG_REF"), but the CONTAINERS will run the published $(b latest) image —
     images are built from $(b main), so there is none for $(b "$SWG_REF"). Re-run with $(b --build) to build
     this branch from source, or set $(b SWG_IMAGE_TAG) to an image tag that exists."
@@ -1702,12 +1749,12 @@ if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && teardown_bare_panel   # host/master convert: stop+remove the bare panel (and move its state aside)
   # ONLY tear the bare NODE down when its datapath is actually being converted (master/node). A HOST-only
   # convert moves just the panel → docker; the co-located bare node must stay UP + keep serving its peers.
-  [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-${SWG_CONVERT_TURNS:-}}
+  [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-}
   # WDTT servers are their own systemd units (not covered by lc_teardown_baremetal's interface/turn teardown) — stop
   # them at the switch so their DTLS/WG ports free up for the container's WDTT, and only NOW (past the point of no
   # return) so a mid-convert abort never drops WDTT while the bare node is still the live install.
   if [ "$PROFILE" != host ]; then
-    for _wu in $(systemctl list-unit-files --no-legend 2>/dev/null | grep -oE 'swg-wdtt-[^ ]+\.service'); do systemctl disable --now "$_wu" >/dev/null 2>&1 || true; done
+    stop_bare_wdtt    # stopped and deleted — a unit left behind is a later uninstall's "WDTT" component, which removes the live one
     stop_bare_csqtt   # same for csqtt — and its raw TUN, which outlives the process and would keep the iface name taken
   fi
 fi
@@ -1822,8 +1869,9 @@ wire_host_updater
 # The Docker root helper for ADDRESS changes (mirrors the updater above). A bare-metal panel runs unprivileged and
 # delegates host jobs (rebind a listener, restart swg-sub) to swg-netctl; Docker has no swg-netctl, and a container
 # can't `docker compose` the host. So the panel container writes the SAME netctl request to data/lib/netctl/queue,
-# and THIS host unit drains that queue into `docker compose` actions (restart / recreate a service). Polled, not a
-# .path unit — inotify never sees the container's write across a bind mount. Panel-bearing profiles only.
+# and THIS host unit drains that queue into `docker compose` actions (restart / recreate a service). Started by a
+# .path unit (the host's inotify sees the container's write: a bind mount is the same inode) and by a 10 s timer, which
+# covers a watch that died. Panel-bearing profiles only.
 wire_docker_netctl(){
   case "$PROFILE" in host|master|host-node) ;; *) return 0;; esac
   # ⚠️ FROM THE SOURCE TREE, like update.sh's ensure_netctl_docker. It used to look only in $INSTALL_DIR/docker/,
@@ -1835,7 +1883,10 @@ wire_docker_netctl(){
   if $DRYRUN; then echo "    [skip] wire the docker address helper (swg-netctl-docker.timer → docker compose restart/up)"; return 0; fi
   [ -f "$drainer" ] || { warn "docker/swg-netctl-docker missing — one-click address changes will fall back to a manual restart"; return 0; }
   mkdir -p "$INSTALL_DIR/data/lib/netctl/queue" "$INSTALL_DIR/data/lib/netctl/status"   # the panel writes requests here (via the data/lib bind mount)
-  install -m755 "$drainer" /usr/local/bin/swg-netctl-docker
+  # written beside and renamed in (as update.sh's refresh): a re-install over a live panel, whose 10 s timer may start the
+  # drainer at any moment, never leaves the path missing or not yet executable
+  install -m755 "$drainer" /usr/local/bin/swg-netctl-docker.new      # two commands, so a failure aborts (set -e), as one install did
+  mv -f /usr/local/bin/swg-netctl-docker.new /usr/local/bin/swg-netctl-docker
   cat > /etc/systemd/system/swg-netctl-docker.service <<EOF
 [Unit]
 Description=swg-panel docker address helper (drains the netctl queue into docker compose actions)
@@ -1863,16 +1914,22 @@ Description=poll the swg-panel docker netctl queue (fallback for the path watch)
 [Timer]
 OnActiveSec=10s
 OnUnitActiveSec=10s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target
 EOF
+  # The idle gate (lib/common.sh): the timer still starts the unit every 10 s — here it is the drainer — but the
+  # Python drainer runs only when the queue holds something.
+  netctl_gate_heal swg-netctl-docker.service "$(swg_netctl_docker_due_dropin_text)"
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable --now swg-netctl-docker.path >/dev/null 2>&1 || warn "couldn't enable swg-netctl-docker.path"
   systemctl enable --now swg-netctl-docker.timer >/dev/null 2>&1 || warn "couldn't enable swg-netctl-docker.timer"
   ok "one-click address changes wired — the panel restarts swg-sub / rebinds via the host on Save"
 }
 wire_docker_netctl
+if ! $DRYRUN; then docker_host_log_dropins; [ "$DOCKER_LOG_DROPINS_CHANGED" -gt 0 ] && { systemctl daemon-reload 2>/dev/null || true; }; fi
+true   # the timer units' systemd lines capped (lib/common.sh); never fatal
 
 # ── a convert invalidates a reverse proxy's vhost ──────────────────────────────────────────────────────────
 # The cert dir just moved (/etc/swg-panel → the container's data/etc) and the upstream ports changed. nginx keeps

@@ -81,11 +81,11 @@ export const capFirst = s => (typeof s === "string" && s && !/[A-Z]/.test(s)) ? 
 // NOT a routing destination, so it's excluded from the destination stats (Top destinations / flow map).
 export const isBlockCat = c => /^blku?[_:]/i.test(String(c));
 export function catLabelOf(c) {   // built-in label · custom-list title (keyed by the list's id AND name, so whichever the node emits resolves to the human title) · inline custom → "Custom" · else the id
-  if (c === "uncat") return "Uncategorised";
+  if (c === "uncat") return T("Uncategorised");
   const lt = {};
   (Store.panelSettings?.custom_lists || []).forEach(l => { if (l && l.title) { if (l.id) lt[l.id] = l.title; if (l.name) lt[l.name] = l.title; } });
   if (isProviderCat(c)) return capFirst(prettyCatLabel(c, (Store.catLabels || {})[c]));   // provider list → humanised (country names etc.)
-  return capFirst(SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || (String(c).startsWith("custom") ? "Custom" : c));
+  return capFirst(SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || (String(c).startsWith("custom") ? T("Custom") : c));
 }
 // Host/IP capability flags for a list — ALWAYS Host first, IP second (house rule).
 export const capBadges = caps => html`<span class="capbs">
@@ -139,6 +139,7 @@ export function reportDropped(r) {
     // operator just saved is gone rather than shortened. Same report, its own sentence — "couldn't be
     // read" beside a list TITLE would send them looking for a bad character in the name.
     if ((d || {}).reason === "list_empty") return T("the list {v1} had nothing readable in it — not saved", { v1: e });
+    if ((d || {}).reason === "id_reserved") return T("the list id {v1} already means something to a rule — the list was saved under a new id", { v1: e });
     if ((d || {}).reason !== "unknown_list") return T("{v1} couldn't be read", { v1: e });
     const prov = provLabelOf(e);
     return prov ? T("{v1} is no longer published by {v2}", { v1: catRawId(e), v2: prov })
@@ -357,10 +358,13 @@ export function CatalogRow({ it, added, onPick }) {
         : html`<${DescInfo} text=${catDescOf(it.id)}/>`}</div>
   </button>`;
 }
+// A Geo-data provider's name as shown. The panel's own provider is a word, not a name: the registry sends it as
+// "Curated", and it is shown in the operator's language; every other provider's label is a proper name, shown as sent.
+export function provName(p) { return p.id === "curated" ? T("Curated") : (p.label || p.id); }
 export function provLabelOf(c) {
   const pid = providerOf(c);
   if (!pid) return "";
-  return ((Store.catalogProviders || []).find(p => p.id === pid) || {}).label || (pid === "curated" ? T("Curated") : pid);
+  return provName((Store.catalogProviders || []).find(p => p.id === pid) || { id: pid });
 }
 // Each provider gets a distinct colour (default palette + a Panel-settings per-mode override, like turn forks).
 export const CAT_PROVIDER_DEFAULTS = { mc: { color: "#5B8FF9", colorL: "#2C6FD6" }, v2: { color: "#61DDAA", colorL: "#1E9E6E" },
@@ -1022,8 +1026,11 @@ export const blockCatLive = (mode, providers, c) => (c.sources || []).some(s => 
 // Built on FIRST READ, never at import: modules load before loadLang() resolves, so a T() here would
 // freeze in English whatever the catalog says (see --frozen).
 let _mech_hint = null;
+// Mechanisms the node does not build yet. They stay in the catalog and in any stored block[] (nothing is rewritten), but no
+// screen offers them: a switch that blocks nothing is worse than no switch — and blocking WebRTC would break calls (Meet).
+const MECH_UNBUILT = new Set(["cryptomining", "webrtc"]);
 export const MECH_HINT = () => (_mech_hint || (_mech_hint = {
-  torrents:     T("Drop BitTorrent / P2P — protects this exit IP's reputation. Free port-hint by default; signature scan where the node supports it."),
+  torrents:     T("Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. Counts only when the server's own Torrents / P2P setting is “Each interface decides”: by default the server blocks it on every way out."),
   smtp:         T("Drop outbound mail on TCP :25 — stops spam being relayed through this exit."),
   portscan:     T("Rate-limit outbound port-scans, brute-force and SYN-floods leaving this interface."),
   cryptomining: T("Drop known cryptomining / Stratum-pool traffic."),
@@ -1149,8 +1156,8 @@ export function blockActiveN(node, value) {
   if (!bc) return ids.length;
   const mode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";
   return ids.filter(id => { const c = (bc.categories || {})[id];
-    return c && c.enabled !== false && (c.kind === "mechanism"
-      || ((c.enabled_nodes || []).includes(node) && blockCatLive(mode, bc.providers, c))); }).length;
+    return c && c.enabled !== false && (c.kind === "mechanism" ? !MECH_UNBUILT.has(id)
+      : ((c.enabled_nodes || []).includes(node) && blockCatLive(mode, bc.providers, c))); }).length;
 }
 
 // Per-interface "Block traffic" (screen ③) — the daily policy surface. Content/IP categories the operator enabled on
@@ -1168,7 +1175,7 @@ export function BlockTraffic({ node, value, onChange }) {
   const list = [...new Set([...(bc.cat_order || []), ...Object.keys(cats)])].map(id => cats[id]).filter(c => c && c.enabled !== false);
   const availOn = c => (c.enabled_nodes || []).includes(node);
   const content = list.filter(c => (c.kind === "content" || c.kind === "ip") && availOn(c));
-  const mech = list.filter(c => c.kind === "mechanism");
+  const mech = list.filter(c => c.kind === "mechanism" && !MECH_UNBUILT.has(c.id));
   const chip = c => { const dis = blockCatDisabled(mode, bc.providers, c);
     const dead = !dis && !blockCatLive(mode, bc.providers, c);   // enforceable in this mode, but none of its lists is switched on / present
     return html`<button type="button" key=${c.id} disabled=${dis}
@@ -1322,6 +1329,16 @@ export function rowGate(row, mode, node, b) {
   return caps && caps.ip ? { ...g, note: T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.") }
     : { ok: false, why: "person_ksni", fix: "sni" };
 }
+
+/* F105 (the 1.8.8 qualification's #18): on an SNI engine "Everything else → Block" drops each new connection to an address no
+   rule has learned yet — before its site name can be read — so a rule above it that matches by site name never sees one: an
+   allow-list by name blocks everything. The datapath change was judged not worth it (it would let a Block's first packets out),
+   so the rule list says it where the operator builds it. A Block row above it loses nothing; the others are counted. */
+export const catchAllPreemptsNames = (mode, rows, catchAll) => (mode === "sni" || mode === "sni_kernel")
+  && !!catchAll && catchAll.action === "block"          // only a catch-all that is on reaches here (rulesToRows, setCatch)
+  && (rows || []).some(r => r.enabled !== false && r.action !== "block" && (r.badges || []).some(b => {
+    const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
+    return caps ? !!caps.host : !_ipKind(b.kind); }));
 
 /* Why a badge cannot run here, said in one sentence, plus the label of the mode that would fix it. Never a
    bare "unsupported": the operator has to be able to act on it, and for three of the five reasons the action
@@ -1501,7 +1518,9 @@ const readToken = (tok, mode, listEditor) => rrReadToken(tok, {
 // is not a refusal, it is a race. So an unloaded catalog means "cannot say", and the token is accepted:
 // the SERVER is the real authority and already drops a category none of the catalog, the custom lists and
 // the built-ins have heard of, reporting it as `unknown_list` (swg-panel-server:10927).
-export const knownListId = id => !!id && (
+// `all` is no list: it is "Everything else" (SMART_CATEGORIES carries it for the catch-all's label). Refused here, so every
+// path that adds a typed list — the box's Enter, the dropdown's "use what you typed", readToken's callers — refuses it.
+export const knownListId = id => !!id && String(id).toLowerCase() !== "all" && (
   SMART_CATEGORIES().some(([c]) => c === id)                                    // a curated preset
   || (Store.panelSettings?.custom_lists || []).some(l => l && l.id === id)      // one the operator wrote
   // ⚠️ THE BENEFIT OF THE DOUBT IS ONLY FOR PROVIDER IDS. A BARE id can always be judged: the curated
@@ -1675,6 +1694,9 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
      offered "Telegram · add this list to the rule" inside the CUSTOM-LIST editor, which cannot hold one.
      Found by clicking, not by reading: both readers were individually correct. */
   const readList = (listTok && !listEditor) ? { id: listTok[1].trim(), ok: knownListId(listTok[1].trim()) } : null;
+  // What a typed list that cannot be added says: `all` is pointed at "Everything else", anything else is no such list.
+  const noList = () => /^all$/i.test((readList || {}).id || "") ? T("For all traffic, use “Everything else” below the rules")
+    : T("No list called {v1} on this panel", { v1: q.trim() });
   const reading = (!listTok && q.trim()) ? classify(q.trim()) : null;     // the "use this" row, when what is typed parses
   // Tier-2 targets on this INTERFACE (§12.1), counted by the parent because the row that is full is not
   // necessarily the row being typed in. Passed as the WHOLE total including this row's, not as "everyone
@@ -1779,7 +1801,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
     const rest = [...bad.map(b => b.raw), ...overCap].join(" ");
     if (added.length || editing) { onChange(next); setEditing(null); }
     setQ(rest);                                            // both kinds of leftover stay in the box, editable
-    const msg = bad.length ? (bad[0].why === "unknown_list" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
+    const msg = bad.length ? (bad[0].why === "catch_all" && !listEditor ? T("For all traffic, use “Everything else” below the rules")
+                              : bad[0].why === "unknown_list" || bad[0].why === "catch_all" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
                                                             : T("{v1} was not added", { v1: bad[0].raw }))
       : overCap.length ? capSay()
       : added.length ? T("Added {v1}", { v1: added.join(", ") })
@@ -2048,7 +2071,8 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
       // longer described the rule, and the next trip through it deleted the 100 it could no longer see.
       // Nothing is applied while anything is unusable; the draft stays whole and says which line is wrong.
       const msg = bad.length
-        ? (bad[0].why === "unknown_list" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
+        ? (bad[0].why === "catch_all" && !listEditor ? T("For all traffic, use “Everything else” below the rules")
+          : bad[0].why === "unknown_list" || bad[0].why === "catch_all" ? (listEditor ? T("A list can't contain another list — add its addresses here instead") : T("No list called {v1} on this panel", { v1: bad[0].raw }))
                                          : T("{v1} was not added", { v1: bad[0].raw }))
         : capSay();
       setSay(msg); setPending({ text: msg, forQ: null });
@@ -2075,7 +2099,7 @@ export function TargetField({ row, mode, node, tier2All, onChange, onSwitchMode,
         if (has(id)) removeList(id); else if (listGate(mode, id, node).ok) commitList(id);
         return; }
       if (readList) { if (readList.ok) commitList(readList.id);
-        else { const m = T("No list called {v1} on this panel", { v1: q.trim() }); setSay(m); setPending({ text: m, forQ: q }); }
+        else { const m = noList(); setSay(m); setPending({ text: m, forQ: q }); }
         return; }
       if (readGate && readGate.ok) commitTyped();
       return;
@@ -2246,7 +2270,7 @@ ${/* The reading and its consequence live in the dropdown's "use what you typed"
       ${leftovers ? (pending.text && pending.forQ === q
             ? html`<span class="tf-lint err">${pending.text}</span>` : null)
         : (listEditor && listTok) ? html`<span class="tf-lint err">${T("A list can't contain another list — add its addresses here instead")}</span>`
-        : readList && !readList.ok ? html`<span class="tf-lint err">${T("No list called {v1} on this panel", { v1: q.trim() })}</span>`
+        : readList && !readList.ok ? html`<span class="tf-lint err">${noList()}</span>`
         : reading && reading.kind === "invalid" ? html`<span class="tf-lint err">${targetWhy(reading.why, q)}</span>`
         : reading ? (open ? null : html`<span class="tf-say">${readGate && readGate.ok ? targetSentence(reading.kind, reading.value) : gateReason(readGate || {}, modeLabel)}</span>`)
         : !badges.length ? html`<span class="tf-say">${listEditor ? T("Type an address, IP range, AS number or pattern.")
@@ -2276,7 +2300,7 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
           <${readList.ok ? "button" : "div"} type=${readList.ok ? "button" : null} class=${"tfuse" + (act <= 0 ? " act" : "") + (readList.ok ? "" : " off")}
             onMouseEnter=${() => setAct(0)} onClick=${readList.ok ? () => commitList(readList.id) : null}>
             <span class="tfbadge list"><span class="tfb-lbl">${readList.ok ? catLabelOf(readList.id) : readList.id}</span></span>
-            <span class="tfuse-say">${readList.ok ? T("Add this list to the rule") : T("No list called {v1} on this panel", { v1: q.trim() })}</span>
+            <span class="tfuse-say">${readList.ok ? T("Add this list to the rule") : noList()}</span>
           <//>` : null}
         ${reading && reading.kind !== "invalid" ? html`<div class="catpick-grp">${T("Use what you typed")}</div>
           <${readGate.ok ? "button" : "div"} type=${readGate.ok ? "button" : null} class=${"tfuse" + (act <= 0 ? " act" : "") + (readGate.ok ? "" : " off")}
@@ -2337,9 +2361,12 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
   const _dflt = nodeScope ? null : ((_nrec || {}).exits || []).find(x => String(x.id) === String((_nrec || {}).default_exit || "")) || null;
   // D11 — when the node's default is a LIST, an interface's silence falls through to it: this interface's rules first, then
   // the node's (All or own clients) and its "Everything else". So silence is a real choice with a name even when the list's
-  // catch-all is not an exit — "Node default — then this node's N rules" (§7.1).
+  // catch-all is not an exit — "Node default (N rules)", as a single default exit reads "Node default (WARP)" (§7.1).
   const _nlist = !nodeScope && Array.isArray((_nrec || {}).default_routing) ? _nrec.default_routing : null;
   const _nfall = _nlist ? _nlist.filter(r => r && r.enabled !== false && r.category !== "all" && r.aud !== "cascaded") : [];
+  // …and where the rest finally goes: the list's own "Everything else", read as the node's editor reads it (rulesToRows),
+  // or with none this node's own way out (direct — destLabelOf's answer for null's empty action).
+  const _ncatch = _nlist ? rulesToRows(_nlist).catchAll : null;
   const exits = (_nrec || {}).exits || [];
   // "" means the node record has not loaded. Kept distinct from "kernel" on purpose: a badge greyed because
   // we could not look up the engine is a lie about the configuration (§4.2).
@@ -2406,7 +2433,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
     return null;
   };
   const destOpts = (withDefault, held) => { const _gone = goneDest(held); return [
-    ...(withDefault && _nlist ? [{ value: "__dflt__", label: T("Node default — then this node's {v1}", { v1: plural(_nfall.length, "rule") }) }]
+    ...(withDefault && _nlist ? [{ value: "__dflt__", label: T("Node default ({v1})", { v1: plural(_nfall.length, "rule") }) }]
       : withDefault && _dflt ? [{ value: "__dflt__",
       label: T("Node default ({v1})", { v1: _dflt.label || _dflt.device || _dflt.id }) }] : []),
     { value: "direct", label: T("Direct (this node)") },
@@ -2602,11 +2629,10 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
     </div>
     ${/* D11 — WHAT THE SILENCE FALLS THROUGH TO, where the interface is edited: the node's rules this interface's traffic
           meets (All and own clients), in order, bounded — then the node's own "Everything else". */""}
-    ${!nodeScope && _nlist && !catchAll ? html`<div class="hint rrnote">${T("Then this node's default:")} ${nodeRows.length
-      ? nodeRows.slice(0, 10).map((r, i) => html`${i ? " · " : ""}<span>${(r.badges || []).slice(0, 3).map(b => b.t === "list" ? catLabelOf(b.id) : targetLabel(b.kind, b.value)).join(", ")}${(r.badges || []).length > 3 ? "…" : ""} → ${destLabelOf(r)}</span>`)
-      : T("no rules yet")}${nodeRows.length > 10 ? " " + T("…and {v1} more", { v1: nodeRows.length - 10 }) : ""}</div>` : null}
+    ${!nodeScope && _nlist && !catchAll ? html`<div class="hint rrnote">${T("Node default (Settings ▸ Network ▸ Default exit):")} ${nodeRows.slice(0, 10).map(r => html`<span>${(r.badges || []).slice(0, 3).map(b => b.t === "list" ? catLabelOf(b.id) : targetLabel(b.kind, b.value)).join(", ")}${(r.badges || []).length > 3 ? "…" : ""} → ${destLabelOf(r)}</span> · `)}${nodeRows.length > 10 ? T("…and {v1} more", { v1: nodeRows.length - 10 }) + " · " : ""}<span>${T("everything else")} → ${_ncatch ? (goneDest(destVal(_ncatch)) || {}).label || destLabelOf(_ncatch) : T("Direct (this node)")}</span></div>` : null}
     ${nodeScope && _mode === "sni_kernel" && ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) < 2 && dispRows.some(r => r.aud !== "local")
       ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for traffic cascaded in — only IP addresses and networks apply to it.")}</span></div>` : null}
+    ${catchAllPreemptsNames(_mode, dispRows, catchAll) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("“Everything else → Block” stops each new connection before its site name is read, so the rules above that match by site name never take effect: those sites are blocked too. Route them by address (an IP range or a network) instead, or block by name only what you don't want.")}</span></div>` : null}
     ${dispRows.length || catchAll ? null : html`<div class="hint">${others.length
       ? Trich("No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.")
       : Trich("No rules yet. Add a rule to send some destinations out a device on this node or block them, or set *Everything else* to say where the rest goes.")}</div>`}
@@ -3568,7 +3594,10 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   // bare `wgx-229f0c44` when untitled, adopted ones as a bare `wg-lab0`, and a pasted profile carried a
   // third shape ("Custom — <title> — <device>"). The same exit therefore read differently depending on
   // which list you opened it from, and an untitled one never said what it WAS.
-  const warp = exits.filter(x => (x.producer || "adopted") === "imported").map(x => mk(x, exitLabel(x, node)));
+  // …and grouped by what they are: a WireGuard profile the operator pasted is imported too, but it is no WARP account (OE, 1.8.9)
+  const imp = exits.filter(x => (x.producer || "adopted") === "imported");
+  const warp = imp.filter(x => x.provider !== "profile").map(x => mk(x, exitLabel(x, node)));
+  const prof = imp.filter(x => x.provider === "profile").map(x => mk(x, exitLabel(x, node)));
   const ext = exits.filter(x => (x.producer || "adopted") !== "imported")
     .map(x => mk({ ...x, _ext: true }, exitLabel(x, node)));
   // ⚠️ AND EVERY DEVICE THE NODE ALREADY HAS. An exit record is the panel's bookkeeping, not the world:
@@ -3610,6 +3639,7 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
       onClick=${e => { e.stopPropagation(); onManage(); }}>${T("Manage…")}</button>` } : {}) });
   return [
     ...(warp.length ? [{ group: T("Exit via WARP"), items: warp }] : []),
+    ...(prof.length ? [{ group: T("Exit via a custom config"), items: prof }] : []),
     // "an external interface" stopped being true the moment a NIC could be one — the node's own card is
     // not external to it. The group is what traffic LEAVES BY, whichever kind of device that is.
     ...(ext.length ? [{ group: T("Leave by a device"), items: ext }] : []),

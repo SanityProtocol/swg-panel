@@ -7,9 +7,14 @@
 # csqtt is PolyForm-Noncommercial-1.0.0 — build only for non-commercial use.
 set -euo pipefail
 
-PIN="446293aa2e873ac5323ef6fd2316d9b81d966c11"   # amurcanov/csqtt v2.1.9 (2026-09-02)
-REPO="https://github.com/amurcanov/csqtt.git"
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# The defaults are line 2.1; forks/csqtt/2.5/build.sh runs this script with the 2.5 pin, patch and source fallback.
+PIN="${CSQTT_PIN:-446293aa2e873ac5323ef6fd2316d9b81d966c11}"   # amurcanov/csqtt v2.1.9 (2026-09-02)
+PATCH="${CSQTT_PATCH:-$HERE/csqtt-swgpanel.patch}"
+REPO="${CSQTT_REPO:-https://github.com/amurcanov/csqtt.git}"
+# "<url> <sha256> <patch sha256>" of OUR release's source archive (upstream at PIN with that patch applied): built from
+# when upstream cannot be fetched, and only if PATCH is the very patch the archive carries.
+SRC_FALLBACK="${CSQTT_SRC_FALLBACK:-}"
 OUT="${1:?usage: build.sh <out-dir> [amd64|arm64]}"
 ARCH="${2:-amd64}"
 case "$ARCH" in
@@ -20,9 +25,22 @@ esac
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-git clone -q "$REPO" "$WORK/csqtt"
-git -C "$WORK/csqtt" checkout -q "$PIN"
-git -C "$WORK/csqtt" apply "$HERE/csqtt-swgpanel.patch"
+if git clone -q "$REPO" "$WORK/csqtt" 2>"$WORK/fetch.err" && git -C "$WORK/csqtt" checkout -q "$PIN" 2>>"$WORK/fetch.err"; then
+  git -C "$WORK/csqtt" apply "$PATCH"
+elif [ -n "$SRC_FALLBACK" ]; then
+  sed 's/^/  /' "$WORK/fetch.err" >&2
+  read -r SRC_URL SRC_SHA SRC_PATCH_SHA <<<"$SRC_FALLBACK"
+  if [ "$(sha256sum "$PATCH" | cut -d' ' -f1)" != "$SRC_PATCH_SHA" ]; then
+    echo "upstream $REPO @ $PIN is not reachable, and $PATCH is not the patch our archive carries — no fallback" >&2; exit 1
+  fi
+  echo "upstream $REPO @ $PIN is not reachable — building our archive of the same pin and patch: $SRC_URL" >&2
+  rm -rf "$WORK/csqtt"; mkdir -p "$WORK/csqtt"
+  curl -fsSL --retry 2 "$SRC_URL" -o "$WORK/src.tar.gz"
+  echo "$SRC_SHA  $WORK/src.tar.gz" | sha256sum -c --quiet
+  tar -xzf "$WORK/src.tar.gz" -C "$WORK/csqtt" --strip-components=1
+else
+  cat "$WORK/fetch.err" >&2; echo "cannot fetch $REPO at $PIN" >&2; exit 1
+fi
 
 rustup toolchain install 1.97.1 --profile minimal >/dev/null 2>&1 || true
 rustup target add "$TARGET" --toolchain 1.97.1 >/dev/null 2>&1 || true

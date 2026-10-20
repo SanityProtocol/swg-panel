@@ -366,7 +366,7 @@ export const STR = {
   "{node} is already on {p} ({a}), but it keeps its clients off that network. Turn on “Clients can reach it” under Local network on {node} to let them in.":
     "{node} уже в сети {p} ({a}), но не пускает туда своих клиентов. Чтобы пустить их, включите «Клиентам доступна» в разделе «Локальная сеть» на {node}.",
   "{p} overlaps a tunnel subnet on {node} ({a}).": "{p} пересекается с подсетью туннеля на {node} ({a}).",
-  "{p} overlaps a mesh link on {node} ({a}).": "{p} пересекается с mesh-связью на {node} ({a}).",
+  "{p} overlaps a mesh link on {node} ({a}).": "{p} пересекается с меш-связью на {node} ({a}).",
   "{p} contains {a}, the gateway {node} reaches the internet through.": "В {p} входит {a} — шлюз, через который {node} выходит в интернет.",
   "{p} contains {a}, the address {node} reaches this panel by.": "В {p} входит {a} — адрес, по которому {node} достаёт до этой панели.",
   "{p} contains {a}, the DNS server {node} depends on — it could no longer find this panel.": "В {p} входит {a} — DNS-сервер, от которого зависит {node}: без него панель будет не найти.",
@@ -1626,6 +1626,254 @@ export const STR = {
   "Routing & Blocking": "Маршрутизация",
   "Geo data providers": "Провайдеры гео-данных",
   "Integrations": "Интеграции",
+
+  // ── Settings → Logs (docs/LOGS-PLAN.md §1) ──
+  // «Логи», not «Журналы»: it is the word the operator types into a search and says out loud. The five levels
+  // are plural nouns where English is ("Errors" = what is kept), and their own keys: «Выкл» or «Инфо» elsewhere
+  // in the panel are different words.
+  "Logs": "Логи",
+  "Logging": "Логирование",
+  "Logging — {v1}": "Логирование — {v1}",
+  "Logging — off: swg's stored logs are deleted": "Логирование — выкл: сохранённые логи swg удаляются",
+  "How much the panel and every node write to their logs. One level for the whole fleet.":
+    "Сколько панель и каждая нода пишут в свои логи. Один уровень на весь флот.",
+  "Log level": "Уровень логирования",
+  "log|Off": "Выкл",
+  "log|Errors": "Ошибки",
+  "log|Warnings": "Предупреждения",
+  "log|Info": "Инфо",
+  "log|Debug": "Отладка",
+  "lvl|err": "ошиб",
+  "lvl|warn": "пред",
+  "lvl|info": "инфо",
+  "lvl|debug": "отлад",
+  "Only failures: something that did not apply, start or sync.":
+    "Только сбои: то, что не применилось, не запустилось или не синхронизировалось.",
+  "Failures, and anything degraded, retrying or falling back.":
+    "Сбои, а также всё, что работает с деградацией, повторяет попытку или переключилось на запасной вариант.",
+  "Also every change of state: an interface coming up, a peer added, a route installed. The default.":
+    "Плюс каждое изменение состояния: интерфейс поднялся, пир добавлен, маршрут установлен. По умолчанию.",
+  "Everything, including each routing pass and every site your users open.":
+    "Всё, включая каждый проход маршрутизации и каждый сайт, который открывают ваши пользователи.",
+  // what Off deletes and what it cannot, per kind of server (q189 DN-2 / NLH-2)
+  "swg's own logs are deleted, and nothing more is kept in them. A server's system journal keeps what it already holds — the kernel's P2P guard lines, with users' addresses, among them.":
+    "Собственные логи swg удаляются, и больше в них ничего не сохраняется. Системный журнал сервера хранит то, что в нём уже есть, — в том числе строки защиты от P2P из ядра с адресами пользователей.",
+  "On bare metal, a turn proxy, relay or WDTT / csqtt server not restarted since the update still writes there.":
+    "На железе turn-прокси, ретранслятор или сервер WDTT / csqtt, не перезапущенный после обновления, продолжает писать туда.",
+  "In Docker, each container's own log keeps its lines until the container is recreated; a turn container started before Off goes on logging until its next start.":
+    "В Docker собственный лог каждого контейнера хранит свои строки, пока контейнер не пересоздадут; turn-контейнер, запущенный до «Выкл», продолжает писать лог до следующего запуска.",
+  "On NixOS, a node's container logs to the host's system journal, which keeps those lines; a turn container started before Off goes on logging until its next start.":
+    "В NixOS контейнер ноды пишет в системный журнал хоста, и тот хранит эти строки; turn-контейнер, запущенный до «Выкл», продолжает писать лог до следующего запуска.",
+  "Failure details go blank: when something breaks, the panel can't say why.":
+    "Подробности сбоев пропадают: если что-то сломается, панель не сможет сказать почему.",
+  "Turn off debugging after": "Выключить отладку через",
+  "24 hours": "24 часа",
+  "debug|never": "никогда",
+  "{v1} left": "осталось {v1}",
+  "{v1} h {v2} min": "{v1} ч {v2} мин",
+  "Debug stays on until you pick another level.": "Отладка останется включённой, пока вы не выберете другой уровень.",
+  "Then logging goes back to {v1}.": "Затем уровень вернётся к «{v1}».",
+  "Turn proxies, WireGuard interfaces and other third-party services pick up a change the next time they restart.":
+    "Turn-прокси, интерфейсы WireGuard и другие сторонние службы подхватят изменение при следующем перезапуске.",
+  // Settings → Logs, the disk budget table
+  "Disk budget": "Место на диске",
+  "How much disk swg's logs may take on each server. When the budget is full, the oldest lines go first.":
+    "Сколько места на диске могут занимать логи swg на каждом сервере. Когда лимит заполнен, первыми удаляются самые старые строки.",
+  "At least {v1} MB": "Не меньше {v1} МБ",
+  "Filter by server…": "Фильтр по серверу…",
+  "Server": "Сервер",
+  "Budget": "Лимит",
+  "Used": "Занято",
+  "Holds": "Хранит",
+  "State": "Состояние",
+  "MB": "МБ",
+  "Budget for {v1}, MB": "Лимит для {v1}, МБ",
+  "{v1} MB": "{v1} МБ",
+  "{v1} h": "{v1} ч",
+  "{v1} days": "{v1} дн.",
+  "Nothing has been removed yet: every line since then is kept": "Пока ничего не удалено: хранятся все строки с этой даты",
+  "No server matches “{q}”.": "Нет серверов по запросу «{q}».",
+  "System journal": "Системный журнал",
+  "On NixOS the panel has no root helper here, so its lines stay in the system journal and its limits.":
+    "На NixOS у панели нет root-помощника, поэтому её строки остаются в системном журнале и в его лимитах.",
+  "Not reporting — it applies the budget when it is back.": "Не на связи — применит лимит, когда вернётся.",
+  "Waiting": "Ожидание",
+  "The panel's root helper reports within a few seconds of starting.": "Root-помощник панели сообщает данные через несколько секунд после запуска.",
+  "Update the node": "Обновите ноду",
+  "This node's build is too old to keep a log budget. Update it to apply one.":
+    "Сборка ноды слишком старая для лимита логов. Обновите ноду, чтобы он применился.",
+  "Not supported": "Не поддерживается",
+  "Not applied": "Не применён",
+  "This server's journald has no namespaces, so swg's logs cannot have a budget of their own here.":
+    "journald на этом сервере не поддерживает пространства имён, поэтому у логов swg здесь не может быть своего лимита.",
+  "The budget could not be applied ({v1}). It is tried again every minute.": "Лимит не удалось применить ({v1}). Попытка повторяется каждую минуту.",
+  "Not reporting — the figures are from its last report.": "Не на связи — цифры из последнего отчёта.",
+  "Pending": "Применяется",
+  "The root helper applies it within 10 seconds.": "Root-помощник применит его в течение 10 секунд.",
+  "Applies on the node's next sync.": "Применится при следующей синхронизации.",
+  "Applied": "Применён",
+  "Relays, turn proxies and WDTT / csqtt servers join the budget the next time they restart.":
+    "Ретрансляторы, turn-прокси и серверы WDTT / csqtt войдут в лимит при своём следующем перезапуске.",
+  "Kernel messages (the P2P guard, network devices) and WireGuard interfaces' own start and stop lines stay in the system journal, outside the budget.":
+    "Сообщения ядра (защита от P2P, сетевые устройства) и строки запуска и остановки интерфейсов WireGuard остаются в системном журнале, вне лимита.",
+  "In docker the budget holds swg's own log files and the containers a node launches; each container's own docker log (10 MB × 3) is not counted.":
+    "В docker лимит распространяется на файлы логов swg и на контейнеры, которые запускает нода; собственный docker-лог каждого контейнера (10 МБ × 3) не учитывается.",
+  "log budget → {v1} MB": "лимит логов → {v1} МБ",
+
+  // ── Settings → Logs, the live viewer (docs/LOGS-PLAN.md §5) ──
+  "Live logs": "Логи онлайн",
+  "Start live log": "Запустить логи",
+  "Servers": "Серверы",
+  "Panel and {n}": "Панель и {n}",
+  "Node service": "Служба ноды",
+  "Relays": "Релеи",
+  "Firewall and kernel": "Фаервол и ядро",
+  "Root helper": "Root-помощник",
+  "Updates": "Обновления",
+  "Smart DNS": "Умный DNS",
+  "SNI classifier": "Классификатор SNI",
+  "P2P guard": "Защита от P2P",
+  "Starting": "Запускается",
+  "Asked: a server starts sending within a sync or two.": "Запрошено: строки придут через синхронизацию-две.",
+  "No answer": "Нет ответа",
+  "Asked, but nothing came back. Check that the server syncs and runs a current build.":
+    "Запрос отправлен, но ответа нет. Проверьте, что сервер синхронизируется и работает на актуальной сборке.",
+  "This node's build is too old for the live viewer. Update it to see its logs.":
+    "Сборка этой ноды слишком старая для просмотра логов. Обновите её, чтобы видеть её логи.",
+  "Not reporting — nothing can be read until it is back.": "Не на связи — читать нечего, пока она не вернётся.",
+  "Logging is off": "Логи выключены",
+  "Logging is off, so nothing is stored to read. Pick a level above to see lines.":
+    "Логирование выключено, поэтому ничего не сохраняется. Выберите уровень выше, чтобы видеть строки.",
+  "No access yet": "Пока нет доступа",
+  "The panel reads its own journal once it restarts after the update that added it to systemd-journal.":
+    "Панель сможет читать свой журнал после перезапуска, следующего за обновлением, которое добавило её в группу systemd-journal.",
+  "Nothing to read": "Читать нечего",
+  "None of the chosen sources is on these servers.": "На этих серверах нет ни одного из выбранных источников.",
+  "Clock off": "Сдвиг часов",
+  "These servers' clocks differ from the panel's. Their lines are shown on the panel's clock.":
+    "Часы этих серверов расходятся с часами панели. Их строки показаны по часам панели.",
+  "Not on docker": "Нет в docker",
+  "A docker node has no host journal to read these from: {v1}.": "У ноды в docker нет журнала хоста, откуда их читать: {v1}.",
+  "and {n} more": "и ещё {n}",
+  "{v1} lines skipped — narrow the sources or raise the filter": "Пропущено строк: {v1} — сузьте источники или поднимите фильтр",
+  "Resumed — some lines before this may be missing": "Возобновлено — часть строк до этого могла пропасть",
+  "Pick at least one server and one source.": "Выберите хотя бы один сервер и один источник.",
+  "Four log viewers are open already. Close one, or wait a few seconds for a closed tab's to lapse.":
+    "Уже открыто четыре просмотра логов. Закройте один или подождите несколько секунд, пока истечёт просмотр закрытой вкладки.",
+  "Logging is off, so nothing is stored to read.": "Логирование выключено, поэтому ничего не сохраняется.",
+  "Waiting for lines…": "Ждём строки…",
+  "None of the chosen servers can be watched. Pick again.": "Ни один из выбранных серверов нельзя смотреть. Выберите заново.",
+  "Nothing matches the filter.": "Под фильтр ничего не подходит.",
+  "Times are this browser's, on the panel's clock": "Время — в часовом поясе браузера, по часам панели",
+  "Full screen": "Во весь экран",
+  "Levels shown": "Уровни",
+  "Search the lines…": "Поиск по строкам…",
+  "Back to the newest lines, following": "Вернуться к новым строкам и следить дальше",
+  "Hold the list still": "Остановить список",
+  "Resume · {n} new": "Далее · +{n}",
+  "Resume": "Продолжить",
+  "Pause": "Пауза",
+  "Wrap": "Перенос",
+  "Paused — {v1} lines held": "Пауза — строк: {v1}",
+  "{v1} of the last {v2} lines": "{v1} из последних {v2} строк",
+  "Shown full screen — Esc returns it here.": "Открыто во весь экран — Esc вернёт сюда.",
+
+  // ── Settings → Logs, the source dropdowns and the bar ──
+  "Nodes": "Ноды",
+  "All": "Все",
+  "All servers": "Все серверы",
+  "All shown": "Все найденные",
+  "Find…": "Найти…",
+  "Search…": "Поиск…",
+  "Nothing matches “{q}”.": "Ничего не найдено по «{q}».",
+  "Panel service": "Служба панели",
+  "the whole kernel log": "весь журнал ядра",
+  "All of them (none reported yet)": "Все (пока ни одного)",
+  "Live": "Онлайн",
+  "Paused": "На паузе",
+  "Not connected": "Нет связи",
+  "Wrap long lines": "Переносить строки",
+  "Clear the list": "Очистить список",
+  "Stop live log (Esc)": "Остановить логи (Esc)",
+  "Leave full screen (Esc)": "Свернуть (Esc)",
+  "The lines shown": "Показанные строки",
+  "{v1} lines, as a text file — at once; keys and tokens are not masked": "Строк: {v1}, текстовым файлом — сразу; ключи и токены не скрываются",
+  "{v1} sources are chosen, and a viewer follows {v2} at most. Choose fewer, or tick a whole group — it counts as one.":
+    "Выбрано источников: {v1}, а просмотр следит не больше чем за {v2}. Выберите меньше или отметьте группу целиком — она считается за один.",
+  "A time range…": "За период…",
+
+  // ── Settings → Logs, a time range downloaded as one file (docs/LOGS-PLAN.md §26) ──
+  "Every line of a time range from these servers, as one file": "Все строки за период с этих серверов — одним файлом",
+  "Download a time range": "Скачать логи за период",
+  "Time range": "Период",
+  "15 min": "15 мин",
+  "7 days": "7 дней",
+  "From {servers}: {sources}, at {levels}.": "{servers}; {sources}; уровни: {levels}.",
+  "The servers, sources and levels chosen above. Each server's share is the 50 MB divided between them; over its share a server gives the newest part.":
+    "Серверы, источники и уровни, выбранные выше. 50 МБ делятся между серверами поровну; если строк больше доли, сервер отдаёт самые новые.",
+  "Mask keys and tokens": "Скрыть ключи и токены",
+  "WireGuard keys, Bearer and API tokens become [key] or [redacted].": "Ключи WireGuard, Bearer- и API-токены заменяются на [key] или [redacted].",
+  "Make the file": "Собрать файл",
+  "Pick a start before the end, at most 31 days apart.": "Начало должно быть раньше конца, не дальше 31 дня.",
+  "Two downloads are being made already. Wait for one to finish.": "Уже собираются два файла. Дождитесь, пока один будет готов.",
+  "This download is gone: made files are kept for {n} min. Make it again.": "Этого файла уже нет: готовые файлы хранятся {n} мин. Соберите его заново.",
+  "Pick at least one server, one source and one level.": "Выберите хотя бы один сервер, один источник и один уровень.",
+  "The panel did not answer. Try again.": "Панель не ответила. Попробуйте ещё раз.",
+  // the panel's own answers on the log routes — read by the viewer's code and by swg-noded, shown on no screen of the
+  // SPA (the viewer words its own sentences by `code`); translated so a srvText() of them never prints English
+  "{v1} log viewers are open already": "уже открыто просмотров логов: {v1}",
+  "{v1} downloads are being made already": "уже собирается файлов: {v1}",
+  "cannot spool the download: {v1}": "не удалось сохранить файл для скачивания: {v1}",
+  "no such download": "такого файла нет",
+  "no such download (made files are kept {v1} min)": "такого файла нет (готовые файлы хранятся {v1} мин)",
+  "no such request": "такого запроса нет",
+  "no such viewer": "такого просмотра нет",
+  "nodes and sources are lists": "серверы и источники должны быть списками",
+  "nodes, sources and levels are lists": "серверы, источники и уровни должны быть списками",
+  "pick at least one server and one source": "выберите хотя бы один сервер и один источник",
+  "pick at least one server, one source and one level": "выберите хотя бы один сервер, один источник и один уровень",
+  "since and until are times in seconds": "since и until — время в секундах",
+  "the range must end after it starts, and span 31 days at most": "конец промежутка должен быть позже начала, а сам он — не длиннее 31 дня",
+  "invalid body": "неверное тело запроса",
+  "busy — send it again": "занято — отправьте ещё раз",
+  "not this request's key": "ключ не от этого запроса",
+  "bad part number": "неверный номер части",
+  "parts must come in order": "части должны идти по порядку",
+  "this server's part is closed": "часть этого сервера уже закрыта",
+  "the panel cannot spool it": "панель не может сохранить эту часть",
+  "log_level must be off, error, warning or info": "log_level: off, error, warning или info",
+  "log_debug must be 0, 3600, 86400 or -1": "log_debug: 0, 3600, 86400 или -1",
+  // {v3} is "N servers" through PLURALS gen|server: «из 1 сервера», «из 21 сервера», «из 5 серверов»
+  "Reading {v1}: waiting on {v2} of {v3}.": "Читаем {v1}: ждём {v2} из {v3}.",
+  "Waiting on {v2} of {v3}": "Ждём {v2} из {v3}",
+  "Making the file…": "Собираем файл…",
+  "Ready: {v1} lines, {v2}.": "Готово: строк — {v1}, {v2}.",
+  "The file could not be made: {v1}": "Не удалось собрать файл: {v1}",
+  "Save the file": "Сохранить файл",
+  "Not the whole range from every server — the file's first lines say which and why.":
+    "Не со всех серверов есть весь период — в начале файла сказано, с каких и почему.",
+  "Kept on the panel for {n} min after each save.": "Файл хранится {n} мин после каждого сохранения.",
+  "Make the file now": "Собрать сейчас",
+  "Make the file from the servers that have answered; the rest are left out": "Собрать файл из ответивших серверов; остальные не войдут",
+  "range|Done": "Готово",
+  "Read and sent: its part of the range is in the file.": "Прочитано и отправлено: его часть периода есть в файле.",
+  "Reading": "Читает",
+  "Reading its logs, at low priority. A full log takes a few seconds.": "Читает свои логи с низким приоритетом. Полный лог — несколько секунд.",
+  "Asked": "Запрошено",
+  "Asked: a server starts within a sync or two.": "Запрошено: сервер начнёт через синхронизацию-две.",
+  "Left out": "Не вошёл",
+  "The file was made before it finished.": "Файл собран раньше, чем он закончил.",
+  "This node's build is too old for range downloads. Update it to include its logs.":
+    "Сборка этой ноды слишком старая для скачивания за период. Обновите её, чтобы её логи вошли в файл.",
+  "It stopped answering while it read, or ran past the 10-minute limit.": "Перестал отвечать во время чтения или не уложился в 10 минут.",
+  "Newest part only": "Только новые строки",
+  "Its share of the 50 MB was full, so the file has the end of its range. Narrow the range or the servers for the rest.":
+    "Его доля из 50 МБ заполнилась, поэтому в файле конец периода. Чтобы получить остальное, сузьте период или список серверов.",
+  "This node's live logs": "Логи этой ноды онлайн",
+  "These turn proxies' live logs": "Логи этих turn-прокси онлайн",
+  "Panel log budget → {v1} MB": "Лимит логов панели → {v1} МБ",
+  "{v1}: the log budget must be at least {v2} MB": "{v1}: лимит логов должен быть не меньше {v2} МБ",
+  "The log budget must be a whole number of MB, at least {v1}.": "Лимит логов — целое число МБ, не меньше {v1}.",
   "Change the panel username and password — applied on *{v1}*. Changing either takes effect immediately and you'll be asked to sign in again. Changing the password also re-keys your *Encryption Vault* in place, so stored configs and subscription links keep working (no re-issue).":
     "Смена логина и пароля панели — применяется по кнопке *{v1}*. Любое из изменений действует сразу, и вас попросят войти заново. Смена пароля также перевыпускает ключ вашего *хранилища шифрования* на месте, поэтому сохранённые конфиги и ссылки на подписки продолжают работать (перевыпуск не нужен).",
   "required to confirm a change": "нужен для подтверждения изменения",
@@ -1845,6 +2093,12 @@ export const STR = {
   "Hide these and close them on every node": "Скрыть их и закрыть на всех нодах",
   "Show these again — each node's own switch then decides who reaches it": "Снова показывать их — дальше доступ решает переключатель на самой ноде",
   "Node local networks — shown in the panel": "Локальные сети нод — показаны в панели",
+  "Trusted sources": "Доверенные источники",
+  "Addresses the port-scan guard never flags. A management box that reaches many servers looks like a scanner to it — name it here to leave it alone. One IP or range a line; a bare IP means that one host. Everything else is still checked.": "Адреса, которые защита от сканов портов никогда не помечает. Управляющий сервер, обращающийся ко множеству серверов, выглядит для неё как сканер — укажите его здесь, чтобы не трогать. По одному IP или диапазону в строке; одиночный IP — это один хост. Всё остальное по-прежнему проверяется.",
+  "Port-scan guard — trusted sources updated": "Защита от сканов портов — доверенные источники обновлены",
+  "Not a valid IPv4 address or range: {v1}": "Неверный IPv4-адрес или диапазон: {v1}",
+  "Too broad for a never-flag list (use /16 or narrower): {v1}": "Слишком широкий диапазон для списка исключений (используйте /16 или уже): {v1}",
+  "Too many trusted sources — {v1} over the limit of 256.": "Слишком много доверенных источников — на {v1} больше лимита в 256.",
   "Mesh links — {v1}": "Связи в меше — {v1}",
   "Node local networks — hidden, and closed on every node": "Локальные сети нод — скрыты и закрыты на всех нодах",
   "Status timing": "Тайминги статусов",
@@ -2149,7 +2403,11 @@ export const STR = {
   "The node reads the unit's ExecStart (listen, forwards-to, wrap key) on its next sync and it shows up here.":
     "Нода прочитает ExecStart юнита (прослушивание, куда ведёт, ключ обёртки) на следующей синхронизации, и он появится здесь.",
   "Service unit path": "Путь к юниту службы",
-  "An address on this server — the proxy binds to it": "Адрес на этом сервере — прокси к нему привязывается",
+  "What clients dial (over the VK relay)": "Куда звонят клиенты (через реле VK)",
+  "Listens on all addresses (0.0.0.0); clients dial `{v1}`.": "Слушает на всех адресах (0.0.0.0); клиенты подключаются к `{v1}`.",
+  "Listens on all addresses (0.0.0.0), and clients have no host to dial — set the node's ingress address in {v1}.":
+    "Слушает на всех адресах (0.0.0.0), а клиентам некуда подключаться — задайте адрес входа ноды в {v1}.",
+  "Not an address of this node, so it listens on all addresses (0.0.0.0).": "Это не адрес этой ноды, поэтому сервер слушает на всех адресах (0.0.0.0).",
 
   // WDTT server
   "WDTT server requested — the node installs it on its next sync. Add users from Peers.":
@@ -2265,6 +2523,7 @@ export const STR = {
   "Endpoint host / IP": "Хост / IP эндпоинта",
   "Public endpoint host / IP": "Публичный хост / IP эндпоинта",
   "Auto (node's detected address)": "Авто (определённый адрес ноды)",
+  "IP or hostname — e.g. vpn.example.com": "IP или имя хоста — например, vpn.example.com",
   "vpn.xyz.com or 203.0.113.7": "vpn.xyz.com или 203.0.113.7",
   "What clients dial": "Куда звонят клиенты",
   "What clients dial. Leave blank to use the node's detected address.":
@@ -2329,8 +2588,50 @@ export const STR = {
   "AmneziaWG parameters": "Параметры AmneziaWG",
   "Rendered into configs/QRs. Leave blank to keep the interface's existing values.":
     "Подставляются в конфиги и QR. Оставьте пустым, чтобы сохранить текущие значения интерфейса.",
-  "Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.":
-    "Отправляются на интерфейс ноды и подставляются в конфиги и QR. После изменения существующим клиентам нужен повторный импорт.",
+  "Pushed to the node's interface and rendered into configs/QRs. Existing devices must re-import after a change, except a change of disguise: each side sends its own.":
+    "Отправляются на интерфейс ноды и подставляются в конфиги и QR. После изменения существующим устройствам нужен повторный импорт — кроме смены маскировки: каждая сторона отправляет свою.",
+  // AmneziaWG "Disguise as" — the picker over I1–I5 in the Edit sheet (docs/AWG-MIMICRY-PLAN.md §3.1, §5)
+  "Disguise as": "Маскировка под",
+  "mimic|Off": "Нет",
+  "DNS query": "DNS-запрос",
+  "Built-in": "Встроенная",
+  "mimic|Custom": "Своя",
+  "disguise: off": "маскировка: нет",
+  "disguise: QUIC": "маскировка: QUIC",
+  "disguise: DNS": "маскировка: DNS",
+  "disguise: built-in": "маскировка: встроенная",
+  "disguise: custom": "маскировка: своя",
+  "no packets before the handshake": "без пакетов перед хендшейком",
+  "1 packet, {v1}–{v2} bytes": "1 пакет, {v1}–{v2} байт",
+  "The disguise sends before each handshake: {v1}, {v2} — about {v3} a month for a device that stays connected.":
+    "Маскировка отправляет перед каждым хендшейком: {v1}, {v2} — около {v3} в месяц для постоянно подключённого устройства.",
+  "No packets before the handshake.": "Перед хендшейком пакетов нет.",
+  "{v1} is {v2} — above 1232 it may be split on a 1280-byte path, and split packets stand out.":
+    "{v1} — {v2}. Больше 1232 пакет может быть фрагментирован на пути с MTU 1280, а фрагменты заметны.",
+  "The set every swgPanel install ships, the same on every server.": "Набор, который ставит каждая установка swgPanel, — одинаковый на всех серверах.",
+  "QUIC looks most natural on UDP 443 — this interface listens on {v1}.": "QUIC естественнее всего выглядит на UDP 443, а этот интерфейс слушает {v1}.",
+  "Changes only what the packets before each handshake look like. It does not help where only listed addresses are allowed — a TURN server is the way there.":
+    "Меняет только вид пакетов перед каждым хендшейком. Не помогает там, где разрешены только адреса из списка, — там нужен TURN-сервер.",
+  "Configs issued from now on carry no disguise.": "Новые конфиги будут без маскировки.",
+  "Configs issued from now on are disguised as {v1}.": "Новые конфиги будут маскироваться под {v1}.",
+  "Configs issued from now on carry the I1–I5 below.": "Новые конфиги получат I1–I5, заданные ниже.",
+  // budget-ok: a hint line under the picker, wraps
+  "On Save, devices keep working. Configs issued or re-imported from now on carry no disguise. Devices on this interface keep their current one until re-imported ({v1}).":
+    "После сохранения устройства продолжат работать. Конфиги, выданные или переимпортированные с этого момента, будут без маскировки. Устройства на этом интерфейсе сохранят прежнюю до переимпорта ({v1}).",
+  // budget-ok: a hint line under the picker, wraps
+  "On Save, devices keep working. Configs issued or re-imported from now on are disguised as {v1}. Devices on this interface keep their current disguise until re-imported ({v2}).":
+    "После сохранения устройства продолжат работать. Конфиги, выданные или переимпортированные с этого момента, будут маскироваться под {v1}. Устройства на этом интерфейсе сохранят прежнюю маскировку до переимпорта ({v2}).",
+  // budget-ok: a hint line under the picker, wraps
+  "On Save, devices keep working. Configs issued or re-imported from now on carry the I1–I5 below. Devices on this interface keep their current ones until re-imported ({v1}).":
+    "После сохранения устройства продолжат работать. Конфиги, выданные или переимпортированные с этого момента, получат I1–I5, заданные ниже. Устройства на этом интерфейсе сохранят прежние до переимпорта ({v1}).",
+  "The interface restarts; connected devices reconnect in about 15 seconds.": "Интерфейс перезапустится; подключённые устройства переподключатся примерно через 15 секунд.",
+  "{v1}: a random part is at most 1000 bytes — split it, like <r 1000><r 214>.": "{v1}: случайная часть — не больше 1000 байт; разбейте её, например <r 1000><r 214>.",
+  "{v1}: <c> is gone from AmneziaWG 3.x, and apps refuse the whole config.": "{v1}: тега <c> нет в AmneziaWG 3.x — приложения отвергнут весь конфиг.",
+  "{v1}: <t> appears twice — once per packet at most.": "{v1}: <t> встречается дважды — в пакете он может быть только один.",
+  "{v1}: holds a character apps cannot read — a line break, a tab, or anything outside plain ASCII.": "{v1}: содержит символ, который приложения не прочитают, — перевод строки, табуляцию или что-либо кроме обычного ASCII.",
+  "{v1}: more than one UDP packet can carry (65,507 bytes).": "{v1}: больше, чем вмещает один UDP-пакет (65 507 байт).",
+  "{v1}: longer than 4096 characters.": "{v1}: длиннее 4096 символов.",
+  "{v1}: apps cannot read {v2} — use <b 0x…>, <r N>, <rc N>, <rd N> or <t>.": "{v1}: приложения не прочитают {v2} — используйте <b 0x…>, <r N>, <rc N>, <rd N> или <t>.",
   // budget-ok: disclosure title, own line
   "Filters & abuse": "Фильтры и ограничения",
   "Advanced settings": "Дополнительно",
@@ -2697,6 +2998,8 @@ export const STR = {
   // budget-ok: toolbar button, row has a grow spacer
   "Add rule": "Добавить правило",
   "Everything else": "Всё остальное",
+  "“Everything else → Block” stops each new connection before its site name is read, so the rules above that match by site name never take effect: those sites are blocked too. Route them by address (an IP range or a network) instead, or block by name only what you don't want.":
+    "«Всё остальное → Заблокировать» останавливает каждое новое соединение раньше, чем прочитано имя сайта, поэтому правила выше, срабатывающие по имени сайта, не действуют: эти сайты тоже блокируются. Направьте их по адресу (диапазон IP или сеть) или блокируйте по имени только то, что не нужно.",
   // A rule whose destination has been removed from the panel. «Указывает в никуда» is the plain reading of
   // a control that renders blank while a real choice sits in the store.
   "{v1} pointing nowhere": "указывают в никуда: {v1}",
@@ -2770,6 +3073,8 @@ export const STR = {
   "Forward to {node}": "Переслать на {node}",
   "Per-destination smart routing": "Умная маршрутизация по назначению",
   "Exit via WARP": "Выход через WARP",
+  "Exit via a custom config": "Выход через свой конфиг",
+  "Uncategorised": "Без категории",
   "Custom interface…": "Свой интерфейс…",
   "Ways out of {v1}": "Выходы ноды {v1}",
   "Every way *{v1}* can leave that isn't its own address. WARP accounts and pasted profiles are created under Settings → WARP; the devices below the line are this node's own, or names you add here.":
@@ -2900,7 +3205,7 @@ export const STR = {
   "Paste a custom config": "Вставить свой конфиг",
   "Paste the profile before saving.": "Перед сохранением вставьте профиль.",
   "Cloudflare WARP accounts and WireGuard profiles from anywhere else. Websites see the exit rather than this node.":
-    "Аккаунты Cloudflare WARP и профили WireGuard откуда угодно ещё. Сайты видят exit, а не эту ноду.",
+    "Аккаунты Cloudflare WARP и профили WireGuard откуда угодно ещё. Сайты видят этот выход, а не эту ноду.",
   "WARP+ licence key — optional": "Ключ WARP+ — необязательно",
   "Paste the [Interface] / [Peer] profile here": "Вставьте сюда профиль с [Interface] / [Peer]",
   "Paste a WireGuard profile for the new exit, or remove it.":
@@ -3085,12 +3390,28 @@ export const STR = {
   // «перезапусков: N» — the count after a colon, so it never has to agree with a noun (3 перезапуска / 5 перезапусков)
   "{v1}: crash-looping — {v2} restarts in {v3} min": "{v1}: падает по кругу — перезапусков за {v3} мин: {v2}",
   "the address clients dial ({v1}) is no longer on this node — new turn-proxies are created with it and will fail to start": "адрес, на который подключаются клиенты ({v1}), больше не принадлежит этой ноде — новые turn-прокси создаются с ним и не смогут запуститься",
+  "the address clients dial ({v1}) is not on this node — fine behind NAT that forwards it here; otherwise clients cannot reach this node": "адрес, на который подключаются клиенты ({v1}), не принадлежит этой ноде — за NAT, который пробрасывает его сюда, это нормально; иначе клиенты не могут подключиться к этой ноде",
   "{v1} {v2} is bound to {v3}, which is no longer on this node": "{v1} {v2} привязан к {v3} — этого адреса больше нет на ноде",
   "{v1}: interface missing on the node (restore available)": "{v1}: интерфейс отсутствует на ноде (доступно восстановление)",
   "AmneziaWG kernel module not built/loaded — awg interfaces run on the slower fallback datapath; update the node to rebuild the module": "Модуль ядра AmneziaWG не собран или не загружен — awg-интерфейсы работают на более медленном резервном датапасе в пользовательском пространстве; обновите ноду, чтобы пересобрать модуль",
   "{v1}: on the slower fallback datapath — update the node to move it back to the kernel module": "{v1}: на более медленном резервном датапасе — обновите ноду, чтобы вернуть его на модуль ядра",
   "AmneziaWG runs on the slower fallback datapath — its kernel module isn’t built or loaded; running Update rebuilds it": "AmneziaWG работает на более медленном резервном датапасе — модуль ядра не собран или не загружен; «Обновить» пересоберёт его",
   "AmneziaWG kernel module not built/loaded — awg interfaces can't come up; update the node to rebuild it": "Модуль ядра AmneziaWG не собран или не загружен — awg-интерфейсы не поднимутся; обновите ноду, чтобы пересобрать его",
+  "AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces run on the slower fallback datapath. Enrol the key once on the node: sudo mokutil --import {v1}, reboot, and pick “Enroll MOK” at the console": "AmneziaWG: Secure Boot не пускает модуль ядра этой ноды — его ключ подписи не зарегистрирован, поэтому awg-интерфейсы работают на более медленном резервном датапасе. Зарегистрируйте ключ один раз на ноде: sudo mokutil --import {v1}, перезагрузитесь и выберите «Enroll MOK» на консоли",
+  "AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces can't come up. Enrol the key once on the node: sudo mokutil --import {v1}, reboot, and pick “Enroll MOK” at the console": "AmneziaWG: Secure Boot не пускает модуль ядра этой ноды — его ключ подписи не зарегистрирован, поэтому awg-интерфейсы не поднимутся. Зарегистрируйте ключ один раз на ноде: sudo mokutil --import {v1}, перезагрузитесь и выберите «Enroll MOK» на консоли",
+  "AmneziaWG's kernel module does not compile on this node's kernel yet — awg interfaces run on the slower fallback datapath; an update tries again when a new kernel or a newer AmneziaWG build arrives": "Модуль ядра AmneziaWG пока не собирается на ядре этой ноды — awg-интерфейсы работают на более медленном резервном датапасе; обновление попробует снова, когда выйдет новое ядро или новая сборка AmneziaWG",
+  "AmneziaWG's kernel module does not compile on this node's kernel yet — awg interfaces can't come up; an update tries again when a new kernel or a newer AmneziaWG build arrives": "Модуль ядра AmneziaWG пока не собирается на ядре этой ноды — awg-интерфейсы не поднимутся; обновление попробует снова, когда выйдет новое ядро или новая сборка AmneziaWG",
+  "the package manager on this node has unfinished work ({v1}) — every install and update on the box fails until it is finished: run sudo dpkg --configure -a on the node, then sudo apt-get -f install if anything is left": "у менеджера пакетов на этой ноде осталась незавершённая работа ({v1}) — пока её не завершить, любая установка и обновление на сервере заканчиваются ошибкой: выполните на ноде sudo dpkg --configure -a, а если что-то осталось — sudo apt-get -f install",
+  "a package manager run on this node was interrupted — every install and update on the box fails until it is finished: run sudo dpkg --configure -a on the node": "работа менеджера пакетов на этой ноде была прервана — пока её не завершить, любая установка и обновление на сервере заканчиваются ошибкой: выполните на ноде sudo dpkg --configure -a",
+  "AmneziaWG runs on the slower fallback datapath — its kernel module does not compile on this kernel yet; an update tries again when a new kernel or a newer AmneziaWG build arrives": "AmneziaWG работает на более медленном резервном датапасе — модуль ядра пока не собирается на этом ядре; обновление попробует снова, когда выйдет новое ядро или новая сборка AmneziaWG",
+  "the AmneziaWG kernel module does not compile on this kernel yet — awg interfaces can’t come up; an update tries again when a new kernel or a newer AmneziaWG build arrives": "модуль ядра AmneziaWG пока не собирается на этом ядре — awg-интерфейсы не поднимутся; обновление попробует снова, когда выйдет новое ядро или новая сборка AmneziaWG",
+  "Secure Boot refuses the AmneziaWG kernel module — its signing key is not enrolled ({v1}). Enrol it once: sudo mokutil --import {v2}, reboot, and pick “Enroll MOK” at the console": "Secure Boot не пускает модуль ядра AmneziaWG — его ключ подписи не зарегистрирован ({v1}). Зарегистрируйте его один раз: sudo mokutil --import {v2}, перезагрузитесь и выберите «Enroll MOK» на консоли",
+  "awg interfaces run on the slower fallback datapath": "awg-интерфейсы работают на более медленном резервном датапасе",
+  "awg interfaces can’t come up": "awg-интерфейсы не поднимутся",
+  "AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces run on the slower fallback datapath. Enrol the key DKMS signed it with once on the node — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der on Ubuntu, /var/lib/dkms/mok.pub on Debian — then reboot and pick “Enroll MOK” at the console": "AmneziaWG: Secure Boot не пускает модуль ядра этой ноды — его ключ подписи не зарегистрирован, поэтому awg-интерфейсы работают на более медленном резервном датапасе. Зарегистрируйте ключ, которым DKMS подписал модуль, один раз на ноде — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der в Ubuntu, /var/lib/dkms/mok.pub в Debian, — затем перезагрузитесь и выберите «Enroll MOK» на консоли",
+  "AmneziaWG: Secure Boot refuses this node's kernel module — its signing key is not enrolled, so awg interfaces can't come up. Enrol the key DKMS signed it with once on the node — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der on Ubuntu, /var/lib/dkms/mok.pub on Debian — then reboot and pick “Enroll MOK” at the console": "AmneziaWG: Secure Boot не пускает модуль ядра этой ноды — его ключ подписи не зарегистрирован, поэтому awg-интерфейсы не поднимутся. Зарегистрируйте ключ, которым DKMS подписал модуль, один раз на ноде — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der в Ubuntu, /var/lib/dkms/mok.pub в Debian, — затем перезагрузитесь и выберите «Enroll MOK» на консоли",
+  "Secure Boot refuses the AmneziaWG kernel module — its signing key is not enrolled ({v1}). Enrol the key DKMS signed it with once — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der on Ubuntu, /var/lib/dkms/mok.pub on Debian — then reboot and pick “Enroll MOK” at the console": "Secure Boot не пускает модуль ядра AmneziaWG — его ключ подписи не зарегистрирован ({v1}). Зарегистрируйте ключ, которым DKMS подписал модуль, один раз — sudo mokutil --import /var/lib/shim-signed/mok/MOK.der в Ubuntu, /var/lib/dkms/mok.pub в Debian, — затем перезагрузитесь и выберите «Enroll MOK» на консоли",
+  "An update cannot fix this — the key has to be enrolled once at the box's console, after a reboot. Until then awg interfaces stay on the userspace datapath, if it is installed.": "Обновление этого не исправит — ключ нужно один раз зарегистрировать в консоли сервера после перезагрузки. До тех пор awg-интерфейсы остаются на датапасе в пользовательском пространстве, если он установлен.",
   "IP forwarding is off on this node — peers connect but nothing they send can leave it. Set net.ipv4.ip_forward=1 on the host (a container can't set it for itself).": "На этой ноде выключена IP-маршрутизация — пиры подключаются, но отправленный ими трафик не может уйти с сервера. Установите net.ipv4.ip_forward=1 на хосте (контейнер не может сделать это сам).",
   "{v1}: this mesh link listens on UDP {v2}, outside this node's declared firewall range ({v3}) — other nodes cannot open the link to this one; it only comes up while this node dials out. Add the mesh port band to the range": "{v1}: меш-линк слушает UDP {v2} вне объявленного диапазона фаервола этой ноды ({v3}) — другие ноды не могут открыть линк к ней, он поднимается, только пока эта нода подключается сама. Добавьте в диапазон порты меш-линков",
   "{v1}: listens on UDP {v2}, outside this node's declared firewall range ({v3}) — clients cannot reach it until the range covers that port, or the interface moves inside it": "{v1}: слушает UDP {v2} вне объявленного диапазона фаервола этой ноды ({v3}) — клиенты не смогут подключиться, пока диапазон не покроет этот порт или интерфейс не переедет внутрь него",
@@ -3428,8 +3749,20 @@ export const STR = {
     "С этого IP нода выходит в интернет по умолчанию. Он применяется там, где свой IP выхода не задан — к любому интерфейсу этой ноды и к трафику, пришедшему с других нод. Если у интерфейса задан свой IP выхода, используется он. Трафик, который уходит в интернет через другую ноду, это не затрагивает.",
   "Panel egress connection IP": "IP для связи с панелью",
   "— source to reach the panel": "— источник для доступа к панели",
-  "This doesn't resolve to an address on this node. The proxy *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.": "Это имя не разрешается в адрес этого узла. Прокси *привязывается* к нему, поэтому оно должно указывать на эту машину, иначе он падает с `bind: cannot assign requested address`.",
-  "This doesn't resolve to an address on this node. The server *binds* to it, so it must land on this box, or it dies with `bind: cannot assign requested address`.": "Это имя не разрешается в адрес этого узла. Сервер *привязывается* к нему, поэтому оно должно указывать на эту машину, иначе он падает с `bind: cannot assign requested address`.",
+  "Not an address of this node, and this node's version binds it as typed, so the server would fail with `bind: cannot assign requested address`. Update the node, or enter one of its own addresses.":
+    "Это не адрес этой ноды, а её версия привязывается к адресу как есть, поэтому сервер упадёт с `bind: cannot assign requested address`. Обновите ноду или укажите один из её собственных адресов.",
+  "This server still binds the address as typed — it was set up before this node could listen on all addresses — so it cannot start. *Restart service* to apply it.":
+    "Этот сервер всё ещё привязывается к адресу как есть — его настроили раньше, чем нода научилась слушать на всех адресах, — поэтому он не может запуститься. Нажмите *Перезапустить*, чтобы применить.",
+  "This node has several IPv4 addresses. Listening on all of them, a reply can leave from one clients didn't dial, and the VK relay drops it. Pick the address to listen on under *Listen on* — behind NAT, the one your router forwards this port to.":
+    "У этой ноды несколько IPv4-адресов. Когда сервер слушает на всех, ответ может уйти с адреса, к которому клиенты не подключались, и реле VK его отбросит. Выберите адрес в поле *Слушать на* — за NAT тот, на который роутер пробрасывает этот порт.",
+  "Listen on": "Слушать на",
+  "Listen on must be an IPv4 address of this node, or Auto": "«Слушать на» — IPv4-адрес этой ноды или «Авто»",
+  "private": "частный",
+  "not on this node": "нет на этой ноде",
+  "Only this address — replies leave from it. Clients still dial the endpoint above.":
+    "Только этот адрес — ответы уходят с него. Клиенты по-прежнему подключаются к эндпоинту выше.",
+  "The endpoint's own address when it is on this node, otherwise all addresses.":
+    "Адрес эндпоинта, если он есть на этой ноде, иначе все адреса.",
   "Transfer token": "Токен переноса",
   "— to move an existing node here": "— чтобы перенести сюда узел",
   "Carries this panel's address and this token together. On the panel that has the node now: its Transfer window, and paste this — nothing is installed.": "Содержит адрес этой панели и этот токен вместе. На панели, где сейчас узел, откройте «Перенос» и вставьте это — ничего не устанавливается.",
@@ -3456,7 +3789,7 @@ export const STR = {
   "Clearing…": "Очищаем…",
   "Couldn't clear it.": "Не удалось очистить.",
   "The panel changes these for you when the node comes back. An address of the old box cannot be bound on the new one, and its address is not known yet — so a listener becomes 0.0.0.0, which is every address the new box turns out to have, and a source address becomes auto. Clients are unaffected either way: a wildcard listener is what tells the panel to advertise this node's ingress name, exactly as a wg/awg interface already does. Anything not listed keeps what it has.": "Панель меняет это за вас, когда узел вернётся. Адрес старой машины нельзя занять на новой, а её адрес пока неизвестен — поэтому слушатель становится 0.0.0.0, то есть всеми адресами, какие у новой машины окажутся, а исходящий адрес — «авто». Клиентов это никак не задевает: 0.0.0.0 как раз и означает, что панель объявляет имя входа этого узла — ровно так же, как уже делает интерфейс wg/awg. Всё, чего нет в списке, сохраняется как есть.",
-  "word|endpoint": "endpoint",
+  "word|endpoint": "эндпоинт",
   "word|egress": "egress",
   "word|panel source": "источник к панели",
   "word|mesh source": "источник к узлам",
@@ -3477,10 +3810,10 @@ export const STR = {
   "Reclaimed {v1} — {v2} user(s) kept": "{v1} возвращён, юзеров: {v2}",
   "Couldn't reclaim {v1}": "Не удалось вернуть {v1}",
   "Take this server back under the panel, keeping the users in its store": "Вернуть этот сервер под управление панели, сохранив пользователей из его хранилища",
-  "Mesh egress IP": "IP для mesh",
+  "Mesh egress IP": "IP для меша",
   "— source to dial other nodes": "— источник для других узлов",
-  "Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.": "С какого из адресов этого узла он подключается к mesh-связям других узлов. Отдельное соединение может переопределить это на своей карточке.",
-  "mesh egress IP → {v1}": "IP для mesh → {v1}",
+  "Which of this node's addresses it dials the other nodes' mesh links from. A single connection can still override it on its own card.": "С какого из адресов этого узла он подключается к меш-связям других узлов. Отдельное соединение может переопределить это на своей карточке.",
+  "mesh egress IP → {v1}": "IP для меша → {v1}",
   "Source IP this node uses to reach the panel. Ignored on same-server installs; falls back to auto if it can't connect.":
     "Адрес источника, с которого нода обращается к панели. На установках на одном сервере игнорируется; при неудаче — авто.",
   "Mesh settings (ingress address, subnet, port, prefix, AWG) for this node are configured in {where} — select this node there.":
@@ -3853,8 +4186,7 @@ export const STR = {
   // narrow-width problem is the header's own, not this string's; kept correct rather than trimmed for it.
   "fix {count}": "исправить {count}",
   // budget-ok: hover caption, no box
-  "On the latest version — click to re-run the updater anyway (repairs this box: reinstalls missing pieces, re-enables services, rebuilds the datapath / AmneziaWG kernel module)":
-    "Версия последняя — нажмите, чтобы всё равно запустить обновление (чинит этот сервер: доустанавливает недостающее, включает службы, пересобирает датапас / модуль ядра AmneziaWG)",
+  "This panel is on the latest version": "На этой панели последняя версия",
   // budget-ok: hover caption on an icon button, no box
   "Check status": "Проверить состояние",
 
@@ -4009,10 +4341,10 @@ export const STR = {
   "acme.sh said:": "acme.sh ответил:",
   "Details:": "Подробности:",
   "Nothing was renewed.": "Ничего не обновлено.",
-  "*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one — and acme.sh will install its next renewal over it ({v1}).* Nodes that pinned the self-signed certificate stop syncing at that moment. Switch now with *Save*, then re-run the node installer on the nodes that pinned it.":
-    "*У acme.sh есть сертификат публичного CA для этого адреса, но панель всё ещё отдаёт самоподписанный — и acme.sh установит поверх него своё следующее обновление ({v1}).* Ноды, закрепившие самоподписанный сертификат, в этот момент перестанут синхронизироваться. Замените его сейчас кнопкой *Сохранить*, затем перезапустите установщик ноды на нодах, которые его закрепили.",
-  "*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one.* It is not swapped automatically: nodes that pinned the self-signed certificate would stop syncing. Switch it here with *Save*, then re-run the node installer on the nodes that pinned it.":
-    "*У acme.sh есть сертификат публичного CA для этого адреса, но панель всё ещё отдаёт самоподписанный.* Автоматически он не заменяется: ноды, закрепившие самоподписанный сертификат, перестали бы синхронизироваться. Замените его здесь кнопкой *Сохранить*, затем перезапустите установщик ноды на нодах, которые его закрепили.",
+  "*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one — and acme.sh will install its next renewal over it ({v1}).* Nodes that pinned the self-signed certificate stop syncing at that moment. Switch now with *Save*, then re-run the node installer on the nodes that pinned it — on a NixOS node, clear `services.swg-node.panelTlsFingerprint` and set `verifyPanelTls = true` in its configuration.nix, run `nixos-rebuild switch` and restart `swg-noded`.":
+    "*У acme.sh есть сертификат публичного CA для этого адреса, но панель всё ещё отдаёт самоподписанный — и acme.sh установит поверх него своё следующее обновление ({v1}).* Ноды, закрепившие самоподписанный сертификат, в этот момент перестанут синхронизироваться. Замените его сейчас кнопкой *Сохранить*, затем перезапустите установщик ноды на нодах, которые его закрепили; на ноде NixOS очистите `services.swg-node.panelTlsFingerprint` и задайте `verifyPanelTls = true` в её configuration.nix, выполните `nixos-rebuild switch` и перезапустите `swg-noded`.",
+  "*acme.sh holds a certificate from a public CA for this address, but the panel still serves its self-signed one.* It is not swapped automatically: nodes that pinned the self-signed certificate would stop syncing. Switch it here with *Save*, then re-run the node installer on the nodes that pinned it — on a NixOS node, clear `services.swg-node.panelTlsFingerprint` and set `verifyPanelTls = true` in its configuration.nix, run `nixos-rebuild switch` and restart `swg-noded`.":
+    "*У acme.sh есть сертификат публичного CA для этого адреса, но панель всё ещё отдаёт самоподписанный.* Автоматически он не заменяется: ноды, закрепившие самоподписанный сертификат, перестали бы синхронизироваться. Замените его здесь кнопкой *Сохранить*, затем перезапустите установщик ноды на нодах, которые его закрепили; на ноде NixOS очистите `services.swg-node.panelTlsFingerprint` и задайте `verifyPanelTls = true` в её configuration.nix, выполните `nixos-rebuild switch` и перезапустите `swg-noded`.",
   "a certificate renewal is running — try again when it has finished (a minute or two)":
     "идёт обновление сертификата — повторите, когда оно закончится (минута-другая)",
   "acme.sh renewed the certificate, but the panel did not install it.": "acme.sh обновил сертификат, но панель его не установила.",
@@ -4034,8 +4366,8 @@ export const STR = {
     " При сохранении `{v1}` поднимется *вместе* с текущим портом (работают оба) — затем перенастройте прокси и подтвердите, чтобы убрать старый, без простоя. Внешние ноды ходят на публичный адрес через прокси, им менять нечего; только ноде на этой же машине, который ходит на `127.0.0.1`, нужно поправить порт в `panel.url`.",
   " The public URL is served by *your reverse proxy*, not the panel — make sure the proxy serves it (server_name / TLS cert / path) before relying on it. The panel's own mount path stays `SWG_PANEL_BASE`. Nodes are told this URL as their dial address, so external nodes re-point to it on their next sync — make sure they can reach it; one that can't must have its `panel.url` updated by hand.":
     " Публичный адрес отдаёт *ваш обратный прокси*, а не панель — прежде чем на него полагаться, проверьте прокси (server_name, сертификат, путь). Свой путь монтирования панель берёт из `SWG_PANEL_BASE`. Нодам этот адрес сообщается как адрес подключения, так что внешние перейдут на него при следующей синхронизации — убедитесь, что он им доступен; кому нет, тому `panel.url` придётся править вручную.",
-  "*Nodes re-point themselves.* On save, online nodes learn the new address on their next sync and switch to it — the old address stays reachable for ~3 minutes so they can. A node that is *offline* during the change (or one installed without verifying/pinning the panel cert) must be re-pointed by hand: set `panel.url` in `/etc/swg-agent/config.json` (bare-metal) or `PANEL_URL` in `.env` (docker) to the new address, then restart `swg-noded` / recreate the container.":
-    "*Ноды перейдут сами.* После сохранения те, что на связи, узнают новый адрес при следующей синхронизации и перейдут — старый адрес держится ещё около 3 минут, чтобы они успели. Нода, который был *офлайн* во время смены (или ставился без проверки и закрепления сертификата панели), придётся перенастроить руками: пропишите `panel.url` в `/etc/swg-agent/config.json` (без Docker) или `PANEL_URL` в `.env` (Docker) и перезапустите `swg-noded` либо пересоздайте контейнер.",
+  "*Nodes re-point themselves.* On save, online nodes learn the new address on their next sync and switch to it — the old address stays reachable for ~3 minutes so they can. A node that is *offline* during the change (or one installed without verifying/pinning the panel cert) must be re-pointed by hand: set `panel.url` in `/etc/swg-agent/config.json` (bare-metal) or `PANEL_URL` in `.env` (docker) to the new address, then restart `swg-noded` / recreate the container; on NixOS, set `services.swg-node.panelUrl` in the node's configuration.nix, run `nixos-rebuild switch` and restart `swg-noded`.":
+    "*Ноды перейдут сами.* После сохранения те, что на связи, узнают новый адрес при следующей синхронизации и перейдут — старый адрес держится ещё около 3 минут, чтобы они успели. Нода, который был *офлайн* во время смены (или ставился без проверки и закрепления сертификата панели), придётся перенастроить руками: пропишите `panel.url` в `/etc/swg-agent/config.json` (без Docker) или `PANEL_URL` в `.env` (Docker) и перезапустите `swg-noded` либо пересоздайте контейнер; на NixOS задайте `services.swg-node.panelUrl` в configuration.nix ноды, выполните `nixos-rebuild switch` и перезапустите `swg-noded`.",
   "Reverse-proxy config for the panel (nginx) — full `server { }` for the values above":
     "Конфиг прокси для панели (nginx) — готовый `server { }` под значения выше",
   "Built from the domain, external port, path (from the Public URL) and the internal listen address above. Point `ssl_certificate` at your real cert, then `nginx -t && systemctl reload nginx`.":
@@ -4156,14 +4488,14 @@ export const STR = {
   "How many rows the Overview's ranked lists show (1–50).":
     "Сколько строк показывать в рейтингах на «Обзоре» (1–50).",
   "All settings saved": "Все настройки сохранены",
-  "Overrides for *{v1}* — blank inherits the default. Changing the subnet, prefix, or AWG re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config).":
-    "Параметры для *{v1}* — пустое поле берёт значение по умолчанию. Смена подсети, префикса или параметров AWG пересоберёт подключения этой ноды при сохранении (она ненадолго выпадет из сети, пока соседи переподключаются).",
+  "Overrides for *{v1}* — blank inherits the default. Changing the subnet or prefix re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config). A link's type and AWG params are set on its card under Node connections.":
+    "Параметры для *{v1}* — пустое поле берёт значение по умолчанию. Смена подсети или префикса пересоберёт подключения этой ноды при сохранении (она ненадолго выпадет из сети, пока соседи переподключаются с новыми настройками). Тип линка и его параметры AWG задаются на его карточке в «Связях ноды».",
   "Ingress address": "Адрес входа",
   "— what peers and clients dial to reach this node": "— по нему к этой ноде подключаются и пиры, и клиенты",
   "Hostname or IP — e.g. node.example.com": "Имя хоста или IP — например node.example.com",
   "(auto)": "(авто)",
-  "Obfuscation for the mesh links that terminate on *{v1}* — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).":
-    "Маскировка для связей сети, которые приходят на *{v1}* — каждая подключающаяся нода примет её и переподключится при сохранении. Пусто — авто (свой набор на связь).",
+  "Both ends of this link use these. A blank cell takes the fleet's default in Settings → Mesh, else a fresh value when the link is rebuilt.":
+    "Их используют оба конца этого линка. Пустое поле берёт значение флота по умолчанию из «Настройки → Меш», а без него — новое значение при пересборке линка.",
   "Configure a panel login first.": "Сначала настройте вход в панель.",
   "Sign-in requires a code from your authenticator app. Keep your recovery codes somewhere safe in case you lose the device.":
     "Для входа нужен код из приложения-аутентификатора. Сохраните запасные коды в надёжном месте на случай потери устройства.",
@@ -4457,8 +4789,56 @@ export const STR = {
   "healthy": "работает",
   "down — host routing degraded": "не работает — домены страдают",
   "OFF — routing stays fresh, no remembered IPs": "ВЫКЛ — маршруты свежие, адреса не запоминаются",
-  "Drop BitTorrent / P2P — protects this exit IP's reputation. Free port-hint by default; signature scan where the node supports it.":
-    "Резать BitTorrent и P2P — бережёт репутацию этого выходного адреса. По умолчанию дёшево, по портам; где нода умеет — по сигнатурам.",
+  "Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. Counts only when the server's own Torrents / P2P setting is “Each interface decides”: by default the server blocks it on every way out.":
+    "Резать BitTorrent и P2P с этого интерфейса на любом порту — их узнают по протоколу и по характеру соединений. Действует, только если в настройке сервера «Торренты / P2P» выбрано «Решает каждый интерфейс»: по умолчанию сервер закрывает их на всех выходах.",
+  // the node-wide torrent policy (Settings ▸ node ▸ Network ▸ Filters & abuse)
+  "Torrents / P2P": "Торренты / P2P",
+  "Torrents / P2P: {v1}": "Торренты / P2P: {v1}",
+  "Torrents / P2P: {v1} — not in force on this node until it is updated": "Торренты / P2P: {v1} — на этой ноде не действует, пока её не обновят",
+  "Block everywhere": "Блокировать везде",
+  "Allow, only out this server's own address": "Разрешить, только через собственный адрес сервера",
+  "Each interface decides": "Решает каждый интерфейс",
+  "blocked": "блокируются",
+  "this server's address only": "только через адрес сервера",
+  "per interface": "по интерфейсам",
+  "torrents → {v1}": "торренты → {v1}",
+  "Torrent traffic is dropped on every way out of this server: its interfaces and traffic other nodes send out through it. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through. Web browsing and video calls are not affected.":
+    "Торрент-трафик отбрасывается на всех выходах сервера: с его интерфейсов и от других нод, выходящих через него. Торрент-программа на самом сервере блокируется, только когда её хендшейки не зашифрованы, — зашифрованная проходит. Сайты и видеозвонки не затрагиваются.",
+  "Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.":
+    "Торрент-трафик может выходить только через собственный адрес сервера — никогда через выход или другую ноду. Остальной трафик идёт своим маршрутом.",
+  "Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked.":
+    "Блокируют только интерфейсы, где включено «Торренты / P2P». Трафик других нод, выходящий через этот сервер, и программы на нём не проверяются.",
+  "This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.":
+    "Этот сервер не умеет читать содержимое пакетов (слишком старое ядро или nft), поэтому торренты узнаются только по характеру соединений.",
+  // P3 — routing torrent traffic through an exit or another node
+  "via {v1}": "через {v1}",
+  "Route through {v1}": "Направлять через {v1}",
+  "Route through node {v1}": "Направлять через ноду {v1}",
+  "Torrent traffic may leave only through {v1}. If that way is down, torrent traffic is blocked — never sent out another way. Traffic other nodes send out through this server is blocked. A torrent program on the server itself is stopped only when its handshakes are unencrypted — an encrypted one gets through.":
+    "Торрент-трафик может выходить только через {v1}. Если этот путь не работает, торрент-трафик блокируется — другим путём он не уходит. Трафик других нод, выходящий через этот сервер, блокируется. Торрент-программа на самом сервере блокируется, только когда её хендшейки не зашифрованы, — зашифрованная проходит.",
+  "{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.":
+    "{v1} блокирует торрент-трафик, который ей присылают другие ноды, — направленное туда не выйдет. Разрешите его на {v1} или оставьте решать каждому интерфейсу.",
+  "Through another node": "Через другую ноду",
+  "There is no mesh link to {v1}.": "До {v1} нет меш-связи.",
+  "{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.": "{v1} сейчас не выходит на связь — торрент-трафик, отправленный туда, не выйдет, пока связь не вернётся.",
+  "Chosen automatically: this is the default. An interface's own Torrents / P2P switch counts only when you pick “Each interface decides”.":
+    "Выбрано автоматически: это значение по умолчанию. Переключатель «Торренты / P2P» на интерфейсе действует, только если выбрать «Решает каждый интерфейс».",
+  "the torrent route's way out is down — torrent traffic is blocked until it is back":
+    "путь для торрентов сейчас не работает — пока он не восстановится, торрент-трафик блокируется",
+  "Torrent route removed": "Маршрут для торрентов снят",
+  "its exit or node is gone — torrent traffic is now blocked": "его выход или нода удалены — торрент-трафик теперь блокируется",
+  "the torrent route is unavailable — torrent traffic is blocked until it is":
+    "маршрут для торрентов недоступен — пока он не заработает, торрент-трафик блокируется",
+  "torrents can only be routed to another node of this fleet": "торренты можно направить только на другую ноду этого флота",
+  "torrents can only be routed through one of this node's exits": "торренты можно направить только через один из выходов этой ноды",
+  "torrent policy must be one of: {v1}": "политика торрентов — одно из: {v1}",
+  "the torrent policy needs a node update — until then torrents are blocked only on interfaces that have Torrents / P2P switched on":
+    "для политики торрентов нужно обновить ноду — пока торренты блокируются только на интерфейсах, где включено «Торренты / P2P»",
+  // the node could not load its torrent rules ({v1}: nft's own first error line, left in English)
+  "the torrent policy is not in force on this node — its rules failed to load ({v1}); until they load, torrents are not blocked or routed as set":
+    "политика торрентов не действует на этой ноде — её правила не загрузились ({v1}); пока они не загрузятся, торренты не блокируются и не направляются так, как задано",
+  "the torrent policy is not in force on this node — its rules failed to load; until they load, torrents are not blocked or routed as set":
+    "политика торрентов не действует на этой ноде — её правила не загрузились; пока они не загрузятся, торренты не блокируются и не направляются так, как задано",
   "Drop outbound mail on TCP :25 — stops spam being relayed through this exit.":
     "Резать исходящую почту на TCP :25 — через этот выход не пойдёт спам.",
   "Rate-limit outbound port-scans, brute-force and SYN-floods leaving this interface.":
@@ -4507,6 +4887,7 @@ export const STR = {
   "Couldn't check for updates.": "Не удалось проверить обновления.",
   "No notes for this release.": "Описания у этого выпуска нет.",
   "See the changelog for what's new.": "Что нового — в списке изменений.",
+  "What's new in {v}": "Что нового в {v}",
   "Panel services need attention": "Службам панели нужно внимание",
   "Port scans": "Сканы портов",
   "Torrents caught": "Поймано торрентов",
@@ -4617,7 +4998,6 @@ export const STR = {
   "Days are counted in {v1}": "Сутки считаются по поясу {v1}",
   "Days are counted in this server's zone": "Сутки считаются по поясу этого сервера",
   "System mesh defaults": "Умолчания системной сети",
-  "mesh AWG params": "параметры AWG сети",
   "Geo lists will refresh on each node's next sync.": "Гео-списки обновятся при следующей синхронизации нод.",
   "Couldn't save the list.": "Не удалось сохранить список.",
   "Content filters": "Фильтры содержимого",
@@ -4713,7 +5093,7 @@ export const STR = {
   "couldn't create node": "не удалось создать ноду",
   "A label for this node — you can rename it anytime. The swatches set its colour per theme.":
     "Название ноды — переименовать можно когда угодно. Образцы задают цвет для каждой темы.",
-  "Node created": "Нода создан",
+  "Node created": "Нода создана",
   "New token": "Новый токен",
   "A label for this node — rename anytime, nothing else changes. The swatches set its colour per theme.":
     "Название ноды — переименование ничего больше не меняет. Образцы задают цвет для каждой темы.",
@@ -4724,6 +5104,8 @@ export const STR = {
   "Queued — the node creates these one at a time": "В очереди — нода создаёт их по одному",
   "Listen IP is required.": "Нужен адрес прослушивания.",
   "Forward-to must be host:port.": "Пересылать нужно в виде хост:порт.",
+  "That interface is no longer on this node — pick another.": "Этого интерфейса больше нет на ноде — выберите другой.",
+  "{v1} · CLI client (desktop)": "{v1} · CLI-клиент (компьютер)",
   "Failed to save the title.": "Не удалось сохранить название.",
   "Random 64-hex key copied — paste it into the parameters":
     "Случайный ключ из 64 знаков скопирован — вставьте его в параметры",
@@ -4931,6 +5313,8 @@ export const STR = {
   "tag|pending": "ожидает",
   "tag|unsaved": "не сохр.",
   "tag|orphan": "сирота",
+  "tag|hidden": "скрыт",
+  "No longer offered for new proxies — listed while a node still runs it": "Больше не предлагается для новых прокси — показан, пока он работает на какой-нибудь ноде",
   "hdr|Encrypted DNS": "Шифрованный DNS",
   "The Encryption Vault is locked, so this peer's stored config can't be read. Unlock it to show the QR — the config has not been lost.": "Хранилище ключей заблокировано, поэтому сохранённый конфиг этого пира не прочитать. Разблокируйте его, чтобы показать QR — конфиг не потерян.",
   "This config was encrypted with a previous encryption key and can no longer be opened. Re-issue this peer to give it a fresh config and QR.": "Этот конфиг зашифрован предыдущим ключом шифрования и больше не открывается. Перевыпустите пир, чтобы получить новый конфиг и QR.",
@@ -5041,7 +5425,6 @@ export const STR = {
   // ── csqtt (amurcanov's Rust rewrite of WDTT — self-contained raw-TUN VK-turn server) ──
   "csqtt needs a /24 tunnel subnet, e.g. 10.66.67.0/24.": "csqtt нужна подсеть туннеля /24, например 10.66.67.0/24.",
   "Max passwords must be a number.": "Максимум паролей должен быть числом.",
-  "What clients dial (over the VK relay)": "Куда звонят клиенты (через реле VK)",
   "UDP DTLS listen (outside)": "Приём UDP DTLS (снаружи)",
   "Max users": "Максимум пользователей",
   "Cap on simultaneous access passwords · blank = 500": "Предел одновременных паролей доступа · пусто = 500",
@@ -5508,8 +5891,8 @@ export const STR = {
     "Как пиры, клиенты и ссылки turn-прокси попадают на *{v1}*.",
   "This is the host in every client config and turn-proxy link for this node. Prefer a hostname: moving the box then costs one DNS change, and nothing a client already holds has to be re-issued.":
     "Это тот хост, который попадает в каждый клиентский конфиг и в каждую ссылку turn-прокси этой ноды. Лучше указать имя хоста: тогда переезд машины стоит одной записи DNS, и ничего из того, что уже есть у клиентов, переиздавать не придётся.",
-  "No nodes yet — enroll a node to configure how it is reached, how it exits, and how it links.":
-    "Нод пока нет — заведите ноду, чтобы настроить вход, выход и связи.",
+  "No nodes yet — enroll a node to configure how it is reached and how it exits.":
+    "Нод пока нет — заведите ноду, чтобы настроить вход и выход.",
   "Listen (local)":
     "Слушает (локально)",
   "Mesh links":
@@ -5633,6 +6016,10 @@ export const STR = {
   "Onboarding turn-proxy": "Подключаем turn-прокси",
   "Re-ported mesh links (live)": "Связи сети переведены на новый порт (на лету)",
   "Re-provisioned mesh links": "Связи сети пересобраны",
+  "Re-provisioned mesh link": "Меш-линк пересобран",
+  "type → {v1}": "тип → {v1}",
+  "AWG params changed": "параметры AWG изменены",
+  "type → {v1}, AWG params changed": "тип → {v1}, параметры AWG изменены",
   // activity verbs for the rebuild adapter (ev_append writes English; the browser looks the sentence up)
   "Rebuild armed": "Пересборка подготовлена",
   "Rolled back to the superseded box": "Откат на прежнюю машину",
@@ -5798,6 +6185,10 @@ export const STR = {
   "mesh port must be 1–65535 (or blank)": "порт сети — от 1 до 65535 (или пусто)",
   "mesh subnet must be a CIDR (or blank)": "подсеть сети — CIDR (или пусто)",
   "mesh_mode must be auto, full or demand": "mesh_mode: auto, full или demand",
+  "mesh_awg_gen must be 2.0, 3.1 or wg": "mesh_awg_gen: 2.0, 3.1 или wg",
+  "mesh_awg_gen must be 2.0, 3.1, wg or blank": "mesh_awg_gen: 2.0, 3.1, wg или пусто",
+  "mesh_awg must be an object": "mesh_awg должен быть объектом",
+  "an AmneziaWG interface needs at least one AmneziaWG parameter — create a WireGuard interface instead": "интерфейсу AmneziaWG нужен хотя бы один параметр AmneziaWG — создайте вместо него интерфейс WireGuard",
   "mesh subnet must be an IPv4 range of /31 or larger (or blank)": "подсеть меша — диапазон IPv4 размером /31 или шире (или пусто)",
   "{v1} holds too few mesh links for this node ({v2} fit, {v3} needed) — choose a larger subnet, or leave it blank to use the panel's": "В подсети {v1} слишком мало места для меш-линков этой ноды (помещается: {v2}, нужно: {v3}) — выберите подсеть шире или оставьте поле пустым, чтобы взять подсеть панели",
   "mtu must be 576–9200": "MTU — от 576 до 9200",
@@ -6007,7 +6398,8 @@ export const STR = {
   "subscription server": "сервер подписок",
   "catalog categories": "категории каталога",
   "never updated": "не обновлялся",
-  "This node's mesh AWG params": "Параметры AWG сети этой ноды",
+  "This link's AWG params":
+    "Параметры AWG этого линка",
   "rotate failed": "смена не прошла",
   "app default": "по умолчанию",
   "check failed": "не проверилось",
@@ -6038,7 +6430,7 @@ export const STR = {
     "DNS-серверы через запятую (-dns-servers). Пусто = умолчание приложения.",
   "Connections": "Соединения",
   "Credential group size": "Размер группы учёток",
-  "Curated": "Подобранный",
+  "Curated": "Подборка",
   "Custom DNS": "Свой DNS",
   "DNS mode": "Режим DNS",
   "Debug logging": "Подробный лог",
@@ -6171,8 +6563,8 @@ export const STR = {
     "Отсканируйте QR или откройте ссылку wdtt:// в WDTT-Plus.",
   "Scan the QR or open the wdtt:// link in the WDTT app (Android) or PWDTT (desktop).":
     "Отсканируйте QR или откройте ссылку wdtt:// в приложении WDTT (Android) или PWDTT (десктоп).",
-  "Scan the QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.":
-    "Отсканируйте QR приложением FreeTurn (samosvalishe/turn-proxy-android) или вставьте ссылку freeturn:// — она несёт ссылку на звонок VK и всю конфигурацию.",
+  "Scan the QR with the FreeTurn app (hackdiaz-dev/turn-proxy-android), or paste the freeturn:// link — it carries the VK call link and the whole config.":
+    "Отсканируйте QR приложением FreeTurn (hackdiaz-dev/turn-proxy-android) или вставьте ссылку freeturn:// — она несёт ссылку на звонок VK и всю конфигурацию.",
   "Scan the QR with the WINGS V app, or paste the wingsv:// link (Settings → import from link).":
     "Отсканируйте QR приложением WINGS V или вставьте ссылку wingsv:// (Настройки → импорт из ссылки).",
   "This server needs a separate client binary. Scan the QR or import .conf into WireGuard/AmneziaWG, then run the client alongside it:":
@@ -6349,6 +6741,7 @@ export const STR = {
   "Edit this list": "Изменить список",
   // §5.4: a list whose every token was unreadable is not shortened, it is GONE — its own sentence
   "the list {v1} had nothing readable in it — not saved": "в списке {v1} не оказалось ничего читаемого — не сохранён",
+  "the list id {v1} already means something to a rule — the list was saved under a new id": "идентификатор списка {v1} уже что-то значит для правила — список сохранён под новым идентификатором",
   "Show as text — copy it out, paste it in, or edit every target at once": "Показать текстом — скопировать, вставить или отредактировать все адреса сразу",
   // the labelled foot toggle (custom-list sheet) — a pair, so the label always says where you are going
   "Show text": "Текстом",
@@ -6359,6 +6752,7 @@ export const STR = {
   "Rule emptied.": "Правило очищено.",
   "Text discarded — the rule is unchanged.": "Текст отброшен — правило не изменилось.",
   "Back to badges — reads every line and turns it into a target. Escape discards instead.": "Обратно в плашки — каждая строка станет адресом. Escape — отбросить.",
+  "For all traffic, use “Everything else” below the rules": "Для всего трафика используйте «Всё остальное» под правилами",
   "No list called {v1} on this panel": "На этой панели нет списка {v1}",
   "Add this list to the rule": "Добавить этот список в правило",
   "{v1} list — the panel resolves it and every node routing it pulls the same copy.": "Список {v1} — панель его разворачивает, и каждая нода, которая его маршрутизирует, тянет одну и ту же копию.",
@@ -6413,6 +6807,7 @@ export const STR = {
   "automatic, attempt {v1} of {v2}": "автоматически, попытка {v1} из {v2}",
   "act|AmneziaWG parameters": "параметры AmneziaWG",
   "act|listen port": "порт прослушивания",
+  "Load the AmneziaWG module": "Запрошена загрузка модуля AmneziaWG",
   "couldn't read {v1} — adopted from the live interface instead (keys, peers and ports kept; any DNS/Table/PostUp lines in that file are not)": "не удалось прочитать {v1} — интерфейс взят с работающего устройства (ключи, пиры и порты сохранены; строки DNS/Table/PostUp из того файла — нет)",
   "The local-node port %d clashes with the panel/subscription port — pick a distinct, free loopback port for the co-located node.": "Порт локальной ноды %d конфликтует с портом панели или подписки — выберите для неё отдельный свободный loopback-порт.",
   "Transfer cancelled": "Перенос отменён",
@@ -6487,6 +6882,10 @@ export const STR = {
   "The escrowed key could not be put back — the node has kept the one it has.": "Ключ из хранилища вернуть не удалось — нода оставила тот, что у неё есть.",
   "It reports: {v1}": "Она сообщает: {v1}",
   "Try again from a browser that can open the vault; if this node was rebuilt since the key was sealed, the escrow has to be re-sealed to it.": "Повторите из браузера, который может открыть хранилище; если ноду пересобирали после запечатывания ключа, хранилище нужно перезапечатать под неё.",
+  "No ping reply from the exit's server — it may not answer ping — so its latency can't be measured. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.":
+    "Сервер выхода не ответил на ping — возможно, он на него не отвечает, — поэтому задержку измерить нельзя. Запрос через туннель к публичному сайту занимает {v1} мс — но туда входит и то, насколько далёк сам сайт.",
+  "No ping reply from the exit's server — it may not answer ping — so its latency can't be measured.":
+    "Сервер выхода не ответил на ping — возможно, он на него не отвечает, — поэтому задержку измерить нельзя.",
   "Round trip from this node to the exit's own server.": "Круговая задержка от этой ноды до собственного сервера выхода.",
   "Round trip from this node to the exit's own server. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.": "Круговая задержка от этой ноды до собственного сервера выхода. Запрос через туннель к публичному сайту занимает {v1} мс — но туда входит и то, насколько далёк сам сайт.",
   // ── AmneziaWG 3.1 (docs/AWG3-PLAN.md §7.7): the version switch, its window, the 3.1 badges' tooltip, the Settings preset ──
@@ -6524,7 +6923,62 @@ export const STR = {
   "RekeyAfterTime + RekeyTimeout + KeepaliveTimeout (up to {v1} s) must not exceed RejectAfterTime ({v2} s at least) — the node would drop data a client still sends": "RekeyAfterTime + RekeyTimeout + KeepaliveTimeout (до {v1} с) не должны превышать RejectAfterTime (не меньше {v2} с) — иначе нода будет отбрасывать данные, которые клиент ещё отправляет",
   "awg_gen must be \"2.0\" or \"3.1\"": "awg_gen должен быть \"2.0\" или \"3.1\"",
   "{v1} cannot run AmneziaWG 3.1 while a turn proxy whose app carries AmneziaWG 2.0 only points at its port: {v2}. Point it at a 2.0 interface, or delete it, and try again once the node has applied that": "{v1} не может работать на AmneziaWG 3.1, пока на его порт указывает turn-прокси, приложение которого понимает только AmneziaWG 2.0: {v2}. Направьте его на интерфейс 2.0 или удалите и повторите, когда нода это применит",
-  "{v1} is a mesh link — mesh links stay AmneziaWG 2.0": "{v1} — связь mesh, а связи mesh остаются на AmneziaWG 2.0",
+  "{v1} is a mesh link — its type comes from the mesh settings (Settings → Mesh), and a re-provision rebuilds it": "{v1} — меш-линк: его тип задаётся в настройках меша (Настройки → Меш), а пересоздание перестраивает линк",
+  // the mesh link type (docs/AWG-OMIT-AND-MESH-GEN-PLAN.md Part B)
+  "Mesh link type": "Тип меш-линков",
+  "A pair where either node cannot run AmneziaWG 3.1 is linked at 2.0, and its node says why.": "Пара, где хотя бы одна нода не умеет AmneziaWG 3.1, связывается на 2.0, и нода объясняет почему.",
+  "No obfuscation — DPI can block it across borders.": "Без обфускации — на межгосударственных каналах DPI может её заблокировать.",
+  "Mesh link type → {v1}, for new links": "Тип меш-линков → {v1}, для новых линков",
+  "Default mesh link type": "Тип меш-линков по умолчанию",
+  "Link type": "Тип линка",
+  "set on this link": "задан для линка",
+  "AWG params set on this link": "параметры AWG заданы для линка",
+  "type and AWG params set on this link": "тип и параметры AWG заданы для линка",
+  "Saving rebuilds this link on both ends — it drops for a few seconds while they reconnect.": "Сохранение пересоберёт этот линк на обоих концах — он пропадёт на несколько секунд, пока они переподключаются.",
+  "This link only, both ends. Default follows the fleet's type in Settings → Mesh.": "Только этот линк, на обоих концах. «По умолчанию» берёт тип флота из «Настройки → Меш».",
+  "What new links are made as. One link can have a type and AWG params of its own — on its card under Node connections, on a node's page. Re-provision a node to move its existing links to this default.":
+    "Каким создаются новые линки. У отдельного линка могут быть свои тип и параметры AWG — на его карточке в «Связях ноды» на странице ноды. Чтобы перевести существующие линки ноды на этот тип, пересоздайте их.",
+  "Default mesh AWG params": "Параметры AWG меша по умолчанию",
+  "The AmneziaWG 3.1 values set here are kept for AWG 3.1 links — select AWG 3.1 to see them.": "Заданные здесь значения AmneziaWG 3.1 сохраняются для линков AWG 3.1 — выберите AWG 3.1, чтобы их увидеть.",
+  "S and H are drawn fresh; the 3.1 fields take what they inherit (the values shown in them), whose ranges the protocol randomises on its own.": "S и H выбираются заново; поля 3.1 получают то, что наследуют (значения, показанные в них), — их диапазоны протокол и так перебирает случайно.",
+  "Obfuscation for new AmneziaWG mesh links, unless a link sets its own on its card. Blank = auto (a fresh set per link).":
+    "Маскировка для новых меш-линков AmneziaWG, если линк не задаёт свою на своей карточке. Пусто — авто (свой набор на каждый линк).",
+  "val|per link": "свой у каждого",
+  "Each link gets a key of its own.": "Каждый линк получает собственный ключ.",
+  "On for every AmneziaWG 3.1 link.": "Включено для каждого линка AmneziaWG 3.1.",
+  "What AmneziaWG 3.1 links add to the fields above. A blank cell takes the value shown in it — the mesh default, or the 3.1 defaults in Settings → Interfaces; - for no such line.": "Что линки AmneziaWG 3.1 добавляют к полям выше. Пустая ячейка берёт значение, показанное в ней, — значение меша по умолчанию или значения 3.1 по умолчанию из «Настройки → Интерфейсы»; - — такой строки не будет.",
+  "No nodes yet — enroll a node to link it to the others.": "Нод пока нет — подключите ноду, чтобы связать её с остальными.",
+  "Link to {v1} ({v2}) is {v3}: {v4}": "Линк к {v1} ({v2}) — {v3}: {v4}",
+  "the mesh MTU ({v1}) is too high for AmneziaWG 3.1 — header protection needs a link MTU of 1428 or less": "MTU меша ({v1}) слишком велик для AmneziaWG 3.1 — защите заголовков нужен MTU линка не больше 1428",
+  // a link that kept what it was made with, and how to rebuild that one link (q189 PR-4) — never "re-provision the node": that rebuilds all its links
+  "made from part of a template — {v1} missing, so this link may not handshake, or runs without those lines (plain WireGuard on the wire); {v2}": "собран из части шаблона — нет {v1}, поэтому линк может не устанавливать соединение или работать без этих строк (по сети идёт обычный WireGuard); {v2}",
+  "it should be {v1}, but a link keeps the type it was made with until it is rebuilt — {v2}": "должен быть {v1}, но линк остаётся того типа, с которым создан, пока его не пересоберут — {v2}",
+  "to rebuild this link alone, pick {v1} as its type on its card under Node connections and Save": "чтобы пересобрать только этот линк, выберите тип {v1} на его карточке в «Связях ноды» и сохраните",
+  "to rebuild this link alone, pick Default as its type on its card under Node connections and Save": "чтобы пересобрать только этот линк, выберите тип «По умолчанию» на его карточке в «Связях ноды» и сохраните",
+  "to rebuild this link alone, pick Default as its type on its card under Node connections and Save, then {v1} and Save again": "чтобы пересобрать только этот линк, выберите тип «По умолчанию» на его карточке в «Связях ноды» и сохраните, затем выберите {v1} и сохраните ещё раз",
+  // an AmneziaWG field set to none ("-") — docs/AWG-OMIT-AND-MESH-GEN-PLAN.md Part A
+  "{v1} cannot hold an empty AmneziaWG field yet — it is offline or needs an update": "{v1} пока не может хранить пустое поле AmneziaWG — нода не в сети или её нужно обновить",
+  "{v1} would have no AmneziaWG field left — make it a WireGuard interface instead": "у {v1} не останется ни одного поля AmneziaWG — вместо этого сделайте его интерфейсом WireGuard",
+  "{v1} would have no AmneziaWG 3.1 field left — switch it to AmneziaWG 2.0 instead": "у {v1} не останется ни одного поля AmneziaWG 3.1 — вместо этого переключите его на AmneziaWG 2.0",
+  "{v1}: Jc, Jmin and Jmax go together — set all three, or all three to none": "{v1}: Jc, Jmin и Jmax задаются вместе — укажите все три или все три сделайте пустыми",
+  "{v1}: header protection needs S1–S4 — {v2} cannot be none while it is on": "{v1}: защите заголовков нужны S1–S4 — {v2} не может быть пустым, пока она включена",
+  "{v1}: S2 must not be S1 + 56 — the two handshake messages would be the same size": "{v1}: S2 не может быть равен S1 + 56 — два сообщения рукопожатия окажутся одного размера",
+  "{v1}: every AmneziaWG field is none — leave at least one, or use WireGuard interfaces": "{v1}: все поля AmneziaWG пустые — оставьте хотя бы одно или используйте интерфейсы WireGuard",
+  "{v1}: AmneziaWG 3.1 links need S1–S4 for header protection — the mesh AWG params set {v2} to none": "{v1}: линкам AmneziaWG 3.1 нужны S1–S4 для защиты заголовков, а в параметрах AWG меша {v2} пустые",
+  "{v1} has generated values: {v2} cannot hold an empty AmneziaWG field yet — it is offline or needs an update": "{v1} получили сгенерированные значения: {v2} пока не может хранить пустое поле AmneziaWG — нода не в сети или её нужно обновить",
+  "{v1} has generated values where its AWG params say none — a link keeps the values it was made with until it is rebuilt; {v2}": "{v1} получили сгенерированные значения, хотя в параметрах AWG этого линка они пустые, — линк сохраняет значения, с которыми создан, пока его не пересоберут; {v2}",
+  "{v1}: wait for the node to report this interface, then set a field to none": "{v1}: дождитесь, пока нода сообщит об этом интерфейсе, затем делайте поле пустым",
+  "the interface defaults": "параметры интерфейсов по умолчанию",
+  "the mesh AWG params": "параметры AWG меша",
+  "the mesh link type": "тип меш-линков",
+  "Jc, Jmin and Jmax go together — set all three to -, or none of them.": "Jc, Jmin и Jmax задаются вместе — поставьте - во все три или ни в одно.",
+  "Every field is - — leave at least one, or use WireGuard interfaces.": "Во всех полях стоит - — оставьте хотя бы одно или используйте интерфейсы WireGuard.",
+  "ContentPaddingAddition is none while RandomTrailers is on — every small packet is padded about five times over.": "ContentPaddingAddition пустой, а RandomTrailers включён — каждый маленький пакет раздувается примерно в пять раз.",
+  "Change {what} and remove {v1}?": "Изменить {what} и убрать {v1}?",
+  "Remove {v1}?": "Убрать {v1}?",
+  "Type - in a cell to remove that line — every device re-imports, as with any change here outside I1–I5.": "Введите - в ячейку, чтобы убрать эту строку — каждому устройству придётся заново импортировать конфигурацию, как и при любом изменении здесь, кроме I1–I5.",
+  "Type - in a cell for no such line on the interfaces made from these; a blank cell stays automatic.": "Введите - в ячейку, чтобы у интерфейсов, созданных с этими значениями, такой строки не было; пустая ячейка остаётся автоматической.",
+  "Type - in a cell for no such line on the links made from these; a blank cell stays automatic.": "Введите - в ячейку, чтобы у линков, созданных с этими значениями, такой строки не было; пустая ячейка остаётся автоматической.",
   "{v1} is a plain WireGuard interface — only an AmneziaWG interface can switch to AmneziaWG 3.1": "{v1} — интерфейс обычного WireGuard; на AmneziaWG 3.1 можно перевести только интерфейс AmneziaWG",
   "{v1} must be 12 or more while header protection is on": "{v1}: при включённой защите заголовков нужно 12 или больше",
   "{v1} must be a number or a range like 10-100": "{v1}: нужно число или диапазон вроде 10-100",
@@ -6534,6 +6988,39 @@ export const STR = {
   "{v1}: its awg tools are AmneziaWG {v2} — an AmneziaWG 3.1 interface needs 3.1": "{v1}: утилиты awg здесь версии AmneziaWG {v2}, а интерфейсу AmneziaWG 3.1 нужны 3.1",
   "{v1}: its userspace AmneziaWG (amneziawg-go), which this interface would run on, is {v2} — an AmneziaWG 3.1 interface needs 3.1": "{v1}: пользовательский AmneziaWG (amneziawg-go), на котором работал бы этот интерфейс, версии {v2}, а интерфейсу AmneziaWG 3.1 нужен 3.1",
   "{v1}: this node does not report its AmneziaWG version — update it": "{v1}: нода не сообщает свою версию AmneziaWG — обновите её",
+  "{v1}: AmneziaWG 3.1 is installed, but the kernel module in use is still {v2} — load it now, or it loads at the next reboot if the kernel accepts it; the node page says why when it does not": "{v1}: AmneziaWG 3.1 установлен, но в работе всё ещё модуль ядра {v2} — загрузите его сейчас, или он загрузится при следующей перезагрузке, если ядро его примет; если не примет, страница ноды скажет почему",
+  "{v1} has not answered the request to load the AmneziaWG module — it may be offline, or on a version without it": "{v1} не ответила на запрос загрузить модуль AmneziaWG — возможно, она не в сети или на версии, где этого ещё нет",
+  "{v1}: AmneziaWG {v2} is loaded — every AmneziaWG interface is back on the kernel module": "{v1}: AmneziaWG {v2} загружен — все интерфейсы AmneziaWG снова работают на модуле ядра",
+  "{v1}: AmneziaWG {v2} is loaded, but not every interface came back on it — on the userspace fallback: {v3}; down: {v4}": "{v1}: AmneziaWG {v2} загружен, но на нём поднялись не все интерфейсы — на пользовательском AmneziaWG: {v3}; не поднялись: {v4}",
+  "{v1}: the new AmneziaWG module did not load — its interfaces run on the userspace fallback until the next reboot": "{v1}: новый модуль AmneziaWG не загрузился — до следующей перезагрузки её интерфейсы работают на пользовательском AmneziaWG",
+  "{v1}: the new AmneziaWG module did not load — on the userspace fallback: {v2}; down: {v3}": "{v1}: новый модуль AmneziaWG не загрузился — на пользовательском AmneziaWG: {v2}; не поднялись: {v3}",
+  "{v1}: nothing was changed — this node has no userspace AmneziaWG (amneziawg-go) to fall back on if the new module did not load": "{v1}: ничего не изменено — на ноде нет пользовательского AmneziaWG (amneziawg-go), на котором работали бы интерфейсы, если новый модуль не загрузится",
+  "{v1}: AmneziaWG 3.1 is installed, but the kernel module in use is still {v2} — it loads at the next reboot if the kernel accepts it (the node page says why when it does not). It cannot be loaded now: this node has no userspace AmneziaWG (amneziawg-go) to run its interfaces on if the new module did not load": "{v1}: AmneziaWG 3.1 установлен, но в работе всё ещё модуль ядра {v2} — 3.1 загрузится при следующей перезагрузке, если ядро его примет (если не примет, страница ноды скажет почему). Загрузить его сейчас нельзя: на ноде нет пользовательского AmneziaWG (amneziawg-go), на котором работали бы её интерфейсы, если новый модуль не загрузится",
+  "{v1}: the AmneziaWG module could not be unloaded — every interface was brought back as it was": "{v1}: модуль AmneziaWG не удалось выгрузить — все интерфейсы возвращены как были",
+  "{v1}: nothing was changed — its awg tools cannot drive the new module": "{v1}: ничего не изменено — её утилиты awg не умеют работать с новым модулем",
+  "{v1}: nothing was changed — nothing would bring back {v2}": "{v1}: ничего не изменено — нечем снова поднять {v2}",
+  "{v1}: nothing was changed — an AmneziaWG device lives in another network namespace": "{v1}: ничего не изменено — устройство AmneziaWG есть в другом сетевом пространстве имён",
+  "{v1}: nothing was changed — the installed module is not newer than the one in use": "{v1}: ничего не изменено — установленный модуль не новее работающего",
+  "{v1}: the AmneziaWG module was not loaded — {v2}": "{v1}: модуль AmneziaWG не загружен — {v2}",
+  "{v1} has no newer AmneziaWG module to load": "{v1}: нет более нового модуля AmneziaWG, который можно загрузить",
+  "{v1}: nothing was changed — the node could not record the request (its state directory is not writable)": "{v1}: ничего не изменено — нода не смогла записать запрос (каталог её состояния недоступен для записи)",
+  "{v1}: nothing was changed — the node cannot check its other network namespaces (lsns or nsenter is missing)": "{v1}: ничего не изменено — нода не может проверить свои другие сетевые пространства имён (нет lsns или nsenter)",
+  "lsns or nsenter is missing, so the other network namespaces cannot be checked": "нет lsns или nsenter, поэтому другие сетевые пространства имён проверить нельзя",
+  "no amneziawg-go to fall back on if the new module would not load": "нет amneziawg-go, на который можно перейти, если новый модуль не загрузится",
+  // rules whose exit node is offline (q189 FLA-F1)
+  "Routing on this node sends traffic out through {v1}, which is offline — that traffic is refused until {v1} is back": "Маршрутизация этой ноды отправляет трафик через {v1}, а она не в сети, — этот трафик отклоняется, пока {v1} не вернётся",
+  // a block list the panel could not hand a node its caps for (no provider catalog, an older node) — q189 D12-OBS-1
+  "{v1}: not filtered yet on {v2} — waiting for the provider catalog, or for this node's update.": "{v1}: пока не фильтруется на {v2} — ждёт каталог провайдеров или обновление ноды.",
+  "Load AmneziaWG 3.1 · {name}": "Загрузить AmneziaWG 3.1 · {name}",
+  "Load now": "Загрузить сейчас",
+  "Every AmneziaWG interface on {name} restarts on the new kernel module. Connected devices lose traffic for about 15 seconds while they reconnect; nothing else changes. Or leave it: the module loads at the next reboot if the kernel accepts it; the node page says why when it does not.": "Все интерфейсы AmneziaWG на {name} перезапустятся на новом модуле ядра. Подключённые устройства примерно на 15 секунд потеряют трафик, пока переподключаются; больше ничего не меняется. Или оставьте как есть: модуль загрузится при следующей перезагрузке, если ядро его примет; если не примет, страница ноды скажет почему.",
+  "Loading the AmneziaWG module on {name}…": "Загружается модуль AmneziaWG на {name}…",
+  "the kernel module is the host's — load it on the host": "модуль ядра принадлежит хосту — загрузите его на хосте",
+  "the AmneziaWG kernel module is not loaded": "модуль ядра AmneziaWG не загружен",
+  "an AmneziaWG device lives in network namespace ": "устройство AmneziaWG есть в сетевом пространстве имён ",
+  "no unit or configuration brings back: ": "нет юнита или конфигурации, чтобы снова поднять: ",
+  "the kernel module could not be unloaded — every interface was brought back as it was": "модуль ядра не удалось выгрузить — все интерфейсы возвращены как были",
+  "tls pin malformed": "закрепление TLS повреждено",
   "{v1} serves an app that carries AmneziaWG 2.0 only — AmneziaWG 3.1 interfaces are hidden.": "Прокси {v1} обслуживают приложение, которое понимает только AmneziaWG 2.0, — интерфейсы AmneziaWG 3.1 скрыты.",
   "{v1} runs AmneziaWG 3.1, and this proxy's app carries AmneziaWG 2.0 only — its clients cannot connect. Point it at a 2.0 interface.": "Интерфейс {v1} на AmneziaWG 3.1, а приложение этого прокси понимает только AmneziaWG 2.0 — его клиенты не подключатся. Направьте прокси на интерфейс 2.0.",
   "tag|2.0 app": "приложение 2.0",
@@ -6541,6 +7028,58 @@ export const STR = {
   "tag|switching to 3.1": "переход на 3.1",
   "tag|switching to 2.0": "переход на 2.0",
   "tag|switching": "переход",
+  // csqtt versions (docs/CSQTT-LINES-PLAN.md): which csqtt a server runs, switchable both ways while its users stay
+  "Version": "Версия",
+  "Stable. For the csqtt {v1} apps, iPhone included.": "Стабильная. Для приложений csqtt {v1}, включая iPhone.",
+  "Needs the csqtt {v1} app on every device. No {v2} app connects to it, the iPhone app included.": "Нужно приложение csqtt {v1} на каждом устройстве. Приложения {v2}, включая приложение для iPhone, к ней не подключатся.",
+  "Update this node to run another csqtt version.": "Чтобы запускать другую версию csqtt, обновите эту ноду.",
+  "Update this node to run csqtt {v1}.": "Чтобы запустить csqtt {v1}, обновите эту ноду.",
+  "Switch to csqtt {v1}?": "Перейти на csqtt {v1}?",
+  "Switch to {v1}": "Перейти на {v1}",
+  "The server restarts on csqtt {v1}. Its {v2} keep their passwords, but every device needs the csqtt {v1} app: a csqtt {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.": "Сервер перезапустится на csqtt {v1}. Его пользователи ({v2}) сохранят пароли, но на каждом устройстве нужно приложение csqtt {v1}: приложение csqtt {v3} к нему не подключится. Если {v1} не запустится, нода сама вернёт сервер на {v3}.",
+  "The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.": "Сервер перезапустится на csqtt {v1}. Если он не запустится, нода сама вернёт сервер на {v2}.",
+  "The iPhone app (Anton48) does not connect to csqtt {v1}: iPhone users lose access until you switch back.": "Приложение для iPhone (Anton48) не подключается к csqtt {v1}: пользователи iPhone потеряют доступ, пока вы не переключите сервер обратно.",
+  "Moving to csqtt {v1} on the node's next sync": "Переход на csqtt {v1} при следующей синхронизации ноды",
+  "tag|switch failed": "переход не удался",
+  "Switch to csqtt {v1} failed": "Переход на csqtt {v1} не удался",
+  "Switching to csqtt {v1} failed: {v2}. The server is back on {v3}. Restart the service to try again, or pick {v3} to stay there.": "Переход на csqtt {v1} не удался: {v2}. Сервер снова на {v3}. Перезапустите службу, чтобы попробовать ещё раз, или выберите {v3}, чтобы остаться на ней.",
+  "it did not start": "он не запустился",
+  // csqtt 2.5 App routing (docs/CSQTT-APP-ROUTING-PLAN.md): one rule per server, sent to every user's app on connect
+  "App routing": "Маршрутизация приложений",
+  "Apps": "Приложения",
+  "Domains": "Домены",
+  "built-in list": "встроенный список",
+  "These go direct": "Эти — напрямую",
+  "Only these use the tunnel": "Через туннель — только эти",
+  "Every app uses the tunnel": "Все приложения — через туннель",
+  "Every app except these": "Все приложения, кроме этих",
+  "Only these apps": "Только эти приложения",
+  "Android app IDs, one per line — the part after id= in the app's Google Play link.": "Идентификаторы приложений Android, по одному в строке — часть после id= в ссылке на приложение в Google Play.",
+  "One per line. Subdomains are included.": "По одному в строке. Поддомены включаются.",
+  "Remove App routing?": "Удалить маршрутизацию приложений?",
+  "Remove and save": "Удалить и сохранить",
+  "Its App routing is removed: csqtt {v1} has none.": "Маршрутизация приложений этого сервера удаляется: в csqtt {v1} её нет.",
+  "Also the built-in list of Russian sites (about 500 domains)": "И встроенный список российских сайтов (около 500 доменов)",
+  "One IPv4 address, network or range (a-b) per line.": "Один IPv4-адрес, сеть или диапазон (a-b) в строке.",
+  "App routing: not a valid setting": "Маршрутизация приложений: недопустимая настройка",
+  "App routing: at most {v1} apps": "Маршрутизация приложений: не больше {v1} приложений",
+  "App routing: at most {v1} domains": "Маршрутизация приложений: не больше {v1} доменов",
+  "App routing: at most {v1} addresses": "Маршрутизация приложений: не больше {v1} адресов",
+  "App routing: {v1} is not an Android app ID (like org.telegram.messenger)": "Маршрутизация приложений: {v1} — не идентификатор приложения Android (вроде org.telegram.messenger)",
+  "App routing: {v1} is not a domain (a full name, like ya.ru)": "Маршрутизация приложений: {v1} — не домен (нужно полное имя, вроде ya.ru)",
+  "App routing: {v1} is an address — list it under Addresses": "Маршрутизация приложений: {v1} — это адрес, укажите его в разделе «Адреса»",
+  "App routing: these addresses cover every address — everything would go outside the tunnel": "Маршрутизация приложений: эти адреса покрывают все адреса — весь трафик пойдёт мимо туннеля",
+  "App routing: {v1} — the app routes IPv4 addresses only": "Маршрутизация приложений: {v1} — приложение маршрутизирует только IPv4-адреса",
+  "App routing: {v1} is not an IP address or range": "Маршрутизация приложений: {v1} — не IP-адрес и не диапазон",
+  "App routing: list at least one app to send through the tunnel": "Маршрутизация приложений: укажите хотя бы одно приложение для туннеля",
+  "App routing: list at least one domain to send through the tunnel": "Маршрутизация приложений: укажите хотя бы один домен для туннеля",
+  "App routing: list at least one address to send through the tunnel": "Маршрутизация приложений: укажите хотя бы один адрес для туннеля",
+  "Switching a csqtt server's version": "Смена версии сервера csqtt",
+  "tag|update node": "обновите ноду",
+  "This node can't run csqtt {v1} — update the node": "Эта нода не умеет запускать csqtt {v1} — обновите ноду",
+  "This node can't run csqtt {v1}, so the server stays on {v2}. Update the node, or pick {v2}.": "Эта нода не умеет запускать csqtt {v1}, поэтому сервер остаётся на {v2}. Обновите ноду или выберите {v2}.",
+  "csqtt {v1} isn't a version this panel offers": "csqtt {v1} — не та версия, которую предлагает эта панель",
+  "this node can't run csqtt {v1} yet — update the node first (its page offers \"update node to …\")": "эта нода пока не умеет запускать csqtt {v1} — сначала обновите ноду (на её странице есть «обновить ноду до …»)",
   "The panel's QR codes show the new config at once; each device still has to import it.": "QR-коды панели сразу показывают новый конфиг; импортировать его каждому устройству всё равно нужно.",
   // Settings → Interfaces: the AmneziaWG 3.1 defaults (the six values a 3.1 create or switch takes)
   "val|per interface": "свой у каждого",
@@ -6591,7 +7130,6 @@ export const STR = {
   "the exit addresses must be given per node": "адреса выхода должны задаваться по узлам",
   // The node's default made smart (ROUTING-PEERS-MESH-PLAN §7.3, §7.4, D2/D9/D11): one rule list for its own clients and the
   // traffic other nodes cascade out through it
-  "Node default — then this node's {v1}": "Как у узла — затем {v1} этого узла",
   "This node's own clients": "Только клиенты этого узла",
   "Traffic cascaded in from other nodes": "Только трафик с других узлов",
   "All — this node's clients and traffic cascaded in": "Все — клиенты этого узла и трафик с других узлов",
@@ -6622,7 +7160,8 @@ export const STR = {
     "{v1} приходят сразу с двух узлов и выходят по собственному маршруту этого узла.",
   "default routing rules": "правила маршрутизации по умолчанию",
   "a more specific rule in this node's default wins these hosts: {toks}": "в правилах этого узла по умолчанию есть более точное — эти адреса забирает оно: {toks}",
-  "Then this node's default:": "Затем правила этого узла по умолчанию:",
+  "Node default (Settings ▸ Network ▸ Default exit):": "Как у ноды (Настройки ▸ Сеть ▸ Выход по умолчанию):",
+  "everything else": "всё остальное",
   "a more specific rule below wins these hosts for the traffic it names: {toks}": "ниже есть более точное правило — для своего трафика эти адреса забирает оно: {toks}",
   "an exit": "выход",
   "default routing exit addresses": "адреса выхода для правил по умолчанию",
@@ -6791,6 +7330,8 @@ export const PLURALS = {
   pattern: ["шаблон", "шаблона", "шаблонов"],
   // Genitive — this slot sits after «у» ("у 2 пользователей"), where the nominative "пользователя" is wrong.
   "gen|user": ["пользователя", "пользователей", "пользователей"],
+  // Genitive after «из» — the range download's progress: «ждём 1 из 1 сервера», «из 21 сервера», «из 5 серверов».
+  "gen|server": ["сервера", "серверов", "серверов"],
   "dead VK link": ["мёртвая ссылка", "мёртвые ссылки", "мёртвых ссылок"],
   domain: ["домен", "домена", "доменов"],
   "threat-IP": ["опасный IP", "опасных IP", "опасных IP"],
@@ -6820,6 +7361,9 @@ export const PLURALS = {
   deployment: ["развёртывание", "развёртывания", "развёртываний"],
   change: ["изменение", "изменения", "изменений"],
   device: ["устройство", "устройства", "устройств"],
+  packet: ["пакет", "пакета", "пакетов"],
+  // the disguise's size, counted as its packets are: «226 байт», «1 232 байта», «1 байт»
+  byte: ["байт", "байта", "байт"],
   list: ["список", "списка", "списков"],
   rule: ["правило", "правила", "правил"],
   // Prepositional case — these two sit after «в» / «на» ("в 3 правилах на 2 интерфейсах"), where the

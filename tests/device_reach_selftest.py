@@ -70,6 +70,7 @@ Hermetic. Run: python3 tests/device_reach_selftest.py            (0 = pass)
      --perturb-held     calls any table whose counters read "held" (the pre-F-P3a rule) and expects RED on the F-P3a checks in [12b] and [15].
 """
 import copy, importlib.machinery, importlib.util, inspect, ipaddress, json, os, re, shutil, sys, tempfile
+os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -477,8 +478,12 @@ nodes_path, roster_path = os.path.join(TMP2, "nodes.json"), os.path.join(TMP2, "
 json.dump({"n1": json.loads(json.dumps(NREC))}, open(nodes_path, "w"))
 RD = roster(); RD["version"] = P.ROSTER_VERSION
 json.dump(RD, open(roster_path, "w"))
+# ⚠️ panel_settings_path too: without it the settings saves in [10] wrote to "" — an fsync'd `.tmp.<hex>` in the cwd, the tree
+# root under the suite, removed a moment later when the rename failed (and the failure suppressed). Six gates at once
+# copy that tree, and a copy that listed the file and then lost it went red (1.8.9 qualification).
 deps = {"nodes_path": nodes_path, "roster_path": roster_path, "node_snaps": {"n1": SNAP}, "stats_dir": TMP2, "fleet": {},
-        "panel_settings": json.loads(json.dumps(P.PANEL_SETTINGS_DEFAULTS))}
+        "panel_settings": json.loads(json.dumps(P.PANEL_SETTINGS_DEFAULTS)),
+        "panel_settings_path": os.path.join(TMP2, "panel-settings.json")}
 def rec():
     return json.load(open(nodes_path))["n1"]
 def door(path, body):

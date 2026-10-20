@@ -44,7 +44,9 @@ import json
 import os
 import re
 import signal
+import socket
 import ssl
+import sys
 import threading
 import traceback
 import time
@@ -62,6 +64,141 @@ WEB_DIR    = os.path.realpath(os.environ.get("SWG_SUB_WEB", os.path.dirname(os.p
 SUB_TLS_DIR  = os.environ.get("SWG_SUB_TLS_DIR", "/etc/swg-sub/tls")
 DEFAULT_SUB_CERT = os.path.join(SUB_TLS_DIR, "fullchain.pem")
 DEFAULT_SUB_KEY  = os.path.join(SUB_TLS_DIR, "key.pem")
+
+
+# ── log levels (docs/LOGS-PLAN.md §1) ────────────────────────────────────────────────────────────────────────────────
+# One level for the whole fleet, chosen in Settings → Logs. Every line carries a syslog priority: under journald the
+# `<N>` prefix, which journald files as PRIORITY; anywhere else (docker) one letter. A line above the level is dropped
+# BEFORE it is formatted — pass the arguments, not a formatted string — so a Debug line costs one comparison at Info.
+# Debug lines are capped at LOG_DEBUG_RATE a second: journald's flood guard counts per unit, and a Debug flood spending
+# this unit's bucket would make journald drop its error lines in the same window (P0 T8).
+# A copy of this block is in each swg program; keep them alike. swg-sub sets its level from subs/serve.json (see
+# _log_follow below main's helpers), wrapping log() rather than changing this block.
+LOG_OFF, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG = -1, 3, 4, 5, 6, 7
+LOG_LEVELS = {"off": LOG_OFF, "error": LOG_ERR, "warning": LOG_WARNING, "info": LOG_INFO, "debug": LOG_DEBUG}
+LOG_DEBUG_RATE = 100
+_LOG_STREAM = "stdout"       # sys.<this>, looked up per line (a redirect_stdout is honoured); swg-netctl: stderr — its
+                               # stdout carries a verb's JSON answer. A stream object here is used as it is.
+# level: the base level · until: Debug until this time.monotonic() (-1 = until changed, 0 = no Debug)
+_LOG = {"level": LOG_INFO, "until": 0, "sec": 0, "n": 0, "dropped": 0}
+
+
+def _log_to_journal():
+    """True when stdout IS the stream systemd connected to the journal — JOURNAL_STREAM names its device:inode. An
+    inherited variable alone is not enough: a child whose stdout was redirected keeps it."""
+    try:
+        dev, ino = (int(x) for x in os.environ.get("JOURNAL_STREAM", "").split(":"))
+        st = os.fstat(getattr(sys, _LOG_STREAM).fileno())
+        return (st.st_dev, st.st_ino) == (dev, ino)
+    except Exception:
+        return False
+
+
+_LOG_JOURNAL = _log_to_journal()
+_LOG_TAG = {LOG_ERR: "E", LOG_WARNING: "W", LOG_NOTICE: "N", LOG_INFO: "I", LOG_DEBUG: "D"}
+
+
+def log_set(level, debug_left=0):
+    """Set the base level, and Debug for `debug_left` seconds on top of it (-1 = until changed, 0 = none)."""
+    _LOG["level"] = level
+    _LOG["until"] = -1 if debug_left == -1 else (time.monotonic() + debug_left if debug_left and debug_left > 0 else 0)
+
+
+def log_level():
+    """The level in force now: Debug while its time runs, else the base level."""
+    u = _LOG["until"]
+    return LOG_DEBUG if (u == -1 or (u and time.monotonic() < u)) else _LOG["level"]
+
+
+# docker (no journald): every line ALSO goes to a file of our own, the one a reader can find without a docker socket,
+# kept in two files of half the budget each (`path`, `path.1`). Off until log_file() names one.
+# The lock is RE-entrant: a signal handler that logs (the panel's SIGHUP reload) runs on the thread it interrupted,
+# which may be inside a write — a plain Lock would deadlock it there.
+_LOG_FILE = {"path": None, "cap": 0, "f": None, "size": 0, "lock": threading.RLock()}
+
+
+def log_file(path, cap):
+    """Also write each line to `path`, timestamped, below `cap` bytes in two files. cap 0 (logging Off) removes both
+    files and writes none; path None stops writing and keeps them. Never raises."""
+    with _LOG_FILE["lock"]:
+        if _LOG_FILE["f"] and (path != _LOG_FILE["path"] or not cap):
+            with contextlib.suppress(OSError):
+                _LOG_FILE["f"].close()
+            _LOG_FILE["f"] = None
+        if path and not cap:
+            for p in (path, path + ".1"):
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+        _LOG_FILE["path"], _LOG_FILE["cap"] = (path, int(cap)) if path and cap else (None, 0)
+
+
+def _log_file_write(data):
+    with _LOG_FILE["lock"]:
+        path = _LOG_FILE["path"]
+        if not path:
+            return
+        try:
+            if _LOG_FILE["f"] is None:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                _LOG_FILE["f"] = open(path, "ab")
+                _LOG_FILE["size"] = _LOG_FILE["f"].tell()
+            _LOG_FILE["f"].write(data)
+            _LOG_FILE["f"].flush()
+            _LOG_FILE["size"] += len(data)
+            if _LOG_FILE["size"] >= _LOG_FILE["cap"] // 2:
+                _LOG_FILE["f"].close()
+                _LOG_FILE["f"] = None
+                os.replace(path, path + ".1")
+        except (OSError, AttributeError, ValueError):   # a nested write (a signal handler) may have rotated it under us
+            _LOG_FILE["f"] = None
+
+
+def _log_write(prio, text):
+    pre = "<%d>" % prio if _LOG_JOURNAL else _LOG_TAG.get(prio, "I") + " "
+    try:
+        out = getattr(sys, _LOG_STREAM) if isinstance(_LOG_STREAM, str) else _LOG_STREAM
+        out.write("".join(pre + ln + "\n" for ln in text.split("\n")))
+        out.flush()
+    except Exception:
+        pass
+    if _LOG_FILE["path"]:
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z " + _LOG_TAG.get(prio, "I") + " "
+        _log_file_write("".join(ts + ln + "\n" for ln in text.split("\n")).encode("utf-8", "replace"))
+
+
+def log(prio, msg, *args):
+    """Write one line (or several: each gets the prefix) at syslog priority `prio`, if the level lets it through."""
+    if prio > _LOG["level"] and prio > log_level():
+        return
+    if prio == LOG_DEBUG or _LOG["dropped"]:
+        s = int(time.monotonic())
+        if s != _LOG["sec"]:
+            if _LOG["dropped"]:
+                _log_write(LOG_DEBUG, "%d debug lines not written (more than %d a second)" % (_LOG["dropped"], LOG_DEBUG_RATE))
+            _LOG["sec"], _LOG["n"], _LOG["dropped"] = s, 0, 0
+        if prio == LOG_DEBUG:
+            _LOG["n"] += 1
+            if _LOG["n"] > LOG_DEBUG_RATE:
+                _LOG["dropped"] += 1
+                return
+    try:
+        text = (msg % args) if args else str(msg)
+    except Exception:
+        text = "%s %r" % (msg, args)
+    _log_write(prio, text)
+
+
+def _log_excepthook(et, ev, tb, *_):
+    """An uncaught exception's traceback at `err`. Printed bare, journald would file it at info — and below Info a
+    unit's LogLevelMax would drop exactly the line that explains the crash."""
+    if et is None or issubclass(et, SystemExit):
+        return
+    log(LOG_ERR, "".join(traceback.format_exception(et, ev, tb)).rstrip("\n"))
+
+
+sys.excepthook = _log_excepthook
+threading.excepthook = lambda a: _log_excepthook(a.exc_type, a.exc_value, a.exc_traceback)
+
 
 # A token is one opaque path segment. Kept tight so it can never escape into the
 # filesystem (the blob path re-sanitises again anyway) or collide with our routes.
@@ -306,9 +443,50 @@ class State:
             out[nid] = {"ifaces": apply_iface_meta(cfg, node_describe(snap)),
                         "turn": snap.get("turn_proxies") or [],
                         "pub_host": node_public_host(snap),   # reported public IP → WDTT link host when endpoint_host is unset
+                        # each WDTT / csqtt server's RUNNING version, by interface → the page offers the app release it names
+                        "tver": _running_versions(snap),
+                        # each csqtt server's running LINE (2.1 / 2.5), by interface → the page offers only apps of that line
+                        "tline": _running_lines(snap),
                         # the networks this node ROUTES right now (swg-noded net_carried) — what the page may promise a user
                         "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else []}
         return out
+
+
+def _own_pins(cat, peers_out):
+    """The catalog with only the pins of versions THIS subscriber's servers run: serve.json carries the whole fleet's,
+    and which builds run on other people's servers is not theirs to read."""
+    pins = cat.get("pins")
+    if not isinstance(pins, dict):
+        return cat
+    mine = set()
+    for po in peers_out:
+        for tg in (po.get("targets") or []):
+            for k in ("wdtt", "csqtt"):
+                if isinstance(tg.get(k), dict) and tg[k].get("version"):
+                    mine.add(tg[k]["version"])
+            mine.update(tp.get("version") for tp in (tg.get("turn") or []) if isinstance(tp, dict) and tp.get("version"))
+    return {**cat, "pins": {repo: {v: x for v, x in vs.items() if v in mine}
+                            for repo, vs in pins.items() if isinstance(vs, dict) and any(v in mine for v in vs)}}
+
+
+def _running_versions(snap):
+    """{iface: running version} of a node's WDTT and csqtt servers — any shape a snapshot carries (a list, or a map of
+    records) and nothing else: a stray value is skipped, never an exception inside every subscription's describe()."""
+    out = {}
+    for k in ("wdtt", "csqtt"):
+        xs = snap.get(k)
+        for x in (xs.values() if isinstance(xs, dict) else xs if isinstance(xs, list) else ()):
+            if isinstance(x, dict) and isinstance(x.get("iface"), str):
+                out[x["iface"]] = str(x.get("version") or "").strip()
+    return out
+
+
+def _running_lines(snap):
+    """{iface: running line} of a node's csqtt servers. "" when the node does not say (an older node: one line, 2.1)."""
+    xs = snap.get("csqtt")
+    return {x["iface"]: str(x.get("line") or "").strip()
+            for x in (xs.values() if isinstance(xs, dict) else xs if isinstance(xs, list) else ())
+            if isinstance(x, dict) and isinstance(x.get("iface"), str)}
 
 
 # ── networks this user can reach (docs/NETWORKS-PLAN.md §18) ──
@@ -616,6 +794,7 @@ def read_data(state, token):
             _ty = (t.get("type") or "wg")
             if _ty in ("wdtt", "csqtt") and _ty in _hide:
                 continue
+            nd = describe.get(t.get("node")) or {}
             if (t.get("type") or "") == "wdtt":
                 # WDTT peer: keyless. Its client link carries only the WRAP password (roster) + the node's public
                 # host + the instance's DTLS/WG ports (from the node store, NOT a snapshot). No WG meta / no `sec`.
@@ -628,6 +807,7 @@ def read_data(state, token):
                     "type": "wdtt",
                     "wdtt": {"password": p.get("wdtt_password") or "",
                              "fork": inst.get("fork") or "amurcanov",   # which WDTT fork → resolve the right per-OS client + encoder
+                             "version": (nd.get("tver") or {}).get(t.get("iface")) or "",
 
                              "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
                                                or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
@@ -652,17 +832,18 @@ def read_data(state, token):
                               "endpoint_host": (_bind_ip_of(inst.get("listen")) or node_cfg.get("endpoint_host")
                                                 or (describe.get(t.get("node")) or {}).get("pub_host") or ""),
                               "port": port,
+                              "version": (nd.get("tver") or {}).get(t.get("iface")) or "",
+                              "line": (nd.get("tline") or {}).get(t.get("iface")) or "",
                               "vk_hash": (p.get("vk_hash") or "").strip()},
                     "primary": _role_of(t),
                 })
                 continue
-            nd = describe.get(t.get("node")) or {}
             meta = (nd.get("ifaces") or {}).get(t.get("iface")) or {}
             awg = meta.get("awg_params") or {}
             lp = meta.get("listen_port")
             # turn-proxies forwarding to THIS interface (same test as the admin's turnProxiesFor: the proxy
             # connects to the iface's listen port). Only non-secret client-config material rides along.
-            turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key")}
+            turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key"), "version": str(tp.get("version") or "").strip()}
                     for tp in (nd.get("turn") or []) if isinstance(tp, dict) and lp and _port_of(tp.get("connect")) == lp]
             _wgty = "awg" if awg else (t.get("type") or "wg")
             # THIS deployment's client-config customisation over the peer-wide one over the interface's live
@@ -719,7 +900,7 @@ def read_data(state, token):
             "turn_fork_colors": subs.get("turn_fork_colors") or {}, "iface_colors": subs.get("iface_colors") or {},
             "turn_client_default": subs.get("turn_client_default") or {},   # admin's END-USER default app per (fork, OS) → the page hands out THIS app instead of the compat-ranked top one
             "turn_client_settings": subs.get("turn_client_settings") or {},   # SETTINGS SPLIT: admin's per-fork client (app) values → the sub page generates configs with them (encoder fills any unset with defaults)
-            "turn_catalog": subs.get("turn_catalog") or {},   # AXIS-3: server→client/app/scheme/store metadata so the page can offer "Get the app" install links (public app links only, no secrets)
+            "turn_catalog": _own_pins(subs.get("turn_catalog") or {}, peers_out),   # AXIS-3: server→client/app/scheme/store metadata so the page can offer "Get the app" install links (public app links only, no secrets)
             "wg_catalog": subs.get("wg_catalog") or {},   # WG/AWG client apps + per-OS resolved installer (download bubble): body → downloads page, icon → direct file
             "node_colors": subs.get("node_colors") or {},   # per-node colour so each server name renders in its panel colour
             "langs": {"enabled": langs.get("enabled") or ["en"], "default": langs.get("default") or "en"}}
@@ -730,8 +911,13 @@ def read_data(state, token):
 class Handler(BaseHTTPRequestHandler):
     server_version = "swg-sub"
     protocol_version = "HTTP/1.1"
+    # Each connection's socket timeout, plain HTTP and TLS alike (the stdlib's setup() puts it on whichever socket the
+    # handler gets): an idle or half-open client is let go after 60 s, as the TLS server's accept already did. Plain HTTP
+    # had none, so every idle connection held a thread and an fd for ever (1.8.9 qualification R2 HELPERS-2).
+    timeout = 60
     state = None
     _meta_warned = False        # link-preview metadata failure is reported once, not once per visit
+    _tb, _tb_lock = [float("-inf"), 0], threading.Lock()   # do_GET: when it last wrote a traceback, and how many it held since
 
     def log_message(self, *a):
         pass                                            # no request logging — the page is public, keep it quiet
@@ -826,8 +1012,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as _e:
             if not Handler._meta_warned:
                 Handler._meta_warned = True
-                print("sub: link-preview metadata skipped (%s) — the page itself is served unchanged"
-                      % str(_e)[:160], flush=True)
+                log(LOG_WARNING, "sub: link-preview metadata skipped (%s) — the page itself is served unchanged"
+                      % str(_e)[:160])
         self._send(200, data, "text/html; charset=utf-8", cache="no-cache", extra={"Content-Security-Policy": self._CSP})
 
     def _client_ident(self):
@@ -852,8 +1038,22 @@ class Handler(BaseHTTPRequestHandler):
         # a 500 the operator can see, a traceback in the journal, and the rest of the pages still served.
         try:
             self._route()
+        except (ConnectionError, TimeoutError, socket.timeout, ssl.SSLError) as e:
+            # The CLIENT went away mid-reply — a closed tab, a phone that lost its network, a reset, its TLS cut under the
+            # write. Routine on a public page, and not a fault here: one Debug line, no traceback, nothing to answer. As an
+            # ERR traceback (~20 lines each) any client could rotate the panel's history out of the journal namespace it
+            # shares with swg-sub (1.8.9 qualification HE-1).
+            log(LOG_DEBUG, "sub: a client went away before its reply was written (%s)", e.__class__.__name__)
         except Exception:
-            traceback.print_exc()
+            # A real fault keeps its traceback — at most one a minute, with how many were held back: the page answers
+            # every visitor, and a fault on it would otherwise write one per request.
+            with Handler._tb_lock:
+                now, (last, held) = time.monotonic(), Handler._tb
+                due = now - last >= 60
+                Handler._tb = [now, 0] if due else [last, held + 1]
+            if due:
+                log(LOG_ERR, traceback.format_exc().rstrip("\n")
+                    + ("\n(%d more since the last one were not written)" % held if held else ""))
             if not getattr(self, "_replied", False):
                 with contextlib.suppress(Exception):     # the peer may be gone; never raise out of the handler
                     self._send(500, "server error\n")
@@ -891,7 +1091,26 @@ class Handler(BaseHTTPRequestHandler):
         return self._page()
 
 
-class _TLSServer(ThreadingHTTPServer):
+class _QuietServer(ThreadingHTTPServer):
+    # The plain-HTTP server too: the stdlib's handle_error prints ~20 bare lines to stderr for every connection reset
+    # before or between requests — a bare connect + RST is enough, before any limiter — and they went to the shared
+    # journal at Info (1.8.9 qualification HE-1). What reaches here is a connection-level failure, never a page fault:
+    # do_GET answers those itself.
+    def handle_error(self, request, client_address):
+        pass                                            # failed handshake / scanner / vanished client — routine noise
+
+    # At most max_conns connections at once, one thread each, in both modes: one more is closed at once, before it costs a
+    # thread (1.8.9 qualification R2 HELPERS-2). ~1000 idle connections held every fd — at the soft limit (1024 on the bare
+    # unit) accept() failed with EMFILE and the serve loop spun a core while the page and /healthz stopped answering. 256:
+    # a page visit is a few short connections, so far above real use, and 256 sockets plus the one file each may have open
+    # stay near half that limit; where the limit is high (docker) it caps the threads' RAM.
+    max_conns = 256
+
+    def verify_request(self, request, client_address):
+        return threading.active_count() <= self.max_conns     # the serve loop's own thread + one per connection
+
+
+class _TLSServer(_QuietServer):
     daemon_threads = True
     ssl_ctx = None
 
@@ -904,9 +1123,6 @@ class _TLSServer(ThreadingHTTPServer):
         if self.ssl_ctx is not None:
             request = self.ssl_ctx.wrap_socket(request, server_side=True)
         super().finish_request(request, client_address)
-
-    def handle_error(self, request, client_address):
-        pass                                            # failed handshake / scanner / vanished client — routine noise
 
 
 def _serve_config(state):
@@ -941,7 +1157,42 @@ def _serve_config(state):
     return host, port, None, None                              # no usable cert → plain HTTP (front with a proxy)
 
 
+# swg-sub's level is the fleet's, which the panel mirrors into subs/serve.json — this process never reads
+# panel-settings.json. Read from log() itself, at most every LOG_REREAD seconds: swg-sub writes a few lines a day, so
+# nothing polls. Its unit has no LogLevelMax (a cap fixed at its start would outlive the level), so this is the only
+# filter. Until the path is known (the first lines of a start), it logs at Info.
+LOG_REREAD = 5
+_LOG_SERVE = {"path": None, "at": -LOG_REREAD}
+
+
+def _log_follow():
+    if not _LOG_SERVE["path"] or time.monotonic() - _LOG_SERVE["at"] < LOG_REREAD:
+        return
+    _LOG_SERVE["at"] = time.monotonic()
+    lg = (load_json(_LOG_SERVE["path"], {}) or {}).get("log")
+    lg = lg if isinstance(lg, dict) else {}
+    try:
+        until = int(lg.get("debug_until") or 0)
+    except (TypeError, ValueError):
+        until = 0
+    log_set(min(LOG_LEVELS.get(lg.get("level"), LOG_INFO), LOG_INFO),
+            -1 if until == -1 else max(0, until - time.time()))
+
+
+_log_write_lines = log
+
+
+def log(prio, msg, *args):            # noqa: F811 — the shared helper's log(), after following the fleet's level
+    _log_follow()
+    _log_write_lines(prio, msg, *args)
+
+
 def main():
+    # As a docker container's PID 1 swg-sub IGNORED SIGTERM — a PID 1 has no default action, and a signal from outside its
+    # namespace (docker stop) reaches only a handler — so every stop waited ~10 s for SIGKILL (1.8.9 qualification, as
+    # swg-noded's NX-L1). Nothing here to flush or close. Off PID 1 (bare metal) SIGTERM's default stays.
+    if os.getpid() == 1:
+        signal.signal(signal.SIGTERM, lambda _sig, _frm: os._exit(0))
     # Tolerate a cold start where the panel hasn't written fleet.json yet (docker: swg-sub and the
     # panel come up together and share the config volume). Wait a bounded while, then let the process
     # exit so the supervisor (systemd Restart / compose restart) retries — never spin forever.
@@ -949,13 +1200,23 @@ def main():
     for _ in range(30):
         if fleet is not None:
             break
-        print(f"swg-sub: waiting for {FLEET_PATH} …", flush=True)
+        log(LOG_INFO, f"swg-sub: waiting for {FLEET_PATH} …")
         time.sleep(2)
         fleet = load_json(FLEET_PATH, None)
     if fleet is None:
         raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
     state = State(fleet)
     Handler.state = state
+    _LOG_SERVE["path"] = os.path.join(state.sub_dir, "serve.json")
+    # …and for serve.json, which the panel writes at the END of its start, well after the entrypoint wrote fleet.json. Read
+    # before it, the TLS mode is unknown, so the listener was decided plain HTTP without waiting for the certificate the
+    # entrypoint issues in the background — and stayed so until a restart (1.8.8 deferred #17: 1 fresh Docker master in 4).
+    if not os.path.exists(_LOG_SERVE["path"]):
+        log(LOG_INFO, "swg-sub: waiting for the panel's %s …" % _LOG_SERVE["path"])
+        for _ in range(30):
+            time.sleep(2)
+            if os.path.exists(_LOG_SERVE["path"]):
+                break
 
     global SUB_BASE, SUB_BASE_ALT                            # SWG_SUB_BASE wins (infra), else the panel's serve.base (from the sub public URL path)
     def _read_bases():
@@ -973,7 +1234,7 @@ def main():
     _sv = (state.subscriptions().get("serve") or {})
     if not (cert and key) and _sv.get("tls_mode") not in (None, "", "reverse-proxy") \
             and not (os.environ.get("SWG_SUB_TLS_CERT") and os.environ.get("SWG_SUB_TLS_KEY")):
-        print("swg-sub: direct-TLS (%s) but no certificate yet — waiting for the panel to issue it…" % _sv.get("tls_mode"), flush=True)
+        log(LOG_WARNING, "swg-sub: direct-TLS (%s) but no certificate yet — waiting for the panel to issue it…" % _sv.get("tls_mode"))
         # SURVIVE THE SIGNAL THAT SAYS THE CERT IS READY. The real SIGHUP handler is installed further down,
         # AFTER this wait — so for the whole ~90s window the default action applied and a HUP simply killed
         # the process. And a HUP is exactly what arrives here: the panel issues the certificate and then
@@ -987,9 +1248,9 @@ def main():
             state = State(fleet); Handler.state = state
             host, port, cert, key = _serve_config(state)
             if cert and key:
-                print("swg-sub: certificate ready — serving HTTPS", flush=True); break
+                log(LOG_INFO, "swg-sub: certificate ready — serving HTTPS"); break
         else:
-            print("swg-sub: no certificate after ~90s — serving plain HTTP (front with a TLS proxy / Cloudflare Flexible)", flush=True)
+            log(LOG_WARNING, "swg-sub: no certificate after ~90s — serving plain HTTP (front with a TLS proxy / Cloudflare Flexible)")
     scheme = "http"
     if cert and key:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -998,7 +1259,7 @@ def main():
         srv.ssl_ctx = ctx
         scheme = "https"
     else:
-        srv = ThreadingHTTPServer((host, port), Handler)
+        srv = _QuietServer((host, port), Handler)
 
     def _reload(_sig, _frm):
         # SIGHUP: re-read serve.json (mount base + transitional alt base) with NO rebind, and — under TLS — swap in a
@@ -1010,10 +1271,9 @@ def main():
             nb, nba = _read_bases()
             if (nb, nba) != (SUB_BASE, SUB_BASE_ALT):
                 SUB_BASE, SUB_BASE_ALT = nb, nba
-                print("swg-sub: reloaded config (SIGHUP) — base %s%s" % (SUB_BASE or "/",
-                      (" (+ old base %s during migration)" % SUB_BASE_ALT) if SUB_BASE_ALT else ""), flush=True)
+                log(LOG_INFO, "swg-sub: reloaded config (SIGHUP) — base %s%s", SUB_BASE or "/", (" (+ old base %s during migration)" % SUB_BASE_ALT) if SUB_BASE_ALT else "")
         except Exception as e:
-            print(f"swg-sub: config reload failed: {e}", flush=True)
+            log(LOG_ERR, f"swg-sub: config reload failed: {e}")
         if getattr(srv, "ssl_ctx", None) is not None:
             # Swap in a FRESH context, not load_cert_chain() over the live one: an SSLContext keeps one cert PER KEY
             # TYPE, so loading a cert of a different key type (an acme renewal that flips ECDSA↔RSA) leaves the OLD
@@ -1022,14 +1282,14 @@ def main():
                 nctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
                 nctx.load_cert_chain(cert, key)
                 srv.ssl_ctx = nctx
-                print("swg-sub: reloaded TLS certificate (SIGHUP)", flush=True)
+                log(LOG_INFO, "swg-sub: reloaded TLS certificate (SIGHUP)")
             except Exception as e:
-                print(f"swg-sub: TLS reload failed (keeping old cert): {e}", flush=True)
+                log(LOG_ERR, f"swg-sub: TLS reload failed (keeping old cert): {e}")
     with contextlib.suppress(ValueError, OSError, AttributeError):
         signal.signal(signal.SIGHUP, _reload)
 
     on = "enabled" if state.enabled() else "disabled (all requests 404 until turned on in the panel)"
-    print(f"swg-sub {VERSION} on {scheme}://{host}:{port}{SUB_BASE or ''} — subscriptions {on}", flush=True)
+    log(LOG_INFO, f"swg-sub {VERSION} on {scheme}://{host}:{port}{SUB_BASE or ''} — subscriptions {on}")
     with contextlib.suppress(KeyboardInterrupt):
         srv.serve_forever()
 

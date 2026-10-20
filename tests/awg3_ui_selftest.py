@@ -44,7 +44,9 @@ PLANTS = {
                 '    return isinstance((((snap if isinstance(snap, dict) else {}).get("datapath") or {}).get("awg") or {}).get("gen"), dict)\n', ["[3]", "[4]", "[5]", "[6]"]),   # the poll fails for every node after it — every later /api/state read
     "a3def": ('    for k, v in {**AWG31_SET, **{k: v for k, v in (defaults or {}).items() if k in _AWG3_RANGED}}.items():\n',
               '    for k, v in AWG31_SET.items():\n', ["[6]"]),
-    "a3check": ('                _a3c, _e3 = awg3_check({**AWG31_SET, **_a3})\n', '                _a3c, _e3 = dict(_a3), None\n', ["[6]"]),
+    "a3check": ('                _a3, _e3 = awg3_template_clean(_a3)\n',     # the six stored as typed, never checked
+                '                _a3, _e3 = {k: str(_a3[k]).strip() for k in _AWG3_RANGED if _a3.get(k) is not None and str(_a3[k]).strip()}, None\n',
+                ["[6]"]),
     "colour": ('            for k in ("wg", "awg", "awg3", "wdtt", "csqtt"):',
                '            for k in ("wg", "awg", "wdtt", "csqtt"):', ["[5]"]),
 }

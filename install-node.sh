@@ -8,8 +8,8 @@
 #
 # First add the node in the panel's "Nodes" screen — it hands you a one-time key
 # and the exact command to run here, e.g.:
-#   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
-#     | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)" \
+#     -- node -key SECURE_NODE_KEY -host https://panel.example.net
 #
 # Fill CONFIG to run unattended, or be prompted. Run as root. --dry-run renders
 # files under ./dryrun and executes nothing.
@@ -24,7 +24,30 @@ MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detect
 ADOPTED_IFACES="${ADOPTED_IFACES:-}"   # interfaces migrated in by convert.sh — shown as "already on this node", not orphan/docker
 ADOPTED_ENDPOINTS="${ADOPTED_ENDPOINTS:-}"   # "name=host,…" convert.sh hands over: the endpoint each migrated interface's clients already dial
 # No terminal: debconf has nobody to ask and says so four lines per package — quiet it (a value already set stays).
-if [ -z "${DEBIAN_FRONTEND:-}" ] && ! { : </dev/tty; } 2>/dev/null; then export DEBIAN_FRONTEND=noninteractive; fi
+# ⚠️ ONLY THE TERMINAL'S FOREGROUND CAN READ IT. Under `curl … | sudo bash`, sudo-rs (Ubuntu 26.04's sudo) runs the
+# script in the BACKGROUND of its own terminal: /dev/tty still opens, and the first read STOPS the process (SIGTTIN) with
+# nothing on screen — the installer "hung at the TLS question" (client report 2026-10-06; sudo-rs issue #1263). So every
+# question reads SWG_TTY: /dev/tty while this process group is the terminal's foreground, /dev/null otherwise (an EOF,
+# which each question already answers with its no-terminal default) — no terminal at all, or the background under sudo-rs.
+# ⚠️ NOT UNDER CLASSIC SUDO. It backgrounds the script the same way (≥ 1.9.13 with use_pty: Ubuntu 24.04, Debian 12/13) but
+# brings it to the foreground at that first read, so `curl … | sudo bash` asked its questions there, as in 1.8.8 — taking
+# every background start as unreadable took them all away (1.8.9 qualification IN-2). Which sudo it is: the first sudo up
+# the chain, by its binary's path (sudo-rs, cargo), else by its --version. No sudo above (a job the operator put in the
+# background): the terminal, as ever. /proc/<pid>/stat after the command name: state ppid pgrp session tty_nr tpgid.
+# Without /proc: as before.
+_swg_tty_fg(){ local s f p e i IFS=' '; { read -r s </proc/$$/stat; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"
+  [ "${f[2]:-}" = "${f[5]:-}" ] && return 0; [ "${f[5]:-0}" -gt 0 ] 2>/dev/null || return 1
+  for i in 1 2 3 4; do p="${f[1]:-0}"; [ "$p" -gt 1 ] 2>/dev/null || return 0; e="$(readlink "/proc/$p/exe" 2>/dev/null)" || e=""
+    case "${e##*/}" in sudo*) case "$e" in *sudo-rs*|*cargo*) return 1;; esac
+      case "$("$e" --version 2>/dev/null)" in sudo-rs*) return 1;; esac; return 0;; esac
+    { read -r s <"/proc/$p/stat"; } 2>/dev/null || return 0; read -ra f <<< "${s##*) }"; done; return 0; }
+SWG_TTY=/dev/tty; _swg_tty_fg || SWG_TTY=/dev/null
+swg_tty_ok(){ [ "$SWG_TTY" = /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+if [ "$SWG_TTY" = /dev/null ] && [ -z "${SWG_TTY_WARNED:-}" ] && { : </dev/tty; } 2>/dev/null; then   # said once per run
+  printf '%s\n' "! This terminal cannot be read: the script runs in its background, which \`curl … | sudo bash\` does under sudo-rs (Ubuntu 26.04's sudo). Questions take their defaults. To answer them, run: sudo bash -c \"\$(curl -fsSL <bootstrap.sh URL>)\" -- <arguments>" >&2
+  export SWG_TTY_WARNED=1
+fi
+if [ -z "${DEBIAN_FRONTEND:-}" ] && ! swg_tty_ok; then export DEBIAN_FRONTEND=noninteractive; fi
 WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 _GIVEN_DNS="${DNS:-}"                  # given on this run (env / convert.sh) — else a re-install keeps the node's own (node_dns_json)
 DNS="${DNS:-1.1.1.1}"
@@ -39,6 +62,7 @@ NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 # were typed — `… node --yes --dry-run` ran a REAL install (1.8.8 qualification, round 12; install-host.sh the same).
 DRYRUN=false; for _a in "$@"; do case "$_a" in --dry-run) DRYRUN=true;; esac; done
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
+_WROTE=wrote; $DRYRUN && _WROTE="would write"   # a dry run writes the preview copy, not the file it names (1.8.8 deferred #13)
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, dl_turn_bin
 # Refuse on a declaratively managed host BEFORE anything is written — a node laid down here would
@@ -87,7 +111,7 @@ bringup(){ local tool="$1" ifn="$2" out
   if $DRYRUN; then echo "    [skip] $tool up $ifn"; return 0; fi
   if out="$("$tool" up "$ifn" 2>&1)"; then return 0
   else [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/      /' >&2; return 1; fi; }
-writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
+writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "${_WROTE:-wrote} $p ($m)"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  a 'mneziawg'           → [a]mneziawg
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd a 'mneziawg (default)'  → [a]mneziawg (default)
@@ -96,11 +120,11 @@ STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo 
 # ⚠️ A TERMINAL, ASKED QUIETLY FIRST. `read … </dev/tty` with none (an unattended run, `</dev/null`, no controlling
 # terminal) makes bash print a raw "line N: /dev/tty: No such device or address" before the read fails and the
 # default is taken — every prompt below then reads as a crash. Same fall-through, without the noise.
-_tty(){ { : </dev/tty; } 2>/dev/null; }
+_tty(){ swg_tty_ok; }
 ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
-  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; else _notty "$p" "$d"; fi; printf -v "$3" '%s' "${v:-$d}"; _pnl; }
+  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$d"; fi; printf -v "$3" '%s' "${v:-$d}"; _pnl; }
 ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; _given "$p" "${!3}"; _pnl; return; fi
-  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi
+  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; if _tty; then read -rp "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v <"${SWG_TTY:-/dev/tty}" || true; else _notty "$p" "$([ "$d" = y ] && echo yes || echo no)"; fi
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; _pnl; }
 
 # ── input validators (0 = ok) ──
@@ -132,7 +156,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && { _given "$p" "${!var}"; _pnl; return; }; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
-    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
+    if _tty && read -rp "  $p [$(col "$C_BLUE" "$d")]: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option
@@ -150,7 +174,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
     warn "ignoring invalid $var='${!var}' ($hint)"; fi
   [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
-    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
+    if _tty && read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v <"${SWG_TTY:-/dev/tty}"; then rc=0; else rc=1; v=""; _tty || _notty "$p" "$d"; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
@@ -205,6 +229,22 @@ detect_wg(){ # every CONVENTIONAL wg/awg location, not just the ones we install 
     for f in "$d"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
   done
 }
+ensure_wg_tools_once(){ # <awg|wg> [again] — ensure_wg_tools, once per run per tool: the answer cannot change within one, and the
+  # AmneziaWG chain can download and compile for minutes. The install steps asked twice (Datapath tooling, then "for future
+  # interface creation"), so a download that failed or crawled the first time was simply repeated (client report 2026-10-06).
+  # ⚠️ BUT A FAILURE IS NOT FINAL WHERE AN INTERFACE IS STARTED: `again` there tries a tool that failed earlier in the run
+  # once more — a dpkg lock held at the tooling step (unattended-upgrades on a fresh box) is gone by then, and that failure,
+  # kept, left an adopted wg0 DOWN after an rc-0 Docker → bare convert (1.8.9 qualification IN-18; 1.8.8 asked afresh there).
+  # Once per tool per run: a chain that really fails is not repeated for every interface. The closing "for future interface
+  # creation" check asks `again` for wg (one apt attempt; 1.8.8 asked afresh there too) but not for awg: its chain is the
+  # GitHub download + compile the 2026-10-06 memo is for.
+  local _v="_WGT_RC_$1" _a="_WGT_AGAIN_$1" _rc
+  if [ -n "${!_v:-}" ] && { [ "${!_v}" = 0 ] || [ -z "${2:-}" ] || [ -n "${!_a:-}" ]; }; then return "${!_v}"; fi
+  [ -z "${2:-}" ] || printf -v "$_a" '%s' 1
+  ensure_wg_tools "$1" && _rc=0 || _rc=$?
+  printf -v "$_v" '%s' "$_rc"
+  return "$_rc"
+}
 ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent, non-fatal -> 0/1).
   # Success = the CLI is present AND its kernel module LOADS. `apt install amneziawg` installs the `awg` tool but the
   # datapath is a DKMS module that must COMPILE against the running kernel (needs dkms + linux-headers-$(uname -r));
@@ -221,7 +261,10 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # or not — awg-quick needs it on disk the day a reboot lands on a kernel with no module. Only the pinned download
   # here; a Go build for a box whose module works is not worth its cost (ensure_awg_userspace keeps that rung).
   awg_go_needs_install && { awg_go_pinned || warn "AmneziaWG: the pinned userspace fallback could not be fetched — awg interfaces depend on the kernel module alone until an update installs it"; }   # missing, or one of our earlier pinned builds
-  if have awg && modprobe amneziawg 2>/dev/null; then return 0; fi
+  if have awg && modprobe amneziawg 2>/dev/null; then                 # already fully working (tool + loadable module) —
+    $DRYRUN || awg_compat_patch_installed >/dev/null || true          # …its source fixed for the NEXT kernel (PR #218)
+    return 0
+  fi
   # graceful degrade on a non-apt distro (Fedora/RHEL/Arch/Alpine): don't silently limp — tell the operator exactly
   # what to install with their own package manager. apt paths below stay for Debian/Ubuntu.
   $DRYRUN || have apt-get || { warn "AmneziaWG not installed — no apt-get on this system; install dkms, linux-headers-$(uname -r) and amneziawg-dkms with your package manager, then re-run"; return 1; }
@@ -234,8 +277,7 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
     run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
     ensure_awg_headers_follow || true   # D4: headers for the NEXT kernel too, so DKMS builds it when it arrives
     awg_dkms_drop_unowned   # D4: one DKMS owner — the package's
-    run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
-    build_awg_module
+    awg_ppa_module_install && build_awg_module   # a module that does not compile on this kernel is given up on, not retried
   else
     # Not Ubuntu: the PPA publishes nothing for this system, so none of it is tried (no software-properties-common, no
     # add-apt-repository traceback, no "Unable to locate package amneziawg") — straight to the source build below, the
@@ -245,6 +287,13 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   fi
   $DRYRUN && return 0
   have awg && modprobe amneziawg 2>/dev/null && return 0
+  # Built, and refused for its signing key (Secure Boot): the steps, once, and straight to userspace — a source build
+  # would compile the same module to the same refusal.
+  if have awg && awg_mod_key_rejected; then
+    awg_key_refused_note
+    ensure_awg_userspace && return 0
+    return 1
+  fi
   # The apt path did not get us there — Debian (the PPA is Ubuntu-only), a non-apt distro, or a kernel with
   # no matching headers. Do NOT stop at a warning: build from source, which is the only route to the KERNEL
   # datapath off Ubuntu and is what we want wherever it is possible.
@@ -252,8 +301,13 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   # Still no module: no headers for this kernel, or an LXC/OpenVZ guest that cannot load one at all. Fall
   # back to userspace so the node can still serve AmneziaWG — awg-quick picks it up by itself.
   if ensure_awg_userspace; then
+    # ⚠️ …but that is a DATAPATH, not the tools: with no awg / awg-quick nothing brings an AmneziaWG interface up, so it is
+    # a failure — ensure_wg_tools_once keeps it, and the switch's `again` tries once more (a dpkg lock held through the
+    # tooling step is gone by then). Counted a success, the memo kept it and an adopted awg0 + the mesh links stayed DOWN
+    # after an rc-0 Docker → bare convert, "awg-quick: command not found" (1.8.9 qualification F21; 1.8.8 asked afresh)
+    have awg && have awg-quick || return 1   # a datapath, not the tools
     warn "AmneziaWG will run on the SLOWER userspace datapath — no loadable kernel module on $(uname -r).$(
-      have apt-get && awg_tools_drive_3x && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
+      have apt-get && awg_tools_drive_3x && ! [ -e "/lib/modules/$(uname -r)/build" ] && printf ' %s' 'Installing matching linux-headers and re-running the installer switches it to the kernel module.')"
     return 0
   fi
   return 1
@@ -265,13 +319,16 @@ build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the RUNNING
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || run dkms autoinstall 2>/dev/null || true
   awg_dkms_build_all_kernels   # D4: every installed kernel with headers — an installed-but-not-booted kernel included
   modprobe amneziawg 2>/dev/null && return 0
-  run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  awg_mod_key_rejected && return 1   # built, refused for its key (Secure Boot) — a reinstall would only build it again
+  awg_dkms_reinstall || return 1   # the source fixed again and dpkg finished; given up when it does not compile (lib/common.sh)
   run dkms autoinstall -k "$(uname -r)" 2>/dev/null || true
   run modprobe amneziawg 2>/dev/null || true
 }
 ensure_smart_tools(){ # nftables (smart-routing marking) + dnsmasq (domain-tier set filling) — idempotent, non-fatal
   have nft     || { run apt-get update -qq || true; run apt-get install -y nftables || true; }
-  have dnsmasq || { run apt-get update -qq || true; run apt-get install -y dnsmasq  || true; }
+  # masked FIRST: its postinst starts it, the start fails on :53 (systemd-resolved) and the first install printed an error
+  # for a unit masked a moment later anyway; a masked unit is not started (1.8.8 deferred #5(b))
+  have dnsmasq || { run apt-get update -qq || true; run systemctl mask dnsmasq 2>/dev/null || true; run apt-get install -y dnsmasq || true; }
   have ipset   || { run apt-get update -qq || true; run apt-get install -y ipset    || true; }   # kernel-SNI mode (xt_string learn → ipset); degrades to userspace SNI if absent
   # the node runs its OWN dnsmasq on loopback:5354 via swg-noded; keep the distro service from ever grabbing :53.
   # mask (not just disable) so an apt postinst can't restart it, and reset-failed so a prior boot's :53 conflict
@@ -333,7 +390,7 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
   for name in "${SPEC_ORDER[@]}"; do
     cmd="${SPEC_CMD[$name]}"; proto="${SPEC_PROTO[$name]}"; port="${SPEC_PORT[$name]}"; subnet="${SPEC_SUBNET[$name]}"
     addr="${SPEC_ADDR[$name]}"; wan="${SPEC_WAN[$name]}"; ep="${SPEC_EP[$name]}"; dir="${SPEC_DIR[$name]}"; conf="$dir/$name.conf"
-    if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
+    if ! ensure_wg_tools_once "$cmd" again; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
     up="$(nat_hook_up "${subnet}" "${wan}")"   # reap-then-add: one copy whatever was there (lib/common.sh)
     down="$(nat_hook_down "${subnet}" "${wan}")"
     printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
@@ -519,7 +576,7 @@ apply_node_switch(){
   info "Bringing up the node's interfaces (starting each one — this can take a moment for many)…"
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -z "$n" ] && continue
     ip link show "$n" >/dev/null 2>&1 && continue          # already up → leave it
-    _c="${IF_CMD[$n]:-awg}"; ensure_wg_tools "$_c" || continue
+    _c="${IF_CMD[$n]:-awg}"; ensure_wg_tools_once "$_c" again || continue
     if [ "$_c" = awg ]; then bringup awg-quick "$n" && { run systemctl enable --quiet "awg-quick@$n" || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"
     else                     bringup wg-quick  "$n" && { run systemctl enable --quiet "wg-quick@$n"  || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"; fi
   done
@@ -586,7 +643,8 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
     case "$exe" in
       *'${SWG_'*)   # EnvironmentFile form — read listen/connect/params out of turn.env
         envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" 2>/dev/null | sed -n 1p)"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
+        lis="$(sed -n 's/^SWG_DIAL=//p' "$envf" 2>/dev/null | sed -n 1p)"   # SWG_DIAL = what clients dial when it differs from the bind (swg-noded turn_bind); SWG_LISTEN is what it binds
+        [ -n "$lis" ] || lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | sed -n 1p)"
         con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | sed -n 1p)"
         params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | sed -n 1p)"
         wk="$(printf '%s\n' "$params" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')"
@@ -603,8 +661,10 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
 turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }   # turn_latest_tag <owner/repo>
   curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
-install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
-  local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst fdir sbin
+install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags> [<Listen on ip>]
+  local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" pin="${6:-}" arch dir bin svc url ver port inst fdir sbin
+  case "$pin" in *[!0-9.]*|"") pin="";; esac   # an IPv4 address or nothing (swg-noded checks it is on the box)
+  [ "$owner" = "samosvalishe/free-turn-proxy" ] && owner="hackdiaz-dev/free-turn-proxy"   # repo deleted 2026-10; hackdiaz-dev carries it on (a record from before the move names the old one)
   case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch="";; esac
   # detect-and-REFUSE: the forks publish server-linux-amd64/arm64 only. Never fall back to amd64 on an unknown arch —
   # that fetched a wrong x86-64 binary → 404 / "Exec format error". Skip the turn-proxy with a clear message instead.
@@ -629,9 +689,12 @@ install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> 
   printf '%s\n' "$owner"          | writef "$fdir/repo.txt" 644
   printf '%s\n' "${ver:-unknown}" | writef "$fdir/version.txt" 644
   # listen/connect/params live in turn.env so a panel edit only rewrites it + restarts (no daemon-reload)
+  # SWG_LISTEN is what the proxy BINDS. Written here as the dialled host (bash cannot decide a bind): swg-noded's
+  # heal_turn_binds re-renders it on its first sync when that host is not on this box, or a Listen on (SWG_PIN) is set.
   writef "$dir/turn.env" 600 <<EOF
 SWG_LISTEN=${listen}
-SWG_CONNECT=${connect}
+${pin:+SWG_PIN=${pin}
+}SWG_CONNECT=${connect}
 SWG_PARAMS=${extra}
 EOF
   writef "/etc/systemd/system/$svc.service" 600 <<EOF
@@ -674,20 +737,21 @@ import json, sys
 try: d=json.load(open(sys.argv[1])); tps=d.get("turn_proxies") or []
 except Exception: tps=[]
 for t in (tps if isinstance(tps,list) else []):
-    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), (t.get("params") or "")]))
+    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), t.get("bind_ip") or "-", (t.get("params") or "")]))
 PY
 )"
   [ -n "$list" ] || return 0
   echo; info "Turn-proxies to migrate from the docker node:"; echo
-  while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "${lis:-?}" "${con:-?}"; done <<EOF
+  # pin before params, "-" when none: tab is IFS whitespace, so an empty field would collapse and shift params into it
+  while IFS="$(printf '\t')" read -r svc owner lis con pin params; do [ -n "$svc" ] && printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "${lis:-?}" "${con:-?}"; done <<EOF
 $list
 EOF
   echo
   # Approach B: auto-carry — always migrate the existing turn-proxies (no prompt). New ones are created from the panel.
-  while IFS="$(printf '\t')" read -r svc owner lis con params; do
+  while IFS="$(printf '\t')" read -r svc owner lis con pin params; do
     [ -n "$svc" ] && [ -n "$owner" ] || continue
     fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"
-    TURN_DEFER_START=1 install_turn_binary "$fork" "$owner" "$lis" "$con" "$params"
+    TURN_DEFER_START=1 install_turn_binary "$fork" "$owner" "$lis" "$con" "$params" "${pin#-}"
   done <<EOF
 $list
 EOF
@@ -936,8 +1000,8 @@ echo
 # convert migrated (auto). The panel's Orphans screen classifies each interface (WG / AWG / WDTT) or leaves it
 # unmanaged; new ones are created there.
 ensure_smart_tools || true            # nftables (smart routing) + dnsmasq (Force-DNS host tier)
-ensure_wg_tools awg || true           # AmneziaWG tools + DKMS kernel module (default interface type)
-ensure_wg_tools wg  || true           # plain WireGuard tools too — either type works when created later
+ensure_wg_tools_once awg || true      # AmneziaWG tools + DKMS kernel module (default interface type)
+ensure_wg_tools_once wg  || true      # plain WireGuard tools too — either type works when created later
 choose_ifaces                         # detect + display + auto-adopt everything found (convert: incl. migrated confs)
 migrate_docker_turns                  # docker→bare convert: carry existing turn-proxies (auto, no prompt)
 write_turn_record                     # record carried turns for the panel (fresh install: writes an empty set)
@@ -964,8 +1028,8 @@ mkdir -p "$PREFIX/var/lib/swg-noded" "$PREFIX/var/log/swg-agent" "$PREFIX/etc/sw
 # Pre-install wg + awg tools regardless of what interfaces (if any) are configured now — so creating
 # an interface later from the panel "just works" (the sandboxed agent can't apt-install at runtime).
 info "Installing WireGuard + AmneziaWG tools (for future interface creation)"
-ensure_wg_tools wg  || warn "wireguard tools not installed — wg interface creation will need them"
-ensure_wg_tools awg || warn "amneziawg tools not installed (the amnezia ppa is Ubuntu-only) — awg interface creation will need them"
+ensure_wg_tools_once wg again || warn "wireguard tools not installed — wg interface creation will need them"   # apt only: retried (IN-18)
+ensure_wg_tools_once awg || warn "amneziawg tools not installed (the amnezia ppa is Ubuntu-only) — awg interface creation will need them"
 ensure_smart_tools  # nftables + dnsmasq for Phase-3 smart routing (domain tier); harmless if already present
 
 # ───────────────────────── config.json (pull-only HTTPS) ─────────────────────────
@@ -1040,6 +1104,9 @@ WantedBy=multi-user.target
 EOF
 # the device-access tables must not outlive a downgrade — see noded_reach_sweep_dropin (lib/common.sh)
 noded_reach_sweep_dropin "$NODED_DIR" | writef "/etc/systemd/system/$NODED_REACH_SWEEP_DROPIN" 644
+# swg's own journal, held to its budget (lib/common.sh), and the command that reads it
+if swg_log_ns_ok; then swg_log_ns_text swg-node | writef "/etc/systemd/system/swg-noded.service.d/$SWG_LOG_NS_DROPIN" 644; else swg_log_ns_clear; fi
+if [ -f "$SRC/swg-logs" ]; then writef /usr/local/bin/swg-logs 755 < "$SRC/swg-logs"; fi
 
 # ───────────────────────── enable ─────────────────────────
 # The node drives every USERSPACE interface (wdtt, csqtt, awg on amneziawg-go) over a UAPI socket

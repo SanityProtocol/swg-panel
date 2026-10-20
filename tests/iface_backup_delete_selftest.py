@@ -29,7 +29,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 SRC = open(os.path.join(ROOT, "swg-noded"), encoding="utf-8").read()
 if "--perturb" in sys.argv:
     old = '''        if drop_iface_backup(iface):
-            print("keys: %s's key backup removed with it" % iface, flush=True)
+            log(LOG_INFO, "keys: %s's key backup removed with it" % iface)
 '''
     assert SRC.count(old) == 1, "perturbation anchor missing — would FALSE-PASS"
     SRC = SRC.replace(old, "")
