@@ -42,8 +42,9 @@ Fixture — node q-node, three deployments per device:
       speaks 2.1); her 2.1 server keeps both. Once the CSQTT app's release is of the other line (no 2.5 release yet), the
       2.5 server offers no app at all rather than one that cannot connect; the line reaches the page through swg-sub
   [12] torrents (1.8.11 S4b): q-node lets them through (Direct) and Boris's awg1 blocks them. Every one of Anna's cells, on every
-      OS and in both languages, carries the one line with the client setting for full speed (in the page's language); Boris's
-      awg1 cell carries none while his csqtt1 cell does; Anna's blocked device's page carries none
+      OS and in both languages, carries the torrent marker in its badge row, labelled with the client setting for full speed
+      (in the page's language); a tap opens that text in a bubble and a second tap closes it; Boris's awg1 cell carries none
+      while his csqtt1 cell does; Anna's blocked device's page carries none
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while v2.5.1 is the latest — the CSQTT app's bubble offers v2.1.9 (our csqtt-app-2.1.9) and says it matches; amurcanov's WDTT 1.2.4-3
       → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
@@ -67,7 +68,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-line       serves a sub.js that offers a csqtt server an app of another line → RED on [11]
      --perturb-ownline    serves a sub.js that offers the CSQTT app of the other line when no release of the server's is out → RED on [11]
      --perturb-chipline   serves a sub.js whose csqtt card no longer names the server's version → RED on [11]
-     --perturb-p2pall     serves a sub.js that draws the torrent line on every cell, allowed or not → RED on [12]
+     --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -262,7 +263,7 @@ if P_OWNLINE:
     perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;\n', "",
                   "the own app's release-line guard")
 if P_P2PALL:
-    perturbed_web("      if (it.tgt.p2p) cc.el", "      if (true) cc.el", "the torrent line only where torrents are allowed")
+    perturbed_web("      var srv = it.tgt.p2p && cc.el", "      var srv = true && cc.el", "the torrent marker only where torrents are allowed")
 if P_CHIPLINE:
     perturbed_web('"CSQTT " + (cd.line || "2.1")', '"CSQTT"', "the csqtt chip's server version")
 if P_TABS:
@@ -327,7 +328,7 @@ READ = r"""(() => {
       mode: pg.getAttribute("data-mode"), p2pn: pg.querySelectorAll(".scell-p2p").length,
       cells: [...pg.querySelectorAll(".scell")].map(c => ({
         tag: txt(c, ".scell-tag"), by: txt(c, ".scell-tag-by"), getapp: txt(c, ".scell-getapp"), role: txt(c, ".scell-role-if"),
-        payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"), text: c.textContent, p2p: txt(c, ".scell-p2p"),
+        payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"), text: c.textContent, p2p: (x => x ? x.getAttribute("aria-label") : null)(c.querySelector(".scell-p2p")),
         qr: !!c.querySelector(".qrbox img[src^='data:image']") })) })) };
 })()"""
 
@@ -453,18 +454,26 @@ try:
           len(turn_cells(rb)) == 1 and "turn" in rb["tabs"], (rb or {}).get("tabs"))
     tab.close()
 
-    # [12] the torrent line: where swg-sub says torrents may leave, and nowhere else
+    # [12] the torrent marker: where swg-sub says torrents may leave, and nowhere else
     P2P_WORDS = {"en": "Prefer TCP", "ru": "Предпочитать TCP"}
     for (os_, lang), r in sorted(renders.items()):
         live = [c for p in r["pages"] if p["mode"] not in ("nets", "dead") for c in p["cells"]]
-        check("[12] %s/%s: every one of Anna's cells carries the torrent line, in the page's language" % (os_, lang),
+        check("[12] %s/%s: every one of Anna's cells carries the torrent marker, labelled in the page's language" % (os_, lang),
               live and all(P2P_WORDS[lang] in (c["p2p"] or "") for c in live), [(c["tag"], (c["p2p"] or "")[:40]) for c in live])
     dead = [p for p in renders[("android", "en")]["pages"] if p["mode"] == "dead"]
     check("[12] …and her blocked device's page none", len(dead) == 1 and dead[0]["p2pn"] == 0, [(p["mode"], p["p2pn"]) for p in dead])
     awg1 = [c for p in rb["pages"] if p["mode"] == "awg" for c in p["cells"]]
-    check("[12] Boris's awg1, which blocks torrents: no line", len(awg1) == 1 and awg1[0]["p2p"] is None, [(c["tag"], c["p2p"]) for c in awg1])
+    check("[12] Boris's awg1, which blocks torrents: no marker", len(awg1) == 1 and awg1[0]["p2p"] is None, [(c["tag"], c["p2p"]) for c in awg1])
     check("[12] …while his csqtt1 cell on the same node carries it", len(turn_cells(rb)) == 1 and turn_cells(rb)[0]["p2p"],
           [(c["tag"], c["p2p"]) for c in turn_cells(rb)])
+    tab, _r = render("u1", "android", "en", phone=True)
+    TAP = r"""(() => { const m=[...document.querySelectorAll('.scell-p2p')].find(x => { const r=x.getBoundingClientRect();
+      return r.width && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; });
+      if (!m) return 'no marker in view'; m.click(); const b=document.querySelector('.note-bubble'); return b ? b.textContent : ''; })()"""
+    first = tab.ev(TAP); time.sleep(0.3); second = tab.ev(TAP)
+    check("[12] a tap on the marker opens its text in a bubble; a second tap closes it",
+          P2P_WORDS["en"] in (first or "") and second == "", (first, second))
+    tab.close()
 
     # [2] the author word, per language, in all three turn cells
     def by_words(os_, lang):

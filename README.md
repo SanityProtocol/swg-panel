@@ -534,9 +534,9 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
 - **Torrents run fastest over TCP.** Through the tunnel a torrent client's default mix of µTP and TCP downloads at a
   fraction of its TCP-only speed — measured on one server: 117 Mbit/s, against 369 with *Prefer TCP* and 540 with TCP
   only — because peers send µTP in packets too large for the tunnel, which the server has to split, and no server
-  setting changes that. Where a server lets torrents through, the subscription page says so with each config, with the
-  setting to use: TCP only, or µTP-TCP mixed mode *Prefer TCP* (qBittorrent: *Options → Connection* / *Advanced*). Where
-  torrents are blocked it says nothing.
+  setting changes that. Where torrents get through, the subscription page shows a magnet beside the config's name; tap or
+  hover it for the setting to use: TCP only, or µTP-TCP mixed mode *Prefer TCP* (qBittorrent: *Options → Connection* /
+  *Advanced*). Where torrents are blocked there is no magnet.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more

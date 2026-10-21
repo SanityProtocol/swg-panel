@@ -228,6 +228,9 @@
     + '<circle cx="20.4" cy="12.4" r="1.8"/>'
     + '<rect x="6" y="14.2" width="2.2" height="3.2" rx="1.1"/><rect x="14" y="14.2" width="2.2" height="3.2" rx="1.1"/>'
     + '<path d="M3.2 12.6 L.9 11.6 L2.1 13.9 Z"/></svg>';
+  // A magnet — the torrent sign — marks a deployment torrents may leave by (swg-sub's `p2p`). Body and pole tips apart.
+  var MAGNET_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true">'
+    + '<path d="M4 7h5v4.5a3 3 0 0 0 6 0V7h5v4.5a8 8 0 0 1-16 0z"/><path d="M4 3h5v3H4zM15 3h5v3h-5z"/></svg>';
   // `ver` = the server's RUNNING version (the cell's deployment): an app published from the server's own repository
   // follows it — the release that version names (the panel's `pins`), not the latest (operator, 2026-10-14).
   // `awg` = the deployment is an AmneziaWG interface: an app whose own tunnel is WireGuard only (`awg: false` in the
@@ -881,6 +884,52 @@
       document.addEventListener("keydown", _dlKey, true);
       window.addEventListener("resize", closeDlBubble);
     }, 0);
+  }
+
+  // Note bubble — the text a marker in a cell's badge row stands for (the torrent magnet). A tap or click toggles it; on a
+  // pointer that hovers, hovering opens it and leaving closes it — unless a click pinned it. A press anywhere else, Escape,
+  // a resize or a scroll (a swipe to the next cell) closes it.
+  var _noteBubble = null;
+  function closeNoteBubble() {
+    if (!_noteBubble) return;
+    _noteBubble.remove(); _noteBubble = null;
+    document.removeEventListener("pointerdown", _nbOutside, true);
+    document.removeEventListener("keydown", _nbKey, true);
+    window.removeEventListener("resize", closeNoteBubble);
+    window.removeEventListener("scroll", closeNoteBubble, true);
+  }
+  function _nbOutside(e) { if (_noteBubble && !_noteBubble.contains(e.target) && !_noteBubble._anchor.contains(e.target)) closeNoteBubble(); }
+  function _nbKey(e) { if (e.key === "Escape") { e.preventDefault(); closeNoteBubble(); } }
+  function openNoteBubble(anchor, text, hover) {
+    if (_noteBubble && _noteBubble._anchor === anchor) { if (!hover) _noteBubble._hover = false; return; }
+    closeNoteBubble(); closeDlBubble();
+    var b = el("div", "note-bubble", text); b._anchor = anchor; b._hover = !!hover;
+    b.setAttribute("role", "tooltip");
+    document.body.appendChild(b);
+    var ar = anchor.getBoundingClientRect(), w = b.offsetWidth;
+    b.style.left = Math.round(Math.min(Math.max(12, ar.left + ar.width / 2 - w / 2), window.innerWidth - w - 12)) + "px";
+    b.style.top = Math.round(ar.bottom + 8) + "px";
+    _noteBubble = b;
+    setTimeout(function () {
+      document.addEventListener("pointerdown", _nbOutside, true);
+      document.addEventListener("keydown", _nbKey, true);
+      window.addEventListener("resize", closeNoteBubble);
+      window.addEventListener("scroll", closeNoteBubble, true);
+    }, 0);
+  }
+  function noteMarker(cls, svg, text) {
+    var m = el("button", "scell-mark " + cls); m.type = "button";
+    m.innerHTML = svg; m.setAttribute("aria-label", text);
+    m.onclick = function (e) {
+      e.stopPropagation();
+      if (_noteBubble && _noteBubble._anchor === m && !_noteBubble._hover) closeNoteBubble();   // pinned → second click closes
+      else openNoteBubble(m, text, false);                                                     // opens, or pins a hover's
+    };
+    if (window.matchMedia && window.matchMedia("(hover: hover)").matches) {
+      m.onmouseenter = function () { openNoteBubble(m, text, true); };
+      m.onmouseleave = function () { if (_noteBubble && _noteBubble._anchor === m && _noteBubble._hover) closeNoteBubble(); };
+    }
+    return m;
   }
 
   // "Ask on tap" choice popover (Safari-on-iOS): Open the app (deliberate scheme fire) vs Get the app (store/TestFlight).
@@ -2228,10 +2277,11 @@
     var multi = Object.keys(_deps).length > 1;
     var ctrls = items.map(function (it) {
       var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason, multi);
-      // Torrents may leave by this deployment (swg-sub sets p2p only then): the one client setting that gets them full speed
-      // through the tunnel. Last in a block the portrait layout measures — the VK block when the cell has one (what the link
-      // needs comes first, then the options), else the header.
-      if (it.tgt.p2p) (cc.el.querySelector(".scell-vk") || cc.el.querySelector(".scell-node")).appendChild(el("p", "scell-p2p", t("p2pHint")));
+      // Torrents may leave by this deployment (swg-sub sets p2p only then): a magnet at the end of the badge row, where the
+      // plain-mode turtle sits, and the one client setting that gets them full speed through the tunnel in its bubble
+      // (operator, 2026-10-21: an icon, not a line — the line took room from the config on a crowded cell).
+      var srv = it.tgt.p2p && cc.el.querySelector(".scell-srv");
+      if (srv) srv.appendChild(noteMarker("scell-p2p", MAGNET_SVG, t("p2pHint")));
       srow.appendChild(cc.el); return cc.ctrl;
     });
     page.appendChild(srow);

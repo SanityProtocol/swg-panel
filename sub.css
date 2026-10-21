@@ -444,9 +444,16 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .scell-raw-d { margin-top: 1px; font-size: clamp(10.5px, 3vw, 11.5px); font-weight: 500; }
 .scell-node > .scell-raw { margin-top: 0; }
 
-/* Torrents allowed on this deployment → the client setting for full speed. Advice, not a status: muted, last in the header. */
-.scell-vk > .scell-p2p { margin-top: 6px; }
-.scell-p2p { max-width: 92%; margin: 0; color: var(--muted); font-size: clamp(11px, 3vw, 12px); font-weight: 500; line-height: 1.3; text-wrap: balance; }
+/* A marker in the badge row that explains itself in a bubble (the torrent magnet: torrents may leave by this deployment,
+   and the client setting for full speed). Brand-coloured: news, not a warning — the turtle beside it is the warning. */
+.scell-mark { appearance: none; border: 0; background: none; padding: 2px; margin: -2px -4px -2px -4px; cursor: pointer;
+  display: inline-flex; align-items: center; line-height: 0; border-radius: 6px; font: inherit; }
+.scell-mark svg { width: 1.3em; height: 1.3em; display: block; }
+.scell-mark:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.scell-p2p { color: var(--brand); }
+.note-bubble { position: fixed; z-index: 70; max-width: min(300px, calc(100vw - 24px)); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 40px rgba(0, 0, 0, .42);
+  color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1.45; text-align: left; }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }
