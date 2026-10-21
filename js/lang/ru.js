@@ -2099,6 +2099,19 @@ export const STR = {
   "Not a valid IPv4 address or range: {v1}": "Неверный IPv4-адрес или диапазон: {v1}",
   "Too broad for a never-flag list (use /16 or narrower): {v1}": "Слишком широкий диапазон для списка исключений (используйте /16 или уже): {v1}",
   "Too many trusted sources — {v1} over the limit of 256.": "Слишком много доверенных источников — на {v1} больше лимита в 256.",
+  // ── the Never-block list (docs/NEVER-BLOCK-AND-PORT-RULES-PLAN.md A.5) ──
+  "Never block": "Не блокировать",
+  "Never blocked by any block list, on every interface and node — and still routed by your routing rules. Your own Block rules and the abuse protections are not affected; for those, use a more specific Direct rule. Site names work on Force-DNS and Hybrid SNI, addresses everywhere. A site name does not unblock an address an address list holds — add the address too. One site name, IP or range a line.":
+    "Никакой список блокировок не блокирует их — ни на одном интерфейсе и ни на одной ноде, — а маршрутизируются они по вашим правилам, как прежде. Ваши собственные правила «Заблокировать» и защита от злоупотреблений не затрагиваются: для них нужно более точное правило «Напрямую». Имена сайтов работают в Force-DNS и Hybrid SNI, адреса — везде. Имя сайта не разблокирует адрес, который держит список адресов, — добавьте и адрес. Одно имя, IP или диапазон на строку.",
+  "Not taken — site names and IPv4 addresses or ranges (/8 or narrower) only: {v1}": "Не принято — только имена сайтов и IPv4-адреса или диапазоны (/8 или уже): {v1}",
+  "To stop the port-scan guard flagging one of your own machines, use Trusted sources (Settings → Network).": "Чтобы защита от сканов портов не отмечала вашу собственную машину, используйте «Доверенные источники» (Настройки → Сеть).",
+  "Never-block list updated": "Список «Не блокировать» обновлён",
+  "Sites on the Never-block list (Settings → Geo data providers → Blocking) are never blocked here.": "Сайты из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь не блокируются никогда.",
+  "Never block takes site names and IPv4 addresses or ranges — not {v1}": "«Не блокировать» принимает имена сайтов и IPv4-адреса или диапазоны — не {v1}",
+  "Too broad for the Never-block list (use /8 or narrower): {v1}": "Слишком широкий диапазон для списка «Не блокировать» (используйте /8 или уже): {v1}",
+  "Too many entries on the Never-block list — {v1} over the limit of {v2}.": "Слишком много записей в списке «Не блокировать» — на {v1} больше лимита {v2}.",
+  "the Never-block list's site names need a node update — until then block lists still block them here (its addresses already work)":
+    "для имён сайтов из списка «Не блокировать» нужно обновить ноду — пока списки блокировок здесь их по-прежнему блокируют (адреса уже работают)",
   "Mesh links — {v1}": "Связи в меше — {v1}",
   "Node local networks — hidden, and closed on every node": "Локальные сети нод — скрыты и закрыты на всех нодах",
   "Status timing": "Тайминги статусов",

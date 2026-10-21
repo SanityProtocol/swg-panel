@@ -2243,6 +2243,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 .blk-gtitle{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:0 0 7px}
 .blk-chips{display:flex;flex-wrap:wrap;gap:7px}
 .blk-empty{margin:0}
+.blk-allow{margin:7px 0 0;font-size:11.5px;color:var(--faint)}   /* the Never-block line under an interface's content chips — a field hint's voice */
 .blkchip{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;padding:6px 12px;border-radius:99px;cursor:pointer;
   background:var(--surface-2);color:var(--dim);border:1px dashed var(--line-solid);white-space:nowrap;transition:background .12s,border-color .12s,color .12s}
 .blkchip:hover{color:var(--ink-2)}

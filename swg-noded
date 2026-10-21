@@ -5833,7 +5833,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         sni_blocks = {"v": 1, "mark": SNI_BLOCK_MARK,
                       "src": [[S, rl] for S, rl in sorted(by_src.items()) if any(r[1] == "block" for r in rl)],
                       "sel": {x: sorted(_src_pairs((srcs or {}).get(x))) for x in sorted(_wids)},   # (device, address)
-                      "nolearn": sorted(_used(("block",)) - _used(("exit", "direct")) - {"all"})}
+                      # the Never-block key (_never_block_adjust) has no set to learn into — listed only when it holds names
+                      "nolearn": sorted(_used(("block",)) - _used(("exit", "direct")) - {"all"}
+                                        | ({NEVER_BLOCK_CAT} & set(name_cats or ())))}
         if arr and any(a == "block" and c != "all" for c, a, _T, _g in aw):   # an arrival's source is its origin subnet (§6.1)
             sni_blocks["arr"] = {"nets": _collapse4(arr["subnets"]),
                                  "rules": [[(0x8000 + i + 1) << 16 | SNI_BLOCK_MARK, a, [[c, []]] + [[sh, []] for sh in ash_of.get(i, ())], None]
@@ -7098,7 +7100,7 @@ def _dns_upstream(raw):
         out.append(str(a) + ("#%d" % pn if port else ""))
     return tuple(dict.fromkeys(out)) or SMART_DNS_UPSTREAM_DEFAULT
 
-def _dom_signature(smart_e, domains, zones, fetched, upstream=SMART_DNS_UPSTREAM_DEFAULT):
+def _dom_signature(smart_e, domains, zones, fetched, upstream=SMART_DNS_UPSTREAM_DEFAULT, allow=()):
     """The domain tier's drift signature. Unchanged inputs skip BOTH the enrich union and the (equally
     expensive) dnsmasq config rebuild, so anything that can change what the config says has to be in here —
     `zones` above all, because a zone-only edit changes no domain and would otherwise never land on the node.
@@ -7106,7 +7108,85 @@ def _dom_signature(smart_e, domains, zones, fetched, upstream=SMART_DNS_UPSTREAM
     return (tuple(sorted({e["subnet"] for e in smart_e})), json.dumps(domains, sort_keys=True),
             json.dumps(zones or {}, sort_keys=True),
             tuple(sorted((c, _DOM_CACHE.get(c, (None,))[0]) for c in (fetched or {}))),
-            tuple(upstream))   # an upstream change rewrites the conf NOW, not on the 12th-pass forced rebuild
+            tuple(upstream)) + ((tuple(allow),) if allow else ())   # an upstream change rewrites the conf NOW, not on the 12th-pass
+                                                                      # forced rebuild; the Never-block list re-tiers, and only when set
+
+
+# ── Never-block list, names (docs/NEVER-BLOCK-AND-PORT-RULES-PLAN.md A.3) ─────────────────────────────────────────────────
+# The operator's fleet-wide list of names no block LIST may block. Addresses never reach the node (the panel cuts them out
+# of the address unions it builds); names are taken out here, in the one map both name engines are configured from —
+# dnsmasq's directives and swg-sni's sni-map.json — so swg-sni itself is unchanged. Only a block list (a `blku:host:` union)
+# loses anything: the operator's own Block rules, rule names and the abuse protections are not touched.
+#
+# An allowed name a union still covers through a PARENT (the union lists `tracker.com`, `cdn.tracker.com` is allowed) needs
+# a key of its own, because both engines answer with the most specific key: it carries the non-union categories that would
+# match it anyway, or — when nothing else names it — this reserved category, which has no nft set (dnsmasq gives the key
+# `dnsok` alone) and is in swg-sni's `nolearn`. Its folded set name (_smart_setname) is longer than any custom list id can
+# fold to, so no list can ever share its set.
+NEVER_BLOCK_CAT = "~swg-never-block-reserved"
+
+
+def _never_block_adjust(domains, zones, allow):
+    """Apply the Never-block list to `domains` ({cat: [name]}) in place, `zones` ({cat: [label]}) being read only (a union's
+    zone is one label, so it is only ever a parent). Returns the number of names taken out of the unions.
+
+    ONE PASS, AND NO SET OF A LIST. A union runs to ~400k names; the candidates — every suffix of every allowed name — are a
+    few thousand at most, and each list is walked once against them. A union name is dropped when one of its suffixes is
+    allowed; every candidate met on the way records the categories that list it, which is all step 2 needs."""
+    allow = {a for a in (allow or ()) if isinstance(a, str) and "." in a}
+    if not allow:
+        return 0
+    cand = set()
+    for a in allow:
+        x = a
+        while True:
+            cand.add(x)
+            i = x.find(".")
+            if i < 0:
+                break
+            x = x[i + 1:]
+
+    def under(d):
+        while True:
+            if d in allow:
+                return True
+            i = d.find(".")
+            if i < 0:
+                return False
+            d = d[i + 1:]
+    hit = {}                                                   # candidate → {category listing it}
+    cut = 0
+    for c in list(domains):
+        lst = domains[c] or []
+        if str(c).startswith("blku:host:"):
+            keep = []
+            for d in lst:
+                if d in cand:
+                    hit.setdefault(d, set()).add(c)
+                if under(d):
+                    cut += 1
+                else:
+                    keep.append(d)
+            if len(keep) != len(lst):
+                domains[c] = keep                              # a new list: the old one may be a cache's (_DOM_CACHE)
+        else:
+            for d in lst:
+                if d in cand:
+                    hit.setdefault(d, set()).add(c)
+    uz = {z for c, zs in (zones or {}).items() if str(c).startswith("blku:host:") for z in (zs or ())}
+    for a in sorted(allow):
+        sfx, x = [], a
+        while "." in x:
+            x = x[x.index(".") + 1:]
+            sfx.append(x)
+        if not (any(c.startswith("blku:host:") for s in sfx for c in hit.get(s, ())) or sfx[-1] in uz):
+            continue                                           # no union covers it through a parent: step 1 was all it needed
+        if any(not c.startswith("blku:host:") for c in hit.get(a, ())):
+            continue                                           # already a key of its own, in a category that is not a union
+        cats = sorted({c for s in sfx for c in hit.get(s, ()) if not c.startswith("blku:host:")}) or [NEVER_BLOCK_CAT]
+        for c in cats:
+            domains[c] = list(domains.get(c) or []) + [a]      # a copy: never append to a list some cache holds
+    return cut
 
 
 def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, nets=(), upstream=SMART_DNS_UPSTREAM_DEFAULT, spare=None):
@@ -7169,6 +7249,11 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, ne
     dom_sets = {}
     _catd = set((spare or {}).get("catd") or ())               # D2: a Block category with a static half also fills catd_<c>
     for cat in domains:
+        if cat == NEVER_BLOCK_CAT:                             # a key of its own and no set: `dnsok` below, or nothing at all
+            for d in domains[cat]:
+                if d:
+                    dom_sets.setdefault(d, set())
+            continue
         sn = _smart_setname(cat)
         for d in domains[cat]:
             if d:
@@ -7230,7 +7315,8 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, ne
         _SMART_MODE["lowered"] = {"zone": len(_zone_keys)}
     groups = {}                                                # group by exact set-membership so same-membership domains
     for d, sns in dom_sets.items():                            # still share a directive (keeps the config compact)
-        groups.setdefault(tuple(sorted(sns)), []).append(d)
+        if sns:                                                # a Never-block key with no Block to spare it from: no directive
+            groups.setdefault(tuple(sorted(sns)), []).append(d)
     for sns in sorted(groups):                                 # sorted here + below → deterministic body (no needless restart)
         suffix = "/" + ",".join("4#inet#" + SMART_NFT_TABLE + "#" + sn for sn in sns)   # every set this group's domains join
         cur, clen = [], 0                                      # chunk by BYTE length: dnsmasq's parser caps a line at
@@ -11067,7 +11153,11 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # An arrival subnet is one more source the domain tier serves (Force-DNS redirects the DNS that crosses this node, §3.6),
     # so it signs like a local one — and only when there are arrivals, so a node with none signs exactly as before.
     _dns_e = smart_e + [{"subnet": S} for S in arr_subs]
-    dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched, _dns_up)
+    # The Never-block list's names (A.3): only where block lists run by name — Force-DNS and Hybrid SNI. The panel sends it
+    # to those nodes only; a node that changed mode since keeps the list out of the other engines all the same.
+    _nb_allow = (sorted({a for a in ((smart or {}).get("allow") or ()) if isinstance(a, str) and _DOM_RE.match(a)})
+                 if host_engine in ("dns", "sni_user") else [])
+    dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched, _dns_up, allow=_nb_allow)
     _dt = _DOMTIER_CACHE.get("v")
     dom_unchanged = bool(_dt and _dt[0] == dom_sig)
     if dom_unchanged:
@@ -11075,6 +11165,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     else:
         for cat, fl in _fetched.items():
             domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
+        _never_block_adjust(domains, _zones, _nb_allow)      # before the cache: an unchanged pass reuses the adjusted map
         _DOMTIER_CACHE["v"] = (dom_sig, domains)
     # A more specific name must not take a host away from rules for other devices (_smart_shadows): the shadow sets are
     # built with the chain, and the two engines that decide by specificity are handed the shadow categories beside it.
@@ -12290,7 +12381,8 @@ def smart_status():
             "dnsmasq": dns_alive, "route_localnet": _route_localnet_ok(),   # false in dns mode ⇒ client DNS blackholed (container)
             "src": 2 if _KSNI_SRC["ok"] else 1,   # 1: per-person rows in the nft chain · 2: Kernel SNI matches their hostnames too
             "arr": 1,                             # runs `smart.arrivals` — the default list for traffic cascaded in (ROUTING-PEERS-MESH-PLAN §4.3)
-            "caps_keep": 1}                       # keeps its caps for the categories a sync names in `cat_caps_keep` (_cat_caps_take)
+            "caps_keep": 1,                       # keeps its caps for the categories a sync names in `cat_caps_keep` (_cat_caps_take)
+            "allow": 1}                           # applies `smart.allow`, the Never-block list's names (_never_block_adjust)
     if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only) | error (its table
         _r = _P2P.get("route") or ""                            # was refused, `detail` says why), the mode in force, and under route
         if _r == "up" and _devexit_state(_P2P.get("route_dev") or "") != "up":   # whether its way out is up — the last pass's answer,

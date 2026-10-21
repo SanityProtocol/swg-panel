@@ -1189,7 +1189,9 @@ export function BlockTraffic({ node, value, onChange }) {
   return html`<div class="blk-field">
     <div class="blk-grp"><div class="blk-gtitle">${T("Content filtering")}</div>
       ${content.length ? html`<div class="blk-chips">${content.map(chip)}</div>`
-        : html`<div class="hint blk-empty">${noFilterCats(() => { closeAllModals(); goSettings("routing"); })}</div>`}</div>
+        : html`<div class="hint blk-empty">${noFilterCats(() => { closeAllModals(); goSettings("routing"); })}</div>`}
+      ${content.length && (Store.panelSettings?.block_allow || []).length   /* where an operator looks when a site is blocked */
+        ? html`<div class="hint blk-allow">${T("Sites on the Never-block list (Settings → Geo data providers → Blocking) are never blocked here.")}</div>` : null}</div>
     <div class="blk-grp"><div class="blk-gtitle">${T("Traffic & abuse")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— built-in")}</span></div>
       <div class="blk-chips">${mech.map(mchip)}</div></div>
   </div>`;
