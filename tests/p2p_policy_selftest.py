@@ -70,6 +70,11 @@
        SWGP retired on it). Where `sudo -n` exists, every variant (block / strict / direct / route / legacy / no @ih × log /
        no log) is loaded on the real kernel in a throwaway namespace: its intact listing reads in force (no reload on every
        pass), and its listing flushed in place is rebuilt
+  [31] 1.8.11 S4 (P2P-OWN-ADDRESS Part A): the flag lasts while the evidence lasts — `hit` writes `update @flag` (`add` never
+       refreshed a timeout, so a running client's flag lapsed every 10 minutes); the fan-out keeps `add` (it writes only a
+       source not flagged). Where a flagged source is blocked, packets 1-4 of exactly what the flagged drop takes go to
+       `reflag` first (one `update` per signature, no verdict), since that drop comes before the signatures. Where `sudo -n`
+       exists, on the real kernel under Block, Direct and Route: two DHT queries 3 s apart leave the flag at a fresh 10m
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
      --perturb    plant each old behaviour in turn → every one must go RED (exit 0 when all are caught)
@@ -83,6 +88,8 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 SRC = open(NODED, encoding="utf-8").read()
 
 PLANTS = {   # name: (old text, planted text) — each re-introduces a defect the checks exist for
+    "hit-add":      ('L.append("    %supdate @flag { ip saddr timeout 10m }" % nf)', 'L.append("    %sadd @flag { ip saddr timeout 10m }" % nf)'),   # S4: the 10-minute lapse
+    "no-reflag":    ('        if ih:\n            L.append("    %sct original packets <= 4 ip saddr @flag %s %sjump reflag" % (who, _P2P_SHAPE, lo))\n', ''),
     "route-open":   ('    if a == "route":                                          # P3 is not built: an unrunnable route fails CLOSED, never open\n        return "block"\n', ""),
     "local-judged": ('    L.append("    fib daddr type local return")', '    pass'),
     "reply-judged": ('    L.append("    ct direction reply return")\n    L += ["    " + h for h in held]\n    # Traffic TO the node',
@@ -273,6 +280,44 @@ def _wire_dht(table):
     out = {ln.split(" ", 1)[0]: ln.split(" ", 1)[1].strip() for ln in (r.stdout or "").splitlines() if " " in ln}
     return None if "FLAG" not in out else (out["FLAG"].split(), out.get("DHT", ""))
 
+
+# [31] the same router, one client: a DHT get_peers, 3 s later another (a new flow) — the flag's expiry after each.
+WIRE_REFLAG = WIRE.split("nft add element")[0] + r'''
+SEND='
+import os, socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.9.0.2", 0))
+s.sendto(b"d1:ad2:id20:" + os.urandom(20) + b"9:info_hash20:" + os.urandom(20) + b"e1:q9:get_peers1:t2:aa1:y1:qe", ("198.51.100.7", 6881))
+'
+exp() { nft list set inet swg_p2p flag | grep -o "10\.9\.0\.2 timeout [0-9a-z]* expires [0-9a-z]*" | grep -o "expires .*" | cut -d" " -f2; }
+nsenter -t "$CPID" -n python3 -c "$SEND"; sleep 0.2
+echo "FIRST $(exp)"
+sleep 3
+nsenter -t "$CPID" -n python3 -c "$SEND"; sleep 0.2
+echo "SECOND $(exp)"
+kill $CPID 2>/dev/null
+'''
+
+
+def _secs(v):   # nft's "9m57s880ms" → 597.88; None when absent
+    import re as _re
+    if not v:
+        return None
+    d = dict((u, float(n)) for n, u in _re.findall(r"(\d+)(ms|h|m|s)", v))
+    return d.get("h", 0) * 3600 + d.get("m", 0) * 60 + d.get("s", 0) + d.get("ms", 0) / 1000
+
+
+def _wire_reflag(table):
+    import subprocess as sp
+    with tempfile.NamedTemporaryFile("w", suffix=".nft", delete=False) as f:
+        f.write(table)
+    try:
+        r = sp.run(["sudo", "-n", "unshare", "-n", "bash", "-s", f.name], input=WIRE_REFLAG, capture_output=True, text=True, timeout=60)
+    except Exception:
+        return None
+    finally:
+        os.unlink(f.name)
+    out = {ln.split(" ", 1)[0]: ln.split(" ", 1)[1].strip() for ln in (r.stdout or "").splitlines() if " " in ln}
+    return None if "FIRST" not in out else (_secs(out["FIRST"]), _secs(out.get("SECOND")))
 
 # [27] a Docker-like bridge (kind bridge) with a container netns behind it, and WireGuard-like users on a plain veth: what is
 # flagged, how many packets of the container's established session leave, whether the DHT packets leave.
@@ -751,7 +796,7 @@ def run_checks(src):
     for k, tb in tabs.items():
         if k == "legacy":
             continue                                          # cls is scoped to the strict subnets there: a container is not in them
-        hitl = [l for l in tb.splitlines() if "add @flag { ip saddr timeout 10m }" in l and "meter p2pfan" not in l]
+        hitl = [l for l in tb.splitlines() if "@flag { ip saddr timeout 10m }" in l and "meter p2pfan" not in l and "@ih," not in l]   # not reflag's: flagged sources only
         fanl = [l for l in tb.splitlines() if "meter p2pfan" in l]
         ok(hitl and all('meta iifkind != "bridge" ' in l for l in hitl) and fanl and all('meta iifkind != "bridge" ' in l for l in fanl),
            "[27] %s: neither a signature hit nor the fan-out flags a source that arrived from a bridge" % k)
@@ -938,6 +983,37 @@ def run_checks(src):
                % (v["name"], p2p_loads(v["b"]) - n, m30._P2P["state"]))
     else:
         print("  SKIPPED [30] real-kernel flush — no `sudo -n` here")
+
+    # [31] S4 / Part A — the flag lasts while the evidence lasts
+    UPD, ADD = "update @flag { ip saddr timeout 10m }", "add @flag { ip saddr timeout 10m }"
+    for k, tb in tabs.items():
+        lines = tb.splitlines()
+        hit = tb.split("  chain hit {")[1].split("  }")[0]
+        ok(UPD in hit and ADD not in hit, "[31] %s: a signature hit writes `update @flag`, which restarts the 10 minutes" % k)
+        ok(sum(1 for l in lines if "meter p2pfan" in l and ADD in l) == 1, "[31] %s: the fan-out keeps `add`" % k)
+        drops = [i for i, l in enumerate(lines) if " ip saddr @flag " + m23._P2P_SHAPE in l    # cls's, not the guard's (postrouting)
+                 and l.rstrip().endswith("fib daddr type != local counter name dropped drop")]
+        jumps = [i for i, l in enumerate(lines) if l.rstrip().endswith("jump reflag")]
+        if k == "no @ih":
+            ok(not jumps and "chain reflag" not in tb, "[31] no @ih: no signatures, so no reflag")
+            continue
+        ok(drops and [i - 1 for i in drops] == jumps
+           and all(lines[i].replace("ct original packets <= 4 ", "").replace("jump reflag", "counter name dropped drop") == lines[i + 1]
+                   for i in jumps),
+           "[31] %s: each flagged drop is preceded by a jump to reflag for its packets 1-4, on exactly the same match" % k)
+        rf = tb.split("  chain reflag {")[1].split("  }")[0].strip().splitlines()
+        ok(len(rf) == len(m23._P2P_SIGS) and all(l.strip().endswith(UPD) and " drop" not in l and "accept" not in l for l in rf),
+           "[31] %s: reflag is one `update` per signature, with no verdict" % k)
+    if _sp23.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and _sp23.run(["which", "unshare"], capture_output=True).returncode == 0:
+        for k in ("block", "direct", "route"):
+            got = _wire_reflag(tabs[k])
+            if got is None:
+                print("  SKIPPED [31] real-kernel re-flag — the throwaway namespace could not be set up here")
+                break
+            ok(got[0] is not None and got[1] is not None and min(got) > 599.0,
+               "[31] on the real kernel, %s: two DHT queries 3 s apart leave the flag at a fresh 10 minutes (%s s, then %s s)" % (k, got[0], got[1]))
+    else:
+        print("  SKIPPED [31] real-kernel re-flag — no `sudo -n` here")
     return fails
 
 

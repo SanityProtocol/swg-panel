@@ -7813,7 +7813,10 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
 
     # hit: a FORWARDED signature match (cls) — flag the user, then drop if blocked here, else route Direct.
     L.append("  chain hit {")
-    L.append("    %sadd @flag { ip saddr timeout 10m }" % nf)   # = the fan-out's: one idle DHT ping must not cost an hour of high ports
+    # `update`, not `add`: `add` never refreshes a timeout, so a running client's flag lapsed every 10 minutes and its next
+    # flows took their normal route until the next hit (P2P-OWN-ADDRESS Part A). 10m = the fan-out's: one idle DHT ping
+    # must not cost an hour of high ports.
+    L.append("    %supdate @flag { ip saddr timeout 10m }" % nf)
     if logged:
         L.append('    limit rate 20/minute log prefix "swg-p2p hit: " level info')
     for who in whos:
@@ -7822,6 +7825,13 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
     if routes:                                                # UDP is caught at packet 1, so THIS flow is routed. TCP is caught
         L.append("    meta l4proto udp %s" % mark)            # at packet 3, already routed: the guard judges its device
     L.append("  }")
+    # reflag: where a flagged source is BLOCKED, cls drops its high-port packets before they reach the signatures, so
+    # its running client never refreshed the flag and the 10 minutes lapsed under Block too. Packets 1-4 of exactly
+    # what that drop takes are checked here first: evidence only, the verdict is the drop's (P2P-OWN-ADDRESS Part A).
+    if ih:
+        L.append("  chain reflag {")
+        L += ["    meta l4proto %s %s update @flag { ip saddr timeout 10m }" % (l4, m) for c, l4, m in _P2P_SIGS]
+        L.append("  }")
 
     L.append("  chain cls {")
     L.append("    type filter hook prerouting priority mangle + 5; policy accept;")
@@ -7836,6 +7846,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
         L.append("    meta nfproto ipv6 return")
         L.append("    ip saddr != @strict return")
     for who in whos:                                          # a flagged user's high-port flows, new AND established
+        if ih:
+            L.append("    %sct original packets <= 4 ip saddr @flag %s %sjump reflag" % (who, _P2P_SHAPE, lo))
         L.append("    %sip saddr @flag %s %scounter name dropped drop" % (who, _P2P_SHAPE, lo))
     if routes:
         L.append("    ct state new ip saddr @flag %s %s%s" % (_P2P_SHAPE, lo, mark))
