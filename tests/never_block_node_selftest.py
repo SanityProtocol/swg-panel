@@ -10,11 +10,16 @@ transaction model, and swg-sni's `Classifier` fed real ClientHello packets:
       a key of its own — in the non-union categories that would match it (its routing kept), else in the reserved category;
       a union ZONE is a parent too; a name already keyed by a rule needs nothing; names no union covers add nothing; rule
       categories never lose a name; no list (or a list that touches nothing) leaves the map as it was
+ [1b] the engine's own ladder decides the key: a more specific rule name than the union's parent needs no key (and gains
+      no broader Block); a rule ZONE (dnsmasq, swg-sni) or a PATTERN (swg-sni) that would route the name keeps it; an
+      allowed parent that was itself cut covers nothing
+ [1c] the shadow sets: a rule for other devices naming an allowed name never hands it back to the union
   [2] dnsmasq: the parent keeps its union set; the allowed name's own key carries `dnsok` alone; with no Block to spare it
       from (D2 off) no directive is written for it; a list that touches nothing leaves the conf byte-identical
   [3] swg-sni: the reserved category is in `nolearn` only when it holds names (sni-blocks.json otherwise as before); the
       allowed name's ClientHello is not refused and nothing is learned for it, its parent's sibling still is refused, and an
-      allowed name under a routed parent is still learned into the route's set
+      allowed name under a routed parent is still learned into the route's set; while the map holds the reserved key the
+      verdicts file is written before the map (swg-sni reloads each on its own), and after it otherwise
   [4] wiring: the pass runs before the domain-tier cache is filled, the list joins the signature only when set, only the
       name engines read it, and the node reports `allow`
   [5] cost: one adjustment over a 400k-name union (a re-tier, never a sync) — printed, and bounded
@@ -23,7 +28,10 @@ Hermetic. Run: python3 tests/never_block_node_selftest.py   (0 = pass)
   --plant <x>  plant one defect and expect RED (exit 0 when caught):
      nocut       a union keeps the allowed names                                               [1]
      nokey       an allowed name under a union parent gets no key of its own                   [1] [3]
+     noladder    the key ignores the ladder: always the reserved category                      [1] [1b]
+     noshadow    the shadow sets ignore the list                                               [1c]
      nolearn     the reserved category is not in swg-sni's nolearn                             [3]
+     blkorder    the map is always written before the verdicts                                 [3]
      dnsempty    a key with no set is written as a directive anyway                            [2]
 """
 import importlib.machinery, importlib.util, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, time
@@ -47,10 +55,13 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
-    "nocut": ('                if under(d):\n                    cut += 1\n                else:\n                    keep.append(d)',
-              '                keep.append(d)'),
-    "nokey": ('        for c in cats:\n            domains[c] = list(domains.get(c) or []) + [a]', '        pass'),
+    "nocut": ('            keep = [d for d in lst if not _nb_under(d, allow)]', '            keep = list(lst)'),
+    "nokey": ('            for c in (ladder(a, False) or {NEVER_BLOCK_CAT}):\n                add.setdefault(c, []).append(a)',
+              '            pass'),
+    "noladder": ('for c in (ladder(a, False) or {NEVER_BLOCK_CAT}):', 'for c in {NEVER_BLOCK_CAT}:'),
+    "noshadow": ('                if allow and _nb_under(n, allow):', '                if False:'),
     "nolearn": ('| ({NEVER_BLOCK_CAT} & set(name_cats or ()))', '| set()'),
+    "blkorder": ('    _nb_first = bool((domains or {}).get(NEVER_BLOCK_CAT))', '    _nb_first = False'),
     "dnsempty": ('        if sns:                                                # a Never-block key', '        if True:  # a Never-block key'),
 }
 TMP = tempfile.mkdtemp(prefix="never-block-")
@@ -96,13 +107,14 @@ def base():
 
 
 ZONES = {UZ: ["xyz", "example"]}
+PATS = {"zone": ZONES}
 
 # ── [1] the map ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("[1] the map")
 D = base()
-cut = N._never_block_adjust(D, ZONES, ALLOW)
+N._never_block_adjust(D, PATS, ALLOW, "dns")
 check("the union loses the allowed name and the name under it (allowed.net, sub.allowed.net)",
-      "allowed.net" not in D[U] and "sub.allowed.net" not in D[U] and cut == 2, (D[U], cut))
+      "allowed.net" not in D[U] and "sub.allowed.net" not in D[U], D[U])
 check("…and keeps every other name, the allowed names' parents included",
       D[U] == ["tracker.com", "x.tracker.com", "googleapis.com", "ads.other.io"], D[U])
 check("an allowed name under a union parent with no rule over it gets the reserved key (cdn.tracker.com)",
@@ -118,14 +130,66 @@ check("rule categories never lose a name", D["custom_keep"] == base()["custom_ke
 check("the reserved category holds exactly the two names nothing else keys", sorted(D.get(R) or []) == ["cdn.tracker.com", "shop.xyz"],
       D.get(R))
 D0 = base()
-check("no list: the map as it was, nothing cut", N._never_block_adjust(D0, ZONES, []) == 0 and D0 == base())
+N._never_block_adjust(D0, PATS, [], "dns")
+check("no list: the map as it was", D0 == base())
 D1 = base()
-check("a list that touches nothing: the map as it was", N._never_block_adjust(D1, ZONES, ["plain.org"]) == 0 and D1 == base(), D1)
+N._never_block_adjust(D1, PATS, ["plain.org"], "dns")
+check("a list that touches nothing: the map as it was", D1 == base(), D1)
 D2 = base()
 _src = {c: v for c, v in D2.items()}
-N._never_block_adjust(D2, ZONES, ALLOW)
+N._never_block_adjust(D2, PATS, ALLOW, "dns")
 check("a list object some cache holds is never mutated (new lists only)", _src[U] is not D2[U] and base()[U] == _src[U]
       and "maps.googleapis.com" not in _src["google"], (_src[U], _src["google"]))
+for eng in ("dns", "sni_user"):
+    D = base()
+    N._never_block_adjust(D, PATS, ALLOW, eng)
+    check("%s: the same map from swg-sni's ladder" % eng, eng == "dns" or sorted(D.get(R) or []) == ["cdn.tracker.com", "shop.xyz"]
+          and "maps.googleapis.com" in D["google"], D)
+
+# ── [1b] the engine's own ladder decides the key ─────────────────────────────────────────────────────────────────────────
+print("\n[1b] the engine's own ladder decides the key")
+for eng in ("dns", "sni_user"):
+    D = {U: ["example.com"], "blockY": ["example.com"], "directX": ["b.example.com"]}
+    N._never_block_adjust(D, {}, ["a.b.example.com"], eng)
+    check("%s: a rule name more specific than the union's parent already wins — no key, no broader Block gained" % eng,
+          D == {U: ["example.com"], "blockY": ["example.com"], "directX": ["b.example.com"]}, D)
+    D = {U: ["tracker.ru"]}
+    N._never_block_adjust(D, {"zone": {"exitE": ["ru"]}}, ["cdn.tracker.ru"], eng)
+    check("%s: a rule ZONE that would route the name keeps it (cdn.tracker.ru → the *.ru Exit, not the catch-all)" % eng,
+          D.get("exitE") == ["cdn.tracker.ru"] and not D.get(R), D)
+    D = {U: ["tracker.com", "cdn.tracker.com", "x.tracker.com"], "custom_com": ["com"]}
+    N._never_block_adjust(D, {}, ["tracker.com", "cdn.tracker.com"], eng)
+    check("%s: an allowed parent that was cut covers nothing — no key for the name under it" % eng,
+          D == {U: [], "custom_com": ["com"]}, D)
+D = {U: ["tracker.io"]}
+N._never_block_adjust(D, {"contains": {"patP": ["cdn"]}, "first": {"patF": ["img"]}}, ["cdn.tracker.io", "img.tracker.io"], "sni_user")
+check("sni_user: a PATTERN rule that would route the name keeps it (contains `cdn`, first label `img`)",
+      D.get("patP") == ["cdn.tracker.io"] and D.get("patF") == ["img.tracker.io"] and not D.get(R), D)
+D = {U: ["tracker.io"]}
+N._never_block_adjust(D, {"contains": {"patP": ["cdn"]}}, ["cdn.tracker.io"], "dns")
+check("dns: patterns are not dnsmasq's — the reserved key", D.get(R) == ["cdn.tracker.io"] and not D.get("patP"), D)
+
+# ── [1c] the shadow sets ─────────────────────────────────────────────────────────────────────────────────────────────────
+print("\n[1c] the shadow sets")
+SA, SB = "10.188.1.0/24", "10.188.2.0/24"
+for eng in ("dns", "sni_user"):
+    for allow_list in (ALLOW, []):
+        D = base()
+        D["direct_b"] = ["cdn.tracker.com"]                      # a rule for OTHER devices names the allowed name itself
+        N._never_block_adjust(D, PATS, allow_list, eng)
+        N._SHADOW.update(k=None, v={})
+        shw = N._smart_shadows([{"subnet": SA, "category": U, "action": "block"},
+                                {"subnet": SB, "category": "google", "action": "exit"},
+                                {"subnet": SB, "category": "direct_b", "action": "direct"}], D, PATS, eng,
+                               insig=None, allow=allow_list)
+        held = sorted({n for sh, v in (shw.get("domains") or {}).items() for n in v
+                       if any(sh == x[0] for x in (shw.get("by_target") or {}).get(U, ()))})
+        if allow_list:
+            check("%s: no shadow of the union holds an allowed name (maps.googleapis.com, cdn.tracker.com)" % eng,
+                  not ({"maps.googleapis.com", "cdn.tracker.com"} & set(held)), held)
+        else:
+            check("%s: …while without the list the union's shadow still holds the rule's name under its parent" % eng,
+                  "cdn.tracker.com" in held, held)
 
 # ── [2] dnsmasq ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[2] dnsmasq")
@@ -153,7 +217,7 @@ def sets_of(c, name):
 
 
 DA = base()
-N._never_block_adjust(DA, ZONES, ALLOW)
+N._never_block_adjust(DA, PATS, ALLOW, "dns")
 c = conf(DA, BLK)
 check("the parent keeps its union set and no dnsok (tracker.com)", sets_of(c, "tracker.com") == [[N._smart_setname(U)]],
       sets_of(c, "tracker.com"))
@@ -168,7 +232,7 @@ c_nospare = conf(DA, None)
 check("with no Block to spare it from (D2 off): no directive for a key with no set", not sets_of(c_nospare, "cdn.tracker.com")
       and not re.search(r"^nftset=/[^#]*/$", c_nospare, re.M), sets_of(c_nospare, "cdn.tracker.com"))
 DT = base()
-N._never_block_adjust(DT, ZONES, ["plain.org"])
+N._never_block_adjust(DT, PATS, ["plain.org"], "dns")
 check("a list that touches nothing: the conf byte-identical", conf(DT, BLK) == conf(base(), BLK))
 
 # ── [3] swg-sni ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -259,12 +323,42 @@ check("an allowed name under a routed parent is not refused and is learned into 
 m = cl.on_packet(packet("10.188.1.9", "198.51.100.13", "allowed.net", 40004))
 check("an allowed name the union listed itself is not refused (allowed.net)", m in (None, N.SNI_RESET_MARK), m)
 
+class _Alive:
+    def poll(self):
+        return None
+
+
+def written_order(domains, blocks_):
+    N.SNI_MAP_PATH, N.SNI_BLOCKS_PATH = os.path.join(d, "o-map.json"), os.path.join(d, "o-blocks.json")
+    N.SNI_PATTERNS_PATH, N.SNI_SETS_PATH = os.path.join(d, "o-pat.json"), os.path.join(d, "o-sets.json")
+    for f in (N.SNI_MAP_PATH, N.SNI_BLOCKS_PATH):
+        with __import__("contextlib").suppress(OSError):
+            os.remove(f)
+    N._SNI_PROC.update(p=_Alive(), ttl=3600)
+    N._SNI_MAP_LAST.update(key=None, stat=None)
+    order, real = [], N.os.replace
+    def rec(a, b):
+        order.append(os.path.basename(b)); real(a, b)
+    N.os.replace = rec
+    try:
+        r = {"changed": 0, "errors": []}
+        N._ensure_sni_router(domains, ["10.188.1.0/24"], r, blocks=blocks_)
+    finally:
+        N.os.replace = real
+    return [x for x in order if x in ("o-map.json", "o-blocks.json")], r
+
+
+o, r = written_order({c: v for c, v in DA.items() if v}, B)
+check("with the reserved key in the map: the verdicts are written first, then the map", o == ["o-blocks.json", "o-map.json"], (o, r))
+o, r = written_order({c: v for c, v in base().items() if v}, B0)
+check("without it: the map first, as before", o == ["o-map.json", "o-blocks.json"], (o, r))
+
 # ── [4] wiring ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[4] wiring")
 src = open(path, encoding="utf-8").read()
 body = src[src.index("    _dns_e = smart_e + [{\"subnet\": S} for S in arr_subs]"):src.index("    _shw = _smart_shadows(")]
 check("the adjustment runs in the re-tier branch, before the cache is filled",
-      body.index("_never_block_adjust(domains, _zones, _nb_allow)") < body.index('_DOMTIER_CACHE["v"] = (dom_sig, domains)')
+      body.index("_never_block_adjust(domains, _pats, _nb_allow, host_engine)") < body.index('_DOMTIER_CACHE["v"] = (dom_sig, domains)')
       and body.index("if dom_unchanged:") < body.index("_never_block_adjust("))
 check("only the name engines read the list (dns, sni_user)", 'if host_engine in ("dns", "sni_user") else []' in body)
 sig = N._dom_signature([{"subnet": S0}], {"a": ["x.y"]}, {}, {})
@@ -277,10 +371,16 @@ print("\n[5] cost")
 big = {U: ["n%d.host%d.example%d.com" % (i, i % 997, i % 13) for i in range(400000)], "google": ["googleapis.com"]}
 allow500 = ["a%d.example%d.com" % (i, i % 13) for i in range(500)]
 t0 = time.perf_counter()
-N._never_block_adjust(big, {}, allow500)
+N._never_block_adjust(big, {}, allow500, "dns")
 dt = time.perf_counter() - t0
 print("  one adjustment, 400 000-name union, 500 allowed names: %.0f ms" % (dt * 1000))
 check("bounded: under 3 s on this box (a re-tier only)", dt < 3.0, dt)
+big = {U: ["example%d.com" % i for i in range(13)], "google": ["g%d.example.net" % i for i in range(300000)]}
+t0 = time.perf_counter()
+N._never_block_adjust(big, {"zone": {"google": ["com"]}}, allow500, "sni_user")   # a *.com rule routes them all
+dt = time.perf_counter() - t0
+print("  500 allowed names under a union parent, each given a key beside a 300 000-name rule list: %.0f ms" % (dt * 1000))
+check("…every one keyed, in one copy of the rule list", len(big["google"]) == 300500 and dt < 3.0, (len(big["google"]), dt))
 
 shutil.rmtree(TMP, ignore_errors=True)
 print()

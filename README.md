@@ -83,8 +83,8 @@ subscription and no one else sitting in the middle of your traffic.
   curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
   which user is behind the torrents and port-scans it flags. One wrong entry in a public list? Put the site or address on
   the fleet-wide **Never block** list (Settings → Geo data providers → Blocking) instead of switching the list off: no block
-  list blocks it anywhere, and your routing rules still route it. Addresses work on every server; site names on Force-DNS
-  and Hybrid SNI, once the server is updated.
+  list blocks it anywhere, and your routing rules still route it. Addresses leave the address lists on every server; site
+  names leave the site lists on Force-DNS and Hybrid SNI, once the server is updated.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
   apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
 - **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a

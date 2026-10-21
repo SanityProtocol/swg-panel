@@ -5393,10 +5393,11 @@ def _smart_src_members(pairs):
 _SHADOW = {"k": None, "v": {}, "dns": ""}   # the last answer and its inputs; the shadow signature dnsmasq last took
 
 
-def _smart_shadows(smart_e, domains, pats, engine, insig=None):
+def _smart_shadows(smart_e, domains, pats, engine, insig=None, allow=()):
     """→ {} (nothing claimed across devices — the common case, and then nothing below runs), or {"by_target": {cat: [(shadow,
     claimer, [more specific containing categories])]}, "domains": {shadow: [name]}, "pats": {kind: {shadow: [operand]}},
-    "sig": str}. `insig` identifies `domains` and `pats` so an unchanged answer is not recomputed every pass."""
+    "sig": str}. `insig` identifies `domains` and `pats` so an unchanged answer is not recomputed every pass. `allow` (the
+    Never-block list's names, which `insig` signs) is never shadowed into a block list: a union is no container for them."""
     if engine not in ("dns", "sni_user"):                      # Kernel SNI learns per subnet, in rule order: nothing to shadow
         return {}
     kinds = ("zone",) if engine == "dns" else ("first", "zone", "any", "starts", "ends", "contains")   # what each engine runs
@@ -5456,6 +5457,7 @@ def _smart_shadows(smart_e, domains, pats, engine, insig=None):
         m = own.get(kd, {}).get(n, 0)
         return [keyed[i] for i in range(m.bit_length()) if m >> i & 1] if m else ()
     found = {}
+    allow = set(allow or ())
     for c1 in sorted({c1 for c1, _c2 in pairs}):
         tg = {c2 for a, c2 in pairs if a == c1}
         for kd, raw, n in ops(c1):
@@ -5465,6 +5467,8 @@ def _smart_shadows(smart_e, domains, pats, engine, insig=None):
                 for j in range(1, len(lb) - (0 if engine == "dns" else 1)):   # parents (swg-sni's domain map needs two labels)
                     hit += [(c, rank("site", ".".join(lb[j:]))) for c in of("site", ".".join(lb[j:]))]
                 hit += [(c, rank("zone", lb[-1])) for c in of("zone", lb[-1])]
+                if allow and _nb_under(n, allow):              # a Never-block name: no block list contains it
+                    hit = [(c, r) for c, r in hit if not str(c).startswith(_NB_UNION)]
                 hit += [(c, rank("any", x, lb)) for x in lb for c in of("any", x)]
                 hit += [(c, rank("ends", o)) for o, cs in t2["ends"] if n.endswith(o) for c in cs]
             elif kd in ("first", "zone"):
@@ -7118,24 +7122,39 @@ def _dom_signature(smart_e, domains, zones, fetched, upstream=SMART_DNS_UPSTREAM
 # dnsmasq's directives and swg-sni's sni-map.json — so swg-sni itself is unchanged. Only a block list (a `blku:host:` union)
 # loses anything: the operator's own Block rules, rule names and the abuse protections are not touched.
 #
-# An allowed name a union still covers through a PARENT (the union lists `tracker.com`, `cdn.tracker.com` is allowed) needs
-# a key of its own, because both engines answer with the most specific key: it carries the non-union categories that would
-# match it anyway, or — when nothing else names it — this reserved category, which has no nft set (dnsmasq gives the key
-# `dnsok` alone) and is in swg-sni's `nolearn`. Its folded set name (_smart_setname) is longer than any custom list id can
-# fold to, so no list can ever share its set.
+# An allowed name a union still WINS through a parent (the union lists `tracker.com`, `cdn.tracker.com` is allowed, and no
+# more specific key claims it) needs a key of its own, because both engines answer with the most specific key. That key
+# carries exactly what the engine's own ladder answers for the name with the unions left out — a rule's site, zone or
+# pattern, so the name is routed as it would be with no block list at all — or, when nothing else claims it, this reserved
+# category, which has no nft set (dnsmasq gives the key `dnsok` alone) and is in swg-sni's `nolearn`. Its folded set name
+# (_smart_setname) is longer than any custom list id can fold to, so no list can ever share its set. The shadow sets
+# (_smart_shadows) skip a union as the container of an allowed name, so another audience's rule cannot hand it back.
 NEVER_BLOCK_CAT = "~swg-never-block-reserved"
+_NB_UNION = "blku:host:"
 
 
-def _never_block_adjust(domains, zones, allow):
-    """Apply the Never-block list to `domains` ({cat: [name]}) in place, `zones` ({cat: [label]}) being read only (a union's
-    zone is one label, so it is only ever a parent). Returns the number of names taken out of the unions.
+def _nb_under(d, allow):
+    """True when `d` or one of its parents is on the Never-block list."""
+    while True:
+        if d in allow:
+            return True
+        i = d.find(".")
+        if i < 0:
+            return False
+        d = d[i + 1:]
+
+
+def _never_block_adjust(domains, pats, allow, engine):
+    """Apply the Never-block list to `domains` ({cat: [name]}) in place; `pats` ({kind: {cat: [operand]}}, zones included)
+    is read only — a union's zone is one label, so it is only ever a parent. `engine` is "dns" or "sni_user".
 
     ONE PASS, AND NO SET OF A LIST. A union runs to ~400k names; the candidates — every suffix of every allowed name — are a
-    few thousand at most, and each list is walked once against them. A union name is dropped when one of its suffixes is
-    allowed; every candidate met on the way records the categories that list it, which is all step 2 needs."""
-    allow = {a for a in (allow or ()) if isinstance(a, str) and "." in a}
+    few thousand at most, and each list is walked once against them. A union name at or under an allowed name is dropped;
+    every candidate met on the way (a union's only if it is kept) records the categories that list it, which is all the
+    ladder below needs."""
+    allow = set(allow or ())
     if not allow:
-        return 0
+        return
     cand = set()
     for a in allow:
         x = a
@@ -7145,48 +7164,68 @@ def _never_block_adjust(domains, zones, allow):
             if i < 0:
                 break
             x = x[i + 1:]
-
-    def under(d):
-        while True:
-            if d in allow:
-                return True
-            i = d.find(".")
-            if i < 0:
-                return False
-            d = d[i + 1:]
-    hit = {}                                                   # candidate → {category listing it}
-    cut = 0
+    hit = {}                                                   # candidate → {category listing it}, after the cut
     for c in list(domains):
         lst = domains[c] or []
-        if str(c).startswith("blku:host:"):
-            keep = []
-            for d in lst:
-                if d in cand:
-                    hit.setdefault(d, set()).add(c)
-                if under(d):
-                    cut += 1
-                else:
-                    keep.append(d)
+        if str(c).startswith(_NB_UNION):
+            keep = [d for d in lst if not _nb_under(d, allow)]
             if len(keep) != len(lst):
                 domains[c] = keep                              # a new list: the old one may be a cache's (_DOM_CACHE)
-        else:
-            for d in lst:
-                if d in cand:
-                    hit.setdefault(d, set()).add(c)
-    uz = {z for c, zs in (zones or {}).items() if str(c).startswith("blku:host:") for z in (zs or ())}
+            lst = keep
+        for d in lst:
+            if d in cand:
+                hit.setdefault(d, set()).add(c)
+    t2k = ("starts", "ends", "contains")
+    idx = {kd: {} for kd in ("first", "zone", "any")}         # as swg-sni's _index: lower-cased, a label's dots stripped
+    t2 = {kd: {} for kd in t2k}
+    for kd, byc in (pats or {}).items():
+        if kd not in idx and kd not in t2:
+            continue
+        for c, ops in (byc or {}).items():
+            for o in (ops or ()):
+                o = str(o).lower()
+                o = o if kd in t2 else o.strip(".")
+                if o:
+                    (t2 if kd in t2 else idx)[kd].setdefault(o, set()).add(c)
+    t2 = {kd: sorted(v.items(), key=lambda kv: (-len(kv[0]), kv[0])) for kd, v in t2.items()}   # longest first (_bucket)
+
+    def ladder(a, unions):
+        """The categories the engine answers `a` with — the first rung that answers wins (swg-sni _match; dnsmasq: the
+        longest key, a zone being a one-label key). `unions` False: as if no block list existed."""
+        ok = (lambda cs: set(cs or ())) if unions else (lambda cs: {c for c in (cs or ()) if not c.startswith(_NB_UNION)})
+        lb = a.split(".")
+        if engine == "dns":
+            for k in range(len(lb)):
+                s = ".".join(lb[k:])
+                got = ok(hit.get(s)) | (ok(idx["zone"].get(s)) if k == len(lb) - 1 else set())
+                if got:
+                    return got
+            return set()
+        for k in range(len(lb) - 1):                           # the domain map needs two labels
+            got = ok(hit.get(".".join(lb[k:])))
+            if got:
+                return got
+        for got in (ok(idx["first"].get(lb[0])), ok(idx["zone"].get(lb[-1]))):
+            if got:
+                return got
+        for x in lb:                                           # the leftmost label wins
+            got = ok(idx["any"].get(x))
+            if got:
+                return got
+        for kd in t2k:
+            for o, cs in t2[kd]:
+                if (a.startswith(o) if kd == "starts" else a.endswith(o) if kd == "ends" else o in a):
+                    got = ok(cs)
+                    if got:
+                        return got
+        return set()
+    add = {}
     for a in sorted(allow):
-        sfx, x = [], a
-        while "." in x:
-            x = x[x.index(".") + 1:]
-            sfx.append(x)
-        if not (any(c.startswith("blku:host:") for s in sfx for c in hit.get(s, ())) or sfx[-1] in uz):
-            continue                                           # no union covers it through a parent: step 1 was all it needed
-        if any(not c.startswith("blku:host:") for c in hit.get(a, ())):
-            continue                                           # already a key of its own, in a category that is not a union
-        cats = sorted({c for s in sfx for c in hit.get(s, ()) if not c.startswith("blku:host:")}) or [NEVER_BLOCK_CAT]
-        for c in cats:
-            domains[c] = list(domains.get(c) or []) + [a]      # a copy: never append to a list some cache holds
-    return cut
+        if any(c.startswith(_NB_UNION) for c in ladder(a, True)):
+            for c in (ladder(a, False) or {NEVER_BLOCK_CAT}):
+                add.setdefault(c, []).append(a)
+    for c, names in add.items():
+        domains[c] = list(domains.get(c) or []) + names        # a copy: never append to a list some cache holds
 
 
 def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False, zones=None, nets=(), upstream=SMART_DNS_UPSTREAM_DEFAULT, spare=None):
@@ -11154,7 +11193,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # so it signs like a local one — and only when there are arrivals, so a node with none signs exactly as before.
     _dns_e = smart_e + [{"subnet": S} for S in arr_subs]
     # The Never-block list's names (A.3): only where block lists run by name — Force-DNS and Hybrid SNI. The panel sends it
-    # to those nodes only; a node that changed mode since keeps the list out of the other engines all the same.
+    # to those nodes only; the engine test keeps every other engine's signature as it was whatever a reply carries.
     _nb_allow = (sorted({a for a in ((smart or {}).get("allow") or ()) if isinstance(a, str) and _DOM_RE.match(a)})
                  if host_engine in ("dns", "sni_user") else [])
     dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched, _dns_up, allow=_nb_allow)
@@ -11165,7 +11204,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     else:
         for cat, fl in _fetched.items():
             domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
-        _never_block_adjust(domains, _zones, _nb_allow)      # before the cache: an unchanged pass reuses the adjusted map
+        _never_block_adjust(domains, _pats, _nb_allow, host_engine)   # before the cache: an unchanged pass reuses the adjusted map
         _DOMTIER_CACHE["v"] = (dom_sig, domains)
     # A more specific name must not take a host away from rules for other devices (_smart_shadows): the shadow sets are
     # built with the chain, and the two engines that decide by specificity are handed the shadow categories beside it.
@@ -11173,7 +11212,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # rule's broader name, nor the other way round. They take part as one pseudo-subnet, `@arr`, which no rule for a local
     # subnet ever covers.
     _shw = _smart_shadows(smart_e + [{"subnet": "@arr", "category": e["category"]} for e in arr_e], domains, _pats,
-                          host_engine, insig=dom_sig)
+                          host_engine, insig=dom_sig, allow=_nb_allow)
     _arr = ({"subnets": arr_subs, "entries": arr_e, "legs": list(_relay_links(node_cfg)),
              # every destination an arrival must never be marked away from (§3.7, T6): this node's own client subnets, the
              # exit subnets it holds for other nodes, and the networks it routes
@@ -12112,7 +12151,28 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patt
     if p and p.poll() is None and _SNI_PROC.get("ttl") != learn_ttl:   # ip_learning TTL flipped → relaunch so swg-sni's seen-cache
         with contextlib.suppress(Exception): p.terminate()            # TTL matches the new learned-set timeout (else a 3600→120 flip leaks)
         _SNI_PROC["p"] = None; p = None
+    def _put_blocks():
+        # The per-source verdicts (D1), same rule, own file: absent when no Block exists, which is also what an older
+        # swg-sni sees — it then refuses nothing by name, the direction every reader here takes.
+        newblk = json.dumps(blocks, sort_keys=True) if blocks else ""
+        oldblk = ""
+        with contextlib.suppress(OSError):
+            with open(SNI_BLOCKS_PATH) as f: oldblk = f.read()
+        if newblk != oldblk:
+            if not newblk:
+                with contextlib.suppress(OSError): os.remove(SNI_BLOCKS_PATH)
+            else:
+                os.makedirs(os.path.dirname(SNI_BLOCKS_PATH), exist_ok=True)
+                with open(SNI_BLOCKS_PATH + ".tmp", "w") as f: f.write(newblk)
+                os.replace(SNI_BLOCKS_PATH + ".tmp", SNI_BLOCKS_PATH)
+            res["changed"] += 1
+    # swg-sni reloads each file on its own mtime. The Never-block key has no set to learn into and is safe only in `nolearn`,
+    # so while the map holds it the verdicts go first (a failed write then leaves the map as it was); otherwise the map
+    # goes first, so a key leaving the map is gone before `nolearn` drops it.
+    _nb_first = bool((domains or {}).get(NEVER_BLOCK_CAT))
     try:                                                       # write the map only when it changes (cheap; swg-sni reloads on mtime)
+        if _nb_first:
+            _put_blocks()
         # …AND BUILD IT ONLY WHEN IT CAN HAVE CHANGED. Sorting and serialising every name of every list, then reading the
         # file back to compare, ran on every pass: 25 ms at 150 000 names on a fast core, several times that on a small VPS,
         # every five seconds, to learn that nothing changed. `map_key` names the inputs (the enriched lists' signature and
@@ -12179,20 +12239,8 @@ def _ensure_sni_router(domains, subnets, res, learn_ttl=3600, map_key=None, patt
             os.makedirs(os.path.dirname(SNI_SETS_PATH), exist_ok=True)
             with open(SNI_SETS_PATH + ".tmp", "w") as f: f.write(newsets)
             os.replace(SNI_SETS_PATH + ".tmp", SNI_SETS_PATH)
-        # The per-source verdicts (D1), same rule, own file: absent when no Block exists, which is also what an older
-        # swg-sni sees — it then refuses nothing by name, the direction every reader here takes.
-        newblk = json.dumps(blocks, sort_keys=True) if blocks else ""
-        oldblk = ""
-        with contextlib.suppress(OSError):
-            with open(SNI_BLOCKS_PATH) as f: oldblk = f.read()
-        if newblk != oldblk:
-            if not newblk:
-                with contextlib.suppress(OSError): os.remove(SNI_BLOCKS_PATH)
-            else:
-                os.makedirs(os.path.dirname(SNI_BLOCKS_PATH), exist_ok=True)
-                with open(SNI_BLOCKS_PATH + ".tmp", "w") as f: f.write(newblk)
-                os.replace(SNI_BLOCKS_PATH + ".tmp", SNI_BLOCKS_PATH)
-            res["changed"] += 1
+        if not _nb_first:
+            _put_blocks()
     except Exception as e:
         res["errors"].append("sni map: " + str(e)[:120]); return
     if not p or p.poll() is not None:                          # (re)launch the classifier if it isn't running

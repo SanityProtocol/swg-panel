@@ -46,8 +46,8 @@ N_PLANTS = {
     "--perturb-probe": ('    _WDTT_TAKES_DNS[key] = any(f["name"] == "dns" for f in flags)\n',
                         '    _WDTT_TAKES_DNS[key] = True\n'),
     "--perturb-change": ('            or _wdtt_params_eff(prev, _wdtt_fork(prev or inst)) != _wdtt_params_eff(inst, _wdtt_fork(prev or inst))\n', ''),
-    "--perturb-upsig": ('            tuple(upstream))   # an upstream change rewrites the conf NOW, not on the 12th-pass forced rebuild\n',
-                        '            ())\n'),
+    "--perturb-upsig": ('            tuple(upstream)) + ((tuple(allow),) if allow else ())',
+                        '            ()) + ((tuple(allow),) if allow else ())'),
     "--perturb-unknown": ('    if not flags:\n        _WDTT_DNS_RETRY[key] = time.time() + _WDTT_DNS_BACKOFF\n        return None\n',
                           '    if not flags:\n        _WDTT_TAKES_DNS[key] = False\n        return False\n'),
     "--perturb-cstop": ('            continue                                          # deliberately down: `restart` would START it; the new binary is used at its next start\n',
@@ -405,7 +405,7 @@ check("signature: the default equals leaving it out", N._dom_signature(e, d, {},
 check("dnsmasq renders server= from the upstream",
       'conf += ["server=" + u for u in (upstream or SMART_DNS_UPSTREAM_DEFAULT)]' in src and "server=1.1.1.1" not in src)
 check("reconcile threads it through", "_dns_up = _dns_upstream((smart or {}).get(\"dns_upstream\"))" in src
-      and "dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched, _dns_up)" in src and ("upstream=_dns_up)" in src or "upstream=_dns_up,\n" in src))
+      and re.search(r"dom_sig = _dom_signature\(_dns_e, domains, _zones, _fetched, _dns_up[,)]", src) is not None and ("upstream=_dns_up)" in src or "upstream=_dns_up,\n" in src))
 check("panel pushes it only when set AND the node is in Force-DNS (untouched node: same reply)",
       'if node.get("dns_upstream") and (node.get("routing_mode") or "kernel") == "forcedns" else {}),' in psrc)
 check("panel de-duplicates after normalising (one resolver, two spellings)",

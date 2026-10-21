@@ -17570,7 +17570,7 @@ def list_ensure(cat, tier, force=False):
     # so a force that skipped the back-off re-fetched a list that never lands every five seconds, per node. A copy in
     # hand keeps being served meanwhile. The one exemption is a union's FIRST build: a local merge, no fetch, and
     # nothing to serve until it exists. (An operator's explicit retry clears the record — /api/list-info.)
-    if list_failed(cat, tier) and (not _union or _meta_n(m)):
+    if list_failed(cat, tier) and (not _union or m):
         return m
     with _LIST_LOCK:
         if k in _LIST_INFLIGHT:
@@ -19634,9 +19634,10 @@ _BLKU_ALLOW = {}   # "blku:ip:<hash>" -> [the Never-block networks its name was 
 def _blku_key(tier, src_ids, allow=()):
     # `nb;` (ip only): the unions built with the bogon cut (_BLKU_NEVER) are NEW lists, so a node loads them at once instead
     # of in its nightly window — an ip union built before the cut cuts clients off from their own peers and LAN.
-    # `al:` (ip only, and only while the Never-block list holds addresses): the networks cut out of it, so an edit of the list
-    # names a NEW union every node loads at once — a fleet without addresses on the list keeps every union's name.
-    al = ("al:" + ",".join(allow) + ";") if allow and tier == "ip" else ""
+    # `al:` (an address union, while the Never-block list holds addresses — the caller passes `allow` only then, and fills
+    # _BLKU_ALLOW from the same value): the networks cut out of it, so an edit of the list names a NEW union every node loads
+    # at once — a fleet without addresses on the list keeps every union's name.
+    al = ("al:" + ",".join(allow) + ";") if allow else ""
     return "blku:" + tier + ":" + hashlib.sha1((("nb;" if tier == "ip" else "") + al + ";".join(sorted(set(src_ids)))).encode()).hexdigest()[:12]
 
 
@@ -19645,13 +19646,14 @@ def _blku_key(tier, src_ids, allow=()):
 # out of the address unions here (every node, any version); names travel to the name engines as `smart.allow` and are taken
 # out of the host unions by the node. The operator's own Block rules and the abuse protections are not touched.
 BLOCK_ALLOW_MAX = 500
-_BLOCK_ALLOW_SPLIT = {"k": None, "v": ((), ())}
+_BLOCK_ALLOW_SPLIT = {"kv": (None, ((), ()))}   # ONE (key, value) pair: sync threads read it while another stores it
 
 def block_allow_split(ps):
     """(names, networks) of the stored Never-block list, sorted — classified once per change of the list, not per sync."""
     raw = (ps or {}).get("block_allow")
     k = tuple(raw) if isinstance(raw, list) else ()
-    if _BLOCK_ALLOW_SPLIT["k"] != k:
+    ck, cv = _BLOCK_ALLOW_SPLIT["kv"]
+    if ck != k:
         names, nets = set(), set()
         for x in k:
             ct = classify_target(x)
@@ -19660,8 +19662,9 @@ def block_allow_split(ps):
             elif ct["kind"] == "ip":
                 with contextlib.suppress(ValueError):
                     nets.add(str(ipaddress.ip_network(ct["value"], strict=False)))
-        _BLOCK_ALLOW_SPLIT.update(k=k, v=(tuple(sorted(names)), tuple(sorted(nets, key=lambda n: ipaddress.ip_network(n)))))
-    return _BLOCK_ALLOW_SPLIT["v"]
+        cv = (tuple(sorted(names)), tuple(sorted(nets, key=lambda n: ipaddress.ip_network(n))))
+        _BLOCK_ALLOW_SPLIT["kv"] = (k, cv)
+    return cv
 
 def _blku_store(cat, tier):
     """Build a per-interface block UNION with BOUNDED memory, returning (meta, status) like list_store. Members
@@ -19717,9 +19720,29 @@ _BLKU_NEVER = tuple(ipaddress.ip_network(n) for n in ("0.0.0.0/8", "10.0.0.0/8",
 
 def _blku_public(nets, allow=()):
     """The networks with every _BLKU_NEVER range — and every Never-block network in `allow` — cut out (a network inside one
-    goes; one around one keeps the rest)."""
+    goes; one around one keeps the rest).
+
+    With `allow`, ONE SORTED SWEEP: up to 500 more ranges made the pairwise cut below quadratic (FireHOL level1, 4.6k
+    networks: 1.07 s; 30k: 7 s, on the request side's GIL). Both members and cuts are collapsed and walked once, in order;
+    the caller collapses the result, so the two paths give the same list. Without it, the cut below, as before."""
+    if allow:
+        cut = [(int(c.network_address), int(c.broadcast_address)) for c in ipaddress.collapse_addresses(_BLKU_NEVER + tuple(allow))]
+        out, i = [], 0
+        for n in ipaddress.collapse_addresses(nets):
+            cur, e = int(n.network_address), int(n.broadcast_address)
+            while i < len(cut) and cut[i][1] < cur:
+                i += 1                                     # members ascend, so a cut wholly below this one is below the rest
+            j = i
+            while j < len(cut) and cut[j][0] <= e and cur <= e:
+                if cut[j][0] > cur:
+                    out.extend(ipaddress.summarize_address_range(ipaddress.IPv4Address(cur), ipaddress.IPv4Address(cut[j][0] - 1)))
+                cur = max(cur, cut[j][1] + 1)
+                j += 1
+            if cur <= e:
+                out.extend(ipaddress.summarize_address_range(ipaddress.IPv4Address(cur), ipaddress.IPv4Address(e)))
+        return out
     out = []
-    cut = _BLKU_NEVER + tuple(allow)
+    cut = _BLKU_NEVER
     for n in nets:
         parts = [n]
         for bad in cut:
@@ -19947,10 +19970,11 @@ def _resolve_iface_blocks(node, snap, panel_settings, mode, node_id):
                     list_ensure(sid, tier)            # still downloading (or backing off) — it joins the union when it lands
             if not ready:
                 continue
-            key = _blku_key(tier, ready, _nb_nets)
+            _al = _nb_nets if tier == "ip" else ()     # the cut the union's name carries is the cut it is built with
+            key = _blku_key(tier, ready, _al)
             _BLKU_REG[key] = sorted(ready)
-            if tier == "ip" and _nb_nets:
-                _BLKU_ALLOW[key] = list(_nb_nets)
+            if _al:
+                _BLKU_ALLOW[key] = list(_al)
             srcs[key] = tier
             entries.append({"subnet": subnet, "category": key, "action": "block"})
     for ifn, ov in (node.get("ifaces") or {}).items():
@@ -23634,13 +23658,9 @@ def api(method, path, qs, body, deps):
         _refmap = _ghost_refs(_ros)   # {node:{iface:[pid]}} — walked once; /api/state passes its already-loaded roster to avoid a 2nd disk read
         _mg_on = mesh_types_in_play(deps, nodes)   # once: a fleet that never picks a mesh type walks no link for it
         _stale2 = max(5, int(((panel_settings.get("advanced") or {}).get("node_stale_ms") or 30000) / 1000)) * 2   # FLA-F1
-        # Never-block list with names → the block categories that carry a NAME list (a host-tier source), and the nodes each runs
-        # on: where one of them is on an interface of a Force-DNS / Hybrid SNI node, that node has to apply `smart.allow`.
-        _nb_cats = ({cid: set(cc.get("enabled_nodes") or ()) for cid, cc in block_catalog(panel_settings).items()
-                     if cc.get("kind") != "mechanism" and cc.get("enabled", True)
-                     and any((BLOCK_PROVIDERS.get((x or {}).get("provider") or "") or {}).get("tier", "host") == "host"
-                             for x in (cc.get("sources") or ()))}
-                    if block_allow_split(panel_settings)[0] else {})
+        # Never-block list with names → a node has to apply `smart.allow` where a block list runs by name: a ready host-tier
+        # feed of an interface's filters, by the one rule the datapath uses (_block_feeds — mode, availability, providers).
+        _nb_bc = (block_catalog(panel_settings), block_providers_enabled(panel_settings)) if block_allow_split(panel_settings)[0] else None
         # operator-set order (POST /api/order): `pos` ascending, unordered nodes after, by created
         for nid, c in sorted(nodes.items(), key=lambda kv: (kv[1].get("pos", 1 << 30), kv[1].get("created", 0), kv[0])):
             snap = snaps.get(nid) or {}
@@ -23743,8 +23763,10 @@ def api(method, path, qs, body, deps):
                                 clash=[dict(e, **{k: (nodes.get(e[k]) or {}).get("name") or e[k]
                                                   for k in ("node", "via") if e.get(k)})
                                        for e in (Handler.deps.get("cas_clash") or {}).get(nid) or ()], exits_offline=_offx,
-                                never_block=bool(_nb_cats) and (c.get("routing_mode") or "kernel") in ("forcedns", "sni")
-                                and any(nid in _nb_cats.get(b, ()) for lst in _node_block_lists(c) for b in lst))
+                                never_block=_nb_bc is not None and (c.get("routing_mode") or "kernel") in ("forcedns", "sni")
+                                and any(t == "host" and _blku_ready(sid, t) is not None for lst in _node_block_lists(c)
+                                        for prs in _block_feeds(_nb_bc[0], _nb_bc[1], nid, c.get("routing_mode") or "kernel", lst)[0].values()
+                                        for sid, t in prs))
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https",    # a link's own type and params ride on its mesh_peers row
                         # the node's links that are not the type the settings ask for, with why — only when there is something
@@ -24420,23 +24442,28 @@ def api(method, path, qs, body, deps):
             # "allow 0.0.0.0/0" would switch every address list off), and more than BLOCK_ALLOW_MAX entries.
             _raw = incoming["block_allow"]
             _items = _raw if isinstance(_raw, list) else re.split(r"[\s,]+", str(_raw or ""))
-            _keep, _bad, _broad = [], [], []
+            _items = list(dict.fromkeys(x for x in (str(_it or "").strip() for _it in _items) if x))
+            if len(_items) > BLOCK_ALLOW_MAX:         # refused before anything is read: this runs under the api lock
+                return 400, {"ok": False, **perr("Too many entries on the Never-block list — {v1} over the limit of {v2}.",
+                                                 v1=str(len(_items) - BLOCK_ALLOW_MAX), v2=str(BLOCK_ALLOW_MAX)), "code": "bad_request"}
+            _keep, _bad, _broad = {}, [], []
             for _it in _items:
-                _it = str(_it or "").strip()
-                if not _it:
-                    continue
-                _ct = classify_target(_it)
+                _ct = classify_target(_it) if not re.search(r"\s", _it) else {"kind": ""}   # one token an entry
+                _v = None
                 if _ct["kind"] == "site":
                     _v = _ct["value"]
                 elif _ct["kind"] == "ip":
-                    _net = ipaddress.ip_network(_ct["value"], strict=False)
-                    if _net.prefixlen < 8:
+                    try:                              # classify_target takes zero-padded octets; ipaddress does not
+                        _net = ipaddress.ip_network(_ct["value"], strict=False)
+                    except ValueError:
+                        _net = None
+                    if _net is not None and _net.prefixlen < 8:
                         _broad.append(str(_net)); continue
-                    _v = str(_net)
-                else:
+                    _v = str(_net) if _net is not None else None
+                if _v is None:
                     _bad.append(_it[:60]); continue
-                if _v not in _keep:
-                    _keep.append(_v)
+                _keep[_v] = 1
+            _keep = list(_keep)
             if _bad:
                 return 400, {"ok": False, **perr("Never block takes site names and IPv4 addresses or ranges — not {v1}",
                                                  v1=", ".join(_bad[:5])), "code": "bad_request"}
@@ -33967,8 +33994,8 @@ class Handler(BaseHTTPRequestHandler):
                                           # Hybrid SNI node with a host union — and only while the list has names; its addresses never
                                           # travel (already cut from the address unions). Absent otherwise: the reply as before.
                                           **({"allow": list(_nb_names)}
-                                             if (_nb_names := block_allow_split(_ps)[0]) and _node_mode not in ("kernel", "sni_kernel")
-                                             and any(t == "host" for t in _blk_srcs.values()) else {}),
+                                             if (_nb_names := block_allow_split(_ps)[0])
+                                             and any(t == "host" for t in _blk_srcs.values()) else {}),   # (_block_feeds: none on IP-only / Kernel SNI)
                                           # the node-wide P2P policy; None = iface (the node keeps the per-interface mechanism alone)
                                           # route: the entry cascade_plan lowered ({table, via_iface, subnets}) — none when it could
                                           # not be lowered, which the node runs as block (fail closed) and reports

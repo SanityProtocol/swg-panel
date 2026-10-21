@@ -15,8 +15,10 @@ real IP normaliser from a file:// feed) and `_blku_store` (builds the union).
   [4] the Never-block list (1.8.11 S5): its addresses are cut from the union as the never-routable ranges are — an address
       inside a listed range splits it, a listed range inside an allowed one goes — under a new union name; its names
       change nothing
+  [5] a union the list empties is built once and then waits out the back-off like any empty list — not rebuilt (two
+      fsync'd writes) on every node sync
 
-Run: python3 tests/blku_bogon_selftest.py      --plant nocut | norename | noallow   (exit 0 when caught)
+Run: python3 tests/blku_bogon_selftest.py      --plant nocut | norename | noallow | rebuild   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, ipaddress, os, sys, tempfile, time
 
@@ -26,7 +28,8 @@ PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 PLANTS = {"nocut": ("[1] [2] [4]", "        items = [str(n) for n in ipaddress.collapse_addresses(_blku_public(nets, _al))]",
                     "        items = [str(n) for n in ipaddress.collapse_addresses(nets)]"),
           "norename": ("[3]", '(("nb;" if tier == "ip" else "") + al + ";".join(', '(al + ";".join('),
-          "noallow": ("[4]", "        _al = [ipaddress.ip_network(n) for n in (_BLKU_ALLOW.get(cat) or ())]", "        _al = []")}
+          "noallow": ("[4]", "        _al = [ipaddress.ip_network(n) for n in (_BLKU_ALLOW.get(cat) or ())]", "        _al = []"),
+          "rebuild": ("[5]", "    if list_failed(cat, tier) and (not _union or m):", "    if list_failed(cat, tier) and (not _union or _meta_n(m)):")}
 FAILS, SECTION = [], [""]
 
 
@@ -129,6 +132,20 @@ check("the never-routable cut still holds beside it", not inn("10.20.1.1", nets4
 ents5 = m._resolve_iface_blocks(NODE, SNAP, dict(PS, block_allow=["example.com"]), "sni", "n1")[0]
 cat5 = [e["category"] for e in ents5 if str(e["category"]).startswith("blku:ip:")]
 check("names alone: the union keeps its name", cat5 == cat, (cat, cat5))
+
+SECTION[0] = "[5]"
+print("\n[5] a union the list empties")
+PS6 = dict(PS, block_allow=["5.188.10.0/24", "45.9.20.0/22", "185.0.0.0/8"] + ["%d.0.0.0/8" % i for i in range(96, 112)])
+ents6 = m._resolve_iface_blocks(NODE, SNAP, PS6, "sni", "n1")[0]
+cat6 = [e["category"] for e in ents6 if str(e["category"]).startswith("blku:ip:")]
+builds, _real = [], m._blku_store
+m._blku_store = lambda c, t: (builds.append(c), _real(c, t))[1]
+m.list_ensure(cat6[0], "ip"); settle()
+check("built once, empty", len(builds) == 1 and m._meta_n(m.list_meta(cat6[0], "ip")) == 0, (builds, m.list_meta(cat6[0], "ip")))
+for _ in range(5):                                       # five node syncs
+    m.list_ensure(cat6[0], "ip"); settle()
+check("…and not again on the next syncs (it waits out the back-off)", len(builds) == 1, len(builds))
+m._blku_store = _real
 
 print()
 if PLANT:

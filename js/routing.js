@@ -1164,6 +1164,17 @@ export function blockActiveN(node, value) {
 // THIS node plus the built-in traffic/abuse mechanisms; a chip toggles the category id in the interface's block[], and
 // the node drops matching traffic on its next sync. Domain (content) categories are inert on an IP-only (kernel) node
 // — shown greyed with a reason, the choice kept for when the mode changes.
+// The Never-block list under an interface's content filters — where an operator looks when a site is blocked. Names are taken
+// out only by a Force-DNS / Hybrid SNI node whose noded reports `allow`; addresses by the panel, on every node.
+function nbLine(node, mode) {
+  const nb = Store.panelSettings?.block_allow || [];
+  const isNet = x => /^\d{1,3}(\.\d{1,3}){3}(\/\d+)?$/.test(x);
+  const byName = (mode === "forcedns" || mode === "sni") && !!((Store.stats[node] || {}).smartroute || {}).allow && nb.some(x => !isNet(x));
+  if (!byName && !nb.some(isNet)) return null;
+  return html`<div class="hint blk-allow">${byName ? T("Sites and addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")
+    : T("Addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")}</div>`;
+}
+
 export function BlockTraffic({ node, value, onChange }) {
   useStore(); useEffect(() => { loadBlockCatalog(); }, []);
   const bc = Store.blockCatalog;
@@ -1190,8 +1201,7 @@ export function BlockTraffic({ node, value, onChange }) {
     <div class="blk-grp"><div class="blk-gtitle">${T("Content filtering")}</div>
       ${content.length ? html`<div class="blk-chips">${content.map(chip)}</div>`
         : html`<div class="hint blk-empty">${noFilterCats(() => { closeAllModals(); goSettings("routing"); })}</div>`}
-      ${content.length && (Store.panelSettings?.block_allow || []).length   /* where an operator looks when a site is blocked */
-        ? html`<div class="hint blk-allow">${T("Sites on the Never-block list (Settings → Geo data providers → Blocking) are never blocked here.")}</div>` : null}</div>
+      ${content.length ? nbLine(node, mode) : null}</div>
     <div class="blk-grp"><div class="blk-gtitle">${T("Traffic & abuse")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— built-in")}</span></div>
       <div class="blk-chips">${mech.map(mchip)}</div></div>
   </div>`;

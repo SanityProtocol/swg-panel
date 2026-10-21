@@ -325,7 +325,7 @@ else:
     N._cat_caps_take({"cat_caps": {B: {"host": True}}, "cat_caps_keep": ["mcx:never-had", 7]})
     check("[3] a name the node never had (or no name at all) invents nothing", N._CAT_CAPS == {B: {"host": True}}, N._CAT_CAPS)
     check("[3] the node says it keeps them: smart_status's base carries caps_keep 1",
-          re.search(r'"arr": 1,\s+#[^\n]*\n\s+"caps_keep": 1\}', NSRC) is not None, "")
+          re.search(r'"arr": 1,\s+#[^\n]*\n\s+"caps_keep": 1[,}]', NSRC) is not None, "")
     check("[3] …and the panel reads it: a report with the flag may get a partial dict, an older node's never does",
           M.node_keeps_caps({"smartroute": {"caps_keep": 1}}) and not M.node_keeps_caps({"smartroute": {"arr": 1}})
           and not M.node_keeps_caps({"smartroute": "x"}) and not M.node_keeps_caps({}), "")

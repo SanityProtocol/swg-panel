@@ -10,13 +10,15 @@ sync builds its unions the way production does.
 
   [1] the setting: names and IPv4 addresses/ranges stored in canonical form (lower case, host bits masked, deduplicated);
       a zone, a pattern, an AS number, IPv6 and a range wider than /8 are each refused, named, and nothing is stored;
-      over the cap is refused; an empty list removes the key (the settings file as before the feature)
+      over the cap is refused, at once, before any entry is read; an entry ipaddress cannot read (zero-padded octets) or
+      holding a space or line break is refused, named, never a 500; an empty list removes the key
   [2] the wire: `smart.allow` carries the names to n-dns only — not to IP-only n-ip, not to n-sni with no host union, not
       when the list holds addresses alone; with no list no node's reply carries the key
   [3] the address cut renames the ip union (n-dns and n-ip alike: a new list, loaded at once), a list of names alone keeps
       every union's name, and clearing the list brings the old name back; the host union's name never moves
   [4] the node card: a Force-DNS node filtering by name whose noded does not report `allow` is told to update while the
-      list holds names; not once it reports `allow`, not on IP-only, not with addresses alone
+      list holds names; not once it reports `allow`, not on IP-only, not with addresses alone, and not once its name list is
+      no longer on disk (no host union runs there — the card asks by the datapath's own rule)
 
 Run: python3 tests/never_block_panel_selftest.py      (0 = pass)
      --plant nowire     the sync never sends `smart.allow`                                    → RED on [2]
@@ -31,7 +33,7 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 PLANTS = {
     "nowire": ("[2]", '                                          **({"allow": list(_nb_names)}', '                                          **({}'),
-    "noname": ("[3]", '    al = ("al:" + ",".join(allow) + ";") if allow and tier == "ip" else ""', '    al = ""'),
+    "noname": ("[3]", '    al = ("al:" + ",".join(allow) + ";") if allow else ""', '    al = ""'),
     "nocard": ("[4]", "    if never_block and _srp is not None and not _srp.get(\"allow\"):", "    if False:"),
 }
 FAILS, SECTION = [], [""]
@@ -151,6 +153,16 @@ try:
               (code, r))
     code, r = req("/api/panel/settings", {"block_allow": ["h%d.example" % i for i in range(501)]})
     check("over 500 entries: refused", code == 400, (code, r))
+    t0 = time.time()
+    code, r = req("/api/panel/settings", {"block_allow": ["h%d.example" % i for i in range(50000)]})
+    check("a 50 000-entry paste: refused at once (under 2 s), the lock held for nothing", code == 400 and time.time() - t0 < 2,
+          (code, round(time.time() - t0, 2)))
+    for bad, why in (("010.1.1.1", "zero-padded octets"), ("example\n.com", "a line break inside one entry"),
+                     ("a.example b.example", "a space inside one entry")):
+        code, r = req("/api/panel/settings", {"block_allow": ["ok.example", bad]})
+        check("refused, named, 400 not 500: %r (%s)" % (bad, why),
+              code == 400 and bad.split()[0].lower() in json.dumps(r).lower() and settings().get("block_allow", [])[:1] == ["example.com"],
+              (code, r))
     code, r = req("/api/panel/settings", {"block_allow": []})
     check("an empty list removes the key", code == 200 and "block_allow" not in settings(), settings().get("block_allow"))
 
@@ -199,6 +211,11 @@ try:
     settled("n-dns")
     req("/api/panel/settings", {"block_allow": ["198.51.100.7"]})
     check("addresses alone: no card (the panel cuts them for every version)", CARD not in issues("n-dns"), issues("n-dns"))
+    req("/api/panel/settings", {"block_allow": ["example.com"]})
+    os.remove(os.path.join(ST, "lists", "blk_hagezi_light__host.txt"))   # the name list gone: no host union runs on n-dns
+    r = settled("n-dns")
+    check("no name list ready on the node: no host union, no `allow`, no card", not unions(r, "host") and "allow" not in smart(r)
+          and CARD not in issues("n-dns"), (unions(r, "host"), issues("n-dns")))
 finally:
     proc.terminate()
     try:

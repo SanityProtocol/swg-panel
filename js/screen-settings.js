@@ -2465,7 +2465,7 @@ export function PanelSettingsScreen() {
     if (Object.keys(blockEdits).length || blockRemoved.length) out.push(T("Content filters — categories / lists"));
     if (secChanged()) out.push(T("Authentication — panel credentials"));
     if (glDirty("turn")) out.push(T("Turn proxies — forks / colours / VK link"));
-    if (glDirty("geo")) out.push(T("Geo data providers"));
+    if (geoDirty()) out.push(T("Geo data providers"));   // the Never-block list has its own line below
     if (glDirty("defaults")) out.push(T("Interfaces — colours / defaults"));
     if (glDirty("configs")) out.push(T("Client configs → {v1}", { v1: sc === "off" ? T("val|off") : T("val|encrypted") }));
     if (glDirty("subs")) out.push(T("Subscriptions — enable / languages"));
@@ -2479,7 +2479,7 @@ export function PanelSettingsScreen() {
     // "mesh defaults" for a disclosure toggle that is not one.
     if (showLans !== (ps.show_node_lans !== false)) out.push(showLans ? T("Node local networks — shown in the panel") : T("Node local networks — hidden, and closed on every node"));
     if (normScanAllow(scanAllow).join(",") !== (ps.scan_allow || []).join(",")) out.push(T("Port-scan guard — trusted sources updated"));
-    if (normBlockAllow(blockAllow).join(",") !== (ps.block_allow || []).join(",")) out.push(T("Never-block list updated"));
+    if (nbDirty()) out.push(T("Never-block list updated"));
     if (meshMode !== (ps.mesh_mode || "auto")) out.push(T("Mesh links — {v1}", { v1: meshModeLabel(meshMode, ps.mesh_auto_max) }));
     if (meshGen !== (ps.mesh_awg_gen || "2.0")) out.push(T("Mesh link type → {v1}, for new links", { v1: meshGenLabel(meshGen) }));
     if (glDirty("links") && (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || !eq(meshTpl(awgSet ? awg : {}), meshTpl(ps.mesh_awg)))) out.push(T("System mesh defaults"));
@@ -2644,11 +2644,14 @@ const sectionLabel = k => ({
   const tzDirty = () => tz !== (ps.time_zone || "");
   // ⚠️ THE THIRD HALF of the settings idiom: without this in the display arm below, Save never enables for these two.
   const dataDirty = () => infHist !== (ps.infinite_history !== false) || histRes !== String(ps.history_resolution || 3600);
+  // Geo data providers, without the Never-block list — which the confirm names on a line of its own (diffList).
+  const geoDirty = () => (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).filter(p => !p.builtin).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00"));
+  const nbDirty = () => normBlockAllow(blockAllow).join(",") !== (ps.block_allow || []).join(",");
   const glDirty = sec =>
     sec === "routing" ? (listsJSON(lists) !== listsJSON(ps.custom_lists || []) || Object.keys(blockEdits).length > 0 || blockRemoved.length > 0) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || TURN_FORKS_DEFAULT).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
-    sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).filter(p => !p.builtin).map(p => [p.id, p.enabled !== false]))) || Object.keys(blockProvEdits).length > 0 || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00") || normBlockAllow(blockAllow).join(",") !== (ps.block_allow || []).join(",")) :
+    sec === "geo" ? geoDirty() || nbDirty() :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || JSON.stringify(awgTrim(awgDef)) !== JSON.stringify(awgTrim(idf.awg_params || {})) || JSON.stringify(awg3Trim(awg3Def)) !== JSON.stringify(awg3Trim(idf.awg3_params)) || reachDef !== (idf.reach || "user") || awgGenDef !== (idf.awg_gen === "3.1" ? "3.1" : "2.0") || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
     sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
@@ -3106,8 +3109,8 @@ const sectionLabel = k => ({
               ${p.url ? html`<a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${T("Open {v1}", { v1: p.label })}>${(p.url || "").replace(/^https?:\/\/(github\.com|raw\.githubusercontent\.com)\//, "").replace(/^www\./, "")}</a>` : null}
             </div>`; })}</div>` : html`<div class="hint">${T("Loading providers…")}</div>`; })()}
           <div class="seclabel" style="margin-top:20px">${T("Never block")}</div>
-          <p class="hint" style="margin:0 0 8px">${T("Never blocked by any block list, on every interface and node — and still routed by your routing rules. Your own Block rules and the abuse protections are not affected; for those, use a more specific Direct rule. Site names work on Force-DNS and Hybrid SNI, addresses everywhere. A site name does not unblock an address an address list holds — add the address too. One site name, IP or range a line.")}</p>
-          <textarea class="ta" rows="4" spellcheck="false" autocomplete="off" placeholder="example.com&#10;203.0.113.7&#10;198.51.100.0/24" value=${blockAllow} onInput=${e => setBlockAllow(e.target.value)}></textarea>
+          <p class="hint" style="margin:0 0 8px">${T("Never blocked by any block list, on every interface and node — and still routed by your routing rules. Your own Block rules and the abuse protections are not affected. Addresses come out of every address list; site names out of the site lists, on Force-DNS and Hybrid SNI. A name and an address are separate: a site name does not unblock an address an address list holds, and an address stays blocked by a site list while a blocked site resolves to it — list both when you need both. One site name, IP or range a line.")}</p>
+          <textarea class="ta" rows="4" spellcheck="false" autocomplete="off" placeholder=${"example.com\n203.0.113.7\n198.51.100.0/24"} value=${blockAllow} onInput=${e => setBlockAllow(e.target.value)}></textarea>
           ${(bad => bad.length ? html`<div class="hint warnish"><${Ic} i="warn"/> ${T("Not taken — site names and IPv4 addresses or ranges (/8 or narrower) only: {v1}", { v1: bad.slice(0, 5).map(c => c.raw).join(", ") })}</div>` : null)(nbRead(blockAllow).filter(c => !c.ok))}
           <p class="hint" style="margin:6px 0 0">${T("To stop the port-scan guard flagging one of your own machines, use Trusted sources (Settings → Network).")}</p>` : null}
 
