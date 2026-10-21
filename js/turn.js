@@ -26,7 +26,9 @@ import { kindOf, iTypeOf, targetType, nodeStale, ifaceNotUp, turnDown, turnLoopi
          suggestPort, portHolder, portErrMsg, nextWdttName, cidrNet, subnetsOverlap, subnetFleetConflict,
          subnetServerAddr, suggestSubnet, ghostIface, ghostPeers } from "./model.js";
 import { Ic, ICON, Tag, Panel, Badge, StatusTag, CmdErr, Sheet, sheetSend, footRow, secTitle, SearchBox, Switch, Dropdown, Disclosure, autoGrow, IpPicker, NodeIpPick, useHostOnNode, Popover, Portal, toast, copy, mutate, rowError, openModal, pushModal, closeModal, closeAllModals, openConfirm, openChildOrRoot, useReorder, GRIP_SVG, opTag, procTag, inProc, statusLabel, goSettings, goSettingsTurnIps, takePendingTurnIps, trackIfaceOps, startOrRestartWdtt, startOrRestartCsqtt, ifaceReady, ifaceWasBusy, RowError, LogBody, logRaw, logRendered, rowSingle, rowDouble, rowNoSelect, ConfirmSheet, orderById, procLabel, typeToConfirm } from "./ui.js";
-import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle, reportDropped, rulesSummary } from "./routing.js";
+import { EgressPicker, NatSourcePick, natPinApplies, egressInit, egressSaveBlock, egressBody, ifTrafficBadge, BlockTraffic, blockActiveN, RoutingRules, rulesTitle, reportDropped, rulesSummary,
+  WhoPicker, peersOn, whoCount, whoEntries, whoEntryName, whoEntryHas } from "./routing.js";
+import { canonWho } from "./rulerows.js";
 import { turnConnRows, wdttConnRows, OnlPop, OnlinePeersTag, orphCount, ProxyDropsPop, dropRate, ReachField } from "./views.js";
 import { IfaceThroughput, RangedHistory, lossColor } from "./charts.js";
 import { buildConf, downloadConf, QR, qrDataURL, turnArtifact, subFeatureOn,
@@ -2435,11 +2437,11 @@ export function CsqttVersionField({ node, value, onChange }) {
 // App routing is every line's but 2.1's — as the panel stores it (/api/csqtt/set drops the rule on 2.1). Saving a server
 // onto a line without it, where no switch confirmation runs (that line already runs), asks first: the rule is dropped.
 export const csqttArLine = line => (line || CSQTT_DEFAULT_LINE) !== CSQTT_DEFAULT_LINE;
-export const csqttArDropAsk = (cfg, line) => !csqttArLine(line) && !!(cfg && cfg.app_routing);
+export const csqttArDropAsk = (cfg, line) => !csqttArLine(line) && !!(cfg && (cfg.app_routing || (cfg.app_routing_except || []).length));
 // Ask before a switch: the server restarts, its users keep their passwords, and every device needs the new line's app.
 function confirmCsqttSwitch(node, iface, from, to, onConfirm) {
   const n = ghostPeers(node, iface).length;
-  const arOn = !!((((Store.nodes || []).find(x => x.id === node) || {}).csqtt_cfg || {})[iface] || {}).app_routing;
+  const arOn = csqttArDropAsk((((Store.nodes || []).find(x => x.id === node) || {}).csqtt_cfg || {})[iface], CSQTT_DEFAULT_LINE);
   pushModal(html`<${ConfirmSheet} title=${T("Switch to csqtt {v1}?", { v1: to })} confirmLabel=${T("Switch to {v1}", { v1: to })} warn=${true}
     body=${n ? T("The server restarts on csqtt {v1}. Its {v2} keep their passwords, but every device needs the csqtt {v1} app: a csqtt {v3} app cannot connect to it. If {v1} won't start, the node puts the server back on {v3} by itself.", { v1: to, v2: plural(n, "user"), v3: from })
       : T("The server restarts on csqtt {v1}. If it won't start, the node puts the server back on {v2} by itself.", { v1: to, v2: from })}
@@ -2705,6 +2707,70 @@ function AppRoutingFields({ value: a, onChange }) {
       ${list("ips", "149.154.160.0/20\n91.108.4.0-91.108.7.255", T("One IPv4 address, network or range (a-b) per line."))}</div>`;
 }
 
+// App routing EXCEPTIONS (docs/CSQTT-APP-ROUTING-WHO-PLAN.md): these people get their own rule, or none. The panel resolves
+// them per password (a device's beats its user's, a user's a group's, the upper group a lower one), so the browser keeps no
+// copy of that order: a row says whom it names and what it gives them, and the hint says how they win.
+const AR_EXC_MAX = 20;                                               // the panel's cap
+let _arxN = 0; const arxId = () => "arx" + (++_arxN);              // a row's key while the sheet is open (drag, edit)
+// What one exception's sheet stores: the kinds it names (an empty one left out), and null for "No App routing" — the panel
+// sends the server's "no rule" for it; an own rule goes as the form reads (the panel validates it).
+export const arxEntry = (sel, own, ar) => ({ who: Object.fromEntries(["users", "groups", "peers"].filter(k => (sel[k] || []).length).map(k => [k, sel[k]])),
+  app_routing: own ? arBody(ar) : null });
+// …and the server's list as the save sends it: the rows in their order, without the sheet's own keys.
+export const arxSend = ax => ax.map(({ who, app_routing }) => ({ who, app_routing }));
+// Whom a row names, in words (its tooltip), and as the picker shows them: a group and a device with their icons.
+const arxWho = who => { const es = whoEntries(who || {}), names = es.slice(0, 3).map(whoEntryName).join(", ");
+  return es.length > 3 ? T("{names} and {n} more", { names, n: es.length - 3 }) : names; };
+const arxWhoRow = who => { const es = whoEntries(who || {});
+  return html`${es.slice(0, 3).map((e, i) => html`${i ? ", " : ""}${e.k === "g" ? html`<${Ic} i="users"/>` : e.k === "p" ? html`<${Ic} i="device"/>` : null}${whoEntryName(e)}`)}${
+    es.length > 3 ? html`<span class="faint"> ${T("+{v1} more", { v1: es.length - 3 })}</span>` : null}`; };
+function ArExceptions({ node, iface, value, onChange }) {
+  const rs = useReorder(value.map(e => e._id), ids => onChange(ids.map(id => value.find(e => e._id === id))), "y", { container: ".arx-list", card: ".arx-row" });
+  const edit = e => pushModal(html`<${ArExceptionSheet} node=${node} iface=${iface} entry=${e}
+    onApply=${ne => onChange(e ? value.map(x => x._id === e._id ? { ...ne, _id: e._id } : x) : [...value, { ...ne, _id: arxId() }])}/>`);
+  const snap = Store.stats[node];
+  return html`<div class="field arx"><label>${T("Exceptions")}</label>
+    ${value.length ? html`<div class="arx-list" ...${rs.container()}>${value.map(e => { const it = rs.item(e._id), who = arxWho(e.who);
+      return html`<div key=${e._id} class=${"arx-row" + it.cls} data-rid=${it.rid}>
+        <span class="drag-grip" title=${T("Drag to reorder")} ...${rs.grip(e._id)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
+        <span class="arx-who" title=${who}>${who ? arxWhoRow(e.who) : T("nobody — they no longer exist")}</span>
+        <span class=${"arx-rule" + (e.app_routing ? "" : " none")}>${e.app_routing
+          ? html`${T("Own rule")}: ${arSummary(arInit({ app_routing: e.app_routing }))}` : T("No App routing")}</span>
+        <button type="button" class="btn btn-ghost btn-mini" title=${T("Edit exception")} aria-label=${T("Edit exception")} onClick=${() => edit(e)}><${Ic} i="pencil"/></button>
+        <button type="button" class="btn btn-ghost btn-mini" title=${T("Remove exception")} aria-label=${T("Remove exception")}
+          onClick=${() => onChange(value.filter(x => x !== e))}><${Ic} i="x"/></button></div>`; })}</div>` : null}
+    <button type="button" class="btn btn-ghost arx-add" disabled=${value.length >= AR_EXC_MAX}
+      title=${value.length >= AR_EXC_MAX ? T("At most {v1} exceptions.", { v1: AR_EXC_MAX }) : ""} onClick=${() => edit(null)}><${Ic} i="plus"/>${T("Add exception")}</button>
+    <div class="hint">${T("Chosen people get their own rule, or none. A device's exception beats its user's, and a user's beats a group's; a person in two groups gets the upper one. Applies at each user's next connect.")}</div>
+    ${value.length && snap && !snap.csqtt_ar_pw ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Exceptions need a node update — until then everyone gets the server rule.")}</span></div>` : null}
+  </div>`;
+}
+// One exception: whom it names (the routing rules' picker, devices counted on this server) and what they get instead.
+function ArExceptionSheet({ node, iface, entry, onApply }) {
+  useStore();
+  const [sel, setSel] = useState(() => canonWho((entry || {}).who || {}));
+  const [own, setOwn] = useState(!!(entry && entry.app_routing));
+  const [ar, setAr] = useState(() => arInit({ app_routing: entry && entry.app_routing }));
+  const here = peersOn(node, iface);
+  const empty = !whoCount(sel);
+  const apply = () => { if (empty) return;
+    onApply(arxEntry(sel, own, ar)); closeModal(); };
+  const cell = e => { const n = here.filter(p => whoEntryHas(e, p.id)).length;
+    return html`<span class=${"netdev" + (n ? "" : " none")} title=${n ? T("{devices} on this server", { devices: plural(n, "device") }) : ""}>${n
+      ? html`<span class="netdev-n ok">${n}</span>` : T("no device here")}</span>`; };
+  return html`<${Sheet} title=${entry ? T("Edit exception") : T("Add exception")} width=${680}
+    foot=${footRow({ onCancel: closeModal, onAction: apply, action: T("Apply"), disabled: empty,
+                     title: empty ? T("Choose at least one person, group or device.") : "" })}>
+    <div class="field"><label>${T("For whom")}</label>
+      <${WhoPicker} sel=${sel} setSel=${setSel} here=${here} cell=${cell} empty=${T("Choose at least one person, group or device.")}/></div>
+    <div class="field"><label>${T("App routing")}</label>
+      <div class="dpsw netsw-share" role="radiogroup" aria-label=${T("App routing")}>${[[false, T("No App routing")], [true, T("Own rule")]].map(([v, l]) => html`<button type="button" role="radio"
+        aria-checked=${own === v} class=${own === v ? "on" : ""} onClick=${() => setOwn(v)}>${l}</button>`)}</div>
+      <div class="hint">${own ? T("Used instead of the server's rule.") : T("Everything they send uses the tunnel, whatever the server's rule says.")}</div></div>
+    ${own ? html`<${AppRoutingFields} value=${ar} onChange=${setAr}/>` : null}
+  <//>`;
+}
+
 export function openEditCsqtt(node, iface) { openModal(html`<${EditCsqttSheet} node=${node} iface=${iface}/>`); }
 // `pick` = a version picked and not yet saved in the csqtt-proxy sheet this one was opened from: it starts there, so a save
 // here (which closes both sheets) carries it instead of dropping it.
@@ -2723,6 +2789,7 @@ export function EditCsqttSheet({ node, iface, pick }) {
   const tog = k => setDisc(d => ({ ...d, [k]: !d[k] }));
   const dns = useTurnDns(cfg, c.fork || cfg.fork || "csqtt", c);   // Client DNS — see EditWdttSheet
   const [ar, setAr] = useState(() => arInit(cfg));                   // App routing — a 2.5 server's
+  const [ax, setAx] = useState(() => (cfg.app_routing_except || []).map(e => ({ ...e, _id: arxId() })));   // …and its exceptions
   const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);   // the csqtt version, here too (operator, 2026-10-17)
   const sw = csqttSwitchState(node, iface);
   const is25 = csqttArLine(lineDirty ? line : cfg.line);              // the line it will run: App routing follows a switch
@@ -2730,7 +2797,7 @@ export function EditCsqttSheet({ node, iface, pick }) {
   const doSave = async () => {
     // sent before the sheet closes (q189 SPA-3): a refusal stays here, in the panel's words, with every edit kept
     const r = await sheetSend(() => api.csqttSet({ node, iface, listen: oldListen, block: blk, reach, ...dns.body, ...egressBody(eg),
-      ...(lineDirty ? { line } : {}), ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);
+      ...(lineDirty ? { line } : {}), ...(is25 ? { app_routing: arBody(ar), app_routing_except: arxSend(ax) } : {}) }), errMsg(setMsg), setBusy);
     if (!r.ok) return;
     Store.ifaceOp[node + "|" + iface] = { verb: "apply", phase: "busy", started: Date.now() }; Store.apply(); closeAllModals();
     reportDropped(r); Store.poll();   // §5.4
@@ -2772,8 +2839,10 @@ export function EditCsqttSheet({ node, iface, pick }) {
       open=${disc.filters} onToggle=${() => tog("filters")}>
       <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
     <//>
-    ${is25 ? html`<${Disclosure} title=${T("App routing")} summary=${arSummary(ar)} open=${disc.approuting} onToggle=${() => tog("approuting")}>
+    ${is25 ? html`<${Disclosure} title=${T("App routing")} open=${disc.approuting} onToggle=${() => tog("approuting")}
+      summary=${ax.length ? html`${arSummary(ar)}<span class="faint"> + ${plural(ax.length, "exception")}</span>` : arSummary(ar)}>
       <${AppRoutingFields} value=${ar} onChange=${setAr}/>
+      <${ArExceptions} node=${node} iface=${iface} value=${ax} onChange=${setAx}/>
     <//>` : null}
     ${/* ⚠️ THESE SHEETS HAD NO "Advanced settings" AT ALL, and `wan_iface` is a real per-instance field for
           them — the node runs the same `_egress_des` ladder for a WDTT/csqtt subnet as for an interface.

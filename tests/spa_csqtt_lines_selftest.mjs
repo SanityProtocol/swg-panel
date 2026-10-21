@@ -24,7 +24,10 @@
  *      stack), and App routing follows the picked line; both sheets hold only a PICK (useCsqttPick): untouched, the field
  *      follows the polled record and nothing is sent; the csqtt-proxy sheet hands only a real pick to the interface sheet
  *
- * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame> plants one regression, expects RED.
+ *  [11] App routing exceptions: a row stores null for "No App routing" and only the kinds it names; the save sends the rows in
+ *      order without the sheet's keys, and only on 2.5; going back to 2.1 with exceptions alone asks first
+ *
+ * Run: node tests/spa_csqtt_lines_selftest.mjs     --perturb <hide|refuse|failed|blocked|unoffered|stale|runline|runseen|ifver|ifline|ifopen|ifpick|askgo|pickdirty|picksame|ardrop|artpl|arxnull|arxkeys|arx21> plants one regression, expects RED.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -39,13 +42,16 @@ const PLANTS = {
   refuse: ["turn.js", "    ...(id !== value && !can.includes(id) ? {", "    ...(false ? {"],
   failed: ["turn.js", "  const failed = c.line_failed && c.line_failed.line === want ? c.line_failed : null;", "  const failed = c.line_failed || null;"],
   runline: ["turn.js", "  return seen ? s.run : s.want;", "  return s.want;"],
-  ardrop: ["turn.js", "export const csqttArDropAsk = (cfg, line) => !csqttArLine(line) && !!(cfg && cfg.app_routing);",
+  ardrop: ["turn.js", "export const csqttArDropAsk = (cfg, line) => !csqttArLine(line) && !!(cfg && (cfg.app_routing || (cfg.app_routing_except || []).length));",
     "export const csqttArDropAsk = (cfg, line) => false;"],
   artpl: ["turn.js", "template_domains: a.domains_mode === \"direct\" && !!a.template_domains,", "template_domains: !!a.template_domains,"],
   runseen: ["turn.js", "  return seen ? s.run : s.want;", "  return s.run;"],
   ifver: ["turn.js", "      <${CsqttVersionField} node=${node} value=${line} onChange=${setLine}/>\n    </div>", "    </div>"],
-  ifline: ["turn.js", "      ...(lineDirty ? { line } : {}), ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);",
-           "      ...(is25 ? { app_routing: arBody(ar) } : {}) }), errMsg(setMsg), setBusy);"],
+  ifline: ["turn.js", "      ...(lineDirty ? { line } : {}), ...(is25 ? { app_routing: arBody(ar), app_routing_except: arxSend(ax) } : {}) }), errMsg(setMsg), setBusy);",
+           "      ...(is25 ? { app_routing: arBody(ar), app_routing_except: arxSend(ax) } : {}) }), errMsg(setMsg), setBusy);"],
+  arxnull: ["turn.js", "  app_routing: own ? arBody(ar) : null });", "  app_routing: arBody(ar) });"],
+  arxkeys: ["turn.js", "export const arxSend = ax => ax.map(({ who, app_routing }) => ({ who, app_routing }));", "export const arxSend = ax => ax;"],
+  arx21: ["turn.js", "...(is25 ? { app_routing: arBody(ar), app_routing_except: arxSend(ax) } : {})", "app_routing_except: arxSend(ax), ...(is25 ? { app_routing: arBody(ar) } : {})"],
   ifopen: ["turn.js", "  const { line, setLine, lineDirty } = useCsqttPick(cfg, pick);", "  const { line, setLine, lineDirty } = useCsqttPick(cfg);"],
   picksame: ["turn.js", "export const csqttPickOf = (v, cfg) => (v && v !== csqttLineOf(cfg) ? v : null);", "export const csqttPickOf = (v, cfg) => v || null;"],
   pickdirty: ["turn.js", "line = picked || cur; return { line, lineDirty: line !== cur }; };", "line = picked || cur; return { line, lineDirty: !!picked }; };"],
@@ -202,5 +208,21 @@ check("[10] a switch away from what runs is confirmed, and confirming saves", a2
 Store.stats.nnew.csqtt[0].line = "2.1";   // q now runs 2.1, its record still holds a 2.5 rule
 const a3 = ask("q", Store.nodes[0].csqtt_cfg.q, "2.1");
 check("[10] back to the 2.1 that runs with a rule: asked to remove it, and confirming goes on to the caller's next step", a3.asked && a3.title === "Remove App routing?" && a3.went === 1, a3);
+
+// [11] App routing exceptions (docs/CSQTT-APP-ROUTING-WHO-PLAN.md §5): what a row stores and what the save sends
+const sel11 = { users: ["u1"], groups: [], peers: ["p2", "p3"] };
+const e11 = TU.arxEntry(sel11, false, TU.arInit({}));
+check("[11] \"No App routing\" stores null (the panel sends the server's \"no rule\" for it)", e11.app_routing === null, e11);
+check("[11] the row names only the kinds it holds", JSON.stringify(e11.who) === '{"users":["u1"],"peers":["p2","p3"]}', e11.who);
+const o11 = TU.arxEntry(sel11, true, { ...TU.arInit({}), domains: "ya.ru vk.com" });
+check("[11] an own rule is stored as the form reads it", JSON.stringify(o11.app_routing) === JSON.stringify(TU.arBody({ ...TU.arInit({}), domains: "ya.ru vk.com" })), o11);
+const s11 = TU.arxSend([{ ...e11, _id: "arx1" }, { ...o11, _id: "arx2" }]);
+check("[11] the save sends the rows in order, without the sheet's keys", JSON.stringify(s11) === JSON.stringify([e11, o11]), s11);
+check("[11] the save sends the list only where App routing is (2.5) — a 2.1 server sends none",
+      sheet.includes("...(is25 ? { app_routing: arBody(ar), app_routing_except: arxSend(ax) } : {})"));
+check("[11] back to 2.1 with exceptions only (no server rule): asked, they go",
+      TU.csqttArDropAsk({ app_routing_except: [e11] }, "2.1") === true && TU.csqttArDropAsk({ app_routing_except: [] }, "2.1") === false);
+check("[11] the exceptions sit in the App routing fold, under the server's rule",
+      sheet.includes("<${AppRoutingFields} value=${ar} onChange=${setAr}/>\n      <${ArExceptions} node=${node} iface=${iface} value=${ax} onChange=${setAx}/>"));
 
 done(!!MODE, MODE || "");

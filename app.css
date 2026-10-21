@@ -2051,6 +2051,20 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
    columns are `auto` (icon-width) and identical in both, so the two 1fr dropdown columns come out equal. A flex
    row can't do this reliably — a <span> and a <select> don't split a flex track equally. */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
+/* App routing exceptions (csqtt 2.5): the rule rows' frame and grip, one line each — whom it names, what they get, edit, ×.
+   The names give way first (ellipsis, the whole list on hover); the rule stays readable. On a phone the rule drops under them. */
+.arx{border-top:1px solid var(--line);padding-top:14px}   /* a scope of its own: these people, not the server's everyone above */
+.arx-list{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+.arx-row{display:grid;grid-template-columns:16px minmax(0,1fr) auto auto auto;align-items:center;gap:8px;padding:5px 8px;
+  border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
+.arx-row .drag-grip{cursor:grab;opacity:.62;margin:0}.arx-row:hover .drag-grip{opacity:.95}
+.arx-who{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arx-who svg{width:13px;height:13px;color:var(--dim);margin-right:5px;vertical-align:-2px}
+.arx-rule{font-size:12.5px;color:var(--ink-2);white-space:nowrap}
+.arx-rule.none{color:var(--dim)}
+.arx-add{align-self:flex-start}
+@media (max-width:640px){.arx-row{grid-template-columns:16px minmax(0,1fr) auto auto}
+  .arx-rule{grid-column:2/-1;grid-row:2;white-space:normal}}
 /* TWO COLUMNS: the grip, then the field across everything else. The destination select used to be a third
    and fourth column, which capped the target box at half the dialog however wide the dialog got — and the
    box is the part that holds an unbounded number of badges. It now rides in the field's own foot, right

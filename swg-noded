@@ -17073,6 +17073,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     snap["wdtt"] = wdtt_snapshot()                    # WDTT instances: active + server pubkey + per-password device/traffic (read-back for the panel; no privkeys)
     snap["csqtt"] = csqtt_snapshot()                  # csqtt instances (raw-TUN): active + per-password device/traffic + byte-delta online (no privkeys)
     snap["csqtt_lines"] = list(CSQTT_KNOWN_LINES)    # the csqtt lines this noded can run — the panel sends no other line here (docs/CSQTT-LINES-PLAN.md G1)
+    snap["csqtt_ar_pw"] = 1                          # desired.json carries a password's own App routing (an exception) — the panel's card reads it
     # ⚠️ An instance WE hold that the panel does not claim. Nothing will ever start it: the node only runs
     # what the panel desires, and removals are explicit — so it sits installed, stopped and ownerless, while
     # the card reads "starting" for ever because our own record says it was not deliberately stopped. Seen on
@@ -22366,9 +22367,16 @@ def _csqtt_desired_body(inst):
     out = []
     for pw, e in (inst.get("passwords") or {}).items():
         e = e or {}
-        out.append({"password": pw, "expires_at": int(e.get("expires_at") or 0),
-                    "vk_hash": str(e.get("vk_hash") or ""), "name": str(e.get("name") or ""),
-                    "is_deactivated": bool(e.get("is_deactivated"))})
+        rec = {"password": pw, "expires_at": int(e.get("expires_at") or 0),
+               "vk_hash": str(e.get("vk_hash") or ""), "name": str(e.get("name") or ""),
+               "is_deactivated": bool(e.get("is_deactivated"))}
+        # This password's own App routing (an exception, docs/CSQTT-APP-ROUTING-WHO-PLAN.md §4): the server reads an
+        # absent key as the server's rule and an all-default body as no rule. Only when the panel sent one and it is the
+        # stored shape — a malformed one drops from this password (→ the server rule), never the file.
+        own = _csqtt_app_routing(e.get("app_routing")) if "app_routing" in e else None
+        if own:
+            rec["app_routing"] = own
+        out.append(rec)
     body = {"passwords": out}
     ar = _csqtt_app_routing(inst.get("app_routing"))
     if ar:

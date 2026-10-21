@@ -2740,12 +2740,12 @@ const whoTally = (rep, only) => { const c = { ok: 0, soon: 0, no: 0 };
   for (const [pid, st] of Object.entries((rep || {}).devices || {})) if (!only || only(pid)) c[st] = (c[st] || 0) + 1;
   return c; };
 // Which of a report's devices one entry of the selection accounts for — a user's own, a group's members', or the one device.
-const whoEntryHas = (e, pid) => { const p = Store.peer(pid), uid = p && p.user_id;
+export const whoEntryHas = (e, pid) => { const p = Store.peer(pid), uid = p && p.user_id;
   return e.k === "p" ? pid === e.id : e.k === "u" ? uid === e.id : !!uid && ((Store.group(e.id) || {}).users || []).includes(uid); };
-const whoEntryName = e => e.k === "g" ? ((Store.group(e.id) || {}).name || T("a group that no longer exists"))
+export const whoEntryName = e => e.k === "g" ? ((Store.group(e.id) || {}).name || T("a group that no longer exists"))
   : e.k === "u" ? ((Store.user(e.id) || {}).name || T("a user who no longer exists"))
   : (Store.peer(e.id) ? deviceLabel(Store.peer(e.id)) : T("a device that no longer exists"));
-const whoEntries = w => [...(w.groups || []).map(id => ({ k: "g", id })), ...(w.users || []).map(id => ({ k: "u", id })),
+export const whoEntries = w => [...(w.groups || []).map(id => ({ k: "g", id })), ...(w.users || []).map(id => ({ k: "u", id })),
                          ...(w.peers || []).map(id => ({ k: "p", id }))];
 
 // Why a device reads red: its build can't prove its source — or the node runs no per-person rule yet (D4), and then none do.
@@ -2807,6 +2807,48 @@ function AsChip({ ip, node, direct }) {
     ? html`<${Ic} i="warn"/>` : null}${T("as {v1}", { v1: ip })}</span>`;
 }
 
+// The devices on one interface (or csqtt / WDTT server) — what the picker offers as single devices.
+export const peersOn = (node, iface) => Store.recon.peers.filter(p => (p.targets || []).some(t => t && t.node === node && t.iface === iface));
+export const whoCount = w => (w.groups || []).length + (w.users || []).length + (w.peers || []).length;
+const whoSorted = (sel, k, key) => sel[key].slice().sort((a, b) => whoEntryName({ k, id: a }).localeCompare(whoEntryName({ k, id: b }))).map(id => ({ k, id }));
+
+/* "FOR WHOM" — people, groups and single devices as a list: search-to-add (`UserPicker`), a filter above a page, the shared
+   pager, a × per row. Rule settings and a csqtt server's App routing exceptions choose people with it; `cell` says what a
+   row's devices are to its caller (the rule's coverage there, the devices on the server here). */
+export function WhoPicker({ sel, setSel, here, cell, onTyped, empty }) {
+  const [q, setQ] = useState(""), [page, setPage] = useState(1);
+  const list = [...whoSorted(sel, "g", "groups"), ...whoSorted(sel, "u", "users"), ...whoSorted(sel, "p", "peers")];
+  const ql = q.trim().toLowerCase();
+  const rows = ql ? list.filter(e => whoEntryName(e).toLowerCase().includes(ql)) : list;
+  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE)), pg = Math.min(page, pages);
+  const addTo = (k, id) => { if (!id || sel[k].includes(id)) return; setSel(s => ({ ...s, [k]: [...s[k], id].sort() })); setQ(""); };
+  const drop = e => { const k = { g: "groups", u: "users", p: "peers" }[e.k]; setSel(s => ({ ...s, [k]: s[k].filter(x => x !== e.id) })); };
+  return html`<${Fragment}>
+      <div class="sharebar" onInput=${onTyped} onChange=${onTyped}>
+        <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person, group or device…")} exclude=${sel.users}
+          groups=${Store.groups().filter(g => !sel.groups.includes(g.id))} onGroup=${id => addTo("groups", id)} onChange=${id => addTo("users", id)}
+          devices=${here.filter(p => !sel.peers.includes(p.id)).map(p => ({ id: p.id, name: deviceLabel(p), sub: (Store.user(p.user_id) || {}).name || "" }))}
+          onDevice=${id => addTo("peers", id)}/></div>
+        ${list.length > LIST_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
+            aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
+      </div>
+      ${list.length ? html`<div class="sharegrid gmembers" role="table">
+          <div class="sharegrid-h" role="row"><span>${T("col|User, group or device")}</span><span>${T("Devices here")}</span><span></span></div>
+          ${pageSlice(rows, pg).map(e => { const gone = e.k === "g" ? !Store.group(e.id) : e.k === "u" ? !Store.user(e.id) : !Store.peer(e.id);
+            return html`<div class=${"sharegrid-r" + (e.k === "u" ? "" : " grp") + (gone ? " gone" : "")} role="row" key=${e.k + ":" + e.id}>
+            <span class="nm">${e.k === "g" ? html`<${Ic} i="users"/>` : e.k === "p" ? html`<${Ic} i="device"/>` : null}${whoEntryName(e)}${e.k === "g" && !gone
+              ? html`<span class="faint sharegrid-sub">${plural(Store.group(e.id).users.length, "member")}</span>` : e.k === "p" && !gone && Store.user(Store.peer(e.id).user_id)
+              ? html`<span class="faint sharegrid-sub">${Store.user(Store.peer(e.id).user_id).name}</span>` : null}</span>
+            <span>${cell(e)}</span>
+            <span><button type="button" class="btn btn-ghost btn-mini" title=${T("Remove {name}", { name: whoEntryName(e) })}
+              aria-label=${T("Remove {name}", { name: whoEntryName(e) })} onClick=${() => drop(e)}><${Ic} i="x"/></button></span></div>`; })}
+          ${!rows.length ? html`<div class="sharegrid-empty">${T("Nobody on the list matches “{q}”.", { q })}</div>` : null}
+        </div>
+        <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>`
+      : html`<div class="sharegrid-empty">${empty}</div>`}
+  <//>`;
+}
+
 /* RULE SETTINGS — where a rule leaves by, and for whom. Built from what exists: `ShareListSheet`'s layout (search-to-add with
    `UserPicker`, a filter above 15 rows, the shared pager, per-row ×, the count in the foot), the Networks window's audience
    switch, and its colour-coded device counts. Nothing here is written until the interface is saved. */
@@ -2827,7 +2869,6 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   // whichever node "Leaves by" currently names, so picking another node up there shows THAT node's address
   // without anything having to reset anything: the old node's entry is simply not the one being read.
   const [ips, setIps] = useState(() => ({ ...(exitIps || {}) }));
-  const [q, setQ] = useState(""), [page, setPage] = useState(1);
   const dirtyRef = useRef(false), closeRef = useRef(null), cleanRef = useRef(null), base = useRef(null);
   // WHICH NODE THIS FORWARDS TO, if it forwards at all — the address list, the sentence and the warning all
   // hang off it, and it is read from the control rather than from the row so that choosing another node
@@ -2861,16 +2902,8 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   const typedOnly = () => { if (cleanRef.current) cleanRef.current(); };      // the filter and the search change nothing
   const whoOf = useWhoReport(node, iface, chosen ? [sel] : []);
   const rep = chosen ? whoOf(sel) : null;
-  const here = Store.recon.peers.filter(p => (p.targets || []).some(t => t && t.node === node && t.iface === iface));
-  const list = [...sel.groups.slice().sort((a, b) => whoEntryName({ k: "g", id: a }).localeCompare(whoEntryName({ k: "g", id: b }))).map(id => ({ k: "g", id })),
-                ...sel.users.slice().sort((a, b) => whoEntryName({ k: "u", id: a }).localeCompare(whoEntryName({ k: "u", id: b }))).map(id => ({ k: "u", id })),
-                ...sel.peers.slice().sort((a, b) => whoEntryName({ k: "p", id: a }).localeCompare(whoEntryName({ k: "p", id: b }))).map(id => ({ k: "p", id }))];
-  const ql = q.trim().toLowerCase();
-  const rows = ql ? list.filter(e => whoEntryName(e).toLowerCase().includes(ql)) : list;
-  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE)), pg = Math.min(page, pages);
-  const addTo = (k, id) => { if (!id || sel[k].includes(id)) return; setSel(s => ({ ...s, [k]: [...s[k], id].sort() })); setQ(""); };
-  const drop = e => { const k = { g: "groups", u: "users", p: "peers" }[e.k]; setSel(s => ({ ...s, [k]: s[k].filter(x => x !== e.id) })); };
-  const empty = chosen && !list.length;
+  const here = peersOn(node, iface);
+  const empty = chosen && !whoCount(sel);
   const c = whoTally(rep);
   const apply = () => { if (empty || pBad) return; onApply(dest, chosen ? sel : null, ips, aud, directIp !== undefined ? dip : undefined,
     withPorts && pc ? { proto: pc.proto, list: pc.list } : null);
@@ -2948,29 +2981,9 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
        : html`<div class="dpsw netsw-share" role="radiogroup" aria-label=${T("For whom")}>${[[false, T("Everyone on this interface")], [true, T("Chosen people and devices")]].map(([v, l]) => html`<button type="button" role="radio"
         aria-checked=${chosen === v} class=${chosen === v ? "on" : ""} onClick=${() => setChosen(v)}>${l}</button>`)}</div>`}</div>
     ${chosen ? html`<${Fragment}>
-      <div class="sharebar" onInput=${typedOnly} onChange=${typedOnly}>
-        <div class="sharebar-add"><${UserPicker} value=${null} placeholder=${T("Add a person, group or device…")} exclude=${sel.users}
-          groups=${Store.groups().filter(g => !sel.groups.includes(g.id))} onGroup=${id => addTo("groups", id)} onChange=${id => addTo("users", id)}
-          devices=${here.filter(p => !sel.peers.includes(p.id)).map(p => ({ id: p.id, name: deviceLabel(p), sub: (Store.user(p.user_id) || {}).name || "" }))}
-          onDevice=${id => addTo("peers", id)}/></div>
-        ${list.length > LIST_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
-            aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
-      </div>
-      ${list.length ? html`<div class="sharegrid gmembers" role="table">
-          <div class="sharegrid-h" role="row"><span>${T("col|User, group or device")}</span><span>${T("Devices here")}</span><span></span></div>
-          ${pageSlice(rows, pg).map(e => { const gone = e.k === "g" ? !Store.group(e.id) : e.k === "u" ? !Store.user(e.id) : !Store.peer(e.id);
-            return html`<div class=${"sharegrid-r" + (e.k === "u" ? "" : " grp") + (gone ? " gone" : "")} role="row" key=${e.k + ":" + e.id}>
-            <span class="nm">${e.k === "g" ? html`<${Ic} i="users"/>` : e.k === "p" ? html`<${Ic} i="device"/>` : null}${whoEntryName(e)}${e.k === "g" && !gone
-              ? html`<span class="faint sharegrid-sub">${plural(Store.group(e.id).users.length, "member")}</span>` : e.k === "p" && !gone && Store.user(Store.peer(e.id).user_id)
-              ? html`<span class="faint sharegrid-sub">${Store.user(Store.peer(e.id).user_id).name}</span>` : null}</span>
-            <span><${WhoDevices} rep=${rep} e=${e} node=${node}/></span>
-            <span><button type="button" class="btn btn-ghost btn-mini" title=${T("Remove {name}", { name: whoEntryName(e) })}
-              aria-label=${T("Remove {name}", { name: whoEntryName(e) })} onClick=${() => drop(e)}><${Ic} i="x"/></button></span></div>`; })}
-          ${!rows.length ? html`<div class="sharegrid-empty">${T("Nobody on the list matches “{q}”.", { q })}</div>` : null}
-        </div>
-        <${ListPager} page=${pg} setPage=${setPage} total=${rows.length}/>
-        ${rep && !c.ok && !c.soon && !c.no ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("None of the chosen people has a device on this interface — the rule routes nothing until one does.")}</span></div>` : null}`
-      : html`<div class="sharegrid-empty">${T("Choose at least one person or device, or pick “Everyone on this interface”.")}</div>`}
+      <${WhoPicker} sel=${sel} setSel=${setSel} here=${here} onTyped=${typedOnly} cell=${e => html`<${WhoDevices} rep=${rep} e=${e} node=${node}/>`}
+        empty=${T("Choose at least one person or device, or pick “Everyone on this interface”.")}/>
+      ${!empty && rep && !c.ok && !c.soon && !c.no ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("None of the chosen people has a device on this interface — the rule routes nothing until one does.")}</span></div>` : null}
       ${rep && rep.node_old ? html`<div class="notice warn"><${Ic} i="warn"/><span>${whoNoWhy(rep, node)}</span></div>` : null}
       ${kSni ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for chosen people — only this rule's IP addresses and networks apply here. Switch to Hybrid SNI to match them.")}</span></div>` : null}
     <//>` : null}

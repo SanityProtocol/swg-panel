@@ -93,7 +93,8 @@ subscription and no one else sitting in the middle of your traffic.
   lands on their subscription page next to everything else, app download included.
 - **csqtt servers too.** The same idea on a newer, faster datapath — create it like any other interface
   and hand out a password. Each server runs csqtt 2.1 or 2.5 (switchable, keeping its users); a 2.5 server can tell
-  every user's app which apps, domains and addresses skip the tunnel. Note that **csqtt is free for personal use only**; running one commercially
+  every user's app which apps, domains and addresses skip the tunnel — with exceptions for chosen people, groups or
+  devices, who get their own rule or none (a device's beats its user's, a user's beats a group's). Note that **csqtt is free for personal use only**; running one commercially
   needs a licence from its author ([details](THIRD-PARTY.md)).
 - **Bring what you already have.** Already running WireGuard, AmneziaWG, WDTT or csqtt on a box by hand? The
   panel finds those servers and offers to **adopt** them — keys, port, subnet and existing users

@@ -45,6 +45,11 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
         band (a click on Delete peer opened the rail's Custom dates); at 1 366 it never did (the control)
   [B16] the Add-node command names the panel's confirmed address (OE, 1.8.9): opened through a tunnel or another name, it was
         built from this tab's address and pointed nowhere; with no address set, this tab's own as before
+  [B17] a csqtt 2.5 server's App routing exceptions (1.8.11 S7): a row per exception in order (whom, what they get), the summary
+        counts them, an older node is said to need an update; a row's sheet lists its person with the devices on this server
+        (the routing rules' "For whom" picker, lifted) and its rule; Own rule opens the form, Apply puts it on the row; a new
+        exception waits for a person; Save sends and the panel stores the list. Rows inside the sheet at 1280 and 390 px, in
+        English and Russian. SPA_SHOTS=<dir> keeps screenshots of the list, the edit and the add sheets
   [i18n] B1's words in Russian; [console] no error or exception on any view
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
@@ -67,6 +72,7 @@ from cdp_pipe import Browser, Tab, CHROME   # noqa: E402
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 PERTURB = next((a[len("--perturb-"):] for a in sys.argv if a.startswith("--perturb-")), None)
 
+P_AR_NONE = {"apps_mode": "all", "packages": [], "domains_mode": "direct", "domains": [], "template_domains": False, "ips_mode": "direct", "ips": []}
 FAILS = []
 def check(name, cond, detail=""):
     print(("  PASS " if cond else "  FAIL ") + name + (("  — " + str(detail)) if detail and not cond else ""))
@@ -173,6 +179,7 @@ try:
     IFACES = {"awg0": ("10.60.0", 51820), "awg1": ("10.61.0", 51821), "awg2": ("10.62.0", 51822)}
     PEERS = {}                                  # pubkey -> (iface, ip) — what the node reports serving
     OFFLINE, NOLAN = set(), [False]             # pubkeys the node reports as long silent · the node reports no LAN
+    CSQ = [0]                                   # [B17]: 1 the node can run csqtt 2.5, 2 it runs a 2.5 server (0 before, so B1–B16 see the fleet they always did)
     def peer_rec(pk, ip, now):
         age = 100000 if pk in OFFLINE else 20
         return {"public_key": pk, "allowed_ips": ip + "/32", "endpoint": "198.51.100.9:40000", "rx_bytes": 1000, "tx_bytes": 1000,
@@ -189,7 +196,10 @@ try:
                 "turn_proxies": [], "node_ips": ["203.0.113.7", "192.168.1.5"], "node_ifaces": ["eth0"],
                 "lans": [] if NOLAN[0] else [{"ip": "192.168.1.5", "iface": "eth0"}],
                 "net_deps": {"panel": "127.0.0.1", "resolvers": ["1.1.1.1"], "resolvers_known": True, "share": 1, "carried": 1, "reach": 2},
-                "net_carried": ["192.168.50.0/24", "192.168.60.0/24"], "dev_reach": {"ok": True, "ifaces": ["awg1", "awg2"]}}
+                "net_carried": ["192.168.50.0/24", "192.168.60.0/24"], "dev_reach": {"ok": True, "ifaces": ["awg1", "awg2"]},
+                **({"csqtt_lines": ["2.1", "2.5"]} if CSQ[0] else {}),
+                **({"csqtt": [{"iface": "csqtt1", "kind": "csqtt", "fork": "csqtt", "active": "active", "line": "2.5",
+                               "listen": "0.0.0.0:46000", "tun_addr": "10.66.80.1/24"}]} if CSQ[0] > 1 else {})}
     def sync():
         return call("POST", "/api/node/sync", {"snapshot": snapshot()}, token=TOKEN, timeout=180)
     must(sync(), "first sync")
@@ -709,6 +719,88 @@ try:
               len(cmds) == 2 and all(want in c for c in cmds), cmds or (txt or "")[:300])
         settle(tab, 400)
     tab.close()
+
+    # ── [B17] csqtt App routing exceptions (docs/CSQTT-APP-ROUTING-WHO-PLAN.md §5) ───────────────────────────────────────────
+    CSQ[0] = 1
+    must(sync(), "sync from a node that runs csqtt 2.5")
+    must(call("POST", "/api/csqtt/set", {"node": NID, "iface": "csqtt1", "listen": "0.0.0.0:46000", "tun_addr": "10.66.80.1/24", "line": "2.5",
+                                         "app_routing": {"domains": ["ya.ru"]}}), "csqtt1 on 2.5")
+    CSQ[0] = 2
+    for who in ("anna", "tester", "tester", "boris"):
+        must(call("POST", "/api/peers/create", {"title": who + " csqtt", "user_id": uid[who], "targets": [{"node": NID, "iface": "csqtt1", "type": "csqtt"}]}),
+             "csqtt device for " + who)
+    must(call("POST", "/api/csqtt/set", {"node": NID, "iface": "csqtt1", "app_routing_except": [
+        {"who": {"groups": [GID["family"]]}, "app_routing": {"apps_mode": "except", "packages": ["org.telegram.messenger"]}},
+        {"who": {"users": [uid["anna"]]}, "app_routing": None}]}), "exceptions")
+    must(sync(), "sync with the csqtt devices")
+    SHOTS = os.environ.get("SPA_SHOTS")
+    def shot(tab, name):
+        if SHOTS:
+            with open(os.path.join(SHOTS, name + ".png"), "wb") as fh:
+                fh.write(base64.b64decode(br.send("Page.captureScreenshot", {"format": "png"}, session=tab.s)["data"]))
+    ROWS = "[...document.querySelectorAll('.arx-row')].map(r => [r.querySelector('.arx-who').textContent, r.querySelector('.arx-rule').textContent])"
+    def open_ar(tab):
+        ev_mod(tab, "turn", "M.openEditCsqtt(%s, 'csqtt1'); return true;" % json.dumps(NID))
+        settle(tab, 900)
+        tab.ev("[...document.querySelectorAll('.overlay.show button.disc')].find(b => /App routing|Маршрутизация приложений/.test(b.textContent)).click()")
+        settle(tab, 500)
+    def click_text(tab, sel, rx):
+        return tab.ev("(() => { const b = [...document.querySelectorAll(%s)].filter(e => %s.test(e.textContent) || %s.test(e.getAttribute('aria-label') || '')).pop();"
+                      " if (!b) return false; b.click(); return true; })()" % (json.dumps(sel), rx, rx))
+    for lang, vp in (("ru", (1280, 900)), ("en", (390, 844)), ("en", (1280, 900))):   # the last one edits and saves
+        tab = open_app(lang, viewport=vp)
+        open_ar(tab)
+        rows = tab.ev(ROWS)
+        tag = "%s %dpx" % (lang, vp[0])
+        if lang == "en":
+            check("[B17] %s: a row per exception, in order — whom it names, what they get" % tag,
+                  rows == [["family", "Own rule: Apps"], ["anna", "No App routing"]], rows)
+            check("[B17] %s: the summary counts them" % tag, "+ 2 exceptions" in (tab.ev("[...document.querySelectorAll('.overlay.show .disc-sum')].map(e => e.textContent).join('|')") or ""))
+            check("[B17] %s: a node that does not report csqtt_ar_pw is said to need an update" % tag,
+                  "Exceptions need a node update" in (tab.ev("document.querySelector('.arx').textContent") or ""))
+        else:
+            check("[B17] ru: the rows in Russian", rows == [["family", "Своё правило: Приложения"], ["anna", "Без маршрутизации приложений"]], rows)
+        fit = tab.ev("(() => { const sh = document.querySelector('.overlay.show .sheet').getBoundingClientRect();"
+                     " return [...document.querySelectorAll('.arx-row, .arx-row *')].every(e => { const r = e.getBoundingClientRect(); return r.right <= sh.right + 0.5 && r.left >= sh.left - 0.5; }); })()")
+        check("[B17] %s: every row and its controls inside the sheet" % tag, fit is True, fit)
+        tab.ev("document.querySelector('.arx').scrollIntoView({block: 'center'})"); settle(tab, 300)
+        shot(tab, "b17-list-" + tag.replace(" ", "-"))
+        if lang == "en" and vp[0] == 1280:
+            # edit the second row: its person is listed in the picker with the devices on this server, its rule is "No App routing"
+            tab.ev("document.querySelectorAll('.arx-row')[1].querySelector('button[aria-label=\"Edit exception\"]').click()"); settle(tab, 700)
+            ed = tab.ev("(() => { const sh = [...document.querySelectorAll('.overlay.show .sheet')].pop(); return { title: sh.querySelector('.sheet-head, h2, .sheet-title') ? sh.querySelector('.sheet-head, h2, .sheet-title').textContent : '',"
+                        " who: [...sh.querySelectorAll('.gmembers .sharegrid-r')].map(r => [r.querySelector('.nm').textContent, r.children[1].textContent]),"
+                        " rule: (sh.querySelector('[role=radio][aria-checked=true]') || {}).textContent, add: !!sh.querySelector('.sharebar-add') }; })()")
+            check("[B17] the exception's sheet lists its person with the devices on this server, its rule picked, and the picker to add more",
+                  ed and ed["who"] == [["anna", "1"]] and ed["rule"] == "No App routing" and ed["add"], ed)
+            click_text(tab, ".overlay.show [role=radio]", "/^Own rule$/"); settle(tab, 400)
+            check("[B17] Own rule opens the App routing form", tab.ev("[...document.querySelectorAll('.overlay.show .sheet')].pop().textContent.includes('Every app uses the tunnel')"))
+            tab.ev("(() => { const ta = [...[...document.querySelectorAll('.overlay.show .sheet')].pop().querySelectorAll('textarea')][0];"
+                   " const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(ta, 'vk.com'); ta.dispatchEvent(new Event('input', {bubbles: true})); })()")
+            settle(tab, 300)
+            shot(tab, "b17-edit")
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Apply$/"); settle(tab, 600)
+            check("[B17] Apply puts the edited rule on its row", tab.ev(ROWS) == [["family", "Own rule: Apps"], ["anna", "Own rule: Domains"]], tab.ev(ROWS))
+            click_text(tab, ".overlay.show button", "/Add exception/"); settle(tab, 700)
+            add = tab.ev("(() => { const sh = [...document.querySelectorAll('.overlay.show .sheet')].pop(); const ap = [...sh.querySelectorAll('.sheet-foot button')].pop();"
+                         " return { empty: (sh.querySelector('.sharegrid-empty') || {}).textContent, disabled: ap.disabled }; })()")
+            check("[B17] a new exception names nobody yet: Apply waits for a person", add and add["disabled"] and "Choose at least one" in (add["empty"] or ""), add)
+            shot(tab, "b17-add")
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Cancel$/"); settle(tab, 400)
+            tab.ev("document.querySelectorAll('.arx-row')[0].querySelector('button[aria-label=\"Remove exception\"]').click()"); settle(tab, 300)
+            tab.ev("window.__arx = null; const of = window.fetch; window.fetch = (u, o) => { if (String(u).includes('/api/csqtt/set')) window.__arx = o && o.body; return of(u, o); };")
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Save$/"); settle(tab, 1500)
+            sent = json.loads(tab.ev("window.__arx") or "{}")
+            check("[B17] Save sends the list as the rows hold it", sent.get("app_routing_except") == [{"who": {"users": [uid["anna"]]}, "app_routing": {
+                "apps_mode": "all", "packages": [], "domains_mode": "direct", "domains": ["vk.com"], "template_domains": False, "ips_mode": "direct", "ips": []}}],
+                  sent.get("app_routing_except"))
+            st, o = call("GET", "/api/state")
+            cfg = ((next((n for n in (o.get("data") or o).get("nodes") or [] if n.get("id") == NID), {}) or {}).get("csqtt_cfg") or {}).get("csqtt1") or {}
+            check("[B17] …and the panel stores it", cfg.get("app_routing_except") == [{"who": {"users": [uid["anna"]]}, "app_routing": dict(
+                P_AR_NONE, domains=["vk.com"])}], cfg.get("app_routing_except"))
+        check("[console] (%s) App routing exceptions: clean" % tag, not console_bad(tab), console_bad(tab)[:3])
+        close_modals(tab)
+        tab.close()
 finally:
     stop.set()
     if br:

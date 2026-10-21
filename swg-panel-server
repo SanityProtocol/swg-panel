@@ -9196,8 +9196,12 @@ def desired_csqtt_for_node(roster, nodes, node_id, fallback_vk=""):
     if not insts:
         return {}
     users = roster.get("users") or {}
+    # App routing exceptions (docs/CSQTT-APP-ROUTING-WHO-PLAN.md §3): only a 2.5 server's, resolved here into each
+    # password's own `app_routing` — none without a list, so a fleet without exceptions builds exactly what it did.
+    exc = {i: _ar_except_index(roster, r["app_routing_except"]) for i, r in insts.items()
+           if isinstance(r, dict) and r.get("app_routing_except") and str(r.get("line") or CSQTT_DEFAULT_LINE) != CSQTT_DEFAULT_LINE}
     out = {}
-    for p in (roster.get("peers") or {}).values():
+    for pid, p in (roster.get("peers") or {}).items():
         if not isinstance(p, dict) or not p.get("csqtt_password"):
             continue
         u = users.get(p.get("user_id")) or {}
@@ -9208,8 +9212,14 @@ def desired_csqtt_for_node(roster, nodes, node_id, fallback_vk=""):
         for t in p.get("targets", []):
             if t.get("node") != node_id or t.get("iface") not in insts:
                 continue
-            out.setdefault(t["iface"], {})[p["csqtt_password"]] = {
+            rec = out.setdefault(t["iface"], {})[p["csqtt_password"]] = {
                 "expires_at": exp, "vk_hash": vkh, "name": name, "is_deactivated": deact}
+            by = exc.get(t["iface"])
+            if by:
+                uid = p.get("user_id")
+                own = by[0].get(pid) or (uid and (by[1].get(uid) or by[2].get(uid)))
+                if own:
+                    rec["app_routing"] = own
     return out
 
 
@@ -9232,6 +9242,7 @@ def _csqtt_reply(roster, nodes, node_id, fallback_vk="", snap=None):
         merged = dict(inst or {}); merged["iface"] = iface
         merged.pop("password", None); merged.pop("web_pass", None)   # node-owned secrets
         merged.pop("reach", None)                                    # planned into `dev_reach`, never shipped here (§10.8 Round 9)
+        merged.pop("app_routing_except", None)                       # resolved into each password's `app_routing` above — the list is the panel's
         merged["passwords"] = derived.get(iface) or {}               # authoritative: roster-derived
         _line = str(merged.pop("line", "") or CSQTT_DEFAULT_LINE)
         _cver = _turn_hold_get(node_id, _csqtt_hold_svc(_line)) or _csqtt_current_version(_line)   # normalised key — _turn_holds_migrate rewrites a bare "<nid>|csqtt" to "fork:csqtt" at startup, so the bare form never survives a restart
@@ -19710,6 +19721,69 @@ def _validate_app_routing(v):
             "ips_mode": imode, "ips": ips}, None
 
 
+_AR_EXCEPT_MAX = 20
+# "No App routing" for one password: every field at its default, which the 2.5 server's `swgpanel_app_rule` turns into NO
+# rule, whatever the server's own. Never `null` (the server reads it as an absent key = the server's rule) nor `{}` (the
+# node drops a body without its keys).
+_AR_NONE = {"apps_mode": "all", "packages": [], "domains_mode": "direct", "domains": [], "template_domains": False,
+            "ips_mode": "direct", "ips": []}
+
+
+def _validate_ar_except(v, prev, roster):
+    """(list or None, perr or None): a 2.5 server's App routing exceptions (docs/CSQTT-APP-ROUTING-WHO-PLAN.md §2),
+    [{who: {users, groups, peers}, app_routing: body or None}] — None = no App routing. [] = none.
+    THE ASYMMETRIC DOOR, as a routing rule's `who` keeps it: the SPA re-sends the list on every save, so an id already
+    stored that no longer exists is dropped quietly (an entry left naming nobody goes with it); a new one is refused."""
+    if v is None or v == []:
+        return [], None
+    if not isinstance(v, list):
+        return None, perr("App routing: not a valid setting")
+    if len(v) > _AR_EXCEPT_MAX:
+        return None, perr("App routing: at most {v1} exceptions", v1=_AR_EXCEPT_MAX)
+    ro = roster or {}
+    known = {k: ro.get(k) or {} for k in ("users", "groups", "peers")}
+    stored = {k: {x for o in (prev or ()) if isinstance(o, dict) and isinstance(o.get("who"), dict)
+                  for x in _who_ids(o["who"].get(k))} for k in known}
+    out = []
+    for n, e in enumerate(v, 1):
+        w = e.get("who") if isinstance(e, dict) else None
+        lists = {k: (w.get(k) if isinstance(w, dict) else None) or [] for k in known}
+        if not isinstance(w, dict) or not all(isinstance(x, list) and all(isinstance(i, str) for i in x) for x in lists.values()):
+            return None, perr("App routing: not a valid setting")
+        if not any(lists.values()):
+            return None, perr("Exception {v1}: choose at least one person, group or device", v1=n)
+        if any(x not in known[k] and x not in stored[k] for k, ids in lists.items() for x in ids):
+            return None, perr("A chosen user, group or device no longer exists — reload and choose again")
+        body, err = _validate_app_routing(e.get("app_routing"))
+        if err:
+            return None, perr("Exception {v1}: {v2}", v1=n, v2=err)
+        keep = {k: sorted({x for x in ids if x in known[k]}) for k, ids in lists.items()}
+        if any(keep.values()):
+            out.append({"who": {k: x for k, x in keep.items() if x}, "app_routing": body})
+    return out, None
+
+
+def _ar_except_index(roster, entries):
+    """The three lookups a server's exceptions resolve by (WHO plan §3), built once per sync: peer id / user id / a group
+    member's user id → the FIRST entry naming it that way (list order). A device's entry beats its user's, a user's beats
+    a group's; a stored id that no longer exists names nobody."""
+    groups = roster.get("groups") or {}
+    by = ({}, {}, {})
+    for e in entries if isinstance(entries, list) else ():
+        w = e.get("who") if isinstance(e, dict) else None
+        if not isinstance(w, dict):
+            continue
+        body = e.get("app_routing") or _AR_NONE
+        for pid in _who_ids(w.get("peers")):
+            by[0].setdefault(pid, body)
+        for uid in _who_ids(w.get("users")):
+            by[1].setdefault(uid, body)
+        for g in _who_ids(w.get("groups")):
+            for uid in _who_ids((groups.get(g) or {}).get("users") if isinstance(groups.get(g), dict) else None):
+                by[2].setdefault(uid, body)
+    return by
+
+
 def _validate_block(block, panel_settings):
     """Clean an interface's active block-category list → known block-category ids only, in order, deduped.
     Unknown/removed ids are DROPPED (never an error) so a category deleted on the Block-lists screen can't lock
@@ -24243,7 +24317,7 @@ def api(method, path, qs, body, deps):
                         "csqtt_cfg": {ifn: {k: (reach_level(ov.get(k)) if k == "reach" else ov.get(k)) for k in ("listen", "tun_addr", "max_passwords", "stopped", "fork",
                                                                     "block", "egress_mode", "egress_node", "egress_ip",
                                                                     "wan_iface", "routing", "routing_exit_ips", "title", "params", "exit_id", "reach", "dns", "dns_orig", "bind_ip", "line",
-                                                                    "app_routing") if k in ov}
+                                                                    "app_routing", "app_routing_except") if k in ov}
                                       for ifn, ov in _c.items()},
                         "wdtt_restoring": sorted((c.get("wdtt_restore") or {}).keys()),  # identity restores in flight (cleared when the node reports the blessed pubkey)
                         "wdtt_recreating": sorted((c.get("wdtt_recreate") or {}).keys()),  # fresh-identity recreates in flight (vault abandoned)
@@ -29847,14 +29921,27 @@ def api(method, path, qs, body, deps):
             inst["block"] = _validate_block(body.get("block"), deps.get("panel_settings"))
         if str(inst.get("line") or CSQTT_DEFAULT_LINE) == CSQTT_DEFAULT_LINE:
             inst.pop("app_routing", None)            # 2.1 has no App routing: a switch back drops the rule, never hides it
-        elif "app_routing" in body:                  # 2.5's App routing: one rule for every user of the server
-            _ar, _are = _validate_app_routing(body.get("app_routing"))
-            if _are:
-                return 400, {"ok": False, **_are, "code": "bad_request"}
-            if _ar:
-                inst["app_routing"] = _ar
-            else:
-                inst.pop("app_routing", None)
+            inst.pop("app_routing_except", None)     # …nor its exceptions
+            if body.get("app_routing_except"):
+                return 400, {"ok": False, **perr("csqtt {v1} has no App routing", v1=CSQTT_DEFAULT_LINE), "code": "bad_request"}
+        else:
+            if "app_routing" in body:                # 2.5's App routing: one rule for every user of the server
+                _ar, _are = _validate_app_routing(body.get("app_routing"))
+                if _are:
+                    return 400, {"ok": False, **_are, "code": "bad_request"}
+                if _ar:
+                    inst["app_routing"] = _ar
+                else:
+                    inst.pop("app_routing", None)
+            if "app_routing_except" in body:         # …and its exceptions: these people get their own rule, or none
+                _ax, _axe = _validate_ar_except(body.get("app_routing_except"), inst.get("app_routing_except"),
+                                                roster_load(roster_path) if body.get("app_routing_except") else None)
+                if _axe:
+                    return 400, {"ok": False, **_axe, "code": "bad_request"}
+                if _ax:
+                    inst["app_routing_except"] = _ax
+                else:
+                    inst.pop("app_routing_except", None)
         _rv = reach_level_set(inst, body)            # device access (§10.4) — `inst` is a copy, so a refusal changes nothing
         if _rv:
             return 400, {"ok": False, **_rv, "code": "bad_request"}
