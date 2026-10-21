@@ -6,13 +6,15 @@ An interface rule may carry `ports: {on, proto, list}`. What the panel has to ge
   [1] THE GRAMMAR   — `ports_clean` answers every vector in tests/ports_vectors.json (the SPA's `portsClean` reads the same
                       file), and the node's `_ports_spans` reads every canonical answer back.
   [2] THE DOOR      — `_validate_routing` stores the guarded shape: `enabled` false, `who.on` false, the switch in `ports.on`;
-                      refuses ports on "Everything else", on a node's default list, and a list that does not read; a rule
-                      without ports is stored exactly as before. `rule_on` reads `ports.on` first.
+                      refuses ports on "Everything else", on a node's default list, and a list that does not read — unless
+                      that very value is already stored (kept as it is: it lowers nothing); a rule without ports is stored
+                      exactly as before. `rule_on` reads `ports.on` first.
   [3] THE OLD TAB   — D7 numeric: a save without `routing_v` 3 over a stored port rule is refused (an absent or non-int
                       `routing_v` reads as 0 — never a 500); a v3 save goes through, also over a `who` rule.
   [4] THE PLAN      — the entry carries `ports`; "ports refine a destination": a port entry goes above the port-less entry of
                       the same subnet, category and people, in either row order, and nothing else moves; a UDP-only exit to a
-                      node adds no relay leg; a stored `ports` that does not read lowers nothing.
+                      node adds no relay leg; a stored `ports` that does not read lowers nothing; a node list's rule with
+                      ports lowers nothing (the door refuses them there); a port rule never decides which LAN is reachable.
   [5] THE SYNC      — a node that does not report `smartroute.ports` gets no port entry (and the categories only they used
                       leave the channels); its card says it needs an update; a capable node gets them; a slice without a port
                       entry is handed back as it was.
@@ -29,8 +31,11 @@ Run: python3 tests/port_rules_panel_selftest.py   (0 = pass)
      e  D7 stays an equality on 2 (a v3 tab is refused over every `who` rule)
      f  a UDP-only exit adds a relay leg
      g  the plan lowers a stored `ports` it cannot read (without its ports — wider than written)
+     h  lan_path lets a port rule decide which LAN a user reaches
+     i  a node list's stored port rule is lowered for every port (arrivals, the Auto interface)
+     j  the door refuses a stored `ports` it cannot read (the interface can no longer be saved)
 """
-import copy, importlib.machinery, importlib.util, json, os, subprocess, sys, tempfile
+import atexit, copy, importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -66,8 +71,14 @@ PLANTS = {
     "g": ('''                    if _pp is None or r.get("category") == "all":
                         return False
                     _pt = {"proto": _pp, "list": _pl}''', '''                    _pt = {"proto": _pp, "list": _pl} if _pp else None'''),
+    "h": ('''        if e.get("subnet") != subnet or "ports" in e:''', '''        if e.get("subnet") != subnet:'''),
+    "i": ('''        return [r for r in v if not (isinstance(r, dict) and r.get("ports") is not None)] if isinstance(v, list) else None''',
+          '''        return v if isinstance(v, list) else None'''),
+    "j": ('''            if any(isinstance(o, dict) and "ports" in o and _ns(o["ports"]) == _ns(p) for o in (prev or ())) \\''',
+          '''            if False and any(isinstance(o, dict) and "ports" in o and _ns(o["ports"]) == _ns(p) for o in (prev or ())) \\'''),
 }
 TMP = tempfile.mkdtemp(prefix="port-rules-panel-")
+atexit.register(shutil.rmtree, TMP, True)
 BASE = os.environ.get("SWG_PORTS_BASE") or "33a6819b"     # origin/dev before 1.8.11 S6 — the last panel without ports
 RELEASED = os.environ.get("SWG_PORTS_RELEASED") or "9c4a59d5"   # 1.8.10-beta, the release a panel may be downgraded to
 
@@ -164,6 +175,16 @@ for pv, why in (({"on": True, "proto": "both", "list": ""}, "Any"), ({"on": True
                 ({"on": True, "proto": "udp", "list": " ".join(str(i) for i in range(1, 40))}, "32"), ("udp", "65535")):
     _, e, _ = door([dict(G, enabled=True, action="direct", ports=pv)])
     check("refused, and said: %r" % (pv,), e is not None and why in e, e)
+# A VALUE ALREADY STORED is kept as it is, however it reads — the SPA re-sends every rule on every save
+BADP = {"on": True, "proto": "udp", "list": "nope"}
+STB = dict(G, enabled=False, action="exit", node="n2", ports=BADP)
+c, e, _ = P._validate_routing([dict(STB, ports=dict(BADP, on=False))], fleet([]), "n1", (), prev=[STB], roster=ROSTER)
+check("a stored `ports` that does not read is kept as stored (switch and all), so the interface can still be saved",
+      e is None and c[0]["ports"] == {"on": False, "proto": "udp", "list": "nope"} and c[0]["enabled"] is False, (e, c))
+_, e, _ = P._validate_routing([dict(STB, ports={"on": True, "proto": "udp", "list": "nope2"})], fleet([]), "n1", (), prev=[STB], roster=ROSTER)
+check("…a new value that does not read is still refused", e is not None and "65535" in e, e)
+c, e, _ = P._validate_routing([STB], fleet([]), "n1", (), prev=[STB], roster=ROSTER, node_scope=True)
+check("…and a node list's stored one is kept too (it lowers nothing there)", e is None and c[0]["ports"] == BADP, (e, c))
 c, e, _ = door([dict(G, enabled=True, action="exit", node="n2")])
 check("a rule without ports is stored exactly as before", e is None and c == [{"enabled": True, "category": "custom", "action": "exit",
                                                                                 "domains": [], "cidrs": ["203.0.113.0/24"], "node": "n2"}], c)
@@ -233,6 +254,25 @@ check("…and the mesh link is still needed (mesh_need reads the store)", frozen
 check("a stored `ports` that does not read lowers nothing (never wider than written)",
       not ents(plan([dict(A, enabled=False, ports={"on": True, "proto": "udp", "list": "nope"})])))
 check("a switched-off port rule lowers nothing", not ents(plan([dict(U, ports=dict(U["ports"], on=False))])))
+# a node's default list never carries ports (the door refuses them); one that arrived anyway lowers nothing, for anyone
+NB = {"enabled": False, "category": "custom", "cidrs": ["0.0.0.0/0"], "domains": [], "action": "block",
+      "ports": {"on": True, "proto": "udp", "list": "27000-27100"}}
+
+
+def nlplan(lst):
+    f = fleet([])
+    f["n1"]["ifaces"]["wg0"] = {}
+    f["n1"]["default_routing"] = lst
+    return json.dumps(P.cascade_plan(f, SNAPS), sort_keys=True, default=str)
+
+
+check("a node list rule carrying ports lowers nothing — the plan is the plan of an empty list",
+      nlplan([NB]) == nlplan([]) and nlplan([dict(NB, enabled=True, ports=None)]) != nlplan([]))
+# which LAN a user is told they reach is never decided by a port rule
+CAS = {"n1": {"smart": [{"subnet": "10.8.0.0/24", "category": "c0", "action": "exit", "via_iface": "swg_n2", "ports": {"proto": "udp", "list": "1"}},
+                        {"subnet": "10.8.0.0/24", "category": "all", "action": "direct"}], "cidrs": {"c0": ["0.0.0.0/0"]}}}
+check("lan_path skips a port rule: the LAN stays where the port-less rules leave it",
+      P.lan_path(CAS, fleet([]), "n1", "10.8.0.0/24", "192.168.1.5") == ("here", None))
 
 # ── [5] the sync ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] the sync — withholding")

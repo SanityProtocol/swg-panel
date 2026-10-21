@@ -95,8 +95,8 @@ PLANTS = {
         for r in nl:""", """        return True
         nl = _nlist(nid) or []
         for r in nl:"""),
-    "p": ('''    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all" and rule_on(r)), None)''',
-          '''    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all"), None)'''),
+    "p": ('''    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all" and rule_on(r)''',
+          '''    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all"'''),
     "k": ('''        subs = sorted(S for S in _via if S not in _pinned and S not in _dup''',
           '''        subs = sorted(S for S in _via if S not in _dup'''),
 }

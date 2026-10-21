@@ -18,7 +18,7 @@ import { idnHost, idnDiffers } from "./idn.js";
 import { rulesToRows, rowsToRules, badgeIdentity, rowHasBadge, newGid,
          badgeText, readToken as rrReadToken,
          customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho, rowLints, badgeCovers,
-         portsClean, portsOf, portsReach } from "./rulerows.js";
+         portsClean, portsOf, portsReach, rowCovers } from "./rulerows.js";
 import { esc, seen } from "./util.js";
 import { isSelfContainedName, nodeStale, kindOf, awgGen } from "./model.js";
 import { meshHealth, deviceLabel } from "./views.js";
@@ -1332,12 +1332,15 @@ export const badgeGate = (mode, node, b) => b.t === "list" ? listGate(mode, b.id
    the nft row and its hostnames route nobody, until the node reports `src: 2`. A hostname badge there is inert with the
    switch to Hybrid SNI; a list holding both kinds routes its IP half and says so. */
 const _ipKind = k => k === "ip" || k === "asn";
+/** Does this badge match by site name? A list by what it can hold, a typed target by its kind. The ONE test: the per-person
+ *  Kernel SNI gate, the Block notices, the port chip and the lints all ask it. */
+const _listCaps = b => customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id);
+const _nameBadge = b => { const caps = b.t === "list" ? _listCaps(b) : null; return caps ? !!caps.host : !_ipKind(b.kind); };
 export function rowGate(row, mode, node, b) {
   const g = badgeGate(mode, node, b);
   if (!g.ok || mode !== "sni_kernel") return g;
-  const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
-  const host = caps ? !!caps.host : !_ipKind(b.kind);
-  if (!host) return g;
+  const caps = b.t === "list" ? _listCaps(b) : null;
+  if (!_nameBadge(b)) return g;
   // A DIRECT OR BLOCK ROW BY SITE NAME RUNS HERE since 1.8.8 (KSNI-HOSTNAMES D3) — the badge that said it was inert
   // (F19) is gone with the gap; only a per-person row still needs the kernel to bind its devices, below.
   if (!(row && row.who) || ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) >= 2) return g;
@@ -1349,44 +1352,61 @@ export function rowGate(row, mode, node, b) {
    rule has learned yet — before its site name can be read — so a rule above it that matches by site name never sees one: an
    allow-list by name blocks everything. The datapath change was judged not worth it (it would let a Block's first packets out),
    so the rule list says it where the operator builds it. A Block row above it loses nothing; the others are counted. */
-const _byName = r => r.enabled !== false && r.action !== "block" && (r.badges || []).some(b => {
-  const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
-  return caps ? !!caps.host : !_ipKind(b.kind); });
+const _byName = r => r.enabled !== false && r.action !== "block" && (r.badges || []).some(_nameBadge);
 export const catchAllPreemptsNames = (mode, rows, catchAll) => (mode === "sni" || mode === "sni_kernel")
   && !!catchAll && catchAll.action === "block"          // only a catch-all that is on reaches here (rulesToRows, setCatch)
   && (rows || []).some(_byName);
 /* …and the same for a Block ROW to every address (0.0.0.0/0, D10) that reaches TCP 443 (B.6): it drops the same first packets,
-   so the rows above it that match by site name never see one. The index of the first such row, or -1. */
+   so the rows above it that match by site name never see one — for the people it is for: a Block for chosen people (the
+   only way to block everything for them, D10) preempts a name row for everyone or for the same people. The index of the
+   first such row, or -1. */
 export const allBlockPreemptsNames = (mode, rows) => {
   if (mode !== "sni" && mode !== "sni_kernel") return -1;
-  const k = (rows || []).findIndex(r => r.enabled !== false && r.action === "block" && !r.who && portsReach(portsOf(r), "tcp", 443)
-    && (r.badges || []).some(b => b.t === "target" && b.kind === "ip" && /^0\.0\.0\.0\/0$/.test(String(b.value))));
-  return k > 0 && rows.slice(0, k).some(_byName) ? k : -1;
+  return (rows || []).findIndex((r, k) => r.enabled !== false && r.action === "block" && portsReach(portsOf(r), "tcp", 443)
+    && (r.badges || []).some(b => b.t === "target" && b.kind === "ip" && /^0\.0\.0\.0\/0$/.test(String(b.value)))
+    && rows.slice(0, k).some(up => _byName(up) && (!r.who || rowCovers(up, r))));
 };
 
-/* PORTS ON A RULE (B.4, the engine matrix — kept here only, fact 12): what the node's mode does with a row's ports, in one
-   sentence for the chip, and whether that sentence is a warning (part of the rule never reaches it). */
-export function portsNote(mode, row) {
+/* PORTS ON A RULE (B.4, the engine matrix — kept here only, fact 12): what the node does with a row's ports, every sentence
+   that applies, for the chip — and whether it is a WARNING: part of what the operator named never reaches the rule. A port
+   only inside "every port" (UDP 443 in "every UDP port") is said, not warned: the rule works for all the rest. `blk` is the
+   interface's Block-traffic switches, which drop their ports before any rule. */
+export function portsNote(mode, row, blk = []) {
   const p = portsOf(row);
   if (!p) return null;
-  const names = (row.badges || []).some(b => { const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
-    return caps ? !!caps.host : !_ipKind(b.kind); });
-  if ((mode === "sni" || mode === "sni_kernel") && portsReach(p, "udp", 443))
-    return { warn: true, text: T("This node drops QUIC (UDP 443) before any rule, so web browsers fall back to TCP — this rule never sees UDP 443.") };
+  if (portsClean(p.proto, p.list).bad)
+    return { warn: true, text: T("These ports can't be read, so this rule applies nowhere — open it and set them again.") };
+  const names = (row.badges || []).some(_nameBadge), out = [];
+  const say = (warn, text) => out.push({ warn, text });
+  const named = n => !!p.list && p.list.split(",").some(t => { const [a, b] = t.split("-").map(Number); return a <= n && n <= (b || a); });
+  if (((mode === "sni" || mode === "sni_kernel") || (blk || []).includes("quic")) && portsReach(p, "udp", 443))
+    say(named(443), mode === "sni" || mode === "sni_kernel"
+      ? T("This node drops QUIC (UDP 443) before any rule, so web browsers fall back to TCP — this rule never sees UDP 443.")
+      : T("This interface's QUIC filter drops UDP 443 before any rule — this rule never sees it."));
+  if ((blk || []).includes("smtp") && portsReach(p, "tcp", 25))
+    say(named(25), T("This interface's SMTP filter drops TCP 25 before any rule — this rule never sees it."));
   if (mode === "forcedns" && (portsReach(p, "udp", 53) || portsReach(p, "tcp", 53)))
-    return { warn: true, text: T("With Force DNS this node answers port 53 itself — DNS never reaches this rule.") };
-  if (names && mode === "sni_kernel" && !portsReach(p, "tcp", 443))
-    return { warn: true, text: T("Kernel SNI reads site names on TCP 443 only — on these ports only this rule's addresses and networks apply.") };
-  if (names && mode === "sni" && (p.proto !== "tcp" || p.list !== "443"))
-    return { warn: false, text: T("Hybrid SNI learns a site's addresses from its web connections — on other ports this rule matches the addresses already learned.") };
-  return null;
+    say(named(53) || row.action === "block", row.action === "block"
+      ? T("This rule drops your clients' DNS to these addresses before Force DNS can answer it.")
+      : T("With Force DNS this node answers port 53 itself, whatever this rule says."));
+  const only443 = p.proto === "tcp" && p.list === "443";
+  if (names && mode === "sni_kernel" && !only443)
+    say(true, portsReach(p, "tcp", 443)
+      ? T("Kernel SNI reads site names on TCP 443 only — on the other ports only this rule's addresses and networks apply.")
+      : T("Kernel SNI reads site names on TCP 443 only — on these ports only this rule's addresses and networks apply."));
+  if (names && mode === "sni" && !only443)
+    say(row.action === "block", row.action === "block"
+      ? T("On Hybrid SNI a Block by site name acts on TCP 443 only — on other ports it blocks only this rule's addresses and networks.")
+      : T("Hybrid SNI learns a site's addresses from its web connections — on other ports this rule matches the addresses already learned."));
+  return out.length ? { warn: out.some(x => x.warn), text: out.map(x => x.text).join(" ") } : null;
 }
 const PROTO_LABEL = () => ({ tcp: "TCP", udp: "UDP", both: T("TCP and UDP") });
 /** "UDP 19302–19309", "TCP 443, 8000–8100", "every UDP port". */
-export const portsLabel = p => !p ? "" : p.list ? PROTO_LABEL()[p.proto] + " " + p.list.split(",").join(", ").replace(/-/g, "\u2013")
+export const portsLabel = p => !p ? "" : portsClean(p.proto, p.list).bad ? T("ports unreadable")
+  : p.list ? PROTO_LABEL()[p.proto] + " " + p.list.split(",").join(", ").replace(/-/g, "\u2013")
   : T("every {proto} port", { proto: PROTO_LABEL()[p.proto] });
-function PortChip({ row, mode }) {
-  const n = portsNote(mode, row);
+function PortChip({ row, mode, blk }) {
+  const n = portsNote(mode, row, blk);
   return html`<span class=${"whochip portchip" + (n && n.warn ? " warn" : "")} title=${(n ? n.text + " " : "") + T("Only this traffic takes the rule — the rest goes on to the rules below.")}>${n && n.warn
     ? html`<${Ic} i="warn"/>` : null}${portsLabel(portsOf(row))}</span>`;
 }
@@ -2401,7 +2421,7 @@ ${/* A DISABLED <button> DOES NOT DELIVER CLICKS TO ITS CHILDREN, so the "Switch
 // and it is the whole story on Kernel-SNI — but it does not decide an overlap between two DIFFERENT targets:
 // swg-sni and dnsmasq both answer that by specificity (measured, plan §10.4x), which is what the label over
 // the list now says and what the `takenBy` lint below points at where the two disagree.
-export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, onChange, scope }) {
+export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, onChange, scope, blk }) {
   // `scope="node"` — THE NODE'S OWN DEFAULT LIST (D2, ROUTING-PEERS-MESH-PLAN §7.3): the same rows for the same grammar, but
   // its rules narrow themselves to an AUDIENCE rather than to people (D9), it has no "node default" to fall back to (it IS
   // the default), and its "Everything else" left silent means this node's own way out.
@@ -2563,7 +2583,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
   // so both rules resolve to one key and the chain takes the earlier. (This is the one place row order really
   // is the answer, which is why this check survived the label change unaltered.) Per badge, not per row: one
   // row of fifteen services shadowing one entry of the next is what the old per-rule check couldn't see.
-  const lints = rowLints(dispRows, destVal);   // per row: dupes, takenBy, takenFew — see rulerows.js
+  const lints = rowLints(dispRows, destVal, { mode: _mode, isName: _nameBadge });   // per row: dupes, takenBy, takenFew — see rulerows.js
   // T32 — D11 SPANS TWO LISTS, AND SO DOES "MOST SPECIFIC WINS". On Hybrid SNI and Force-DNS a node rule for `shop.example.com`
   // takes those hosts from this interface's `example.com` rule although this interface's rules come first, and nothing on this
   // screen would show it. Only where the silence actually falls through (no "Everything else" of its own), only on those two
@@ -2609,7 +2629,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
               is the only one, and it is what joins "Everything else" to the control. */""}
         ${(() => { const _xip = row.action === "exit" ? shownIps[row.node] : "", _dip = row.action === "direct" && dipOn ? directIp : "";
           const dest = html`${row.who ? html`<${WhoChip} who=${row.who} rep=${whoOf(row.who)} node=${node}/>` : null}
-              ${row.ports ? html`<${PortChip} row=${row} mode=${_mode}/>` : null}
+              ${row.ports ? html`<${PortChip} row=${row} mode=${_mode} blk=${blk}/>` : null}
               ${row.aud ? html`<span class="whochip" title=${row.aud === "local" ? T("This node's own clients") : T("Traffic cascaded in from other nodes")}><${Ic} i="users"/>${row.aud === "local" ? T("chip|own clients") : T("chip|cascaded in")}</span>` : null}
               ${_xip ? html`<${AsChip} ip=${_xip} node=${row.node}/>` : _dip ? html`<${AsChip} ip=${_dip} node=${node} direct/>` : null}
               ${row.locked ? null : tuneBtn(row.who || row.aud || row.ports || _xip || _dip, () => openRule(row))}<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
@@ -2799,8 +2819,8 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   const [sel, setSel] = useState(() => canonWho(row.who || {}));
   // PORTS (B.6) — an interface rule's only; "Any" protocol with no port is the rule as it always was (no ports at all).
   const withPorts = !nodeScope && !everyone;
-  const [proto, setProto] = useState((portsOf(row) || {}).proto || "both");
-  const [plist, setPlist] = useState(((portsOf(row) || {}).list || "").split(",").join(", "));
+  const [proto, setProto] = useState(portsOf(row) ? String(portsOf(row).proto || "") : "both");   // "" — a stored one that doesn't read
+  const [plist, setPlist] = useState(String((portsOf(row) || {}).list || "").split(",").join(", "));
   const pc = proto === "both" && !plist.trim() ? null : portsClean(proto, plist);
   const pBad = !!(withPorts && pc && pc.bad);
   // A DRAFT OF THE INTERFACE'S WHOLE ADDRESS MAP, not one address. The field below edits the entry for
@@ -2906,10 +2926,10 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
           <div class="dpsw netsw-share netsw-aud" role="radiogroup" aria-label=${T("Protocol")}>${[["both", T("proto|Any")], ["tcp", "TCP"], ["udp", "UDP"]].map(([v, l]) => html`<button type="button" role="radio"
             aria-checked=${proto === v} class=${proto === v ? "on" : ""} onClick=${() => setProto(v)}>${l}</button>`)}</div></div>
         <div class="field"><label for="rs-ports-in">${T("Ports")}</label>
-          <input id="rs-ports-in" value=${plist} inputmode="numeric" autocomplete="off" spellcheck="false" placeholder=${T("all ports — or 443, 8000-8100")}
+          <input id="rs-ports-in" class=${pBad ? "bad" : ""} value=${plist} autocomplete="off" spellcheck="false" placeholder=${T("all ports — or 443, 8000-8100")}
             aria-invalid=${pBad ? "true" : "false"} onInput=${e => setPlist(e.target.value)}/></div>
       </div>
-      <div class=${"hint rs-where-note" + (pBad ? " err" : "")}>${pBad ? (pc.bad === "empty" ? T("“Any” with no port is every connection — choose TCP or UDP, or name a port.")
+      <div class=${"hint rs-where-note" + (pBad ? " err" : "")}>${pBad ? (pc.bad === "proto" ? T("Choose a protocol.") : pc.bad === "empty" ? T("“Any” with no port is every connection — choose TCP or UDP, or name a port.")
           : pc.bad === "too_many" ? T("At most 32 ports or ranges.") : T("Write ports and ranges from 1 to 65535, like 443, 8000-8100."))
         : pc ? T("Only {ports} to this destination takes the rule — the rest goes on to the rules below.", { ports: portsLabel(pc) })
         : T("Every port. Choose TCP or UDP, or name ports, to narrow the rule.")}</div>` : null}

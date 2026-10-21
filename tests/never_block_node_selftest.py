@@ -390,7 +390,7 @@ check("with the list set, a pattern rule's edit moves the signature (the keys ar
 check("…and without it the signature is as before, whatever the patterns",
       N._dom_signature([{"subnet": S0}], {"a": ["x.y"]}, {}, {}, pats=_P2) == sig)
 check("the reconcile passes the patterns", "allow=_nb_allow, pats=_pats)" in body)
-check("the node reports `allow` in its smart status", '"allow": 1}' in src[src.index("def smart_status"):])
+check("the node reports `allow` in its smart status", re.search(r'"allow": 1[,}]', src[src.index("def smart_status"):]) is not None)
 
 # ── [5] cost ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] cost")

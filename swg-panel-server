@@ -7052,7 +7052,7 @@ def lan_path(cas, nodes, nid, subnet, addr):
         if e.get("subnet") == subnet and e.get("scope") != "rule":
             return ("gone", None)
     for e in sl.get("smart") or []:
-        if e.get("subnet") != subnet:
+        if e.get("subnet") != subnet or "ports" in e:          # a port rule takes some traffic only: the rest goes on (B.4)
             continue
         cat = e.get("category")
         if cat != "all":
@@ -18594,7 +18594,7 @@ def ports_clean(proto, raw):
     """A rule's ports → (proto, canonical list) or (None, why). The list is ports and ranges, any separators of commas and
     spaces, an en dash read as a hyphen; canonical = sorted, overlapping and adjacent ranges merged, joined by "," with no
     spaces ("443,8000-8100"). Empty means every port of `proto`; `both` with none is not a port rule. The SPA reads the same
-    grammar (js/ports.js), both gated on tests/ports_vectors.json."""
+    grammar (`portsClean` in js/rulerows.js), both gated on tests/ports_vectors.json."""
     if proto not in PORTS_PROTOS:
         return None, "proto"
     if raw is not None and not isinstance(raw, str):
@@ -18859,6 +18859,17 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=Non
         # switch is the rule's one switch — `enabled` and `who.on` are stored off, so no older reader ever lowers it without them.
         if r.get("ports") is not None:
             p = r["ports"]
+            # A VALUE ALREADY STORED is kept as it is, however it reads: the SPA re-sends every rule on every save, so refusing
+            # it would make the interface unsavable — including the save that deletes it. It lowers nothing (`_lower`, `_nlist`).
+            _ns = (lambda v: {k: x for k, x in v.items() if k != "on"} if isinstance(v, dict) else v)
+            if any(isinstance(o, dict) and "ports" in o and _ns(o["ports"]) == _ns(p) for o in (prev or ())) \
+                    and (node_scope or cat == "all" or not isinstance(p, dict) or ports_clean(p.get("proto"), p.get("list"))[0] is None):
+                out["enabled"] = False
+                if "who" in out:
+                    out["who"]["on"] = False
+                out["ports"] = {**p, "on": (p.get("on") is True) if "on" in p else rule_on(out)} if isinstance(p, dict) else p
+                clean.append(out)
+                continue
             if node_scope:
                 return None, "A node's default rules can't name ports — set them on an interface's rule", _dropped_report(dropped)
             if cat == "all":
@@ -19330,7 +19341,8 @@ def derive_default_exit(rec):
         return
     # The catch-all the plan lowers: the first that is ON — `_lower` skips a switched-off one, so a list holding
     # [off → exit X, on → exit Y] routes by Y, and so must the fallback an older panel or node reads.
-    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all" and rule_on(r)), None)
+    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all" and rule_on(r)
+               and r.get("ports") is None), None)              # a catch-all never carries ports; one stored anyway lowers nothing
     xid = str(ca.get("exit_id") or "") if ca and ca.get("action") == "dev" else ""
     if xid and any(str((x or {}).get("id")) == xid for x in (rec.get("exits") or [])):
         rec["default_exit"] = xid
@@ -20307,9 +20319,11 @@ def cascade_plan(nodes, snaps, custom_lists=None):
     plans = {}
 
     def _nlist(nid):
-        """The node's default list (D2), or None when its default is not a list — the presence of the list IS the switch."""
+        """The node's default list (D2), or None when its default is not a list — the presence of the list IS the switch.
+        Without any rule that carries `ports`: the door refuses them on a node's list, and one that arrived anyway (a transfer,
+        a hand edit) lowers nothing — as on an interface whose ports do not read — rather than for every port (B.2)."""
         v = (nodes.get(nid) or {}).get("default_routing")
-        return v if isinstance(v, list) else None
+        return [r for r in v if not (isinstance(r, dict) and r.get("ports") is not None)] if isinstance(v, list) else None
 
     def _arr_ok(nid):
         """Does this node run `smart.arrivals`? ASKED of the node (`arr` in its smart status, §4.3), never inferred from a

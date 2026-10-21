@@ -83,10 +83,10 @@ PLANTS = {
           '            pass'),
     "b": ('''"meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "accept")
                     elif act == "direct":
-                        bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "accept")''',
+                        bat.add(*_row, *_new, *pm, "ip", "daddr", "@" + snm, "accept")''',
           '''"meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")
                     elif act == "direct":
-                        bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "return")'''),
+                        bat.add(*_row, *_new, *pm, "ip", "daddr", "@" + snm, "return")'''),
     "c": ('                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|pb\\d+|sa|pa\\d+", c))):',
           '                for _c in ("catcount", "catany", "forward"):'),
     "d": ('''("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]''',
@@ -96,8 +96,8 @@ PLANTS = {
     "g1": ('''    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)''',
            '''    expect_pre = pin or any(a != "direct" for (_, _, a, _) in want)'''),
     "g2": ('''            S, cat, act, T = w[:4]
-            if len(w) > 4:''', '''            S, cat, act, T = w
-            if len(w) > 4:'''),
+            pm = pt_of.get(i, [])''', '''            S, cat, act, T = w
+            pm = pt_of.get(i, [])'''),
     "h": ('''    expect_pre = pin or any(w[2] != "direct" or len(w) > 4 for w in want)''',
           '''    expect_pre = pin or any(w[2] != "direct" for w in want)'''),
     "s1": ('''                xm = [t for x in ex for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))]''',
@@ -105,7 +105,8 @@ PLANTS = {
     "s2": ('''            _shadow_rules(i, lambda *m, _S=S: _add("ip", "saddr", _S, *m), "return")''', '''            pass'''),
     "s3": ('''                _shadow_rules(i, lambda *m, _k=k: bat.add("add", "rule", "inet", SMART_NFT_TABLE, "sr%d" % _k, *m), "accept")''',
            '''                pass'''),
-    "s4": ('''        return any(None not in cov.get(S, ()) and not (w and w in cov.get(S, ())) for S, ws in aud[c2].items() for w in ws)''',
+    "s4": ('''        return any(not any((x is None or x == w) and _ports_cover(p1, p2) for x, p1 in cov.get(S, ()))
+                   for S, ws in aud[c2].items() for w, p2 in ws)''',
            '''        return True'''),
     "s5": ('''                if None not in cov and not (len(w) > 4 and w[4] in cov):''', '''                if True:'''),
     "s6": ('''            "sets": {k: v for k, v in t["counts"].items() if not re.fullmatch(r"catl?_sw_[0-9a-f]{10}|src_[0-9a-f]{12}|lg|ar|cln|catd_\\S+|dnsok", k)}, "rules": rules,''',
@@ -114,8 +115,8 @@ PLANTS = {
            '''            _SHADOW["dns"] = (_shw or {}).get("sig", "")'''),
     "s8": ('''                hit += [(c, rank("zone", lb[-1])) for c in of("zone", lb[-1])]''',
            '''                hit += [(c, rank("zone", lb[-1])) for c in of("zone", lb[-1])] + [(c, (2,)) for c in of("first", lb[0])]'''),
-    "s9": ('''                cov = set().union(*(aud.get(c, {}).get(w[0], set()) for c in [c1] + list(more)))''',
-           '''                cov = aud.get(c1, {}).get(w[0], set())'''),
+    "s9": ('''for c in [c1] + list(more) for x, p1 in aud.get(c, {}).get(w[0], ())''',
+           '''for c in [c1] for x, p1 in aud.get(c, {}).get(w[0], ())'''),
     "s10": ('''            if ("blku" not in ln and not (_m and _m.group(1) in _bsw)) or "drop" not in ln:''',
             '''            if "blku" not in ln or "drop" not in ln:'''),
     "s11": ('''        if kd == "zone":
@@ -123,25 +124,26 @@ PLANTS = {
             return (1, -99)'''),
     "s12": ('''            return (-(n.count(".") + 1),)                      # dnsmasq: the longest key (a zone is a one-label key)''',
             '''            return (0,)'''),
-    "n1": [('''    spec = [e for e in smart_e if e["category"] != "all" and ("src" not in e or _SRC_WID_RE.fullmatch(str(e["src"])))]''',
-            '''    spec = [e for e in smart_e if e["category"] != "all" and (not e.get("src") or _SRC_WID_RE.fullmatch(str(e["src"])))]'''),
+    "n1": [('''    return ("src" not in e or bool(_SRC_WID_RE.fullmatch(str(e["src"])))) and''',
+            '''    return (not e.get("src") or bool(_SRC_WID_RE.fullmatch(str(e["src"])))) and'''),
            ('''e.get("table")) + ((e["src"],) if "src" in e else ())''', '''e.get("table")) + ((e["src"],) if e.get("src") else ())''')],
     "c2": ('                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|pb\\d+|sa|pa\\d+", c))):',
            '                for _c in ("catcount", "catany", "forward") + tuple(sorted(c for c in re.findall(r"chain (\\S+) {", body) if re.fullmatch(r"sr\\d+|sa|pa\\d+", c))):'),
     "pb1": ('''                bat.add("add", "rule", "inet", SMART_NFT_TABLE, "pb%d" % i, *cnd, "ip", "daddr", "@" + snm, "accept")''',
             '''                pass'''),
-    "pb2": ('''                    ex += [[cnd, snm] for snm in''', '''                    ex += [[[], snm] for snm in'''),
+    "pb2": ('''                    ex += [[cnd + pt_of[j], snm, None if j in off443 else cnd] if j in pt_of else [cnd, snm]''',
+            '''                    ex += [[[] + pt_of[j], snm, None if j in off443 else []] if j in pt_of else [[], snm]'''),
     "pb3": ('''        sig = hashlib.sha1((sig + "|pb:" + json.dumps(sorted(pb_of.items()))).encode()).hexdigest()[:16]''', '''        pass'''),
-    "pb4": ('''                if queue:                                      # swg-sni still reads the connection's first packets''',
+    "pb4": ('''                if queue and qc is not None:                   # swg-sni still reads the connection's first packets''',
             '''                if False:'''),
-    "pb5": ('''                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))''',
-            '''                        _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))'''),   # `xc`: 90e7045
+    "pb5": ('''                        _add("ip", "saddr", S, *pm, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))''',
+            '''                        _add("ip", "saddr", S, *_new, *pm, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))'''),   # `xc`: 90e7045
     "pb6": ('''[(sh, cond + [t for x in xs for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))])''',
             '''[(sh, cond)'''),
-    "pb7": ('''                    ex += [[cnd, snm] for snm in [_smart_setname(c)] + ([_smart_learnsetname(c)] if queue else [])]''',
-            '''                    ex += [[cnd, snm] for snm in [_smart_setname(c)]]'''),
-    "pb8": ('''"pb%d" % i, *cnd, "ip", "daddr", "@" + snm, *_sni_queue())''', '''"pb%d" % i, "ip", "daddr", "@" + snm, *_sni_queue())'''),
-    "pb9": ('''"pb%d" % i, *cnd, "ip", "daddr", "@" + snm, *_sni_queue())''', '''"pb%d" % i, *cnd, *_sni_queue())'''),
+    "pb7": ('''                           for snm in [_smart_setname(c)] + ([_smart_learnsetname(c)] if queue else [])]''',
+            '''                           for snm in [_smart_setname(c)]]'''),
+    "pb8": ('''"pb%d" % i, *qc, "ip", "daddr", "@" + snm, *_sni_queue())''', '''"pb%d" % i, "ip", "daddr", "@" + snm, *_sni_queue())'''),
+    "pb9": ('''"pb%d" % i, *qc, "ip", "daddr", "@" + snm, *_sni_queue())''', '''"pb%d" % i, *qc, *_sni_queue())'''),
     "pb10": ('''            if c not in want_pb:
                 bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)''', '''            if False:
                 bat.add("flush", "chain", "inet", SMART_NFT_TABLE, c)'''),

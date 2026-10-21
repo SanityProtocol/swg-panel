@@ -2039,7 +2039,6 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 /* Rule settings → Ports (B.6): the protocol switch keeps its three equal parts, the field takes the rest; on a phone they stack. */
 .rs-ports{margin-bottom:0;align-items:flex-start}
 .rs-ports .field{margin-bottom:6px}
-.rs-ports input[aria-invalid="true"]{border-color:var(--partial)}
 @media (max-width:640px){.rs-ports{flex-direction:column;align-items:stretch;gap:0}}
 /* A row's chips, settings button and destination are ONE line that moves as a unit: beside the entry count while it fits,
    under it (still one line, right-aligned) when it does not — the foot wraps, never the trail. Split, the chips sat on a

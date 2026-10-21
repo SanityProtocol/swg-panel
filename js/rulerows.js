@@ -62,7 +62,7 @@ const rowKey = r => [r.action || "exit",
                      + (r.aud ? "|aud:" + r.aud : "")
                      // …AND ITS PORTS (B.6): a rule for UDP 19302-19309 and one for every port are two rows, or the second is
                      // re-emitted with the first one's ports. Appended only when a rule has them.
-                     + (portsOf(r) ? "|pt:" + portsKey(portsOf(r)) : "");
+                     + ptKey(r);
 
 /* PER-PERSON RULES (ROUTING-PEERS-MESH-PLAN §4.2). A rule with `who` applies only to the users, groups and devices it names,
    on its own interface. It is STORED `enabled: false`, so every older reader skips it — a released panel would otherwise
@@ -100,10 +100,25 @@ export function portsClean(proto, raw) {
   }
   return { proto, list: out.map(([a, b]) => a === b ? String(a) : a + "-" + b).join(",") };
 }
-/** A stored rule's or a row's ports, `{proto, list}`, or null. */
-export const portsOf = r => r && r.ports && typeof r.ports === "object" && r.ports.proto
-  ? { proto: r.ports.proto, list: String(r.ports.list || "") } : null;
-const portsKey = p => p ? p.proto + ":" + p.list : "";
+/** A stored rule's or a row's ports — `{proto, list}` as stored, without the switch — or null. A value that does not read is
+ *  returned as it is, never dropped: its rule stays a port rule (the chip says it applies nowhere) and is saved back unchanged,
+ *  which the panel keeps — read as "no ports", the next save would store it for every port. */
+export const portsOf = r => r && r.ports && typeof r.ports === "object" ? (({ on, ...p }) => p)(r.ports) : null;
+const ptKey = r => { const p = portsOf(r); return p ? "|pt:" + p.proto + ":" + p.list : ""; };
+/** (proto, [[a, b]…]) of a port spec, or null when it does not read. */
+const portsSpans = p => { const c = portsClean(p && p.proto, p && p.list);
+  return c.bad ? null : [c.proto, c.list ? c.list.split(",").map(t => { const [a, b] = t.split("-").map(Number); return [a, b || a]; }) : []]; };
+/** Do ports `a` take every packet ports `b` take? null = no ports (every port); a spec that does not read takes nothing. The
+ *  node's `_ports_cover`, which decides whether a port rule covers a broader name's rule (B.4). */
+export function portsCover(a, b) {
+  if (!a) return true;
+  const A = portsSpans(a);
+  if (!A) return false;
+  if (!b) return false;
+  const B = portsSpans(b);
+  return !!B && (A[0] === "both" || A[0] === B[0]) && (!A[1].length || (B[1].length > 0
+    && B[1].every(([lo, hi]) => A[1].some(([x, y]) => x <= lo && hi <= y))));
+}
 /** Does this port spec reach TCP 443 / one port `n` of protocol `pr`? No spec = every port. */
 export const portsReach = (p, pr, n) => !p || ((p.proto === "both" || p.proto === pr)
   && (!p.list || p.list.split(",").some(t => { const [a, b] = t.split("-").map(Number); return a <= n && n <= (b || a); })));
@@ -123,27 +138,43 @@ export const rowCovers = (a, b) => (!(a && a.aud) || a.aud === (b && b.aud))   /
  *  (the node keeps them on this row for everyone else). Two different selections are not compared: which people they share
  *  is the panel's to resolve, and a warning about an overlap that may not exist is worse than none. `destOf` is the caller's
  *  destination key: two rules sending the same hosts to the same place are not worth a word. */
-/*  PORTS (B.6) narrow a row, and the lints follow what the node does with one: a DUPLICATE is the same badge with the same ports
- *  (one badge in a port-less row and in a port row is one category — the port entry goes first, B.3); a row with ports never
- *  TAKES a broader row's hosts (a port entry is never coverage: the broader row keeps them through its shadow, B.4); and a port
- *  row BELOW a port-less row that reaches its devices and claims its badge's hosts with a broader name never fires — that row's
- *  shadow takes them on every port first — so the badge is listed in `dupes`, whose sentence says exactly that. */
-export function rowLints(rows, destOf) {
+/*  PORTS (B.6) narrow a row, and the lints follow the node's own decisions about one (the S5 lesson: emulate the engine):
+ *  · a DUPLICATE is the same badge with the same ports;
+ *  · a port row below a row to elsewhere that reaches its devices never fires when that row takes its badge's hosts on every
+ *    one of its ports first — the same badge (first match; except the port-less row of the SAME category and people, which the
+ *    panel moves below it, B.3), or a broader name whose shadow takes them (the node's coverage, `_ports_cover`: on a name
+ *    engine a narrower port rule covers a broader one only on ports holding all of its, so equal ports win in either order).
+ *    On Hybrid SNI a Block above takes no learned address and a name below on other ports still fires. Listed in `dupes`;
+ *  · a port row TAKES the hosts of a port row above only on ports that hold all of its (`takenBy`); never a port-less row's.
+ *  `opts.mode` is the node's engine; `opts.isName(b)` whether a badge matches by site name (a list's kind is the caller's). */
+export function rowLints(rows, destOf, opts = {}) {
+  const mode = opts.mode || "", shadowEng = mode === "sni" || mode === "forcedns";
+  const isName = opts.isName || (b => b.t === "list" || (b.kind !== "ip" && b.kind !== "asn"));
+  const typedKey = r => (r.badges || []).filter(b => b.t === "target").map(badgeIdentity).sort().join("\n");
+  const sameSrc = (a, b) => !a.who === !b.who && (!a.who || JSON.stringify(canonWho(a.who)) === JSON.stringify(canonWho(b.who)));
   const seen = new Map();                                   // badge identity (+ the row's ports) → the earlier rows holding it
   return (rows || []).map((row, ri) => {
     const badges = row.badges || [];
     const dupes = [];
-    const pk = portsOf(row) ? "|pt:" + portsKey(portsOf(row)) : "";
+    const pj = portsOf(row), pk = ptKey(row);
+    const ups = pj ? rows.slice(0, ri).filter(up => destOf(up) !== destOf(row) && rowCovers(up, row)) : [];   // once a row
+    const dead = b => ups.some(up => {
+      const pu = portsOf(up);
+      if (!portsCover(pu, pj)) return false;
+      if (mode === "sni" && up.action === "block" && isName(b)) return false;
+      return (up.badges || []).some(ub => badgeIdentity(ub) === badgeIdentity(b)
+        ? !(!pu && sameSrc(up, row) && (b.t === "list" || typedKey(up) === typedKey(row)))
+        : badgeCovers(ub, b) && !(shadowEng && portsCover(pj, pu)));
+    });
     for (const b of badges) {
       const k = badgeIdentity(b) + pk, held = seen.get(k) || [];
-      if (held.some(e => rowCovers(e, row))
-          || (pk && rows.slice(0, ri).some(up => !portsOf(up) && destOf(up) !== destOf(row) && rowCovers(up, row)
-                                                 && (up.badges || []).some(ub => badgeCovers(ub, b))))) dupes.push(b);
+      if (held.some(e => rowCovers(e, row)) || (pj && dead(b))) dupes.push(b);
       seen.set(k, [...held, row]);
     }
     const taken = new Map();                                // identity → {b, all}: `all` once ANY rule below reaches everyone here
     for (const lower of rows.slice(ri + 1)) {
-      if (destOf(lower) === destOf(row) || portsOf(lower)) continue;
+      if (destOf(lower) === destOf(row)) continue;
+      if (portsOf(lower) && !(pj && shadowEng && portsCover(portsOf(lower), pj))) continue;
       const all = rowCovers(lower, row);
       // two different selections, or a narrowed row above: not ours to judge (see above). A row for BOTH audiences above one
       // narrowed to an audience is judged like a row for everyone above a per-person one — `takenFew`, for that audience

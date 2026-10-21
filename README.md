@@ -356,10 +356,12 @@ Its limits:
   **which of that server's addresses** the traffic leaves it by — useful when a server has several and a site
   expects one of them. For a **Direct** rule it picks this server's own address — one for the whole interface.
   The same window narrows a rule to **ports**: TCP, UDP or both, and ports or ranges (`443, 8000-8100`), so
-  "Google → server A" and "Google on UDP 19302-19309 → server B" work side by side, in either order. For **every
-  address**, type `0.0.0.0/0` as the destination. Ports are for an interface's rules (not a server's default list) and
-  need the servers updated; on the SNI modes UDP 443 never reaches a rule (QUIC is dropped first), with Force-DNS port 53
-  never does, and a site name off TCP 443 matches only what the mode can see — the rule's chip says which.
+  "Google → server A" and "Google on UDP 19302-19309 → server B" work side by side, in either order when both are for the
+  same people; otherwise put the port rule first — the list marks one that can never fire. For **every address**, type
+  `0.0.0.0/0` as the destination. Ports are for an interface's rules (not a server's default list) and need the servers
+  updated; on the SNI modes UDP 443 never reaches a rule (QUIC is dropped first), with Force-DNS the server answers port 53
+  itself (a Block on it drops your clients' DNS), the interface's SMTP and QUIC filters drop their ports first, and a site
+  name off TCP 443 matches only what the mode can see — the rule's chip says which.
   A server's own default can be a rule list too — **Settings → Network → Default exit → Routing (smart cascade)**:
   one list for its interfaces set to **Auto** and for the traffic other servers send out through it, and each rule
   can narrow itself to **this node's own clients** or to **traffic cascaded in**. A **Forward to node** rule there

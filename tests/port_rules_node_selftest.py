@@ -12,9 +12,14 @@ include TCP 443. Each checked on what the node hands nft, through the swg_smart 
                        node before ports (BASE) did, in all three engines.
   [4] TCP 443 ONLY   — swg-sni's verdicts (`sni_blocks`), the route-back chain `svb` and xt_string's list take a port entry
                        only when it reaches TCP 443: a UDP-only Block is never exported to swg-sni.
-  [5] NOT COVERAGE   — a port entry never covers a broader name's hosts: the broader rule gets its shadow (`_smart_shadows`)
-                       on both name engines, where the same rule without ports takes them (the control).
+  [5] COVERAGE       — a port entry covers a broader name's rule only on ports that hold all of that rule's: a UDP 3478 rule
+                       takes a UDP 3478 rule's hosts in any order, never a rule's for every port (that one keeps its shadow);
+                       decided alike by `_smart_shadows` and per entry at render.
   [6] THE REPORT     — `smartroute.ports`, which the panel's withholding reads.
+  Also: the L4 match comes after `ct state new` (an established packet never compares it); a pin-mode Block's exception
+  never puts a port match beside swg-sni's `tcp dport 443` (a batch nft refuses — the model refuses it too); a UDP-only
+  Block still keeps its names out of swg-sni's learning (`nolearn`); a category whose every Exit and Direct is off TCP 443
+  learns without a reset (`quiet`); a port Block is not a name's verdict for Force-DNS's sparing (`dnsok`).
 
 Hermetic: no nft, no root. Run: python3 tests/port_rules_node_selftest.py   (0 = pass)
   --plant p1..p10   plant one defect and expect RED on its own check (exit 0 when caught):
@@ -22,8 +27,12 @@ Hermetic: no nft, no root. Run: python3 tests/port_rules_node_selftest.py   (0 =
      p4  a shadow copy drops them              p5  swg-sni takes a UDP-only rule   p6  a port entry counts as coverage
      p7  an unreadable `ports` is rendered     p8  the ports are not signed        p9  `svb` takes a UDP-only Exit
      p10 every plan signs `pt` (a node without ports rebuilds on upgrade)
+     p11 the pb queue rule keeps j's UDP match       p12 a port Block joins Force-DNS's sparing (dns_blk)
+     p13 no `quiet` list                             p14 a UDP-only Block alone writes no sni-blocks (no `nolearn`)
+     p15 the L4 match before `ct state new`          p16 overlapping spans are not merged
+     p17 a port entry covers nothing at render (an equal-ports claimer leaves the broader entry its shadow copy)
 """
-import hashlib, importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
+import atexit, hashlib, importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 os.environ["SWG_NFT_CLI_ONLY"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -44,26 +53,40 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
-    "p1": ('''                    _add("ip", "saddr", S, *pm, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")''',
+    "p1": ('''                    _add("ip", "saddr", S, *_new, *pm, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")''',
            '''                    _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")'''),
-    "p2": ('''                        bat.add(*_row, *pm, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "accept")''',
+    "p2": ('''                        bat.add(*_row, *_new, *pm, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "accept")''',
            '''                        bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "accept")'''),
-    "p3": ('''if len(wj) > 4 else []) + pt_of.get(j, [])   # j claimed only its ports''', '''if len(wj) > 4 else [])'''),
-    "p4": ('''for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))] + pt_of.get(i, [])   # …on its ports (B.4)''',
-           '''for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))]'''),
-    "p5": ('''            if w[1] != "all" and p443[i]:                      # swg-sni decides TCP 443 only: a rule off it is not its to apply''',
+    "p3": ('''[[cnd + pt_of[j], snm, None if j in off443 else cnd] if j in pt_of else [cnd, snm]''', '''[[cnd, snm]'''),
+    "p4": ('''            pmi = pt_of.get(i, [])                             # …on its ports (B.4)''', '''            pmi = []'''),
+    "p5": ('''            if w[1] != "all" and i not in off443:              # swg-sni decides TCP 443 only: a rule off it is not its to apply''',
            '''            if w[1] != "all":'''),
-    "p6": ('''        cov = cov_of.get(c1, {})''', '''        cov = aud[c1]'''),
-    "p7": ('''            and ("ports" not in e or _ports_match(e["ports"]) is not None)]   # …and a `ports` that does not read: dropped (B.4)''',
-           ''']'''),
+    "p6": ('''        return any(not any((x is None or x == w) and _ports_cover(p1, p2) for x, p1 in cov.get(S, ()))''',
+           '''        return any(not any((x is None or x == w) for x, p1 in cov.get(S, ()))'''),
+    "p7": (''' and ("ports" not in e or _ports_spans(e["ports"]) is not None)
+''', '''
+'''),
     "p8": ('''        sig = hashlib.sha1((sig + "|pt:" + json.dumps(sorted(pt_of.items()))).encode()).hexdigest()[:16]''', '''        pass'''),
-    "p9": ('''                if wj[0] == w[0] and wj[2] in ("exit", "direct") and wj[1] != "all" and p443[j]:''',
+    "p9": ('''                if wj[0] == w[0] and wj[2] in ("exit", "direct") and wj[1] != "all" and j not in off443:''',
            '''                if wj[0] == w[0] and wj[2] in ("exit", "direct") and wj[1] != "all":'''),
     "p10": ('''    if pt_of:                                                   # B.4 — only a plan with a port rule signs its ports''',
             '''    if True:'''),
+    "p11": ('''cnd, snm, qc = x[0], x[1], (x[2] if len(x) > 2 else x[0])''', '''cnd, snm, qc = x[0], x[1], x[0]'''),
+    "p12": ('''            if w[2] == "block" and w[1] != "all" and i not in pt_of:''', '''            if w[2] == "block" and w[1] != "all":'''),
+    "p13": ('''            if _q:
+                sni_blocks["quiet"] = _q''', '''            if False:
+                sni_blocks["quiet"] = _q'''),
+    "p14": ('''    if queue and (_has_blk or off443):''',
+            '''    if queue and any(w[2] == "block" and w[1] != "all" and i not in off443 for i, w in enumerate(want)):'''),
+    "p15": ('''                    _add("ip", "saddr", S, *_new, *pm, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")''',
+            '''                    _add("ip", "saddr", S, *pm, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")'''),
+    "p16": ('''        if out and a <= out[-1][1] + 1:''', '''        if False:'''),
+    "p17": ('''for x, p1 in aud.get(c, {}).get(w[0], ()) if _ports_cover(p1, ps_of.get(i))}''',
+            '''for x, p1 in aud.get(c, {}).get(w[0], ()) if p1 is None}'''),
 }
 
 STATE = tempfile.mkdtemp(prefix="port-rules-node-")
+atexit.register(shutil.rmtree, STATE, True)
 os.environ["SWG_NODED_STATE"] = STATE
 
 
@@ -106,13 +129,13 @@ def fresh(mod):
     return K
 
 
-def npass(mod, K, entries, pin, queue, shadows=None, name_cats=None):
+def npass(mod, K, entries, pin, queue, shadows=None, name_cats=None, **kw):
     mod._LOOP["n"] += 1
     res = {"changed": 0, "errors": []}
     n0 = len(K.scripts)
     try:
         mod._ensure_smart_nft([dict(e) for e in entries], sorted({e["category"] for e in entries}), res, pin=pin, queue=queue,
-                              reset_mark=(mod.SNI_RESET_MARK if pin else 0), srcs=SRCS, shadows=shadows, name_cats=name_cats)
+                              reset_mark=(mod.SNI_RESET_MARK if pin else 0), srcs=SRCS, shadows=shadows, name_cats=name_cats, **kw)
     except Exception as e:
         res["errors"].append("raised %s: %s" % (type(e).__name__, e))
     res["scripts"] = K.scripts[n0:]
@@ -177,9 +200,22 @@ for label, pin, queue in MODES:
     check("%s: `both` matches UDP 53 (7003)…" % label, v["mark"] == 7003, v)
     v = pk(K, OTHER, Z, "tcp", 53)
     check("%s: …and TCP 53 (7003)" % label, v["mark"] == 7003, v)
+    if pin:
+        bad = [t for t in rules_text(K) if "meta mark set" in t and ("dport" in t or "l4proto" in t)
+               and not 0 <= t.find("ct state new") < min(i for i in (t.find("l4proto"), t.find("dport")) if i >= 0)]
+        check("%s: a mark rule's port match comes after `ct state new` (an established packet never compares it)" % label, not bad, bad[:2])
     if queue:
-        check("%s: the only Block is UDP-only — nothing for swg-sni to refuse (no sni_blocks)" % label, N._SNI_BLOCKS["v"] is None,
-              N._SNI_BLOCKS["v"])
+        B1 = N._SNI_BLOCKS["v"] or {}
+        check("%s: the only Block is UDP-only — swg-sni has no verdict to give for it" % label, not B1.get("src"), B1)
+        check("%s: …and still learns none of its names (`nolearn`)" % label, "custom_e" in (B1.get("nolearn") or []), B1)
+        check("%s: a category whose every Exit and Direct is off TCP 443 learns without a reset (`quiet`); one with a TCP 443 "
+              "rule (custom_g) resets as before" % label, B1.get("quiet") == ["custom_b", "custom_z"], B1)
+        K = fresh(N)
+        npass(N, K, [{"subnet": S, "category": "custom_e", "action": "block", "ports": {"proto": "udp", "list": "27000"}},
+                     {"subnet": S, "category": "all", "action": "exit", "via_iface": "swg_s", "table": 7002}], pin, queue)
+        B1 = N._SNI_BLOCKS["v"] or {}
+        check("%s: a UDP-only Block alone still writes `nolearn` (swg-sni must not learn and reset its names)" % label,
+              "custom_e" in (B1.get("nolearn") or []) and "quiet" not in B1, B1)
     if pin:
         # pb<i>: an Exit (UDP 5000 only) above a Block of the same address — the exception is the Exit's ports, nothing more
         PB = [{"subnet": S, "category": "custom_x", "action": "exit", "via_iface": "swg_p", "table": 7004, "ports": {"proto": "udp", "list": "5000"}},
@@ -197,6 +233,18 @@ for label, pin, queue in MODES:
         v2 = K.m.packet(T, "wg0", OTHER, X, proto="tcp", dport=443, ct="established", ctmark=7004)
         check("%s: pb — any other port to that address is the Block's (dropped)" % label, v["verdict"] == "drop" and v2["verdict"] == "drop",
               (v, v2))
+        # …an Exit on TCP and UDP 400-500 above it: the exception keeps its ports; swg-sni's queue rule (`tcp dport 443`) none
+        PB2 = [dict(PB[0], ports={"proto": "both", "list": "400-500"})] + PB[1:]
+        K = fresh(N)
+        npass(N, K, PB2, pin, queue)
+        fill(K, DEST)
+        rp = npass(N, K, PB2, pin, queue)
+        pbt = [x["text"] for x in ((K.m.tables.get(T) or {}).get("chains") or {}).get("pb1", {}).get("rules", [])]
+        check("%s: pb — a TCP+UDP port Exit's exception carries its ports, and a queue rule without them (nft refuses both)" % label,
+              not rp["errors"] and any("l4proto" in t and "accept" in t for t in pbt)
+              and (not queue or any("queue" in t and "l4proto" not in t for t in pbt)), (rp["errors"], pbt))
+        v = pk(K, OTHER, X, "udp", 450)
+        check("%s: pb — UDP 450 is the Exit's (7004), let through its Block" % label, v["mark"] == 7004 and v["verdict"] != "drop", v)
 
 # a shadow copy carries its entry's ports — a broad port rule R and a more specific port rule L (never coverage, [5])
 print("\n[1] shadow copies")
@@ -223,8 +271,16 @@ fill(K, DEST)
 check("an entry whose `ports` does not read is not rendered at all", not rb["errors"]
       and not any("@cat_custom_b" in t or "@cat_custom_g" in t for t in rules_text(K)), rules_text(K))
 check("…so its destination is not blocked on any port", pk(K, OTHER, B, "tcp", 443)["mark"] == 7002)
-check("a catch-all carrying `ports` is never lowered (B.2 refuses it)", not [e for e in [{"category": "all", "ports": {}}]
-      if "ports" not in e] and 'e["category"] == "all" and "src" not in e and "ports" not in e' in open(path, encoding="utf-8").read())
+K = fresh(N)
+CA = [{"subnet": S, "category": "all", "action": "block", "ports": {"proto": "udp", "list": "53"}},
+      {"subnet": S, "category": "all", "action": "exit", "via_iface": "swg_s", "table": 7002}]
+rc = npass(N, K, CA, False, False)
+v1, v2 = pk(K, OTHER, B, "udp", 53), pk(K, OTHER, B, "tcp", 443)
+check("a catch-all carrying `ports` is never lowered (B.2 refuses it): the next one takes its own ports and every other (7002)",
+      not rc["errors"] and v1["mark"] == 7002 and v1["verdict"] != "drop" and v2["mark"] == 7002, (rc["errors"], v1, v2))
+check("spans that overlap or touch are merged before nft sees them: one interval, one match",
+      N._ports_spans({"proto": "tcp", "list": "8050,8000-8100,8101"}) == ("tcp", [(8000, 8101)])
+      and N._ports_match({"proto": "tcp", "list": "8050,8000-8100,8101"}) == ["meta", "l4proto", "tcp", "th", "dport", "8000-8101"])
 
 # ── [3] the signature ───────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[3] the signature")
@@ -291,7 +347,7 @@ check("xt_string is handed only the entries that reach TCP 443 (Exit, Direct and
       and "and (_ks or \"src\" not in e) and _ports_t443(e) for e in smart_e)" in src)
 
 # ── [5] not coverage ────────────────────────────────────────────────────────────────────────────────────────────────────────
-print("\n[5] a port entry never covers")
+print("\n[5] coverage")
 R_ = {"subnet": S, "category": "custom_r", "action": "exit", "via_iface": "swg_p", "table": 7005}
 L_ = {"subnet": S, "category": "custom_l", "action": "exit", "via_iface": "swg_q", "table": 7006}
 for eng in ("dns", "sni_user"):
@@ -310,6 +366,39 @@ if shn in K.m.tables.get(T, {}).get("sets", {}):
 v1, v2 = pk(K, OTHER, "192.0.2.9", "udp", 3478), pk(K, OTHER, "192.0.2.9", "tcp", 443)
 check("Force-DNS: the port rule above takes its host on UDP 3478 (7006), the broader rule keeps it elsewhere (7005)",
       not rr["errors"] and v1["mark"] == 7006 and v2["mark"] == 7005, (rr["errors"], v1, v2))
+U3 = {"proto": "udp", "list": "3478"}
+for eng in ("dns", "sni_user"):
+    same = N._smart_shadows([dict(R_, ports=U3), dict(L_, ports=U3)], DOMS, {}, eng)
+    check("%s: a more specific port rule on the SAME ports covers the broader one (no shadow: it wins in either order)" % eng,
+          same == {}, same)
+    fewer = N._smart_shadows([dict(R_, ports={"proto": "udp", "list": "3470-3480"}), dict(L_, ports=U3)], DOMS, {}, eng)
+    check("%s: …on fewer ports it does not — the broader rule keeps its hosts on the rest (shadow)" % eng,
+          [x[1] for x in ((fewer or {}).get("by_target") or {}).get("custom_r", [])] == ["custom_l"], fewer)
+    both = N._smart_shadows([dict(R_, ports=U3), dict(L_, ports={"proto": "both", "list": "3478"})], DOMS, {}, eng)
+    check("%s: …on TCP and UDP 3478 it covers a UDP 3478 rule" % eng, both == {}, both)
+# the broader category with a UDP 3478 entry ABOVE the claimer and a port-less one below: the shadow exists (the port-less
+# entry needs it), but only the port-less entry is given its copy — UDP 3478 to the claimed host is the claimer's
+MIX = [dict(R_, ports=U3), dict(L_, ports=U3), R_]
+K = fresh(N)
+shw = N._smart_shadows(MIX, DOMS, {}, "dns")
+rr = npass(N, K, MIX, False, False, shadows=shw)
+shn = N._smart_setname(shw["by_target"]["custom_r"][0][0]) if shw else ""
+K.load_set(T, N._smart_setname("custom_l"), ["192.0.2.0/24"])
+if shn in K.m.tables.get(T, {}).get("sets", {}):
+    K.load_set(T, shn, ["192.0.2.0/24"])
+v1, v2 = pk(K, OTHER, "192.0.2.9", "udp", 3478), pk(K, OTHER, "192.0.2.9", "tcp", 443)
+check("Force-DNS: a UDP 3478 rule of the broader name ABOVE the claimer on the same ports does not take its host (7006); the "
+      "broader port-less rule keeps it elsewhere (7005)", not rr["errors"] and shw and v1["mark"] == 7006 and v2["mark"] == 7005,
+      (rr["errors"], bool(shw), v1, v2))
+# Force-DNS's sparing (D2) is node-wide: a port Block's names must not lose `dnsok`
+K = fresh(N)
+SP = [{"subnet": S, "category": "custom_a", "action": "block"},
+      {"subnet": S, "category": "custom_v", "action": "block", "ports": {"proto": "udp", "list": "443"}}]
+rd = npass(N, K, SP, False, False, spare_dns=True)
+dsp = (N._DNS_SPARE.get("v") or {}).get("block_sets") or []
+check("Force-DNS: a port Block is not a name's verdict for the sparing — only the port-less Block's set is spared by `dnsok`",
+      not rd["errors"] and dsp == [N._smart_setname("custom_a")]
+      and not any("@" + N._smart_setname("custom_v") in t and "dnsok" in t for t in rules_text(K)), (rd["errors"], dsp))
 
 # ── [6] the report ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[6] the report")

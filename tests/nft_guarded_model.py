@@ -524,6 +524,12 @@ class SmartModel:
                 raise NftError("syntax error in rule %r at %r" % (text, " ".join(tk[i:i + 3])))
         if any(o[0] in ("verdict", "jump") for o in ops[:-1]):
             raise NftError("syntax error: a verdict must end the rule %r" % text)
+        # `tcp dport` beside an L4 match that allows another protocol: nft refuses the rule, and with it the whole batch —
+        # "conflicting protocols specified: udp vs. tcp" (measured, nft 1.0.9 and 1.1.3; `meta l4proto tcp` beside it is fine)
+        l4 = [{o[1]} if o[0] == "l4any" else o[1] for o in ops if o[0] in ("l4any", "l4in")]
+        for o in ops:
+            if o[0] == "l4" and any(c != {o[1]} for c in l4):
+                raise NftError("conflicting protocols specified: %s vs. %s (%r)" % ("/".join(sorted(l4[0])), o[1], text))
         return ops
 
     @staticmethod
