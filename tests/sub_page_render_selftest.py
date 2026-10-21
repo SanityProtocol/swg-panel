@@ -68,6 +68,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-line       serves a sub.js that offers a csqtt server an app of another line → RED on [11]
      --perturb-ownline    serves a sub.js that offers the CSQTT app of the other line when no release of the server's is out → RED on [11]
      --perturb-chipline   serves a sub.js whose csqtt card no longer names the server's version → RED on [11]
+     --perturb-pickmark   serves a sub.js whose picker copies the badge rows with their markers → RED on [12]
      --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
@@ -97,7 +98,8 @@ P_LINE = "--perturb-line" in sys.argv
 P_OWNLINE = "--perturb-ownline" in sys.argv
 P_CHIPLINE = "--perturb-chipline" in sys.argv
 P_P2PALL = "--perturb-p2pall" in sys.argv
-PERTURB = (P_P2PALL or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+P_PICKMARK = "--perturb-pickmark" in sys.argv
+PERTURB = (P_P2PALL or P_PICKMARK or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE)
 
 FAILS = []
@@ -262,6 +264,9 @@ if P_LINE:
 if P_OWNLINE:
     perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;\n', "",
                   "the own app's release-line guard")
+if P_PICKMARK:
+    perturbed_web('          Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) { x.remove(); });\n', "",
+                  "the picker's badge copies without their markers")
 if P_P2PALL:
     perturbed_web("      var srv = it.tgt.p2p && cc.el", "      var srv = true && cc.el", "the torrent marker only where torrents are allowed")
 if P_CHIPLINE:
@@ -455,7 +460,7 @@ try:
     tab.close()
 
     # [12] the torrent marker: where swg-sub says torrents may leave, and nowhere else
-    P2P_WORDS = {"en": "Prefer TCP", "ru": "Предпочитать TCP"}
+    P2P_WORDS = {"en": "Torrents work here", "ru": "Торренты здесь работают"}   # the marker's label; the bubble holds the setting
     for (os_, lang), r in sorted(renders.items()):
         live = [c for p in r["pages"] if p["mode"] not in ("nets", "dead") for c in p["cells"]]
         check("[12] %s/%s: every one of Anna's cells carries the torrent marker, labelled in the page's language" % (os_, lang),
@@ -467,12 +472,30 @@ try:
     check("[12] …while his csqtt1 cell on the same node carries it", len(turn_cells(rb)) == 1 and turn_cells(rb)[0]["p2p"],
           [(c["tag"], c["p2p"]) for c in turn_cells(rb)])
     tab, _r = render("u1", "android", "en", phone=True)
+    # A TAP AS A FINGER MAKES IT: pointerdown on the marker first (the outside-press handler must not take it for one), then click.
     TAP = r"""(() => { const m=[...document.querySelectorAll('.scell-p2p')].find(x => { const r=x.getBoundingClientRect();
       return r.width && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; });
-      if (!m) return 'no marker in view'; m.click(); const b=document.querySelector('.note-bubble'); return b ? b.textContent : ''; })()"""
-    first = tab.ev(TAP); time.sleep(0.3); second = tab.ev(TAP)
-    check("[12] a tap on the marker opens its text in a bubble; a second tap closes it",
-          P2P_WORDS["en"] in (first or "") and second == "", (first, second))
+      if (!m) return 'no marker in view'; m.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); m.click();
+      const b=document.querySelector('.note-bubble'); return b ? b.textContent + '|' + m.getAttribute('aria-expanded') : ''; })()"""
+    NB = "(() => (document.querySelector('.note-bubble') || {}).textContent || '')()"
+    first = tab.ev(TAP); time.sleep(0.3); second = tab.ev(TAP); time.sleep(0.3)
+    check("[12] a tap on the marker opens the setting in a bubble (expanded); a second tap closes it",
+          "Prefer TCP" in (first or "") and (first or "").endswith("|true") and second == "", (first, second))
+    tab.ev(TAP); time.sleep(0.3)
+    tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true})); true"); time.sleep(0.2)
+    esc = tab.ev(NB)
+    tab.ev(TAP); time.sleep(0.3)
+    tab.ev("document.body.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); true"); time.sleep(0.2)
+    out = tab.ev(NB)
+    check("[12] Escape closes it, and so does a press anywhere else", esc == "" and out == "", (esc, out))
+    tab.ev(TAP); time.sleep(0.3)
+    tab.ev("document.querySelector('[data-pick]').click(); true"); time.sleep(0.6)
+    # Anna has two devices: the picker opens on them, and a device's connections — the badge copies — are one level down
+    tab.ev("(() => { const r=[...document.querySelectorAll('.cp-row')].find(x => x.textContent.includes('laptop')); if (r) r.click(); return 1 })()")
+    time.sleep(0.6)
+    pick = tab.ev("(() => ({marks: document.querySelectorAll('.cp-row .scell-mark').length, rows: document.querySelectorAll('.cp-row .scell-srv').length}))()")
+    check("[12] the connection picker's copies of the badge rows carry no marker (a dead button inside a row button)",
+          pick and pick["rows"] and pick["marks"] == 0, pick)
     tab.close()
 
     # [2] the author word, per language, in all three turn cells

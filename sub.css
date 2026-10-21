@@ -184,7 +184,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .scell-tag-by { color: var(--muted); font-weight: 600; letter-spacing: .4px; text-transform: none; opacity: .85; }
 /* plain/slow marker beside the role — warning-orange turtle (VK throttles unobfuscated transports) */
 .scell-slow { display: inline-flex; align-items: center; margin-left: -4px; color: #f97316; line-height: 0; }
-.scell-slow svg { width: 1.3em; height: 1.3em; display: block; }
+.scell-slow svg, .scell-mark svg { width: 1.3em; height: 1.3em; display: block; }   /* one size for every badge-row icon */
 /* AXIS-3: "Get the app" install link under the fork badge — subtle secondary affordance (brand on hover) */
 .scell-getapp { max-width: 100%; }
 .scell-getapp-a { color: var(--muted); font-size: 12.5px; font-weight: 700; text-decoration: none; white-space: nowrap; transition: color .15s; }
@@ -448,12 +448,11 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
    and the client setting for full speed). Brand-coloured: news, not a warning — the turtle beside it is the warning. */
 .scell-mark { appearance: none; border: 0; background: none; padding: 2px; margin: -2px -4px -2px -4px; cursor: pointer;
   display: inline-flex; align-items: center; line-height: 0; border-radius: 6px; font: inherit; }
-.scell-mark svg { width: 1.3em; height: 1.3em; display: block; }
 .scell-mark:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
 .scell-p2p { color: var(--brand); }
 .note-bubble { position: fixed; z-index: 70; max-width: min(300px, calc(100vw - 24px)); background: var(--panel);
   border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 40px rgba(0, 0, 0, .42);
-  color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1.45; text-align: left; }
+  color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1.45; text-align: left; overflow: auto; }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }

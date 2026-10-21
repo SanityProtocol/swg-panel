@@ -65,6 +65,7 @@
       vkAddApp: "Add this VK call link to {app}", vkAddFork: "Add this VK call link to {fork} app",
       backup: "Backup",
       vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}", theApp: "the app",
+      p2pMark: "Torrents work here — the setting for full speed",
       p2pHint: "Torrents work here. For full speed, set the torrent client to TCP only, or µTP‑TCP mixed mode to “Prefer TCP” (qBittorrent: Options → Connection / Advanced).",
       rawT: "Faster mode available", rawD: "In the app's settings set the RAW port to {port} and the connection mode to RAW — they live there, not in this link. It drops WireGuard for speed.",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
@@ -128,6 +129,7 @@
       vkAddApp: "Добавьте эту ссылку на звонок VK в {app}", vkAddFork: "Добавьте эту ссылку на звонок VK в приложении",
       backup: "Резерв",
       vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложение",   /* accusative — every {app} slot that falls back to it takes one — «в приложение», «Открыть приложение», «Установить приложение» */
+      p2pMark: "Торренты здесь работают — настройка для полной скорости",
       p2pHint: "Торренты здесь работают. Для полной скорости включите в торрент-клиенте только TCP или алгоритм смешанного режима µTP‑TCP «Предпочитать TCP» (qBittorrent: Настройки → Соединение / Дополнительно).",
       rawT: "Доступен быстрый режим", rawD: "В настройках приложения укажите RAW-порт {port} и режим подключения RAW — они хранятся там, а не в этой ссылке. Работает без WireGuard.",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
@@ -772,7 +774,11 @@
         // the protocol's own brand mark leads the row, in full colour — see rowIcon()
         var mark = rowIcon(en.mode);
         if (mark) { var ic = el("span", "cp-ico"); ic.appendChild(mark); lead.appendChild(ic); }
-        if (en.badge) lead.appendChild(en.badge.cloneNode(true));
+        if (en.badge) {   // a COPY of the cell's badge row: its marker buttons would be dead (no handlers) and nested in this row's button
+          var bc = en.badge.cloneNode(true);
+          Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) { x.remove(); });
+          lead.appendChild(bc);
+        }
         r.appendChild(lead);
         r.onclick = function () { go(en); };
         list.appendChild(r);
@@ -825,7 +831,7 @@
   function _dlKey(e) { if (e.key === "Escape") { e.preventDefault(); closeDlBubble(); } }
   function openDlBubble(anchor, ga, files) {
     if (_dlBubble && _dlBubble._anchor === anchor) { closeDlBubble(); return; }   // second click on same trigger → toggle off
-    closeDlBubble();
+    closeDlBubble(); closeNoteBubble();
     var b = el("div", "dl-bubble"); b._anchor = anchor;
     if (ga.headerTitle) {   // multi-app bubble (WG/AWG) — a plain title, no single releases page to link
       b.appendChild(el("div", "dl-bubble-title", ga.headerTitle));
@@ -890,8 +896,10 @@
   // pointer that hovers, hovering opens it and leaving closes it — unless a click pinned it. A press anywhere else, Escape,
   // a resize or a scroll (a swipe to the next cell) closes it.
   var _noteBubble = null;
+  var _canHover = window.matchMedia ? window.matchMedia("(hover: hover)") : null;   // asked at event time (a mouse plugged in)
   function closeNoteBubble() {
     if (!_noteBubble) return;
+    if (_noteBubble._anchor) _noteBubble._anchor.setAttribute("aria-expanded", "false");
     _noteBubble.remove(); _noteBubble = null;
     document.removeEventListener("pointerdown", _nbOutside, true);
     document.removeEventListener("keydown", _nbKey, true);
@@ -902,33 +910,37 @@
   function _nbKey(e) { if (e.key === "Escape") { e.preventDefault(); closeNoteBubble(); } }
   function openNoteBubble(anchor, text, hover) {
     if (_noteBubble && _noteBubble._anchor === anchor) { if (!hover) _noteBubble._hover = false; return; }
-    closeNoteBubble(); closeDlBubble();
+    closeNoteBubble();
+    if (!hover) closeDlBubble();                       // a click replaces the download list; a pointer passing over does not
     var b = el("div", "note-bubble", text); b._anchor = anchor; b._hover = !!hover;
-    b.setAttribute("role", "tooltip");
+    b.setAttribute("role", "tooltip"); b.id = "note-bubble";
     document.body.appendChild(b);
-    var ar = anchor.getBoundingClientRect(), w = b.offsetWidth;
+    anchor.setAttribute("aria-expanded", "true"); anchor.setAttribute("aria-describedby", b.id);
+    var ar = anchor.getBoundingClientRect(), w = b.offsetWidth, h = b.offsetHeight;
     b.style.left = Math.round(Math.min(Math.max(12, ar.left + ar.width / 2 - w / 2), window.innerWidth - w - 12)) + "px";
-    b.style.top = Math.round(ar.bottom + 8) + "px";
+    // below the marker, or above it where below runs off the screen and above has more room; capped either way
+    var below = window.innerHeight - ar.bottom - 20, above = ar.top - 20;
+    if (h > below && above > below) { b.style.maxHeight = above + "px"; b.style.top = Math.round(Math.max(12, ar.top - 8 - Math.min(h, above))) + "px"; }
+    else { b.style.maxHeight = Math.max(80, below) + "px"; b.style.top = Math.round(ar.bottom + 8) + "px"; }
     _noteBubble = b;
     setTimeout(function () {
+      if (_noteBubble !== b) return;                   // closed before the listeners went on (a quick hover sweep)
       document.addEventListener("pointerdown", _nbOutside, true);
       document.addEventListener("keydown", _nbKey, true);
       window.addEventListener("resize", closeNoteBubble);
       window.addEventListener("scroll", closeNoteBubble, true);
     }, 0);
   }
-  function noteMarker(cls, svg, text) {
+  function noteMarker(cls, svg, label, text) {
     var m = el("button", "scell-mark " + cls); m.type = "button";
-    m.innerHTML = svg; m.setAttribute("aria-label", text);
+    m.innerHTML = svg; m.setAttribute("aria-label", label); m.setAttribute("aria-expanded", "false");
     m.onclick = function (e) {
       e.stopPropagation();
       if (_noteBubble && _noteBubble._anchor === m && !_noteBubble._hover) closeNoteBubble();   // pinned → second click closes
       else openNoteBubble(m, text, false);                                                     // opens, or pins a hover's
     };
-    if (window.matchMedia && window.matchMedia("(hover: hover)").matches) {
-      m.onmouseenter = function () { openNoteBubble(m, text, true); };
-      m.onmouseleave = function () { if (_noteBubble && _noteBubble._anchor === m && _noteBubble._hover) closeNoteBubble(); };
-    }
+    m.onmouseenter = function () { if (_canHover && _canHover.matches) openNoteBubble(m, text, true); };
+    m.onmouseleave = function () { if (_noteBubble && _noteBubble._anchor === m && _noteBubble._hover) closeNoteBubble(); };
     return m;
   }
 
@@ -945,7 +957,7 @@
   function _scOutside(e) { if (_startChoice && !_startChoice.contains(e.target)) closeStartChoice(); }
   function _scKey(e) { if (e.key === "Escape") { e.preventDefault(); closeStartChoice(); } }
   function openStartChoice(anchor, c, onOpen, onGet) {
-    closeStartChoice(); closeDlBubble();
+    closeStartChoice(); closeDlBubble(); closeNoteBubble();
     var app = c.app || t("theApp");
     var b = el("div", "start-choice");
     b.appendChild(el("div", "start-choice-t", t("startHow")));
@@ -1135,7 +1147,7 @@
   }
   // the 3 buttons are a COMPACT popover above the button bar (like the Safari ask-on-tap) — NOT a full-screen card
   function showVktgzChoice(c, anchor) {
-    closeStartChoice(); closeDlBubble(); closeVktgzChoice(); closeVktgzHint();
+    closeStartChoice(); closeDlBubble(); closeVktgzChoice(); closeVktgzHint(); closeNoteBubble();
     var b = el("div", "start-choice mz-choice");
     b.appendChild(el("div", "start-choice-t", "VK TURN Proxy"));
     var mk = function (n, label, sub, fn, go) {
@@ -2281,7 +2293,7 @@
       // plain-mode turtle sits, and the one client setting that gets them full speed through the tunnel in its bubble
       // (operator, 2026-10-21: an icon, not a line — the line took room from the config on a crowded cell).
       var srv = it.tgt.p2p && cc.el.querySelector(".scell-srv");
-      if (srv) srv.appendChild(noteMarker("scell-p2p", MAGNET_SVG, t("p2pHint")));
+      if (srv) srv.appendChild(noteMarker("scell-p2p", MAGNET_SVG, t("p2pMark"), t("p2pHint")));
       srow.appendChild(cc.el); return cc.ctrl;
     });
     page.appendChild(srow);
@@ -2643,6 +2655,7 @@
   }
 
   function render(data, cryptoKey, keepPos) {
+    closeNoteBubble();                                 // its marker is about to leave the DOM, and its text may change language
     _lastData = data; _lastKey = cryptoKey;
     LANGS = (data.langs && data.langs.enabled && data.langs.enabled.length) ? data.langs.enabled : ["en"];
     LANG_DEFAULT = (data.langs && data.langs.default) || "en";
