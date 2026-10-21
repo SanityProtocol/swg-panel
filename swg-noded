@@ -7833,8 +7833,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
     if fdrop:
         L.append("  chain fdrop {")
         L.append("    ct original packets > 4 counter name dropped drop")
-        L += ["    %smeta l4proto %s %s counter name %s update @flag { ip saddr timeout 10m }" % (nf, l4, m, c)   # counted as in cls,
-              for c, l4, m in _P2P_SIGS]                     # else a flag kept alive here freezes the node's torrent count
+        L += ["    meta l4proto %s %s counter name %s %supdate @flag { ip saddr timeout 10m }" % (l4, m, c, nf)   # counted as in
+              for c, l4, m in _P2P_SIGS]   # cls (else a flag kept alive here freezes the torrent count); nf read on a hit only
         L.append("    counter name dropped drop")
         L.append("  }")
 

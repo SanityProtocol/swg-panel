@@ -91,10 +91,12 @@ SRC = open(NODED, encoding="utf-8").read()
 PLANTS = {   # name: (old text, planted text) — each re-introduces a defect the checks exist for
     "hit-add":      ('L.append("    %supdate @flag { ip saddr timeout 10m }" % nf)', 'L.append("    %sadd @flag { ip saddr timeout 10m }" % nf)'),   # S4: the 10-minute lapse
     "fdrop-skip":   ('"jump fdrop" if fdrop else "counter name dropped drop"', '"counter name dropped drop"'),   # S4: Block's lapse again
-    "fdrop-nf":     ('L += ["    %smeta l4proto %s %s counter name %s update @flag { ip saddr timeout 10m }" % (nf, l4, m, c)',
-                     'L += ["    %smeta l4proto %s %s counter name %s update @flag { ip saddr timeout 10m }" % ("", l4, m, c)'),   # F1: a bridge keeps a flag
-    "fdrop-uncounted": ('"    %smeta l4proto %s %s counter name %s update @flag { ip saddr timeout 10m }" % (nf, l4, m, c)',
-                        '"    %smeta l4proto %s %s update @flag { ip saddr timeout 10m }%s" % (nf, l4, m, c and "")'),   # F6: a frozen count
+    "fdrop-nf":     ('"    meta l4proto %s %s counter name %s %supdate @flag { ip saddr timeout 10m }" % (l4, m, c, nf)',
+                     '"    meta l4proto %s %s counter name %s %supdate @flag { ip saddr timeout 10m }" % (l4, m, c, "")'),   # F1: a bridge keeps a flag
+    "fdrop-uncounted": ('"    meta l4proto %s %s counter name %s %supdate @flag { ip saddr timeout 10m }" % (l4, m, c, nf)',
+                        '"    meta l4proto %s %s %supdate @flag { ip saddr timeout 10m }%s" % (l4, m, nf, c and "")'),   # F6: a frozen count
+    "fdrop-nf-first": ('"    meta l4proto %s %s counter name %s %supdate @flag { ip saddr timeout 10m }" % (l4, m, c, nf)',
+                       '"    %smeta l4proto %s %s counter name %s update @flag { ip saddr timeout 10m }" % (nf, l4, m, c)'),   # F11: nf on every packet
     "route-open":   ('    if a == "route":                                          # P3 is not built: an unrunnable route fails CLOSED, never open\n        return "block"\n', ""),
     "local-judged": ('    L.append("    fib daddr type local return")', '    pass'),
     "reply-judged": ('    L.append("    ct direction reply return")\n    L += ["    " + h for h in held]\n    # Traffic TO the node',
@@ -316,7 +318,10 @@ _REFRESH = {}   # table text → result: --perturb runs every check per plant in
 
 def _wire_refresh(table):
     if table not in _REFRESH:
-        _REFRESH[table] = _wire_refresh_run(table)
+        got = _wire_refresh_run(table)
+        if got is None:
+            return None                                       # a set-up that failed is tried again, never kept
+        _REFRESH[table] = got
     return _REFRESH[table]
 
 
@@ -1022,6 +1027,10 @@ def run_checks(src):
            and fd[-1].strip() == "counter name dropped drop"
            and all(l.strip().endswith(UPD) and " drop" not in l and "accept" not in l for l in mid),
            "[31] %s: fdrop drops packets past the 4th at once, reads 1-4 for one `update` per signature (no verdict), then drops" % k)
+        ok(len(mid) == len(m23._P2P_SIGS)
+           and all(l.strip().startswith("meta l4proto %s %s counter name %s " % (l4, m, c)) for l, (c, l4, m) in zip(mid, m23._P2P_SIGS)),
+           "[31] %s: each fdrop line compares its signature first and counts it in that signature's counter (as cls does; "
+           "the bridge / nofan test after it, read on a hit only)" % k)
         ok("jump fdrop" not in tb.split("  chain cls {")[0], "[31] %s: only cls jumps to fdrop" % k)
     if _sp23.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and _sp23.run(["which", "unshare"], capture_output=True).returncode == 0:
         # The client 10.9.0.2 is BLOCKED in all three (so its refresh is fdrop's): Block; Direct with its subnet strict;
@@ -1035,13 +1044,11 @@ def run_checks(src):
         for k in rtabs:
             got = _rf[k]
             if got is None:
-                print("  SKIPPED [31] real-kernel re-flag — the throwaway namespace could not be set up here")
-                break
+                print("  SKIPPED [31] real-kernel re-flag, %s — the throwaway namespace could not be set up here" % k)
+                continue
             ok(got[0] is not None and got[1] is not None and got[0] > 590 and got[1] > got[0] - 1.5,
                "[31] on the real kernel, %s: a DHT query 3 s after the first leaves the flag fresh again (%s s, then %s s; "
                "`add` runs it down by the 3 s)" % (k, got[0], got[1]))
-        fd_c = rtabs["block"]
-        ok("dht" in fd_c.split("  chain fdrop {")[1].split("\n  }")[0], "[31] fdrop counts its evidence in the signature counters")
     else:
         print("  SKIPPED [31] real-kernel re-flag — no `sudo -n` here")
     return fails
@@ -1052,9 +1059,9 @@ def main():
         missed = []
         for name, (old, new) in PLANTS.items():
             if old not in SRC:
-                print("PLANT %-13s anchor missing — fix the plant" % name); missed.append(name); continue
+                print("PLANT %-16s anchor missing — fix the plant" % name); missed.append(name); continue
             f = run_checks(SRC.replace(old, new, 1))
-            print("PLANT %-13s %s" % (name, ("RED  (" + f[0] + ")") if f else "GREEN — NOT CAUGHT"))
+            print("PLANT %-16s %s" % (name, ("RED  (" + f[0] + ")") if f else "GREEN — NOT CAUGHT"))
             if not f:
                 missed.append(name)
         print("perturb:", "all caught" if not missed else "MISSED " + ", ".join(missed))
