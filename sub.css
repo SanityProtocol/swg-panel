@@ -437,12 +437,15 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .scell-vkwarn-t { font-size: clamp(12px, 3.4vw, 13.5px); font-weight: 700; }
 .scell-vkwarn-d { margin-top: 0; font-size: clamp(11.5px, 3.3vw, 13px); font-weight: 500; }
 /* RAW-IP availability note — informational, not a warning: the peer's link works as-is, this is an optional
-   faster mode they can switch on by hand. Muted, so it never competes with the vk-missing warning above it. */
+   faster mode they can switch on by hand. Muted, so it never competes with the vk-missing warning above it (it goes inside
+   that warning's block when there is one, else into the header, whose own gap spaces it). */
 .scell-raw { max-width: 96%; margin: 6px auto 0; text-align: center; line-height: 1.2; color: var(--muted, #8aa0b4); }
 .scell-raw-t { font-size: clamp(11.5px, 3.2vw, 12.5px); font-weight: 700; color: #F0913C; }
 .scell-raw-d { margin-top: 1px; font-size: clamp(10.5px, 3vw, 11.5px); font-weight: 500; }
+.scell-node > .scell-raw { margin-top: 0; }
 
 /* Torrents allowed on this deployment → the client setting for full speed. Advice, not a status: muted, last in the header. */
+.scell-vk > .scell-p2p { margin-top: 6px; }
 .scell-p2p { max-width: 92%; margin: 0; color: var(--muted); font-size: clamp(11px, 3vw, 12px); font-weight: 500; line-height: 1.3; text-wrap: balance; }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */

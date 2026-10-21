@@ -1942,8 +1942,10 @@
           var wraw = el("div", "scell-raw");
           wraw.appendChild(el("div", "scell-raw-t", t("rawT")));
           wraw.appendChild(el("div", "scell-raw-d", t("rawD").replace("{port}", wd.raw_port)));
-          node.appendChild(wraw);   // in the header block, which the portrait layout measures — appended to the cell it sat
-                                    // outside it: under the down chevron on a phone, above the badges on a desktop
+          // In a block the portrait layout measures — appended to the cell it sat outside it: under the down chevron on a phone,
+          // above the badges on a desktop. Under the VK-missing warning when there is one (the warning is the fix the link
+          // needs; this is an option), else last in the header.
+          (wvkw || node).appendChild(wraw);
         }
         ctrl.cliApp = false; ctrl.vktgz = false;   // WDTT clients are apps, never a CLI/VKTGZ flow
         // The VK link is embedded IN the WDTT link (wrapAPassword+vkLink / wdtt://…:vkHash), so no separate "add this
@@ -2227,8 +2229,9 @@
     var ctrls = items.map(function (it) {
       var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason, multi);
       // Torrents may leave by this deployment (swg-sub sets p2p only then): the one client setting that gets them full speed
-      // through the tunnel. Last in the header block, which the portrait layout measures as one line.
-      if (it.tgt.p2p) cc.el.querySelector(".scell-node").appendChild(el("p", "scell-p2p", t("p2pHint")));
+      // through the tunnel. Last in a block the portrait layout measures — the VK block when the cell has one (what the link
+      // needs comes first, then the options), else the header.
+      if (it.tgt.p2p) (cc.el.querySelector(".scell-vk") || cc.el.querySelector(".scell-node")).appendChild(el("p", "scell-p2p", t("p2pHint")));
       srow.appendChild(cc.el); return cc.ctrl;
     });
     page.appendChild(srow);
