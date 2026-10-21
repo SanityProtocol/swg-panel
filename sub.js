@@ -899,15 +899,16 @@
   var _canHover = window.matchMedia ? window.matchMedia("(hover: hover)") : null;   // asked at event time (a mouse plugged in)
   function closeNoteBubble() {
     if (!_noteBubble) return;
-    if (_noteBubble._anchor) _noteBubble._anchor.setAttribute("aria-expanded", "false");
+    if (_noteBubble._anchor) { _noteBubble._anchor.setAttribute("aria-expanded", "false"); _noteBubble._anchor.removeAttribute("aria-describedby"); }
     _noteBubble.remove(); _noteBubble = null;
     document.removeEventListener("pointerdown", _nbOutside, true);
     document.removeEventListener("keydown", _nbKey, true);
     window.removeEventListener("resize", closeNoteBubble);
-    window.removeEventListener("scroll", closeNoteBubble, true);
+    window.removeEventListener("scroll", _nbScroll, true);
   }
   function _nbOutside(e) { if (_noteBubble && !_noteBubble.contains(e.target) && !_noteBubble._anchor.contains(e.target)) closeNoteBubble(); }
   function _nbKey(e) { if (e.key === "Escape") { e.preventDefault(); closeNoteBubble(); } }
+  function _nbScroll(e) { if (_noteBubble && !_noteBubble.contains(e.target)) closeNoteBubble(); }   // its own (capped) text scrolls
   function openNoteBubble(anchor, text, hover) {
     if (_noteBubble && _noteBubble._anchor === anchor) { if (!hover) _noteBubble._hover = false; return; }
     closeNoteBubble();
@@ -921,14 +922,14 @@
     // below the marker, or above it where below runs off the screen and above has more room; capped either way
     var below = window.innerHeight - ar.bottom - 20, above = ar.top - 20;
     if (h > below && above > below) { b.style.maxHeight = above + "px"; b.style.top = Math.round(Math.max(12, ar.top - 8 - Math.min(h, above))) + "px"; }
-    else { b.style.maxHeight = Math.max(80, below) + "px"; b.style.top = Math.round(ar.bottom + 8) + "px"; }
+    else { b.style.maxHeight = Math.max(24, below) + "px"; b.style.top = Math.round(ar.bottom + 8) + "px"; }   // no room either side: the larger, scrolled
     _noteBubble = b;
     setTimeout(function () {
       if (_noteBubble !== b) return;                   // closed before the listeners went on (a quick hover sweep)
       document.addEventListener("pointerdown", _nbOutside, true);
       document.addEventListener("keydown", _nbKey, true);
       window.addEventListener("resize", closeNoteBubble);
-      window.addEventListener("scroll", closeNoteBubble, true);
+      window.addEventListener("scroll", _nbScroll, true);
     }, 0);
   }
   function noteMarker(cls, svg, label, text) {

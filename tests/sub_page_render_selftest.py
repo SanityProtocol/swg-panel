@@ -68,6 +68,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-line       serves a sub.js that offers a csqtt server an app of another line → RED on [11]
      --perturb-ownline    serves a sub.js that offers the CSQTT app of the other line when no release of the server's is out → RED on [11]
      --perturb-chipline   serves a sub.js whose csqtt card no longer names the server's version → RED on [11]
+     --perturb-scrollclose serves a sub.js whose bubble closes on its own scroll → RED on [12]
      --perturb-pickmark   serves a sub.js whose picker copies the badge rows with their markers → RED on [12]
      --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
@@ -99,7 +100,8 @@ P_OWNLINE = "--perturb-ownline" in sys.argv
 P_CHIPLINE = "--perturb-chipline" in sys.argv
 P_P2PALL = "--perturb-p2pall" in sys.argv
 P_PICKMARK = "--perturb-pickmark" in sys.argv
-PERTURB = (P_P2PALL or P_PICKMARK or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+P_SCROLLCLOSE = "--perturb-scrollclose" in sys.argv
+PERTURB = (P_P2PALL or P_PICKMARK or P_SCROLLCLOSE or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE)
 
 FAILS = []
@@ -264,6 +266,9 @@ if P_LINE:
 if P_OWNLINE:
     perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;\n', "",
                   "the own app's release-line guard")
+if P_SCROLLCLOSE:
+    perturbed_web("function _nbScroll(e) { if (_noteBubble && !_noteBubble.contains(e.target)) closeNoteBubble(); }",
+                  "function _nbScroll(e) { closeNoteBubble(); }", "a scroll inside the bubble leaves it open")
 if P_PICKMARK:
     perturbed_web('          Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) { x.remove(); });\n', "",
                   "the picker's badge copies without their markers")
@@ -488,6 +493,14 @@ try:
     tab.ev("document.body.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); true"); time.sleep(0.2)
     out = tab.ev(NB)
     check("[12] Escape closes it, and so does a press anywhere else", esc == "" and out == "", (esc, out))
+    tab.ev(TAP); time.sleep(0.3)
+    inner = tab.ev("(() => { const b=document.querySelector('.note-bubble'); b.style.maxHeight='30px'; b.scrollTop=20;"
+                   " b.dispatchEvent(new Event('scroll')); return !!document.querySelector('.note-bubble') })()"); time.sleep(0.2)
+    tab.ev("document.dispatchEvent(new Event('scroll')); true"); time.sleep(0.2)
+    page = tab.ev(NB)
+    stale = tab.ev("[...document.querySelectorAll('.scell-p2p')].filter(m => m.hasAttribute('aria-describedby')).length")
+    check("[12] scrolling the bubble's own capped text keeps it open; a page scroll closes it; no closed marker still points at a bubble",
+          inner is True and page == "" and stale == 0, (inner, page, stale))
     tab.ev(TAP); time.sleep(0.3)
     tab.ev("document.querySelector('[data-pick]').click(); true"); time.sleep(0.6)
     # Anna has two devices: the picker opens on them, and a device's connections — the badge copies — are one level down
