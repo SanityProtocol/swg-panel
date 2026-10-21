@@ -17569,8 +17569,10 @@ def list_ensure(cat, tier, force=False):
     # refresh: the manifest builder forces every list that has no copy yet (`_due = not meta`), on every node sync —
     # so a force that skipped the back-off re-fetched a list that never lands every five seconds, per node. A copy in
     # hand keeps being served meanwhile. The one exemption is a union's FIRST build: a local merge, no fetch, and
-    # nothing to serve until it exists. (An operator's explicit retry clears the record — /api/list-info.)
-    if list_failed(cat, tier) and (not _union or m):
+    # nothing to serve until it exists. (An operator's explicit retry clears the record — /api/list-info.) A union stored
+    # EMPTY (every address cut — the bogons, the Never-block list) backs off too, but only while it is made of the members it
+    # was built from: the same merge gives the same nothing, and a member that changed is built at once.
+    if list_failed(cat, tier) and (not _union or _meta_n(m) or (m and (m.get("mv") or {}) == _blku_member_vers(cat, tier))):
         return m
     with _LIST_LOCK:
         if k in _LIST_INFLIGHT:
@@ -19635,9 +19637,9 @@ def _blku_key(tier, src_ids, allow=()):
     # `nb;` (ip only): the unions built with the bogon cut (_BLKU_NEVER) are NEW lists, so a node loads them at once instead
     # of in its nightly window — an ip union built before the cut cuts clients off from their own peers and LAN.
     # `al:` (an address union, while the Never-block list holds addresses — the caller passes `allow` only then, and fills
-    # _BLKU_ALLOW from the same value): the networks cut out of it, so an edit of the list names a NEW union every node loads
-    # at once — a fleet without addresses on the list keeps every union's name.
-    al = ("al:" + ",".join(allow) + ";") if allow else ""
+    # _BLKU_ALLOW from the same value; a host union never carries it, whatever is passed): the networks cut out of it, so an
+    # edit of the list names a NEW union every node loads at once — a fleet without addresses on the list keeps every name.
+    al = ("al:" + ",".join(allow) + ";") if allow and tier == "ip" else ""
     return "blku:" + tier + ":" + hashlib.sha1((("nb;" if tier == "ip" else "") + al + ";".join(sorted(set(src_ids)))).encode()).hexdigest()[:12]
 
 
@@ -23661,6 +23663,7 @@ def api(method, path, qs, body, deps):
         # Never-block list with names → a node has to apply `smart.allow` where a block list runs by name: a ready host-tier
         # feed of an interface's filters, by the one rule the datapath uses (_block_feeds — mode, availability, providers).
         _nb_bc = (block_catalog(panel_settings), block_providers_enabled(panel_settings)) if block_allow_split(panel_settings)[0] else None
+        _nb_rdy = {}                                  # sid → ready, once per build: every node's lists name the same few feeds
         # operator-set order (POST /api/order): `pos` ascending, unordered nodes after, by created
         for nid, c in sorted(nodes.items(), key=lambda kv: (kv[1].get("pos", 1 << 30), kv[1].get("created", 0), kv[0])):
             snap = snaps.get(nid) or {}
@@ -23763,8 +23766,9 @@ def api(method, path, qs, body, deps):
                                 clash=[dict(e, **{k: (nodes.get(e[k]) or {}).get("name") or e[k]
                                                   for k in ("node", "via") if e.get(k)})
                                        for e in (Handler.deps.get("cas_clash") or {}).get(nid) or ()], exits_offline=_offx,
-                                never_block=_nb_bc is not None and (c.get("routing_mode") or "kernel") in ("forcedns", "sni")
-                                and any(t == "host" and _blku_ready(sid, t) is not None for lst in _node_block_lists(c)
+                                never_block=_nb_bc is not None and not ((snap.get("smartroute") or {}).get("allow") if isinstance(snap.get("smartroute"), dict) else 0)
+                                and any(t == "host" and (_nb_rdy[sid] if sid in _nb_rdy else _nb_rdy.setdefault(sid, _blku_ready(sid, t) is not None))
+                                        for lst in _node_block_lists(c)
                                         for prs in _block_feeds(_nb_bc[0], _nb_bc[1], nid, c.get("routing_mode") or "kernel", lst)[0].values()
                                         for sid, t in prs))
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
@@ -24443,7 +24447,9 @@ def api(method, path, qs, body, deps):
             _raw = incoming["block_allow"]
             _items = _raw if isinstance(_raw, list) else re.split(r"[\s,]+", str(_raw or ""))
             _items = list(dict.fromkeys(x for x in (str(_it or "").strip() for _it in _items) if x))
-            if len(_items) > BLOCK_ALLOW_MAX:         # refused before anything is read: this runs under the api lock
+            if len(_items) > 4 * BLOCK_ALLOW_MAX:     # refused before anything is read: this runs under the api lock. Raw
+                # spellings, so a bound with room for several per entry (`1.2.3.4`, `1.2.3.4/32`, `Example.com`); the limit
+                # itself is on the stored entries below.
                 return 400, {"ok": False, **perr("Too many entries on the Never-block list — {v1} over the limit of {v2}.",
                                                  v1=str(len(_items) - BLOCK_ALLOW_MAX), v2=str(BLOCK_ALLOW_MAX)), "code": "bad_request"}
             _keep, _bad, _broad = {}, [], []

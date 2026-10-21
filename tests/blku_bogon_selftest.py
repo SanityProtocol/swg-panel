@@ -16,9 +16,9 @@ real IP normaliser from a file:// feed) and `_blku_store` (builds the union).
       inside a listed range splits it, a listed range inside an allowed one goes — under a new union name; its names
       change nothing
   [5] a union the list empties is built once and then waits out the back-off like any empty list — not rebuilt (two
-      fsync'd writes) on every node sync
+      fsync'd writes) on every node sync; a member that changes is built at once, not after the back-off
 
-Run: python3 tests/blku_bogon_selftest.py      --plant nocut | norename | noallow | rebuild   (exit 0 when caught)
+Run: python3 tests/blku_bogon_selftest.py      --plant nocut | norename | noallow | rebuild | stuck   (exit 0 when caught)
 """
 import importlib.machinery, importlib.util, ipaddress, os, sys, tempfile, time
 
@@ -29,7 +29,8 @@ PLANTS = {"nocut": ("[1] [2] [4]", "        items = [str(n) for n in ipaddress.c
                     "        items = [str(n) for n in ipaddress.collapse_addresses(nets)]"),
           "norename": ("[3]", '(("nb;" if tier == "ip" else "") + al + ";".join(', '(al + ";".join('),
           "noallow": ("[4]", "        _al = [ipaddress.ip_network(n) for n in (_BLKU_ALLOW.get(cat) or ())]", "        _al = []"),
-          "rebuild": ("[5]", "    if list_failed(cat, tier) and (not _union or m):", "    if list_failed(cat, tier) and (not _union or _meta_n(m)):")}
+          "rebuild": ("[5]", '    if list_failed(cat, tier) and (not _union or _meta_n(m) or (m and (m.get("mv") or {}) == _blku_member_vers(cat, tier))):', "    if list_failed(cat, tier) and (not _union or _meta_n(m)):"),
+          "stuck": ("[5]", '    if list_failed(cat, tier) and (not _union or _meta_n(m) or (m and (m.get("mv") or {}) == _blku_member_vers(cat, tier))):', "    if list_failed(cat, tier) and (not _union or m):")}
 FAILS, SECTION = [], [""]
 
 
@@ -145,6 +146,12 @@ check("built once, empty", len(builds) == 1 and m._meta_n(m.list_meta(cat6[0], "
 for _ in range(5):                                       # five node syncs
     m.list_ensure(cat6[0], "ip"); settle()
 check("…and not again on the next syncs (it waits out the back-off)", len(builds) == 1, len(builds))
+open(os.path.join(feeds, "lvl1.txt"), "w").write("\n".join(NEVER + PUBLIC + ["96.0.0.0/4", "10.20.0.0/16", "203.0.113.0/24"]) + "\n")
+m._LIST_FAILED.pop("blk:ti:lvl1|ip", None)
+m.list_ensure("blk:ti:lvl1", "ip", force=True); settle()
+m.list_ensure(cat6[0], "ip"); settle()
+check("a member that changed is built at once, back-off or not (203.0.113.0/24 now blocked)",
+      len(builds) == 2 and "203.0.113.0/24" in open(m._list_path(cat6[0], "ip")).read().split(), (len(builds), m.list_meta(cat6[0], "ip")))
 m._blku_store = _real
 
 print()

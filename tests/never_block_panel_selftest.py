@@ -33,7 +33,7 @@ SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-ser
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""
 PLANTS = {
     "nowire": ("[2]", '                                          **({"allow": list(_nb_names)}', '                                          **({}'),
-    "noname": ("[3]", '    al = ("al:" + ",".join(allow) + ";") if allow else ""', '    al = ""'),
+    "noname": ("[3]", '    al = ("al:" + ",".join(allow) + ";") if allow and tier == "ip" else ""', '    al = ""'),
     "nocard": ("[4]", "    if never_block and _srp is not None and not _srp.get(\"allow\"):", "    if False:"),
 }
 FAILS, SECTION = [], [""]
@@ -163,6 +163,10 @@ try:
         check("refused, named, 400 not 500: %r (%s)" % (bad, why),
               code == 400 and bad.split()[0].lower() in json.dumps(r).lower() and settings().get("block_allow", [])[:1] == ["example.com"],
               (code, r))
+    code, r = req("/api/panel/settings", {"block_allow": ["203.0.%d.%d" % (i // 250, i % 250) for i in range(300)]
+                                                          + ["203.0.%d.%d/32" % (i // 250, i % 250) for i in range(300)]})
+    check("600 spellings of 300 entries (1.2.3.4 and 1.2.3.4/32): taken — the limit is on what is stored",
+          code == 200 and len(settings().get("block_allow") or []) == 300, (code, r, len(settings().get("block_allow") or [])))
     code, r = req("/api/panel/settings", {"block_allow": []})
     check("an empty list removes the key", code == 200 and "block_allow" not in settings(), settings().get("block_allow"))
 

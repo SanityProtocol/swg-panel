@@ -5467,7 +5467,7 @@ def _smart_shadows(smart_e, domains, pats, engine, insig=None, allow=()):
                 for j in range(1, len(lb) - (0 if engine == "dns" else 1)):   # parents (swg-sni's domain map needs two labels)
                     hit += [(c, rank("site", ".".join(lb[j:]))) for c in of("site", ".".join(lb[j:]))]
                 hit += [(c, rank("zone", lb[-1])) for c in of("zone", lb[-1])]
-                if allow and _nb_under(n, allow):              # a Never-block name: no block list contains it
+                if allow and not str(c1).startswith(_NB_UNION) and _nb_under(n, allow):   # a Never-block name: no block list contains it
                     hit = [(c, r) for c, r in hit if not str(c).startswith(_NB_UNION)]
                 hit += [(c, rank("any", x, lb)) for x in lb for c in of("any", x)]
                 hit += [(c, rank("ends", o)) for o, cs in t2["ends"] if n.endswith(o) for c in cs]
@@ -7104,7 +7104,7 @@ def _dns_upstream(raw):
         out.append(str(a) + ("#%d" % pn if port else ""))
     return tuple(dict.fromkeys(out)) or SMART_DNS_UPSTREAM_DEFAULT
 
-def _dom_signature(smart_e, domains, zones, fetched, upstream=SMART_DNS_UPSTREAM_DEFAULT, allow=()):
+def _dom_signature(smart_e, domains, zones, fetched, upstream=SMART_DNS_UPSTREAM_DEFAULT, allow=(), pats=None):
     """The domain tier's drift signature. Unchanged inputs skip BOTH the enrich union and the (equally
     expensive) dnsmasq config rebuild, so anything that can change what the config says has to be in here —
     `zones` above all, because a zone-only edit changes no domain and would otherwise never land on the node.
@@ -7112,8 +7112,9 @@ def _dom_signature(smart_e, domains, zones, fetched, upstream=SMART_DNS_UPSTREAM
     return (tuple(sorted({e["subnet"] for e in smart_e})), json.dumps(domains, sort_keys=True),
             json.dumps(zones or {}, sort_keys=True),
             tuple(sorted((c, _DOM_CACHE.get(c, (None,))[0]) for c in (fetched or {}))),
-            tuple(upstream)) + ((tuple(allow),) if allow else ())   # an upstream change rewrites the conf NOW, not on the 12th-pass
-                                                                      # forced rebuild; the Never-block list re-tiers, and only when set
+            tuple(upstream)) + ((tuple(allow), json.dumps({k: v for k, v in (pats or {}).items() if k != "zone"}, sort_keys=True))
+                                if allow else ())   # an upstream change rewrites the conf NOW, not on the 12th-pass forced rebuild;
+    # the Never-block list re-tiers, and only when set — with the pattern rules, which its keys are made from (_never_block_adjust)
 
 
 # ── Never-block list, names (docs/NEVER-BLOCK-AND-PORT-RULES-PLAN.md A.3) ─────────────────────────────────────────────────
@@ -7122,13 +7123,18 @@ def _dom_signature(smart_e, domains, zones, fetched, upstream=SMART_DNS_UPSTREAM
 # dnsmasq's directives and swg-sni's sni-map.json — so swg-sni itself is unchanged. Only a block list (a `blku:host:` union)
 # loses anything: the operator's own Block rules, rule names and the abuse protections are not touched.
 #
-# An allowed name a union still WINS through a parent (the union lists `tracker.com`, `cdn.tracker.com` is allowed, and no
-# more specific key claims it) needs a key of its own, because both engines answer with the most specific key. That key
-# carries exactly what the engine's own ladder answers for the name with the unions left out — a rule's site, zone or
-# pattern, so the name is routed as it would be with no block list at all — or, when nothing else claims it, this reserved
-# category, which has no nft set (dnsmasq gives the key `dnsok` alone) and is in swg-sni's `nolearn`. Its folded set name
-# (_smart_setname) is longer than any custom list id can fold to, so no list can ever share its set. The shadow sets
-# (_smart_shadows) skip a union as the container of an allowed name, so another audience's rule cannot hand it back.
+# An allowed name a union still covers through a PARENT or a zone (the union lists `tracker.com`, `cdn.tracker.com` is
+# allowed) gets a key of its own: both engines answer with the most specific key, and the union's parent would otherwise
+# take the name — or the names under it — and a shadow of the union (_smart_shadows) could carry it to another audience's
+# rule. That key carries exactly what the engine's own ladder answers for the name with the unions left out — a rule's site,
+# zone or pattern, so the name is routed as it would be with no block list at all — or, when nothing else claims it, this
+# reserved category, which has no nft set (dnsmasq gives the key `dnsok` alone) and is in swg-sni's `nolearn`. Its folded
+# set name (_smart_setname) is longer than any custom list id can fold to, so no list can ever share its set. The shadow
+# sets skip a union as the container of an allowed name, so another audience's rule cannot hand it back.
+#
+# KNOWN LIMIT (Hybrid SNI): the key is a domain key, which swg-sni also matches for every name UNDER the allowed one, so
+# such a name takes the allowed name's answer — never blocked, but routed by it even where a pattern (`img.*`, `*cdn*`)
+# would have routed that name alone differently. Telling them apart would take swg-sni's own matching, which stays as it is.
 NEVER_BLOCK_CAT = "~swg-never-block-reserved"
 _NB_UNION = "blku:host:"
 
@@ -7151,7 +7157,8 @@ def _never_block_adjust(domains, pats, allow, engine):
     ONE PASS, AND NO SET OF A LIST. A union runs to ~400k names; the candidates — every suffix of every allowed name — are a
     few thousand at most, and each list is walked once against them. A union name at or under an allowed name is dropped;
     every candidate met on the way (a union's only if it is kept) records the categories that list it, which is all the
-    ladder below needs."""
+    ladder below needs. `pats` takes part in the domain-tier signature while the list is set (_dom_signature), so a
+    pattern rule's edit runs this again."""
     allow = set(allow or ())
     if not allow:
         return
@@ -7168,10 +7175,15 @@ def _never_block_adjust(domains, pats, allow, engine):
     for c in list(domains):
         lst = domains[c] or []
         if str(c).startswith(_NB_UNION):
-            keep = [d for d in lst if not _nb_under(d, allow)]
+            keep = []
+            for d in lst:
+                if not _nb_under(d, allow):
+                    keep.append(d)
+                    if d in cand:
+                        hit.setdefault(d, set()).add(c)
             if len(keep) != len(lst):
                 domains[c] = keep                              # a new list: the old one may be a cache's (_DOM_CACHE)
-            lst = keep
+            continue
         for d in lst:
             if d in cand:
                 hit.setdefault(d, set()).add(c)
@@ -7189,10 +7201,10 @@ def _never_block_adjust(domains, pats, allow, engine):
                     (t2 if kd in t2 else idx)[kd].setdefault(o, set()).add(c)
     t2 = {kd: sorted(v.items(), key=lambda kv: (-len(kv[0]), kv[0])) for kd, v in t2.items()}   # longest first (_bucket)
 
-    def ladder(a, unions):
-        """The categories the engine answers `a` with — the first rung that answers wins (swg-sni _match; dnsmasq: the
-        longest key, a zone being a one-label key). `unions` False: as if no block list existed."""
-        ok = (lambda cs: set(cs or ())) if unions else (lambda cs: {c for c in (cs or ()) if not c.startswith(_NB_UNION)})
+    def ladder(a):
+        """The categories the engine answers `a` with as if no block list existed — the first rung that answers wins
+        (swg-sni _match; dnsmasq: the longest key, a zone being a one-label key)."""
+        ok = lambda cs: {c for c in (cs or ()) if not c.startswith(_NB_UNION)}
         lb = a.split(".")
         if engine == "dns":
             for k in range(len(lb)):
@@ -7219,11 +7231,15 @@ def _never_block_adjust(domains, pats, allow, engine):
                     if got:
                         return got
         return set()
+    uz = {z for z, cs in idx["zone"].items() if any(c.startswith(_NB_UNION) for c in cs)}
     add = {}
     for a in sorted(allow):
-        if any(c.startswith(_NB_UNION) for c in ladder(a, True)):
-            for c in (ladder(a, False) or {NEVER_BLOCK_CAT}):
-                add.setdefault(c, []).append(a)
+        lb = a.split(".")
+        if hit.get(a) or not (lb[-1] in uz or any(c.startswith(_NB_UNION) for k in range(1, len(lb)) for c in hit.get(".".join(lb[k:]), ()))):
+            continue                                           # a rule keys it already (the union's own entry was cut), or no union
+            #                                                    covers it through a parent: the cut was all it needed
+        for c in (ladder(a) or {NEVER_BLOCK_CAT}):
+            add.setdefault(c, []).append(a)
     for c, names in add.items():
         domains[c] = list(domains.get(c) or []) + names        # a copy: never append to a list some cache holds
 
@@ -11196,7 +11212,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # to those nodes only; the engine test keeps every other engine's signature as it was whatever a reply carries.
     _nb_allow = (sorted({a for a in ((smart or {}).get("allow") or ()) if isinstance(a, str) and _DOM_RE.match(a)})
                  if host_engine in ("dns", "sni_user") else [])
-    dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched, _dns_up, allow=_nb_allow)
+    dom_sig = _dom_signature(_dns_e, domains, _zones, _fetched, _dns_up, allow=_nb_allow, pats=_pats)
     _dt = _DOMTIER_CACHE.get("v")
     dom_unchanged = bool(_dt and _dt[0] == dom_sig)
     if dom_unchanged:

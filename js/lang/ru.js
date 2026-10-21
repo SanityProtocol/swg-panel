@@ -2107,6 +2107,7 @@ export const STR = {
   "To stop the port-scan guard flagging one of your own machines, use Trusted sources (Settings → Network).": "Чтобы защита от сканов портов не отмечала вашу собственную машину, используйте «Доверенные источники» (Настройки → Сеть).",
   "Never-block list updated": "Список «Не блокировать» обновлён",
   "Sites and addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Сайты и адреса из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",
+  "Sites on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Сайты из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",
   "Addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.": "Адреса из списка «Не блокировать» (Настройки → Провайдеры гео-данных → Блокировки) здесь убираются из этих списков.",
   "Never block takes site names and IPv4 addresses or ranges — not {v1}": "«Не блокировать» принимает имена сайтов и IPv4-адреса или диапазоны — не {v1}",
   "Too broad for the Never-block list (use /8 or narrower): {v1}": "Слишком широкий диапазон для списка «Не блокировать» (используйте /8 или уже): {v1}",

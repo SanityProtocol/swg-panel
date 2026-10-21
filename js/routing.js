@@ -1160,21 +1160,23 @@ export function blockActiveN(node, value) {
       : ((c.enabled_nodes || []).includes(node) && blockCatLive(mode, bc.providers, c))); }).length;
 }
 
+// The Never-block list under an interface's content filters — where an operator looks when a site is blocked. Names are taken
+// out only by a Force-DNS / Hybrid SNI node whose noded reports `allow`; addresses by the panel, on every node. Entries read by
+// the rules' own grammar (classifyAll), as the Settings box reads them.
+function nbLine(node, mode) {
+  const kinds = new Set(classifyAll((Store.panelSettings?.block_allow || []).join("\n")).map(c => c.kind));
+  const names = kinds.has("site") && (mode === "forcedns" || mode === "sni") && !!((Store.stats[node] || {}).smartroute || {}).allow;
+  const nets = kinds.has("ip");
+  if (!names && !nets) return null;
+  return html`<div class="hint blk-allow">${names && nets ? T("Sites and addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")
+    : names ? T("Sites on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")
+    : T("Addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")}</div>`;
+}
+
 // Per-interface "Block traffic" (screen ③) — the daily policy surface. Content/IP categories the operator enabled on
 // THIS node plus the built-in traffic/abuse mechanisms; a chip toggles the category id in the interface's block[], and
 // the node drops matching traffic on its next sync. Domain (content) categories are inert on an IP-only (kernel) node
 // — shown greyed with a reason, the choice kept for when the mode changes.
-// The Never-block list under an interface's content filters — where an operator looks when a site is blocked. Names are taken
-// out only by a Force-DNS / Hybrid SNI node whose noded reports `allow`; addresses by the panel, on every node.
-function nbLine(node, mode) {
-  const nb = Store.panelSettings?.block_allow || [];
-  const isNet = x => /^\d{1,3}(\.\d{1,3}){3}(\/\d+)?$/.test(x);
-  const byName = (mode === "forcedns" || mode === "sni") && !!((Store.stats[node] || {}).smartroute || {}).allow && nb.some(x => !isNet(x));
-  if (!byName && !nb.some(isNet)) return null;
-  return html`<div class="hint blk-allow">${byName ? T("Sites and addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")
-    : T("Addresses on the Never-block list (Settings → Geo data providers → Blocking) are taken out of these lists here.")}</div>`;
-}
-
 export function BlockTraffic({ node, value, onChange }) {
   useStore(); useEffect(() => { loadBlockCatalog(); }, []);
   const bc = Store.blockCatalog;

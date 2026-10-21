@@ -781,7 +781,7 @@
           Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) {
             var icon = el("span"); icon.className = x.className; icon.classList.remove("scell-mark");
             icon.setAttribute("role", "img"); icon.setAttribute("aria-label", x.getAttribute("aria-label") || "");
-            icon.title = x.getAttribute("aria-label") || "";   // the row is the button: the icon names itself by its label
+            icon.title = x.getAttribute("data-note") || x.getAttribute("aria-label") || "";   // no bubble in a row button: the note
             while (x.firstChild) icon.appendChild(x.firstChild);
             x.replaceWith(icon);
           });
@@ -943,6 +943,7 @@
   function noteMarker(cls, svg, label, text) {
     var m = el("button", "scell-mark " + cls); m.type = "button";
     m.innerHTML = svg; m.setAttribute("aria-label", label); m.setAttribute("aria-expanded", "false");
+    m.setAttribute("data-note", text);   // the picker's copy has no bubble: its icon shows this as a tooltip
     m.onclick = function (e) {
       e.stopPropagation();
       if (_noteBubble && _noteBubble._anchor === m && !_noteBubble._hover) closeNoteBubble();   // pinned → second click closes

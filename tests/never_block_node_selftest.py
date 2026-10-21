@@ -13,7 +13,9 @@ transaction model, and swg-sni's `Classifier` fed real ClientHello packets:
  [1b] the engine's own ladder decides the key: a more specific rule name than the union's parent needs no key (and gains
       no broader Block); a rule ZONE (dnsmasq, swg-sni) or a PATTERN (swg-sni) that would route the name keeps it; an
       allowed parent that was itself cut covers nothing
- [1c] the shadow sets: a rule for other devices naming an allowed name never hands it back to the union
+ [1c] the shadow sets: a rule for other devices naming an allowed name — or a name between the union's entry and it —
+      never hands it back to the union; under a pattern that answers the allowed name, the names below it are not left to
+      a union zone
   [2] dnsmasq: the parent keeps its union set; the allowed name's own key carries `dnsok` alone; with no Block to spare it
       from (D2 off) no directive is written for it; a list that touches nothing leaves the conf byte-identical
   [3] swg-sni: the reserved category is in `nolearn` only when it holds names (sni-blocks.json otherwise as before); the
@@ -30,6 +32,8 @@ Hermetic. Run: python3 tests/never_block_node_selftest.py   (0 = pass)
      nokey       an allowed name under a union parent gets no key of its own                   [1] [3]
      noladder    the key ignores the ladder: always the reserved category                      [1] [1b]
      noshadow    the shadow sets ignore the list                                               [1c]
+     nearparent  only a union listing the DIRECT parent gives a key                            [1c]
+     nopatsig    the signature ignores the pattern rules                                       [4]
      nolearn     the reserved category is not in swg-sni's nolearn                             [3]
      blkorder    the map is always written before the verdicts                                 [3]
      dnsempty    a key with no set is written as a directive anyway                            [2]
@@ -55,11 +59,12 @@ def check(name, cond, detail=""):
 
 
 PLANTS = {
-    "nocut": ('            keep = [d for d in lst if not _nb_under(d, allow)]', '            keep = list(lst)'),
-    "nokey": ('            for c in (ladder(a, False) or {NEVER_BLOCK_CAT}):\n                add.setdefault(c, []).append(a)',
-              '            pass'),
-    "noladder": ('for c in (ladder(a, False) or {NEVER_BLOCK_CAT}):', 'for c in {NEVER_BLOCK_CAT}:'),
-    "noshadow": ('                if allow and _nb_under(n, allow):', '                if False:'),
+    "nocut": ('                if not _nb_under(d, allow):\n                    keep.append(d)', '                if True:\n                    keep.append(d)'),
+    "nokey": ('        for c in (ladder(a) or {NEVER_BLOCK_CAT}):\n            add.setdefault(c, []).append(a)', '        pass'),
+    "noladder": ('for c in (ladder(a) or {NEVER_BLOCK_CAT}):', 'for c in {NEVER_BLOCK_CAT}:'),
+    "noshadow": ('                if allow and not str(c1).startswith(_NB_UNION) and _nb_under(n, allow):', '                if False:'),
+    "nearparent": ('for k in range(1, len(lb)) for c in hit.get(', 'for k in range(1, 2) for c in hit.get('),
+    "nopatsig": ('json.dumps({k: v for k, v in (pats or {}).items() if k != "zone"}, sort_keys=True)', '""'),
     "nolearn": ('| ({NEVER_BLOCK_CAT} & set(name_cats or ()))', '| set()'),
     "blkorder": ('    _nb_first = bool((domains or {}).get(NEVER_BLOCK_CAT))', '    _nb_first = False'),
     "dnsempty": ('        if sns:                                                # a Never-block key', '        if True:  # a Never-block key'),
@@ -151,8 +156,8 @@ print("\n[1b] the engine's own ladder decides the key")
 for eng in ("dns", "sni_user"):
     D = {U: ["example.com"], "blockY": ["example.com"], "directX": ["b.example.com"]}
     N._never_block_adjust(D, {}, ["a.b.example.com"], eng)
-    check("%s: a rule name more specific than the union's parent already wins — no key, no broader Block gained" % eng,
-          D == {U: ["example.com"], "blockY": ["example.com"], "directX": ["b.example.com"]}, D)
+    check("%s: a rule name more specific than the union's parent wins — the key carries that rule alone, no broader Block" % eng,
+          D == {U: ["example.com"], "blockY": ["example.com"], "directX": ["b.example.com", "a.b.example.com"]}, D)
     D = {U: ["tracker.ru"]}
     N._never_block_adjust(D, {"zone": {"exitE": ["ru"]}}, ["cdn.tracker.ru"], eng)
     check("%s: a rule ZONE that would route the name keeps it (cdn.tracker.ru → the *.ru Exit, not the catch-all)" % eng,
@@ -190,6 +195,20 @@ for eng in ("dns", "sni_user"):
         else:
             check("%s: …while without the list the union's shadow still holds the rule's name under its parent" % eng,
                   "cdn.tracker.com" in held, held)
+    D = {U: ["tracker.com"], "exitX": ["foo.tracker.com"]}     # a name BETWEEN the union's entry and the allowed one
+    N._never_block_adjust(D, {}, ["cdn.foo.tracker.com"], eng)
+    N._SHADOW.update(k=None, v={})
+    shw = N._smart_shadows([{"subnet": SA, "category": U, "action": "block"}, {"subnet": SB, "category": "exitX", "action": "exit"}],
+                           D, {}, eng, insig=None, allow=["cdn.foo.tracker.com"])
+    sh_u = [sh for sh, _c1, _m in (shw.get("by_target") or {}).get(U, ())]
+    check("%s: a rule for other devices names a name between the union's entry and the allowed one: the allowed name gets "
+          "its own key (that rule's), more specific than the union's shadow of the rule's name" % eng,
+          "cdn.foo.tracker.com" in D["exitX"] and not any("cdn.foo.tracker.com" in (shw.get("domains") or {}).get(sh, ()) for sh in sh_u)
+          and any("foo.tracker.com" in (shw.get("domains") or {}).get(sh, ()) for sh in sh_u), (D, shw.get("domains")))
+D = {U: ["placeholder.io"]}
+N._never_block_adjust(D, {"zone": {UZ: ["ru"]}, "first": {"patF": ["site"]}}, ["site.ru"], "sni_user")
+check("sni_user: a first-label rule answers the allowed name and a union ZONE covers it: it is keyed to the rule, so the "
+      "names under it (img.site.ru) meet the key, not the zone", D.get("patF") == ["site.ru"], D)
 
 # ── [2] dnsmasq ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[2] dnsmasq")
@@ -364,6 +383,13 @@ check("only the name engines read the list (dns, sni_user)", 'if host_engine in 
 sig = N._dom_signature([{"subnet": S0}], {"a": ["x.y"]}, {}, {})
 check("the list joins the signature only when set", N._dom_signature([{"subnet": S0}], {"a": ["x.y"]}, {}, {}, allow=()) == sig
       and N._dom_signature([{"subnet": S0}], {"a": ["x.y"]}, {}, {}, allow=["p.q"]) != sig)
+_P1, _P2 = {"zone": {"z": ["ru"]}, "contains": {"p": ["cdn"]}}, {"zone": {"z": ["ru"]}, "contains": {"p": ["cdn"], "q": ["img"]}}
+check("with the list set, a pattern rule's edit moves the signature (the keys are made from it)",
+      N._dom_signature([{"subnet": S0}], {"a": ["x.y"]}, {}, {}, allow=["p.q"], pats=_P1)
+      != N._dom_signature([{"subnet": S0}], {"a": ["x.y"]}, {}, {}, allow=["p.q"], pats=_P2))
+check("…and without it the signature is as before, whatever the patterns",
+      N._dom_signature([{"subnet": S0}], {"a": ["x.y"]}, {}, {}, pats=_P2) == sig)
+check("the reconcile passes the patterns", "allow=_nb_allow, pats=_pats)" in body)
 check("the node reports `allow` in its smart status", '"allow": 1}' in src[src.index("def smart_status"):])
 
 # ── [5] cost ──────────────────────────────────────────────────────────────────────────────────────────────────────────────

@@ -72,6 +72,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-turtlespan serves a sub.js whose turtle is the old span with a title again → RED on [12]
      --perturb-scrollclose serves a sub.js whose bubble closes on its own scroll → RED on [12]
      --perturb-pickmark   serves a sub.js whose picker copies the badge rows with their marker buttons → RED on [12]
+     --perturb-pickshort  serves a sub.js whose picker icons show the short label as their tooltip → RED on [12]
      --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
@@ -102,9 +103,10 @@ P_OWNLINE = "--perturb-ownline" in sys.argv
 P_CHIPLINE = "--perturb-chipline" in sys.argv
 P_P2PALL = "--perturb-p2pall" in sys.argv
 P_PICKMARK = "--perturb-pickmark" in sys.argv
+P_PICKSHORT = "--perturb-pickshort" in sys.argv
 P_SCROLLCLOSE = "--perturb-scrollclose" in sys.argv
 P_TURTLESPAN = "--perturb-turtlespan" in sys.argv
-PERTURB = (P_P2PALL or P_PICKMARK or P_SCROLLCLOSE or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+PERTURB = (P_P2PALL or P_PICKMARK or P_PICKSHORT or P_SCROLLCLOSE or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE)
 
 FAILS = []
@@ -278,6 +280,8 @@ if P_TURTLESPAN:
 if P_SCROLLCLOSE:
     perturbed_web("function _nbScroll(e) { if (_noteBubble && !_noteBubble.contains(e.target)) closeNoteBubble(); }",
                   "function _nbScroll(e) { closeNoteBubble(); }", "a scroll inside the bubble leaves it open")
+if P_PICKSHORT:
+    perturbed_web('icon.title = x.getAttribute("data-note") || ', 'icon.title = ', "the picker icon's tooltip being the whole note")
 if P_PICKMARK:
     perturbed_web('            x.replaceWith(icon);\n', "", "the picker's badge copies turning their marker buttons into icons")
 if P_P2PALL:
@@ -515,10 +519,11 @@ try:
     tab.ev("(() => { const r=[...document.querySelectorAll('.cp-row')].find(x => x.textContent.includes('laptop')); if (r) r.click(); return 1 })()")
     time.sleep(0.6)
     pick = tab.ev("(() => ({marks: document.querySelectorAll('.cp-row .scell-mark').length, rows: document.querySelectorAll('.cp-row .scell-srv').length,"
-                  " turtles: [...document.querySelectorAll('.cp-row span.scell-slow[role=img]')].filter(x => x.querySelector('svg') && x.getAttribute('aria-label')).length,"
+                  " turtles: [...document.querySelectorAll('.cp-row span.scell-slow[role=img]')].filter(x => x.querySelector('svg') && x.getAttribute('aria-label')"
+                  " && x.title.length > x.getAttribute('aria-label').length).length,"
                   " magnets: [...document.querySelectorAll('.cp-row span.scell-p2p[role=img]')].filter(x => x.querySelector('svg') && x.getAttribute('aria-label')).length}))()")
     check("[12] the connection picker's copies of the badge rows carry no marker button (a dead button inside a row button), "
-          "and keep the turtle and the magnet as labelled icons",
+          "and keep the turtle and the magnet as labelled icons — the turtle's tooltip its whole note (no bubble there)",
           pick and pick["rows"] and pick["marks"] == 0 and pick["turtles"] >= 1 and pick["magnets"] >= 1, pick)
     tab.close()
     tab, _r = render("u1", "android", "en", phone=True)
