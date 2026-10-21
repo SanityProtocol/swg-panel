@@ -48,7 +48,11 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
   [i18n] B1's words in Russian; [console] no error or exception on any view
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
+A tab whose app did not boot (a module the page imports failed to fetch — seen under load, six lanes beside VM cells: "Failed
+to fetch dynamically imported module peer-ui.js") is opened again, once, and says so; the browser caches a failed module, so
+only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
+     --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
      --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth
 """
@@ -243,8 +247,13 @@ try:
 
     br = Browser()
 
-    def open_app(lang="en", viewport=None):
+    first_load = [True]
+    def open_app(lang="en", viewport=None, retry=True):
         tab = Tab(br)
+        if "--flake-first-load" in sys.argv and first_load[0]:   # the load flake, made to order: this tab cannot fetch peer-ui.js
+            br.send("Network.enable", session=tab.s)
+            br.send("Network.setBlockedURLs", {"urls": ["*/js/peer-ui.js*"]}, session=tab.s)
+        first_load[0] = False
         if viewport:
             br.send("Emulation.setDeviceMetricsOverride", {"width": viewport[0], "height": viewport[1], "deviceScaleFactor": 1, "mobile": False}, session=tab.s)
         br.send("Page.addScriptToEvaluateOnNewDocument", {"source": "try { localStorage.setItem('swg-lang', %s); } catch (_) {}" % json.dumps(lang)}, session=tab.s)
@@ -256,6 +265,12 @@ try:
             except Exception:
                 pass
             time.sleep(0.1)
+        booted = tab.ev("(async () => { if (!document.querySelector('.urow')) return 'no users grid'; try { await %s('peer-ui'); return ''; }"
+                        " catch (e) { return String(e).slice(0, 160); } })()" % MOD)
+        if booted and retry:
+            print("  (retry: the app did not load in this tab — %s; a fresh tab, once)" % booted)
+            tab.close()
+            return open_app(lang, viewport, retry=False)
         tab.ev("new Promise(r => setTimeout(r, 1500))", timeout=10)
         return tab
 

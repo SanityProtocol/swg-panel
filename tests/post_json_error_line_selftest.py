@@ -5,8 +5,9 @@ Production, 2026-10-20/21: hel-relay and hel-flux reach the panel through Cloudf
 restarting, or the Cloudflare → panel hop failing) came back as a whole HTML page; swg-noded's post_json kept its first
 200 characters raw, the sync loop logged `sync HTTP 502: <that>`, and log() writes every `\n`-line as its own entry —
 about six 502s in a day were 31 red `err` rows in Live Logs. post_json's error on a status of 400 or more is now one
-short line: an HTML page's <title> (else its first <h1>), anything else with its whitespace squeezed, cut at 200. The
-panel's JSON `code` is still read from the RAW body (`_panel_busy`: a 503 with `code == "busy"`).
+short line: an HTML page's <title>, else (none, or an empty one) its first <h1>, entities decoded; anything else with its
+whitespace squeezed; cut at 200. The panel's JSON `code` is still read from the RAW body (`_panel_busy`: a 503 with
+`code == "busy"`).
 
 Real HTTP on 127.0.0.1, swg-noded's post_json as shipped. No root.
 Run: python3 tests/post_json_error_line_selftest.py     (0 = pass)
