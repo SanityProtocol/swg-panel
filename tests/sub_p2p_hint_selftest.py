@@ -8,13 +8,18 @@ holds the flag to the node's own rule: the node-wide policy is not Block AND the
       functions are the same statements (docstrings aside) — swg-sub copies the panel's reader, it cannot import it
   [2] torrents_allowed: Block (saved or absent) allows nothing; any other policy allows every deployment whose own record
       — the interface for wg/awg, the WDTT or csqtt server for those — does not block "torrents"; no record = allowed;
-      junk shapes answer without an exception
+      junk shapes answer without an exception. What the node RUNS outranks what is saved: a node reporting mode block (a
+      Route it could not lower) or its route down allows nothing (review F1). Where the policy hands P2P to another node —
+      a Route to a node, or per-interface on an interface forwarded whole — that node must let arrivals' P2P out: Direct or
+      per-interface, not Block, not a Route of its own, not reporting block (F2)
   [3] read_data: `"p2p": true` on exactly the allowed deployments of a live device; none on a blocked or expired device;
       and a fleet that blocks torrents serves no "p2p" key at all (its payload is the last release's)
 
 Hermetic. Run: python3 tests/sub_p2p_hint_selftest.py            (0 = pass)
      --perturb          swg-sub's p2p_policy defaults to iface instead of block → RED on [1], [2] and [3]
      --perturb-record   torrents_allowed reads every deployment's record from the interfaces → RED on [2] and [3]
+     --perturb-report   the node's own report is ignored (a Route run as Block reads as allowed) → RED on [2]
+     --perturb-farnode  a Route to a node is allowed whatever that node runs → RED on [2]
 """
 import ast, hashlib, importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -24,7 +29,9 @@ SUB = os.environ.get("SWG_SUB") or os.path.join(ROOT, "swg-sub")
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 P_POLICY = "--perturb" in sys.argv
 P_RECORD = "--perturb-record" in sys.argv
-PERTURB = P_POLICY or P_RECORD
+P_REPORT = "--perturb-report" in sys.argv
+P_FAR = "--perturb-farnode" in sys.argv
+PERTURB = P_POLICY or P_RECORD or P_REPORT or P_FAR
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -52,8 +59,12 @@ def plant(old, new, what):
 if P_POLICY:
     plant('        return v["action"]\n    return "block"\n', '        return v["action"]\n    return "iface"\n', "p2p_policy's default")
 if P_RECORD:
-    plant('node_cfg.get({"wdtt": "wdtt", "csqtt": "csqtt"}.get(t.get("type") or "", "ifaces"))', 'node_cfg.get("ifaces")',
-          "the record a deployment lands on")
+    plant('cfg.get(_P2P_RECS.get(t.get("type") or "", "ifaces"))', 'cfg.get("ifaces")', "the record a deployment lands on")
+if P_REPORT:
+    plant('rep.get("mode") == "block" or rep.get("route") == "down"', 'False', "the node's own report")
+if P_FAR:
+    plant('        return _p2p_runs(nodes, describe, (cfg.get("p2p") or {}).get("node"), arrivals=True)', '        return True',
+          "the far node of a Route")
 SUB_PATH = SUB
 if PERTURB:
     fd, SUB_PATH = tempfile.mkstemp(prefix="swg-sub-perturbed-")
@@ -86,21 +97,43 @@ T = lambda iface, ty="wg": {"node": "n1", "iface": iface, "type": ty}
 WANT = [(T("wg0"), False), (T("wg1"), True), (T("wg9"), True), (T("awg0", "awg"), False), (T("wg1", "awg"), True),
         (T("w1", "wdtt"), False), (T("w2", "wdtt"), True), (T("wg1", "wdtt"), False),   # a WDTT server's record, not wg1's
         (T("c1", "csqtt"), False), (T("c2", "csqtt"), True), (T("wg0", "csqtt"), True)]
+def allowed(n1, n2=None, d1=None, d2=None, tgs=None):
+    nodes = {"n1": n1, **({"n2": n2} if n2 is not None else {})}
+    desc = {"n1": {"p2p": d1 or {}}, "n2": {"p2p": d2 or {}}}
+    return [tg for tg, _ in (tgs or WANT) if S.torrents_allowed(nodes, desc, tg)]
 for pol in (None, "block"):
-    node = dict(RECS, **({"p2p": {"action": pol}} if pol else {}))
-    got = [tg for tg, _ in WANT if S.torrents_allowed(node, tg)]
+    got = allowed(dict(RECS, **({"p2p": {"action": pol}} if pol else {})))
     check("policy %s: no deployment allowed" % (pol or "absent (= block)"), not got, got)
+FAR = {"p2p": {"action": "direct"}}
 for pol in ("direct", "iface", "exit", "dev"):
-    node = dict(RECS, p2p={"action": pol})
-    bad = [(tg["type"], tg["iface"], want) for tg, want in WANT if S.torrents_allowed(node, tg) != want]
+    node = dict(RECS, p2p={"action": pol, **({"node": "n2"} if pol == "exit" else {})})
+    got = allowed(node, FAR)
+    bad = [(tg["type"], tg["iface"], want) for tg, want in WANT if (tg in got) != want]
     check("policy %s: allowed exactly where the deployment's own record does not block torrents" % pol, not bad, bad)
+DIRECT = dict(RECS, p2p={"action": "direct"})
+check("F1: a node REPORTING mode block (a Route it could not lower) allows nothing", not allowed(DIRECT, d1={"mode": "block"}))
+check("F1: …nor one whose route is down", not allowed(dict(RECS, p2p={"action": "exit", "node": "n2"}), FAR, d1={"mode": "route", "route": "down"}))
+check("F1: a node reporting what it was told (direct) is as saved", allowed(DIRECT, d1={"mode": "direct", "state": "ok"}) == allowed(DIRECT))
+TO2 = dict(RECS, p2p={"action": "exit", "node": "n2"})
+for far, d2, ok in (({}, None, False), ({"p2p": {"action": "block"}}, None, False), ({"p2p": {"action": "exit", "node": "n1"}}, None, False),
+                    ({"p2p": {"action": "dev", "exit_id": "x"}}, None, False), ({"p2p": {"action": "direct"}}, {"mode": "block"}, False),
+                    ({"p2p": {"action": "direct"}}, None, True), ({"p2p": {"action": "iface"}}, None, True)):
+    got = allowed(TO2, far, d2=d2)
+    check("F2: a Route to n2 that %s — %s" % (json.dumps(far.get("p2p") or "no policy") + (" reporting block" if d2 else ""),
+                                              "allowed by the records" if ok else "allows nothing"),
+          bool(got) == ok and (not ok or got == allowed(DIRECT)), got)
+FWD = {"p2p": {"action": "iface"}, "ifaces": {"wgf": {"egress_mode": "forward", "egress_node": "n2"}, "wgd": {}}}
+TF = [(T("wgf"), None), (T("wgd"), None)]
+check("F2: per-interface, an interface forwarded whole to a node under Block: no; the direct one beside it: yes",
+      allowed(FWD, {}, tgs=TF) == [T("wgd")], allowed(FWD, {}, tgs=TF))
+check("F2: …forwarded to a node under Direct: both", allowed(FWD, FAR, tgs=TF) == [T("wgf"), T("wgd")], allowed(FWD, FAR, tgs=TF))
 JUNK = [None, [], "x", {"p2p": {"action": "direct"}, "ifaces": []}, {"p2p": {"action": "direct"}, "ifaces": {"wg0": "x"}},
         {"p2p": {"action": "direct"}, "ifaces": {"wg0": {"block": "torrents"}}}, {"p2p": {"action": "direct"}, "wdtt": None}]
 errs = []
 for n in JUNK:
     for tg in (T("wg0"), T("w1", "wdtt"), {"iface": None}, {}):
         try:
-            S.torrents_allowed(n, tg)
+            S.torrents_allowed({"n1": n}, {"n1": {"p2p": n}}, tg)
         except Exception as e:
             errs.append((n, tg, repr(e)))
 check("junk node / record / target shapes answer without an exception", not errs, errs[:3])

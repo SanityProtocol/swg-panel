@@ -65,7 +65,7 @@
       vkAddApp: "Add this VK call link to {app}", vkAddFork: "Add this VK call link to {fork} app",
       backup: "Backup",
       vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}", theApp: "the app",
-      p2pHint: "Torrents are allowed here. For full speed, set your torrent client to TCP only, or µTP‑TCP mixed mode to “Prefer TCP” (qBittorrent: Options → Connection / Advanced).",
+      p2pHint: "Torrents work here. For full speed, set the torrent client to TCP only, or µTP‑TCP mixed mode to “Prefer TCP” (qBittorrent: Options → Connection / Advanced).",
       rawT: "Faster mode available", rawD: "In the app's settings set the RAW port to {port} and the connection mode to RAW — they live there, not in this link. It drops WireGuard for speed.",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
       outOfDate: "This link is out of date — ask your administrator for a fresh one.",
@@ -128,7 +128,7 @@
       vkAddApp: "Добавьте эту ссылку на звонок VK в {app}", vkAddFork: "Добавьте эту ссылку на звонок VK в приложении",
       backup: "Резерв",
       vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложение",   /* accusative — every {app} slot that falls back to it takes one — «в приложение», «Открыть приложение», «Установить приложение» */
-      p2pHint: "Торренты здесь разрешены. Для полной скорости включите в торрент-клиенте только TCP или алгоритм смешанного режима µTP‑TCP «Предпочитать TCP» (qBittorrent: Настройки → Соединение / Дополнительно).",
+      p2pHint: "Торренты здесь работают. Для полной скорости включите в торрент-клиенте только TCP или алгоритм смешанного режима µTP‑TCP «Предпочитать TCP» (qBittorrent: Настройки → Соединение / Дополнительно).",
       rawT: "Доступен быстрый режим", rawD: "В настройках приложения укажите RAW-порт {port} и режим подключения RAW — они хранятся там, а не в этой ссылке. Работает без WireGuard.",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
@@ -1942,7 +1942,8 @@
           var wraw = el("div", "scell-raw");
           wraw.appendChild(el("div", "scell-raw-t", t("rawT")));
           wraw.appendChild(el("div", "scell-raw-d", t("rawD").replace("{port}", wd.raw_port)));
-          cell.appendChild(wraw);
+          node.appendChild(wraw);   // in the header block, which the portrait layout measures — appended to the cell it sat
+                                    // outside it: under the down chevron on a phone, above the badges on a desktop
         }
         ctrl.cliApp = false; ctrl.vktgz = false;   // WDTT clients are apps, never a CLI/VKTGZ flow
         // The VK link is embedded IN the WDTT link (wrapAPassword+vkLink / wdtt://…:vkHash), so no separate "add this

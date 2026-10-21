@@ -448,7 +448,9 @@ class State:
                         # each csqtt server's running LINE (2.1 / 2.5), by interface → the page offers only apps of that line
                         "tline": _running_lines(snap),
                         # the networks this node ROUTES right now (swg-noded net_carried) — what the page may promise a user
-                        "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else []}
+                        "net_carried": snap.get("net_carried") if isinstance(snap.get("net_carried"), list) else [],
+                        # the torrent policy the node RUNS ({state, mode, route}) — a Route it could not lower runs as block
+                        "p2p": _snap_p2p(snap)}
         return out
 
 
@@ -467,6 +469,13 @@ def _own_pins(cat, peers_out):
             mine.update(tp.get("version") for tp in (tg.get("turn") or []) if isinstance(tp, dict) and tp.get("version"))
     return {**cat, "pins": {repo: {v: x for v, x in vs.items() if v in mine}
                             for repo, vs in pins.items() if isinstance(vs, dict) and any(v in mine for v in vs)}}
+
+
+def _snap_p2p(snap):
+    """The node's own report of its torrent policy (swg-noded smart_status `p2p`), or {} — read only as an object."""
+    sr = snap.get("smartroute")
+    v = sr.get("p2p") if isinstance(sr, dict) else None
+    return v if isinstance(v, dict) else {}
 
 
 def _running_versions(snap):
@@ -632,17 +641,47 @@ def p2p_policy(node):
     return "block"
 
 
-def torrents_allowed(node_cfg, t):
-    """Whether torrents may leave by deployment `t`, the node's own rule (strictest wins, P2P-POLICY §2.2): the node-wide
-    policy is not Block, and the record `t` lands on — its interface, WDTT or csqtt server — does not block "torrents". Which
-    way an allowed torrent leaves is not asked. A "torrents" category switched off in Settings still reads as blocked here
-    (Settings is not this process's to read), so the hint can be missing where torrents run, never shown where they drop."""
-    if not isinstance(node_cfg, dict) or p2p_policy(node_cfg) == "block":
+_P2P_RECS = {"wdtt": "wdtt", "csqtt": "csqtt"}   # a deployment's type → the node record set it lands on (else "ifaces")
+
+
+def _p2p_runs(nodes, describe, nid, arrivals=False):
+    """Whether node `nid` lets P2P out: its policy is not Block, and it does not REPORT running Block — a Route the panel could
+    not lower (no mesh link, the exit gone) runs as Block (fail closed), and a Route whose way out is down carries nothing.
+    `arrivals`: for P2P another node sends here, which this node judges by its own policy and drops under a Route of its own
+    (P2P-POLICY §2: P2P never goes back into the mesh), so only Direct and per-interface let it on."""
+    cfg = nodes.get(nid)
+    if not isinstance(cfg, dict):
         return False
-    recs = node_cfg.get({"wdtt": "wdtt", "csqtt": "csqtt"}.get(t.get("type") or "", "ifaces"))
+    pol = p2p_policy(cfg)
+    rep = (describe.get(nid) or {}).get("p2p") or {}
+    if pol == "block" or rep.get("mode") == "block" or rep.get("route") == "down":
+        return False
+    return pol in ("direct", "iface") if arrivals else True
+
+
+def torrents_allowed(nodes, describe, t):
+    """Whether torrents may leave by deployment `t` — the nodes' own rule, strictest wins (P2P-POLICY §2.2): the record `t`
+    lands on (its interface, WDTT or csqtt server) does not block "torrents", its node lets P2P out, and where the policy hands
+    it to ANOTHER node — a Route to a node, or a per-interface policy on an interface forwarded whole to one — that node lets
+    arrivals' P2P out too. One hop, as the policy routes: a smart interface's catch-all is cascade_plan's to resolve, not this
+    page's (a known limit). A "torrents" category switched off in Settings still reads as blocked here (Settings is not this
+    process's to read), so the hint can be missing where torrents run."""
+    nid = t.get("node")
+    cfg = nodes.get(nid)
+    if not _p2p_runs(nodes, describe, nid):
+        return False
+    recs = cfg.get(_P2P_RECS.get(t.get("type") or "", "ifaces"))
     rec = recs.get(t.get("iface")) if isinstance(recs, dict) else None
-    blk = rec.get("block") if isinstance(rec, dict) else None
-    return not any(str(b).strip() == "torrents" for b in (blk if isinstance(blk, list) else ()))
+    rec = rec if isinstance(rec, dict) else {}
+    blk = rec.get("block")
+    if any(str(b).strip() == "torrents" for b in (blk if isinstance(blk, list) else ())):
+        return False
+    pol = p2p_policy(cfg)
+    if pol == "exit":                                  # every client subnet's P2P goes to that node
+        return _p2p_runs(nodes, describe, (cfg.get("p2p") or {}).get("node"), arrivals=True)
+    if pol == "iface" and rec.get("egress_mode") == "forward":   # follows the interface: forwarded whole to that node
+        return _p2p_runs(nodes, describe, rec.get("egress_node"), arrivals=True)
+    return True
 
 
 def _role_of(t):
@@ -911,7 +950,7 @@ def read_data(state, token):
         _exp = is_expired(p, nowv)
         if not (p.get("disabled") or _exp):
             for tg in tgts:   # torrents may leave by it → the page's client-setting line; absent otherwise (old pages ignore it)
-                if torrents_allowed(nodes.get(tg.get("node")), tg):
+                if torrents_allowed(nodes, describe, tg):
                     tg["p2p"] = True
         peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts,
                           "disabled": bool(p.get("disabled")), "expired": _exp})
