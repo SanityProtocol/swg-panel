@@ -774,9 +774,11 @@
         // the protocol's own brand mark leads the row, in full colour — see rowIcon()
         var mark = rowIcon(en.mode);
         if (mark) { var ic = el("span", "cp-ico"); ic.appendChild(mark); lead.appendChild(ic); }
-        if (en.badge) {   // a COPY of the cell's badge row: its marker buttons would be dead (no handlers) and nested in this row's button
-          var bc = en.badge.cloneNode(true);
-          Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) { x.remove(); });
+        if (en.badge) {   // a COPY of the cell's badge row: its marker buttons would be dead (no handlers) and nested in this row's
+          var bc = en.badge.cloneNode(true);   // button — each becomes its icon alone (the turtle, the magnet), shown, not pressable
+          Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) {
+            var icon = el("span", x.className.replace(/\bscell-mark\b/, "").trim()); icon.innerHTML = x.innerHTML; x.replaceWith(icon);
+          });
           lead.appendChild(bc);
         }
         r.appendChild(lead);
@@ -2073,7 +2075,8 @@
       if (!isBackup) role.style.color = ifaceColor(tgt.type);
       srvRow.appendChild(role);
       // Plain (unobfuscated) → the fork's normal transport, which VK throttles: mark it slow with a brand-coloured turtle.
-      if (turnCellPlain(forkId, it.tgt.type === "awg")) { var slow = el("span", "scell-slow"); slow.title = t("slowPlain"); slow.innerHTML = TURTLE_SVG; srvRow.appendChild(slow); }
+      // A tap opens the same bubble as the torrent magnet (operator, 2026-10-21) — a title alone never showed on a phone.
+      if (turnCellPlain(forkId, it.tgt.type === "awg")) srvRow.appendChild(noteMarker("scell-slow", TURTLE_SVG, t("slowPlain"), t("slowPlain")));
       // AXIS-3: "Get the app" install link under the badge — for a first-time user who doesn't have the client app
       // yet. Shown only when the fork's client has a published app link (CLI sidecar forks have none). Complements
       // the bar's "Open in app": open if you have it, get it if you don't (never branch on install-state — can't detect).

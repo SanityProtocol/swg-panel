@@ -44,7 +44,8 @@ Fixture — node q-node, three deployments per device:
   [12] torrents (1.8.11 S4b): q-node lets them through (Direct) and Boris's awg1 blocks them. Every one of Anna's cells, on every
       OS and in both languages, carries the torrent marker in its badge row, labelled with the client setting for full speed
       (in the page's language); a tap opens that text in a bubble and a second tap closes it; Boris's awg1 cell carries none
-      while his csqtt1 cell does; Anna's blocked device's page carries none
+      while his csqtt1 cell does; Anna's blocked device's page carries none. The plain-mode turtle (a cacggghp proxy) opens its
+      own text in the same bubble on a tap; the connection picker shows both icons, as icons, not buttons
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while v2.5.1 is the latest — the CSQTT app's bubble offers v2.1.9 (our csqtt-app-2.1.9) and says it matches; amurcanov's WDTT 1.2.4-3
       → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
@@ -69,7 +70,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-ownline    serves a sub.js that offers the CSQTT app of the other line when no release of the server's is out → RED on [11]
      --perturb-chipline   serves a sub.js whose csqtt card no longer names the server's version → RED on [11]
      --perturb-scrollclose serves a sub.js whose bubble closes on its own scroll → RED on [12]
-     --perturb-pickmark   serves a sub.js whose picker copies the badge rows with their markers → RED on [12]
+     --perturb-pickmark   serves a sub.js whose picker copies the badge rows with their marker buttons → RED on [12]
      --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
@@ -218,6 +219,8 @@ J("stats/stats-n1.json", {"interfaces": {
     "wdtt": [{"iface": "wdtt1", "fork": "amurcanov", "version": "1.2.4-3"}],
     "turn_proxies": [{"service": "vk-turn-proxy-samosvalishe-1", "listen": "0.0.0.0:56100", "connect": "127.0.0.1:51820", "wrap_key": "k" * 64, "version": "v4.0.3"},
                      {"service": "vk-turn-proxy-samosvalishe-2", "listen": "0.0.0.0:56101", "connect": "127.0.0.1:51830", "wrap_key": "j" * 64, "version": "v4.0.3"},
+                     # [12] a plain fork's proxy (cacggghp: no obfuscation) — its cell carries the turtle
+                     {"service": "vk-turn-proxy-cacggghp-4", "listen": "0.0.0.0:56104", "connect": "127.0.0.1:51830", "wrap_key": "", "version": "v1.0.0"},
                      # [10] a proxy of a HIDDEN fork a node still runs (MYSOREZ, hidden 2026-10-14)
                      {"service": "vk-turn-proxy-MYSOREZ-3", "listen": "0.0.0.0:56102", "connect": "127.0.0.1:51830", "wrap_key": "m" * 64, "version": "v4.0.3"}],
     "net_carried": ["192.168.50.0/24"]})
@@ -270,8 +273,8 @@ if P_SCROLLCLOSE:
     perturbed_web("function _nbScroll(e) { if (_noteBubble && !_noteBubble.contains(e.target)) closeNoteBubble(); }",
                   "function _nbScroll(e) { closeNoteBubble(); }", "a scroll inside the bubble leaves it open")
 if P_PICKMARK:
-    perturbed_web('          Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) { x.remove(); });\n', "",
-                  "the picker's badge copies without their markers")
+    perturbed_web('            var icon = el("span", x.className.replace(/\\bscell-mark\\b/, "").trim()); icon.innerHTML = x.innerHTML; x.replaceWith(icon);\n',
+                  "", "the picker's badge copies turning their marker buttons into icons")
 if P_P2PALL:
     perturbed_web("      var srv = it.tgt.p2p && cc.el", "      var srv = true && cc.el", "the torrent marker only where torrents are allowed")
 if P_CHIPLINE:
@@ -506,9 +509,17 @@ try:
     # Anna has two devices: the picker opens on them, and a device's connections — the badge copies — are one level down
     tab.ev("(() => { const r=[...document.querySelectorAll('.cp-row')].find(x => x.textContent.includes('laptop')); if (r) r.click(); return 1 })()")
     time.sleep(0.6)
-    pick = tab.ev("(() => ({marks: document.querySelectorAll('.cp-row .scell-mark').length, rows: document.querySelectorAll('.cp-row .scell-srv').length}))()")
-    check("[12] the connection picker's copies of the badge rows carry no marker (a dead button inside a row button)",
-          pick and pick["rows"] and pick["marks"] == 0, pick)
+    pick = tab.ev("(() => ({marks: document.querySelectorAll('.cp-row .scell-mark').length, rows: document.querySelectorAll('.cp-row .scell-srv').length,"
+                  " icons: document.querySelectorAll('.cp-row span.scell-slow svg, .cp-row span.scell-p2p svg').length}))()")
+    check("[12] the connection picker's copies of the badge rows carry no marker button (a dead button inside a row button), "
+          "and keep the turtle and the magnet as icons", pick and pick["rows"] and pick["marks"] == 0 and pick["icons"] >= 2, pick)
+    tab.close()
+    tab, _r = render("u1", "android", "en", phone=True)
+    tab.ev("(() => { const b=document.querySelector('.mtab-turn'); if (b) b.click(); return 1 })()"); time.sleep(0.8)
+    tab.ev("(() => { " + seek_js("turn", "cacggghp") + " return 'ok'; })()"); time.sleep(0.8)
+    tt = tab.ev(TAP.replace(".scell-p2p", ".scell-slow"))
+    check("[12] a tap on the plain-mode turtle opens its own text in the same bubble",
+          (tt or "").startswith("Plain — no obfuscation") and (tt or "").endswith("|true"), tt)
     tab.close()
 
     # [2] the author word, per language, in all three turn cells
@@ -543,7 +554,7 @@ try:
     # [6] a fork that changed hands is named by its catalog label: samosvalishe's repos are gone and hack-diaz (GitHub: hackdiaz-dev) carries them
     # on, but the id stays (it is in every node's unit names) — so the id must never reach the visitor
     fp = [(os_, lang, c) for os_ in ALL_OS for lang in ("en", "ru") for c in turn_cells(renders[(os_, lang)])
-          if (c["role"] or "") in ("AWG", "WG") and not (c["tag"] or "").startswith("MYSOREZ")]   # [10]'s proxy is another fork
+          if (c["role"] or "") in ("AWG", "WG") and not (c["tag"] or "").startswith(("MYSOREZ", "cacggghp"))]   # [10]'s and [12]'s proxies are other forks
     check("[6] the samosvalishe-fronted cell's badge names hack-diaz on every OS and language",
           fp and all("hack-diaz" in (c["tag"] or "") for _o, _l, c in fp), [(o, l, c["tag"]) for o, l, c in fp])
     leak = [(os_, lang, c["text"][:120]) for os_ in ALL_OS for lang in ("en", "ru") for p in renders[(os_, lang)]["pages"]
