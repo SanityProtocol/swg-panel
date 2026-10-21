@@ -86,6 +86,7 @@
       unsupported: "Unsupported browser",
       unsupportedSub: "This page needs a modern browser with Web Crypto (and a secure https:// connection) to decrypt your configs.",
       wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", turnApp: "Turn proxy app", forkApp: "{fork} app",
+      slowMark: "Plain mode — slower",
       slowPlain: "Plain — no obfuscation, so slower (may be throttled)",
       langName: "EN", themeToLight: "Switch to light", themeToDark: "Switch to dark", langLabel: "Language", osLabel: "Device / OS",
     },
@@ -150,6 +151,7 @@
       unsupported: "Браузер не поддерживается",
       unsupportedSub: "Для расшифровки конфигов нужен современный браузер с Web Crypto и защищённое соединение https://.",
       wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", turnApp: "Приложение для turn proxy", forkApp: "Приложение {fork}",
+      slowMark: "Без обфускации — медленнее",
       slowPlain: "Без обфускации — медленнее (возможно ограничение скорости)",
       langName: "RU", themeToLight: "Светлая тема", themeToDark: "Тёмная тема", langLabel: "Язык", osLabel: "Устройство / ОС",
     },
@@ -777,7 +779,11 @@
         if (en.badge) {   // a COPY of the cell's badge row: its marker buttons would be dead (no handlers) and nested in this row's
           var bc = en.badge.cloneNode(true);   // button — each becomes its icon alone (the turtle, the magnet), shown, not pressable
           Array.prototype.forEach.call(bc.querySelectorAll(".scell-mark"), function (x) {
-            var icon = el("span", x.className.replace(/\bscell-mark\b/, "").trim()); icon.innerHTML = x.innerHTML; x.replaceWith(icon);
+            var icon = el("span"); icon.className = x.className; icon.classList.remove("scell-mark");
+            icon.setAttribute("role", "img"); icon.setAttribute("aria-label", x.getAttribute("aria-label") || "");
+            icon.title = x.getAttribute("aria-label") || "";   // the row is the button: the icon names itself by its label
+            while (x.firstChild) icon.appendChild(x.firstChild);
+            x.replaceWith(icon);
           });
           lead.appendChild(bc);
         }
@@ -894,7 +900,7 @@
     }, 0);
   }
 
-  // Note bubble — the text a marker in a cell's badge row stands for (the torrent magnet). A tap or click toggles it; on a
+  // Note bubble — the text a marker in a cell's badge row stands for (the torrent magnet, the plain-mode turtle). A tap or click toggles it; on a
   // pointer that hovers, hovering opens it and leaving closes it — unless a click pinned it. A press anywhere else, Escape,
   // a resize or a scroll (a swipe to the next cell) closes it.
   var _noteBubble = null;
@@ -2076,7 +2082,7 @@
       srvRow.appendChild(role);
       // Plain (unobfuscated) → the fork's normal transport, which VK throttles: mark it slow with a brand-coloured turtle.
       // A tap opens the same bubble as the torrent magnet (operator, 2026-10-21) — a title alone never showed on a phone.
-      if (turnCellPlain(forkId, it.tgt.type === "awg")) srvRow.appendChild(noteMarker("scell-slow", TURTLE_SVG, t("slowPlain"), t("slowPlain")));
+      if (turnCellPlain(forkId, it.tgt.type === "awg")) srvRow.appendChild(noteMarker("scell-slow", TURTLE_SVG, t("slowMark"), t("slowPlain")));
       // AXIS-3: "Get the app" install link under the badge — for a first-time user who doesn't have the client app
       // yet. Shown only when the fork's client has a published app link (CLI sidecar forks have none). Complements
       // the bar's "Open in app": open if you have it, get it if you don't (never branch on install-state — can't detect).

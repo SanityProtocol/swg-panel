@@ -69,6 +69,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-line       serves a sub.js that offers a csqtt server an app of another line → RED on [11]
      --perturb-ownline    serves a sub.js that offers the CSQTT app of the other line when no release of the server's is out → RED on [11]
      --perturb-chipline   serves a sub.js whose csqtt card no longer names the server's version → RED on [11]
+     --perturb-turtlespan serves a sub.js whose turtle is the old span with a title again → RED on [12]
      --perturb-scrollclose serves a sub.js whose bubble closes on its own scroll → RED on [12]
      --perturb-pickmark   serves a sub.js whose picker copies the badge rows with their marker buttons → RED on [12]
      --perturb-p2pall     serves a sub.js that draws the torrent marker on every cell, allowed or not → RED on [12]
@@ -102,7 +103,8 @@ P_CHIPLINE = "--perturb-chipline" in sys.argv
 P_P2PALL = "--perturb-p2pall" in sys.argv
 P_PICKMARK = "--perturb-pickmark" in sys.argv
 P_SCROLLCLOSE = "--perturb-scrollclose" in sys.argv
-PERTURB = (P_P2PALL or P_PICKMARK or P_SCROLLCLOSE or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+P_TURTLESPAN = "--perturb-turtlespan" in sys.argv
+PERTURB = (P_P2PALL or P_PICKMARK or P_SCROLLCLOSE or P_TURTLESPAN or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE)
 
 FAILS = []
@@ -269,12 +271,15 @@ if P_LINE:
 if P_OWNLINE:
     perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;\n', "",
                   "the own app's release-line guard")
+if P_TURTLESPAN:
+    perturbed_web('srvRow.appendChild(noteMarker("scell-slow", TURTLE_SVG, t("slowMark"), t("slowPlain")));',
+                  '{ var slow = el("span", "scell-slow"); slow.title = t("slowPlain"); slow.innerHTML = TURTLE_SVG; srvRow.appendChild(slow); }',
+                  "the turtle as a marker")
 if P_SCROLLCLOSE:
     perturbed_web("function _nbScroll(e) { if (_noteBubble && !_noteBubble.contains(e.target)) closeNoteBubble(); }",
                   "function _nbScroll(e) { closeNoteBubble(); }", "a scroll inside the bubble leaves it open")
 if P_PICKMARK:
-    perturbed_web('            var icon = el("span", x.className.replace(/\\bscell-mark\\b/, "").trim()); icon.innerHTML = x.innerHTML; x.replaceWith(icon);\n',
-                  "", "the picker's badge copies turning their marker buttons into icons")
+    perturbed_web('            x.replaceWith(icon);\n', "", "the picker's badge copies turning their marker buttons into icons")
 if P_P2PALL:
     perturbed_web("      var srv = it.tgt.p2p && cc.el", "      var srv = true && cc.el", "the torrent marker only where torrents are allowed")
 if P_CHIPLINE:
@@ -510,16 +515,18 @@ try:
     tab.ev("(() => { const r=[...document.querySelectorAll('.cp-row')].find(x => x.textContent.includes('laptop')); if (r) r.click(); return 1 })()")
     time.sleep(0.6)
     pick = tab.ev("(() => ({marks: document.querySelectorAll('.cp-row .scell-mark').length, rows: document.querySelectorAll('.cp-row .scell-srv').length,"
-                  " icons: document.querySelectorAll('.cp-row span.scell-slow svg, .cp-row span.scell-p2p svg').length}))()")
+                  " turtles: [...document.querySelectorAll('.cp-row span.scell-slow[role=img]')].filter(x => x.querySelector('svg') && x.getAttribute('aria-label')).length,"
+                  " magnets: [...document.querySelectorAll('.cp-row span.scell-p2p[role=img]')].filter(x => x.querySelector('svg') && x.getAttribute('aria-label')).length}))()")
     check("[12] the connection picker's copies of the badge rows carry no marker button (a dead button inside a row button), "
-          "and keep the turtle and the magnet as icons", pick and pick["rows"] and pick["marks"] == 0 and pick["icons"] >= 2, pick)
+          "and keep the turtle and the magnet as labelled icons",
+          pick and pick["rows"] and pick["marks"] == 0 and pick["turtles"] >= 1 and pick["magnets"] >= 1, pick)
     tab.close()
     tab, _r = render("u1", "android", "en", phone=True)
     tab.ev("(() => { const b=document.querySelector('.mtab-turn'); if (b) b.click(); return 1 })()"); time.sleep(0.8)
-    tab.ev("(() => { " + seek_js("turn", "cacggghp") + " return 'ok'; })()"); time.sleep(0.8)
-    tt = tab.ev(TAP.replace(".scell-p2p", ".scell-slow"))
-    check("[12] a tap on the plain-mode turtle opens its own text in the same bubble",
-          (tt or "").startswith("Plain — no obfuscation") and (tt or "").endswith("|true"), tt)
+    seek = tab.ev("(() => { " + seek_js("turn", "cacggghp") + " return 'ok'; })()"); time.sleep(0.8)
+    tt = tab.ev(TAP.replace(".scell-p2p", ".scell-slow"))   # the cacggghp cell is the one in view after the seek
+    check("[12] a tap on the plain-mode turtle (the cacggghp cell) opens its own text in the same bubble",
+          seek == "ok" and (tt or "").startswith("Plain — no obfuscation") and (tt or "").endswith("|true"), (seek, tt))
     tab.close()
 
     # [2] the author word, per language, in all three turn cells
