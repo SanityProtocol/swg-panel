@@ -72,8 +72,8 @@
        pass), and its listing flushed in place is rebuilt
   [31] 1.8.11 S4 (P2P-OWN-ADDRESS Part A): the flag lasts while the evidence lasts — `hit` writes `update @flag` (`add` never
        refreshed a timeout, so a running client's flag lapsed every 10 minutes); the fan-out keeps `add` (it writes only a
-       source not flagged). Where a flagged source is blocked, packets 1-4 of exactly what the flagged drop takes go to
-       `reflag` first (one `update` per signature, no verdict), since that drop comes before the signatures. Where `sudo -n`
+       source not flagged). Where a flagged source is blocked, its drop comes before the signatures, so the drop jumps to
+       `fdrop`: packets 1-4 are read for evidence (one `update` per signature, no verdict), then everything drops. Where `sudo -n`
        exists, on the real kernel under Block, Direct and Route: two DHT queries 3 s apart leave the flag at a fresh 10m
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
@@ -89,7 +89,7 @@ SRC = open(NODED, encoding="utf-8").read()
 
 PLANTS = {   # name: (old text, planted text) — each re-introduces a defect the checks exist for
     "hit-add":      ('L.append("    %supdate @flag { ip saddr timeout 10m }" % nf)', 'L.append("    %sadd @flag { ip saddr timeout 10m }" % nf)'),   # S4: the 10-minute lapse
-    "no-reflag":    ('        if ih:\n            L.append("    %sct original packets <= 4 ip saddr @flag %s %sjump reflag" % (who, _P2P_SHAPE, lo))\n', ''),
+    "fdrop-skip":   ('"jump fdrop" if fdrop else "counter name dropped drop"', '"counter name dropped drop"'),   # S4: Block's lapse again
     "route-open":   ('    if a == "route":                                          # P3 is not built: an unrunnable route fails CLOSED, never open\n        return "block"\n', ""),
     "local-judged": ('    L.append("    fib daddr type local return")', '    pass'),
     "reply-judged": ('    L.append("    ct direction reply return")\n    L += ["    " + h for h in held]\n    # Traffic TO the node',
@@ -473,7 +473,9 @@ def run_checks(src):
     # [3] block
     t = m._p2p_nft("block", [], [], [], True)
     cls = t.split("chain cls {", 1)[1].split("\n  }", 1)[0]
-    ok("    ip saddr @flag meta l4proto" in cls and "counter name dropped drop" in cls, "[3] block drops flagged users in prerouting")
+    fdc = t.split("chain fdrop {", 1)[1].split("\n  }", 1)[0] if "chain fdrop {" in t else ""
+    ok("    ip saddr @flag meta l4proto" in cls and ("counter name dropped drop" in cls or ("jump fdrop" in cls and fdc.rstrip().endswith("counter name dropped drop"))),
+       "[3] block drops flagged users in prerouting")
     g = t.split("chain guard {", 1)[1]
     ok("oifname != {" not in g and "jump gdrop" in t, "[3] block allows no egress device: every signature drops")
     ok("chain guard" in t and "fib saddr type local" in t, "[3] block judges every egress + the node's own processes")
@@ -991,19 +993,21 @@ def run_checks(src):
         hit = tb.split("  chain hit {")[1].split("  }")[0]
         ok(UPD in hit and ADD not in hit, "[31] %s: a signature hit writes `update @flag`, which restarts the 10 minutes" % k)
         ok(sum(1 for l in lines if "meter p2pfan" in l and ADD in l) == 1, "[31] %s: the fan-out keeps `add`" % k)
-        drops = [i for i, l in enumerate(lines) if " ip saddr @flag " + m23._P2P_SHAPE in l    # cls's, not the guard's (postrouting)
-                 and l.rstrip().endswith("fib daddr type != local counter name dropped drop")]
-        jumps = [i for i, l in enumerate(lines) if l.rstrip().endswith("jump reflag")]
+        cls = tb.split("  chain cls {")[1].split("\n  }")[0]
+        drops = [l for l in cls.splitlines() if " ip saddr @flag " + m23._P2P_SHAPE + " fib daddr type != local " in l
+                 and "meta mark set" not in l]                # Direct / Route's mark for the routed scope is not a drop
         if k == "no @ih":
-            ok(not jumps and "chain reflag" not in tb, "[31] no @ih: no signatures, so no reflag")
+            ok(drops and all(l.endswith("counter name dropped drop") for l in drops) and "fdrop" not in tb,
+               "[31] no @ih: no signatures to read, so the flagged drop stays inline")
             continue
-        ok(drops and [i - 1 for i in drops] == jumps
-           and all(lines[i].replace("ct original packets <= 4 ", "").replace("jump reflag", "counter name dropped drop") == lines[i + 1]
-                   for i in jumps),
-           "[31] %s: each flagged drop is preceded by a jump to reflag for its packets 1-4, on exactly the same match" % k)
-        rf = tb.split("  chain reflag {")[1].split("  }")[0].strip().splitlines()
-        ok(len(rf) == len(m23._P2P_SIGS) and all(l.strip().endswith(UPD) and " drop" not in l and "accept" not in l for l in rf),
-           "[31] %s: reflag is one `update` per signature, with no verdict" % k)
+        ok(drops and all(l.endswith("jump fdrop") for l in drops), "[31] %s: every flagged drop in cls jumps to fdrop" % k)
+        fd = tb.split("  chain fdrop {")[1].split("\n  }")[0].strip().splitlines() if "  chain fdrop {" in tb else []
+        mid = fd[1:-1]
+        ok(len(fd) == len(m23._P2P_SIGS) + 2 and fd[0].strip() == "ct original packets > 4 counter name dropped drop"
+           and fd[-1].strip() == "counter name dropped drop"
+           and all(l.strip().endswith(UPD) and " drop" not in l and "accept" not in l for l in mid),
+           "[31] %s: fdrop drops packets past the 4th at once, reads 1-4 for one `update` per signature (no verdict), then drops" % k)
+        ok("jump fdrop" not in tb.split("  chain cls {")[0], "[31] %s: only cls jumps to fdrop" % k)
     if _sp23.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and _sp23.run(["which", "unshare"], capture_output=True).returncode == 0:
         for k in ("block", "direct", "route"):
             got = _wire_reflag(tabs[k])

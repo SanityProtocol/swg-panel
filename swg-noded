@@ -7825,12 +7825,16 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
     if routes:                                                # UDP is caught at packet 1, so THIS flow is routed. TCP is caught
         L.append("    meta l4proto udp %s" % mark)            # at packet 3, already routed: the guard judges its device
     L.append("  }")
-    # reflag: where a flagged source is BLOCKED, cls drops its high-port packets before they reach the signatures, so
-    # its running client never refreshed the flag and the 10 minutes lapsed under Block too. Packets 1-4 of exactly
-    # what that drop takes are checked here first: evidence only, the verdict is the drop's (P2P-OWN-ADDRESS Part A).
-    if ih:
-        L.append("  chain reflag {")
+    # fdrop: where a flagged source is BLOCKED, cls drops its high-port packets before they reach the signatures, so its
+    # running client never refreshed the flag and the 10 minutes lapsed under Block too. The drop jumps here instead:
+    # packets 1-4 are read for evidence (`update`, no verdict of their own), then dropped (P2P-OWN-ADDRESS Part A). A
+    # jump, not a rule of its own before the drop: an unflagged packet pays nothing, a flagged one its match once.
+    fdrop = ih and bool(whos)
+    if fdrop:
+        L.append("  chain fdrop {")
+        L.append("    ct original packets > 4 counter name dropped drop")
         L += ["    meta l4proto %s %s update @flag { ip saddr timeout 10m }" % (l4, m) for c, l4, m in _P2P_SIGS]
+        L.append("    counter name dropped drop")
         L.append("  }")
 
     L.append("  chain cls {")
@@ -7846,9 +7850,7 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
         L.append("    meta nfproto ipv6 return")
         L.append("    ip saddr != @strict return")
     for who in whos:                                          # a flagged user's high-port flows, new AND established
-        if ih:
-            L.append("    %sct original packets <= 4 ip saddr @flag %s %sjump reflag" % (who, _P2P_SHAPE, lo))
-        L.append("    %sip saddr @flag %s %scounter name dropped drop" % (who, _P2P_SHAPE, lo))
+        L.append("    %sip saddr @flag %s %s%s" % (who, _P2P_SHAPE, lo, "jump fdrop" if fdrop else "counter name dropped drop"))
     if routes:
         L.append("    ct state new ip saddr @flag %s %s%s" % (_P2P_SHAPE, lo, mark))
     L.append("    ct original packets > 4 return")
