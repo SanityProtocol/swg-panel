@@ -2393,11 +2393,13 @@ def matters(t, svc):
 # recreate agree on what the box runs. The file carries every role's services, and a node was told its copy lacked the
 # panel's SWG_PANEL_SUB_BIND / _PORT — keys of a container it never runs (1.8.8, a client's node update).
 # A service with no `profiles:` runs under every profile; an unknown profile, or a `profiles:` this reader cannot parse,
-# filters nothing. A shipped key both services carry (SWG_UPDATE_TRIGGER) counts for each service it runs; the
-# installed side is one set of tokens, so a key present under either service reads as present.
+# filters nothing. A shipped key both services carry (SWG_UPDATE_TRIGGER) counts for each service it runs, and is
+# missing for each service whose installed block lacks it: (token, service) pairs on both sides. A flat set of the
+# installed tokens read a master's swg-node without the trigger as complete, because swg-panel had it (the key reached
+# the two services in separate commits).
 prof = sys.argv[3] if len(sys.argv) > 3 else ""
 runs = lambda svc: not svc or not prof or prof in (profiles.get(svc) or [prof])
-missing = {t: {o for o in owners if runs(o) and matters(t, o)} for t, owners in ship.items() if t not in inst}
+missing = {t: {o for o in owners if o not in inst.get(t, ()) and runs(o) and matters(t, o)} for t, owners in ship.items()}
 missing = {t: owners for t, owners in missing.items() if owners}
 gone = set(o for t, owners in missing.items() if t.startswith("service:") for o in owners)
 rest = sorted(t for t, owners in missing.items() if not t.startswith("service:") and owners - gone)

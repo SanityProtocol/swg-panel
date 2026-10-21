@@ -319,7 +319,7 @@ function App() {
     if (ar) {
       const ref = Store.panelUpdateRef || "";
       ar.hidden = !ref;
-      if (ref) { ar.textContent = T("from {ref}", { ref }); ar.title = T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo SWG_REF=main swg-update` once to follow releases again.", { ref }); }
+      if (ref) { ar.textContent = T("from {ref}", { ref }); ar.title = T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo bash -c \"SWG_REF=main swg-update\"` once to follow releases again.", { ref }); }
     }
     const ht = $("#host-tport");      // how the PANEL itself is deployed (docker / bare-metal)
     if (ht && Store.env && ("docker" in Store.env)) {

@@ -38,6 +38,8 @@ Run: python3 tests/update_ref_selftest.py (0 = pass).  --perturb restores the ha
      --perturb-hint   the hint pinned to main again (e66018f) → RED on [5] only
      --perturb-shown  a container reports its ref too → RED on [6] only
      --perturb-custom a node running an operator's own update_cmd does not say so (the first cut) → RED on [6] only
+     --perturb-viahost a master's own node never says so, even when its header offers "update node to" (1.8.10, r1810b
+                      F16) → RED on [6] only
 [7] (1.8.10) the PANEL HOST's updater (/usr/local/bin/swg-update) follows the ref baked into it at install/update; the
     panel reads that one machine-written line (cached by mtime) and reports panel_update_ref when it is not main; the
     header and a master's own node page say "from <ref>" (swgt: dev, unseen, 2026-10-20).
@@ -46,6 +48,7 @@ Run: python3 tests/update_ref_selftest.py (0 = pass).  --perturb restores the ha
      --perturb-panelfail   a failed read is cached (the label gone until the next update) → RED on [7] only
      --perturb-panelino    the cache key ignores the inode (a same-size rename in the same second) → RED on [7] only
      --perturb-paneldecl   a NixOS panel reports a bare-metal wrapper left behind → RED on [7] only
+     --perturb-panelslash  the panel's reader takes a ref with a `/` that update.sh's read-back refuses → RED on [7] only
 """
 import contextlib, os, re, subprocess, sys, tempfile
 
@@ -60,6 +63,8 @@ PERTURB_PANELCACHE = "--perturb-panelcache" in sys.argv
 PERTURB_PANELFAIL = "--perturb-panelfail" in sys.argv
 PERTURB_PANELINO = "--perturb-panelino" in sys.argv
 PERTURB_PANELDECL = "--perturb-paneldecl" in sys.argv
+PERTURB_PANELSLASH = "--perturb-panelslash" in sys.argv
+PERTURB_VIAHOST = "--perturb-viahost" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -288,13 +293,19 @@ check("[6] the panel passes update_custom on as a strict boolean", '"update_cust
 check("[6] the panel's node record passes it on, kept to a ref's characters",
       '"update_ref": _uref if re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", _uref := str(snap.get("update_ref") or "")) else "",' in _P)
 _SN = open(os.path.join(ROOT, "js", "screen-nodes.js"), encoding="utf-8").read()
+if PERTURB_VIAHOST:
+    _a = "          if (nrec.update_custom && !viaHost) return"
+    assert _SN.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _SN = _SN.replace(_a, "          if (nrec.update_custom && !nrec.local) return")
 _RU = open(os.path.join(ROOT, "js", "lang", "ru.js"), encoding="utf-8").read()
 check("[6] the node page says \"from <ref>\" beside the version, and why in its title",
-      'const ref = nrec.local ? Store.panelUpdateRef : nrec.update_ref;' in _SN
+      'const ref = viaHost ? Store.panelUpdateRef : nrec.update_ref;' in _SN
       and ': T("Update installs {ref}, not the latest release — this node was installed' in _SN
       and 'T("from {ref}", { ref })' in _SN)
-check("[6] a node running its own update command says so beside the version, and how to undo it in the title",
-      'if (nrec.update_custom && !nrec.local) return html`<span class="nm-ver out" title=${T("Update runs this node\'s own update command' in _SN
+check("[6] a node running its own update command says so beside the version, and how to undo it in the title — a master's "
+      "own node too when its header offers \"update node to\" (that button runs the node's own updater; r1810b F16)",
+      'const viaHost = nrec.local && !(nrec.outdated && !Store.panelOutdated);' in _SN
+      and 'if (nrec.update_custom && !viaHost) return html`<span class="nm-ver out" title=${T("Update runs this node\'s own update command' in _SN
       and "Remove it there and restart swg-noded to follow releases again." in _SN
       and '${T("own update command")}' in _SN)
 check("[6] …in Russian too", '"from {ref}": "из {ref}"' in _RU and '"Update installs {ref}, not the latest release' in _RU
@@ -318,6 +329,10 @@ if PERTURB_PANELINO:
     _a = '    key = (st.st_ino, st.st_mtime_ns, st.st_size)\n'
     assert _psrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
     _psrc = _psrc.replace(_a, '    key = (st.st_mtime_ns, st.st_size)\n')
+if PERTURB_PANELSLASH:
+    _a = "r'([^/\"]{1,100})/bootstrap\\.sh\\}\"$', re.M)"
+    assert _psrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _psrc = _psrc.replace(_a, "r'([^\"]{1,100})/bootstrap\\.sh\\}\"$', re.M)")
 if PERTURB_PANELDECL:
     _a = '    if not UPDATE_TRIGGER or PANEL_DECLARATIVE:\n'
     assert _psrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
@@ -360,9 +375,21 @@ if os.geteuid() != 0:                     # root reads a 000 file, so the unread
 ref_after(wrapper("dev")); _t = os.stat(_W).st_mtime_ns; _new = _W + ".new"
 open(_new, "w").write(wrapper("tst")); os.utime(_new, ns=(_t, _t)); os.replace(_new, _W)   # same size, same mtime, new inode
 check("[7] …a rename to a same-size ref in the same second is noticed (the key holds the inode)", _P7.panel_update_ref() == "tst")
+# update.sh reads the same line back with its own sed (the ref it re-bakes on the next update): both readers, run on the
+# same generated wrappers, must agree — the panel says nothing for main, which update.sh reads as main.
+_m = re.search(r"sed -n '(s#\^URL=[^']*)' /usr/local/bin/swg-update", open(os.path.join(ROOT, "update.sh"), encoding="utf-8").read())
+check("[7] update.sh still reads its updater's ref back with one sed (the comparison below runs it)", bool(_m))
+if _m:
+    _bad = []
+    for _ref in ("dev", "main", "v1.9.0", "1.8.11-rc.1", "my_branch", "feature/x"):
+        _txt = wrapper(_ref); open(_W, "w").write(_txt)
+        _sed = subprocess.run(["sed", "-n", _m.group(1), _W], capture_output=True, text=True).stdout.split("\n")[0]
+        ref_after(_txt)
+        if (_sed if _sed != "main" else "") != _P7.panel_update_ref():
+            _bad.append((_ref, _sed, _P7.panel_update_ref()))
+    check("[7] the panel's reader and update.sh's read-back agree on the same wrappers (a branch, main, tags, a `/`)",
+          not _bad, _bad)
 shutil.rmtree(_pd, ignore_errors=True)
-check("[7] the reader matches what update.sh reads back ([^/] up to /bootstrap.sh)",
-      "r'([^/\"]{1,100})/bootstrap\\.sh\\}\"$', re.M)" in _psrc)
 check("[7] /api/state carries panel_update_ref only when there is one",
       '**({"panel_update_ref": _pref} if (_pref := panel_update_ref()) else {}),' in _psrc)
 _ST = open(os.path.join(ROOT, "js", "store.js"), encoding="utf-8").read()
@@ -373,17 +400,17 @@ check("[7] the header shows it beside the version, hidden without one",
       '<span class="appver appref" id="appref" hidden></span>' in _IX and 'ar.hidden = !ref;' in _AP
       and 'ar.textContent = T("from {ref}", { ref });' in _AP)
 check("[7] a master's own node shows the host updater's ref, not its own",
-      '${nrec.local ? T("Update installs {ref}, not the latest release — this host\'s updater' in _SN
-      and "Run `sudo SWG_REF=main swg-update` once to follow releases again." in _SN + _AP)
+      '${viaHost ? T("Update installs {ref}, not the latest release — this host\'s updater' in _SN
+      and (_SN + _AP).count('Run `sudo bash -c \\"SWG_REF=main swg-update\\"` once to follow releases again.') == 2)
 check("[7] …in Russian too", "this host's updater (/usr/local/bin/swg-update) was installed or last updated from it" in _RU
-      and "программу обновления этого хоста (/usr/local/bin/swg-update)" in _RU and "`sudo SWG_REF=main swg-update`." in _RU)
+      and "программу обновления этого хоста (/usr/local/bin/swg-update)" in _RU and '`sudo bash -c \\"SWG_REF=main swg-update\\"`.' in _RU)
 
 print()
-if PERTURB_PANELMAIN or PERTURB_PANELCACHE or PERTURB_PANELFAIL or PERTURB_PANELINO or PERTURB_PANELDECL:
+if PERTURB_PANELMAIN or PERTURB_PANELCACHE or PERTURB_PANELFAIL or PERTURB_PANELINO or PERTURB_PANELDECL or PERTURB_PANELSLASH:
     _red = [f for f in FAILS if f.startswith("[7]")]
     print("perturb-panel: %s" % ("RED as it must be (%d), all [7]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
-if PERTURB_CUSTOM:
+if PERTURB_CUSTOM or PERTURB_VIAHOST:
     _red = [f for f in FAILS if f.startswith("[6]")]
     print("perturb-custom: %s" % ("RED as it must be (%d), all [6]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
     sys.exit(0 if _red and len(_red) == len(FAILS) else 1)

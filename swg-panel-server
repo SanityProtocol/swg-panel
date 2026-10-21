@@ -997,13 +997,15 @@ def _ver_behind(have, ref):
     return bool(h != (0, 0, 0) and r != (0, 0, 0) and h < r)
 
 
-# The branch this HOST's one-click updater installs from. /usr/local/bin/swg-update is machine-written (one text,
+# The branch or tag this HOST's one-click updater installs from. /usr/local/bin/swg-update is machine-written (one text,
 # lib/common.sh swg_update_wrapper_text) with the ref baked into one exact line — update.sh reads it back the same way —
 # so unlike a hand-written command it can be read. A panel host (and a master's own node, which updates with it) that
 # was installed or updated from dev keeps installing dev on every header Update, and nothing said so (swgt, 2026-10-20).
 # A Docker panel has no such file (its image decides): "". Reported only where the header Update touches the trigger and so
-# runs this file — without one it hands out UPDATE_CMD, which is pinned to main. Cached by the file's inode, mtime and size
-# (every writer replaces it by rename), so the 5 s poll costs one stat; a failed read is not cached.
+# runs this file — without one it hands out UPDATE_CMD, which is pinned to main — and never on a declarative (NixOS)
+# panel, whose trigger runs the module's own swg-update.service: a bare-metal wrapper left behind there decides nothing.
+# Cached by the file's inode, mtime and size (every writer replaces it by rename), so the 5 s poll costs one stat; a
+# failed read is not cached.
 UPDATE_WRAPPER = os.environ.get("SWG_UPDATE_WRAPPER") or "/usr/local/bin/swg-update"
 _WRAPPER_REF_RE = re.compile(r'^URL="\$\{SWG_BOOTSTRAP_URL:-https://raw\.githubusercontent\.com/SanityProtocol/swg-panel/'
                              r'([^/"]{1,100})/bootstrap\.sh\}"$', re.M)   # update.sh reads it back as [^/]*

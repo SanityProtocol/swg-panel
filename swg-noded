@@ -1604,7 +1604,13 @@ def post_json(url, token, obj, panel, timeout=20, source_ip="", peer=None, gz=Fa
         resp = conn.getresponse()
         data = (resp.read().decode() or "{}")
         if resp.status >= 400:
-            out = {"error": data[:200]}
+            # ONE short line: log() writes each line of a message as its own entry, and a proxy's error page is a whole
+            # HTML document — a Cloudflare 502 in front of the panel was 8 red rows in Live Logs (production, 2026-10-20).
+            # A page reads as its <title>, else its first <h1>; anything else has its whitespace squeezed. `code` below
+            # still reads the raw body.
+            m = re.search(r"(?is)<title\b[^>]*>(.*?)</title>", data) or re.search(r"(?is)<h1\b[^>]*>(.*?)</h1>", data)
+            line = " ".join(re.sub(r"<[^>]*>", " ", m.group(1)).split()) if m else ""
+            out = {"error": (line or " ".join(data.split()))[:200]}
             with contextlib.suppress(Exception):         # the panel's own machine-readable reason, when it sent one
                 code = json.loads(data).get("code")
                 if isinstance(code, str):
@@ -16696,7 +16702,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
             "turn_bind_any": True,   # a turn listener whose host is not on this box binds every address (turn_bind), not a crash loop
             "update_auto": update_auto(),   # can the panel's Update button do anything here? (see update_auto)
-            # The branch the Update button installs from, when it is not main: one hand-update from dev records dev for
+            # The branch or tag the Update button installs from, when it is not main: one hand-update from dev records dev for
             # good, and a production node then followed dev unseen (operator, 2026-10-20: hel-flux stayed on 1.8.8
             # while dev lagged main). Absent = main, so a main node's report is unchanged; a container or a declarative
             # host is updated by its image or its configuration, never by this ref.

@@ -7,7 +7,9 @@ Docker NODE, updating to 1.8.8, was told its copy predated the release and lacke
 env:SWG_PANEL_SUB_PORT — keys of the swg-panel service, which the node profile never starts — and to re-run the
 installer for them. The checker now takes a profile and skips a service whose `profiles:` does not name it; a service
 with no `profiles:`, a top-level item (an x- anchor), a blank profile and a `profiles:` it cannot read filter nothing.
-A key both services carry (SWG_UPDATE_TRIGGER) counts for every service carrying it, not the last one in the file.
+A key both services carry (SWG_UPDATE_TRIGGER) counts for every service carrying it, not the last one in the file,
+and is missing where ONE service's installed block lacks it: a master whose swg-node had no trigger read as complete
+because swg-panel had one (compose-drift F8, 1.8.11).
 A key whose whole value is "${VAR:-}" counts only where the install's .env gives VAR a value: a Docker node updating to
 1.8.9 was told to re-run the installer for SWG_NFT_CLI_ONLY, an opt-in no .env sets. No readable .env -> it counts.
 
@@ -20,6 +22,7 @@ Run: python3 tests/compose_drift_profile_selftest.py      (0 = pass)
      --perturb-wrap     reads a wrapped `profiles:` list's first line as the whole list and expects RED.
      --perturb-optional counts a "${VAR:-}" key whatever .env says (the 1.8.9 shape) and expects RED.
      --perturb-shell    reads .env alone, blind to the update's own shell, and expects RED.
+     --perturb-flat     compares the installed side as one token set (a key under either service = present), expects RED.
 """
 import atexit, os, re, shutil, subprocess, sys, tempfile
 
@@ -49,13 +52,16 @@ CHECKER = m.group(1)
 assert '"$prof" "$DOCKER_DIR/.env" 2>/dev/null <<\'PYDRIFT\'' in SRC, \
     "the caller no longer hands the checker the update's profile and the install's .env"
 if "--perturb" in ARGS:                       # the shape that shipped: every service's gaps, whatever the box runs
-    CHECKER = plant(CHECKER, "{o for o in owners if runs(o) and matters(t, o)}", "{o for o in owners if matters(t, o)}")
+    CHECKER = plant(CHECKER, "if o not in inst.get(t, ()) and runs(o) and matters(t, o)}", "if o not in inst.get(t, ()) and matters(t, o)}")
 if "--perturb-shared" in ARGS:                # last service in the file wins a shared key
     CHECKER = plant(CHECKER, "out.setdefault(t, set()).add(svc)", "out.__setitem__(t, {svc})")
 if "--perturb-optional" in ARGS:              # every "${VAR:-}" key counts, set or not
     CHECKER = plant(CHECKER, "    if env is None or var is None or os.environ.get(var):\n        return True\n", "    return True\n")
 if "--perturb-shell" in ARGS:                 # .env only: a VAR the shell running compose sets is missed
     CHECKER = plant(CHECKER, "if env is None or var is None or os.environ.get(var):", "if env is None or var is None:")
+if "--perturb-flat" in ARGS:                  # the installed side as one set: a key under either service reads as present
+    CHECKER = plant(CHECKER, "{o for o in owners if o not in inst.get(t, ()) and runs(o) and matters(t, o)} for t, owners in ship.items()}",
+                    "{o for o in owners if runs(o) and matters(t, o)} for t, owners in ship.items() if t not in inst}")
 if "--perturb-wrap" in ARGS:                  # whatever names sit on the `profiles:` line are the list
     CHECKER = plant(CHECKER, r"""re.findall(r'[A-Za-z0-9_-]+', f.group(1)) if f else []""",
                     r"""re.findall(r'[A-Za-z0-9_-]+', line.split(":", 1)[1].split("#")[0])""")
@@ -67,13 +73,15 @@ atexit.register(shutil.rmtree, TMP, True)
 CHK = os.path.join(TMP, "checker.py"); write(CHK, CHECKER)
 N = [0]
 
-def installed(drop_lines=(), drop_service=None):
-    """The shipped compose with some lines (and optionally a whole service block) taken out — an older install."""
-    out, skip = [], False
+def installed(drop_lines=(), drop_service=None, only_in=None):
+    """The shipped compose with some lines (and optionally a whole service block) taken out — an older install.
+    `only_in` takes drop_lines out of that one service's block alone."""
+    out, skip, svc = [], False, ""
     for line in SHIPPED.splitlines():
-        if drop_service and re.match(r'^  [a-z0-9-]+:\s*$', line):
-            skip = line.strip().rstrip(":") == drop_service
-        if skip or any(d in line for d in drop_lines):
+        if re.match(r'^  [a-z0-9-]+:\s*$', line):
+            svc = line.strip().rstrip(":")
+            skip = bool(drop_service) and svc == drop_service
+        if skip or (any(d in line for d in drop_lines) and (only_in is None or svc == only_in)):
             continue
         out.append(line)
     N[0] += 1
@@ -172,6 +180,16 @@ rc, out = drift(installed(SUBKEYS), "host", env=plain)
 check("a key with a default of its own (SWG_PANEL_SUB_BIND) stays named whatever .env says",
       "env:SWG_PANEL_SUB_BIND" in out, out)
 
+print("[11] a key both services carry, missing from ONE service's block, is named for the box that runs that service")
+for svc, other in (("swg-node", "swg-panel"), ("swg-panel", "swg-node")):
+    half = installed(("SWG_UPDATE_TRIGGER:",), only_in=svc)
+    assert len(re.findall(r'(?m)^\s+SWG_UPDATE_TRIGGER:', open(half).read())) == 1, "anchor missing — [11] would test nothing"
+    rc, out = drift(half, "master")
+    check("master, %s lacks it (%s has it): env:SWG_UPDATE_TRIGGER named" % (svc, other), "env:SWG_UPDATE_TRIGGER" in out, out)
+rc, out = drift(installed(("SWG_UPDATE_TRIGGER:",), only_in="swg-node"), "host")
+check("host, only swg-node lacks it: nothing named (the host never starts swg-node)", out == "", out)
+rc, out = drift(installed(("SWG_UPDATE_TRIGGER:",), only_in="swg-panel"), "node")
+check("node, only swg-panel lacks it: nothing named", out == "", out)
 
 print()
 if FAILS:
