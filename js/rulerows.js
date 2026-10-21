@@ -59,13 +59,54 @@ const rowKey = r => [r.action || "exit",
                      // …AND ITS AUDIENCE, on a node's default list (D9): a rule for this node's own clients and one for traffic
                      // cascaded in are two rows, or the second is re-emitted with the first one's audience (T13). Appended only
                      // when a rule has one, so every other key is unchanged.
-                     + (r.aud ? "|aud:" + r.aud : "");
+                     + (r.aud ? "|aud:" + r.aud : "")
+                     // …AND ITS PORTS (B.6): a rule for UDP 19302-19309 and one for every port are two rows, or the second is
+                     // re-emitted with the first one's ports. Appended only when a rule has them.
+                     + (portsOf(r) ? "|pt:" + portsKey(portsOf(r)) : "");
 
 /* PER-PERSON RULES (ROUTING-PEERS-MESH-PLAN §4.2). A rule with `who` applies only to the users, groups and devices it names,
    on its own interface. It is STORED `enabled: false`, so every older reader skips it — a released panel would otherwise
    route it for the whole subnet — and its real switch is `who.on`. A row reads that switch as its `enabled` and carries the
    selection as `who`; `rowsToRules` writes the guarded shape back. The panel's `rule_on` is the same test. */
-const ruleOn = r => r && r.who && typeof r.who === "object" ? r.who.on === true : !!r && r.enabled !== false;
+/* PORTS (NEVER-BLOCK-AND-PORT-RULES-PLAN B.2) take the guard one step further: a rule with `ports` is stored with `enabled` AND
+   `who.on` false — a released panel reads `who.on` — and its switch is `ports.on`. The panel's `rule_on` reads them in this order. */
+const ruleOn = r => r && r.ports && typeof r.ports === "object" ? r.ports.on === true
+  : r && r.who && typeof r.who === "object" ? r.who.on === true : !!r && r.enabled !== false;
+
+/* ── PORTS: the grammar, shared with the panel's `ports_clean` (both gated on tests/ports_vectors.json) ──
+   `proto` tcp | udp | both; `list` ports and ranges separated by commas or spaces, an en dash read as a hyphen. Canonical:
+   sorted, overlapping and adjacent ranges merged, joined by "," ("443,8000-8100"). Empty = every port of `proto`; `both` with
+   none is not a port rule. → {proto, list} or {bad: "proto"|"list"|"too_many"|"empty"}. */
+export const PORTS_MAX_TOKENS = 32;
+export function portsClean(proto, raw) {
+  if (!["tcp", "udp", "both"].includes(proto)) return { bad: "proto" };
+  if (raw != null && typeof raw !== "string") return { bad: "list" };
+  const toks = String(raw || "").replace(/\u2013/g, "-").split(/[, \t\r\n\u00a0]+/).filter(Boolean);   // the panel's exact separators
+  if (toks.length > PORTS_MAX_TOKENS) return { bad: "too_many" };
+  const spans = [];
+  for (const t of toks) {
+    const m = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(t);
+    if (!m) return { bad: "list" };
+    const a = Number(m[1]), b = Number(m[2] || m[1]);
+    if (!(a >= 1 && a <= b && b <= 65535)) return { bad: "list" };
+    spans.push([a, b]);
+  }
+  if (!spans.length && proto === "both") return { bad: "empty" };
+  spans.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const out = [];
+  for (const [a, b] of spans) {
+    if (out.length && a <= out[out.length - 1][1] + 1) out[out.length - 1][1] = Math.max(out[out.length - 1][1], b);
+    else out.push([a, b]);
+  }
+  return { proto, list: out.map(([a, b]) => a === b ? String(a) : a + "-" + b).join(",") };
+}
+/** A stored rule's or a row's ports, `{proto, list}`, or null. */
+export const portsOf = r => r && r.ports && typeof r.ports === "object" && r.ports.proto
+  ? { proto: r.ports.proto, list: String(r.ports.list || "") } : null;
+const portsKey = p => p ? p.proto + ":" + p.list : "";
+/** Does this port spec reach TCP 443 / one port `n` of protocol `pr`? No spec = every port. */
+export const portsReach = (p, pr, n) => !p || ((p.proto === "both" || p.proto === pr)
+  && (!p.list || p.list.split(",").some(t => { const [a, b] = t.split("-").map(Number); return a <= n && n <= (b || a); })));
 /** A selection's three lists, sorted and unique — the form the key, the window and the wire all use. */
 const whoList = v => Array.isArray(v) ? v.filter(x => typeof x === "string") : [];   // a stored shape the panel names nobody with
 export const canonWho = w => ({ users: [...new Set(whoList(w && w.users))].sort(), groups: [...new Set(whoList(w && w.groups))].sort(),
@@ -82,19 +123,27 @@ export const rowCovers = (a, b) => (!(a && a.aud) || a.aud === (b && b.aud))   /
  *  (the node keeps them on this row for everyone else). Two different selections are not compared: which people they share
  *  is the panel's to resolve, and a warning about an overlap that may not exist is worse than none. `destOf` is the caller's
  *  destination key: two rules sending the same hosts to the same place are not worth a word. */
+/*  PORTS (B.6) narrow a row, and the lints follow what the node does with one: a DUPLICATE is the same badge with the same ports
+ *  (one badge in a port-less row and in a port row is one category — the port entry goes first, B.3); a row with ports never
+ *  TAKES a broader row's hosts (a port entry is never coverage: the broader row keeps them through its shadow, B.4); and a port
+ *  row BELOW a port-less row that reaches its devices and claims its badge's hosts with a broader name never fires — that row's
+ *  shadow takes them on every port first — so the badge is listed in `dupes`, whose sentence says exactly that. */
 export function rowLints(rows, destOf) {
-  const seen = new Map();                                   // badge identity → the earlier rows (and this one) holding it
+  const seen = new Map();                                   // badge identity (+ the row's ports) → the earlier rows holding it
   return (rows || []).map((row, ri) => {
     const badges = row.badges || [];
     const dupes = [];
+    const pk = portsOf(row) ? "|pt:" + portsKey(portsOf(row)) : "";
     for (const b of badges) {
-      const k = badgeIdentity(b), held = seen.get(k) || [];
-      if (held.some(e => rowCovers(e, row))) dupes.push(b);
+      const k = badgeIdentity(b) + pk, held = seen.get(k) || [];
+      if (held.some(e => rowCovers(e, row))
+          || (pk && rows.slice(0, ri).some(up => !portsOf(up) && destOf(up) !== destOf(row) && rowCovers(up, row)
+                                                 && (up.badges || []).some(ub => badgeCovers(ub, b))))) dupes.push(b);
       seen.set(k, [...held, row]);
     }
     const taken = new Map();                                // identity → {b, all}: `all` once ANY rule below reaches everyone here
     for (const lower of rows.slice(ri + 1)) {
-      if (destOf(lower) === destOf(row)) continue;
+      if (destOf(lower) === destOf(row) || portsOf(lower)) continue;
       const all = rowCovers(lower, row);
       // two different selections, or a narrowed row above: not ours to judge (see above). A row for BOTH audiences above one
       // narrowed to an audience is judged like a row for everyone above a per-person one — `takenFew`, for that audience
@@ -150,6 +199,7 @@ export function rulesToRows(rules) {
                 node: rule.action === "exit" ? (rule.node || "") : "",
                 exit_id: rule.action === "dev" ? (rule.exit_id || "") : "", badges: badgesOf(rule),
                 ...(rule.who && typeof rule.who === "object" ? { who: canonWho(rule.who) } : {}),
+                ...(portsOf(rule) ? { ports: portsOf(rule) } : {}),
                 ...(rule.aud === "local" || rule.aud === "cascaded" ? { aud: rule.aud } : {}) });
   }
   return { rows, catchAll };
@@ -170,6 +220,8 @@ export function rowsToRules(rows, catchAll) {
     // the guarded shape: off to every older reader, the switch and the people in `who`
     if (row.who) { base.who = { on: base.enabled, ...canonWho(row.who) }; base.enabled = false; }
     if (row.aud === "local" || row.aud === "cascaded") base.aud = row.aud;   // a node default-list rule's audience (D9)
+    // …and ports: their switch is the rule's one switch, `enabled` and `who.on` stored off (B.2)
+    if (portsOf(row)) { base.ports = { on: row.enabled !== false, ...portsOf(row) }; base.enabled = false; if (base.who) base.who.on = false; }
     for (const b of badges) if (b.t === "list") out.push({ ...base, category: b.id });
     const typed = badges.filter(b => b.t === "target");
     // One custom rule for the whole row: identical bundles share an nft set on the node, and `targets` is

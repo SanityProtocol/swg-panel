@@ -9073,6 +9073,21 @@ def who_plan_for_node(my, roster, node_id, snap):
                 **{k: {c: v for c, v in (my.get(k) or {}).items() if c in cats} for k in ("domains", "cidrs", "patterns")})
 
 
+def ports_plan_for_node(my, snap):
+    """The syncing node's plan slice without its port entries, when that node does not report `smartroute.ports` (B.4): a
+    node that does not read `ports` would build the rule for every port. Withheld, never widened — and the categories only
+    they used leave the domain, CIDR and pattern channels with them, as `who_plan_for_node` does. A slice with no port entry
+    is returned as it is."""
+    smart = my.get("smart") or []
+    _sr = (snap or {}).get("smartroute")
+    if not any("ports" in e for e in smart) or (isinstance(_sr, dict) and _sr.get("ports")):
+        return my
+    keep = [e for e in smart if "ports" not in e]
+    cats = {e["category"] for e in keep} | {e["category"] for e in ((my.get("arrivals") or {}).get("entries") or [])}
+    return dict(my, smart=keep, **{k: {c: v for c, v in (my.get(k) or {}).items() if c in cats}
+                                   for k in ("domains", "cidrs", "patterns") if k in my})
+
+
 def who_report(roster, node_id, snap, iface, whos):
     """What each selection covers on one interface, for the Rule settings window and the row's chip — answered by the
     reader the sync uses (`_who_here`, and the node's own `src` as `who_plan_for_node` reads it). Per selection: its
@@ -9378,6 +9393,13 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
             for k in ("ifaces", "wdtt", "csqtt") for ov in (c.get(k) or {}).values()
             if isinstance(ov, dict) and ov.get("egress_mode") == "smart" for r in (ov.get("routing") or [])):
         issues.append(perr("{v1} needs an update to route per person — these rules apply to nobody there until it is.",
+                           v1=c.get("name") or "this node"))
+    # …and the same for a rule with PORTS (B.4): withheld from a node that does not report `ports` (ports_plan_for_node).
+    if isinstance(_sr, dict) and not _sr.get("ports") and any(
+            rule_on(r) and isinstance(r.get("ports"), dict)
+            for k in ("ifaces", "wdtt", "csqtt") for ov in (c.get(k) or {}).values()
+            if isinstance(ov, dict) and ov.get("egress_mode") == "smart" for r in (ov.get("routing") or [])):
+        issues.append(perr("{v1} needs an update to route by port — rules with ports don't apply there until it is.",
                            v1=c.get("name") or "this node"))
     # …AND FOR ARRIVALS (D4, §4.4): a node whose default is a list, too old to run `smart.arrivals`, gets the list's
     # catch-all as a plain default — so everything cascaded in leaves by it. Said only once the node has reported its
@@ -18550,11 +18572,55 @@ def _mint_device_exit(nodes, nid, ref, snap=None):
 # INTERFACE. It is STORED `enabled: false` with its real switch in `who.on`, so every older reader skips it: a released
 # panel emits nothing for it (proven against df3bb45), where a plain rule with `who` would have been widened to the whole
 # subnet. Every reader of a routing rule's `enabled` asks `rule_on` instead — a closed list, gated (T11).
+#
+# PORTS ON A RULE (docs/NEVER-BLOCK-AND-PORT-RULES-PLAN.md B.2) take the same guard one step further: a rule with `ports` is
+# stored `enabled: false` AND `who.on: false`, its switch in `ports.on` — a released panel reads `who.on`, and would lower a
+# who+ports rule without its ports ("block UDP 27000-27100 for the kids" → "block everything for the kids").
 def rule_on(r):
+    p = r.get("ports") if isinstance(r, dict) else None
+    if isinstance(p, dict):
+        return p.get("on") is True
     w = r.get("who") if isinstance(r, dict) else None
     if isinstance(w, dict):
         return w.get("on") is True
     return isinstance(r, dict) and r.get("enabled", True) is not False
+
+
+PORTS_PROTOS = ("tcp", "udp", "both")
+PORTS_MAX_TOKENS = 32
+
+
+def ports_clean(proto, raw):
+    """A rule's ports → (proto, canonical list) or (None, why). The list is ports and ranges, any separators of commas and
+    spaces, an en dash read as a hyphen; canonical = sorted, overlapping and adjacent ranges merged, joined by "," with no
+    spaces ("443,8000-8100"). Empty means every port of `proto`; `both` with none is not a port rule. The SPA reads the same
+    grammar (js/ports.js), both gated on tests/ports_vectors.json."""
+    if proto not in PORTS_PROTOS:
+        return None, "proto"
+    if raw is not None and not isinstance(raw, str):
+        return None, "list"
+    toks = [t for t in re.split(r"[, \t\r\n\u00a0]+", (raw or "").replace("\u2013", "-")) if t]   # the SPA's exact separators
+    if len(toks) > PORTS_MAX_TOKENS:
+        return None, "too_many"
+    spans = []
+    for t in toks:
+        m = re.fullmatch(r"([0-9]{1,5})(?:-([0-9]{1,5}))?", t)   # ASCII digits, as the SPA's \d
+        if not m:
+            return None, "list"
+        a, b = int(m.group(1)), int(m.group(2) or m.group(1))
+        if not (1 <= a <= b <= 65535):
+            return None, "list"
+        spans.append([a, b])
+    if not spans and proto == "both":
+        return None, "empty"
+    spans.sort()
+    out = []
+    for a, b in spans:
+        if out and a <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return proto, ",".join(str(a) if a == b else "%d-%d" % (a, b) for a, b in out)
 
 
 def _exit_nodes(n):
@@ -18789,6 +18855,24 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=Non
                 return None, "Choose at least one person or device, or pick “Everyone on this interface”.", _dropped_report(dropped)
             out["enabled"] = False                         # ← what every older reader sees: a rule that is off
             out["who"] = {"on": (w.get("on") is True) if "on" in w else (r.get("enabled", True) is not False), **keep}
+        # PORTS (B.2): only on an interface's list, never on "Everything else" (All destinations is a 0.0.0.0/0 row). Their
+        # switch is the rule's one switch — `enabled` and `who.on` are stored off, so no older reader ever lowers it without them.
+        if r.get("ports") is not None:
+            p = r["ports"]
+            if node_scope:
+                return None, "A node's default rules can't name ports — set them on an interface's rule", _dropped_report(dropped)
+            if cat == "all":
+                return None, "“Everything else” applies to every port — use a rule to 0.0.0.0/0 with ports", _dropped_report(dropped)
+            pp, pl = ports_clean(p.get("proto"), p.get("list")) if isinstance(p, dict) else (None, "proto")
+            if pp is None:                                 # `pl` is the reason then
+                return None, ("Ports: “TCP and UDP” needs at least one port" if pl == "empty"
+                              else "Ports: at most 32 ports or ranges" if pl == "too_many"
+                              else "Ports: write ports and ranges from 1 to 65535, like 443, 8000-8100"), _dropped_report(dropped)
+            _on = (p.get("on") is True) if "on" in p else rule_on(out)
+            out["enabled"] = False
+            if "who" in out:
+                out["who"]["on"] = False
+            out["ports"] = {"on": _on, "proto": pp, "list": pl}
         clean.append(out)
     return clean, None, _dropped_report(dropped)
 
@@ -19413,9 +19497,13 @@ def _apply_egress_mode(rec, body, nodes, nid, deps):
     # ⚠️ THE EXIT IP IS NOT IN HERE, and that is a property of WHERE it is stored (§4.2): it is a map on this record, not a
     # field on a rule, so a client that rewrites `routing` cannot reach it. An old tab saves the rules it knows and leaves
     # the addresses exactly as they were. That is the whole reason the map is worth more than the field it replaced.
+    # …and `routing_v: 3` for a list holding a rule with PORTS (B.2): an older tab's whitelist has no `ports` either. NUMERIC, so a
+    # v3 tab saves over a `who` rule too; a tab that sends none (or not an int) reads as 0 — never `None < 2`, a 500.
+    _rv = body.get("routing_v")
+    _rv = _rv if isinstance(_rv, int) and not isinstance(_rv, bool) else 0
     if ((body.get("egress_mode") == "smart" or ("routing" in body and "egress_mode" not in body and rec.get("egress_mode") == "smart"))
-            and body.get("routing_v") != 2 and any(isinstance(r, dict) and "who" in r
-                                                   for r in (rec.get("routing") or []))):
+            and any(isinstance(r, dict) and ((_rv < 2 and "who" in r) or (_rv < 3 and "ports" in r))
+                    for r in (rec.get("routing") or []))):
         return "This browser tab is older than the panel — reload it before saving routing.", None
     if "egress_mode" in body:
         mode = (body.get("egress_mode") or "direct").strip()
@@ -20515,6 +20603,14 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                 action = r.get("action")
                 if action not in ("exit", "direct", "block", "dev"):
                     return False                   # unknown action → ignore
+                # PORTS (B.4), re-read through the door's grammar: a stored value it would refuse lowers NOTHING — the rule
+                # without its ports would be wider than the one the operator wrote. Never on a catch-all (the door refuses it).
+                _pt = r.get("ports")
+                if _pt is not None:
+                    _pp, _pl = ports_clean(_pt.get("proto"), _pt.get("list")) if isinstance(_pt, dict) else (None, "")
+                    if _pp is None or r.get("category") == "all":
+                        return False
+                    _pt = {"proto": _pp, "list": _pl}
                 _rc = _rule_cat(nid, r)
                 if not _rc:
                     return False
@@ -20531,10 +20627,10 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     _xdev, _xkey, _xks, _xeg, _xgw = _r
                     if _xkey not in targets:
                         targets.append(_xkey)
-                    smart_items.append((nid, None, S, cat, "dev", _xdev, None, None, extra, _xkey, _xks, _xeg, _xgw, r.get("who")))
+                    smart_items.append((nid, None, S, cat, "dev", _xdev, None, None, extra, _xkey, _xks, _xeg, _xgw, r.get("who"), _pt))
                     return cat == "all"
                 if action != "exit":               # direct / block are LOCAL (no mesh exit) — carry them for first-match + kill-switch
-                    smart_items.append((nid, None, S, cat, action, None, None, None, extra, None, None, "", "", r.get("who")))
+                    smart_items.append((nid, None, S, cat, action, None, None, None, extra, None, None, "", "", r.get("who"), _pt))
                     return cat == "all"
                 P = r.get("node")
                 if not P or P not in nodes:
@@ -20546,7 +20642,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     return False
                 if P not in targets:
                     targets.append(P)
-                smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra, None, None, "", "", r.get("who")))
+                smart_items.append((nid, P, S, cat, "exit", dev_n, dev_p, base_p, extra, None, None, "", "", r.get("who"), _pt))
                 return cat == "all"
             for r in (ov.get("routing") or []):
                 _all_said = _lower(r) or _all_said
@@ -20587,7 +20683,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     _ddev, _dkey, _dks, _deg, _dgw = _dr
                     if _dkey not in targets:
                         targets.append(_dkey)
-                    smart_items.append((nid, None, S, "all", "dev", _ddev, None, None, None, _dkey, _dks, _deg, _dgw, None))
+                    smart_items.append((nid, None, S, "all", "dev", _ddev, None, None, None, _dkey, _dks, _deg, _dgw, None, None))
 
     for nid, node in nodes.items():
         targets = []
@@ -20767,7 +20863,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
     # 2b) Phase-3 smart entries. exit = MASQUERADE out P's WAN (egress_ip ""); direct/block = LOCAL verdicts carried
     # for the node's first-match chain. ORDER is preserved (rules were collected in panel rule order) so first-match
     # wins — a direct/block exception before a catch-all exit is honoured, and block is a real drop, not a leak.
-    for (nid, P, S, cat, action, dev_n, dev_p, base_p, extra, xkey, xks, xeg, xgw, who) in smart_items:
+    for (nid, P, S, cat, action, dev_n, dev_p, base_p, extra, xkey, xks, xeg, xgw, who, ports) in smart_items:
         sn = slot(nid)
         if action == "exit":
             T = sn["_targets"].get(P)
@@ -20793,7 +20889,9 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             # deliberately (see the branch below), so nothing downstream can tell them apart. Here they
             # can: `P` is a node id, `_targets` keys a device as "exit:<id>", and only this branch has a
             # peer node. The relay masks loss on a MESH leg; a device exit has no far end to mask.
-            if (S, P, "smart") not in sn["_leg_seen"]:
+            # …but not for a rule that carries no TCP at all (B.4): the relay's divert is TCP-only, so a UDP-only rule's leg
+            # would be offered a relay that never carries a byte of it.
+            if (S, P, "smart") not in sn["_leg_seen"] and not (isinstance(ports, dict) and ports.get("proto") == "udp"):
                 sn["_leg_seen"].add((S, P, "smart"))
                 sn["_legs"].append({"subnet": S, "peer": P, "mark": T, "mode": "smart"})
         elif action == "dev":
@@ -20822,6 +20920,9 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             # that node alone. `_who` is panel-internal, like `_legs`, and exists only when a rule names people.
             entry["src"] = who_wid(S, who)
             sn.setdefault("_who", {})[entry["src"]] = (S, who)
+        if isinstance(ports, dict):                            # B.4 — only when set: a rule without ports is the entry it always was
+            entry["ports"] = {"proto": ports["proto"], "list": ports["list"]}
+            sn["_ports"] = True
         if entry not in sn["smart"]:                           # preserve order, drop exact dups
             sn["smart"].append(entry)
         if extra:                                              # custom rule: domains → dnsmasq/sni fill cat_<id>; cidrs → loaded directly (also for block/direct sets)
@@ -20852,6 +20953,25 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                     _k = classify_target(_p)
                     if _k.get("kind") in _PATTERN_KINDS:
                         b.setdefault(_k["kind"], []).append(_k["value"])
+
+    # B.3 — PORTS REFINE A DESTINATION. Rules with identical targets share a category (`custom_cat_id`), so "Google → A" and
+    # "Google UDP 19302-19309 → B" are two entries of one category; the one with ports goes first whatever the row order, or
+    # the port-less one — first match — would take its ports too. Only among entries of one subnet, one category and the same
+    # people; everything else keeps rule order. Only in a slot that has a port entry: every other plan is the list it was.
+    for sn in plans.values():
+        if sn.pop("_ports", None):
+            out, first = [], {}                                # (subnet, category, src) → index of its first port-less entry
+            for e in sn["smart"]:
+                k = (e["subnet"], e["category"], e.get("src"))
+                if "ports" in e and k in first:
+                    at = first[k]
+                    out.insert(at, e)                          # after the port entries already moved there: order among them kept
+                    first = {kk: (v + 1 if v >= at else v) for kk, v in first.items()}
+                    continue
+                if "ports" not in e:
+                    first.setdefault(k, len(out))
+                out.append(e)
+            sn["smart"] = out
 
     # 2b) P2P ROUTES — the far side exactly as a rule's: a node target gets the exit record (`to S lookup T` + SNAT), the
     # mesh ACL, its arrival default and the relay leg record; a device gets a RULE-scoped devexit per subnet (its SNAT, and
@@ -32609,6 +32729,7 @@ class Handler(BaseHTTPRequestHandler):
         my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "devexit": [], "allowed": {}}
         if my_plan.get("_who"):                          # a rule names people: resolve them for THIS node only (§4.3, D4)
             my_plan = who_plan_for_node(my_plan, roster, nid, snap)
+        my_plan = ports_plan_for_node(my_plan, snap)     # a node that does not read `ports` gets no port rule (B.4)
         _ps = Handler.deps.get("panel_settings") or {}   # Panel settings → mirrors / geo TTL / geo epoch for the node (used in the reply below)
         for _ifn, _mpeers in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],
                                                     my_plan.get("allowed"), Handler.deps.get("node_snaps")).items():

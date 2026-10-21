@@ -2036,6 +2036,12 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 .rs-where .field{margin-bottom:6px}
 .rs-where .rsdest{max-width:none}
 .rs-where-note{margin:0 0 14px}
+/* Rule settings → Ports (B.6): the protocol switch keeps its three equal parts, the field takes the rest; on a phone they stack. */
+.rs-ports{margin-bottom:0;align-items:flex-start}
+.rs-ports .field{margin-bottom:6px}
+.rs-ports .field:first-child{flex:0 1 300px}
+.rs-ports input[aria-invalid="true"]{border-color:var(--partial)}
+@media (max-width:640px){.rs-ports{flex-direction:column;gap:0}.rs-ports .field:first-child{flex:none;width:100%}}
 /* A row's chips, settings button and destination are ONE line that moves as a unit: beside the entry count while it fits,
    under it (still one line, right-aligned) when it does not — the foot wraps, never the trail. Split, the chips sat on a
    line of their own above a lone dropdown. The destination gives up to ~100px first, so a row with three chips still fits. */

@@ -5303,6 +5303,44 @@ def _smart_srcsetname(wid):
     return "src_" + wid
 
 
+# PORTS ON A RULE (docs/NEVER-BLOCK-AND-PORT-RULES-PLAN.md B.4). An entry may carry `ports: {proto: tcp|udp|both, list:
+# "443,8000-8100"}` — the panel's canonical form; empty list = every port of that protocol. Rendered as one L4 match beside
+# the entry's own (`_ports_match`). THE KEY DECIDES, as for `src`: an entry whose `ports` does not read is dropped, never
+# lowered for every port. Three consumers treat every entry as a TCP 443 rule (swg-sni's verdicts, `svb`, xt_string) and take
+# one with ports only when they include TCP 443 (`_ports_t443`).
+_PORTS_LIST_RE = re.compile(r"(?:[0-9]{1,5}(?:-[0-9]{1,5})?(?:,[0-9]{1,5}(?:-[0-9]{1,5})?){0,31})?")
+
+
+def _ports_spans(p):
+    """`ports` → (proto, [(a, b)…]) or None when it does not read."""
+    if not isinstance(p, dict) or p.get("proto") not in ("tcp", "udp", "both") or not isinstance(p.get("list", ""), str) \
+            or not _PORTS_LIST_RE.fullmatch(p.get("list", "")):
+        return None
+    spans = [tuple(int(x) for x in (t.split("-") * 2)[:2]) for t in p.get("list", "").split(",") if t]
+    if any(not (1 <= a <= b <= 65535) for a, b in spans) or (not spans and p["proto"] == "both"):
+        return None
+    return p["proto"], spans
+
+
+def _ports_match(p):
+    """`ports` → the nft tokens that match it (`meta l4proto udp th dport { 19302-19309 }`); None when it does not read."""
+    ps = _ports_spans(p)
+    if ps is None:
+        return None
+    proto, spans = ps
+    out = ["meta", "l4proto", "{ tcp, udp }" if proto == "both" else proto]
+    if spans:
+        el = ["%d" % a if a == b else "%d-%d" % (a, b) for a, b in spans]
+        out += ["th", "dport", el[0] if len(el) == 1 else "{ " + ", ".join(el) + " }"]
+    return out
+
+
+def _ports_t443(e):
+    """Does this entry reach TCP 443 — no ports at all, or ports that include it?"""
+    ps = _ports_spans(e.get("ports")) if "ports" in e else ("both", [])
+    return ps is not None and ps[0] != "udp" and (not ps[1] or any(a <= 443 <= b for a, b in ps[1]))
+
+
 # ARRIVALS (ROUTING-PEERS-MESH-PLAN §3, §4.3, §6.1–6.2). Traffic another node cascades out through this one carries its ORIGIN
 # client's source — no SNAT into the leg — so none of this node's own rules ever matched it (§1.3 A6/A7). When this node's
 # default is a rule list, the panel sends `smart.arrivals = {subnets: [...], entries: [...]}`: which origin subnets are
@@ -5402,12 +5440,16 @@ def _smart_shadows(smart_e, domains, pats, engine, insig=None, allow=()):
         return {}
     kinds = ("zone",) if engine == "dns" else ("first", "zone", "any", "starts", "ends", "contains")   # what each engine runs
     aud = {}                                                   # category → subnet → {selection id, or None for everyone}
+    cov_of = {}                                                # …the same, from the entries that COVER: a port entry never does (B.4)
     for e in smart_e:                                          # the entries _ensure_smart_nft lowers, and only those
-        if e.get("category") and e["category"] != "all" and ("src" not in e or _SRC_WID_RE.fullmatch(str(e["src"]))):
+        if e.get("category") and e["category"] != "all" and ("src" not in e or _SRC_WID_RE.fullmatch(str(e["src"]))) \
+                and ("ports" not in e or _ports_match(e["ports"]) is not None):
             aud.setdefault(e["category"], {}).setdefault(e["subnet"], set()).add(e.get("src") or None)
+            if "ports" not in e:
+                cov_of.setdefault(e["category"], {}).setdefault(e["subnet"], set()).add(e.get("src") or None)
     keyed = [c for c in aud if (domains or {}).get(c) or any(c in ((pats or {}).get(k) or {}) for k in kinds)]
     def gap(c1, c2):                                           # does some rule of c2 reach a device no rule of c1 reaches?
-        cov = aud[c1]
+        cov = cov_of.get(c1, {})
         return any(None not in cov.get(S, ()) and not (w and w in cov.get(S, ())) for S, ws in aud[c2].items() for w in ws)
     pairs = {(c1, c2) for c1 in keyed for c2 in keyed if c1 != c2 and gap(c1, c2)}
     if not pairs:
@@ -5716,12 +5758,17 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     # is the catch-all → emitted after the specific rules for its subnet. Order is preserved from the panel plan.
     # THE KEY DECIDES, NOT ITS VALUE: an entry carrying `src` at all is per-person, so an empty or null one is dropped with the
     # malformed ones rather than lowered for the whole subnet. Narrower, never wider.
-    spec = [e for e in smart_e if e["category"] != "all" and ("src" not in e or _SRC_WID_RE.fullmatch(str(e["src"])))]
-    allr = [e for e in smart_e if e["category"] == "all" and "src" not in e]   # a catch-all is for everyone (D10): never widened from a selection
+    spec = [e for e in smart_e if e["category"] != "all" and ("src" not in e or _SRC_WID_RE.fullmatch(str(e["src"])))
+            and ("ports" not in e or _ports_match(e["ports"]) is not None)]   # …and a `ports` that does not read: dropped (B.4)
+    allr = [e for e in smart_e if e["category"] == "all" and "src" not in e and "ports" not in e]   # a catch-all is for everyone (D10): never widened from a selection
     # A per-person entry adds its selection as a FIFTH element; everyone else's stays a 4-tuple, so a plan without one
     # signs exactly as it always has (T3). Read by index below, never unpacked to four names.
     want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) + ((e["src"],) if "src" in e else ())
             for e in spec + allr]
+    # PORTS NEVER RIDE IN THE TUPLE (`len(w) > 4` means per-person to every reader below): a parallel map, by want index, of
+    # the L4 match each entry adds — and `p443`, the entries the TCP-443 consumers (swg-sni's verdicts, `svb`) may take.
+    pt_of = {i: _ports_match(e["ports"]) for i, e in enumerate(spec + allr) if "ports" in e}
+    p443 = [i not in pt_of or _ports_t443(e) for i, e in enumerate(spec + allr)]
     # A ROW is one run of consecutive entries with the same (subnet, selection) — one chain `sr<k>`, reached by ONE
     # lookup of its source set, so a device that is not chosen skips the whole row at once (§5.1: free).
     rows = []
@@ -5749,8 +5796,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     sh_of = {}
     if shcats:
         aud = {}
-        for w in want:
-            aud.setdefault(w[1], {}).setdefault(w[0], set()).add(w[4] if len(w) > 4 else None)
+        for i, w in enumerate(want):
+            if i not in pt_of:                                 # a port entry claims its hosts on its ports only: never coverage (B.4)
+                aud.setdefault(w[1], {}).setdefault(w[0], set()).add(w[4] if len(w) > 4 else None)
         for i, w in enumerate(want):
             for sh, c1, more in shadows["by_target"].get(w[1], ()):
                 cov = set().union(*(aud.get(c, {}).get(w[0], set()) for c in [c1] + list(more)))
@@ -5777,7 +5825,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 wj = want[j]
                 if wj[0] != w[0] or wj[2] not in ("exit", "direct") or wj[1] == "all":
                     continue
-                cond = ["iifname", ".", "ip", "saddr", "@" + _smart_srcsetname(wj[4])] if len(wj) > 4 else []
+                cond = (["iifname", ".", "ip", "saddr", "@" + _smart_srcsetname(wj[4])] if len(wj) > 4 else []) + pt_of.get(j, [])   # j claimed only its ports
                 for c, cnd in [(wj[1], cond)] + [(sh, cond + [t for x in xs for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))])
                                                   for sh, xs in sh_of.get(j, ())]:
                     ex += [[cnd, snm] for snm in [_smart_setname(c)] + ([_smart_learnsetname(c)] if queue else [])]
@@ -5823,11 +5871,11 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     # excludes them), so the first rule whose categories meet a host's decides — an Exit or a Direct above a Block keeps
     # its names. Written only when a Block exists (local or arrival): a node without one writes nothing and signs as before.
     sni_blocks = None
-    _nb = lambda acts: any(w[2] in acts and w[1] != "all" for w in want) or any(a in acts and c != "all" for c, a, _T, _g in aw)
+    _nb = lambda acts: any(w[2] in acts and w[1] != "all" and p443[i] for i, w in enumerate(want)) or any(a in acts and c != "all" for c, a, _T, _g in aw)
     if queue and _nb(("block",)):
         by_src = {}
         for i, w in enumerate(want):
-            if w[1] != "all":
+            if w[1] != "all" and p443[i]:                      # swg-sni decides TCP 443 only: a rule off it is not its to apply
                 by_src.setdefault(w[0], []).append([(i + 1) << 16 | SNI_BLOCK_MARK, w[2],
                                                     [[w[1], []]] + [[sh, list(ex)] for sh, ex in sh_of.get(i, ())],
                                                     w[4] if len(w) > 4 else None])
@@ -5852,13 +5900,13 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     svb_of = {}
     if sni_blocks:
         for i, w in enumerate(want):
-            if w[2] != "block" or w[1] == "all" or str(w[1]).startswith("blku") or \
+            if w[2] != "block" or w[1] == "all" or str(w[1]).startswith("blku") or not p443[i] or \
                     (name_cats is not None and w[1] not in name_cats and not sh_of.get(i)):
                 continue
             ex = []
             for j in range(i):
                 wj = want[j]
-                if wj[0] == w[0] and wj[2] in ("exit", "direct") and wj[1] != "all":
+                if wj[0] == w[0] and wj[2] in ("exit", "direct") and wj[1] != "all" and p443[j]:
                     ex.append([["iifname", ".", "ip", "saddr", "@" + _smart_srcsetname(wj[4])] if len(wj) > 4 else [], _smart_setname(wj[1])])
             if ex:
                 svb_of[(i + 1) << 16 | SNI_BLOCK_MARK] = ex
@@ -5909,6 +5957,8 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         return [(_smart_setname(c), [])] + ([(_smart_learnsetname(c), [])] if queue else [])
     v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
     sig = hashlib.sha1((("pin;" if pin else "") + ("q2;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s9").encode()).hexdigest()[:16]   # q2: the queue hands swg-sni only the ClientHello (_sni_queue) — so only a node whose engine is swg-sni rebuilds, once (every caller has queue ⇒ pin: queue=(engine == sni_user), pin=is_sni); s9: reverted the per-source blkd meter (its duplicate name killed the catl_blku drop rule → hybrid blocking broke); s7: +counter on the blku content-block drop; s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
+    if pt_of:                                                   # B.4 — only a plan with a port rule signs its ports
+        sig = hashlib.sha1((sig + "|pt:" + json.dumps(sorted(pt_of.items()))).encode()).hexdigest()[:16]
     if shw:                                                     # only then — a plan with no shadow signs exactly as before
         sig = hashlib.sha1((sig + "|sh:" + json.dumps(shw)).encode()).hexdigest()[:16]
     if pb_of:                                                   # likewise: only a pin-mode node with a Block below an Exit/Direct rebuilds
@@ -6038,7 +6088,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         def _shadow_rules(i, emit, fin):                       # right after entry i's own rules, with its verdict (see sh_of)
             _S, c2, a2, T2 = want[i][:4]
             for sh, ex in sh_of.get(i, ()):
-                xm = [t for x in ex for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))]
+                xm = [t for x in ex for t in ("iifname", ".", "ip", "saddr", "!=", "@" + _smart_srcsetname(x))] + pt_of.get(i, [])   # …on its ports (B.4)
                 for snm in [_smart_setname(sh)] + ([_smart_learnsetname(sh)] if queue else []):
                     if a2 == "exit":
                         emit(*xm, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T2), *(["ct", "mark", "set", str(T2)] if pin else []), fin)
@@ -6050,6 +6100,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
 
         for i, w in enumerate(want):
             S, cat, act, T = w[:4]
+            pm = pt_of.get(i, [])                              # the entry's ports (B.4), after its source, before its destination
             if len(w) > 4:                                     # a per-person entry: its row's ONE jump, then its rules inside the row,
                 k = _row_of[i]                                 # each ending in `accept` — in a jumped chain that ends this table's
                 if rows[k]["start"] == i:                      # walk exactly as `return` does in the base chain (policy accept), so
@@ -6057,11 +6108,11 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 for snm, xc in _rsets(cat, act):
                     _row = ("add", "rule", "inet", SMART_NFT_TABLE, "sr%d" % k)
                     if act == "exit":
-                        bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "accept")
+                        bat.add(*_row, *pm, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "accept")
                     elif act == "direct":
-                        bat.add(*_row, *_new, "ip", "daddr", "@" + snm, "accept")
+                        bat.add(*_row, *pm, *_new, "ip", "daddr", "@" + snm, "accept")
                     elif act == "block":                       # …or to its pin-mode chain (see pb_of)
-                        bat.add(*_row, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))
+                        bat.add(*_row, *pm, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))
                 _shadow_rules(i, lambda *m, _k=k: bat.add("add", "rule", "inet", SMART_NFT_TABLE, "sr%d" % _k, *m), "accept")
                 continue
             if cat == "all":                                   # catch-all — no dest set, emitted last for its subnet
@@ -6074,14 +6125,14 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
             # for a Block, whose learned set is a name's (see _bsets)
             for snm, xc in _rsets(cat, act):
                 if act == "exit":
-                    _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")
+                    _add("ip", "saddr", S, *pm, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")
                 elif act == "direct":
-                    _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "return")   # explicit direct exception (wins over a later catch-all exit)
+                    _add("ip", "saddr", S, *pm, *_new, "ip", "daddr", "@" + snm, "return")   # explicit direct exception (wins over a later catch-all exit)
                 elif act == "block":
                     if str(cat).startswith("blku"):    # content-block union → aggregate COUNTER (growing "blocked" metric); zero
                         _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *xc, "counter", "drop")   # CPU (only ticks on dropped pkts)
                     else:                                      # …or to its pin-mode chain (see pb_of)
-                        _add("ip", "saddr", S, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))
+                        _add("ip", "saddr", S, *pm, "ip", "daddr", "@" + snm, *xc, *(["jump", "pb%d" % i] if i in pb_of else ["drop"]))
             _shadow_rules(i, lambda *m, _S=S: _add("ip", "saddr", _S, *m), "return")
         if arr:
             # ── `sa`: the node's default list, for traffic cascaded in (§6.2). Each rule `accept`s — in a jumped chain that
@@ -11241,7 +11292,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _ks = _ksni_src_ok() if host_engine == "sni_kernel" else False
     _kname = {c for c, v in domains.items() if v} | {c for c, v in (_pats.get("contains") or {}).items() if v}
     _ks_blk = host_engine == "sni_kernel" and (
-        any(e.get("action") == "block" and e["category"] in _kname and (_ks or "src" not in e) for e in smart_e)
+        any(e.get("action") == "block" and e["category"] in _kname and (_ks or "src" not in e) and _ports_t443(e) for e in smart_e)
         or (_ks and any(e["action"] == "block" and e["category"] in _kname for e in arr_e)))
     set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=is_sni, v6_ifaces=smart_ifs,
                                     reset_mark=(SNI_RESET_MARK if is_sni else 0), queue=(host_engine == "sni_user"),
@@ -11281,8 +11332,9 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         # out and its IP targets route through the nft row alone (`src: 1`, ROUTING-PEERS-MESH-PLAN §6.3).
         # Exit, Direct and Block rules alike (D3): an Exit or a Direct learns its names' addresses, a Block refuses its names'
         # connections. The catch-all has no name and never reaches it.
+        # …and only rules that reach TCP 443, the one port it reads (B.4): a UDP-only Block by name would refuse web pages.
         _built = _ensure_smart_xtstring([e for e in smart_e if e.get("category") != "all" and e.get("action", "exit") in ("exit", "direct", "block")
-                                         and (_ks or "src" not in e)], domains, SNI_RESET_MARK, res,
+                                         and (_ks or "src" not in e) and _ports_t443(e)], domains, SNI_RESET_MARK, res,
                                         ttl=learn_ttl, contains=_pats.get("contains") or {},   # enriched domains + contains, one capped budget
                                         srcs=(smart or {}).get("srcs") if _ks else None,
                                         # arrivals get hostnames here only where a subnet can be bound to its leg (§6.3)
@@ -12418,8 +12470,11 @@ def _blk_domains_read():
 # reads the two fields today, which is exactly why it went unnoticed for as long as it did: a health number
 # that no screen shows is a number nobody checks. See tests/smart_rulecount_selftest.py, whose fixtures are
 # captured from real nodes rather than written from this regex.
+# …and a PORT rule's L4 clause sits between the source and the pin (B.4) — `meta l4proto udp th dport { … }`, which nft may
+# list back as `udp dport …`; optional, so every shape above counts as it did.
 _SMART_MARK_RE = re.compile(
-    r"^\s*ip saddr \S+ (?:ct state new )?(?:ip daddr @\S+ )?meta mark set (?:0x)?[0-9a-fA-F]+", re.M)
+    r"^\s*ip saddr \S+ (?:meta l4proto (?:\{[^}]*\}|\S+) )?(?:(?:th|tcp|udp) dport (?:\{[^}]*\}|\S+) )?"
+    r"(?:ct state new )?(?:ip daddr @\S+ )?meta mark set (?:0x)?[0-9a-fA-F]+", re.M)
 
 
 def smart_status():
@@ -12446,7 +12501,8 @@ def smart_status():
             "src": 2 if _KSNI_SRC["ok"] else 1,   # 1: per-person rows in the nft chain · 2: Kernel SNI matches their hostnames too
             "arr": 1,                             # runs `smart.arrivals` — the default list for traffic cascaded in (ROUTING-PEERS-MESH-PLAN §4.3)
             "caps_keep": 1,                       # keeps its caps for the categories a sync names in `cat_caps_keep` (_cat_caps_take)
-            "allow": 1}                           # applies `smart.allow`, the Never-block list's names (_never_block_adjust)
+            "allow": 1,                           # applies `smart.allow`, the Never-block list's names (_never_block_adjust)
+            "ports": 1}                           # renders an entry's `ports` (B.4) — the panel withholds port rules until it says so
     if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only) | error (its table
         _r = _P2P.get("route") or ""                            # was refused, `detail` says why), the mode in force, and under route
         if _r == "up" and _devexit_state(_P2P.get("route_dev") or "") != "up":   # whether its way out is up — the last pass's answer,

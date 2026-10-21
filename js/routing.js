@@ -17,7 +17,8 @@ import { classify, classifyAll, patternTier, TIER2_MIN } from "./classify.js";
 import { idnHost, idnDiffers } from "./idn.js";
 import { rulesToRows, rowsToRules, badgeIdentity, rowHasBadge, newGid,
          badgeText, readToken as rrReadToken,
-         customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho, rowLints, badgeCovers } from "./rulerows.js";
+         customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho, rowLints, badgeCovers,
+         portsClean, portsOf, portsReach } from "./rulerows.js";
 import { esc, seen } from "./util.js";
 import { isSelfContainedName, nodeStale, kindOf, awgGen } from "./model.js";
 import { meshHealth, deviceLabel } from "./views.js";
@@ -1348,11 +1349,47 @@ export function rowGate(row, mode, node, b) {
    rule has learned yet — before its site name can be read — so a rule above it that matches by site name never sees one: an
    allow-list by name blocks everything. The datapath change was judged not worth it (it would let a Block's first packets out),
    so the rule list says it where the operator builds it. A Block row above it loses nothing; the others are counted. */
+const _byName = r => r.enabled !== false && r.action !== "block" && (r.badges || []).some(b => {
+  const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
+  return caps ? !!caps.host : !_ipKind(b.kind); });
 export const catchAllPreemptsNames = (mode, rows, catchAll) => (mode === "sni" || mode === "sni_kernel")
   && !!catchAll && catchAll.action === "block"          // only a catch-all that is on reaches here (rulesToRows, setCatch)
-  && (rows || []).some(r => r.enabled !== false && r.action !== "block" && (r.badges || []).some(b => {
-    const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
-    return caps ? !!caps.host : !_ipKind(b.kind); }));
+  && (rows || []).some(_byName);
+/* …and the same for a Block ROW to every address (0.0.0.0/0, D10) that reaches TCP 443 (B.6): it drops the same first packets,
+   so the rows above it that match by site name never see one. The index of the first such row, or -1. */
+export const allBlockPreemptsNames = (mode, rows) => {
+  if (mode !== "sni" && mode !== "sni_kernel") return -1;
+  const k = (rows || []).findIndex(r => r.enabled !== false && r.action === "block" && !r.who && portsReach(portsOf(r), "tcp", 443)
+    && (r.badges || []).some(b => b.t === "target" && b.kind === "ip" && /^0\.0\.0\.0\/0$/.test(String(b.value))));
+  return k > 0 && rows.slice(0, k).some(_byName) ? k : -1;
+};
+
+/* PORTS ON A RULE (B.4, the engine matrix — kept here only, fact 12): what the node's mode does with a row's ports, in one
+   sentence for the chip, and whether that sentence is a warning (part of the rule never reaches it). */
+export function portsNote(mode, row) {
+  const p = portsOf(row);
+  if (!p) return null;
+  const names = (row.badges || []).some(b => { const caps = b.t === "list" ? (customListOf(b.id) ? customCaps(customListOf(b.id)) : catCapsAny(b.id)) : null;
+    return caps ? !!caps.host : !_ipKind(b.kind); });
+  if ((mode === "sni" || mode === "sni_kernel") && portsReach(p, "udp", 443))
+    return { warn: true, text: T("This node drops QUIC (UDP 443) before any rule, so web browsers fall back to TCP — this rule never sees UDP 443.") };
+  if (mode === "forcedns" && (portsReach(p, "udp", 53) || portsReach(p, "tcp", 53)))
+    return { warn: true, text: T("With Force DNS this node answers port 53 itself — DNS never reaches this rule.") };
+  if (names && mode === "sni_kernel" && !portsReach(p, "tcp", 443))
+    return { warn: true, text: T("Kernel SNI reads site names on TCP 443 only — on these ports only this rule's addresses and networks apply.") };
+  if (names && mode === "sni" && (p.proto !== "tcp" || p.list !== "443"))
+    return { warn: false, text: T("Hybrid SNI learns a site's addresses from its web connections — on other ports this rule matches the addresses already learned.") };
+  return null;
+}
+const PROTO_LABEL = () => ({ tcp: "TCP", udp: "UDP", both: T("TCP and UDP") });
+/** "UDP 19302–19309", "TCP 443, 8000–8100", "every UDP port". */
+export const portsLabel = p => !p ? "" : p.list ? PROTO_LABEL()[p.proto] + " " + p.list.split(",").join(", ").replace(/-/g, "\u2013")
+  : T("every {proto} port", { proto: PROTO_LABEL()[p.proto] });
+function PortChip({ row, mode }) {
+  const n = portsNote(mode, row);
+  return html`<span class=${"whochip portchip" + (n && n.warn ? " warn" : "")} title=${(n ? n.text + " " : "") + T("Only this traffic takes the rule — the rest goes on to the rules below.")}>${n && n.warn
+    ? html`<${Ic} i="warn"/>` : null}${portsLabel(portsOf(row))}</span>`;
+}
 
 /* Why a badge cannot run here, said in one sentence, plus the label of the mode that would fix it. Never a
    bare "unsupported": the operator has to be able to act on it, and for three of the five reasons the action
@@ -2482,8 +2519,8 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
   const whoOf = useWhoReport(node, iface, dispRows.filter(r => r.who).map(r => r.who));
   const openRule = row => row && pushModal(html`<${RuleSettingsSheet} node=${node} iface=${iface} row=${row} exitIps=${ips}
     directIp=${dipOn ? directIp || "" : undefined} dests=${destOpts(false, destVal(row))} dest=${destVal(row)} mode=${_mode} nodeScope=${nodeScope}
-    onApply=${(v, who, xs, aud, dip) => emit(dispRows.map(r => r._gid === row._gid
-      ? { ...r, ...destPatch(v), who: who || undefined, aud: nodeScope ? (aud || undefined) : r.aud } : r), undefined, xs, dip)}/>`);
+    onApply=${(v, who, xs, aud, dip, ports) => emit(dispRows.map(r => r._gid === row._gid
+      ? { ...r, ...destPatch(v), who: who || undefined, aud: nodeScope ? (aud || undefined) : r.aud, ports: nodeScope ? r.ports : (ports || undefined) } : r), undefined, xs, dip)}/>`);
   // THE CATCH-ALL'S OWN WINDOW (D10, §7.1). `everyone` fixes "For whom", so the only thing it can change besides the
   // destination is the address — which is the whole reason it opens at all.
   const openCatch = () => pushModal(html`<${RuleSettingsSheet} node=${node} iface=${iface} everyone exitIps=${ips} nodeScope=${nodeScope}
@@ -2572,9 +2609,10 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
               is the only one, and it is what joins "Everything else" to the control. */""}
         ${(() => { const _xip = row.action === "exit" ? shownIps[row.node] : "", _dip = row.action === "direct" && dipOn ? directIp : "";
           const dest = html`${row.who ? html`<${WhoChip} who=${row.who} rep=${whoOf(row.who)} node=${node}/>` : null}
+              ${row.ports ? html`<${PortChip} row=${row} mode=${_mode}/>` : null}
               ${row.aud ? html`<span class="whochip" title=${row.aud === "local" ? T("This node's own clients") : T("Traffic cascaded in from other nodes")}><${Ic} i="users"/>${row.aud === "local" ? T("chip|own clients") : T("chip|cascaded in")}</span>` : null}
               ${_xip ? html`<${AsChip} ip=${_xip} node=${row.node}/>` : _dip ? html`<${AsChip} ip=${_dip} node=${node} direct/>` : null}
-              ${row.locked ? null : tuneBtn(row.who || row.aud || _xip || _dip, () => openRule(row))}<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
+              ${row.locked ? null : tuneBtn(row.who || row.aud || row.ports || _xip || _dip, () => openRule(row))}<span class="rrdest" title=${row.locked ? T("Stored as written — this rule is kept exactly as it is.") : ""}>
             <${Dropdown} disabled=${!!row.locked} value=${destVal(row)}
               onChange=${v => onDest(row._gid, v)} options=${destOpts(false, destVal(row))}/>
           </span>`;
@@ -2646,6 +2684,7 @@ export function RoutingRules({ node, iface, rows, catchAll, exitIps, directIp, o
     ${!nodeScope && _nlist && !catchAll ? html`<div class="hint rrnote">${T("Node default (Settings ▸ Network ▸ Default exit):")} ${nodeRows.slice(0, 10).map(r => html`<span>${(r.badges || []).slice(0, 3).map(b => b.t === "list" ? catLabelOf(b.id) : targetLabel(b.kind, b.value)).join(", ")}${(r.badges || []).length > 3 ? "…" : ""} → ${destLabelOf(r)}</span> · `)}${nodeRows.length > 10 ? T("…and {v1} more", { v1: nodeRows.length - 10 }) + " · " : ""}<span>${T("everything else")} → ${_ncatch ? (goneDest(destVal(_ncatch)) || {}).label || destLabelOf(_ncatch) : T("Direct (this node)")}</span></div>` : null}
     ${nodeScope && _mode === "sni_kernel" && ((((Store.stats || {})[node] || {}).smartroute || {}).src || 0) < 2 && dispRows.some(r => r.aud !== "local")
       ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("Kernel SNI on this node can't match hostnames for traffic cascaded in — only IP addresses and networks apply to it.")}</span></div>` : null}
+    ${allBlockPreemptsNames(_mode, dispRows) >= 0 ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("A Block to every address (0.0.0.0/0) stops each new connection before its site name is read, so the rules above it that match by site name never take effect: those sites are blocked too. Route them by address instead, or give the Block ports that leave out TCP 443.")}</span></div>` : null}
     ${catchAllPreemptsNames(_mode, dispRows, catchAll) ? html`<div class="notice warn"><${Ic} i="warn"/><span>${T("“Everything else → Block” stops each new connection before its site name is read, so the rules above that match by site name never take effect: those sites are blocked too. Route them by address (an IP range or a network) instead, or block by name only what you don't want.")}</span></div>` : null}
     ${dispRows.length || catchAll ? null : html`<div class="hint">${others.length
       ? Trich("No rules yet. Add a rule to send some destinations through another node, or set *Everything else* to channel everything.")
@@ -2758,6 +2797,12 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   const [aud, setAud] = useState(nodeScope && !everyone ? (row.aud || "") : "");
   const [chosen, setChosen] = useState(!nodeScope && !everyone && !!row.who);
   const [sel, setSel] = useState(() => canonWho(row.who || {}));
+  // PORTS (B.6) — an interface rule's only; "TCP and UDP" with no port is the rule as it always was (no ports at all).
+  const withPorts = !nodeScope && !everyone;
+  const [proto, setProto] = useState((portsOf(row) || {}).proto || "both");
+  const [plist, setPlist] = useState(((portsOf(row) || {}).list || "").split(",").join(", "));
+  const pc = proto === "both" && !plist.trim() ? null : portsClean(proto, plist);
+  const pBad = !!(withPorts && pc && pc.bad);
   // A DRAFT OF THE INTERFACE'S WHOLE ADDRESS MAP, not one address. The field below edits the entry for
   // whichever node "Leaves by" currently names, so picking another node up there shows THAT node's address
   // without anything having to reset anything: the old node's entry is simply not the one being read.
@@ -2790,7 +2835,7 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   // THE address field, whichever it is: the far node's for Forward, this node's for Direct — one picker, one stale test.
   const addr = asRec ? { node: asNode, ips: asIps, value: ip, set: setIp } : dRec ? { node, ips: dIps, value: dip, set: setDip } : null;
   const addrStale = !!(addr && addr.value && addr.ips.length && !addr.ips.includes(addr.value));
-  const key = JSON.stringify([dest, chosen, chosen ? sel : null, ips, aud, dip]);
+  const key = JSON.stringify([dest, chosen, chosen ? sel : null, ips, aud, dip, withPorts ? [proto, plist] : null]);
   if (base.current === null) base.current = key;
   dirtyRef.current = key !== base.current;
   const typedOnly = () => { if (cleanRef.current) cleanRef.current(); };      // the filter and the search change nothing
@@ -2807,7 +2852,8 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   const drop = e => { const k = { g: "groups", u: "users", p: "peers" }[e.k]; setSel(s => ({ ...s, [k]: s[k].filter(x => x !== e.id) })); };
   const empty = chosen && !list.length;
   const c = whoTally(rep);
-  const apply = () => { if (empty) return; onApply(dest, chosen ? sel : null, ips, aud, directIp !== undefined ? dip : undefined);
+  const apply = () => { if (empty || pBad) return; onApply(dest, chosen ? sel : null, ips, aud, directIp !== undefined ? dip : undefined,
+    withPorts && pc ? { proto: pc.proto, list: pc.list } : null);
     dirtyRef.current = false; if (cleanRef.current) cleanRef.current(); closeModal(); };
   const count = [sel.groups.length ? plural(sel.groups.length, "group") : "", sel.users.length ? plural(sel.users.length, "user") : "",
                  sel.peers.length ? plural(sel.peers.length, "device") : ""].filter(Boolean).join(", ");
@@ -2815,7 +2861,7 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   return html`<${Sheet} title=${T("Rule settings")} width=${680} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}
     foot=${html`<${Fragment}><span class="faint">${chosen && count ? T("{v1} chosen", { v1: count }) : ""}</span><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => (closeRef.current ? closeRef.current() : closeModal())}>${T("Cancel")}</button>
-      <button class="btn btn-primary" disabled=${empty} title=${empty ? T("Choose at least one person or device, or pick “Everyone on this interface”.") : ""} onClick=${apply}>${T("Apply")}</button><//>`}>
+      <button class="btn btn-primary" disabled=${empty || pBad} title=${empty ? T("Choose at least one person or device, or pick “Everyone on this interface”.") : ""} onClick=${apply}>${T("Apply")}</button><//>`}>
     ${/* WHERE IT LEAVES AND AS WHAT, ON ONE LINE: the address refines the destination beside it, and the notes about the
           address run under both at full width rather than down a half-width column.
           THE EXIT IP (D6). For a "Forward to node" destination it is that node's SNAT, and only for a node still in this
@@ -2852,6 +2898,21 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
       </div>
       ${note ? html`<div class="hint rs-where-note">${note}</div>` : null}
       ${addrStale ? html`<div class="hint err rs-where-note">${T("{v1} isn't reporting this address. Traffic on this rule leaves it with a source it can't receive replies on, so it goes nowhere until the address is back or you choose another.", { v1: Store.nodeName(addr.node) })}</div>` : null}`; })()}
+    ${/* PORTS (B.6): which traffic to the destination takes the rule. Its own line under "Leaves by": the protocol in the same
+          three-part switch as a node list's audience, the ports beside it. Empty = every port; "TCP and UDP" + empty = no ports,
+          the rule as it always was. Not on "Everything else" (it is every port, D10) nor on a node's default list (B.1). */""}
+    ${withPorts ? html`<div class="row2 rs-ports">
+        <div class="field"><label>${T("Protocol")}</label>
+          <div class="dpsw netsw-share netsw-aud" role="radiogroup" aria-label=${T("Protocol")}>${[["both", T("TCP and UDP")], ["tcp", "TCP"], ["udp", "UDP"]].map(([v, l]) => html`<button type="button" role="radio"
+            aria-checked=${proto === v} class=${proto === v ? "on" : ""} onClick=${() => setProto(v)}>${l}</button>`)}</div></div>
+        <div class="field"><label for="rs-ports-in">${T("Ports")}</label>
+          <input id="rs-ports-in" value=${plist} inputmode="numeric" autocomplete="off" spellcheck="false" placeholder=${T("all ports — or 443, 8000-8100")}
+            aria-invalid=${pBad ? "true" : "false"} onInput=${e => setPlist(e.target.value)}/></div>
+      </div>
+      <div class=${"hint rs-where-note" + (pBad ? " err" : "")}>${pBad ? (pc.bad === "empty" ? T("“TCP and UDP” with no port is every connection — choose TCP or UDP, or name a port.")
+          : pc.bad === "too_many" ? T("At most 32 ports or ranges.") : T("Write ports and ranges from 1 to 65535, like 443, 8000-8100."))
+        : pc ? T("Only {ports} to this destination takes the rule — the rest goes on to the rules below.", { ports: portsLabel(pc) })
+        : T("Every port. Choose TCP or UDP, or name ports, to narrow the rule.")}</div>` : null}
     ${/* D10 — "Everything else" is for everyone on the interface, so its window says so rather than
           offering a switch that cannot move. */""}
     <div class="field"><label>${T("For whom")}</label>
@@ -3756,10 +3817,10 @@ export function ifTrafficBadge(mode, egNode, node, exitId) {
 
 // serialise an egress selection into the API body shape (shared by the interface and WDTT save paths)
 // `routing_v: 2` tells the panel this tab knows per-person rules: a save WITHOUT it over a stored one is refused (D7), because an
-// older tab's rowsToRules drops `who` and would re-save the rule without its people.
+// older tab's rowsToRules drops `who` and would re-save the rule without its people. 3: …and ports on a rule (B.2), the same way.
 export const egressBody = eg => eg.mode === "smart"
   // `egress_ip` rides along: the node source-NATs by it in every mode, and it is what a Direct rule leaves as (Rule settings).
-  ? { egress_mode: "smart", routing: rowsToRules(eg.rows, eg.catchAll), routing_exit_ips: eg.exitIps || {}, routing_v: 2, egress_ip: eg.ip || "" }
+  ? { egress_mode: "smart", routing: rowsToRules(eg.rows, eg.catchAll), routing_exit_ips: eg.exitIps || {}, routing_v: 3, egress_ip: eg.ip || "" }
   // An exit carries an ID and nothing else — not a NIC and not a node. Sending the others alongside would
   // be harmless today (the server's ladder pops them) and a trap tomorrow, since a stale `wan_iface` riding
   // along is how a mode ends up meaning two things.

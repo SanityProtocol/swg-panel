@@ -63,6 +63,16 @@ FIXTURES = [
 		ip saddr 10.8.0.0/24 meta mark set 0x00001b58
 	}
 """, 1),
+    # ⚠️ NOT CAPTURED — written from the emitter (1.8.11 S6): a port rule's L4 clause, as the node writes it and in the
+    # `udp dport` spelling nft may list it back as. Re-capture from a live node with a port rule.
+    ("a port rule, Hybrid SNI pin (as emitted, and as nft may list it)", """
+	chain prerouting {
+		type filter hook prerouting priority mangle; policy accept;
+		ip saddr 10.8.0.0/24 meta l4proto udp th dport { 19302-19309 } ct state new ip daddr @cat_custom_1 meta mark set 0x00001b59 ct mark set 0x00001b59 return
+		ip saddr 10.8.0.0/24 meta l4proto udp udp dport 19302-19309 ct state new ip daddr @cat_custom_1 meta mark set 0x00001b59 ct mark set 0x00001b59 return
+		ip saddr 10.8.0.0/24 meta l4proto { tcp, udp } th dport 53 ip daddr @cat_custom_2 meta mark set 0x00001b5a return
+	}
+""", 3),
     ("nothing configured", """
 	chain prerouting {
 		type filter hook prerouting priority mangle; policy accept;
@@ -88,7 +98,8 @@ src = open(NODED).read()
 path = NODED
 if PERTURB:
     frm = '''_SMART_MARK_RE = re.compile(
-    r"^\\s*ip saddr \\S+ (?:ct state new )?(?:ip daddr @\\S+ )?meta mark set (?:0x)?[0-9a-fA-F]+", re.M)'''
+    r"^\\s*ip saddr \\S+ (?:meta l4proto (?:\\{[^}]*\\}|\\S+) )?(?:(?:th|tcp|udp) dport (?:\\{[^}]*\\}|\\S+) )?"
+    r"(?:ct state new )?(?:ip daddr @\\S+ )?meta mark set (?:0x)?[0-9a-fA-F]+", re.M)'''
     to = '''_SMART_MARK_RE = re.compile(r"ip saddr \\S+ ip daddr @\\S+ meta mark set")'''
     if src.count(frm) != 1:
         print("HARNESS BROKEN: perturbation matched %d times, not 1" % src.count(frm))
@@ -129,7 +140,7 @@ for name, body in NEGATIVES:
 
 print("── the emitter still writes what this reads ──")
 real = open(NODED).read()
-for frag in ('_add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T)',
+for frag in ('_add("ip", "saddr", S, *pm, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T)',   # *pm: a port rule's L4 match (B.4)
              '_add("ip", "saddr", S, *_new, "meta", "mark", "set", str(T)',
              '_new = ["ct", "state", "new"] if pin else []'):
     check("emitter fragment present: " + frag[:56], frag in real,
