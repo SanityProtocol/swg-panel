@@ -278,6 +278,9 @@ export function NodeDetail({ node: rawName }) {
   const migrating = !!nrec.migrating;
   const blocked = migrating || !live || inProc(nrec.proc_status);   // node down or mid convert/re-install → only recovery actions (rotate key, delete) stay enabled (a timed-out/failed tag doesn't block)
   const down = !live && !inProc(nrec.proc_status);      // genuinely not reporting (not just mid-convert) → offer one-click Recover in place of rotate-token
+  // the header's "update node to" button (updateNode: the node's own updater) — the one condition both that button and the
+  // "from <ref>" / "own update command" label beside the version read, so the label always names what the button runs
+  const nodeUpd = nrec.outdated && !(nrec.local && Store.panelOutdated);
   const dhUpdating = nrec.updating || (nrec.local && (hostUpdating || inProc(Store.hostProc) || inProc(nrec.proc_status)));  // the dh-ver pill already shows "updating…" — so suppress a duplicate "updating" proc-tag next to the title
   const snap = Store.stats[name];
   // turn-proxies present (installed, a pending install, or onboarding) → show the Turn-proxies block;
@@ -313,7 +316,7 @@ export function NodeDetail({ node: rawName }) {
               Store.panelUpdateRef) — except when the header offers "update node to" below (the node lags a current
               panel): that button runs the node's own updater, its ref or an operator's own update_cmd */
           if (nrec.uninstalled) return null;
-          const viaHost = nrec.local && !(nrec.outdated && !Store.panelOutdated);
+          const viaHost = nrec.local && !nodeUpd;
           const ref = viaHost ? Store.panelUpdateRef : nrec.update_ref;
           if (ref) return html`<span class="nm-ver out" title=${viaHost ? T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo bash -c \"SWG_REF=main swg-update\"` once to follow releases again.", { ref }) : T("Update installs {ref}, not the latest release — this node was installed or last updated from it. Run its update once with SWG_REF=main to follow releases again.", { ref })}>${T("from {ref}", { ref })}</span>`;
           if (nrec.update_custom && !viaHost) return html`<span class="nm-ver out" title=${T("Update runs this node's own update command (update_cmd in its agent config, /etc/swg-agent/config.json by default), not the release updater. Remove it there and restart swg-noded to follow releases again.")}>${T("own update command")}</span>`;
@@ -322,7 +325,7 @@ export function NodeDetail({ node: rawName }) {
         ${nrec.uninstalled ? null : dhUpdating ? html`<span class="livepill upd-busy">${T("updating…")} <svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>`
           : (nrec.proc_status && isUpdateState(nrec.proc_status)) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec))
           : (nrec.local && Store.panelOutdated) ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateHost()} title=${T("Update this master (panel + co-located node) to the latest release")}>${T("update to")} <b>${Store.latestRemote || "?"}</b></button>`
-          : nrec.outdated ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateNode(nrec)} title=${blocked ? T("Unavailable while the node is down / converting") : T("Update this node")}>${T("update node to")} <b>${nrec.latest || "?"}</b></button>`
+          : nodeUpd ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateNode(nrec)} title=${blocked ? T("Unavailable while the node is down / converting") : T("Update this node")}>${T("update node to")} <b>${nrec.latest || "?"}</b></button>`
           : nrec.repairable ? html`<button class="livepill updpill fixpill" disabled=${blocked} onClick=${() => nrec.local ? updateHost() : updateNode(nrec)} title=${(nrec.kind === "docker" ? T("A container or the datapath isn't running on this node — recreating it should fix it. ")
             // D2: repairable no longer means DOWN. A node with the userspace fallback keeps its interfaces up; only
             // datapath_broken (no module AND no fallback — or a node too old to say) keeps the "can't come up" sentence.

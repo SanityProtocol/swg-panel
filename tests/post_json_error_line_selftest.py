@@ -12,6 +12,8 @@ Real HTTP on 127.0.0.1, swg-noded's post_json as shipped. No root.
 Run: python3 tests/post_json_error_line_selftest.py     (0 = pass)
      --perturb-raw    keeps the first 200 characters raw (the 1.8.8 shape) and expects RED
      --perturb-noh1   reads only <title>, so a page with an <h1> alone falls back to its markup, and expects RED
+     --perturb-empty  stops at a <title> that matched but is empty, never reaching the <h1>, and expects RED
+     --perturb-raw-entities  leaves entities encoded (`&#124;` logged as it is), and expects RED
 """
 import http.server, importlib.machinery, importlib.util, json, os, sys, tempfile, threading
 
@@ -36,7 +38,11 @@ assert SRC.count(LINE) == 1, "anchor missing — post_json's error line changed;
 if "--perturb-raw" in ARGS:
     plant(LINE, '            out = {"error": data[:200]}\n')
 if "--perturb-noh1" in ARGS:
-    plant(' or re.search(r"(?is)<h1\\b[^>]*>(.*?)</h1>", data)', "")
+    plant('            for tag in ("title", "h1"):\n', '            for tag in ("title",):\n')
+if "--perturb-empty" in ARGS:
+    plant("                if line:\n                    break\n", "                if m:\n                    break\n")
+if "--perturb-raw-entities" in ARGS:
+    plant('html.unescape(re.sub(r"<[^>]*>", " ", m.group(1)))', 're.sub(r"<[^>]*>", " ", m.group(1))')
 
 with tempfile.TemporaryDirectory(prefix="postjson-") as tmp:
     path = os.path.join(tmp, "noded.py")
@@ -69,11 +75,15 @@ CF502 = """<!DOCTYPE html>
 </body>
 </html>
 """
+EMPTYTITLE = "<html><head><title> </title></head><body><h1>502 Bad Gateway</h1></body></html>"
+ENTITY = "<html><head><title>Error 1033 &#124; Cloudflare</title></head><body><h1>Argo Tunnel error</h1></body></html>"
 H1ONLY = "<html>\n<body>\n<h1>\n  <b>503</b> Service\n  Unavailable\n</h1>\n<p>The server is busy.</p>\n</body>\n</html>\n"
 BUSY = {"ok": False, "error": "busy — another sync is running", "code": "busy"}
 REPLIES = {
     "/cf": (502, "text/html", CF502),
     "/h1": (503, "text/html", H1ONLY),
+    "/empty-title": (502, "text/html", EMPTYTITLE),
+    "/entity": (530, "text/html", ENTITY),
     "/plain": (502, "text/plain", "error code: 502"),
     "/busy": (503, "application/json", json.dumps(BUSY)),
     "/busy-pretty": (503, "application/json", json.dumps(BUSY, indent=2)),
@@ -104,6 +114,10 @@ check("Cloudflare 502: `sync HTTP 502: panel.example.net | 502: Bad gateway`",
       st == 502 and r.get("error") == "panel.example.net | 502: Bad gateway", (st, r))
 st, r = post("/h1")
 check("a page with an <h1> and no <title>: its text, tags and line breaks gone", r.get("error") == "503 Service Unavailable", r)
+st, r = post("/empty-title")
+check("an empty <title>: its <h1> instead", r.get("error") == "502 Bad Gateway", r)
+st, r = post("/entity")
+check("an entity in the title is decoded (`&#124;` → `|`)", r.get("error") == "Error 1033 | Cloudflare", r)
 
 print("[2] anything else keeps its text, whitespace squeezed, cut at 200")
 check("Cloudflare's plain `error code: 502` as it is", post("/plain")[1].get("error") == "error code: 502")
@@ -120,7 +134,7 @@ for p in ("/busy", "/busy-pretty"):
 check("_panel_busy still recognises it", N._panel_busy(*post("/busy-pretty")))
 
 print("[4] every error is one line; a 200 is untouched")
-for p in ("/cf", "/h1", "/plain", "/busy", "/busy-pretty", "/401", "/long"):
+for p in ("/cf", "/h1", "/empty-title", "/entity", "/plain", "/busy", "/busy-pretty", "/401", "/long"):
     check("%s: no line break in the error" % p, "\n" not in post(p)[1].get("error", ""))
 check("a 200 returns the panel's JSON as it was", post("/ok") == (200, {"desired": {}}))
 srv.shutdown()

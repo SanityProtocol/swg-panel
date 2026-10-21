@@ -304,7 +304,9 @@ check("[6] the node page says \"from <ref>\" beside the version, and why in its 
       and 'T("from {ref}", { ref })' in _SN)
 check("[6] a node running its own update command says so beside the version, and how to undo it in the title — a master's "
       "own node too when its header offers \"update node to\" (that button runs the node's own updater; r1810b F16)",
-      'const viaHost = nrec.local && !(nrec.outdated && !Store.panelOutdated);' in _SN
+      'const nodeUpd = nrec.outdated && !(nrec.local && Store.panelOutdated);' in _SN
+      and 'const viaHost = nrec.local && !nodeUpd;' in _SN
+      and ': nodeUpd ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateNode(nrec)}' in _SN
       and 'if (nrec.update_custom && !viaHost) return html`<span class="nm-ver out" title=${T("Update runs this node\'s own update command' in _SN
       and "Remove it there and restart swg-noded to follow releases again." in _SN
       and '${T("own update command")}' in _SN)

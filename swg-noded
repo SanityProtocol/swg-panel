@@ -1606,10 +1606,15 @@ def post_json(url, token, obj, panel, timeout=20, source_ip="", peer=None, gz=Fa
         if resp.status >= 400:
             # ONE short line: log() writes each line of a message as its own entry, and a proxy's error page is a whole
             # HTML document — a Cloudflare 502 in front of the panel was 8 red rows in Live Logs (production, 2026-10-20).
-            # A page reads as its <title>, else its first <h1>; anything else has its whitespace squeezed. `code` below
-            # still reads the raw body.
-            m = re.search(r"(?is)<title\b[^>]*>(.*?)</title>", data) or re.search(r"(?is)<h1\b[^>]*>(.*?)</h1>", data)
-            line = " ".join(re.sub(r"<[^>]*>", " ", m.group(1)).split()) if m else ""
+            # A page reads as its <title>, else (none, or an empty one) its first <h1>, entities decoded; anything else
+            # has its whitespace squeezed. `code` below still reads the raw body.
+            import html                          # here: only an error page pays for the entity table
+            line = ""
+            for tag in ("title", "h1"):
+                m = re.search(r"(?is)<%s\b[^>]*>(.*?)</%s>" % (tag, tag), data)
+                line = " ".join(html.unescape(re.sub(r"<[^>]*>", " ", m.group(1))).split()) if m else ""
+                if line:
+                    break
             out = {"error": (line or " ".join(data.split()))[:200]}
             with contextlib.suppress(Exception):         # the panel's own machine-readable reason, when it sent one
                 code = json.loads(data).get("code")
