@@ -615,6 +615,36 @@ def sub_networks(roster, uid, describe, nodes, nowv):
     return sorted(best.values(), key=lambda r: (r["node_name"], ipaddress.ip_network(r["prefix"])))
 
 
+# ── torrents allowed on a deployment (1.8.11 S4b) ──
+# Through the tunnel a torrent client's default µTP-TCP mixing downloads at ~⅕ of TCP only, and the node cannot help it
+# (it splits the peers' 1500-byte µTP datagrams); one client setting can. So the page tells a user whose deployment lets
+# torrents through — and only them: the same line where torrents drop would invite a try.
+
+P2P_ACTIONS = ("block", "direct", "iface", "exit", "dev")
+
+
+def p2p_policy(node):
+    """swg-panel-server's p2p_policy, copied — this process imports nothing of the panel (tests/sub_p2p_hint_selftest.py holds
+    the two together): what the operator saved, else block."""
+    v = node.get("p2p")
+    if isinstance(v, dict) and v.get("action") in P2P_ACTIONS:
+        return v["action"]
+    return "block"
+
+
+def torrents_allowed(node_cfg, t):
+    """Whether torrents may leave by deployment `t`, the node's own rule (strictest wins, P2P-POLICY §2.2): the node-wide
+    policy is not Block, and the record `t` lands on — its interface, WDTT or csqtt server — does not block "torrents". Which
+    way an allowed torrent leaves is not asked. A "torrents" category switched off in Settings still reads as blocked here
+    (Settings is not this process's to read), so the hint can be missing where torrents run, never shown where they drop."""
+    if not isinstance(node_cfg, dict) or p2p_policy(node_cfg) == "block":
+        return False
+    recs = node_cfg.get({"wdtt": "wdtt", "csqtt": "csqtt"}.get(t.get("type") or "", "ifaces"))
+    rec = recs.get(t.get("iface")) if isinstance(recs, dict) else None
+    blk = rec.get("block") if isinstance(rec, dict) else None
+    return not any(str(b).strip() == "torrents" for b in (blk if isinstance(blk, list) else ()))
+
+
 def _role_of(t):
     """The operator's label for one deployment: "primary", "backup", or "" — literal, never derived.
 
@@ -878,8 +908,13 @@ def read_data(state, token):
         # A blocked/expired peer still appears on the page, but the cell shows a "BLOCKED"/"EXPIRED" placeholder
         # instead of its QR/config/buttons — so the holder sees WHY it stopped working. (A whole-user block/expiry
         # is handled above; these per-peer flags cover the case where only some of a user's peers are cut off.)
+        _exp = is_expired(p, nowv)
+        if not (p.get("disabled") or _exp):
+            for tg in tgts:   # torrents may leave by it → the page's client-setting line; absent otherwise (old pages ignore it)
+                if torrents_allowed(nodes.get(tg.get("node")), tg):
+                    tg["p2p"] = True
         peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts,
-                          "disabled": bool(p.get("disabled")), "expired": is_expired(p, nowv)})
+                          "disabled": bool(p.get("disabled")), "expired": _exp})
     # active peers first (A-Z by title, untitled by IP), then blocked/expired at the bottom (also A-Z). The sub page
     # renders live-then-dead within this order, so a single title sort here gives both groups their A-Z ordering.
     def _peer_key(po):

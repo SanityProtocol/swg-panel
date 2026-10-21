@@ -41,6 +41,9 @@ Fixture — node q-node, three deployments per device:
       line — on Android the CSQTT app, though the operator's default is La Lune (2.1 only), and on iOS nothing (VK TURN Proxy
       speaks 2.1); her 2.1 server keeps both. Once the CSQTT app's release is of the other line (no 2.5 release yet), the
       2.5 server offers no app at all rather than one that cannot connect; the line reaches the page through swg-sub
+  [12] torrents (1.8.11 S4b): q-node lets them through (Direct) and Boris's awg1 blocks them. Every one of Anna's cells, on every
+      OS and in both languages, carries the one line with the client setting for full speed (in the page's language); Boris's
+      awg1 cell carries none while his csqtt1 cell does; Anna's blocked device's page carries none
   [8] an app from the server's own repository follows the server's running version (operator, 2026-10-14): csqtt
       2.1.9-4 while v2.5.1 is the latest — the CSQTT app's bubble offers v2.1.9 (our csqtt-app-2.1.9) and says it matches; amurcanov's WDTT 1.2.4-3
       → v1.2.4 and the hack-diaz CLI on Linux → the proxy's v4.0.3 (both versions reach the page); FreeTurn on that proxy
@@ -64,6 +67,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-line       serves a sub.js that offers a csqtt server an app of another line → RED on [11]
      --perturb-ownline    serves a sub.js that offers the CSQTT app of the other line when no release of the server's is out → RED on [11]
      --perturb-chipline   serves a sub.js whose csqtt card no longer names the server's version → RED on [11]
+     --perturb-p2pall     serves a sub.js that draws the torrent line on every cell, allowed or not → RED on [12]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -91,7 +95,8 @@ P_GUARD = "--perturb-guard" in sys.argv
 P_LINE = "--perturb-line" in sys.argv
 P_OWNLINE = "--perturb-ownline" in sys.argv
 P_CHIPLINE = "--perturb-chipline" in sys.argv
-PERTURB = (P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
+P_P2PALL = "--perturb-p2pall" in sys.argv
+PERTURB = (P_P2PALL or P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
            or P_LINE or P_OWNLINE or P_CHIPLINE)
 
 FAILS = []
@@ -193,7 +198,8 @@ J("users.json", {"users": {"u1": {"name": "Anna", "vk_links": VK}, "u2": {"name"
                      # [5] a blocked device: its page is a dead end with the device's name as the picker's trigger
                      "p4": {"id": "p4", "user_id": "u1", "title": "old tablet", "disabled": True,
                             "targets": [{"node": "n1", "iface": "awg0", "type": "awg", "ip": "10.8.0.9/32"}]}}})
-J("nodes.json", {"n1": {"name": "q-node", "endpoint_host": "203.0.113.7",
+# [12] torrents leave q-node directly, except from awg1, whose own Torrents / P2P block is on
+J("nodes.json", {"n1": {"name": "q-node", "endpoint_host": "203.0.113.7", "p2p": {"action": "direct"}, "ifaces": {"awg1": {"block": ["torrents"]}},
                         "csqtt": {"csqtt1": {"listen": "0.0.0.0:56002"}, "csqtt2": {"listen": "0.0.0.0:56003"}},
                         "wdtt": {"wdtt1": {"listen": "0.0.0.0:56000", "fork": "amurcanov", "wg_port": 56001}}}})
 AWG = {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": 0, "S2": 0, "H1": 1, "H2": 2, "H3": 3, "H4": 4}
@@ -255,6 +261,8 @@ if P_LINE:
 if P_OWNLINE:
     perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;\n', "",
                   "the own app's release-line guard")
+if P_P2PALL:
+    perturbed_web("      if (it.tgt.p2p) cc.el", "      if (true) cc.el", "the torrent line only where torrents are allowed")
 if P_CHIPLINE:
     perturbed_web('"CSQTT " + (cd.line || "2.1")', '"CSQTT"', "the csqtt chip's server version")
 if P_TABS:
@@ -316,10 +324,10 @@ READ = r"""(() => {
     state: (document.getElementById("state") || {}).textContent || "",
     tabs: [...document.querySelectorAll(".modetab")].map(b => b.className.replace(/.*mtab-(\w+).*/, "$1")),
     pages: [...document.querySelectorAll("section.ppage")].map(pg => ({
-      mode: pg.getAttribute("data-mode"),
+      mode: pg.getAttribute("data-mode"), p2pn: pg.querySelectorAll(".scell-p2p").length,
       cells: [...pg.querySelectorAll(".scell")].map(c => ({
         tag: txt(c, ".scell-tag"), by: txt(c, ".scell-tag-by"), getapp: txt(c, ".scell-getapp"), role: txt(c, ".scell-role-if"),
-        payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"), text: c.textContent,
+        payload: txt(c, "pre.cfgtext"), fail: txt(c, ".cfg-fail"), text: c.textContent, p2p: txt(c, ".scell-p2p"),
         qr: !!c.querySelector(".qrbox img[src^='data:image']") })) })) };
 })()"""
 
@@ -444,6 +452,19 @@ try:
     check("[1] control: the same device on Android has its Turn page and tab",
           len(turn_cells(rb)) == 1 and "turn" in rb["tabs"], (rb or {}).get("tabs"))
     tab.close()
+
+    # [12] the torrent line: where swg-sub says torrents may leave, and nowhere else
+    P2P_WORDS = {"en": "Prefer TCP", "ru": "Предпочитать TCP"}
+    for (os_, lang), r in sorted(renders.items()):
+        live = [c for p in r["pages"] if p["mode"] not in ("nets", "dead") for c in p["cells"]]
+        check("[12] %s/%s: every one of Anna's cells carries the torrent line, in the page's language" % (os_, lang),
+              live and all(P2P_WORDS[lang] in (c["p2p"] or "") for c in live), [(c["tag"], (c["p2p"] or "")[:40]) for c in live])
+    dead = [p for p in renders[("android", "en")]["pages"] if p["mode"] == "dead"]
+    check("[12] …and her blocked device's page none", len(dead) == 1 and dead[0]["p2pn"] == 0, [(p["mode"], p["p2pn"]) for p in dead])
+    awg1 = [c for p in rb["pages"] if p["mode"] == "awg" for c in p["cells"]]
+    check("[12] Boris's awg1, which blocks torrents: no line", len(awg1) == 1 and awg1[0]["p2p"] is None, [(c["tag"], c["p2p"]) for c in awg1])
+    check("[12] …while his csqtt1 cell on the same node carries it", len(turn_cells(rb)) == 1 and turn_cells(rb)[0]["p2p"],
+          [(c["tag"], c["p2p"]) for c in turn_cells(rb)])
 
     # [2] the author word, per language, in all three turn cells
     def by_words(os_, lang):

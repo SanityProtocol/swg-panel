@@ -65,6 +65,7 @@
       vkAddApp: "Add this VK call link to {app}", vkAddFork: "Add this VK call link to {fork} app",
       backup: "Backup",
       vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}", theApp: "the app",
+      p2pHint: "Torrents are allowed here. For full speed, set your torrent client to TCP only, or µTP‑TCP mixed mode to “Prefer TCP” (qBittorrent: Options → Connection / Advanced).",
       rawT: "Faster mode available", rawD: "In the app's settings set the RAW port to {port} and the connection mode to RAW — they live there, not in this link. It drops WireGuard for speed.",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
       outOfDate: "This link is out of date — ask your administrator for a fresh one.",
@@ -127,6 +128,7 @@
       vkAddApp: "Добавьте эту ссылку на звонок VK в {app}", vkAddFork: "Добавьте эту ссылку на звонок VK в приложении",
       backup: "Резерв",
       vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложение",   /* accusative — every {app} slot that falls back to it takes one — «в приложение», «Открыть приложение», «Установить приложение» */
+      p2pHint: "Торренты здесь разрешены. Для полной скорости включите в торрент-клиенте только TCP или алгоритм смешанного режима µTP‑TCP «Предпочитать TCP» (qBittorrent: Настройки → Соединение / Дополнительно).",
       rawT: "Доступен быстрый режим", rawD: "В настройках приложения укажите RAW-порт {port} и режим подключения RAW — они хранятся там, а не в этой ссылке. Работает без WireGuard.",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
@@ -2221,7 +2223,13 @@
     // So base `multi` on distinct deployments (it.tgt), not on the number of turn cells.
     var _deps = {}; items.forEach(function (it) { _deps[it.tgt.node + "|" + it.tgt.iface] = 1; });
     var multi = Object.keys(_deps).length > 1;
-    var ctrls = items.map(function (it) { var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason, multi); srow.appendChild(cc.el); return cc.ctrl; });
+    var ctrls = items.map(function (it) {
+      var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason, multi);
+      // Torrents may leave by this deployment (swg-sub sets p2p only then): the one client setting that gets them full speed
+      // through the tunnel. Last in the header block, which the portrait layout measures as one line.
+      if (it.tgt.p2p) cc.el.querySelector(".scell-node").appendChild(el("p", "scell-p2p", t("p2pHint")));
+      srow.appendChild(cc.el); return cc.ctrl;
+    });
     page.appendChild(srow);
 
     // up/down swipe HINT (vertical, between peers) — flanks the QR top/bottom; render hides the ends.
