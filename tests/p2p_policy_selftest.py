@@ -74,7 +74,8 @@
        refreshed a timeout, so a running client's flag lapsed every 10 minutes); the fan-out keeps `add` (it writes only a
        source not flagged). Where a flagged source is blocked, its drop comes before the signatures, so the drop jumps to
        `fdrop`: packets 1-4 are read for evidence (one `update` per signature, no verdict), then everything drops. Where `sudo -n`
-       exists, on the real kernel under Block, Direct and Route: two DHT queries 3 s apart leave the flag at a fresh 10m
+       exists, on the real kernel under Block, Direct and Route: two DHT queries 3 s apart leave the flag fresh again (Block, Direct
+       with the client strict, Route with it unroutable — all through fdrop — and Direct through hit)
 
 Run: python3 tests/p2p_policy_selftest.py        (0 = pass)
      --perturb    plant each old behaviour in turn → every one must go RED (exit 0 when all are caught)
@@ -90,6 +91,10 @@ SRC = open(NODED, encoding="utf-8").read()
 PLANTS = {   # name: (old text, planted text) — each re-introduces a defect the checks exist for
     "hit-add":      ('L.append("    %supdate @flag { ip saddr timeout 10m }" % nf)', 'L.append("    %sadd @flag { ip saddr timeout 10m }" % nf)'),   # S4: the 10-minute lapse
     "fdrop-skip":   ('"jump fdrop" if fdrop else "counter name dropped drop"', '"counter name dropped drop"'),   # S4: Block's lapse again
+    "fdrop-nf":     ('L += ["    %smeta l4proto %s %s counter name %s update @flag { ip saddr timeout 10m }" % (nf, l4, m, c)',
+                     'L += ["    %smeta l4proto %s %s counter name %s update @flag { ip saddr timeout 10m }" % ("", l4, m, c)'),   # F1: a bridge keeps a flag
+    "fdrop-uncounted": ('"    %smeta l4proto %s %s counter name %s update @flag { ip saddr timeout 10m }" % (nf, l4, m, c)',
+                        '"    %smeta l4proto %s %s update @flag { ip saddr timeout 10m }%s" % (nf, l4, m, c and "")'),   # F6: a frozen count
     "route-open":   ('    if a == "route":                                          # P3 is not built: an unrunnable route fails CLOSED, never open\n        return "block"\n', ""),
     "local-judged": ('    L.append("    fib daddr type local return")', '    pass'),
     "reply-judged": ('    L.append("    ct direction reply return")\n    L += ["    " + h for h in held]\n    # Traffic TO the node',
@@ -282,7 +287,7 @@ def _wire_dht(table):
 
 
 # [31] the same router, one client: a DHT get_peers, 3 s later another (a new flow) — the flag's expiry after each.
-WIRE_REFLAG = WIRE.split("nft add element")[0] + r'''
+WIRE_REFRESH = WIRE.split("nft add element")[0] + r'''
 SEND='
 import os, socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.9.0.2", 0))
@@ -306,12 +311,21 @@ def _secs(v):   # nft's "9m57s880ms" → 597.88; None when absent
     return d.get("h", 0) * 3600 + d.get("m", 0) * 60 + d.get("s", 0) + d.get("ms", 0) / 1000
 
 
-def _wire_reflag(table):
+_REFRESH = {}   # table text → result: --perturb runs every check per plant in one process, and most plants leave this text as it is
+
+
+def _wire_refresh(table):
+    if table not in _REFRESH:
+        _REFRESH[table] = _wire_refresh_run(table)
+    return _REFRESH[table]
+
+
+def _wire_refresh_run(table):
     import subprocess as sp
     with tempfile.NamedTemporaryFile("w", suffix=".nft", delete=False) as f:
         f.write(table)
     try:
-        r = sp.run(["sudo", "-n", "unshare", "-n", "bash", "-s", f.name], input=WIRE_REFLAG, capture_output=True, text=True, timeout=60)
+        r = sp.run(["sudo", "-n", "unshare", "-n", "bash", "-s", f.name], input=WIRE_REFRESH, capture_output=True, text=True, timeout=60)
     except Exception:
         return None
     finally:
@@ -474,7 +488,8 @@ def run_checks(src):
     t = m._p2p_nft("block", [], [], [], True)
     cls = t.split("chain cls {", 1)[1].split("\n  }", 1)[0]
     fdc = t.split("chain fdrop {", 1)[1].split("\n  }", 1)[0] if "chain fdrop {" in t else ""
-    ok("    ip saddr @flag meta l4proto" in cls and ("counter name dropped drop" in cls or ("jump fdrop" in cls and fdc.rstrip().endswith("counter name dropped drop"))),
+    fl3 = [l for l in cls.splitlines() if l.startswith("    ip saddr @flag meta l4proto")]
+    ok(len(fl3) == 1 and (fl3[0].endswith("counter name dropped drop") or (fl3[0].endswith("jump fdrop") and fdc.rstrip().endswith("counter name dropped drop"))),
        "[3] block drops flagged users in prerouting")
     g = t.split("chain guard {", 1)[1]
     ok("oifname != {" not in g and "jump gdrop" in t, "[3] block allows no egress device: every signature drops")
@@ -798,7 +813,7 @@ def run_checks(src):
     for k, tb in tabs.items():
         if k == "legacy":
             continue                                          # cls is scoped to the strict subnets there: a container is not in them
-        hitl = [l for l in tb.splitlines() if "@flag { ip saddr timeout 10m }" in l and "meter p2pfan" not in l and "@ih," not in l]   # not reflag's: flagged sources only
+        hitl = [l for l in tb.splitlines() if "@flag { ip saddr timeout 10m }" in l and "meter p2pfan" not in l]   # hit's and fdrop's
         fanl = [l for l in tb.splitlines() if "meter p2pfan" in l]
         ok(hitl and all('meta iifkind != "bridge" ' in l for l in hitl) and fanl and all('meta iifkind != "bridge" ' in l for l in fanl),
            "[27] %s: neither a signature hit nor the fan-out flags a source that arrived from a bridge" % k)
@@ -1009,13 +1024,24 @@ def run_checks(src):
            "[31] %s: fdrop drops packets past the 4th at once, reads 1-4 for one `update` per signature (no verdict), then drops" % k)
         ok("jump fdrop" not in tb.split("  chain cls {")[0], "[31] %s: only cls jumps to fdrop" % k)
     if _sp23.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and _sp23.run(["which", "unshare"], capture_output=True).returncode == 0:
-        for k in ("block", "direct", "route"):
-            got = _wire_reflag(tabs[k])
+        # The client 10.9.0.2 is BLOCKED in all three (so its refresh is fdrop's): Block; Direct with its subnet strict;
+        # Route with its subnet outside the routable ones. Direct as rendered above refreshes through hit instead.
+        _rr = {"entry": {"table": 7005, "via_iface": "swg_q", "subnets": ["10.68.0.0/24"]}, "routable": ["10.68.0.0/24"]}
+        rtabs = {"block": tabs["block"], "direct, strict": m23._p2p_nft("direct", ["10.9.0.0/24"], ["eth0"], [], True),
+                 "route, unroutable": m23._p2p_nft("route", ["10.67.0.0/24"], ["eth0"], [], True, route=_rr), "direct, by hit": tabs["direct"]}
+        import concurrent.futures as _cf                      # each in its own namespace, side by side: the gate runs per plant
+        with _cf.ThreadPoolExecutor(len(rtabs)) as _ex:
+            _rf = dict(zip(rtabs, _ex.map(lambda k: _wire_refresh(rtabs[k]), rtabs)))
+        for k in rtabs:
+            got = _rf[k]
             if got is None:
                 print("  SKIPPED [31] real-kernel re-flag — the throwaway namespace could not be set up here")
                 break
-            ok(got[0] is not None and got[1] is not None and min(got) > 599.0,
-               "[31] on the real kernel, %s: two DHT queries 3 s apart leave the flag at a fresh 10 minutes (%s s, then %s s)" % (k, got[0], got[1]))
+            ok(got[0] is not None and got[1] is not None and got[0] > 590 and got[1] > got[0] - 1.5,
+               "[31] on the real kernel, %s: a DHT query 3 s after the first leaves the flag fresh again (%s s, then %s s; "
+               "`add` runs it down by the 3 s)" % (k, got[0], got[1]))
+        fd_c = rtabs["block"]
+        ok("dht" in fd_c.split("  chain fdrop {")[1].split("\n  }")[0], "[31] fdrop counts its evidence in the signature counters")
     else:
         print("  SKIPPED [31] real-kernel re-flag — no `sudo -n` here")
     return fails

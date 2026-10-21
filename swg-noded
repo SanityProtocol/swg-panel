@@ -7827,13 +7827,14 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True):
     L.append("  }")
     # fdrop: where a flagged source is BLOCKED, cls drops its high-port packets before they reach the signatures, so its
     # running client never refreshed the flag and the 10 minutes lapsed under Block too. The drop jumps here instead:
-    # packets 1-4 are read for evidence (`update`, no verdict of their own), then dropped (P2P-OWN-ADDRESS Part A). A
+    # packets 1-4 are read for evidence (`update`, `nf` as for every flag write, no verdict), then dropped (Part A). A
     # jump, not a rule of its own before the drop: an unflagged packet pays nothing, a flagged one its match once.
     fdrop = ih and bool(whos)
     if fdrop:
         L.append("  chain fdrop {")
         L.append("    ct original packets > 4 counter name dropped drop")
-        L += ["    meta l4proto %s %s update @flag { ip saddr timeout 10m }" % (l4, m) for c, l4, m in _P2P_SIGS]
+        L += ["    %smeta l4proto %s %s counter name %s update @flag { ip saddr timeout 10m }" % (nf, l4, m, c)   # counted as in cls,
+              for c, l4, m in _P2P_SIGS]                     # else a flag kept alive here freezes the node's torrent count
         L.append("    counter name dropped drop")
         L.append("  }")
 
