@@ -135,6 +135,8 @@ h1,h2,h3{font-family:var(--sans)}
 .brand-name span{color:var(--ink-2);font-weight:600}
 .appver{font-family:var(--mono);font-size:10.5px;color:var(--faint);white-space:nowrap;letter-spacing:-.02em;margin-right:16px}
 .appver b{color:var(--dim);font-weight:600}
+.appver:has(+ .appref:not([hidden])){margin-right:6px}
+.appref{color:#F0913C}   /* the host updater's branch when not main — the version pill's own amber (.nm-ver.out) */
 .tabs{display:flex;gap:2px}
 .tabs a{padding:8px 11px;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;
   color:var(--faint);font-weight:500;transition:color .15s;position:relative}
@@ -4627,7 +4629,7 @@ input, textarea, select, .mono, pre, code, kbd, samp { font-variant-ligatures: n
 .lb-holdsl{display:none}
 @media (max-width:640px){.lb-holdsl{display:inline}}
 
-/* Settings → Logs, the live viewer (js/logview.js): the facets (servers × sources, each opening its picker in place), the
+/* Settings → Logs, the live viewer (js/journal.js): the facets (servers × sources, each opening its picker in place), the
    servers' states as counted chips, a bar (levels with counts, search, Pause, Wrap, Clear, Download), then ONE dense mono
    stream — time · server chip · source · level · message — with the level as a thin coloured tick down the left edge, the
    one mark that lets errors be found by eye in a fast-moving list. Full screen: the card is lifted over the whole window. */

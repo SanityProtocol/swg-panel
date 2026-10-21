@@ -61,16 +61,16 @@ if not CHROME:
 
 # ── the web root: the repo's SPA, or a copy with one fix undone ─────────────────────────────────────────────────────────────
 PERTURBATIONS = {
-    "stopcard": ("js/logview.js", "const closeLogOverlay = () => { if (!LV.card) { closeReq(); LV.live = false; }\n  LV.overlay = false;",
+    "stopcard": ("js/journal.js", "const closeLogOverlay = () => { if (!LV.card) { closeReq(); LV.live = false; }\n  LV.overlay = false;",
                  "const closeLogOverlay = () => {\n  LV.overlay = false;"),
     "chipwrap": ("app.css", "  .lv-levels{flex-wrap:wrap;gap:6px;border:0;border-radius:0;overflow:visible}\n"
                             "  .lv-lvb{border:1px solid var(--line-solid);border-radius:var(--r-sm)}\n", ""),
-    "floor": ("js/logview.js", "else { LV.held = { ...LV.floor }; for", "else { LV.held = {}; for"),
-    "srcmax": ("js/logview.js", "const SRC_MAX = 64;", "const SRC_MAX = Infinity;"),
-    "deeplink": ("js/logview.js", "  if (!_own) _own = { nodes: LV.nodes, src: LV.src };\n  if (nodes) LV.nodes = nodes;\n  if (src) LV.src = src;\n  LV.gen++;\n",
+    "floor": ("js/journal.js", "else { LV.held = { ...LV.floor }; for", "else { LV.held = {}; for"),
+    "srcmax": ("js/journal.js", "const SRC_MAX = 64;", "const SRC_MAX = Infinity;"),
+    "deeplink": ("js/journal.js", "  if (!_own) _own = { nodes: LV.nodes, src: LV.src };\n  if (nodes) LV.nodes = nodes;\n  if (src) LV.src = src;\n  LV.gen++;\n",
                  "  if (nodes) LV.nodes = nodes;\n  if (src) LV.src = src;\n  LV.gen++; remember();\n"),
-    "unmasked": ("js/logview.js", 'T("{v1} lines, as a text file — at once; keys and tokens are not masked"', 'T("{v1} lines, as a text file — at once"'),
-    "nixos": ("js/logview.js", "const panelBare = () => !((Store.panelSettings || {}).log_panel || {}).docker;",
+    "unmasked": ("js/journal.js", 'T("{v1} lines, as a text file — at once; keys and tokens are not masked"', 'T("{v1} lines, as a text file — at once"'),
+    "nixos": ("js/journal.js", "const panelBare = () => !((Store.panelSettings || {}).log_panel || {}).docker;",
               'const panelBare = () => { const lp = (Store.panelSettings || {}).log_panel || {}; return !lp.docker && lp.err !== "nixos"; };'),
 }
 WEB = ROOT
@@ -365,7 +365,7 @@ try:
     def sec6(tab):
         saved = lambda: tab.ev("JSON.parse(localStorage.getItem('swg-logview') || 'null')")
         # the module the app runs — by its stamped URL (?v=…, the panel's cache key), or a second copy would answer
-        tab.ev("import(document.querySelector('link[rel=modulepreload][href*=\"js/logview.js\"]').href)"
+        tab.ev("import(document.querySelector('link[rel=modulepreload][href*=\"js/journal.js\"]').href)"
                ".then(m => m.openLogs({ nodes: ['n1'], src: ['noded', 'dns'] }))")
         wait(tab, 800)
         s = saved() or {}

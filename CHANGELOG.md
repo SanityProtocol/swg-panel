@@ -3,6 +3,26 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.8.10-beta] — 2026-10-21
+
+### Added
+
+- **The subscription page names the csqtt version.** Each csqtt card says CSQTT 2.1 or CSQTT 2.5, and its download
+  names the app's version (CSQTT 2.5.1), so a 2.1 and a 2.5 server no longer look alike until the app is downloaded.
+- **A server that doesn't update to releases says so.** A server installed or last updated from a branch other than
+  main keeps updating from it; its page now shows "from dev" beside its version, with the way back to releases. One
+  with a hand-set update command of its own says "own update command". The panel's header does the same for the
+  panel's own server.
+
+### Fixed
+
+- **The panel stayed blank for anyone with an ad or tracker blocker** (uBlock Origin, AdGuard, Brave): the common block
+  lists refuse the name one of its files had, the log viewer's. It has another name now.
+- **A Docker update asked to re-run the installer for nothing.** It named an optional setting nobody had set
+  (SWG_NFT_CLI_ONLY) as missing from docker-compose.yml.
+- **The csqtt 2.5 server logged a web-panel password and address it never uses.** csqtt 2.5 servers move to 2.5.1-2
+  with this update, restarting once; their users reconnect by themselves.
+
 ## [1.8.9-beta] — 2026-10-20
 
 ### Added

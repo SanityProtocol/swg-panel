@@ -2311,8 +2311,8 @@ PYLG
   #    (hand-published bridge ports, a build: block, custom conf mounts) — but a silent gap becomes a visible
   #    one, on the box where the stale file actually is.
   if [ -f "$SRC/docker-compose.yml" ]; then
-    _drift="$(python3 - "$SRC/docker-compose.yml" "$DOCKER_DIR/docker-compose.yml" "$prof" 2>/dev/null <<'PYDRIFT'
-import re, sys
+    _drift="$(python3 - "$SRC/docker-compose.yml" "$DOCKER_DIR/docker-compose.yml" "$prof" "$DOCKER_DIR/.env" 2>/dev/null <<'PYDRIFT'
+import os, re, sys
 
 # The installer DISABLES two things by commenting them rather than deleting (host networking): the node's
 # `ports:` / `sysctls:` blocks and their items. Un-comment ONLY those shapes — stripping '#' from every line
@@ -2320,8 +2320,9 @@ import re, sys
 _UNCOMMENT = (re.compile(r'^(\s*)#\s{0,3}(- .*)$'), re.compile(r'^(\s*)#\s?((?:ports|sysctls):).*$'))
 
 def tokens(text):
-    """What this compose FILE offers -> ({token: the services carrying it}, {service: its profiles})."""
-    out, profiles, service, in_services = {}, {}, "", False
+    """What this compose FILE offers -> ({token: the services carrying it}, {service: its profiles},
+    {(env token, service): VAR} for a key whose whole value is "${VAR:-}")."""
+    out, profiles, optvar, service, in_services = {}, {}, {}, "", False
     add = lambda t, svc: out.setdefault(t, set()).add(svc)    # a set: swg-panel and swg-node share keys
     for raw in text.splitlines():
         line = raw.rstrip()
@@ -2338,7 +2339,11 @@ def tokens(text):
             service = line.strip().rstrip(":"); add("service:" + service, service); continue
         m = re.match(r'^\s{6}([A-Z_][A-Z0-9_]*):\s', line)
         if m:
-            add("env:" + m.group(1), service); continue
+            add("env:" + m.group(1), service)
+            v = re.match(r'^\s{6}[A-Z_][A-Z0-9_]*:\s*"?\$\{([A-Za-z_][A-Za-z0-9_]*):-\}"?\s*(?:#.*)?$', line)
+            if v:
+                optvar[("env:" + m.group(1), service)] = v.group(1)
+            continue
         m = re.match(r'^\s*-\s*"?([^"#]+?)"?\s*(?:#.*)?$', line)
         if m:
             v = m.group(1).strip()
@@ -2355,12 +2360,35 @@ def tokens(text):
             if m.group(1) == "profiles":          # one-line flow list only; any other shape reads [] = filters nothing
                 f = re.match(r'^\s{4}profiles:\s*\[([^\]]*)\]', line)
                 profiles[service] = re.findall(r'[A-Za-z0-9_-]+', f.group(1)) if f else []
-    return out, profiles
+    return out, profiles, optvar
 
 try:
-    (ship, profiles), (inst, _) = (tokens(open(p).read()) for p in sys.argv[1:3])
+    (ship, profiles, optvar), (inst, _, _) = (tokens(open(p).read()) for p in sys.argv[1:3])
 except Exception:
     sys.exit(0)                                   # unreadable either side -> say nothing, never block an update
+# A key whose whole value is "${VAR:-}" hands the container VAR from .env, or nothing: missing, it changes something only
+# where .env gives VAR a value. A Docker node was told to re-run the installer for SWG_NFT_CLI_ONLY, an opt-in nobody sets
+# (1.8.9). SWG_UPDATE_TRIGGER has the same shape and the installer does set it, so a copy without it is still named. No
+# readable .env -> every such key counts, as before. Compose also takes VAR from the shell running it (this update's own
+# environment, which wins over .env), and a value that names another variable ("${OTHER}") cannot be resolved here: both
+# count as set — the report errs toward naming.
+env = None
+try:
+    env = {}
+    for l in open(sys.argv[4]).read().splitlines():
+        k, eq, v = l.strip().partition("=")
+        k = k.strip()
+        if k.startswith("export "):
+            k = k[7:].strip()
+        if eq and k and not k.startswith("#"):
+            env[k] = v.split(" #")[0].strip().strip('"').strip("'")
+except Exception:
+    env = None
+def matters(t, svc):
+    var = optvar.get((t, svc))
+    if env is None or var is None or os.environ.get(var):
+        return True
+    return bool(env.get(var))
 # Only what THIS update starts: argv[3] is $prof, the profile its own `compose up` takes, so the report and the
 # recreate agree on what the box runs. The file carries every role's services, and a node was told its copy lacked the
 # panel's SWG_PANEL_SUB_BIND / _PORT — keys of a container it never runs (1.8.8, a client's node update).
@@ -2369,7 +2397,7 @@ except Exception:
 # installed side is one set of tokens, so a key present under either service reads as present.
 prof = sys.argv[3] if len(sys.argv) > 3 else ""
 runs = lambda svc: not svc or not prof or prof in (profiles.get(svc) or [prof])
-missing = {t: {o for o in owners if runs(o)} for t, owners in ship.items() if t not in inst}
+missing = {t: {o for o in owners if runs(o) and matters(t, o)} for t, owners in ship.items() if t not in inst}
 missing = {t: owners for t, owners in missing.items() if owners}
 gone = set(o for t, owners in missing.items() if t.startswith("service:") for o in owners)
 rest = sorted(t for t, owners in missing.items() if not t.startswith("service:") and owners - gone)

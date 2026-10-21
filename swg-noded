@@ -16685,6 +16685,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             _fk = _turn_fork(_tp.get("service") or "")
             if _fk and _fk not in _tflags:
                 _tflags[_fk] = _turn_discover_flags(_tp.get("service") or "")
+    _uref = update_ref_shown(node_cfg)            # the Update button's branch or tag when it is not main (snap["update_ref"])
+    _ucustom = update_custom_shown(node_cfg)      # …or that it runs an operator's own command (snap["update_custom"])
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": _tps, "turn_flags": _tflags,
             "turn_drops": proxy_drops(_tps + _selfcontained_listeners()),
@@ -16694,6 +16696,12 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
             "turn_bind_any": True,   # a turn listener whose host is not on this box binds every address (turn_bind), not a crash loop
             "update_auto": update_auto(),   # can the panel's Update button do anything here? (see update_auto)
+            # The branch the Update button installs from, when it is not main: one hand-update from dev records dev for
+            # good, and a production node then followed dev unseen (operator, 2026-10-20: hel-flux stayed on 1.8.8
+            # while dev lagged main). Absent = main, so a main node's report is unchanged; a container or a declarative
+            # host is updated by its image or its configuration, never by this ref.
+            **({"update_ref": _uref} if _uref else {}),
+            **({"update_custom": True} if _ucustom else {}),
             # Informational, NOT failures: an adoption that succeeded but not from the source the operator named.
             # cmd_errors is the wrong channel for it (it renders as a failure and is cleared on success).
             "onboard_notes": dict(NODE_NOTES),
@@ -23560,16 +23568,50 @@ UPDATE_CMD_TMPL = (
 DEFAULT_UPDATE_REF = "main"
 
 
-def default_update_cmd(node_cfg):
-    """The self-update command for this box: the operator's explicit `update_cmd`, else the template
-    pinned to the ref this box was installed from."""
+def update_ref(node_cfg):
+    """The branch (or tag) this box's self-update follows: the one it was installed or last updated from, else main."""
     _n = (node_cfg or {}).get("node") or {}
     _ref = str(_n.get("update_ref") or DEFAULT_UPDATE_REF).strip() or DEFAULT_UPDATE_REF
     # A ref is a git branch/tag name and is spliced into a URL and a shell command — keep it to the
     # characters those can carry safely rather than trusting whatever landed in the config.
     if not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", _ref):
         _ref = DEFAULT_UPDATE_REF
-    return UPDATE_CMD_TMPL.format(ref=_ref)
+    return _ref
+
+
+def own_update_cmd(node_cfg):
+    """The operator's own `update_cmd`, which wins over the template (run_self_update), else None."""
+    return ((node_cfg or {}).get("node") or {}).get("update_cmd") or None
+
+
+def _own_updater_runs():
+    """Does the panel's Update button run this daemon's updater here? Not with a trigger, in a container or on a
+    declarative host — those are updated by other means."""
+    return update_auto() and not os.environ.get("SWG_UPDATE_TRIGGER")
+
+
+def update_ref_shown(node_cfg):
+    """The snapshot's `update_ref`: the branch or tag the panel's Update button installs from when it is not main, else "".
+    Only where that button runs this daemon's updater with the template — an operator's own `update_cmd` is reported
+    as `update_custom` instead."""
+    if not _own_updater_runs() or own_update_cmd(node_cfg):
+        return ""
+    ref = update_ref(node_cfg)
+    return "" if ref == DEFAULT_UPDATE_REF else ref
+
+
+def update_custom_shown(node_cfg):
+    """The snapshot's `update_custom`: the Update button runs an operator's own `update_cmd`, not the release updater.
+    Shown as such, never parsed: what a hand-written shell command installs cannot be read off its text (quoting, sudo's
+    env_reset, another repository's URL), and a guessed ref is worse than none. swgt's msk-main carried a hand-set
+    dev-pinned command that hid exactly this (2026-10-20)."""
+    return bool(_own_updater_runs() and own_update_cmd(node_cfg))
+
+
+def default_update_cmd(node_cfg):
+    """The template's self-update command, pinned to the ref this box follows (update_ref). An operator's own
+    `update_cmd` (own_update_cmd) wins over it — run_self_update applies that, not this."""
+    return UPDATE_CMD_TMPL.format(ref=update_ref(node_cfg))
 
 
 # ── the updater's verdict has to outlive the updater ────────────────────────────────────────────────────
@@ -23648,7 +23690,7 @@ def run_self_update(node_cfg, want):
     reply that carries an 'update'. Updates swg-noded/swg-agent (and a co-located panel), and — `--no-components`
     notwithstanding — heals the AmneziaWG datapath, follows the amnezia packages (apt, DKMS) and installs swg-logs;
     never WireGuard's own packages nor the turn-proxies. The panel clears the request once we report the new version."""
-    cmd = (node_cfg.get("node") or {}).get("update_cmd") or default_update_cmd(node_cfg)
+    cmd = own_update_cmd(node_cfg) or default_update_cmd(node_cfg)
     # Always through a shell now, LIST COMMAND INCLUDED — the wrapper is what turns a detached updater into a
     # reported one, and an operator's own `update_cmd` deserves that as much as ours does (shlex-quoted, so a
     # list is passed through exactly as it would have been exec'd).

@@ -28,15 +28,38 @@ would have passed while measuring nothing.
 [5] (1.8.9 qualification IN-8) update.sh's "re-run the host installer" hint (the panel unit is missing) names the ref the
     box follows — `SWG_REF=dev; ` inside the string and dev's bootstrap — not main: followed on a dev box, it re-installed main
 
+[6] (1.8.10) the branch a node's Update button installs from is SHOWN when it is not main: one hand-update from dev
+    records dev for good, and hel-flux (production) followed dev unseen — it stayed on 1.8.8 when the operator updated
+    the fleet in the minute dev lagged main (2026-10-20). noded reports `update_ref` only where its own updater runs
+    (not a container, a declarative host, a trigger or an operator's update_cmd) and only when it is not main; the
+    panel passes it on in the node record; the node page says "from <ref>" beside the version.
+
 Run: python3 tests/update_ref_selftest.py (0 = pass).  --perturb restores the hardcoded `main`.
      --perturb-hint   the hint pinned to main again (e66018f) → RED on [5] only
+     --perturb-shown  a container reports its ref too → RED on [6] only
+     --perturb-custom a node running an operator's own update_cmd does not say so (the first cut) → RED on [6] only
+[7] (1.8.10) the PANEL HOST's updater (/usr/local/bin/swg-update) follows the ref baked into it at install/update; the
+    panel reads that one machine-written line (cached by mtime) and reports panel_update_ref when it is not main; the
+    header and a master's own node page say "from <ref>" (swgt: dev, unseen, 2026-10-20).
+     --perturb-panelmain   main is reported too → RED on [7] only
+     --perturb-panelcache  the cache never notices a rewritten wrapper → RED on [7] only
+     --perturb-panelfail   a failed read is cached (the label gone until the next update) → RED on [7] only
+     --perturb-panelino    the cache key ignores the inode (a same-size rename in the same second) → RED on [7] only
+     --perturb-paneldecl   a NixOS panel reports a bare-metal wrapper left behind → RED on [7] only
 """
-import os, re, subprocess, sys, tempfile
+import contextlib, os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
 PERTURB_HINT = "--perturb-hint" in sys.argv
+PERTURB_SHOWN = "--perturb-shown" in sys.argv
+PERTURB_CUSTOM = "--perturb-custom" in sys.argv
+PERTURB_PANELMAIN = "--perturb-panelmain" in sys.argv
+PERTURB_PANELCACHE = "--perturb-panelcache" in sys.argv
+PERTURB_PANELFAIL = "--perturb-panelfail" in sys.argv
+PERTURB_PANELINO = "--perturb-panelino" in sys.argv
+PERTURB_PANELDECL = "--perturb-paneldecl" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -160,7 +183,16 @@ for f in ("install-node.sh", "install-host.sh"):
 import importlib.machinery, importlib.util, shutil
 _dir = tempfile.mkdtemp(prefix="noded-ref-")     # not tests/: each run left a ~1.5 MB pyc in tests/__pycache__ for good, and
 _fd, _tmp = tempfile.mkstemp(suffix=".py", prefix="noded-ref-", dir=_dir)   # a gate copying the tree could lose the copy
-os.write(_fd, nsrc["swg-noded"].encode()); os.close(_fd)
+_nsrc = nsrc["swg-noded"]
+if PERTURB_SHOWN:
+    _a = '    return update_auto() and not os.environ.get("SWG_UPDATE_TRIGGER")\n'
+    assert _nsrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _nsrc = _nsrc.replace(_a, '    return not os.environ.get("SWG_UPDATE_TRIGGER")\n')
+if PERTURB_CUSTOM:
+    _a = '    return bool(_own_updater_runs() and own_update_cmd(node_cfg))\n'
+    assert _nsrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _nsrc = _nsrc.replace(_a, '    return False\n')
+os.write(_fd, _nsrc.encode()); os.close(_fd)
 _l = importlib.machinery.SourceFileLoader("nodedref", _tmp)
 _m = importlib.util.module_from_spec(importlib.util.spec_from_loader("nodedref", _l))
 try: _l.exec_module(_m)
@@ -208,7 +240,157 @@ for ref, want in (("dev", 'sudo bash -c "SWG_REF=dev; $(curl -fsSL https://raw.g
     check("SWG_REF=%-7s → the hint names %s" % (ref if ref is not None else "(unset)", "dev, inside the string" if ref == "dev" else "main"),
           line.strip().endswith(want) and "FAIL=yes" in r.stdout, (line, r.stderr[-200:]))
 
+print("\n[6] a node's non-main update branch is shown (1.8.10)")
+def shown(ref, kind="bare-metal", declarative=False, trigger="", cmd="", fn="update_ref_shown"):
+    _m.NODE_KIND, _m.NODE_DECLARATIVE = kind, declarative
+    old = os.environ.pop("SWG_UPDATE_TRIGGER", None)
+    if trigger:
+        os.environ["SWG_UPDATE_TRIGGER"] = trigger
+    try:
+        n = {} if ref is None else {"update_ref": ref}
+        if cmd:
+            n["update_cmd"] = cmd
+        return getattr(_m, fn)({"node": n})
+    finally:
+        os.environ.pop("SWG_UPDATE_TRIGGER", None)
+        if old is not None:
+            os.environ["SWG_UPDATE_TRIGGER"] = old
+_s6 = []
+for args, want, what in (((("dev",), {}), "dev", "a bare node on dev reports dev"),
+                         (((None,), {}), "", "…one with no ref recorded (main) reports nothing"),
+                         ((("main",), {}), "", "…one on main reports nothing"),
+                         ((("v1.9.0",), {}), "v1.9.0", "…a tag is reported as it is"),
+                         ((("evil;rm -rf /",), {}), "", "…an unsafe ref reads as main and reports nothing"),
+                         ((("dev",), {"kind": "docker"}), "", "a container on dev reports nothing (its image updates it)"),
+                         ((("dev",), {"declarative": True}), "", "a declarative host reports nothing (its configuration updates it)"),
+                         ((("dev",), {"trigger": "/run/swg/update"}), "", "a node with an update trigger reports nothing"),
+                         ((("dev",), {"cmd": "MINE"}), "", "a node running an operator's own update_cmd reports no ref (update_custom says it)")):
+    got = shown(*args[0], **args[1])
+    check("[6] %s" % what, got == want, repr(got)); _s6.append(what)
+SWGT = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/dev/bootstrap.sh"
+        " | SWG_REF=dev bash -s update -y --no-components --node-only")
+for (a, kw), want, what in ((((None,), {"cmd": SWGT}), True, "an own update_cmd is reported as update_custom (swgt's dev-pinned one)"),
+                            (((None,), {"cmd": ["bash", "/root/up.sh", 1]}), True, "…a list one too, never parsed (a hand-edited int cannot break the snapshot)"),
+                            ((("dev",), {}), False, "…no update_cmd: no update_custom"),
+                            ((("dev",), {"cmd": SWGT, "kind": "docker"}), False, "…a container: none (its image updates it)"),
+                            ((("dev",), {"cmd": SWGT, "trigger": "/run/swg/update"}), False, "…a trigger: none")):
+    got = shown(*a, fn="update_custom_shown", **kw)
+    check("[6] %s" % what, got is want, repr(got))
+check("[6] build_snapshot carries it, only when there is one (computed once per snapshot)",
+      '_uref = update_ref_shown(node_cfg)' in nsrc["swg-noded"] and '**({"update_ref": _uref} if _uref else {}),' in nsrc["swg-noded"]
+      and '_ucustom = update_custom_shown(node_cfg)' in nsrc["swg-noded"] and '**({"update_custom": True} if _ucustom else {}),' in nsrc["swg-noded"])
+_fn = lambda name: (re.search(r"^def %s\(.*?(?=^def )" % name, nsrc["swg-noded"], re.S | re.M) or re.search("$", "")).group(0)
+check("[6] the report and the command share one rule for an operator's own update_cmd (own_update_cmd)",
+      "cmd = own_update_cmd(node_cfg) or default_update_cmd(node_cfg)" in nsrc["swg-noded"]
+      and "own_update_cmd(node_cfg)" in _fn("update_ref_shown") and "own_update_cmd(node_cfg)" in _fn("update_custom_shown"))
+_P = open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read()
+check("[6] the panel passes update_custom on as a strict boolean", '"update_custom": snap.get("update_custom") is True,' in _P)
+check("[6] the panel's node record passes it on, kept to a ref's characters",
+      '"update_ref": _uref if re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", _uref := str(snap.get("update_ref") or "")) else "",' in _P)
+_SN = open(os.path.join(ROOT, "js", "screen-nodes.js"), encoding="utf-8").read()
+_RU = open(os.path.join(ROOT, "js", "lang", "ru.js"), encoding="utf-8").read()
+check("[6] the node page says \"from <ref>\" beside the version, and why in its title",
+      'const ref = nrec.local ? Store.panelUpdateRef : nrec.update_ref;' in _SN
+      and ': T("Update installs {ref}, not the latest release — this node was installed' in _SN
+      and 'T("from {ref}", { ref })' in _SN)
+check("[6] a node running its own update command says so beside the version, and how to undo it in the title",
+      'if (nrec.update_custom && !nrec.local) return html`<span class="nm-ver out" title=${T("Update runs this node\'s own update command' in _SN
+      and "Remove it there and restart swg-noded to follow releases again." in _SN
+      and '${T("own update command")}' in _SN)
+check("[6] …in Russian too", '"from {ref}": "из {ref}"' in _RU and '"Update installs {ref}, not the latest release' in _RU
+      and '"own update command": "своя команда обновления"' in _RU and "\"Update runs this node's own update command" in _RU)
+
+print("\n[7] the panel host's updater ref (1.8.10)")
+_psrc = open(os.path.join(ROOT, "swg-panel-server"), encoding="utf-8").read()
+if PERTURB_PANELMAIN:
+    _a = '        _WRAPPER_REF.update(key=key, ref="" if ref == "main" else ref)\n'
+    assert _psrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _psrc = _psrc.replace(_a, '        _WRAPPER_REF.update(key=key, ref=ref)\n')
+if PERTURB_PANELCACHE:
+    _a = '    if _WRAPPER_REF["key"] != key:\n'
+    assert _psrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _psrc = _psrc.replace(_a, '    if _WRAPPER_REF["key"] is None:\n')
+if PERTURB_PANELFAIL:
+    _a = '            return ""                           # not cached: the next poll reads it again\n'
+    assert _psrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _psrc = _psrc.replace(_a, '            _WRAPPER_REF.update(key=key, ref=""); return ""\n')
+if PERTURB_PANELINO:
+    _a = '    key = (st.st_ino, st.st_mtime_ns, st.st_size)\n'
+    assert _psrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _psrc = _psrc.replace(_a, '    key = (st.st_mtime_ns, st.st_size)\n')
+if PERTURB_PANELDECL:
+    _a = '    if not UPDATE_TRIGGER or PANEL_DECLARATIVE:\n'
+    assert _psrc.count(_a) == 1, "perturbation anchor missing — would FALSE-PASS"
+    _psrc = _psrc.replace(_a, '    if not UPDATE_TRIGGER:\n')
+_pd = tempfile.mkdtemp(prefix="panel-ref-")
+_pf = os.path.join(_pd, "panelref.py"); open(_pf, "w").write(_psrc)
+os.environ["SWG_NO_REEXEC"] = "1"
+_pl = importlib.machinery.SourceFileLoader("panelref", _pf)
+_P7 = importlib.util.module_from_spec(importlib.util.spec_from_loader("panelref", _pl))
+try: _pl.exec_module(_P7)
+except SystemExit: pass
+def wrapper(ref):   # the real text every writer installs (lib/common.sh swg_update_wrapper_text)
+    return subprocess.run(["bash", "-c", 'source "$1" >/dev/null 2>&1; swg_update_wrapper_text "$2"', "_",
+                           os.path.join(ROOT, "lib", "common.sh"), ref], capture_output=True, text=True).stdout
+_W = os.path.join(_pd, "swg-update"); _P7.UPDATE_WRAPPER = _W; _P7.UPDATE_TRIGGER = os.path.join(_pd, "trigger")
+def ref_after(text):
+    if text is None:
+        with contextlib.suppress(OSError): os.unlink(_W)
+    else:
+        open(_W, "w").write(text); st = os.stat(_W); os.utime(_W, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    return _P7.panel_update_ref()
+check("[7] a host updater baked with dev reports dev", ref_after(wrapper("dev")) == "dev")
+check("[7] …rewritten to main (a later update from main) reports nothing — the cache follows the file", ref_after(wrapper("main")) == "")
+check("[7] …a tag is reported as it is", ref_after(wrapper("v1.9.0")) == "v1.9.0")
+check("[7] …no updater (a Docker panel) reports nothing", ref_after(None) == "")
+check("[7] …a file that is not our text reports nothing", ref_after('#!/bin/sh\nURL="https://example.org/swg-panel/dev/bootstrap.sh"\n') == "")
+_P7.UPDATE_TRIGGER = None
+check("[7] …a panel without the update trigger reports nothing (its Update hands out a main-pinned command)",
+      ref_after(wrapper("dev")) == "")
+_P7.UPDATE_TRIGGER = os.path.join(_pd, "trigger")
+_P7.PANEL_DECLARATIVE = True
+check("[7] …a NixOS panel reports nothing: its trigger runs the module's own service, not a wrapper left behind",
+      ref_after(wrapper("dev")) == "")
+_P7.PANEL_DECLARATIVE = False
+if os.geteuid() != 0:                     # root reads a 000 file, so the unreadable case needs an ordinary user
+    ref_after(wrapper("v1.9.0")); open(_W, "w").write(wrapper("dev"))
+    _st = os.stat(_W); os.utime(_W, ns=(_st.st_atime_ns, _st.st_mtime_ns + 2_000_000_000)); os.chmod(_W, 0)
+    _r1 = _P7.panel_update_ref(); os.chmod(_W, 0o644); _r2 = _P7.panel_update_ref()
+    check("[7] …a read that fails is not cached: the next poll reads the file again", _r1 == "" and _r2 == "dev", (_r1, _r2))
+ref_after(wrapper("dev")); _t = os.stat(_W).st_mtime_ns; _new = _W + ".new"
+open(_new, "w").write(wrapper("tst")); os.utime(_new, ns=(_t, _t)); os.replace(_new, _W)   # same size, same mtime, new inode
+check("[7] …a rename to a same-size ref in the same second is noticed (the key holds the inode)", _P7.panel_update_ref() == "tst")
+shutil.rmtree(_pd, ignore_errors=True)
+check("[7] the reader matches what update.sh reads back ([^/] up to /bootstrap.sh)",
+      "r'([^/\"]{1,100})/bootstrap\\.sh\\}\"$', re.M)" in _psrc)
+check("[7] /api/state carries panel_update_ref only when there is one",
+      '**({"panel_update_ref": _pref} if (_pref := panel_update_ref()) else {}),' in _psrc)
+_ST = open(os.path.join(ROOT, "js", "store.js"), encoding="utf-8").read()
+_AP = open(os.path.join(ROOT, "app.js"), encoding="utf-8").read()
+_IX = open(os.path.join(ROOT, "index.html"), encoding="utf-8").read()
+check("[7] the store keeps it", 'this.panelUpdateRef = d.panel_update_ref || "";' in _ST)
+check("[7] the header shows it beside the version, hidden without one",
+      '<span class="appver appref" id="appref" hidden></span>' in _IX and 'ar.hidden = !ref;' in _AP
+      and 'ar.textContent = T("from {ref}", { ref });' in _AP)
+check("[7] a master's own node shows the host updater's ref, not its own",
+      '${nrec.local ? T("Update installs {ref}, not the latest release — this host\'s updater' in _SN
+      and "Run `sudo SWG_REF=main swg-update` once to follow releases again." in _SN + _AP)
+check("[7] …in Russian too", "this host's updater (/usr/local/bin/swg-update) was installed or last updated from it" in _RU
+      and "программу обновления этого хоста (/usr/local/bin/swg-update)" in _RU and "`sudo SWG_REF=main swg-update`." in _RU)
+
 print()
+if PERTURB_PANELMAIN or PERTURB_PANELCACHE or PERTURB_PANELFAIL or PERTURB_PANELINO or PERTURB_PANELDECL:
+    _red = [f for f in FAILS if f.startswith("[7]")]
+    print("perturb-panel: %s" % ("RED as it must be (%d), all [7]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
+if PERTURB_CUSTOM:
+    _red = [f for f in FAILS if f.startswith("[6]")]
+    print("perturb-custom: %s" % ("RED as it must be (%d), all [6]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
+if PERTURB_SHOWN:
+    _red = [f for f in FAILS if f.startswith("[6]")]
+    print("perturb-shown: %s" % ("RED as it must be (%d), all [6]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB_HINT:
     _red = [f for f in FAILS if f.startswith("SWG_REF=")]
     print("perturb-hint: %s" % ("RED as it must be (%d), all [5]" % len(_red) if _red and len(_red) == len(FAILS) else "WRONG: %s" % FAILS))

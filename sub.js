@@ -1852,7 +1852,9 @@
         var cBackup = multi && crl === "backup";                                // csqtt is its own protocol family → the "CSQTT" role chip, in the csqtt type colour
         var crole = el("span", "scell-role" + (cBackup ? " scell-backup" : "") + (multi && crl ? " scell-role-on" : ""));
         if (multi && crl) crole.appendChild(document.createTextNode(t(crl) + " "));
-        crole.appendChild(el("span", "scell-role-if", "CSQTT"));
+        // 2.1 and 2.5 cannot reach each other's servers, and their cards were alike until the app was downloaded: the chip
+        // names the server's version (operator, 2026-10-20). No line = a node too old to say = 2.1 (swg-sub _running_lines).
+        crole.appendChild(el("span", "scell-role-if", "CSQTT " + (cd.line || "2.1")));
         if (!cBackup) crole.style.color = cfc;
         srvRow.appendChild(crole);
         ctrl.forkId = "csqtt"; ctrl.app = (cga && (cga.productName || cga.app)) || "CSQTT"; ctrl.zoomTail = ctrl.app;
@@ -1862,7 +1864,14 @@
           cvkw.appendChild(el("div", "scell-vkwarn-d", t("vkMissing").replace("{app}", t("theApp"))));
           cell.appendChild(cvkw);
         }
-        if (cga) { ctrl.dlAppUrl = cga.file; ctrl.dlAppFile = cga.fileName; ctrl.dlAppName = cga.app; ctrl.dlAppPage = cga.page; node.appendChild(getAppRow(cga)); }
+        if (cga) {
+          ctrl.dlAppUrl = cga.file; ctrl.dlAppFile = cga.fileName; ctrl.dlAppName = cga.app; ctrl.dlAppPage = cga.page;
+          // "Get CSQTT 2.5.1 …": the version of the release it fetches (a rebuild's -N kept), so which app it is shows before the tap
+          var cver = /(\d+\.\d+\.\d+(?:-\d+)?)/.exec(cga.pinned ? cga.tag : "");
+          var cshown = {}; for (var ck in cga) cshown[ck] = cga[ck];
+          if (cver) cshown.app = cga.app + " " + cver[1];
+          node.appendChild(getAppRow(cshown));
+        }
         ctrl.cliApp = false; ctrl.vktgz = false;         // csqtt client is an app, never a CLI/VKTGZ flow
         // 2.1: no scanner in its apps → the csqtt:// link itself; 2.5: its app scans one → a QR (cart.qr), the link sealed
         // asynchronously (Web Crypto) — the same draw-then-apply as a turn proxy's buildAsync artifact.

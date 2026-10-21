@@ -103,6 +103,7 @@ def load(name, standin):
 P = load("swgpanel_lines", "")
 P1 = load("swgpanel_lines_off", "")
 V25, T25 = P.CSQTT_LINES["2.5"][0]   # the released 2.5 build — read, not spelled: a new 2.5.x needs no edit here
+L25 = list(P.CSQTT_LINES["2.5"])      # …and every 2.5 build the panel lists, newest first (2.5.1-2, 2.5.1 kept for a rollback)
 
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
@@ -210,7 +211,7 @@ try:
                   {"iface": "csqtt2", "kind": "csqtt", "fork": "csqtt", "line": "2.1", "version": "2.1.9-4", "max_passwords": 500, "params": ""}])   # the switch landed
     code, v = req("/api/csqtt/versions?node=nnew&iface=csqtt1")
     vd = v.get("data") or {}
-    check("2.5's picker lists 2.5's builds", vd.get("line") == "2.5" and vd.get("versions") == [V25], vd)
+    check("2.5's picker lists 2.5's builds", vd.get("line") == "2.5" and vd.get("versions") == [v for v, _ in L25], vd)
     code, v = req("/api/csqtt/versions?node=nnew&iface=csqtt2")
     check("2.1's picker lists 2.1's builds", (v.get("data") or {}).get("versions", [None])[0] == "2.1.9-4", v)
     code, r = req("/api/csqtt/version", {"node": "nnew", "iface": "csqtt1", "ver": "2.1.9-4"})
@@ -263,7 +264,7 @@ try:
     check("a stand-in naming an unpublished build adds nothing", (P1._csqtt_standin("2.6=9.9.9") or True) and list(P1.CSQTT_LINES) == ["2.1", "2.5"])
     check("a stand-in cannot replace 2.1", (P1._csqtt_standin("2.1=2.0.1") or True) and P1.CSQTT_LINES["2.1"][0][0] == "2.1.9-4")
     P1._csqtt_standin("2.5=2.1.9-3")
-    check("a stand-in cannot replace the released 2.5", P1.CSQTT_LINES["2.5"] == [(V25, T25)], P1.CSQTT_LINES["2.5"])
+    check("a stand-in cannot replace the released 2.5", P1.CSQTT_LINES["2.5"] == L25, P1.CSQTT_LINES["2.5"])
 
     section("[10] a line this panel does not offer")
     put_csqtt("nnew", "csqtt8", dict(C1, tun_addr="10.66.98.1/24", listen="0.0.0.0:46080", line="3.0"))

@@ -49,7 +49,7 @@ import {
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
 } from "./routing.js";
-import { LogViewer } from "./logview.js";   // Settings → Logs, the live viewer (docs/LOGS-PLAN.md §5)
+import { LogViewer } from "./journal.js";   // Settings → Logs, the live viewer (docs/LOGS-PLAN.md §5)
 import { classifyAll } from "./classify.js";   // the one grammar — CustomListSheet accepts what a rule accepts
 import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
 import {

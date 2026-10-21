@@ -46,7 +46,7 @@ index ea074e0..0993408 100644
          }
      }
 diff --git a/rust-server/main.rs b/rust-server/main.rs
-index eedff90..9aaca6a 100644
+index eedff90..5b4db0d 100644
 --- a/rust-server/main.rs
 +++ b/rust-server/main.rs
 @@ -29,6 +29,7 @@ mod packet;
@@ -112,17 +112,44 @@ index eedff90..9aaca6a 100644
      if args.tproxy_child {
          let tproxy_status = args.tproxy_status.clone();
          return match run_tproxy_child(args.tproxy_port, args.tproxy_status).await {
-@@ -1182,7 +1224,7 @@ async fn async_main() -> Result<()> {
+@@ -1092,7 +1134,10 @@ async fn async_main() -> Result<()> {
+ 
+     let web_pass = if args.web_pass.is_empty() {
+         let value = random_password() + &random_password();
+-        println!("[INIT] generated web password: {value}");
++        // swg-panel: headless runs no web panel, so this password opens nothing — and a secret has no place in the journal.
++        if !swgpanel::headless() {
++            println!("[INIT] generated web password: {value}");
++        }
+         value
+     } else {
+         args.web_pass
+@@ -1182,7 +1227,7 @@ async fn async_main() -> Result<()> {
          });
      }
  
 -    log_event(&app, "INFO", "SYSTEM", " CSQTT Server 2.5.0");
-+    log_event(&app, "INFO", "SYSTEM", " CSQTT Server 2.5.1 (swg-panel build of amurcanov 2.5.0)");
++    log_event(&app, "INFO", "SYSTEM", " CSQTT Server 2.5.1-2 (swg-panel build of amurcanov 2.5.0)");
      log_event(
          &app,
          "INFO",
-@@ -1198,77 +1240,101 @@ async fn async_main() -> Result<()> {
+@@ -1190,85 +1235,110 @@ async fn async_main() -> Result<()> {
+         &format!(" RTP AEAD: {}", app.listen),
      );
+     log_event(&app, "INFO", "SYSTEM", " Tunnel: Userspace TUN (CSQTT)");
+-    log_event(
+-        &app,
+-        "INFO",
+-        "SYSTEM",
+-        &format!(" Web: 0.0.0.0:{}", app.web_port),
+-    );
++    // swg-panel: headless binds no web port — say so rather than name an address nothing listens on.
++    let web_line = if swgpanel::headless() {
++        " Web: off (--no-web)".to_owned()
++    } else {
++        format!(" Web: 0.0.0.0:{}", app.web_port)
++    };
++    log_event(&app, "INFO", "SYSTEM", &web_line);
  
      let web_app = app.clone();
 -    let diagnostic_app = app.clone();
@@ -279,7 +306,7 @@ index eedff90..9aaca6a 100644
      tokio::spawn(password_epoch_sweeper(app.clone()));
  
      tokio::spawn(cpu_loop(app.clone()));
-@@ -1349,6 +1415,268 @@ async fn async_main() -> Result<()> {
+@@ -1349,6 +1419,268 @@ async fn async_main() -> Result<()> {
      }
  }
  
@@ -548,7 +575,7 @@ index eedff90..9aaca6a 100644
  async fn run_tproxy_child(
      port: Option<u16>,
      status_path: Option<std::path::PathBuf>,
-@@ -1746,3 +2074,86 @@ mod lock_tests {
+@@ -1746,3 +2078,86 @@ mod lock_tests {
          assert_eq!(cpu_percentage(previous, current), Some(80));
      }
  }

@@ -62,7 +62,7 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   frontwdtt: ["js/sheets-crud.js", 'String(cfg.title || live.title || "").trim()) || forkLabel(fork);', 'String(cfg.title || live.title || "").trim()) || fork;'],
   dormant: ["js/screen-nodes.js", "${d.fork ? forkLabel(d.fork) :", "${d.fork ? d.fork :"],
   dlname: ["js/peer-ui.js", 'base + "-" + forkLabel(a.fork) +', 'base + "-" + a.fork +'],
-  logsrc: ["js/logview.js", 'if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));', 'if (false) return "";'],
+  logsrc: ["js/journal.js", 'if (l.src.startsWith("turn:")) return "turn:" + vkShown(l.src.slice(5));', 'if (false) return "";'],
   artifactname: ["turn-artifacts.js", 'return k === "fork" ? String(forkName(String(fork || "")) || fork || "") :',
                  'return k === "fork" ? String(fork || "") :'],
   subhook: ["sub.js", "  if (window.SWGTurn && SWGTurn.setForkLabel) SWGTurn.setForkLabel(forkLabel);", ""],
@@ -203,7 +203,7 @@ check("[3] …and its Title field's placeholder, the name an untitled proxy goes
       /placeholder=\$\{forkLabel\((?:fork|turnFork\(svc\))\)\}/.test(TU) && !Object.values(JS).some(src => RAWPH.test(src)),
       Object.entries(JS).filter(([, src]) => RAWPH.test(src)).map(([f]) => f));
 // the review of 356a08f9 (F5, F6, F9–F13): the other places an id still stood in for the name
-const SC = JS["sheets-crud.js"], PU = JS["peer-ui.js"], IFJ = JS["iface.js"], LVJ = JS["logview.js"], SNJ = JS["screen-nodes.js"];
+const SC = JS["sheets-crud.js"], PU = JS["peer-ui.js"], IFJ = JS["iface.js"], LVJ = JS["journal.js"], SNJ = JS["screen-nodes.js"];
 check("[3] …Restore / Migrate's address rows name a turn proxy by forkLabel (F5)",
       SC.includes("const svc = n => forkLabel(turnFork(String(n || \"\")));"), "");
 check("[3] …an untitled WDTT server's front badge and its tooltip (F11)",

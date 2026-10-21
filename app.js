@@ -61,7 +61,7 @@ import {
 import {
   AccountScreen, PanelSettingsScreen,
 } from "./js/screen-settings.js";
-import { LogOverlay, openLogOverlay } from "./js/logview.js";   // the header's Logs button: nothing loads until it is clicked
+import { LogOverlay, openLogOverlay } from "./js/journal.js";   // the header's Logs button: nothing loads until it is clicked
 
 // Fill the Store's callback slots (see js/store.js). These live above the Store in the module graph, so it
 // cannot import them — it calls back into them instead. Each assignment moves into the owning module as the
@@ -314,6 +314,12 @@ function App() {
       // reinstatement reason as the turn badge: this innerHTML is rewritten on every poll.
       el.innerHTML = `<span class="appver-wrap"><b>${esc(v.panel)}</b><span class="appver-info" aria-label="${esc(T("Changelog"))}">${INFO_SVG}</span></span>`;
       if (!el._verWired) { el._verWired = true; versionHoverBubble(el); }   // wire once — #appver persists across polls
+    }
+    const ar = $("#appref");          // the host updater's branch, when it is not main: header Update installs it, not releases
+    if (ar) {
+      const ref = Store.panelUpdateRef || "";
+      ar.hidden = !ref;
+      if (ref) { ar.textContent = T("from {ref}", { ref }); ar.title = T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo SWG_REF=main swg-update` once to follow releases again.", { ref }); }
     }
     const ht = $("#host-tport");      // how the PANEL itself is deployed (docker / bare-metal)
     if (ht && Store.env && ("docker" in Store.env)) {

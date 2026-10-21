@@ -33,7 +33,7 @@
 | WDTT-Plus | [Ivan4537/WDTT-Plus](https://github.com/Ivan4537/WDTT-Plus) | **GPL-3.0** | `b3935b94` (v18) | [`forks/wdtt/wdttplus/`](forks/wdtt/wdttplus/) | `wdtt-wdttplus-18-2` |
 | qWDTT — SpaceNeuroX | [SpaceNeuroX/proxy-turn-vk-android](https://github.com/SpaceNeuroX/proxy-turn-vk-android) | **GPL-3.0** | `fae121ef` (v1.4.3) | [`forks/qwdtt/`](forks/qwdtt/) | `wdtt-qwdtt-1.4.3-4` |
 | csqtt | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `446293aa` (v2.1.9) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.1.9-4` |
-| csqtt 2.5 | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.1` ¶ |
+| csqtt 2.5 | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | [`forks/csqtt/`](forks/csqtt/) | `csqtt-2.5.1-2` ¶ |
 | Приложение csqtt 2.5 для Android (наша сборка приложения amurcanov) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) `app/` | **PolyForm Noncommercial 1.0.0** | `d02da9b` (v2.5.0) | в релизе: `csqtt-app-2.5.1.patch`, `Dockerfile.android`, `build-apk.sh` | `csqtt-app-2.5.1` ¶ |
 | Приложение csqtt 2.1.9 для Android (APK amurcanov без изменений) | [amurcanov/csqtt](https://github.com/amurcanov/csqtt) v2.1.9 | **PolyForm Noncommercial 1.0.0** | v2.1.9 | — (зеркало: его подписанные APK, хэши сверены) | `csqtt-app-2.1.9` ¶ |
 | amneziawg-go (датапас AmneziaWG в пользовательском пространстве — запасной вариант bare-metal-нод) | [amnezia-vpn/amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | `b5928efb` (v3.1.20260828) § | [`forks/amneziawg-go/`](forks/amneziawg-go/) | `amneziawg-go-3.1.20260828` § |

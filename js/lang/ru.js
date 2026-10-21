@@ -4867,6 +4867,14 @@ export const STR = {
     "Режим «только IP» ведёт трафик по адресам — уберите домен ({list}) или переключите ноду на Force-DNS.",
   "Node is running a newer version than the panel — update the panel to catch up":
     "На ноде версия новее, чем у панели — обновите панель",
+  "Update installs {ref}, not the latest release — this node was installed or last updated from it. Run its update once with SWG_REF=main to follow releases again.":
+    "Обновление ставит {ref}, а не последний выпуск: из {ref} эту ноду установили или обновили в последний раз. Чтобы снова получать выпуски, один раз запустите её обновление с SWG_REF=main.",
+  "from {ref}": "из {ref}",
+  "Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo SWG_REF=main swg-update` once to follow releases again.":
+    "Обновление ставит {ref}, а не последний выпуск: из {ref} установили или в последний раз обновили программу обновления этого хоста (/usr/local/bin/swg-update). Чтобы снова получать выпуски, один раз выполните `sudo SWG_REF=main swg-update`.",
+  "Update runs this node's own update command (update_cmd in its agent config, /etc/swg-agent/config.json by default), not the release updater. Remove it there and restart swg-noded to follow releases again.":
+    "Обновление запускает собственную команду этой ноды (update_cmd в её конфиге агента, по умолчанию /etc/swg-agent/config.json), а не обновление выпусками. Чтобы снова получать выпуски, удалите её оттуда и перезапустите swg-noded.",
+  "own update command": "своя команда обновления",
   "Node settings": "Настройки ноды",
   "Bring this WDTT server back with its original identity — no user re-imports":
     "Вернуть сервер WDTT с прежними ключами — пользователям ничего не переносить",

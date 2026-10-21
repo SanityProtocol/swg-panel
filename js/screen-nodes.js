@@ -8,7 +8,7 @@
  * above any mount.
  */
 
-import { openLogs, NODE_SOURCES } from "./logview.js";   // the node's live logs, from its page
+import { openLogs, NODE_SOURCES } from "./journal.js";   // the node's live logs, from its page
 import { $, esc, seen, dur, ago, fmtBytes, tkey, ipOf, portOf, listenAddr, panelNowS } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";
 import { go } from "./router.js";
@@ -308,6 +308,15 @@ export function NodeDetail({ node: rawName }) {
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version && !nrec.uninstalled ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? T("Node is running a newer version than the panel — update the panel to catch up") : ""}>v${nrec.version}</span>` : null}
+        ${(() => {   /* what the Update button installs when it is not a release. A hand-update from a branch or tag is
+              remembered for good; a master's own node updates with the panel host, so its ref is the host updater's
+              (Store.panelUpdateRef), and an operator's own update_cmd never runs there */
+          if (nrec.uninstalled) return null;
+          const ref = nrec.local ? Store.panelUpdateRef : nrec.update_ref;
+          if (ref) return html`<span class="nm-ver out" title=${nrec.local ? T("Update installs {ref}, not the latest release — this host's updater (/usr/local/bin/swg-update) was installed or last updated from it. Run `sudo SWG_REF=main swg-update` once to follow releases again.", { ref }) : T("Update installs {ref}, not the latest release — this node was installed or last updated from it. Run its update once with SWG_REF=main to follow releases again.", { ref })}>${T("from {ref}", { ref })}</span>`;
+          if (nrec.update_custom && !nrec.local) return html`<span class="nm-ver out" title=${T("Update runs this node's own update command (update_cmd in its agent config, /etc/swg-agent/config.json by default), not the release updater. Remove it there and restart swg-noded to follow releases again.")}>${T("own update command")}</span>`;
+          return null;
+        })()}
         ${nrec.uninstalled ? null : dhUpdating ? html`<span class="livepill upd-busy">${T("updating…")} <svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>`
           : (nrec.proc_status && isUpdateState(nrec.proc_status)) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), procErr(nrec))
           : (nrec.local && Store.panelOutdated) ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateHost()} title=${T("Update this master (panel + co-located node) to the latest release")}>${T("update to")} <b>${Store.latestRemote || "?"}</b></button>`

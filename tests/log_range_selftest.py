@@ -92,7 +92,7 @@ import urllib.error, urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PROG = {k: os.path.join(ROOT, f) for k, f in (("noded", "swg-noded"), ("panel", "swg-panel-server"),
-                                              ("spa", "js/logview.js"), ("ru", "js/lang/ru.js"), ("ui", "js/ui.js"),
+                                              ("spa", "js/journal.js"), ("ru", "js/lang/ru.js"), ("ui", "js/ui.js"),
                                               ("css", "app.css"))}
 REF = "ef9c309"                                  # the last build before P3: the byte-identical reference
 PLANT = sys.argv[sys.argv.index("--plant") + 1] if "--plant" in sys.argv else ""

@@ -16,15 +16,25 @@ swg-panel the same way the `wdtt/` forks are, plus a reproducible build.
 - **`build.sh <out> [amd64|arm64]`** — clone→checkout pin→apply patch→`cargo zigbuild` static musl binary.
   Needs rustup 1.97.1 + zig + cargo-zigbuild.
 
+## csqtt 2.5.1-2 (line 2.5, published 2026-10-20)
+
+`csqtt-2.5.1-2` is 2.5.1 with one log change: under `--no-web` (how swg-panel always runs it) the server no longer prints
+the web panel's generated password — no web panel runs, so it opened nothing, but a secret has no place in the journal —
+and it logs "Web: off (--no-web)" instead of an address nothing listens on. **`2.5/csqtt-swgpanel-2.5.1-2.patch`** is the
+whole patch against `d02da9b`; `2.5/build.sh` builds it. Bit for bit, in the same container: amd64 `0fb63f46…`, arm64
+`8353df0d…`, from git and from the release's archive alike. Rig (`.campaign/rigs/csqtt25.sh` A I X S M R) on the
+published amd64 bytes: everything as 2.5.1 below. 2.5.1 stays listed on the line for a rollback.
+
 ## csqtt 2.5.1 (line 2.5, published 2026-10-20)
 
 `csqtt-2.5.1` is amurcanov's published **2.5.0** (`d02da9b`, released "as is", his support ended) with this integration
 ported to it and one datapath fix, so it carries our own version, the same as our 2.5.1 build of his Android app.
-- **`2.5/csqtt-swgpanel-2.5.1.patch`** — pinned to upstream `d02da9b`; **`2.5/build.sh <out> [amd64|arm64]`** runs
-  `build.sh` with that pin and patch. If his repository is gone it builds the same source from the `csqtt-2.5.1` release's
-  archive (sha256-checked). Bit for bit: in the `csqtt-build:1.97.1` container (Rust 1.97.1, zig 0.15.2,
-  `CARGO_HOME=/tmp/ch`) both paths give the published amd64 `b25bdd47…`; the release archive's own recipe rebuilds amd64
-  `b25bdd47…` and arm64 `9155d017…`. Another toolchain, zig or `CARGO_HOME` gives a different file of the same source.
+- **`csqtt-swgpanel-2.5.1.patch`** — pinned to upstream `d02da9b`; it now lives in the `csqtt-2.5.1` release beside the
+  source archive, and `2.5/` carries 2.5.1-2's patch, so `2.5/build.sh` builds **2.5.1-2**. To rebuild 2.5.1 itself, use
+  that release's archive and its `PROVENANCE.md`. Bit for bit, when 2.5/ still carried 2.5.1 (in the
+  `csqtt-build:1.97.1` container: Rust 1.97.1, zig 0.15.2, `CARGO_HOME=/tmp/ch`): both paths gave the published amd64
+  `b25bdd47…`; the release archive's own recipe rebuilds amd64 `b25bdd47…` and arm64 `9155d017…`. Another toolchain, zig
+  or `CARGO_HOME` gives a different file of the same source.
 - **The fix:** upstream holds any UDP flow that carries a small packet (≤ 300 B) on one relay stream while small packets
   keep coming. VK caps an allocation near 2 Mbit/s downlink, so a QUIC download or a nested tunnel fell from 20 to 2.1
   Mbit/s (live, 6 interleaved runs per build). A flow now keeps the pin only while it fits in one stream (3/4 of the stream

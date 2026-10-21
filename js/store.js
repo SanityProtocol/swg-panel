@@ -346,6 +346,7 @@ export const Store = {
     this.tls = d.tls || this.tls || {};   // cert expiry + renewal health → the Access & TLS card
 
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
+    this.panelUpdateRef = d.panel_update_ref || "";   // the host updater's branch when not main (swg-update's baked ref)
     this.turnUpdates = d.turn_updates || this.turnUpdates || [];   // [{fork,kind,node,installed,latest,ids}] — deployed turn-family servers behind their newest build, one row per (fork, node). Held forks are already excluded server-side.
     if (s && s.ok) { this.hostProc = d.host_proc || null; this.hostProcErr = d.host_proc_err || null; }   // only on a clean poll → the tag HOLDS through the panel's own re-install downtime
     if (ev && Array.isArray(ev.data)) this.events = ev.data;

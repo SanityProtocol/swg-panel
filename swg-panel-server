@@ -997,6 +997,39 @@ def _ver_behind(have, ref):
     return bool(h != (0, 0, 0) and r != (0, 0, 0) and h < r)
 
 
+# The branch this HOST's one-click updater installs from. /usr/local/bin/swg-update is machine-written (one text,
+# lib/common.sh swg_update_wrapper_text) with the ref baked into one exact line — update.sh reads it back the same way —
+# so unlike a hand-written command it can be read. A panel host (and a master's own node, which updates with it) that
+# was installed or updated from dev keeps installing dev on every header Update, and nothing said so (swgt, 2026-10-20).
+# A Docker panel has no such file (its image decides): "". Reported only where the header Update touches the trigger and so
+# runs this file — without one it hands out UPDATE_CMD, which is pinned to main. Cached by the file's inode, mtime and size
+# (every writer replaces it by rename), so the 5 s poll costs one stat; a failed read is not cached.
+UPDATE_WRAPPER = os.environ.get("SWG_UPDATE_WRAPPER") or "/usr/local/bin/swg-update"
+_WRAPPER_REF_RE = re.compile(r'^URL="\$\{SWG_BOOTSTRAP_URL:-https://raw\.githubusercontent\.com/SanityProtocol/swg-panel/'
+                             r'([^/"]{1,100})/bootstrap\.sh\}"$', re.M)   # update.sh reads it back as [^/]*
+_WRAPPER_REF = {"key": None, "ref": ""}
+
+def panel_update_ref():
+    """The ref the host updater follows when it is not main, else "" (no trigger, no wrapper, unreadable, not our text).
+    A declarative (NixOS) panel's trigger runs the module's own swg-update.service, never a bare-metal wrapper left behind."""
+    if not UPDATE_TRIGGER or PANEL_DECLARATIVE:
+        return ""
+    try:
+        st = os.stat(UPDATE_WRAPPER)
+    except OSError:
+        return ""
+    key = (st.st_ino, st.st_mtime_ns, st.st_size)
+    if _WRAPPER_REF["key"] != key:
+        try:
+            with open(UPDATE_WRAPPER, encoding="utf-8") as f:
+                m = _WRAPPER_REF_RE.search(f.read(65536))
+        except (OSError, UnicodeDecodeError):
+            return ""                           # not cached: the next poll reads it again
+        ref = m.group(1) if m else ""
+        _WRAPPER_REF.update(key=key, ref="" if ref == "main" else ref)
+    return _WRAPPER_REF["ref"]
+
+
 def _update_target():
     """The version a node should be brought to: the latest RELEASE, or the panel's own if that is higher.
 
@@ -1519,7 +1552,9 @@ CSQTT_DEFAULT_LINE = "2.1"
 # small-UDP pin fix (release csqtt-2.5.1, 2026-10-20; one version with our 2.5.1 app, which carries the uplink half). It
 # replaces csqtt-2.5.0, a build of his pre-release source that never shipped, deleted (operator). A new protocol — a 2.1
 # app cannot reach a 2.5 server, nor a 2.5 app a 2.1 one (catalog csqtt_lines decides which apps each server is offered).
-CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS, "2.5": [("2.5.1", "csqtt-2.5.1")]}
+# 2.5.1-2 (release csqtt-2.5.1-2, 2026-10-20): 2.5.1 with one log change — under --no-web no generated web password in the
+# journal and "Web: off" instead of an address nothing listens on. 2.5.1 stays listed for a rollback.
+CSQTT_LINES = {CSQTT_DEFAULT_LINE: CSQTT_BUILDS, "2.5": [("2.5.1-2", "csqtt-2.5.1-2"), ("2.5.1", "csqtt-2.5.1")]}
 _CSQTT_LINE_RE = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}$")
 def _csqtt_standin(spec):
     line, _, vers = (spec or "").partition("=")
@@ -6244,7 +6279,7 @@ KEYLESS_SHARE_BUILDS = {
                                                   # 1.5.0-4 (28aba26f, 2026-09-25): .campaign/rigs/keyless-ildarmaga-wg-q.sh — the
                                                   # unpatched qWDTT client (same wire), 1.5.0-3 as the control: T1–T7 pass on both,
                                                   # and the -dns value reaches the client's config at start and after a SIGHUP
-    "csqtt":     {"raw": ("2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
+    "csqtt":     {"raw": ("2.5.1-2", "2.5.1", "2.1.9-4", "2.1.9-3", "2.1.9-2")},  # rig on the published bytes (217623e9): spoof +0 at the TUN, borrow refused;
                                                   # 2.1.9 fails both; 2.1.9-3 (eb86d752) and 2.1.9-4 (e7f76fd2) the same on their published bytes,
                                                   # 2026-09-25 — a moved password keeps its address. 2.5.0 (line 2.5, 8911aa11 = the published
                                                   # bytes, 2026-10-16, .campaign/rigs/csqtt25.sh): reach, IPv4 spoof +0 and IPv6 uplink +0 at the
@@ -6252,6 +6287,9 @@ KEYLESS_SHARE_BUILDS = {
                                                   # across reconnects; no borrow to refuse — 2.5 has no devices, the address is the password's.
                                                   # 2.5.1 (b25bdd47 = the published bytes, 2026-10-20; 2.5.0 is gone): the same, plus the
                                                   # networks rig --p5c 21/21 (a LAN behind a WG gateway, WG peers, 2.5 ⇄ 2.5)
+                                                  # 2.5.1-2 (0fb63f46 = the published bytes, 2026-10-20; 2.5.1 + a log-only change):
+                                                  # csqtt25.sh A I X S M R all as 2.5.1 — reach, spoof +0, IPv6 uplink +0,
+                                                  # deactivate/revoke cut + refused, stable address, two instances, App routing
 }
 
 
@@ -23896,6 +23934,10 @@ def api(method, path, qs, body, deps):
                         "ignored_dormant": [x for x in (snap.get("wdtt_dormant") or [])
                                             if isinstance(x, dict) and x.get("config_dir") in _ign],
                         "version": snap.get("noded_version"),   # swg-noded version this node reports
+                        # the branch or tag its Update button installs from, when not main (an older node, a container: ""),
+                        # or that it runs an operator's own update_cmd
+                        "update_ref": _uref if re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", _uref := str(snap.get("update_ref") or "")) else "",
+                        "update_custom": snap.get("update_custom") is True,
                         "latest": _update_target(),   # the latest RELEASE, or the panel's own version when that is higher (a branch-tracking fleet) — see _update_target
                         "outdated": _ver_behind(snap.get("noded_version"), _update_target()),   # strictly older only — never offer a downgrade
                         "ahead": _ver_ahead(snap.get("noded_version"), _update_target()),        # node is NEWER than the target (e.g. a dev build)
@@ -24146,6 +24188,7 @@ def api(method, path, qs, body, deps):
                            **_cat_labels_extra},         # + catalog cats in use → their provider label
 
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
+            **({"panel_update_ref": _pref} if (_pref := panel_update_ref()) else {}),   # the host updater's ref when not main
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             # Absent unless set, so /api/state on an ordinary panel carries exactly what it carried before.
             "env": {"docker": IN_DOCKER, "runtime": PANEL_RUNTIME, "fleet_path": FLEET_PATH,

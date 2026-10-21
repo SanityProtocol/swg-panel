@@ -1,13 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.8.9-beta</code></p>
+<p align="center"><code>1.8.10-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.8.9-beta** — [full changelog](CHANGELOG.md)
-> - **Logs you control.** Settings → Logs sets how much the panel and every server log, gives swg's logs a disk budget of their own, streams any servers and sources live in the panel, and builds one file for any time range, with keys and tokens masked.
-> - **csqtt 2.5, beside 2.1, at full speed.** Each csqtt server runs 2.1 or 2.5 and switches either way, keeping its users. We ship 2.5.1, our build of amurcanov's 2.5.0: QUIC traffic and nested VPNs use every relay stream (downloads 2.1 → 20 Mbit/s in our tests), App routing chooses what bypasses the tunnel, and subscription pages hand out the apps from our own releases. ⚠️ 2.1 and 2.5 don't talk to each other: every device needs the app of its server's version.
-> - **Half the memory, far less CPU and almost no disk writes at rest.** The panel and swg-noded use about half the RAM they did, an idle node about a quarter of the CPU, and an idle server writes a few kilobytes a minute instead of hundreds.
-> - **AmneziaWG.** Load a newer AmneziaWG module without a reboot, pick AmneziaWG 2.0, 3.1 or plain WireGuard per mesh link, disguise a handshake as QUIC or DNS, and see why a module won't load. ⚠️ Updates now upgrade AmneziaWG's packages from the PPA, and torrents are blocked by default on every way out of a server.
+> **What's new in 1.8.10-beta** — [full changelog](CHANGELOG.md)
+> - **Fixes for what 1.8.9 met on its first day.** The panel no longer stays blank behind an ad or tracker blocker (uBlock Origin, AdGuard, Brave), a Docker update no longer asks to re-run the installer for an optional setting nobody set, and the csqtt 2.5 server no longer logs a web-panel password it never uses (2.5 servers move to 2.5.1-2 and restart once).
+> - **The subscription page names the csqtt version.** Each csqtt card says CSQTT 2.1 or CSQTT 2.5, and its download names the app's version.
+> - **A server that doesn't update to releases says so.** A server installed or last updated from a branch other than main shows "from dev" beside its version, with the way back to releases; the panel's header does the same for its own server.
 <!-- WHATS-NEW:END -->
 
 ---

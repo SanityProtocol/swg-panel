@@ -1,4 +1,6 @@
-/* logview.js — Settings → Logs, the live viewer (docs/LOGS-PLAN.md §3, §5, §23).
+/* journal.js — Settings → Logs, the live viewer (docs/LOGS-PLAN.md §3, §5, §23).
+ * Named journal.js, not logview.js: EasyPrivacy (uBlock Origin, AdGuard, Brave) blocks any "/logview.js", and one
+ * blocked module leaves the whole panel blank (1.8.9). Gate: tests/served_names_selftest.py.
  *
  * LAYER 10: a leaf screen part that only Settings renders. Pick servers (the Panel first) and sources (grouped, a
  * three-state box per group), and see ONE stream, merged and sorted by each line's own time on the panel's clock (a node

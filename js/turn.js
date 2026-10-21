@@ -12,7 +12,7 @@
  * were distributed to ui.js and routing.js first, which is what let this come out with a one-way edge.
  */
 
-import { openLogs, TURN_SOURCES } from "./logview.js";   // a turn proxy's live logs
+import { openLogs, TURN_SOURCES } from "./journal.js";   // a turn proxy's live logs
 import { T, Trich, Tsplit, plural, pluralWord, srvText } from "./i18n.js";
 import { esc, portOf, ipOf, ipChoices, ipPickerVal, seen, ago, dur, fmtBytes, isSelfContainedKind, isPrivIp } from "./util.js";
 import { Store, api, bus, useStore } from "./store.js";

@@ -35,10 +35,10 @@ import { ROOT, check, done } from "./spa_env.mjs";
 
 const MODE = process.argv.includes("--perturb") ? process.argv[process.argv.indexOf("--perturb") + 1] : null;
 const PLANTS = {   // file → [anchor, what it was before the fix]
-  skew: ["js/logview.js", 'T("{v1} min", { v1: Math.round(Math.abs(s) / 60) }) : T("{v1} s", { v1: Math.abs(s) })',
+  skew: ["js/journal.js", 'T("{v1} min", { v1: Math.round(Math.abs(s) / 60) }) : T("{v1} s", { v1: Math.abs(s) })',
          'Math.round(Math.abs(s) / 60) + " min" : Math.abs(s) + " s"'],
   usedmb: ["js/screen-settings.js", 'T("{v1} MB", { v1: fmtNum(st.used_mb) })', 'T("{v1} MB", { v1: st.used_mb })'],
-  genserver: ["js/logview.js", 'v2: fmtNum(total - done), v3: plural(total, "gen|server") });', 'v2: fmtNum(total - done), v3: fmtNum(total) });'],
+  genserver: ["js/journal.js", 'v2: fmtNum(total - done), v3: plural(total, "gen|server") });', 'v2: fmtNum(total - done), v3: fmtNum(total) });'],
   plo12: ["js/screen-settings.js", 'title: T("This server\'s journald has no namespaces, so swg\'s logs cannot have a budget of their own here.") }',
           "title: st.err }"],
   perlink: ["js/lang/ru.js", '"val|per link": "свой у каждого",', '"val|per link": "у каждого линка свой",'],
@@ -52,7 +52,7 @@ const PLANTS = {   // file → [anchor, what it was before the fix]
   settingsname: ["js/i18n.js", '  if (e && e.verb === "Updated panel settings") return n.split(", ").map(x => T(x)).join(", ");\n', ""],
   endpointru: ["js/lang/ru.js", '"word|endpoint": "эндпоинт",', '"word|endpoint": "endpoint",'],
   nodecreated: ["js/lang/ru.js", '"Node created": "Нода создана",', '"Node created": "Нода создан",'],
-  lvlrow: ["js/logview.js", '<span class="lv-lv">${levelShort(lv)}</span>', '<span class="lv-lv">${lv}</span>'],
+  lvlrow: ["js/journal.js", '<span class="lv-lv">${levelShort(lv)}</span>', '<span class="lv-lv">${lv}</span>'],
   uptodate: ["app.js", 'title="${esc(T("This panel is on the latest version"))}"', 'title="${esc(T("On the latest version — click to re-run the updater anyway (repairs this box: reinstalls missing pieces, re-enables services, rebuilds the datapath / AmneziaWG kernel module)"))}"'],
 };
 const read = f => {
@@ -81,7 +81,7 @@ try {
 } finally { for (const p of made) fs.rmSync(p, { force: true }); }
 const { T, plural } = I;
 check("the Russian catalog is loaded", I.lang() === "ru" && T("Not supported") === "Не поддерживается", T("Not supported"));
-const RU = read("js/lang/ru.js"), LV = read("js/logview.js"), SET = read("js/screen-settings.js"), PANEL = read("swg-panel-server");
+const RU = read("js/lang/ru.js"), LV = read("js/journal.js"), SET = read("js/screen-settings.js"), PANEL = read("swg-panel-server");
 const ruHas = k => RU.includes(JSON.stringify(k) + ":");
 
 // [1] SPA-14

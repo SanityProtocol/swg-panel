@@ -63,6 +63,7 @@ Run: python3 tests/sub_page_render_selftest.py        (0 = pass)
      --perturb-guard      serves a sub.js that pins any app of a server, its repository or not → RED on [8]
      --perturb-line       serves a sub.js that offers a csqtt server an app of another line → RED on [11]
      --perturb-ownline    serves a sub.js that offers the CSQTT app of the other line when no release of the server's is out → RED on [11]
+     --perturb-chipline   serves a sub.js whose csqtt card no longer names the server's version → RED on [11]
      --perturb-xxsub      the catalog and sub.js of before 2026-10-14 (XXcipherX's app stands in for a WDTT fork's own) → RED on [7]
    A perturbation prints "PERTURB OK" and exits 0 when something went red, exits 1 when nothing did — or when its anchor is
    gone (a perturbation that cannot be applied proves nothing).
@@ -89,8 +90,9 @@ P_HIDDENMAP = "--perturb-hiddenmap" in sys.argv
 P_GUARD = "--perturb-guard" in sys.argv
 P_LINE = "--perturb-line" in sys.argv
 P_OWNLINE = "--perturb-ownline" in sys.argv
+P_CHIPLINE = "--perturb-chipline" in sys.argv
 PERTURB = (P_MACOS or P_BY or P_AUTO or P_TABS or P_COPY or P_NETSW or P_FORKNAME or P_XXSUB or P_PIN or P_AWGAPP or P_HIDDENMAP or P_GUARD
-           or P_LINE or P_OWNLINE)
+           or P_LINE or P_OWNLINE or P_CHIPLINE)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -253,6 +255,8 @@ if P_LINE:
 if P_OWNLINE:
     perturbed_web('      if (lineGate && own && srv && own[1] === srv.owner && !links.pinned && relLine !== line) return null;\n', "",
                   "the own app's release-line guard")
+if P_CHIPLINE:
+    perturbed_web('"CSQTT " + (cd.line || "2.1")', '"CSQTT"', "the csqtt chip's server version")
 if P_TABS:
     perturbed_web("groups = groups.filter(function (m) { return firstOf[m]; });", "", "the tabs-only-for-groups-with-a-page filter")
 if P_COPY:
@@ -418,7 +422,7 @@ try:
 
     # [1] csqtt: a cell wherever a client ships, none on macOS
     for os_ in ALL_OS:
-        cs = [c for c in turn_cells(renders[(os_, "en")]) if (c["role"] or "") == "CSQTT"]
+        cs = [c for c in turn_cells(renders[(os_, "en")]) if (c["role"] or "") == "CSQTT 2.1"]   # Anna's csqtt1: no line → 2.1
         if os_ == "macos":
             check("[1] macOS: no csqtt cell — no csqtt client exists for macOS", not cs, [c["tag"] for c in cs])
         else:
@@ -444,7 +448,7 @@ try:
     # [2] the author word, per language, in all three turn cells
     def by_words(os_, lang):
         return {(c["role"] or "?"): c["by"] for c in turn_cells(renders[(os_, lang)]) if c["by"]}
-    for os_, cell, author in (("windows", "CSQTT", "luminescq"), ("linux", "WDTT", "luminescq"), ("android", "CSQTT", "Endlad2")):
+    for os_, cell, author in (("windows", "CSQTT 2.1", "luminescq"), ("linux", "WDTT", "luminescq"), ("android", "CSQTT 2.1", "Endlad2")):
         en, ru = by_words(os_, "en").get(cell), by_words(os_, "ru").get(cell)
         check("[2] %s %s cell: EN badge says ' by %s'" % (os_, cell, author), en == " by " + author, by_words(os_, "en"))
         check("[2] %s %s cell: RU badge says ' от %s', no English" % (os_, cell, author), ru == " от " + author, by_words(os_, "ru"))
@@ -625,6 +629,13 @@ try:
     check("[11] …the 2.1 server beside it keeps La Lune", len(c21) == 1 and "La Lune" in (c21[0]["tag"] or ""), [c["tag"] for c in c21])
     check("[11] …the 2.5 server shown as a QR (the 2.5 app scans one), while the 2.1 server's plain link has none",
           len(c25) == 1 and c25[0]["qr"] and len(c21) == 1 and not c21[0]["qr"], [(c["tag"], c["qr"]) for c in cells])
+    # 2.1 and 2.5 cards were alike until the app was downloaded (operator, 2026-10-20): the chip names the server's version,
+    # the download its app's — and a node that reports no line is a 2.1 one
+    check("[11] the 2.5 server's card says CSQTT 2.5, and its download CSQTT 2.5.1",
+          len(c25) == 1 and c25[0]["role"] == "CSQTT 2.5" and "CSQTT 2.5.1" in (c25[0]["getapp"] or ""),
+          [(c["role"], c["getapp"]) for c in c25])
+    check("[11] …the 2.1 server's card (no line reported) says CSQTT 2.1",
+          len(c21) == 1 and c21[0]["role"] == "CSQTT 2.1", [c["role"] for c in c21])
     res, clip, steps, navs = start_on(tab, "turn", "amurcanov · CSQTT")
     sealed = next((x for x in list(clip) + list(navs) if x.startswith("csqtt://") and not x.startswith("csqtt://connect")), "")
     p25 = _unseal(sealed) if sealed else ""
