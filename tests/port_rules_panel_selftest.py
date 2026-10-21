@@ -18,7 +18,7 @@ An interface rule may carry `ports: {on, proto, list}`. What the panel has to ge
                       entry is handed back as it was.
   [6] NO PORTS, NO CHANGE — on a fleet without ports, cascade_plan and the sync slice are byte-identical to the panel the
                       feature was built on (BASE, the commit before S6).
-  [7] THE OLD PANEL — released `main` (origin/main) emits nothing for a stored port rule, with or without `who`.
+  [7] THE OLD PANEL — the released panel (RELEASED, 1.8.10-beta) emits nothing for a stored port rule, with or without `who`.
 
 Run: python3 tests/port_rules_panel_selftest.py   (0 = pass)
   --plant a|b|c|d|e|f|g   plant one defect and expect RED on its own check (exit 0 when caught):
@@ -69,6 +69,7 @@ PLANTS = {
 }
 TMP = tempfile.mkdtemp(prefix="port-rules-panel-")
 BASE = os.environ.get("SWG_PORTS_BASE") or "33a6819b"     # origin/dev before 1.8.11 S6 — the last panel without ports
+RELEASED = os.environ.get("SWG_PORTS_RELEASED") or "9c4a59d5"   # 1.8.10-beta, the release a panel may be downgraded to
 
 
 def load(path, name):
@@ -272,16 +273,16 @@ else:
           == ser(H.who_plan_for_node(b["n1"], ROSTER, "n1", SNAP1)))
 
 # ── [7] the released panel ──────────────────────────────────────────────────────────────────────────────────────────────────
-print("\n[7] the released panel (origin/main) — a stored port rule is off to it")
-mp = git_show("origin/main", "swg-panel-server")
+print("\n[7] the released panel (%s) — a stored port rule is off to it" % RELEASED)
+mp = git_show(RELEASED, "swg-panel-server")
 if mp is None:
-    check("origin/main's panel is readable (git show)", False)
+    check("the released panel is readable (git show)", False)
 else:
     M = load(mp, "swgpanel_main")
     for nm, r in (("a port rule", PR), ("a port rule with `who`", door([dict(G, enabled=True, action="exit", node="n2", who=WHO,
                                                                          ports={"on": True, "proto": "udp", "list": "443"})])[0][0])):
         es = [e for e in (M.cascade_plan(fleet([r]), SNAPS).get("n1") or {}).get("smart", []) if e["subnet"] == "10.8.0.0/24"]
-        check("released main lowers nothing for %s (never without its ports)" % nm, not es, es)
+        check("the released panel lowers nothing for %s (never without its ports)" % nm, not es, es)
 
 print("\n%s" % ("ALL PASS" if not FAILS else "FAILED: %d" % len(FAILS)))
 if PLANT:
