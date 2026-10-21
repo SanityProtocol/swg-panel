@@ -160,7 +160,7 @@ _, e, _ = door([{"enabled": True, "category": "all", "action": "direct", "ports"
 check("refused on “Everything else”", e is not None and "Everything else" in e, e)
 _, e, _ = door([dict(G, enabled=True, action="direct", ports={"on": True, "proto": "udp", "list": "1"})], node_scope=True)
 check("refused on a node's default list (B.1)", e is not None and "default rules" in e, e)
-for pv, why in (({"on": True, "proto": "both", "list": ""}, "TCP and UDP"), ({"on": True, "proto": "udp", "list": "70000"}, "65535"),
+for pv, why in (({"on": True, "proto": "both", "list": ""}, "Any"), ({"on": True, "proto": "udp", "list": "70000"}, "65535"),
                 ({"on": True, "proto": "udp", "list": " ".join(str(i) for i in range(1, 40))}, "32"), ("udp", "65535")):
     _, e, _ = door([dict(G, enabled=True, action="direct", ports=pv)])
     check("refused, and said: %r" % (pv,), e is not None and why in e, e)

@@ -18865,7 +18865,7 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=(), prev=(), snap=Non
                 return None, "“Everything else” applies to every port — use a rule to 0.0.0.0/0 with ports", _dropped_report(dropped)
             pp, pl = ports_clean(p.get("proto"), p.get("list")) if isinstance(p, dict) else (None, "proto")
             if pp is None:                                 # `pl` is the reason then
-                return None, ("Ports: “TCP and UDP” needs at least one port" if pl == "empty"
+                return None, ("Ports: “Any” protocol needs at least one port" if pl == "empty"
                               else "Ports: at most 32 ports or ranges" if pl == "too_many"
                               else "Ports: write ports and ranges from 1 to 65535, like 443, 8000-8100"), _dropped_report(dropped)
             _on = (p.get("on") is True) if "on" in p else rule_on(out)

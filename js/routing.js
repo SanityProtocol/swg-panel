@@ -2797,7 +2797,7 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
   const [aud, setAud] = useState(nodeScope && !everyone ? (row.aud || "") : "");
   const [chosen, setChosen] = useState(!nodeScope && !everyone && !!row.who);
   const [sel, setSel] = useState(() => canonWho(row.who || {}));
-  // PORTS (B.6) — an interface rule's only; "TCP and UDP" with no port is the rule as it always was (no ports at all).
+  // PORTS (B.6) — an interface rule's only; "Any" protocol with no port is the rule as it always was (no ports at all).
   const withPorts = !nodeScope && !everyone;
   const [proto, setProto] = useState((portsOf(row) || {}).proto || "both");
   const [plist, setPlist] = useState(((portsOf(row) || {}).list || "").split(",").join(", "));
@@ -2899,17 +2899,17 @@ function RuleSettingsSheet({ node, iface, row, dests, dest: dest0, mode, everyon
       ${note ? html`<div class="hint rs-where-note">${note}</div>` : null}
       ${addrStale ? html`<div class="hint err rs-where-note">${T("{v1} isn't reporting this address. Traffic on this rule leaves it with a source it can't receive replies on, so it goes nowhere until the address is back or you choose another.", { v1: Store.nodeName(addr.node) })}</div>` : null}`; })()}
     ${/* PORTS (B.6): which traffic to the destination takes the rule. Its own line under "Leaves by": the protocol in the same
-          three-part switch as a node list's audience, the ports beside it. Empty = every port; "TCP and UDP" + empty = no ports,
+          three-part switch as a node list's audience, the ports beside it. Empty = every port; "Any" + empty = no ports,
           the rule as it always was. Not on "Everything else" (it is every port, D10) nor on a node's default list (B.1). */""}
     ${withPorts ? html`<div class="row2 rs-ports">
         <div class="field"><label>${T("Protocol")}</label>
-          <div class="dpsw netsw-share netsw-aud" role="radiogroup" aria-label=${T("Protocol")}>${[["both", T("TCP and UDP")], ["tcp", "TCP"], ["udp", "UDP"]].map(([v, l]) => html`<button type="button" role="radio"
+          <div class="dpsw netsw-share netsw-aud" role="radiogroup" aria-label=${T("Protocol")}>${[["both", T("proto|Any")], ["tcp", "TCP"], ["udp", "UDP"]].map(([v, l]) => html`<button type="button" role="radio"
             aria-checked=${proto === v} class=${proto === v ? "on" : ""} onClick=${() => setProto(v)}>${l}</button>`)}</div></div>
         <div class="field"><label for="rs-ports-in">${T("Ports")}</label>
           <input id="rs-ports-in" value=${plist} inputmode="numeric" autocomplete="off" spellcheck="false" placeholder=${T("all ports — or 443, 8000-8100")}
             aria-invalid=${pBad ? "true" : "false"} onInput=${e => setPlist(e.target.value)}/></div>
       </div>
-      <div class=${"hint rs-where-note" + (pBad ? " err" : "")}>${pBad ? (pc.bad === "empty" ? T("“TCP and UDP” with no port is every connection — choose TCP or UDP, or name a port.")
+      <div class=${"hint rs-where-note" + (pBad ? " err" : "")}>${pBad ? (pc.bad === "empty" ? T("“Any” with no port is every connection — choose TCP or UDP, or name a port.")
           : pc.bad === "too_many" ? T("At most 32 ports or ranges.") : T("Write ports and ranges from 1 to 65535, like 443, 8000-8100."))
         : pc ? T("Only {ports} to this destination takes the rule — the rest goes on to the rules below.", { ports: portsLabel(pc) })
         : T("Every port. Choose TCP or UDP, or name ports, to narrow the rule.")}</div>` : null}
