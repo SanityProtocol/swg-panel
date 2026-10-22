@@ -36,7 +36,7 @@ import {
   ListPager, LIST_PAGE, pageSlice,
 } from "./ui.js";
 import {
-  CONF_SEALED_OLD, CONF_UNREACHABLE, awgConfLines, buildConf, exitKeepRouter, exitRouterKey, genKeys, genPSK, QR,
+  CONF_SEALED_OLD, CONF_UNREACHABLE, EXIT_LOCKED, awgConfLines, buildConf, exitKeepRouter, exitRouterKey, genKeys, genPSK, QR,
   SUB_LANG_LIST, VaultPromptSheet, downloadConf, ivkSetEscrow, nginxServerBlock, nixDirectTlsBlock, nixProxyBlock,
   ensureVaultUnlocked, ivkResealForNodeBlob, nixUpstream, normPublicUrl, qrDataURL, runConfigMigration, subBaseUrl, subForget, subKeyB64, subRewrap, subSKCached, subUnlock,
   subVaultCreate, urlPortOf, withUrlPort,
@@ -4233,8 +4233,9 @@ export function routerConf(host, prof, routerPriv, nodePub, psk) {
 // a title in a QR's zoom card is written into HTML; the router's config is named by what it is, never by free text
 const qrSafe = t => String(t || "").replace(/[<>&"']/g, "");
 
-/** The router's config, shown once. `noSwipe`: a swipe must not close it and lose the key (MOBILE-PLAN hook 2). It opens at
- *  the top of the file: the readonly box is the sheet's first focus, and a caret at its end scrolled the key out of sight. */
+/** The router's config. Not kept, it is shown once, and `noSwipe` keeps a swipe from closing it and losing the key (MOBILE-PLAN
+ *  hook 2). It opens at the top of the file: the readonly box is the sheet's first focus, and a caret at its end scrolled the
+ *  key out of sight. */
 function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
   const name = ex.label || exitDefaultTitle(ex);
   const port = (ex.profile || {}).listen_port;
@@ -4244,7 +4245,7 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
   // closes. Kept (`kept === true`): it opens again from the row, so the sheet closes like any other.
   const keep = useRef(kept !== true);
   const took = () => { keep.current = false; };
-  return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${680} noSwipe=${true} dirtyRef=${keep}
+  return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${680} noSwipe=${kept !== true} dirtyRef=${keep}
     foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done"),
                      left: onRegen ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); onRegen(); }}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>` : null })}>
     ${changed ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("The router config changed — {v1}. Import this one on the router again.", { v1: changed })}</span></div>` : null}
@@ -4252,7 +4253,9 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
       ? html`<p class="hint" style="margin:0 0 12px">${T("Kept encrypted with your client configs — the QR button on the exit's row shows it again.")}</p>`
       : html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.")}${
           typeof kept === "string" ? " " + T("Not kept with your client configs: {v1}.", { v1: kept }) : ""}</span></div>`}
-    ${!nodeDialHost(node) ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.")}</span></div>` : null}
+    ${!nodeDialHost(node) ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${kept === true
+      ? T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then open it again from the exit's row.")
+      : T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.")}</span></div>` : null}
     ${node.kind === "docker" && node.net_mode === "bridge" ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: 'ports: "' + port + ":" + port + '/udp"' })}</span></div>` : null}
     <div class="rconf">
       <textarea ref=${box} class="exprof" rows="13" readonly wrap="off" spellcheck="false" value=${conf}/>
@@ -4419,12 +4422,16 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
   const fresh = id => (((Store.nodes || []).find(n => n.id === node.id) || {}).exits || []).find(x => String(x.id) === String(id)) || null;
   // Generate (a new exit, `proto` set) and Regenerate (a stored one, `proto` null): the keys are made HERE, the panel keeps
   // the node's private key, and the router's config is rendered from what it stored.
+  // The router's key is kept only by a browser holding the encryption key, so it is asked for BEFORE the keys exist — the
+  // peers' prompt. Skipped, the exit is still made (or regenerated); its config is then shown once, unless the key is
+  // unlocked in this tab before a reload (exitKeepRouter holds it until then). Asked before Regenerate's confirm, never
+  // inside it: a sheet pushed from a confirm's onConfirm leaves the confirm spinning when the action then fails.
+  const askKeep = isNew => ensureVaultUnlocked({ title: T("Unlock to keep the router config"),
+    reason: T("The router's config is kept encrypted with your client configs — only you can read it, with your encryption key. Unlock it so the exit's row can show the config again."),
+    consequence: isNew ? T("the exit is created and works, but its router config is shown once only — unless you unlock the key in this tab before you reload.")
+                       : T("both sides still get new keys, but the router's new config is shown once only — unless you unlock the key in this tab before you reload.") });
   const generate = async (rec, proto) => {
-    // The router's key is kept only by a browser holding the encryption key, so it is asked for BEFORE the keys exist —
-    // the peers' prompt. Skipped, the exit is still made; its config is then shown once.
-    await ensureVaultUnlocked({ title: T("Unlock to keep the router config"),
-      reason: T("The router's config is kept encrypted with your client configs — only you can read it, with your encryption key. Unlock it so the exit's row can show the config again."),
-      consequence: T("the exit is created and works, but its router config is shown once only — Regenerate makes a new one.") });
+    if (proto) await askKeep(true);
     const nk = await genKeys(), rk = await genKeys(), psk = genPSK();
     const body = { ...rec, profile_text: "", dial_src: "", dialin_gen: { proto, private_key: nk.priv, peer_key: rk.pub, psk } };
     const isNew = !exits.some(x => String(x.id) === String(rec.id));
@@ -4435,9 +4442,12 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     for (let i = 0; r === true && i < 3 && !(st && st.profile && st.profile.peer_key === rk.pub); i++) {
       await new Promise(ok => setTimeout(ok, 700)); await Store.poll(); st = fresh(rec.id);
     }
+    if (r !== true) return T("Couldn't save");
+    // Kept against the record, which the panel checks itself — so a poll that never caught up still leaves the config readable.
+    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);
     if (!st || !st.profile || st.profile.peer_key !== rk.pub)
-      return r === true ? T("Saved, but the panel did not return the exit — reload and regenerate.") : T("Couldn't save");
-    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub);
+      return kept === true ? T("Saved, but the panel did not return the exit — reload, and the QR button on its row shows the router config.")
+                           : T("Saved, but the panel did not return the exit — reload and regenerate.");
     delete DIALIN_NOTE[rec.id];
     closeModal();
     openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${kept} onRegen=${() => regen(st)}
@@ -4450,16 +4460,25 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     if (r !== true) toast(typeof r === "string" ? r : T("Couldn't save"), "err");
   };
   const REGEN_BODY = () => T("Both sides get new keys. The router stops connecting until it imports the new config.");
-  const regen = ex => openConfirm({ title: T("Regenerate the router config?"), confirmLabel: T("Regenerate"),
-    body: REGEN_BODY(), onConfirm: () => regenNow(ex) });
+  const regen = async ex => { await askKeep(false); openConfirm({ title: T("Regenerate the router config?"), confirmLabel: T("Regenerate"),
+    body: REGEN_BODY(), onConfirm: () => regenNow(ex) }); };
   // The row's QR button: the kept router key, and the config rebuilt from the profile the panel stores NOW.
   const showRouter = async ex => {
-    if (Store.storeMode === "encrypted" && !(await ensureVaultUnlocked({ title: T("Unlock to show the router config"),
+    const ask = () => ensureVaultUnlocked({ always: true, title: T("Unlock to show the router config"),
       reason: T("The router's config is kept encrypted with your client configs — only you can read it, with your encryption key."),
-      consequence: T("the router config is not shown.") }))) return;
-    const st = fresh(ex.id);
-    const r = st && st.profile && exitIsDialin(st) ? await exitRouterKey(node.id, ex.id) : null;
-    if (r === CONF_UNREACHABLE) return toast(T("Couldn't reach the panel just now, so the router config could not be read. It has not been lost — try again in a moment."), "err");
+      consequence: T("the router config is not shown.") });
+    // the store on: asked first, as a peer's QR asks (a Regenerate from "none kept" then keeps the new key)
+    if (Store.storeMode === "encrypted" && !(await ask())) return;
+    let st = fresh(ex.id);
+    let r = exitIsDialin(st) ? await exitRouterKey(node.id, ex.id) : null;
+    if (r === EXIT_LOCKED) {                    // the store switched off since: what it kept is still there, and still opens
+      if (!(await ask())) return;
+      r = await exitRouterKey(node.id, ex.id);
+    }
+    // The key is the record's (the panel serves only that); this tab's profile may predate another tab's Regenerate, and
+    // the new key with the old PSK never handshakes.
+    if (r && r.k && r.pub !== st.profile.peer_key) { await Store.poll(); st = fresh(ex.id); }
+    if (r === CONF_UNREACHABLE || r === EXIT_LOCKED || (r && r.k && !(exitIsDialin(st) && r.pub === st.profile.peer_key))) return toast(T("Couldn't reach the panel just now, so the router config could not be read. It has not been lost — try again in a moment."), "err");
     if (!r || r === CONF_SEALED_OLD) return openConfirm({ title: T("No router config is kept for this exit"),
       body: (Store.storeMode !== "encrypted"
         ? T("Keeping encrypted client configs is off, so the router's private key was shown once and not kept.")
@@ -4479,7 +4498,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                          : exits.map(x => (String(x.id) === String(ex.id) ? { ...x, ...body } : x));
       const before = (ex.profile && ex.profile.listen_port && !ex.profile.endpoint) ? ex.profile : null;
       const r = await write(next);
-      // What the router has to follow (§2.4a): said on the screen until Regenerate, never stored.
+      // What the router has to follow (§2.4a): marked on the exit's row until its router config is opened or regenerated, never stored.
       const after = r === true && before ? (fresh(ex.id) || {}).profile : null;
       if (after && after.listen_port && !after.endpoint) {      // still dial-in: a paste that made it dial-out has no router
         const ch = [];

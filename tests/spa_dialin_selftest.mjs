@@ -10,10 +10,11 @@
  *  [4] (S9b) the router's config, built from the stored profile, parses through the same parser as a DIAL-OUT profile that
  *      dials the node: its peer is the node's public key, its address the router's half of the pair, Endpoint the node's
  *      host and port, the AmneziaWG set identical (3.1 included)
- *  [5] (S9c) the router's key in the config store: nothing is kept with the store off, and a locked vault says so; kept, it
- *      goes to the node's bucket as ciphertext against the router's public key, and reads back as both keys the config
- *      needs; a blob under another bucket key reads "sealed", an exit the panel no longer has reads "none", a dead panel
- *      reads "unreachable"
+ *  [5] (S9c) the router's key in the config store: nothing is kept with the store off, and a locked vault says so — and a
+ *      later unlock in the same tab keeps it after all; kept, it goes to the node's bucket as ciphertext against the
+ *      router's public key and the node key's digest, and reads back (in one request) as both keys the config needs; a
+ *      locked vault reads "locked", a bucket key or a blob this vault cannot open reads "sealed", a refused mint is not
+ *      blamed on an old key, an exit the panel no longer has reads "none", a dead panel reads "unreachable"
  *
  * Run: node tests/spa_dialin_selftest.mjs
  *      --perturb-text    the box prints `Endpoint = ` for a dial-in profile again        → RED [1]
@@ -22,6 +23,7 @@
  *      --perturb-warp    the WARP group is "not profile" again                            → RED [3]
  *      --perturb-rconf   the router's address is the node's own (no +1)                  → RED [4]
  *      --perturb-keepn   the node's public key is left out of the kept blob                → RED [5]
+ *      --perturb-pending a keep skipped at a locked vault is forgotten                    → RED [5]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -38,6 +40,7 @@ const PLANTS = {
   "--perturb-rconf": ["screen-settings.js", 'address: subnetServerAddr(prof.address + "/32")', 'address: prof.address + "/32"'],
   "--perturb-warp": ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
   "--perturb-keepn": ["crypto.js", "JSON.stringify({ k: routerPriv, n: nodePub })", "JSON.stringify({ k: routerPriv })"],
+  "--perturb-pending": ["crypto.js", "_pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); return", "return"],
 };
 if (_flag && !PLANTS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
 const PLANT = _flag || "";
@@ -163,31 +166,52 @@ check("an IPv6 host is bracketed", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(S
 console.log("\n[5] the router's key in the config store");
 const { api } = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href);
 const ESC = {}, BLOBS = {}, SENT = [];
-let GET = (n, e) => ({ ok: true, data: { sec: BLOBS[e] || "", user_id: C.exitBucket(n) } });
+let GET = (n, e) => ({ ok: true, data: { sec: (BLOBS[e] || {}).sec || "", pub: (BLOBS[e] || {}).pub || "", user_id: C.exitBucket(n),
+                                         unlock_by_sk: ESC[C.exitBucket(n)] || "" } });
+let USERS = () => ({ ok: true, data: { users: Object.fromEntries(Object.entries(ESC).map(([u, w]) => [u, { unlock_by_sk: w }])) } });
 Object.assign(api, {
   subVault: async () => ({ ok: true, data: { exists: true } }),          // a vault from before sk_verify: any key opens it
-  subUsers: async () => ({ ok: true, data: { users: Object.fromEntries(Object.entries(ESC).map(([u, w]) => [u, { unlock_by_sk: w }])) } }),
-  subEscrow: async b => { if (!ESC[b.user_id]) ESC[b.user_id] = b.unlock_by_sk; return { ok: true, data: { unlock_by_sk: ESC[b.user_id] } }; },
-  subExitBlob: async b => { SENT.push(b); BLOBS[b.exit] = b.sec; return { ok: true, data: { stored: true } }; },
+  subUsers: async () => USERS(),
+  subEscrow: async b => { if (b.user_id === "_x_n2") return { ok: false, error: "escrow.json is not writable" };
+                          if (!ESC[b.user_id]) ESC[b.user_id] = b.unlock_by_sk; return { ok: true, data: { unlock_by_sk: ESC[b.user_id] } }; },
+  subExitBlob: async b => { SENT.push(b); BLOBS[b.exit] = { sec: b.sec, pub: b.pub }; return { ok: true, data: { stored: true } }; },
   subExitBlobGet: async (n, e) => GET(n, e),
 });
 const rk = await C.genKeys(), nk = await C.genKeys();
+const SK = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
+const tick = () => new Promise(ok => setTimeout(ok, 50));
 Store.storeMode = "off";
-check("the store off: nothing kept, nothing sent", await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub) === false && !SENT.length);
+check("the store off: nothing kept, nothing sent", await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub, nk.priv) === false && !SENT.length);
 Store.storeMode = "encrypted";
-const locked = await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub);
+const locked = await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub, nk.priv);
 check("a locked vault: not kept, and says why", typeof locked === "string" && /locked/.test(locked) && !SENT.length, locked);
-await C.subUnlockWithKey(Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"));
-check("kept, with the vault open", await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub) === true, SENT);
-check("…in the node's bucket, against the router's public key", !!ESC["_x_n1"] && SENT.length === 1 && SENT[0].node === "n1"
-      && SENT[0].exit === "aabbccdd" && SENT[0].pub === rk.pub, SENT);
-check("…as ciphertext: the private key is not in what was sent", SENT.length === 1 && !JSON.stringify(SENT[0]).includes(rk.priv), SENT);
+await C.subUnlockWithKey(SK); await tick();
+check("…and unlocking later in the same tab keeps it after all, as a skipped peer's config", SENT.length === 1, SENT);
+check("…in the node's bucket, against the router's public key and the node key's digest", !!ESC["_x_n1"] && SENT.length === 1
+      && SENT[0].node === "n1" && SENT[0].exit === "aabbccdd" && SENT[0].pub === rk.pub
+      && SENT[0].nkh === (await C.sha256hex(nk.priv)).slice(0, 16), SENT);
+check("…as ciphertext: neither private key is in what was sent", SENT.length === 1 && !JSON.stringify(SENT[0]).includes(rk.priv)
+      && !JSON.stringify(SENT[0]).includes(nk.priv), SENT);
+check("kept, with the vault open", await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub, nk.priv) === true, SENT);
+USERS = () => { throw new Error("a blip"); };                           // the read is ONE request: a second one failing is no "none"
 const kb = await C.exitRouterKey("n1", "aabbccdd");
-check("it reads back as the router's private key and the node's public key", kb && kb.k === rk.priv && kb.n === nk.pub, kb);
+check("it reads back as the router's private key, the node's public key and the router key it was kept against",
+      kb && kb.k === rk.priv && kb.n === nk.pub && kb.pub === rk.pub, kb);
+C.subForget();
+check("kept, with the vault locked: says locked (the caller asks), never 'none kept'", await C.exitRouterKey("n1", "aabbccdd") === C.EXIT_LOCKED);
+await C.subUnlockWithKey(SK); await tick();
 const wrap = ESC["_x_n1"];
 ESC["_x_n1"] = ESC["_x_n1"].split("").reverse().join("");                // another bucket key: the wrap no longer opens
-check("a blob under another bucket key reads sealed", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_SEALED_OLD);
+check("a bucket key this vault cannot open reads sealed", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_SEALED_OLD);
 ESC["_x_n1"] = wrap;
+const sec0 = BLOBS.aabbccdd.sec;
+BLOBS.aabbccdd.sec = sec0.slice(0, 30) + (sec0[30] === "A" ? "B" : "A") + sec0.slice(31);   // one ciphertext byte off
+check("a blob the bucket key does not open (GCM refuses it) reads sealed", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_SEALED_OLD);
+BLOBS.aabbccdd.sec = sec0;
+USERS = () => ({ ok: true, data: { users: {} } });
+const refused = await C.exitKeepRouter("n2", "aabbccdd", rk.pub, rk.priv, nk.pub, nk.priv);
+check("a bucket key the panel refused to mint is not blamed on a previous encryption key", typeof refused === "string"
+      && !/previous/.test(refused) && /couldn't store/.test(refused), refused);
 GET = () => ({ ok: false, code: "not_found" });
 check("an exit the panel no longer has reads none", await C.exitRouterKey("n1", "aabbccdd") === null);
 GET = () => null;

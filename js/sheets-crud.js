@@ -2602,7 +2602,7 @@ export function TransferOutcome({ d, preview }) {
   if (!d) return null;
   const strip = d.strip || [], split = d.split || [], un = d.unrestorable || d.unrecorded || [];
   const vkfb = d.vk_fallback || [], fam = d.turn_family || [], ifaces = d.ifaces || [];
-  const users = d.users || [], subs = d.sub_links || [], esc = d.escrow || [];
+  const users = d.users || [], subs = d.sub_links || [], esc = d.escrow || [], rk = d.router_keys || [];
   const names = xs => xs.map(x => (typeof x === "string" ? x : (x.iface || x.title || x.peer))).join(", ");
   /* A row is label-left / value-right, which is right for "5 configs" and wrong for a sentence: the
      sentence wraps to two lines while one name sits alone in the right-hand column. Such a row STACKS —
@@ -2620,6 +2620,8 @@ export function TransferOutcome({ d, preview }) {
 
     vkfb.length ? [T("Peers on the panel-wide call link — the other panel resolves its own"), names(vkfb)] : null,
     un.length ? [T("Never set up through this panel — nothing to hand over"), names(un)] : null,
+    rk.length ? [T("Dial-in exits' router configs are sealed to this panel's vault, so they stay here — open them here first, or regenerate one there"),
+                 rk.map(x => x.title || T("Dial-in exit :{v1}", { v1: x.port })).join(", "), "stack"] : null,
     subs.length ? [T("Subscription links keep this panel's address in them"), plural(subs.length, "sub link")] : null,
     d.declarative ? [T("Managed by its own configuration — it will point itself back"),
                      T("update panelUrl and the token file there too")] : null,

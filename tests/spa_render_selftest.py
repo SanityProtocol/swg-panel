@@ -71,7 +71,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -138,7 +138,8 @@ PERTURBATIONS = {
     "rqr": ("js/screen-settings.js", '${exitIsDialin(stored(ex.id)) ? html`<button class="exg-qr"', '${false ? html`<button class="exg-qr"'),
     "rregen": ("js/screen-settings.js", "                     left: onRegen ? html`<button", "                     left: false ? html`<button"),
     "rmark": ("js/screen-settings.js", '(DIALIN_NOTE[ex.id] ? " chg" : "")', '("")'),
-    "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub);", "    const kept = false;"),
+    "rguard": ("js/screen-settings.js", "  const keep = useRef(kept !== true);", "  const keep = useRef(false);"),
+    "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
 }
 WEB = ROOT
 if PERTURB:
@@ -923,6 +924,13 @@ try:
                   bool(rpub) and (gx.get("profile") or {}).get("peer_key") == rpub
                   and ("\nPublicKey = " + rpub + "\n") not in rs["conf"], {"stored": (gx.get("profile") or {}).get("peer_key"), "derived": rpub})
             shot(tab, "b18-rconf-%s-%d" % (lang, vp[0]))
+            # not kept (the store is off), it is the only copy: Esc asks before it drops it
+            tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
+            settle(tab, 400)
+            _g = tab.ev("(() => { const s = %s; return s ? [...s.querySelectorAll('.sheet-foot button')].map(b => b.textContent.trim()) : null; })()" % TOP) or []
+            check("[B18] …not kept, Esc asks first instead of dropping the only copy", "Keep editing" in _g, _g)
+            click_text(tab, ".overlay.show .sheet-foot button", "/Keep editing/")
+            settle(tab, 300)
             # Regenerate from the router config's own sheet: new keys both sides, the port and the address kept, shown again
             click_text(tab, ".overlay.show .sheet-foot button", "/Regenerate router config/")
             settle(tab, 600)

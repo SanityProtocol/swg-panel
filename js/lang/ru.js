@@ -3274,8 +3274,19 @@ export const STR = {
   "Unlock to keep the router config": "Откройте хранилище, чтобы сохранить конфиг роутера",
   "The router's config is kept encrypted with your client configs — only you can read it, with your encryption key. Unlock it so the exit's row can show the config again.":
     "Конфиг роутера хранится зашифрованным вместе с конфигами клиентов — прочитать его можете только вы своим ключом. Откройте ключ, чтобы строка выхода могла показать конфиг снова.",
-  "the exit is created and works, but its router config is shown once only — Regenerate makes a new one.":
-    "выход создаётся и работает, но конфиг роутера будет показан только один раз — новый даст «Пересоздать».",
+  "the exit is created and works, but its router config is shown once only — unless you unlock the key in this tab before you reload.":
+    "выход создаётся и работает, но конфиг роутера будет показан только один раз — если только вы не откроете ключ в этой вкладке до перезагрузки страницы.",
+  "both sides still get new keys, but the router's new config is shown once only — unless you unlock the key in this tab before you reload.":
+    "обе стороны всё равно получат новые ключи, но новый конфиг роутера будет показан только один раз — если только вы не откроете ключ в этой вкладке до перезагрузки страницы.",
+  "Saved, but the panel did not return the exit — reload, and the QR button on its row shows the router config.":
+    "Сохранено, но панель не вернула выход — обновите страницу, и кнопка QR в его строке покажет конфиг роутера.",
+  "This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then open it again from the exit's row.":
+    "У этой ноды пока нет входного адреса, поэтому строка Endpoint неполная. Задайте его в Настройки → Сеть и откройте конфиг снова из строки выхода.",
+  "Dial-in exits' router configs are sealed to this panel's vault, so they stay here — open them here first, or regenerate one there":
+    "Конфиги роутеров обратных выходов запечатаны хранилищем этой панели, поэтому остаются здесь — откройте их здесь заранее или пересоздайте там",
+  "no dial-in exit with this id on this node": "на этой ноде нет обратного выхода с таким id",
+  "the exit's router key has changed since this config was made": "ключ роутера этого выхода сменился после того, как был создан этот конфиг",
+  "no encryption key for this node — set up config encryption first": "для этой ноды нет ключа шифрования — сначала настройте шифрование конфигов",
   "Unlock to show the router config": "Откройте хранилище, чтобы показать конфиг роутера",
   "The router's config is kept encrypted with your client configs — only you can read it, with your encryption key.":
     "Конфиг роутера хранится зашифрованным вместе с конфигами клиентов — прочитать его можете только вы своим ключом.",

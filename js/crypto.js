@@ -621,11 +621,12 @@ export async function subMaybePublish(userId, peerId, privkey, psk) {
 // in-session key copy — after that the config is unrecoverable and the peer must be rekeyed.
 const _pendingPublish = new Map();
 export async function subFlushPending() {
-  if (Store.storeMode !== "encrypted" || !subSKCached() || !_pendingPublish.size) return;
+  if (Store.storeMode !== "encrypted" || !subSKCached() || !(_pendingPublish.size || _pendingKeep.size)) return;
   let n = 0;
   for (const [peerId, p] of [..._pendingPublish]) {
     try { await subMaybePublish(p.userId, peerId, p.privkey, p.psk); _pendingPublish.delete(peerId); n++; } catch (_) {}
   }
+  for (const a of [..._pendingKeep.values()]) if ((await exitKeepRouter(...a)) === true) n++;   // a dial-in router's key, the same way
   if (n) bus.emit();
 }
 // Peers the backfill confirmed have NO recoverable config server-side (no session key, no stored plaintext, no
@@ -657,7 +658,8 @@ export function subNoConfHas(pid, pubkey) { return !!pubkey && _subNoConf.get(pi
 // skipping. Never throws.
 let _vaultPromptPending = null;   // the in-flight unlock promise while the modal is open — coalesces concurrent asks
 export function ensureVaultUnlocked(opts) {
-  if (Store.storeMode !== "encrypted") return Promise.resolve(true);   // nothing is stored encrypted → no key needed
+  // nothing is stored encrypted → no key needed; `always`: something kept while it was on is still read with the key
+  if (Store.storeMode !== "encrypted" && !(opts && opts.always)) return Promise.resolve(true);
   if (subSKCached()) return Promise.resolve(true);                     // already unlocked this session
   if (_vaultPromptPending) return _vaultPromptPending;                 // a modal is already up → share it (one prompt for a burst of actions)
   _vaultPromptPending = new Promise(function (resolve) {
@@ -1322,34 +1324,45 @@ export async function blobConfig(peer, node, iface) {
 // {k: the router's private key, n: the node's public key}, encrypted here under the bucket's unlock-key as a peer's {k, p}
 // is. The config itself is never stored — it is rebuilt from the exit's stored profile each time it is shown.
 export const exitBucket = nid => "_x_" + nid;
+// Keeps skipped while the vault was locked — "node|exit" → exitKeepRouter's arguments. The router's private key lives only
+// in this tab, so, as a peer's in _pendingPublish, unlocking later in the same session still keeps it (subFlushPending).
+const _pendingKeep = new Map();
 // → true (kept), false (the store is off), or a sentence saying why it was not kept. Never throws.
-export async function exitKeepRouter(nid, exitId, routerPub, routerPriv, nodePub) {
+export async function exitKeepRouter(nid, exitId, routerPub, routerPriv, nodePub, nodePriv) {
   if (Store.storeMode !== "encrypted") return false;
+  const pk = nid + "|" + exitId;
   try {
-    if (!subSKCached()) return T("the encryption key is locked");
-    const unlockKey = await ensureUserUnlockKey(exitBucket(nid));
-    if (!unlockKey) return T("its encryption bucket was sealed with a previous encryption key");
+    if (!subSKCached()) { _pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); return T("the encryption key is locked"); }
+    _pendingKeep.delete(pk);
+    const uid = exitBucket(nid), unlockKey = await ensureUserUnlockKey(uid);
+    // null is either a key this vault cannot open or a refused mint — the map ensureUserUnlockKey just read says which
+    if (!unlockKey) return ((await subUsersMap())[uid] || {}).unlock_by_sk
+      ? T("its encryption bucket was sealed with a previous encryption key") : T("couldn't store the router config");
     const sec = await subEnc(unlockKey, new TextEncoder().encode(JSON.stringify({ k: routerPriv, n: nodePub })));
-    const r = await api.subExitBlob({ node: nid, exit: exitId, pub: routerPub, sec });
+    // the node key sealed inside, named by the digest the panel stamps from the record — a re-paste in between is refused
+    const nkh = (await sha256hex(nodePriv)).slice(0, 16);
+    const r = await api.subExitBlob({ node: nid, exit: exitId, pub: routerPub, nkh, sec });
     return r && r.ok !== false ? true : (srvText(r) || T("couldn't store the router config"));
   } catch (e) { return String((e && e.message) || e); }
 }
-// → {k, n}; null when none is kept (or the vault is locked); CONF_UNREACHABLE / CONF_SEALED_OLD as blobConfig says them.
+// A kept key the vault is locked for: the caller asks to unlock (whatever the store's mode now) and reads again.
+export const EXIT_LOCKED = Symbol("exit-locked");
+// → {k, n, pub}; null when none is kept; EXIT_LOCKED; CONF_UNREACHABLE / CONF_SEALED_OLD as blobConfig says them. One request:
+// the bucket's wrapped unlock-key comes with the ciphertext, so a blip in a second read cannot turn into "nothing kept".
 export async function exitRouterKey(nid, exitId) {
-  if (!subSKCached()) return null;
   let r, unlockKey;
   try {
     r = await api.subExitBlobGet(nid, exitId);
     if (r && r.code === "not_found") return null;                 // no longer a dial-in exit here: nothing to show
-    if (!r || r.ok === false) return CONF_UNREACHABLE;
-    if (!r.data || !r.data.sec) return null;
-    const rec = (await subUsersMap(true))[r.data.user_id];
-    if (!rec || !rec.unlock_by_sk) return null;
-    try { unlockKey = await subRecoverUnlock(rec); } catch (_) { return CONF_SEALED_OLD; }
+    if (!r || r.ok === false || !r.data) return CONF_UNREACHABLE;
+    if (!r.data.sec) return null;
+    if (!subSKCached()) return EXIT_LOCKED;
+    if (!r.data.unlock_by_sk) return CONF_SEALED_OLD;             // a key with no bucket key: nothing here opens it
+    try { unlockKey = await subRecoverUnlock(r.data); } catch (_) { return CONF_SEALED_OLD; }
   } catch (_) { return CONF_UNREACHABLE; }
   try {
     const s = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, r.data.sec)));
-    return s && s.k && s.n ? { k: s.k, n: s.n } : null;
+    return s && s.k && s.n ? { k: s.k, n: s.n, pub: r.data.pub || "" } : null;
   } catch (_) { return CONF_SEALED_OLD; }                         // GCM refused it: sealed under a key this vault does not hold
 }
 
