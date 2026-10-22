@@ -875,13 +875,40 @@ try:
         shot(tab, "b18-row-%s-%d" % (lang, vp[0]))
         clicked = click_text(tab, ".exadd button", "/Add a dial-in exit|Добавить обратный выход/")
         settle(tab, 600)
+        SHEET = ("(() => { const s = %s; if (!s) return null; const b = [...s.querySelectorAll('.sheet-foot button')]; const sr = s.getBoundingClientRect();"
+                 " return {title: (s.querySelector('.sheet-head') || {}).textContent || '', protos: [...s.querySelectorAll('.awgsw button')].map(x => x.textContent),"
+                 " tops: b.map(x => Math.round(x.getBoundingClientRect().top)), inside: b.every(x => x.getBoundingClientRect().right <= sr.right + 1),"
+                 " conf: (s.querySelector('textarea.exprof') || {}).value || '', qr: !!s.querySelector('.qr img')}; })()" % TOP)
+        gs = tab.ev(SHEET)
+        check("[B18] %s: Add a dial-in exit opens Generate — WireGuard, AmneziaWG 2.0, AmneziaWG 3.1; Cancel and Create on one line" % tag,
+              bool(clicked and gs) and ("Обратный выход" if ru else "Dial-in exit") in gs["title"]
+              and gs["protos"] == ["WireGuard", "AmneziaWG 2.0", "AmneziaWG 3.1"] and len(gs["tops"]) == 2
+              and max(gs["tops"]) - min(gs["tops"]) <= 3 and gs["inside"], gs)
+        shot(tab, "b18-gen-%s-%d" % (lang, vp[0]))
+        if lang == "en" and vp[0] == 1280:          # Create: the router's config, shown once, from what the panel stored
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Create/")
+            settle(tab, 3000)
+            rs = tab.ev(SHEET)
+            check("[B18] Create shows the router's config: Endpoint the node's host and the port it got, a QR, one Done",
+                  bool(rs) and "Router config" in rs["title"] and "\nEndpoint = 203.0.113.7:51823\n" in rs["conf"]
+                  and "PrivateKey = " in rs["conf"] and rs["qr"] and len(rs["tops"]) == 1, rs)
+            st = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
+            check("[B18] …and the panel stored the node side on that port, not the router's private key",
+                  any((x.get("profile") or {}).get("listen_port") == 51823 for x in st)
+                  and not any(l.split(" = ", 1)[1] in json.dumps(st) for l in rs["conf"].splitlines() if l.startswith("PrivateKey = ")), st)
+            shot(tab, "b18-rconf-%s-%d" % (lang, vp[0]))
+            close_modals(tab)
+            click_text(tab, ".exadd button", "/Add a dial-in exit/")
+            settle(tab, 600)
+        click_text(tab, ".overlay.show .linkbtn", "/Paste the server config instead|Вставьте серверный конфиг/")
+        settle(tab, 600)
         sh = tab.ev("(() => { const s = %s; if (!s) return null; const lab = [...s.querySelectorAll('.field label')].map(l => l.textContent.trim());"
                     " const b = [...s.querySelectorAll('.sheet-foot button')];"
                     " const sr = s.getBoundingClientRect();"
                     " return {title: (s.querySelector('.sheet-head') || {}).textContent || '', labels: lab,"
                     " tops: b.map(x => Math.round(x.getBoundingClientRect().top)), inside: b.every(x => x.getBoundingClientRect().right <= sr.right + 1)}; })()" % TOP)
-        check("[B18] %s: Add a dial-in exit opens its sheet — the server config, no Connect from" % tag,
-              bool(clicked and sh) and ("Обратный выход" if ru else "Dial-in exit") in sh["title"] and ("Свой" if ru else "Custom") not in sh["title"]
+        check("[B18] %s: …and its paste link the sheet for the server config, no Connect from" % tag,
+              bool(sh) and ("Обратный выход" if ru else "Dial-in exit") in sh["title"] and ("Свой" if ru else "Custom") not in sh["title"]
               and ("Конфигурация сервера" if ru else "Server configuration") in sh["labels"]
               and not any(l in sh["labels"] for l in ("Connect from", "Подключаться с")), sh)
         check("[B18] %s: Cancel and Save share the bottom line, inside the sheet" % tag,
@@ -889,7 +916,7 @@ try:
         shot(tab, "b18-add-%s-%d" % (lang, vp[0]))
         if lang == "en" and vp[0] == 1280:
             tab.ev("(() => { const t = %s.querySelector('textarea.exprof'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;"
-                   " set.call(t, %s); t.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % (TOP, json.dumps(din_conf(51831, "10.254.0.2"))))
+                   " set.call(t, %s); t.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % (TOP, json.dumps(din_conf(51831, "10.254.9.0"))))
             settle(tab, 300)
             _sv = click_text(tab, ".overlay.show .sheet-foot button", "/^Save/")
             settle(tab, 2500)

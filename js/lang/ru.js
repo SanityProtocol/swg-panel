@@ -3260,6 +3260,48 @@ export const STR = {
   "the dial-in exit {v1}": "обратный выход {v1}",
   "{v1}: this dial-in exit listens on UDP {v2}, outside this node's declared firewall range ({v3}) — the router cannot connect until the range covers that port":
     "{v1}: этот обратный выход слушает UDP {v2} вне заявленного диапазона файрвола ноды ({v3}) — роутер не подключится, пока диапазон не покроет этот порт",
+  // dial-in exits: Generate and the router's config (S9b)
+  "Router config — {v1}": "Конфиг роутера — {v1}",
+  "Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.":
+    "Показывается один раз — приватный ключ роутера нигде не хранится. Потеряли? Пересоздайте конфиг роутера.",
+  "This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.":
+    "У этой ноды пока нет входного адреса, поэтому строка Endpoint неполная. Задайте его в Настройки → Сеть и пересоздайте конфиг.",
+  "Download .conf": "Скачать .conf",
+  "Router config copied": "Конфиг роутера скопирован",
+  "On the router": "На роутере",
+  "Import this config as a WireGuard (or AmneziaWG) connection. Leave “use for internet access” off — the router keeps its own internet; this tunnel only carries the node's traffic out.":
+    "Импортируйте этот конфиг как подключение WireGuard (или AmneziaWG). «Использовать для выхода в интернет» не включайте — у роутера остаётся свой интернет, а этот туннель только выпускает трафик ноды наружу.",
+  "Let traffic from the tunnel out to the internet: on Keenetic `ip nat WireguardN`, then `system configuration save`; on OpenWrt, put the interface in a zone that forwards to wan with masquerading.":
+    "Выпустите трафик из туннеля в интернет: на Keenetic — `ip nat WireguardN`, затем `system configuration save`; на OpenWrt — поместите интерфейс в зону с перенаправлением в wan и маскарадингом.",
+  "If this node itself is behind NAT, forward UDP {v1} to it.": "Если сама нода за NAT, пробросьте на неё UDP {v1}.",
+  "If this router also connects to swg as a user, traffic arriving on this tunnel must leave by the router's WAN, not by its swg tunnel — otherwise it loops and the exit carries nothing.":
+    "Если этот роутер ещё и подключается к swg как пользователь, трафик из этого туннеля должен уходить через WAN роутера, а не через его туннель swg — иначе он зациклится и выход ничего не пропустит.",
+  "The panel makes both sides; you import the router's config on the router.": "Панель создаст обе стороны, а конфиг роутера вы импортируете на роутере.",
+  "val|WireGuard": "WireGuard",
+  "AmneziaWG 2.0": "AmneziaWG 2.0",
+  "The router must be able to import it — check what its firmware supports.": "Роутер должен уметь его импортировать — проверьте, что поддерживает его прошивка.",
+  "Already have the router's config?": "Конфиг роутера уже есть?",
+  "Paste the server config instead": "Вставьте серверный конфиг",
+  "Creating…": "Создаём…",
+  "Regenerate router config": "Пересоздать конфиг роутера",
+  "New keys for both sides; the router must import the new config.": "Новые ключи для обеих сторон; роутеру нужно импортировать новый конфиг.",
+  "Saved, but the panel did not return the exit — reload and regenerate.": "Сохранено, но панель не вернула выход — обновите страницу и пересоздайте конфиг.",
+  "Regenerate the router config?": "Пересоздать конфиг роутера?",
+  "Regenerate": "Пересоздать",
+  "Both sides get new keys. The router stops connecting until it imports the new config.":
+    "Обе стороны получат новые ключи. Роутер не подключится, пока не импортирует новый конфиг.",
+  "port {v1} → {v2}": "порт {v1} → {v2}",
+  "address {v1} → {v2}": "адрес {v1} → {v2}",
+  "the AmneziaWG parameters": "параметры AmneziaWG",
+  "this node's key": "ключ этой ноды",
+  "{v1}: the router config changed — {v2}.": "{v1}: конфиг роутера изменился — {v2}.",
+  "a dial-in exit can only be generated from the exits screen": "обратный выход можно сгенерировать только на экране выходов",
+  "the generated keys are not usable keys": "сгенерированные ключи непригодны",
+  "choose WireGuard, AmneziaWG 2.0 or AmneziaWG 3.1": "выберите WireGuard, AmneziaWG 2.0 или AmneziaWG 3.1",
+  "no free port in 51820–51899 on this node — paste a config with your own port":
+    "на этой ноде нет свободного порта в 51820–51899 — вставьте конфиг со своим портом",
+  "no free address pair in 10.254.0.0/16 on this node — paste a config with your own address":
+    "на этой ноде нет свободной пары адресов в 10.254.0.0/16 — вставьте конфиг со своим адресом",
   "Paste the profile before saving.": "Перед сохранением вставьте профиль.",
   "Cloudflare WARP accounts, WireGuard profiles from anywhere else, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.":
     "Аккаунты Cloudflare WARP, профили WireGuard откуда угодно ещё и обратные выходы — апстрим вроде роутера за NAT, который сам подключается к этой ноде. Сайты видят этот выход, а не эту ноду.",

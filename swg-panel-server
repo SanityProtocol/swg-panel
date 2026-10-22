@@ -19226,6 +19226,13 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
                 # Carried forward when the operator is editing something else — a paste is a one-time act
                 # and re-typing the whole profile to rename the exit would be absurd.
                 _kept = (known.get(eid) or {}).get("profile") or {}
+                # GENERATE (docs/LISTEN-EXIT-PLAN.md §2.1): the panel makes the node side of a dial-in exit — as a server config
+                # the paste path then parses, so a generated exit and a pasted one are stored in one shape by one parser.
+                if isinstance(e.get("dialin_gen"), dict) and not str(e.get("profile_text") or "").strip():
+                    _gt, _ge = _dialin_generate(e["dialin_gen"], _kept, eid, exits, known, dialin)
+                    if _ge:
+                        return None, _ge
+                    e = dict(e, profile_text=_gt)
                 if str(e.get("profile_text") or "").strip():
                     _txt = str(e.get("profile_text"))
                     # The sentinel stands in for the key we already hold. Substituted BEFORE parsing, so
@@ -19361,6 +19368,53 @@ def _dialin_refusal(out, kept, dial_src, ctx):
     return ""
 
 
+DIALIN_PORTS = range(51820, 51900)          # the interface range every firewall here already opens (LISTEN-EXIT §7 Q2)
+DIALIN_NET = ipaddress.ip_network("10.254.0.0/16")   # a /31 per generated dial-in exit: node .0, router .1 (§2.3)
+
+
+def _dialin_generate(g, kept, eid, exits, known, ctx):
+    """The server config of a GENERATED dial-in exit, or ("", why) (docs/LISTEN-EXIT-PLAN.md §2.1/§2.3).
+
+    The browser made both keypairs and the PSK and sends the node's private key, the router's PUBLIC key and the PSK —
+    never the router's private key. A new exit gets the first free port of 51820–51899 (never outside it: that range is
+    what the node's firewall opens), a /31 of 10.254.0.0/16 clear of the node's subnets and of its other exits, and the
+    AmneziaWG set the interfaces' own generators draw for the protocol asked (`proto` — a request field, never stored: the
+    stored set says which it is). An existing dial-in exit (Regenerate) keeps its port, address, MTU and AmneziaWG set and
+    takes the new keys — the router re-imports either way."""
+    if not ctx:
+        return "", "a dial-in exit can only be generated from the exits screen"
+    pk, rk, psk = (str(g.get(k) or "").strip() for k in ("private_key", "peer_key", "psk"))
+    if not (_WG_KEY_RE.match(pk) and _WG_KEY_RE.match(rk)) or (psk and not _WG_KEY_RE.match(psk)):
+        return "", "the generated keys are not usable keys"
+    if kept.get("listen_port") and not kept.get("endpoint"):
+        port, node, awg, mtu = int(kept["listen_port"]), kept.get("address"), kept.get("awg") or {}, kept.get("mtu") or 1280
+        router = str(ipaddress.IPv4Address(node) + 1)
+    else:
+        proto = str(g.get("proto") or "")
+        if proto not in ("wg", "awg2", "awg3"):
+            return "", "choose WireGuard, AmneziaWG 2.0 or AmneziaWG 3.1"
+        others = [((known.get(str((x or {}).get("id") or "")) or {}).get("profile") or {}) for x in exits
+                  if isinstance(x, dict) and str(x.get("id") or "") != eid]
+        used = set(ctx.get("ports") or {}) | {int(o["listen_port"]) for o in others if str(o.get("listen_port") or "").isdigit()}
+        port = next((p for p in DIALIN_PORTS if p not in used), None)
+        if port is None:
+            return "", "no free port in 51820–51899 on this node — paste a config with your own port"
+        taken = [n for _nm, n in (ctx.get("nets") or ()) if n.version == 4]
+        for o in others:
+            with contextlib.suppress(ValueError):
+                taken.append(ipaddress.ip_network(str(o.get("address") or "") + "/32"))
+        pair = next((n for n in DIALIN_NET.subnets(new_prefix=31) if not any(n.overlaps(t) for t in taken)), None)
+        if pair is None:
+            return "", "no free address pair in 10.254.0.0/16 on this node — paste a config with your own address"
+        node, router, mtu = str(pair[0]), str(pair[1]), 1280
+        awg = {} if proto == "wg" else gen_awg_params() if proto == "awg2" else \
+            awg3_full(None, defaults=ctx.get("awg3") or {}, omit=ctx.get("awg3_omit") or ())
+    return ("[Interface]\nPrivateKey = %s\nAddress = %s/32\nMTU = %s\nListenPort = %d\n" % (pk, node, mtu, port)
+            + "".join("%s = %s\n" % (k, awg[k]) for k in AWG_FIELDS if k in awg and str(awg[k]).strip() != "")
+            + "\n[Peer]\nPublicKey = %s\n" % rk + ("PresharedKey = %s\n" % psk if psk else "")
+            + "AllowedIPs = %s/32\n" % router), ""
+
+
 def _dialin_ctx(deps, nodes, nid):
     """What a dial-in exit's port and address must not collide with on node `nid`: {"ports": {port: holder}, "nets":
     [(name, network)]}. The ports are every UDP holder but the exits themselves (the exits' own list is compared as a whole,
@@ -19377,7 +19431,7 @@ def _dialin_ctx(deps, nodes, nid):
     nets += _tunnel_networks(c)
     with contextlib.suppress(ValueError, TypeError):
         nets.append(("the mesh pool", ipaddress.ip_network(str(node_mesh_cfg(deps, c).get("subnet") or ""), strict=False)))
-    return {"ports": ports, "nets": nets}
+    return {"ports": ports, "nets": nets, "awg3": awg3_defaults(deps), "awg3_omit": awg3_omitted(deps)}
 
 
 def prune_node_refs(nodes):

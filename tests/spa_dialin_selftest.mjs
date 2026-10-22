@@ -7,12 +7,16 @@
  *  [2] the row's statuses: waiting for the router (no handshake), connected but carrying nothing (NAT on the router),
  *      up with the router's address, and a node too old for dial-in exits (an error and no `listen_port`)
  *  [3] a kind this panel does not know is not offered as WARP, not labelled WARP, not escrowed as WARP
+ *  [4] (S9b) the router's config, built from the stored profile, parses through the same parser as a DIAL-OUT profile that
+ *      dials the node: its peer is the node's public key, its address the router's half of the pair, Endpoint the node's
+ *      host and port, the AmneziaWG set identical (3.1 included)
  *
  * Run: node tests/spa_dialin_selftest.mjs
  *      --perturb-text    the box prints `Endpoint = ` for a dial-in profile again        → RED [1]
  *      --perturb-status  the row has no dial-in arm (the dial-out sentences)              → RED [2]
  *      --perturb-old     the old-node read removed                                        → RED [2]
  *      --perturb-warp    the WARP group is "not profile" again                            → RED [3]
+ *      --perturb-rconf   the router's address is the node's own (no +1)                  → RED [4]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -20,17 +24,17 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { ROOT, check, done } from "./spa_env.mjs";
 
-// Each plant's flag is written out whole: runperturb.py finds a gate's plants by their quoted flags.
-const FLAGS = { "--perturb-text": "text", "--perturb-status": "status", "--perturb-old": "old", "--perturb-warp": "warp" };
+// Keyed by the whole flag, written out: runperturb.py finds a gate's plants by their quoted flags — one list, no twin.
 const _flag = process.argv.find(a => a.startsWith("--" + "perturb"));
-if (_flag && !FLAGS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
-const PLANT = _flag ? FLAGS[_flag] : "";
 const PLANTS = {
-  text: ["screen-settings.js", '...(din ? [] : ["Endpoint = " + (p.endpoint || "")]),', '"Endpoint = " + (p.endpoint || ""),'],
-  status: ["routing.js", 'if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return', 'if (false) return'],
-  old: ["routing.js", 'if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return', 'if (false) return'],
-  warp: ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
+  "--perturb-text": ["screen-settings.js", '...(din ? [] : ["Endpoint = " + (p.endpoint || "")]),', '"Endpoint = " + (p.endpoint || ""),'],
+  "--perturb-status": ["routing.js", 'if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return', 'if (false) return'],
+  "--perturb-old": ["routing.js", 'if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return', 'if (false) return'],
+  "--perturb-rconf": ["screen-settings.js", '"Address = " + ip4Next(prof.address) + "/32"', '"Address = " + prof.address + "/32"'],
+  "--perturb-warp": ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
 };
+if (_flag && !PLANTS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
+const PLANT = _flag || "";
 const made = [];
 // A perturbed copy sits beside the original so its relative imports resolve; the other module imports the copy.
 const load = async name => {
@@ -44,15 +48,16 @@ const load = async name => {
   }
   return import(pathToFileURL(file).href);
 };
-let R, Store, C;
+let R, Store, C, SSM;
 try {
   R = await load("routing.js");
+  SSM = await load("screen-settings.js");
   ({ Store } = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href));
   C = await import(pathToFileURL(path.join(ROOT, "js", "crypto.js")).href);
 } finally { for (const f of made) fs.unlinkSync(f); }
 // `profileText` is private to screen-settings.js: taken from the (maybe perturbed) source and run with what it uses.
 let SSRC = fs.readFileSync(path.join(ROOT, "js", "screen-settings.js"), "utf8");
-if (PLANT === "text") SSRC = SSRC.replace(PLANTS.text[1], PLANTS.text[2]);
+if (PLANT === "--perturb-text") SSRC = SSRC.replace(PLANTS[PLANT][1], PLANTS[PLANT][2]);
 const _pt = /\nfunction profileText\(ex\) \{[\s\S]*?\n\}\n/.exec(SSRC);
 check("profileText is locatable (a miss here would pass everything)", !!_pt);
 const SS = { profileText: new Function("awgConfLines", "Store", (_pt || [""])[0] + "\nreturn profileText;")(C.awgConfLines, Store) };
@@ -127,5 +132,22 @@ Store.stats = { ...(Store.stats || {}), n9: { interfaces: {} } };
 check("the SPA's port check names a dial-in exit's port as taken, as the server does", /dial-in exit/.test(MD.portHolder("n9", 51820) || ""),
       MD.portHolder("n9", 51820));
 check("an empty provider is still a WARP exit", routeFns.exitTypeLabel({ producer: "imported" }) === "WARP exit");
+
+console.log("\n[4] the router's config dials the node");
+const HPK = "c2l4dGVlbi1ieXRlcy1rZXktZm9yLWhwa3Rlc3QtMDA=";
+const A31 = { Jc: "4", Jmin: "40", Jmax: "70", S1: "76", S2: "39", S3: "20", S4: "30", H1: "5-20", H2: "1000000000-1000000015",
+              H3: "2000000000-2000000015", H4: "3000000000-3000000015", HeaderProtectionKey: HPK, RandomTrailers: "1" };
+for (const [nm, awg] of [["WireGuard", {}], ["AmneziaWG 3.1", A31]]) {
+  const prof = { ...DIN.profile, address: "10.254.0.6", listen_port: 51824, awg };
+  const rc = SSM.routerConf("203.0.113.7", prof, K1, K2, PSK);
+  const r = parse(rc);
+  check(nm + ": it parses as a dial-out profile", !r.e && r.p && !r.p.listen_port, r);
+  check(nm + ": its peer is the node, at the node's host and port", r.p && r.p.peer_key === K2 && r.p.endpoint === "203.0.113.7:51824", r.p);
+  check(nm + ": the router's address is the other half of the pair, AllowedIPs the node's /32",
+        r.p && r.p.address === "10.254.0.7" && /\nAllowedIPs = 10\.254\.0\.6\/32\n/.test(rc), rc);
+  check(nm + ": the same AmneziaWG set, keepalive on", r.p && JSON.stringify(r.p.awg) === JSON.stringify(parse(SS.profileText({ provider: "profile", profile: prof })).p.awg)
+        && r.p.keepalive === 25, [r.p && r.p.awg, rc]);
+}
+check("an IPv6 host is bracketed", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(SSM.routerConf("2001:db8::1", { ...DIN.profile, listen_port: 51824 }, K1, K2, "")));
 
 done(!!PLANT, PLANT);
