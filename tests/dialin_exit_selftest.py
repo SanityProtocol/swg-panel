@@ -280,6 +280,8 @@ check("two peers on a dial-in config → refused", P.parse_wg_profile(conf("List
       == "a dial-in exit has exactly one peer — the upstream")
 check("a ListenPort that is not a port → refused", P.parse_wg_profile(conf("ListenPort = 70000\n", endpoint=False))[1]
       == "the profile's ListenPort is not a usable port")
+check("…a non-ASCII digit too, refused rather than raising", P.parse_wg_profile(conf("ListenPort = \u00b2\n", endpoint=False))[1]
+      == "the profile's ListenPort is not a usable port")
 
 print("\n[6] the panel's save")
 NID = "n1"
@@ -329,7 +331,20 @@ c, e = save([{"id": "aabbccdd", "producer": "imported", "provider": "socks5"}])
 check("an unknown kind is refused, not coerced to WARP", c is None and "does not know" in str((e or {}).get("error")), (c, e))
 odd = {"id": "aabbccdd", "producer": "imported", "provider": "socks5", "device": "wgx-aabbccdd", "label": "x", "socks": {"h": 1}}
 c, e = save([dict(odd)], stored=[dict(odd)])
-check("…but one already stored is kept verbatim (the list stays savable)", e is None and c == [odd], (c, e))
+check("…but one already stored is kept (the list stays savable)", e is None and c and {k: c[0].get(k) for k in odd} == odd, (c, e))
+c, e = save([dict(odd, enabled=False, label="y")], stored=[dict(odd)])
+check("…and the grid's switch and title still apply to it", e is None and c[0]["enabled"] is False and c[0]["label"] == "y"
+      and c[0].get("socks") == {"h": 1} and c[0]["cfg_sig"] == P.exit_cfg_sig(c[0]), (c, e))
+dout = {"id": "aabbccdd", "producer": "imported", "provider": "profile",
+        "profile": {"private_key": K1, "address": "10.254.4.9", "peer_key": K2, "endpoint": "203.0.113.9:51820", "mtu": 1280,
+                    "psk": "", "keepalive": 0, "awg": {}}}
+c, e = save([din(addr="10.254.4.9")], stored=[dout])
+check("a stored dial-OUT exit re-pasted as dial-in with the same address is checked like a new one", c is None
+      and "wg0" in str((e or {}).get("error")), (c, e))
+deps, nodes = world([dict(ok[0], label="home", profile=dict(ok[0]["profile"], listen_port=13231))])
+deps["node_snaps"][NID]["udp_ports"] = "51820-51899"
+iss = [str((x or {}).get("error") if isinstance(x, dict) else x) for x in P._node_issues(nodes[NID], deps["node_snaps"][NID])]
+check("a dial-in port outside the node's declared firewall range is a node issue", any("dial-in exit" in x and "13231" in x for x in iss), iss)
 w, e = save([{"id": "aabbccdd", "producer": "imported", "provider": "warp"}, {"id": "11223344", "producer": "imported"}])
 check("warp and an empty provider are WARP", e is None and [x["provider"] for x in w] == ["warp", "warp"], (w, e))
 

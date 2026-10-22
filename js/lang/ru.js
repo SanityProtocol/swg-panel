@@ -3092,8 +3092,8 @@ export const STR = {
   "Uncategorised": "Без категории",
   "Custom interface…": "Свой интерфейс…",
   "Ways out of {v1}": "Выходы ноды {v1}",
-  "Every way *{v1}* can leave that isn't its own address. WARP accounts and pasted profiles are created under Settings → WARP; the devices below the line are this node's own, or names you add here.":
-    "Всё, через что *{v1}* может выходить, кроме собственного адреса. Аккаунты WARP и вставленные профили создаются в разделе «Настройки → WARP»; устройства ниже — собственные устройства этой ноды или имена, добавленные здесь.",
+  "Every way *{v1}* can leave that isn't its own address. WARP accounts, pasted profiles and dial-in exits are created under Settings → WARP & exits; the devices below the line are this node's own, or names you add here.":
+    "Всё, через что *{v1}* может выходить, кроме собственного адреса. Аккаунты WARP, вставленные профили и обратные выходы создаются в разделе «Настройки → ВАРП и выходы»; устройства ниже — собственные устройства этой ноды или имена, добавленные здесь.",
   "val|WARP+": "WARP+",
   "WARP exit": "Выход WARP",
   "WARP+ exit": "Выход WARP+",
@@ -3223,7 +3223,6 @@ export const STR = {
   "Add a dial-in exit": "Добавить обратный выход",
   "Dial-in exit": "Обратный выход",
   "val|Dial-in": "Обратный",
-  "Exit": "Выход",
   "For an upstream that can't be reached — a router behind NAT: it connects to this node.":
     "Для апстрима без белого адреса (роутер за NAT): он сам подключается к ноде.",
   "Server configuration": "Конфигурация сервера",
@@ -3255,6 +3254,12 @@ export const STR = {
     "адрес {v1} попадает в {v2} ({v3}) на этой ноде — возьмите другой",
   "two dial-in exits cannot listen on one port ({v1})": "два обратных выхода не могут слушать один порт ({v1})",
   "two dial-in exits cannot have one address ({v1})": "у двух обратных выходов не может быть одного адреса ({v1})",
+  "Meanwhile the kill-switch is holding everything that uses this exit.": "Пока что kill-switch держит всё, что идёт через этот выход.",
+  "Meanwhile everything that uses this exit goes out through this node's own IP.": "Пока что всё, что идёт через этот выход, уходит с собственного IP этой ноды.",
+  "Other exits": "Другие выходы",
+  "the dial-in exit {v1}": "обратный выход {v1}",
+  "{v1}: this dial-in exit listens on UDP {v2}, outside this node's declared firewall range ({v3}) — the router cannot connect until the range covers that port":
+    "{v1}: этот обратный выход слушает UDP {v2} вне заявленного диапазона файрвола ноды ({v3}) — роутер не подключится, пока диапазон не покроет этот порт",
   "Paste the profile before saving.": "Перед сохранением вставьте профиль.",
   "Cloudflare WARP accounts, WireGuard profiles from anywhere else, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.":
     "Аккаунты Cloudflare WARP, профили WireGuard откуда угодно ещё и обратные выходы — апстрим вроде роутера за NAT, который сам подключается к этой ноде. Сайты видят этот выход, а не эту ноду.",

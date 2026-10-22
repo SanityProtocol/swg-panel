@@ -3497,7 +3497,7 @@ export function exitHealth(x, node) {
     return { state: "configuring", tone: "busy", icon: "refresh", dot: "unknown",
              why: T("Applying your changes on the node…") };
   // A node older than dial-in exits refuses one as a profile with no endpoint; a 1.8.11 node reports the port on every row.
-  if (l.error && exitIsDialin(ex) && !l.listen_port) return { state: "unsupported", tone: "warn", icon: "warn", dot: "unknown",
+  if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return { state: "unsupported", tone: "warn", icon: "warn", dot: "unknown",
     why: T("This node needs the 1.8.11 update for dial-in exits.") };
   if (l.error) return { state: "failed", tone: "bad", dot: "bad",
     // An error with no "and then what" reads as stuck — the node reports when it will try again, so say it.
@@ -3526,11 +3526,17 @@ export function exitHealth(x, node) {
   // power, or this node's UDP port). A handshake and no traffic: it connected but forwards nothing — NAT on the router is
   // missing, the most likely mistake (LISTEN-EXIT §2.4). A handshake older than WireGuard keeps a session (180 s — the router
   // re-handshakes every 2 min while it is there) is a router that has gone, not one that is connected.
-  if (exitIsDialin(ex) && (l.handshake === 0 || l.handshake > 180)) return { state: "waiting", tone: "warn", icon: "warn", dot: "down",
+  // Only a handshake KNOWN to be fresh is "connected" (an unreadable one, null, is not); only a pass whose trace crossed
+  // nothing blames NAT (a router that just came back carries while the judge waits out its hysteresis); and what the
+  // failover did with the traffic is said too, by this exit's kill-switch, as the plain `stalled` row says it.
+  const _fell = l.no_traffic ? " " + (ex.killswitch
+    ? T("Meanwhile the kill-switch is holding everything that uses this exit.")
+    : T("Meanwhile everything that uses this exit goes out through this node's own IP.")) : "";
+  if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return { state: "waiting", tone: "warn", icon: "warn", dot: "down",
     why: T("Waiting for the router to connect. Check the router is on, its config imported, and UDP {v1} open on this node.",
-           { v1: (ex.profile || {}).listen_port }) };
-  if (exitIsDialin(ex) && l.no_traffic) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
-    why: said(T("The router is connected but passes no traffic — check NAT on the router.")) };
+           { v1: (ex.profile || {}).listen_port }) + _fell };
+  if (exitIsDialin(ex) && l.no_traffic && !(l.trace || {}).ip) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
+    why: said(T("The router is connected but passes no traffic — check NAT on the router.")) + _fell };
   // ⚠️ UP AND CARRYING NOTHING, as the NODE judged it — not a guess from `handshake` or `trace` here. The node
   // has already routed around it (`no_traffic` is only reported once it did), so the row states what happened to
   // the traffic, which depends on this exit's own kill-switch. Absent on a node too old to judge: it falls
@@ -3728,6 +3734,7 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   const imp = exits.filter(x => (x.producer || "adopted") === "imported");
   const warp = imp.filter(x => exitProv(x) === "warp").map(x => mk(x, exitLabel(x, node)));
   const prof = imp.filter(x => exitProv(x) === "profile").map(x => mk(x, exitLabel(x, node)));
+  const other = imp.filter(x => !["warp", "profile"].includes(exitProv(x))).map(x => mk(x, exitLabel(x, node)));
   const ext = exits.filter(x => (x.producer || "adopted") !== "imported")
     .map(x => mk({ ...x, _ext: true }, exitLabel(x, node)));
   // ⚠️ AND EVERY DEVICE THE NODE ALREADY HAS. An exit record is the panel's bookkeeping, not the world:
@@ -3770,6 +3777,7 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   return [
     ...(warp.length ? [{ group: T("Exit via WARP"), items: warp }] : []),
     ...(prof.length ? [{ group: T("Exit via a custom config"), items: prof }] : []),
+    ...(other.length ? [{ group: T("Other exits"), items: other }] : []),
     // "an external interface" stopped being true the moment a NIC could be one — the node's own card is
     // not external to it. The group is what traffic LEAVES BY, whichever kind of device that is.
     ...(ext.length ? [{ group: T("Leave by a device"), items: ext }] : []),

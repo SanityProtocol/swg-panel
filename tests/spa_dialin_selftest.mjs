@@ -20,11 +20,12 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { ROOT, check, done } from "./spa_env.mjs";
 
-const PLANT = (process.argv.find(a => a.startsWith("--perturb-")) || "").slice("--perturb-".length);
+const PFX = "--" + "perturb" + "-";   // spelled apart: runperturb.py reads a literal flag here as a plant with no name
+const PLANT = (process.argv.find(a => a.startsWith(PFX)) || "").slice(PFX.length);
 const PLANTS = {
   text: ["screen-settings.js", '...(din ? [] : ["Endpoint = " + (p.endpoint || "")]),', '"Endpoint = " + (p.endpoint || ""),'],
-  status: ["routing.js", 'if (exitIsDialin(ex) && (l.handshake === 0 || l.handshake > 180)) return', 'if (false) return'],
-  old: ["routing.js", 'if (l.error && exitIsDialin(ex) && !l.listen_port) return', 'if (false) return'],
+  status: ["routing.js", 'if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return', 'if (false) return'],
+  old: ["routing.js", 'if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return', 'if (false) return'],
   warp: ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
 };
 if (PLANT && !PLANTS[PLANT]) { console.log("unknown plant " + PLANT); process.exit(2); }
@@ -91,8 +92,17 @@ const gone = H({ handshake: 900, no_traffic: { since: 1, why: "x" } });
 check("a router that dialled once and went away (handshake 15 min old) → waiting, not 'check NAT'", gone.state === "waiting", gone);
 const nt = H({ handshake: 40, no_traffic: { since: 1, why: "x" } });
 check("a handshake and no traffic → check NAT on the router", nt.state === "stalled" && /NAT on the router/.test(nt.why), nt);
+const back2 = H({ handshake: 40, no_traffic: { since: 1, why: "x" }, trace: { ip: "198.51.100.7" } });
+check("a router that carries again while the judge waits out its hysteresis is not blamed for NAT", back2.state !== "stalled" || !/NAT/.test(back2.why), back2);
+const unread = H({ handshake: null, no_traffic: { since: 1, why: "x" } });
+check("a handshake the node could not read is not 'connected' (waiting)", unread.state === "waiting", unread);
+const ks = routeFns.exitHealth({ ...DIN, killswitch: true, live: { device: "wgx-aabbccdd", up: true, listen_port: 51820, handshake: 0, no_traffic: { since: 1, why: "x" } } }, NODE);
+check("…and once failed over it says what happened to the traffic, by the kill-switch",
+      /kill-switch is holding/.test(ks.why) && /own IP/.test(gone.why), [ks.why, gone.why]);
 const ok = H({ handshake: 40, trace: { ip: "198.51.100.7" }, endpoint: "198.51.100.7:40123" });
 check("carrying → ok, with the router's address", ok.state === "ok" && /198\.51\.100\.7:40123/.test(ok.why), ok);
+const stale = routeFns.exitHealth({ ...DIN, cfg_sig: "new", live: { device: "wgx-aabbccdd", up: false, cfg_sig: "old", error: "x" } }, { id: "n2" });
+check("a report about the PREVIOUS config is not read as a node too old for dial-in", !/1\.8\.11 update/.test(stale.why), stale);
 const old = routeFns.exitHealth({ ...DIN, live: { device: "wgx-aabbccdd", up: false, error: "the profile is missing its endpoint" } }, NODE);
 check("an error and no listen_port → the node needs the update", /needs the 1\.8\.11 update/.test(old.why), old);
 const err = H({ up: false, error: "wg-quick up failed" });
@@ -105,9 +115,15 @@ const odd = { id: "11223344", producer: "imported", provider: "socks5", device: 
 const groups = routeFns.exitOptionGroups({ exits: [odd, { ...DIN }] }, {});
 const flat = groups.flatMap(g => (g.items || []).map(i => [g.group, String(i.label || "")]));
 check("an unknown kind is in no WARP group", !flat.some(([g, l]) => /WARP/.test(g) && /11223344|socks5/.test(l)), flat);
+check("…but in a group of its own, so a stored choice of it still shows", flat.some(([g, l]) => g === "Other exits" && /socks5/.test(l)), flat);
 check("a dial-in exit is offered as a custom config", flat.some(([g]) => /custom config/.test(g)), flat);
 check("…named a dial-in exit", routeFns.exitTypeLabel(DIN) === "Dial-in exit", routeFns.exitTypeLabel(DIN));
 check("an unknown kind is labelled by its own name, never WARP", routeFns.exitTypeLabel(odd) === "socks5", routeFns.exitTypeLabel(odd));
+const MD = await import(pathToFileURL(path.join(ROOT, "js", "model.js")).href);
+Store.nodes = [{ id: "n9", name: "n9", exits: [DIN] }];
+Store.stats = { ...(Store.stats || {}), n9: { interfaces: {} } };
+check("the SPA's port check names a dial-in exit's port as taken, as the server does", /dial-in exit/.test(MD.portHolder("n9", 51820) || ""),
+      MD.portHolder("n9", 51820));
 check("an empty provider is still a WARP exit", routeFns.exitTypeLabel({ producer: "imported" }) === "WARP exit");
 
 done(!!PLANT, PLANT);

@@ -354,7 +354,7 @@ export function suggestPort(node, kind, extra) {
   const wdttPorts = (snap.wdtt || []).flatMap(w => w ? [Number(String(w.listen || "").split(":").pop()), Number(w.wg_port)] : []).filter(Boolean);
   // csqtt instances (raw TUN) each claim ONE port — the DTLS listen — and, like WDTT, don't appear in snap.interfaces.
   const csqttPorts = (snap.csqtt || []).map(c => c ? Number(String(c.listen || "").split(":").pop()) : 0).filter(Boolean);
-  const used = new Set([...ifacePorts, ...turnPorts, ...wdttPorts, ...pendingWdttPorts(node), ...csqttPorts, ...pendingCsqttPorts(node), ...(extra || []).map(Number).filter(Boolean)]);   // extra = ports picked in-modal, not yet applied
+  const used = new Set([...ifacePorts, ...turnPorts, ...wdttPorts, ...pendingWdttPorts(node), ...csqttPorts, ...pendingCsqttPorts(node), ...dialinPorts(node).map(x => x[1]), ...(extra || []).map(Number).filter(Boolean)]);   // extra = ports picked in-modal, not yet applied
   const mine = kind === "turn" ? turnPorts : ifacePorts;
   // Never hand out the UPSTREAM DEFAULTS. An unmanaged WDTT server binds 56000 (DTLS) + 56001 (internal WG) out
   // of the box and a stock WireGuard 51820, so suggesting one walks straight into a collision with something the
@@ -388,6 +388,10 @@ export function suggestPort(node, kind, extra) {
 // already occupies `port` on this node, or null if the port is free. `own` = ports this instance already
 // holds, so editing it doesn't flag its own port. Lets port fields validate live, before the optimistic
 // save closes the modal (else a clash only surfaces as a node-side "FAILED TO APPLY" after the fact).
+// The UDP ports this node's dial-in exits listen on, [[exit, port]] — the server counts them in _node_ports (LISTEN-EXIT §2.3).
+const dialinPorts = node => (((Store.nodes || []).find(n => n.id === node) || {}).exits || [])
+  .filter(x => x && x.provider === "profile" && x.profile && x.profile.listen_port && !x.profile.endpoint)
+  .map(x => [x, Number(x.profile.listen_port)]);
 export function portHolder(node, port, own) {
   const p = Number(port); if (!p) return null;
   const skip = new Set((own || []).map(Number).filter(Boolean));
@@ -405,6 +409,7 @@ export function portHolder(node, port, own) {
     if (Number(String(c.listen || "").split(":").pop()) === p) return (c.iface || T("a csqtt proxy")) + T(" (CSQTT)");
   }
   for (const pt of pendingIf(node)) if (Number(pt.port) === p) return (pt.name || T("a pending interface"));
+  for (const [x, q] of dialinPorts(node)) if (q === p) return T("the dial-in exit {v1}", { v1: x.label || x.device || "" });
   // WDTT instances the panel wants but the node has not started yet — named, so the inline error says which
   // instance is taking the port instead of only failing server-side on save.
   const _nrec = (Store.nodes || []).find(n => n.id === node) || {};

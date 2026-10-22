@@ -9742,6 +9742,11 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
                 issues.append(perr("{v1}: listens on UDP {v2}, outside this node's declared "
                                    "firewall range ({v3}) — clients cannot reach it until the range "
                                    "covers that port, or the interface moves inside it", v1=ifn, v2=_lp, v3=_spec))
+        for _x, _lp in _dialin_ports(c):                  # …and a dial-in exit's port, which its router has to reach
+            if not any(a <= _lp <= b for a, b in _ranges):
+                issues.append(perr("{v1}: this dial-in exit listens on UDP {v2}, outside this node's declared firewall "
+                                   "range ({v3}) — the router cannot connect until the range covers that port",
+                                   v1=_x.get("label") or _x.get("device") or "", v2=_lp, v3=_spec))
     # A node-wide torrent policy the node does not run: noded older than the policy ignores `smart.p2p` and keeps blocking
     # only on the interfaces whose switch is on — so "blocked everywhere" would be a claim the datapath does not keep.
     # ASKED of the node (it reports `p2p` while the policy runs), never inferred from a version; a node that has not
@@ -14068,14 +14073,20 @@ def _used_ports(nodes, snaps, nid):
     return used
 
 
+def exit_is_dialin(x):
+    """A DIAL-IN exit (docs/LISTEN-EXIT-PLAN.md §2): a profile with a `listen_port` and no `endpoint` — nothing else marks it.
+    The one spelling of the test on the panel (the SPA's is exitIsDialin, the node's _exit_dialin)."""
+    pr = x.get("profile") if isinstance(x, dict) else None
+    return isinstance(pr, dict) and x.get("provider") == "profile" and bool(pr.get("listen_port")) and not pr.get("endpoint")
+
+
 def _dialin_ports(node):
     """[(exit, port)] — the UDP ports this node's dial-in exits listen on (docs/LISTEN-EXIT-PLAN.md §2.3)."""
     out = []
     for x in (node or {}).get("exits") or []:
-        pr = (x or {}).get("profile") if isinstance(x, dict) else None
-        if isinstance(pr, dict) and x.get("provider") == "profile" and pr.get("listen_port") and not pr.get("endpoint"):
+        if exit_is_dialin(x):
             with contextlib.suppress(TypeError, ValueError):
-                out.append((x, int(pr["listen_port"])))
+                out.append((x, int(x["profile"]["listen_port"])))
     return out
 
 
@@ -19026,7 +19037,7 @@ def parse_wg_profile(text):
     if not prof["endpoint"] and _lp:
         if npeer != 1:
             return None, "a dial-in exit has exactly one peer — the upstream"
-        if not _lp.isdigit() or not 1 <= int(_lp) <= 65535:
+        if not re.fullmatch(r"[0-9]{1,5}", _lp) or not 1 <= int(_lp) <= 65535:   # ASCII only: '²'.isdigit()
             return None, "the profile's ListenPort is not a usable port"
         prof["listen_port"], prof["keepalive"] = int(_lp), 0
         return prof, ""
@@ -19190,7 +19201,9 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
             if _pv not in EXIT_PROVIDERS:
                 _was = known.get(eid) or {}
                 if _was.get("producer") == "imported" and str(_was.get("provider") or "") == _pv:
-                    clean.append(dict(_was))
+                    _kp = dict(_was, label=lbl, enabled=out["enabled"], killswitch=out["killswitch"])   # the grid's switches still work
+                    _kp["cfg_sig"] = exit_cfg_sig(_kp)
+                    clean.append(_kp)
                     continue
                 return None, perr("this panel does not know exits of kind {v1}", v1=_pv[:20])
             out["provider"] = _pv
@@ -19308,8 +19321,7 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
         clean.append(out)
     # …and two dial-in exits of this list cannot share a port or an address — read from the NEW list, so removing one
     # and adding another in the same save is judged by what will exist.
-    _din = [x for x in clean if x.get("provider") == "profile" and (x.get("profile") or {}).get("listen_port")
-            and not (x.get("profile") or {}).get("endpoint")]
+    _din = [x for x in clean if exit_is_dialin(x)]
     for i, a in enumerate(_din):
         for b in _din[:i]:
             if a["profile"]["listen_port"] == b["profile"]["listen_port"]:
@@ -19325,13 +19337,15 @@ def _dialin_refusal(out, kept, dial_src, ctx):
     It dials nothing, so a source to dial from is meaningless — refused rather than stored doing nothing. Its port and its
     address are asked of the node only when this save CHANGES them (`kept` = the stored profile): a stored exit stays
     savable when something else later lands next to it, as every other door here tolerates what already exists."""
-    pr = out.get("profile") or {}
-    if not pr.get("listen_port") or pr.get("endpoint"):
+    if not exit_is_dialin(out):
         return ""
+    pr = out["profile"]
     if dial_src:
         return "a dial-in exit dials nothing, so it has no source address to pin — set Connect from to Auto"
     if not ctx:
         return ""
+    # a stored DIAL-OUT profile's address was never vetted against the node's subnets: turned into a dial-in exit, it is new
+    kept = kept if exit_is_dialin({"provider": "profile", "profile": kept or {}}) else {}
     port = int(pr["listen_port"])
     if port != (kept or {}).get("listen_port"):
         held = (ctx.get("ports") or {}).get(port)

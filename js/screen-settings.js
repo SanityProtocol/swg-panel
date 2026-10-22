@@ -2558,7 +2558,7 @@ export function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: T("Delete custom list"), confirmLabel: T("Delete"), danger: true,
     body: Trich("Delete *{v1}*? It's removed from *every node* it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.", { v1: l.title || T("Untitled list") }),
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Network"], ["links", "Mesh"], ["exits", "WARP"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"], ["logs", "Logs"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Panel access"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "Network"], ["links", "Mesh"], ["exits", "WARP & exits"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing & Blocking"], ["geo", "Geo data providers"], ["integrations", "Integrations"], ["logs", "Logs"]]   // i18n-keys: canonical (deep-link + persisted section); sectionLabel() below carries the display names
 /* The fill-in line the panel writes into a plain-text config when no VK link is set. It has to stay
    byte-identical to turn-artifacts.js's copy: the hint below tells the operator which line to look for in
    the generated file, so a TRANSLATED placeholder would describe something that never appears there. */
@@ -3901,17 +3901,14 @@ function ExitFields({ value, onChange, discovered, devEditable, submitLabel, onS
 }
 
 function ExitManageSheet({ node, seed, onSaved, onClose }) {
-  // ── THE ROW MODEL. Four kinds, and every capability in the grid is a function of which one it is:
-  //      warp/profile   the panel MADE it. Renamable and switchable here; never created or deleted here,
+  // ── THE ROW MODEL. Three kinds, and every capability in the grid is a function of which one it is:
+  //      imported       the panel MADE it (WARP, a pasted or dial-in profile, a kind a newer panel knows). Renamable and switchable here; never created or deleted here,
   //                     because it carries a licence key and a whole pasted config that belong on the WARP
   //                     screen with room to edit them. Its extra fields ride along untouched — see `_src`.
   //      found          the node reports the device. Nothing to delete: it runs whatever the panel thinks.
   //      custom         a name the operator typed that the node has never reported. The only deletable kind.
-  //      imported       a kind this panel does not know (a newer panel's): shown, never edited here.
-  const kindOf = (x, isCand) => (x.producer || "adopted") === "imported"
-    ? (["warp", "profile"].includes(exitProv(x)) ? exitProv(x) : "imported")
-    : (isCand ? "found" : "custom");
-  const isImp = r => ["warp", "profile", "imported"].includes(r._kind);
+  const kindOf = (x, isCand) => (x.producer || "adopted") === "imported" ? "imported" : (isCand ? "found" : "custom");
+  const isImp = r => r._kind === "imported";
   const isCand = n => !!candOf(node, n);
   const [rows, setRows] = useState(() => {
     const recs = (seed || []).map(x => ({ ...x, _src: x, _kind: kindOf(x, isCand(x.device)) }));
@@ -4009,7 +4006,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
                      onCancel: onClose || closeModal, cancelLabel: T("Close"),
                      action: anyDirty ? (busy === "all" ? T("Saving…") : T("Save changes")) : null,
                      onAction: saveAll, disabled: !!busy })}>
-    <p class="hint" style="margin:0 0 16px">${Trich("Every way *{v1}* can leave that isn't its own address. WARP accounts and pasted profiles are created under Settings → WARP; the devices below the line are this node's own, or names you add here.", { v1: node.name })}</p>
+    <p class="hint" style="margin:0 0 16px">${Trich("Every way *{v1}* can leave that isn't its own address. WARP accounts, pasted profiles and dial-in exits are created under Settings → WARP & exits; the devices below the line are this node's own, or names you add here.", { v1: node.name })}</p>
     <div class="exgrid g8x">
       <div class="exg-r"><div class="exg-h">${T("Title")}</div>
       <div class="exg-h">${T("Device")}</div>
@@ -4171,7 +4168,7 @@ const exitInsideAddr = (ex, live) => String(((live || (ex || {}).live || {}).add
   || (((ex || {}).profile || {}).address) || "").split("/")[0].trim();
 
 const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).dialin || exitIsDialin(ex) ? T("Dial-in exit") : T("Custom exit"))
-  : exitProv(ex) === "warp" ? T("WARP exit") : T("Exit");
+  : exitProv(ex) === "warp" ? T("WARP exit") : exitProv(ex);
 
 /** The badge for an imported exit: [class, label]. A WARP account with a licence on it is WARP+ — the
  *  operator paid for it and the whole point of the row is knowing which ones did. Taken from the LICENCE
@@ -4281,7 +4278,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
           <div class="hint">${isDialin
             ? T("This node listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")
             : T("Edit it here or paste a replacement. IPv4 only — the v6 half is dropped, and routing lines are ignored because this node decides its own. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")}</div>
-          ${isDialin && node.kind === "docker" && (node.net_mode || "host") === "bridge"
+          ${isDialin && node.kind === "docker" && node.net_mode === "bridge"
             ? html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: 'ports: "' + (((ex.profile || {}).listen_port) || "PORT") + ":" + (((ex.profile || {}).listen_port) || "PORT") + '/udp"' })}</span></div>`
             : null}</div>`
       : !isWarp ? html`<p class="hint">${T("This panel does not know this kind of exit. It is kept as it is; you can switch it off or remove it.")}</p>`
@@ -4339,11 +4336,11 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
   };
   const del = ex => openConfirm({
     title: T("Remove this exit?"), confirmLabel: T("Remove"), danger: true,
-    body: exitProv(ex) !== "warp" && exitProv(ex) !== "profile"
-      ? T("{v1} is removed from this node and its tunnel comes down.", { v1: ex.label || ex.device })
-      : exitProv(ex) === "profile"
+    body: exitProv(ex) === "profile"
       ? T("{v1} is removed from this node and its tunnel comes down. The profile and its key are deleted from the panel — you would have to paste it again.", { v1: ex.label || ex.device })
-      : T("{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.", { v1: ex.label || ex.device }),
+      : exitProv(ex) === "warp"
+      ? T("{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.", { v1: ex.label || ex.device })
+      : T("{v1} is removed from this node and its tunnel comes down.", { v1: ex.label || ex.device }),
     onConfirm: () => write(exits.filter(x => String(x.id) !== String(ex.id))),
   });
   // Health, from what the node reports about the exit it was told to create. Four states, same vocabulary
@@ -4397,9 +4394,11 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                 hover, where it answers the different question it actually answers. An em dash when the node
                 cannot measure it: an invented number is worse than an absent one. */""}
           <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}
-            title=${exitIsDialin(ex) ? T("Latency is not measured for a dial-in exit — the router dials this node, so there is no server to ping.") : /* An up exit whose ping came back null: no reply reached this node — most often a firewalled VPS that drops ICMP, and
+            title=${/* An up exit whose ping came back null: no reply reached this node — most often a firewalled VPS that drops ICMP, and
                      the dash alone read as "custom exits have no latency" (operator, 2026-10-17). ⚠️ `=== null` ON PURPOSE: an older node
-                     sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows. */""}${l.up && l.ping_ms === null
+                     sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows. */""}${exitIsDialin(ex)
+              ? T("Latency is not measured for a dial-in exit — the router dials this node, so there is no server to ping.")
+              : l.up && l.ping_ms === null
               ? (Number.isFinite((l.trace || {}).rtt_ms)
                 ? T("No ping reply from the exit's server — it may not answer ping — so its latency can't be measured. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.", { v1: (l.trace || {}).rtt_ms })
                 : T("No ping reply from the exit's server — it may not answer ping — so its latency can't be measured."))
