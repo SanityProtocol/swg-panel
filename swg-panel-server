@@ -14063,10 +14063,23 @@ def _used_ports(nodes, snaps, nid):
     for lr in (nodes.get(nid, {}).get("links") or {}).values():
         if str(lr.get("listen_port")).isdigit():
             used.add(int(lr["listen_port"]))
+    for _x, p in _dialin_ports(nodes.get(nid) or {}):
+        used.add(p)
     return used
 
 
-def _node_ports(deps, nodes, nid):
+def _dialin_ports(node):
+    """[(exit, port)] — the UDP ports this node's dial-in exits listen on (docs/LISTEN-EXIT-PLAN.md §2.3)."""
+    out = []
+    for x in (node or {}).get("exits") or []:
+        pr = (x or {}).get("profile") if isinstance(x, dict) else None
+        if isinstance(pr, dict) and x.get("provider") == "profile" and pr.get("listen_port") and not pr.get("endpoint"):
+            with contextlib.suppress(TypeError, ValueError):
+                out.append((x, int(pr["listen_port"])))
+    return out
+
+
+def _node_ports(deps, nodes, nid, skip_exits=False):
     """Every UDP port CLAIMED on a node → {port: holder-label}: wg/awg interfaces, turn-proxies, WDTT (DTLS listen +
     internal WG port), mesh links, and wg/awg servers in FOREIGN containers that publish a host port, from BOTH
     the live snapshot AND the desired store (so a just-created but not-yet-reported one still counts). The
@@ -14104,6 +14117,9 @@ def _node_ports(deps, nodes, nid):
     for x in (snap.get("container_ifaces") or []):
         if isinstance(x, dict) and x.get("host_port"):
             add(x["host_port"], "%s in container %s" % (x.get("name") or "an interface", x.get("container") or "?"))
+    if not skip_exits:                                 # last: a port an interface also claims is named after the interface
+        for x, p in _dialin_ports(node):
+            add(p, "the dial-in exit " + (x.get("label") or x.get("device") or ""))
     return out
 
 def _port_conflict(deps, nodes, nid, port, own=()):
@@ -18940,13 +18956,14 @@ def parse_wg_profile(text):
     file is arbitrary root command execution."""
     if not isinstance(text, str) or len(text) > 8000:
         return None, "that doesn't look like a WireGuard profile"
-    sec, iface, peer = "", {}, {}
+    sec, iface, peer, npeer = "", {}, {}, 0
     for ln in text.splitlines():
         ln = ln.split("#", 1)[0].strip()
         if not ln:
             continue
         if ln.startswith("["):
             sec = ln.strip("[]").strip().lower()
+            npeer += sec == "peer"
             continue
         if "=" not in ln:
             continue
@@ -19001,6 +19018,18 @@ def parse_wg_profile(text):
         ipaddress.IPv4Address(prof["address"])
     except Exception:
         return None, "the profile's Address is not an IPv4 address"
+    # A DIAL-IN exit (docs/LISTEN-EXIT-PLAN.md §2.1): a SERVER config — no Endpoint, a ListenPort — for an upstream that
+    # cannot be dialled (a router behind NAT) and dials this node instead. An Endpoint makes it dial-out exactly as before,
+    # a ListenPort beside it ignored, and a dial-out profile never carries `listen_port`: its dict, its cfg_sig and its conf
+    # are what they always were. The peer's AllowedIPs is never read here — the node writes 0.0.0.0/0 (trap 1).
+    _lp = str(iface.get("listenport") or "").strip()
+    if not prof["endpoint"] and _lp:
+        if npeer != 1:
+            return None, "a dial-in exit has exactly one peer — the upstream"
+        if not _lp.isdigit() or not 1 <= int(_lp) <= 65535:
+            return None, "the profile's ListenPort is not a usable port"
+        prof["listen_port"], prof["keepalive"] = int(_lp), 0
+        return prof, ""
     if not prof["endpoint"] or ":" not in prof["endpoint"] or len(prof["endpoint"]) > 200:
         return None, "the profile has no usable Endpoint"
     if any(ch in prof["endpoint"] for ch in " \t\"'\\"):
@@ -19043,11 +19072,16 @@ def exit_cfg_sig(rec):
     return hashlib.sha256(json.dumps(mat, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
 
 
+# Every kind of imported exit this panel can make, BY NAME (docs/SOCKS5-EXIT-PLAN.md T6). Everything that was not `profile`
+# used to be saved as WARP — so a kind added later, or one stored by a newer panel, silently became a Cloudflare account.
+EXIT_PROVIDERS = ("warp", "profile")
+
 # The fields the panel's sync loop and escrow doors write onto an imported WARP exit — never the operator's.
 _EXIT_ESCROW_KEYS = ("key_blob", "key_blob_prev", "key_restore", "key_restore_pub", "key_restore_at")
 
 
-def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=(), gws=None, wan="", gen_snap=None):
+def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=(), gws=None, wan="", gen_snap=None,
+                    dialin=None):
     """Clean a node's exit list → [{id, label, producer, device, enabled, killswitch, …}]. (clean, error).
     Adopted entries also carry `egress_ip`; imported ones carry `provider`/`licence`/`dial_src`/`profile`.
 
@@ -19068,7 +19102,11 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
     operator can reach through the UI — and a pasted profile the node cannot use: one that does not parse, or an
     AmneziaWG 3.1 profile on a node that cannot run 3.1 (`gen_snap`, the node's snapshot — {} when it has none; None, from
     a caller that saves no profile, asks nothing). That one is asked only of a profile whose AmneziaWG set this save
-    changes, so a stored exit stays savable whatever the node runs now; awg_gen_refusal's perr is the error."""
+    changes, so a stored exit stays savable whatever the node runs now; awg_gen_refusal's perr is the error.
+
+    A DIAL-IN profile (docs/LISTEN-EXIT-PLAN.md §2.3) is checked against `dialin` = {"ports": {port: holder},
+    "nets": [(name, network)]} — what else on the node binds a UDP port or holds a subnet (_dialin_ctx) — only for a port
+    or an address this save CHANGES; None (a caller that parses no profile) asks nothing."""
     if not isinstance(exits, list):
         return None, "exits must be a list"
     known = {str(e.get("id") or ""): e for e in (prev or []) if isinstance(e, dict)}
@@ -19145,7 +19183,17 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
             # `swg_` is the MESH prefix and `exit_device_refusal` refuses it, and `wg*` is what
             # `_node_addrs` strips, which is exactly what keeps this device out of the NIC list.
             out["device"] = "wgx-" + eid
-            out["provider"] = "warp" if str(e.get("provider") or "warp") != "profile" else "profile"
+            # Empty is the one legacy default (a record from before `provider` existed is a WARP account). Anything else
+            # is named or refused — and an unknown kind ALREADY STORED (a newer panel's, after a downgrade) is kept as it
+            # was: refusing it would make the whole list unsavable, including the save that removes it.
+            _pv = str(e.get("provider") or "warp")
+            if _pv not in EXIT_PROVIDERS:
+                _was = known.get(eid) or {}
+                if _was.get("producer") == "imported" and str(_was.get("provider") or "") == _pv:
+                    clean.append(dict(_was))
+                    continue
+                return None, perr("this panel does not know exits of kind {v1}", v1=_pv[:20])
+            out["provider"] = _pv
             # A WARP+ licence is an OPTIONAL upgrade on the account we already registered, never a second
             # thing to enable (§3's naming rule). Kept verbatim; the node applies it and reports what
             # Cloudflare said.
@@ -19194,6 +19242,9 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
                     out["profile"] = _kept
                 else:
                     return None, "paste a WireGuard profile for this exit"
+                _why = _dialin_refusal(out, _kept, _ds, dialin)
+                if _why:
+                    return None, _why
         else:
             # ⚠️ ADOPTED ONLY, AND IT IS A SOURCE ON **THE DEVICE**, not one of the node's own addresses.
             # A device exit SNATs `-o <dev>`, and MASQUERADE takes whatever source the kernel would pick for
@@ -19250,12 +19301,69 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
         # A WARP account only — a profile is not escrowed, and switching an exit to one ends the account.
         _old = known.get(eid) or {}
         if out.get("provider") == "warp" and _old.get("producer") == "imported" \
-                and str(_old.get("provider") or "warp") != "profile":
+                and str(_old.get("provider") or "warp") == "warp":
             for _k in _EXIT_ESCROW_KEYS:
                 if _k in _old:
                     out[_k] = _old[_k]
         clean.append(out)
+    # …and two dial-in exits of this list cannot share a port or an address — read from the NEW list, so removing one
+    # and adding another in the same save is judged by what will exist.
+    _din = [x for x in clean if x.get("provider") == "profile" and (x.get("profile") or {}).get("listen_port")
+            and not (x.get("profile") or {}).get("endpoint")]
+    for i, a in enumerate(_din):
+        for b in _din[:i]:
+            if a["profile"]["listen_port"] == b["profile"]["listen_port"]:
+                return None, perr("two dial-in exits cannot listen on one port ({v1})", v1=str(a["profile"]["listen_port"]))
+            if a["profile"].get("address") == b["profile"].get("address"):
+                return None, perr("two dial-in exits cannot have one address ({v1})", v1=str(a["profile"].get("address")))
     return clean, None
+
+
+def _dialin_refusal(out, kept, dial_src, ctx):
+    """Why the dial-in exit `out` cannot be saved, or "" (docs/LISTEN-EXIT-PLAN.md §2.3). A dial-out profile: "".
+
+    It dials nothing, so a source to dial from is meaningless — refused rather than stored doing nothing. Its port and its
+    address are asked of the node only when this save CHANGES them (`kept` = the stored profile): a stored exit stays
+    savable when something else later lands next to it, as every other door here tolerates what already exists."""
+    pr = out.get("profile") or {}
+    if not pr.get("listen_port") or pr.get("endpoint"):
+        return ""
+    if dial_src:
+        return "a dial-in exit dials nothing, so it has no source address to pin — set Connect from to Auto"
+    if not ctx:
+        return ""
+    port = int(pr["listen_port"])
+    if port != (kept or {}).get("listen_port"):
+        held = (ctx.get("ports") or {}).get(port)
+        if held:
+            return perr("UDP port {v1} is already used on this node by {v2}", v1=str(port), v2=str(held))
+    if pr.get("address") != (kept or {}).get("address"):
+        with contextlib.suppress(ValueError):
+            a = ipaddress.IPv4Address(str(pr.get("address") or ""))
+            for nm, net in (ctx.get("nets") or ()):
+                if net.version == 4 and a in net:
+                    return perr("the address {v1} is inside {v2} ({v3}) on this node — use another one",
+                                v1=str(a), v2=str(nm), v3=str(net))
+    return ""
+
+
+def _dialin_ctx(deps, nodes, nid):
+    """What a dial-in exit's port and address must not collide with on node `nid`: {"ports": {port: holder}, "nets":
+    [(name, network)]}. The ports are every UDP holder but the exits themselves (the exits' own list is compared as a whole,
+    see _validate_exits) plus RAW-IP's reserved one; the networks are the node's interface subnets as it reports them (mesh
+    links included), its WDTT/csqtt subnets and its mesh pool."""
+    c = nodes.get(nid) or {}
+    ports = dict(_node_ports(deps, nodes, nid, skip_exits=True))
+    ports.setdefault(WDTT_RAW_PORT, "RAW-IP (reserved)")
+    nets = []
+    for ifn, blk in sorted((((deps.get("node_snaps") or {}).get(nid) or {}).get("interfaces") or {}).items()):
+        with contextlib.suppress(ValueError, TypeError):
+            if ((blk or {}).get("meta") or {}).get("subnet"):
+                nets.append((ifn, ipaddress.ip_network(blk["meta"]["subnet"], strict=False)))
+    nets += _tunnel_networks(c)
+    with contextlib.suppress(ValueError, TypeError):
+        nets.append(("the mesh pool", ipaddress.ip_network(str(node_mesh_cfg(deps, c).get("subnet") or ""), strict=False)))
+    return {"ports": ports, "nets": nets}
 
 
 def prune_node_refs(nodes):
@@ -28177,7 +28285,7 @@ def api(method, path, qs, body, deps):
             _sn = (deps.get("node_snaps") or {}).get(nid) or {}
             _nic = _sn.get("ether_ifaces") or []
             _ex, _err = _validate_exits(body.get("exits"), _c, mesh_prefix=_pf, link_ifaces=_lk,
-                                        prev=_c.get("exits") or [], nics=_nic,
+                                        prev=_c.get("exits") or [], nics=_nic, dialin=_dialin_ctx(deps, nodes, nid),
                                         gws=_sn.get("ether_gws"), wan=(_sn.get("wan_iface") or ""), gen_snap=_sn)
             if isinstance(_err, dict):                   # a perr: a 3.1 profile this node cannot run, or a bad 3.x key
                 return 400, {"ok": False, **_err, "code": "bad_request"}

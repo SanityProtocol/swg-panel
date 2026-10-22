@@ -45,7 +45,7 @@ import {
   AsnHint, BlockListPicker, CAT_PROVIDER_DEFAULTS, DescInfo, FleetAssign, HostHealth, ListInfo,
   MODE_META, ModeTabs, NewBlockCatSheet, ProvTag, blockCatDisabled, blockSrcOk, capBadges, catCap, catDescOf,
   blistText, blockCatLabel, catLabelOf, catListUrl, catRawId, catUsableInMode, loadBlockCatalog, newRid,
-  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitLabel, exitOptionGroups, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
+  TargetField, candAddr, cardAddrs, cardGateway, isCardName, candOf, exitHealth, exitIsDialin, exitLabel, exitOptionGroups, exitProv, fleetRuleCats, provLabelOf, provName, providerColor, providerUsage, reportDropped,
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
 } from "./routing.js";
@@ -2583,7 +2583,7 @@ const logLeftLabel = s => s >= 3600
    the persisted section), so only the LABEL is translated — literal T() calls, same as evItemLabel. */
 const sectionLabel = k => ({
   display: T("Display"), security: T("Authentication"), access: T("Panel access"), configs: T("Client configs"),
-  subs: T("Subscriptions"), mesh: T("Network"), links: T("Mesh"), exits: T("val|WARP"), defaults: T("Interfaces"),
+  subs: T("Subscriptions"), mesh: T("Network"), links: T("Mesh"), exits: T("WARP & exits"), defaults: T("Interfaces"),
   turn: T("Turn proxies"), routing: T("Routing & Blocking"), geo: T("Geo data providers"),
   integrations: T("Integrations"), logs: T("Logs"),
 }[k] || k);   // i18n-keys
@@ -3699,7 +3699,7 @@ const newExitId = () => Array.from(crypto.getRandomValues(new Uint8Array(4)))
    key — so the panel relays ciphertext and never holds the plaintext it is escrowing. */
 function ExitEscrow({ node, ex, stored, live, goSection, escrowOn }) {
   const [busy, setBusy] = useState(false);
-  if ((ex.producer || "adopted") !== "imported" || ex.provider === "profile") return null;
+  if ((ex.producer || "adopted") !== "imported" || exitProv(ex) !== "warp") return null;
   const blob = (stored || {}).key_blob || null;
   const nodeHasKey = !!(live || {}).public_key;
   // ⚠️ NOTHING IS SAID ABOUT ESCROW ITSELF ANY MORE. It is ON by default and its switch lives on the
@@ -3907,9 +3907,11 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
   //                     screen with room to edit them. Its extra fields ride along untouched — see `_src`.
   //      found          the node reports the device. Nothing to delete: it runs whatever the panel thinks.
   //      custom         a name the operator typed that the node has never reported. The only deletable kind.
+  //      imported       a kind this panel does not know (a newer panel's): shown, never edited here.
   const kindOf = (x, isCand) => (x.producer || "adopted") === "imported"
-    ? (x.provider === "profile" ? "profile" : "warp")
+    ? (["warp", "profile"].includes(exitProv(x)) ? exitProv(x) : "imported")
     : (isCand ? "found" : "custom");
+  const isImp = r => ["warp", "profile", "imported"].includes(r._kind);
   const isCand = n => !!candOf(node, n);
   const [rows, setRows] = useState(() => {
     const recs = (seed || []).map(x => ({ ...x, _src: x, _kind: kindOf(x, isCand(x.device)) }));
@@ -4028,7 +4030,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
         // right. One lookup, used by both the badge and the health.
         const src = (node.exits || []).find(x => String(x.id) === String(r.id)) || null;
         const [cls, lbl, kind] = (r._added && !r._src) ? TYPE.unsaved
-          : (r._kind === "warp" || r._kind === "profile")
+          : isImp(r)
             ? exitBadge(r, (src || {}).live)
             : (TYPE[r._kind] || TYPE.custom);
         const why = (r._src || {}).why_not || "";
@@ -4074,7 +4076,7 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
                              the CLIENT subnet's address, so packets leave carrying 10.x, leak the internal
                              subnet upstream and are dropped there while the device still reads up. That is
                              why this row keeps a marker: Auto here is a choice, but not a safe default. */""}
-          <div class="exg-c">${(r._kind === "warp" || r._kind === "profile")
+          <div class="exg-c">${isImp(r)
             ? (() => {
                 const ins = exitInsideAddr(r, ((node.exits || []).find(x => String(x.id) === String(r.id)) || {}).live);
                 return ins ? html`<span class="mono faint" title=${T("The tunnel's own address — traffic leaves as this.")}>${ins}</span>`
@@ -4127,6 +4129,9 @@ function ExitManageSheet({ node, seed, onSaved, onClose }) {
 function profileText(ex) {
   const p = ex.profile || {};
   if (!p.address) return "";
+  // ⚠️ A DIAL-IN PROFILE IS A SERVER CONFIG, rendered as one: ListenPort, no Endpoint, no keepalive. Printed with today's
+  // `Endpoint = ` line, the first edit of a dial-in exit sent an empty Endpoint back and the save refused it.
+  const din = !!p.listen_port && !p.endpoint;      // exitIsDialin's own test, inline: the box is only ever a profile's
   return ["[Interface]",
           "PrivateKey = " + (Store.exitKeyKeep || "(unchanged)"),
           // ⚠️ STRIP BEFORE APPENDING. `parse_wg_profile` stores the bare address (the node's own conf
@@ -4134,6 +4139,7 @@ function profileText(ex) {
           // prefix, and "10.9.0.44/32/32" is not a config anyone can save.
           "Address = " + String(p.address).split("/")[0] + "/32",
           "MTU = " + (p.mtu || 1280),
+          ...(din ? ["ListenPort = " + p.listen_port] : []),
           // ⚠️ THE OBFUSCATION, or this box lies about what is stored — and then destroys it. An AmneziaWG
           // exit's parameters were kept by the parser and written by the node, and rendered back HERE as a
           // plain WireGuard config. Two consequences, the second much worse than the first: the operator
@@ -4148,8 +4154,8 @@ function profileText(ex) {
           // the operator can leave alone (the stored one is kept) or overwrite (the new one is used).
           ...(p.psk ? ["PresharedKey = " + (Store.exitPskKeep || "(unchanged)")] : []),
           "AllowedIPs = 0.0.0.0/0",
-          "Endpoint = " + (p.endpoint || ""),
-          ...(p.keepalive ? ["PersistentKeepalive = " + p.keepalive] : [])].join("\n") + "\n";
+          ...(din ? [] : ["Endpoint = " + (p.endpoint || "")]),
+          ...(p.keepalive && !din ? ["PersistentKeepalive = " + p.keepalive] : [])].join("\n") + "\n";
 }
 
 /** ── EDIT ONE EXIT ──────────────────────────────────────────────────────────────────────────────────────
@@ -4164,7 +4170,8 @@ function profileText(ex) {
 const exitInsideAddr = (ex, live) => String(((live || (ex || {}).live || {}).address)
   || (((ex || {}).profile || {}).address) || "").split("/")[0].trim();
 
-const exitDefaultTitle = ex => (ex && ex.provider === "profile") ? T("Custom exit") : T("WARP exit");
+const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).dialin || exitIsDialin(ex) ? T("Dial-in exit") : T("Custom exit"))
+  : exitProv(ex) === "warp" ? T("WARP exit") : T("Exit");
 
 /** The badge for an imported exit: [class, label]. A WARP account with a licence on it is WARP+ — the
  *  operator paid for it and the whole point of the row is knowing which ones did. Taken from the LICENCE
@@ -4185,13 +4192,20 @@ const badgeLabel = lbl => String(lbl).endsWith("+")
 // falls back to the WireGuard colour, which is what every row looked like before. An AmneziaWG 3.1 profile (the stored
 // one holds a HeaderProtectionKey — awgDict3 — and the node builds exactly what it is sent) wears the 3.1 interface colour
 // (--awg3) and says so on hover, as a 3.1 interface's badges do (tip3).
-const exitBadge = (ex, live) => (ex || {}).provider === "profile"
+// A kind this panel does not know wears the plain WireGuard pair and its own name, never WARP's.
+const exitBadgeOf = (ex, live) => exitProv(ex) === "profile"
   ? ((live || {}).awg && awgDict3(((ex || {}).profile || {}).awg)
       ? ["exawg exawg3", T("val|Custom"), T("AmneziaWG 3.1")]   // i18n-keys: the first of each pair is a CSS class
       : [(live || {}).awg ? "exawg" : "exwg", T("val|Custom")])
+  : exitProv(ex) !== "warp" ? ["exwg", exitProv(ex)]
   : (String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
     ? ["warp plus", badgeLabel(T("val|WARP+"))]   // i18n-keys: the first half of each pair is a CSS class, not display text
     : ["warp", T("val|WARP")];
+// …and a dial-in profile reads "Dial-in", in the colours of what it is.
+const exitBadge = (ex, live) => {
+  const b = exitBadgeOf(ex, live);
+  return exitIsDialin(ex) || (ex || {}).dialin ? [b[0], T("val|Dial-in"), ...b.slice(2)] : b;   // `dialin`: a new one, not saved yet
+};
 
 function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }) {
   const [v, setV] = useState(() => ({ ...ex, profile_text: "" }));
@@ -4202,7 +4216,9 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const dirtyRef = useRef(false);
-  const isProf = v.provider === "profile";
+  const isProf = exitProv(v) === "profile", isWarp = exitProv(v) === "warp";
+  // a dial-in exit — a new one (the draft says so) or a stored one (its profile does) — dials nothing: no "Connect from"
+  const isDialin = !!v.dialin || exitIsDialin(ex);
   const set = patch => { dirtyRef.current = true; setV(x => ({ ...x, ...patch })); };
   const stored = (node.exits || []).find(x => String(x.id) === String(ex.id)) || {};
   // The three things this sheet can edit, plus the config box. A NEW exit is always dirty: there is nothing
@@ -4216,7 +4232,8 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
     // A NEW profile has nothing stored to fall back on, so an empty box is refused here rather than
     // stored as an imported exit with no profile — which the node cannot bring up.
     if (isProf && isNew && !txt.trim()) { setBusy(false); return setMsg(T("Paste the profile before saving.")); }
-    const body = { ...v, ...(isProf && txt !== profileText(ex) ? { profile_text: txt } : { profile_text: "" }) };
+    const body = { ...v, ...(isProf && txt !== profileText(ex) ? { profile_text: txt } : { profile_text: "" }),
+                   ...(isDialin ? { dial_src: "" } : {}) };
     const ok = await onSave(body);
     setBusy(false);
     if (ok !== true) return setMsg(typeof ok === "string" ? ok : T("Couldn't save"));
@@ -4247,19 +4264,27 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
                      title: !busy && !dirty ? T("No changes to save") : "" })}>
     ${/* DECISION 7 — which of the node's own addresses dials the exit. Imported only: an adopted device
           dials on its own and there is nothing for us to pin. */""}
-    <div class="row2">
+    ${isDialin ? html`<p class="hint" style="margin:0 0 12px">${T("For an upstream that can't be reached — a router behind NAT: it connects to this node.")}</p>` : null}
+    <div class=${isDialin ? "" : "row2"}>
       <div class="field"><label>${T("Title")}</label>
         <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40"
           onInput=${e => set({ label: e.target.value })}/></div>
-      <div class="field"><label>${T("Connect from")}</label>
-        <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>
+      ${isDialin ? null : html`<div class="field"><label>${T("Connect from")}</label>
+        <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>`}
     </div>
     ${isProf
-      ? html`<div class="field"><label>${T("Configuration")}</label>
+      ? html`<div class="field"><label>${isDialin ? T("Server configuration") : T("Configuration")}</label>
           <textarea class="exprof" rows="11" spellcheck="false" value=${txt}
-            placeholder=${T("Paste the [Interface] / [Peer] profile here")}
+            placeholder=${isDialin ? T("Paste this node's side: [Interface] with ListenPort, one [Peer] — the router — with no Endpoint")
+                                   : T("Paste the [Interface] / [Peer] profile here")}
             onInput=${e => { dirtyRef.current = true; setTxt(e.target.value); }}/>
-          <div class="hint">${T("Edit it here or paste a replacement. IPv4 only — the v6 half is dropped, and routing lines are ignored because this node decides its own. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")}</div></div>`
+          <div class="hint">${isDialin
+            ? T("This node listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")
+            : T("Edit it here or paste a replacement. IPv4 only — the v6 half is dropped, and routing lines are ignored because this node decides its own. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")}</div>
+          ${isDialin && node.kind === "docker" && (node.net_mode || "host") === "bridge"
+            ? html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: 'ports: "' + (((ex.profile || {}).listen_port) || "PORT") + ":" + (((ex.profile || {}).listen_port) || "PORT") + '/udp"' })}</span></div>`
+            : null}</div>`
+      : !isWarp ? html`<p class="hint">${T("This panel does not know this kind of exit. It is kept as it is; you can switch it off or remove it.")}</p>`
       : html`<div class="field"><label>${T("WARP+ licence key")}</label>
           <input value=${v.licence || ""} spellcheck="false" autocomplete="off"
             placeholder=${T("WARP+ licence key — optional")}
@@ -4314,7 +4339,9 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
   };
   const del = ex => openConfirm({
     title: T("Remove this exit?"), confirmLabel: T("Remove"), danger: true,
-    body: ex.provider === "profile"
+    body: exitProv(ex) !== "warp" && exitProv(ex) !== "profile"
+      ? T("{v1} is removed from this node and its tunnel comes down.", { v1: ex.label || ex.device })
+      : exitProv(ex) === "profile"
       ? T("{v1} is removed from this node and its tunnel comes down. The profile and its key are deleted from the panel — you would have to paste it again.", { v1: ex.label || ex.device })
       : T("{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.", { v1: ex.label || ex.device }),
     onConfirm: () => write(exits.filter(x => String(x.id) !== String(ex.id))),
@@ -4336,7 +4363,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
           config. Said here, where the operator decides, rather than nowhere. */""}
     ${/* The node's name is in the section header two lines up, and where devices live is a fact about a
           different screen. What is left is the one thing the screen has to say. */""}
-    <p class="hint" style="margin:0 0 14px">${T("Cloudflare WARP accounts and WireGuard profiles from anywhere else. Websites see the exit rather than this node.")}</p>
+    <p class="hint" style="margin:0 0 14px">${T("Cloudflare WARP accounts, WireGuard profiles from anywhere else, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.")}</p>
     ${exits.length ? html`<div class="exgrid g8">
       <div class="exg-r"><div class="exg-h">${T("Title")}</div>
       <div class="exg-h">${T("Device")}</div>
@@ -4370,7 +4397,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                 hover, where it answers the different question it actually answers. An em dash when the node
                 cannot measure it: an invented number is worse than an absent one. */""}
           <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}
-            title=${/* An up exit whose ping came back null: no reply reached this node — most often a firewalled VPS that drops ICMP, and
+            title=${exitIsDialin(ex) ? T("Latency is not measured for a dial-in exit — the router dials this node, so there is no server to ping.") : /* An up exit whose ping came back null: no reply reached this node — most often a firewalled VPS that drops ICMP, and
                      the dash alone read as "custom exits have no latency" (operator, 2026-10-17). ⚠️ `=== null` ON PURPOSE: an older node
                      sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows. */""}${l.up && l.ping_ms === null
               ? (Number.isFinite((l.trace || {}).rtt_ms)
@@ -4393,7 +4420,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
         </div>`;
       })}
     </div>`
-      : html`<p class="hint" style="margin:0 0 12px">${T("No WARP exits on this node yet. Register a free Cloudflare account, or paste a WireGuard profile from somewhere else.")}</p>`}
+      : html`<p class="hint" style="margin:0 0 12px">${T("No exits on this node yet. Register a free Cloudflare account, paste a WireGuard profile from somewhere else, or add a dial-in exit for an upstream that connects to this node.")}</p>`}
     ${/* TWO WAYS TO GET ONE, offered as two actions rather than one button and a provider dropdown: the
           choice is what the operator is actually deciding, and "Register" has to be one click for the path
           that needs no input at all. wgcf is never named — it is plumbing. */""}
@@ -4402,6 +4429,8 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
         <${Ic} i="plus"/> ${T("Register with WARP")}</button>
       <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "profile", profile_text: "" })}>
         <${Ic} i="plus"/> ${T("Paste a custom config")}</button>
+      <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "profile", profile_text: "", dialin: true })}>
+        <${Ic} i="plus"/> ${T("Add a dial-in exit")}</button>
     </div>
   </div>`;
 }

@@ -10129,11 +10129,24 @@ def _exit_down(dev, rec):
     return getattr(r, "returncode", 1) == 0
 
 
+def _exit_dialin(rec):
+    """True for a DIAL-IN exit (docs/LISTEN-EXIT-PLAN.md §2): the upstream — a router behind NAT — dials this node, so the
+    profile holds a `listen_port` and no `endpoint`. Nothing else marks it; a dial-out profile never has the port."""
+    return bool(rec.get("listen_port")) and not str(rec.get("endpoint") or "").strip()
+
+
 def _exit_conf_text(rec):
-    """The .conf we write. Every line here is deliberate; see the Table = off note above."""
+    """The .conf we write. Every line here is deliberate; see the Table = off note above.
+
+    A dial-in exit listens and dials nothing: `ListenPort`, no `Endpoint` and no keepalive (the router keeps its own NAT
+    open), and `AllowedIPs = 0.0.0.0/0` whatever the pasted peer said — `<router>/32` there carries only traffic TO the
+    router, a handshake and nothing else (trap 1). A dial-out exit's text is unchanged."""
+    _in = _exit_dialin(rec)
     L = ["[Interface]", "PrivateKey = " + rec.get("priv", ""),
-         "Address = " + rec.get("address", "") + "/32", "MTU = " + str(rec.get("mtu") or 1280),
-         "Table = off"]
+         "Address = " + rec.get("address", "") + "/32", "MTU = " + str(rec.get("mtu") or 1280)]
+    if _in:
+        L.append("ListenPort = " + str(int(rec["listen_port"])))
+    L.append("Table = off")
     # The obfuscation goes in [Interface], in AWG_KEYS order, so the file is byte-stable across syncs —
     # `_exit_conf_text` is compared against what is on disk and a reordered dict would bounce the tunnel.
     _aw = _exit_awg(rec)
@@ -10141,7 +10154,10 @@ def _exit_conf_text(rec):
     L += ["", "[Peer]", "PublicKey = " + rec.get("peer_key", "")]
     if str(rec.get("psk") or "").strip():
         L.append("PresharedKey = " + str(rec["psk"]).strip())
-    L += ["AllowedIPs = 0.0.0.0/0", "Endpoint = " + rec.get("endpoint", "")]
+    L.append("AllowedIPs = 0.0.0.0/0")
+    if _in:
+        return "\n".join(L) + "\n"
+    L.append("Endpoint = " + rec.get("endpoint", ""))
     if int(rec.get("keepalive") or 0) > 0:
         L.append("PersistentKeepalive = " + str(int(rec["keepalive"])))
     return "\n".join(L) + "\n"
@@ -10378,6 +10394,20 @@ def _exit_handshake(rec, dev):
     return None
 
 
+def _exit_learned_ep(rec, dev):
+    """The endpoint WireGuard learned for a dial-in exit's peer — the router's NAT address, from its last valid packet —
+    or "" before it has dialled. Read from the pass's dump (`_dump_of`, cached), asked the way `_exit_handshake` asks."""
+    for cmd in _exit_clis(rec, dev):
+        r = _dump_of(cmd, dev)
+        if getattr(r, "returncode", 1) != 0:
+            continue
+        for f in (ln.split("\t") for ln in (r.stdout or "").splitlines()[1:]):
+            if len(f) >= 3 and f[2] and f[2] != "(none)":
+                return f[2]
+        return ""
+    return ""
+
+
 _EXIT_TLS = {"ctx": None, "at": 0.0}    # the exit traces' TLS context and when it was built — see _exit_tls
 
 
@@ -10609,7 +10639,10 @@ def reconcile_exits(desired, res):
                     "no_traffic": ({"since": int(_hl["since"]), "why": _hl["why"]}
                                    if _hl and _hl["dead"] else None),
                     "address": rec.get("address", ""), "public_key": rec.get("pub", ""),
-                    "peer_key": rec.get("peer_key", ""), "endpoint": rec.get("endpoint", ""),
+                    "peer_key": rec.get("peer_key", ""),
+                    # a dial-in exit has no endpoint of its own: report where the router dialled FROM (its NAT address,
+                    # learned by WireGuard from its last packet; empty until it has dialled) — the pass's dump, no fork
+                    "endpoint": (_exit_learned_ep(rec, dev) if _live else "") if _exit_dialin(rec) else rec.get("endpoint", ""),
                     "account_type": rec.get("account_type", ""), "trace": tr,
                     # ⚠️ THE RESTORE FAILURE RIDES ALONGSIDE THE LIVE STATE, AND NOT IN `error`. `err` is
                     # this exit's own health, and the panel's `exitHealth` returns `failed / bad / red` for
@@ -10656,6 +10689,14 @@ def reconcile_exits(desired, res):
                 with open(sp) as f:
                     rec = json.load(f)
             prov = str(d.get("provider") or "warp")
+            # ⚠️ EVERY KIND BY NAME (docs/SOCKS5-EXIT-PLAN.md T6). Everything below that is not `profile` used to be WARP,
+            # so a kind this node does not know — a newer panel's — would have REGISTERED A CLOUDFLARE ACCOUNT for it and
+            # come up as a WARP exit the operator never asked for. Refused, and said on the row, instead.
+            if prov not in ("warp", "profile"):
+                res["errors"].append("exit %s: unknown kind %s" % (xid, prov[:20]))
+                out.append({"id": xid, "device": dev, "provider": prov, "up": False,
+                            "error": "this node does not know this kind of exit — update the node"})
+                continue
             err = ""
             # Set when a relayed escrow blob could not be opened but the exit has a key of its own and keeps
             # running. Reset per exit, or one exit's failure would be reported against the next one.
@@ -10685,7 +10726,12 @@ def reconcile_exits(desired, res):
                        # Kept only for the keys we know (the panel already sanitised, this is the node's own
                        # floor), so a profile carrying junk cannot put junk in a conf file.
                        "awg": {k: v for k, v in (pr.get("awg") or {}).items() if k in AWG_KEYS and str(v).strip()}}
-                if not (rec["priv"] and rec["address"] and rec["peer_key"] and rec["endpoint"]):
+                # A dial-in exit's port (LISTEN-EXIT §2.2) — kept only when set, so a dial-out state file is unchanged.
+                with contextlib.suppress(TypeError, ValueError):
+                    if 0 < int(pr.get("listen_port") or 0) <= 65535:
+                        rec["listen_port"] = int(pr["listen_port"])
+                # …and it is the port OR the endpoint: a dial-in exit has no endpoint to be missing.
+                if not (rec["priv"] and rec["address"] and rec["peer_key"] and (rec["endpoint"] or rec.get("listen_port"))):
                     res["errors"].append("exit %s: incomplete profile" % xid)
                     # Reported, for the reason above: without this the row reads "waiting for the node" for
                     # ever about a profile the node has already looked at and rejected. Which PART is missing
@@ -10865,9 +10911,15 @@ def reconcile_exits(desired, res):
     # indistinguishable to the panel from a node that has not caught up yet — so that exit's row would spin
     # for ever. One site cannot miss a path. The stamp means "this is what I have been told to be", which
     # is precisely the question the panel is asking; whether it SUCCEEDED is `error`, reported beside it.
+    # …and a dial-in exit's port, on every row shape for the same reason: the panel reads a dial-in row that has an error
+    # and NO `listen_port` as a node too old for dial-in exits (LISTEN-EXIT §2.3), so this node's own refusals carry it.
+    _lps = {xid: (d.get("profile") or {}).get("listen_port") for xid, d in want.items()
+            if isinstance(d, dict) and isinstance(d.get("profile"), dict)}
     _sigs = {xid: str((d or {}).get("cfg_sig") or "") for xid, d in want.items()}
     for _o in out:
         _o["cfg_sig"] = _sigs.get(str(_o.get("id") or ""), "")
+        if _lps.get(str(_o.get("id") or "")):
+            _o["listen_port"] = _lps[str(_o.get("id") or "")]
 
     # 5) reap. An exit the panel stopped listing takes its device and its account state with it — otherwise
     # a removed exit keeps a tunnel up and an operator has no way to see, let alone stop, it.
@@ -16223,6 +16275,7 @@ def iface_candidates(node_cfg):
             if len(p) >= 4 and p[2] == "inet":
                 ipmap.setdefault(p[1], p[3])
     out = []
+    own_exits = None                                         # this node's exit devices, read once when first needed
     for name in sorted(names):
         if not name or name in managed or name.startswith("swg_"):
             continue
@@ -16296,6 +16349,16 @@ def iface_candidates(node_cfg):
             # name match, and nothing else on the node answers that question (see _exit_candidates).
             _EXIT_CAND["list"].append(_exit_cand_entry(name, proto, conf, addr, up, ent_peers))
             continue                                        # this box dialling out (WDTT-Plus exit / WARP) — never a candidate
+        # ⚠️ ONE OF OUR OWN EXITS' DEVICES IS NEVER ADOPTABLE. A dial-out one never gets here (the test above sees its
+        # Endpoint), but a DIAL-IN exit has no endpoint until the router dials — and "Adopt" on it would hand the exit's
+        # device to the interface reconciler. Skipped by the confs we wrote, not by a `wgx-` name, and only HERE, after
+        # the exit-candidate branch: `_EXIT_CAND` (what the exit picker reads) stays exactly as it was (CPU-PLAN Round 9).
+        if own_exits is None:
+            own_exits = set()
+            with contextlib.suppress(OSError):
+                own_exits = {f[:-5] for f in os.listdir(EXIT_DIR) if f.endswith(".conf")}
+        if name in own_exits:
+            continue
         ent = {"name": name, "proto": proto, "datapath": "userspace" if userspace else "kernel",
                "listen_port": port, "address": addr, "peers": peers, "up": bool(up),
                "wdtt_hint": bool(userspace or name in names_wdtt),

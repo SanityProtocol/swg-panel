@@ -3438,6 +3438,14 @@ export const cardGateway = (node, name) => String((((node || {}).ether_gws) || {
  *              seeing it ("nothing is checked until the node next syncs"). Silence is the DOCUMENTED
  *              flow, not a fault — refusing it here would break the feature that exists to allow it.
  */
+/** An imported exit's KIND, by name — every test of it compares to a name, never "not profile ⇒ WARP" (docs/SOCKS5-EXIT-PLAN.md
+ *  T6): a kind this panel does not know is neither, and a later kind is added by name. Empty is a legacy WARP account. */
+export const exitProv = x => String((x || {}).provider || "warp");
+/** A DIAL-IN exit (docs/LISTEN-EXIT-PLAN.md §2): a pasted SERVER config — a ListenPort, no Endpoint — which the upstream (a
+ *  router behind NAT) dials. Derived from the stored profile, as the panel and the node derive it; nothing else marks it. */
+export const exitIsDialin = x => exitProv(x) === "profile" && !!((x || {}).profile || {}).listen_port
+  && !((x || {}).profile || {}).endpoint;
+
 export function exitHealth(x, node) {
   const ex = x || {};
   const l = ex.live || {};
@@ -3488,6 +3496,9 @@ export function exitHealth(x, node) {
   if (ex.cfg_sig && l.cfg_sig && l.cfg_sig !== ex.cfg_sig && !nodeStale((node || {}).id))
     return { state: "configuring", tone: "busy", icon: "refresh", dot: "unknown",
              why: T("Applying your changes on the node…") };
+  // A node older than dial-in exits refuses one as a profile with no endpoint; a 1.8.11 node reports the port on every row.
+  if (l.error && exitIsDialin(ex) && !l.listen_port) return { state: "unsupported", tone: "warn", icon: "warn", dot: "unknown",
+    why: T("This node needs the 1.8.11 update for dial-in exits.") };
   if (l.error) return { state: "failed", tone: "bad", dot: "bad",
     // An error with no "and then what" reads as stuck — the node reports when it will try again, so say it.
     // ⚠️ THROUGH T(), like every other sentence the SPA shows. The node's own words arrived verbatim, so a
@@ -3510,6 +3521,16 @@ export function exitHealth(x, node) {
   const said = t => probe ? t + " " + T("The node reports: {v1}", { v1: probe }) : t;
   if (!l.up) return { state: "down", tone: "warn", dot: "down",
                       why: said(T("The node reports this device is not up.")) };
+  // ⚠️ A DIAL-IN EXIT WAITS FOR THE ROUTER, and the sentences below are written for a server we dial — "check the
+  // endpoint" names a field this exit does not have. Never a handshake: the router has not connected (its config, its
+  // power, or this node's UDP port). A handshake and no traffic: it connected but forwards nothing — NAT on the router is
+  // missing, the most likely mistake (LISTEN-EXIT §2.4). A handshake older than WireGuard keeps a session (180 s — the router
+  // re-handshakes every 2 min while it is there) is a router that has gone, not one that is connected.
+  if (exitIsDialin(ex) && (l.handshake === 0 || l.handshake > 180)) return { state: "waiting", tone: "warn", icon: "warn", dot: "down",
+    why: T("Waiting for the router to connect. Check the router is on, its config imported, and UDP {v1} open on this node.",
+           { v1: (ex.profile || {}).listen_port }) };
+  if (exitIsDialin(ex) && l.no_traffic) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
+    why: said(T("The router is connected but passes no traffic — check NAT on the router.")) };
   // ⚠️ UP AND CARRYING NOTHING, as the NODE judged it — not a guess from `handshake` or `trace` here. The node
   // has already routed around it (`no_traffic` is only reported once it did), so the row states what happened to
   // the traffic, which depends on this exit's own kill-switch. Absent on a node too old to judge: it falls
@@ -3553,7 +3574,8 @@ export function exitHealth(x, node) {
   // RECORD, which returns nothing the moment record and device disagree — exactly the case worth reporting.
   // It now asks by what the device IS and falls back to the other tool, so `handshake` is answerable for any
   // device that exists, and the `=== 0` test above catches the reported case without inventing a second one.
-  return { state: "ok", tone: "", dot: "up", why: T("Up on the node.") };
+  return { state: "ok", tone: "", dot: "up", why: exitIsDialin(ex) && l.endpoint
+    ? T("Up on the node. The router connects from {v1}.", { v1: l.endpoint }) : T("Up on the node.") };
 }
 
 /** The one marker for an exit's health. Three screens rendered this by hand and all three hardcoded the
@@ -3704,8 +3726,8 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   // which list you opened it from, and an untitled one never said what it WAS.
   // …and grouped by what they are: a WireGuard profile the operator pasted is imported too, but it is no WARP account (OE, 1.8.9)
   const imp = exits.filter(x => (x.producer || "adopted") === "imported");
-  const warp = imp.filter(x => x.provider !== "profile").map(x => mk(x, exitLabel(x, node)));
-  const prof = imp.filter(x => x.provider === "profile").map(x => mk(x, exitLabel(x, node)));
+  const warp = imp.filter(x => exitProv(x) === "warp").map(x => mk(x, exitLabel(x, node)));
+  const prof = imp.filter(x => exitProv(x) === "profile").map(x => mk(x, exitLabel(x, node)));
   const ext = exits.filter(x => (x.producer || "adopted") !== "imported")
     .map(x => mk({ ...x, _ext: true }, exitLabel(x, node)));
   // ⚠️ AND EVERY DEVICE THE NODE ALREADY HAS. An exit record is the panel's bookkeeping, not the world:
@@ -3774,8 +3796,8 @@ export const exitIsPlus = ex => !!(String((ex || {}).licence || "").trim()
 export function exitTypeLabel(ex, node) {
   const x = ex || {};
   if ((x.producer || "adopted") === "imported")
-    return x.provider === "profile" ? T("Custom exit")
-      : exitIsPlus(x) ? T("WARP+ exit") : T("WARP exit");
+    return exitProv(x) === "profile" ? (exitIsDialin(x) ? T("Dial-in exit") : T("Custom exit"))
+      : exitProv(x) === "warp" ? (exitIsPlus(x) ? T("WARP+ exit") : T("WARP exit")) : exitProv(x);
   // ⚠️ A NETWORK CARD SAYS SO, and this is the whole of decision B1 in one line. `Direct — source from
   // eth2` (a NAT pin) and an eth2 EXIT (a route) can now both be on screen at once, and they do completely
   // different things. Naming each by WHAT IT CHANGES is what keeps them apart: this half is the route, so

@@ -51,6 +51,10 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
         is discarded, a search typed alone does not; Own rule opens the form, Apply puts it on the row; a new exception waits
         for a person; a removed row asks before the server sheet discards it; Save sends and the panel stores the list. Rows inside the sheet at 1280 and 390 px, in
         English and Russian. SPA_SHOTS=<dir> keeps screenshots of the list, the edit and the add sheets
+  [B18] a dial-in exit (1.8.11 S9, docs/LISTEN-EXIT-PLAN.md §2.4): the section reads "WARP & exits"; the row wears "Dial-in" and
+        waits for the router naming its port; "Add a dial-in exit" opens a sheet asking for the server config with no "Connect
+        from", Cancel and Save on one line at 390 px; the stored one's box shows ListenPort and no Endpoint; a server config
+        pasted there and saved is stored as a dial-in exit. English and Russian, 1280 and 390 px. SPA_SHOTS keeps the shots
   [i18n] B1's words in Russian; [console] no error or exception on any view
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
@@ -117,6 +121,11 @@ PERTURBATIONS = {
     "arxtyped": ("js/turn.js", "cell=${cell} onTyped=${typedOnly} empty=", "cell=${cell} empty="),
     "csqguard": ("js/turn.js", 'width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef}\n', 'width=${720}\n'),
     "arpw": ("js/turn.js", "snap && !snap.csqtt_ar_pw ?", "snap && !snap.csqtt_arpw ?"),
+    # [B18]: the dial-in sheet offers "Connect from" (a source for an exit that dials nothing), as a dial-out one does
+    "dialsrc": ("js/screen-settings.js", '      ${isDialin ? null : html`<div class="field"><label>${T("Connect from")}</label>',
+                '      ${false ? null : html`<div class="field"><label>${T("Connect from")}</label>'),
+    # [B18]: the edit box prints a dial-in profile as a dial-out one (`Endpoint = `), as it did before 1.8.11
+    "dinbox": ("js/screen-settings.js", '  const din = !!p.listen_port && !p.endpoint;', '  const din = false;'),
 }
 WEB = ROOT
 if PERTURB:
@@ -185,6 +194,7 @@ try:
     IFACES = {"awg0": ("10.60.0", 51820), "awg1": ("10.61.0", 51821), "awg2": ("10.62.0", 51822)}
     PEERS = {}                                  # pubkey -> (iface, ip) — what the node reports serving
     OFFLINE, NOLAN = set(), [False]             # pubkeys the node reports as long silent · the node reports no LAN
+    DXR = []                                    # [B18]: the exit rows the node reports (none before, so B1–B17 see what they always did)
     CSQ = [0]                                   # [B17]: 1 the node can run csqtt 2.5, 2 it runs a 2.5 server, 3 it reports csqtt_ar_pw (0 before, so B1–B16 see the fleet they always did)
     def peer_rec(pk, ip, now):
         age = 100000 if pk in OFFLINE else 20
@@ -203,6 +213,7 @@ try:
                 "lans": [] if NOLAN[0] else [{"ip": "192.168.1.5", "iface": "eth0"}],
                 "net_deps": {"panel": "127.0.0.1", "resolvers": ["1.1.1.1"], "resolvers_known": True, "share": 1, "carried": 1, "reach": 2},
                 "net_carried": ["192.168.50.0/24", "192.168.60.0/24"], "dev_reach": {"ok": True, "ifaces": ["awg1", "awg2"]},
+                **({"exits": list(DXR)} if DXR else {}),
                 **({"csqtt_lines": ["2.1", "2.5"]} if CSQ[0] else {}), **({"csqtt_ar_pw": 1} if CSQ[0] > 2 else {}),
                 **({"csqtt": [{"iface": "csqtt1", "kind": "csqtt", "fork": "csqtt", "active": "active", "line": "2.5",
                                "listen": "0.0.0.0:46000", "tun_addr": "10.66.80.1/24"}]} if CSQ[0] > 1 else {})}
@@ -828,6 +839,73 @@ try:
             check("[B17] …and the panel stores it", cfg.get("app_routing_except") == [{"who": {"users": [uid["anna"]]}, "app_routing": dict(
                 P_AR_NONE, domains=["vk.com"])}], cfg.get("app_routing_except"))
         check("[console] (%s) App routing exceptions: clean" % tag, not console_bad(tab), console_bad(tab)[:3])
+        close_modals(tab)
+        tab.close()
+
+    # ── [B18] a dial-in exit (docs/LISTEN-EXIT-PLAN.md §2.4) ────────────────────────────────────────────────────────────────────
+    _K = ("QFm3Jt5Rrn6f0aX1sVYQK0lZ2p8vJcU7dHwEbNqTsGk=", "ZtVPNeJM8Gsneelu4sijDrDz3AVt7uZb9IbtK71Q6xc=")
+    def din_conf(port, addr):
+        return "[Interface]\nPrivateKey = %s\nAddress = %s/31\nListenPort = %d\n\n[Peer]\nPublicKey = %s\nAllowedIPs = 10.254.0.1/32\n" % (_K[0], addr, port, _K[1])
+    must(call("POST", "/api/nodes/update", {"id": NID, "exits": [{"id": "d1a1d1a1", "producer": "imported", "provider": "profile",
+                                                                   "profile_text": din_conf(51830, "10.254.0.0")}]}), "a dial-in exit")
+    _sig = next((x.get("cfg_sig") for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID
+                 for x in (n.get("exits") or []) if x.get("id") == "d1a1d1a1"), "")
+    DXR.append({"id": "d1a1d1a1", "device": "wgx-d1a1d1a1", "provider": "profile", "up": True, "handshake": 0, "listen_port": 51830,
+                "cfg_sig": _sig, "endpoint": "", "error": "", "trace": {}, "address": "10.254.0.0", "awg": False, "ping_ms": None})
+    must(sync(), "sync with the dial-in exit's row")
+    time.sleep(3.5)                          # the background sync may have built its snapshot before the row existed
+    must(sync(), "sync with the dial-in exit's row, again")
+    SEC = "[...document.querySelectorAll('.setrail-i')].map(b => b.textContent.trim())"
+    def open_exits(tab):
+        ev_mod(tab, "ui", "M.setPendingSection('exits'); return true;")
+        tab.ev("location.hash = '#/panel/settings'")
+        settle(tab, 1200)
+    for lang, vp in (("ru", (1280, 900)), ("en", (390, 844)), ("en", (1280, 900))):   # the last one pastes and saves
+        tag = "%s %dpx" % (lang, vp[0])
+        tab = open_app(lang, viewport=vp)
+        open_exits(tab)
+        ru = lang == "ru"
+        check("[B18] %s: the section reads %s" % (tag, "«ВАРП и выходы»" if ru else "WARP & exits"),
+              ("ВАРП и выходы" if ru else "WARP & exits") in (tab.ev(SEC) or []), tab.ev(SEC))
+        row = tab.ev("(() => { const r = [...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes('wgx-d1a1d1a1'));"
+                     " if (!r) return null; return {text: r.textContent, dot: (r.querySelector('.exg-dot') || {}).title || ''}; })()")
+        check("[B18] %s: the row wears %s and waits for the router on UDP 51830" % (tag, "«Обратный»" if ru else "Dial-in"),
+              bool(row) and ("Обратный" if ru else "Dial-in") in row["text"] and "51830" in row["dot"]
+              and ("роутера" if ru else "router") in row["dot"], row)
+        shot(tab, "b18-row-%s-%d" % (lang, vp[0]))
+        clicked = click_text(tab, ".exadd button", "/Add a dial-in exit|Добавить обратный выход/")
+        settle(tab, 600)
+        sh = tab.ev("(() => { const s = %s; if (!s) return null; const lab = [...s.querySelectorAll('.field label')].map(l => l.textContent.trim());"
+                    " const b = [...s.querySelectorAll('.sheet-foot button')];"
+                    " const sr = s.getBoundingClientRect();"
+                    " return {title: (s.querySelector('.sheet-head') || {}).textContent || '', labels: lab,"
+                    " tops: b.map(x => Math.round(x.getBoundingClientRect().top)), inside: b.every(x => x.getBoundingClientRect().right <= sr.right + 1)}; })()" % TOP)
+        check("[B18] %s: Add a dial-in exit opens its sheet — the server config, no Connect from" % tag,
+              bool(clicked and sh) and ("Обратный выход" if ru else "Dial-in exit") in sh["title"] and ("Свой" if ru else "Custom") not in sh["title"]
+              and ("Конфигурация сервера" if ru else "Server configuration") in sh["labels"]
+              and not any(l in sh["labels"] for l in ("Connect from", "Подключаться с")), sh)
+        check("[B18] %s: Cancel and Save share the bottom line, inside the sheet" % tag,
+              bool(sh) and len(sh["tops"]) >= 2 and max(sh["tops"]) - min(sh["tops"]) <= 3 and sh["inside"], sh)
+        shot(tab, "b18-add-%s-%d" % (lang, vp[0]))
+        if lang == "en" and vp[0] == 1280:
+            tab.ev("(() => { const t = %s.querySelector('textarea.exprof'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;"
+                   " set.call(t, %s); t.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % (TOP, json.dumps(din_conf(51831, "10.254.0.2"))))
+            settle(tab, 300)
+            _sv = click_text(tab, ".overlay.show .sheet-foot button", "/^Save/")
+            settle(tab, 2500)
+            _said = tab.ev("[...document.querySelectorAll('.overlay.show .err, .toast')].map(e => e.textContent).join(' | ')")
+            st = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
+            check("[B18] a server config pasted in the sheet and saved is stored as a dial-in exit",
+                  any((x.get("profile") or {}).get("listen_port") == 51831 and not (x.get("profile") or {}).get("endpoint") for x in st),
+                  {"clicked": _sv, "said": _said, "stored": st})
+        close_modals(tab)
+        tab.ev("[...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes('wgx-d1a1d1a1')).querySelector('.exg-ed').click()")
+        settle(tab, 600)
+        box = tab.ev("(%s.querySelector('textarea.exprof') || {}).value || ''" % TOP)
+        check("[B18] %s: the stored dial-in exit's box is a server config — ListenPort, no Endpoint" % tag,
+              "ListenPort = 51830" in box and "Endpoint" not in box, box)
+        shot(tab, "b18-edit-%s-%d" % (lang, vp[0]))
+        check("[console] (%s) dial-in exit: clean" % tag, not console_bad(tab), console_bad(tab)[:3])
         close_modals(tab)
         tab.close()
 finally:

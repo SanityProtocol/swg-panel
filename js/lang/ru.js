@@ -3114,8 +3114,8 @@ export const STR = {
     "{v1} будет удалён с этой ноды, туннель опустится. Профиль и его ключ удаляются из панели — вставлять придётся заново.",
   "{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.":
     "{v1} будет удалён с этой ноды, туннель опустится. Вместе с ним удаляется и аккаунт Cloudflare: при повторном добавлении регистрируется НОВЫЙ аккаунт с другим IP выхода.",
-  "No WARP exits on this node yet. Register a free Cloudflare account, or paste a WireGuard profile from somewhere else.":
-    "На этой ноде пока нет выходов WARP. Зарегистрируйте бесплатный аккаунт Cloudflare или вставьте профиль WireGuard откуда-то ещё.",
+  "No exits on this node yet. Register a free Cloudflare account, paste a WireGuard profile from somewhere else, or add a dial-in exit for an upstream that connects to this node.":
+    "На этой ноде пока нет выходов. Зарегистрируйте бесплатный аккаунт Cloudflare, вставьте профиль WireGuard откуда-то ещё или добавьте обратный выход — для апстрима, который сам подключается к этой ноде.",
   "val|Unsaved": "Не сохранён",
   "Refused: {v1}": "Отклонён: {v1}",
   "This node hasn't reported a device by this name.": "Нода не сообщала об устройстве с таким именем.",
@@ -3218,9 +3218,46 @@ export const STR = {
     "Эта нода уже поднимает это устройство для одного из своих exit'ов — выберите тот exit.",
   "WARP+ licence key": "Ключ WARP+",
   "Paste a custom config": "Вставить свой конфиг",
+  // dial-in exits (docs/LISTEN-EXIT-PLAN.md) and exit kinds by name (SOCKS5-EXIT-PLAN T6)
+  "WARP & exits": "ВАРП и выходы",
+  "Add a dial-in exit": "Добавить обратный выход",
+  "Dial-in exit": "Обратный выход",
+  "val|Dial-in": "Обратный",
+  "Exit": "Выход",
+  "For an upstream that can't be reached — a router behind NAT: it connects to this node.":
+    "Для апстрима без белого адреса (роутер за NAT): он сам подключается к ноде.",
+  "Server configuration": "Конфигурация сервера",
+  "Paste this node's side: [Interface] with ListenPort, one [Peer] — the router — with no Endpoint":
+    "Вставьте сторону этой ноды: [Interface] с ListenPort и один [Peer] — роутер — без Endpoint",
+  "This node listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.":
+    "Нода слушает ListenPort, роутер подключается к ней сам. AllowedIPs пира не учитывается — весь трафик уходит на роутер. Строка PrivateKey — заглушка: оставьте её, и сохранённый ключ останется; замените — будет использован новый.",
+  "This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.":
+    "Эта docker-нода работает в сети `bridge` — опубликуйте UDP-порт выхода в `docker-compose.yml` ноды ({ports}) и выполните `up -d`, иначе роутер до неё не достучится.",
+  "This panel does not know this kind of exit. It is kept as it is; you can switch it off or remove it.":
+    "Эта панель не знает такой вид выхода. Он сохранён как есть: его можно выключить или удалить.",
+  "{v1} is removed from this node and its tunnel comes down.": "{v1} будет удалён с этой ноды, туннель опустится.",
+  "Latency is not measured for a dial-in exit — the router dials this node, so there is no server to ping.":
+    "Для обратного выхода задержка не измеряется: роутер сам подключается к ноде, пинговать некого.",
+  "This node needs the 1.8.11 update for dial-in exits.": "Для обратных выходов ноду нужно обновить до 1.8.11.",
+  "Waiting for the router to connect. Check the router is on, its config imported, and UDP {v1} open on this node.":
+    "Ждём подключения роутера. Проверьте, что роутер включён, конфиг на нём импортирован, а UDP {v1} на этой ноде открыт.",
+  "The router is connected but passes no traffic — check NAT on the router.":
+    "Роутер подключён, но трафик через него не идёт — проверьте NAT на роутере.",
+  "Up on the node. The router connects from {v1}.": "Поднят на ноде. Роутер подключается с {v1}.",
+  "this panel does not know exits of kind {v1}": "эта панель не знает выходы вида {v1}",
+  "this node does not know this kind of exit — update the node": "эта нода не знает такой вид выхода — обновите ноду",
+  "a dial-in exit has exactly one peer — the upstream": "у обратного выхода ровно один пир — апстрим",
+  "the profile's ListenPort is not a usable port": "ListenPort в профиле — не пригодный порт",
+  "a dial-in exit dials nothing, so it has no source address to pin — set Connect from to Auto":
+    "обратный выход никуда не подключается сам, закреплять адрес-источник нечего — выберите «Подключаться с»: Авто",
+  "UDP port {v1} is already used on this node by {v2}": "UDP-порт {v1} на этой ноде уже занят: {v2}",
+  "the address {v1} is inside {v2} ({v3}) on this node — use another one":
+    "адрес {v1} попадает в {v2} ({v3}) на этой ноде — возьмите другой",
+  "two dial-in exits cannot listen on one port ({v1})": "два обратных выхода не могут слушать один порт ({v1})",
+  "two dial-in exits cannot have one address ({v1})": "у двух обратных выходов не может быть одного адреса ({v1})",
   "Paste the profile before saving.": "Перед сохранением вставьте профиль.",
-  "Cloudflare WARP accounts and WireGuard profiles from anywhere else. Websites see the exit rather than this node.":
-    "Аккаунты Cloudflare WARP и профили WireGuard откуда угодно ещё. Сайты видят этот выход, а не эту ноду.",
+  "Cloudflare WARP accounts, WireGuard profiles from anywhere else, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.":
+    "Аккаунты Cloudflare WARP, профили WireGuard откуда угодно ещё и обратные выходы — апстрим вроде роутера за NAT, который сам подключается к этой ноде. Сайты видят этот выход, а не эту ноду.",
   "WARP+ licence key — optional": "Ключ WARP+ — необязательно",
   "Paste the [Interface] / [Peer] profile here": "Вставьте сюда профиль с [Interface] / [Peer]",
   "Paste a WireGuard profile for the new exit, or remove it.":

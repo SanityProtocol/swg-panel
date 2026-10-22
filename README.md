@@ -99,6 +99,9 @@ subscription and no one else sitting in the middle of your traffic.
 - **Bring what you already have.** Already running WireGuard, AmneziaWG, WDTT or csqtt on a box by hand? The
   panel finds those servers and offers to **adopt** them — keys, port, subnet and existing users
   intact, nothing to re-issue and no downtime.
+- **Leave through a router behind NAT.** A server's traffic can leave by Cloudflare WARP, a WireGuard profile from
+  anywhere, or a **dial-in exit**: an upstream that can't be reached — a home router abroad — connects to the server,
+  and the server's users go out through it. Paste the server side of its config in **Settings → WARP & exits**.
 - **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
 
 <details>
