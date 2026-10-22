@@ -65,7 +65,7 @@ PLANTS = {
     "refuseoff": ("[12]", "        if _vl not in CSQTT_LINES:\n            # a server on a line", "        if False:\n            # a server on a line"),
     "arstore": ("[13]", "            _ar, _are = _validate_app_routing(body.get(\"app_routing\"))",
                 "            _ar, _are = body.get(\"app_routing\"), None"),
-    "arclear": ("[13]", "            else:\n                inst.pop(\"app_routing\", None)\n", "            else:\n                pass\n"),
+    "arclear": ("[13]", "                else:\n                    inst.pop(\"app_routing\", None)\n", "                else:\n                    pass\n"),
     "ar21": ("[13]", "            inst.pop(\"app_routing\", None)            # 2.1 has no App routing", "            pass                                     # 2.1 has no App routing"),
     "mirror": (("[8]", "[10]"), "                    _inst[\"line\"] = _rep[\"line\"]", "                    pass"),
 }

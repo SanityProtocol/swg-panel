@@ -2060,6 +2060,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 .arx-row .drag-grip{cursor:grab;opacity:.62;margin:0}.arx-row:hover .drag-grip{opacity:.95}
 .arx-who{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .arx-who svg{width:13px;height:13px;color:var(--dim);margin-right:5px;vertical-align:-2px}
+.arx-who.none{color:var(--dim);font-weight:500}
+.arx-n{color:var(--dim);font-weight:500;font-variant-numeric:tabular-nums;margin-right:6px}
 .arx-rule{font-size:12.5px;color:var(--ink-2);white-space:nowrap}
 .arx-rule.none{color:var(--dim)}
 .arx-add{align-self:flex-start}

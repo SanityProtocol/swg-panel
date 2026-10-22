@@ -10,29 +10,38 @@ desired.json the node writes — the outcome is judged by the engine, not by the
 
   [1] the door (_validate_ar_except): null kept as no App routing, an all-default own rule is the same; an own rule's
       refusal names the exception and nests the reason; nobody chosen, a cap of 20, a non-list are refused; a NEW unknown
-      id is refused, a STORED one that dangles is dropped quietly and an entry left naming nobody goes
+      id is refused, a STORED one that dangles is dropped quietly and an entry left naming nobody is kept (its own rule
+      with it) and may be re-sent; a stored list that is not a list is no list; www.www.ru is refused (stored as www.ru, the
+      next save would refuse it)
   [2] resolution (desired_csqtt_for_node): device > user > group, the upper group for a person in two, a deleted group
       names nobody, no winner → no key; per server (another server on the node keeps its own rule); a 2.1 server never
-      resolves a list; the reply never carries the list
-  [3] the node (_csqtt_desired_body): a password's own body written, its known keys only; a malformed one dropped from
-      that password only; the drift check sees an exception added and removed; snap reports csqtt_ar_pw
+      resolves a list; a roster whose groups are not a map resolves users and devices; the reply never carries the list
+      and carries each winning body once (`ar_bodies`), its passwords naming it by index (`ar`)
+  [3] the node (_csqtt_desired_body): a password's own body (by its index) written, its known keys only; a malformed body
+      or index dropped from those passwords only; the drift check sees an exception added and removed; snap reports
+      csqtt_ar_pw
   [4] the engine: each password's rule, as the 2.5 binary computes it from the node's desired.json, is the one asked for
       — incl. "No App routing" overriding a server rule, and removing the exception returning the server's rule
   [5] byte-identical: with no exceptions the sync reply and desired.json are those of 0c910315 (the panel and noded
       before this change), on a fleet with a 2.1 server, a 2.5 server with a rule and one without
-  [6] through a real panel: /api/csqtt/set stores the list (2.5), refuses it on 2.1 and pops it on a switch to 2.1,
-      keeps it when a tab does not send the key; csqtt_cfg publishes it; the node's sync reply carries per-password bodies
-      and never the list
+  [6] through a real panel: /api/csqtt/set stores the list (2.5), drops it on 2.1 as it drops the rule and pops it on a
+      switch to 2.1, keeps it when a tab does not send the key; csqtt_cfg publishes it; the node's sync reply carries the
+      bodies once and never the list
 
 Run: python3 tests/csqtt_app_routing_who_selftest.py   (0 = pass)
      --perturb-null     "No App routing" sent as null (the binary reads it as the server's rule) → RED in [2]/[4]/[6]
-     --perturb-order    a group's entry before a user's → RED in [2]/[4]
+     --perturb-order    a user's entry before a device's → RED in [2]/[4]/[6]
+     --perturb-grpfirst one pass: an upper group's entry beats a lower user's → RED in [2]/[4]
      --perturb-lastgrp  the LOWER group wins for a person in two → RED in [2]/[4]
+     --perturb-percopy  the reply copies the body into every password (and the node finds none) → RED in [2]/[4]/[6]
      --perturb-nopop    the reply carries the list → RED in [2]/[6]
      --perturb-line21   a 2.1 server resolves a list too → RED in [2]
      --perturb-door     a stored id that dangles is refused (the server becomes unsavable) → RED in [1]
      --perturb-newid    a new unknown id is stored → RED in [1]
-     --perturb-nodrop   the node writes a malformed per-password body → RED in [3]
+     --perturb-nobody   an entry left naming nobody is dropped with its own rule → RED in [1]
+     --perturb-www      www.www.ru is stored as www.ru → RED in [1]
+     --perturb-nodrop   the node writes a malformed body → RED in [3]
+     --perturb-badix    the node takes a bool as an index → RED in [3]
      --perturb-nopass   the node drops per-password bodies (the old whitelist) → RED in [3]/[4]
      --perturb-cfg      csqtt_cfg does not publish the list → RED in [6]
      --perturb-keep21   a switch to 2.1 keeps the list → RED in [6]
@@ -47,22 +56,29 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 BASE = "0c910315"   # the panel and noded before exceptions — [5] compares with them
 
 P_PLANTS = {
-    "--perturb-null": (("[2]", "[4]", "[6]"), '        body = e.get("app_routing") or _AR_NONE\n', '        body = e.get("app_routing")\n'),
-    "--perturb-order": (("[2]", "[4]"), "                own = by[0].get(pid) or (uid and (by[1].get(uid) or by[2].get(uid)))",
-                        "                own = by[0].get(pid) or (uid and (by[2].get(uid) or by[1].get(uid)))"),
-    "--perturb-lastgrp": (("[2]", "[4]"), "                by[2].setdefault(uid, body)", "                by[2][uid] = body"),
-    "--perturb-nopop": (("[2]", "[6]"), '        merged.pop("app_routing_except", None)', '        pass'),
+    "--perturb-null": (("[2]", "[4]", "[6]"), 'e.get("app_routing") or _AR_NONE) for e in', 'e.get("app_routing")) for e in'),
+    "--perturb-order": (("[2]", "[4]", "[6]"), '                own = by[0].get(pid) or by[1].get(p.get("user_id"))',
+                        '                own = by[1].get(p.get("user_id")) or by[0].get(pid)'),
+    "--perturb-grpfirst": (("[2]", "[4]"), "            by_uid.setdefault(uid, body)\n    for w, body in es:\n",
+                           "            by_uid.setdefault(uid, body)\n"),
+    "--perturb-lastgrp": (("[2]", "[4]"), "                by_uid.setdefault(m, body)", "                by_uid[m] = body"),
+    "--perturb-percopy": (("[2]", "[4]", "[6]"), '                b = rec.pop("app_routing", None)\n', '                b = None\n'),
+    "--perturb-nopop": (("[2]", "[6]"), '        if merged.pop("app_routing_except", None):', '        if merged.get("app_routing_except"):'),
     "--perturb-line21": (("[2]",), ' and str(r.get("line") or CSQTT_DEFAULT_LINE) != CSQTT_DEFAULT_LINE}', '}'),
     "--perturb-door": (("[1]",), "        if any(x not in known[k] and x not in stored[k] for k, ids in lists.items() for x in ids):",
                        "        if any(x not in known[k] for k, ids in lists.items() for x in ids):"),
     "--perturb-newid": (("[1]",), "        if any(x not in known[k] and x not in stored[k] for k, ids in lists.items() for x in ids):",
                         "        if False:"),
+    "--perturb-nobody": (("[1]",), '        out.append({"who": {k: x for k, x in keep.items() if x}, "app_routing": body})',
+                         '        if any(keep.values()):\n            out.append({"who": {k: x for k, x in keep.items() if x}, "app_routing": body})'),
+    "--perturb-www": (("[1]",), '        if h.startswith("www."):\n            # www.www', '        if False:\n            # www.www'),
     "--perturb-cfg": (("[6]",), '"app_routing", "app_routing_except") if k in ov}', '"app_routing") if k in ov}'),
     "--perturb-keep21": (("[6]",), '            inst.pop("app_routing_except", None)     # …nor its exceptions\n', ''),
 }
 N_PLANTS = {
-    "--perturb-nodrop": (("[3]",), '        own = _csqtt_app_routing(e.get("app_routing")) if "app_routing" in e else None',
-                         '        own = e.get("app_routing")'),
+    "--perturb-nodrop": (("[3]",), '    own_by = [_csqtt_app_routing(b) for b in bodies] if isinstance(bodies, list) else []',
+                         '    own_by = list(bodies) if isinstance(bodies, list) else []'),
+    "--perturb-badix": (("[3]",), '        own = own_by[ix] if type(ix) is int and', '        own = own_by[ix] if isinstance(ix, int) and'),
     "--perturb-nopass": (("[3]", "[4]"), '        if own:\n            rec["app_routing"] = own\n', ''),
 }
 MODE = next((a for a in sys.argv[1:] if a in P_PLANTS or a in N_PLANTS), None)
@@ -199,10 +215,28 @@ try:
     prev = [{"who": {"users": ["u1", "u9"], "groups": ["g9"]}, "app_routing": None}, {"who": {"groups": ["g8"]}, "app_routing": None}]
     o, e = V([{"who": {"users": ["u1", "u9"], "groups": ["g9"]}, "app_routing": None},
               {"who": {"groups": ["g8"]}, "app_routing": None}], prev, ROSTER)
-    check("a stored id that no longer exists is dropped quietly (the server stays savable); an entry left naming nobody goes",
-          e is None and o == [{"who": {"users": ["u1"]}, "app_routing": None}], (o, e))
+    check("a stored id that no longer exists is dropped quietly (the server stays savable); an entry left naming nobody is kept",
+          e is None and o == [{"who": {"users": ["u1"]}, "app_routing": None}, {"who": {}, "app_routing": None}], (o, e))
     o, e = V([{"who": {"users": ["u1", "u7"]}}], prev, ROSTER)
     check("…while a NEW unknown id is refused", o is None and e and "no longer exists" in e["error"], (o, e))
+    prev = [{"who": {"groups": ["g8"]}, "app_routing": R_X}]
+    o, e = V(prev, prev, ROSTER)
+    check("an own rule whose people were all deleted is kept with it (as a routing rule is)", e is None and o == [{"who": {}, "app_routing": R_X}], (o, e))
+    o, e = V(o, o, ROSTER)
+    check("…and the next save re-sends it as stored", e is None and o == [{"who": {}, "app_routing": R_X}], (o, e))
+    for bad_prev in ({}, 5, True, "x", [None, 3]):
+        try:
+            o, e = V([{"who": {"users": ["u1"]}}], bad_prev, ROSTER)
+            ok = e is None and o == [{"who": {"users": ["u1"]}, "app_routing": None}]
+        except Exception as ex:
+            ok, o = False, repr(ex)
+        check("a stored list that is not a list is no list: %r" % (bad_prev,), ok, o)
+    VA = P._validate_app_routing
+    b, e = VA({"domains": ["www.www.ru"]})
+    check("www.www.ru is refused (stored as www.ru, the next save would read ru)", b is None and e and "not a domain" in e["error"], (b, e))
+    for d in ("www.ya.ru", "*.www.example.com", "https://www.vk.com/feed", "xn--d1acpjx3f.xn--p1ai", "mail.www.ru"):
+        b1, e1 = VA({"domains": [d]}); b2, e2 = VA(b1)
+        check("a stored own rule re-validates to itself: %s" % d, e1 is None and e2 is None and b1 == b2, (b1, e1, b2, e2))
 
     section("[2] resolution")
     def got(pw, iface="csqtt1", f=None):
@@ -218,26 +252,51 @@ try:
     check("a 2.1 server never resolves a list (a hand-edited one included)",
           got("pw-f", "csqtt3", fleet(ex3=[{"who": {"users": ["u4"]}, "app_routing": None}])) == "ABSENT"
           and got("pw-a", "csqtt1", fleet(line1="2.1")) == "ABSENT")
+    ro = dict(ROSTER, groups=["g1"])
+    try:
+        okg = (OWN("csqtt1", "pw-b", None) == OWN("csqtt1", "pw-b", None) and
+               P.desired_csqtt_for_node(ro, fleet(), "n1")["csqtt1"]["pw-b"].get("app_routing") == R_P2)
+    except Exception as ex:
+        okg = repr(ex)
+    check("a roster whose groups are not a map still resolves devices and users (never a failed sync)", okg is True, okg)
     rep = P._csqtt_reply(ROSTER, fleet(), "n1", snap=SNAP)
     check("the reply never carries the list", all("app_routing_except" not in (v or {}) for v in rep.values()), list(rep.get("csqtt1", {})))
-    check("…and its passwords carry the resolved bodies", (rep["csqtt1"]["passwords"].get("pw-b") or {}).get("app_routing") == R_P2)
+    c1 = rep["csqtt1"]; ab = c1.get("ar_bodies") or []
+    pick = lambda pw: (lambda i: ab[i] if isinstance(i, int) and 0 <= i < len(ab) else "ABSENT")((c1["passwords"].get(pw) or {}).get("ar"))
+    check("…and names each password's body by index", pick("pw-b") == R_P2 and pick("pw-a") == P._AR_NONE and pick("pw-d") == "ABSENT",
+          (pick("pw-b"), pick("pw-a"), pick("pw-d")))
+    check("…each winning body once, and no password carries one",
+          len(ab) == 4 and all("app_routing" not in v for v in c1["passwords"].values()), (len(ab), c1["passwords"]))
+    check("a server without exceptions has no `ar_bodies`", "ar_bodies" not in rep["csqtt2"] and "ar_bodies" not in rep["csqtt3"])
 
     section("[3] the node")
-    BODY = lambda pws, ar=SR: N._csqtt_desired_body({"passwords": pws, "app_routing": ar})
-    d = json.loads(BODY({"pw-a": {"name": "a", "app_routing": dict(R_G1, bogus=1)}, "pw-b": {"name": "b"}}))
-    check("a password's own body is written, its known keys only; the others have none",
-          d["passwords"][0].get("app_routing") == R_G1 and "app_routing" not in d["passwords"][1], d)
+    def BODY(pws, bodies=None, ar=SR):
+        inst = {"passwords": pws, "app_routing": ar}
+        if bodies is not None:
+            inst["ar_bodies"] = bodies
+        return N._csqtt_desired_body(inst)
+    d = json.loads(BODY({"pw-a": {"name": "a", "ar": 0}, "pw-b": {"name": "b"}, "pw-c": {"ar": 0}}, [dict(R_G1, bogus=1)]))
+    check("a password's own body (by index) is written, its known keys only; the others have none",
+          d["passwords"][0].get("app_routing") == R_G1 and "app_routing" not in d["passwords"][1]
+          and d["passwords"][2].get("app_routing") == R_G1, d)
     check("the canonical all-default body is written as it is (never dropped as empty)",
-          json.loads(BODY({"pw-a": {"app_routing": P._AR_NONE}}))["passwords"][0].get("app_routing") == P._AR_NONE)
+          json.loads(BODY({"pw-a": {"ar": 0}}, [P._AR_NONE]))["passwords"][0].get("app_routing") == P._AR_NONE)
     for bad in (dict(R_G1, domains="g1.ru"), dict(R_G1, apps_mode="sometimes"), "x", None, {}):
-        d = json.loads(BODY({"pw-a": {"app_routing": bad}, "pw-b": {"app_routing": R_G2}}))
-        check("a malformed body drops from that password only: %s" % str(bad)[:40],
+        d = json.loads(BODY({"pw-a": {"ar": 0}, "pw-b": {"ar": 1}}, [bad, R_G2]))
+        check("a malformed body drops from its passwords only: %s" % str(bad)[:40],
               "app_routing" not in d["passwords"][0] and d["passwords"][1].get("app_routing") == R_G2 and d.get("app_routing") == SR, d)
+    for ix in (True, False, "0", -1, 2, 1.0, None):
+        d = json.loads(BODY({"pw-a": {"ar": ix}, "pw-b": {"ar": 1}}, [R_G1, R_G2]))
+        check("an index that is not one drops from that password only: %r" % (ix,),
+              "app_routing" not in d["passwords"][0] and d["passwords"][1].get("app_routing") == R_G2, d)
+    for bodies in ({"0": R_G1}, "x", 5):
+        d = json.loads(BODY({"pw-a": {"ar": 0}}, bodies))
+        check("bodies that are not a list are none: %r" % (bodies,), "app_routing" not in d["passwords"][0] and d.get("app_routing") == SR, d)
     N._csqtt_dir = lambda iface: TMP
     open(os.path.join(TMP, "desired.json"), "w").write(BODY({"pw-a": {}}) + "\n")
-    check("the drift check sees an exception added", N._csqtt_desired_changed("csqtt1", BODY({"pw-a": {"app_routing": R_G1}})) is True)
-    open(os.path.join(TMP, "desired.json"), "w").write(BODY({"pw-a": {"app_routing": R_G1}}) + "\n")
-    check("…the same one is no change, and its removal is", N._csqtt_desired_changed("csqtt1", BODY({"pw-a": {"app_routing": R_G1}})) is False
+    check("the drift check sees an exception added", N._csqtt_desired_changed("csqtt1", BODY({"pw-a": {"ar": 0}}, [R_G1])) is True)
+    open(os.path.join(TMP, "desired.json"), "w").write(BODY({"pw-a": {"ar": 0}}, [R_G1]) + "\n")
+    check("…the same one is no change, and its removal is", N._csqtt_desired_changed("csqtt1", BODY({"pw-a": {"ar": 0}}, [R_G1])) is False
           and N._csqtt_desired_changed("csqtt1", BODY({"pw-a": {}})) is True)
     check("the node reports csqtt_ar_pw", 'snap["csqtt_ar_pw"] = 1' in NSRC)
 
@@ -332,11 +391,13 @@ try:
                                            for i, l in (("csqtt1", "2.5"), ("csqtt2", "2.5"), ("csqtt3", "2.1"))]}
         code, r = req("/api/node/sync", {"snapshot": sn}, tok)
         c1 = (r.get("csqtt") or {}).get("csqtt1") or {}
-        check("the sync reply carries per-password bodies and never the list",
-              code == 200 and "app_routing_except" not in c1 and (c1.get("passwords", {}).get("pw-b") or {}).get("app_routing") == R_P2
-              and (c1.get("passwords", {}).get("pw-a") or {}).get("app_routing") == P._AR_NONE, (code, list(c1)))
+        ab = c1.get("ar_bodies") or []
+        pick = lambda pw: (lambda i: ab[i] if isinstance(i, int) and 0 <= i < len(ab) else "ABSENT")((c1.get("passwords", {}).get(pw) or {}).get("ar"))
+        check("the sync reply carries the bodies once, by index, and never the list",
+              code == 200 and "app_routing_except" not in c1 and pick("pw-b") == R_P2 and pick("pw-a") == P._AR_NONE, (code, list(c1)))
         code, r = req("/api/csqtt/set", {"node": "n1", "iface": "csqtt3", "app_routing_except": [{"who": {"users": ["u1"]}}]})
-        check("a 2.1 server refuses the list", code == 400 and "app_routing_except" not in rec("csqtt3"), (code, r))
+        check("a 2.1 server drops the list as it drops the rule (the rest of the save stands)",
+              code == 200 and "app_routing_except" not in rec("csqtt3"), (code, r))
         code, r = SET(line="2.1")
         check("a switch to 2.1 pops the list with the rule", code == 200 and "app_routing_except" not in rec() and "app_routing" not in rec(), (code, rec()))
     finally:

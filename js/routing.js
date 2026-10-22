@@ -2829,7 +2829,7 @@ export function WhoPicker({ sel, setSel, here, cell, onTyped, empty }) {
           groups=${Store.groups().filter(g => !sel.groups.includes(g.id))} onGroup=${id => addTo("groups", id)} onChange=${id => addTo("users", id)}
           devices=${here.filter(p => !sel.peers.includes(p.id)).map(p => ({ id: p.id, name: deviceLabel(p), sub: (Store.user(p.user_id) || {}).name || "" }))}
           onDevice=${id => addTo("peers", id)}/></div>
-        ${list.length > LIST_PAGE ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
+        ${list.length > LIST_PAGE || q ? html`<input class="sharebar-filter" value=${q} data-enter="self" placeholder=${T("Filter the list…")}
             aria-label=${T("Filter the list…")} onInput=${e => { setQ(e.target.value); setPage(1); }}/>` : null}
       </div>
       ${list.length ? html`<div class="sharegrid gmembers" role="table">

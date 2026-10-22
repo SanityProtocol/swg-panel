@@ -7115,7 +7115,6 @@ export const STR = {
   "App routing: at most {v1} exceptions": "Маршрутизация приложений: не больше {v1} исключений",
   "Exception {v1}: choose at least one person, group or device": "Исключение {v1}: выберите хотя бы одного человека, группу или устройство",
   "Exception {v1}: {v2}": "Исключение {v1}: {v2}",
-  "csqtt {v1} has no App routing": "В csqtt {v1} нет маршрутизации приложений",
   "Switching a csqtt server's version": "Смена версии сервера csqtt",
   "tag|update node": "обновите ноду",
   "This node can't run csqtt {v1} — update the node": "Эта нода не умеет запускать csqtt {v1} — обновите ноду",

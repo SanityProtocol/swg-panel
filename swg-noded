@@ -22364,16 +22364,19 @@ def _csqtt_desired_body(inst):
     """A csqtt server record's desired.json: a LIST of panel-owned password records (matches the Rust patch's SwgDesiredFile).
     NOTE the shape differs from WDTT's dict-keyed-by-password body. `app_routing` (2.5's one rule for every password) is
     written ONLY when set, so a server without it keeps the file it always had — no rewrite, no SIGHUP, on an update."""
+    # Exceptions (docs/CSQTT-APP-ROUTING-WHO-PLAN.md §4): the panel sends each winning body once (`ar_bodies`) and a
+    # password names its own by index (`ar`); the server reads an absent key as the server's rule and an all-default
+    # body as no rule. A malformed body or index drops from those passwords only (→ the server rule), never the file.
+    bodies = inst.get("ar_bodies")
+    own_by = [_csqtt_app_routing(b) for b in bodies] if isinstance(bodies, list) else []
     out = []
     for pw, e in (inst.get("passwords") or {}).items():
         e = e or {}
         rec = {"password": pw, "expires_at": int(e.get("expires_at") or 0),
                "vk_hash": str(e.get("vk_hash") or ""), "name": str(e.get("name") or ""),
                "is_deactivated": bool(e.get("is_deactivated"))}
-        # This password's own App routing (an exception, docs/CSQTT-APP-ROUTING-WHO-PLAN.md §4): the server reads an
-        # absent key as the server's rule and an all-default body as no rule. Only when the panel sent one and it is the
-        # stored shape — a malformed one drops from this password (→ the server rule), never the file.
-        own = _csqtt_app_routing(e.get("app_routing")) if "app_routing" in e else None
+        ix = e.get("ar")
+        own = own_by[ix] if type(ix) is int and 0 <= ix < len(own_by) else None
         if own:
             rec["app_routing"] = own
         out.append(rec)

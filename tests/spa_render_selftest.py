@@ -46,9 +46,10 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
   [B16] the Add-node command names the panel's confirmed address (OE, 1.8.9): opened through a tunnel or another name, it was
         built from this tab's address and pointed nowhere; with no address set, this tab's own as before
   [B17] a csqtt 2.5 server's App routing exceptions (1.8.11 S7): a row per exception in order (whom, what they get), the summary
-        counts them, an older node is said to need an update; a row's sheet lists its person with the devices on this server
-        (the routing rules' "For whom" picker, lifted) and its rule; Own rule opens the form, Apply puts it on the row; a new
-        exception waits for a person; Save sends and the panel stores the list. Rows inside the sheet at 1280 and 390 px, in
+        counts them, an older node is said to need an update and an updated one is not; a row's sheet lists its person with the
+        devices on this server (the routing rules' "For whom" picker, lifted) and its rule; a click edit there asks before it
+        is discarded, a search typed alone does not; Own rule opens the form, Apply puts it on the row; a new exception waits
+        for a person; a removed row asks before the server sheet discards it; Save sends and the panel stores the list. Rows inside the sheet at 1280 and 390 px, in
         English and Russian. SPA_SHOTS=<dir> keeps screenshots of the list, the edit and the add sheets
   [i18n] B1's words in Russian; [console] no error or exception on any view
 
@@ -59,7 +60,7 @@ only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
      --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost
-                       | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth
+                       | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
@@ -111,6 +112,11 @@ PERTURBATIONS = {
     "cmdhost": ("js/sheets-crud.js", 'const host = String(Store.panelPublicUrl || "").trim().replace(/\\/+$/, "") || `${location.origin}${BASE}`;',
                 "const host = `${location.origin}${BASE}`;"),
     "footwidth": ("js/sheets-crud.js", 'width=${760} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}', 'width=${640} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}'),
+    "arxguard": ("js/turn.js", 'width=${680} dirtyRef=${dirtyRef} closeRef=${closeRef} cleanRef=${cleanRef}\n    foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), onAction: apply, action: T("Apply")',
+                 'width=${680}\n    foot=${footRow({ onCancel: () => (closeRef.current ? closeRef.current() : closeModal()), onAction: apply, action: T("Apply")'),
+    "arxtyped": ("js/turn.js", "cell=${cell} onTyped=${typedOnly} empty=", "cell=${cell} empty="),
+    "csqguard": ("js/turn.js", 'width=${720} dirtyRef=${dirtyRef} closeRef=${closeRef}\n', 'width=${720}\n'),
+    "arpw": ("js/turn.js", "snap && !snap.csqtt_ar_pw ?", "snap && !snap.csqtt_arpw ?"),
 }
 WEB = ROOT
 if PERTURB:
@@ -179,7 +185,7 @@ try:
     IFACES = {"awg0": ("10.60.0", 51820), "awg1": ("10.61.0", 51821), "awg2": ("10.62.0", 51822)}
     PEERS = {}                                  # pubkey -> (iface, ip) — what the node reports serving
     OFFLINE, NOLAN = set(), [False]             # pubkeys the node reports as long silent · the node reports no LAN
-    CSQ = [0]                                   # [B17]: 1 the node can run csqtt 2.5, 2 it runs a 2.5 server (0 before, so B1–B16 see the fleet they always did)
+    CSQ = [0]                                   # [B17]: 1 the node can run csqtt 2.5, 2 it runs a 2.5 server, 3 it reports csqtt_ar_pw (0 before, so B1–B16 see the fleet they always did)
     def peer_rec(pk, ip, now):
         age = 100000 if pk in OFFLINE else 20
         return {"public_key": pk, "allowed_ips": ip + "/32", "endpoint": "198.51.100.9:40000", "rx_bytes": 1000, "tx_bytes": 1000,
@@ -197,7 +203,7 @@ try:
                 "lans": [] if NOLAN[0] else [{"ip": "192.168.1.5", "iface": "eth0"}],
                 "net_deps": {"panel": "127.0.0.1", "resolvers": ["1.1.1.1"], "resolvers_known": True, "share": 1, "carried": 1, "reach": 2},
                 "net_carried": ["192.168.50.0/24", "192.168.60.0/24"], "dev_reach": {"ok": True, "ifaces": ["awg1", "awg2"]},
-                **({"csqtt_lines": ["2.1", "2.5"]} if CSQ[0] else {}),
+                **({"csqtt_lines": ["2.1", "2.5"]} if CSQ[0] else {}), **({"csqtt_ar_pw": 1} if CSQ[0] > 2 else {}),
                 **({"csqtt": [{"iface": "csqtt1", "kind": "csqtt", "fork": "csqtt", "active": "active", "line": "2.5",
                                "listen": "0.0.0.0:46000", "tun_addr": "10.66.80.1/24"}]} if CSQ[0] > 1 else {})}
     def sync():
@@ -738,7 +744,11 @@ try:
         if SHOTS:
             with open(os.path.join(SHOTS, name + ".png"), "wb") as fh:
                 fh.write(base64.b64decode(br.send("Page.captureScreenshot", {"format": "png"}, session=tab.s)["data"]))
-    ROWS = "[...document.querySelectorAll('.arx-row')].map(r => [r.querySelector('.arx-who').textContent, r.querySelector('.arx-rule').textContent])"
+    ROWS = ("[...document.querySelectorAll('.arx-row')].map(r => [[...r.querySelector('.arx-who').childNodes].filter(n => !(n.classList && n.classList.contains('arx-n')))"
+            ".map(n => n.textContent).join(''), r.querySelector('.arx-rule').textContent])")
+    TOP = "[...document.querySelectorAll('.overlay.show .sheet')].pop()"
+    ESC = "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))"
+    ASKS = "((%s || document).querySelector('.discard-msg') || {}).textContent || ''" % TOP
     def open_ar(tab):
         ev_mod(tab, "turn", "M.openEditCsqtt(%s, 'csqtt1'); return true;" % json.dumps(NID))
         settle(tab, 900)
@@ -748,6 +758,9 @@ try:
         return tab.ev("(() => { const b = [...document.querySelectorAll(%s)].filter(e => %s.test(e.textContent) || %s.test(e.getAttribute('aria-label') || '')).pop();"
                       " if (!b) return false; b.click(); return true; })()" % (json.dumps(sel), rx, rx))
     for lang, vp in (("ru", (1280, 900)), ("en", (390, 844)), ("en", (1280, 900))):   # the last one edits and saves
+        if lang == "en" and vp[0] == 1280:
+            CSQ[0] = 3
+            must(sync(), "sync from a node that reports csqtt_ar_pw")
         tab = open_app(lang, viewport=vp)
         open_ar(tab)
         rows = tab.ev(ROWS)
@@ -756,8 +769,13 @@ try:
             check("[B17] %s: a row per exception, in order — whom it names, what they get" % tag,
                   rows == [["family", "Own rule: Apps"], ["anna", "No App routing"]], rows)
             check("[B17] %s: the summary counts them" % tag, "+ 2 exceptions" in (tab.ev("[...document.querySelectorAll('.overlay.show .disc-sum')].map(e => e.textContent).join('|')") or ""))
-            check("[B17] %s: a node that does not report csqtt_ar_pw is said to need an update" % tag,
-                  "Exceptions need a node update" in (tab.ev("document.querySelector('.arx').textContent") or ""))
+            need = "Exceptions need a node update" in (tab.ev("document.querySelector('.arx').textContent") or "")
+            if vp[0] == 1280:
+                check("[B17] %s: a node that reports csqtt_ar_pw is not said to need an update" % tag, not need)
+            else:
+                check("[B17] %s: a node that does not report csqtt_ar_pw is said to need an update" % tag, need)
+            check("[B17] %s: the rows are numbered (the order decides; the panel names a refused one by its number)" % tag,
+                  tab.ev("[...document.querySelectorAll('.arx-row .arx-n')].map(e => e.textContent)") == ["1.", "2."])
         else:
             check("[B17] ru: the rows in Russian", rows == [["family", "Своё правило: Приложения"], ["anna", "Без маршрутизации приложений"]], rows)
         fit = tab.ev("(() => { const sh = document.querySelector('.overlay.show .sheet').getBoundingClientRect();"
@@ -774,6 +792,9 @@ try:
             check("[B17] the exception's sheet lists its person with the devices on this server, its rule picked, and the picker to add more",
                   ed and ed["who"] == [["anna", "1"]] and ed["rule"] == "No App routing" and ed["add"], ed)
             click_text(tab, ".overlay.show [role=radio]", "/^Own rule$/"); settle(tab, 400)
+            tab.ev(ESC); settle(tab, 300)
+            check("[B17] a click edit (Own rule) asks before Esc discards it", "Discard unsaved changes?" in tab.ev(ASKS), tab.ev(ASKS))
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Keep editing$/"); settle(tab, 300)
             check("[B17] Own rule opens the App routing form", tab.ev("[...document.querySelectorAll('.overlay.show .sheet')].pop().textContent.includes('Every app uses the tunnel')"))
             tab.ev("(() => { const ta = [...[...document.querySelectorAll('.overlay.show .sheet')].pop().querySelectorAll('textarea')][0];"
                    " const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; set.call(ta, 'vk.com'); ta.dispatchEvent(new Event('input', {bubbles: true})); })()")
@@ -786,8 +807,16 @@ try:
                          " return { empty: (sh.querySelector('.sharegrid-empty') || {}).textContent, disabled: ap.disabled }; })()")
             check("[B17] a new exception names nobody yet: Apply waits for a person", add and add["disabled"] and "Choose at least one" in (add["empty"] or ""), add)
             shot(tab, "b17-add")
+            tab.ev("(() => { const i = %s.querySelector('.sharebar-add input'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
+                   " set.call(i, 'zz'); i.dispatchEvent(new Event('input', {bubbles: true})); })()" % TOP); settle(tab, 300)
+            n0 = tab.ev("document.querySelectorAll('.overlay.show .sheet').length")
             click_text(tab, ".overlay.show .sheet-foot button", "/^Cancel$/"); settle(tab, 400)
+            check("[B17] a search typed alone is no change: Cancel closes the new exception's sheet without asking",
+                  tab.ev("document.querySelectorAll('.overlay.show .sheet').length") == n0 - 1 and "Discard" not in tab.ev(ASKS), (n0, tab.ev(ASKS)))
             tab.ev("document.querySelectorAll('.arx-row')[0].querySelector('button[aria-label=\"Remove exception\"]').click()"); settle(tab, 300)
+            tab.ev(ESC); settle(tab, 300)
+            check("[B17] a removed row asks before Esc discards the server sheet", "Discard unsaved changes?" in tab.ev(ASKS), tab.ev(ASKS))
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Keep editing$/"); settle(tab, 300)
             tab.ev("window.__arx = null; const of = window.fetch; window.fetch = (u, o) => { if (String(u).includes('/api/csqtt/set')) window.__arx = o && o.body; return of(u, o); };")
             click_text(tab, ".overlay.show .sheet-foot button", "/^Save$/"); settle(tab, 1500)
             sent = json.loads(tab.ev("window.__arx") or "{}")
