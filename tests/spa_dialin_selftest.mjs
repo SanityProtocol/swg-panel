@@ -20,15 +20,17 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { ROOT, check, done } from "./spa_env.mjs";
 
-const PFX = "--" + "perturb" + "-";   // spelled apart: runperturb.py reads a literal flag here as a plant with no name
-const PLANT = (process.argv.find(a => a.startsWith(PFX)) || "").slice(PFX.length);
+// Each plant's flag is written out whole: runperturb.py finds a gate's plants by their quoted flags.
+const FLAGS = { "--perturb-text": "text", "--perturb-status": "status", "--perturb-old": "old", "--perturb-warp": "warp" };
+const _flag = process.argv.find(a => a.startsWith("--" + "perturb"));
+if (_flag && !FLAGS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
+const PLANT = _flag ? FLAGS[_flag] : "";
 const PLANTS = {
   text: ["screen-settings.js", '...(din ? [] : ["Endpoint = " + (p.endpoint || "")]),', '"Endpoint = " + (p.endpoint || ""),'],
   status: ["routing.js", 'if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return', 'if (false) return'],
   old: ["routing.js", 'if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return', 'if (false) return'],
   warp: ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
 };
-if (PLANT && !PLANTS[PLANT]) { console.log("unknown plant " + PLANT); process.exit(2); }
 const made = [];
 // A perturbed copy sits beside the original so its relative imports resolve; the other module imports the copy.
 const load = async name => {
