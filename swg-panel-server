@@ -19116,8 +19116,8 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
     changes, so a stored exit stays savable whatever the node runs now; awg_gen_refusal's perr is the error.
 
     A DIAL-IN profile (docs/LISTEN-EXIT-PLAN.md §2.3) is checked against `dialin` = {"ports": {port: holder},
-    "nets": [(name, network)]} — what else on the node binds a UDP port or holds a subnet (_dialin_ctx) — only for a port
-    or an address this save CHANGES; None (a caller that parses no profile) asks nothing."""
+    "nets": [(name, network)], …} — what else on the node binds a UDP port or holds a subnet (_dialin_ctx) — only for a port
+    or an address this save CHANGES; None (a caller that parses no profile) asks nothing, and refuses a `dialin_gen`."""
     if not isinstance(exits, list):
         return None, "exits must be a list"
     known = {str(e.get("id") or ""): e for e in (prev or []) if isinstance(e, dict)}
@@ -19386,9 +19386,9 @@ def _dialin_generate(g, kept, eid, exits, known, ctx):
     pk, rk, psk = (str(g.get(k) or "").strip() for k in ("private_key", "peer_key", "psk"))
     if not (_WG_KEY_RE.match(pk) and _WG_KEY_RE.match(rk)) or (psk and not _WG_KEY_RE.match(psk)):
         return "", "the generated keys are not usable keys"
-    if kept.get("listen_port") and not kept.get("endpoint"):
+    if exit_is_dialin({"provider": "profile", "profile": kept}):
         port, node, awg, mtu = int(kept["listen_port"]), kept.get("address"), kept.get("awg") or {}, kept.get("mtu") or 1280
-        router = str(ipaddress.IPv4Address(node) + 1)
+        router = "0.0.0.0"           # the server side's AllowedIPs is never read (trap 1): the router's own address is not needed
     else:
         proto = str(g.get("proto") or "")
         if proto not in ("wg", "awg2", "awg3"):
@@ -19396,19 +19396,31 @@ def _dialin_generate(g, kept, eid, exits, known, ctx):
         others = [((known.get(str((x or {}).get("id") or "")) or {}).get("profile") or {}) for x in exits
                   if isinstance(x, dict) and str(x.get("id") or "") != eid]
         used = set(ctx.get("ports") or {}) | {int(o["listen_port"]) for o in others if str(o.get("listen_port") or "").isdigit()}
-        port = next((p for p in DIALIN_PORTS if p not in used), None)
+        # …inside the node's DECLARED firewall range too, when it declares one (a NixOS module): a port outside it is
+        # one the router can never reach, and _node_issues would flag it the moment it was stored
+        _fw = ctx.get("udp_ranges") or []
+        port = next((p for p in DIALIN_PORTS if p not in used and (not _fw or any(a <= p <= b for a, b in _fw))), None)
         if port is None:
             return "", "no free port in 51820–51899 on this node — paste a config with your own port"
-        taken = [n for _nm, n in (ctx.get("nets") or ()) if n.version == 4]
-        for o in others:
+        # The pair is unique across the FLEET, not only this node: one router may serve several nodes (the client fails
+        # over between them), and two configs with one Address on one router collide there.
+        taken = [n for _nm, n in (ctx.get("nets") or ()) if n.version == 4] + list(ctx.get("dialin_addrs") or [])
+        for o in others:          # the node side, and the router beside it (a pasted exit's router is taken to be node + 1)
             with contextlib.suppress(ValueError):
                 taken.append(ipaddress.ip_network(str(o.get("address") or "") + "/32"))
-        pair = next((n for n in DIALIN_NET.subnets(new_prefix=31) if not any(n.overlaps(t) for t in taken)), None)
+                taken.append(ipaddress.ip_network(str(ipaddress.IPv4Address(str(o.get("address") or "")) + 1) + "/32"))
+        # a subnet covering the whole range answers at once, not after 32768 overlap tests under the API lock
+        pair = None if any(t.version == 4 and DIALIN_NET.subnet_of(t) for t in taken) else \
+            next((n for n in DIALIN_NET.subnets(new_prefix=31) if not any(n.overlaps(t) for t in taken)), None)
         if pair is None:
             return "", "no free address pair in 10.254.0.0/16 on this node — paste a config with your own address"
         node, router, mtu = str(pair[0]), str(pair[1]), 1280
-        awg = {} if proto == "wg" else gen_awg_params() if proto == "awg2" else \
-            awg3_full(None, defaults=ctx.get("awg3") or {}, omit=ctx.get("awg3_omit") or ())
+        # the operator's interface-defaults template applies as it does to a new interface: its values over the generator,
+        # and a key it sets to "-" left out (a router that cannot take I1–I5 is exactly why someone sets them to none)
+        _tv, _tom = ctx.get("awg_tpl") or ({}, frozenset())
+        awg = {} if proto == "wg" else \
+            {k: v for k, v in {**gen_awg_params(), **_tv}.items() if k not in _tom and k not in AWG3_FIELDS} if proto == "awg2" else \
+            awg3_full(_tv, defaults=ctx.get("awg3") or {}, omit=frozenset(ctx.get("awg3_omit") or ()) | _tom)
     return ("[Interface]\nPrivateKey = %s\nAddress = %s/32\nMTU = %s\nListenPort = %d\n" % (pk, node, mtu, port)
             + "".join("%s = %s\n" % (k, awg[k]) for k in AWG_FIELDS if k in awg and str(awg[k]).strip() != "")
             + "\n[Peer]\nPublicKey = %s\n" % rk + ("PresharedKey = %s\n" % psk if psk else "")
@@ -19416,13 +19428,21 @@ def _dialin_generate(g, kept, eid, exits, known, ctx):
 
 
 def _dialin_ctx(deps, nodes, nid):
-    """What a dial-in exit's port and address must not collide with on node `nid`: {"ports": {port: holder}, "nets":
-    [(name, network)]}. The ports are every UDP holder but the exits themselves (the exits' own list is compared as a whole,
-    see _validate_exits) plus RAW-IP's reserved one; the networks are the node's interface subnets as it reports them (mesh
-    links included), its WDTT/csqtt subnets and its mesh pool."""
+    """What a dial-in exit's port and address must not collide with on node `nid`, and what Generate draws from:
+    {"ports": {port: holder}, "nets": [(name, network)], "udp_ranges": [(lo, hi)], "dialin_addrs": [network],
+    "awg3": {…}, "awg3_omit": frozenset}. The ports are every UDP holder but the exits themselves (the exits' own list is
+    compared as a whole, see _validate_exits), RAW-IP's reserved one and the wg/awg servers the node reports but nobody
+    adopted (a stock wg0 on 51820); the networks are the node's interface subnets as it reports them (mesh links included),
+    its WDTT/csqtt subnets and its mesh pool; `udp_ranges` the node's declared firewall range (none: no limit);
+    `dialin_addrs` every OTHER node's dial-in exit addresses (Generate keeps pairs fleet-unique); `awg3`/`awg3_omit` the
+    operator's 3.1 defaults and `awg_tpl` the interface-defaults AmneziaWG template (values, omitted) for a generated set."""
     c = nodes.get(nid) or {}
+    snap = ((deps.get("node_snaps") or {}).get(nid) or {})
     ports = dict(_node_ports(deps, nodes, nid, skip_exits=True))
     ports.setdefault(WDTT_RAW_PORT, "RAW-IP (reserved)")
+    for _cd in snap.get("iface_candidates") or []:
+        if isinstance(_cd, dict) and str(_cd.get("listen_port") or "").isdigit() and int(_cd["listen_port"]):
+            ports.setdefault(int(_cd["listen_port"]), str(_cd.get("name") or "an unadopted interface"))
     nets = []
     for ifn, blk in sorted((((deps.get("node_snaps") or {}).get(nid) or {}).get("interfaces") or {}).items()):
         with contextlib.suppress(ValueError, TypeError):
@@ -19431,7 +19451,15 @@ def _dialin_ctx(deps, nodes, nid):
     nets += _tunnel_networks(c)
     with contextlib.suppress(ValueError, TypeError):
         nets.append(("the mesh pool", ipaddress.ip_network(str(node_mesh_cfg(deps, c).get("subnet") or ""), strict=False)))
-    return {"ports": ports, "nets": nets, "awg3": awg3_defaults(deps), "awg3_omit": awg3_omitted(deps)}
+    others = []
+    for _oid, _on in nodes.items():
+        if _oid != nid:
+            for _x, _p in _dialin_ports(_on):
+                with contextlib.suppress(ValueError, TypeError):
+                    others.append(ipaddress.ip_network(str(_x["profile"].get("address") or "") + "/32"))
+    return {"ports": ports, "nets": nets, "udp_ranges": _parse_port_ranges(snap.get("udp_ports")), "dialin_addrs": others,
+            "awg3": awg3_defaults(deps), "awg3_omit": awg3_omitted(deps),
+            "awg_tpl": awg_template((((deps.get("panel_settings") or {}).get("interface_defaults")) or {}).get("awg_params"))}
 
 
 def prune_node_refs(nodes):

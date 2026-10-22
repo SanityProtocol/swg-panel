@@ -3295,6 +3295,11 @@ export const STR = {
   "the AmneziaWG parameters": "параметры AmneziaWG",
   "this node's key": "ключ этой ноды",
   "{v1}: the router config changed — {v2}.": "{v1}: конфиг роутера изменился — {v2}.",
+  "the preshared key": "общий ключ (PSK)",
+  "Save or discard your changes first — Regenerate keeps what is stored.": "Сначала сохраните или отмените изменения — пересоздание берёт сохранённое.",
+  "AmneziaWG 3.1: {v1}": "AmneziaWG 3.1: {v1}",
+  "Route the node's address {v1} into the tunnel — on OpenWrt tick “Route Allowed IPs” on the peer — or the replies leave by the router's WAN and the exit carries nothing.":
+    "Направьте адрес ноды {v1} в туннель — на OpenWrt отметьте «Route Allowed IPs» у пира, — иначе ответы уйдут через WAN роутера и выход ничего не пропустит.",
   "a dial-in exit can only be generated from the exits screen": "обратный выход можно сгенерировать только на экране выходов",
   "the generated keys are not usable keys": "сгенерированные ключи непригодны",
   "choose WireGuard, AmneziaWG 2.0 or AmneziaWG 3.1": "выберите WireGuard, AmneziaWG 2.0 или AmneziaWG 3.1",

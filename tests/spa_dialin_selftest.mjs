@@ -30,13 +30,14 @@ const PLANTS = {
   "--perturb-text": ["screen-settings.js", '...(din ? [] : ["Endpoint = " + (p.endpoint || "")]),', '"Endpoint = " + (p.endpoint || ""),'],
   "--perturb-status": ["routing.js", 'if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return', 'if (false) return'],
   "--perturb-old": ["routing.js", 'if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return', 'if (false) return'],
-  "--perturb-rconf": ["screen-settings.js", '"Address = " + ip4Next(prof.address) + "/32"', '"Address = " + prof.address + "/32"'],
+  "--perturb-rconf": ["screen-settings.js", 'address: subnetServerAddr(prof.address + "/32")', 'address: prof.address + "/32"'],
   "--perturb-warp": ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
 };
 if (_flag && !PLANTS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
 const PLANT = _flag || "";
 const made = [];
-// A perturbed copy sits beside the original so its relative imports resolve; the other module imports the copy.
+// A perturbed copy sits beside the original so its relative imports resolve. screen-settings.js (for routerConf) imports the
+// ORIGINAL routing.js, so a routing.js plant is read through R only — the status checks call R, never screen-settings.
 const load = async name => {
   let file = path.join(ROOT, "js", name);
   if (PLANT && PLANTS[PLANT][0] === name) {
@@ -145,9 +146,12 @@ for (const [nm, awg] of [["WireGuard", {}], ["AmneziaWG 3.1", A31]]) {
   check(nm + ": its peer is the node, at the node's host and port", r.p && r.p.peer_key === K2 && r.p.endpoint === "203.0.113.7:51824", r.p);
   check(nm + ": the router's address is the other half of the pair, AllowedIPs the node's /32",
         r.p && r.p.address === "10.254.0.7" && /\nAllowedIPs = 10\.254\.0\.6\/32\n/.test(rc), rc);
-  check(nm + ": the same AmneziaWG set, keepalive on", r.p && JSON.stringify(r.p.awg) === JSON.stringify(parse(SS.profileText({ provider: "profile", profile: prof })).p.awg)
-        && r.p.keepalive === 25, [r.p && r.p.awg, rc]);
+  // against the stored dict itself, not against another rendering by the same awgConfLines (which would agree with itself)
+  const want = Object.fromEntries(Object.entries(awg).sort());
+  check(nm + ": the same AmneziaWG set as stored, keepalive on", r.p && JSON.stringify(Object.fromEntries(Object.entries(r.p.awg).sort())) === JSON.stringify(want)
+        && r.p.keepalive === 25, [r.p && r.p.awg, want]);
 }
+check("a host already bracketed is not bracketed twice", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(SSM.routerConf("[2001:db8::1]", { ...DIN.profile, listen_port: 51824 }, K1, K2, "")));
 check("an IPv6 host is bracketed", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(SSM.routerConf("2001:db8::1", { ...DIN.profile, listen_port: 51824 }, K1, K2, "")));
 
 done(!!PLANT, PLANT);

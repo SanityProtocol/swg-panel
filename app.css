@@ -2980,13 +2980,13 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .exdial{gap:8px}
 .exdial .dropdown{min-width:170px}
 .exdef input{accent-color:var(--brand);width:15px;height:15px;margin:0;cursor:pointer}
-.exadd{display:flex;flex-wrap:wrap;gap:8px}
+.exadd{display:flex;flex-wrap:wrap;gap:8px}   /* the ways to get an exit, equal weight — none is the "real" one */
 /* a dial-in exit's router config: the file beside its QR, stacked on a phone (LISTEN-EXIT §2.4a) */
 .rconf{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:start}
-.rconf .qr img{width:220px;height:220px}
+.rconf .qr img{width:220px;height:220px;image-rendering:pixelated;image-rendering:crisp-edges}
 .rsteps{margin:6px 0 0;padding-left:18px;font-size:13px;line-height:1.5;color:var(--ink-2)}
 .rsteps li+li{margin-top:6px}
-@media (max-width:600px){.rconf{grid-template-columns:1fr}.rconf .qr{justify-self:center}}   /* the three ways to get an exit, equal weight — none is the "real" one */
+@media (max-width:600px){.rconf{grid-template-columns:1fr}.rconf .qr{justify-self:center}}
 /* .exprof — see `.tf-text, .exprof` below: one look for every box an operator types a config into. */
 /* mesh-health tag (node-detail header + nodes-list) + its hover bubble */
 .mh-pop{display:inline-flex}

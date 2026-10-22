@@ -12,7 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { awgDict3, nodeStatusOf, nodeStale } from "./model.js";
+import { awgDict3, nodeStatusOf, nodeStale, subnetServerAddr } from "./model.js";
 import {
   BASE, ago, ipChoices, seen, url, fmtBytes, panelNow, panelNowS,
 } from "./util.js";
@@ -36,7 +36,7 @@ import {
   ListPager, LIST_PAGE, pageSlice,
 } from "./ui.js";
 import {
-  awgConfLines, clientKeepalive, genKeys, genPSK, QR,
+  awgConfLines, buildConf, genKeys, genPSK, QR,
   SUB_LANG_LIST, VaultPromptSheet, downloadConf, ivkSetEscrow, nginxServerBlock, nixDirectTlsBlock, nixProxyBlock,
   ensureVaultUnlocked, ivkResealForNodeBlob, nixUpstream, normPublicUrl, qrDataURL, runConfigMigration, subBaseUrl, subForget, subKeyB64, subRewrap, subSKCached, subUnlock,
   subVaultCreate, urlPortOf, withUrlPort,
@@ -54,7 +54,7 @@ import { classifyAll } from "./classify.js";   // the one grammar — CustomList
 import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
 import {
   TURN_FORKS_DEFAULT, TurnCollectedIps, openRosterCheck, openServerClients, openServerDefaults,
-  turnForkPlatforms, turnUpdateTarget, turnUpdating,
+  turnDialFallback, turnForkPlatforms, turnUpdateTarget, turnUpdating,
 } from "./turn.js";
 import {
   IgnoredIfacesCard, openIfaceEditor, AwgGenField, Awg3Grid, AWG3_EDIT_COLS, MeshGenField,
@@ -4214,45 +4214,47 @@ const exitBadge = (ex, live) => {
  *  not stored (§2.4a): it lasts until Regenerate or a reload, and the row offers Regenerate beside it. */
 const DIALIN_NOTE = {};
 
-const ip4Next = a => {
-  const p = String(a || "").split(".").map(Number);
-  const n = (((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3] + 1) >>> 0;
-  return [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
-};
-/** The host the router dials: the node's ingress address, else its first public address — as a WDTT client's link is built. */
-const nodeDialHost = node => String((node || {}).endpoint_host || "").trim()
-  || ((((Store.stats || {})[(node || {}).id] || {}).node_ips) || [])
-    .find(ip => ip && !/^(0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(ip)) || "";
+/** The host the router dials — the one a turn link's client dials: the node's ingress address, else its first public one. */
+const nodeDialHost = node => turnDialFallback((node || {}).id);
 
-/** The router's side of a dial-in exit — file text, nothing translated.   // i18n-keys */
+/** The router's side of a dial-in exit: a client config to the node, built by the client configs' own builder (buildConf)
+ *  — its address the other half of the pair, its AllowedIPs the node's /32, keepalive 25 (the router keeps its NAT open). */
 export function routerConf(host, prof, routerPriv, nodePub, psk) {
-  const h = /:/.test(host) ? "[" + host + "]" : host;
-  return ["[Interface]", "PrivateKey = " + routerPriv, "Address = " + ip4Next(prof.address) + "/32",   // i18n-keys: generated .conf — file text
-    "MTU = " + (prof.mtu || 1280), ...awgConfLines(prof.awg),   // i18n-keys: generated .conf — file text
-    "", "[Peer]", "PublicKey = " + nodePub, ...(psk ? ["PresharedKey = " + psk] : []),   // i18n-keys: generated .conf — file text
-    "AllowedIPs = " + prof.address + "/32", "Endpoint = " + h + ":" + prof.listen_port,   // i18n-keys: generated .conf — file text
-    "PersistentKeepalive = " + clientKeepalive(25, prof.awg)].join("\n") + "\n";   // i18n-keys: generated .conf — file text
+  const h = /:/.test(host) && !/^\[/.test(host) ? "[" + host + "]" : host;   // a bare IPv6 literal; one already bracketed stays
+  return buildConf({ privkey: routerPriv, address: subnetServerAddr(prof.address + "/32"), mtu: prof.mtu || 1280,
+                     awg_params: prof.awg, server_pubkey: nodePub, psk, allowed: prof.address + "/32",
+                     endpoint: h + ":" + prof.listen_port, keepalive: 25 });
 }
+// a title in a QR's zoom card is written into HTML; the router's config is named by what it is, never by free text
+const qrSafe = t => String(t || "").replace(/[<>&"']/g, "");
 
-/** The router's config, shown once. `noSwipe`: a swipe must not close it and lose the key (MOBILE-PLAN hook 2). */
+/** The router's config, shown once. `noSwipe`: a swipe must not close it and lose the key (MOBILE-PLAN hook 2). It opens at
+ *  the top of the file: the readonly box is the sheet's first focus, and a caret at its end scrolled the key out of sight. */
 function RouterConfSheet({ node, ex, conf }) {
   const name = ex.label || exitDefaultTitle(ex);
   const port = (ex.profile || {}).listen_port;
-  return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${680} noSwipe=${true}
+  const box = useRef(null);
+  useEffect(() => { const t = box.current; if (t) { setTimeout(() => { t.setSelectionRange(0, 0); t.scrollTop = 0; }, 0); } }, []);
+  // Esc and a click outside ask first until the config has been downloaded or copied — this is its only copy. Done closes.
+  const keep = useRef(true);
+  const took = () => { keep.current = false; };
+  return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${680} noSwipe=${true} dirtyRef=${keep}
     foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done") })}>
     <div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.")}</span></div>
     ${!nodeDialHost(node) ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.")}</span></div>` : null}
+    ${node.kind === "docker" && node.net_mode === "bridge" ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: 'ports: "' + port + ":" + port + '/udp"' })}</span></div>` : null}
     <div class="rconf">
-      <textarea class="exprof" rows="13" readonly wrap="off" spellcheck="false" value=${conf}/>
-      <${QR} conf=${conf} label=${name} px=${220}/>
+      <textarea ref=${box} class="exprof" rows="13" readonly wrap="off" spellcheck="false" value=${conf}/>
+      <${QR} conf=${conf} label=${qrSafe(name)} px=${220}/>
     </div>
     <div class="exadd" style="margin:10px 0 16px">
-      <button class="btn btn-ghost btn-mini" onClick=${() => downloadConf(conf, name)}><${Ic} i="download"/> ${T("Download .conf")}</button>
-      <button class="btn btn-ghost btn-mini" onClick=${() => copy(conf, T("Router config copied"))}><${Ic} i="copy"/> ${T("Copy")}</button>
+      <button class="btn btn-ghost btn-mini" onClick=${() => { took(); downloadConf(conf, "swg-" + ex.id); }}><${Ic} i="download"/> ${T("Download .conf")}</button>
+      <button class="btn btn-ghost btn-mini" onClick=${() => { took(); copy(conf, T("Router config copied")); }}><${Ic} i="copy"/> ${T("Copy")}</button>
     </div>
     <div class="seclabel">${T("On the router")}</div>
     <ul class="rsteps">
       <li>${T("Import this config as a WireGuard (or AmneziaWG) connection. Leave “use for internet access” off — the router keeps its own internet; this tunnel only carries the node's traffic out.")}</li>
+      <li>${Trich("Route the node's address {v1} into the tunnel — on OpenWrt tick “Route Allowed IPs” on the peer — or the replies leave by the router's WAN and the exit carries nothing.", { v1: ex.profile.address })}</li>
       <li>${Trich("Let traffic from the tunnel out to the internet: on Keenetic `ip nat WireguardN`, then `system configuration save`; on OpenWrt, put the interface in a zone that forwards to wan with masquerading.")}</li>
       <li>${T("If this node itself is behind NAT, forward UDP {v1} to it.", { v1: port })}</li>
       <li>${T("If this router also connects to swg as a user, traffic arriving on this tunnel must leave by the router's WAN, not by its swg tunnel — otherwise it loops and the exit carries nothing.")}</li>
@@ -4268,7 +4270,8 @@ function DialinGenSheet({ node, onCreate, onPaste }) {
   const [busy, setBusy] = useState(false), [msg, setMsg] = useState("");
   const go = async () => {
     setBusy(true); setMsg("");
-    const r = await onCreate(label.trim(), proto);
+    let r;
+    try { r = await onCreate(label.trim(), proto); } catch (e) { r = String((e && e.message) || e); }   // e.g. no X25519 in this browser
     setBusy(false);
     if (r !== true) setMsg(typeof r === "string" ? r : T("Couldn't save"));
   };
@@ -4284,9 +4287,9 @@ function DialinGenSheet({ node, onCreate, onPaste }) {
       <div class="dpsw awgsw" role="radiogroup" aria-label=${T("Protocol")}>${opts.map(([k, l, no]) => html`<button type="button" role="radio" key=${k}
         aria-checked=${proto === k} class=${(proto === k ? "on" : "") + (k === "awg3" ? " sw-awg3" : "")} disabled=${proto !== k && !!no}
         title=${proto !== k && no ? no : null} onClick=${() => setProto(k)}>${l}</button>`)}</div>
-      <div class="hint">${T("The router must be able to import it — check what its firmware supports.")}</div></div>
+      <div class="hint">${no31 ? T("AmneziaWG 3.1: {v1}", { v1: no31 }) + " " : ""}${T("The router must be able to import it — check what its firmware supports.")}</div></div>
     <p class="hint" style="margin:14px 0 0">${T("Already have the router's config?")}${" "}
-      <button type="button" class="linkbtn" onClick=${onPaste}>${T("Paste the server config instead")}</button></p>
+      <button type="button" class="linkbtn" onClick=${() => onPaste(label.trim())}>${T("Paste the server config instead")}</button></p>
   <//>`;
 }
 
@@ -4365,7 +4368,8 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
             ? T("This node listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")
             : T("Edit it here or paste a replacement. IPv4 only — the v6 half is dropped, and routing lines are ignored because this node decides its own. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")}</div>
           ${isDialin && !isNew && onRegen ? html`<div style="margin-top:10px">
-            <button type="button" class="btn btn-ghost btn-mini" onClick=${onRegen}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>
+            <button type="button" class="btn btn-ghost btn-mini" onClick=${onRegen} disabled=${dirty}
+              title=${dirty ? T("Save or discard your changes first — Regenerate keeps what is stored.") : null}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>
             <span class="hint" style="margin-left:8px">${T("New keys for both sides; the router must import the new config.")}</span></div>` : null}
           ${isDialin && node.kind === "docker" && node.net_mode === "bridge"
             ? html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: ((q => 'ports: "' + q + ":" + q + '/udp"')((/^\s*ListenPort\s*=\s*(\d+)/mi.exec(txt) || [])[1] || (ex.profile || {}).listen_port || "PORT")) })}</span></div>`
@@ -4413,8 +4417,14 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     const body = { ...rec, profile_text: "", dial_src: "", dialin_gen: { proto, private_key: nk.priv, peer_key: rk.pub, psk } };
     const isNew = !exits.some(x => String(x.id) === String(rec.id));
     const r = await write(isNew ? [...exits, body] : exits.map(x => (String(x.id) === String(rec.id) ? { ...x, ...body } : x)));
-    const st = r === true ? fresh(rec.id) : null;
-    if (!st || !st.profile) return r === true ? T("Saved, but the panel did not return the exit — reload and regenerate.") : T("Couldn't save");
+    // The stored profile THIS save made — its peer is the router key just sent. A poll built before the save landed can
+    // still answer with the old one (or none), and rendering from that would hand the router a config that never works.
+    let st = r === true ? fresh(rec.id) : null;
+    for (let i = 0; r === true && i < 3 && !(st && st.profile && st.profile.peer_key === rk.pub); i++) {
+      await new Promise(ok => setTimeout(ok, 700)); await Store.poll(); st = fresh(rec.id);
+    }
+    if (!st || !st.profile || st.profile.peer_key !== rk.pub)
+      return r === true ? T("Saved, but the panel did not return the exit — reload and regenerate.") : T("Couldn't save");
     delete DIALIN_NOTE[rec.id];
     closeModal();
     openModal(html`<${RouterConfSheet} node=${node} ex=${st} conf=${routerConf(nodeDialHost(node), st.profile, rk.priv, nk.pub, psk)}/>`);
@@ -4423,7 +4433,11 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
   const regen = ex => openConfirm({
     title: T("Regenerate the router config?"), confirmLabel: T("Regenerate"),
     body: T("Both sides get new keys. The router stops connecting until it imports the new config."),
-    onConfirm: () => generate({ ...ex }, null),
+    onConfirm: async () => {   // the confirm sheet drops what onConfirm returns: a failure is said here, not lost
+      let r;
+      try { r = await generate({ ...ex }, null); } catch (e) { r = String((e && e.message) || e); }
+      if (r !== true) toast(typeof r === "string" ? r : T("Couldn't save"), "err");
+    },
   });
   const openEdit = (ex, isNew) => openModal(html`<${ExitEditSheet} node=${node} ex=${ex} isNew=${isNew}
     escrowOn=${escrowOn} goSection=${goSection} onRegen=${() => { closeModal(); regen(ex); }}
@@ -4434,11 +4448,12 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
       const r = await write(next);
       // What the router has to follow (§2.4a): said on the screen until Regenerate, never stored.
       const after = r === true && before ? (fresh(ex.id) || {}).profile : null;
-      if (after) {
+      if (after && after.listen_port && !after.endpoint) {      // still dial-in: a paste that made it dial-out has no router
         const ch = [];
         if (before.listen_port !== after.listen_port) ch.push(T("port {v1} → {v2}", { v1: before.listen_port, v2: after.listen_port }));
         if (before.address !== after.address) ch.push(T("address {v1} → {v2}", { v1: before.address, v2: after.address }));
         if (JSON.stringify(before.awg || {}) !== JSON.stringify(after.awg || {})) ch.push(T("the AmneziaWG parameters"));
+        if ((before.psk || "") !== (after.psk || "")) ch.push(T("the preshared key"));
         if (body.profile_text && !String(body.profile_text).includes(Store.exitKeyKeep || "(unchanged)")) ch.push(T("this node's key"));
         if (ch.length) DIALIN_NOTE[ex.id] = ch.join(", ");
       }
@@ -4446,7 +4461,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     }}/>`);
   const openDialin = rec => openModal(html`<${DialinGenSheet} node=${node}
     onCreate=${(label, proto) => generate({ ...rec, label }, proto)}
-    onPaste=${() => { closeModal(); openEdit(rec, true); }}/>`);
+    onPaste=${label => { closeModal(); openEdit({ ...rec, label }, true); }}/>`);
   const add = p2 => {
     const rec = { id: newExitId(), label: "", enabled: true, killswitch: false, device: "", ...p2 };
     // ⚠️ A CUSTOM CONFIG IS WRITTEN ONLY ONCE IT EXISTS. Creating the record first and opening the editor

@@ -54,7 +54,11 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
   [B18] a dial-in exit (1.8.11 S9, docs/LISTEN-EXIT-PLAN.md §2.4): the section reads "WARP & exits"; the row wears "Dial-in" and
         waits for the router naming its port; "Add a dial-in exit" opens a sheet asking for the server config with no "Connect
         from", Cancel and Save on one line at 390 px; the stored one's box shows ListenPort and no Endpoint; a server config
-        pasted there and saved is stored as a dial-in exit. English and Russian, 1280 and 390 px. SPA_SHOTS keeps the shots
+        pasted there and saved is stored as a dial-in exit. (S9b) It opens Generate first — three protocols, Cancel and
+        Create on one line; Create shows the router's config once (Endpoint = the node's host and the port it got, a QR, one
+        Done), and the panel's peer is the X25519 public half of the router's key; Regenerate keeps the port and address
+        and shows a new config; a port change says the router config changed, with Regenerate beside it. English and
+        Russian, 1280 and 390 px. SPA_SHOTS keeps the shots
   [i18n] B1's words in Russian; [console] no error or exception on any view
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
@@ -856,6 +860,12 @@ try:
     time.sleep(3.5)                          # the background sync may have built its snapshot before the row existed
     must(sync(), "sync with the dial-in exit's row, again")
     SEC = "[...document.querySelectorAll('.setrail-i')].map(b => b.textContent.trim())"
+    def x25519_pub(priv_b64):        # the public half of a WireGuard private key, by node's crypto (no Python dependency)
+        r = subprocess.run(["node", "-e", "const c = require('crypto'); const k = Buffer.from(process.argv[1], 'base64');"
+                            " const p = c.createPublicKey(c.createPrivateKey({key: Buffer.concat([Buffer.from('302e020100300506032b656e04220420', 'hex'), k]),"
+                            " format: 'der', type: 'pkcs8'})); process.stdout.write(p.export({format: 'der', type: 'spki'}).subarray(-32).toString('base64'))",
+                            priv_b64], capture_output=True, text=True, timeout=20)
+        return r.stdout.strip()
     def open_exits(tab):
         ev_mod(tab, "ui", "M.setPendingSection('exits'); return true;")
         tab.ev("location.hash = '#/panel/settings'")
@@ -893,11 +903,47 @@ try:
                   bool(rs) and "Router config" in rs["title"] and "\nEndpoint = 203.0.113.7:51823\n" in rs["conf"]
                   and "PrivateKey = " in rs["conf"] and rs["qr"] and len(rs["tops"]) == 1, rs)
             st = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
-            check("[B18] …and the panel stored the node side on that port, not the router's private key",
-                  any((x.get("profile") or {}).get("listen_port") == 51823 for x in st)
-                  and not any(l.split(" = ", 1)[1] in json.dumps(st) for l in rs["conf"].splitlines() if l.startswith("PrivateKey = ")), st)
+            # The KEYS GO THE RIGHT WAY ROUND: the panel's peer for this exit is the PUBLIC half of the private key the router
+            # config carries (X25519, by node's own crypto) — a swap would store the router's private key on the panel and
+            # every text check above would still pass.
+            gx = next((x for x in st if (x.get("profile") or {}).get("listen_port") == 51823), {})
+            rpriv = next((l.split(" = ", 1)[1] for l in rs["conf"].splitlines() if l.startswith("PrivateKey = ")), "")
+            rpub = x25519_pub(rpriv) if rpriv else ""
+            check("[B18] …the panel's peer for it is the public half of the router's key, and the router's peer is not itself",
+                  bool(rpub) and (gx.get("profile") or {}).get("peer_key") == rpub
+                  and ("\nPublicKey = " + rpub + "\n") not in rs["conf"], {"stored": (gx.get("profile") or {}).get("peer_key"), "derived": rpub})
             shot(tab, "b18-rconf-%s-%d" % (lang, vp[0]))
             close_modals(tab)
+            # Regenerate from the exit's own sheet: new keys both sides, the port and the address kept, the config shown again
+            tab.ev("[...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes(%s)).querySelector('.exg-ed').click()"
+                   % json.dumps(gx.get("device") or "wgx-?"))
+            settle(tab, 600)
+            click_text(tab, ".overlay.show button", "/Regenerate router config/")
+            settle(tab, 600)
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Regenerate$/")
+            settle(tab, 3500)
+            rs2 = tab.ev(SHEET)
+            st2 = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
+            gx2 = next((x for x in st2 if x.get("id") == gx.get("id")), {})
+            r2priv = next((l.split(" = ", 1)[1] for l in (rs2 or {}).get("conf", "").splitlines() if l.startswith("PrivateKey = ")), "")
+            check("[B18] Regenerate shows a new router config on the same port and address, the stored peer its new key",
+                  bool(rs2) and "\nEndpoint = 203.0.113.7:51823\n" in rs2["conf"] and r2priv and r2priv != rpriv
+                  and (gx2.get("profile") or {}).get("listen_port") == 51823
+                  and (gx2.get("profile") or {}).get("address") == (gx.get("profile") or {}).get("address")
+                  and (gx2.get("profile") or {}).get("peer_key") == x25519_pub(r2priv), {"rs2": rs2, "stored": gx2.get("profile")})
+            close_modals(tab)
+            # …and a save the router has to follow says so, with Regenerate beside it (a view note, not stored)
+            tab.ev("[...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes('wgx-d1a1d1a1')).querySelector('.exg-ed').click()")
+            settle(tab, 600)
+            tab.ev("(() => { const t = %s.querySelector('textarea.exprof'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;"
+                   " set.call(t, t.value.replace('ListenPort = 51830', 'ListenPort = 51832')); t.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % TOP)
+            settle(tab, 300)
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Save/")
+            settle(tab, 2500)
+            note = tab.ev("[...document.querySelectorAll('.notice')].map(n => n.textContent).find(t => /router config changed/.test(t)) || ''")
+            check("[B18] a port change says the router config changed — port 51830 → 51832 — with Regenerate beside it",
+                  "port 51830 → 51832" in note and "Regenerate router config" in note, note)
+            shot(tab, "b18-note-%s-%d" % (lang, vp[0]))
             click_text(tab, ".exadd button", "/Add a dial-in exit/")
             settle(tab, 600)
         click_text(tab, ".overlay.show .linkbtn", "/Paste the server config instead|Вставьте серверный конфиг/")
@@ -930,7 +976,7 @@ try:
         settle(tab, 600)
         box = tab.ev("(%s.querySelector('textarea.exprof') || {}).value || ''" % TOP)
         check("[B18] %s: the stored dial-in exit's box is a server config — ListenPort, no Endpoint" % tag,
-              "ListenPort = 51830" in box and "Endpoint" not in box, box)
+              ("ListenPort = %d" % (51832 if (lang, vp[0]) == ("en", 1280) else 51830)) in box and "Endpoint" not in box, box)   # en 1280 moved it
         shot(tab, "b18-edit-%s-%d" % (lang, vp[0]))
         check("[console] (%s) dial-in exit: clean" % tag, not console_bad(tab), console_bad(tab)[:3])
         close_modals(tab)
