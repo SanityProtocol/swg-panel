@@ -58,7 +58,8 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
         Create on one line; Create shows the router's config once (Endpoint = the node's host and the port it got, a QR, one
         Done), and the panel's peer is the X25519 public half of the router's key; Regenerate keeps the port and address
         and shows a new config; a port change says the router config changed, with Regenerate beside it. (S9c) With the store
-        off the row's QR button says nothing is kept and offers Regenerate; with it on and a vault, Create says the config is
+        off the row's QR button says nothing is kept and offers Regenerate; Regenerate sits in the router config's footer beside
+        Done, not in the edit sheet; with it on and a vault, Create says the config is
         kept, closes like any sheet, and the row's QR button shows the same router key again. English and Russian, 1280 and
         390 px. SPA_SHOTS keeps the shots
   [i18n] B1's words in Russian; [console] no error or exception on any view
@@ -69,7 +70,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -134,6 +135,7 @@ PERTURBATIONS = {
     "dinbox": ("js/screen-settings.js", '  const din = !!p.listen_port && !p.endpoint;', '  const din = false;'),
     # [B18] (S9c): the dial-in row has no QR button; Generate keeps nothing
     "rqr": ("js/screen-settings.js", '${exitIsDialin(stored(ex.id)) ? html`<button class="exg-qr"', '${false ? html`<button class="exg-qr"'),
+    "rregen": ("js/screen-settings.js", "                     left: onRegen ? html`<button", "                     left: false ? html`<button"),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -904,9 +906,10 @@ try:
             click_text(tab, ".overlay.show .sheet-foot button", "/^Create/")
             settle(tab, 3000)
             rs = tab.ev(SHEET)
-            check("[B18] Create shows the router's config: Endpoint the node's host and the port it got, a QR, one Done",
+            check("[B18] Create shows the router's config: Endpoint the node's host and the port it got, a QR; Regenerate and Done on one line",
                   bool(rs) and "Router config" in rs["title"] and "\nEndpoint = 203.0.113.7:51823\n" in rs["conf"]
-                  and "PrivateKey = " in rs["conf"] and rs["qr"] and len(rs["tops"]) == 1, rs)
+                  and "PrivateKey = " in rs["conf"] and rs["qr"] and len(rs["tops"]) == 2
+                  and max(rs["tops"]) - min(rs["tops"]) <= 3 and rs["inside"], rs)
             st = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
             # The KEYS GO THE RIGHT WAY ROUND: the panel's peer for this exit is the PUBLIC half of the private key the router
             # config carries (X25519, by node's own crypto) — a swap would store the router's private key on the panel and
@@ -918,12 +921,8 @@ try:
                   bool(rpub) and (gx.get("profile") or {}).get("peer_key") == rpub
                   and ("\nPublicKey = " + rpub + "\n") not in rs["conf"], {"stored": (gx.get("profile") or {}).get("peer_key"), "derived": rpub})
             shot(tab, "b18-rconf-%s-%d" % (lang, vp[0]))
-            close_modals(tab)
-            # Regenerate from the exit's own sheet: new keys both sides, the port and the address kept, the config shown again
-            tab.ev("[...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes(%s)).querySelector('.exg-ed').click()"
-                   % json.dumps(gx.get("device") or "wgx-?"))
-            settle(tab, 600)
-            click_text(tab, ".overlay.show button", "/Regenerate router config/")
+            # Regenerate from the router config's own sheet: new keys both sides, the port and the address kept, shown again
+            click_text(tab, ".overlay.show .sheet-foot button", "/Regenerate router config/")
             settle(tab, 600)
             click_text(tab, ".overlay.show .sheet-foot button", "/^Regenerate$/")
             settle(tab, 3500)
@@ -940,6 +939,8 @@ try:
             # …and a save the router has to follow says so, with Regenerate beside it (a view note, not stored)
             tab.ev("[...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes('wgx-d1a1d1a1')).querySelector('.exg-ed').click()")
             settle(tab, 600)
+            _eb = tab.ev("(() => { const s = %s; return s ? [...s.querySelectorAll('button')].map(b => b.textContent.trim()) : null; })()" % TOP) or []
+            check("[B18] the exit's edit sheet has no Regenerate — it lives with the router config", _eb and not any("Regenerate" in b for b in _eb), _eb)
             tab.ev("(() => { const t = %s.querySelector('textarea.exprof'); const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;"
                    " set.call(t, t.value.replace('ListenPort = 51830', 'ListenPort = 51832')); t.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % TOP)
             settle(tab, 300)

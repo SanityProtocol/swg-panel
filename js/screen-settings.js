@@ -4232,7 +4232,7 @@ const qrSafe = t => String(t || "").replace(/[<>&"']/g, "");
 
 /** The router's config, shown once. `noSwipe`: a swipe must not close it and lose the key (MOBILE-PLAN hook 2). It opens at
  *  the top of the file: the readonly box is the sheet's first focus, and a caret at its end scrolled the key out of sight. */
-function RouterConfSheet({ node, ex, conf, kept }) {
+function RouterConfSheet({ node, ex, conf, kept, onRegen }) {
   const name = ex.label || exitDefaultTitle(ex);
   const port = (ex.profile || {}).listen_port;
   const box = useRef(null);
@@ -4242,7 +4242,8 @@ function RouterConfSheet({ node, ex, conf, kept }) {
   const keep = useRef(kept !== true);
   const took = () => { keep.current = false; };
   return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${680} noSwipe=${true} dirtyRef=${keep}
-    foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done") })}>
+    foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done"),
+                     left: onRegen ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); onRegen(); }}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>` : null })}>
     ${kept === true
       ? html`<p class="hint" style="margin:0 0 12px">${T("Kept encrypted with your client configs — the QR button on the exit's row shows it again.")}</p>`
       : html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.")}${
@@ -4299,7 +4300,7 @@ function DialinGenSheet({ node, onCreate, onPaste }) {
   <//>`;
 }
 
-function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, onRegen }) {
+function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }) {
   const [v, setV] = useState(() => ({ ...ex, profile_text: "" }));
   const [txt, setTxt] = useState(() => profileText(ex));
   // What this sheet OPENED with, so "did anything change" is a comparison rather than a guess. Captured
@@ -4373,10 +4374,6 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose, 
           <div class="hint">${isDialin
             ? T("This node listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")
             : T("Edit it here or paste a replacement. IPv4 only — the v6 half is dropped, and routing lines are ignored because this node decides its own. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")}</div>
-          ${isDialin && !isNew && onRegen ? html`<div style="margin-top:10px">
-            <button type="button" class="btn btn-ghost btn-mini" onClick=${onRegen} disabled=${dirty}
-              title=${dirty ? T("Save or discard your changes first — Regenerate keeps what is stored.") : null}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>
-            <span class="hint" style="margin-left:8px">${T("New keys for both sides; the router must import the new config.")}</span></div>` : null}
           ${isDialin && node.kind === "docker" && node.net_mode === "bridge"
             ? html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: ((q => 'ports: "' + q + ":" + q + '/udp"')((/^\s*ListenPort\s*=\s*(\d+)/mi.exec(txt) || [])[1] || (ex.profile || {}).listen_port || "PORT")) })}</span></div>`
             : null}</div>`
@@ -4439,7 +4436,8 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub);
     delete DIALIN_NOTE[rec.id];
     closeModal();
-    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${kept} conf=${routerConf(nodeDialHost(node), st.profile, rk.priv, nk.pub, psk)}/>`);
+    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${kept} onRegen=${() => regen(st)}
+      conf=${routerConf(nodeDialHost(node), st.profile, rk.priv, nk.pub, psk)}/>`);
     return true;
   };
   const regenNow = async ex => {   // a confirm sheet drops what onConfirm returns: a failure is said here, not lost
@@ -4466,10 +4464,11 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
         : T("It was made before the router's key was kept, pasted from elsewhere, or its keys changed since.")) + " " + REGEN_BODY(),
       confirmLabel: T("Regenerate"), onConfirm: () => regenNow(ex) });
     delete DIALIN_NOTE[ex.id];
-    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${true} conf=${routerConf(nodeDialHost(node), st.profile, r.k, r.n, st.profile.psk)}/>`);
+    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${true} onRegen=${() => regen(st)}
+      conf=${routerConf(nodeDialHost(node), st.profile, r.k, r.n, st.profile.psk)}/>`);
   };
   const openEdit = (ex, isNew) => openModal(html`<${ExitEditSheet} node=${node} ex=${ex} isNew=${isNew}
-    escrowOn=${escrowOn} goSection=${goSection} onRegen=${() => { closeModal(); regen(ex); }}
+    escrowOn=${escrowOn} goSection=${goSection}
     onSave=${async body => {
       const next = isNew ? [...exits, { ...ex, ...body }]
                          : exits.map(x => (String(x.id) === String(ex.id) ? { ...x, ...body } : x));
@@ -4537,7 +4536,6 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
       <div class="exg-h c">${T("Latency")}</div>
       <div class="exg-h c">${T("Kill-switch")}</div>
       <div class="exg-h c">${T("Active")}</div>
-      <div class="exg-h"></div>
       <div class="exg-h"></div></div>
       ${exits.map(ex => {
         const l = stored(ex.id).live || {};
@@ -4582,8 +4580,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, enabled: x } : y)))}/></div>
           <div class="exg-c exg-act" onClick=${stop}>
             ${exitIsDialin(stored(ex.id)) ? html`<button class="exg-qr" title=${T("Router config")} onClick=${() => showRouter(ex)}><${Ic} i="qr"/></button>` : null}
-            <button class="exg-ed" title=${T("val|Edit")} onClick=${() => openEdit(ex)}><${Ic} i="pencil"/></button></div>
-          <div class="exg-c exg-act" onClick=${stop}>
+            <button class="exg-ed" title=${T("val|Edit")} onClick=${() => openEdit(ex)}><${Ic} i="pencil"/></button>
             <button class="exg-rm" title=${T("Remove")} onClick=${() => del(ex)}><${Ic} i="trash"/></button></div>
         </div>`;
       })}

@@ -3310,7 +3310,6 @@ export const STR = {
   "Paste the server config instead": "Вставьте серверный конфиг",
   "Creating…": "Создаём…",
   "Regenerate router config": "Пересоздать конфиг роутера",
-  "New keys for both sides; the router must import the new config.": "Новые ключи для обеих сторон; роутеру нужно импортировать новый конфиг.",
   "Saved, but the panel did not return the exit — reload and regenerate.": "Сохранено, но панель не вернула выход — обновите страницу и пересоздайте конфиг.",
   "Regenerate the router config?": "Пересоздать конфиг роутера?",
   "Regenerate": "Пересоздать",
@@ -3322,7 +3321,6 @@ export const STR = {
   "this node's key": "ключ этой ноды",
   "{v1}: the router config changed — {v2}.": "{v1}: конфиг роутера изменился — {v2}.",
   "the preshared key": "общий ключ (PSK)",
-  "Save or discard your changes first — Regenerate keeps what is stored.": "Сначала сохраните или отмените изменения — пересоздание берёт сохранённое.",
   "AmneziaWG 3.1: {v1}": "AmneziaWG 3.1: {v1}",
   "Route the node's address {v1} into the tunnel — on OpenWrt tick “Route Allowed IPs” on the peer — or the replies leave by the router's WAN and the exit carries nothing.":
     "Направьте адрес ноды {v1} в туннель — на OpenWrt отметьте «Route Allowed IPs» у пира, — иначе ответы уйдут через WAN роутера и выход ничего не пропустит.",

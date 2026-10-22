@@ -2575,7 +2575,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
    far end of this tunnel, and is it worth routing through. Kept narrow (max-content over a 64px floor): the
    value is "128 ms" or an em dash and never grows. */
 .exgrid.g8{grid-template-columns:minmax(110px,1.3fr) minmax(130px,1.2fr) minmax(70px,max-content)
-  minmax(110px,max-content) minmax(64px,max-content) minmax(76px,max-content) minmax(62px,max-content) minmax(40px,max-content) 40px}
+  minmax(110px,max-content) minmax(64px,max-content) minmax(76px,max-content) minmax(62px,max-content) max-content}   /* one actions cell: every icon button one gap apart */
 /* the manage grid: the same seven plus "Leaves as", the source the traffic actually carries */
 .exgrid.g8x{grid-template-columns:minmax(95px,1fr) minmax(100px,0.9fr) minmax(70px,max-content)
   minmax(178px,1.4fr) minmax(84px,max-content) minmax(76px,max-content) minmax(62px,max-content) 62px}
