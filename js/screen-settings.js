@@ -4250,7 +4250,7 @@ export function routerSteps(kind, ex, conf) {
   // the commands as the router takes them — not prose, never translated
   const KN_NAT = "interface WireguardN security-level private\nip nat WireguardN\nsystem configuration save",
         KN_POLICY = "ip hotspot policy WireguardN PolicyN\nsystem configuration save",
-        LX_MASQ = `sysctl -w net.ipv4.ip_forward=1\niptables -I FORWARD -i ${tag} -j ACCEPT\n`
+        LX_MASQ = `sysctl -w net.ipv4.ip_forward=1\niptables -I FORWARD -i ${tag} -o eth0 -j ACCEPT\n`
           + `iptables -I FORWARD -o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n`
           + `iptables -t nat -A POSTROUTING -s ${addr} -o eth0 -j MASQUERADE`;
   if (kind === "keenetic") return [

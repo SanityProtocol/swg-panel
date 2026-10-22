@@ -71,7 +71,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -149,7 +149,9 @@ PERTURBATIONS = {
     # locked); the Linux steps lose their FORWARD accept (a router whose FORWARD policy is DROP passes nothing)
     "rwhy": ("js/screen-settings.js", 'kept === false ? T("Not kept — keeping', 'false ? T("Not kept — keeping'),
     "rlocked": ("js/screen-settings.js", ': kept === T("the encryption key is locked") ?', ': false ?'),
-    "rfwd": ("js/screen-settings.js", "`sysctl -w net.ipv4.ip_forward=1\\niptables -I FORWARD -i ${tag} -j ACCEPT\\n`", "`sysctl -w net.ipv4.ip_forward=1\\n`"),
+    "rfwd": ("js/screen-settings.js", "`sysctl -w net.ipv4.ip_forward=1\\niptables -I FORWARD -i ${tag} -o eth0 -j ACCEPT\\n`", "`sysctl -w net.ipv4.ip_forward=1\\n`"),
+    # [B18] (S9d verify F8): the FORWARD accept from the tunnel names the uplink — without it the node reaches the router's LAN
+    "rlan": ("js/screen-settings.js", "iptables -I FORWARD -i ${tag} -o eth0 -j ACCEPT", "iptables -I FORWARD -i ${tag} -j ACCEPT"),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -965,8 +967,8 @@ try:
             click_text(tab, ".overlay.show .rkind .seg", "/^Other router$/")
             settle(tab, 300)
             kl = tab.ev(STEPS) or {}
-            check("[B18] (S9d) …Other router: wg-quick, a FORWARD accept both ways and the masquerade for the node's address",
-                  "wg-quick up" in kl.get("steps", "") and "iptables -I FORWARD -i swg-" in kl.get("steps", "")
+            check("[B18] (S9d) …Other router: wg-quick, a FORWARD accept both ways (out only to the uplink, not the LAN) and the masquerade for the node's address",
+                  "wg-quick up" in kl.get("steps", "") and re.search(r"iptables -I FORWARD -i swg-\S+ -o eth0 -j ACCEPT", kl.get("steps", ""))
                   and "--ctstate RELATED,ESTABLISHED -j ACCEPT" in kl.get("steps", "") and "-j MASQUERADE" in kl.get("steps", ""), kl)
             _off = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
             check("[B18] (S9d) the store off: the notice says why nothing is kept, and where to turn it on",
