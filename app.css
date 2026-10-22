@@ -2619,6 +2619,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 .exg-ed:hover,.exg-qr:hover{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--brand)}
 .exg-ed svg,.exg-qr svg{width:14px;height:14px}
 .exg-qr{color:var(--brand)}   /* a dial-in row's router config: the peers' QR button, in the grid's own icon size */
+/* …which the router has to import again: amber, with a dot, on THAT row — each exit has its own router config */
+.exg-qr.chg{position:relative;color:var(--amber)}
+.exg-qr.chg::after{content:"";position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--amber)}
 /* ── THE EXIT EDITOR'S HEADER ───────────────────────────────────────────────────────────────────────────
    Three weights, in one line, with air between them: the NAME is the loud thing, the kind and the device
    are metadata beside it, and what depends on it sits far right where a count belongs. Everything after the

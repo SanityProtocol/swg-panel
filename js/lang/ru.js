@@ -3222,6 +3222,9 @@ export const STR = {
   "WARP & exits": "ВАРП и выходы",
   "Add a dial-in exit": "Добавить обратный выход",
   "Dial-in exit": "Обратный выход",
+  "Dial-in exit :{v1}": "Обратный выход :{v1}",
+  "The router config changed — {v1}. Import it on the router again.": "Конфиг роутера изменился — {v1}. Импортируйте его на роутере заново.",
+  "The router config changed — {v1}. Import this one on the router again.": "Конфиг роутера изменился — {v1}. Импортируйте на роутере этот.",
   "val|Dial-in": "Обратный",
   "For an upstream that can't be reached — a router behind NAT: it connects to this node.":
     "Для апстрима без белого адреса (роутер за NAT): он сам подключается к ноде.",
@@ -3287,7 +3290,6 @@ export const STR = {
   "It was made before the router's key was kept, pasted from elsewhere, or its keys changed since.":
     "Он создан до того, как ключ роутера стал сохраняться, вставлен извне, или его ключи с тех пор сменились.",
   "Router config": "Конфиг роутера",
-  "Show router config": "Показать конфиг роутера",
   "the encryption key is locked": "ключ шифрования заперт",
   "couldn't store the router config": "не удалось сохранить конфиг роутера",
   "This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.":
@@ -3319,7 +3321,6 @@ export const STR = {
   "address {v1} → {v2}": "адрес {v1} → {v2}",
   "the AmneziaWG parameters": "параметры AmneziaWG",
   "this node's key": "ключ этой ноды",
-  "{v1}: the router config changed — {v2}.": "{v1}: конфиг роутера изменился — {v2}.",
   "the preshared key": "общий ключ (PSK)",
   "AmneziaWG 3.1: {v1}": "AmneziaWG 3.1: {v1}",
   "Route the node's address {v1} into the tunnel — on OpenWrt tick “Route Allowed IPs” on the peer — or the replies leave by the router's WAN and the exit carries nothing.":

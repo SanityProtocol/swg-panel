@@ -57,7 +57,8 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
         pasted there and saved is stored as a dial-in exit. (S9b) It opens Generate first — three protocols, Cancel and
         Create on one line; Create shows the router's config once (Endpoint = the node's host and the port it got, a QR, one
         Done), and the panel's peer is the X25519 public half of the router's key; Regenerate keeps the port and address
-        and shows a new config; a port change says the router config changed, with Regenerate beside it. (S9c) With the store
+        and shows a new config; a port change marks that row's QR button (what changed in its hover), no banner, and an
+        untitled exit is named by its port. (S9c) With the store
         off the row's QR button says nothing is kept and offers Regenerate; Regenerate sits in the router config's footer beside
         Done, not in the edit sheet; with it on and a vault, Create says the config is
         kept, closes like any sheet, and the row's QR button shows the same router key again. English and Russian, 1280 and
@@ -70,7 +71,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -136,6 +137,7 @@ PERTURBATIONS = {
     # [B18] (S9c): the dial-in row has no QR button; Generate keeps nothing
     "rqr": ("js/screen-settings.js", '${exitIsDialin(stored(ex.id)) ? html`<button class="exg-qr"', '${false ? html`<button class="exg-qr"'),
     "rregen": ("js/screen-settings.js", "                     left: onRegen ? html`<button", "                     left: false ? html`<button"),
+    "rmark": ("js/screen-settings.js", '(DIALIN_NOTE[ex.id] ? " chg" : "")', '("")'),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -946,9 +948,12 @@ try:
             settle(tab, 300)
             click_text(tab, ".overlay.show .sheet-foot button", "/^Save/")
             settle(tab, 2500)
-            note = tab.ev("[...document.querySelectorAll('.notice')].map(n => n.textContent).find(t => /router config changed/.test(t)) || ''")
-            check("[B18] a port change says the router config changed — port 51830 → 51832 — with Regenerate beside it",
-                  "port 51830 → 51832" in note and "Regenerate router config" in note, note)
+            note = tab.ev("(() => { const r = [...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes('wgx-d1a1d1a1'));"
+                          " const b = r && r.querySelector('.exg-qr'); return {chg: !!(b && b.classList.contains('chg')), title: b ? b.title : '',"
+                          " row: r ? r.textContent : '', banner: [...document.querySelectorAll('.notice')].some(n => /router config changed/.test(n.textContent))}; })()") or {}
+            check("[B18] a port change marks THAT row's QR button — the router config changed, port 51830 → 51832 — and no banner under the list",
+                  note.get("chg") and "port 51830 → 51832" in note.get("title", "") and not note.get("banner"), note)
+            check("[B18] …and the untitled exit is named by its port", "Dial-in exit :51832" in note.get("row", ""), note.get("row"))
             shot(tab, "b18-note-%s-%d" % (lang, vp[0]))
             # (S9c) the store off: the row's QR button says nothing is kept, and offers Regenerate
             QRBTN = ("(() => { const r = [...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes(%s));"

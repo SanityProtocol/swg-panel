@@ -4167,7 +4167,9 @@ function profileText(ex) {
 const exitInsideAddr = (ex, live) => String(((live || (ex || {}).live || {}).address)
   || (((ex || {}).profile || {}).address) || "").split("/")[0].trim();
 
-const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).dialin || exitIsDialin(ex) ? T("Dial-in exit") : T("Custom exit"))
+// A dial-in exit with no title is named by its port, so two untitled ones never read alike in a sheet or a note.
+const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).dialin || exitIsDialin(ex)
+    ? (exitIsDialin(ex) ? T("Dial-in exit :{v1}", { v1: ex.profile.listen_port }) : T("Dial-in exit")) : T("Custom exit"))
   : exitProv(ex) === "warp" ? T("WARP exit") : exitProv(ex);
 
 /** The badge for an imported exit: [class, label]. A WARP account with a licence on it is WARP+ — the
@@ -4213,7 +4215,8 @@ const exitBadge = (ex, live) => {
    the store off (or the vault left locked) it is shown once, and Regenerate is the way to a new one. */
 
 /** What changed on a saved dial-in exit that the router has to follow ("port 51820 → 51821"), by exit id — a view note,
- *  not stored (§2.4a): it lasts until the router config is shown again or a reload. */
+ *  not stored (§2.4a): it marks THAT row's QR button and heads its router config, until the config is shown again (or
+ *  regenerated) or a reload. On the row, not under the list: each exit has its own router config. */
 const DIALIN_NOTE = {};
 
 /** The host the router dials — the one a turn link's client dials: the node's ingress address, else its first public one. */
@@ -4232,7 +4235,7 @@ const qrSafe = t => String(t || "").replace(/[<>&"']/g, "");
 
 /** The router's config, shown once. `noSwipe`: a swipe must not close it and lose the key (MOBILE-PLAN hook 2). It opens at
  *  the top of the file: the readonly box is the sheet's first focus, and a caret at its end scrolled the key out of sight. */
-function RouterConfSheet({ node, ex, conf, kept, onRegen }) {
+function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
   const name = ex.label || exitDefaultTitle(ex);
   const port = (ex.profile || {}).listen_port;
   const box = useRef(null);
@@ -4244,6 +4247,7 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen }) {
   return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${680} noSwipe=${true} dirtyRef=${keep}
     foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done"),
                      left: onRegen ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); onRegen(); }}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>` : null })}>
+    ${changed ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("The router config changed — {v1}. Import this one on the router again.", { v1: changed })}</span></div>` : null}
     ${kept === true
       ? html`<p class="hint" style="margin:0 0 12px">${T("Kept encrypted with your client configs — the QR button on the exit's row shows it again.")}</p>`
       : html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.")}${
@@ -4463,8 +4467,9 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
         ? T("It was kept under a previous encryption key, which this vault cannot open.")
         : T("It was made before the router's key was kept, pasted from elsewhere, or its keys changed since.")) + " " + REGEN_BODY(),
       confirmLabel: T("Regenerate"), onConfirm: () => regenNow(ex) });
+    const changed = DIALIN_NOTE[ex.id];
     delete DIALIN_NOTE[ex.id];
-    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${true} onRegen=${() => regen(st)}
+    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${true} onRegen=${() => regen(st)} changed=${changed}
       conf=${routerConf(nodeDialHost(node), st.profile, r.k, r.n, st.profile.psk)}/>`);
   };
   const openEdit = (ex, isNew) => openModal(html`<${ExitEditSheet} node=${node} ex=${ex} isNew=${isNew}
@@ -4579,18 +4584,14 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
           <div class="exg-c c" onClick=${stop}><${Switch} on=${!off} title=${ACTIVE_TITLE()}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, enabled: x } : y)))}/></div>
           <div class="exg-c exg-act" onClick=${stop}>
-            ${exitIsDialin(stored(ex.id)) ? html`<button class="exg-qr" title=${T("Router config")} onClick=${() => showRouter(ex)}><${Ic} i="qr"/></button>` : null}
+            ${exitIsDialin(stored(ex.id)) ? html`<button class=${"exg-qr" + (DIALIN_NOTE[ex.id] ? " chg" : "")} onClick=${() => showRouter(ex)}
+              title=${DIALIN_NOTE[ex.id] ? T("The router config changed — {v1}. Import it on the router again.", { v1: DIALIN_NOTE[ex.id] }) : T("Router config")}><${Ic} i="qr"/></button>` : null}
             <button class="exg-ed" title=${T("val|Edit")} onClick=${() => openEdit(ex)}><${Ic} i="pencil"/></button>
             <button class="exg-rm" title=${T("Remove")} onClick=${() => del(ex)}><${Ic} i="trash"/></button></div>
         </div>`;
       })}
     </div>`
       : null}
-    ${exits.filter(x => DIALIN_NOTE[x.id]).map(x => html`<div class="notice warn" key=${"dn" + x.id} style="margin:10px 0 0">
-      <${Ic} i="warn"/><span>${T("{v1}: the router config changed — {v2}.", { v1: x.label || exitDefaultTitle(x), v2: DIALIN_NOTE[x.id] })}</span>
-      ${Store.storeMode === "encrypted"
-        ? html`<button type="button" class="btn btn-ghost btn-mini" onClick=${() => showRouter(x)}>${T("Show router config")}</button>`
-        : html`<button type="button" class="btn btn-ghost btn-mini" onClick=${() => regen(x)}>${T("Regenerate router config")}</button>`}</div>`)}
     ${exits.length ? null
       : html`<p class="hint" style="margin:0 0 12px">${T("No exits on this node yet. Register a free Cloudflare account, paste a WireGuard profile from somewhere else, or add a dial-in exit for an upstream that connects to this node.")}</p>`}
     ${/* TWO WAYS TO GET ONE, offered as two actions rather than one button and a provider dropdown: the
