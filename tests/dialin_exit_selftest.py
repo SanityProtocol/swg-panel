@@ -194,6 +194,7 @@ res, rows, d = harness([dict(DX, profile=dict(PR, private_key=""))])
 row = rows.get("aabbccdd") or {}
 check("a dial-in record the node refuses still carries its port (so the panel does not read 'too old')",
       bool(row.get("error")) and row.get("listen_port") == 51820, row)
+check("…and does not say an endpoint is missing (a dial-in exit has none)", "endpoint" not in str(row.get("error")), row)
 res, rows, d = harness([dict(DX, profile=dict(PR, endpoint="203.0.113.9:51820", listen_port=None))])
 row = rows.get("aabbccdd") or {}
 check("a dial-out row carries no listen_port and reports its own endpoint",
@@ -202,6 +203,9 @@ res, rows, d = harness([dict(DX, provider="socks5", profile=None)])
 row = rows.get("aabbccdd") or {}
 check("an unknown kind is refused on the row", row.get("up") is False and "does not know" in str(row.get("error")), row)
 check("…and no WARP account is registered for it", CALLS["warp"] == 0, CALLS["warp"])
+res, rows, d = harness([dict(DX, provider="socks5", profile=None, down=True)])
+row = rows.get("aabbccdd") or {}
+check("…a paused one reads paused, not failed", row.get("paused") is True and not row.get("error"), row)
 res, rows, d = harness([dict(DX, provider="", profile=None)])
 check("an EMPTY provider is still the legacy WARP default (it tries to register)", CALLS["warp"] == 1, CALLS["warp"])
 
