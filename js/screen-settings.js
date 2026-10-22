@@ -12,7 +12,7 @@
 
 import { T, Trich, Tsplit, plural, srvText, locale, fmtNum } from "./i18n.js";
 import { normVkLink, _VK_CALL_RE } from "./peer-ui.js";   // validate pool links by the same rule as the per-user field
-import { awgDict3, nodeStatusOf, nodeStale, subnetServerAddr } from "./model.js";
+import { awgDict3, nodeStatusOf, nodeStale } from "./model.js";
 import {
   BASE, ago, ipChoices, seen, url, fmtBytes, panelNow, panelNowS,
 } from "./util.js";
@@ -4226,11 +4226,11 @@ const nodeDialHost = node => turnDialFallback((node || {}).id);
  *  — its address the other half of the pair, its AllowedIPs the node's /32, keepalive 25 (the router keeps its NAT open). */
 export function routerConf(host, prof, routerPriv, nodePub, psk) {
   const h = /:/.test(host) && !/^\[/.test(host) ? "[" + host + "]" : host;   // a bare IPv6 literal; one already bracketed stays
-  // The router's half of the pair is a /31 when the node holds its even address (every generated exit — the panel hands out
-  // aligned pairs): the node's address is then on the router's own link, so Keenetic's `ip nat WireguardN` covers it and no
-  // router needs a route for it. As a /32 Keenetic forwarded nothing (live, 2026-10-22). Any other address stays a /32.
-  const pair = Number(String(prof.address || "").split(".")[3]) % 2 === 0;
-  return buildConf({ privkey: routerPriv, address: subnetServerAddr(prof.address + (pair ? "/31" : "/32")), mtu: prof.mtu || 1280,
+  // The router is the other half of the node's /31 (every generated exit is an aligned pair, node .0 / router .1; a re-pasted
+  // odd address pairs downwards): the node's address is then on the router's own link, so Keenetic's `ip nat WireguardN`
+  // covers it and no router needs a route for it. As a /32 Keenetic forwarded nothing (live, 2026-10-22).
+  const o = String(prof.address || "").split("."), ra = o.length === 4 ? [o[0], o[1], o[2], Number(o[3]) ^ 1].join(".") + "/31" : prof.address + "/32";
+  return buildConf({ privkey: routerPriv, address: ra, mtu: prof.mtu || 1280,
                      awg_params: prof.awg, server_pubkey: nodePub, psk, allowed: prof.address + "/32",
                      endpoint: h + ":" + prof.listen_port, keepalive: 25 });
 }
@@ -4245,12 +4245,14 @@ const cmdBlock = text => html`<div class="netsnip"><pre class="mono nixblock">${
   <button type="button" class="btn btn-ghost btn-mini" onClick=${() => copy(text, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>`;
 /** Each router's own steps, numbered — they are a sequence. The commands carry the real addresses; Keenetic's interface is
  *  found by the description its import gives it (the file's name, `swg-<id>`). */
-function routerSteps(kind, ex, conf) {
-  const addr = (ex.profile || {}).address || "", tag = "swg-" + ex.id, awg = /^\s*Jc\s*=/m.test(conf);
+export function routerSteps(kind, ex, conf) {
+  const addr = (ex.profile || {}).address || "", tag = "swg-" + ex.id, awg = Object.keys((ex.profile || {}).awg || {}).length > 0;
   // the commands as the router takes them — not prose, never translated
   const KN_NAT = "interface WireguardN security-level private\nip nat WireguardN\nsystem configuration save",
         KN_POLICY = "ip hotspot policy WireguardN PolicyN\nsystem configuration save",
-        LX_MASQ = `sysctl -w net.ipv4.ip_forward=1\niptables -t nat -A POSTROUTING -s ${addr} -o eth0 -j MASQUERADE`;
+        LX_MASQ = `sysctl -w net.ipv4.ip_forward=1\niptables -I FORWARD -i ${tag} -j ACCEPT\n`
+          + `iptables -I FORWARD -o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n`
+          + `iptables -t nat -A POSTROUTING -s ${addr} -o eth0 -j MASQUERADE`;
   if (kind === "keenetic") return [
     html`${T("Import the config: Internet → Other connections → WireGuard → Import from file. Leave “Use for accessing the Internet” off — the router keeps its own internet; this tunnel only carries the node's traffic out.")}`,
     html`${Trich("Find its name: `show interface` on the command page (my.keenetic.net/a) lists it as WireguardN, described {v1}. Then, with your N:", { v1: tag })}
@@ -4292,8 +4294,10 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
     ${changed ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("The router config changed — {v1}. Import this one on the router again.", { v1: changed })}</span></div>` : null}
     ${kept === true
       ? html`<p class="hint" style="margin:0 0 12px">${T("Kept encrypted with your client configs — the QR button on the exit's row shows it again.")}</p>`
-      : html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.")}${
-          typeof kept === "string" ? " " + T("Not kept with your client configs: {v1}.", { v1: kept }) : ""}</span></div>`}
+      : html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${
+          kept === false ? T("Not kept — keeping encrypted client configs is off (Settings → Client configs). Download or copy it now; once closed, only Regenerate makes a new one.")
+          : kept === T("the encryption key is locked") ? T("Not kept yet — the encryption key is locked. Unlock it in this tab before you reload and it is kept; otherwise download or copy it now.")
+          : T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.") + (typeof kept === "string" ? " " + T("Not kept with your client configs: {v1}.", { v1: kept }) : "")}</span></div>`}
     ${!nodeDialHost(node) ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${kept === true
       ? T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then open it again from the exit's row.")
       : T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.")}</span></div>` : null}
@@ -4309,7 +4313,7 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
       </div>
     </div>
     <div class="seclabel" style="margin-top:16px">${T("On the router")}</div>
-    <div class="segrow rkind">${ROUTER_KINDS.map(([k, l]) => html`<button type="button" class=${"seg" + (kind === k ? " on" : "")}
+    <div class="segrow rkind" role="radiogroup" aria-label=${T("On the router")}>${ROUTER_KINDS.map(([k, l]) => html`<button type="button" role="radio" aria-checked=${kind === k} class=${"seg" + (kind === k ? " on" : "")}
       onClick=${() => { ROUTER_VIEW.kind = k; setKind(k); }}>${l || T("Other router")}</button>`)}</div>
     <ol class="rsteps">
       ${routerSteps(kind, ex, conf).map(st => html`<li>${st}</li>`)}

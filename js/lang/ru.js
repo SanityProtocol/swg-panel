@@ -3330,8 +3330,12 @@ export const STR = {
     "Если собственный интернет этой машины идёт через VPN, отправьте адрес ноды через интерфейс интернета правилом маршрутизации по источнику.",
   "The exit's row turns green about a minute after traffic starts to flow — the node waits that long before it routes back through a tunnel that failed.":
     "Строка выхода становится зелёной примерно через минуту после того, как пойдёт трафик, — столько нода ждёт, прежде чем вернуть трафик в туннель, который не работал.",
-  "Traffic crosses it again — routing back through it in about {v1} s.":
-    "Трафик снова проходит — нода вернёт его в этот выход примерно через {v1} с.",
+  "Traffic crosses it again — the node routes back through it within a minute.":
+    "Трафик снова проходит — нода вернёт его в этот выход в течение минуты.",
+  "Not kept — keeping encrypted client configs is off (Settings → Client configs). Download or copy it now; once closed, only Regenerate makes a new one.":
+    "Не хранится — хранение зашифрованных конфигов клиентов выключено (Настройки → Конфиги клиентов). Скачайте или скопируйте его сейчас; после закрытия новый даст только пересоздание.",
+  "Not kept yet — the encryption key is locked. Unlock it in this tab before you reload and it is kept; otherwise download or copy it now.":
+    "Пока не сохранён — ключ шифрования заперт. Отоприте его в этой вкладке до перезагрузки, и конфиг сохранится; иначе скачайте или скопируйте его сейчас.",
   "Other router":
     "Другой роутер",
   "If this node itself is behind NAT, forward UDP {v1} to it.": "Если сама нода за NAT, пробросьте на неё UDP {v1}.",

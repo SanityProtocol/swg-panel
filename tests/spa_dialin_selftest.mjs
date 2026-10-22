@@ -23,6 +23,7 @@
  *      --perturb-warp    the WARP group is "not profile" again                            → RED [3]
  *      --perturb-rconf   the router's address is the node's own (no +1)                  → RED [4]
  *      --perturb-r31     the router's address is a /32 again (Keenetic forwards nothing)  → RED [4]
+ *      --perturb-rawg    the steps tell AmneziaWG by a `Jc =` line (a template may omit it) → RED [4]
  *      --perturb-keepn   the node's public key is left out of the kept blob                → RED [5]
  *      --perturb-pending a keep skipped at a locked vault is forgotten                    → RED [5]
  *      --perturb-pendfail a queued keep is dropped before it is tried (a failed flush loses it) → RED [5]
@@ -39,8 +40,9 @@ const PLANTS = {
   "--perturb-text": ["screen-settings.js", '...(din ? [] : ["Endpoint = " + (p.endpoint || "")]),', '"Endpoint = " + (p.endpoint || ""),'],
   "--perturb-status": ["routing.js", 'if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return', 'if (false) return'],
   "--perturb-old": ["routing.js", 'if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return', 'if (false) return'],
-  "--perturb-rconf": ["screen-settings.js", 'address: subnetServerAddr(prof.address + (pair ? "/31" : "/32"))', 'address: prof.address + (pair ? "/31" : "/32")'],
-  "--perturb-r31": ["screen-settings.js", 'address: subnetServerAddr(prof.address + (pair ? "/31" : "/32"))', 'address: subnetServerAddr(prof.address + "/32")'],
+  "--perturb-rconf": ["screen-settings.js", 'Number(o[3]) ^ 1].join(".") + "/31"', 'Number(o[3])].join(".") + "/31"'],
+  "--perturb-r31": ["screen-settings.js", 'Number(o[3]) ^ 1].join(".") + "/31"', 'Number(o[3]) + 1].join(".") + "/32"'],
+  "--perturb-rawg": ["screen-settings.js", 'awg = Object.keys((ex.profile || {}).awg || {}).length > 0;', 'awg = /^\\s*Jc\\s*=/m.test(conf);'],
   "--perturb-warp": ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
   "--perturb-keepn": ["crypto.js", "JSON.stringify({ k: routerPriv, n: nodePub })", "JSON.stringify({ k: routerPriv })"],
   "--perturb-pending": ["crypto.js", "_pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); return", "return"],
@@ -166,8 +168,17 @@ for (const [nm, awg] of [["WireGuard", {}], ["AmneziaWG 3.1", A31]]) {
   check(nm + ": the same AmneziaWG set as stored, keepalive on", r.p && JSON.stringify(Object.fromEntries(Object.entries(r.p.awg).sort())) === JSON.stringify(want)
         && r.p.keepalive === 25, [r.p && r.p.awg, want]);
 }
-check("a node address that is not the even half of a pair keeps the router a /32",
-      /\nAddress = 10\.254\.0\.8\/32\n/.test(SSM.routerConf("203.0.113.7", { ...DIN.profile, address: "10.254.0.7", listen_port: 51824 }, K1, K2, "")));
+check("a re-pasted odd node address pairs downwards — the router still the other half of its /31",
+      /\nAddress = 10\.254\.0\.6\/31\n/.test(SSM.routerConf("203.0.113.7", { ...DIN.profile, address: "10.254.0.7", listen_port: 51824 }, K1, K2, "")));
+// the steps name the AmneziaWG tools by the stored set — a generated AWG config may carry no Jc line (the template's "-")
+const vtext = v => v == null || v === false ? "" : Array.isArray(v) ? v.map(vtext).join("") : typeof v === "object" ? vtext((v.props || {}).children) : String(v);
+const awgNoJc = { id: "aabbccdd", profile: { address: "10.254.0.0", listen_port: 51824, awg: { S1: "36", H1: "5-20" } } };
+const awgConf = SSM.routerConf("203.0.113.7", awgNoJc.profile, K1, K2, "");
+const oth = vtext(SSM.routerSteps("other", awgNoJc, awgConf)), owrt = vtext(SSM.routerSteps("openwrt", awgNoJc, awgConf));
+check("an AmneziaWG config with no Jc line still gets the AmneziaWG steps (awg-quick, protocol AmneziaWG)",
+      !/^\s*Jc\s*=/m.test(awgConf) && /awg-quick up/.test(oth) && /amnezia\/amneziawg/.test(oth) && /protocol AmneziaWG/.test(owrt), [oth, owrt]);
+const wgEx = { id: "aabbccdd", profile: { address: "10.254.0.0", listen_port: 51824, awg: {} } };
+check("…and a WireGuard one the WireGuard steps", /wg-quick up/.test(vtext(SSM.routerSteps("other", wgEx, ""))) && !/awg-quick/.test(vtext(SSM.routerSteps("other", wgEx, ""))));
 check("a host already bracketed is not bracketed twice", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(SSM.routerConf("[2001:db8::1]", { ...DIN.profile, listen_port: 51824 }, K1, K2, "")));
 check("an IPv6 host is bracketed", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(SSM.routerConf("2001:db8::1", { ...DIN.profile, listen_port: 51824 }, K1, K2, "")));
 

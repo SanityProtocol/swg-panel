@@ -42,7 +42,9 @@ const PWARP = process.argv.includes("--perturb-warp");
 const PSTALLED = process.argv.includes("--perturb-stalled");
 // `--perturb-recover`: the row ignores `back_in` (a tunnel carrying again still reads "passes no traffic") — [5b] goes red.
 const PRECOVER = process.argv.includes("--perturb-recover");
-const PERTURB = PSTALE || PWARP || PSTALLED || PRECOVER || process.argv.includes("--perturb");
+// `--perturb-recstale`: a stale node's last `back_in` is still believed — [5b] goes red.
+const PRECSTALE = process.argv.includes("--perturb-recstale");
+const PERTURB = PSTALE || PWARP || PSTALLED || PRECOVER || PRECSTALE || process.argv.includes("--perturb");
 const SRC = path.join(ROOT, "js", "routing.js");
 let mod = SRC;
 
@@ -53,8 +55,10 @@ if (PERTURB) {
     ['said((ex.provider || "warp") === "warp"', "said((false)"],
   ] : PSTALE ? [
     ["&& !nodeStale((node || {}).id))", ")"],
+  ] : PRECSTALE ? [
+    ["&& !nodeStale((node || {}).id)) return { state: \"recovering\"", ") return { state: \"recovering\""],
   ] : PRECOVER ? [
-    ["if (l.no_traffic && Number.isFinite(l.no_traffic.back_in)) return", "if (false) return"],
+    ["if (l.no_traffic && Number.isFinite(l.no_traffic.back_in) && !nodeStale((node || {}).id)) return", "if (false) return"],
   ] : PSTALLED ? [
     // ⚠️ ITS OWN ARM. Without one the flag fell through to the default guards below: something went red, and
     // none of it was section [5] — a perturbation of a flag nothing reads.
@@ -195,9 +199,15 @@ const dinEx = { profile: { listen_port: 51820, address: "10.254.0.0" } };
 check("[5b] a judged-dead tunnel carrying again reads `recovering`", st({}, back) === "recovering", st({}, back));
 check("[5b] …a dial-in one too, not \"passes no traffic — check NAT\"", (() => { const h = exitHealth(ex(dinEx, back), NODE);
   return h.state === "recovering" && !/check NAT/.test(h.why); })(), exitHealth(ex(dinEx, back), NODE));
-check("[5b] …and says when traffic moves back, in round seconds", /routing back through it in about 40 s/.test(why({}, back)), why({}, back));
+check("[5b] …says traffic moves back within a minute — no countdown a 5 s poll cannot age", /within a minute/.test(why({}, back))
+      && !/\d+ s\b/.test(why({}, back)), why({}, back));
+Store.recon.nodeStatus = { n1: "stale" };
+check("[5b] …but a node gone dark is not taken at its last word: the row falls back to the stalled reading",
+      st({}, back) === "stalled", st({}, back));
+Store.recon.nodeStatus = { n1: "live" };
+check("[5b] …progress, not a fault: no clickable \"This exit isn't working\"", exitHealth(ex({}, back), NODE).tone === "busy", exitHealth(ex({}, back), NODE));
 check("[5b] …still saying where the traffic is meanwhile", /node's own IP/.test(why({ killswitch: false }, back)), why({ killswitch: false }, back));
 
-done(PERTURB, PRECOVER ? "the recovering state ignored" : PWARP ? "the WARP arm of the never-answered advice removed"
+done(PERTURB, PRECSTALE ? "a stale node's back_in believed" : PRECOVER ? "the recovering state ignored" : PWARP ? "the WARP arm of the never-answered advice removed"
                     : PSTALE ? "the staleness half of `configuring` removed"
                     : PSTALLED ? "the node's dead-tunnel verdict ignored" : "both freshness guards removed");

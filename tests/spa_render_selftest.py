@@ -71,7 +71,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -145,6 +145,11 @@ PERTURBATIONS = {
     "rfit": ("app.css", "font-size:clamp(9px, calc((100cqi - 26px) / (var(--rconf-cols) * 0.6)), 13px)", "font-size:15px"),
     "rside": ("app.css", ".rconf-side{display:flex;flex-direction:column;gap:8px}", ".rconf-side{display:flex;flex-direction:row;gap:8px}"),
     "rkind": ("js/screen-settings.js", '"interface WireguardN security-level private\\nip nat WireguardN', '"ip nat WireguardN'),
+    # [B18] (S9d fix round): the not-kept notice no longer says why (store off) / that a later unlock keeps it (vault
+    # locked); the Linux steps lose their FORWARD accept (a router whose FORWARD policy is DROP passes nothing)
+    "rwhy": ("js/screen-settings.js", 'kept === false ? T("Not kept — keeping', 'false ? T("Not kept — keeping'),
+    "rlocked": ("js/screen-settings.js", ': kept === T("the encryption key is locked") ?', ': false ?'),
+    "rfwd": ("js/screen-settings.js", "`sysctl -w net.ipv4.ip_forward=1\\niptables -I FORWARD -i ${tag} -j ACCEPT\\n`", "`sysctl -w net.ipv4.ip_forward=1\\n`"),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -957,6 +962,15 @@ try:
             ko = tab.ev(STEPS) or {}
             check("[B18] (S9d) …OpenWrt shows its own steps instead", ko.get("on") == "OpenWrt" and "Load configuration" in ko.get("steps", "")
                   and "security-level" not in ko.get("steps", ""), ko)
+            click_text(tab, ".overlay.show .rkind .seg", "/^Other router$/")
+            settle(tab, 300)
+            kl = tab.ev(STEPS) or {}
+            check("[B18] (S9d) …Other router: wg-quick, a FORWARD accept both ways and the masquerade for the node's address",
+                  "wg-quick up" in kl.get("steps", "") and "iptables -I FORWARD -i swg-" in kl.get("steps", "")
+                  and "--ctstate RELATED,ESTABLISHED -j ACCEPT" in kl.get("steps", "") and "-j MASQUERADE" in kl.get("steps", ""), kl)
+            _off = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
+            check("[B18] (S9d) the store off: the notice says why nothing is kept, and where to turn it on",
+                  "keeping encrypted client configs is off (Settings → Client configs)" in _off, _off[:300])
             click_text(tab, ".overlay.show .rkind .seg", "/^Keenetic$/")
             settle(tab, 300)
             # not kept (the store is off), it is the only copy: Esc asks before it drops it
@@ -1046,6 +1060,18 @@ try:
                   and ("\nEndpoint = 203.0.113.7:%s\n" % kport) in (rs3.get("conf") or "") and rs3.get("qr"),
                   {"button": _qb, "exit": kx.get("device"), "sheet": rs3})
             shot(tab, "b18-again-%s-%d" % (lang, vp[0]))
+            close_modals(tab)
+            # (S9d) the vault left locked: Create asks to unlock; skipped, the sheet says a later unlock in this tab keeps it
+            ev_mod(tab, "crypto", "M.subForget(); return true;")
+            click_text(tab, ".exadd button", "/Add a dial-in exit/")
+            settle(tab, 600)
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Create/")
+            settle(tab, 1200)
+            click_text(tab, ".overlay.show button", "/^Skip$/")
+            settle(tab, 3500)
+            _ltxt = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
+            check("[B18] (S9d) the vault left locked: the sheet says an unlock before a reload keeps it — not \"not kept anywhere\"",
+                  "Not kept yet — the encryption key is locked" in _ltxt and "not kept anywhere" not in _ltxt, _ltxt[:300])
             close_modals(tab)
             click_text(tab, ".exadd button", "/Add a dial-in exit/")
             settle(tab, 600)

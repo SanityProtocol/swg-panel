@@ -3537,8 +3537,10 @@ export function exitHealth(x, node) {
            { v1: (ex.profile || {}).listen_port }) + _fell };
   // Carrying again, and the node is waiting out EXIT_ALIVE_AFTER_S before it moves traffic back: say that, not "passes no
   // traffic" — that minute read as the fault still being there (live, 2026-10-22).
-  if (l.no_traffic && Number.isFinite(l.no_traffic.back_in)) return { state: "recovering", tone: "warn", icon: "refresh", dot: "down",
-    why: T("Traffic crosses it again — routing back through it in about {v1} s.", { v1: Math.max(5, Math.ceil(l.no_traffic.back_in / 5) * 5) }) + _fell };
+  // Progress, not a fault (`busy`, as `configuring`); no countdown — a figure from the last report cannot age with the poll —
+  // and a stale node's word is not taken for it.
+  if (l.no_traffic && Number.isFinite(l.no_traffic.back_in) && !nodeStale((node || {}).id)) return { state: "recovering", tone: "busy", icon: "refresh", dot: "down",
+    why: T("Traffic crosses it again — the node routes back through it within a minute.") + _fell };
   if (exitIsDialin(ex) && l.no_traffic && !(l.trace || {}).ip) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
     why: said(T("The router is connected but passes no traffic — check NAT on the router.")) + _fell };
   // ⚠️ UP AND CARRYING NOTHING, as the NODE judged it — not a guess from `handshake` or `trace` here. The node
