@@ -1333,7 +1333,6 @@ export async function exitKeepRouter(nid, exitId, routerPub, routerPriv, nodePub
   const pk = nid + "|" + exitId;
   try {
     if (!subSKCached()) { _pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); return T("the encryption key is locked"); }
-    _pendingKeep.delete(pk);
     const uid = exitBucket(nid), unlockKey = await ensureUserUnlockKey(uid);
     // null is either a key this vault cannot open or a refused mint — the map ensureUserUnlockKey just read says which
     if (!unlockKey) return ((await subUsersMap())[uid] || {}).unlock_by_sk
@@ -1342,7 +1341,8 @@ export async function exitKeepRouter(nid, exitId, routerPub, routerPriv, nodePub
     // the node key sealed inside, named by the digest the panel stamps from the record — a re-paste in between is refused
     const nkh = (await sha256hex(nodePriv)).slice(0, 16);
     const r = await api.subExitBlob({ node: nid, exit: exitId, pub: routerPub, nkh, sec });
-    return r && r.ok !== false ? true : (srvText(r) || T("couldn't store the router config"));
+    if (r && r.ok !== false) { _pendingKeep.delete(pk); return true; }   // only now: a failed keep stays queued for a later unlock
+    return srvText(r) || T("couldn't store the router config");
   } catch (e) { return String((e && e.message) || e); }
 }
 // A kept key the vault is locked for: the caller asks to unlock (whatever the store's mode now) and reads again.

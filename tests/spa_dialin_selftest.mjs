@@ -24,6 +24,7 @@
  *      --perturb-rconf   the router's address is the node's own (no +1)                  → RED [4]
  *      --perturb-keepn   the node's public key is left out of the kept blob                → RED [5]
  *      --perturb-pending a keep skipped at a locked vault is forgotten                    → RED [5]
+ *      --perturb-pendfail a queued keep is dropped before it is tried (a failed flush loses it) → RED [5]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -41,6 +42,7 @@ const PLANTS = {
   "--perturb-warp": ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
   "--perturb-keepn": ["crypto.js", "JSON.stringify({ k: routerPriv, n: nodePub })", "JSON.stringify({ k: routerPriv })"],
   "--perturb-pending": ["crypto.js", "_pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); return", "return"],
+  "--perturb-pendfail": ["crypto.js", "if (r && r.ok !== false) { _pendingKeep.delete(pk); return true; }", "_pendingKeep.delete(pk); if (r && r.ok !== false) return true;"],
 };
 if (_flag && !PLANTS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
 const PLANT = _flag || "";
@@ -216,5 +218,17 @@ GET = () => ({ ok: false, code: "not_found" });
 check("an exit the panel no longer has reads none", await C.exitRouterKey("n1", "aabbccdd") === null);
 GET = () => null;
 check("a panel that does not answer reads unreachable", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_UNREACHABLE);
+// a queued keep whose flush fails stays queued — the router's key lives only in this tab — and a later unlock keeps it
+C.subForget();
+const rk2 = await C.genKeys(), okPost = api.subExitBlob;
+await C.exitKeepRouter("n1", "eeff0011", rk2.pub, rk2.priv, nk.pub, nk.priv);
+let fails = 0;
+api.subExitBlob = async () => { fails++; return { ok: false, error: "panel busy" }; };
+await C.subUnlockWithKey(SK); await tick();
+api.subExitBlob = okPost;
+const sent0 = SENT.length;
+C.subForget(); await C.subUnlockWithKey(SK); await tick();
+check("a queued keep whose flush failed is kept on the next unlock, not lost", fails === 1 && SENT.length === sent0 + 1
+      && SENT[SENT.length - 1].exit === "eeff0011" && SENT[SENT.length - 1].pub === rk2.pub, { fails, sent: SENT.length - sent0 });
 
 done(!!PLANT, PLANT);

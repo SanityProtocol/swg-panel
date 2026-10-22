@@ -4242,12 +4242,12 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
   const box = useRef(null);
   useEffect(() => { const t = box.current; if (t) { setTimeout(() => { t.setSelectionRange(0, 0); t.scrollTop = 0; }, 0); } }, []);
   // Not kept: Esc and a click outside ask first until the config has been downloaded or copied — this is its only copy. Done
-  // closes. Kept (`kept === true`): it opens again from the row, so the sheet closes like any other.
+  // closes. Regenerate's confirm opens over the sheet, so its Cancel comes back to it. Kept (`kept === true`): it opens again from the row, so the sheet closes like any other.
   const keep = useRef(kept !== true);
   const took = () => { keep.current = false; };
   return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${680} noSwipe=${kept !== true} dirtyRef=${keep}
     foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done"),
-                     left: onRegen ? html`<button class="btn btn-ghost" onClick=${() => { closeModal(); onRegen(); }}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>` : null })}>
+                     left: onRegen ? html`<button class="btn btn-ghost" onClick=${onRegen}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>` : null })}>
     ${changed ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("The router config changed — {v1}. Import this one on the router again.", { v1: changed })}</span></div>` : null}
     ${kept === true
       ? html`<p class="hint" style="margin:0 0 12px">${T("Kept encrypted with your client configs — the QR button on the exit's row shows it again.")}</p>`

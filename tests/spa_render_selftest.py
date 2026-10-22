@@ -71,7 +71,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -135,10 +135,11 @@ PERTURBATIONS = {
     # [B18]: the edit box prints a dial-in profile as a dial-out one (`Endpoint = `), as it did before 1.8.11
     "dinbox": ("js/screen-settings.js", '  const din = !!p.listen_port && !p.endpoint;', '  const din = false;'),
     # [B18] (S9c): the dial-in row has no QR button; Generate keeps nothing
-    "rqr": ("js/screen-settings.js", '${exitIsDialin(stored(ex.id)) ? html`<button class="exg-qr"', '${false ? html`<button class="exg-qr"'),
+    "rqr": ("js/screen-settings.js", '${exitIsDialin(stored(ex.id)) ? html`<button class=${"exg-qr"', '${false ? html`<button class=${"exg-qr"'),
     "rregen": ("js/screen-settings.js", "                     left: onRegen ? html`<button", "                     left: false ? html`<button"),
     "rmark": ("js/screen-settings.js", '(DIALIN_NOTE[ex.id] ? " chg" : "")', '("")'),
     "rguard": ("js/screen-settings.js", "  const keep = useRef(kept !== true);", "  const keep = useRef(false);"),
+    "rcancel": ("js/screen-settings.js", "<button class=\"btn btn-ghost\" onClick=${onRegen}>", "<button class=\"btn btn-ghost\" onClick=${() => { closeModal(); onRegen(); }}>"),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -931,6 +932,14 @@ try:
             check("[B18] …not kept, Esc asks first instead of dropping the only copy", "Keep editing" in _g, _g)
             click_text(tab, ".overlay.show .sheet-foot button", "/Keep editing/")
             settle(tab, 300)
+            # Regenerate's confirm opens over the sheet: Cancel comes back to the same config, not to a lost one
+            click_text(tab, ".overlay.show .sheet-foot button", "/Regenerate router config/")
+            settle(tab, 600)
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Cancel$/")
+            settle(tab, 500)
+            rsc = tab.ev(SHEET)
+            check("[B18] …Regenerate, then Cancel: the same router config is still open", bool(rsc) and rsc.get("conf") == rs["conf"],
+                  (rsc or {}).get("title"))
             # Regenerate from the router config's own sheet: new keys both sides, the port and the address kept, shown again
             click_text(tab, ".overlay.show .sheet-foot button", "/Regenerate router config/")
             settle(tab, 600)

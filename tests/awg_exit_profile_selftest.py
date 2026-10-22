@@ -201,7 +201,7 @@ check("…with the through-tunnel figure moved to the hover, saying what it incl
       "which also includes however far that site is" in ss)
 css = open(os.path.join(ROOT, "app.css"), encoding="utf-8").read()
 g8 = re.search(r"\.exgrid\.g8\{grid-template-columns:([^}]*)\}", css)
-check("the grid grew to 9 columns to match the header", g8 and len(g8.group(1).split()) == 9,
+check("the grid has 8 columns to match the header (the icon buttons share one actions cell)", g8 and len(g8.group(1).split()) == 8,
       g8 and g8.group(1).split())
 
 print("\n[6] an AmneziaWG 3.1 profile keeps its 3.x keys; a 2.0 profile reads exactly as before")
