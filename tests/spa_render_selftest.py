@@ -71,10 +71,10 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
-import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
+import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 os.environ["SWG_NFT_CLI_ONLY"] = "1"   # the kernel is this test's model, read through run(): nftables via the CLI only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -140,6 +140,11 @@ PERTURBATIONS = {
     "rmark": ("js/screen-settings.js", '(DIALIN_NOTE[ex.id] ? " chg" : "")', '("")'),
     "rguard": ("js/screen-settings.js", "  const keep = useRef(kept !== true);", "  const keep = useRef(false);"),
     "rcancel": ("js/screen-settings.js", "<button class=\"btn btn-ghost\" onClick=${onRegen}>", "<button class=\"btn btn-ghost\" onClick=${() => { closeModal(); onRegen(); }}>"),
+    # [B18] (S9d): the config's font is not fitted to its box (a long line wraps); Download/Copy beside the QR, not under
+    # it; the Keenetic steps lose `security-level private` (the router lets nothing in)
+    "rfit": ("app.css", "font-size:clamp(9px, calc((100cqi - 26px) / (var(--rconf-cols) * 0.6)), 13px)", "font-size:15px"),
+    "rside": ("app.css", ".rconf-side{display:flex;flex-direction:column;gap:8px}", ".rconf-side{display:flex;flex-direction:row;gap:8px}"),
+    "rkind": ("js/screen-settings.js", '"interface WireguardN security-level private\\nip nat WireguardN', '"ip nat WireguardN'),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -899,7 +904,7 @@ try:
         SHEET = ("(() => { const s = %s; if (!s) return null; const b = [...s.querySelectorAll('.sheet-foot button')]; const sr = s.getBoundingClientRect();"
                  " return {title: (s.querySelector('.sheet-head') || {}).textContent || '', protos: [...s.querySelectorAll('.awgsw button')].map(x => x.textContent),"
                  " tops: b.map(x => Math.round(x.getBoundingClientRect().top)), inside: b.every(x => x.getBoundingClientRect().right <= sr.right + 1),"
-                 " conf: (s.querySelector('textarea.exprof') || {}).value || '', qr: !!s.querySelector('.qr img')}; })()" % TOP)
+                 " conf: (s.querySelector('pre.rconf-text') || {}).textContent || '', qr: !!s.querySelector('.qr img')}; })()" % TOP)
         gs = tab.ev(SHEET)
         check("[B18] %s: Add a dial-in exit opens Generate — WireGuard, AmneziaWG 2.0, AmneziaWG 3.1; Cancel and Create on one line" % tag,
               bool(clicked and gs) and ("Обратный выход" if ru else "Dial-in exit") in gs["title"]
@@ -925,6 +930,35 @@ try:
                   bool(rpub) and (gx.get("profile") or {}).get("peer_key") == rpub
                   and ("\nPublicKey = " + rpub + "\n") not in rs["conf"], {"stored": (gx.get("profile") or {}).get("peer_key"), "derived": rpub})
             shot(tab, "b18-rconf-%s-%d" % (lang, vp[0]))
+            # (S9d) the config whole, no scroll: every line on one row at a font between 9 and 13 px; Download and Copy
+            # under the QR; the router's address a /31
+            fit = tab.ev("(() => { const s = %s; const p = s && s.querySelector('pre.rconf-text'); if (!p) return null;"
+                         " const cs = getComputedStyle(p), lh = parseFloat(cs.lineHeight), fs = parseFloat(cs.fontSize);"
+                         " const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom), n = p.textContent.replace(/\\n+$/, '').split('\\n').length;"
+                         " const q = s.querySelector('.rconf .qr img').getBoundingClientRect();"
+                         " const b = [...s.querySelectorAll('.rconf-acts button')].map(x => x.getBoundingClientRect());"
+                         " return {fs, rows: Math.round((p.clientHeight - pad) / lh), n, sx: p.scrollWidth - p.clientWidth, sy: p.scrollHeight - p.clientHeight,"
+                         " under: b.length === 2 && b.every(r => r.top >= q.bottom - 1 && r.left >= q.left - 1 && r.right <= q.right + 1)}; })()" % TOP) or {}
+            check("[B18] (S9d) the router config is shown whole — one row a line, no scroll, its font fitted (9–13 px)",
+                  fit.get("n") and fit.get("rows") == fit.get("n") and fit.get("sx", 1) <= 0 and fit.get("sy", 1) <= 0
+                  and 9 <= fit.get("fs", 0) <= 13, fit)
+            check("[B18] (S9d) …Download and Copy under the QR, in its column", fit.get("under"), fit)
+            check("[B18] (S9d) …the router's address the other half of a /31", "\nAddress = " in rs["conf"]
+                  and re.search(r"\nAddress = 10\.254\.\d+\.\d*[13579]/31\n", rs["conf"]) is not None, rs["conf"][:200])
+            STEPS = ("(() => { const s = %s; return s ? {kinds: [...s.querySelectorAll('.rkind .seg')].map(b => b.textContent.trim()),"
+                     " on: (s.querySelector('.rkind .seg.on') || {}).textContent || '', steps: (s.querySelector('.rsteps') || {}).textContent || ''} : null; })()" % TOP)
+            ks = tab.ev(STEPS) or {}
+            check("[B18] (S9d) On the router: Keenetic, OpenWrt, Other router — Keenetic's numbered steps carry its own commands",
+                  ks.get("kinds") == ["Keenetic", "OpenWrt", "Other router"] and ks.get("on") == "Keenetic"
+                  and "security-level private" in ks.get("steps", "") and "ip nat WireguardN" in ks.get("steps", "")
+                  and ("swg-" + str(gx.get("id"))) in ks.get("steps", ""), ks)
+            click_text(tab, ".overlay.show .rkind .seg", "/^OpenWrt$/")
+            settle(tab, 300)
+            ko = tab.ev(STEPS) or {}
+            check("[B18] (S9d) …OpenWrt shows its own steps instead", ko.get("on") == "OpenWrt" and "Load configuration" in ko.get("steps", "")
+                  and "security-level" not in ko.get("steps", ""), ko)
+            click_text(tab, ".overlay.show .rkind .seg", "/^Keenetic$/")
+            settle(tab, 300)
             # not kept (the store is off), it is the only copy: Esc asks before it drops it
             tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
             settle(tab, 400)
@@ -1024,7 +1058,7 @@ try:
                     " tops: b.map(x => Math.round(x.getBoundingClientRect().top)), inside: b.every(x => x.getBoundingClientRect().right <= sr.right + 1)}; })()" % TOP)
         check("[B18] %s: …and its paste link the sheet for the server config, no Connect from" % tag,
               bool(sh) and ("Обратный выход" if ru else "Dial-in exit") in sh["title"] and ("Свой" if ru else "Custom") not in sh["title"]
-              and ("Конфигурация сервера" if ru else "Server configuration") in sh["labels"]
+              and ("Сторона ноды" if ru else "This node's end") in sh["labels"]
               and not any(l in sh["labels"] for l in ("Connect from", "Подключаться с")), sh)
         check("[B18] %s: Cancel and Save share the bottom line, inside the sheet" % tag,
               bool(sh) and len(sh["tops"]) >= 2 and max(sh["tops"]) - min(sh["tops"]) <= 3 and sh["inside"], sh)

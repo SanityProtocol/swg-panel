@@ -51,6 +51,7 @@ Run: python3 tests/exit_failover_selftest.py            (0 = pass)
      --perturb-clis        only the first CLI is asked (an amneziawg-go device never re-pointed) — RED in [8]
      --perturb-late        the lookup's answer is not parked for the caller (a late one is lost) — RED in [8]
      --perturb-rebuild     a rebuilt tunnel inherits the old one's lookup history — RED in [5]
+     --perturb-backin      a dead tunnel carrying again reports no `back_in` (the row keeps blaming it) — RED in [5]
 """
 import importlib.machinery, importlib.util, os, sys, tempfile, threading
 
@@ -74,6 +75,7 @@ PLANTS = {
                           "    except BaseException:\n        raise\n    if True:\n        # ⚠️ IN A `finally`: a later exit"),
     "--perturb-evidence": ("        res[dev] = (tr, rch, None)", "        pass"),
     "--perturb-redial": ("            _exit_resolve(dev, rec)              # nothing crossed", "            pass  #"),
+    "--perturb-backin": ('if _hl.get("ok_since") is not None else {}))', 'if False else {}))'),
     "--perturb-redial-rr": ("    if live_ip in ips:", "    if live_ip in ips[:1]:"),
     "--perturb-ghost": ("    if live is None:\n        return None", "    if live is None:\n        live = \"\""),
     "--perturb-thread": ("            _exit_resolve(dev, rec)              # nothing crossed",
@@ -275,6 +277,13 @@ check("…and the routing reads the same verdict", N._devexit_state(D) == "dead"
 check("a tunnel carrying nothing asks whether its endpoint's name has moved", _redialled == [D, D], _redialled)
 check("…and the answer is acted on in the CALLING thread, never by a probe that may outlive its pass",
       _redial_main == [(D, FOUND, True)] * 2, _redial_main)
+# (S9d) carrying again, still dead until EXIT_ALIVE_AFTER_S: the report says how long until traffic moves back
+N._exit_trace = lambda d: dict(OK)
+N.reconcile_exits(_want, {"changed": 0, "errors": []})
+_r3 = next(x for x in N._EXITS["list"] if x["id"] == "aabbccdd")
+check("a dead tunnel carrying again still reports no_traffic, with back_in — the seconds before traffic moves back",
+      isinstance(_r3.get("no_traffic"), dict) and 0 < (_r3["no_traffic"].get("back_in") or 0) <= N.EXIT_ALIVE_AFTER_S, _r3)
+check("…and only then: a tunnel still failing reports none", "back_in" not in _r2["no_traffic"], _r2)
 _calls.clear()
 N._dev_link_state = lambda d: "up" if any(" up " in x for x in _calls) else "absent"
 N._exit_trace = lambda d: dict(OK)

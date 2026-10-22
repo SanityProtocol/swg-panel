@@ -4226,26 +4226,67 @@ const nodeDialHost = node => turnDialFallback((node || {}).id);
  *  — its address the other half of the pair, its AllowedIPs the node's /32, keepalive 25 (the router keeps its NAT open). */
 export function routerConf(host, prof, routerPriv, nodePub, psk) {
   const h = /:/.test(host) && !/^\[/.test(host) ? "[" + host + "]" : host;   // a bare IPv6 literal; one already bracketed stays
-  return buildConf({ privkey: routerPriv, address: subnetServerAddr(prof.address + "/32"), mtu: prof.mtu || 1280,
+  // The router's half of the pair is a /31 when the node holds its even address (every generated exit — the panel hands out
+  // aligned pairs): the node's address is then on the router's own link, so Keenetic's `ip nat WireguardN` covers it and no
+  // router needs a route for it. As a /32 Keenetic forwarded nothing (live, 2026-10-22). Any other address stays a /32.
+  const pair = Number(String(prof.address || "").split(".")[3]) % 2 === 0;
+  return buildConf({ privkey: routerPriv, address: subnetServerAddr(prof.address + (pair ? "/31" : "/32")), mtu: prof.mtu || 1280,
                      awg_params: prof.awg, server_pubkey: nodePub, psk, allowed: prof.address + "/32",
                      endpoint: h + ":" + prof.listen_port, keepalive: 25 });
 }
 // a title in a QR's zoom card is written into HTML; the router's config is named by what it is, never by free text
 const qrSafe = t => String(t || "").replace(/[<>&"']/g, "");
 
+// The router the "On the router" steps are written for — a view choice that outlives the sheet, not a setting.
+const ROUTER_VIEW = { kind: "keenetic" };
+const ROUTER_KINDS = [["keenetic", "Keenetic"], ["openwrt", "OpenWrt"], ["other", ""]];   // product names, the same in every language
+// A command block with its Copy under it (the `.netsnip` of the networks section).
+const cmdBlock = text => html`<div class="netsnip"><pre class="mono nixblock">${text}</pre>
+  <button type="button" class="btn btn-ghost btn-mini" onClick=${() => copy(text, T("Copied"))}><${Ic} i="copy"/> ${T("Copy")}</button></div>`;
+/** Each router's own steps, numbered — they are a sequence. The commands carry the real addresses; Keenetic's interface is
+ *  found by the description its import gives it (the file's name, `swg-<id>`). */
+function routerSteps(kind, ex, conf) {
+  const addr = (ex.profile || {}).address || "", tag = "swg-" + ex.id, awg = /^\s*Jc\s*=/m.test(conf);
+  // the commands as the router takes them — not prose, never translated
+  const KN_NAT = "interface WireguardN security-level private\nip nat WireguardN\nsystem configuration save",
+        KN_POLICY = "ip hotspot policy WireguardN PolicyN\nsystem configuration save",
+        LX_MASQ = `sysctl -w net.ipv4.ip_forward=1\niptables -t nat -A POSTROUTING -s ${addr} -o eth0 -j MASQUERADE`;
+  if (kind === "keenetic") return [
+    html`${T("Import the config: Internet → Other connections → WireGuard → Import from file. Leave “Use for accessing the Internet” off — the router keeps its own internet; this tunnel only carries the node's traffic out.")}`,
+    html`${Trich("Find its name: `show interface` on the command page (my.keenetic.net/a) lists it as WireguardN, described {v1}. Then, with your N:", { v1: tag })}
+      ${cmdBlock(KN_NAT)}`,
+    html`${T("If this router's own internet goes through a VPN — swg or another — keep this tunnel on your provider, with a connection policy that uses only the provider's connection:")}
+      ${cmdBlock(KN_POLICY)}`,
+  ];
+  if (kind === "openwrt") return [
+    html`${awg
+      ? T("Network → Interfaces → Add new interface, protocol AmneziaWG (the amneziawg packages), then load this config into it. Leave “Route Allowed IPs” off.")
+      : T("Network → Interfaces → Add new interface, protocol WireGuard VPN, then “Load configuration…” with this config. Leave “Route Allowed IPs” off.")}`,
+    html`${T("Firewall: put the interface in a zone that may forward to wan — wan masquerades by default, so the node's traffic leaves as the router.")}`,
+    html`${Trich("If wan is not this router's default route (its own internet goes through a VPN), send traffic from `{v1}` out by wan with policy-based routing (pbr).", { v1: addr })}`,
+  ];
+  return [
+    html`${Trich("Bring the config up: save it as `/etc/{v1}/{v2}.conf` and run `{v3} up {v2}`.", awg
+      ? { v1: "amnezia/amneziawg", v2: tag, v3: "awg-quick" } : { v1: "wireguard", v2: tag, v3: "wg-quick" })}`,
+    html`${T("Forward and masquerade the node's traffic out of your internet interface (eth0 here):")}
+      ${cmdBlock(LX_MASQ)}`,
+    html`${T("If this machine's own internet goes through a VPN, send the node's address out by your internet interface with a policy rule.")}`,
+  ];
+}
+
 /** The router's config. Not kept, it is shown once, and `noSwipe` keeps a swipe from closing it and losing the key (MOBILE-PLAN
- *  hook 2). It opens at the top of the file: the readonly box is the sheet's first focus, and a caret at its end scrolled the
- *  key out of sight. */
+ *  hook 2). The config is shown whole: no scroll either way — its font is sized to the box by its longest line (JetBrains
+ *  Mono is 0.6 em a character), and a line still too long at the floor wraps. Download and Copy sit under the QR. */
 function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
   const name = ex.label || exitDefaultTitle(ex);
   const port = (ex.profile || {}).listen_port;
-  const box = useRef(null);
-  useEffect(() => { const t = box.current; if (t) { setTimeout(() => { t.setSelectionRange(0, 0); t.scrollTop = 0; }, 0); } }, []);
+  const [kind, setKind] = useState(ROUTER_VIEW.kind);
+  const longest = Math.max(20, ...String(conf).split("\n").map(l => l.length));
   // Not kept: Esc and a click outside ask first until the config has been downloaded or copied — this is its only copy. Done
   // closes. Regenerate's confirm opens over the sheet, so its Cancel comes back to it. Kept (`kept === true`): it opens again from the row, so the sheet closes like any other.
   const keep = useRef(kept !== true);
   const took = () => { keep.current = false; };
-  return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${680} noSwipe=${kept !== true} dirtyRef=${keep}
+  return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${720} noSwipe=${kept !== true} dirtyRef=${keep}
     foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done"),
                      left: onRegen ? html`<button class="btn btn-ghost" onClick=${onRegen}><${Ic} i="refresh"/> ${T("Regenerate router config")}</button>` : null })}>
     ${changed ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("The router config changed — {v1}. Import this one on the router again.", { v1: changed })}</span></div>` : null}
@@ -4258,21 +4299,23 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
       : T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.")}</span></div>` : null}
     ${node.kind === "docker" && node.net_mode === "bridge" ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: 'ports: "' + port + ":" + port + '/udp"' })}</span></div>` : null}
     <div class="rconf">
-      <textarea ref=${box} class="exprof" rows="13" readonly wrap="off" spellcheck="false" value=${conf}/>
-      <${QR} conf=${conf} label=${qrSafe(name)} px=${220}/>
+      <div class="rconf-fit"><pre class="mono rconf-text" style=${"--rconf-cols:" + longest}>${conf}</pre></div>
+      <div class="rconf-side">
+        <${QR} conf=${conf} label=${qrSafe(name)} px=${220}/>
+        <div class="rconf-acts">
+          <button class="btn btn-ghost btn-mini" onClick=${() => { took(); downloadConf(conf, "swg-" + ex.id); }}><${Ic} i="download"/> ${T("Download .conf")}</button>
+          <button class="btn btn-ghost btn-mini" onClick=${() => { took(); copy(conf, T("Router config copied")); }}><${Ic} i="copy"/> ${T("Copy")}</button>
+        </div>
+      </div>
     </div>
-    <div class="exadd" style="margin:10px 0 16px">
-      <button class="btn btn-ghost btn-mini" onClick=${() => { took(); downloadConf(conf, "swg-" + ex.id); }}><${Ic} i="download"/> ${T("Download .conf")}</button>
-      <button class="btn btn-ghost btn-mini" onClick=${() => { took(); copy(conf, T("Router config copied")); }}><${Ic} i="copy"/> ${T("Copy")}</button>
-    </div>
-    <div class="seclabel">${T("On the router")}</div>
-    <ul class="rsteps">
-      <li>${T("Import this config as a WireGuard (or AmneziaWG) connection. Leave “use for internet access” off — the router keeps its own internet; this tunnel only carries the node's traffic out.")}</li>
-      <li>${Trich("Route the node's address {v1} into the tunnel — on OpenWrt tick “Route Allowed IPs” on the peer — or the replies leave by the router's WAN and the exit carries nothing.", { v1: ex.profile.address })}</li>
-      <li>${Trich("Let traffic from the tunnel out to the internet: on Keenetic `ip nat WireguardN`, then `system configuration save`; on OpenWrt, put the interface in a zone that forwards to wan with masquerading.")}</li>
+    <div class="seclabel" style="margin-top:16px">${T("On the router")}</div>
+    <div class="segrow rkind">${ROUTER_KINDS.map(([k, l]) => html`<button type="button" class=${"seg" + (kind === k ? " on" : "")}
+      onClick=${() => { ROUTER_VIEW.kind = k; setKind(k); }}>${l || T("Other router")}</button>`)}</div>
+    <ol class="rsteps">
+      ${routerSteps(kind, ex, conf).map(st => html`<li>${st}</li>`)}
       <li>${T("If this node itself is behind NAT, forward UDP {v1} to it.", { v1: port })}</li>
-      <li>${T("If this router also connects to swg as a user, traffic arriving on this tunnel must leave by the router's WAN, not by its swg tunnel — otherwise it loops and the exit carries nothing.")}</li>
-    </ul>
+      <li>${T("The exit's row turns green about a minute after traffic starts to flow — the node waits that long before it routes back through a tunnel that failed.")}</li>
+    </ol>
   <//>`;
 }
 
@@ -4373,13 +4416,13 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
         <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>`}
     </div>
     ${isProf
-      ? html`<div class="field"><label>${isDialin ? T("Server configuration") : T("Configuration")}</label>
+      ? html`<div class="field"><label>${isDialin ? T("This node's end") : T("Configuration")}</label>
           <textarea class="exprof" rows="11" spellcheck="false" value=${txt}
             placeholder=${isDialin ? T("Paste this node's side: [Interface] with ListenPort, one [Peer] — the router — with no Endpoint")
                                    : T("Paste the [Interface] / [Peer] profile here")}
             onInput=${e => { dirtyRef.current = true; setTxt(e.target.value); }}/>
           <div class="hint">${isDialin
-            ? T("This node listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")
+            ? T("This node's end of the tunnel: it listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line stands for this node's own key, which the panel keeps and never shows: leave it and the key is kept, replace it and the new one is used. The router has its own key — its config opens from the QR button on the exit's row.")
             : T("Edit it here or paste a replacement. IPv4 only — the v6 half is dropped, and routing lines are ignored because this node decides its own. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")}</div>
           ${isDialin && node.kind === "docker" && node.net_mode === "bridge"
             ? html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: ((q => 'ports: "' + q + ":" + q + '/udp"')((/^\s*ListenPort\s*=\s*(\d+)/mi.exec(txt) || [])[1] || (ex.profile || {}).listen_port || "PORT")) })}</span></div>`

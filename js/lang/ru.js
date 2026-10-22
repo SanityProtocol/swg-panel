@@ -3228,11 +3228,11 @@ export const STR = {
   "val|Dial-in": "Обратный",
   "For an upstream that can't be reached — a router behind NAT: it connects to this node.":
     "Для апстрима без белого адреса (роутер за NAT): он сам подключается к ноде.",
-  "Server configuration": "Конфигурация сервера",
+  "This node's end": "Сторона ноды",
   "Paste this node's side: [Interface] with ListenPort, one [Peer] — the router — with no Endpoint":
     "Вставьте сторону этой ноды: [Interface] с ListenPort и один [Peer] — роутер — без Endpoint",
-  "This node listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.":
-    "Нода слушает ListenPort, роутер подключается к ней сам. AllowedIPs пира не учитывается — весь трафик уходит на роутер. Строка PrivateKey — заглушка: оставьте её, и сохранённый ключ останется; замените — будет использован новый.",
+  "This node's end of the tunnel: it listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line stands for this node's own key, which the panel keeps and never shows: leave it and the key is kept, replace it and the new one is used. The router has its own key — its config opens from the QR button on the exit's row.":
+    "Сторона ноды в туннеле: она слушает ListenPort, роутер подключается к ней сам. AllowedIPs пира не учитывается — весь трафик уходит на роутер. Строка PrivateKey обозначает собственный ключ ноды — панель хранит его и никогда не показывает: оставьте её, и ключ сохранится; замените — будет использован новый. У роутера свой ключ — его конфиг открывается кнопкой QR в строке выхода.",
   "This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.":
     "Эта docker-нода работает в сети `bridge` — опубликуйте UDP-порт выхода в `docker-compose.yml` ноды ({ports}) и выполните `up -d`, иначе роутер до неё не достучится.",
   "This panel does not know this kind of exit. It is kept as it is; you can switch it off or remove it.":
@@ -3308,13 +3308,33 @@ export const STR = {
   "Download .conf": "Скачать .conf",
   "Router config copied": "Конфиг роутера скопирован",
   "On the router": "На роутере",
-  "Import this config as a WireGuard (or AmneziaWG) connection. Leave “use for internet access” off — the router keeps its own internet; this tunnel only carries the node's traffic out.":
-    "Импортируйте этот конфиг как подключение WireGuard (или AmneziaWG). «Использовать для выхода в интернет» не включайте — у роутера остаётся свой интернет, а этот туннель только выпускает трафик ноды наружу.",
-  "Let traffic from the tunnel out to the internet: on Keenetic `ip nat WireguardN`, then `system configuration save`; on OpenWrt, put the interface in a zone that forwards to wan with masquerading.":
-    "Выпустите трафик из туннеля в интернет: на Keenetic — `ip nat WireguardN`, затем `system configuration save`; на OpenWrt — поместите интерфейс в зону с перенаправлением в wan и маскарадингом.",
+  "Import the config: Internet → Other connections → WireGuard → Import from file. Leave “Use for accessing the Internet” off — the router keeps its own internet; this tunnel only carries the node's traffic out.":
+    "Импортируйте конфиг: Интернет → Другие подключения → WireGuard → Загрузить из файла. Оставьте «Использовать для выхода в интернет» выключенным — у роутера остаётся свой интернет, этот туннель только выводит трафик ноды наружу.",
+  "Find its name: `show interface` on the command page (my.keenetic.net/a) lists it as WireguardN, described {v1}. Then, with your N:":
+    "Найдите его имя: `show interface` на странице командной строки (my.keenetic.net/a) покажет его как WireguardN с описанием {v1}. Затем, со своим N:",
+  "If this router's own internet goes through a VPN — swg or another — keep this tunnel on your provider, with a connection policy that uses only the provider's connection:":
+    "Если собственный интернет роутера идёт через VPN — swg или другой — оставьте этот туннель на провайдере: политикой доступа, в которой есть только подключение провайдера:",
+  "Network → Interfaces → Add new interface, protocol AmneziaWG (the amneziawg packages), then load this config into it. Leave “Route Allowed IPs” off.":
+    "Network → Interfaces → Add new interface, протокол AmneziaWG (пакеты amneziawg), затем загрузите в него этот конфиг. «Route Allowed IPs» оставьте выключенным.",
+  "Network → Interfaces → Add new interface, protocol WireGuard VPN, then “Load configuration…” with this config. Leave “Route Allowed IPs” off.":
+    "Network → Interfaces → Add new interface, протокол WireGuard VPN, затем «Load configuration…» с этим конфигом. «Route Allowed IPs» оставьте выключенным.",
+  "Firewall: put the interface in a zone that may forward to wan — wan masquerades by default, so the node's traffic leaves as the router.":
+    "Firewall: поместите интерфейс в зону, которой разрешена пересылка в wan — wan по умолчанию делает маскарадинг, и трафик ноды уходит от имени роутера.",
+  "If wan is not this router's default route (its own internet goes through a VPN), send traffic from `{v1}` out by wan with policy-based routing (pbr).":
+    "Если wan — не основной маршрут роутера (его собственный интернет идёт через VPN), отправьте трафик от `{v1}` через wan маршрутизацией по политикам (pbr).",
+  "Bring the config up: save it as `/etc/{v1}/{v2}.conf` and run `{v3} up {v2}`.":
+    "Поднимите конфиг: сохраните его как `/etc/{v1}/{v2}.conf` и выполните `{v3} up {v2}`.",
+  "Forward and masquerade the node's traffic out of your internet interface (eth0 here):":
+    "Включите пересылку и маскарадинг трафика ноды через интерфейс интернета (здесь eth0):",
+  "If this machine's own internet goes through a VPN, send the node's address out by your internet interface with a policy rule.":
+    "Если собственный интернет этой машины идёт через VPN, отправьте адрес ноды через интерфейс интернета правилом маршрутизации по источнику.",
+  "The exit's row turns green about a minute after traffic starts to flow — the node waits that long before it routes back through a tunnel that failed.":
+    "Строка выхода становится зелёной примерно через минуту после того, как пойдёт трафик, — столько нода ждёт, прежде чем вернуть трафик в туннель, который не работал.",
+  "Traffic crosses it again — routing back through it in about {v1} s.":
+    "Трафик снова проходит — нода вернёт его в этот выход примерно через {v1} с.",
+  "Other router":
+    "Другой роутер",
   "If this node itself is behind NAT, forward UDP {v1} to it.": "Если сама нода за NAT, пробросьте на неё UDP {v1}.",
-  "If this router also connects to swg as a user, traffic arriving on this tunnel must leave by the router's WAN, not by its swg tunnel — otherwise it loops and the exit carries nothing.":
-    "Если этот роутер ещё и подключается к swg как пользователь, трафик из этого туннеля должен уходить через WAN роутера, а не через его туннель swg — иначе он зациклится и выход ничего не пропустит.",
   "The panel makes both sides; you import the router's config on the router.": "Панель создаст обе стороны, а конфиг роутера вы импортируете на роутере.",
   "val|WireGuard": "WireGuard",
   "AmneziaWG 2.0": "AmneziaWG 2.0",
@@ -3334,8 +3354,6 @@ export const STR = {
   "this node's key": "ключ этой ноды",
   "the preshared key": "общий ключ (PSK)",
   "AmneziaWG 3.1: {v1}": "AmneziaWG 3.1: {v1}",
-  "Route the node's address {v1} into the tunnel — on OpenWrt tick “Route Allowed IPs” on the peer — or the replies leave by the router's WAN and the exit carries nothing.":
-    "Направьте адрес ноды {v1} в туннель — на OpenWrt отметьте «Route Allowed IPs» у пира, — иначе ответы уйдут через WAN роутера и выход ничего не пропустит.",
   "a dial-in exit can only be generated from the exits screen": "обратный выход можно сгенерировать только на экране выходов",
   "the generated keys are not usable keys": "сгенерированные ключи непригодны",
   "choose WireGuard, AmneziaWG 2.0 or AmneziaWG 3.1": "выберите WireGuard, AmneziaWG 2.0 или AmneziaWG 3.1",

@@ -10636,7 +10636,11 @@ def reconcile_exits(desired, res):
         return {"id": xid, "device": dev, "provider": prov, "up": _live,
                     # Present only while the node is routing around this tunnel, so its presence alone is the
                     # fact the panel shows; an older node never sends it and the row reads as it always did.
-                    "no_traffic": ({"since": int(_hl["since"]), "why": _hl["why"]}
+                    # `back_in`: carrying again, the seconds left before traffic moves back (EXIT_ALIVE_AFTER_S) — so the
+                    # row says it is recovering instead of still blaming the tunnel for that minute
+                    "no_traffic": (dict({"since": int(_hl["since"]), "why": _hl["why"]},
+                                        **({"back_in": max(0, int(EXIT_ALIVE_AFTER_S - (time.time() - _hl["ok_since"])))}
+                                           if _hl.get("ok_since") is not None else {}))
                                    if _hl and _hl["dead"] else None),
                     "address": rec.get("address", ""), "public_key": rec.get("pub", ""),
                     "peer_key": rec.get("peer_key", ""),

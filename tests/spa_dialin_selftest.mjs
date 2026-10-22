@@ -22,6 +22,7 @@
  *      --perturb-old     the old-node read removed                                        → RED [2]
  *      --perturb-warp    the WARP group is "not profile" again                            → RED [3]
  *      --perturb-rconf   the router's address is the node's own (no +1)                  → RED [4]
+ *      --perturb-r31     the router's address is a /32 again (Keenetic forwards nothing)  → RED [4]
  *      --perturb-keepn   the node's public key is left out of the kept blob                → RED [5]
  *      --perturb-pending a keep skipped at a locked vault is forgotten                    → RED [5]
  *      --perturb-pendfail a queued keep is dropped before it is tried (a failed flush loses it) → RED [5]
@@ -38,7 +39,8 @@ const PLANTS = {
   "--perturb-text": ["screen-settings.js", '...(din ? [] : ["Endpoint = " + (p.endpoint || "")]),', '"Endpoint = " + (p.endpoint || ""),'],
   "--perturb-status": ["routing.js", 'if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return', 'if (false) return'],
   "--perturb-old": ["routing.js", 'if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return', 'if (false) return'],
-  "--perturb-rconf": ["screen-settings.js", 'address: subnetServerAddr(prof.address + "/32")', 'address: prof.address + "/32"'],
+  "--perturb-rconf": ["screen-settings.js", 'address: subnetServerAddr(prof.address + (pair ? "/31" : "/32"))', 'address: prof.address + (pair ? "/31" : "/32")'],
+  "--perturb-r31": ["screen-settings.js", 'address: subnetServerAddr(prof.address + (pair ? "/31" : "/32"))', 'address: subnetServerAddr(prof.address + "/32")'],
   "--perturb-warp": ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
   "--perturb-keepn": ["crypto.js", "JSON.stringify({ k: routerPriv, n: nodePub })", "JSON.stringify({ k: routerPriv })"],
   "--perturb-pending": ["crypto.js", "_pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); return", "return"],
@@ -157,11 +159,15 @@ for (const [nm, awg] of [["WireGuard", {}], ["AmneziaWG 3.1", A31]]) {
   check(nm + ": its peer is the node, at the node's host and port", r.p && r.p.peer_key === K2 && r.p.endpoint === "203.0.113.7:51824", r.p);
   check(nm + ": the router's address is the other half of the pair, AllowedIPs the node's /32",
         r.p && r.p.address === "10.254.0.7" && /\nAllowedIPs = 10\.254\.0\.6\/32\n/.test(rc), rc);
+  // (S9d) as a /31, so the node's address is on the router's own link — as a /32 a Keenetic forwarded nothing (live)
+  check(nm + ": …as a /31 — the node's address on the router's own link", /\nAddress = 10\.254\.0\.7\/31\n/.test(rc), rc);
   // against the stored dict itself, not against another rendering by the same awgConfLines (which would agree with itself)
   const want = Object.fromEntries(Object.entries(awg).sort());
   check(nm + ": the same AmneziaWG set as stored, keepalive on", r.p && JSON.stringify(Object.fromEntries(Object.entries(r.p.awg).sort())) === JSON.stringify(want)
         && r.p.keepalive === 25, [r.p && r.p.awg, want]);
 }
+check("a node address that is not the even half of a pair keeps the router a /32",
+      /\nAddress = 10\.254\.0\.8\/32\n/.test(SSM.routerConf("203.0.113.7", { ...DIN.profile, address: "10.254.0.7", listen_port: 51824 }, K1, K2, "")));
 check("a host already bracketed is not bracketed twice", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(SSM.routerConf("[2001:db8::1]", { ...DIN.profile, listen_port: 51824 }, K1, K2, "")));
 check("an IPv6 host is bracketed", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(SSM.routerConf("2001:db8::1", { ...DIN.profile, listen_port: 51824 }, K1, K2, "")));
 

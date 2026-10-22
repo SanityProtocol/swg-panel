@@ -40,7 +40,9 @@ const PWARP = process.argv.includes("--perturb-warp");
 // `--perturb-stalled`: the row ignores the node's dead-tunnel verdict (how it read before `no_traffic` existed)
 // and section [5] has to be what goes red.
 const PSTALLED = process.argv.includes("--perturb-stalled");
-const PERTURB = PSTALE || PWARP || PSTALLED || process.argv.includes("--perturb");
+// `--perturb-recover`: the row ignores `back_in` (a tunnel carrying again still reads "passes no traffic") — [5b] goes red.
+const PRECOVER = process.argv.includes("--perturb-recover");
+const PERTURB = PSTALE || PWARP || PSTALLED || PRECOVER || process.argv.includes("--perturb");
 const SRC = path.join(ROOT, "js", "routing.js");
 let mod = SRC;
 
@@ -51,6 +53,8 @@ if (PERTURB) {
     ['said((ex.provider || "warp") === "warp"', "said((false)"],
   ] : PSTALE ? [
     ["&& !nodeStale((node || {}).id))", ")"],
+  ] : PRECOVER ? [
+    ["if (l.no_traffic && Number.isFinite(l.no_traffic.back_in)) return", "if (false) return"],
   ] : PSTALLED ? [
     // ⚠️ ITS OWN ARM. Without one the flag fell through to the default guards below: something went red, and
     // none of it was section [5] — a perturbation of a flag nothing reads.
@@ -185,6 +189,15 @@ check("[5] …and both say it recovers by itself", /by itself/.test(offWhy) && /
 check("[5] a node too old to judge (no `no_traffic`) reads exactly as before", st({}, {}) === "ok", st({}, {}));
 check("[5] it draws a clickable fault marker", exitHealthMark(exitHealth(ex({}, gone), NODE)) !== null);
 
-done(PERTURB, PWARP ? "the WARP arm of the never-answered advice removed"
+// ── [5b] (S9d) carrying again, the node waits a minute before it routes back — the row says so, not "no traffic" ──
+const back = { no_traffic: { since: 1789482000, why: "TimeoutError: timed out", back_in: 37 }, trace: { ip: "198.51.100.9" }, handshake: 12 };
+const dinEx = { profile: { listen_port: 51820, address: "10.254.0.0" } };
+check("[5b] a judged-dead tunnel carrying again reads `recovering`", st({}, back) === "recovering", st({}, back));
+check("[5b] …a dial-in one too, not \"passes no traffic — check NAT\"", (() => { const h = exitHealth(ex(dinEx, back), NODE);
+  return h.state === "recovering" && !/check NAT/.test(h.why); })(), exitHealth(ex(dinEx, back), NODE));
+check("[5b] …and says when traffic moves back, in round seconds", /routing back through it in about 40 s/.test(why({}, back)), why({}, back));
+check("[5b] …still saying where the traffic is meanwhile", /node's own IP/.test(why({ killswitch: false }, back)), why({ killswitch: false }, back));
+
+done(PERTURB, PRECOVER ? "the recovering state ignored" : PWARP ? "the WARP arm of the never-answered advice removed"
                     : PSTALE ? "the staleness half of `configuring` removed"
                     : PSTALLED ? "the node's dead-tunnel verdict ignored" : "both freshness guards removed");

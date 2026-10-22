@@ -3535,6 +3535,10 @@ export function exitHealth(x, node) {
   if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return { state: "waiting", tone: "warn", icon: "warn", dot: "down",
     why: T("Waiting for the router to connect. Check the router is on, its config imported, and UDP {v1} open on this node.",
            { v1: (ex.profile || {}).listen_port }) + _fell };
+  // Carrying again, and the node is waiting out EXIT_ALIVE_AFTER_S before it moves traffic back: say that, not "passes no
+  // traffic" — that minute read as the fault still being there (live, 2026-10-22).
+  if (l.no_traffic && Number.isFinite(l.no_traffic.back_in)) return { state: "recovering", tone: "warn", icon: "refresh", dot: "down",
+    why: T("Traffic crosses it again — routing back through it in about {v1} s.", { v1: Math.max(5, Math.ceil(l.no_traffic.back_in / 5) * 5) }) + _fell };
   if (exitIsDialin(ex) && l.no_traffic && !(l.trace || {}).ip) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
     why: said(T("The router is connected but passes no traffic — check NAT on the router.")) + _fell };
   // ⚠️ UP AND CARRYING NOTHING, as the NODE judged it — not a guess from `handshake` or `trace` here. The node
