@@ -141,6 +141,8 @@ export const api = {
   subUserDisable(b) { return this.post("/api/sub/user/disable", b); },
   subBlob(b) { return this.post("/api/sub/blob", b); },
   subBlobGet(pid) { return this.get("/api/sub/blob?peer_id=" + encodeURIComponent(pid)); },   // read one peer's ciphertext for in-browser Show-QR decrypt
+  subExitBlob(b) { return this.post("/api/sub/exitblob", b); },   // keep a dial-in exit's router key (ciphertext)
+  subExitBlobGet(node, exit) { return this.get("/api/sub/exitblob?node=" + encodeURIComponent(node) + "&exit=" + encodeURIComponent(exit)); },
   subEscrow(b) { return this.post("/api/sub/escrow", b); },   // ensure a user holds an encryption unlock-key (encrypted config storage, no subscription)
   purgePlaintext(b) { return this.post("/api/config/purge-plaintext", b || {}); },   // migration: delete legacy plaintext where a blob exists
   plaintextPeers() { return this.get("/api/config/plaintext-peers"); },   // migration: exactly which peers still hold plaintext (+ orphan count)

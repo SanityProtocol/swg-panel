@@ -22,6 +22,11 @@ profile reads, signs and writes exactly as it did (compared against `eb25bad7`, 
   [7] generate (S9b): the first free port of 51820–51899, never outside it (full → refused); a /31 of 10.254.0.0/16 clear of
       the node's subnets and its other exits; the AmneziaWG set per protocol (3.1 refused on a 2.0 node); stored in the
       paste's shape, the request field never stored; Regenerate keeps port, address and AmneziaWG and takes the new keys
+  [8] the router's key in the config store (S9c): a node's bucket takes an encryption key only for a known node; a key is
+      kept only against the router key the exit stores, with the node-key digest taken from the record; it is read back
+      while the exit stands, and gone once the router or the node key changes, the exit turns dial-out or is removed (the
+      save prunes it on disk), or the node is deleted (bucket and key); the bucket lists as the node's, and a Transfer
+      carries it with the node and does not count it as a user
 
 Run: python3 tests/dialin_exit_selftest.py      (0 = pass)
      --perturb-endpoint   the dial-in conf keeps an `Endpoint =` line                     → RED [1]
@@ -42,6 +47,13 @@ Run: python3 tests/dialin_exit_selftest.py      (0 = pass)
      --perturb-pair       generate takes the first /31 without the overlap test             → RED [7]
      --perturb-regen      Regenerate draws a new port/address/set like a new exit           → RED [7]
      --perturb-fleet      the pair is unique on this node only                             → RED [7]
+     --perturb-xesc       a node's bucket is refused an encryption key                      → RED [8]
+     --perturb-xpub       a key is kept against any router key                              → RED [8]
+     --perturb-xgate      the read-time gate ignores the router key                         → RED [8]
+     --perturb-xnkh       the read-time gate ignores the node key                           → RED [8]
+     --perturb-xsave      an exits save leaves a removed exit's key on disk                 → RED [8]
+     --perturb-xdrop      a node delete leaves its bucket and key                           → RED [8]
+     --perturb-xmove      a Transfer leaves the node's bucket behind                        → RED [8]
 """
 import importlib.machinery, importlib.util, ipaddress, os, subprocess, sys, tempfile
 
@@ -84,6 +96,16 @@ PLANTS = {
               "    if False:\n        port, node, awg, mtu"),
     "fleet": ("p", "+ list(ctx.get(\"dialin_addrs\") or [])", ""),
     "coerce": ("p", '            _pv = str(e.get("provider") or "warp")\n', '            _pv = "warp" if str(e.get("provider") or "warp") != "profile" else "profile"\n'),
+    "xesc": ("p", "                and sub_exit_node(uid) not in nodes:", "                and True:"),
+    "xpub": ("p", "        if pub != live[eid][0]:                                       # a later save", "        if False:                                       # a later save"),
+    "xgate": ("p", "if isinstance(v, dict) and eid in live and (v.get(\"pub\"), v.get(\"nkh\")) == live[eid]}",
+              "if isinstance(v, dict) and eid in live and v.get(\"nkh\") == live[eid][1]}"),
+    "xnkh": ("p", "if isinstance(v, dict) and eid in live and (v.get(\"pub\"), v.get(\"nkh\")) == live[eid]}",
+             "if isinstance(v, dict) and eid in live and v.get(\"pub\") == live[eid][0]}"),
+    "xsave": ("p", '        if "exits" in body and os.path.exists(_sub_blob_path(deps, sub_exit_bucket(nid))):', "        if False:"),
+    "xdrop": ("p", "        drop_sub_blobs(deps, sub_exit_bucket(nid))\n        _esc = load_sub_escrow(deps)\n        if _esc.pop(sub_exit_bucket(nid), None) is not None:",
+              "        _esc = {}\n        if False:"),
+    "xmove": ("p", "    if _xk and _xb in escrow_all:\n", "    if False:\n"),
 }
 if PLANT == "cand":
     _blk = NSRC[NSRC.index("        # ⚠️ ONE OF OUR OWN EXITS' DEVICES IS NEVER ADOPTABLE."):NSRC.index("        if name in own_exits:\n            continue\n") + len("        if name in own_exits:\n            continue\n")]
@@ -459,6 +481,67 @@ check("Regenerate keeps the port, the address, the MTU and the AmneziaWG set", e
       r.get(x) == st3["profile"].get(x) for x in ("listen_port", "address", "mtu", "awg")), (e, r, st3["profile"]))
 check("…and takes the new keys", r.get("private_key") == kk2["private_key"] and r.get("peer_key") == kk2["peer_key"]
       and r.get("psk") == kk2["psk"], r)
+
+print("\n[8] the router's key in the config store (S9c)")
+import json as _json, shutil as _sh
+_D = tempfile.mkdtemp(prefix="dialin-store-")
+try:
+    _rk, _nk = _k(), _k()
+    _ex = {"id": "aabbccdd", "producer": "imported", "provider": "profile", "label": "home",
+           "profile": {"private_key": _nk, "address": "10.254.0.0", "mtu": 1280, "listen_port": 51820, "endpoint": "",
+                       "peer_key": _rk, "psk": "", "keepalive": 0, "awg": {}}}
+    _deps = {"fleet": {}, "roster_path": os.path.join(_D, "users.json"), "nodes_path": os.path.join(_D, "nodes.json"),
+             "sub_dir": os.path.join(_D, "subs"), "node_snaps": {}, "node_seen": {}, "panel_settings": {}, "now": lambda: 1}
+    _json.dump({"users": {}, "peers": {}}, open(_deps["roster_path"], "w"))
+    def _nodes(exits):
+        P.nodes_save(_deps["nodes_path"], {NID: {"name": "lab", "id": NID, "exits": exits, "links": {}, "ifaces": {}}})
+    def _api(m, path, body=None, qs=None):
+        return P.api(m, path, qs or {}, body or {}, _deps)
+    _nodes([_ex])
+    B = P.sub_exit_bucket(NID)
+    st, r = _api("POST", "/api/sub/escrow", {"user_id": B, "unlock_by_sk": "WRAPPED"})
+    check("a known node's bucket takes an encryption key", st == 200, (st, r))
+    st, r = _api("POST", "/api/sub/escrow", {"user_id": P.sub_exit_bucket("nosuchnode"), "unlock_by_sk": "W"})
+    check("…an unknown node's does not", st == 404, (st, r))
+    st, r = _api("POST", "/api/sub/exitblob", {"node": NID, "exit": "aabbccdd", "pub": _k(), "sec": "CT"})
+    check("a key made against another router key is refused (409)", st == 409, (st, r))
+    st, r = _api("POST", "/api/sub/exitblob", {"node": NID, "exit": "eeeeeeee", "pub": _rk, "sec": "CT"})
+    check("…a key for an exit the node has not, 404", st == 404, (st, r))
+    st, r = _api("POST", "/api/sub/exitblob", {"node": NID, "exit": "aabbccdd", "pub": _rk, "sec": "CT", "nkh": "forged"})
+    _ent = P.load_sub_blobs(_deps, B).get("aabbccdd") or {}
+    check("the router's key is kept, its node-key digest from the record (never the browser's)", st == 200
+          and _ent.get("sec") == "CT" and _ent.get("pub") == _rk and _ent.get("nkh") == P._exit_nkh(_ex["profile"]), (st, r, _ent))
+    check("…the digest names nothing of the key", _nk not in _json.dumps(_ent), _ent)
+    def _get():
+        return _api("GET", "/api/sub/exitblob", qs={"node": [NID], "exit": ["aabbccdd"]})
+    st, r = _get()
+    check("it is read back while the exit stands, from the node's bucket", st == 200 and r["data"] == {"sec": "CT", "user_id": B}, (st, r))
+    _su = _api("GET", "/api/sub/users")[1]["data"]["users"].get(B) or {}
+    check("the bucket lists as the node's: one dial-in exit, one kept", (_su.get("peers"), _su.get("provisioned")) == (1, 1), _su)
+    _tp = P.transfer_plan(_deps, P.nodes_load(_deps["nodes_path"]), NID, {}, {}, P.roster_load(_deps["roster_path"]))
+    check("a Transfer carries the node's bucket and its key", (_tp.get("blobs") or {}).get(B, {}).get("aabbccdd", {}).get("sec") == "CT"
+          and B in (_tp.get("escrow") or {}), {k: _tp.get(k) for k in ("blobs", "escrow")})
+    def _after(change, name):
+        _nodes([change])
+        P.save_sub_blobs(_deps, B, {"aabbccdd": dict(_ent)})
+        st, r = _get()
+        check(name, (st == 200 and r["data"]["sec"] == "" or st == 404) and "aabbccdd" not in P.load_sub_blobs(_deps, B), (st, r))
+    _after(dict(_ex, profile=dict(_ex["profile"], peer_key=_k())), "a regenerated or re-pasted router: the kept key is gone")
+    _after(dict(_ex, profile=dict(_ex["profile"], private_key=_k())), "a pasted new node key: the kept key is gone")
+    _after(dict(_ex, profile=dict(_ex["profile"], endpoint="203.0.113.9:51820")), "the exit turned dial-out: the kept key is gone")
+    _nodes([_ex]); P.save_sub_blobs(_deps, B, {"aabbccdd": dict(_ent)})
+    st, r = _api("POST", "/api/nodes/update", {"id": NID, "exits": []})
+    check("an exits save that removes the exit takes its key off the disk at once", st == 200
+          and "aabbccdd" not in P.load_sub_blobs(_deps, B), (st, r, P.load_sub_blobs(_deps, B)))
+    _nodes([_ex]); P.save_sub_blobs(_deps, B, {"aabbccdd": dict(_ent)})
+    P.node_remove(_deps, NID)
+    check("a node delete drops its bucket and the key it was sealed under",
+          not os.path.exists(P._sub_blob_path(_deps, B)) and B not in P.load_sub_escrow(_deps), P.load_sub_escrow(_deps))
+    _nodes([_ex]); P.save_sub_escrow(_deps, {B: {"unlock_by_sk": "W"}, "u1": {"unlock_by_sk": "W"}})
+    check("a Transfer's pre-flight counts users only, not the node's bucket",
+          [u for u in ("u1", B) if not P.sub_exit_node(u)] == ["u1"] and P.sub_exit_node(B) == NID and P.sub_exit_node("_orphan") == "")
+finally:
+    _sh.rmtree(_D, ignore_errors=True)
 
 ru = open(os.path.join(ROOT, "js", "lang", "ru.js"), encoding="utf-8").read()
 for k in ("a dial-in exit has exactly one peer — the upstream", "the profile's ListenPort is not a usable port",

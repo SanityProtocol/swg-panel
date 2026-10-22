@@ -57,8 +57,10 @@ Fixture — node q-node (enforces device access: net_deps.reach 2, syncing every
         pasted there and saved is stored as a dial-in exit. (S9b) It opens Generate first — three protocols, Cancel and
         Create on one line; Create shows the router's config once (Endpoint = the node's host and the port it got, a QR, one
         Done), and the panel's peer is the X25519 public half of the router's key; Regenerate keeps the port and address
-        and shows a new config; a port change says the router config changed, with Regenerate beside it. English and
-        Russian, 1280 and 390 px. SPA_SHOTS keeps the shots
+        and shows a new config; a port change says the router config changed, with Regenerate beside it. (S9c) With the store
+        off the row's QR button says nothing is kept and offers Regenerate; with it on and a vault, Create says the config is
+        kept, closes like any sheet, and the row's QR button shows the same router key again. English and Russian, 1280 and
+        390 px. SPA_SHOTS keeps the shots
   [i18n] B1's words in Russian; [console] no error or exception on any view
 
 Needs google-chrome (or $CHROME). A missing browser is a FAIL, never a skip.
@@ -67,7 +69,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -130,6 +132,9 @@ PERTURBATIONS = {
                 '      ${false ? null : html`<div class="field"><label>${T("Connect from")}</label>'),
     # [B18]: the edit box prints a dial-in profile as a dial-out one (`Endpoint = `), as it did before 1.8.11
     "dinbox": ("js/screen-settings.js", '  const din = !!p.listen_port && !p.endpoint;', '  const din = false;'),
+    # [B18] (S9c): the dial-in row has no QR button; Generate keeps nothing
+    "rqr": ("js/screen-settings.js", '${exitIsDialin(stored(ex.id)) ? html`<button class="exg-qr"', '${false ? html`<button class="exg-qr"'),
+    "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub);", "    const kept = false;"),
 }
 WEB = ROOT
 if PERTURB:
@@ -944,6 +949,47 @@ try:
             check("[B18] a port change says the router config changed — port 51830 → 51832 — with Regenerate beside it",
                   "port 51830 → 51832" in note and "Regenerate router config" in note, note)
             shot(tab, "b18-note-%s-%d" % (lang, vp[0]))
+            # (S9c) the store off: the row's QR button says nothing is kept, and offers Regenerate
+            QRBTN = ("(() => { const r = [...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes(%s));"
+                     " const b = r && r.querySelector('.exg-qr'); if (b) b.click(); return !!b; })()")
+            _qb = tab.ev(QRBTN % json.dumps(gx.get("device") or "wgx-?"))
+            settle(tab, 800)
+            _cf = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
+            check("[B18] the store off: the row's QR button says no router config is kept, and offers Regenerate",
+                  _qb and "No router config is kept" in _cf and "Keeping encrypted client configs is off" in _cf and "Regenerate" in _cf,
+                  {"button": _qb, "sheet": _cf[:300]})
+            close_modals(tab)
+            # …on, with a vault: Create keeps it, and the row's QR button shows the same router key again
+            must(call("POST", "/api/panel/settings", {"store_configs": "encrypted"}), "keep encrypted configs")
+            ev_mod(tab, "crypto", "await M.subVaultCreate('b18-vault-pass'); return true;")
+            ev_mod(tab, "store", "await M.Store.poll(); return M.Store.storeMode;")
+            settle(tab, 600)
+            click_text(tab, ".exadd button", "/Add a dial-in exit/")
+            settle(tab, 600)
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Create/")
+            settle(tab, 3500)
+            ks = tab.ev(SHEET) or {}
+            _ktxt = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
+            kpriv = next((l.split(" = ", 1)[1] for l in ks.get("conf", "").splitlines() if l.startswith("PrivateKey = ")), "")
+            kport = next((l.rsplit(":", 1)[1] for l in ks.get("conf", "").splitlines() if l.startswith("Endpoint = ")), "")
+            check("[B18] the store on: Create says the router config is kept, not shown once",
+                  bool(kpriv) and "Kept encrypted with your client configs" in _ktxt and "Shown once" not in _ktxt, _ktxt[:300])
+            shot(tab, "b18-kept-%s-%d" % (lang, vp[0]))
+            tab.ev("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
+            settle(tab, 600)
+            check("[B18] …and it closes on Esc like any sheet (it opens again from the row)", not tab.ev(SHEET), tab.ev(SHEET))
+            close_modals(tab)
+            st3 = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
+            kx = next((x for x in st3 if str((x.get("profile") or {}).get("listen_port")) == kport), {})
+            _qb = tab.ev(QRBTN % json.dumps(kx.get("device") or "wgx-?"))
+            settle(tab, 2000)
+            rs3 = tab.ev(SHEET) or {}
+            check("[B18] …the row's QR button shows the same router config again: its key, the node's host and port",
+                  _qb and "Router config" in (rs3.get("title") or "") and ("PrivateKey = " + kpriv + "\n") in (rs3.get("conf") or "")
+                  and ("\nEndpoint = 203.0.113.7:%s\n" % kport) in (rs3.get("conf") or "") and rs3.get("qr"),
+                  {"button": _qb, "exit": kx.get("device"), "sheet": rs3})
+            shot(tab, "b18-again-%s-%d" % (lang, vp[0]))
+            close_modals(tab)
             click_text(tab, ".exadd button", "/Add a dial-in exit/")
             settle(tab, 600)
         click_text(tab, ".overlay.show .linkbtn", "/Paste the server config instead|Вставьте серверный конфиг/")

@@ -10,6 +10,10 @@
  *  [4] (S9b) the router's config, built from the stored profile, parses through the same parser as a DIAL-OUT profile that
  *      dials the node: its peer is the node's public key, its address the router's half of the pair, Endpoint the node's
  *      host and port, the AmneziaWG set identical (3.1 included)
+ *  [5] (S9c) the router's key in the config store: nothing is kept with the store off, and a locked vault says so; kept, it
+ *      goes to the node's bucket as ciphertext against the router's public key, and reads back as both keys the config
+ *      needs; a blob under another bucket key reads "sealed", an exit the panel no longer has reads "none", a dead panel
+ *      reads "unreachable"
  *
  * Run: node tests/spa_dialin_selftest.mjs
  *      --perturb-text    the box prints `Endpoint = ` for a dial-in profile again        → RED [1]
@@ -17,6 +21,7 @@
  *      --perturb-old     the old-node read removed                                        → RED [2]
  *      --perturb-warp    the WARP group is "not profile" again                            → RED [3]
  *      --perturb-rconf   the router's address is the node's own (no +1)                  → RED [4]
+ *      --perturb-keepn   the node's public key is left out of the kept blob                → RED [5]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -32,6 +37,7 @@ const PLANTS = {
   "--perturb-old": ["routing.js", 'if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return', 'if (false) return'],
   "--perturb-rconf": ["screen-settings.js", 'address: subnetServerAddr(prof.address + "/32")', 'address: prof.address + "/32"'],
   "--perturb-warp": ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
+  "--perturb-keepn": ["crypto.js", "JSON.stringify({ k: routerPriv, n: nodePub })", "JSON.stringify({ k: routerPriv })"],
 };
 if (_flag && !PLANTS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
 const PLANT = _flag || "";
@@ -54,7 +60,7 @@ try {
   R = await load("routing.js");
   SSM = await load("screen-settings.js");
   ({ Store } = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href));
-  C = await import(pathToFileURL(path.join(ROOT, "js", "crypto.js")).href);
+  C = await load("crypto.js");
 } finally { for (const f of made) fs.unlinkSync(f); }
 // `profileText` is private to screen-settings.js: taken from the (maybe perturbed) source and run with what it uses.
 let SSRC = fs.readFileSync(path.join(ROOT, "js", "screen-settings.js"), "utf8");
@@ -153,5 +159,38 @@ for (const [nm, awg] of [["WireGuard", {}], ["AmneziaWG 3.1", A31]]) {
 }
 check("a host already bracketed is not bracketed twice", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(SSM.routerConf("[2001:db8::1]", { ...DIN.profile, listen_port: 51824 }, K1, K2, "")));
 check("an IPv6 host is bracketed", /\nEndpoint = \[2001:db8::1\]:51824\n/.test(SSM.routerConf("2001:db8::1", { ...DIN.profile, listen_port: 51824 }, K1, K2, "")));
+
+console.log("\n[5] the router's key in the config store");
+const { api } = await import(pathToFileURL(path.join(ROOT, "js", "store.js")).href);
+const ESC = {}, BLOBS = {}, SENT = [];
+let GET = (n, e) => ({ ok: true, data: { sec: BLOBS[e] || "", user_id: C.exitBucket(n) } });
+Object.assign(api, {
+  subVault: async () => ({ ok: true, data: { exists: true } }),          // a vault from before sk_verify: any key opens it
+  subUsers: async () => ({ ok: true, data: { users: Object.fromEntries(Object.entries(ESC).map(([u, w]) => [u, { unlock_by_sk: w }])) } }),
+  subEscrow: async b => { if (!ESC[b.user_id]) ESC[b.user_id] = b.unlock_by_sk; return { ok: true, data: { unlock_by_sk: ESC[b.user_id] } }; },
+  subExitBlob: async b => { SENT.push(b); BLOBS[b.exit] = b.sec; return { ok: true, data: { stored: true } }; },
+  subExitBlobGet: async (n, e) => GET(n, e),
+});
+const rk = await C.genKeys(), nk = await C.genKeys();
+Store.storeMode = "off";
+check("the store off: nothing kept, nothing sent", await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub) === false && !SENT.length);
+Store.storeMode = "encrypted";
+const locked = await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub);
+check("a locked vault: not kept, and says why", typeof locked === "string" && /locked/.test(locked) && !SENT.length, locked);
+await C.subUnlockWithKey(Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"));
+check("kept, with the vault open", await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub) === true, SENT);
+check("…in the node's bucket, against the router's public key", !!ESC["_x_n1"] && SENT.length === 1 && SENT[0].node === "n1"
+      && SENT[0].exit === "aabbccdd" && SENT[0].pub === rk.pub, SENT);
+check("…as ciphertext: the private key is not in what was sent", SENT.length === 1 && !JSON.stringify(SENT[0]).includes(rk.priv), SENT);
+const kb = await C.exitRouterKey("n1", "aabbccdd");
+check("it reads back as the router's private key and the node's public key", kb && kb.k === rk.priv && kb.n === nk.pub, kb);
+const wrap = ESC["_x_n1"];
+ESC["_x_n1"] = ESC["_x_n1"].split("").reverse().join("");                // another bucket key: the wrap no longer opens
+check("a blob under another bucket key reads sealed", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_SEALED_OLD);
+ESC["_x_n1"] = wrap;
+GET = () => ({ ok: false, code: "not_found" });
+check("an exit the panel no longer has reads none", await C.exitRouterKey("n1", "aabbccdd") === null);
+GET = () => null;
+check("a panel that does not answer reads unreachable", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_UNREACHABLE);
 
 done(!!PLANT, PLANT);

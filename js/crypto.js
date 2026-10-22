@@ -1318,6 +1318,41 @@ export async function blobConfig(peer, node, iface) {
   } catch (_) { return null; }
 }
 
+// A dial-in exit's ROUTER key is kept in the same store (1.8.11 S9c), in its node's bucket (SUB_EXIT_PFX on the server):
+// {k: the router's private key, n: the node's public key}, encrypted here under the bucket's unlock-key as a peer's {k, p}
+// is. The config itself is never stored — it is rebuilt from the exit's stored profile each time it is shown.
+export const exitBucket = nid => "_x_" + nid;
+// → true (kept), false (the store is off), or a sentence saying why it was not kept. Never throws.
+export async function exitKeepRouter(nid, exitId, routerPub, routerPriv, nodePub) {
+  if (Store.storeMode !== "encrypted") return false;
+  try {
+    if (!subSKCached()) return T("the encryption key is locked");
+    const unlockKey = await ensureUserUnlockKey(exitBucket(nid));
+    if (!unlockKey) return T("its encryption bucket was sealed with a previous encryption key");
+    const sec = await subEnc(unlockKey, new TextEncoder().encode(JSON.stringify({ k: routerPriv, n: nodePub })));
+    const r = await api.subExitBlob({ node: nid, exit: exitId, pub: routerPub, sec });
+    return r && r.ok !== false ? true : (srvText(r) || T("couldn't store the router config"));
+  } catch (e) { return String((e && e.message) || e); }
+}
+// → {k, n}; null when none is kept (or the vault is locked); CONF_UNREACHABLE / CONF_SEALED_OLD as blobConfig says them.
+export async function exitRouterKey(nid, exitId) {
+  if (!subSKCached()) return null;
+  let r, unlockKey;
+  try {
+    r = await api.subExitBlobGet(nid, exitId);
+    if (r && r.code === "not_found") return null;                 // no longer a dial-in exit here: nothing to show
+    if (!r || r.ok === false) return CONF_UNREACHABLE;
+    if (!r.data || !r.data.sec) return null;
+    const rec = (await subUsersMap(true))[r.data.user_id];
+    if (!rec || !rec.unlock_by_sk) return null;
+    try { unlockKey = await subRecoverUnlock(rec); } catch (_) { return CONF_SEALED_OLD; }
+  } catch (_) { return CONF_UNREACHABLE; }
+  try {
+    const s = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, r.data.sec)));
+    return s && s.k && s.n ? { k: s.k, n: s.n } : null;
+  } catch (_) { return CONF_SEALED_OLD; }                         // GCM refused it: sealed under a key this vault does not hold
+}
+
 // A config the server currently can't build (e.g. the peer's interface is a ghost — gone with no key) returns
 // EMPTY every time. Without a memory of that, a QR/config view re-requests it on every render/remount and floods
 // the console + server with identical 404s. Remember an empty result per (pubkey,node,iface) and skip re-fetching

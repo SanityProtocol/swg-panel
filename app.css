@@ -2575,7 +2575,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
    far end of this tunnel, and is it worth routing through. Kept narrow (max-content over a 64px floor): the
    value is "128 ms" or an em dash and never grows. */
 .exgrid.g8{grid-template-columns:minmax(110px,1.3fr) minmax(130px,1.2fr) minmax(70px,max-content)
-  minmax(110px,max-content) minmax(64px,max-content) minmax(76px,max-content) minmax(62px,max-content) 40px 40px}
+  minmax(110px,max-content) minmax(64px,max-content) minmax(76px,max-content) minmax(62px,max-content) minmax(40px,max-content) 40px}
 /* the manage grid: the same seven plus "Leaves as", the source the traffic actually carries */
 .exgrid.g8x{grid-template-columns:minmax(95px,1fr) minmax(100px,0.9fr) minmax(70px,max-content)
   minmax(178px,1.4fr) minmax(84px,max-content) minmax(76px,max-content) minmax(62px,max-content) 62px}
@@ -2614,10 +2614,11 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 /* A whole row opens the editor, so the cells that are not controls say so. */
 .exg-c.clk{cursor:pointer}
 .exgrid.g8 .exg-r:hover>.exg-c{background:color-mix(in srgb,var(--brand) 7%,transparent)}
-.exg-ed{display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;
+.exg-ed,.exg-qr{display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:0;
   border-radius:6px;background:none;color:var(--faint);cursor:pointer;transition:background .12s,color .12s}
-.exg-ed:hover{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--brand)}
-.exg-ed svg{width:14px;height:14px}
+.exg-ed:hover,.exg-qr:hover{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--brand)}
+.exg-ed svg,.exg-qr svg{width:14px;height:14px}
+.exg-qr{color:var(--brand)}   /* a dial-in row's router config: the peers' QR button, in the grid's own icon size */
 /* ── THE EXIT EDITOR'S HEADER ───────────────────────────────────────────────────────────────────────────
    Three weights, in one line, with air between them: the NAME is the loud thing, the kind and the device
    are metadata beside it, and what depends on it sits far right where a count belongs. Everything after the

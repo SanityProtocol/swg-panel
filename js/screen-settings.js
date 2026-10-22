@@ -36,7 +36,7 @@ import {
   ListPager, LIST_PAGE, pageSlice,
 } from "./ui.js";
 import {
-  awgConfLines, buildConf, genKeys, genPSK, QR,
+  CONF_SEALED_OLD, CONF_UNREACHABLE, awgConfLines, buildConf, exitKeepRouter, exitRouterKey, genKeys, genPSK, QR,
   SUB_LANG_LIST, VaultPromptSheet, downloadConf, ivkSetEscrow, nginxServerBlock, nixDirectTlsBlock, nixProxyBlock,
   ensureVaultUnlocked, ivkResealForNodeBlob, nixUpstream, normPublicUrl, qrDataURL, runConfigMigration, subBaseUrl, subForget, subKeyB64, subRewrap, subSKCached, subUnlock,
   subVaultCreate, urlPortOf, withUrlPort,
@@ -4207,11 +4207,13 @@ const exitBadge = (ex, live) => {
 /* ── DIAL-IN: GENERATE AND THE ROUTER'S CONFIG (docs/LISTEN-EXIT-PLAN.md §2.1, §2.3, §2.4a) ────────────────────────────────
    The browser makes both keypairs and the PSK; the panel gets the node's private key, the router's PUBLIC key and the PSK,
    allocates the port and the address, and stores the node side. The router's config is then rendered here from what the
-   panel STORED (so it carries exactly the port, address and AmneziaWG set the node writes) plus the router's private key,
-   which only this tab ever held: shown once, never stored. Regenerate is the one way to see a router config again. */
+   panel STORED (so it carries exactly the port, address and AmneziaWG set the node writes) plus the router's private key.
+   That key is kept as a peer's is (S9c): encrypted here into the config store, in the node's bucket, when the store is on —
+   and the row's QR button rebuilds the config from the stored profile each time, so it follows a later port change. With
+   the store off (or the vault left locked) it is shown once, and Regenerate is the way to a new one. */
 
 /** What changed on a saved dial-in exit that the router has to follow ("port 51820 → 51821"), by exit id — a view note,
- *  not stored (§2.4a): it lasts until Regenerate or a reload, and the row offers Regenerate beside it. */
+ *  not stored (§2.4a): it lasts until the router config is shown again or a reload. */
 const DIALIN_NOTE = {};
 
 /** The host the router dials — the one a turn link's client dials: the node's ingress address, else its first public one. */
@@ -4230,17 +4232,21 @@ const qrSafe = t => String(t || "").replace(/[<>&"']/g, "");
 
 /** The router's config, shown once. `noSwipe`: a swipe must not close it and lose the key (MOBILE-PLAN hook 2). It opens at
  *  the top of the file: the readonly box is the sheet's first focus, and a caret at its end scrolled the key out of sight. */
-function RouterConfSheet({ node, ex, conf }) {
+function RouterConfSheet({ node, ex, conf, kept }) {
   const name = ex.label || exitDefaultTitle(ex);
   const port = (ex.profile || {}).listen_port;
   const box = useRef(null);
   useEffect(() => { const t = box.current; if (t) { setTimeout(() => { t.setSelectionRange(0, 0); t.scrollTop = 0; }, 0); } }, []);
-  // Esc and a click outside ask first until the config has been downloaded or copied — this is its only copy. Done closes.
-  const keep = useRef(true);
+  // Not kept: Esc and a click outside ask first until the config has been downloaded or copied — this is its only copy. Done
+  // closes. Kept (`kept === true`): it opens again from the row, so the sheet closes like any other.
+  const keep = useRef(kept !== true);
   const took = () => { keep.current = false; };
   return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${680} noSwipe=${true} dirtyRef=${keep}
     foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done") })}>
-    <div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.")}</span></div>
+    ${kept === true
+      ? html`<p class="hint" style="margin:0 0 12px">${T("Kept encrypted with your client configs — the QR button on the exit's row shows it again.")}</p>`
+      : html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.")}${
+          typeof kept === "string" ? " " + T("Not kept with your client configs: {v1}.", { v1: kept }) : ""}</span></div>`}
     ${!nodeDialHost(node) ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.")}</span></div>` : null}
     ${node.kind === "docker" && node.net_mode === "bridge" ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: 'ports: "' + port + ":" + port + '/udp"' })}</span></div>` : null}
     <div class="rconf">
@@ -4413,6 +4419,11 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
   // Generate (a new exit, `proto` set) and Regenerate (a stored one, `proto` null): the keys are made HERE, the panel keeps
   // the node's private key, and the router's config is rendered from what it stored.
   const generate = async (rec, proto) => {
+    // The router's key is kept only by a browser holding the encryption key, so it is asked for BEFORE the keys exist —
+    // the peers' prompt. Skipped, the exit is still made; its config is then shown once.
+    await ensureVaultUnlocked({ title: T("Unlock to keep the router config"),
+      reason: T("The router's config is kept encrypted with your client configs — only you can read it, with your encryption key. Unlock it so the exit's row can show the config again."),
+      consequence: T("the exit is created and works, but its router config is shown once only — Regenerate makes a new one.") });
     const nk = await genKeys(), rk = await genKeys(), psk = genPSK();
     const body = { ...rec, profile_text: "", dial_src: "", dialin_gen: { proto, private_key: nk.priv, peer_key: rk.pub, psk } };
     const isNew = !exits.some(x => String(x.id) === String(rec.id));
@@ -4425,20 +4436,38 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     }
     if (!st || !st.profile || st.profile.peer_key !== rk.pub)
       return r === true ? T("Saved, but the panel did not return the exit — reload and regenerate.") : T("Couldn't save");
+    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub);
     delete DIALIN_NOTE[rec.id];
     closeModal();
-    openModal(html`<${RouterConfSheet} node=${node} ex=${st} conf=${routerConf(nodeDialHost(node), st.profile, rk.priv, nk.pub, psk)}/>`);
+    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${kept} conf=${routerConf(nodeDialHost(node), st.profile, rk.priv, nk.pub, psk)}/>`);
     return true;
   };
-  const regen = ex => openConfirm({
-    title: T("Regenerate the router config?"), confirmLabel: T("Regenerate"),
-    body: T("Both sides get new keys. The router stops connecting until it imports the new config."),
-    onConfirm: async () => {   // the confirm sheet drops what onConfirm returns: a failure is said here, not lost
-      let r;
-      try { r = await generate({ ...ex }, null); } catch (e) { r = String((e && e.message) || e); }
-      if (r !== true) toast(typeof r === "string" ? r : T("Couldn't save"), "err");
-    },
-  });
+  const regenNow = async ex => {   // a confirm sheet drops what onConfirm returns: a failure is said here, not lost
+    let r;
+    try { r = await generate({ ...ex }, null); } catch (e) { r = String((e && e.message) || e); }
+    if (r !== true) toast(typeof r === "string" ? r : T("Couldn't save"), "err");
+  };
+  const REGEN_BODY = () => T("Both sides get new keys. The router stops connecting until it imports the new config.");
+  const regen = ex => openConfirm({ title: T("Regenerate the router config?"), confirmLabel: T("Regenerate"),
+    body: REGEN_BODY(), onConfirm: () => regenNow(ex) });
+  // The row's QR button: the kept router key, and the config rebuilt from the profile the panel stores NOW.
+  const showRouter = async ex => {
+    if (Store.storeMode === "encrypted" && !(await ensureVaultUnlocked({ title: T("Unlock to show the router config"),
+      reason: T("The router's config is kept encrypted with your client configs — only you can read it, with your encryption key."),
+      consequence: T("the router config is not shown.") }))) return;
+    const st = fresh(ex.id);
+    const r = st && st.profile && exitIsDialin(st) ? await exitRouterKey(node.id, ex.id) : null;
+    if (r === CONF_UNREACHABLE) return toast(T("Couldn't reach the panel just now, so the router config could not be read. It has not been lost — try again in a moment."), "err");
+    if (!r || r === CONF_SEALED_OLD) return openConfirm({ title: T("No router config is kept for this exit"),
+      body: (Store.storeMode !== "encrypted"
+        ? T("Keeping encrypted client configs is off, so the router's private key was shown once and not kept.")
+        : r === CONF_SEALED_OLD
+        ? T("It was kept under a previous encryption key, which this vault cannot open.")
+        : T("It was made before the router's key was kept, pasted from elsewhere, or its keys changed since.")) + " " + REGEN_BODY(),
+      confirmLabel: T("Regenerate"), onConfirm: () => regenNow(ex) });
+    delete DIALIN_NOTE[ex.id];
+    openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${true} conf=${routerConf(nodeDialHost(node), st.profile, r.k, r.n, st.profile.psk)}/>`);
+  };
   const openEdit = (ex, isNew) => openModal(html`<${ExitEditSheet} node=${node} ex=${ex} isNew=${isNew}
     escrowOn=${escrowOn} goSection=${goSection} onRegen=${() => { closeModal(); regen(ex); }}
     onSave=${async body => {
@@ -4552,6 +4581,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
           <div class="exg-c c" onClick=${stop}><${Switch} on=${!off} title=${ACTIVE_TITLE()}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, enabled: x } : y)))}/></div>
           <div class="exg-c exg-act" onClick=${stop}>
+            ${exitIsDialin(stored(ex.id)) ? html`<button class="exg-qr" title=${T("Router config")} onClick=${() => showRouter(ex)}><${Ic} i="qr"/></button>` : null}
             <button class="exg-ed" title=${T("val|Edit")} onClick=${() => openEdit(ex)}><${Ic} i="pencil"/></button></div>
           <div class="exg-c exg-act" onClick=${stop}>
             <button class="exg-rm" title=${T("Remove")} onClick=${() => del(ex)}><${Ic} i="trash"/></button></div>
@@ -4561,7 +4591,9 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
       : null}
     ${exits.filter(x => DIALIN_NOTE[x.id]).map(x => html`<div class="notice warn" key=${"dn" + x.id} style="margin:10px 0 0">
       <${Ic} i="warn"/><span>${T("{v1}: the router config changed — {v2}.", { v1: x.label || exitDefaultTitle(x), v2: DIALIN_NOTE[x.id] })}</span>
-      <button type="button" class="btn btn-ghost btn-mini" onClick=${() => regen(x)}>${T("Regenerate router config")}</button></div>`)}
+      ${Store.storeMode === "encrypted"
+        ? html`<button type="button" class="btn btn-ghost btn-mini" onClick=${() => showRouter(x)}>${T("Show router config")}</button>`
+        : html`<button type="button" class="btn btn-ghost btn-mini" onClick=${() => regen(x)}>${T("Regenerate router config")}</button>`}</div>`)}
     ${exits.length ? null
       : html`<p class="hint" style="margin:0 0 12px">${T("No exits on this node yet. Register a free Cloudflare account, paste a WireGuard profile from somewhere else, or add a dial-in exit for an upstream that connects to this node.")}</p>`}
     ${/* TWO WAYS TO GET ONE, offered as two actions rather than one button and a provider dropdown: the

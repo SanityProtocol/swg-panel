@@ -3264,6 +3264,32 @@ export const STR = {
   "Router config — {v1}": "Конфиг роутера — {v1}",
   "Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.":
     "Показывается один раз — приватный ключ роутера нигде не хранится. Потеряли? Пересоздайте конфиг роутера.",
+  // S9c: the router's key kept with the client configs
+  "Kept encrypted with your client configs — the QR button on the exit's row shows it again.":
+    "Хранится зашифрованным вместе с конфигами клиентов — кнопка QR в строке выхода покажет его снова.",
+  "Not kept with your client configs: {v1}.": "Не сохранён вместе с конфигами клиентов: {v1}.",
+  "Unlock to keep the router config": "Откройте хранилище, чтобы сохранить конфиг роутера",
+  "The router's config is kept encrypted with your client configs — only you can read it, with your encryption key. Unlock it so the exit's row can show the config again.":
+    "Конфиг роутера хранится зашифрованным вместе с конфигами клиентов — прочитать его можете только вы своим ключом. Откройте ключ, чтобы строка выхода могла показать конфиг снова.",
+  "the exit is created and works, but its router config is shown once only — Regenerate makes a new one.":
+    "выход создаётся и работает, но конфиг роутера будет показан только один раз — новый даст «Пересоздать».",
+  "Unlock to show the router config": "Откройте хранилище, чтобы показать конфиг роутера",
+  "The router's config is kept encrypted with your client configs — only you can read it, with your encryption key.":
+    "Конфиг роутера хранится зашифрованным вместе с конфигами клиентов — прочитать его можете только вы своим ключом.",
+  "the router config is not shown.": "конфиг роутера не будет показан.",
+  "Couldn't reach the panel just now, so the router config could not be read. It has not been lost — try again in a moment.":
+    "Сейчас не удалось связаться с панелью, поэтому конфиг роутера прочитать не вышло. Он не потерян — попробуйте ещё раз через минуту.",
+  "No router config is kept for this exit": "Для этого выхода конфиг роутера не сохранён",
+  "Keeping encrypted client configs is off, so the router's private key was shown once and not kept.":
+    "Хранение зашифрованных конфигов клиентов выключено, поэтому приватный ключ роутера был показан один раз и не сохранён.",
+  "It was kept under a previous encryption key, which this vault cannot open.":
+    "Он сохранён под предыдущим ключом шифрования, который это хранилище открыть не может.",
+  "It was made before the router's key was kept, pasted from elsewhere, or its keys changed since.":
+    "Он создан до того, как ключ роутера стал сохраняться, вставлен извне, или его ключи с тех пор сменились.",
+  "Router config": "Конфиг роутера",
+  "Show router config": "Показать конфиг роутера",
+  "the encryption key is locked": "ключ шифрования заперт",
+  "couldn't store the router config": "не удалось сохранить конфиг роутера",
   "This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then regenerate.":
     "У этой ноды пока нет входного адреса, поэтому строка Endpoint неполная. Задайте его в Настройки → Сеть и пересоздайте конфиг.",
   "Download .conf": "Скачать .conf",
