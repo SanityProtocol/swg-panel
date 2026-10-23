@@ -24,7 +24,7 @@ Run: python3 tests/router_steps_fence_selftest.py
                  accept, the FORWARD jump to the chain, the INPUT drop — each must turn [2] red. Prints "PERTURB OK",
                  exit 0 (exit 1 if a plant stayed green); SKIPPED plants are named as such.
 """
-import contextlib, signal, os, re, shutil, subprocess, sys
+import contextlib, signal, os, re, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -118,12 +118,23 @@ def run_checks(src):
     check("[1] the Linux steps are read from the SPA as built — only ${tag}/${addr} interpolated", cmds is not None and not unknown, unknown)
     check("[1] …the uplink is named once (UPLINK=eth0) and used by name", bool(cmds) and cmds.count("eth0") == 1
           and cmds.startswith("UPLINK=eth0\n") and "$UPLINK" in cmds, cmds)
+    _vars = sorted(set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", cmds or "")))
+    check("[1] …no rule is held in a variable: UPLINK is the only one, a single word in any shell (zsh does not split $R)",
+          _vars == ["UPLINK"], _vars)
     sd = sudo()
     if sd is None or not shutil.which("ip") or not shutil.which("iptables") and not os.path.exists("/usr/sbin/iptables"):
         SKIPS.append("[2]"); print("  SKIPPED [2] — no root / `sudo -n`, ip or iptables here; [1] still ran"); return
-    for pol in ("DROP", "ACCEPT"):
+    # both iptables backends: the nft one, and the legacy one through a PATH shim (an older router) — iptables-restore's
+    # chain declaration must empty an existing chain in each
+    shim = tempfile.mkdtemp(prefix="swgfence-legacy-")
+    for t in ("iptables", "iptables-restore", "iptables-save"):
+        os.symlink("/usr/sbin/" + t.replace("iptables", "iptables-legacy", 1), os.path.join(shim, t))
+    os.chmod(shim, 0o755)
+    arms = [("nft", "", "DROP"), ("nft", "", "ACCEPT")] + ([("legacy", shim + ":", "ACCEPT")] if os.path.exists("/usr/sbin/iptables-legacy-restore") else [])
+    for be, pre, pol in arms:
         env = ["env", "PID=%d" % os.getpid(), "TAG=" + TAG, "ADDR=" + ADDR, "POLICY=" + pol, "CMDS=" + (cmds or "false"),
-               "PATH=/usr/sbin:/usr/bin:/sbin:/bin"]
+               "PATH=" + pre + "/usr/sbin:/usr/bin:/sbin:/bin"]
+        pol = pol if be == "nft" else pol + " (iptables-legacy)"
         out = run_rig(sd + env + ["bash", "-c", RIG.replace("$$PID", "$PID")], 120)[0]
         got = dict(l.split(": ", 1) for l in out.splitlines() if ": " in l)
         check("[2] FORWARD %s: the commands run as shown" % pol, got.get("cmds") == "ok", out)
@@ -133,18 +144,20 @@ def run_checks(src):
             check("[2] FORWARD %s: %s %s is %s" % (pol, SEEN[d], d, w), got.get(d) == w, got.get(d))
         check("[2] FORWARD %s: TCP to the internet gets through, from the router's address (masqueraded)" % pol,
               got.get("tcp") == "from 198.51.100.2", got.get("tcp"))
+    shutil.rmtree(shim, ignore_errors=True)
 
 SRC = open(SPA).read()
 if "--perturb" in sys.argv:
     plants = {
         "the private ranges not dropped": ("-d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP",
                                            "-d 198.51.100.250 -j DROP"),
-        "the chain's rest accepted, not dropped": ("iptables -A ${tag}-fwd -j DROP\\n", "iptables -A ${tag}-fwd -j ACCEPT\\n"),
-        "the chain's accept names no uplink": ("iptables -A ${tag}-fwd -o $UPLINK -j ACCEPT", "iptables -A ${tag}-fwd -j ACCEPT"),
+        "the chain's rest accepted, not dropped": ("\\n-A ${tag}-fwd -j DROP\\n", "\\n-A ${tag}-fwd -j ACCEPT\\n"),
+        "the chain's accept names no uplink": ("-A ${tag}-fwd -o $UPLINK -j ACCEPT", "-A ${tag}-fwd -j ACCEPT"),
         "no FORWARD jump to the chain (the tunnel left to the policy)": ("+ `iptables -C FORWARD -i ${tag} -j ${tag}-fwd 2>/dev/null || iptables -I FORWARD -i ${tag} -j ${tag}-fwd\\n`", "+ ``"),
-        "no INPUT drop": ("+ `R=\"-i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\"; iptables -C INPUT $R 2>/dev/null || iptables -I INPUT $R\\n`", "+ ``"),
-        "the chain made with no flush (a second paste fails)": ("iptables -N ${tag}-fwd 2>/dev/null || iptables -F ${tag}-fwd\\n", "iptables -N ${tag}-fwd\\n"),
-        "a rule added again on a second paste (no -C)": ("iptables -C FORWARD $R 2>/dev/null || iptables -I FORWARD $R", "iptables -I FORWARD $R"),
+        "no INPUT drop": ("+ `iptables -C INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP 2>/dev/null || iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\\n`", "+ ``"),
+        "the chain appended to, not declared in the transaction (a second paste doubles it)": ("iptables-restore --noflush <<EOF\\n*filter\\n:${tag}-fwd - [0:0]\\n",
+                                                                                              "iptables -N ${tag}-fwd 2>/dev/null || true\\niptables-restore --noflush <<EOF\\n*filter\\n"),
+        "a rule added again on a second paste (no -C)": ("iptables -C FORWARD -i ${tag} -j ${tag}-fwd 2>/dev/null || iptables -I FORWARD -i ${tag} -j ${tag}-fwd", "iptables -I FORWARD -i ${tag} -j ${tag}-fwd"),
     }
     bad, skipped = [], []
     for name, (a, b) in plants.items():

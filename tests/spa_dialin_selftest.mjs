@@ -28,7 +28,10 @@
  *      --perturb-pending a keep skipped at a locked vault is forgotten                    → RED [5]
  *      --perturb-pendfail a queued keep is dropped before it is tried (a failed flush loses it) → RED [5]
  *      --perturb-blobgcm  a peer's blob GCM refuses reads "no stored config" again (s9c F25/F45) → RED [5]
+ *      --perturb-s4twin   the browser's wire overhead differs from the panel's (review F6)   → RED [5b]
  *      --perturb-rewrap   the pre-flight promises a re-wrap again (NODE-TRANSFER I.18)         → RED [6]
+ *      --perturb-keepseal a queued keep whose bucket is sealed reads "queued" for ever (review F1) → RED [5]
+ *      --perturb-sealplain a sealed blob hides the plaintext copy a migrating panel still has (F2) → RED [5]
  *      --perturb-keepdrop a keep the panel refused for good is re-posted on every unlock (s9c F57) → RED [5]
  *      --perturb-keepwhy  a failed flush is silent — the open sheet cannot say why (s9c F60)   → RED [5]
  *      --perturb-stalenat a stale node's recovering dial-in exit blames NAT on the router (s9d F9) → RED [2]
@@ -54,11 +57,14 @@ const PLANTS = {
   "--perturb-pendfail": ["crypto.js", "if (r && r.ok !== false) { _pendingKeep.delete(pk); _keepFail.delete(pk); return true; }", "_pendingKeep.delete(pk); if (r && r.ok !== false) return true;"],
   "--perturb-blobgcm": ["crypto.js", "try { secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec))); } catch (_) { return CONF_SEALED_OLD; }",
                         "secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec)));"],
+  "--perturb-keepseal": ["crypto.js", "if (_pendingKeep.has(pk)) { _keepFail.set(pk, why); if (sealed) _pendingKeep.delete(pk); }", "0;"],
+  "--perturb-sealplain": ["crypto.js", "if (!(Store.configsPlaintext > 0)) return null;\n      return api.config(", "return null;\n      return api.config("],
   "--perturb-keepdrop": ["crypto.js", 'if (r && ["stale", "not_found", "bad_request"].includes(r.code)) _pendingKeep.delete(pk);', "0;"],
   "--perturb-keepwhy": ["crypto.js", "if (_pendingKeep.has(pk)) _keepFail.set(pk, why);\n", "\n"],
   "--perturb-stalenat": ["routing.js", "if (exitIsDialin(ex) && l.no_traffic && !Number.isFinite(l.no_traffic.back_in) && !(l.trace || {}).ip) return", "if (exitIsDialin(ex) && l.no_traffic && !(l.trace || {}).ip) return"],
 };
-PLANTS["--perturb-rewrap"] = ["sheets-crud.js", "", ""];   // read by [6] itself: no module to load perturbed
+PLANTS["--perturb-rewrap"] = ["sheets-crud.js", "", ""];
+PLANTS["--perturb-s4twin"] = ["screen-settings-text", "", ""];   // read by [5b] itself, as text   // read by [6] itself: no module to load perturbed
 if (_flag && !PLANTS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
 const PLANT = _flag || "";
 const made = [];
@@ -253,6 +259,16 @@ api.subBlobGet = async () => ({ ok: true, data: { sec: sec0, user_id: C.exitBuck
 const bopen = await C.blobConfig(bpeer, "n1", "wg0");
 check("a peer's stored config the bucket key does not open reads sealed; one it opens is built", bsealed === C.CONF_SEALED_OLD
       && typeof bopen === "string" && bopen.includes("PrivateKey = " + rk.priv), [String(bsealed), typeof bopen]);
+// …and on a panel still migrating, the plaintext copy of a sealed one is still read (backlog C review F2)
+api.subBlobGet = async () => ({ ok: true, data: { sec: BLOBS.aabbccdd.sec.slice(0, 30) + (BLOBS.aabbccdd.sec[30] === "A" ? "B" : "A") + BLOBS.aabbccdd.sec.slice(31), user_id: C.exitBucket("n1") } });
+Store.recon.peers = [{ ...bpeer, pubkey: "PKSEALED" }];
+Store.configsPlaintext = 1;
+const PLAIN = "[Interface]\nPrivateKey = " + rk.priv + "\nAddress = 10.9.0.2/32\n\n[Peer]\nPublicKey = " + K2 + "\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n";
+api.config = async () => ({ ok: true, data: { config: PLAIN } });
+const gplain = await C.getConfig("PKSEALED", "n1", "wg0");
+Store.configsPlaintext = 0;
+check("…a sealed blob with a plaintext copy still on the panel shows that copy, not 're-issue'",
+      typeof gplain === "string" && gplain.includes("PrivateKey = " + rk.priv) && !C.confWasSealedOld("PKSEALED", "n1", "wg0"), [typeof gplain, String(gplain).slice(0, 60)]);
 BLOBS.aabbccdd.sec = sec0;
 USERS = () => ({ ok: true, data: { users: {} } });
 const refused = await C.exitKeepRouter("n2", "aabbccdd", rk.pub, rk.priv, nk.pub, nk.priv);
@@ -288,6 +304,25 @@ C.subForget(); await C.subUnlockWithKey(SK); await tick();
 api.subExitBlob = okPost;
 check("a keep the panel refuses for good (stale) is dropped, not re-posted on every unlock, and still says why",
       posts === 1 && /changed since/.test(String(C.exitKeepState("n1", "22334455"))), { posts, st: C.exitKeepState("n1", "22334455") });
+// a queued keep whose bucket is sealed under a previous key: said, and not re-tried on every unlock (backlog C review F1)
+C.subForget();
+ESC["_x_n7"] = "c2VhbGVkLXVuZGVyLWFub3RoZXIta2V5LXh4eHh4eHh4eHh4eHh4eA==";
+USERS = () => ({ ok: true, data: { users: Object.fromEntries(Object.entries(ESC).map(([u, w]) => [u, { unlock_by_sk: w }])) } });
+C.subUsersForget();                                                     // the users map is cached 4 s; a fresh read sees the bucket
+let p7 = 0;
+api.subExitBlob = async b => { p7++; return okPost(b); };
+await C.exitKeepRouter("n7", "77777777", rk3.pub, rk3.priv, nk.pub, nk.priv);
+await C.subUnlockWithKey(SK); await tick();
+C.subForget(); await C.subUnlockWithKey(SK); await tick();
+api.subExitBlob = okPost;
+check("…a queued keep whose bucket is sealed: the sheet reads why, never \"queued\", and nothing is posted",
+      /previous encryption key/.test(String(C.exitKeepState("n7", "77777777"))) && p7 === 0, { st: C.exitKeepState("n7", "77777777"), p7 });
+
+console.log("\n[5b] the browser fits a drawn S4 by the panel's own numbers (backlog B review F6)");
+const _ss = fs.readFileSync(path.join(ROOT, "js", "screen-settings.js"), "utf8").replace(PLANT === "--perturb-s4twin" ? "const DIN_WIRE = 60;" : "\0", "const DIN_WIRE = 61;");
+const _jw = (_ss.match(/^const DIN_WIRE = (\d+);/m) || [])[1], _pw = (fs.readFileSync(path.join(ROOT, "swg-panel-server"), "utf8").match(/^MESH_WIRE_OVERHEAD = (\d+)/m) || [])[1];
+check("the browser's wire overhead is the panel's MESH_WIRE_OVERHEAD", !!_jw && _jw === _pw, { browser: _jw, panel: _pw });
+check("…and it reads the MTU as the panel does: digits only", /\/\^\[0-9\]\+\$\/\.test\(String\(mtu \?\? ""\)\.trim\(\)\)/.test(_ss));
 
 console.log("\n[6] a node transfer's pre-flight says what becomes of users' encryption keys (NODE-TRANSFER I.18)");
 const SC = PLANT === "--perturb-rewrap" ? fs.readFileSync(path.join(ROOT, "js", "sheets-crud.js"), "utf8")

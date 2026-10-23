@@ -4254,14 +4254,16 @@ export function routerSteps(kind, ex, conf) {
         // the tunnel's forwards go through a chain of its own, so its rules apply in the order shown, and they reach the
         // internet interface only: never a private range (a one-NIC box's LAN is behind that same interface), nothing else
         // on the box (a tailnet, a second NIC); nor the box itself (INPUT). Pasting it again changes nothing: the chain is
-        // emptied and refilled, and every other rule is added only when `-C` does not find it (s9d-f8-lan F7)
-        LX_MASQ = `UPLINK=eth0\nsysctl -w net.ipv4.ip_forward=1\niptables -N ${tag}-fwd 2>/dev/null || iptables -F ${tag}-fwd\n`
-          + `iptables -A ${tag}-fwd -d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP\n`
-          + `iptables -A ${tag}-fwd -o $UPLINK -j ACCEPT\niptables -A ${tag}-fwd -j DROP\n`
+        // declared in one iptables-restore transaction, which empties and refills it at once — no moment with the jump in
+        // and the chain empty (backlog D review F4) — and every other rule is added only when `-C` does not find it
+        // (s9d-f8-lan F7), each spelled out whole: a rule held in a variable is one word to zsh (review F3)
+        LX_MASQ = `UPLINK=eth0\nsysctl -w net.ipv4.ip_forward=1\niptables-restore --noflush <<EOF\n*filter\n:${tag}-fwd - [0:0]\n`
+          + `-A ${tag}-fwd -d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP\n`
+          + `-A ${tag}-fwd -o $UPLINK -j ACCEPT\n-A ${tag}-fwd -j DROP\nCOMMIT\nEOF\n`
           + `iptables -C FORWARD -i ${tag} -j ${tag}-fwd 2>/dev/null || iptables -I FORWARD -i ${tag} -j ${tag}-fwd\n`
-          + `R="-o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"; iptables -C FORWARD $R 2>/dev/null || iptables -I FORWARD $R\n`
-          + `R="-i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP"; iptables -C INPUT $R 2>/dev/null || iptables -I INPUT $R\n`
-          + `R="-s ${addr} -o $UPLINK -j MASQUERADE"; iptables -t nat -C POSTROUTING $R 2>/dev/null || iptables -t nat -A POSTROUTING $R`;
+          + `iptables -C FORWARD -o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD -o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n`
+          + `iptables -C INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP 2>/dev/null || iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\n`
+          + `iptables -t nat -C POSTROUTING -s ${addr} -o $UPLINK -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${addr} -o $UPLINK -j MASQUERADE`;
   if (kind === "keenetic") return [
     html`${T("Import the config: Internet → Other connections → WireGuard → Import from file. Leave “Use for accessing the Internet” off — the router keeps its own internet; this tunnel only carries the node's traffic out.")}`,
     html`${Trich("Find its name: `show interface` on the command page (my.keenetic.net/a) lists it as WireguardN, described {v1}. Then, with your N:", { v1: tag })}
@@ -4358,8 +4360,10 @@ function dialinHints(proto) {     // a blank 2.0 cell: the template's value as t
 }
 // A drawn S4 fitted to the MTU as the panel fits it (mesh_s4_room / mesh_s4_draw): a full-size packet stays inside 1500
 // bytes; never under `floor` (12 on 3.1). A value that already fits, or one that is not a number, is left as it is.
+const DIN_WIRE = 60;   // twin of the panel's MESH_WIRE_OVERHEAD (tests/spa_dialin_selftest.mjs holds them equal)
 function dialinS4(s4, mtu, floor) {
-  const m = parseInt(mtu, 10), room = Number.isFinite(m) ? Math.max(0, 1500 - 60 - m) : null;
+  // the MTU read as the panel reads it: digits only — "1420x" is not a number there, so it is none here (review F6)
+  const m = /^[0-9]+$/.test(String(mtu ?? "").trim()) ? +String(mtu).trim() : NaN, room = Number.isFinite(m) ? Math.max(0, 1500 - DIN_WIRE - m) : null;
   if (room === null || !/^[0-9]+$/.test(String(s4)) || +s4 <= room) return String(s4);
   const lo = Math.max(floor, Math.min(15, room)), hi = Math.max(lo, room);
   return String(lo + Math.floor(Math.random() * (hi - lo + 1)));

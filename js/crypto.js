@@ -1154,9 +1154,17 @@ function vaultMissing(onNav) {
   return html`<${Fragment}>${before}<a href="#/panel/settings" onClick=${onNav}>${T("Settings → Client configs → Encryption")}</a>${after}<//>`;
 }
 
+// The last few QR images by config and size: a sheet that re-renders on every poll (the router config's, while a keep
+// may still land) shows the same config again without encoding it again (backlog C review F5)
+const _qrMemo = new Map();
 export function QR({ conf, label, px }) {
-  let src = null;
-  try { src = qrDataURL(conf, px || 360); } catch (_) { src = null; }
+  const mk = (px || 360) + "|" + conf;
+  let src = _qrMemo.get(mk);
+  if (src === undefined) {
+    try { src = qrDataURL(conf, px || 360); } catch (_) { src = null; }
+    _qrMemo.set(mk, src);
+    if (_qrMemo.size > 8) _qrMemo.delete(_qrMemo.keys().next().value);
+  }
   if (!src) return html`<div class="qr-fail">${T("config too large")}<br>${T("to encode as QR")}</div>`;
   return html`<div class="qr" title=${T("Tap to enlarge for scanning")} onClick=${() => qrZoom(conf, label)}>
     <img class="qrimg" alt=${T("config QR")} src=${src}/></div>`;
@@ -1351,8 +1359,14 @@ export async function exitKeepRouter(nid, exitId, routerPub, routerPriv, nodePub
     if (!subSKCached()) { _pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); _keepFail.delete(pk); return EXIT_KEEP_LOCKED; }
     const uid = exitBucket(nid), unlockKey = await ensureUserUnlockKey(uid);
     // null is either a key this vault cannot open or a refused mint — the map ensureUserUnlockKey just read says which
-    if (!unlockKey) return ((await subUsersMap())[uid] || {}).unlock_by_sk
-      ? T("its encryption bucket was sealed with a previous encryption key") : T("couldn't store the router config");
+    if (!unlockKey) {
+      const sealed = !!((await subUsersMap())[uid] || {}).unlock_by_sk;
+      const why = sealed ? T("its encryption bucket was sealed with a previous encryption key") : T("couldn't store the router config");
+      // a queued keep says why it failed, as the request's own failures do — and a sealed bucket opens on no later unlock
+      // either, so it is not re-tried on each one (backlog C review F1)
+      if (_pendingKeep.has(pk)) { _keepFail.set(pk, why); if (sealed) _pendingKeep.delete(pk); }
+      return why;
+    }
     const sec = await subEnc(unlockKey, new TextEncoder().encode(JSON.stringify({ k: routerPriv, n: nodePub })));
     // the node key sealed inside, named by the digest the panel stamps from the record — a re-paste in between is refused
     const nkh = (await sha256hex(nodePriv)).slice(0, 16);
@@ -1415,7 +1429,16 @@ export function getConfig(pubkey, node, iface) {
   // encrypted-at-rest blob first (assigned peer + vault unlocked); else the transitional plaintext store.
   return blobConfig(peer, node, iface).then(c => {
     if (c === CONF_UNREACHABLE) { _confUnreach.set(mk, Date.now()); return null; }   // learned nothing — do NOT miss()
-    if (c === CONF_SEALED_OLD) { _confSealed.set(mk, Date.now()); return null; }     // permanent: the key is gone, not the panel
+    if (c === CONF_SEALED_OLD) {                // permanent: the key is gone, not the panel —
+      _confSealed.set(mk, Date.now());
+      // …but a panel still migrating may hold this peer's config in plaintext too, and that one still opens (backlog C review F2)
+      if (!(Store.configsPlaintext > 0)) return null;
+      return api.config(pubkey, node, iface).then(r => {
+        const conf = rerenderConf(r.ok ? r.data.config : null, node, iface);
+        if (conf) { _confSealed.delete(mk); hit(); }
+        return conf;
+      }).catch(() => null);
+    }
     _confUnreach.delete(mk);
     if (c) { hit(); return c; }
     // /api/config is the LEGACY plaintext endpoint; in the (normal) encrypted-at-rest steady state there are no

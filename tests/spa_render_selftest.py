@@ -1015,21 +1015,22 @@ try:
             kl = tab.ev(STEPS) or {}
             _cmd = tab.ev("[...document.querySelectorAll('.overlay.show .rsteps pre')].map(p => p.textContent).join('\\n')") or ""
             _ln = [l.strip() for l in _cmd.splitlines() if l.strip()]
-            _ch = [l for l in _ln if re.match(r"iptables -A swg-\S+-fwd ", l)]
+            _ch = [l for l in _ln if re.match(r"-A swg-\S+-fwd ", l)]
             check("[B18] (S9d) …Other router: wg-quick, and the tunnel's own chain in the order it applies — the private ranges "
                   "dropped, out the uplink only, the rest dropped — jumped to from FORWARD, the replies let back, new "
                   "connections to the box itself dropped, the uplink named once, the node's address masqueraded",
                   "wg-quick up" in kl.get("steps", "")
-                  and [re.sub(r"^iptables -A swg-\S+-fwd ", "", l) for l in _ch] == [
+                  and [re.sub(r"^-A swg-\S+-fwd ", "", l) for l in _ch] == [
                       "-d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP",
                       "-o $UPLINK -j ACCEPT", "-j DROP"]
-                  # (s9d-f8-lan F7) every line safe to paste again: the chain emptied and refilled, the rest added once (-C)
-                  and any(re.fullmatch(r"iptables -N (swg-\S+)-fwd 2>/dev/null \|\| iptables -F \1-fwd", l) for l in _ln)
+                  # (s9d-f8-lan F7, backlog D review F3/F4) safe to paste again: the chain declared in one restore transaction,
+                  # each other rule added once (-C), spelled out whole — no rule in a variable
+                  and "iptables-restore --noflush <<EOF" in _ln and "COMMIT" in _ln and any(re.fullmatch(r":swg-\S+-fwd - \[0:0\]", l) for l in _ln)
                   and any(re.fullmatch(r"iptables -C FORWARD -i (swg-\S+) -j \1-fwd 2>/dev/null \|\| iptables -I FORWARD -i \1 -j \1-fwd", l) for l in _ln)
-                  and any(re.fullmatch(r'R="-o swg-\S+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"; iptables -C FORWARD \$R 2>/dev/null \|\| iptables -I FORWARD \$R', l) for l in _ln)
-                  and any(re.fullmatch(r'R="-i swg-\S+ -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP"; iptables -C INPUT \$R 2>/dev/null \|\| iptables -I INPUT \$R', l) for l in _ln)
+                  and any(re.fullmatch(r"iptables -C FORWARD (-o swg-\S+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT) 2>/dev/null \|\| iptables -I FORWARD \1", l) for l in _ln)
+                  and any(re.fullmatch(r"iptables -C INPUT (-i swg-\S+ -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP) 2>/dev/null \|\| iptables -I INPUT \1", l) for l in _ln)
                   and _cmd.count("eth0") == 1 and "UPLINK=eth0" in _ln
-                  and any(re.fullmatch(r'R="-s 10\.254\.\S+ -o \$UPLINK -j MASQUERADE"; iptables -t nat -C POSTROUTING \$R 2>/dev/null \|\| iptables -t nat -A POSTROUTING \$R', l) for l in _ln)
+                  and any(re.fullmatch(r"iptables -t nat -C POSTROUTING (-s 10\.254\.\S+ -o \$UPLINK -j MASQUERADE) 2>/dev/null \|\| iptables -t nat -A POSTROUTING \1", l) for l in _ln)
                   and not any(re.match(r"iptables -[AI] FORWARD -i swg-\S+ .*-j ACCEPT", l) for l in _ln), {"cmd": _cmd})
             _off = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
             check("[B18] (S9d) the store off: the notice says why nothing is kept, and where to turn it on",
