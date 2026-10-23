@@ -350,6 +350,7 @@ export function AdoptCsqttSheet({ node, c }) {
       <div class="ig-item"><span class="ig-l">${T("Found at")}</span><span class="ig-v">${c.config_dir}</span></div>
       <div class="ig-item"><span class="ig-l">${T("Listen")}</span><span class="ig-v">${c.listen || "—"}</span></div>
       <div class="ig-item"><span class="ig-l">${T("Server address")}</span><span class="ig-v">${c.tun_addr || "—"}</span></div>
+      ${c.line != null ? html`<div class="ig-item"><span class="ig-l">${T("Version")}</span><span class="ig-v">${c.line || html`<span class="faint">${T("value|unknown")}</span>`}</span></div>` : null}
       <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${storeGone ? html`<span class="faint">${T("couldn't be read")}</span>` : (n || html`<span class="faint">${T("none found")}</span>`)}</span></div>
     </div>
     ${n ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Adopting brings its *{count}* across — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}

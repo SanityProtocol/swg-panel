@@ -5723,6 +5723,10 @@ export const STR = {
   "this node already manages a csqtt instance on {v1}": "эта нода уже управляет экземпляром csqtt на {v1}",
   "this node doesn't report a csqtt server on {v1} — refresh and try again":
     "эта нода не сообщает о сервере csqtt на {v1} — обновите и попробуйте снова",
+  "the node couldn't tell which csqtt version runs on {v1} — refresh and try again":
+    "нода не смогла определить, какая версия csqtt работает на {v1} — обновите и попробуйте снова",
+  "this server runs csqtt {v1}, a version this panel doesn't run — taking it over would cut off its clients":
+    "этот сервер работает на csqtt {v1} — эту версию панель не запускает, и при захвате его клиенты потеряли бы связь",
   "a csqtt server this panel doesn't manage already holds {v1} on this node — adopt it from the node's page to take it over with its users, or pick another name":
     "сервер csqtt, которым эта панель не управляет, уже занимает {v1} на этой ноде — примите его со страницы ноды, чтобы забрать вместе с пользователями, или выберите другое имя",
   "this server's tunnel subnet isn't an IPv4 /24: {v1}": "подсеть туннеля этого сервера не IPv4 /24: {v1}",

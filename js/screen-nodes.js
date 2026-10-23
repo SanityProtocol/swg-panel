@@ -740,6 +740,8 @@ export function NodeDetail({ node: rawName }) {
               : html`<div class="ifrow"><span class="l">${T("Found at")}</span><span class="r addr">${c.config_dir}</span></div>`}
             <div class="ifrow"><span class="l">${T("Listen")}</span><span class="r addr">${c.listen || "—"}</span></div>
             <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${c.tun_addr || "—"}</span></div>
+            ${c.line != null                  /* which csqtt line runs (2.1 / 2.5) — both can sit side by side on one box; the label inside our 2.5.1 says 2.5.0 */
+              ? html`<div class="ifrow"><span class="l">${T("Version")}</span><span class="r">${c.line || html`<span class="faint">${T("value|unknown")}</span>`}</span></div>` : null}
             <div class="ifrow"><span class="l">${T("Peers")}</span><span class="r">${(c.users || []).length
               ? html`<b>${(c.users || []).length}</b>` : html`<span class="faint">${T("None")}</span>`}</span></div>
           </div></div>`; };

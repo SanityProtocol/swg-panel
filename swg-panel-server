@@ -30728,6 +30728,19 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, **perr("the node can't read this server's password store at {v1}, so adopting would stop it and take over with NO users — its clients would all be dropped. Confirm to adopt anyway.", v1=_cd.get("config_dir") or "?"), "code": "store_unreadable"}
         inst = {"iface": iface, "adopt_foreign": True, "adopt_at": int(time.time()),   # see the take-over sweep
                 "adopt_config_dir": _cd.get("config_dir") or ""}
+        # The LINE it runs, so ours starts on the same one: 2.1 and 2.5 do not speak to each other, and a 2.5 server
+        # (in place of 2.1.9 or deployed next to it) taken over as 2.1 would cut off every client it serves. An absent
+        # field is a node older than this report — today's adopt, 2.1; "" is a binary the node could not read.
+        if "line" in _cd:
+            _ln = str(_cd.get("line") or "").strip()
+            if not _ln:
+                return 400, {"ok": False, **perr("the node couldn't tell which csqtt version runs on {v1} — refresh and try again", v1=iface), "code": "bad_request"}
+            if _ln not in CSQTT_LINES:
+                return 400, {"ok": False, **perr("this server runs csqtt {v1}, a version this panel doesn't run — taking it over would cut off its clients", v1=(_cd.get("version") or _ln)[:16]), "code": "bad_request"}
+            if _ln != CSQTT_DEFAULT_LINE:
+                if _ln not in (_snap.get("csqtt_lines") or []):
+                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \"update node to …\")", v1=_ln), "code": "node_too_old"}
+                inst["line"] = _ln
         fork = (body.get("fork") or "").strip() or _csqtt_default_fork()
         if (TURN_SERVERS.get(fork) or {}).get("kind") != "csqtt":
             return 400, {"ok": False, **perr("unknown csqtt fork: {v1}", v1=fork), "code": "bad_request"}
