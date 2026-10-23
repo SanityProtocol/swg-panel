@@ -10157,25 +10157,15 @@ def _dialin_devices(want):
                    if isinstance(d, dict) and _exit_dialin(d.get("profile") or {})} - {""})
 
 
-def _dialin_wan(rows, prev, devs):
-    """{device: the router's public IPv4} for the dial-in devices `devs` — the endpoint a row reports (learned from the
-    router's last packet), else the one known before: a pass that learned nothing keeps it."""
-    wan = {d: ip for d, ip in (prev or {}).items() if d in devs}
-    for x in rows or ():
-        x = x or {}
-        ep = str(x.get("endpoint") or "") if x.get("device") in devs else ""
-        with contextlib.suppress(ValueError):
-            if ipaddress.ip_address(ep.rsplit(":", 1)[0]).version == 4:
-                wan[x["device"]] = ep.rsplit(":", 1)[0]
-    return wan
-
-
 def _dialin_cut(entries, exit_, troutes, net_tables):
     """[(table, prefix)] to prohibit — every table whose default leaves by a dial-in exit device that is up: the private
-    ranges, and that router's public address. A prefix the table holds already — a Network or client subnet (`troutes`,
-    in the `net_tables`), or another node's exit subnet (`exit_`) — equal to it or covering it is skipped: `replace` would
-    overwrite that route, and the band would drift every pass (review F4, F5)."""
-    dl, wan = set(_EXITS.get("dialin") or ()), _EXITS.get("dialin_wan") or {}
+    ranges. A prefix the table holds already — a Network or client subnet (`troutes`, in the `net_tables`), or another
+    node's exit subnet (`exit_`) whose route is installed — equal to it or covering it is skipped: `replace` would
+    overwrite that route, and the band would drift every pass (review F4, F5). An exit route WITHHELD (its leg down) holds
+    nothing, so the prefix is cut (verify F16).
+    ⚠️ NOT the router's public address (round 2, operator): that is whatever NATs the router's packets — the home IP, where
+    the operator's own services may answer, or a relay — and learning it rebuilt the band on every change of it."""
+    dl = set(_EXITS.get("dialin") or ())
     tdev = {}
     for e in entries:
         if e.get("via_iface") in dl and not e.get("_noroute"):
@@ -10183,12 +10173,12 @@ def _dialin_cut(entries, exit_, troutes, net_tables):
     out = []
     for T in sorted(tdev):
         held = [p for p, _ in troutes] if T in net_tables else []
-        held += [x["subnet"] for x in exit_ if str(x.get("table")) == T]
+        held += [x["subnet"] for x in exit_ if str(x.get("table")) == T and not x.get("_noroute")]
         nets = []
         for h in held:
             with contextlib.suppress(ValueError):
                 nets.append(ipaddress.ip_network(h, strict=False))
-        for p in list(EXIT_PRIVATE_CUT) + sorted(wan[d] + "/32" for d in tdev[T] if wan.get(d)):
+        for p in EXIT_PRIVATE_CUT:
             n = ipaddress.ip_network(p)
             if not any(n.version == h.version and n.subnet_of(h) for h in nets):
                 out.append((T, p))
@@ -11025,10 +11015,6 @@ def reconcile_exits(desired, res):
             log(LOG_INFO, "exit %s: removed (device %s)", _stem, od or "-")
             res["changed"] += 1
     _EXITS["list"] = out
-    # …and each one's router at its PUBLIC address — the endpoint WireGuard learned from its last packet, which is also the
-    # users' egress address: a `private` Keenetic answers there too (its admin page, its hairpin port-forwards; review F8).
-    # Kept until the device goes, so a pass that learned nothing does not drop the cut and rebuild the band.
-    _EXITS["dialin_wan"] = _dialin_wan(out, _EXITS.get("dialin_wan"), _EXITS["dialin"])
 
 
 def _cascade_local_routes(node_cfg, _proc="/proc/net/route"):
@@ -11322,7 +11308,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                     break
         for tbl in _band_tables(band):                         # …and only the priorities that ARE tables
             run(["ip", "route", "flush", "table", str(tbl)])
-        # a dial-in exit's tables: no private range (nor the router's public address) into the tunnel — FIRST, before any rule
+        # a dial-in exit's tables: no private range into the tunnel — FIRST, before any rule
         # points into the table or its default goes in, so a rebuild has no moment without it (review F3)
         for T, p in _cut:
             run(["ip", "route", "replace", "prohibit", p, "table", T])
@@ -24737,7 +24723,7 @@ def main():
                                          _devexit_sig(reply.get("cascade")),
                                          _NET["sig"], sorted(_NET["refused"]),
                                          reply.get("lan_share"), _SHARE["sig"],
-                                         _EXITS.get("dialin"), _EXITS.get("dialin_wan"),   # which devices are cut (review F2)
+                                         _EXITS.get("dialin"),   # which devices are cut (review F2)
                                          log_level() >= LOG_INFO],   # the P2P table's `log` follows the level (§1)
                                         sort_keys=True, default=str)
                 _iface_churn = bool(_awg_loaded or cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
