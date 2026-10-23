@@ -10438,7 +10438,12 @@ def _exit_trace(dev):
             so = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             so.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev.encode())
             so.settimeout(s2.timeout)
-            so.connect((s2.host, s2.port))
+            # the name resolved FIRST (the node's resolver, not the tunnel), so the timed connect is one round trip
+            # through the tunnel and nothing else: the latency of an exit whose server answers no ping (S9e)
+            _a = socket.getaddrinfo(s2.host, s2.port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
+            _t = time.monotonic()
+            so.connect(_a)
+            s2.tcp_ms = round((time.monotonic() - _t) * 1000, 1)
             s2.sock = s2._context.wrap_socket(so, server_hostname=s2.host)
     # ⚠️ THE FAILURE REASON IS THE POINT, and it used to be thrown away. The whole probe sat under a bare
     # `contextlib.suppress(Exception)` returning `{}`, so the node learned exactly why nothing crossed the
@@ -10460,8 +10465,11 @@ def _exit_trace(dev):
         c = _Bound("www.cloudflare.com", 443, timeout=10, context=_exit_tls())
         c.request("GET", "/cdn-cgi/trace", headers={"Host": "www.cloudflare.com", "User-Agent": "swg-noded"})
         kv = dict(l.split("=", 1) for l in c.getresponse().read().decode().strip().splitlines() if "=" in l)
+        # `tcp_ms`: the TCP handshake alone — one round trip node → exit → Cloudflare's nearest server, no TLS, no
+        # HTTP. What the latency column shows when the exit's own server answers no ping, or (a dial-in exit) there
+        # is none to ping: measured on swgt 10-23, custom exits 38 ms, a home router 58–84 ms, both "—" by ping.
         return {"ip": kv.get("ip", ""), "warp": kv.get("warp", ""), "loc": kv.get("loc", ""),
-                "rtt_ms": int((time.monotonic() - _t0) * 1000)}
+                "rtt_ms": int((time.monotonic() - _t0) * 1000), "tcp_ms": getattr(c, "tcp_ms", None)}
     except Exception as e:
         # The exception TYPE carries as much as its text here — `timed out` alone does not say what timed
         # out, and socket errors stringify to a bare errno message. Bounded, because it reaches a dialog.

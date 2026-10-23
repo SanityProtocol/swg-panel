@@ -71,7 +71,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone | tcplat
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -160,6 +160,8 @@ PERTURBATIONS = {
     "rstack": ("app.css", ".rconf-acts{display:flex;flex-direction:column;gap:6px}", ".rconf-acts{display:flex;flex-wrap:wrap;gap:6px}"),
     # [B18] (S9e): what was typed on create never reaches the generator; an edit-sheet field never reaches the text saved
     "dintyped": ("js/screen-settings.js", "psk, ...(typed || {}) } };", "psk } };"),
+    # [B18] (S9e): an exit with no ping shows "—" again although the tunnel's time is measured
+    "tcplat": ("js/screen-settings.js", '              : Number.isFinite((l.trace || {}).tcp_ms)\n              ? T("~{v1} ms"', '              : false\n              ? T("~{v1} ms"'),
     "dinphone": ("app.css", ".row2.dinrow>.field:first-child{flex:1 0 100%}", ".row2.dinrow>.field:first-child{flex:1}"),
     "dinedit": ("js/screen-settings.js", "setTxt(t => confIfSet(t, k, val)); };", "0; };"),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
@@ -888,7 +890,7 @@ try:
     _sig = next((x.get("cfg_sig") for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID
                  for x in (n.get("exits") or []) if x.get("id") == "d1a1d1a1"), "")
     DXR.append({"id": "d1a1d1a1", "device": "wgx-d1a1d1a1", "provider": "profile", "up": True, "handshake": 0, "listen_port": 51830,
-                "cfg_sig": _sig, "endpoint": "", "error": "", "trace": {}, "address": "10.254.0.0", "awg": False, "ping_ms": None})
+                "cfg_sig": _sig, "endpoint": "", "error": "", "trace": {"tcp_ms": 53.3}, "address": "10.254.0.0", "awg": False, "ping_ms": None})
     must(sync(), "sync with the dial-in exit's row")
     time.sleep(3.5)                          # the background sync may have built its snapshot before the row existed
     must(sync(), "sync with the dial-in exit's row, again")
@@ -915,6 +917,11 @@ try:
         check("[B18] %s: the row wears %s and waits for the router on UDP 51830" % (tag, "«Обратный»" if ru else "Dial-in"),
               bool(row) and ("Обратный" if ru else "Dial-in") in row["text"] and "51830" in row["dot"]
               and ("роутера" if ru else "router") in row["dot"], row)
+        lat = tab.ev("(() => { const r = [...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes('wgx-d1a1d1a1'));"
+                     " const c = r && r.querySelector('.exg-c.c.mono');"   # the latency cell: the centred mono one (the IP's is not centred)
+                     " return c ? {text: c.textContent.trim(), title: c.title} : null; })()") or {}
+        check("[B18] (S9e) %s: no server to ping, so the latency is the tunnel's — ~53.3 %s, its hover saying it is measured through the router" % (tag, "мс" if ru else "ms"),
+              lat.get("text") == ("~53.3 мс" if ru else "~53.3 ms") and ("через роутер" if ru else "through the router") in lat.get("title", ""), lat)
         shot(tab, "b18-row-%s-%d" % (lang, vp[0]))
         clicked = click_text(tab, ".exadd button", "/Add a dial-in exit|Добавить обратный выход/")
         settle(tab, 600)

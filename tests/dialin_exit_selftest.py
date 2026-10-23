@@ -12,6 +12,8 @@ profile reads, signs and writes exactly as it did (compared against `eb25bad7`, 
       never registered as WARP
   [3] health: a device that nothing answers through reads False (dead), not "can't tell"; three probes over 30 s → dead;
       no endpoint name is ever looked up for a dial-in exit, so redial cannot fire (closed by the code — no plant)
+  [3b] the latency through the tunnel (S9e): the trace's TCP handshake alone, the name resolved before the clock starts —
+      a real _exit_trace against a local TLS server, pinned to lo, its resolver held up 200 ms
   [4] adoption: a dial-in device before its first handshake is not offered for adoption, and the exit-candidate list is
       identical with and without the skip
   [5] panel parse: Endpoint → dial-out, the dict identical to eb25bad7's; ListenPort alone → dial-in; neither, two peers,
@@ -67,6 +69,8 @@ Run: python3 tests/dialin_exit_selftest.py      (0 = pass)
      --perturb-mineexit   a dial-in exit's own live port reads as another program          → RED [7c]
      --perturb-meshinv    the mesh allocator keeps its own short list again                → RED [7c]
      --perturb-listenall  the node reports connected sockets (outbound ports) as listeners → RED [7c]
+     --perturb-tcpdns     the tunnel latency's clock starts before the name is resolved   → RED [3b]
+     --perturb-tcpms      the trace reports no tunnel latency                              → RED [3b]
      --perturb-pair       generate takes the first /31 without the overlap test             → RED [7]
      --perturb-regen      Regenerate draws a new port/address/set like a new exit           → RED [7]
      --perturb-fleet      the pair is unique on this node only                             → RED [7]
@@ -129,6 +133,9 @@ PLANTS = {
     "udplisten": ("p", '    for p in (snap.get("udp_listen") or [])[:1024]:', "    for p in []:"),
     "mineexit": ("p", "        if p not in _mine:\n            add(p, \"another program", "        if True:\n            add(p, \"another program"),
     "listenall": ("n", '                    if len(f_) > 3 and f_[3] == "07" and f_[2].endswith(":0000"):', '                    if len(f_) > 3:'),
+    "tcpdns": ("n", "            _a = socket.getaddrinfo(s2.host, s2.port, socket.AF_INET, socket.SOCK_STREAM)[0][4]\n            _t = time.monotonic()\n",
+               "            _t = time.monotonic()\n            _a = socket.getaddrinfo(s2.host, s2.port, socket.AF_INET, socket.SOCK_STREAM)[0][4]\n"),
+    "tcpms": ("n", '"tcp_ms": getattr(c, "tcp_ms", None)}', '"tcp_ms": None}'),
     "meshinv": ("p", '    return set(_node_ports({"node_snaps": snaps or {}}, nodes, nid)) | {WDTT_RAW_PORT}',
                 '    return ({int((b.get("meta") or {}).get("listen_port")) for b in (((snaps or {}).get(nid) or {}).get("interfaces") or {}).values()'
                 ' if str((b.get("meta") or {}).get("listen_port")).isdigit()} | {p for _x, p in _dialin_ports(nodes.get(nid) or {})})'),
@@ -182,6 +189,7 @@ def _git(path):
 try:
     P = _load(_file(PSRC, "p"), "swgpanel")
     N = _load(_file(NSRC, "n"), "swgnoded")
+    _REAL_TRACE = N._exit_trace          # [3b] runs the real one; the node pass below stubs it
     P0 = _load(_file(_git("swg-panel-server"), "p0"), "swgpanel0")
     N0 = _load(_file(_git("swg-noded"), "n0"), "swgnoded0")
 finally:
@@ -297,6 +305,39 @@ for t in (0, 10, 20, 31):
 check("three failed probes over 30 s → dead", bool(st and st["dead"]), st)
 res, rows, d = harness([DX])
 check("a dial-in pass looks no endpoint name up and never redials", CALLS["gai"] == 0 and CALLS["redial"] == 0, CALLS)
+
+print("\n[3b] the latency through the tunnel (S9e)")
+import ssl as _ssl, socket as _so, threading as _th, time as _tm, http.server as _hs
+_cd = tempfile.mkdtemp(prefix="tcpms-")
+subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=www.cloudflare.com",
+                "-keyout", os.path.join(_cd, "k.pem"), "-out", os.path.join(_cd, "c.pem")], capture_output=True, check=True)
+class _H(_hs.BaseHTTPRequestHandler):
+    def do_GET(self):
+        b = b"ip=198.51.100.7\nloc=XX\nwarp=off\n"
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *a): pass
+_srv = _hs.HTTPServer(("127.0.0.1", 0), _H)
+_sc = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER); _sc.load_cert_chain(os.path.join(_cd, "c.pem"), os.path.join(_cd, "k.pem"))
+_srv.socket = _sc.wrap_socket(_srv.socket, server_side=True)
+_th.Thread(target=_srv.serve_forever, daemon=True).start()
+_gai = _so.getaddrinfo
+def _slow_gai(host, port, *a, **k):          # the node's resolver, held up: a clock that includes it reads ≥ 200 ms
+    if host == "www.cloudflare.com":
+        _tm.sleep(0.2)
+        return _gai("127.0.0.1", _srv.server_address[1], *a, **k)
+    return _gai(host, port, *a, **k)
+_cli = _ssl.create_default_context(); _cli.check_hostname = False; _cli.verify_mode = _ssl.CERT_NONE
+_saved_tls = N._exit_tls
+_so.getaddrinfo, N._exit_tls = _slow_gai, (lambda: _cli)
+try:
+    _tr = _REAL_TRACE("lo")
+finally:
+    _so.getaddrinfo, N._exit_tls = _gai, _saved_tls
+    _srv.shutdown()
+check("the trace through the device still reads the exit's IP", _tr.get("ip") == "198.51.100.7", _tr)
+check("…and times the TCP handshake alone — a number, the 200 ms resolver not in it", isinstance(_tr.get("tcp_ms"), (int, float))
+      and 0 <= _tr["tcp_ms"] < 100, _tr)
+check("…while the whole request (rtt_ms) still includes it", (_tr.get("rtt_ms") or 0) >= 200, _tr)
 
 print("\n[4] adoption: our own dial-in device is never offered, and the exit candidates are unchanged")
 def cands(exit_dir_confs):

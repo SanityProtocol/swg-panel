@@ -4726,7 +4726,14 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
           <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}
             title=${/* An up exit whose ping came back null: no reply reached this node — most often a firewalled VPS that drops ICMP, and
                      the dash alone read as "custom exits have no latency" (operator, 2026-10-17). ⚠️ `=== null` ON PURPOSE: an older node
-                     sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows. */""}${exitIsDialin(ex)
+                     sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows.
+                     S9e: no ping to be had (no reply, or a dial-in exit with no server) — the trace's TCP handshake through the tunnel
+                     stands in, marked ~ and said in the hover: one round trip to Cloudflare's nearest server, a little over the exit
+                     alone. A WARP exit answers ping; its own figure is never replaced. */""}${!Number.isFinite(l.ping_ms) && Number.isFinite((l.trace || {}).tcp_ms)
+              ? (exitIsDialin(ex)
+                ? T("Measured through the tunnel: one round trip from this node through the router to Cloudflare's nearest server. The router dials this node, so there is no server of its own to ping.")
+                : T("The exit's server answers no ping, so this is measured through the tunnel: one round trip from this node through the exit to Cloudflare's nearest server — a little more than the exit alone."))
+              : exitIsDialin(ex)
               ? T("Latency is not measured for a dial-in exit — the router dials this node, so there is no server to ping.")
               : l.up && l.ping_ms === null
               ? (Number.isFinite((l.trace || {}).rtt_ms)
@@ -4737,6 +4744,8 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
               : T("Round trip from this node to the exit's own server.")}>
             ${Number.isFinite(l.ping_ms)
               ? T("{v1} ms", { v1: l.ping_ms })
+              : Number.isFinite((l.trace || {}).tcp_ms)
+              ? T("~{v1} ms", { v1: Math.round(l.trace.tcp_ms * 10) / 10 })
               : html`<span class="faint">—</span>`}</div>
           <div class="exg-c c" onClick=${stop}><${Switch} on=${!!ex.killswitch} title=${KS_TITLE()}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, killswitch: x } : y)))}/></div>

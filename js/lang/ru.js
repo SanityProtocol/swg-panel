@@ -3380,6 +3380,11 @@ export const STR = {
   "Drawn for this exit; the router's config carries the same key.":
     "Генерируется для этого выхода; в конфиге роутера тот же ключ.",
   "On for every AmneziaWG 3.1 exit.": "Включено у каждого выхода AmneziaWG 3.1.",
+  "~{v1} ms": "~{v1} мс",
+  "Measured through the tunnel: one round trip from this node through the router to Cloudflare's nearest server. The router dials this node, so there is no server of its own to ping.":
+    "Измерено через туннель: один круг от этой ноды через роутер до ближайшего сервера Cloudflare. Роутер сам подключается к ноде, поэтому своего сервера для пинга нет.",
+  "The exit's server answers no ping, so this is measured through the tunnel: one round trip from this node through the exit to Cloudflare's nearest server — a little more than the exit alone.":
+    "Сервер выхода не отвечает на пинг, поэтому задержка измерена через туннель: один круг от этой ноды через выход до ближайшего сервера Cloudflare — чуть больше, чем до самого выхода.",
   "S1–S4 and H1–H4 are drawn anew, and every blank cell — the router has to import its config again.":
     "S1–S4 и H1–H4 генерируются заново, как и все пустые ячейки — роутеру придётся импортировать конфиг снова.",
   "no free address pair in 10.254.0.0/16 on this node — paste a config with your own address":
