@@ -106,7 +106,7 @@ subscription and no one else sitting in the middle of your traffic.
   set by you (also editable later) — and shows the router's config with a QR and the steps for Keenetic, OpenWrt or another router,
   kept encrypted with your client configs (when the panel keeps encrypted configs) so the exit's row shows it again, or
   shown once otherwise; or paste a server config you already have. The server's users reach the internet through a dial-in
-  exit, never the network behind it: the router's LAN and the router itself (any private address) stay out of reach.
+  exit, never the network behind it: the router's LAN and the router itself stay out of reach.
 - **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
 
 <details>

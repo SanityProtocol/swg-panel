@@ -11,14 +11,19 @@ client subnets, more specific routes in the same table, still win.
   [1] hermetic (`run()` stubbed, the argv read): which devices are dial-in; the cut in a dial-in exit's table and nowhere
       else (a WARP / dial-out exit, a device that is down, a node with none — byte-identical); a Network holding a cut
       prefix exactly is left alone; the signature reads the routes back as written, and the kill-switch keeps its token
+      — and the review's round: a Network covering a cut prefix and another node's exit subnet are left alone; the router's
+      public address is cut; the cut is installed before any rule points into the table; the devices are known before
+      reconcile_exits' loop; a change in them re-runs the routing reconcile
   [2] on the real kernel, in throwaway network namespaces, the real reconcile_cascade run inside the node's: through a
-      router that forwards everything (Keenetic `private`), an internet host answers; the router's LAN and its tunnel
-      address do not; a Network the node shares still does
+      router that forwards everything (Keenetic `private`), an internet host answers; the router's LAN, its tunnel address
+      and its public address do not; a Network the node shares still does
 
 [2] runs as root or through `sudo -n`; without either it is SKIPPED, and says so — never passed. The namespaces are named by
 this process's pid and deleted on the way out; nothing leaves them (the "internet" is a TEST-NET address on a veth).
 Run: python3 tests/dialin_lan_cut_selftest.py
      --perturb   the node without the cut (no device reads as dial-in) — [1] and [2] must turn red. Prints "PERTURB OK".
+     --perturb-early | -trigger | -order | -cover | -exitsub | -wan   one fix of the review's round undone each (F1 F2 F3 F4
+                 F5 F8) — each must turn its check red
 """
 import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
@@ -26,7 +31,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 PERTURB = "--perturb" in sys.argv
-_ANCH = '    _dlv = set(_EXITS.get("dialin") or ())\n'
+_ANCH = '    dl, wan = set(_EXITS.get("dialin") or ()), _EXITS.get("dialin_wan") or {}\n'
+# the named plants (review F1–F5, F8): each fix undone on its own
+PLANT = next((a[len("--perturb-"):] for a in sys.argv if a.startswith("--perturb-")), "")
+PLANTS = {
+    "early": ('    _EXITS["dialin"] = _dialin_devices(want)\n    _slots = []', '    _slots = []'),
+    "trigger": ('                                         _EXITS.get("dialin"), _EXITS.get("dialin_wan"),', ''),
+    "order": ('        for T, p in _cut:\n            run(["ip", "route", "replace", "prohibit", p, "table", T])\n        for e in fwd:',
+              '        for e in fwd:'),
+    "cover": ('if not any(n.version == h.version and n.subnet_of(h) for h in nets):', 'if not any(n == h for h in nets):'),
+    "exitsub": ('        held += [x["subnet"] for x in exit_ if str(x.get("table")) == T]\n', ''),
+    "wan": ('list(EXIT_PRIVATE_CUT) + sorted(wan[d] + "/32" for d in tdev[T] if wan.get(d))', 'list(EXIT_PRIVATE_CUT)'),
+}
 
 FAILS, SKIPS = [], []
 def check(name, cond, detail=""):
@@ -37,7 +53,11 @@ def check(name, cond, detail=""):
 def noded_src():
     src = open(NODED, encoding="utf-8").read()
     assert src.count(_ANCH) == 1, "anchor missing — this run would FALSE-PASS"
-    return src.replace(_ANCH, "    _dlv = set()\n") if PERTURB else src
+    if PLANT:
+        a, b = PLANTS[PLANT]
+        assert src.count(a) == 1, "plant anchor missing — this run would FALSE-PASS: " + a[:60]
+        return src.replace(a, b)
+    return src.replace(_ANCH, "    dl, wan = set(), {}\n") if PERTURB else src
 
 def load(src):
     fd, path = tempfile.mkstemp(suffix=".py", prefix="swgnoded-cut-")
@@ -70,12 +90,13 @@ check("…nothing asked for, nothing dial-in", N._dialin_devices({}) == [] and N
 class _R:
     def __init__(s, out=""): s.stdout, s.stderr, s.returncode = out, "", 0
 
-def lower(dev, dialin=(), state="up", nets=(), ks=False):
+def lower(dev, dialin=(), state="up", nets=(), ks=False, wan=None):
     calls = []
     N.run = lambda argv, **kw: (calls.append(argv if isinstance(argv, list) else [str(argv)]), _R(""))[1]
     N._dev_link_state = lambda d: state
     N._DEVEXIT["list"] = []
     N._EXITS["dialin"] = list(dialin)
+    N._EXITS["dialin_wan"] = dict(wan or {})
     N.reconcile_cascade({"interfaces": {}}, {"devexit": [{"subnet": "10.17.0.0/24", "dev": dev, "table": 7000,
                                                            "killswitch": ks}]}, None, "", nets=list(nets))
     return [" ".join(map(str, c)) for c in calls if c and c[0] == "ip"]
@@ -99,15 +120,52 @@ check("a Network the node shares goes in as a more specific route, untouched by 
 check("…and a prefix a Network holds EXACTLY is not overwritten by a prohibit",
       "ip route replace prohibit 10.0.0.0/8 table 7000" not in _nt and "ip route replace 10.0.0.0/8 dev office0 table 7000" in _nt, _nt)
 
+_bn = lower("wgx-aabbccdd", dialin=["wgx-aabbccdd"], nets=[("10.0.0.0/7", "office0")])
+check("…nor one a broader Network covers (10.0.0.0/7 holds 10/8: the node's network wins, review F4)",
+      "ip route replace prohibit 10.0.0.0/8 table 7000" not in _bn and ROUTES[-1] in _bn, [x for x in _bn if "table 7000" in x])
+_xs = N._dialin_cut([{"via_iface": "wgx-aabbccdd", "table": 7000}], [{"subnet": "100.64.0.0/10", "table": 7000}], (), set())
+check("…nor another node's exit subnet in the same table (replace would overwrite it, review F5)",
+      ("7000", "100.64.0.0/10") not in _xs and ("7000", "10.0.0.0/8") in _xs, _xs)
+_wn = lower("wgx-aabbccdd", dialin=["wgx-aabbccdd"], wan={"wgx-aabbccdd": "203.0.113.1"})
+check("the router's public address (its learned endpoint, the users' egress address) is cut too (review F8)",
+      "ip route replace prohibit 203.0.113.1/32 table 7000" in _wn, [x for x in _wn if "prohibit" in x])
+_fp = next((i for i, x in enumerate(_wn) if x.startswith("ip route replace prohibit 10.0.0.0/8")), 10 ** 6)
+_fr = next((i for i, x in enumerate(_wn) if x.startswith("ip rule add") or x.startswith("ip route replace default")), -1)
+check("…the cut goes in before any rule points into the table and before its default (no window, review F3)",
+      0 <= _fr and _fp < _fr, _wn)
+check("which router address: the endpoint a dial-in row reports, kept while it reports none, gone with its device",
+      N._dialin_wan([{"device": "wgx-a", "endpoint": "198.51.100.7:4500"}, {"device": "wgx-b", "endpoint": "198.51.100.8:1"}], {}, ["wgx-a"])
+      == {"wgx-a": "198.51.100.7"}
+      and N._dialin_wan([{"device": "wgx-a", "endpoint": ""}], {"wgx-a": "198.51.100.7"}, ["wgx-a"]) == {"wgx-a": "198.51.100.7"}
+      and N._dialin_wan([], {"wgx-a": "198.51.100.7"}, []) == {})
+# reconcile_exits knows the dial-in devices before its loop: a pass that raises half-way still cuts (review F1)
+_xd = tempfile.mkdtemp(prefix="swgcut-exits-")
+N.EXIT_DIR = _xd
+N._EXITS.pop("dialin", None)
+_orig_conf = N._exit_conf_text
+N._exit_conf_text = lambda rec: (_ for _ in ()).throw(RuntimeError("a pass that raises"))
+try:
+    N.reconcile_exits([dict(want["aabbccdd"], profile=dict(DIALIN, priv="k", peer_key="p", pub="q"))], {"changed": 0, "errors": []})
+except Exception:
+    pass
+N._exit_conf_text = _orig_conf
+shutil.rmtree(_xd, ignore_errors=True)
+check("…a pass of reconcile_exits that raises still leaves its dial-in device known", N._EXITS.get("dialin") == ["wgx-aabbccdd"],
+      N._EXITS.get("dialin"))
+_rs = SRC.split("_route_sig = json.dumps(", 1)[1].split("sort_keys=True", 1)[0]
+check("a change in which devices are dial-in, or in a router's address, re-runs the routing reconcile (review F2)",
+      '_EXITS.get("dialin")' in _rs and '_EXITS.get("dialin_wan")' in _rs, _rs[-300:])
+
 # the signature: what is written reads back as the same token, or every pass rebuilds the band (a gap each time)
-_cut = [("7000", p) for p in CUT]
+_cut = [("7000", p) for p in CUT + ["203.0.113.1/32"]]
 _ws = N._cascade_want_sig([], [], [], cut=_cut)
-check("the want-signature names each cut route", {"T|7000|prohibit:%s||" % p for p in CUT} <= _ws, sorted(_ws))
-_show = "default dev wgx-aabbccdd scope link \n" + "".join("prohibit %s \n" % p for p in CUT) + \
+_tok = {"T|7000|prohibit:%s||" % p for p in CUT} | {"T|7000|prohibit:203.0.113.1||"}
+check("the want-signature names each cut route (a /32 spelled as `ip route show` prints it)", _tok <= _ws, sorted(_ws))
+_show = "default dev wgx-aabbccdd scope link \n" + "".join("prohibit %s \n" % p for p in CUT) + "prohibit 203.0.113.1 \n" + \
         "prohibit default metric %d \n" % N.DEVEXIT_GUARD_METRIC
 N.run = lambda argv, **kw: _R(_show if argv[:3] == ["ip", "route", "show"] else "")
 _ls = N._cascade_live_sig({"7000"})
-check("…the live reader reads them back as the same tokens", {"T|7000|prohibit:%s||" % p for p in CUT} <= _ls, sorted(_ls))
+check("…the live reader reads them back as the same tokens", _tok <= _ls, sorted(_ls))
 check("…and `prohibit default` keeps the kill-switch's own token (no rebuild on update)",
       "T|7000|prohibit||" in _ls and not any(t.startswith("T|7000|prohibit:default") for t in _ls), sorted(_ls))
 
@@ -150,12 +208,13 @@ l = importlib.machinery.SourceFileLoader("n", sys.argv[1]); m = importlib.util.m
 try: l.exec_module(m)
 except SystemExit: pass
 m._EXITS["dialin"] = ["wgx-aabbccdd"]
+m._EXITS["dialin_wan"] = {"wgx-aabbccdd": "203.0.113.1"}   # what the node learns from the router's packets
 # the client interface as a node has it: its conf's Address is what puts 10.17.0.0/24 into the exit's table
 # (_cascade_local_routes), so the node's own replies to its clients never follow the default into the tunnel
 m.reconcile_cascade({"interfaces": {"up0": {"conf": sys.argv[2]}}}, {"devexit": [{"subnet": "10.17.0.0/24", "dev": "wgx-aabbccdd", "table": 7000,
                     "killswitch": False}]}, None, "", nets=[("192.168.77.0/24", "net0")])
 PY
-for d in 203.0.113.9 192.168.1.10 192.168.1.1 10.254.0.1 192.168.77.10; do
+for d in 203.0.113.9 192.168.1.10 192.168.1.1 10.254.0.1 203.0.113.1 192.168.77.10; do
   ip netns exec $P-c ping -c1 -W1 -q $d >/dev/null 2>&1 && echo "$d: reached" || echo "$d: blocked"; done
 '''
 
@@ -182,6 +241,7 @@ def rig():
     check("…the router's LAN does not (192.168.1.10)", out.get("192.168.1.10") == "blocked", out)
     check("…nor the router at its LAN address (192.168.1.1, the admin page)", out.get("192.168.1.1") == "blocked", out)
     check("…nor the router at its tunnel address (10.254.0.1)", out.get("10.254.0.1") == "blocked", out)
+    check("…nor the router at its public address (203.0.113.1, the users' egress address)", out.get("203.0.113.1") == "blocked", out)
     check("a Network the node shares is still reached (192.168.77.10, a more specific route)",
           out.get("192.168.77.10") == "reached", out)
 

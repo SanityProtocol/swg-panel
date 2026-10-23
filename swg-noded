@@ -4987,7 +4987,7 @@ def _cascade_want_sig(fwd, exit_, smart=None, guard=(), nets=(), net_tables=(), 
         for p, dev in nets:
             sig.add(f"T|{T}|{_net_kernel_dst(p)}|{dev}|")
     for T, p in cut:                                   # a dial-in exit's private cut (EXIT_PRIVATE_CUT)
-        sig.add(f"T|{T}|prohibit:{p}||")
+        sig.add(f"T|{T}|prohibit:{_net_kernel_dst(p)}||")   # a /32 printed bare, as the live reader reads it
     return sig
 
 
@@ -10157,6 +10157,44 @@ def _dialin_devices(want):
                    if isinstance(d, dict) and _exit_dialin(d.get("profile") or {})} - {""})
 
 
+def _dialin_wan(rows, prev, devs):
+    """{device: the router's public IPv4} for the dial-in devices `devs` — the endpoint a row reports (learned from the
+    router's last packet), else the one known before: a pass that learned nothing keeps it."""
+    wan = {d: ip for d, ip in (prev or {}).items() if d in devs}
+    for x in rows or ():
+        x = x or {}
+        ep = str(x.get("endpoint") or "") if x.get("device") in devs else ""
+        with contextlib.suppress(ValueError):
+            if ipaddress.ip_address(ep.rsplit(":", 1)[0]).version == 4:
+                wan[x["device"]] = ep.rsplit(":", 1)[0]
+    return wan
+
+
+def _dialin_cut(entries, exit_, troutes, net_tables):
+    """[(table, prefix)] to prohibit — every table whose default leaves by a dial-in exit device that is up: the private
+    ranges, and that router's public address. A prefix the table holds already — a Network or client subnet (`troutes`,
+    in the `net_tables`), or another node's exit subnet (`exit_`) — equal to it or covering it is skipped: `replace` would
+    overwrite that route, and the band would drift every pass (review F4, F5)."""
+    dl, wan = set(_EXITS.get("dialin") or ()), _EXITS.get("dialin_wan") or {}
+    tdev = {}
+    for e in entries:
+        if e.get("via_iface") in dl and not e.get("_noroute"):
+            tdev.setdefault(str(e["table"]), set()).add(e["via_iface"])
+    out = []
+    for T in sorted(tdev):
+        held = [p for p, _ in troutes] if T in net_tables else []
+        held += [x["subnet"] for x in exit_ if str(x.get("table")) == T]
+        nets = []
+        for h in held:
+            with contextlib.suppress(ValueError):
+                nets.append(ipaddress.ip_network(h, strict=False))
+        for p in list(EXIT_PRIVATE_CUT) + sorted(wan[d] + "/32" for d in tdev[T] if wan.get(d)):
+            n = ipaddress.ip_network(p)
+            if not any(n.version == h.version and n.subnet_of(h) for h in nets):
+                out.append((T, p))
+    return out
+
+
 def _exit_conf_text(rec):
     """The .conf we write. Every line here is deliberate; see the Table = off note above.
 
@@ -10660,6 +10698,9 @@ def reconcile_exits(desired, res):
     and a new egress IP.)"""
     want = {str((e or {}).get("id") or ""): e for e in (desired or []) if isinstance(e, dict)}
     out = []
+    # the devices that lead into a home router's network, known BEFORE the loop: a pass that raises half-way still cuts
+    # (reconcile_cascade, EXIT_PRIVATE_CUT) — the caller swallows the exception and routes the exit anyway (review F1)
+    _EXITS["dialin"] = _dialin_devices(want)
     _slots = []                                  # live devices awaiting their probe: (slot in out, xid, dev, prov, rec, err, blob_err)
     def _exit_row(xid, dev, prov, rec, err, _blob_err, _live, tr, _hl, ping):
         # ONE shape for every exit that reached its health step, judged now or after the loop (4b).
@@ -10984,7 +11025,10 @@ def reconcile_exits(desired, res):
             log(LOG_INFO, "exit %s: removed (device %s)", _stem, od or "-")
             res["changed"] += 1
     _EXITS["list"] = out
-    _EXITS["dialin"] = _dialin_devices(want)
+    # …and each one's router at its PUBLIC address — the endpoint WireGuard learned from its last packet, which is also the
+    # users' egress address: a `private` Keenetic answers there too (its admin page, its hairpin port-forwards; review F8).
+    # Kept until the device goes, so a pass that learned nothing does not drop the cut and rebuild the band.
+    _EXITS["dialin_wan"] = _dialin_wan(out, _EXITS.get("dialin_wan"), _EXITS["dialin"])
 
 
 def _cascade_local_routes(node_cfg, _proc="/proc/net/route"):
@@ -11240,11 +11284,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         _troutes += [(p, dev) for p, dev in _cascade_local_routes(node_cfg) if p not in _taken]
     _net_tables = _tbls if _troutes else []
     # A dial-in exit's private cut, in each table whose default route actually leaves by one (EXIT_PRIVATE_CUT)
-    _dlv = set(_EXITS.get("dialin") or ())
-    _held = {p for p, _ in _troutes}
-    _cut = [(T, p) for T in sorted({str(e["table"]) for e in fwd + smart_exit + arr_exit
-                                     if e.get("via_iface") in _dlv and not e.get("_noroute")})
-            for p in EXIT_PRIVATE_CUT if not (T in _net_tables and p in _held)]
+    _cut = _dialin_cut(fwd + smart_exit + arr_exit, exit_, _troutes if _net_tables else (), set(_net_tables))
     want_sig = _cascade_want_sig(fwd, exit_, smart_exit, guard=_dxguard,
                                  nets=_troutes, net_tables=_net_tables, arr=arr_exit, cut=_cut)   # only exit entries create fwmark→table policy routing
     # ⚠️ ONLY THE PRIORITIES THAT ARE ALSO TABLES. `band` now spans both bands, and an upstream priority
@@ -11282,6 +11322,10 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                     break
         for tbl in _band_tables(band):                         # …and only the priorities that ARE tables
             run(["ip", "route", "flush", "table", str(tbl)])
+        # a dial-in exit's tables: no private range (nor the router's public address) into the tunnel — FIRST, before any rule
+        # points into the table or its default goes in, so a rebuild has no moment without it (review F3)
+        for T, p in _cut:
+            run(["ip", "route", "replace", "prohibit", p, "table", T])
         for e in fwd:                                          # P2 ENTRY: from S → table T (default via link)
             T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
             _gw = str(e.get("gw") or "")                       # "" for every point-to-point link — unchanged
@@ -11318,8 +11362,6 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
             # table a rule-scoped kill-switch lives in; leaving it out turns "fail closed" into "go direct".
             run(["ip", "rule", "add", "fwmark", T, "lookup", T, "priority", T])
             res["changed"] += 1
-        for T, p in _cut:                                      # a dial-in exit's tables: no private range into the tunnel
-            run(["ip", "route", "replace", "prohibit", p, "table", T])
         for e in exit_:                                        # EXIT: to S → table T (S via link)
             T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
             if not e.get("_noroute"):                          # withheld: its leg is not up (see `_withheld`)
@@ -24695,6 +24737,7 @@ def main():
                                          _devexit_sig(reply.get("cascade")),
                                          _NET["sig"], sorted(_NET["refused"]),
                                          reply.get("lan_share"), _SHARE["sig"],
+                                         _EXITS.get("dialin"), _EXITS.get("dialin_wan"),   # which devices are cut (review F2)
                                          log_level() >= LOG_INFO],   # the P2P table's `log` follows the level (§1)
                                         sort_keys=True, default=str)
                 _iface_churn = bool(_awg_loaded or cr["created"] or dl["deleted"] or ob["added"] or rs["restarted"]
