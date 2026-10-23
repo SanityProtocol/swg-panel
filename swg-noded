@@ -16896,6 +16896,27 @@ def _udp_sockets():
     return out
 
 
+def udp_listen_ports(limit=1024):
+    """The UDP ports this host LISTENS on — unconnected sockets (st 07, no remote port), v4 and v6, sorted, at most `limit`.
+    The panel's port inventory names one nothing of ours holds "another program on this node", so a port typed for a
+    dial-in exit, an interface or a turn-proxy is refused there instead of failing to bind here (S9e). A connected socket
+    (an outbound query's ephemeral port) is not a listener and would only make the list flicker. 182 µs a read on swgt
+    (52 sockets, 31 ports) — every sync; an unreadable file is an empty answer, never an error."""
+    out = set()
+    for path in ("/proc/net/udp", "/proc/net/udp6"):
+        try:
+            with open(path) as f:
+                next(f, None)
+                for ln in f:
+                    f_ = ln.split()
+                    if len(f_) > 3 and f_[3] == "07" and f_[2].endswith(":0000"):
+                        with contextlib.suppress(ValueError):
+                            out.add(int(f_[1].rpartition(":")[2], 16))
+        except OSError:
+            continue
+    return sorted(p for p in out if p)[:limit]
+
+
 def proxy_drops(proxies, now=None):
     """{service: {win_drops, per_min, life_drops, rxq, span_s, last_bad_s}} — kernel drops on each
     proxy's listen socket, windowed the same way the interface counters are."""
@@ -17140,6 +17161,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         snap["runtime"] = NODE_RUNTIME
     if NODE_UDP_PORTS:
         snap["udp_ports"] = NODE_UDP_PORTS
+    snap["udp_listen"] = udp_listen_ports()           # what the host listens on — the panel refuses a port typed onto one (S9e)
     snap["wdtt"] = wdtt_snapshot()                    # WDTT instances: active + server pubkey + per-password device/traffic (read-back for the panel; no privkeys)
     snap["csqtt"] = csqtt_snapshot()                  # csqtt instances (raw-TUN): active + per-password device/traffic + byte-delta online (no privkeys)
     snap["csqtt_lines"] = list(CSQTT_KNOWN_LINES)    # the csqtt lines this noded can run — the panel sends no other line here (docs/CSQTT-LINES-PLAN.md G1)

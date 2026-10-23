@@ -4330,16 +4330,72 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
   <//>`;
 }
 
-/** Generate a dial-in exit: a title and the protocol; the keys are made on Create. The paste is one click away. */
+/* A dial-in exit's own parameters (S9e) — the port and the MTU beside the title, and under the protocol the accordion the mesh
+   and the interface defaults use: the AmneziaWG cells the protocol takes (plain WireGuard has none: no accordion, operator 10-23). Blank = drawn (the interface-defaults template,
+   then the generator: what the background text shows), "-" = no such line, a value = used. One block for both sheets: the
+   create sheet sends it to the panel's generator; the edit sheet writes it into "This node's end", which stays the one thing
+   saved. */
+const DIALIN_RANGE = "42821–42899";
+const DIALIN_PORT_HINT = () => T("Blank: a free port of {v1} — on a node whose firewall is declared (NixOS), inside what it declares. Not 51820, the port every scanner tries first.", { v1: DIALIN_RANGE });
+function dialinHints() {          // a blank 2.0 cell: the interface-defaults template's value, or what the generator does
+  const tpl = ((Store.panelSettings || {}).interface_defaults || {}).awg_params || {}, b = awgBlankHints();
+  return Object.fromEntries(AWG_KEYS.map(k => { const t = String(tpl[k] ?? "").trim(); return [k, t === "-" ? T("val|none") : t || b[k]]; }));
+}
+// which protocol a stored set is — the server's own reading: a HeaderProtectionKey is 3.1, any 2.0 key is 2.0
+const dialinProto = awg => (awg || {}).HeaderProtectionKey ? "awg3" : AWG_KEYS.some(k => String((awg || {})[k] ?? "").trim() !== "") ? "awg2" : "wg";
+// the cells a blank is drawn for: the 2.0 generator, and for 3.1 the value its cell shows (the 3.1 defaults)
+function dialinDraw(proto, awg, fresh) {     // `fresh`: S1–S4 and H1–H4 drawn anew too (the edit sheet's Generate)
+  const g = genAwg(), h3 = mesh3Hints(false), out = { ...(awg || {}) };
+  for (const k of AWG_KEYS)
+    if (String(out[k] ?? "").trim() === "" || (fresh && /^[SH][1-4]$/.test(k) && String(out[k]).trim() !== "-")) out[k] = String(g[k]);
+  if (proto === "awg3") for (const k of AWG3_EDIT_COLS.flat())
+    if (String(out[k] ?? "").trim() === "" && String(h3[k] ?? "").trim()) out[k] = h3[k] === T("val|none") ? "-" : String(h3[k]);
+  return out;
+}
+function DialinParams({ proto, awg, onAwg, open: open0, edit }) {
+  const [open, setOpen] = useState(!!open0);
+  const a = awg || {}, isSet = Object.values(a).some(x => String(x ?? "").trim() !== "");
+  if (proto === "wg") return null;
+  return html`<div class="dinparams"><button type="button" class="advtoggle" aria-expanded=${open ? "true" : "false"} onClick=${() => setOpen(!open)}>
+      <span class="advcaret">${open ? "▾" : "▸"}</span> ${T("Parameters")}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
+    ${open ? html`<div class="field dinparams-body">
+      ${proto !== "wg" ? html`<${AwgGrid} value=${a} onChange=${onAwg} placeholders=${dialinHints()}
+        omit=${T("Type - in a cell for no such line on the router either; a blank cell is drawn — the value shown in it, or a random one.")}/>` : null}
+      ${proto === "awg3" ? html`<div style="margin-top:14px"><${Awg3Grid} value=${a} onKey=${(k, x) => onAwg({ ...a, [k]: x })} placeholders=${mesh3Hints(false)}
+        hpk=${a.HeaderProtectionKey ? T("val|set") : T("val|generated")} rt=${T("val|on")}
+        hpkTip=${T("Drawn for this exit; the router's config carries the same key.")} rtTip=${T("On for every AmneziaWG 3.1 exit.")}/></div>` : null}
+      ${proto !== "wg" ? html`<div class="dinparams-acts"><button type="button" class="btn btn-mini" onClick=${() => onAwg(dialinDraw(proto, a, edit))}
+          title=${edit ? T("S1–S4 and H1–H4 are drawn anew, and every blank cell — the router has to import its config again.") : null}>
+          <${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet && !edit ? html`<button type="button" class="btn btn-mini"
+          onClick=${() => { onAwg(Object.fromEntries(Object.entries(a).filter(([k]) => !AWG_KEYS.includes(k) && !AWG3_EDIT_COLS.flat().includes(k)))); }}>${T("Clear (auto)")}</button>` : null}</div>` : null}
+    </div>` : null}</div>`;
+}
+// "This node's end" as fields: a line of its [Interface] read, written (a value), or taken out ("-" or blank)
+const confIfLine = (txt, k) => { const m = new RegExp("^[ \\t]*" + k + "[ \\t]*=[ \\t]*(.*?)[ \\t]*$", "mi").exec(String(txt).split(/^\s*\[Peer\]/mi)[0]); return m ? m[1] : null; };
+function confIfSet(txt, k, v) {
+  const parts = String(txt).split(/(?=^\s*\[Peer\])/mi), head = parts[0], rest = parts.slice(1).join("");
+  const re = new RegExp("^[ \\t]*" + k + "[ \\t]*=.*$\\n?", "mi"), val = String(v ?? "").trim();
+  if (val === "" || val === "-") return head.replace(re, "") + rest;
+  if (re.test(head)) return head.replace(re, k + " = " + val + "\n") + rest;
+  return head.replace(/\n*$/, "\n") + k + " = " + val + "\n" + (rest ? "\n" + rest.replace(/^\n+/, "") : "");
+}
+
+/** Generate a dial-in exit: a title, the port and the protocol, the parameters under it; the keys are made on Create. The
+ *  paste is one click away. */
 function DialinGenSheet({ node, onCreate, onPaste }) {
   const [label, setLabel] = useState("");
   const no31 = node.awg31_no ? srvText(node.awg31_no) : "";
   const [proto, setProto] = useState("wg");
+  const [port, setPort] = useState(""), [mtu, setMtu] = useState(""), [awg, setAwg] = useState({});
   const [busy, setBusy] = useState(false), [msg, setMsg] = useState("");
   const go = async () => {
     setBusy(true); setMsg("");
     let r;
-    try { r = await onCreate(label.trim(), proto); } catch (e) { r = String((e && e.message) || e); }   // e.g. no X25519 in this browser
+    // only what was typed: a blank is the panel's to draw, and the cells of a protocol not chosen are not sent
+    const keys = proto === "wg" ? [] : [...AWG_KEYS, ...(proto === "awg3" ? AWG3_EDIT_COLS.flat() : [])];
+    const typed = { listen_port: port.trim(), mtu: mtu.trim(),
+                    awg: Object.fromEntries(keys.filter(k => String(awg[k] ?? "").trim() !== "").map(k => [k, String(awg[k]).trim()])) };
+    try { r = await onCreate(label.trim(), proto, typed); } catch (e) { r = String((e && e.message) || e); }   // e.g. no X25519 in this browser
     setBusy(false);
     if (r !== true) setMsg(typeof r === "string" ? r : T("Couldn't save"));
   };
@@ -4349,13 +4405,19 @@ function DialinGenSheet({ node, onCreate, onPaste }) {
                      action: busy ? T("Creating…") : T("Create"), onAction: go, disabled: busy })}>
     <p class="hint" style="margin:0 0 12px">${T("For an upstream that can't be reached — a router behind NAT: it connects to this node.")}
       ${" "}${T("The panel makes both sides; you import the router's config on the router.")}</p>
-    <div class="field"><label>${T("Title")}</label>
+    <div class="row2 dinrow"><div class="field"><label>${T("Title")}</label>
       <input value=${label} placeholder=${T("Dial-in exit")} maxlength="40" onInput=${e => setLabel(e.target.value)}/></div>
+      <div class="field dinport"><label>${T("Port")}</label>
+        <input inputmode="numeric" value=${port} placeholder=${T("val|Auto")} title=${DIALIN_PORT_HINT()} onInput=${e => setPort(e.target.value)}/></div>
+      <div class="field dinmtu"><label>${T("MTU")}</label>
+        <input inputmode="numeric" value=${mtu} placeholder="1280" onInput=${e => setMtu(e.target.value)}/></div></div>
+    <div class="hint dinport-hint">${DIALIN_PORT_HINT()}</div>
     <div class="field awggen"><label>${T("Protocol")}</label>
       <div class="dpsw awgsw" role="radiogroup" aria-label=${T("Protocol")}>${opts.map(([k, l, no]) => html`<button type="button" role="radio" key=${k}
         aria-checked=${proto === k} class=${(proto === k ? "on" : "") + (k === "awg3" ? " sw-awg3" : "")} disabled=${proto !== k && !!no}
         title=${proto !== k && no ? no : null} onClick=${() => setProto(k)}>${l}</button>`)}</div>
       <div class="hint">${no31 ? T("AmneziaWG 3.1: {v1}", { v1: no31 }) + " " : ""}${T("The router must be able to import it — check what its firmware supports.")}</div></div>
+    <${DialinParams} proto=${proto} awg=${awg} onAwg=${setAwg}/>
     <p class="hint" style="margin:14px 0 0">${T("Already have the router's config?")}${" "}
       <button type="button" class="linkbtn" onClick=${() => onPaste(label.trim())}>${T("Paste the server config instead")}</button></p>
   <//>`;
@@ -4374,6 +4436,15 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
   // a dial-in exit — a new one (the draft says so) or a stored one (its profile does) — dials nothing: no "Connect from"
   const isDialin = !!v.dialin || exitIsDialin(ex);
   const set = patch => { dirtyRef.current = true; setV(x => ({ ...x, ...patch })); };
+  // A dial-in exit's port, MTU and AmneziaWG cells (S9e), read from "This node's end" and written back into it — the text
+  // stays the one thing saved. An absent line reads "-"; a cell the operator clears is drawn on Save, as on create.
+  const [dinBlank, setDinBlank] = useState({});
+  const dinProto = isDialin ? dialinProto((ex.profile || {}).awg) : "wg";
+  const dinKeys = dinProto === "wg" ? [] : [...AWG_KEYS, ...(dinProto === "awg3" ? AWG3_EDIT_COLS.flat() : [])];
+  const dinAwg = Object.fromEntries(dinKeys.map(k => [k, dinBlank[k] ? "" : (confIfLine(txt, k) ?? "-")]));
+  const dinPort0 = String((ex.profile || {}).listen_port || "");
+  const dinLine = (k, val) => { dirtyRef.current = true; setDinBlank(b => ({ ...b, [k]: String(val ?? "").trim() === "" })); setTxt(t => confIfSet(t, k, val)); };
+  const dinAwgSet = d => { for (const k of dinKeys) if (String(d[k] ?? "") !== String(dinAwg[k] ?? "")) dinLine(k, d[k]); };
   const stored = (node.exits || []).find(x => String(x.id) === String(ex.id)) || {};
   // The three things this sheet can edit, plus the config box. A NEW exit is always dirty: there is nothing
   // to compare against and the operator has to be able to press Save.
@@ -4386,7 +4457,15 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
     // A NEW profile has nothing stored to fall back on, so an empty box is refused here rather than
     // stored as an imported exit with no profile — which the node cannot bring up.
     if (isProf && isNew && !txt.trim()) { setBusy(false); return setMsg(T("Paste the profile before saving.")); }
-    const body = { ...v, ...(isProf && txt !== profileText(ex) ? { profile_text: txt } : { profile_text: "" }),
+    // a dial-in exit's cleared cells are drawn now, a cleared MTU is 1280 and a cleared port is the one it has (S9e)
+    let out = txt;
+    if (isDialin && !isNew) {
+      const drawn = dialinDraw(dinProto, dinAwg);
+      for (const k of dinKeys) if (dinBlank[k]) out = confIfSet(out, k, drawn[k]);
+      if (confIfLine(out, "MTU") === null) out = confIfSet(out, "MTU", "1280");
+      if (confIfLine(out, "ListenPort") === null && dinPort0) out = confIfSet(out, "ListenPort", dinPort0);
+    }
+    const body = { ...v, ...(isProf && out !== profileText(ex) ? { profile_text: out } : { profile_text: "" }),
                    ...(isDialin ? { dial_src: "" } : {}) };
     const ok = await onSave(body);
     setBusy(false);
@@ -4419,19 +4498,26 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
     ${/* DECISION 7 — which of the node's own addresses dials the exit. Imported only: an adopted device
           dials on its own and there is nothing for us to pin. */""}
     ${isDialin ? html`<p class="hint" style="margin:0 0 12px">${T("For an upstream that can't be reached — a router behind NAT: it connects to this node.")}</p>` : null}
-    <div class=${isDialin ? "" : "row2"}>
+    <div class=${isDialin ? (isNew ? "" : "row2 dinrow") : "row2"}>
       <div class="field"><label>${T("Title")}</label>
         <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40"
           onInput=${e => set({ label: e.target.value })}/></div>
+      ${isDialin && !isNew ? html`<div class="field dinport"><label>${T("Port")}</label>
+        <input inputmode="numeric" value=${confIfLine(txt, "ListenPort") ?? ""} placeholder=${dinPort0}
+          onInput=${e => dinLine("ListenPort", e.target.value)}/></div>
+        <div class="field dinmtu"><label>${T("MTU")}</label>
+          <input inputmode="numeric" value=${dinBlank.MTU ? "" : (confIfLine(txt, "MTU") ?? "")} placeholder="1280"
+            onInput=${e => dinLine("MTU", e.target.value)}/></div>` : null}
       ${isDialin ? null : html`<div class="field"><label>${T("Connect from")}</label>
         <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>`}
     </div>
+    ${isDialin && !isNew ? html`<${DialinParams} edit proto=${dinProto} awg=${dinAwg} onAwg=${dinAwgSet}/>` : null}
     ${isProf
       ? html`<div class="field"><label>${isDialin ? T("This node's end") : T("Configuration")}</label>
           <textarea class="exprof" rows="11" spellcheck="false" value=${txt}
             placeholder=${isDialin ? T("Paste this node's side: [Interface] with ListenPort, one [Peer] — the router — with no Endpoint")
                                    : T("Paste the [Interface] / [Peer] profile here")}
-            onInput=${e => { dirtyRef.current = true; setTxt(e.target.value); }}/>
+            onInput=${e => { dirtyRef.current = true; setDinBlank({}); setTxt(e.target.value); }}/>
           <div class="hint">${isDialin
             ? T("This node's end of the tunnel: it listens on the ListenPort and the router dials it. The peer's AllowedIPs is ignored — everything is sent to the router. The PrivateKey line stands for this node's own key, which the panel keeps and never shows: leave it and the key is kept, replace it and the new one is used. The router has its own key — its config opens from the QR button on the exit's row.")
             : T("Edit it here or paste a replacement. IPv4 only — the v6 half is dropped, and routing lines are ignored because this node decides its own. The PrivateKey line is a placeholder: leave it and the stored key is kept, replace it and the new one is used.")}</div>
@@ -4484,10 +4570,10 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     reason: T("The router's config is kept encrypted with your client configs — only you can read it, with your encryption key. Unlock it so the exit's row can show the config again."),
     consequence: isNew ? T("the exit is created and works, but its router config is shown once only — unless you unlock the key in this tab before you reload.")
                        : T("both sides still get new keys, but the router's new config is shown once only — unless you unlock the key in this tab before you reload.") });
-  const generate = async (rec, proto) => {
+  const generate = async (rec, proto, typed) => {
     if (proto) await askKeep(true);
     const nk = await genKeys(), rk = await genKeys(), psk = genPSK();
-    const body = { ...rec, profile_text: "", dial_src: "", dialin_gen: { proto, private_key: nk.priv, peer_key: rk.pub, psk } };
+    const body = { ...rec, profile_text: "", dial_src: "", dialin_gen: { proto, private_key: nk.priv, peer_key: rk.pub, psk, ...(typed || {}) } };
     const isNew = !exits.some(x => String(x.id) === String(rec.id));
     const r = await write(isNew ? [...exits, body] : exits.map(x => (String(x.id) === String(rec.id) ? { ...x, ...body } : x)));
     // The stored profile THIS save made — its peer is the router key just sent. A poll built before the save landed can
@@ -4566,7 +4652,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
       return r === true ? true : T("Couldn't save");
     }}/>`);
   const openDialin = rec => openModal(html`<${DialinGenSheet} node=${node}
-    onCreate=${(label, proto) => generate({ ...rec, label }, proto)}
+    onCreate=${(label, proto, typed) => generate({ ...rec, label }, proto, typed)}
     onPaste=${label => { closeModal(); openEdit({ ...rec, label }, true); }}/>`);
   const add = p2 => {
     const rec = { id: newExitId(), label: "", enabled: true, killswitch: false, device: "", ...p2 };

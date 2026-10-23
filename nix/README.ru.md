@@ -380,6 +380,7 @@ sudo chmod 0600 /etc/swg-secrets/node-token /etc/swg-secrets/node.env
 services.swg-node.udpPortRanges = [
   { from = 51820; to = 51899; }   # интерфейсы — отсюда панель начинает новые
   { from = 56000; to = 56099; }   # turn-прокси, серверы WDTT и csqtt
+  { from = 42821; to = 42899; }   # обратные выходы — роутер за NAT, который сам подключается к этой ноде
   { from = 9999;  to = 10098; }   # меш-линки между вашими узлами (Настройки → Умолчания системной сети)
 ];
 ```

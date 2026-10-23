@@ -3361,8 +3361,27 @@ export const STR = {
   "a dial-in exit can only be generated from the exits screen": "обратный выход можно сгенерировать только на экране выходов",
   "the generated keys are not usable keys": "сгенерированные ключи непригодны",
   "choose WireGuard, AmneziaWG 2.0 or AmneziaWG 3.1": "выберите WireGuard, AmneziaWG 2.0 или AmneziaWG 3.1",
-  "no free port in 51820–51899 on this node — paste a config with your own port":
-    "на этой ноде нет свободного порта в 51820–51899 — вставьте конфиг со своим портом",
+  "no free port in 42821–42899 on this node, nor in its declared firewall range — type a port":
+    "на этой ноде нет свободного порта ни в 42821–42899, ни в объявленном диапазоне брандмауэра — укажите порт",
+  "the port must be a number from 1 to 65535": "порт — число от 1 до 65535",
+  "the MTU must be a number from 576 to 9200": "MTU — число от 576 до 9200",
+  "S1–S4 must be at least 12 for AmneziaWG 3.1 — header protection refuses less":
+    "для AmneziaWG 3.1 S1–S4 должны быть не меньше 12 — защита заголовков не принимает меньше",
+  "UDP port {v1} is outside this node's declared firewall ranges ({v2}) — the router could never reach it; pick a port inside them, or add it to udpPortRanges":
+    "UDP-порт {v1} вне объявленных диапазонов брандмауэра этой ноды ({v2}) — роутер до него не достучится; выберите порт внутри них или добавьте его в udpPortRanges",
+  "this exit": "этот выход",
+  "Port": "Порт",
+  "Parameters": "Параметры",
+  "val|generated": "генерируется",
+  "Blank: a free port of {v1} — on a node whose firewall is declared (NixOS), inside what it declares. Not 51820, the port every scanner tries first.":
+    "Пусто — свободный порт из {v1}, а на ноде с объявленным брандмауэром (NixOS) — из того, что он открывает. Не 51820: его сканеры пробуют первым.",
+  "Type - in a cell for no such line on the router either; a blank cell is drawn — the value shown in it, or a random one.":
+    "Впишите - в ячейку, чтобы такой строки не было и у роутера; пустая ячейка заполняется — показанным в ней значением или случайным.",
+  "Drawn for this exit; the router's config carries the same key.":
+    "Генерируется для этого выхода; в конфиге роутера тот же ключ.",
+  "On for every AmneziaWG 3.1 exit.": "Включено у каждого выхода AmneziaWG 3.1.",
+  "S1–S4 and H1–H4 are drawn anew, and every blank cell — the router has to import its config again.":
+    "S1–S4 и H1–H4 генерируются заново, как и все пустые ячейки — роутеру придётся импортировать конфиг снова.",
   "no free address pair in 10.254.0.0/16 on this node — paste a config with your own address":
     "на этой ноде нет свободной пары адресов в 10.254.0.0/16 — вставьте конфиг со своим адресом",
   "Paste the profile before saving.": "Перед сохранением вставьте профиль.",

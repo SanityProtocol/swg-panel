@@ -71,7 +71,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -156,6 +156,12 @@ PERTURBATIONS = {
     "rlan": ("js/screen-settings.js", "-d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP", "-d 198.51.100.0/24 -j DROP"),
     "rrest": ("js/screen-settings.js", "iptables -A ${tag}-fwd -j DROP\\n", "iptables -A ${tag}-fwd -j ACCEPT\\n"),
     "rinput": ("js/screen-settings.js", "+ `iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\\n`", "+ ``"),
+    # [B18] (S9e, operator 10-23): Download and Copy one per row at the QR's width in every language, not side by side in EN
+    "rstack": ("app.css", ".rconf-acts{display:flex;flex-direction:column;gap:6px}", ".rconf-acts{display:flex;flex-wrap:wrap;gap:6px}"),
+    # [B18] (S9e): what was typed on create never reaches the generator; an edit-sheet field never reaches the text saved
+    "dintyped": ("js/screen-settings.js", "psk, ...(typed || {}) } };", "psk } };"),
+    "dinphone": ("app.css", ".row2.dinrow>.field:first-child{flex:1 0 100%}", ".row2.dinrow>.field:first-child{flex:1}"),
+    "dinedit": ("js/screen-settings.js", "setTxt(t => confIfSet(t, k, val)); };", "0; };"),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -921,20 +927,29 @@ try:
               bool(clicked and gs) and ("Обратный выход" if ru else "Dial-in exit") in gs["title"]
               and gs["protos"] == ["WireGuard", "AmneziaWG 2.0", "AmneziaWG 3.1"] and len(gs["tops"]) == 2
               and max(gs["tops"]) - min(gs["tops"]) <= 3 and gs["inside"], gs)
+        DROW = ("(() => { const s = %s; const f = s && [...s.querySelectorAll('.dinrow > .field')].map(x => x.getBoundingClientRect()); if (!f || f.length !== 3) return null;"
+                " return {n: f.length, one: Math.abs(f[0].top - f[1].top) < 2 && Math.abs(f[1].top - f[2].top) < 2,"
+                " phone: f[1].top >= f[0].bottom - 1 && Math.abs(f[1].top - f[2].top) < 2 && Math.abs(f[0].width - (f[2].right - f[1].left)) < 2,"
+                " labels: [...s.querySelectorAll('.dinrow > .field > label')].map(l => l.textContent.trim())}; })()" % TOP)
+        dr = tab.ev(DROW) or {}
+        check("[B18] (S9e) %s: Title, Port and MTU at the top — %s" % (tag, "on one line" if vp[0] > 600 else "the title alone, then Port and MTU on the next line"),
+              dr.get("labels", [])[1:] == (["Порт", "MTU"] if ru else ["Port", "MTU"]) and (dr.get("one") if vp[0] > 600 else dr.get("phone")), dr)
         shot(tab, "b18-gen-%s-%d" % (lang, vp[0]))
         if lang == "en" and vp[0] == 1280:          # Create: the router's config, shown once, from what the panel stored
             click_text(tab, ".overlay.show .sheet-foot button", "/^Create/")
             settle(tab, 3000)
             rs = tab.ev(SHEET)
-            check("[B18] Create shows the router's config: Endpoint the node's host and the port it got, a QR; Regenerate and Done on one line",
-                  bool(rs) and "Router config" in rs["title"] and "\nEndpoint = 203.0.113.7:51823\n" in rs["conf"]
+            _gm = re.search(r"\nEndpoint = 203\.0\.113\.7:(\d+)\n", (rs or {}).get("conf", ""))
+            gport = int(_gm.group(1)) if _gm else 0
+            check("[B18] Create shows the router's config: Endpoint the node's host and the port it got (42821–42899, S9e), a QR; Regenerate and Done on one line",
+                  bool(rs) and "Router config" in rs["title"] and 42821 <= gport <= 42899
                   and "PrivateKey = " in rs["conf"] and rs["qr"] and len(rs["tops"]) == 2
                   and max(rs["tops"]) - min(rs["tops"]) <= 3 and rs["inside"], rs)
             st = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
             # The KEYS GO THE RIGHT WAY ROUND: the panel's peer for this exit is the PUBLIC half of the private key the router
             # config carries (X25519, by node's own crypto) — a swap would store the router's private key on the panel and
             # every text check above would still pass.
-            gx = next((x for x in st if (x.get("profile") or {}).get("listen_port") == 51823), {})
+            gx = next((x for x in st if (x.get("profile") or {}).get("listen_port") == gport), {})
             rpriv = next((l.split(" = ", 1)[1] for l in rs["conf"].splitlines() if l.startswith("PrivateKey = ")), "")
             rpub = x25519_pub(rpriv) if rpriv else ""
             check("[B18] …the panel's peer for it is the public half of the router's key, and the router's peer is not itself",
@@ -949,11 +964,14 @@ try:
                          " const q = s.querySelector('.rconf .qr img').getBoundingClientRect();"
                          " const b = [...s.querySelectorAll('.rconf-acts button')].map(x => x.getBoundingClientRect());"
                          " return {fs, rows: Math.round((p.clientHeight - pad) / lh), n, sx: p.scrollWidth - p.clientWidth, sy: p.scrollHeight - p.clientHeight,"
-                         " under: b.length === 2 && b.every(r => r.top >= q.bottom - 1 && r.left >= q.left - 1 && r.right <= q.right + 1)}; })()" % TOP) or {}
+                         " under: b.length === 2 && b.every(r => r.top >= q.bottom - 1 && r.left >= q.left - 1 && r.right <= q.right + 1),"
+                         " stacked: b.length === 2 && b[1].top >= b[0].bottom - 1 && b.every(r => Math.abs(r.width - q.width) <= 2)"
+                         " && getComputedStyle(s.querySelector('.rconf-acts')).flexDirection === 'column'}; })()" % TOP) or {}
             check("[B18] (S9d) the router config is shown whole — one row a line, no scroll, its font fitted (9–13 px)",
                   fit.get("n") and fit.get("rows") == fit.get("n") and fit.get("sx", 1) <= 0 and fit.get("sy", 1) <= 0
                   and 9 <= fit.get("fs", 0) <= 13, fit)
             check("[B18] (S9d) …Download and Copy under the QR, in its column", fit.get("under"), fit)
+            check("[B18] (S9e) …one per row, each the QR's width, in every language", fit.get("stacked"), fit)
             check("[B18] (S9d) …the router's address the other half of a /31", "\nAddress = " in rs["conf"]
                   and re.search(r"\nAddress = 10\.254\.\d+\.\d*[13579]/31\n", rs["conf"]) is not None, rs["conf"][:200])
             STEPS = ("(() => { const s = %s; return s ? {kinds: [...s.querySelectorAll('.rkind .seg')].map(b => b.textContent.trim()),"
@@ -1017,8 +1035,8 @@ try:
             gx2 = next((x for x in st2 if x.get("id") == gx.get("id")), {})
             r2priv = next((l.split(" = ", 1)[1] for l in (rs2 or {}).get("conf", "").splitlines() if l.startswith("PrivateKey = ")), "")
             check("[B18] Regenerate shows a new router config on the same port and address, the stored peer its new key",
-                  bool(rs2) and "\nEndpoint = 203.0.113.7:51823\n" in rs2["conf"] and r2priv and r2priv != rpriv
-                  and (gx2.get("profile") or {}).get("listen_port") == 51823
+                  bool(rs2) and ("\nEndpoint = 203.0.113.7:%d\n" % gport) in rs2["conf"] and r2priv and r2priv != rpriv
+                  and (gx2.get("profile") or {}).get("listen_port") == gport
                   and (gx2.get("profile") or {}).get("address") == (gx.get("profile") or {}).get("address")
                   and (gx2.get("profile") or {}).get("peer_key") == x25519_pub(r2priv), {"rs2": rs2, "stored": gx2.get("profile")})
             close_modals(tab)
@@ -1091,6 +1109,58 @@ try:
             _ltxt = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
             check("[B18] (S9d) the vault left locked: the sheet says an unlock before a reload keeps it — not \"not kept anywhere\"",
                   "Not kept yet — the encryption key is locked" in _ltxt and "not kept anywhere" not in _ltxt, _ltxt[:300])
+            close_modals(tab)
+            # (S9e) the port and the parameters typed on create reach the router config; the edit sheet shows them as fields
+            SETIN = ("(() => { const s = %s; const i = s && (%s); if (!i) return false; const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
+                     " set.call(i, %s); i.dispatchEvent(new Event('input', {bubbles: true})); return true; })()")
+            CELL = "[...s.querySelectorAll('.awg-f')].map(l => (l.querySelector('span') || {}).textContent === %s ? l.querySelector('input') : null).find(Boolean)"
+            click_text(tab, ".exadd button", "/Add a dial-in exit/")
+            settle(tab, 600)
+            _t1 = tab.ev(SETIN % (TOP, "s.querySelector('.dinport input')", json.dumps("42860")))
+            click_text(tab, ".overlay.show .awgsw button", "/^AmneziaWG 2.0$/")
+            click_text(tab, ".overlay.show .dinparams .advtoggle", "/Parameters/")
+            settle(tab, 300)
+            _t2 = [tab.ev(SETIN % (TOP, "s.querySelector('.dinmtu input')", json.dumps("1380"))),
+                   tab.ev(SETIN % (TOP, CELL % json.dumps("S1"), json.dumps("33"))), tab.ev(SETIN % (TOP, CELL % json.dumps("I1"), json.dumps("-")))]
+            settle(tab, 300)
+            shot(tab, "b18-params-%s-%d" % (lang, vp[0]))
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Create/")
+            settle(tab, 1200)
+            click_text(tab, ".overlay.show button", "/^Skip$/")
+            settle(tab, 3500)
+            ts = tab.ev(SHEET) or {}
+            check("[B18] (S9e) a port and parameters typed on create reach the router config: the port, the MTU, S1, no I1 line",
+                  _t1 and all(_t2) and "\nEndpoint = 203.0.113.7:42860\n" in ts.get("conf", "") and "\nMTU = 1380\n" in ts.get("conf", "")
+                  and "\nS1 = 33\n" in ts.get("conf", "") and "\nI1 = " not in ts.get("conf", "") and "\nS2 = " in ts.get("conf", ""),
+                  {"typed": [_t1, _t2], "conf": ts.get("conf", "")[:400]})
+            close_modals(tab)
+            st4 = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
+            tx = next((x for x in st4 if (x.get("profile") or {}).get("listen_port") == 42860), {})
+            tab.ev("(() => { const r = [...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes(%s)); r && r.querySelector('.exg-ed').click(); })()"
+                   % json.dumps(tx.get("device") or "wgx-?"))
+            settle(tab, 600)
+            click_text(tab, ".overlay.show .dinparams .advtoggle", "/Parameters/")
+            settle(tab, 300)
+            EDV = ("(() => { const s = %s; if (!s) return null; const c = k => { const i = %s; return i ? i.value : null; };"
+                   " return {port: (s.querySelector('.dinport input') || {}).value, mtu: (s.querySelector('.dinmtu input') || {}).value,"
+                   " s1: c('S1'), i1: c('I1'), box: (s.querySelector('textarea.exprof') || {}).value || ''}; })()" % (TOP, CELL.replace("%s", "k")))
+            ev0 = tab.ev(EDV) or {}
+            check("[B18] (S9e) the edit sheet shows them as fields: the port beside the title, the MTU, S1, and I1 as - (no such line)",
+                  ev0.get("port") == "42860" and ev0.get("mtu") == "1380" and ev0.get("s1") == "33" and ev0.get("i1") == "-", ev0)
+            tab.ev(SETIN % (TOP, "s.querySelector('.dinport input')", json.dumps("42861")))
+            tab.ev(SETIN % (TOP, CELL % json.dumps("S1"), json.dumps("44")))
+            settle(tab, 300)
+            ev1 = tab.ev(EDV) or {}
+            check("[B18] (S9e) …editing a field rewrites its line in \"This node's end\"",
+                  "\nListenPort = 42861\n" in ev1.get("box", "") and "\nS1 = 44\n" in ev1.get("box", "") and "\nI1 = " not in ev1.get("box", ""), ev1.get("box"))
+            shot(tab, "b18-edit-params-%s-%d" % (lang, vp[0]))
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Save/")
+            settle(tab, 2500)
+            st5 = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
+            tx5 = next((x for x in st5 if x.get("id") == tx.get("id")), {})
+            check("[B18] (S9e) …and Save stores them (port 42861, S1 44)",
+                  (tx5.get("profile") or {}).get("listen_port") == 42861 and str(((tx5.get("profile") or {}).get("awg") or {}).get("S1")) == "44",
+                  tx5.get("profile"))
             close_modals(tab)
             click_text(tab, ".exadd button", "/Add a dial-in exit/")
             settle(tab, 600)

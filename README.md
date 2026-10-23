@@ -102,7 +102,8 @@ subscription and no one else sitting in the middle of your traffic.
 - **Leave through a router behind NAT.** A server's traffic can leave by Cloudflare WARP, a WireGuard profile from
   anywhere, or a **dial-in exit**: an upstream that can't be reached — a home router abroad — connects to the server,
   and the server's users go out through it. In **Settings → WARP & exits → Add a dial-in exit** the panel makes both sides —
-  WireGuard or AmneziaWG, a free port, an address — and shows the router's config with a QR and the steps for Keenetic, OpenWrt or another router,
+  WireGuard or AmneziaWG, a free port of 42821–42899 or one you choose, an address, and the AmneziaWG parameters drawn or
+  set by you (also editable later) — and shows the router's config with a QR and the steps for Keenetic, OpenWrt or another router,
   kept encrypted with your client configs (when the panel keeps encrypted configs) so the exit's row shows it again, or
   shown once otherwise; or paste a server config you already have.
 - **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.

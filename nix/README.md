@@ -374,6 +374,7 @@ In `/etc/nixos/configuration.nix`:
 services.swg-node.udpPortRanges = [
   { from = 51820; to = 51899; }   # interfaces — where the panel starts new ones
   { from = 56000; to = 56099; }   # turn proxies, WDTT and csqtt servers
+  { from = 42821; to = 42899; }   # dial-in exits — a router behind NAT that connects to this node
   { from = 9999;  to = 10098; }   # mesh links between your nodes (Settings → System mesh defaults)
 ];
 ```

@@ -2167,11 +2167,12 @@ export function nixNodeSteps(host, endpoint, token, recovery, mode, reserved) {
      picked by the panel at RUN time — interfaces, turn servers, mesh links. Without `udpPortRanges` an interface created
      from the panel syncs, reports healthy and is unreachable, and nothing says so. Measured on a fresh NixOS 26.05 native
      node (1.8.7 qualification PART 4, A1): a laptop client never handshook until the range was declared. The three bands are
-     the ones the panel hands out: user interfaces from 51820 (suggestPort), turn-family servers from 56000, and the system
-     mesh band from these settings — leave that one out and the node's own mesh link raises a firewall issue. */
+     the ones the panel hands out: user interfaces from 51820 (suggestPort), turn-family servers from 56000, dial-in exits from
+     42821 (S9e — a node that leaves it out gets theirs from what it declares), and the system mesh band from these settings —
+     leave that one out and the node's own mesh link raises a firewall issue. */
   const rsv = reserved || {};
   const mBase = Number(rsv.mesh_port_base) || 9999, mSpan = Number(rsv.port_span) || 100;
-  const ports = `            udpPortRanges = [ { from = 51820; to = 51899; } { from = 56000; to = 56099; } { from = ${mBase}; to = ${mBase + mSpan - 1}; } ];   # interfaces · turn servers · mesh links`;
+  const ports = `            udpPortRanges = [ { from = 51820; to = 51899; } { from = 56000; to = 56099; } { from = 42821; to = 42899; } { from = ${mBase}; to = ${mBase + mSpan - 1}; } ];   # interfaces · turn servers · dial-in exits · mesh links`;
   // Native takes the raw token via LoadCredential; the container arm reads NODE_TOKEN= from an env
   // file, because a host credential cannot cross into a container (node.nix's tokenFile assertion).
   const tokenCmd = podman ? [

@@ -2996,9 +2996,18 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
   font-size:clamp(9px, calc((100cqi - 26px) / (var(--rconf-cols) * 0.6)), 13px)}
 .rconf-side{display:flex;flex-direction:column;gap:8px}
 .rconf .qr img{width:220px;height:220px;image-rendering:pixelated;image-rendering:crisp-edges}
-.rconf-acts{display:flex;flex-wrap:wrap;gap:6px}
-.rconf-acts .btn{flex:1 1 auto;justify-content:center}
+.rconf-acts{display:flex;flex-direction:column;gap:6px}   /* one button per row in every language, as RU wraps to (operator 10-23) */
+.rconf-acts .btn{width:100%;justify-content:center}
 .rkind{margin:8px 0 4px}
+/* S9e: a dial-in exit's port and MTU beside its title (five digits each, the title takes the rest), its parameters under the protocol */
+.row2.dinrow .field.dinport,.row2.dinrow .field.dinmtu{flex:0 0 96px}
+/* …on a phone the title takes its own line and the port and the MTU share the next (operator 10-23) */
+@media (max-width:600px){.row2.dinrow{flex-wrap:wrap}.row2.dinrow>.field:first-child{flex:1 0 100%}
+  .row2.dinrow .field.dinport,.row2.dinrow .field.dinmtu{flex:1 1 0}}
+.dinport-hint{font-size:11.5px;color:var(--faint);margin:-6px 0 12px}   /* the fields' own hint size, as the protocol's under it */
+.dinparams .advtoggle{margin-top:4px}
+.dinparams-body{margin-top:10px}
+.dinparams-acts{margin-top:12px;display:flex;gap:8px;justify-content:flex-end}
 .rsteps{margin:6px 0 0;padding-left:22px;font-size:13px;line-height:1.5;color:var(--ink-2)}
 .rsteps li+li{margin-top:8px}
 .rsteps .netsnip{margin:6px 0 0}

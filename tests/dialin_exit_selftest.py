@@ -19,9 +19,17 @@ profile reads, signs and writes exactly as it did (compared against `eb25bad7`, 
   [6] panel save: dial_src refused; a port another holder has, RAW-IP's, or another dial-in exit's → refused, an
       unchanged stored one tolerated; an address inside an interface subnet or the mesh pool → refused; the ports are
       counted for everything else on the node; an unknown kind refused, not coerced — and kept when already stored
-  [7] generate (S9b): the first free port of 51820–51899, never outside it (full → refused); a /31 of 10.254.0.0/16 clear of
+  [7] generate (S9b, S9e): a random free port of 42821–42899, never outside it (full → refused); on a node that declares its
+      firewall without that range, a free port inside what it declares, never 51820; a /31 of 10.254.0.0/16 clear of
       the node's subnets and its other exits; the AmneziaWG set per protocol (3.1 refused on a 2.0 node); stored in the
       paste's shape, the request field never stored; Regenerate keeps port, address and AmneziaWG and takes the new keys
+  [7b] what the operator typed (S9e): a port used (one another holder has, one outside a declared firewall, or no number →
+      refused); an MTU used (out of range → refused); AmneziaWG cells over the template and the generator — a value used,
+      "-" no such line, blank drawn; a typed value beats a template "-"; Jc/Jmin/Jmax go together; 3.1 S1–S4 ≥ 12;
+      WireGuard takes no cells
+  [7c] the node's port inventory (S9e): a port the host listens on that nothing of ours holds is "another program" — refused
+      to a typed dial-in port and to an interface create, never drawn — but a dial-in exit's own live port is not; the mesh
+      link allocator asks the same inventory (WDTT and its internal WG port, csqtt, a created interface, RAW-IP)
   [8] the router's key in the config store (S9c): a node's bucket takes an encryption key only for a known node; a key is
       kept only against the router key and the node-key digest the exit's record holds (a ciphertext that is no string is
       refused); it is read back — with its bucket key and router key, one request — while the exit stands, a read that
@@ -45,7 +53,20 @@ Run: python3 tests/dialin_exit_selftest.py      (0 = pass)
      --perturb-overlap    the address not checked                                         → RED [6]
      --perturb-count      the node's port table does not count dial-in exits               → RED [6]
      --perturb-coerce     the panel's "not profile ⇒ WARP" coercion back                   → RED [6]
-     --perturb-bound      generate allocates past 51899 (unbounded, as _alloc_port is)      → RED [7]
+     --perturb-bound      generate allocates past 42899 (unbounded, as _alloc_port is)      → RED [7]
+     --perturb-dinrange   generate draws from 51820–51899 again                            → RED [7]
+     --perturb-fwfall     a declared firewall without 42821–42899 gets no port             → RED [7]
+     --perturb-no51820    the declared fallback may draw 51820                             → RED [7]
+     --perturb-typedport  a typed port is ignored                                          → RED [7b]
+     --perturb-typedmtu   a typed MTU is ignored                                           → RED [7b]
+     --perturb-typedawg   the typed AmneziaWG cells are ignored                            → RED [7b]
+     --perturb-awgref     the typed cells are not checked (Jc trio)                        → RED [7b]
+     --perturb-s3min      a 3.1 S under 12 is not refused (awg3_full re-draws it silently) → RED [7b]
+     --perturb-fwref      a changed port outside a declared firewall is accepted           → RED [7b]
+     --perturb-udplisten  the host's listeners are not in the inventory                    → RED [7c]
+     --perturb-mineexit   a dial-in exit's own live port reads as another program          → RED [7c]
+     --perturb-meshinv    the mesh allocator keeps its own short list again                → RED [7c]
+     --perturb-listenall  the node reports connected sockets (outbound ports) as listeners → RED [7c]
      --perturb-pair       generate takes the first /31 without the overlap test             → RED [7]
      --perturb-regen      Regenerate draws a new port/address/set like a new exit           → RED [7]
      --perturb-fleet      the pair is unique on this node only                             → RED [7]
@@ -92,9 +113,25 @@ PLANTS = {
     "dialsrc": ("p", "    if dial_src:\n        return \"a dial-in exit dials nothing", "    if False:\n        return \"a dial-in exit dials nothing"),
     "clash": ("p", "        held = (ctx.get(\"ports\") or {}).get(port)\n", "        held = None\n"),
     "overlap": ("p", "                if net.version == 4 and a in net:\n", "                if False:\n"),
-    "count": ("p", "    for _x, p in _dialin_ports(nodes.get(nid) or {}):\n        used.add(p)\n    return used", "    return used"),
-    "bound": ("p", "        port = next((p for p in DIALIN_PORTS if p not in used and",
-              "        port = next((p for p in range(51820, 70000) if p not in used and"),
+    "count": ("p", "    if not skip_exits:                                 # last:", "    if False:                                 # last:"),
+    "bound": ("p", "            free = [p for p in DIALIN_PORTS if p not in used and",
+              "            free = [p for p in range(42821, 70000) if p not in used and"),
+    "dinrange": ("p", "DIALIN_PORTS = range(42821, 42900)", "DIALIN_PORTS = range(51820, 51900)"),
+    "fwfall": ("p", "            if not free and _fw:\n", "            if False:\n"),
+    "no51820": ("p", "- used - {51820, WDTT_RAW_PORT})", "- used)"),
+    "typedport": ("p", "        if _tp:                  # typed:", "        if False:                  # typed:"),
+    "typedmtu": ("p", "        if _tm:\n            if not _tm.isdigit()", "        if False:\n            if not _tm.isdigit()"),
+    "typedawg": ("p", '        _typed = g.get("awg") if isinstance(g.get("awg"), dict) and proto != "wg" else {}', '        _typed = {}'),
+    "awgref": ("p", '        _ref = awg_template_refusal(_typed, perr("this exit"), gen3=proto == "awg3") if _typed else None', "        _ref = None"),
+    "s3min": ("p", '        if proto == "awg3" and any(not str(_uv[k]).isdigit()', '        if False and any(not str(_uv[k]).isdigit()'),
+    "fwref": ("p", "        if _fw and not any(a <= port <= b for a, b in _fw):\n            return perr(\"UDP port {v1} is outside",
+              "        if False:\n            return perr(\"UDP port {v1} is outside"),
+    "udplisten": ("p", '    for p in (snap.get("udp_listen") or [])[:1024]:', "    for p in []:"),
+    "mineexit": ("p", "        if p not in _mine:\n            add(p, \"another program", "        if True:\n            add(p, \"another program"),
+    "listenall": ("n", '                    if len(f_) > 3 and f_[3] == "07" and f_[2].endswith(":0000"):', '                    if len(f_) > 3:'),
+    "meshinv": ("p", '    return set(_node_ports({"node_snaps": snaps or {}}, nodes, nid)) | {WDTT_RAW_PORT}',
+                '    return ({int((b.get("meta") or {}).get("listen_port")) for b in (((snaps or {}).get(nid) or {}).get("interfaces") or {}).values()'
+                ' if str((b.get("meta") or {}).get("listen_port")).isdigit()} | {p for _x, p in _dialin_ports(nodes.get(nid) or {})})'),
     "pair": ("p", "if not any(n.overlaps(t) for t in taken)), None)", "), None)"),
     "regen": ("p", "    if exit_is_dialin({\"provider\": \"profile\", \"profile\": kept}):\n        port, node, awg, mtu",
               "    if False:\n        port, node, awg, mtu"),
@@ -398,7 +435,7 @@ import base64 as _b64
 _k = lambda: _b64.b64encode(os.urandom(32)).decode()
 S31 = {"datapath": {"awg": {"gen": {"module": "3.1", "fallback": None, "tools": "3.1"}}}}
 S20 = {"datapath": {"awg": {"gen": {"module": "2.0", "fallback": None, "tools": "3.1"}}}}
-def gen(proto, xid="aabbccdd", stored=(), snap=S31, ports=None, nets=None, keys=None, prep=None):
+def gen(proto, xid="aabbccdd", stored=(), snap=S31, ports=None, nets=None, keys=None, prep=None, typed=None):
     deps, nodes = world(stored)
     if prep:
         prep(deps, nodes)
@@ -409,26 +446,28 @@ def gen(proto, xid="aabbccdd", stored=(), snap=S31, ports=None, nets=None, keys=
         ctx["nets"] = nets
     kk = keys or {"private_key": _k(), "peer_key": _k(), "psk": _k()}
     xs = [dict(x) for x in stored if x.get("id") != xid] + [{"id": xid, "producer": "imported", "provider": "profile",
-                                                             "dialin_gen": dict(kk, proto=proto)}]
+                                                             "dialin_gen": dict(kk, proto=proto, **(typed or {}))}]
     return P._validate_exits(xs, nodes[NID], prev=list(stored), gen_snap=snap, dialin=ctx), kk
 (c, e), kk = gen("wg")
 g = (c or [{}])[-1].get("profile") or {}
-check("a generated exit gets the first port the node does not hold (wg0 has 51821)", e is None and g.get("listen_port") == 51820, (e, g))
+check("a generated exit gets a free port of 42821–42899 — not WireGuard's 51820", e is None and 42821 <= g.get("listen_port", 0) <= 42899, (e, g))
+_drawn = {(gen("wg")[0][0] or [{}])[-1].get("profile", {}).get("listen_port") for _ in range(12)}
+check("…drawn at random, not the first free one", len(_drawn) > 1 and all(42821 <= x <= 42899 for x in _drawn), _drawn)
 check("…a /31's .0 clear of wg0's 10.254.4.0/24", g.get("address") == "10.254.0.0", g)
 check("…the keys sent, a WireGuard set, MTU 1280", g.get("private_key") == kk["private_key"] and g.get("peer_key") == kk["peer_key"]
       and g.get("psk") == kk["psk"] and g.get("awg") == {} and g.get("mtu") == 1280, g)
 check("…and the request field is never stored", "dialin_gen" not in (c or [{}])[-1], (c or [{}])[-1])
-_txt = P._dialin_generate(dict(kk, proto="wg"), {}, "aabbccdd", [], {}, P._dialin_ctx(world()[0], world()[1], NID))[0]
+_txt = P._dialin_generate(dict(kk, proto="wg", listen_port=g.get("listen_port")), {}, "aabbccdd", [], {}, P._dialin_ctx(world()[0], world()[1], NID))[0]
 check("…in the paste's shape: what it stored is exactly what its own server config parses to", P.parse_wg_profile(_txt)[0] == g,
       (P.parse_wg_profile(_txt)[0], g))
-(c, e), _ = gen("wg", ports={p: "x" for p in range(51820, 51900)})
-check("a full 51820–51899 → refused, never a port outside it", c is None and "51820–51899" in str(e), (c and c[-1].get("profile"), e))
+(c, e), _ = gen("wg", ports={p: "x" for p in range(42821, 42900)})
+check("a full 42821–42899 → refused, never a port outside it", c is None and "42821–42899" in str(e), (c and c[-1].get("profile"), e))
 (c, e), _ = gen("wg", nets=[("wg0", ipaddress.ip_network("10.254.0.0/17"))])
 check("the pair skips a subnet the node holds", e is None and c[-1]["profile"]["address"] == "10.254.128.0", (e, c and c[-1]["profile"]))
 first = dict(ok[0])                                     # [6]'s stored paste: port 51820, address 10.254.0.0
 (c, e), _ = gen("wg", xid="11223344", stored=[first])
 g2 = (c or [{}])[-1].get("profile") or {}
-check("a second generated exit takes another port and another pair", e is None and g2.get("listen_port") == 51822
+check("a second generated exit takes another port and another pair", e is None and 42821 <= g2.get("listen_port", 0) <= 42899
       and g2.get("address") == "10.254.0.2", (e, g2))
 (c, e), _ = gen("awg2")
 check("AmneziaWG 2.0: the interfaces' generator set, no header protection", e is None and (c[-1]["profile"]["awg"] or {}).get("S1")
@@ -447,17 +486,20 @@ def _other_node(deps, nodes):          # another node's dial-in exit already hol
 (c, e), _ = gen("wg", prep=_other_node)
 check("the pair is unique across the fleet, not only this node", e is None and c[-1]["profile"]["address"] == "10.254.0.2",
       (e, c and c[-1]["profile"]))
-def _unadopted(deps, nodes):          # a stock wg0 the operator runs by hand, not adopted, on 51820
-    deps["node_snaps"][NID]["iface_candidates"] = [{"name": "wg-hand", "listen_port": 51820}]
+def _unadopted(deps, nodes):          # servers the operator runs by hand, not adopted, on all of 42821–42898
+    deps["node_snaps"][NID]["iface_candidates"] = [{"name": "wg-hand%d" % p, "listen_port": p} for p in range(42821, 42899)]
 (c, e), _ = gen("wg", prep=_unadopted)
-check("an unadopted server's port is taken too", e is None and c[-1]["profile"]["listen_port"] == 51822, (e, c and c[-1]["profile"]))
+check("an unadopted server's port is taken too", e is None and c[-1]["profile"]["listen_port"] == 42899, (e, c and c[-1]["profile"]))
 def _declared(spec):                  # a NixOS node that opens only what its module declares
     return lambda deps, nodes: deps["node_snaps"][NID].__setitem__("udp_ports", spec)
-(c, e), _ = gen("wg", prep=_declared("51825-51830,56000-56099"))
-check("a port is drawn inside the node's declared firewall range", e is None and c[-1]["profile"]["listen_port"] == 51825,
+(c, e), _ = gen("wg", prep=_declared("42821-42899,56000-56099"))
+check("a port is drawn inside the node's declared firewall range", e is None and 42821 <= c[-1]["profile"]["listen_port"] <= 42899,
       (e, c and c[-1]["profile"]))
-(c, e), _ = gen("wg", prep=_declared("51821-51821,56000-56099"))
-check("…and none left there (51821 is wg0's) → refused", c is None and "51820–51899" in str(e), (e, c and c[-1]["profile"]))
+(c, e), _ = gen("wg", prep=_declared("51820-51830"))
+check("a declared firewall without 42821–42899 (set up before it): a free port inside what it declares — not 51820, not wg0's",
+      e is None and 51822 <= c[-1]["profile"]["listen_port"] <= 51830, (e, c and c[-1]["profile"]))
+(c, e), _ = gen("wg", prep=_declared("51820-51821"))
+check("…and none left there (51821 is wg0's, 51820 is never drawn) → refused", c is None and "42821–42899" in str(e), (e, c and c[-1]["profile"]))
 def _tpl(deps, nodes):                # the operator's interface defaults: Jc 7, and no I1–I5 (their router cannot take them)
     deps["panel_settings"] = {"interface_defaults": {"awg_params": {"Jc": "7", **{k: "-" for k in ("I1", "I2", "I3", "I4", "I5")}}}}
 (c, e), _ = gen("awg2", prep=_tpl)
@@ -487,6 +529,91 @@ check("Regenerate keeps the port, the address, the MTU and the AmneziaWG set", e
       r.get(x) == st3["profile"].get(x) for x in ("listen_port", "address", "mtu", "awg")), (e, r, st3["profile"]))
 check("…and takes the new keys", r.get("private_key") == kk2["private_key"] and r.get("peer_key") == kk2["peer_key"]
       and r.get("psk") == kk2["psk"], r)
+
+print("\n[7b] what the operator typed (S9e)")
+def _p(c): return (c or [{}])[-1].get("profile") or {}
+(c, e), _ = gen("wg", typed={"listen_port": "443", "mtu": "1380"})
+check("a typed port and MTU are used", e is None and _p(c).get("listen_port") == 443 and _p(c).get("mtu") == 1380, (e, _p(c)))
+(c, e), _ = gen("wg", typed={"listen_port": "51821"})
+check("a typed port another holder has → refused, naming it (wg0)", c is None and "wg0" in str(e), e)
+(c, e), _ = gen("wg", typed={"listen_port": "443"}, prep=_declared("42821-42899"))
+check("a typed port outside the node's declared firewall → refused", c is None and "outside this node's declared firewall" in str(e), e)
+(c, e), _ = gen("wg", typed={"listen_port": "42850"}, prep=_declared("42821-42899"))
+check("…one inside it is used", e is None and _p(c).get("listen_port") == 42850, (e, _p(c)))
+(c, e), _ = gen("wg", typed={"listen_port": "port"})
+check("a port that is no number → refused", c is None and "1 to 65535" in str(e), e)
+(c, e), _ = gen("wg", typed={"mtu": "50"})
+check("an MTU out of range → refused", c is None and "576 to 9200" in str(e), e)
+(c, e), _ = gen("awg2", typed={"awg": {"Jc": "9", "S1": "33", "I1": "-"}})
+_a = _p(c).get("awg") or {}
+check("AmneziaWG cells: a value used, '-' no such line, a blank drawn", e is None and str(_a.get("Jc")) == "9" and str(_a.get("S1")) == "33"
+      and "I1" not in _a and _a.get("S2") and _a.get("H1"), (e, _a))
+(c, e), _ = gen("awg2", typed={"awg": {"I1": "<r 16>"}}, prep=_tpl)
+_a = _p(c).get("awg") or {}
+check("…a typed value beats the template's '-' (I1), the template's other '-' keys stay out", e is None and _a.get("I1") == "<r 16>"
+      and not any(k in _a for k in ("I2", "I3", "I4", "I5")) and str(_a.get("Jc")) == "7", (e, _a))
+(c, e), _ = gen("awg2", typed={"awg": {"Jc": "-"}})
+check("…Jc, Jmin and Jmax go together → refused", c is None and "go together" in str(e), e)
+(c, e), _ = gen("awg3", typed={"awg": {"S1": "5"}})
+check("…AmneziaWG 3.1: an S under 12 → refused, not re-drawn behind the operator's back", c is None and "at least 12" in str(e), e)
+(c, e), _ = gen("awg3", typed={"awg": {"S1": "40", "RekeyTimeout": "7"}})
+_a = _p(c).get("awg") or {}
+check("…3.1: typed cells kept, the 3.1 set and a key around them", e is None and str(_a.get("S1")) == "40"
+      and str(_a.get("RekeyTimeout")) == "7" and _a.get("HeaderProtectionKey"), (e, _a))
+(c, e), _ = gen("wg", typed={"awg": {"Jc": "9"}})
+check("WireGuard takes no AmneziaWG cells", e is None and _p(c).get("awg") == {}, (e, _p(c)))
+_st = dict(first, profile=dict(first["profile"], listen_port=42850))
+(c, e), _ = gen(None, stored=[_st], prep=_declared("51820-51899"))
+check("Regenerate keeps a stored port outside a declared firewall (unchanged: tolerated)", e is None and _p(c).get("listen_port") == 42850, e)
+
+print("\n[7c] the node's port inventory (S9e)")
+def _listen(ports):
+    return lambda deps, nodes: deps["node_snaps"][NID].__setitem__("udp_listen", ports)
+deps, nodes = world()
+deps["node_snaps"][NID]["udp_listen"] = [53, 443, 51821]
+_inv = P._node_ports(deps, nodes, NID)
+check("a port the host listens on that nothing of ours holds is 'another program'", _inv.get(443) == "another program on this node"
+      and _inv.get(51821) == "wg0", _inv)
+check("…an interface create there is refused", bool(P._port_conflict(deps, nodes, NID, 443)))
+(c, e), _ = gen("wg", typed={"listen_port": "443"}, prep=_listen([443]))
+check("…a typed dial-in port there is refused", c is None and "another program" in str(e), e)
+def _busy(deps, nodes):
+    deps["node_snaps"][NID]["iface_candidates"] = [{"name": "h%d" % p, "listen_port": p} for p in range(42821, 42899)]
+    deps["node_snaps"][NID]["udp_listen"] = [42899]
+(c, e), _ = gen("wg", prep=_busy)
+check("…and never drawn (42899, the only one left, is a listener)", c is None and "42821–42899" in str(e), (e, c and _p(c)))
+deps, nodes = world([dict(ok[0])])                      # a stored dial-in exit on 51820, live: its socket is a listener too
+deps["node_snaps"][NID]["udp_listen"] = [51820]
+check("a dial-in exit's own live port is named after the exit, not another program",
+      "dial-in exit" in str(P._node_ports(deps, nodes, NID).get(51820))
+      and P._dialin_ctx(deps, nodes, NID)["ports"].get(51820) is None, P._dialin_ctx(deps, nodes, NID)["ports"])
+deps, nodes = world()
+nodes[NID]["wdtt"] = {"wdtt1": {"listen": "0.0.0.0:10001", "wg_port": 10002}}
+nodes[NID]["csqtt"] = {"csqtt1": {"listen": "0.0.0.0:10003"}}
+nodes[NID]["ifaces"] = {"awg9": {"desired_port": 10004}}
+deps["node_snaps"][NID]["udp_listen"] = [10005]
+_u = P._used_ports(nodes, deps["node_snaps"], NID)
+check("the mesh link allocator asks the same inventory: WDTT and its internal WG port, csqtt, a created interface, a listener, RAW-IP",
+      {10001, 10002, 10003, 10004, 10005, P.WDTT_RAW_PORT} <= _u, sorted(_u))
+check("…so the first link port off 10000 skips them", P._alloc_port(_u, 10000) == 10000 and P._alloc_port(_u, 10001) == 10006, sorted(_u))
+
+import io as _io
+_PROC = {"/proc/net/udp": "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n"
+         "  1: 00000000:01BB 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 11 2 0000 0\n"      # *:443 listening
+         "  2: 0100007F:A7A2 0100007F:CB2C 01 00000000:00000000 00:00000000 00000000     0        0 12 2 0000 0\n"      # connected, ESTABLISHED
+         "  3: 0300A8C0:D431 08080808:0035 07 00000000:00000000 00:00000000 00000000     0        0 13 2 0000 0\n",     # a connected query socket
+         "/proc/net/udp6": "  sl  local_address rem_address st\n"
+         "  4: 00000000000000000000000000000000:CA6C 00000000000000000000000000000000:0000 07 00000000:00000000 00:00000000 00000000 0 0 14 2 0 0\n"}
+_saved_open = N.__dict__.get("open")
+N.open = lambda path, *a, **k: _io.StringIO(_PROC[path])
+try:
+    _ul = N.udp_listen_ports()
+finally:
+    if _saved_open is None:
+        del N.open
+    else:
+        N.open = _saved_open
+check("the node reports the ports it LISTENS on (v4 and v6), never a connected socket's port", _ul == [443, 51820], _ul)
 
 print("\n[8] the router's key in the config store (S9c)")
 import json as _json, shutil as _sh
@@ -570,7 +697,10 @@ for k in ("a dial-in exit has exactly one peer — the upstream", "the profile's
           "UDP port {v1} is already used on this node by {v2}", "this panel does not know exits of kind {v1}",
           "this node does not know this kind of exit — update the node",
           "the address {v1} is inside {v2} ({v3}) on this node — use another one",
-          "no free port in 51820–51899 on this node — paste a config with your own port",
+          "no free port in 42821–42899 on this node, nor in its declared firewall range — type a port",
+          "the port must be a number from 1 to 65535", "the MTU must be a number from 576 to 9200",
+          "S1–S4 must be at least 12 for AmneziaWG 3.1 — header protection refuses less", "this exit",
+          "UDP port {v1} is outside this node's declared firewall ranges ({v2}) — the router could never reach it; pick a port inside them, or add it to udpPortRanges",
           "choose WireGuard, AmneziaWG 2.0 or AmneziaWG 3.1", "the generated keys are not usable keys",
           "no dial-in exit with this id on this node", "the exit's router key has changed since this config was made",
           "no encryption key for this node — set up config encryption first"):
