@@ -187,19 +187,25 @@ for x in $NS; do ip netns add $P-$x; ip -n $P-$x link set lo up; done
 pair() { ip link add "$2" netns $P-$1 type veth peer name "$4" netns $P-$3 && ip -n $P-$1 link set "$2" up && ip -n $P-$3 link set "$4" up; }
 pair c c0 n up0;       ip -n $P-c addr add 10.17.0.5/24 dev c0;  ip -n $P-c route add default via 10.17.0.1
                        ip -n $P-n addr add 10.17.0.1/24 dev up0
-# the tunnel: point-to-point like a WireGuard device (a multi-access one without a gateway is never routed into), over
-# an underlay of its own — ipip, so no keys and no module beyond the kernel's own
+# the tunnel: a real WireGuard pair, point-to-point as a dial-in exit is (a multi-access device without a gateway is never
+# routed into), over an underlay of its own. ⚠️ NOT ipip: loading that module puts a `tunl0` into EVERY namespace made after
+# it, and the cells' isolation checks then refuse to run (measured: mech-behaviour and per-packet-ab, 2026-10-23).
 pair n ul0 r ul1;      ip -n $P-n addr add 198.18.0.1/30 dev ul0; ip -n $P-r addr add 198.18.0.2/30 dev ul1
-ip -n $P-n link add wgx-aabbccdd type ipip local 198.18.0.1 remote 198.18.0.2; ip -n $P-n link set wgx-aabbccdd up
-ip -n $P-r link add rt0 type ipip local 198.18.0.2 remote 198.18.0.1;          ip -n $P-r link set rt0 up
-ip -n $P-n addr add 10.254.0.0/31 dev wgx-aabbccdd;  ip -n $P-r addr add 10.254.0.1/31 dev rt0
+KN=$(wg genkey); KR=$(wg genkey)
+ip -n $P-n link add wgx-aabbccdd type wireguard; ip -n $P-r link add rt0 type wireguard
+ip netns exec $P-n wg set wgx-aabbccdd private-key <(echo "$KN") listen-port 51901 \
+  peer "$(echo "$KR" | wg pubkey)" endpoint 198.18.0.2:51902 allowed-ips 0.0.0.0/0
+ip netns exec $P-r wg set rt0 private-key <(echo "$KR") listen-port 51902 \
+  peer "$(echo "$KN" | wg pubkey)" endpoint 198.18.0.1:51901 allowed-ips 0.0.0.0/0
+ip -n $P-n addr add 10.254.0.0/32 dev wgx-aabbccdd;  ip -n $P-r addr add 10.254.0.1/32 dev rt0
+ip -n $P-n link set wgx-aabbccdd up;                 ip -n $P-r link set rt0 up
 pair n net0 k k0;      ip -n $P-n addr add 192.168.77.1/24 dev net0; ip -n $P-k addr add 192.168.77.10/24 dev k0
                        ip -n $P-k route add default via 192.168.77.1
 pair r l0 l lan0;      ip -n $P-r addr add 192.168.1.1/24 dev l0; ip -n $P-l addr add 192.168.1.10/24 dev lan0
                        ip -n $P-l route add default via 192.168.1.1
 pair r w0 i wan0;      ip -n $P-r addr add 203.0.113.1/24 dev w0; ip -n $P-i addr add 203.0.113.9/24 dev wan0
                        ip -n $P-i route add default via 203.0.113.1
-ip -n $P-r route add 10.17.0.0/24 via 10.254.0.0
+ip -n $P-r route add 10.254.0.0/32 dev rt0; ip -n $P-r route add 10.17.0.0/24 dev rt0
 for x in n r; do ip netns exec $P-$x sysctl -qw net.ipv4.ip_forward=1; done
 # the node: the real reconcile_cascade, a dial-in device exit for the client subnet, one shared Network
 ip netns exec $P-n python3 - "$NODED" "$CONF" <<'PY' || { echo "cascade: FAILED"; exit 0; }
@@ -220,8 +226,8 @@ for d in 203.0.113.9 192.168.1.10 192.168.1.1 10.254.0.1 203.0.113.1 192.168.77.
 
 def rig():
     sd = sudo()
-    if sd is None or not shutil.which("ip"):
-        SKIPS.append("[2]"); print("  SKIPPED [2] — no root / `sudo -n` or no ip here; [1] still ran"); return
+    if sd is None or not shutil.which("ip") or not shutil.which("wg"):
+        SKIPS.append("[2]"); print("  SKIPPED [2] — no root / `sudo -n`, ip or wg here; [1] still ran"); return
     tmp = tempfile.mkdtemp(prefix="swgnoded-cut-rig-", dir="/tmp")
     path, conf = os.path.join(tmp, "noded.py"), os.path.join(tmp, "up0.conf")
     with open(path, "w", encoding="utf-8") as f:
