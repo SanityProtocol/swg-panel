@@ -71,7 +71,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -149,10 +149,13 @@ PERTURBATIONS = {
     # locked); the Linux steps lose their FORWARD accept (a router whose FORWARD policy is DROP passes nothing)
     "rwhy": ("js/screen-settings.js", 'kept === false ? T("Not kept — keeping', 'false ? T("Not kept — keeping'),
     "rlocked": ("js/screen-settings.js", ': kept === T("the encryption key is locked") ?', ': false ?'),
-    "rfwd": ("js/screen-settings.js", "`sysctl -w net.ipv4.ip_forward=1\\niptables -I FORWARD -i ${tag} -j ACCEPT\\n`", "`sysctl -w net.ipv4.ip_forward=1\\n`"),
-    # [B18] (S9d verify F8): the tunnel's forwards to private ranges are dropped — without it the node reaches the router's
-    # LAN (a one-NIC box reaches it through the uplink itself, so a narrowed accept would not fence it)
-    "rlan": ("js/screen-settings.js", "-d 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 -j DROP", "-d 198.51.100.0/24 -j DROP"),
+    "rfwd": ("js/screen-settings.js", "+ `iptables -I FORWARD -i ${tag} -j ${tag}-fwd\\n`", "+ ``"),
+    # [B18] (S9d verify F8 + s9d-f8-lan F3–F5): the tunnel's own chain drops the private ranges (a one-NIC box's LAN is
+    # behind the uplink itself), lets out the uplink only and drops the rest (a tailnet, a second NIC); new connections
+    # from the tunnel to the box itself are dropped
+    "rlan": ("js/screen-settings.js", "-d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP", "-d 198.51.100.0/24 -j DROP"),
+    "rrest": ("js/screen-settings.js", "iptables -A ${tag}-fwd -j DROP\\n", "iptables -A ${tag}-fwd -j ACCEPT\\n"),
+    "rinput": ("js/screen-settings.js", "+ `iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\\n`", "+ ``"),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -968,11 +971,22 @@ try:
             click_text(tab, ".overlay.show .rkind .seg", "/^Other router$/")
             settle(tab, 300)
             kl = tab.ev(STEPS) or {}
-            check("[B18] (S9d) …Other router: wg-quick, a FORWARD accept both ways, a drop to the private ranges (not the LAN) and the masquerade for the node's address",
-                  "wg-quick up" in kl.get("steps", "") and re.search(r"iptables -I FORWARD -i swg-\S+ -j ACCEPT", kl.get("steps", ""))
-                  and re.search(r"iptables -I FORWARD -i swg-\S+ -d 10\.0\.0\.0/8,172\.16\.0\.0/12,192\.168\.0\.0/16 -j DROP", kl.get("steps", ""))
-                  and kl.get("steps", "").count("eth0") == 2
-                  and "--ctstate RELATED,ESTABLISHED -j ACCEPT" in kl.get("steps", "") and "-j MASQUERADE" in kl.get("steps", ""), kl)
+            _cmd = tab.ev("[...document.querySelectorAll('.overlay.show .rsteps pre')].map(p => p.textContent).join('\\n')") or ""
+            _ln = [l.strip() for l in _cmd.splitlines() if l.strip()]
+            _ch = [l for l in _ln if re.match(r"iptables -A swg-\S+-fwd ", l)]
+            check("[B18] (S9d) …Other router: wg-quick, and the tunnel's own chain in the order it applies — the private ranges "
+                  "dropped, out the uplink only, the rest dropped — jumped to from FORWARD, the replies let back, new "
+                  "connections to the box itself dropped, the uplink named once, the node's address masqueraded",
+                  "wg-quick up" in kl.get("steps", "")
+                  and [re.sub(r"^iptables -A swg-\S+-fwd ", "", l) for l in _ch] == [
+                      "-d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP",
+                      "-o $UPLINK -j ACCEPT", "-j DROP"]
+                  and any(re.fullmatch(r"iptables -I FORWARD -i (swg-\S+) -j \1-fwd", l) for l in _ln)
+                  and any(re.fullmatch(r"iptables -I FORWARD -o swg-\S+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", l) for l in _ln)
+                  and any(re.fullmatch(r"iptables -I INPUT -i swg-\S+ -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP", l) for l in _ln)
+                  and _cmd.count("eth0") == 1 and "UPLINK=eth0" in _ln
+                  and any(re.fullmatch(r"iptables -t nat -A POSTROUTING -s 10\.254\.\S+ -o \$UPLINK -j MASQUERADE", l) for l in _ln)
+                  and not any(re.match(r"iptables -[AI] FORWARD -i swg-\S+ .*-j ACCEPT", l) for l in _ln), {"cmd": _cmd})
             _off = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
             check("[B18] (S9d) the store off: the notice says why nothing is kept, and where to turn it on",
                   "keeping encrypted client configs is off (Settings → Client configs)" in _off, _off[:300])

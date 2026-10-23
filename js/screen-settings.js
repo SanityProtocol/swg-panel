@@ -4250,10 +4250,16 @@ export function routerSteps(kind, ex, conf) {
   // the commands as the router takes them — not prose, never translated
   const KN_NAT = "interface WireguardN security-level private\nip nat WireguardN\nsystem configuration save",
         KN_POLICY = "ip hotspot policy WireguardN PolicyN\nsystem configuration save",
-        LX_MASQ = `sysctl -w net.ipv4.ip_forward=1\niptables -I FORWARD -i ${tag} -j ACCEPT\n`
-          + `iptables -I FORWARD -i ${tag} -d 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 -j DROP\n`
+        // the tunnel's forwards go through a chain of its own, so the order shown is the order that applies — also once
+        // saved as rules (-A) — and they reach the internet interface only: never a private range (a one-NIC box's LAN
+        // is behind that same interface), nothing else on the box (a tailnet, a second NIC); nor the box itself (INPUT)
+        LX_MASQ = `UPLINK=eth0\nsysctl -w net.ipv4.ip_forward=1\niptables -N ${tag}-fwd\n`
+          + `iptables -A ${tag}-fwd -d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP\n`
+          + `iptables -A ${tag}-fwd -o $UPLINK -j ACCEPT\niptables -A ${tag}-fwd -j DROP\n`
+          + `iptables -I FORWARD -i ${tag} -j ${tag}-fwd\n`
           + `iptables -I FORWARD -o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n`
-          + `iptables -t nat -A POSTROUTING -s ${addr} -o eth0 -j MASQUERADE`;
+          + `iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\n`
+          + `iptables -t nat -A POSTROUTING -s ${addr} -o $UPLINK -j MASQUERADE`;
   if (kind === "keenetic") return [
     html`${T("Import the config: Internet → Other connections → WireGuard → Import from file. Leave “Use for accessing the Internet” off — the router keeps its own internet; this tunnel only carries the node's traffic out.")}`,
     html`${Trich("Find its name: `show interface` on the command page (my.keenetic.net/a) lists it as WireguardN, described {v1}. Then, with your N:", { v1: tag })}
@@ -4271,7 +4277,7 @@ export function routerSteps(kind, ex, conf) {
   return [
     html`${Trich("Bring the config up: save it as `/etc/{v1}/{v2}.conf` and run `{v3} up {v2}`.", awg
       ? { v1: "amnezia/amneziawg", v2: tag, v3: "awg-quick" } : { v1: "wireguard", v2: tag, v3: "wg-quick" })}`,
-    html`${T("Forward and masquerade the node's traffic out of your internet interface (eth0 here); the drop line keeps it out of your local network:")}
+    html`${T("Let the node's traffic out to the internet only, masqueraded — not into your local networks, nor to this machine itself. Set UPLINK to your internet interface:")}
       ${cmdBlock(LX_MASQ)}`,
     html`${T("If this machine's own internet goes through a VPN, send the node's address out by your internet interface with a policy rule.")}`,
   ];

@@ -3324,8 +3324,8 @@ export const STR = {
     "Если wan — не основной маршрут роутера (его собственный интернет идёт через VPN), отправьте трафик от `{v1}` через wan маршрутизацией по политикам (pbr).",
   "Bring the config up: save it as `/etc/{v1}/{v2}.conf` and run `{v3} up {v2}`.":
     "Поднимите конфиг: сохраните его как `/etc/{v1}/{v2}.conf` и выполните `{v3} up {v2}`.",
-  "Forward and masquerade the node's traffic out of your internet interface (eth0 here); the drop line keeps it out of your local network:":
-    "Включите пересылку и маскарадинг трафика ноды через интерфейс интернета (здесь eth0); строка с DROP не пускает его в вашу локальную сеть:",
+  "Let the node's traffic out to the internet only, masqueraded — not into your local networks, nor to this machine itself. Set UPLINK to your internet interface:":
+    "Выпустите трафик ноды только в интернет, с маскарадингом — не в ваши локальные сети и не к самой этой машине. В UPLINK укажите интерфейс интернета:",
   "If this machine's own internet goes through a VPN, send the node's address out by your internet interface with a policy rule.":
     "Если собственный интернет этой машины идёт через VPN, отправьте адрес ноды через интерфейс интернета правилом маршрутизации по источнику.",
   "The exit's row turns green about a minute after traffic starts to flow — the node waits that long before it routes back through a tunnel that failed.":
