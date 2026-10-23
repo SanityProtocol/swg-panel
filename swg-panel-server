@@ -15761,12 +15761,14 @@ _PIN_TAG_OVERRIDE = {("ildarmaga", "1.5.40"): "v1.5.0", ("ildarmaga", "1.5.40-2"
 # without a panel update): "csqtt-app-2.5.1+" = csqtt-app-2.5.<n>[-<k>], highest number, 2.5.1 the floor (_hosted_tag).
 _PIN_SOURCE_LINES = {"csqtt": {"2.1": "csqtt-app-2.1.9", "2.5": "csqtt-app-2.5.1+"}}   # fork id → line → OUR app release
 _HOSTED_TAG_TTL = 3600
+_HOSTED_TAG_SETTLE = 600   # a new release is offered 10 minutes after it is published: its APKs all uploaded
 def _hosted_tag(spec):
     """The release tag a _PIN_SOURCE_LINES entry names now. A plain tag is itself. "<prefix>.<n>+" is our newest
     "<prefix>.<m>[-<k>]" with m >= n, by number (2.5.10 above 2.5.9, a rebuild 2.5.2-2 above 2.5.2), that is not a
-    prerelease and already holds an APK (one still uploading is not offered yet). One listing of our releases an hour,
-    from the background passes only; a failed listing keeps the last answer, else the floor, and is asked again in five
-    minutes (once, not once per server build: a boot before the network is up never holds the floor for an hour)."""
+    prerelease, holds an APK and was published at least _HOSTED_TAG_SETTLE ago (its files all uploaded). One listing of
+    our releases an hour, from the background passes only. A listing that fails, or names no such release, never moves
+    a sub page back: the last answer stands — this run's, else the newest of ours the pins restored from
+    release-cache.json name — else the floor; and it is asked again in five minutes, once, not once per server build."""
     m = re.fullmatch(r"(.*)\.(\d+)\+", spec)
     if not m:
         return spec
@@ -15775,25 +15777,33 @@ def _hosted_tag(spec):
     ent = _GH_COMMIT_CACHE.get(ck)
     if ent and time.time() - ent["at"] < _HOSTED_TAG_TTL:
         return ent["res"]
+    tag_re = re.compile(re.escape(prefix) + r"\.(\d+)(?:-(\d+))?")
+    def rank(t):
+        tm = tag_re.fullmatch(str(t or ""))
+        return tm and int(tm.group(1)) >= floor and (int(tm.group(1)), int(tm.group(2) or 0))
     best = None
-    try:
+    with contextlib.suppress(Exception):              # GitHub refused or unreachable: no answer (below)
         rels = _gh_api("/repos/%s/releases?per_page=100" % WDTT_BUILD_REPO)
-        tag_re = re.compile(re.escape(prefix) + r"\.(\d+)(?:-(\d+))?")
         for x in rels if isinstance(rels, list) else ():
             t = isinstance(x, dict) and not x.get("prerelease") and not x.get("draft") and str(x.get("tag_name") or "")
-            tm = t and tag_re.fullmatch(t)
-            if tm and int(tm.group(1)) >= floor and any(re.search(r"\.apk$", str(a.get("name") or ""), re.I)
-                                                       for a in x.get("assets") or () if isinstance(a, dict)):
-                rank = (int(tm.group(1)), int(tm.group(2) or 0))
-                if best is None or rank > best[0]:
-                    best = (rank, t)
-    except Exception:                                 # GitHub refused or unreachable: the last answer stands, else the floor
-        res = ent["res"] if ent else "%s.%d" % (prefix, floor)
-        _GH_COMMIT_CACHE[ck] = {"res": res, "at": time.time() - _HOSTED_TAG_TTL + 300}
-        return res
-    res = best[1] if best else "%s.%d" % (prefix, floor)
-    _GH_COMMIT_CACHE[ck] = {"res": res, "at": time.time()}
+            rk = t and rank(t)
+            if rk and any(re.search(r"\.apk$", str(a.get("name") or ""), re.I) for a in x.get("assets") or ()
+                          if isinstance(a, dict)) and _released_since(x.get("published_at")) >= _HOSTED_TAG_SETTLE:
+                if best is None or rk > best[0]:
+                    best = (rk, t)
+    if best:
+        _GH_COMMIT_CACHE[ck] = {"res": best[1], "at": time.time()}
+        return best[1]
+    known = [t for t in [ent and ent["res"]] + [str(x.get("src") or "").rpartition("@")[2] for x in _RELEASE_PIN.values()]
+             + [str(x.get("page") or "").rpartition("/tag/")[2] for x in _RELEASE_INFO.values()] if rank(t)]
+    res = max(known, key=rank) if known else "%s.%d" % (prefix, floor)
+    _GH_COMMIT_CACHE[ck] = {"res": res, "at": time.time() - _HOSTED_TAG_TTL + 300}
     return res
+def _released_since(published_at):
+    """Seconds since a release's published_at ("2026-10-23T05:09:01Z"); a missing or odd value counts as long ago."""
+    with contextlib.suppress(Exception):
+        return time.time() - _live_cal.timegm(time.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ"))
+    return float("inf")
 def _pin_source(owner, repo, version):
     """(owner, repo, tag) of OUR app release for a build the panel itself lists on a hosted line (CSQTT_LINES) AND of that
     line's own version, else None: a build it does not list (a hand-placed 2.1.5), or an older protocol kept on the line

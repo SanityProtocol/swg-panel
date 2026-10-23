@@ -52,8 +52,10 @@ Hermetic. Run: python3 tests/turn_app_pins_selftest.py   (0 = pass)
      --perturb-follow the 2.5 line stays on its floor (2.5.1) whatever we release → RED in [8]
      --perturb-lexical tags compared as text (2.5.9 above 2.5.10) → RED in [8]
      --perturb-noapk  a release with no APK yet (still uploading) is offered → RED in [8]
+     --perturb-settle a release is offered the moment it is published, its APKs maybe half uploaded → RED in [8]
+     --perturb-downgrade a failed or empty listing answers the floor (2.5.1), moving sub pages back → RED in [8]
 """
-import atexit, importlib.machinery, importlib.util, io, json, os, re, shutil, sys, tempfile, urllib.error, urllib.parse
+import atexit, importlib.machinery, importlib.util, io, json, os, re, shutil, sys, tempfile, time, urllib.error, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -75,9 +77,11 @@ PERTURB_403 = "--perturb-403" in sys.argv
 PERTURB_FOLLOW = "--perturb-follow" in sys.argv
 PERTURB_LEXICAL = "--perturb-lexical" in sys.argv
 PERTURB_NOAPK = "--perturb-noapk" in sys.argv
+PERTURB_SETTLE = "--perturb-settle" in sys.argv
+PERTURB_DOWNGRADE = "--perturb-downgrade" in sys.argv
 PERTURBED = (PERTURB or PERTURB_REPO or PERTURB_OWN or PERTURB_OFFLINE or PERTURB_SEEN or PERTURB_SRC or PERTURB_CACHE
              or PERTURB_MEMO or PERTURB_FALLBACK or PERTURB_LATEST or PERTURB_FBSRC or PERTURB_PROTO or PERTURB_403
-             or PERTURB_FOLLOW or PERTURB_LEXICAL or PERTURB_NOAPK)
+             or PERTURB_FOLLOW or PERTURB_LEXICAL or PERTURB_NOAPK or PERTURB_SETTLE or PERTURB_DOWNGRADE)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -117,9 +121,11 @@ P = load("swgpanel_apppins", planted(SERVER, ([('    for x in (v, re.sub(r"-\\d+
                                           + ([("                    rec[\"src\"] = sk                   #", "                    pass  #", "his stand-in unmarked")] if PERTURB_FBSRC else [])
                                           + ([("if str(version).startswith(line + \".\") and any(", "if any(", "the line's version not required")] if PERTURB_PROTO else [])
                                           + ([("                        hosted[sk] = False\n", "                        pass\n", "a refused release not remembered")] if PERTURB_403 else [])
-                                          + ([("    res = best[1] if best else ", "    res = ", "the floor kept")] if PERTURB_FOLLOW else [])
-                                          + ([("rank = (int(tm.group(1)), int(tm.group(2) or 0))", "rank = t", "tags compared as text")] if PERTURB_LEXICAL else [])
-                                          + ([('re.search(r"\\.apk$", str(a.get("name") or ""), re.I)', "True", "no APK required")] if PERTURB_NOAPK else [])))
+                                          + ([("    if best:\n        _GH_COMMIT_CACHE[ck]", "    if False:\n        _GH_COMMIT_CACHE[ck]", "the floor kept")] if PERTURB_FOLLOW else [])
+                                          + ([("and (int(tm.group(1)), int(tm.group(2) or 0))", "and t", "tags compared as text")] if PERTURB_LEXICAL else [])
+                                          + ([('re.search(r"\\.apk$", str(a.get("name") or ""), re.I)', "True", "no APK required")] if PERTURB_NOAPK else [])
+                                          + ([("_released_since(x.get(\"published_at\")) >= _HOSTED_TAG_SETTLE", "True", "offered at once")] if PERTURB_SETTLE else [])
+                                          + ([("    res = max(known, key=rank) if known else ", "    res = ", "the floor on no answer")] if PERTURB_DOWNGRADE else [])))
 S = load("swgsub_apppins", planted(SUB, [("for repo, vs in pins.items() if isinstance(vs, dict) and any(v in mine for v in vs)}}",
                                           "for repo, vs in pins.items() if isinstance(vs, dict)} if False else pins}",
                                           "every subscriber gets the fleet's pins")] if PERTURB_OWN else []))
@@ -168,7 +174,7 @@ REL = {("amurcanov", "csqtt", "v2.5.0"): A("CSQTT-2.5.0.apk"), ("amurcanov", "cs
        ("Ivan4537", "WDTT-Plus", "v18"): A("WDTT-Plus-v18-universal-release.apk"),
        ("hackdiaz-dev", "free-turn-proxy", "v4.0.3"): A("client-linux-amd64", "server-linux-amd64")}
 CALLS, DOWN, NET = [], set(), {"up": True}
-PRE, LIST_DOWN = set(), {"on": False}
+PRE, LIST_DOWN, PUB = set(), {"on": False}, {}
 def api(path):
     if not NET["up"]:
         CALLS.append(path)
@@ -177,7 +183,9 @@ def api(path):
     if path == "/repos/SanityProtocol/swg-panel/releases?per_page=100":   # [8]: our releases, newest first as GitHub lists them
         if ("SanityProtocol", "swg-panel") in DOWN or LIST_DOWN["on"]:
             raise urllib.error.HTTPError(path, 403, "rate limited", {}, io.BytesIO(b""))
-        return [{"tag_name": t, "prerelease": t in PRE, "assets": REL[(o, r, t)]}
+        if LIST_DOWN.get("empty"):
+            return []
+        return [{"tag_name": t, "prerelease": t in PRE, "assets": REL[(o, r, t)], "published_at": PUB.get(t, "2026-10-01T00:00:00Z")}
                 for (o, r, t) in reversed(list(REL)) if (o, r) == ("SanityProtocol", "swg-panel")]
     m = re.match(r"/repos/([^/]+)/([^/]+)/releases/tags/(.+)$", path)
     o, r, t = m.group(1), m.group(2), urllib.parse.unquote(m.group(3))
@@ -398,18 +406,38 @@ check("[8] a prerelease, a release with no APK yet, another line (2.6.0) and a s
       TAG25() == "csqtt-app-2.5.10", TAG25())
 lat = P._hosted_latest("amurcanov", "csqtt")
 check("[8] the catalog's \"latest\" follows too (v2.5.10)", lat and lat["tag"] == "v2.5.10", lat)
+REL[SP + ("csqtt-app-2.5.14",)] = A("CSQTT-2.5.14-universal.apk")
+PUB["csqtt-app-2.5.14"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 120))
+P._GH_COMMIT_CACHE.clear()
+check("[8] a release published 2 minutes ago (its APKs maybe still uploading) is not offered yet", TAG25() == "csqtt-app-2.5.10", TAG25())
+PUB["csqtt-app-2.5.14"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 660)); P._GH_COMMIT_CACHE.clear()
+check("[8] …11 minutes on, it is", TAG25() == "csqtt-app-2.5.14", TAG25())
 P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"]["at"] = 0; LIST_DOWN["on"] = True
-check("[8] the listing refused when the hour is up → the last answer stands", TAG25() == "csqtt-app-2.5.10", TAG25())
+check("[8] the listing refused when the hour is up → the last answer stands", TAG25() == "csqtt-app-2.5.14", TAG25())
 CALLS.clear(); TAG25()
 check("[8] …and it rests five minutes: the next ask makes no request (not one timeout per server build)", not CALLS, CALLS)
 P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"]["at"] -= 301; CALLS.clear(); TAG25()
 check("[8] …five minutes on, the listing is asked again", CALLS == ["/repos/SanityProtocol/swg-panel/releases?per_page=100"], CALLS)
+LIST_DOWN["on"] = False; LIST_DOWN["empty"] = True; P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"]["at"] = 0
+check("[8] a listing that answers but names no 2.5.x (empty, or past its first page) keeps the last answer, not the floor",
+      TAG25() == "csqtt-app-2.5.14", TAG25())
+LIST_DOWN["empty"] = False; P._GH_COMMIT_CACHE.clear(); P._RELEASE_PIN.clear(); P._PIN_SEEN.clear(); P._PIN_TRIED.clear(); P._PIN_WANTED = {}
+P._turn_warm_pins(d7)
+check("[8] (set-up) a 2.5 server pinned on our csqtt-app-2.5.14", own("2.5.1")[1] == "SanityProtocol/swg-panel@csqtt-app-2.5.14", own("2.5.1"))
+P._GH_COMMIT_CACHE.clear(); LIST_DOWN["on"] = True                     # a restart: memory gone, pins restored, no listing
+CALLS.clear(); P._turn_warm_pins(d7, refresh=True)
+check("[8] after a restart with the listing failing, the restored pin (2.5.14) stays — never rewritten to 2.5.1 and published",
+      own("2.5.1")[1] == "SanityProtocol/swg-panel@csqtt-app-2.5.14"
+      and "/repos/SanityProtocol/swg-panel/releases/tags/csqtt-app-2.5.1" not in CALLS, (own("2.5.1"), CALLS))
 P._GH_COMMIT_CACHE.clear()
-check("[8] the listing refused with no answer yet → the floor, 2.5.1 (never his app)", TAG25() == "csqtt-app-2.5.1", TAG25())
+check("[8] …and the catalog's latest says the same (2.5.14)", (P._hosted_latest("amurcanov", "csqtt") or {}).get("tag") == "v2.5.14",
+      P._hosted_latest("amurcanov", "csqtt"))
+P._GH_COMMIT_CACHE.clear(); P._RELEASE_PIN.clear(); P._RELEASE_INFO.clear()
+check("[8] a panel that has never known a newer one, the listing refused → the floor, 2.5.1 (never his app)", TAG25() == "csqtt-app-2.5.1", TAG25())
 LIST_DOWN["on"] = False; P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"]["at"] -= 301
-check("[8] …and five minutes later, the listing answering, the newest again — the floor was not held for the hour",
-      TAG25() == "csqtt-app-2.5.10", TAG25())
-LIST_DOWN["on"] = False; CALLS.clear()
+check("[8] …and five minutes later, the listing answering, the newest — the floor was not held for the hour",
+      TAG25() == "csqtt-app-2.5.14", TAG25())
+CALLS.clear()
 check("[8] a plain tag (the 2.1 line) is itself, with no request", P._hosted_tag("csqtt-app-2.1.9") == "csqtt-app-2.1.9" and not CALLS, CALLS)
 
 if FAILS:
