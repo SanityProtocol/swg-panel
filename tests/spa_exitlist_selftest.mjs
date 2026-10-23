@@ -30,11 +30,13 @@ const PERTURB = process.argv.includes("--perturb") && !GROUPS;
 let R = await spa("routing.js");
 if (GROUPS) {
   const src = fs.readFileSync(path.join(ROOT, "js", "routing.js"), "utf8");
-  const a = '  const warp = imp.filter(x => x.provider !== "profile").map(x => mk(x, exitLabel(x, node)));';
+  const a = '  const warp = imp.filter(x => exitProv(x) === "warp").map(x => mk(x, exitLabel(x, node)));';
+  const b = '  const prof = imp.filter(x => exitProv(x) === "profile").map(x => mk(x, exitLabel(x, node)));';
   if (src.split(a).length !== 2) { console.log("PERTURB ANCHOR MISSING: the WARP group's filter"); process.exit(1); }
+  if (src.split(b).length !== 2) { console.log("PERTURB ANCHOR MISSING: the custom-config group's filter"); process.exit(1); }
   const tmp = path.join(ROOT, "js", "__perturb_exitlist.js");
   fs.writeFileSync(tmp, src.replace(a, '  const warp = imp.map(x => mk(x, exitLabel(x, node))); const _was = 0;')
-    .replace('  const prof = imp.filter(x => x.provider === "profile").map(x => mk(x, exitLabel(x, node)));', '  const prof = [];'));
+    .replace(b, '  const prof = [];'));
   try { R = await import(pathToFileURL(tmp).href); } finally { fs.unlinkSync(tmp); }
 }
 const { exitOptionGroups, exitLabel, exitTypeLabel, exitHealth, exitHealthMark } = R;

@@ -50,7 +50,8 @@ assert NSRC.count(_FLOOR) == 1, "handshake-floor anchor missing — this run wou
 assert NSRC.count(_STAMP) == 1, "cfg_sig stamp anchor missing — this run would FALSE-PASS"
 if PERTURB:
     NSRC = NSRC.replace(_FLOOR, "return 0 if ts == 0 else max(0, int(time.time()) - ts)")
-    NSRC = NSRC.replace(_STAMP, "    pass")
+    # The loop stays: the dial-in rows' `listen_port` is stamped in the same loop, after the cfg_sig (S9a).
+    NSRC = NSRC.replace(_STAMP, "    for _o in out:\n        pass")
 
 npath = NODED
 if PERTURB:
