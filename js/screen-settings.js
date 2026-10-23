@@ -4250,7 +4250,8 @@ export function routerSteps(kind, ex, conf) {
   // the commands as the router takes them — not prose, never translated
   const KN_NAT = "interface WireguardN security-level private\nip nat WireguardN\nsystem configuration save",
         KN_POLICY = "ip hotspot policy WireguardN PolicyN\nsystem configuration save",
-        LX_MASQ = `sysctl -w net.ipv4.ip_forward=1\niptables -I FORWARD -i ${tag} -o eth0 -j ACCEPT\n`
+        LX_MASQ = `sysctl -w net.ipv4.ip_forward=1\niptables -I FORWARD -i ${tag} -j ACCEPT\n`
+          + `iptables -I FORWARD -i ${tag} -d 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 -j DROP\n`
           + `iptables -I FORWARD -o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n`
           + `iptables -t nat -A POSTROUTING -s ${addr} -o eth0 -j MASQUERADE`;
   if (kind === "keenetic") return [
@@ -4270,7 +4271,7 @@ export function routerSteps(kind, ex, conf) {
   return [
     html`${Trich("Bring the config up: save it as `/etc/{v1}/{v2}.conf` and run `{v3} up {v2}`.", awg
       ? { v1: "amnezia/amneziawg", v2: tag, v3: "awg-quick" } : { v1: "wireguard", v2: tag, v3: "wg-quick" })}`,
-    html`${T("Forward and masquerade the node's traffic out of your internet interface (eth0 here):")}
+    html`${T("Forward and masquerade the node's traffic out of your internet interface (eth0 here); the drop line keeps it out of your local network:")}
       ${cmdBlock(LX_MASQ)}`,
     html`${T("If this machine's own internet goes through a VPN, send the node's address out by your internet interface with a policy rule.")}`,
   ];
