@@ -54,6 +54,8 @@ Hermetic. Run: python3 tests/turn_app_pins_selftest.py   (0 = pass)
      --perturb-noapk  a release with no APK yet (still uploading) is offered → RED in [8]
      --perturb-settle a release is offered the moment it is published, its APKs maybe half uploaded → RED in [8]
      --perturb-downgrade a failed or empty listing answers the floor (2.5.1), moving sub pages back → RED in [8]
+     --perturb-standin the fallback reads a pin's source tag, though his release stood in for it → RED in [8]
+     --perturb-stale  a remembered higher tag beats this run's own answer → RED in [8]
 """
 import atexit, importlib.machinery, importlib.util, io, json, os, re, shutil, sys, tempfile, time, urllib.error, urllib.parse
 
@@ -79,9 +81,12 @@ PERTURB_LEXICAL = "--perturb-lexical" in sys.argv
 PERTURB_NOAPK = "--perturb-noapk" in sys.argv
 PERTURB_SETTLE = "--perturb-settle" in sys.argv
 PERTURB_DOWNGRADE = "--perturb-downgrade" in sys.argv
+PERTURB_STANDIN = "--perturb-standin" in sys.argv
+PERTURB_STALE = "--perturb-stale" in sys.argv
 PERTURBED = (PERTURB or PERTURB_REPO or PERTURB_OWN or PERTURB_OFFLINE or PERTURB_SEEN or PERTURB_SRC or PERTURB_CACHE
              or PERTURB_MEMO or PERTURB_FALLBACK or PERTURB_LATEST or PERTURB_FBSRC or PERTURB_PROTO or PERTURB_403
-             or PERTURB_FOLLOW or PERTURB_LEXICAL or PERTURB_NOAPK or PERTURB_SETTLE or PERTURB_DOWNGRADE)
+             or PERTURB_FOLLOW or PERTURB_LEXICAL or PERTURB_NOAPK or PERTURB_SETTLE or PERTURB_DOWNGRADE
+             or PERTURB_STANDIN or PERTURB_STALE)
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -125,7 +130,10 @@ P = load("swgpanel_apppins", planted(SERVER, ([('    for x in (v, re.sub(r"-\\d+
                                           + ([("and (int(tm.group(1)), int(tm.group(2) or 0))", "and t", "tags compared as text")] if PERTURB_LEXICAL else [])
                                           + ([('re.search(r"\\.apk$", str(a.get("name") or ""), re.I)', "True", "no APK required")] if PERTURB_NOAPK else [])
                                           + ([("_released_since(x.get(\"published_at\")) >= _HOSTED_TAG_SETTLE", "True", "offered at once")] if PERTURB_SETTLE else [])
-                                          + ([("    res = max(known, key=rank) if known else ", "    res = ", "the floor on no answer")] if PERTURB_DOWNGRADE else [])))
+                                          + ([("    res = max(known, key=rank) if known else ", "    res = ", "the floor on no answer")] if PERTURB_DOWNGRADE else [])
+                                          + ([('for t in (str(x.get("page") or "").rpartition("/")[2],) if rank(t)]',
+                                               'for t in (str(x.get("src") or "").rpartition("@")[2],) if rank(t)]', "the source tag, not the served page")] if PERTURB_STANDIN else [])
+                                          + ([("    if ent:\n        res = ent[\"res\"]\n    else:", "    if False:\n        pass\n    else:", "this run's answer not first")] if PERTURB_STALE else [])))
 S = load("swgsub_apppins", planted(SUB, [("for repo, vs in pins.items() if isinstance(vs, dict) and any(v in mine for v in vs)}}",
                                           "for repo, vs in pins.items() if isinstance(vs, dict)} if False else pins}",
                                           "every subscriber gets the fleet's pins")] if PERTURB_OWN else []))
@@ -185,8 +193,9 @@ def api(path):
             raise urllib.error.HTTPError(path, 403, "rate limited", {}, io.BytesIO(b""))
         if LIST_DOWN.get("empty"):
             return []
-        return [{"tag_name": t, "prerelease": t in PRE, "assets": REL[(o, r, t)], "published_at": PUB.get(t, "2026-10-01T00:00:00Z")}
-                for (o, r, t) in reversed(list(REL)) if (o, r) == ("SanityProtocol", "swg-panel")]
+        odd = [{"tag_name": "csqtt-app-2.5.30", "assets": 5}, {"tag_name": 7}, "junk"] if LIST_DOWN.get("odd") else []
+        return odd + [{"tag_name": t, "prerelease": t in PRE, "assets": REL[(o, r, t)], "published_at": PUB.get(t, "2026-10-01T00:00:00Z")}
+                      for (o, r, t) in reversed(list(REL)) if (o, r) == ("SanityProtocol", "swg-panel")]
     m = re.match(r"/repos/([^/]+)/([^/]+)/releases/tags/(.+)$", path)
     o, r, t = m.group(1), m.group(2), urllib.parse.unquote(m.group(3))
     if (o, r) in DOWN:
@@ -437,6 +446,24 @@ check("[8] a panel that has never known a newer one, the listing refused → the
 LIST_DOWN["on"] = False; P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"]["at"] -= 301
 check("[8] …and five minutes later, the listing answering, the newest — the floor was not held for the hour",
       TAG25() == "csqtt-app-2.5.14", TAG25())
+LIST_DOWN["empty"] = True; P._GH_COMMIT_CACHE.clear(); TAG25()
+P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"]["at"] -= 301; CALLS.clear(); TAG25()
+check("[8] (review F10) a listing that answered without a 2.5.x stands for the hour: five minutes on, no request", not CALLS, CALLS)
+LIST_DOWN["empty"] = False; LIST_DOWN["odd"] = True; P._GH_COMMIT_CACHE.clear()
+check("[8] (F11) odd release objects (non-list assets, a numeric tag, junk) are skipped one by one; the newest good one is taken",
+      TAG25() == "csqtt-app-2.5.14", TAG25())
+LIST_DOWN["odd"] = False
+P._GH_COMMIT_CACHE.clear(); P._RELEASE_INFO.clear()
+P._RELEASE_PIN.clear(); P._RELEASE_PIN[("amurcanov", "csqtt", "2.5.1")] = {"tag": "v2.5.0", "page": "page/v2.5.0", "assets": [], "url": {},
+                                                                          "src": "SanityProtocol/swg-panel@csqtt-app-2.5.20"}
+LIST_DOWN["on"] = True
+check("[8] (F7) a pin his release stood in for (ours 404, deleted) is not taken as ours: listing refused → the floor, not 2.5.20",
+      TAG25() == "csqtt-app-2.5.1", TAG25())
+P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"] = {"res": "csqtt-app-2.5.2", "at": 0}
+P._RELEASE_PIN[("amurcanov", "csqtt", "2.5.1")] = {"tag": "v2.5.3", "page": "page/csqtt-app-2.5.3", "assets": [], "url": {},
+                                                  "src": "SanityProtocol/swg-panel@csqtt-app-2.5.3"}
+check("[8] (F8) this run's answer (2.5.2) beats a stale higher tag a pin still names (2.5.3, withdrawn)", TAG25() == "csqtt-app-2.5.2", TAG25())
+LIST_DOWN["on"] = False; P._RELEASE_PIN.clear()
 CALLS.clear()
 check("[8] a plain tag (the 2.1 line) is itself, with no request", P._hosted_tag("csqtt-app-2.1.9") == "csqtt-app-2.1.9" and not CALLS, CALLS)
 
