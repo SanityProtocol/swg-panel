@@ -18,7 +18,7 @@ import { Store, api, bus } from "./store.js";
 import { Ic, Sheet, Panel, toast, copy, closeModal, pushModal } from "./ui.js";
 import { turnFork, turnForkList, forkLabel } from "./turn-catalog.js";
 import { h, Fragment } from "preact";
-import { useState, useEffect, useRef } from "preact/hooks";
+import { useState, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -1154,17 +1154,11 @@ function vaultMissing(onNav) {
   return html`<${Fragment}>${before}<a href="#/panel/settings" onClick=${onNav}>${T("Settings → Client configs → Encryption")}</a>${after}<//>`;
 }
 
-// The last few QR images by config and size: a sheet that re-renders on every poll (the router config's, while a keep
-// may still land) shows the same config again without encoding it again (backlog C review F5)
-const _qrMemo = new Map();
+// A sheet that re-renders on every poll (the router config's, while a keep may still land) shows the same config again
+// without encoding it again (backlog C review F5) — memoised PER QR, so the image (it encodes a private key) goes with the
+// QR that showed it: a module-wide cache kept up to 8 keys in the tab after the sheet closed and the vault locked (verify F7)
 export function QR({ conf, label, px }) {
-  const mk = (px || 360) + "|" + conf;
-  let src = _qrMemo.get(mk);
-  if (src === undefined) {
-    try { src = qrDataURL(conf, px || 360); } catch (_) { src = null; }
-    _qrMemo.set(mk, src);
-    if (_qrMemo.size > 8) _qrMemo.delete(_qrMemo.keys().next().value);
-  }
+  const src = useMemo(() => { try { return qrDataURL(conf, px || 360); } catch (_) { return null; } }, [conf, px]);
   if (!src) return html`<div class="qr-fail">${T("config too large")}<br>${T("to encode as QR")}</div>`;
   return html`<div class="qr" title=${T("Tap to enlarge for scanning")} onClick=${() => qrZoom(conf, label)}>
     <img class="qrimg" alt=${T("config QR")} src=${src}/></div>`;
@@ -1433,11 +1427,15 @@ export function getConfig(pubkey, node, iface) {
       _confSealed.set(mk, Date.now());
       // …but a panel still migrating may hold this peer's config in plaintext too, and that one still opens (backlog C review F2)
       if (!(Store.configsPlaintext > 0)) return null;
+      // no copy either: asked once this epoch, not on every render (verify F8) — the in-memory miss only, never the persisted
+      // "no config" mark: after a reload the peer must still read sealed, not "No stored config — re-issue"
+      const sealedMiss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, at: Date.now() }); return null; };
       return api.config(pubkey, node, iface).then(r => {
         const conf = rerenderConf(r.ok ? r.data.config : null, node, iface);
-        if (conf) { _confSealed.delete(mk); hit(); }
+        if (!conf) return sealedMiss();
+        _confSealed.delete(mk); hit();
         return conf;
-      }).catch(() => null);
+      }).catch(sealedMiss);
     }
     _confUnreach.delete(mk);
     if (c) { hit(); return c; }

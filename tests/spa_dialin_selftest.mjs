@@ -29,6 +29,8 @@
  *      --perturb-pendfail a queued keep is dropped before it is tried (a failed flush loses it) → RED [5]
  *      --perturb-blobgcm  a peer's blob GCM refuses reads "no stored config" again (s9c F25/F45) → RED [5]
  *      --perturb-s4twin   the browser's wire overhead differs from the panel's (review F6)   → RED [5b]
+ *      --perturb-qrcache  a QR image kept in a module-wide cache (a private key outlives its sheet) → RED [5b]
+ *      --perturb-sealmiss a sealed peer with no plaintext copy asks /api/config on every render (F8) → RED [5]
  *      --perturb-rewrap   the pre-flight promises a re-wrap again (NODE-TRANSFER I.18)         → RED [6]
  *      --perturb-keepseal a queued keep whose bucket is sealed reads "queued" for ever (review F1) → RED [5]
  *      --perturb-sealplain a sealed blob hides the plaintext copy a migrating panel still has (F2) → RED [5]
@@ -58,13 +60,15 @@ const PLANTS = {
   "--perturb-blobgcm": ["crypto.js", "try { secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec))); } catch (_) { return CONF_SEALED_OLD; }",
                         "secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec)));"],
   "--perturb-keepseal": ["crypto.js", "if (_pendingKeep.has(pk)) { _keepFail.set(pk, why); if (sealed) _pendingKeep.delete(pk); }", "0;"],
-  "--perturb-sealplain": ["crypto.js", "if (!(Store.configsPlaintext > 0)) return null;\n      return api.config(", "return null;\n      return api.config("],
+  "--perturb-sealplain": ["crypto.js", "      if (!(Store.configsPlaintext > 0)) return null;\n      // no copy either", "      return null;\n      // no copy either"],
   "--perturb-keepdrop": ["crypto.js", 'if (r && ["stale", "not_found", "bad_request"].includes(r.code)) _pendingKeep.delete(pk);', "0;"],
   "--perturb-keepwhy": ["crypto.js", "if (_pendingKeep.has(pk)) _keepFail.set(pk, why);\n", "\n"],
   "--perturb-stalenat": ["routing.js", "if (exitIsDialin(ex) && l.no_traffic && !Number.isFinite(l.no_traffic.back_in) && !(l.trace || {}).ip) return", "if (exitIsDialin(ex) && l.no_traffic && !(l.trace || {}).ip) return"],
 };
 PLANTS["--perturb-rewrap"] = ["sheets-crud.js", "", ""];
-PLANTS["--perturb-s4twin"] = ["screen-settings-text", "", ""];   // read by [5b] itself, as text   // read by [6] itself: no module to load perturbed
+PLANTS["--perturb-s4twin"] = ["screen-settings-text", "", ""];
+PLANTS["--perturb-qrcache"] = ["crypto-text", "", ""];         // read by [5b] as text
+PLANTS["--perturb-sealmiss"] = ["crypto.js", "        if (!conf) return sealedMiss();\n", ""];   // read by [5b] itself, as text   // read by [6] itself: no module to load perturbed
 if (_flag && !PLANTS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
 const PLANT = _flag || "";
 const made = [];
@@ -251,6 +255,9 @@ const sec0 = BLOBS.aabbccdd.sec;
 BLOBS.aabbccdd.sec = sec0.slice(0, 30) + (sec0[30] === "A" ? "B" : "A") + sec0.slice(31);   // one ciphertext byte off
 check("a blob the bucket key does not open (GCM refuses it) reads sealed", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_SEALED_OLD);
 // …and a PEER's stored config the same way: sealed, not "No stored config — re-issue", the one advice that destroys it (s9c F25)
+// the users map as the panel serves it — the check above left a stub that throws, and the 4 s cache hid that only while fast
+USERS = () => ({ ok: true, data: { users: Object.fromEntries(Object.entries(ESC).map(([u, w]) => [u, { unlock_by_sk: w }])) } });
+C.subUsersForget();
 Store.describe = { ...(Store.describe || {}), n1: { wg0: { public_key: K2, endpoint: "203.0.113.7:51820", awg_params: {} } } };
 const bpeer = { id: "p1", user_id: C.exitBucket("n1"), targets: [{ node: "n1", iface: "wg0", ip: "10.9.0.2/32" }] };
 api.subBlobGet = async () => ({ ok: true, data: { sec: BLOBS.aabbccdd.sec, user_id: C.exitBucket("n1") } });
@@ -266,6 +273,13 @@ Store.configsPlaintext = 1;
 const PLAIN = "[Interface]\nPrivateKey = " + rk.priv + "\nAddress = 10.9.0.2/32\n\n[Peer]\nPublicKey = " + K2 + "\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n";
 api.config = async () => ({ ok: true, data: { config: PLAIN } });
 const gplain = await C.getConfig("PKSEALED", "n1", "wg0");
+// …and one with no plaintext copy either is asked once, not on every render, and never marked "no config" for good (verify F8)
+Store.recon.peers = [{ ...bpeer, id: "p2", pubkey: "PKSEALED2" }];
+let ncfg = 0;
+api.config = async () => { ncfg++; return { ok: false, code: "not_found" }; };
+const g2a = await C.getConfig("PKSEALED2", "n1", "wg0"), g2b = await C.getConfig("PKSEALED2", "n1", "wg0");
+check("…a sealed blob with no plaintext copy: /api/config asked once, the peer still reads sealed (not \"no config\")",
+      g2a === null && g2b === null && ncfg === 1 && C.confWasSealedOld("PKSEALED2", "n1", "wg0") && !C.subNoConfHas("p2", "PKSEALED2"), { ncfg });
 Store.configsPlaintext = 0;
 check("…a sealed blob with a plaintext copy still on the panel shows that copy, not 're-issue'",
       typeof gplain === "string" && gplain.includes("PrivateKey = " + rk.priv) && !C.confWasSealedOld("PKSEALED", "n1", "wg0"), [typeof gplain, String(gplain).slice(0, 60)]);
@@ -323,6 +337,13 @@ const _ss = fs.readFileSync(path.join(ROOT, "js", "screen-settings.js"), "utf8")
 const _jw = (_ss.match(/^const DIN_WIRE = (\d+);/m) || [])[1], _pw = (fs.readFileSync(path.join(ROOT, "swg-panel-server"), "utf8").match(/^MESH_WIRE_OVERHEAD = (\d+)/m) || [])[1];
 check("the browser's wire overhead is the panel's MESH_WIRE_OVERHEAD", !!_jw && _jw === _pw, { browser: _jw, panel: _pw });
 check("…and it reads the MTU as the panel does: digits only", /\/\^\[0-9\]\+\$\/\.test\(String\(mtu \?\? ""\)\.trim\(\)\)/.test(_ss));
+
+// the QR image encodes a private key: it lives with the QR that shows it, not in a module-wide cache (verify F7)
+const _cj = fs.readFileSync(path.join(ROOT, "js", "crypto.js"), "utf8").replace(PLANT === "--perturb-qrcache" ? "const src = useMemo(() => { try { return qrDataURL(conf, px || 360); } catch (_) { return null; } }, [conf, px]);" : "\0",
+  "const src = _QRC[conf] || (_QRC[conf] = qrDataURL(conf, px || 360));");
+const _qrf = _cj.slice(_cj.indexOf("export function QR("), _cj.indexOf("export let qrZoomEl"));
+check("a QR's image is memoised per QR (useMemo), and nothing module-wide holds one", /const src = useMemo\(\(\) => \{ try \{ return qrDataURL\(/.test(_qrf)
+      && !/_QRC|_qrMemo/.test(_cj), _qrf.slice(0, 160));
 
 console.log("\n[6] a node transfer's pre-flight says what becomes of users' encryption keys (NODE-TRANSFER I.18)");
 const SC = PLANT === "--perturb-rewrap" ? fs.readFileSync(path.join(ROOT, "js", "sheets-crud.js"), "utf8")
