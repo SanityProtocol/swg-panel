@@ -15752,12 +15752,46 @@ _PIN_KEEP = 3600         # a version unseen this long is retired: its pin leaves
 _PIN_TAG_OVERRIDE = {("ildarmaga", "1.5.40"): "v1.5.0", ("ildarmaga", "1.5.40-2"): "v1.5.0"}
 # Apps hosted in OUR repository (operator, 2026-10-20): amurcanov ended csqtt support with 2.5.0 and may remove his
 # repository, so a csqtt server's app comes from our releases, by the server's LINE — 2.1 → his 2.1.9 app mirrored
-# unmodified (csqtt-app-2.1.9), 2.5 → our 2.5.1 build of his app with the uplink half of the small-UDP pin fix
-# (csqtt-app-2.5.1). The pin keeps his key — the sub page matches an app to its author's repository — and only the
+# unmodified (csqtt-app-2.1.9), 2.5 → our build of his app with the uplink half of the small-UDP pin fix
+# (csqtt-app-2.5.1, and the newer 2.5.x builds after it). The pin keeps his key — the sub page matches an app to its author's repository — and only the
 # lookup moves; only the release's .apk files are the app, and the sub page shows the app's version (v2.5.1). A build
 # the panel does not list, a rollback row of an older protocol (2.0.1), or a release of ours that is missing or has no
 # APK yet, still asks his repository; the catalog's "latest" is ours too.
-_PIN_SOURCE_LINES = {"csqtt": {"2.1": "csqtt-app-2.1.9", "2.5": "csqtt-app-2.5.1"}}   # fork id → line → OUR app release
+# A tag ending in "+" follows our newest release on its line (operator, 2026-10-23: the 2.5 app gets 2.5.2, 2.5.3, …
+# without a panel update): "csqtt-app-2.5.1+" = csqtt-app-2.5.<n>[-<k>], highest number, 2.5.1 the floor (_hosted_tag).
+_PIN_SOURCE_LINES = {"csqtt": {"2.1": "csqtt-app-2.1.9", "2.5": "csqtt-app-2.5.1+"}}   # fork id → line → OUR app release
+_HOSTED_TAG_TTL = 3600
+def _hosted_tag(spec):
+    """The release tag a _PIN_SOURCE_LINES entry names now. A plain tag is itself. "<prefix>.<n>+" is our newest
+    "<prefix>.<m>[-<k>]" with m >= n, by number (2.5.10 above 2.5.9, a rebuild 2.5.2-2 above 2.5.2), that is not a
+    prerelease and already holds an APK (one still uploading is not offered yet). One listing of our releases an hour,
+    from the background passes only; a failed listing keeps the last answer, else the floor."""
+    m = re.fullmatch(r"(.*)\.(\d+)\+", spec)
+    if not m:
+        return spec
+    prefix, floor = m.group(1), int(m.group(2))
+    ck = "hosted:" + spec
+    ent = _GH_COMMIT_CACHE.get(ck)
+    if ent and time.time() - ent["at"] < _HOSTED_TAG_TTL:
+        return ent["res"]
+    best = None
+    try:
+        rels = _gh_api("/repos/%s/releases?per_page=100" % WDTT_BUILD_REPO)
+        tag_re = re.compile(re.escape(prefix) + r"\.(\d+)(?:-(\d+))?")
+        for x in rels if isinstance(rels, list) else ():
+            t = isinstance(x, dict) and not x.get("prerelease") and not x.get("draft") and str(x.get("tag_name") or "")
+            tm = t and tag_re.fullmatch(t)
+            if tm and int(tm.group(1)) >= floor and any(re.search(r"\.apk$", str(a.get("name") or ""), re.I)
+                                                       for a in x.get("assets") or () if isinstance(a, dict)):
+                rank = (int(tm.group(1)), int(tm.group(2) or 0))
+                if best is None or rank > best[0]:
+                    best = (rank, t)
+    except Exception:
+        if ent:                                       # GitHub refused or unreachable: the last answer stands
+            return ent["res"]
+    res = best[1] if best else "%s.%d" % (prefix, floor)
+    _GH_COMMIT_CACHE[ck] = {"res": res, "at": time.time()}
+    return res
 def _pin_source(owner, repo, version):
     """(owner, repo, tag) of OUR app release for a build the panel itself lists on a hosted line (CSQTT_LINES) AND of that
     line's own version, else None: a build it does not list (a hand-placed 2.1.5), or an older protocol kept on the line
@@ -15766,14 +15800,14 @@ def _pin_source(owner, repo, version):
         if turn_fork_owner(fork) == owner + "/" + repo:
             for line, tag in lines.items():
                 if str(version).startswith(line + ".") and any(b == version for b, _ in CSQTT_LINES.get(line) or ()):
-                    return tuple(WDTT_BUILD_REPO.split("/", 1)) + (tag,)
+                    return tuple(WDTT_BUILD_REPO.split("/", 1)) + (_hosted_tag(tag),)
     return None
 def _hosted_latest(owner, repo):
     """The newest hosted line's app release, shaped as _gh_latest_release shapes one: the catalog's "latest" (a server
     with no pin yet) leans on our repository too, not on his. None = not hosted, or our release is not there."""
     for fork, lines in _PIN_SOURCE_LINES.items():
         if turn_fork_owner(fork) == owner + "/" + repo and lines:
-            tag = lines[max(lines, key=lambda l: tuple(int(x) for x in l.split(".")))]
+            tag = _hosted_tag(lines[max(lines, key=lambda l: tuple(int(x) for x in l.split(".")))])
             o, r = WDTT_BUILD_REPO.split("/", 1)
             try:      # a GitHub error, or a release whose APKs are still uploading → None: his latest stands in, as before
                 rec = _pin_lookup(o, r, [tag], asset_re=r"\.apk$")
