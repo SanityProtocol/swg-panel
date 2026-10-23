@@ -15765,7 +15765,8 @@ def _hosted_tag(spec):
     """The release tag a _PIN_SOURCE_LINES entry names now. A plain tag is itself. "<prefix>.<n>+" is our newest
     "<prefix>.<m>[-<k>]" with m >= n, by number (2.5.10 above 2.5.9, a rebuild 2.5.2-2 above 2.5.2), that is not a
     prerelease and already holds an APK (one still uploading is not offered yet). One listing of our releases an hour,
-    from the background passes only; a failed listing keeps the last answer, else the floor."""
+    from the background passes only; a failed listing keeps the last answer, else the floor, and is asked again in five
+    minutes (once, not once per server build: a boot before the network is up never holds the floor for an hour)."""
     m = re.fullmatch(r"(.*)\.(\d+)\+", spec)
     if not m:
         return spec
@@ -15786,9 +15787,10 @@ def _hosted_tag(spec):
                 rank = (int(tm.group(1)), int(tm.group(2) or 0))
                 if best is None or rank > best[0]:
                     best = (rank, t)
-    except Exception:
-        if ent:                                       # GitHub refused or unreachable: the last answer stands
-            return ent["res"]
+    except Exception:                                 # GitHub refused or unreachable: the last answer stands, else the floor
+        res = ent["res"] if ent else "%s.%d" % (prefix, floor)
+        _GH_COMMIT_CACHE[ck] = {"res": res, "at": time.time() - _HOSTED_TAG_TTL + 300}
+        return res
     res = best[1] if best else "%s.%d" % (prefix, floor)
     _GH_COMMIT_CACHE[ck] = {"res": res, "at": time.time()}
     return res

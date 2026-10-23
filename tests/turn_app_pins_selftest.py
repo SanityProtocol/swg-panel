@@ -400,8 +400,15 @@ lat = P._hosted_latest("amurcanov", "csqtt")
 check("[8] the catalog's \"latest\" follows too (v2.5.10)", lat and lat["tag"] == "v2.5.10", lat)
 P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"]["at"] = 0; LIST_DOWN["on"] = True
 check("[8] the listing refused when the hour is up → the last answer stands", TAG25() == "csqtt-app-2.5.10", TAG25())
+CALLS.clear(); TAG25()
+check("[8] …and it rests five minutes: the next ask makes no request (not one timeout per server build)", not CALLS, CALLS)
+P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"]["at"] -= 301; CALLS.clear(); TAG25()
+check("[8] …five minutes on, the listing is asked again", CALLS == ["/repos/SanityProtocol/swg-panel/releases?per_page=100"], CALLS)
 P._GH_COMMIT_CACHE.clear()
 check("[8] the listing refused with no answer yet → the floor, 2.5.1 (never his app)", TAG25() == "csqtt-app-2.5.1", TAG25())
+LIST_DOWN["on"] = False; P._GH_COMMIT_CACHE["hosted:csqtt-app-2.5.1+"]["at"] -= 301
+check("[8] …and five minutes later, the listing answering, the newest again — the floor was not held for the hour",
+      TAG25() == "csqtt-app-2.5.10", TAG25())
 LIST_DOWN["on"] = False; CALLS.clear()
 check("[8] a plain tag (the 2.1 line) is itself, with no request", P._hosted_tag("csqtt-app-2.1.9") == "csqtt-app-2.1.9" and not CALLS, CALLS)
 
