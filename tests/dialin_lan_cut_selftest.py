@@ -25,7 +25,7 @@ Run: python3 tests/dialin_lan_cut_selftest.py
      --perturb-early | -trigger | -order | -cover | -exitsub | -wan   one fix of the review's round undone each (F1 F2 F3 F4
                  F5 F8) — each must turn its check red
 """
-import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
+import contextlib, signal, importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -170,6 +170,21 @@ check("…and `prohibit default` keeps the kill-switch's own token (no rebuild o
       "T|7000|prohibit||" in _ls and not any(t.startswith("T|7000|prohibit:default") for t in _ls), sorted(_ls))
 
 # ── [2] the real kernel ──────────────────────────────────────────────────────────────────────────────────────────
+def run_rig(cmd, timeout):
+    """→ (stdout, stderr). On a timeout the whole session gets TERM — `sudo` passes it on, and the rig's trap deletes its
+    namespaces; killing only the child left them behind (s9d-f8-lan F10)."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        return p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(p.pid, signal.SIGTERM)
+        try:
+            return p.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            return p.communicate()
+
 def sudo():
     if os.geteuid() == 0:
         return []
@@ -183,6 +198,7 @@ P=swgcut$$
 NS="c n r l i k"
 cleanup() { for x in $NS; do ip netns del $P-$x 2>/dev/null; done; }
 trap cleanup EXIT
+trap 'exit 1' INT TERM     # …and on a timeout's TERM too: the EXIT trap then deletes the namespaces
 for x in $NS; do ip netns add $P-$x; ip -n $P-$x link set lo up; done
 pair() { ip link add "$2" netns $P-$1 type veth peer name "$4" netns $P-$3 && ip -n $P-$1 link set "$2" up && ip -n $P-$3 link set "$4" up; }
 pair c c0 n up0;       ip -n $P-c addr add 10.17.0.5/24 dev c0;  ip -n $P-c route add default via 10.17.0.1
@@ -237,8 +253,7 @@ def rig():
     for x in (tmp, path, conf):
         os.chmod(x, 0o755 if x == tmp else 0o644)
     try:
-        r = subprocess.run(sd + ["env", "NODED=" + path, "CONF=" + conf, "bash", "-c", RIG], capture_output=True,
-                           text=True, timeout=120)
+        r = subprocess.CompletedProcess([], 0, *run_rig(sd + ["env", "NODED=" + path, "CONF=" + conf, "bash", "-c", RIG], 120))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     out = {ln.split(": ")[0]: ln.split(": ")[1] for ln in r.stdout.splitlines() if ": " in ln}

@@ -381,6 +381,9 @@ for what, i1, want in (("<c>", "<b 0xc0><c>", "<c> is gone"), ("a random part ov
           and str(e.get("error") or "").startswith("Home router: I1:") and want in str(e.get("error")), e)
 c, e = V([dict(XL, profile_text=AWG_CONF.replace("S1 = 76\n", "S1 = 7\t6\n"))], S20MOD)
 check("…a control character in S1 → refused, naming S1", c is None and str((e or {}).get("error") if isinstance(e, dict) else e).startswith("Home router: S1"), e)
+_eu = V([dict(XI("<c>"), label="")], S20MOD)[1]
+check("…an untitled exit is named by its device, as the grid shows it (verify F7)",
+      str((_eu or {}).get("error") or "").startswith("wgx-aabbccdd: I1:"), _eu)
 okI, e = V([XI("<b 0xc000000001><r 64><t>")], S20MOD)
 check("a good I1 is taken and kept", e is None and okI and okI[0]["profile"]["awg"].get("I1") == "<b 0xc000000001><r 64><t>", e)
 # a stored exit already holding a bad line (saved before this check) is never blocked by it

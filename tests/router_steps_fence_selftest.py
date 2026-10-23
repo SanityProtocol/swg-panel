@@ -24,7 +24,7 @@ Run: python3 tests/router_steps_fence_selftest.py
                  accept, the FORWARD jump to the chain, the INPUT drop — each must turn [2] red. Prints "PERTURB OK",
                  exit 0 (exit 1 if a plant stayed green); SKIPPED plants are named as such.
 """
-import os, re, shutil, subprocess, sys
+import contextlib, signal, os, re, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -47,6 +47,21 @@ def commands(src):
     unknown = sorted(set(re.findall(r"\$\{([^}]*)\}", raw)) - {"tag", "addr"})
     return raw.replace("${tag}", TAG).replace("${addr}", ADDR).replace("\\n", "\n"), unknown
 
+def run_rig(cmd, timeout):
+    """→ (stdout, stderr). On a timeout the whole session gets TERM — `sudo` passes it on, and the rig's trap deletes its
+    namespaces; killing only the child left them behind (s9d-f8-lan F10)."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        return p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(p.pid, signal.SIGTERM)
+        try:
+            return p.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            return p.communicate()
+
 def sudo():
     if os.geteuid() == 0:
         return []
@@ -60,6 +75,7 @@ P=s9f$$PID
 NS="r n i l t"
 cleanup() { for n in $NS; do ip netns del $P-$n 2>/dev/null; done; }
 trap cleanup EXIT
+trap 'exit 1' INT TERM     # …and on a timeout's TERM too: the EXIT trap then deletes the namespaces
 cleanup
 for n in $NS; do ip netns add $P-$n; ip -n $P-$n link set lo up; done
 pair() { ip link add "$2" netns $P-$1 type veth peer name "$4" netns $P-$3 && ip -n $P-$1 link set "$2" up && ip -n $P-$3 link set "$4" up; }
@@ -74,6 +90,11 @@ ip -n $P-r addr add 192.0.2.1/24 dev ts0; ip -n $P-t addr add 192.0.2.10/24 dev 
 ip netns exec $P-r iptables -P FORWARD $POLICY
 if ! ip netns exec $P-r bash -e -c "$CMDS" >/dev/null 2>&1; then echo "cmds: FAILED"; exit 0; fi
 echo "cmds: ok"
+# pasted again (s9d-f8-lan F7): it must succeed and leave exactly the rules the first paste made
+N1=$(ip netns exec $P-r iptables-save | grep -c -- "$TAG")
+ip netns exec $P-r bash -e -c "$CMDS" >/dev/null 2>&1 && echo "again: ok" || echo "again: FAILED"
+N2=$(ip netns exec $P-r iptables-save | grep -c -- "$TAG")
+[ "$N1" = "$N2" ] && echo "rules: same" || echo "rules: $N1 -> $N2"
 for d in 203.0.113.9 198.51.100.1 192.168.1.10 192.168.50.10 100.101.102.103 192.0.2.10 10.254.0.1 192.168.1.5; do
   ip netns exec $P-n ping -c1 -W1 -q $d >/dev/null 2>&1 && echo "$d: reached" || echo "$d: blocked"; done
 ip netns exec $P-i timeout 4 python3 -c "
@@ -103,9 +124,11 @@ def run_checks(src):
     for pol in ("DROP", "ACCEPT"):
         env = ["env", "PID=%d" % os.getpid(), "TAG=" + TAG, "ADDR=" + ADDR, "POLICY=" + pol, "CMDS=" + (cmds or "false"),
                "PATH=/usr/sbin:/usr/bin:/sbin:/bin"]
-        out = subprocess.run(sd + env + ["bash", "-c", RIG.replace("$$PID", "$PID")], capture_output=True, text=True, timeout=120).stdout
+        out = run_rig(sd + env + ["bash", "-c", RIG.replace("$$PID", "$PID")], 120)[0]
         got = dict(l.split(": ", 1) for l in out.splitlines() if ": " in l)
         check("[2] FORWARD %s: the commands run as shown" % pol, got.get("cmds") == "ok", out)
+        check("[2] FORWARD %s: …and pasted again, they run again and add no rule (s9d-f8-lan F7)" % pol,
+              got.get("again") == "ok" and got.get("rules") == "same", (got.get("again"), got.get("rules")))
         for d, w in WANT.items():
             check("[2] FORWARD %s: %s %s is %s" % (pol, SEEN[d], d, w), got.get(d) == w, got.get(d))
         check("[2] FORWARD %s: TCP to the internet gets through, from the router's address (masqueraded)" % pol,
@@ -118,8 +141,10 @@ if "--perturb" in sys.argv:
                                            "-d 198.51.100.250 -j DROP"),
         "the chain's rest accepted, not dropped": ("iptables -A ${tag}-fwd -j DROP\\n", "iptables -A ${tag}-fwd -j ACCEPT\\n"),
         "the chain's accept names no uplink": ("iptables -A ${tag}-fwd -o $UPLINK -j ACCEPT", "iptables -A ${tag}-fwd -j ACCEPT"),
-        "no FORWARD jump to the chain (the tunnel left to the policy)": ("+ `iptables -I FORWARD -i ${tag} -j ${tag}-fwd\\n`", "+ ``"),
-        "no INPUT drop": ("+ `iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\\n`", "+ ``"),
+        "no FORWARD jump to the chain (the tunnel left to the policy)": ("+ `iptables -C FORWARD -i ${tag} -j ${tag}-fwd 2>/dev/null || iptables -I FORWARD -i ${tag} -j ${tag}-fwd\\n`", "+ ``"),
+        "no INPUT drop": ("+ `R=\"-i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\"; iptables -C INPUT $R 2>/dev/null || iptables -I INPUT $R\\n`", "+ ``"),
+        "the chain made with no flush (a second paste fails)": ("iptables -N ${tag}-fwd 2>/dev/null || iptables -F ${tag}-fwd\\n", "iptables -N ${tag}-fwd\\n"),
+        "a rule added again on a second paste (no -C)": ("iptables -C FORWARD $R 2>/dev/null || iptables -I FORWARD $R", "iptables -I FORWARD $R"),
     }
     bad, skipped = [], []
     for name, (a, b) in plants.items():

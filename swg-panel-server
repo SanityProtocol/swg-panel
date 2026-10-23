@@ -14168,15 +14168,16 @@ def _node_ports(deps, nodes, nid, skip_exits=False):
     for svc, req in (node.get("turn") or {}).items():
         add(tail(req.get("listen")), svc)
     for ifn, w in (node.get("wdtt") or {}).items():
-        add(tail(w.get("listen")), ifn + " (WDTT)"); add(w.get("wg_port"), ifn + " (WDTT internal WG)")
-    def ents(v):                                       # a list of objects, or an object of them (_snap_sanitise takes both)
-        return [e for e in (v.values() if isinstance(v, dict) else v or ()) if isinstance(e, dict)]
-    for w in ents(snap.get("wdtt")):
-        add(tail(w.get("listen")), (w.get("iface") or "") + " (WDTT)"); add(w.get("wg_port"), (w.get("iface") or "") + " (WDTT internal WG)")
+        add(tail(w.get("listen")), ifn + " (WDTT)"); add(w.get("wg_port"), perr("{v1} (WDTT internal WG)", v1=ifn))
+    def ents(v):                                       # a list of objects, or an object of them keyed by iface (_snap_sanitise takes both)
+        return [(e.get("iface") or (k if isinstance(v, dict) else "") or "", e)
+                for k, e in (v.items() if isinstance(v, dict) else enumerate(v or ())) if isinstance(e, dict)]
+    for ifn, w in ents(snap.get("wdtt")):
+        add(tail(w.get("listen")), ifn + " (WDTT)"); add(w.get("wg_port"), perr("{v1} (WDTT internal WG)", v1=ifn))
     for ifn, c in (node.get("csqtt") or {}).items():   # csqtt binds ONE DTLS listen port (raw TUN, no internal WG port)
         add(tail(c.get("listen")), ifn + " (csqtt)")
-    for c in ents(snap.get("csqtt")):
-        add(tail(c.get("listen")), (c.get("iface") or "") + " (csqtt)")
+    for ifn, c in ents(snap.get("csqtt")):
+        add(tail(c.get("listen")), ifn + " (csqtt)")
     for lr in (node.get("links") or {}).values():
         add(lr.get("listen_port"), "a mesh link")
     for x in (snap.get("container_ifaces") or []):
@@ -14210,7 +14211,7 @@ def _port_conflict(deps, nodes, nid, port, own=()):
     # fleet — it became an instance's internal WG port) locks RAW out of the whole box: the internal WG
     # listener binds the wildcard address, so it blocks every IP, not just its own.
     if port == WDTT_RAW_PORT:
-        return _wdtt_raw_holder(nodes, nid, "") or "RAW-IP (reserved)"
+        return _wdtt_raw_holder(nodes, nid, "") or perr("RAW-IP (reserved)")   # a phrase: translated where it lands
     return _node_ports(deps, nodes, nid).get(port)
 
 
@@ -19380,7 +19381,7 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
                         if str(_v).strip() != str(_ka.get(_k, "")).strip():
                             _ib = awg_value_refusal(_k, _v)
                             if _ib:      # the list is saved whole: say which exit
-                                return None, perr("{v1}: {v2}", v1=lbl or eid, v2=_ib)
+                                return None, perr("{v1}: {v2}", v1=lbl or out.get("device") or eid, v2=_ib)   # the grid shows an untitled one by its device
                     out["profile"] = _pr
                 elif _kept:
                     out["profile"] = _kept
@@ -19481,7 +19482,7 @@ def _dialin_refusal(out, kept, dial_src, ctx):
     if port != (kept or {}).get("listen_port"):
         held = (ctx.get("ports") or {}).get(port)
         if held:
-            return perr("UDP port {v1} is already used on this node by {v2}", v1=str(port), v2=str(held))
+            return perr("UDP port {v1} is already used on this node by {v2}", v1=str(port), v2=held)   # a phrase stays one
         # a node that DECLARES its firewall (NixOS udpPortRanges) lets in only that: a port outside it is one the router
         # can never reach — said now, not by _node_issues after the save (S9e: the port is typed now, not only drawn)
         _mb = ctx.get("mesh_band") or range(0)
@@ -19583,6 +19584,7 @@ def _dialin_generate(g, kept, eid, exits, known, ctx):
             return "", "S1–S4 must be at least 12 for AmneziaWG 3.1 — header protection refuses less"
         if proto == "awg3":      # a 2.0 template's S under 12 would make awg3_full re-draw all four, the typed ones too (F8)
             _tv = {k: v for k, v in _tv.items() if not (k in ("S1", "S2", "S3", "S4") and not (str(v).isdigit() and int(v) >= 12))}
+            _tom = _tom - {"S1", "S2", "S3", "S4"}     # …and a template "-" is drawn too: header protection needs all four
         # a template value no app reads (one stored before template saves were checked) is drawn, as a blank is — the sheet has
         # no cell that would let the operator fix it, and the exits save below would refuse the set over it
         _tv = {k: v for k, v in _tv.items() if not awg_value_refusal(k, v)}
@@ -19617,7 +19619,7 @@ def _dialin_ctx(deps, nodes, nid):
     c = nodes.get(nid) or {}
     snap = ((deps.get("node_snaps") or {}).get(nid) or {})
     ports = dict(_node_ports(deps, nodes, nid, skip_exits=True))
-    ports.setdefault(WDTT_RAW_PORT, "RAW-IP (reserved)")
+    ports.setdefault(WDTT_RAW_PORT, perr("RAW-IP (reserved)"))
     for _cd in snap.get("iface_candidates") or []:
         if isinstance(_cd, dict) and str(_cd.get("listen_port") or "").isdigit() and int(_cd["listen_port"]):
             ports.setdefault(int(_cd["listen_port"]), str(_cd.get("name") or "an unadopted interface"))

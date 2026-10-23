@@ -708,6 +708,10 @@ export const STR = {
   "a pending interface": "создаваемый интерфейс",
   " (WDTT)": " (WDTT)",
   " (WDTT internal WG)": " (внутр. WG WDTT)",
+  "{v1} (WDTT internal WG)": "{v1} (внутр. WG WDTT)",
+  "RAW-IP (reserved)": "RAW-IP (зарезервирован)",
+  "These users' encryption keys stay sealed to this panel's vault — their links keep working, but the other panel can't show their stored configs or store new ones":
+    "Ключи шифрования этих пользователей остаются запечатанными хранилищем этой панели — их ссылки продолжат работать, но другая панель не сможет показать их сохранённые конфиги или сохранить новые",
   " (WDTT, starting)": " (WDTT, запускается)",
   " (WDTT internal WG, starting)": " (внутр. WG WDTT, запуск)",
 
@@ -6826,8 +6830,6 @@ export const STR = {
   "Users, and every peer deployed here": "Пользователи и все их пиры на этой ноде",
   "Stored configs — the links your users already hold keep opening them":
     "Сохранённые конфиги — ссылки, которые уже есть у пользователей, продолжат их открывать",
-  "Users' encryption keys — re-wrapped there the next time you unlock the vault":
-    "Ключи шифрования пользователей — перешифруются там при следующей разблокировке хранилища",
   "Mesh links — the other panel builds its own": "Связи меша — та панель поднимет свои",
 
   // The wait. It is not a progress bar: the node decides when it moves, and until it does this panel is

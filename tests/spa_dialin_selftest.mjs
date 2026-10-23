@@ -27,6 +27,11 @@
  *      --perturb-keepn   the node's public key is left out of the kept blob                → RED [5]
  *      --perturb-pending a keep skipped at a locked vault is forgotten                    → RED [5]
  *      --perturb-pendfail a queued keep is dropped before it is tried (a failed flush loses it) → RED [5]
+ *      --perturb-blobgcm  a peer's blob GCM refuses reads "no stored config" again (s9c F25/F45) → RED [5]
+ *      --perturb-rewrap   the pre-flight promises a re-wrap again (NODE-TRANSFER I.18)         → RED [6]
+ *      --perturb-keepdrop a keep the panel refused for good is re-posted on every unlock (s9c F57) → RED [5]
+ *      --perturb-keepwhy  a failed flush is silent — the open sheet cannot say why (s9c F60)   → RED [5]
+ *      --perturb-stalenat a stale node's recovering dial-in exit blames NAT on the router (s9d F9) → RED [2]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -45,9 +50,15 @@ const PLANTS = {
   "--perturb-rawg": ["screen-settings.js", 'awg = Object.keys((ex.profile || {}).awg || {}).length > 0;', 'awg = /^\\s*Jc\\s*=/m.test(conf);'],
   "--perturb-warp": ["routing.js", 'imp.filter(x => exitProv(x) === "warp")', 'imp.filter(x => x.provider !== "profile")'],
   "--perturb-keepn": ["crypto.js", "JSON.stringify({ k: routerPriv, n: nodePub })", "JSON.stringify({ k: routerPriv })"],
-  "--perturb-pending": ["crypto.js", "_pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); return", "return"],
-  "--perturb-pendfail": ["crypto.js", "if (r && r.ok !== false) { _pendingKeep.delete(pk); return true; }", "_pendingKeep.delete(pk); if (r && r.ok !== false) return true;"],
+  "--perturb-pending": ["crypto.js", "_pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); _keepFail.delete(pk); return", "return"],
+  "--perturb-pendfail": ["crypto.js", "if (r && r.ok !== false) { _pendingKeep.delete(pk); _keepFail.delete(pk); return true; }", "_pendingKeep.delete(pk); if (r && r.ok !== false) return true;"],
+  "--perturb-blobgcm": ["crypto.js", "try { secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec))); } catch (_) { return CONF_SEALED_OLD; }",
+                        "secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec)));"],
+  "--perturb-keepdrop": ["crypto.js", 'if (r && ["stale", "not_found", "bad_request"].includes(r.code)) _pendingKeep.delete(pk);', "0;"],
+  "--perturb-keepwhy": ["crypto.js", "if (_pendingKeep.has(pk)) _keepFail.set(pk, why);\n", "\n"],
+  "--perturb-stalenat": ["routing.js", "if (exitIsDialin(ex) && l.no_traffic && !Number.isFinite(l.no_traffic.back_in) && !(l.trace || {}).ip) return", "if (exitIsDialin(ex) && l.no_traffic && !(l.trace || {}).ip) return"],
 };
+PLANTS["--perturb-rewrap"] = ["sheets-crud.js", "", ""];   // read by [6] itself: no module to load perturbed
 if (_flag && !PLANTS[_flag]) { console.log("unknown plant " + _flag); process.exit(2); }
 const PLANT = _flag || "";
 const made = [];
@@ -117,6 +128,11 @@ const nt = H({ handshake: 40, no_traffic: { since: 1, why: "x" } });
 check("a handshake and no traffic → check NAT on the router", nt.state === "stalled" && /NAT on the router/.test(nt.why), nt);
 const back2 = H({ handshake: 40, no_traffic: { since: 1, why: "x" }, trace: { ip: "198.51.100.7" } });
 check("a router that carries again while the judge waits out its hysteresis is not blamed for NAT", back2.state !== "stalled" || !/NAT/.test(back2.why), back2);
+Store.recon.nodeStatus = { n1: "stale" };
+const sback = H({ handshake: 40, no_traffic: { since: 1, why: "x", back_in: 30 } });
+Store.recon.nodeStatus = { n1: "live" };
+check("a node that stopped reporting while its dial-in exit recovered: the plain stalled reading, not blamed on NAT (s9d F9)",
+      !/NAT/.test(sback.why) && sback.state === "stalled", sback);
 const unread = H({ handshake: null, no_traffic: { since: 1, why: "x" } });
 check("a handshake the node could not read is not 'connected' (waiting)", unread.state === "waiting", unread);
 const ks = routeFns.exitHealth({ ...DIN, killswitch: true, live: { device: "wgx-aabbccdd", up: true, listen_port: 51820, handshake: 0, no_traffic: { since: 1, why: "x" } } }, NODE);
@@ -203,9 +219,11 @@ Store.storeMode = "off";
 check("the store off: nothing kept, nothing sent", await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub, nk.priv) === false && !SENT.length);
 Store.storeMode = "encrypted";
 const locked = await C.exitKeepRouter("n1", "aabbccdd", rk.pub, rk.priv, nk.pub, nk.priv);
-check("a locked vault: not kept, and says why", typeof locked === "string" && /locked/.test(locked) && !SENT.length, locked);
+check("a locked vault: not kept, and says so by a sentinel a language switch cannot break (s9d F10)",
+      locked === C.EXIT_KEEP_LOCKED && !SENT.length && C.exitKeepState("n1", "aabbccdd") === "queued", String(locked));
 await C.subUnlockWithKey(SK); await tick();
 check("…and unlocking later in the same tab keeps it after all, as a skipped peer's config", SENT.length === 1, SENT);
+check("…and the open sheet can read that it is kept now (s9d F11)", C.exitKeepState("n1", "aabbccdd") === null);
 check("…in the node's bucket, against the router's public key and the node key's digest", !!ESC["_x_n1"] && SENT.length === 1
       && SENT[0].node === "n1" && SENT[0].exit === "aabbccdd" && SENT[0].pub === rk.pub
       && SENT[0].nkh === (await C.sha256hex(nk.priv)).slice(0, 16), SENT);
@@ -226,6 +244,15 @@ ESC["_x_n1"] = wrap;
 const sec0 = BLOBS.aabbccdd.sec;
 BLOBS.aabbccdd.sec = sec0.slice(0, 30) + (sec0[30] === "A" ? "B" : "A") + sec0.slice(31);   // one ciphertext byte off
 check("a blob the bucket key does not open (GCM refuses it) reads sealed", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_SEALED_OLD);
+// …and a PEER's stored config the same way: sealed, not "No stored config — re-issue", the one advice that destroys it (s9c F25)
+Store.describe = { ...(Store.describe || {}), n1: { wg0: { public_key: K2, endpoint: "203.0.113.7:51820", awg_params: {} } } };
+const bpeer = { id: "p1", user_id: C.exitBucket("n1"), targets: [{ node: "n1", iface: "wg0", ip: "10.9.0.2/32" }] };
+api.subBlobGet = async () => ({ ok: true, data: { sec: BLOBS.aabbccdd.sec, user_id: C.exitBucket("n1") } });
+const bsealed = await C.blobConfig(bpeer, "n1", "wg0");
+api.subBlobGet = async () => ({ ok: true, data: { sec: sec0, user_id: C.exitBucket("n1") } });
+const bopen = await C.blobConfig(bpeer, "n1", "wg0");
+check("a peer's stored config the bucket key does not open reads sealed; one it opens is built", bsealed === C.CONF_SEALED_OLD
+      && typeof bopen === "string" && bopen.includes("PrivateKey = " + rk.priv), [String(bsealed), typeof bopen]);
 BLOBS.aabbccdd.sec = sec0;
 USERS = () => ({ ok: true, data: { users: {} } });
 const refused = await C.exitKeepRouter("n2", "aabbccdd", rk.pub, rk.priv, nk.pub, nk.priv);
@@ -247,5 +274,27 @@ const sent0 = SENT.length;
 C.subForget(); await C.subUnlockWithKey(SK); await tick();
 check("a queued keep whose flush failed is kept on the next unlock, not lost", fails === 1 && SENT.length === sent0 + 1
       && SENT[SENT.length - 1].exit === "eeff0011" && SENT[SENT.length - 1].pub === rk2.pub, { fails, sent: SENT.length - sent0 });
+// …its failure is said while it waits (s9c F60), and a refusal for good is not re-posted on every unlock (s9c F57)
+C.subForget();
+const rk3 = await C.genKeys();
+await C.exitKeepRouter("n1", "22334455", rk3.pub, rk3.priv, nk.pub, nk.priv);
+api.subExitBlob = async () => ({ ok: false, error: "panel busy" });
+await C.subUnlockWithKey(SK); await tick();
+check("…a failed flush leaves its reason for the open sheet", C.exitKeepState("n1", "22334455") === "panel busy", C.exitKeepState("n1", "22334455"));
+let posts = 0;
+api.subExitBlob = async () => { posts++; return { ok: false, code: "stale", error: "the exit's router key has changed since this config was made" }; };
+C.subForget(); await C.subUnlockWithKey(SK); await tick();
+C.subForget(); await C.subUnlockWithKey(SK); await tick();
+api.subExitBlob = okPost;
+check("a keep the panel refuses for good (stale) is dropped, not re-posted on every unlock, and still says why",
+      posts === 1 && /changed since/.test(String(C.exitKeepState("n1", "22334455"))), { posts, st: C.exitKeepState("n1", "22334455") });
+
+console.log("\n[6] a node transfer's pre-flight says what becomes of users' encryption keys (NODE-TRANSFER I.18)");
+const SC = PLANT === "--perturb-rewrap" ? fs.readFileSync(path.join(ROOT, "js", "sheets-crud.js"), "utf8")
+    .replace("esc.length ? [T(\"These users' encryption keys stay sealed", "esc.length ? [T(\"Users' encryption keys — re-wrapped there the next time you unlock the vault\"), plural(esc.length, \"user\")] : null,\n    false ? [T(\"These users' encryption keys stay sealed")
+  : fs.readFileSync(path.join(ROOT, "js", "sheets-crud.js"), "utf8");
+const _l0 = SC.indexOf("const lost = ["), _lost = SC.slice(_l0, SC.indexOf("const kept = [", _l0));   // TransferOutcome's two lists
+check("…among \"Worth knowing before you do this\": they stay sealed to this panel — nothing re-wraps them there",
+      /esc\.length \? \[T\("These users' encryption keys stay sealed to this panel's vault/.test(_lost) && !/T\("[^"]*re-wrapped there the next time/.test(SC), _lost.slice(0, 200));
 
 done(!!PLANT, PLANT);

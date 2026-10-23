@@ -148,7 +148,10 @@ PERTURBATIONS = {
     # [B18] (S9d fix round): the not-kept notice no longer says why (store off) / that a later unlock keeps it (vault
     # locked); the Linux steps lose their FORWARD accept (a router whose FORWARD policy is DROP passes nothing)
     "rwhy": ("js/screen-settings.js", 'kept === false ? T("Not kept — keeping', 'false ? T("Not kept — keeping'),
-    "rlocked": ("js/screen-settings.js", ': kept === T("the encryption key is locked") ?', ': false ?'),
+    "rlocked": ("js/screen-settings.js", ': kept === EXIT_KEEP_LOCKED ?', ': false ?'),
+    # [B18] (batch C): the open sheet follows a queued keep that an unlock kept (s9d F11); Regenerate asks once (s9c F59/F61)
+    "rfollow": ("js/screen-settings.js", '  const kept = kept0 !== EXIT_KEEP_LOCKED ? kept0 : ks === null ? true : ks === "queued" ? EXIT_KEEP_LOCKED : ks;', '  const kept = kept0;'),
+    "rbusy": ("js/screen-settings.js", "    if (REGEN_BUSY.on) return;\n", ""),
     "rfwd": ("js/screen-settings.js", "+ `iptables -I FORWARD -i ${tag} -j ${tag}-fwd\\n`", "+ ``"),
     # [B18] (S9d verify F8 + s9d-f8-lan F3–F5): the tunnel's own chain drops the private ranges (a one-NIC box's LAN is
     # behind the uplink itself), lets out the uplink only and drops the rest (a tailnet, a second NIC); new connections
@@ -170,7 +173,9 @@ PERTURBATIONS = {
     # the generator alone, the interface-defaults template ignored
     "dinclear": ("js/screen-settings.js", " || Object.values(dinBlank).some(Boolean)", ""),
     "dinspace": ("js/screen-settings.js", 'val = String(v ?? "").replace(/^[ \\t]+/, "");', 'val = String(v ?? "").trim();'),
-    "dindraw": ("js/screen-settings.js", "out[k] = t && !sl ? t : String(g[k]);", "out[k] = String(g[k]);"),
+    "dindraw": ("js/screen-settings.js", "out[k] = tpl[k] || String(g[k]);", "out[k] = String(g[k]);"),
+    # [B18] (dial-in batch B, verify F59): a drawn S4 is fitted to the MTU in the browser too — a cleared S4 at MTU 1420
+    "dins4fit": ("js/screen-settings.js", 'out.S4 = dialinS4(out.S4, mtu || 1280, proto === "awg3" ? 12 : 0);', '0;'),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -1018,11 +1023,13 @@ try:
                   and [re.sub(r"^iptables -A swg-\S+-fwd ", "", l) for l in _ch] == [
                       "-d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP",
                       "-o $UPLINK -j ACCEPT", "-j DROP"]
-                  and any(re.fullmatch(r"iptables -I FORWARD -i (swg-\S+) -j \1-fwd", l) for l in _ln)
-                  and any(re.fullmatch(r"iptables -I FORWARD -o swg-\S+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", l) for l in _ln)
-                  and any(re.fullmatch(r"iptables -I INPUT -i swg-\S+ -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP", l) for l in _ln)
+                  # (s9d-f8-lan F7) every line safe to paste again: the chain emptied and refilled, the rest added once (-C)
+                  and any(re.fullmatch(r"iptables -N (swg-\S+)-fwd 2>/dev/null \|\| iptables -F \1-fwd", l) for l in _ln)
+                  and any(re.fullmatch(r"iptables -C FORWARD -i (swg-\S+) -j \1-fwd 2>/dev/null \|\| iptables -I FORWARD -i \1 -j \1-fwd", l) for l in _ln)
+                  and any(re.fullmatch(r'R="-o swg-\S+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"; iptables -C FORWARD \$R 2>/dev/null \|\| iptables -I FORWARD \$R', l) for l in _ln)
+                  and any(re.fullmatch(r'R="-i swg-\S+ -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP"; iptables -C INPUT \$R 2>/dev/null \|\| iptables -I INPUT \$R', l) for l in _ln)
                   and _cmd.count("eth0") == 1 and "UPLINK=eth0" in _ln
-                  and any(re.fullmatch(r"iptables -t nat -A POSTROUTING -s 10\.254\.\S+ -o \$UPLINK -j MASQUERADE", l) for l in _ln)
+                  and any(re.fullmatch(r'R="-s 10\.254\.\S+ -o \$UPLINK -j MASQUERADE"; iptables -t nat -C POSTROUTING \$R 2>/dev/null \|\| iptables -t nat -A POSTROUTING \$R', l) for l in _ln)
                   and not any(re.match(r"iptables -[AI] FORWARD -i swg-\S+ .*-j ACCEPT", l) for l in _ln), {"cmd": _cmd})
             _off = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
             check("[B18] (S9d) the store off: the notice says why nothing is kept, and where to turn it on",
@@ -1128,6 +1135,18 @@ try:
             _ltxt = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
             check("[B18] (S9d) the vault left locked: the sheet says an unlock before a reload keeps it — not \"not kept anywhere\"",
                   "Not kept yet — the encryption key is locked" in _ltxt and "not kept anywhere" not in _ltxt, _ltxt[:300])
+            # (s9d F11) unlocked now, in this tab, with the sheet still open: the queued key is kept, and the sheet says so
+            ev_mod(tab, "crypto", "await M.subUnlock('b18-vault-pass'); return true;")
+            settle(tab, 2500)
+            _ltxt2 = tab.ev("(() => { const s = %s; return s ? s.textContent : ''; })()" % TOP) or ""
+            check("[B18] (s9d F11) …unlocked with the sheet open: it now says the config is kept, not \"Not kept yet\"",
+                  "Kept encrypted with your client configs" in _ltxt2 and "Not kept yet" not in _ltxt2, _ltxt2[:300])
+            # (s9c F59/F61) a double click on Regenerate asks once
+            tab.ev("(() => { const s = %s; const b = s && [...s.querySelectorAll('.sheet-foot button')].find(b => /Regenerate router config/.test(b.textContent));"
+                   " if (b) { b.click(); b.click(); } })()" % TOP)
+            settle(tab, 900)
+            _nrc = tab.ev("[...document.querySelectorAll('.overlay.show')].filter(o => /Regenerate the router config\\?/.test(o.textContent)).length")
+            check("[B18] (s9c F59/F61) a double click on Regenerate opens ONE confirm", _nrc == 1, _nrc)
             close_modals(tab)
             # (S9e) the port and the parameters typed on create reach the router config; the edit sheet shows them as fields.
             # 43860/43861: outside 42821–42899, so no exit an earlier block drew sits there (review F11: ~7% of runs collided)
@@ -1207,6 +1226,8 @@ try:
             check("[B18] (S9e) …a trailing space typed into a cell stays (\"<r \" on the way to \"<r 32>\")", _sp == "<r ", repr(_sp))
             tab.ev(SETIN % (TOP, CELL % json.dumps("I2"), json.dumps("<r 32>")))
             tab.ev(SETIN % (TOP, CELL % json.dumps("Jc"), json.dumps("")))
+            tab.ev(SETIN % (TOP, CELL % json.dumps("S4"), json.dumps("")))         # …and a cleared S4 at MTU 1420: room for 20
+            tab.ev(SETIN % (TOP, "s.querySelector('.dinmtu input')", json.dumps("1420")))
             settle(tab, 300)
             click_text(tab, ".overlay.show .sheet-foot button", "/^Save/")
             settle(tab, 2500)
@@ -1214,6 +1235,8 @@ try:
             a6 = (next((x for x in st6 if x.get("id") == tx.get("id")), {}).get("profile") or {}).get("awg") or {}
             check("[B18] (S9e) …Save draws the cleared cells as create does: I1 drawn, Jc the template's 7, I2 as typed",
                   str(a6.get("I1") or "").strip() != "" and str(a6.get("Jc")) == "7" and a6.get("I2") == "<r 32>", a6)
+            check("[B18] (dial-in B, verify F59) …and a cleared S4 is drawn to fit MTU 1420 (at most 20: a full-size packet stays in 1500)",
+                  str(a6.get("S4") or "").isdigit() and int(a6["S4"]) <= 20, a6.get("S4"))
             close_modals(tab)
             must(call("POST", "/api/panel/settings", {"interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25, **_ps0,
                                                                              "awg_params": _ps0.get("awg_params") or {}}}), "the template back")

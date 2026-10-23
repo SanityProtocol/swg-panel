@@ -3541,7 +3541,9 @@ export function exitHealth(x, node) {
   // and a stale node's word is not taken for it.
   if (l.no_traffic && Number.isFinite(l.no_traffic.back_in) && !nodeStale((node || {}).id)) return { state: "recovering", tone: "busy", icon: "refresh", dot: "down",
     why: T("Traffic crosses it again — the node routes back through it within a minute.") + _fell };
-  if (exitIsDialin(ex) && l.no_traffic && !(l.trace || {}).ip) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
+  // A stale node's last `back_in` is not believed (above), but it did say the tunnel carried again: that is no router with
+  // NAT missing — the row takes the plain stalled reading below rather than send the operator to the router (s9d F9)
+  if (exitIsDialin(ex) && l.no_traffic && !Number.isFinite(l.no_traffic.back_in) && !(l.trace || {}).ip) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
     why: said(T("The router is connected but passes no traffic — check NAT on the router.")) + _fell };
   // ⚠️ UP AND CARRYING NOTHING, as the NODE judged it — not a guess from `handshake` or `trace` here. The node
   // has already routed around it (`no_traffic` is only reported once it did), so the row states what happened to

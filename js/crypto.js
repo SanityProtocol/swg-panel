@@ -626,8 +626,9 @@ export async function subFlushPending() {
   for (const [peerId, p] of [..._pendingPublish]) {
     try { await subMaybePublish(p.userId, peerId, p.privkey, p.psk); _pendingPublish.delete(peerId); n++; } catch (_) {}
   }
+  const tried = _pendingKeep.size;
   for (const a of [..._pendingKeep.values()]) if ((await exitKeepRouter(...a)) === true) n++;   // a dial-in router's key, the same way
-  if (n) bus.emit();
+  if (n || tried) bus.emit();      // a failed keep too: the open router sheet says why (s9c F60)
 }
 // Peers the backfill confirmed have NO recoverable config server-side (no session key, no stored plaintext, no
 // blob) — the panel never held their private key, so it can't rebuild or publish them (key custody). Re-probing
@@ -1311,7 +1312,10 @@ export async function blobConfig(peer, node, iface) {
     }
   } catch (_) { return CONF_UNREACHABLE; }     // fetch threw → we did not learn anything about this peer
   try {
-    const secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec)));   // GCM auth fails on a wrong key
+    let secret;
+    // GCM refuses a blob sealed under a key this bucket's unlock-key is not (one moved in from another bucket): the same
+    // answer as an unwrap that fails above — not "no stored config", which recommends re-issuing as if nothing were there
+    try { secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec))); } catch (_) { return CONF_SEALED_OLD; }
     if (!secret || !secret.k) return null;
     const eff = effectiveClientParams(peer, t, meta);
     return buildConf({ privkey: secret.k, address: (t.ip || "").split("/")[0] + "/32",
@@ -1327,12 +1331,24 @@ export const exitBucket = nid => "_x_" + nid;
 // Keeps skipped while the vault was locked — "node|exit" → exitKeepRouter's arguments. The router's private key lives only
 // in this tab, so, as a peer's in _pendingPublish, unlocking later in the same session still keeps it (subFlushPending).
 const _pendingKeep = new Map();
-// → true (kept), false (the store is off), or a sentence saying why it was not kept. Never throws.
+// "node|exit" → why the last try to keep a queued one failed (a flush after an unlock), so the open sheet can say it (s9c F60)
+const _keepFail = new Map();
+// What exitKeepRouter answers while the vault is locked: a sentinel, not a sentence — a sentence compared against T() stops
+// matching after a language switch (s9d F10)
+export const EXIT_KEEP_LOCKED = Symbol("exit-keep-locked");
+// The keep of this exit's router key as this tab knows it: "queued" (waiting for an unlock), a sentence (its last try failed —
+// still queued, or refused for good and dropped), or null (nothing waiting: kept). The router sheet reads it again after a
+// flush (s9d F11).
+export function exitKeepState(nid, exitId) {
+  const pk = nid + "|" + exitId;
+  return _keepFail.get(pk) || (_pendingKeep.has(pk) ? "queued" : null);
+}
+// → true (kept), false (the store is off), EXIT_KEEP_LOCKED, or a sentence saying why it was not kept. Never throws.
 export async function exitKeepRouter(nid, exitId, routerPub, routerPriv, nodePub, nodePriv) {
   if (Store.storeMode !== "encrypted") return false;
   const pk = nid + "|" + exitId;
   try {
-    if (!subSKCached()) { _pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); return T("the encryption key is locked"); }
+    if (!subSKCached()) { _pendingKeep.set(pk, [nid, exitId, routerPub, routerPriv, nodePub, nodePriv]); _keepFail.delete(pk); return EXIT_KEEP_LOCKED; }
     const uid = exitBucket(nid), unlockKey = await ensureUserUnlockKey(uid);
     // null is either a key this vault cannot open or a refused mint — the map ensureUserUnlockKey just read says which
     if (!unlockKey) return ((await subUsersMap())[uid] || {}).unlock_by_sk
@@ -1341,9 +1357,14 @@ export async function exitKeepRouter(nid, exitId, routerPub, routerPriv, nodePub
     // the node key sealed inside, named by the digest the panel stamps from the record — a re-paste in between is refused
     const nkh = (await sha256hex(nodePriv)).slice(0, 16);
     const r = await api.subExitBlob({ node: nid, exit: exitId, pub: routerPub, nkh, sec });
-    if (r && r.ok !== false) { _pendingKeep.delete(pk); return true; }   // only now: a failed keep stays queued for a later unlock
-    return srvText(r) || T("couldn't store the router config");
-  } catch (e) { return String((e && e.message) || e); }
+    if (r && r.ok !== false) { _pendingKeep.delete(pk); _keepFail.delete(pk); return true; }   // only now: a failed keep stays queued
+    const why = srvText(r) || T("couldn't store the router config");
+    // …unless the panel refused it for good — the exit is gone, its keys changed since, the request is malformed: re-posting
+    // that on every unlock would fail the same way for ever (s9c F57)
+    if (_pendingKeep.has(pk)) _keepFail.set(pk, why);
+    if (r && ["stale", "not_found", "bad_request"].includes(r.code)) _pendingKeep.delete(pk);   // its reason stays for the sheet
+    return why;
+  } catch (e) { const why = String((e && e.message) || e); if (_pendingKeep.has(pk)) _keepFail.set(pk, why); return why; }
 }
 // A kept key the vault is locked for: the caller asks to unlock (whatever the store's mode now) and reads again.
 export const EXIT_LOCKED = Symbol("exit-locked");

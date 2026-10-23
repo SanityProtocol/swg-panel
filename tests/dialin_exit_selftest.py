@@ -70,6 +70,8 @@ Run: python3 tests/dialin_exit_selftest.py      (0 = pass)
      --perturb-awgref     the typed cells are not checked (an I-line no app reads)          → RED [7b]
      --perturb-awgrules   the set Generate makes is not held to the rules (Jc trio)        → RED [7b]
      --perturb-s3tpl      a 3.1 template S under 12 makes awg3_full re-draw the typed S     → RED [7b]
+     --perturb-rawphrase  the holder is flattened to its English text inside the sentence     → RED [6]
+     --perturb-s3omit     a 3.1 template S of "-" is kept as no line, so the create is refused → RED [7b]
      --perturb-tplbad     a template I-line no app reads refuses Generate                  → RED [7b]
      --perturb-meshref    a typed port in the system mesh band is accepted                 → RED [7b]
      --perturb-s4fit      a drawn S4 is not fitted to a typed MTU                          → RED [7b]
@@ -80,6 +82,7 @@ Run: python3 tests/dialin_exit_selftest.py      (0 = pass)
      --perturb-typedlisten  a typed port the host listens on is refused (or re-drawn)     → RED [7c]
      --perturb-shape      udp_listen is not in the snapshot shape table                    → RED [7c]
      --perturb-ents       a WDTT report sent as an object of objects is walked as a list   → RED [7c]
+     --perturb-entsname   …and its holder named by an `iface` field it does not carry      → RED [7c]
      --perturb-meshinv    the mesh allocator keeps its own short list again                → RED [7c]
      --perturb-listenall  the node reports connected sockets (outbound ports) as listeners → RED [7c]
      --perturb-tcpdns     the tunnel latency's clock starts before the name is resolved   → RED [3b]
@@ -141,6 +144,8 @@ PLANTS = {
     "typedawg": ("p", '        _typed = g.get("awg") if isinstance(g.get("awg"), dict) and proto != "wg" else {}', '        _typed = {}'),
     "awgref": ("p", '        _ref = awg_template_refusal(_typed, perr("this exit"), gen3=proto == "awg3", was=None) if _typed else None', "        _ref = None"),
     "awgrules": ("p", '        _ref = awg_rules(awg, perr("this exit"), gen3=proto == "awg3") if proto != "wg" else None', "        _ref = None"),
+    "rawphrase": ("p", '            return perr("UDP port {v1} is already used on this node by {v2}", v1=str(port), v2=held)', '            return perr("UDP port {v1} is already used on this node by {v2}", v1=str(port), v2=str(held))'),
+    "s3omit": ("p", '            _tom = _tom - {"S1", "S2", "S3", "S4"}', '            pass'),
     "tplbad": ("p", "        _tv = {k: v for k, v in _tv.items() if not awg_value_refusal(k, v)}\n", ""),
     "s3tpl": ("p", '        if proto == "awg3":      # a 2.0 template', '        if False:      # a 2.0 template'),
     "meshband": ("p", "            _no = used | set(ctx.get(\"listen\") or ()) | set(ctx.get(\"mesh_band\") or ())",
@@ -149,7 +154,8 @@ PLANTS = {
     "meshref": ("p", "        if port in _mb:\n", "        if False:\n"),
     "asciiport": ("p", '            if not re.fullmatch(r"[0-9]{1,5}", _tp)', '            if not _tp.isdigit()'),
     "shape": ("p", '    "udp_listen": (list, int),', ''),
-    "ents": ("p", '    for w in ents(snap.get("wdtt")):', '    for w in (snap.get("wdtt") or []):'),
+    "ents": ("p", '    for ifn, w in ents(snap.get("wdtt")):', '    for ifn, w in [((x or {}).get("iface") or "", x) for x in (snap.get("wdtt") or [])]:'),
+    "entsname": ("p", '        return [(e.get("iface") or (k if isinstance(v, dict) else "") or "", e)', '        return [(e.get("iface") or "", e)'),
     "s3min": ("p", '        if proto == "awg3" and any(not str(_uv[k]).isdigit()', '        if False and any(not str(_uv[k]).isdigit()'),
     "fwref": ("p", "        if _fw and not any(a <= port <= b for a, b in _fw):\n            return perr(\"UDP port {v1} is outside",
               "        if False:\n            return perr(\"UDP port {v1} is outside"),
@@ -453,6 +459,10 @@ c, e = save([din(port=51821)])
 check("a port an interface holds → refused, naming it", c is None and "wg0" in str((e or {}).get("error")), e)
 c, e = save([din(port=P.WDTT_RAW_PORT)])
 check("RAW-IP's reserved port → refused", c is None and "RAW-IP" in str((e or {}).get("error")), e)
+_rv = ((e or {}).get("error_vars") or {}).get("v2")
+_ru = open(os.path.join(ROOT, "js", "lang", "ru.js"), encoding="utf-8").read()
+check("…its holder travels as a phrase the browser translates, and RU has it (no English inside a RU sentence)",
+      isinstance(_rv, dict) and _rv.get("error_key") == "RAW-IP (reserved)" and '"RAW-IP (reserved)":' in _ru, _rv)
 c, e = save([din(), din(xid="11223344", addr="10.254.0.2")])
 check("two dial-in exits on one port → refused", c is None and "one port" in str((e or {}).get("error")), e)
 c, e = save([din(), din(xid="11223344", port=51830)])
@@ -641,6 +651,12 @@ def _tpl_s3(deps, nodes):             # a 2.0 template's S3 under 12
 _a = _p(c).get("awg") or {}
 check("3.1: a template's S under 12 does not re-draw the typed S1/S2 (review F8)", e is None and str(_a.get("S1")) == "20"
       and str(_a.get("S2")) == "30" and int(_a.get("S3") or 0) >= 12, (e, _a))
+def _tpl_s1none(deps, nodes):          # a 2.0 template with S1 as none — a 3.1 exit needs all four (verify F58)
+    deps["panel_settings"] = {"interface_defaults": {"awg_params": {"S1": "-"}}}
+(c, e), _ = gen("awg3", prep=_tpl_s1none)
+_a = _p(c).get("awg") or {}
+check("3.1: a template S1 of '-' is drawn, not kept as no line (header protection needs all four) — not refused",
+      e is None and str(_a.get("S1") or "").isdigit() and int(_a["S1"]) >= 12, (e, _a))
 def _tpl_badi(deps, nodes):           # a template I1 no app reads, stored before template saves were checked
     deps["panel_settings"] = {"interface_defaults": {"awg_params": {"Jc": "7", "I1": "<c>"}}}
 (c, e), _ = gen("awg2", prep=_tpl_badi)
@@ -702,13 +718,15 @@ _u = P._used_ports(nodes, deps["node_snaps"], NID)
 check("the mesh link allocator asks the same inventory: WDTT and its internal WG port, csqtt, a created interface, a listener, RAW-IP",
       {10001, 10002, 10003, 10004, 10005, P.WDTT_RAW_PORT} <= _u, sorted(_u))
 check("…so the first link port off 10000 skips them", P._alloc_port(_u, 10000) == 10000 and P._alloc_port(_u, 10001) == 10006, sorted(_u))
-deps["node_snaps"][NID]["wdtt"] = {"w1": {"iface": "w1", "listen": "0.0.0.0:10007", "wg_port": 10008}}   # an object of objects
+deps["node_snaps"][NID]["wdtt"] = {"w1": {"listen": "0.0.0.0:10007", "wg_port": 10008}}   # an object of objects, keyed by iface
 try:
     _u = P._used_ports(nodes, deps["node_snaps"], NID)
 except Exception as _x:
     _u = "raised %r" % _x
 check("…a WDTT report sent as an object of objects (sanitise takes it) is walked, not raised on inside reconcile_mesh",
       isinstance(_u, set) and {10007, 10008} <= _u, _u)
+_np = P._node_ports(deps, nodes, NID) if isinstance(_u, set) else {}
+check("…and the conflict names the holder by its key (verify F67)", _np.get(10007) == "w1 (WDTT)", _np.get(10007))
 _sn = {"udp_listen": {"a": 1}}; P._snap_sanitise(_sn, "t1")
 _sl = {"udp_listen": [53, "x", [1]]}; P._snap_sanitise(_sl, "t2")
 check("a udp_listen that is not a list of numbers is dropped or cleaned at the sync door (review F4)",

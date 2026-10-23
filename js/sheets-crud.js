@@ -2621,6 +2621,12 @@ export function TransferOutcome({ d, preview }) {
 
     vkfb.length ? [T("Peers on the panel-wide call link — the other panel resolves its own"), names(vkfb)] : null,
     un.length ? [T("Never set up through this panel — nothing to hand over"), names(un)] : null,
+    /* ⚠️ NOT "re-wrapped there the next time you unlock the vault" — nothing does that (NODE-TRANSFER I.18). Each user's
+       encryption key arrives wrapped under THIS panel's key, which the other panel does not hold: their links keep opening
+       (the blobs and the public token map travel), but that panel can neither open these users' stored configs nor store
+       a new one for them — it never overwrites a key that exists. */
+    esc.length ? [T("These users' encryption keys stay sealed to this panel's vault — their links keep working, but the other panel can't show their stored configs or store new ones"),
+                  plural(esc.length, "user"), "stack"] : null,
     rk.length ? [T("Dial-in exits' router configs are sealed to this panel's vault, so they stay here — open them here first, or regenerate one there"),
                  rk.map(x => x.title || T("Dial-in exit :{v1}", { v1: x.port })).join(", "), "stack"] : null,
     subs.length ? [T("Subscription links keep this panel's address in them"), plural(subs.length, "sub link")] : null,
@@ -2635,8 +2641,6 @@ export function TransferOutcome({ d, preview }) {
                     plural(users.length, "user") + " · " + plural(d.peers || 0, "peer")] : null,
     d.blobs ? [T("Stored configs — the links your users already hold keep opening them"),
                plural(d.blobs, "config")] : null,
-    esc.length ? [T("Users' encryption keys — re-wrapped there the next time you unlock the vault"),
-                  plural(esc.length, "user")] : null,
     d.mesh_links ? [T("Mesh links — the other panel builds its own"), plural(d.mesh_links, "link")] : null,
     /* ⚠️ ESCROW BELONGS HERE, not in the red box it used to sit in. The ciphertext genuinely cannot
        travel — a blob is sealed to THIS panel's vault, so the far panel would hold something openable by

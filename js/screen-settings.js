@@ -29,14 +29,14 @@ import {
   forkSupportsAwg, turnColor, turnFork, turnForkList, turnForksVisible, forkLabel,
 } from "./turn-catalog.js";
 import {
-  ConfirmSheet, Disclosure, Dropdown, ExitDevicePick, ExitEgressPick, Ic, NodeIpPick, Popover, Sheet, Switch, ThemedSwatch, autoGrow, closeModal, copy, footRow,
+  ConfirmSheet, Disclosure, Dropdown, ExitDevicePick, ExitEgressPick, Ic, NodeIpPick, Popover, Sheet, Switch, ThemedSwatch, autoGrow, closeModal, closeModals, copy, footRow,
   goSettings, meshGenLabel, openConfirm, openModal, pushModal, registerSectionSetter, takePendingSection, toast,
   useHostOnNode,
   exitRefusalText,
   ListPager, LIST_PAGE, pageSlice,
 } from "./ui.js";
 import {
-  CONF_SEALED_OLD, CONF_UNREACHABLE, EXIT_LOCKED, awgConfLines, buildConf, exitKeepRouter, exitRouterKey, genKeys, genPSK, QR,
+  CONF_SEALED_OLD, CONF_UNREACHABLE, EXIT_LOCKED, EXIT_KEEP_LOCKED, exitKeepState, awgConfLines, buildConf, exitKeepRouter, exitRouterKey, genKeys, genPSK, QR,
   SUB_LANG_LIST, VaultPromptSheet, downloadConf, ivkSetEscrow, nginxServerBlock, nixDirectTlsBlock, nixProxyBlock,
   ensureVaultUnlocked, ivkResealForNodeBlob, nixUpstream, normPublicUrl, qrDataURL, runConfigMigration, subBaseUrl, subForget, subKeyB64, subRewrap, subSKCached, subUnlock,
   subVaultCreate, urlPortOf, withUrlPort,
@@ -49,6 +49,7 @@ import {
   resetRouting, sizeSummary,
   exitHealthMark, RoutingRules, rulesTitle, rulesSummary, egressSaveBlock,
 } from "./routing.js";
+import { awgFieldCheck } from "./mimic.js";   // a template value a dial-in exit can take: one every app reads
 import { LogViewer } from "./journal.js";   // Settings → Logs, the live viewer (docs/LOGS-PLAN.md §5)
 import { classifyAll } from "./classify.js";   // the one grammar — CustomListSheet accepts what a rule accepts
 import { customCaps, customTargets, rulesToRows, rowsToRules, adoptRows } from "./rulerows.js";   // what a list record holds — preact-free, so it is gated
@@ -4250,16 +4251,17 @@ export function routerSteps(kind, ex, conf) {
   // the commands as the router takes them — not prose, never translated
   const KN_NAT = "interface WireguardN security-level private\nip nat WireguardN\nsystem configuration save",
         KN_POLICY = "ip hotspot policy WireguardN PolicyN\nsystem configuration save",
-        // the tunnel's forwards go through a chain of its own, so the order shown is the order that applies — also once
-        // saved as rules (-A) — and they reach the internet interface only: never a private range (a one-NIC box's LAN
-        // is behind that same interface), nothing else on the box (a tailnet, a second NIC); nor the box itself (INPUT)
-        LX_MASQ = `UPLINK=eth0\nsysctl -w net.ipv4.ip_forward=1\niptables -N ${tag}-fwd\n`
+        // the tunnel's forwards go through a chain of its own, so its rules apply in the order shown, and they reach the
+        // internet interface only: never a private range (a one-NIC box's LAN is behind that same interface), nothing else
+        // on the box (a tailnet, a second NIC); nor the box itself (INPUT). Pasting it again changes nothing: the chain is
+        // emptied and refilled, and every other rule is added only when `-C` does not find it (s9d-f8-lan F7)
+        LX_MASQ = `UPLINK=eth0\nsysctl -w net.ipv4.ip_forward=1\niptables -N ${tag}-fwd 2>/dev/null || iptables -F ${tag}-fwd\n`
           + `iptables -A ${tag}-fwd -d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP\n`
           + `iptables -A ${tag}-fwd -o $UPLINK -j ACCEPT\niptables -A ${tag}-fwd -j DROP\n`
-          + `iptables -I FORWARD -i ${tag} -j ${tag}-fwd\n`
-          + `iptables -I FORWARD -o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n`
-          + `iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\n`
-          + `iptables -t nat -A POSTROUTING -s ${addr} -o $UPLINK -j MASQUERADE`;
+          + `iptables -C FORWARD -i ${tag} -j ${tag}-fwd 2>/dev/null || iptables -I FORWARD -i ${tag} -j ${tag}-fwd\n`
+          + `R="-o ${tag} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"; iptables -C FORWARD $R 2>/dev/null || iptables -I FORWARD $R\n`
+          + `R="-i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP"; iptables -C INPUT $R 2>/dev/null || iptables -I INPUT $R\n`
+          + `R="-s ${addr} -o $UPLINK -j MASQUERADE"; iptables -t nat -C POSTROUTING $R 2>/dev/null || iptables -t nat -A POSTROUTING $R`;
   if (kind === "keenetic") return [
     html`${T("Import the config: Internet → Other connections → WireGuard → Import from file. Leave “Use for accessing the Internet” off — the router keeps its own internet; this tunnel only carries the node's traffic out.")}`,
     html`${Trich("Find its name: `show interface` on the command page (my.keenetic.net/a) lists it as WireguardN, described {v1}. Then, with your N:", { v1: tag })}
@@ -4286,7 +4288,10 @@ export function routerSteps(kind, ex, conf) {
 /** The router's config. Not kept, it is shown once, and `noSwipe` keeps a swipe from closing it and losing the key (MOBILE-PLAN
  *  hook 2). The config is shown whole: no scroll either way — its font is sized to the box by its longest line (JetBrains
  *  Mono is 0.6 em a character), and a line still too long at the floor wraps. Download and Copy sit under the QR. */
-function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
+function RouterConfSheet({ node, ex, conf, kept: kept0, onRegen, changed }) {
+  useStore();   // an unlock in this tab flushes a queued keep and emits: the sheet says what became of it (s9d F11, s9c F60)
+  const ks = kept0 === EXIT_KEEP_LOCKED ? exitKeepState(node.id, ex.id) : undefined;
+  const kept = kept0 !== EXIT_KEEP_LOCKED ? kept0 : ks === null ? true : ks === "queued" ? EXIT_KEEP_LOCKED : ks;
   const name = ex.label || exitDefaultTitle(ex);
   const port = (ex.profile || {}).listen_port;
   const [kind, setKind] = useState(ROUTER_VIEW.kind);
@@ -4294,6 +4299,7 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
   // Not kept: Esc and a click outside ask first until the config has been downloaded or copied — this is its only copy. Done
   // closes. Regenerate's confirm opens over the sheet, so its Cancel comes back to it. Kept (`kept === true`): it opens again from the row, so the sheet closes like any other.
   const keep = useRef(kept !== true);
+  if (kept === true) keep.current = false;      // kept after it opened: it closes like any other
   const took = () => { keep.current = false; };
   return html`<${Sheet} title=${T("Router config — {v1}", { v1: name })} width=${720} noSwipe=${kept !== true} dirtyRef=${keep}
     foot=${footRow({ onCancel: closeModal, cancelLabel: T("Done"),
@@ -4303,7 +4309,7 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
       ? html`<p class="hint" style="margin:0 0 12px">${T("Kept encrypted with your client configs — the QR button on the exit's row shows it again.")}</p>`
       : html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${
           kept === false ? T("Not kept — keeping encrypted client configs is off (Settings → Client configs). Download or copy it now; once closed, only Regenerate makes a new one.")
-          : kept === T("the encryption key is locked") ? T("Not kept yet — the encryption key is locked. Unlock it in this tab before you reload and it is kept; otherwise download or copy it now.")
+          : kept === EXIT_KEEP_LOCKED ? T("Not kept yet — the encryption key is locked. Unlock it in this tab before you reload and it is kept; otherwise download or copy it now.")
           : T("Shown once — the router's private key is not kept anywhere. Lost it? Regenerate the router config.") + (typeof kept === "string" ? " " + T("Not kept with your client configs: {v1}.", { v1: kept }) : "")}</span></div>`}
     ${!nodeDialHost(node) ? html`<div class="notice warn" style="margin:0 0 12px"><${Ic} i="warn"/><span>${kept === true
       ? T("This node has no ingress address yet, so the Endpoint line is incomplete. Set one under Settings → Network, then open it again from the exit's row.")
@@ -4336,29 +4342,46 @@ function RouterConfSheet({ node, ex, conf, kept, onRegen, changed }) {
    create sheet sends it to the panel's generator; the edit sheet writes it into "This node's end", which stays the one thing
    saved. */
 const DIALIN_RANGE = "42821–42899";
+const REGEN_BUSY = { on: false };   // a Regenerate is being asked for (its unlock prompt is up) — module-level: the sheet re-renders
 const DIALIN_PORT_HINT = () => T("Blank: a free port of {v1} — on a node whose firewall is declared (NixOS), inside what it declares. Not 51820, the port every scanner tries first.", { v1: DIALIN_RANGE });
-function dialinHints() {          // a blank 2.0 cell: the interface-defaults template's value, or what the generator does
-  const tpl = ((Store.panelSettings || {}).interface_defaults || {}).awg_params || {}, b = awgBlankHints();
-  return Object.fromEntries(AWG_KEYS.map(k => { const t = String(tpl[k] ?? "").trim(); return [k, t === "-" ? T("val|none") : t || b[k]]; }));
+// The interface-defaults template as a dial-in exit takes it — the server's _dialin_generate: a value no app reads (one
+// stored before template saves were checked) is drawn as a blank is, and for 3.1 so is an S under 12 or "-" (header
+// protection needs all four, at least 12)
+function dialinTpl(proto) {
+  const tpl = ((Store.panelSettings || {}).interface_defaults || {}).awg_params || {};
+  return Object.fromEntries(AWG_KEYS.map(k => { const t = String(tpl[k] ?? "").trim();
+    return [k, !awgFieldCheck(k, t).ok || (proto === "awg3" && /^S[1-4]$/.test(k) && !(/^[0-9]+$/.test(t) && +t >= 12)) ? "" : t]; }));
+}
+function dialinHints(proto) {     // a blank 2.0 cell: the template's value as the exit takes it, or what the generator does
+  const tpl = dialinTpl(proto), b = awgBlankHints();
+  return Object.fromEntries(AWG_KEYS.map(k => [k, tpl[k] === "-" ? T("val|none") : tpl[k] || b[k]]));
+}
+// A drawn S4 fitted to the MTU as the panel fits it (mesh_s4_room / mesh_s4_draw): a full-size packet stays inside 1500
+// bytes; never under `floor` (12 on 3.1). A value that already fits, or one that is not a number, is left as it is.
+function dialinS4(s4, mtu, floor) {
+  const m = parseInt(mtu, 10), room = Number.isFinite(m) ? Math.max(0, 1500 - 60 - m) : null;
+  if (room === null || !/^[0-9]+$/.test(String(s4)) || +s4 <= room) return String(s4);
+  const lo = Math.max(floor, Math.min(15, room)), hi = Math.max(lo, room);
+  return String(lo + Math.floor(Math.random() * (hi - lo + 1)));
 }
 // which protocol a stored set is — the server's own reading: a HeaderProtectionKey is 3.1 (awgDict3), any 2.0 key is 2.0
 const dialinProto = awg => awgDict3(awg) ? "awg3" : AWG_KEYS.some(k => String((awg || {})[k] ?? "").trim() !== "") ? "awg2" : "wg";
-// what a blank cell becomes, as the server draws it on create: the interface-defaults template's value ("-": no such line),
-// else the 2.0 generator — for 3.1 a template S under 12 is not taken (the server's rule) — and for the 3.1 cells the value
-// they show (the 3.1 defaults)
-function dialinDraw(proto, awg, fresh) {     // `fresh`: S1–S4 and H1–H4 drawn anew too (the edit sheet's Generate)
-  const g = genAwg(), h3 = mesh3Hints(false), out = { ...(awg || {}) };
-  const tpl = ((Store.panelSettings || {}).interface_defaults || {}).awg_params || {};
+// what a blank cell becomes, as the server draws it on create: the template's value as the exit takes it ("-": no such
+// line), else the 2.0 generator, an S4 not typed fitted to the MTU — and for the 3.1 cells the value they show (the 3.1
+// defaults)
+function dialinDraw(proto, awg, fresh, mtu) {     // `fresh`: S1–S4 and H1–H4 drawn anew too (the edit sheet's Generate)
+  const g = genAwg(), h3 = mesh3Hints(false), out = { ...(awg || {}) }, tpl = dialinTpl(proto);
+  const typedS4 = String(out.S4 ?? "").trim() !== "" && !fresh;
   for (const k of AWG_KEYS) {
-    const t = String(tpl[k] ?? "").trim(), sl = /^S[1-4]$/.test(k) && proto === "awg3" && !(/^[0-9]+$/.test(t) && +t >= 12);
-    if (String(out[k] ?? "").trim() === "") out[k] = t && !sl ? t : String(g[k]);
+    if (String(out[k] ?? "").trim() === "") out[k] = tpl[k] || String(g[k]);
     else if (fresh && /^[SH][1-4]$/.test(k) && String(out[k]).trim() !== "-") out[k] = String(g[k]);
   }
+  if (!typedS4 && String(out.S4).trim() !== "-") out.S4 = dialinS4(out.S4, mtu || 1280, proto === "awg3" ? 12 : 0);
   if (proto === "awg3") for (const k of AWG3_EDIT_COLS.flat())
     if (String(out[k] ?? "").trim() === "" && String(h3[k] ?? "").trim()) out[k] = h3[k] === T("val|none") ? "-" : String(h3[k]);
   return out;
 }
-function DialinParams({ proto, awg, onAwg, edit }) {
+function DialinParams({ proto, awg, onAwg, edit, mtu }) {
   const [open, setOpen] = useState(false);
   // "(auto)" while no cell of the protocol SHOWN holds anything (a 3.1 cell typed before a switch to 2.0 is not shown)
   const a = awg || {}, isSet = [...AWG_KEYS, ...(proto === "awg3" ? AWG3_EDIT_COLS.flat() : [])].some(k => String(a[k] ?? "").trim() !== "");
@@ -4366,12 +4389,12 @@ function DialinParams({ proto, awg, onAwg, edit }) {
   return html`<div class="dinparams"><button type="button" class="advtoggle" aria-expanded=${open ? "true" : "false"} onClick=${() => setOpen(!open)}>
       <span class="advcaret">${open ? "▾" : "▸"}</span> ${T("Parameters")}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
     ${open ? html`<div class="field dinparams-body">
-      <${AwgGrid} value=${a} onChange=${onAwg} placeholders=${dialinHints()}
+      <${AwgGrid} value=${a} onChange=${onAwg} placeholders=${dialinHints(proto)}
         omit=${T("Type - in a cell for no such line on the router either; a blank cell is drawn — the value shown in it, or a random one.")}/>
       ${proto === "awg3" ? html`<div style="margin-top:14px"><${Awg3Grid} value=${a} onKey=${(k, x) => onAwg({ ...a, [k]: x })} placeholders=${mesh3Hints(false)}
         hpk=${a.HeaderProtectionKey ? T("val|set") : T("val|generated")} rt=${T("val|on")}
         hpkTip=${T("Drawn for this exit; the router's config carries the same key.")} rtTip=${T("On for every AmneziaWG 3.1 exit.")}/></div>` : null}
-      <div class="dinparams-acts"><button type="button" class="btn btn-mini" onClick=${() => onAwg(dialinDraw(proto, a, edit))}
+      <div class="dinparams-acts"><button type="button" class="btn btn-mini" onClick=${() => onAwg(dialinDraw(proto, a, edit, mtu))}
           title=${edit ? T("S1–S4 and H1–H4 are drawn anew, and every blank cell — the router has to import its config again.") : null}>
           <${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet && !edit ? html`<button type="button" class="btn btn-mini"
           onClick=${() => onAwg({})}>${T("Clear (auto)")}</button>` : null}</div>
@@ -4436,8 +4459,8 @@ function DialinGenSheet({ node, onCreate, onPaste }) {
       <div class="dpsw awgsw" role="radiogroup" aria-label=${T("Protocol")}>${opts.map(([k, l, no]) => html`<button type="button" role="radio" key=${k}
         aria-checked=${proto === k} class=${(proto === k ? "on" : "") + (k === "awg3" ? " sw-awg3" : "")} disabled=${proto !== k && !!no}
         title=${proto !== k && no ? no : null} onClick=${() => setProto(k)}>${l}</button>`)}</div>
-      <div class="hint">${no31 ? T("AmneziaWG 3.1: {v1}", { v1: no31 }) + " " : ""}${T("The router must be able to import it — check what its firmware supports.")}</div></div>
-    <${DialinParams} proto=${proto} awg=${awg} onAwg=${setAwg}/>
+      <div class="hint">${no31 ? T("AmneziaWG 3.1: {v1}", { v1: no31 }) + (/[.!?…]$/.test(no31) ? " " : ". ") : ""}${T("The router must be able to import it — check what its firmware supports.")}</div></div>
+    <${DialinParams} proto=${proto} awg=${awg} onAwg=${setAwg} mtu=${mtu.trim()}/>
     <p class="hint" style="margin:14px 0 0">${T("Already have the router's config?")}${" "}
       <button type="button" class="linkbtn" onClick=${() => onPaste(label.trim())}>${T("Paste the server config instead")}</button></p>
   <//>`;
@@ -4484,9 +4507,9 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
     // a dial-in exit's cleared cells are drawn now, a cleared MTU is 1280 and a cleared port is the one it has (S9e)
     let out = txt;
     if (isDialin && !isNew) {
-      const drawn = dialinDraw(dinProto, dinAwg);
-      for (const k of dinKeys) if (dinBlank[k]) out = confIfSet(out, k, drawn[k]);
       if (confIfLine(out, "MTU") === null) out = confIfSet(out, "MTU", "1280");
+      const drawn = dialinDraw(dinProto, dinAwg, false, confIfLine(out, "MTU"));
+      for (const k of dinKeys) if (dinBlank[k]) out = confIfSet(out, k, drawn[k]);
       if (confIfLine(out, "ListenPort") === null && dinPort0) out = confIfSet(out, "ListenPort", dinPort0);
     }
     const body = { ...v, ...(isProf && out !== profileText(ex) ? { profile_text: out } : { profile_text: "" }),
@@ -4535,7 +4558,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
       ${isDialin ? null : html`<div class="field"><label>${T("Connect from")}</label>
         <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>`}
     </div>
-    ${isDialin && !isNew ? html`<${DialinParams} edit proto=${dinProto} onAwg=${dinAwgSet}
+    ${isDialin && !isNew ? html`<${DialinParams} edit proto=${dinProto} onAwg=${dinAwgSet} mtu=${confIfLine(txt, "MTU") || ""}
       awg=${dinProto === "awg3" ? { ...dinAwg, HeaderProtectionKey: confIfLine(txt, "HeaderProtectionKey") || "" } : dinAwg}/>` : null}
     ${isProf
       ? html`<div class="field"><label>${isDialin ? T("This node's end") : T("Configuration")}</label>
@@ -4610,23 +4633,33 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     if (r !== true) return T("Couldn't save");
     // Kept against the record, which the panel checks itself — so a poll that never caught up still leaves the config readable.
     const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);
+    // Saved either way: { info } is not a failure, and is never shown as one (s9c F51)
     if (!st || !st.profile || st.profile.peer_key !== rk.pub)
-      return kept === true ? T("Saved, but the panel did not return the exit — reload, and the QR button on its row shows the router config.")
-                           : T("Saved, but the panel did not return the exit — reload and regenerate.");
+      return kept === true ? { info: T("Saved, but the panel did not return the exit — reload, and the QR button on its row shows the router config.") }
+                           : { info: T("Saved, but the panel did not return the exit — reload and regenerate.") };
     delete DIALIN_NOTE[rec.id];
     closeModal();
     openModal(html`<${RouterConfSheet} node=${node} ex=${st} kept=${kept} onRegen=${() => regen(st)}
       conf=${routerConf(nodeDialHost(node), st.profile, rk.priv, nk.pub, psk)}/>`);
     return true;
   };
-  const regenNow = async ex => {   // a confirm sheet drops what onConfirm returns: a failure is said here, not lost
+  // `fromSheet`: the confirm sits over the router sheet it was opened from. Saved without the new config to show, that sheet
+  // holds keys that no longer work — it is closed with the confirm, not left open under the toast (s9c F55).
+  const regenNow = async (ex, fromSheet) => {   // a confirm sheet drops what onConfirm returns: a failure is said here, not lost
     let r;
     try { r = await generate({ ...ex }, null); } catch (e) { r = String((e && e.message) || e); }
-    if (r !== true) toast(typeof r === "string" ? r : T("Couldn't save"), "err");
+    if (r === true) return;
+    if (r && r.info) { if (fromSheet) closeModals(2); return toast(r.info); }
+    toast(typeof r === "string" ? r : T("Couldn't save"), "err");
   };
   const REGEN_BODY = () => T("Both sides get new keys. The router stops connecting until it imports the new config.");
-  const regen = async ex => { await askKeep(false); openConfirm({ title: T("Regenerate the router config?"), confirmLabel: T("Regenerate"),
-    body: REGEN_BODY(), onConfirm: () => regenNow(ex) }); };
+  // one at a time: a second click while the unlock prompt is up stacked a second confirm, and two Regenerates (s9c F59/F61)
+  const regen = async ex => {
+    if (REGEN_BUSY.on) return;
+    REGEN_BUSY.on = true;
+    try { await askKeep(false); } finally { REGEN_BUSY.on = false; }
+    openConfirm({ title: T("Regenerate the router config?"), confirmLabel: T("Regenerate"), body: REGEN_BODY(), onConfirm: () => regenNow(ex, true) });
+  };
   // The row's QR button: the kept router key, and the config rebuilt from the profile the panel stores NOW.
   const showRouter = async ex => {
     const ask = () => ensureVaultUnlocked({ always: true, title: T("Unlock to show the router config"),
@@ -4677,7 +4710,9 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
       return r === true ? true : T("Couldn't save");
     }}/>`);
   const openDialin = rec => openModal(html`<${DialinGenSheet} node=${node}
-    onCreate=${(label, proto, typed) => generate({ ...rec, label }, proto, typed)}
+    onCreate=${async (label, proto, typed) => { const r = await generate({ ...rec, label }, proto, typed);
+      if (r && r.info) { closeModal(); toast(r.info); return true; }    // created: said as what it is, not as an error (s9c F51)
+      return r; }}
     onPaste=${label => { closeModal(); openEdit({ ...rec, label }, true); }}/>`);
   const add = p2 => {
     const rec = { id: newExitId(), label: "", enabled: true, killswitch: false, device: "", ...p2 };
