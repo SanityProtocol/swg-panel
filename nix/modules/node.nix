@@ -336,9 +336,10 @@ in
     udpPortRanges = mkOption {
       type = types.listOf (types.attrsOf types.port);
       default = [ ];
-      example = literalExpression "[ { from = 51820; to = 51899; } ]";
+      example = literalExpression "[ { from = 51820; to = 51899; } { from = 42821; to = 42899; } ]";
       description = ''
-        UDP port ranges to open for this node's interfaces, and to tell the panel about.
+        UDP port ranges to open for this node's interfaces and dial-in exits (42821–42899), and to tell
+        the panel about.
 
         This exists because of a collision that is otherwise silent: **interfaces get their ports
         from the panel, at any time, while `networking.firewall` is evaluated at build time.** NixOS
@@ -478,7 +479,8 @@ in
         empty. Interfaces you create from the panel get their ports at runtime, and the firewall is
         evaluated at build time, so such an interface will sync, report healthy, show its peers —
         and be unreachable from the internet. Declare the range you intend to use
-        (e.g. udpPortRanges = [ { from = 51820; to = 51899; } ];), open the ports another way, or
+        (e.g. udpPortRanges = [ { from = 51820; to = 51899; } { from = 42821; to = 42899; } ];, the
+        second for dial-in exits), open the ports another way, or
         set networking.firewall.enable = false.
       '';
 

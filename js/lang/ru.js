@@ -3364,7 +3364,8 @@ export const STR = {
   "no free port in 42821–42899 on this node, nor in its declared firewall range — type a port":
     "на этой ноде нет свободного порта ни в 42821–42899, ни в объявленном диапазоне брандмауэра — укажите порт",
   "the port must be a number from 1 to 65535": "порт — число от 1 до 65535",
-  "the MTU must be a number from 576 to 9200": "MTU — число от 576 до 9200",
+  "the MTU must be a number from 576 to 1500": "MTU — число от 576 до 1500",
+  "UDP port {v1} is in the reserved system mesh range ({v2})": "UDP-порт {v1} входит в зарезервированный диапазон системных mesh-связей ({v2})",
   "S1–S4 must be at least 12 for AmneziaWG 3.1 — header protection refuses less":
     "для AmneziaWG 3.1 S1–S4 должны быть не меньше 12 — защита заголовков не принимает меньше",
   "UDP port {v1} is outside this node's declared firewall ranges ({v2}) — the router could never reach it; pick a port inside them, or add it to udpPortRanges":

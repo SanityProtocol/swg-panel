@@ -248,8 +248,9 @@ try:
     check("…a good one is saved", c == 200 and (ps().get("mesh_awg") or {}).get("I2") == "<r 24><t>", (c, r.get("error")))
     srv_src = open(SERVER, encoding="utf-8").read()
     calls = re.findall(r"(?<!def )awg_template_refusal\(([^\n]*(?:\n[^\n]*was=[^\n]*)?)", srv_src)
-    check("all three template saves pass the stored template (interface defaults, the fleet's mesh_awg, a link's)",
-          len(calls) == 3 and all("was=" in c for c in calls), calls)
+    check("every caller names what was stored: the three template saves (interface defaults, the fleet's mesh_awg, a link's) "
+          "the stored template, a dial-in exit's typed cells None — every one is new (S9e)",
+          len(calls) == 4 and all("was=" in c for c in calls) and sum("was=None" in c for c in calls) == 1, calls)
 finally:
     proc.terminate()
     try:

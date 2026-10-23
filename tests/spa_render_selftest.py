@@ -161,11 +161,16 @@ PERTURBATIONS = {
     # [B18] (S9e): what was typed on create never reaches the generator; an edit-sheet field never reaches the text saved
     "dintyped": ("js/screen-settings.js", "psk, ...(typed || {}) } };", "psk } };"),
     # [B18] (S9e): an exit with no ping shows "—" again although the tunnel's time is measured
-    "tcplat": ("js/screen-settings.js", '              : Number.isFinite((l.trace || {}).tcp_ms)\n              ? T("~{v1} ms"', '              : false\n              ? T("~{v1} ms"'),
+    "tcplat": ("js/screen-settings.js", '              : tcp\n              ? T("~{v1} ms"', '              : false\n              ? T("~{v1} ms"'),
     "latbub": ("js/screen-settings.js", 'return html`<${Popover} hoverOnly cls="exlat-pop" popCls="netroute-bub exlat-bub" trigger=${html`<span class="exlat">${v}</span>`}>${why}<//>`;',
                'return html`<span class="exlat" title=${why}>${v}</span>`;'),
     "dinphone": ("app.css", ".row2.dinrow>.field:first-child{flex:1 0 100%}", ".row2.dinrow>.field:first-child{flex:1}"),
-    "dinedit": ("js/screen-settings.js", "setTxt(t => confIfSet(t, k, val)); };", "0; };"),
+    "dinedit": ("js/screen-settings.js", "    setTxt(t => confIfSet(t, k, val));\n  };", "    0;\n  };"),
+    # [B18] (S9e review F12/F9/F7): a cleared "-" cell is no change; a trailing space is trimmed away; a cleared cell drawn by
+    # the generator alone, the interface-defaults template ignored
+    "dinclear": ("js/screen-settings.js", " || Object.values(dinBlank).some(Boolean)", ""),
+    "dinspace": ("js/screen-settings.js", 'val = String(v ?? "").replace(/^[ \\t]+/, "");', 'val = String(v ?? "").trim();'),
+    "dindraw": ("js/screen-settings.js", "out[k] = t && !sl ? t : String(g[k]);", "out[k] = String(g[k]);"),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
 }
 WEB = ROOT
@@ -1124,13 +1129,14 @@ try:
             check("[B18] (S9d) the vault left locked: the sheet says an unlock before a reload keeps it — not \"not kept anywhere\"",
                   "Not kept yet — the encryption key is locked" in _ltxt and "not kept anywhere" not in _ltxt, _ltxt[:300])
             close_modals(tab)
-            # (S9e) the port and the parameters typed on create reach the router config; the edit sheet shows them as fields
+            # (S9e) the port and the parameters typed on create reach the router config; the edit sheet shows them as fields.
+            # 43860/43861: outside 42821–42899, so no exit an earlier block drew sits there (review F11: ~7% of runs collided)
             SETIN = ("(() => { const s = %s; const i = s && (%s); if (!i) return false; const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
                      " set.call(i, %s); i.dispatchEvent(new Event('input', {bubbles: true})); return true; })()")
             CELL = "[...s.querySelectorAll('.awg-f')].map(l => (l.querySelector('span') || {}).textContent === %s ? l.querySelector('input') : null).find(Boolean)"
             click_text(tab, ".exadd button", "/Add a dial-in exit/")
             settle(tab, 600)
-            _t1 = tab.ev(SETIN % (TOP, "s.querySelector('.dinport input')", json.dumps("42860")))
+            _t1 = tab.ev(SETIN % (TOP, "s.querySelector('.dinport input')", json.dumps("43860")))
             click_text(tab, ".overlay.show .awgsw button", "/^AmneziaWG 2.0$/")
             click_text(tab, ".overlay.show .dinparams .advtoggle", "/Parameters/")
             settle(tab, 300)
@@ -1144,12 +1150,12 @@ try:
             settle(tab, 3500)
             ts = tab.ev(SHEET) or {}
             check("[B18] (S9e) a port and parameters typed on create reach the router config: the port, the MTU, S1, no I1 line",
-                  _t1 and all(_t2) and "\nEndpoint = 203.0.113.7:42860\n" in ts.get("conf", "") and "\nMTU = 1380\n" in ts.get("conf", "")
+                  _t1 and all(_t2) and "\nEndpoint = 203.0.113.7:43860\n" in ts.get("conf", "") and "\nMTU = 1380\n" in ts.get("conf", "")
                   and "\nS1 = 33\n" in ts.get("conf", "") and "\nI1 = " not in ts.get("conf", "") and "\nS2 = " in ts.get("conf", ""),
                   {"typed": [_t1, _t2], "conf": ts.get("conf", "")[:400]})
             close_modals(tab)
             st4 = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
-            tx = next((x for x in st4 if (x.get("profile") or {}).get("listen_port") == 42860), {})
+            tx = next((x for x in st4 if (x.get("profile") or {}).get("listen_port") == 43860), {})
             tab.ev("(() => { const r = [...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes(%s)); r && r.querySelector('.exg-ed').click(); })()"
                    % json.dumps(tx.get("device") or "wgx-?"))
             settle(tab, 600)
@@ -1160,22 +1166,57 @@ try:
                    " s1: c('S1'), i1: c('I1'), box: (s.querySelector('textarea.exprof') || {}).value || ''}; })()" % (TOP, CELL.replace("%s", "k")))
             ev0 = tab.ev(EDV) or {}
             check("[B18] (S9e) the edit sheet shows them as fields: the port beside the title, the MTU, S1, and I1 as - (no such line)",
-                  ev0.get("port") == "42860" and ev0.get("mtu") == "1380" and ev0.get("s1") == "33" and ev0.get("i1") == "-", ev0)
-            tab.ev(SETIN % (TOP, "s.querySelector('.dinport input')", json.dumps("42861")))
+                  ev0.get("port") == "43860" and ev0.get("mtu") == "1380" and ev0.get("s1") == "33" and ev0.get("i1") == "-", ev0)
+            tab.ev(SETIN % (TOP, "s.querySelector('.dinport input')", json.dumps("43861")))
             tab.ev(SETIN % (TOP, CELL % json.dumps("S1"), json.dumps("44")))
             settle(tab, 300)
             ev1 = tab.ev(EDV) or {}
             check("[B18] (S9e) …editing a field rewrites its line in \"This node's end\"",
-                  "\nListenPort = 42861\n" in ev1.get("box", "") and "\nS1 = 44\n" in ev1.get("box", "") and "\nI1 = " not in ev1.get("box", ""), ev1.get("box"))
+                  "\nListenPort = 43861\n" in ev1.get("box", "") and "\nS1 = 44\n" in ev1.get("box", "") and "\nI1 = " not in ev1.get("box", ""), ev1.get("box"))
             shot(tab, "b18-edit-params-%s-%d" % (lang, vp[0]))
             click_text(tab, ".overlay.show .sheet-foot button", "/^Save/")
             settle(tab, 2500)
             st5 = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
             tx5 = next((x for x in st5 if x.get("id") == tx.get("id")), {})
-            check("[B18] (S9e) …and Save stores them (port 42861, S1 44)",
-                  (tx5.get("profile") or {}).get("listen_port") == 42861 and str(((tx5.get("profile") or {}).get("awg") or {}).get("S1")) == "44",
+            check("[B18] (S9e) …and Save stores them (port 43861, S1 44)",
+                  (tx5.get("profile") or {}).get("listen_port") == 43861 and str(((tx5.get("profile") or {}).get("awg") or {}).get("S1")) == "44",
                   tx5.get("profile"))
             close_modals(tab)
+            # (S9e review F7/F9/F12) a second edit: clearing a "-" cell alone is a change Save draws; a cleared cell is drawn as
+            # create draws it (the interface-defaults template's Jc 7 here, not the generator's 4); a trailing space survives typing
+            _sg = call("GET", "/api/state")[1]
+            _ps0 = ((_sg.get("data", _sg) or {}).get("panel_settings") or {}).get("interface_defaults") or {}
+            must(call("POST", "/api/panel/settings", {"interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25, **_ps0,
+                                                                             "awg_params": {"Jc": "7"}}}), "an interface-defaults template")
+            settle(tab, 6000)                    # the next poll carries it to the browser
+            tab.ev("(() => { const r = [...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes(%s)); r && r.querySelector('.exg-ed').click(); })()"
+                   % json.dumps(tx.get("device") or "wgx-?"))
+            settle(tab, 600)
+            click_text(tab, ".overlay.show .dinparams .advtoggle", "/Parameters/")
+            settle(tab, 300)
+            SAVEOFF = "(() => { const s = %s; const b = s && [...s.querySelectorAll('.sheet-foot button')].find(b => /^Save/.test(b.textContent)); return b ? b.disabled : null; })()" % TOP
+            CELLV = "(() => { const s = %s; const i = s && (%s); return i ? i.value : null; })()"
+            _off0 = tab.ev(SAVEOFF)
+            tab.ev(SETIN % (TOP, CELL % json.dumps("I1"), json.dumps("")))
+            settle(tab, 200)
+            _off1 = tab.ev(SAVEOFF)
+            check("[B18] (S9e) clearing a cell that reads - (no such line) is a change: Save is enabled", _off0 is True and _off1 is False, (_off0, _off1))
+            tab.ev(SETIN % (TOP, CELL % json.dumps("I2"), json.dumps("<r ")))
+            settle(tab, 200)
+            _sp = tab.ev(CELLV % (TOP, CELL % json.dumps("I2")))
+            check("[B18] (S9e) …a trailing space typed into a cell stays (\"<r \" on the way to \"<r 32>\")", _sp == "<r ", repr(_sp))
+            tab.ev(SETIN % (TOP, CELL % json.dumps("I2"), json.dumps("<r 32>")))
+            tab.ev(SETIN % (TOP, CELL % json.dumps("Jc"), json.dumps("")))
+            settle(tab, 300)
+            click_text(tab, ".overlay.show .sheet-foot button", "/^Save/")
+            settle(tab, 2500)
+            st6 = [x for n in call("GET", "/api/nodes")[1].get("data", {}).get("nodes", []) if n.get("id") == NID for x in (n.get("exits") or [])]
+            a6 = (next((x for x in st6 if x.get("id") == tx.get("id")), {}).get("profile") or {}).get("awg") or {}
+            check("[B18] (S9e) …Save draws the cleared cells as create does: I1 drawn, Jc the template's 7, I2 as typed",
+                  str(a6.get("I1") or "").strip() != "" and str(a6.get("Jc")) == "7" and a6.get("I2") == "<r 32>", a6)
+            close_modals(tab)
+            must(call("POST", "/api/panel/settings", {"interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25, **_ps0,
+                                                                             "awg_params": _ps0.get("awg_params") or {}}}), "the template back")
             click_text(tab, ".exadd button", "/Add a dial-in exit/")
             settle(tab, 600)
         click_text(tab, ".overlay.show .linkbtn", "/Paste the server config instead|Вставьте серверный конфиг/")

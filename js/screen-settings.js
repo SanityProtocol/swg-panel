@@ -4341,43 +4341,63 @@ function dialinHints() {          // a blank 2.0 cell: the interface-defaults te
   const tpl = ((Store.panelSettings || {}).interface_defaults || {}).awg_params || {}, b = awgBlankHints();
   return Object.fromEntries(AWG_KEYS.map(k => { const t = String(tpl[k] ?? "").trim(); return [k, t === "-" ? T("val|none") : t || b[k]]; }));
 }
-// which protocol a stored set is — the server's own reading: a HeaderProtectionKey is 3.1, any 2.0 key is 2.0
-const dialinProto = awg => (awg || {}).HeaderProtectionKey ? "awg3" : AWG_KEYS.some(k => String((awg || {})[k] ?? "").trim() !== "") ? "awg2" : "wg";
-// the cells a blank is drawn for: the 2.0 generator, and for 3.1 the value its cell shows (the 3.1 defaults)
+// which protocol a stored set is — the server's own reading: a HeaderProtectionKey is 3.1 (awgDict3), any 2.0 key is 2.0
+const dialinProto = awg => awgDict3(awg) ? "awg3" : AWG_KEYS.some(k => String((awg || {})[k] ?? "").trim() !== "") ? "awg2" : "wg";
+// what a blank cell becomes, as the server draws it on create: the interface-defaults template's value ("-": no such line),
+// else the 2.0 generator — for 3.1 a template S under 12 is not taken (the server's rule) — and for the 3.1 cells the value
+// they show (the 3.1 defaults)
 function dialinDraw(proto, awg, fresh) {     // `fresh`: S1–S4 and H1–H4 drawn anew too (the edit sheet's Generate)
   const g = genAwg(), h3 = mesh3Hints(false), out = { ...(awg || {}) };
-  for (const k of AWG_KEYS)
-    if (String(out[k] ?? "").trim() === "" || (fresh && /^[SH][1-4]$/.test(k) && String(out[k]).trim() !== "-")) out[k] = String(g[k]);
+  const tpl = ((Store.panelSettings || {}).interface_defaults || {}).awg_params || {};
+  for (const k of AWG_KEYS) {
+    const t = String(tpl[k] ?? "").trim(), sl = /^S[1-4]$/.test(k) && proto === "awg3" && !(/^[0-9]+$/.test(t) && +t >= 12);
+    if (String(out[k] ?? "").trim() === "") out[k] = t && !sl ? t : String(g[k]);
+    else if (fresh && /^[SH][1-4]$/.test(k) && String(out[k]).trim() !== "-") out[k] = String(g[k]);
+  }
   if (proto === "awg3") for (const k of AWG3_EDIT_COLS.flat())
     if (String(out[k] ?? "").trim() === "" && String(h3[k] ?? "").trim()) out[k] = h3[k] === T("val|none") ? "-" : String(h3[k]);
   return out;
 }
-function DialinParams({ proto, awg, onAwg, open: open0, edit }) {
-  const [open, setOpen] = useState(!!open0);
-  const a = awg || {}, isSet = Object.values(a).some(x => String(x ?? "").trim() !== "");
+function DialinParams({ proto, awg, onAwg, edit }) {
+  const [open, setOpen] = useState(false);
+  // "(auto)" while no cell of the protocol SHOWN holds anything (a 3.1 cell typed before a switch to 2.0 is not shown)
+  const a = awg || {}, isSet = [...AWG_KEYS, ...(proto === "awg3" ? AWG3_EDIT_COLS.flat() : [])].some(k => String(a[k] ?? "").trim() !== "");
   if (proto === "wg") return null;
   return html`<div class="dinparams"><button type="button" class="advtoggle" aria-expanded=${open ? "true" : "false"} onClick=${() => setOpen(!open)}>
       <span class="advcaret">${open ? "▾" : "▸"}</span> ${T("Parameters")}${isSet ? "" : html` <span class="faint" style="font-weight:400">${T("(auto)")}</span>`}</button>
     ${open ? html`<div class="field dinparams-body">
-      ${proto !== "wg" ? html`<${AwgGrid} value=${a} onChange=${onAwg} placeholders=${dialinHints()}
-        omit=${T("Type - in a cell for no such line on the router either; a blank cell is drawn — the value shown in it, or a random one.")}/>` : null}
+      <${AwgGrid} value=${a} onChange=${onAwg} placeholders=${dialinHints()}
+        omit=${T("Type - in a cell for no such line on the router either; a blank cell is drawn — the value shown in it, or a random one.")}/>
       ${proto === "awg3" ? html`<div style="margin-top:14px"><${Awg3Grid} value=${a} onKey=${(k, x) => onAwg({ ...a, [k]: x })} placeholders=${mesh3Hints(false)}
         hpk=${a.HeaderProtectionKey ? T("val|set") : T("val|generated")} rt=${T("val|on")}
         hpkTip=${T("Drawn for this exit; the router's config carries the same key.")} rtTip=${T("On for every AmneziaWG 3.1 exit.")}/></div>` : null}
-      ${proto !== "wg" ? html`<div class="dinparams-acts"><button type="button" class="btn btn-mini" onClick=${() => onAwg(dialinDraw(proto, a, edit))}
+      <div class="dinparams-acts"><button type="button" class="btn btn-mini" onClick=${() => onAwg(dialinDraw(proto, a, edit))}
           title=${edit ? T("S1–S4 and H1–H4 are drawn anew, and every blank cell — the router has to import its config again.") : null}>
           <${Ic} i="refresh"/>${T("Generate a set")}</button>${isSet && !edit ? html`<button type="button" class="btn btn-mini"
-          onClick=${() => { onAwg(Object.fromEntries(Object.entries(a).filter(([k]) => !AWG_KEYS.includes(k) && !AWG3_EDIT_COLS.flat().includes(k)))); }}>${T("Clear (auto)")}</button>` : null}</div>` : null}
+          onClick=${() => onAwg({})}>${T("Clear (auto)")}</button>` : null}</div>
     </div>` : null}</div>`;
 }
-// "This node's end" as fields: a line of its [Interface] read, written (a value), or taken out ("-" or blank)
-const confIfLine = (txt, k) => { const m = new RegExp("^[ \\t]*" + k + "[ \\t]*=[ \\t]*(.*?)[ \\t]*$", "mi").exec(String(txt).split(/^\s*\[Peer\]/mi)[0]); return m ? m[1] : null; };
+// "This node's end" as fields: a line of its [Interface] read, written (a value), or taken out ("-" or blank). The
+// [Interface] section wherever it stands (a paste may put [Peer] first), else what comes before any section; a key's LAST
+// line, as the parser reads it.
+function confIfSpan(s) {
+  const m = /^[ \t]*\[Interface\][^\n]*(?:\n|$)/mi.exec(s), from = m ? m.index + m[0].length : 0, nx = /^[ \t]*\[/m.exec(s.slice(from));
+  return [from, nx ? from + nx.index : s.length];
+}
+const confIfRe = k => new RegExp("^[ \\t]*" + k + "[ \\t]*=[ \\t]*(.*)(?:\\n|$)", "gmi");
+const confIfLine = (txt, k) => {
+  const s = String(txt), [a, b] = confIfSpan(s), all = [...s.slice(a, b).matchAll(confIfRe(k))];
+  return all.length ? all[all.length - 1][1].replace(/\r$/, "") : null;
+};
 function confIfSet(txt, k, v) {
-  const parts = String(txt).split(/(?=^\s*\[Peer\])/mi), head = parts[0], rest = parts.slice(1).join("");
-  const re = new RegExp("^[ \\t]*" + k + "[ \\t]*=.*$\\n?", "mi"), val = String(v ?? "").trim();
-  if (val === "" || val === "-") return head.replace(re, "") + rest;
-  if (re.test(head)) return head.replace(re, k + " = " + val + "\n") + rest;
-  return head.replace(/\n*$/, "\n") + k + " = " + val + "\n" + (rest ? "\n" + rest.replace(/^\n+/, "") : "");
+  // a trailing space is kept: typing "<r 32>" passes through "<r " (review F9)
+  const s = String(txt), [a, b] = confIfSpan(s), sec = s.slice(a, b), val = String(v ?? "").replace(/^[ \t]+/, "");
+  const keep = !["", "-"].includes(val.trim()), line = k + " = " + val + "\n", hits = [...sec.matchAll(confIfRe(k))];
+  let out = "", at = 0;                     // the last line rewritten in place, any earlier copy taken out
+  hits.forEach((h, i) => { out += sec.slice(at, h.index) + (keep && i === hits.length - 1 ? line : ""); at = h.index + h[0].length; });
+  out += sec.slice(at);
+  if (keep && !hits.length) { const body = out.replace(/\n*$/, ""); out = (body ? body + "\n" : "") + line + out.slice(body.length).replace(/^\n/, ""); }
+  return s.slice(0, a) + out + s.slice(b);
 }
 
 /** Generate a dial-in exit: a title, the port and the protocol, the parameters under it; the keys are made on Create. The
@@ -4443,12 +4463,16 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
   const dinKeys = dinProto === "wg" ? [] : [...AWG_KEYS, ...(dinProto === "awg3" ? AWG3_EDIT_COLS.flat() : [])];
   const dinAwg = Object.fromEntries(dinKeys.map(k => [k, dinBlank[k] ? "" : (confIfLine(txt, k) ?? "-")]));
   const dinPort0 = String((ex.profile || {}).listen_port || "");
-  const dinLine = (k, val) => { dirtyRef.current = true; setDinBlank(b => ({ ...b, [k]: String(val ?? "").trim() === "" })); setTxt(t => confIfSet(t, k, val)); };
+  const dinLine = (k, val) => {
+    dirtyRef.current = true;
+    if (dinKeys.includes(k)) setDinBlank(b => ({ ...b, [k]: String(val ?? "").trim() === "" }));   // a cleared cell is drawn on Save
+    setTxt(t => confIfSet(t, k, val));
+  };
   const dinAwgSet = d => { for (const k of dinKeys) if (String(d[k] ?? "") !== String(dinAwg[k] ?? "")) dinLine(k, d[k]); };
   const stored = (node.exits || []).find(x => String(x.id) === String(ex.id)) || {};
   // The three things this sheet can edit, plus the config box. A NEW exit is always dirty: there is nothing
   // to compare against and the operator has to be able to press Save.
-  const dirty = isNew || txt !== txt0
+  const dirty = isNew || txt !== txt0 || Object.values(dinBlank).some(Boolean)   // a "-" cleared changes no line yet (F12)
     || ["label", "dial_src", "licence"].some(k => String(v[k] ?? "") !== String(ex[k] ?? ""));
   const save = async () => {
     setBusy(true); setMsg("");
@@ -4506,12 +4530,13 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
         <input inputmode="numeric" value=${confIfLine(txt, "ListenPort") ?? ""} placeholder=${dinPort0}
           onInput=${e => dinLine("ListenPort", e.target.value)}/></div>
         <div class="field dinmtu"><label>${T("MTU")}</label>
-          <input inputmode="numeric" value=${dinBlank.MTU ? "" : (confIfLine(txt, "MTU") ?? "")} placeholder="1280"
+          <input inputmode="numeric" value=${confIfLine(txt, "MTU") ?? ""} placeholder="1280"
             onInput=${e => dinLine("MTU", e.target.value)}/></div>` : null}
       ${isDialin ? null : html`<div class="field"><label>${T("Connect from")}</label>
         <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>`}
     </div>
-    ${isDialin && !isNew ? html`<${DialinParams} edit proto=${dinProto} awg=${dinAwg} onAwg=${dinAwgSet}/>` : null}
+    ${isDialin && !isNew ? html`<${DialinParams} edit proto=${dinProto} onAwg=${dinAwgSet}
+      awg=${dinProto === "awg3" ? { ...dinAwg, HeaderProtectionKey: confIfLine(txt, "HeaderProtectionKey") || "" } : dinAwg}/>` : null}
     ${isProf
       ? html`<div class="field"><label>${isDialin ? T("This node's end") : T("Configuration")}</label>
           <textarea class="exprof" rows="11" spellcheck="false" value=${txt}
@@ -4729,8 +4754,10 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                      sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows.
                      S9e: no ping to be had (no reply, or a dial-in exit with no server) — the trace's TCP handshake through the tunnel
                      stands in, marked ~ and said in the hover: one round trip to Cloudflare's nearest server, a little over the exit
-                     alone. A WARP exit answers ping; its own figure is never replaced. */""}
-            ${(() => { const why = !Number.isFinite(l.ping_ms) && Number.isFinite((l.trace || {}).tcp_ms)
+                     alone. Only for a pasted WireGuard/AmneziaWG exit (custom or dial-in): a WARP exit's handshake ends at
+                     Cloudflare's edge (~2 ms) and an adopted TUN exit's netstack answers it on the node itself. */""}
+            ${(() => { const tcp = exitProv(ex) === "profile" && !Number.isFinite(l.ping_ms) && Number.isFinite((l.trace || {}).tcp_ms);
+              const why = tcp
               ? (exitIsDialin(ex)
                 ? T("Measured through the tunnel: one round trip from this node through the router to Cloudflare's nearest server. The router dials this node, so there is no server of its own to ping.")
                 : T("The exit's server answers no ping, so this is measured through the tunnel: one round trip from this node through the exit to Cloudflare's nearest server — a little more than the exit alone."))
@@ -4745,7 +4772,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
               : T("Round trip from this node to the exit's own server.");
               const v = Number.isFinite(l.ping_ms)
               ? T("{v1} ms", { v1: l.ping_ms })
-              : Number.isFinite((l.trace || {}).tcp_ms)
+              : tcp
               ? T("~{v1} ms", { v1: Math.round(l.trace.tcp_ms * 10) / 10 })
               : html`<span class="faint">—</span>`;
               return html`<${Popover} hoverOnly cls="exlat-pop" popCls="netroute-bub exlat-bub" trigger=${html`<span class="exlat">${v}</span>`}>${why}<//>`; })()}</div>
