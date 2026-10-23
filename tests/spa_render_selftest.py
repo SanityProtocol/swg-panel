@@ -152,13 +152,13 @@ PERTURBATIONS = {
     # [B18] (batch C): the open sheet follows a queued keep that an unlock kept (s9d F11); Regenerate asks once (s9c F59/F61)
     "rfollow": ("js/screen-settings.js", '  const kept = kept0 !== EXIT_KEEP_LOCKED ? kept0 : ks === null ? true : ks === "queued" ? EXIT_KEEP_LOCKED : ks;', '  const kept = kept0;'),
     "rbusy": ("js/screen-settings.js", "    if (REGEN_BUSY.on) return;\n", ""),
-    "rfwd": ("js/screen-settings.js", "+ `iptables -I FORWARD -i ${tag} -j ${tag}-fwd\\n`", "+ ``"),
+    "rfwd": ("js/screen-settings.js", "+ `iptables -C FORWARD -i ${tag} -j ${tag}-fwd 2>/dev/null || iptables -I FORWARD -i ${tag} -j ${tag}-fwd\\n`", "+ ``"),
     # [B18] (S9d verify F8 + s9d-f8-lan F3–F5): the tunnel's own chain drops the private ranges (a one-NIC box's LAN is
     # behind the uplink itself), lets out the uplink only and drops the rest (a tailnet, a second NIC); new connections
     # from the tunnel to the box itself are dropped
     "rlan": ("js/screen-settings.js", "-d 10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16 -j DROP", "-d 198.51.100.0/24 -j DROP"),
-    "rrest": ("js/screen-settings.js", "iptables -A ${tag}-fwd -j DROP\\n", "iptables -A ${tag}-fwd -j ACCEPT\\n"),
-    "rinput": ("js/screen-settings.js", "+ `iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\\n`", "+ ``"),
+    "rrest": ("js/screen-settings.js", "-A ${tag}-fwd -j DROP\\nCOMMIT", "-A ${tag}-fwd -j ACCEPT\\nCOMMIT"),
+    "rinput": ("js/screen-settings.js", "+ `iptables -C INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP 2>/dev/null || iptables -I INPUT -i ${tag} -m conntrack ! --ctstate RELATED,ESTABLISHED -j DROP\\n`", "+ ``"),
     # [B18] (S9e, operator 10-23): Download and Copy one per row at the QR's width in every language, not side by side in EN
     "rstack": ("app.css", ".rconf-acts{display:flex;flex-direction:column;gap:6px}", ".rconf-acts{display:flex;flex-wrap:wrap;gap:6px}"),
     # [B18] (S9e): what was typed on create never reaches the generator; an edit-sheet field never reaches the text saved
