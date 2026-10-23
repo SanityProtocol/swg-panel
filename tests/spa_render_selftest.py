@@ -71,7 +71,7 @@ to fetch dynamically imported module peer-ui.js") is opened again, once, and say
 only a fresh tab can load it. A second failure stands.
 Run: python3 tests/spa_render_selftest.py      (0 = pass)
      --flake-first-load  blocks js/peer-ui.js in the first tab only and expects GREEN, with one retry line
-     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone | tcplat
+     --perturb-<name>  serves a copy of the SPA with one fix undone and expects RED: group-count | cap | cursor | total | flip | grow | netonline | netbubble | icons | lanwidth | phonebar | rutight | railclear | cmdhost | rqr | rkeep | rregen | rmark | rguard | rcancel | rfit | rside | rkind | rwhy | rlocked | rfwd | rlan | rrest | rinput | rstack | dintyped | dinedit | dinphone | tcplat | latbub
                        | probebtn | gwclick | pillwidth | chipsend | footsize | footwidth | arxguard | arxtyped | csqguard | arpw
 """
 import base64, http.client, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
@@ -162,6 +162,8 @@ PERTURBATIONS = {
     "dintyped": ("js/screen-settings.js", "psk, ...(typed || {}) } };", "psk } };"),
     # [B18] (S9e): an exit with no ping shows "—" again although the tunnel's time is measured
     "tcplat": ("js/screen-settings.js", '              : Number.isFinite((l.trace || {}).tcp_ms)\n              ? T("~{v1} ms"', '              : false\n              ? T("~{v1} ms"'),
+    "latbub": ("js/screen-settings.js", 'return html`<${Popover} hoverOnly cls="exlat-pop" popCls="netroute-bub exlat-bub" trigger=${html`<span class="exlat">${v}</span>`}>${why}<//>`;',
+               'return html`<span class="exlat" title=${why}>${v}</span>`;'),
     "dinphone": ("app.css", ".row2.dinrow>.field:first-child{flex:1 0 100%}", ".row2.dinrow>.field:first-child{flex:1}"),
     "dinedit": ("js/screen-settings.js", "setTxt(t => confIfSet(t, k, val)); };", "0; };"),
     "rkeep": ("js/screen-settings.js", "    const kept = await exitKeepRouter(node.id, rec.id, rk.pub, rk.priv, nk.pub, nk.priv);", "    const kept = false;"),
@@ -917,11 +919,16 @@ try:
         check("[B18] %s: the row wears %s and waits for the router on UDP 51830" % (tag, "«Обратный»" if ru else "Dial-in"),
               bool(row) and ("Обратный" if ru else "Dial-in") in row["text"] and "51830" in row["dot"]
               and ("роутера" if ru else "router") in row["dot"], row)
-        lat = tab.ev("(() => { const r = [...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes('wgx-d1a1d1a1'));"
-                     " const c = r && r.querySelector('.exg-c.c.mono');"   # the latency cell: the centred mono one (the IP's is not centred)
-                     " return c ? {text: c.textContent.trim(), title: c.title} : null; })()") or {}
-        check("[B18] (S9e) %s: no server to ping, so the latency is the tunnel's — ~53.3 %s, its hover saying it is measured through the router" % (tag, "мс" if ru else "ms"),
-              lat.get("text") == ("~53.3 мс" if ru else "~53.3 ms") and ("через роутер" if ru else "through the router") in lat.get("title", ""), lat)
+        LATC = "[...document.querySelectorAll('.exgrid .exg-r')].find(r => r.textContent.includes('wgx-d1a1d1a1')).querySelector('.exg-c.c.mono .exlat')"
+        lat = tab.ev("(() => { const c = %s; return c ? {text: c.textContent.trim(), title: c.closest('.exg-c').title || ''} : null; })()" % LATC) or {}
+        _hv = hover(tab, LATC)
+        settle(tab, 400)
+        lat["bubble"] = tab.ev("(document.querySelector('.deppop.exlat-bub') || {}).textContent || ''") or ""
+        shot(tab, "b18-latbub-%s-%d" % (lang, vp[0]))
+        unhover(tab)
+        check("[B18] (S9e) %s: no server to ping, so the latency is the tunnel's — ~53.3 %s, and its BUBBLE (not a native title) says it is measured through the router" % (tag, "мс" if ru else "ms"),
+              lat.get("text") == ("~53.3 мс" if ru else "~53.3 ms") and not lat.get("title") and _hv
+              and ("через роутер" if ru else "through the router") in lat.get("bubble", ""), lat)
         shot(tab, "b18-row-%s-%d" % (lang, vp[0]))
         clicked = click_text(tab, ".exadd button", "/Add a dial-in exit|Добавить обратный выход/")
         settle(tab, 600)

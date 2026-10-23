@@ -3008,6 +3008,8 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .dinparams .advtoggle{margin-top:4px}
 .dinparams-body{margin-top:10px}
 .dinparams-acts{margin-top:12px;display:flex;gap:8px;justify-content:flex-end}
+/* S9e: an exit's latency, its explanation in the panel's bubble; "~53.3 ms" never splits across two lines */
+.exlat{white-space:nowrap}
 .rsteps{margin:6px 0 0;padding-left:22px;font-size:13px;line-height:1.5;color:var(--ink-2)}
 .rsteps li+li{margin-top:8px}
 .rsteps .netsnip{margin:6px 0 0}

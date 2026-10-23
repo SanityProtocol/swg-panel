@@ -4723,13 +4723,14 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                 varies is not a latency column. The through-tunnel figure is still measured and lives in the
                 hover, where it answers the different question it actually answers. An em dash when the node
                 cannot measure it: an invented number is worse than an absent one. */""}
-          <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}
-            title=${/* An up exit whose ping came back null: no reply reached this node — most often a firewalled VPS that drops ICMP, and
-                     the dash alone read as "custom exits have no latency" (operator, 2026-10-17). ⚠️ `=== null` ON PURPOSE: an older node
+          <div class="exg-c c clk mono" onClick=${() => openEdit(ex)}>
+            ${/* The hover is the panel's own bubble, not a native title (operator, 10-23). An up exit whose ping came back
+                     null: no reply reached this node — most often a firewalled VPS that drops ICMP, and the dash alone read as "custom exits have no latency" (operator, 2026-10-17). ⚠️ `=== null` ON PURPOSE: an older node
                      sends no field (undefined) and keeps the plain hover. The through-tunnel time, when measured, still follows.
                      S9e: no ping to be had (no reply, or a dial-in exit with no server) — the trace's TCP handshake through the tunnel
                      stands in, marked ~ and said in the hover: one round trip to Cloudflare's nearest server, a little over the exit
-                     alone. A WARP exit answers ping; its own figure is never replaced. */""}${!Number.isFinite(l.ping_ms) && Number.isFinite((l.trace || {}).tcp_ms)
+                     alone. A WARP exit answers ping; its own figure is never replaced. */""}
+            ${(() => { const why = !Number.isFinite(l.ping_ms) && Number.isFinite((l.trace || {}).tcp_ms)
               ? (exitIsDialin(ex)
                 ? T("Measured through the tunnel: one round trip from this node through the router to Cloudflare's nearest server. The router dials this node, so there is no server of its own to ping.")
                 : T("The exit's server answers no ping, so this is measured through the tunnel: one round trip from this node through the exit to Cloudflare's nearest server — a little more than the exit alone."))
@@ -4741,12 +4742,13 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
                 : T("No ping reply from the exit's server — it may not answer ping — so its latency can't be measured."))
               : Number.isFinite((l.trace || {}).rtt_ms)
               ? T("Round trip from this node to the exit's own server. A request through the tunnel to a public site takes {v1} ms, which also includes however far that site is.", { v1: (l.trace || {}).rtt_ms })
-              : T("Round trip from this node to the exit's own server.")}>
-            ${Number.isFinite(l.ping_ms)
+              : T("Round trip from this node to the exit's own server.");
+              const v = Number.isFinite(l.ping_ms)
               ? T("{v1} ms", { v1: l.ping_ms })
               : Number.isFinite((l.trace || {}).tcp_ms)
               ? T("~{v1} ms", { v1: Math.round(l.trace.tcp_ms * 10) / 10 })
-              : html`<span class="faint">—</span>`}</div>
+              : html`<span class="faint">—</span>`;
+              return html`<${Popover} hoverOnly cls="exlat-pop" popCls="netroute-bub exlat-bub" trigger=${html`<span class="exlat">${v}</span>`}>${why}<//>`; })()}</div>
           <div class="exg-c c" onClick=${stop}><${Switch} on=${!!ex.killswitch} title=${KS_TITLE()}
             onChange=${x => write(exits.map(y => (y.id === ex.id ? { ...y, killswitch: x } : y)))}/></div>
           <div class="exg-c c" onClick=${stop}><${Switch} on=${!off} title=${ACTIVE_TITLE()}
