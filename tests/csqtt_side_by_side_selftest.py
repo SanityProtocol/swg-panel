@@ -11,9 +11,11 @@ csqtt1 read it as already gone and the guard pulled its live TUN.
   node (swg-noded imported; hermetic but for [2], which reads a real running process's binary):
   [1] candidates  a stock 2.1.9 (no --iface, /etc/csqtt) and our 2.5 beside it (--iface csqtt25) are two candidates with
                   their own iface, subnet and line; our own supervised instance is not one
-  [2] version     the version is read from the binary of a REAL running process (/proc/<pid>/exe): a 2.5.0 label is
-                  line 2.5, 2.1.9 is 2.1, no label is 2.1, 2.6.0 is "2.6"; an unreadable binary is None and not cached
-  [3] stop        the take-over of csqtt1 stops the stock server and never the 2.5 one, and the reverse
+  [2] version     the version is read from the binary of a REAL running process (/proc/<pid>/exe): 2.5.0, 2.5.0-rc1 and
+                  2.5 are line 2.5; 2.1.9 and 2.0.0 are 2.1; 2.3.0 and 2.6.0 their own (refused); no label is "" (every
+                  csqtt build carries one — a wrapper's binary does not); an unreadable binary is None, kept a minute
+  [3] stop        the take-over of csqtt1 stops the stock server and never the 2.5 one, and the reverse; the config
+                  dir compares normalised (a trailing slash)
   [4] staletun    a new csqtt1 of ours never deletes the TUN a live stock server holds; with none live it does
   panel (a real panel on 127.0.0.1, snapshots pushed over /api/node/sync):
   [5] adopt       the 2.5 candidate is adopted with line 2.5 and the next reply asks for 2.5's build; the 2.1 one with no
@@ -23,7 +25,8 @@ csqtt1 read it as already gone and the guard pulled its live TUN.
 
 Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
-                       nocache [2] · adopt21 [5] · nocheck [6]
+                       rawcfg [3] ·
+                       nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, types
 import urllib.error, urllib.request
@@ -34,10 +37,16 @@ NODED = os.environ.get("SWG_NODED") or os.path.join(ROOT, "swg-noded")
 SERVER = os.environ.get("SWG_PANEL") or os.path.join(ROOT, "swg-panel-server")
 
 PLANTS = {   # name: (sections, file, anchor, replacement)
-    "noline": (("[1]", "[5]"), "noded", '''                    "version": ver or "", "line": _csqtt_line_of_version(ver) if ver is not None else "",''', ""),
+    "noline": (("[1]", "[5]"), "noded", '''                    "version": ver or "", "line": _csqtt_line_of_version(ver),''', ""),
     "bareiface": (("[3]", "[4]"), "noded", '''    return (fl.get("iface") or "").strip() or CSQTT_DEFAULT_IFACE''', '''    return (fl.get("iface") or "").strip()'''),
-    "nocfg": ("[3]", "noded", '''                     and (not cfgdir or (f.get("config-dir") or "").strip() == cfgdir)\n''', ""),
-    "nocache": ("[2]", "noded", '''    if ver is not None:\n        _CSQTT_EXEVER[pid] = (now, ver)''', '''    _CSQTT_EXEVER[pid] = (now, ver)'''),
+    "nocfg": ("[3]", "noded", '''                     and (not cfgdir or os.path.normpath((f.get("config-dir") or "").strip() or "/") == os.path.normpath(cfgdir))\n''', ""),
+    "rawcfg": ("[3]", "noded", '''                     and (not cfgdir or os.path.normpath((f.get("config-dir") or "").strip() or "/") == os.path.normpath(cfgdir))''',
+               '''                     and (not cfgdir or (f.get("config-dir") or "").strip() == cfgdir)'''),
+    "nocache": ("[2]", "noded", '''    _CSQTT_EXEVER[pid] = (now, ver)\n    return ver''', '''    if ver:\n        _CSQTT_EXEVER[pid] = (now, ver)\n    return ver'''),
+    "failttl": ("[2]", "noded", '''(_CSQTT_EXEVER_TTL if hit[1] is not None else _CSQTT_EXEVER_FAIL_TTL)''', '''_CSQTT_EXEVER_TTL'''),
+    "nolabel21": ("[2]", "noded", '''    if not m:\n        return ""\n    mm = ''', '''    if not m:\n        return CSQTT_DEFAULT_LINE\n    mm = '''),
+    "strictre": ("[2]", "noded", r"""rb'aria-label="v(\d{1,3}\.\d{1,3}[0-9A-Za-z.+~-]{0,24}) by amurcanov"'""", r"""rb'aria-label="v(\d{1,3}\.\d{1,3}\.\d{1,4}) by amurcanov"'"""),
+    "mid21": ("[2]", "noded", '''    return CSQTT_DEFAULT_LINE if mm in ("2.0", "2.1") else mm''', '''    return CSQTT_DEFAULT_LINE if mm < "2.5" else mm'''),
     "adopt21": ("[5]", "panel", '''                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_ln), "code": "node_too_old"}
                 inst["line"] = _ln''', '''                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_ln), "code": "node_too_old"}
                 pass'''),
@@ -131,7 +140,8 @@ try:
         os.chmod(p, 0o755)
         pr = subprocess.Popen([p, "30"]); procs.append(pr)
         return pr.pid
-    want = {"2.5.0": ("2.5.0", "2.5"), "2.1.9": ("2.1.9", "2.1"), "": ("", "2.1"), "2.6.0": ("2.6.0", "2.6")}
+    want = {"2.5.0": ("2.5.0", "2.5"), "2.1.9": ("2.1.9", "2.1"), "2.0.0": ("2.0.0", "2.1"), "": ("", ""),
+            "2.6.0": ("2.6.0", "2.6"), "2.5.0-rc1": ("2.5.0-rc1", "2.5"), "2.5": ("2.5", "2.5"), "2.3.0": ("2.3.0", "2.3")}
     pids = {lab: spawn(lab) for lab in want}
     time.sleep(0.2)
     for lab, (ver, line) in want.items():
@@ -139,8 +149,15 @@ try:
         check("label %-7r → version %r, line %s" % (lab, ver, line),
               got == ver and N2._csqtt_line_of_version(got) == line, (got, N2._csqtt_line_of_version(got or "")))
     dead = subprocess.Popen(["true"]); dead.wait()
-    check("an unreadable binary (no such process) is None", N2._csqtt_exe_version(dead.pid) is None)
-    check("…and is not cached (a failed read is no answer)", dead.pid not in N2._CSQTT_EXEVER, N2._CSQTT_EXEVER.get(dead.pid))
+    check("an unreadable binary (no such process) is None, and its line \"\" (refused)",
+          N2._csqtt_exe_version(dead.pid) is None and N2._csqtt_line_of_version(None) == "")
+    at0 = (N2._CSQTT_EXEVER.get(dead.pid) or (None,))[0]
+    check("…kept a minute, not asked again every snapshot (a privileged hop on docker)",
+          at0 is not None and N2._csqtt_exe_version(dead.pid) is None and N2._CSQTT_EXEVER[dead.pid][0] == at0, N2._CSQTT_EXEVER.get(dead.pid))
+    if at0 is not None:
+        N2._CSQTT_EXEVER[dead.pid] = (at0 - N2._CSQTT_EXEVER_FAIL_TTL - 1, None)
+        N2._csqtt_exe_version(dead.pid)
+        check("…and asked again after it (a failed read is no answer)", N2._CSQTT_EXEVER[dead.pid][0] >= at0, N2._CSQTT_EXEVER.get(dead.pid))
     for pr in procs:
         pr.kill()
 
@@ -169,6 +186,9 @@ try:
     ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25")
     check("csqtt25: the 2.5 server is stopped, the stock 2.1.9 still runs",
           ok and set(b.kills) == {202} and 101 in b.alive, (ok, why, b.kills, b.alive))
+    b = box()
+    ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25/")
+    check("the same dir spelled with a trailing slash still finds it", ok and set(b.kills) == {202}, (ok, why, b.kills))
     b = box()
     ok, why = N._csqtt_stop_foreign("csqtt1", "/etc/other")
     check("a stop for a store this server does not serve signals nothing", not b.kills, (ok, why, b.kills))

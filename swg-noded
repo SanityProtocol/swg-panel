@@ -23396,28 +23396,31 @@ def _csqtt_iface_of(fl):
     return (fl.get("iface") or "").strip() or CSQTT_DEFAULT_IFACE
 
 
-# The csqtt VERSION a foreign server runs, read from its binary — never by running it. Every build since 2.1.9 compiles
-# amurcanov's web panel in, whose logo carries `aria-label="v<version> by amurcanov"` (ours too, --no-web or not; our
-# 2.5.1 keeps his 2.5.0 label, and only the line matters). Read through /proc/<pid>/exe, which is the binary the
-# process runs whatever mount namespace it lives in, and still there when the file was replaced on disk. ~11 MB,
-# once per process (10 min cache): candidates are re-reported every 5 s.
-_CSQTT_VER_RE = re.compile(rb'aria-label="v(\d{1,3}\.\d{1,3}\.\d{1,4}) by amurcanov"')
+# The csqtt VERSION a foreign server runs, read from its binary — never by running it. Every csqtt server build compiles
+# amurcanov's web panel in, whose logo carries `aria-label="v<version> by amurcanov"` — checked on his 2.1.9 and 2.5.0,
+# the early 2.5.0 and our 2.0.1 (labelled 2.0.0), 2.1.9-x and 2.5.1 (labelled 2.5.0: only the line matters), --no-web or
+# not. So a binary WITHOUT it is not one we can name — a wrapper (sudo, nohup, sh) whose argv carries the flags, a packed
+# build — and gets no line: the adopt is refused rather than guessed. Read through /proc/<pid>/exe, which is the binary
+# the process runs whatever mount namespace it lives in, and still there when the file was replaced on disk. ~0.3–0.8 ms
+# for 11 MB, once per process (10 min cache; a failed read 60 s): candidates are re-reported every 5 s.
+_CSQTT_VER_RE = re.compile(rb'aria-label="v(\d{1,3}\.\d{1,3}[0-9A-Za-z.+~-]{0,24}) by amurcanov"')
 _CSQTT_EXEVER = {}             # pid -> (at, version)
 _CSQTT_EXEVER_TTL = 600
+_CSQTT_EXEVER_FAIL_TTL = 60    # an unread binary is asked again after this, not every snapshot (a privileged hop on docker)
 
 def _csqtt_exe_version(pid):
-    """"2.5.0" / "2.1.9" for a running csqtt server, "" when its binary carries no label (a build before 2.1.9 —
-    the 2.1 line), None when the binary could not be read (never cached: a failed docker hop is not an answer)."""
+    """"2.5.0" / "2.1.9" for a running csqtt server, "" when its binary carries no label, None when it could not be
+    read (kept only a minute: a failed docker hop is not an answer)."""
     now = time.time()
     hit = _CSQTT_EXEVER.get(pid)
-    if hit and now - hit[0] < _CSQTT_EXEVER_TTL:
+    if hit and now - hit[0] < (_CSQTT_EXEVER_TTL if hit[1] is not None else _CSQTT_EXEVER_FAIL_TTL):
         return hit[1]
     for k in [k for k, v in _CSQTT_EXEVER.items() if now - v[0] >= _CSQTT_EXEVER_TTL]:
         _CSQTT_EXEVER.pop(k, None)
     ver = None
     with contextlib.suppress(Exception):
         if NODE_KIND == "docker":           # a HOST pid: the host shell reads it; the trailer says the read happened
-            r = host_sh("grep -a -o -m1 -E 'aria-label=\"v[0-9]+\\.[0-9]+\\.[0-9]+ by amurcanov\"' /proc/%d/exe "
+            r = host_sh("grep -a -o -m1 -E 'aria-label=\"v[0-9][^\"]{0,30} by amurcanov\"' /proc/%d/exe "
                         "2>/dev/null | head -c 200; [ -r /proc/%d/exe ] && echo CSQTT_EXE_READ; :" % (int(pid), int(pid)),
                         timeout=20)
             out = (r.stdout or "").encode()
@@ -23428,20 +23431,19 @@ def _csqtt_exe_version(pid):
             with open("/proc/%d/exe" % int(pid), "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
                 m = _CSQTT_VER_RE.search(mm)
                 ver = m.group(1).decode() if m else ""
-    if ver is not None:
-        _CSQTT_EXEVER[pid] = (now, ver)
+    _CSQTT_EXEVER[pid] = (now, ver)
     return ver
 
 
 def _csqtt_line_of_version(ver):
-    """The line a csqtt version speaks: anything before 2.5 (or unlabelled) is 2.1's wire, 2.5.x is 2.5, and a later
-    one is returned as its own "X.Y" — a line no panel offers yet, so the adopt is refused instead of guessed."""
-    with contextlib.suppress(Exception):
-        mm = tuple(int(x) for x in ver.split(".")[:2])
-        if mm < (2, 5):
-            return CSQTT_DEFAULT_LINE
-        return "%d.%d" % mm
-    return CSQTT_DEFAULT_LINE
+    """The line a labelled csqtt version speaks: 2.0.x and 2.1.x are 2.1's wire, 2.5.x is 2.5. Anything else (none was
+    ever released: upstream has 2.0.0, 2.1.9, 2.5.0) is returned as its own "X.Y" — a line no panel offers, so the
+    adopt is refused rather than guessed; an unlabelled or unread binary is "" (refused too)."""
+    m = re.match(r"(\d+)\.(\d+)", ver or "")
+    if not m:
+        return ""
+    mm = "%d.%d" % (int(m.group(1)), int(m.group(2)))
+    return CSQTT_DEFAULT_LINE if mm in ("2.0", "2.1") else mm
 
 
 def _csqtt_procs():
@@ -23498,9 +23500,9 @@ def csqtt_candidates():
         ver = _csqtt_exe_version(pid)
         out.append({"iface": iface, "pid": pid, "config_dir": cfg,
                     # Which csqtt it runs: 2.1 and 2.5 do not speak to each other, so the take-over must install the
-                    # same line or every client it serves is cut off. "" line = the binary could not be read (the
-                    # panel refuses the adopt until it can); an absent field = a node older than this.
-                    "version": ver or "", "line": _csqtt_line_of_version(ver) if ver is not None else "",
+                    # same line or every client it serves is cut off. "" line = a binary the node could not read or
+                    # name (the panel refuses the adopt); an absent field = a node older than this.
+                    "version": ver or "", "line": _csqtt_line_of_version(ver),
                     # Which container owns it, "" when it runs on the node — this is what decides ALIEN vs
                     # ORPHAN in the panel (see _proc_container).
                     "container": _proc_container(pid),
@@ -23594,7 +23596,7 @@ def _csqtt_stop_foreign(iface, cfgdir):
         # two foreign servers, and the take-over of one must never pick up the other.
         return next(((p, f) for p, f in _csqtt_procs()
                      if _csqtt_iface_of(f) == iface
-                     and (not cfgdir or (f.get("config-dir") or "").strip() == cfgdir)
+                     and (not cfgdir or os.path.normpath((f.get("config-dir") or "").strip() or "/") == os.path.normpath(cfgdir))
                      and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/")), None)
 
     def _drop_tun():
@@ -23768,7 +23770,7 @@ def reconcile_csqtt(want, remove=None):
                 # lose every one of this server's. Falls back to the plain path when no process matches.
                 _spid = next((pid for pid, f in _csqtt_procs()
                               if _csqtt_iface_of(f) == iface
-                              and (not _src or (f.get("config-dir") or "").strip() == _src)), None)
+                              and (not _src or os.path.normpath((f.get("config-dir") or "").strip() or "/") == os.path.normpath(_src))), None)
                 _pre = _csqtt_adopted_users(_src, fresh=True, pid=_spid) if _src else {}
                 if _pre:
                     inst["adopt_users"] = _pre

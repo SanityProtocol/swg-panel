@@ -331,6 +331,8 @@ export function AdoptCsqttSheet({ node, c }) {
   // the promise below is withdrawn and the operator has to accept the loss instead of being told the opposite.
   // Undefined = a node older than this signal, whose only working case was a local read; treat as read.
   const storeGone = c.store_found === false;
+  // Which csqtt line it runs, so ours starts on the same one ("" = the node couldn't name it: the panel refuses the adopt).
+  const lineUnknown = c.line === "";
   const [accept, setAccept] = useState(false);
   const doAdopt = async () => {
     setBusy(true);
@@ -341,7 +343,7 @@ export function AdoptCsqttSheet({ node, c }) {
     location.hash = "#/node/" + encodeURIComponent(node);
   };
   return html`<${Sheet} title=${T("Adopt csqtt server · {v1}", { v1: c.iface })} width=${620}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class=${"btn " + (storeGone ? "btn-danger" : "btn-primary")} disabled=${busy || (storeGone && !accept)} onClick=${doAdopt}>${storeGone ? T("Adopt without its users") : T("Adopt")}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>${T("Cancel")}</button><button class=${"btn " + (storeGone ? "btn-danger" : "btn-primary")} disabled=${busy || lineUnknown || (storeGone && !accept)} onClick=${doAdopt}>${storeGone ? T("Adopt without its users") : T("Adopt")}</button></>`}>
     ${storeGone
       ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Trich("The node *can't read this server's password store* at {v1}, so its users cannot come across. Adopting stops it and starts ours in its place with *no users at all* — everyone it is serving right now is dropped, and you have nothing to re-issue their access from.", { v1: c.config_dir })}</span></div>
         <div class="hint" style="margin:-6px 0 14px">${T("This usually means the server runs inside a container of its own, where the node can't reach its files. To keep its users, stop it and re-create the server from the panel instead.")}</div>`
@@ -353,6 +355,7 @@ export function AdoptCsqttSheet({ node, c }) {
       ${c.line != null ? html`<div class="ig-item"><span class="ig-l">${T("Version")}</span><span class="ig-v">${c.line || html`<span class="faint">${T("value|unknown")}</span>`}</span></div>` : null}
       <div class="ig-item"><span class="ig-l">${T("Users")}</span><span class="ig-v">${storeGone ? html`<span class="faint">${T("couldn't be read")}</span>` : (n || html`<span class="faint">${T("none found")}</span>`)}</span></div>
     </div>
+    ${lineUnknown ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><span>${T("The node couldn't tell which csqtt version this server runs, and taking it over on a guess could cut off its clients. Refresh in a minute; if it stays unknown, stop that server and create one from the panel.")}</span></div>` : null}
     ${n ? html`<div class="hint" style="margin:-6px 0 14px">${Trich("Adopting brings its *{count}* across — each becomes an unassigned peer you can hand to a user.", { count: plural(n, "user") })}</div>` : null}
     <div class="field"><label>${T("Server fork")}</label><${Dropdown} value=${fork} onChange=${v => setFork(v)} options=${forkOpts(forks)} ariaLabel=${T("Server fork")}/>
       <div class="hint">${T("Which csqtt server implements this instance")}</div></div>

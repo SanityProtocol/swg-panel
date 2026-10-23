@@ -30734,7 +30734,7 @@ def api(method, path, qs, body, deps):
         if "line" in _cd:
             _ln = str(_cd.get("line") or "").strip()
             if not _ln:
-                return 400, {"ok": False, **perr("the node couldn't tell which csqtt version runs on {v1} — refresh and try again", v1=iface), "code": "bad_request"}
+                return 400, {"ok": False, **perr("the node couldn't tell which csqtt version runs on {v1}, and taking it over on a guess could cut off its clients — refresh and try again; if it stays unknown, stop that server and create one from the panel", v1=iface), "code": "bad_request"}
             if _ln not in CSQTT_LINES:
                 return 400, {"ok": False, **perr("this server runs csqtt {v1}, a version this panel doesn't run — taking it over would cut off its clients", v1=(_cd.get("version") or _ln)[:16]), "code": "bad_request"}
             if _ln != CSQTT_DEFAULT_LINE:

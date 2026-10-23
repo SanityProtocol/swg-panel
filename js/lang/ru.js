@@ -5723,8 +5723,10 @@ export const STR = {
   "this node already manages a csqtt instance on {v1}": "эта нода уже управляет экземпляром csqtt на {v1}",
   "this node doesn't report a csqtt server on {v1} — refresh and try again":
     "эта нода не сообщает о сервере csqtt на {v1} — обновите и попробуйте снова",
-  "the node couldn't tell which csqtt version runs on {v1} — refresh and try again":
-    "нода не смогла определить, какая версия csqtt работает на {v1} — обновите и попробуйте снова",
+  "the node couldn't tell which csqtt version runs on {v1}, and taking it over on a guess could cut off its clients — refresh and try again; if it stays unknown, stop that server and create one from the panel":
+    "нода не смогла определить, какая версия csqtt работает на {v1}, а захват наугад может отключить его клиентов — обновите и попробуйте снова; если версия так и не определится, остановите этот сервер и создайте новый из панели",
+  "The node couldn't tell which csqtt version this server runs, and taking it over on a guess could cut off its clients. Refresh in a minute; if it stays unknown, stop that server and create one from the panel.":
+    "Нода не смогла определить, какая версия csqtt работает на этом сервере, а захват наугад может отключить его клиентов. Обновите страницу через минуту; если версия так и не определится, остановите этот сервер и создайте новый из панели.",
   "this server runs csqtt {v1}, a version this panel doesn't run — taking it over would cut off its clients":
     "этот сервер работает на csqtt {v1} — эту версию панель не запускает, и при захвате его клиенты потеряли бы связь",
   "a csqtt server this panel doesn't manage already holds {v1} on this node — adopt it from the node's page to take it over with its users, or pick another name":
