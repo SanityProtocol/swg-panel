@@ -19379,8 +19379,8 @@ def _validate_exits(exits, c, mesh_prefix="swg_", link_ifaces=(), prev=(), nics=
                     for _k, _v in (_pr.get("awg") or {}).items():
                         if str(_v).strip() != str(_ka.get(_k, "")).strip():
                             _ib = awg_value_refusal(_k, _v)
-                            if _ib:
-                                return None, _ib
+                            if _ib:      # the list is saved whole: say which exit
+                                return None, perr("{v1}: {v2}", v1=lbl or eid, v2=_ib)
                     out["profile"] = _pr
                 elif _kept:
                     out["profile"] = _kept
@@ -19583,6 +19583,9 @@ def _dialin_generate(g, kept, eid, exits, known, ctx):
             return "", "S1–S4 must be at least 12 for AmneziaWG 3.1 — header protection refuses less"
         if proto == "awg3":      # a 2.0 template's S under 12 would make awg3_full re-draw all four, the typed ones too (F8)
             _tv = {k: v for k, v in _tv.items() if not (k in ("S1", "S2", "S3", "S4") and not (str(v).isdigit() and int(v) >= 12))}
+        # a template value no app reads (one stored before template saves were checked) is drawn, as a blank is — the sheet has
+        # no cell that would let the operator fix it, and the exits save below would refuse the set over it
+        _tv = {k: v for k, v in _tv.items() if not awg_value_refusal(k, v)}
         _tv, _tom = {**{k: v for k, v in _tv.items() if k not in _uom}, **_uv}, (_tom - set(_uv)) | _uom
         awg = {} if proto == "wg" else \
             {k: v for k, v in {**gen_awg_params(), **_tv}.items() if k not in _tom and k not in AWG3_FIELDS} if proto == "awg2" else \

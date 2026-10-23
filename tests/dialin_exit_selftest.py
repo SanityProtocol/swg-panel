@@ -30,7 +30,7 @@ profile reads, signs and writes exactly as it did (compared against `eb25bad7`, 
       mesh band, or no ASCII number → refused, never a 500); an MTU used (outside 576–1500 → refused, never clamped);
       AmneziaWG cells over the template and the generator — a value used, "-" no such line, blank drawn; a typed value beats
       a template "-"; an I-line no app reads refused; the set it makes keeps the rules (Jc/Jmin/Jmax together); 3.1 S1–S4
-      ≥ 12, a template's S under 12 never re-draws the typed ones; WireGuard takes no cells
+      ≥ 12, a template's S under 12 never re-draws the typed ones; a template value no app reads is drawn; WireGuard takes no cells
   [7c] the node's port inventory (S9e): a port the host listens on is not a holder at any door — not refused to a typed
       port nor to an interface create, RAW-IP's own listener included — but never drawn; a dial-in exit's own live port is
       named after the exit; the mesh link allocator asks the same inventory (WDTT and its internal WG port, csqtt, a
@@ -70,6 +70,7 @@ Run: python3 tests/dialin_exit_selftest.py      (0 = pass)
      --perturb-awgref     the typed cells are not checked (an I-line no app reads)          → RED [7b]
      --perturb-awgrules   the set Generate makes is not held to the rules (Jc trio)        → RED [7b]
      --perturb-s3tpl      a 3.1 template S under 12 makes awg3_full re-draw the typed S     → RED [7b]
+     --perturb-tplbad     a template I-line no app reads refuses Generate                  → RED [7b]
      --perturb-meshref    a typed port in the system mesh band is accepted                 → RED [7b]
      --perturb-s4fit      a drawn S4 is not fitted to a typed MTU                          → RED [7b]
      --perturb-asciiport  a typed port is read with str.isdigit() ("²" → a 500)            → RED [7b]
@@ -140,6 +141,7 @@ PLANTS = {
     "typedawg": ("p", '        _typed = g.get("awg") if isinstance(g.get("awg"), dict) and proto != "wg" else {}', '        _typed = {}'),
     "awgref": ("p", '        _ref = awg_template_refusal(_typed, perr("this exit"), gen3=proto == "awg3", was=None) if _typed else None', "        _ref = None"),
     "awgrules": ("p", '        _ref = awg_rules(awg, perr("this exit"), gen3=proto == "awg3") if proto != "wg" else None', "        _ref = None"),
+    "tplbad": ("p", "        _tv = {k: v for k, v in _tv.items() if not awg_value_refusal(k, v)}\n", ""),
     "s3tpl": ("p", '        if proto == "awg3":      # a 2.0 template', '        if False:      # a 2.0 template'),
     "meshband": ("p", "            _no = used | set(ctx.get(\"listen\") or ()) | set(ctx.get(\"mesh_band\") or ())",
                  "            _no = used | set(ctx.get(\"listen\") or ())"),
@@ -639,6 +641,12 @@ def _tpl_s3(deps, nodes):             # a 2.0 template's S3 under 12
 _a = _p(c).get("awg") or {}
 check("3.1: a template's S under 12 does not re-draw the typed S1/S2 (review F8)", e is None and str(_a.get("S1")) == "20"
       and str(_a.get("S2")) == "30" and int(_a.get("S3") or 0) >= 12, (e, _a))
+def _tpl_badi(deps, nodes):           # a template I1 no app reads, stored before template saves were checked
+    deps["panel_settings"] = {"interface_defaults": {"awg_params": {"Jc": "7", "I1": "<c>"}}}
+(c, e), _ = gen("awg2", prep=_tpl_badi)
+_a = _p(c).get("awg") or {}
+check("a template I1 no app reads is drawn, as a blank is — Generate is not refused over a cell the sheet does not show",
+      e is None and _a.get("I1") != "<c>" and str(_a.get("Jc")) == "7", (e, _a))
 (c, e), _ = gen("awg2", typed={"awg": {"Jc": "9", "S1": "33", "I1": "-"}})
 _a = _p(c).get("awg") or {}
 check("AmneziaWG cells: a value used, '-' no such line, a blank drawn", e is None and str(_a.get("Jc")) == "9" and str(_a.get("S1")) == "33"
