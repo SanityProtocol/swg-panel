@@ -19592,6 +19592,12 @@ def _dialin_generate(g, kept, eid, exits, known, ctx):
         awg = {} if proto == "wg" else \
             {k: v for k, v in {**gen_awg_params(), **_tv}.items() if k not in _tom and k not in AWG3_FIELDS} if proto == "awg2" else \
             awg3_full(_tv, defaults=ctx.get("awg3") or {}, omit=((frozenset(ctx.get("awg3_omit") or ()) - set(_uv)) | _tom))
+        # A typed (or template) S1 or S2 beside a drawn partner may land on S2 = S1 + 56, which the rules below refuse — the
+        # generator keeps only its own pair apart (about 1 in 130): the drawn one is drawn again. Both chosen: refused below.
+        while all(str(awg.get(k, "")).isdigit() for k in ("S1", "S2")) and int(awg["S2"]) == int(awg["S1"]) + 56 \
+                and not {"S1", "S2"} <= set(_tv):
+            _k = "S2" if "S2" not in _tv else "S1"
+            awg[_k] = str(gen_awg_params()[_k])
         # A drawn S4 is fitted to the MTU as a mesh link's is: the generator's 15–100 sat inside 1280's room, and a typed 1420
         # leaves 20 — a full-size packet fragmented both ways (S9e review F3). A typed S4 is the operator's.
         if "S4" in awg and "S4" not in _uv and not mesh_s4_fits(awg["S4"], mtu):

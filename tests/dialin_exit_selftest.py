@@ -75,6 +75,7 @@ Run: python3 tests/dialin_exit_selftest.py      (0 = pass)
      --perturb-tplbad     a template I-line no app reads refuses Generate                  → RED [7b]
      --perturb-meshref    a typed port in the system mesh band is accepted                 → RED [7b]
      --perturb-s4fit      a drawn S4 is not fitted to a typed MTU                          → RED [7b]
+     --perturb-s156       a drawn S beside a typed one may land on S2 = S1 + 56 (refused)   → RED [7b]
      --perturb-asciiport  a typed port is read with str.isdigit() ("²" → a 500)            → RED [7b]
      --perturb-s3min      a 3.1 S under 12 is not refused (awg3_full re-draws it silently) → RED [7b]
      --perturb-fwref      a changed port outside a declared firewall is accepted           → RED [7b]
@@ -150,6 +151,7 @@ PLANTS = {
     "s3tpl": ("p", '        if proto == "awg3":      # a 2.0 template', '        if False:      # a 2.0 template'),
     "meshband": ("p", "            _no = used | set(ctx.get(\"listen\") or ()) | set(ctx.get(\"mesh_band\") or ())",
                  "            _no = used | set(ctx.get(\"listen\") or ())"),
+    "s156": ("p", '        while all(str(awg.get(k, "")).isdigit() for k in ("S1", "S2"))', '        while False and all(str(awg.get(k, "")).isdigit() for k in ("S1", "S2"))'),
     "s4fit": ("p", '        if "S4" in awg and "S4" not in _uv and not mesh_s4_fits(awg["S4"], mtu):', '        if False:'),
     "meshref": ("p", "        if port in _mb:\n", "        if False:\n"),
     "asciiport": ("p", '            if not re.fullmatch(r"[0-9]{1,5}", _tp)', '            if not _tp.isdigit()'),
@@ -681,6 +683,31 @@ check("…AmneziaWG 3.1: an S under 12 → refused, not re-drawn behind the oper
 _a = _p(c).get("awg") or {}
 check("…3.1: typed cells kept, the 3.1 set and a key around them", e is None and str(_a.get("S1")) == "40"
       and str(_a.get("RekeyTimeout")) == "7" and _a.get("HeaderProtectionKey"), (e, _a))
+# a typed S beside a drawn partner that lands on S2 = S1 + 56 (about 1 in 130, round 3's flake): the drawn one is drawn again
+_gap0 = P.gen_awg_params
+def _gap(**over):
+    _n = [0]
+    def g():
+        _n[0] += 1
+        return {**_gap0(), **(over if _n[0] == 1 else {})}
+    return g
+for _pr in ("awg3", "awg2"):
+    P.gen_awg_params = _gap(S1=40, S2=96)
+    try:
+        (c, e), _ = gen(_pr, typed={"awg": {"S1": "40"}})
+        _a = _p(c).get("awg") or {}
+        check("…%s: a typed S1 whose drawn S2 is S1 + 56 → the S2 drawn again, not refused" % _pr, e is None
+              and str(_a.get("S1")) == "40" and str(_a.get("S2")).isdigit() and int(_a["S2"]) != 96, (e, _a))
+        P.gen_awg_params = _gap(S1=40, S2=96)
+        (c, e), _ = gen(_pr, typed={"awg": {"S2": "96"}})
+        _a = _p(c).get("awg") or {}
+        check("…%s: a typed S2 whose drawn S1 is S2 - 56 → the S1 drawn again" % _pr, e is None
+              and str(_a.get("S2")) == "96" and str(_a.get("S1")).isdigit() and int(_a["S1"]) != 40, (e, _a))
+        P.gen_awg_params = _gap(S1=40, S2=96)
+        (c, e), _ = gen(_pr, typed={"awg": {"S1": "40", "S2": "96"}})
+        check("…%s: both typed as S2 = S1 + 56 → still refused (the operator's own pair)" % _pr, c is None and "S1 + 56" in str(e), e)
+    finally:
+        P.gen_awg_params = _gap0
 (c, e), _ = gen("wg", typed={"awg": {"Jc": "9"}})
 check("WireGuard takes no AmneziaWG cells", e is None and _p(c).get("awg") == {}, (e, _p(c)))
 _st = dict(first, profile=dict(first["profile"], listen_port=42850))
