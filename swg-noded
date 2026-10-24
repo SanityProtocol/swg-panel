@@ -23488,7 +23488,8 @@ def _csqtt_parent_of(pid):
         return ""
     shown = (parts[0] if parts and parts[0] else "?")
     if len(parts) > 1 and parts[1]:
-        shown += " …" if parts[1].startswith("-") or "=" in parts[1] else " " + parts[1]   # an option or `env PASS=…`: not shown
+        _p1 = parts[1]                   # shown only as one plain word (a script's path): never an option, `env PASS=…`, or a
+        shown += " " + _p1 if not (_p1.startswith("-") or "=" in _p1 or any(c.isspace() for c in _p1)) else " …"   # whole command in one string
     return "pid %s `%s`" % (pp, shown[:120])
 
 
@@ -23875,7 +23876,10 @@ def reconcile_csqtt(want, remove=None):
             if _later and (not inst.get("adopt_foreign") or _csqtt_present(iface)):
                 _CSQTT_ADOPT_LATER.pop(iface, None); _later = None
             # Between tries only LOOK: once that server is gone (the operator stopped what restarts it), go on at once — the
-            # minute is for not stopping it again, and waiting it out could run past the panel's window
+            # minute is for not stopping it again, and waiting it out could run past the panel's window. On docker the walk is
+            # cached up to minutes, and still lists the server the failed try saw: look fresh (only during that minute)
+            if _later and time.monotonic() < _later[0] and NODE_KIND == "docker":
+                _wdtt_hostproc_flush()
             if _later and time.monotonic() < _later[0] and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):
                 res["errors"].append(iface + ": " + _later[1])   # the last try's reason, until the next try
                 if prev:
@@ -23930,8 +23934,8 @@ def reconcile_csqtt(want, remove=None):
                 # that name exists here (no device, nothing to pull — and no process walk on an ordinary install), and when
                 # the scan cannot say, not at all: a skipped install is loud and retried, a pulled live TUN is neither.
                 if os.path.exists("/sys/class/net/" + iface):
-                    if NODE_KIND == "docker" and inst.get("adopt_foreign"):
-                        _wdtt_hostproc_flush()       # a take-over just stopped it: the cached walk would still show it
+                    if NODE_KIND == "docker":
+                        _wdtt_hostproc_flush()       # what decides a destructive step reads fresh (the walk's own rule)
                     _fp = _csqtt_foreign_pid(iface)
                     if _fp or not _csqtt_scan_ok():
                         if not _fp:

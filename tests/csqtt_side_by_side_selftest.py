@@ -35,7 +35,7 @@ Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
                        rawcfg / noback [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
-                       installover / nobackoff / respawnrec / showargs / nogone / keeplater / rmtun /
+                       installover / nobackoff / respawnrec / showargs / spaceargs / nogone / keeplater / noflushlook / noflushguard / rmtun /
                        keepfail [7] · keeprec [8]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, types
@@ -63,9 +63,12 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
     "installover": ("[7]", "noded", '''                    if _fp or not _csqtt_scan_ok():''', '''                    if False:'''),
     "nobackoff": ("[7]", "noded", '''            if _later and time.monotonic() < _later[0] and (''', '''            if False and ('''),
     "noback": ("[3]", "noded", '''        if back and back[0] != pid:''', '''        if False:'''),
-    "showargs": ("[7]", "noded", '''        shown += " …" if parts[1].startswith("-") or "=" in parts[1] else " " + parts[1]''', '''        shown = " ".join(parts)'''),
+    "showargs": ("[7]", "noded", '''        shown += " " + _p1 if not (_p1.startswith("-") or "=" in _p1 or any(c.isspace() for c in _p1)) else " …"''', '''        shown = " ".join(parts)'''),
     "nogone": ("[7]", "noded", '''time.monotonic() < _later[0] and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):''', '''time.monotonic() < _later[0]:'''),
     "keeplater": ("[7]", "noded", '''    for _i in [i for i in _CSQTT_ADOPT_LATER if i not in want]:''', '''    for _i in []:'''),
+    "noflushlook": ("[7]", "noded", '''            if _later and time.monotonic() < _later[0] and NODE_KIND == "docker":\n                _wdtt_hostproc_flush()''', '''            pass'''),
+    "noflushguard": ("[7]", "noded", '''                    if NODE_KIND == "docker":\n                        _wdtt_hostproc_flush()       # what decides''', '''                    if NODE_KIND == "docker" and inst.get("adopt_foreign"):\n                        _wdtt_hostproc_flush()       # what decides'''),
+    "spaceargs": ("[7]", "noded", ''' or any(c.isspace() for c in _p1)) else " …"''', ''') else " …"'''),
     "respawnrec": ("[7]", "noded", '''                        if prev:              # not recorded unless''', '''                        if True:              # not recorded unless'''),
     "keepfail": ("[7]", "noded", '''                    if prev:\n                        have[iface] = inst\n                    continue''', '''                    have[iface] = inst\n                    continue'''),
     "rmtun": ("[7]", "noded",'''    _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
@@ -305,6 +308,17 @@ try:
     r = rec({"csqtt25": dict(ADOPT)}, stop=(True, True))
     check("once it stays down the take-over completes and its backoff is gone",
           installs == ["csqtt25"] and "csqtt25" not in N._CSQTT_ADOPT_LATER, (installs, N._CSQTT_ADOPT_LATER))
+    # docker: the host walk is cached for minutes — both the look between tries and the guard before an install read fresh
+    flushes = []
+    N.NODE_KIND = "docker"; N._wdtt_hostproc_flush = lambda: flushes.append(1)
+    b = box(); N._wdtt_hostproc_flush = lambda: flushes.append(1); clean(); links.add("csqtt25")
+    N._CSQTT_ADOPT_LATER["csqtt25"] = (time.monotonic() + 60, "old")
+    rec({"csqtt25": dict(ADOPT)})
+    check("docker: the look between tries reads a fresh walk (a cached one still lists the server the failed try saw)", flushes, flushes)
+    flushes.clear(); clean()
+    rec({"csqtt25": dict(INST)})
+    check("docker: the guard before an install reads a fresh walk outside a take-over too (it decides a TUN delete)", flushes, flushes)
+    N.NODE_KIND = "baremetal"; b = box(); clean(); links.add("csqtt25")
     N._CSQTT_ADOPT_LATER["csqtt25"] = (time.monotonic() + 60, "old")
     rec({"csqtt26": dict(INST)})
     check("a take-over the panel stopped asking for (it gave up) forgets its minute: a new one starts at once, without the old error",
@@ -333,6 +347,33 @@ try:
     pr.kill()
     check("an inline `sh -c '…'` restarter is named `sh …` — never the command line it runs, which can hold a password",
           got == "pid %d `%s …`" % (pr.pid, "sh") and "SECRET" not in got, got)
+    wd = os.path.join(TMP, "run -password Pw0SECRET"); os.makedirs(wd)    # one argument holding a whole command (`watch '…'`)
+    sc = os.path.join(wd, "loop"); open(sc, "w").write("sleep 30\n")
+    pr = subprocess.Popen(["sh", sc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    kid = []
+    for _ in range(40):
+        kid = subprocess.run(["pgrep", "-P", str(pr.pid)], capture_output=True, text=True).stdout.split()
+        if kid:
+            break
+        _REAL_SLEEP(0.05)
+    got = N2._csqtt_parent_of(int(kid[0])) if kid else ""
+    for k in kid:
+        _REAL_KILL(int(k), 9)
+    pr.kill()
+    check("…nor an argument with spaces in it, which can be a whole command line", got == "pid %d `sh …`" % pr.pid and "SECRET" not in got, got)
+    sc2 = os.path.join(TMP, "loop2.sh"); open(sc2, "w").write("sleep 30\n")
+    pr = subprocess.Popen(["sh", sc2], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    kid = []
+    for _ in range(40):
+        kid = subprocess.run(["pgrep", "-P", str(pr.pid)], capture_output=True, text=True).stdout.split()
+        if kid:
+            break
+        _REAL_SLEEP(0.05)
+    got = N2._csqtt_parent_of(int(kid[0])) if kid else ""
+    for k in kid:
+        _REAL_KILL(int(k), 9)
+    pr.kill()
+    check("…while a script's plain path is shown, so the operator knows what to stop", got == "pid %d `sh %s`" % (pr.pid, sc2), got)
 
     sh = []
     b = box(); N.host_sh = lambda cmd, *a, **k: (sh.append(cmd), R())[1]
