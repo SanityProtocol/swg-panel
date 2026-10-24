@@ -35,7 +35,7 @@ Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
                        rawcfg / noback [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
-                       installover / nobackoff / respawnrec / showargs / spaceargs / nlsplit / nogone / keeplater / noflushlook / noflushguard / flushalways / rmtun /
+                       installover / nobackoff / respawnrec / showargs / spaceargs / nlsplit / nogone / keeplater / noflushlook / noflushguard / staleguard / flushalways / rmtun /
                        keepfail [7] · keeprec [8]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, types
@@ -61,14 +61,15 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
                 inst["line"] = _ln''', '''                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_ln), "code": "node_too_old"}
                 pass'''),
     "installover": ("[7]", "noded", '''                    if _fp or not _csqtt_scan_ok():''', '''                    if False:'''),
-    "nobackoff": ("[7]", "noded", '''            if _later and time.monotonic() < _later[0] and (''', '''            if False and ('''),
+    "nobackoff": ("[7]", "noded", '            if _waiting and (_csqtt_foreign_pid', '            if False and (_csqtt_foreign_pid'),
     "noback": ("[3]", "noded", '''        if back and back[0] != pid:''', '''        if False:'''),
     "showargs": ("[7]", "noded", '''        shown += " " + _p1 if not (_p1.startswith("-") or "=" in _p1 or any(c.isspace() for c in _p1)) else " …"''', '''        shown = " ".join(parts)'''),
-    "nogone": ("[7]", "noded", '''time.monotonic() < _later[0] and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):''', '''time.monotonic() < _later[0]:'''),
+    "nogone": ("[7]", "noded", '            if _waiting and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):', '            if _waiting:'),
     "keeplater": ("[7]", "noded", '''    for _i in [i for i in _CSQTT_ADOPT_LATER if i not in want]:''', '''    for _i in []:'''),
-    "noflushlook": ("[7]", "noded", '''                    and time.time() - _WDTT_HOSTPROC["at"] > CSQTT_ADOPT_LOOK_S):''', '''                    and False):'''),
-    "noflushguard": ("[7]", "noded", '''                    if not _fp and NODE_KIND == "docker":''', '''                    if False:'''),
-    "flushalways": ("[7]", "noded", '''                    and time.time() - _WDTT_HOSTPROC["at"] > CSQTT_ADOPT_LOOK_S):''', '''                    ):'''),
+    "noflushlook": ("[7]", "noded", '            if _waiting and NODE_KIND == "docker":\n                _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S)', '            if False:\n                _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S)'),
+    "noflushguard": ("[7]", "noded", '_wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if _fp else 0)', '_wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if _fp else 10**9)'),
+    "staleguard": ("[7]", "noded", '_wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if _fp else 0)', '_wdtt_hostproc_fresh(10**9 if _fp else 0)'),
+    "flushalways": ("[7]", "noded", '                _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S)\n            if _waiting and (', '                _wdtt_hostproc_fresh(0)\n            if _waiting and ('),
     "spaceargs": ("[7]", "noded", ''' or any(c.isspace() for c in _p1)) else " …"''', ''') else " …"'''),
     "nlsplit": ("[7]", "noded", '''        pp, parts = pp.strip(), rest.split("\\x01")[:2]''', '''        pp, parts = pp.strip(), rest.replace("\\x01", "\\n").split("\\n")[:2]'''),
     "respawnrec": ("[7]", "noded", '''                        if prev:              # not recorded unless''', '''                        if True:              # not recorded unless'''),
@@ -312,7 +313,7 @@ try:
           installs == ["csqtt25"] and "csqtt25" not in N._CSQTT_ADOPT_LATER, (installs, N._CSQTT_ADOPT_LATER))
     # docker: the host walk is cached for minutes — both the look between tries and the guard before an install read fresh
     flushes = []
-    N.NODE_KIND = "docker"; N._wdtt_hostproc_flush = lambda: flushes.append(1)
+    N.NODE_KIND = "docker"
     b = box(); N._wdtt_hostproc_flush = lambda: flushes.append(1); clean(); links.add("csqtt25")
     N._CSQTT_ADOPT_LATER["csqtt25"] = (time.monotonic() + 60, "old")
     N._WDTT_HOSTPROC["at"] = time.time() - 60
@@ -326,6 +327,10 @@ try:
     rec({"csqtt25": dict(INST)})
     check("docker: a cached walk that shows the foreign server refuses the install as it is (a clash that lasts costs no walk per sync)",
           not flushes and not installs, (flushes, installs))
+    N._WDTT_HOSTPROC["at"] = time.time() - 60; flushes.clear()
+    rec({"csqtt25": dict(INST)})
+    check("…refreshed once it is over 15 s old, so a server the operator has stopped stops blocking soon (not after the 120 s TTL)",
+          flushes, flushes)
     b.alive.clear(); flushes.clear()
     rec({"csqtt25": dict(INST)})
     check("…while a cached \"clear\" is read fresh before the install, which deletes the TUN by name", flushes, flushes)
