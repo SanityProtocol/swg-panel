@@ -35,7 +35,7 @@ Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
                        rawcfg / noback [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
-                       installover / nobackoff / respawnrec / showargs / spaceargs / nogone / keeplater / noflushlook / noflushguard / rmtun /
+                       installover / nobackoff / respawnrec / showargs / spaceargs / nlsplit / nogone / keeplater / noflushlook / noflushguard / flushalways / rmtun /
                        keepfail [7] · keeprec [8]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, types
@@ -66,9 +66,11 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
     "showargs": ("[7]", "noded", '''        shown += " " + _p1 if not (_p1.startswith("-") or "=" in _p1 or any(c.isspace() for c in _p1)) else " …"''', '''        shown = " ".join(parts)'''),
     "nogone": ("[7]", "noded", '''time.monotonic() < _later[0] and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):''', '''time.monotonic() < _later[0]:'''),
     "keeplater": ("[7]", "noded", '''    for _i in [i for i in _CSQTT_ADOPT_LATER if i not in want]:''', '''    for _i in []:'''),
-    "noflushlook": ("[7]", "noded", '''            if _later and time.monotonic() < _later[0] and NODE_KIND == "docker":\n                _wdtt_hostproc_flush()''', '''            pass'''),
-    "noflushguard": ("[7]", "noded", '''                    if NODE_KIND == "docker":\n                        _wdtt_hostproc_flush()       # what decides''', '''                    if NODE_KIND == "docker" and inst.get("adopt_foreign"):\n                        _wdtt_hostproc_flush()       # what decides'''),
+    "noflushlook": ("[7]", "noded", '''                    and time.time() - _WDTT_HOSTPROC["at"] > CSQTT_ADOPT_LOOK_S):''', '''                    and False):'''),
+    "noflushguard": ("[7]", "noded", '''                    if not _fp and NODE_KIND == "docker":''', '''                    if False:'''),
+    "flushalways": ("[7]", "noded", '''                    and time.time() - _WDTT_HOSTPROC["at"] > CSQTT_ADOPT_LOOK_S):''', '''                    ):'''),
     "spaceargs": ("[7]", "noded", ''' or any(c.isspace() for c in _p1)) else " …"''', ''') else " …"'''),
+    "nlsplit": ("[7]", "noded", '''        pp, parts = pp.strip(), rest.split("\\x01")[:2]''', '''        pp, parts = pp.strip(), rest.replace("\\x01", "\\n").split("\\n")[:2]'''),
     "respawnrec": ("[7]", "noded", '''                        if prev:              # not recorded unless''', '''                        if True:              # not recorded unless'''),
     "keepfail": ("[7]", "noded", '''                    if prev:\n                        have[iface] = inst\n                    continue''', '''                    have[iface] = inst\n                    continue'''),
     "rmtun": ("[7]", "noded",'''    _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
@@ -313,11 +315,20 @@ try:
     N.NODE_KIND = "docker"; N._wdtt_hostproc_flush = lambda: flushes.append(1)
     b = box(); N._wdtt_hostproc_flush = lambda: flushes.append(1); clean(); links.add("csqtt25")
     N._CSQTT_ADOPT_LATER["csqtt25"] = (time.monotonic() + 60, "old")
+    N._WDTT_HOSTPROC["at"] = time.time() - 60
     rec({"csqtt25": dict(ADOPT)})
-    check("docker: the look between tries reads a fresh walk (a cached one still lists the server the failed try saw)", flushes, flushes)
+    check("docker: the look between tries refreshes a walk older than 15 s (a cached one still lists the server the failed try saw)",
+          flushes, flushes)
+    flushes.clear(); N._WDTT_HOSTPROC["at"] = time.time() - 5
+    rec({"csqtt25": dict(ADOPT)})
+    check("…but not one younger: each walk is a privileged container, ~0.25 s CPU — not one every sync", not flushes, flushes)
     flushes.clear(); clean()
     rec({"csqtt25": dict(INST)})
-    check("docker: the guard before an install reads a fresh walk outside a take-over too (it decides a TUN delete)", flushes, flushes)
+    check("docker: a cached walk that shows the foreign server refuses the install as it is (a clash that lasts costs no walk per sync)",
+          not flushes and not installs, (flushes, installs))
+    b.alive.clear(); flushes.clear()
+    rec({"csqtt25": dict(INST)})
+    check("…while a cached \"clear\" is read fresh before the install, which deletes the TUN by name", flushes, flushes)
     N.NODE_KIND = "baremetal"; b = box(); clean(); links.add("csqtt25")
     N._CSQTT_ADOPT_LATER["csqtt25"] = (time.monotonic() + 60, "old")
     rec({"csqtt26": dict(INST)})
@@ -374,6 +385,26 @@ try:
         _REAL_KILL(int(k), 9)
     pr.kill()
     check("…while a script's plain path is shown, so the operator knows what to stop", got == "pid %d `sh %s`" % (pr.pid, sc2), got)
+    wd3 = os.path.join(TMP, "Pw0SECRET\nx"); os.makedirs(wd3)              # an argument whose FIRST LINE is one bare word
+    sc3 = os.path.join(wd3, "loop"); open(sc3, "w").write("sleep 30\n")
+    pr = subprocess.Popen(["sh", sc3], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    kid = []
+    for _ in range(40):
+        kid = subprocess.run(["pgrep", "-P", str(pr.pid)], capture_output=True, text=True).stdout.split()
+        if kid:
+            break
+        _REAL_SLEEP(0.05)
+    _kind, _hsh = N2.NODE_KIND, N2.host_sh
+    N2.host_sh = lambda cmd, *a, **k: subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)   # the host is here
+    got_bm = N2._csqtt_parent_of(int(kid[0])) if kid else ""
+    N2.NODE_KIND = "docker"
+    got_dk = N2._csqtt_parent_of(int(kid[0])) if kid else ""
+    N2.NODE_KIND, N2.host_sh = _kind, _hsh
+    for k in kid:
+        _REAL_KILL(int(k), 9)
+    pr.kill()
+    check("…nor an argument with a newline in it, on bare metal and on docker alike (its first line can be a bare password)",
+          got_bm == got_dk == "pid %d `sh …`" % pr.pid, (got_bm, got_dk))
 
     sh = []
     b = box(); N.host_sh = lambda cmd, *a, **k: (sh.append(cmd), R())[1]

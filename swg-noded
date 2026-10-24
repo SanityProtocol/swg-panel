@@ -23475,9 +23475,10 @@ def _csqtt_parent_of(pid):
     pp, parts = "", []
     if NODE_KIND == "docker":
         out = (host_sh("p=$(sed 's/.*) //' /proc/%d/stat 2>/dev/null | cut -d' ' -f2); [ -n \"$p\" ] && echo \"$p\" && "
-                       "tr '\\0' '\\n' < /proc/$p/cmdline 2>/dev/null | head -n 2; :" % int(pid), timeout=20).stdout or "")
-        lines = out.splitlines()
-        pp, parts = (lines[0].strip() if lines else ""), lines[1:3]
+                       "tr '\\0' '\\001' < /proc/$p/cmdline 2>/dev/null | head -c 4096; :" % int(pid), timeout=20).stdout or "")
+        # \x01 between the arguments, not newlines: an argument with a newline in it stays whole (and so hidden, below)
+        pp, _, rest = out.partition("\n")
+        pp, parts = pp.strip(), rest.split("\x01")[:2]
     else:
         with contextlib.suppress(Exception):
             with open("/proc/%d/stat" % int(pid)) as f:
@@ -23772,6 +23773,7 @@ def _csqtt_serve_adopted(inst):
 
 _CSQTT_ADOPT_LATER = {}     # iface -> (monotonic time, error): a take-over whose server could not be stopped, or came back, is retried no sooner
 CSQTT_ADOPT_RETRY_S = 60    # each try stops that server again — its clients reconnect — so at most once a minute, not every sync
+CSQTT_ADOPT_LOOK_S = 15     # docker: between tries, the host walk is refreshed no oftener than this to see that server gone
 _CSQTT_FETCH_LATER = {}     # (line, build) — ("wdtt:<fork>", build) for WDTT — whose fetch failed -> monotonic time before which it is not walked again
 CSQTT_FETCH_RETRY_S = 300   # a walk is the panel mirror, then GitHub and every mirror with curl's retries: ≈ 90 s blackholed
 
@@ -23877,8 +23879,10 @@ def reconcile_csqtt(want, remove=None):
                 _CSQTT_ADOPT_LATER.pop(iface, None); _later = None
             # Between tries only LOOK: once that server is gone (the operator stopped what restarts it), go on at once — the
             # minute is for not stopping it again, and waiting it out could run past the panel's window. On docker the walk is
-            # cached up to minutes, and still lists the server the failed try saw: look fresh (only during that minute)
-            if _later and time.monotonic() < _later[0] and NODE_KIND == "docker":
+            # cached up to minutes and still lists the server the failed try saw: refresh it — every 15 s, not every sync,
+            # since each walk is a privileged container (~0.25 s CPU, measured on a 1-vCPU node)
+            if (_later and time.monotonic() < _later[0] and NODE_KIND == "docker"
+                    and time.time() - _WDTT_HOSTPROC["at"] > CSQTT_ADOPT_LOOK_S):
                 _wdtt_hostproc_flush()
             if _later and time.monotonic() < _later[0] and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):
                 res["errors"].append(iface + ": " + _later[1])   # the last try's reason, until the next try
@@ -23934,9 +23938,10 @@ def reconcile_csqtt(want, remove=None):
                 # that name exists here (no device, nothing to pull — and no process walk on an ordinary install), and when
                 # the scan cannot say, not at all: a skipped install is loud and retried, a pulled live TUN is neither.
                 if os.path.exists("/sys/class/net/" + iface):
-                    if NODE_KIND == "docker":
-                        _wdtt_hostproc_flush()       # what decides a destructive step reads fresh (the walk's own rule)
-                    _fp = _csqtt_foreign_pid(iface)
+                    _fp = _csqtt_foreign_pid(iface)  # docker: cached — a server there is already a safe refusal, and a clash
+                    if not _fp and NODE_KIND == "docker":   # that lasts no longer costs a privileged container every sync
+                        _wdtt_hostproc_flush()       # a "clear" decides a TUN delete: read it fresh (the walk's own rule)
+                        _fp = _csqtt_foreign_pid(iface)
                     if _fp or not _csqtt_scan_ok():
                         if not _fp:
                             _e = "the process scan did not complete, so this server is not installed on %s yet" % iface
