@@ -2796,6 +2796,8 @@ export const STR = {
     "Этот сервер *принимается* — нода останавливает существующий и поднимает его снова под панелью с исходной идентичностью и пользователями. До конца этого его управление остаётся выключенным.",
   "This node isn't reporting this server — it's gone from the box (a rebuild, or a node running a build without WDTT support).":
     "Нода не сообщает об этом сервере — он пропал с сервера (пересборка или нода со сборкой без поддержки WDTT).",
+  "The node couldn't take this server over yet: *{err}*. It tries again on every sync — stop that server on the node and the take-over completes; otherwise the panel stops trying 5 minutes after you pressed Adopt and leaves it running as it was.":
+    "Нода пока не смогла принять этот сервер: *{err}*. Она пробует снова при каждой синхронизации — остановите тот сервер на ноде, и приём завершится; иначе через 5 минут после нажатия «Принять» панель прекратит попытки и оставит его работать как есть.",
   "This server was wiped.": "Этот сервер был стёрт.",
   "Its identity is escrowed in your Encryption Vault, so it's held offline rather than coming back with a fresh key that would break every user. *Restore* to bring it back with its original identity, or *Recreate fresh* (every user re-imports).":
     "Его идентичность депонирована в вашем хранилище шифрования, поэтому он держится офлайн, а не возвращается со свежим ключом, который сломал бы всех пользователей. *Восстановить* — вернуть его с исходной идентичностью, или *Пересоздать заново* (все пользователи импортируют заново).",

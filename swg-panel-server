@@ -33885,7 +33885,7 @@ class Handler(BaseHTTPRequestHandler):
             # SAY so, so the operator can adopt again instead of watching a red row that is still trying.
             # The window rides over the ordinary transient (the foreign server mid-restart, stoppable moments later).
             for _st, _kind in ((_wstore, "WDTT"), (_cstore0, "csqtt")):
-                for _ifn, _ov in _st.items():
+                for _ifn, _ov in list(_st.items()):
                     if not _ov.get("adopt_foreign"):
                         continue
                     _aat = _ov.get("adopt_at") or 0
@@ -33894,6 +33894,12 @@ class Handler(BaseHTTPRequestHandler):
                     if time.time() - _aat <= PROC_GRACE:
                         continue
                     _ov.pop("adopt_foreign", None); _ov.pop("adopt_at", None); _wdtt_dirty = True
+                    # A csqtt record exists only because of the take-over (the node never reported it — that clears the
+                    # marker above), so nothing of it is ours: without the marker the node read it as a server to install,
+                    # on the TUN and port the foreign one still holds. Drop it, and the node page offers the take-over
+                    # again, as the message says. (A WDTT record holds the escrowed identity; its give-up stays as it was.)
+                    if _kind == "csqtt":
+                        _st.pop(_ifn, None)
                     node["proc_status"] = {
                         "state": "adopt-failed", "at": int(time.time()),
                         "err": "Taking over the existing %s server on %s did not finish within %d min — it is "

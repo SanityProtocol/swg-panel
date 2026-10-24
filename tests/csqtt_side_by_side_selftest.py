@@ -17,16 +17,22 @@ csqtt1 read it as already gone and the guard pulled its live TUN.
   [3] stop        the take-over of csqtt1 stops the stock server and never the 2.5 one, and the reverse; the config
                   dir compares normalised (a trailing slash)
   [4] staletun    a new csqtt1 of ours never deletes the TUN a live stock server holds; with none live it does
+  [7] noinstall  a server of ours is never installed over a foreign one live on its name (the unit's first step deletes
+                  that TUN), and removing ours never deletes a TUN a foreign server holds — the state a take-over the
+                  panel gave up on, or Remove pressed during one, left; with nothing foreign live both go ahead as before
   panel (a real panel on 127.0.0.1, snapshots pushed over /api/node/sync):
   [5] adopt       the 2.5 candidate is adopted with line 2.5 and the next reply asks for 2.5's build; the 2.1 one with no
                   line (2.1 stays the absent value); a candidate from a node older than the report (no field) as today
   [6] refuse      line "" (binary unread) and a line the panel does not offer are refused; 2.5 on a node that cannot
                   run it is refused node_too_old
+  [8] giveup      a csqtt take-over the panel gives up on drops its record (the node never reported it, so nothing of it
+                  is ours) and says so; a take-over still inside its window keeps it
 
 Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
                        rawcfg [3] ·
-                       nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6]
+                       nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
+                       installover / rmtun [7] · keeprec [8]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, types
 import urllib.error, urllib.request
@@ -50,7 +56,10 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
     "adopt21": ("[5]", "panel", '''                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_ln), "code": "node_too_old"}
                 inst["line"] = _ln''', '''                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_ln), "code": "node_too_old"}
                 pass'''),
-    "nocheck": ("[6]", "panel", '''            if _ln not in CSQTT_LINES:
+    "installover": ("[7]", "noded", '''    _fp = _csqtt_foreign_pid(iface)\n    if _fp:''', '''    _fp = None\n    if _fp:'''),
+    "rmtun": ("[7]", "noded", '''    _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
+    "keeprec": ("[8]", "panel", '''                    if _kind == "csqtt":\n                        _st.pop(_ifn, None)''', '''                    pass'''),
+    "nocheck": ("[6]", "panel",'''            if _ln not in CSQTT_LINES:
                 return 400, {"ok": False, **perr("this server runs csqtt {v1}''', '''            if False:
                 return 400, {"ok": False, **perr("this server runs csqtt {v1}'''),
 }
@@ -202,6 +211,39 @@ try:
     N._csqtt_clear_stale_tun("csqtt1")
     check("nothing foreign live on csqtt1: the stale TUN is deleted", ["ip", "link", "delete", "dev", "csqtt1"] in b.runs, b.runs)
 
+    # ── [7] ──────────────────────────────────────────────────────────────────────────────────────────────────────
+    section("[7] noinstall — never over, never under a foreign server's TUN")
+    class _Wrote(Exception):
+        pass
+    def _wrote(*a, **k):
+        raise _Wrote()
+    N._csqtt_fork_unknown = lambda inst: ""
+    N._csqtt_write_cfgdir = _wrote
+    N._csqtt_bin_shared = lambda line: HERE           # exists: past the guard the install goes straight on to writing
+    def install(iface):   # "WROTE" = past the guard: the install reached its config-dir write (which it reports as failed)
+        got = N._csqtt_install({"iface": iface, "listen": "0.0.0.0:46100", "tun_addr": "10.66.68.1/24"})
+        return "WROTE" if got.startswith("cfgdir write failed") else got
+    b = box()
+    got = install("csqtt25")
+    check("csqtt25 held by the live 2.5 server beside 2.1.9: ours is not installed over it, and the error says why",
+          got != "WROTE" and "202" in got and "not installed over it" in got, got)
+    check("csqtt1 held by the live stock server (no --iface): refused too", install("csqtt1") != "WROTE")
+    b.alive.clear()
+    got = install("csqtt25")
+    check("nothing foreign live on csqtt25: the install goes ahead as before", got == "WROTE", got)
+    check("our own supervised instance on its name is no foreign server (csqtt2)", install("csqtt2") == "WROTE")
+    sh = []
+    b = box(); N.host_sh = lambda cmd, *a, **k: (sh.append(cmd), R())[1]
+    N._csqtt_remove("csqtt25")
+    check("removing csqtt25 while the foreign 2.5 server holds it: its TUN stays, our unit and dir go",
+          bool(sh) and "ip link del" not in sh[-1] and "rm -rf" in sh[-1], sh)
+    N._csqtt_scan_ok = lambda: False
+    sh.clear(); b.alive.clear(); N._csqtt_remove("csqtt25")
+    check("…nor when the process scan could not say (fail safe, as the stale-TUN guard)", bool(sh) and "ip link del" not in sh[-1], sh)
+    N._csqtt_scan_ok = lambda: True
+    sh.clear(); N._csqtt_remove("csqtt25")
+    check("with nothing foreign live the TUN is deleted, as before", bool(sh) and "ip link del csqtt25" in sh[-1], sh)
+
     N.os.kill, N.time.sleep = _REAL_KILL, _REAL_SLEEP   # N.os / N.time ARE the os / time modules: the panel half needs them back
 
     # ── panel ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -290,6 +332,24 @@ try:
         sync("nold", [cand("csqtt25", "10.66.68.1/24", 46100, "/etc/csqtt25", version="2.5.0", line="2.5")], lines=("2.1",))
         code, r = req("/api/csqtt/adopt", {"node": "nold", "iface": "csqtt25"})
         check("2.5 on a node that cannot run it: node_too_old", code == 400 and r.get("code") == "node_too_old", (code, r))
+
+        section("[8] giveup — a take-over that never landed leaves nothing of the panel's behind")
+        sync("nnew", [])                                  # starts every pending take-over's clock (adopt_at)
+        nd = nodes()
+        cs = nd["nnew"].get("csqtt") or {}
+        check("before: csqtt30 and csqtt1 are pending take-overs",
+              (cs.get("csqtt30") or {}).get("adopt_foreign") and (cs.get("csqtt1") or {}).get("adopt_foreign"), cs)
+        if "csqtt30" in cs:
+            cs["csqtt30"]["adopt_at"] = int(time.time()) - P.PROC_GRACE - 60   # its window is over
+            json.dump(nd, open(NODES + ".t", "w")); os.replace(NODES + ".t", NODES)
+        rep = sync("nnew", [])                             # the node still does not report csqtt30
+        cs = nodes()["nnew"].get("csqtt") or {}
+        ps = nodes()["nnew"].get("proc_status") or {}
+        check("its record is dropped, so the node is not asked to install over the server still running",
+              "csqtt30" not in cs and "csqtt30" not in rep, (sorted(cs), sorted(rep)))
+        check("…and the panel says nothing was taken over", ps.get("state") == "adopt-failed" and "csqtt30" in json.dumps(ps), ps)
+        check("a take-over still inside its window keeps its record and marker",
+              (cs.get("csqtt1") or {}).get("adopt_foreign"), cs.get("csqtt1"))
     finally:
         proc.terminate()
         with __import__("contextlib").suppress(Exception):

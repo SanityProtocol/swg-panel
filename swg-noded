@@ -23097,6 +23097,10 @@ def _csqtt_install(inst):
                 "Update the node (its page offers \"update node to …\"), then this server installs on the next sync. "
                 "Known here: " + ", ".join(sorted(CSQTT_FORK_OWNER)) + ".")
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface); line = _csqtt_line_of(inst)
+    _fp = _csqtt_foreign_pid(iface)
+    if _fp:
+        return ("another csqtt server, not this panel's, is running on %s (pid %d), so this one is not installed over it. "
+                "Stop that server, or remove this one and take that server over from the node page." % (iface, _fp))
     binshared = _csqtt_bin_shared(line); binp = cfgdir + "/server"
     if not os.path.exists(binshared):
         # A build whose fetch failed is walked again only after CSQTT_FETCH_RETRY_S, as a switch's (NR-4): a server whose binary
@@ -23203,9 +23207,13 @@ def _csqtt_reconfigure(inst):
 def _csqtt_remove(iface):
     if not _CSQTT_NAME_RE.match(iface or ""):   # never rm -rf a path built from an unvalidated name
         return
+    # A server we don't manage holds this TUN (ours never got it), or the scan can't say: leave the device, as the stale-TUN
+    # guard does — a TUN left behind is recoverable and loud, a live server's pulled out from under it is neither
+    _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()
     if NODE_KIND == "docker":
         _csqtt_docker_stop(iface)
-        with contextlib.suppress(Exception): run(["ip", "link", "delete", "dev", iface])
+        if not _theirs:
+            with contextlib.suppress(Exception): run(["ip", "link", "delete", "dev", iface])
         with contextlib.suppress(Exception): shutil.rmtree(_csqtt_dir(iface), ignore_errors=True)
         _CSQTT_LASTBYTES.pop(iface, None); _RAW_SEEN.pop("csqtt:" + iface, None)
         _wdtt_del_iptables_comment("nat", "POSTROUTING", "swg-egress:" + iface)
@@ -23215,7 +23223,7 @@ def _csqtt_remove(iface):
     svc = _csqtt_svc(iface)
     host_sh(sc_disable_now(svc) + " >/dev/null 2>&1; "
             "rm -f " + shlex.quote(_csqtt_unit_path(iface)) + "; systemctl daemon-reload; "
-            "ip link del " + shlex.quote(iface) + " 2>/dev/null; "
+            + ("" if _theirs else "ip link del " + shlex.quote(iface) + " 2>/dev/null; ") +
             "rm -rf " + shlex.quote(_csqtt_dir(iface)))
     _CSQTT_LASTBYTES.pop(iface, None); _RAW_SEEN.pop("csqtt:" + iface, None)
     # node-owned egress rules (reconcile_egress won't drop them — the iface is already gone from the record)
@@ -23452,6 +23460,15 @@ def _csqtt_iface_of(fl):
     bare flag, so a stock server (deploy.sh passes no --iface) was never found on csqtt1: the take-over read it as
     already gone, and the guard pulled its live TUN."""
     return (fl.get("iface") or "").strip() or CSQTT_DEFAULT_IFACE
+
+
+def _csqtt_foreign_pid(iface):
+    """The pid of a csqtt server this node does NOT manage that holds `iface`'s TUN, else None. Installing or removing
+    ours both delete that TUN by name (the unit's ExecStartPre, _csqtt_remove) — with another server serving on it, that
+    cuts its clients off. A take-over the panel gave up on left exactly that: its record without the marker, so the next
+    sync installed over the server still running, and Remove, the way out, pulled the same TUN."""
+    return next((p for p, f in _csqtt_procs()
+                 if _csqtt_iface_of(f) == iface and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/")), None)
 
 
 # The csqtt VERSION a foreign server runs, read from its binary — never by running it. Every csqtt server build compiles
@@ -23836,7 +23853,7 @@ def reconcile_csqtt(want, remove=None):
                     _au = _pre
                 _stopped, _why = _csqtt_stop_foreign(iface, _src)
                 if not _stopped:
-                    res["errors"].append(iface + ": couldn't stop the existing csqtt server (" + _why + ") — adopt again once it is down")
+                    res["errors"].append(iface + ": couldn't stop the existing csqtt server (" + _why + ")")
                     have[iface] = inst; continue
             if _au:
                 _csqtt_serve_adopted(inst)
