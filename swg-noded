@@ -22793,8 +22793,7 @@ def _csqtt_clear_stale_tun(iface):
         log(LOG_WARNING, "swg-noded: csqtt " + iface + ": skipping stale-TUN cleanup — the process scan did not complete, "
               "so a foreign server holding this name would be invisible")
         return
-    if any(_csqtt_iface_of(f) == iface
-           and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/") for _p, f in procs):
+    if _csqtt_foreign_pid(iface, procs) is not None:
         return
     with contextlib.suppress(Exception): run(["ip", "link", "delete", "dev", iface])
 
@@ -23097,10 +23096,6 @@ def _csqtt_install(inst):
                 "Update the node (its page offers \"update node to …\"), then this server installs on the next sync. "
                 "Known here: " + ", ".join(sorted(CSQTT_FORK_OWNER)) + ".")
     iface = inst["iface"]; cfgdir = _csqtt_dir(iface); line = _csqtt_line_of(inst)
-    _fp = _csqtt_foreign_pid(iface)
-    if _fp:
-        return ("another csqtt server, not this panel's, is running on %s (pid %d), so this one is not installed over it. "
-                "Stop that server, or remove this one and take that server over from the node page." % (iface, _fp))
     binshared = _csqtt_bin_shared(line); binp = cfgdir + "/server"
     if not os.path.exists(binshared):
         # A build whose fetch failed is walked again only after CSQTT_FETCH_RETRY_S, as a switch's (NR-4): a server whose binary
@@ -23462,13 +23457,33 @@ def _csqtt_iface_of(fl):
     return (fl.get("iface") or "").strip() or CSQTT_DEFAULT_IFACE
 
 
-def _csqtt_foreign_pid(iface):
+def _csqtt_foreign_pid(iface, procs=None):
     """The pid of a csqtt server this node does NOT manage that holds `iface`'s TUN, else None. Installing or removing
     ours both delete that TUN by name (the unit's ExecStartPre, _csqtt_remove) — with another server serving on it, that
     cuts its clients off. A take-over the panel gave up on left exactly that: its record without the marker, so the next
-    sync installed over the server still running, and Remove, the way out, pulled the same TUN."""
-    return next((p for p, f in _csqtt_procs()
+    sync installed over the server still running, and Remove, the way out, pulled the same TUN. The one test of "foreign
+    on this name" — the stale-TUN guard, install and remove all ask it."""
+    return next((p for p, f in (_csqtt_procs() if procs is None else procs)
                  if _csqtt_iface_of(f) == iface and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/")), None)
+
+
+def _csqtt_parent_of(pid):
+    """"pid N `cmd`" for what started `pid` — what restarts a server a take-over stopped — or "" when that is init or
+    unreadable. Read on the HOST for a docker node, where the pid lives."""
+    txt = ""
+    if NODE_KIND == "docker":
+        txt = (host_sh("p=$(cut -d' ' -f4 /proc/%d/stat 2>/dev/null); [ -n \"$p\" ] && echo \"$p\" && "
+                       "tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null; :" % int(pid), timeout=20).stdout or "")
+    else:
+        with contextlib.suppress(Exception):
+            with open("/proc/%d/stat" % int(pid)) as f:
+                pp = f.read().rsplit(")", 1)[1].split()[1]
+            with open("/proc/%s/cmdline" % pp, "rb") as f:
+                txt = pp + "\n" + f.read().replace(b"\0", b" ").decode(errors="replace")
+    pp, _, cmd = txt.strip().partition("\n")
+    if not pp.isdigit() or int(pp) <= 1:
+        return ""
+    return "pid %s `%s`" % (pp, (cmd.strip() or "?")[:120])
 
 
 # The csqtt VERSION a foreign server runs, read from its binary — never by running it. Every csqtt server build compiles
@@ -23737,6 +23752,8 @@ def _csqtt_serve_adopted(inst):
     inst["passwords"] = pwds
 
 
+_CSQTT_ADOPT_LATER = {}     # iface -> (monotonic time, error): a take-over whose server could not be stopped, or came back, is retried no sooner
+CSQTT_ADOPT_RETRY_S = 60    # each try stops that server again — its clients reconnect — so at most once a minute, not every sync
 _CSQTT_FETCH_LATER = {}     # (line, build) — ("wdtt:<fork>", build) for WDTT — whose fetch failed -> monotonic time before which it is not walked again
 CSQTT_FETCH_RETRY_S = 300   # a walk is the panel mirror, then GitHub and every mirror with curl's retries: ≈ 90 s blackholed
 
@@ -23835,6 +23852,14 @@ def reconcile_csqtt(want, remove=None):
             if _au:
                 inst["adopt_users"] = _au
                 inst["adopt_users_at"] = prev.get("adopt_users_at") or int(time.time())
+            _later = _CSQTT_ADOPT_LATER.get(iface)
+            if _later and (not inst.get("adopt_foreign") or _csqtt_present(iface)):
+                _CSQTT_ADOPT_LATER.pop(iface, None); _later = None
+            if _later and time.monotonic() < _later[0]:
+                res["errors"].append(iface + ": " + _later[1])   # the last try's reason, until the next try
+                if prev:
+                    have[iface] = inst
+                continue
             if inst.get("adopt_foreign") and not _csqtt_present(iface):
                 _src = (inst.get("adopt_config_dir") or "").strip()
                 if not _src:
@@ -23853,7 +23878,9 @@ def reconcile_csqtt(want, remove=None):
                     _au = _pre
                 _stopped, _why = _csqtt_stop_foreign(iface, _src)
                 if not _stopped:
-                    res["errors"].append(iface + ": couldn't stop the existing csqtt server (" + _why + ")")
+                    _e = "couldn't stop the existing csqtt server (" + _why + ")"
+                    _CSQTT_ADOPT_LATER[iface] = (time.monotonic() + CSQTT_ADOPT_RETRY_S, _e)
+                    res["errors"].append(iface + ": " + _e)
                     # Nothing of ours exists yet, so it is not recorded: a recorded instance is reported, and the panel reads
                     # a reported take-over as done ("ours now") — it dropped the marker on the first failed attempt and the
                     # next sync installed over the server still running. Unrecorded, the panel keeps waiting, shows this
@@ -23878,7 +23905,35 @@ def reconcile_csqtt(want, remove=None):
                     inst["ver"] = (inst.get("cur_ver") or "").strip() or _csqtt_installed_ver(inst["line"])
                 if inst.get("restart") != prev.get("restart"):   # the operator's Restart: its failed fetch is tried at once (NODED-3)
                     _CSQTT_FETCH_LATER.pop((_csqtt_line_of(inst), (inst.get("ver") or "").strip()), None)
+                # Never over a server we don't manage: ours deletes the TUN by name as it starts. Asked only when a device of
+                # that name exists here (no device, nothing to pull — and no process walk on an ordinary install), and when
+                # the scan cannot say, not at all: a skipped install is loud and retried, a pulled live TUN is neither.
+                if os.path.exists("/sys/class/net/" + iface):
+                    if NODE_KIND == "docker":
+                        _wdtt_hostproc_flush()
+                    _procs = _csqtt_procs()
+                    _fp = _csqtt_foreign_pid(iface, _procs)
+                    if _fp or not _csqtt_scan_ok():
+                        _by = _csqtt_parent_of(_fp) if _fp else ""
+                        if not _fp:
+                            _e = "the process scan did not complete, so this server is not installed on %s yet" % iface
+                        elif inst.get("adopt_foreign"):
+                            # stopped a moment ago, and back already: something restarts it, and stopping it again every
+                            # sync would only cut its clients off over and over
+                            _e = ("the server being taken over came back right after it was stopped (pid %d)%s — stop "
+                                  "what restarts it, and the take-over completes" % (_fp, ", restarted by " + _by if _by else ""))
+                            _CSQTT_ADOPT_LATER[iface] = (time.monotonic() + CSQTT_ADOPT_RETRY_S, _e)
+                        else:
+                            _e = ("another csqtt server, not this panel's, is running on %s (pid %d)%s, so this one is not "
+                                  "installed over it. Stop that server, or remove this one and take that server over from "
+                                  "the node page." % (iface, _fp, ", started by " + _by if _by else ""))
+                        res["errors"].append(iface + ": " + _e)
+                        if prev:              # not recorded unless it was ours already: recorded is reported, read as done
+                            have[iface] = inst
+                        continue
                 err = _csqtt_install(inst)
+                if not err:
+                    _CSQTT_ADOPT_LATER.pop(iface, None)
                 if not err and _cut:
                     _csqtt_cut_clear(iface)
                 if err:
