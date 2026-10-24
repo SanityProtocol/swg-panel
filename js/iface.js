@@ -836,7 +836,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   // being ADOPTED, and "Recreate fresh" there would mint a new key and break the very clients the adoption
   // exists to keep. `adopting` therefore wins over `missing`, and stands down every lifecycle control until
   // the node reports the result.
-  const adopting = !isCsq && (nrec.wdtt_adopting || []).includes(iface);
+  const adopting = ((isCsq ? nrec.csqtt_adopting : nrec.wdtt_adopting) || []).includes(iface);   // a csqtt take-over too: same window
   const awaiting = !adopting && (!!w.await_restore || !!missing);
   const stopped = !!cfg.stopped;
   // The node REFUSED to install this one (no binary for the fork, bad params) — it never existed, so there is
