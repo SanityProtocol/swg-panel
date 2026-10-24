@@ -63,7 +63,7 @@ const PLANTS = {
   arondraft: ["turn.js", "  const arOn = csqttArDropAsk(cfg, CSQTT_DEFAULT_LINE);",
               "  const arOn = csqttArDropAsk((((Store.nodes || []).find(x => x.id === node) || {}).csqtt_cfg || {})[iface], CSQTT_DEFAULT_LINE);"],
   aronoff: ["turn.js", "  const arOn = csqttArDropAsk(cfg, CSQTT_DEFAULT_LINE);", "  const arOn = csqttArDropAsk({}, CSQTT_DEFAULT_LINE);"],
-  cqadopt: ["screen-nodes.js", "            ${_cAdopting.has(ifn) ? html`<${StatusTag} cls=\"tg-busy\" icon=\"clock\" label=\"adopting\"", "            ${false ? html`<${StatusTag} cls=\"tg-busy\" icon=\"clock\" label=\"adopting\""],
+  cqadopt: ["screen-nodes.js", "            ${_cAdopting.has(ifn) ? html`<${StatusTag} cls=\"tg-busy\" icon=\"clock\" label=${T(\"tag|adopting\")}", "            ${false ? html`<${StatusTag} cls=\"tg-busy\" icon=\"clock\" label=${T(\"tag|adopting\")}"],
   cqtwice: ["screen-nodes.js", "\n                             && !(_cAdopting.has(ifn) && (nrec.csqtt_candidates || []).some(c => c && c.iface === ifn)))", ")"],
   adopterr: ["iface.js", "    ${adopting && failErr   /*", "    ${false && failErr   /*"],
   ifnever: ["iface.js", "  const never = !adopting && !!missing", "  const never = !!missing"],
@@ -273,7 +273,7 @@ check("[11] the exceptions sit in the App routing fold, under the server's rule"
 // [12] a csqtt take-over in flight — read from the source (the node page and the server's page have hooks)
 const cm12 = NSRC.slice(NSRC.indexOf("const cmcard = (ifn, cc) =>"), NSRC.indexOf("const csqCard = c =>"));
 check("[12] the pending csqtt card says adopting during a take-over, ahead of stopped/starting",
-      /\$\{_cAdopting\.has\(ifn\) \? html`<\$\{StatusTag\} cls="tg-busy" icon="clock" label="adopting"[^\n]*\n\s*: cc\.stopped \?[^\n]*\n\s*: html`<\$\{StatusTag\} cls="tg tg-pending" icon="clock" label="starting"/.test(cm12));
+      /\$\{_cAdopting\.has\(ifn\) \? html`<\$\{StatusTag\} cls="tg-busy" icon="clock" label=\$\{T\("tag\|adopting"\)\}[^\n]*\n\s*: cc\.stopped \?[^\n]*\n\s*: html`<\$\{StatusTag\} cls="tg tg-pending" icon="clock" label="starting"/.test(cm12));
 check("[12] …and is skipped while the foreign server's own card still shows the take-over (one card per server)",
       cm12.includes(".filter(([ifn]) => !csqttIfaces.some(c => c.iface === ifn) && !pending.includes(ifn)\n                             && !(_cAdopting.has(ifn) && (nrec.csqtt_candidates || []).some(c => c && c.iface === ifn)))"));
 check("[12] …the set it reads is the panel's csqtt_adopting", NSRC.includes("const _cAdopting = new Set(nrec.csqtt_adopting || []);"));

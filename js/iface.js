@@ -886,7 +886,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
           ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
           : adopting
           // Take-over in flight: Stop/Restart/Edit/Delete would all act on a server that is being replaced.
-          ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("The node applies the take-over on its next sync")}/>`
+          ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${T("tag|adopting")} title=${T("The node applies the take-over on its next sync")}/>`
           : unclaimed
           // ⚠️ OWNERLESS: the node still holds this server, this panel has no record of it, and so nothing
           // will ever start it — a node runs only what the panel desires. Offering Start here was worse than
