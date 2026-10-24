@@ -23854,7 +23854,13 @@ def reconcile_csqtt(want, remove=None):
                 _stopped, _why = _csqtt_stop_foreign(iface, _src)
                 if not _stopped:
                     res["errors"].append(iface + ": couldn't stop the existing csqtt server (" + _why + ")")
-                    have[iface] = inst; continue
+                    # Nothing of ours exists yet, so it is not recorded: a recorded instance is reported, and the panel reads
+                    # a reported take-over as done ("ours now") — it dropped the marker on the first failed attempt and the
+                    # next sync installed over the server still running. Unrecorded, the panel keeps waiting, shows this
+                    # error, and gives up after its window. (An instance of ours from before keeps its record — the NOTE below.)
+                    if prev:
+                        have[iface] = inst
+                    continue
             if _au:
                 _csqtt_serve_adopted(inst)
             if not _csqtt_present(iface):

@@ -19,7 +19,8 @@ csqtt1 read it as already gone and the guard pulled its live TUN.
   [4] staletun    a new csqtt1 of ours never deletes the TUN a live stock server holds; with none live it does
   [7] noinstall  a server of ours is never installed over a foreign one live on its name (the unit's first step deletes
                   that TUN), and removing ours never deletes a TUN a foreign server holds — the state a take-over the
-                  panel gave up on, or Remove pressed during one, left; with nothing foreign live both go ahead as before
+                  panel gave up on, or Remove pressed during one, left; with nothing foreign live both go ahead as before;
+                  a take-over that cannot stop the server is not recorded (so not reported, so not read as done)
   panel (a real panel on 127.0.0.1, snapshots pushed over /api/node/sync):
   [5] adopt       the 2.5 candidate is adopted with line 2.5 and the next reply asks for 2.5's build; the 2.1 one with no
                   line (2.1 stays the absent value); a candidate from a node older than the report (no field) as today
@@ -32,7 +33,7 @@ Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
                        rawcfg [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
-                       installover / rmtun [7] · keeprec [8]
+                       installover / rmtun / keepfail [7] · keeprec [8]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, types
 import urllib.error, urllib.request
@@ -57,7 +58,8 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
                 inst["line"] = _ln''', '''                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_ln), "code": "node_too_old"}
                 pass'''),
     "installover": ("[7]", "noded", '''    _fp = _csqtt_foreign_pid(iface)\n    if _fp:''', '''    _fp = None\n    if _fp:'''),
-    "rmtun": ("[7]", "noded", '''    _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
+    "keepfail": ("[7]", "noded", '''                    if prev:\n                        have[iface] = inst\n                    continue''', '''                    have[iface] = inst\n                    continue'''),
+    "rmtun": ("[7]", "noded",'''    _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
     "keeprec": ("[8]", "panel", '''                    if _kind == "csqtt":\n                        _st.pop(_ifn, None)''', '''                    pass'''),
     "nocheck": ("[6]", "panel",'''            if _ln not in CSQTT_LINES:
                 return 400, {"ok": False, **perr("this server runs csqtt {v1}''', '''            if False:
@@ -243,6 +245,21 @@ try:
     N._csqtt_scan_ok = lambda: True
     sh.clear(); N._csqtt_remove("csqtt25")
     check("with nothing foreign live the TUN is deleted, as before", bool(sh) and "ip link del csqtt25" in sh[-1], sh)
+
+    saved = []
+    N._csqtt_load = lambda: {}
+    N._csqtt_save = lambda insts: (saved.append(dict(insts)), True)[1]
+    N._csqtt_stop_foreign = lambda iface, src: (False, "it is still running after TERM and KILL")
+    N._csqtt_adopted_users = lambda *a, **k: {}
+    r7 = N.reconcile_csqtt({"csqtt25": {"adopt_foreign": True, "adopt_config_dir": "/etc/csqtt25", "line": "2.5",
+                                        "listen": "0.0.0.0:46100", "tun_addr": "10.66.68.1/24", "password": "x"}})
+    check("a take-over that cannot stop the server reports why", any("couldn't stop the existing csqtt server" in e for e in r7["errors"]), r7)
+    check("…and does not record it: a recorded instance is reported, which the panel reads as the take-over done",
+          bool(saved) and "csqtt25" not in saved[-1], saved[-1:] or r7)
+    N._csqtt_load = lambda: {"csqtt25": {"iface": "csqtt25", "panel_managed": True, "line": "2.5"}}
+    saved.clear(); N.reconcile_csqtt({"csqtt25": {"adopt_foreign": True, "adopt_config_dir": "/etc/csqtt25", "line": "2.5",
+                                                  "listen": "0.0.0.0:46100", "tun_addr": "10.66.68.1/24", "password": "x"}})
+    check("an instance of ours from before keeps its record through the same failure", bool(saved) and "csqtt25" in saved[-1], saved[-1:])
 
     N.os.kill, N.time.sleep = _REAL_KILL, _REAL_SLEEP   # N.os / N.time ARE the os / time modules: the panel half needs them back
 
