@@ -23728,8 +23728,14 @@ def _csqtt_stop_foreign(iface, cfgdir):
                 time.sleep(0.15)
             else:
                 os.kill(pid, signal.SIGKILL)
-    gone = not _foreign()
-    if not (gone and _csqtt_scan_ok()):
+    back = _foreign()
+    if not (not back and _csqtt_scan_ok()):
+        if back and back[0] != pid:
+            # Another process on the same TUN and store, a moment after this one died: something restarts it. Say what,
+            # so the operator can stop that — stopping the server again only cuts its clients off again.
+            _by = _csqtt_parent_of(back[0])
+            return False, ("it came back right after it was stopped (pid %d)%s — stop what restarts it"
+                           % (back[0], ", restarted by " + _by if _by else ""))
         return False, "it is still running after TERM and KILL"   # never drop a TUN we cannot prove is unused
     _drop_tun()
     return True, ""

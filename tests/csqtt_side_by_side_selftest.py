@@ -15,7 +15,7 @@ csqtt1 read it as already gone and the guard pulled its live TUN.
                   2.5 are line 2.5; 2.1.9 and 2.0.0 are 2.1; 2.3.0 and 2.6.0 their own (refused); no label is "" (every
                   csqtt build carries one — a wrapper's binary does not); an unreadable binary is None, kept a minute
   [3] stop        the take-over of csqtt1 stops the stock server and never the 2.5 one, and the reverse; the config
-                  dir compares normalised (a trailing slash)
+                  dir compares normalised (a trailing slash); a server that comes straight back names what restarts it
   [4] staletun    a new csqtt1 of ours never deletes the TUN a live stock server holds; with none live it does
   [7] noinstall  a server of ours is never installed over a foreign one live on its name (the unit's first step deletes
                   that TUN), and removing ours never deletes a TUN a foreign server holds — the state a take-over the
@@ -33,7 +33,7 @@ csqtt1 read it as already gone and the guard pulled its live TUN.
 
 Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
-                       rawcfg [3] ·
+                       rawcfg / noback [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
                        installover / nobackoff / respawnrec / rmtun / keepfail [7] · keeprec [8]
 """
@@ -61,6 +61,7 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
                 pass'''),
     "installover": ("[7]", "noded", '''                    if _fp or not _csqtt_scan_ok():''', '''                    if False:'''),
     "nobackoff": ("[7]", "noded", '''            if _later and time.monotonic() < _later[0]:''', '''            if False:'''),
+    "noback": ("[3]", "noded", '''        if back and back[0] != pid:''', '''        if False:'''),
     "respawnrec": ("[7]", "noded", '''                        if prev:              # not recorded unless''', '''                        if True:              # not recorded unless'''),
     "keepfail": ("[7]", "noded", '''                    if prev:\n                        have[iface] = inst\n                    continue''', '''                    have[iface] = inst\n                    continue'''),
     "rmtun": ("[7]", "noded",'''    _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
@@ -207,6 +208,13 @@ try:
     b = box()
     ok, why = N._csqtt_stop_foreign("csqtt1", "/etc/other")
     check("a stop for a store this server does not serve signals nothing", not b.kills, (ok, why, b.kills))
+    b = box()
+    SIDE2 = (204, SIDE[1])                       # what a supervisor starts the moment 202 dies: same TUN, same store
+    N._csqtt_procs = lambda: [p for p in (STOCK, SIDE, OURS) if p[0] in b.alive or p[0] == 303] + ([SIDE2] if 202 in b.kills else [])
+    N._csqtt_parent_of = lambda pid: "pid 77 `/bin/bash /root/loop.sh`" if pid == 204 else ""
+    ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25")
+    check("a server that comes straight back after the stop: not stopped, and the reason names the new pid and what restarts it",
+          not ok and "came back right after it was stopped (pid 204)" in why and "/root/loop.sh" in why, (ok, why))
 
     # ── [4] ──────────────────────────────────────────────────────────────────────────────────────────────────────
     section("[4] staletun — a live stock server's TUN is never pulled")
