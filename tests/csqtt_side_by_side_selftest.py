@@ -35,7 +35,8 @@ Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
                        rawcfg / noback [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
-                       installover / nobackoff / respawnrec / rmtun / keepfail [7] · keeprec [8]
+                       installover / nobackoff / respawnrec / showargs / nogone / keeplater / rmtun /
+                       keepfail [7] · keeprec [8]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, types
 import urllib.error, urllib.request
@@ -60,8 +61,11 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
                 inst["line"] = _ln''', '''                    return 400, {"ok": False, **perr("this node can't run csqtt {v1} yet — update the node first (its page offers \\"update node to …\\")", v1=_ln), "code": "node_too_old"}
                 pass'''),
     "installover": ("[7]", "noded", '''                    if _fp or not _csqtt_scan_ok():''', '''                    if False:'''),
-    "nobackoff": ("[7]", "noded", '''            if _later and time.monotonic() < _later[0]:''', '''            if False:'''),
+    "nobackoff": ("[7]", "noded", '''            if _later and time.monotonic() < _later[0] and (''', '''            if False and ('''),
     "noback": ("[3]", "noded", '''        if back and back[0] != pid:''', '''        if False:'''),
+    "showargs": ("[7]", "noded", '''        shown += " …" if parts[1].startswith("-") or "=" in parts[1] else " " + parts[1]''', '''        shown = " ".join(parts)'''),
+    "nogone": ("[7]", "noded", '''time.monotonic() < _later[0] and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):''', '''time.monotonic() < _later[0]:'''),
+    "keeplater": ("[7]", "noded", '''    for _i in [i for i in _CSQTT_ADOPT_LATER if i not in want]:''', '''    for _i in []:'''),
     "respawnrec": ("[7]", "noded", '''                        if prev:              # not recorded unless''', '''                        if True:              # not recorded unless'''),
     "keepfail": ("[7]", "noded", '''                    if prev:\n                        have[iface] = inst\n                    continue''', '''                    have[iface] = inst\n                    continue'''),
     "rmtun": ("[7]", "noded",'''    _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
@@ -291,10 +295,20 @@ try:
     check("…not recorded either", saved and "csqtt25" not in saved[-1], saved[-1:])
     r = rec({"csqtt25": dict(ADOPT)})
     check("…and not stopped again inside the minute", len(stops) == 1, stops)
+    b.alive.discard(202)                                     # the operator stops what restarts it, inside the minute
+    r = rec({"csqtt25": dict(ADOPT)}, stop=(True, True))
+    check("…and once that server is gone the take-over completes at once, not after the minute (which can outrun the panel's window)",
+          installs == ["csqtt25"] and "csqtt25" not in N._CSQTT_ADOPT_LATER, (installs, r))
+    b = box(); clean(); links.add("csqtt25")
+    r = rec({"csqtt25": dict(ADOPT)}, stop=(True, False))
     N._CSQTT_ADOPT_LATER["csqtt25"] = (0, "old")              # the minute is over; this time it stays down
     r = rec({"csqtt25": dict(ADOPT)}, stop=(True, True))
     check("once it stays down the take-over completes and its backoff is gone",
           installs == ["csqtt25"] and "csqtt25" not in N._CSQTT_ADOPT_LATER, (installs, N._CSQTT_ADOPT_LATER))
+    N._CSQTT_ADOPT_LATER["csqtt25"] = (time.monotonic() + 60, "old")
+    rec({"csqtt26": dict(INST)})
+    check("a take-over the panel stopped asking for (it gave up) forgets its minute: a new one starts at once, without the old error",
+          "csqtt25" not in N._CSQTT_ADOPT_LATER, N._CSQTT_ADOPT_LATER)
     b = box(); clean(); links.add("csqtt25")
     N._csqtt_load = lambda: {"csqtt25": {"iface": "csqtt25", "panel_managed": True, "line": "2.5"}}
     r = rec({"csqtt25": dict(ADOPT)}, stop=(False, False, "x"))
@@ -305,6 +319,20 @@ try:
     check("what restarts a server is read from the real process table (its parent's pid and command line)",
           got.startswith("pid %d `" % os.getpid()) and "python" in got, got)
     check("…and init (pid 1) is not named as a restarter", N2._csqtt_parent_of(1) == "", N2._csqtt_parent_of(1))
+    pr = subprocess.Popen(["sh", "-c", "sleep 30; echo -password Pw0SECRET"],     # an inline loop, its server's password in it
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    kid = []
+    for _ in range(40):
+        kid = subprocess.run(["pgrep", "-P", str(pr.pid)], capture_output=True, text=True).stdout.split()
+        if kid:
+            break
+        _REAL_SLEEP(0.05)
+    got = N2._csqtt_parent_of(int(kid[0])) if kid else ""
+    for k in kid:
+        _REAL_KILL(int(k), 9)
+    pr.kill()
+    check("an inline `sh -c '…'` restarter is named `sh …` — never the command line it runs, which can hold a password",
+          got == "pid %d `%s …`" % (pr.pid, "sh") and "SECRET" not in got, got)
 
     sh = []
     b = box(); N.host_sh = lambda cmd, *a, **k: (sh.append(cmd), R())[1]

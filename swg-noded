@@ -23468,22 +23468,35 @@ def _csqtt_foreign_pid(iface, procs=None):
 
 
 def _csqtt_parent_of(pid):
-    """"pid N `cmd`" for what started `pid` — what restarts a server a take-over stopped — or "" when that is init or
-    unreadable. Read on the HOST for a docker node, where the pid lives."""
-    txt = ""
+    """"pid N `program [script]`" for what started `pid` — what restarts a server a take-over stopped — or "" when that is
+    init or unreadable. Only the program and, when its next word is one, the script it runs: never the rest of the command
+    line, which goes into the node's errors (stored, logged, shown) and can carry the server's own password — an inline
+    `sh -c 'while :; do server -password …; done'` names as `sh …`. Read on the HOST for a docker node."""
+    pp, parts = "", []
     if NODE_KIND == "docker":
-        txt = (host_sh("p=$(cut -d' ' -f4 /proc/%d/stat 2>/dev/null); [ -n \"$p\" ] && echo \"$p\" && "
-                       "tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null; :" % int(pid), timeout=20).stdout or "")
+        out = (host_sh("p=$(sed 's/.*) //' /proc/%d/stat 2>/dev/null | cut -d' ' -f2); [ -n \"$p\" ] && echo \"$p\" && "
+                       "tr '\\0' '\\n' < /proc/$p/cmdline 2>/dev/null | head -n 2; :" % int(pid), timeout=20).stdout or "")
+        lines = out.splitlines()
+        pp, parts = (lines[0].strip() if lines else ""), lines[1:3]
     else:
         with contextlib.suppress(Exception):
             with open("/proc/%d/stat" % int(pid)) as f:
-                pp = f.read().rsplit(")", 1)[1].split()[1]
+                pp = f.read().rsplit(")", 1)[1].split()[1]        # after the name, which may hold spaces and ")"
             with open("/proc/%s/cmdline" % pp, "rb") as f:
-                txt = pp + "\n" + f.read().replace(b"\0", b" ").decode(errors="replace")
-    pp, _, cmd = txt.strip().partition("\n")
+                parts = [x.decode(errors="replace") for x in f.read().split(b"\0")[:2]]
     if not pp.isdigit() or int(pp) <= 1:
         return ""
-    return "pid %s `%s`" % (pp, (cmd.strip() or "?")[:120])
+    shown = (parts[0] if parts and parts[0] else "?")
+    if len(parts) > 1 and parts[1]:
+        shown += " …" if parts[1].startswith("-") or "=" in parts[1] else " " + parts[1]   # an option or `env PASS=…`: not shown
+    return "pid %s `%s`" % (pp, shown[:120])
+
+
+def _csqtt_came_back(pid):
+    """The words for a server that is running again right after it was stopped — the one sentence both the stop and the
+    install guard say, so it reads the same wherever the operator meets it."""
+    _by = _csqtt_parent_of(pid)
+    return "came back right after it was stopped (pid %d)%s — stop what restarts it" % (pid, ", restarted by " + _by if _by else "")
 
 
 # The csqtt VERSION a foreign server runs, read from its binary — never by running it. Every csqtt server build compiles
@@ -23733,9 +23746,7 @@ def _csqtt_stop_foreign(iface, cfgdir):
         if back and back[0] != pid:
             # Another process on the same TUN and store, a moment after this one died: something restarts it. Say what,
             # so the operator can stop that — stopping the server again only cuts its clients off again.
-            _by = _csqtt_parent_of(back[0])
-            return False, ("it came back right after it was stopped (pid %d)%s — stop what restarts it"
-                           % (back[0], ", restarted by " + _by if _by else ""))
+            return False, "it " + _csqtt_came_back(back[0])
         return False, "it is still running after TERM and KILL"   # never drop a TUN we cannot prove is unused
     _drop_tun()
     return True, ""
@@ -23776,6 +23787,8 @@ def reconcile_csqtt(want, remove=None):
         res["errors"].append("panel sent a malformed csqtt set (%s) — ignored" % type(want).__name__)
         return res
     have = _csqtt_load()
+    for _i in [i for i in _CSQTT_ADOPT_LATER if i not in want]:   # the panel gave the take-over up (dropped it): a new one
+        _CSQTT_ADOPT_LATER.pop(_i, None)                         # starts with no wait and none of the old one's error
     if not want and not have:
         return res
     _sw_pass = [False]                     # one line switch per pass (see below)
@@ -23861,7 +23874,9 @@ def reconcile_csqtt(want, remove=None):
             _later = _CSQTT_ADOPT_LATER.get(iface)
             if _later and (not inst.get("adopt_foreign") or _csqtt_present(iface)):
                 _CSQTT_ADOPT_LATER.pop(iface, None); _later = None
-            if _later and time.monotonic() < _later[0]:
+            # Between tries only LOOK: once that server is gone (the operator stopped what restarts it), go on at once — the
+            # minute is for not stopping it again, and waiting it out could run past the panel's window
+            if _later and time.monotonic() < _later[0] and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):
                 res["errors"].append(iface + ": " + _later[1])   # the last try's reason, until the next try
                 if prev:
                     have[iface] = inst
@@ -23915,24 +23930,21 @@ def reconcile_csqtt(want, remove=None):
                 # that name exists here (no device, nothing to pull — and no process walk on an ordinary install), and when
                 # the scan cannot say, not at all: a skipped install is loud and retried, a pulled live TUN is neither.
                 if os.path.exists("/sys/class/net/" + iface):
-                    if NODE_KIND == "docker":
-                        _wdtt_hostproc_flush()
-                    _procs = _csqtt_procs()
-                    _fp = _csqtt_foreign_pid(iface, _procs)
+                    if NODE_KIND == "docker" and inst.get("adopt_foreign"):
+                        _wdtt_hostproc_flush()       # a take-over just stopped it: the cached walk would still show it
+                    _fp = _csqtt_foreign_pid(iface)
                     if _fp or not _csqtt_scan_ok():
-                        _by = _csqtt_parent_of(_fp) if _fp else ""
                         if not _fp:
                             _e = "the process scan did not complete, so this server is not installed on %s yet" % iface
                         elif inst.get("adopt_foreign"):
                             # stopped a moment ago, and back already: something restarts it, and stopping it again every
                             # sync would only cut its clients off over and over
-                            _e = ("the server being taken over came back right after it was stopped (pid %d)%s — stop "
-                                  "what restarts it, and the take-over completes" % (_fp, ", restarted by " + _by if _by else ""))
+                            _e = "the server being taken over " + _csqtt_came_back(_fp)
                             _CSQTT_ADOPT_LATER[iface] = (time.monotonic() + CSQTT_ADOPT_RETRY_S, _e)
                         else:
-                            _e = ("another csqtt server, not this panel's, is running on %s (pid %d)%s, so this one is not "
+                            _e = ("another csqtt server, not this panel's, is running on %s (pid %d), so this one is not "
                                   "installed over it. Stop that server, or remove this one and take that server over from "
-                                  "the node page." % (iface, _fp, ", started by " + _by if _by else ""))
+                                  "the node page." % (iface, _fp))
                         res["errors"].append(iface + ": " + _e)
                         if prev:              # not recorded unless it was ours already: recorded is reported, read as done
                             have[iface] = inst
