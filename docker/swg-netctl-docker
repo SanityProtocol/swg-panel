@@ -515,7 +515,10 @@ def _handle(verb, args):
         sc, sk = os.path.join(sub_dir, "fullchain.pem"), os.path.join(sub_dir, "key.pem")
         if os.path.exists(panel_cert) and os.path.exists(panel_key) and _cert_covers_host(panel_cert, domain):
             try:
-                shutil.copyfile(panel_cert, sc); shutil.copyfile(panel_key, sk); os.chmod(sk, 0o600)
+                # key first, each through a temp file and a rename: swg-sub watches these files and must never load
+                # a half-written one, or a new cert beside the old key (review F7)
+                for src, dst, mode in ((panel_key, sk, 0o600), (panel_cert, sc, 0o644)):
+                    shutil.copyfile(src, dst + ".new"); os.chmod(dst + ".new", mode); os.replace(dst + ".new", dst)
             except OSError as e:
                 return False, "could not copy the panel certificate for the subscription page: %s" % e
             return True, "reused the panel certificate for %s" % domain

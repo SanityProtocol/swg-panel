@@ -1545,7 +1545,13 @@ elif [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; then
   # A held :80 is not a reason to refuse the install: the certificate that already exists keeps serving, and
   # only RENEWAL needs the challenge. So skip the publish, keep the panel startable, and say plainly what
   # will not happen by itself. `SWG_FORCE_PORT80=1` overrides for an operator who is about to free it.
-  if [ "${SWG_FORCE_PORT80:-}" != 1 ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
+  # …and the holder is not THIS panel: on a re-install the running container still holds :80 through its docker-proxy,
+  # and reading that as "taken" dropped the publish, so the panel came back unable to renew (S9f review F5).
+  _own80=0
+  if have docker && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
+    _own80="$(docker ps --filter 'name=^swg-panel$' --format '{{.Ports}}' 2>/dev/null | grep -c ':80->80/tcp' || true)"
+  fi
+  if [ "${SWG_FORCE_PORT80:-}" != 1 ] && ! $DRYRUN && have ss && [ "${_own80:-0}" = 0 ] && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
     _p80who="$(ss -lntpH 'sport = :80' 2>/dev/null | grep -oE '"[^"]+"' | sed -n 1p | tr -d '"' || true)"
     warn "host port 80 is already in use${_p80who:+ (by $_p80who)} — NOT publishing it"
     echo "    Let's Encrypt HTTP-01 renews through :80, so renewal cannot run by itself while that holds."

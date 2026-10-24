@@ -30,7 +30,7 @@ cert_is_selfsigned(){ local i s
   [ -n "$i" ] && [ "$i" = "$s" ]; }
 # An IP address in one spelling (IPv6 as Python prints it), or nothing when $1 is not one.
 ip_canon(){ python3 -c 'import ipaddress, sys
-try: print(ipaddress.ip_address(sys.argv[1]))
+try: print(ipaddress.ip_address(sys.argv[1].strip("[]")))
 except ValueError: pass' "$1" 2>/dev/null || true; }
 # Does cert $1 cover hostname $2 — an exact SAN/CN, or a single-label *.wildcard (so *.example.com covers
 # sub.example.com but not a.b.example.com)? An IP address is covered by an `IP Address:` SAN only: a Let's Encrypt IP
@@ -41,6 +41,11 @@ cert_covers_host(){ local host="$2" dns base pre ip hip
   if [ -n "$hip" ]; then
     for ip in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE 'IP Address:[^,[:space:]]+' | cut -d: -f2-); do
       [ "$(ip_canon "$ip")" = "$hip" ] && return 0
+    done
+    # …or a DNS SAN spelling the address: the self-signed sub certificate an earlier image wrote (review F1) — refused
+    # there, it was minted again on every start, a new key each time
+    for dns in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE 'DNS:[^,[:space:]]+' | cut -d: -f2); do
+      [ "$dns" = "$host" ] && return 0
     done
     return 1
   fi
@@ -80,9 +85,11 @@ cert_overdue(){
   return 0
 }
 SUB_TLS_DIR="${SUB_TLS_DIR:-/etc/swg-sub/tls}"; SC="$SUB_TLS_DIR/fullchain.pem"; SK="$SUB_TLS_DIR/key.pem"
-sub_selfsigned(){ mkdir -p "$SUB_TLS_DIR"
+sub_selfsigned(){ local san="DNS:$SUB_DOMAIN"
+  [ -n "$(ip_canon "$SUB_DOMAIN")" ] && san="IP:$(ip_canon "$SUB_DOMAIN")"   # an address is an IP SAN, as the panel's own
+  mkdir -p "$SUB_TLS_DIR"
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$SK" -out "$SC" \
-    -subj "/CN=$SUB_DOMAIN" -addext "subjectAltName=DNS:$SUB_DOMAIN" >/dev/null 2>&1
+    -subj "/CN=$SUB_DOMAIN" -addext "subjectAltName=$san" >/dev/null 2>&1
   log "swg-sub: generated self-signed cert (CN=$SUB_DOMAIN)"; }
 # The file an acme entry installs its certificate to ("" when there is no such entry).
 acme_target(){ sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$ACME_CFG/${1}_ecc/${1}.conf" 2>/dev/null | head -1; }
@@ -284,9 +291,12 @@ acme_install(){ acme_prune_stale
 # Re-assert the panel entry's install target on a start that reuses the certificate on disk. Something that ran
 # --install-cert on our entry (an older image's sub step did, S9f) left every renewal going elsewhere, and that start
 # never called acme_install, so nothing put it back. The store is this container's own volume: no other tool's target.
-acme_reassert(){
+acme_reassert(){ local e="$ACME_CFG/${PANEL_DOMAIN}_ecc"
   case "${TLS:-}" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 0 ;; esac
   acme_has_cert || return 0
+  # only when the panel serves the key of the _ecc entry acme_install installs: a certificate the operator mounted over
+  # it stays theirs (review F6), and an RSA entry from an older store, with no _ecc key, is not re-pointed (review F2)
+  cmp -s "$SWG_PANEL_TLS_KEY" "$e/${PANEL_DOMAIN}.key" || return 0
   [ "$(acme_target "$PANEL_DOMAIN")" = "$SWG_PANEL_TLS_CERT" ] && return 0
   log "the acme entry for $PANEL_DOMAIN installs to $(acme_target "$PANEL_DOMAIN" || true), not the panel's certificate — re-pointing it at the panel"
   acme_install; }
@@ -468,6 +478,9 @@ sub_follow_panel(){ local d
   [ -s "$SC" ] && [ -s "${SWG_PANEL_TLS_CERT:-/nonexistent}" ] && [ -s "${SWG_PANEL_TLS_KEY:-/nonexistent}" ] || return 0
   cmp -s "$SWG_PANEL_TLS_CERT" "$SC" && return 0
   cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && return 0     # a failed issuance's placeholder never replaces the sub's cert
+  for d in "$ACME_CFG"/*/*.conf; do                         # the sub has a renewer of its own: its entry installs here
+    [ -f "$d" ] && [ "$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$d" | sed -n 1p)" = "$SC" ] && return 0
+  done                                                      # (review F3: the two overwrote each other on alternate renewals)
   d="$(sub_domain_cfg)"; d="${d:-${SUB_DOMAIN:-}}"
   cmp -s "$SWG_PANEL_TLS_KEY" "$SK" || { [ -n "$d" ] && cert_covers_host "$SWG_PANEL_TLS_CERT" "$d"; } || return 0
   cp "$SWG_PANEL_TLS_KEY" "$SK.new" && chmod 600 "$SK.new" && cp "$SWG_PANEL_TLS_CERT" "$SC.new" \
@@ -487,7 +500,7 @@ renew_why(){ local why
   fi
   [ -n "$why" ] || return 0
   if [ -s "$ACME_CFG/.port80-held" ] && [ "${TLS:-}" != cloudflare ]; then
-    why="$why — host port 80 is held by $(head -c 64 "$ACME_CFG/.port80-held" | tr -d '\n'), so Let's Encrypt cannot reach this panel: free port 80 and re-run the installer$([ "${TLS:-}" = letsencrypt ] && echo ", or switch to Cloudflare DNS-01" || true)"
+    why="$why — the installer found host port 80 held by $(head -c 64 "$ACME_CFG/.port80-held" | tr -d '\n') and did not publish it, so Let's Encrypt may not reach this panel: if that is still so, free port 80 and re-run the installer$([ "${TLS:-}" = letsencrypt ] && echo ", or switch to Cloudflare DNS-01" || true)"
   fi
   printf '%s\n' "$why"; }
 # 4) Auto-renewal — only the acme-managed modes have something to renew. acme.sh re-issues

@@ -926,7 +926,7 @@ retire_carried_acme(){
   shift
   [ $# -gt 0 ] || set -- /root/.acme.sh "${HOME:-/root}/.acme.sh"   # convert.sh's own search order
   for h in "$@"; do
-    [ -x "$h/acme.sh" ] || continue
+    [ -d "$h" ] || continue                                 # the first that exists, as convert.sh copies (review F9)
     for conf in "$h"/*/*.conf; do
       [ -f "$conf" ] || continue
       dir="$(dirname "$conf")"
@@ -934,8 +934,10 @@ retire_carried_acme(){
       case "$rp" in /etc/swg-panel/tls/*|/etc/swg-sub/tls/*) ;; *) continue ;; esac
       d="$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$conf" | sed -n 1p)"
       [ -n "$d" ] && [ -d "$vol/$(basename "$dir")" ] || continue
-      case "$dir" in *_ecc) "$h/acme.sh" --home "$h" --remove -d "$d" --ecc >/dev/null 2>&1 || true ;;
-                     *)     "$h/acme.sh" --home "$h" --remove -d "$d" >/dev/null 2>&1 || true ;; esac
+      if [ -x "$h/acme.sh" ]; then
+        case "$dir" in *_ecc) "$h/acme.sh" --home "$h" --remove -d "$d" --ecc >/dev/null 2>&1 || true ;;
+                       *)     "$h/acme.sh" --home "$h" --remove -d "$d" >/dev/null 2>&1 || true ;; esac
+      fi
       rm -rf "$dir"
       echo "  the host's acme.sh no longer renews $d — the container does (its copy came over with the convert)"
     done

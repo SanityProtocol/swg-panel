@@ -63,7 +63,8 @@ WEB_DIR    = os.path.realpath(os.environ.get("SWG_SUB_WEB", os.path.dirname(os.p
 # swg-netctl issues+installs here; the file is group-swg readable so swgsub can load it. Absent → plain HTTP.
 SUB_TLS_DIR  = os.environ.get("SWG_SUB_TLS_DIR", "/etc/swg-sub/tls")
 DEFAULT_SUB_CERT = os.path.join(SUB_TLS_DIR, "fullchain.pem")
-_CERT_WATCH_S = max(1, int(os.environ.get("SWG_SUB_CERT_WATCH_S", "") if os.environ.get("SWG_SUB_CERT_WATCH_S", "").isdigit() else 60))   # how often the certificate files are looked at (the gate sets 1)
+_w = os.environ.get("SWG_SUB_CERT_WATCH_S", "")
+_CERT_WATCH_S = max(1, int(_w)) if _w.isdigit() else 60   # how often the certificate files are looked at (the gate sets 1)
 DEFAULT_SUB_KEY  = os.path.join(SUB_TLS_DIR, "key.pem")
 
 

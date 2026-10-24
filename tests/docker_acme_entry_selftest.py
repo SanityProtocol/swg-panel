@@ -32,7 +32,7 @@ PLANTS = [
      "[1] swg-netctl-docker: an IP certificate covers its own IP"),
     ("ENTRY", '  elif acme_entry_is_panels "$SUB_DOMAIN"; then', '  elif false; then',
      "[2] the panel's file not there yet: the sub still never installs onto the panel's entry"),
-    ("ENTRY", '  acme_has_cert || return 0\n  [ "$(acme_target "$PANEL_DOMAIN")" = "$SWG_PANEL_TLS_CERT" ] && return 0',
+    ("ENTRY", '  cmp -s "$SWG_PANEL_TLS_KEY" "$e/${PANEL_DOMAIN}.key" || return 0\n  [ "$(acme_target "$PANEL_DOMAIN")" = "$SWG_PANEL_TLS_CERT" ] && return 0',
      '  return 0',
      "[3] a hijacked entry is re-pointed at the panel's certificate"),
     ("ENTRY", '  log "using the certificate already present at $SWG_PANEL_TLS_CERT (mounted / previously issued)"\n  acme_reassert\n',
@@ -42,6 +42,29 @@ PLANTS = [
      "[4] a renewed panel certificate reaches the sub's copy"),
     ("ENTRY", '  cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && return 0     # a failed issuance\'s placeholder never replaces the sub\'s cert\n', '',
      "[4] …a self-signed panel placeholder never replaces the sub's certificate"),
+    ("ENTRY", '  cmp -s "$SWG_PANEL_TLS_KEY" "$e/${PANEL_DOMAIN}.key" || return 0\n', '',
+     "[3] …a certificate the operator mounted over the entry stays theirs"),
+    ("ENTRY", '  case "${TLS:-}" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 0 ;; esac\n  acme_has_cert || return 0\n',
+     '  acme_has_cert || return 0\n',
+     "[3] …only in an acme mode (selfsigned: nothing is re-pointed)"),
+    ("ENTRY", '    [ -f "$d" ] && [ "$(sed -n', '    false && [ "$(sed -n',
+     "[4] …a sub with its own acme entry installing to its files is left to that entry"),
+    ("ENTRY", '  [ -n "$(ip_canon "$SUB_DOMAIN")" ] && san="IP:$(ip_canon "$SUB_DOMAIN")"', '  :',
+     "[2] a self-signed sub on an IP writes an IP SAN, and is reused on the next start"),
+    ("ENTRY", '    for dns in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE \'DNS:[^,[:space:]]+\' | cut -d: -f2); do\n      [ "$dns" = "$host" ] && return 0\n    done\n    return 1',
+     '    return 1',
+     "[1] …an IP spelled as a DNS SAN (an earlier image's self-signed sub cert) still covers it"),
+    ("ENTRY", 'print(ipaddress.ip_address(sys.argv[1].strip("[]")))', 'print(ipaddress.ip_address(sys.argv[1]))',
+     "[1] …a bracketed IPv6 host, as swg-netctl-docker reads it"),
+    ("NCD", '                    shutil.copyfile(src, dst + ".new"); os.chmod(dst + ".new", mode); os.replace(dst + ".new", dst)',
+     '                    shutil.copyfile(src, dst); os.chmod(dst, mode)',
+     "[1] swg-netctl-docker copies the panel's pair into sub-tls by rename, key first"),
+    ("COMMON", '    [ -d "$h" ] || continue                                 # the first that exists, as convert.sh copies (review F9)\n',
+     '    [ -x "$h/acme.sh" ] || continue\n',
+     "[7] the store convert.sh copied is the one retired, with or without an acme.sh in it"),
+    ("IDOCKER", '  if [ "${SWG_FORCE_PORT80:-}" != 1 ] && ! $DRYRUN && have ss && [ "${_own80:-0}" = 0 ] &&',
+     '  if [ "${SWG_FORCE_PORT80:-}" != 1 ] && ! $DRYRUN && have ss &&',
+     "[8] a re-install does not read the panel's own docker-proxy on :80 as taken"),
     ("ENTRY", '        sub_follow_panel || true\n', '',
      "[4] …after every --cron of the renewal loop"),
     ("SUB", '        threading.Thread(target=_watch_cert, name="cert-watch", daemon=True).start()\n', '',
@@ -255,6 +278,13 @@ NCD = importlib.util.module_from_spec(_s)
 _l.exec_module(NCD)
 check("[1] swg-netctl-docker: an IP certificate covers its own IP", NCD._cert_covers_host(IPC, IP)
       and NCD._cert_covers_host(IP6CRT, IP6) and NCD._cert_covers_host(IP6CRT, IP6C))
+_dnsip, _ = leaf("dns-ip", "DNS:" + IP, 3650)
+check("[1] …an IP spelled as a DNS SAN (an earlier image's self-signed sub cert) still covers it", covers(_dnsip, IP))
+check("[1] …a bracketed IPv6 host, as swg-netctl-docker reads it", covers(IP6CRT, "[" + IP6 + "]"))
+_nsrc = open(PATHS["NCD"], encoding="utf-8").read()
+_ic = _nsrc[_nsrc.index('if verb == "issue-cert":'):][:3000]
+check("[1] swg-netctl-docker copies the panel's pair into sub-tls by rename, key first", 'os.replace(dst + ".new", dst)' in _ic
+      and _ic.index("(panel_key, sk, 0o600)") < _ic.index("(panel_cert, sc, 0o644)"), _ic[:400])
 check("[1] swg-netctl-docker: …not another IP, and DNS as before", not NCD._cert_covers_host(IPC, "203.0.113.8")
       and NCD._cert_covers_host(WILD, "sub.example.com") and not NCD._cert_covers_host(DNSC, IP))
 
@@ -271,6 +301,12 @@ _inst = [c for c in calls() if "--install-cert" in c]
 check("[2] the panel's file not there yet: the sub still never installs onto the panel's entry", not _inst
       and same(env["SUB_TLS_DIR"] + "/fullchain.pem", IPC), (_inst, r.stdout[-300:]))
 
+w, env = world("w2c", tls="selfsigned", dom="panel.example.com")
+r = run(env, 'SUB_DOMAIN=%s; issue_sub_cert; cp "$SC" "$SC.first"; issue_sub_cert' % IP)
+_t = sh("openssl", "x509", "-in", env["SUB_TLS_DIR"] + "/fullchain.pem", "-noout", "-text").stdout
+check("[2] a self-signed sub on an IP writes an IP SAN, and is reused on the next start", ("IP Address:" + IP) in _t
+      and same(env["SUB_TLS_DIR"] + "/fullchain.pem", env["SUB_TLS_DIR"] + "/fullchain.pem.first"), (r.stdout[-300:], _t[-300:]))
+
 print("[3] a start repairs an entry that installs elsewhere")
 w, env = world("w3")
 run(env, "acme_install")
@@ -284,11 +320,28 @@ _reuse = cut(EP, "elif reuse_present_cert; then", "\nelif ")
 check("[3] …on a start that reuses the certificate on disk", "acme_reassert" in _reuse, _reuse)
 w, env = world("w3b", tls="selfsigned")
 run(env, "acme_install")
-with open(w + "/acme/%s_ecc/%s.conf" % (IP, IP), "a") as f:
-    f.write("Le_RealFullChainPath='/elsewhere'\n")
+with open(w + "/acme/%s_ecc/%s.conf" % (IP, IP), "w") as f:
+    f.write("Le_Domain='%s'\nLe_RealFullChainPath='/elsewhere'\n" % IP)
 open(CALLS, "w").close()
 run(env, "acme_reassert")
 check("[3] …only in an acme mode (selfsigned: nothing is re-pointed)", not [c for c in calls() if "--install-cert" in c], calls())
+
+w, env = world("w3c")
+run(env, "acme_install")
+_mc, _mk = leaf("mounted", "IP:" + IP, 90)                      # the operator's own pair, mounted over the managed path
+shutil.copyfile(_mc, env["SWG_PANEL_TLS_CERT"]); shutil.copyfile(_mk, env["SWG_PANEL_TLS_KEY"])
+with open(w + "/acme/%s_ecc/%s.conf" % (IP, IP), "w") as f:       # …and the entry installing elsewhere
+    f.write("Le_Domain='%s'\nLe_RealFullChainPath='/elsewhere'\n" % IP)
+open(CALLS, "w").close()
+run(env, "acme_reassert")
+check("[3] …a certificate the operator mounted over the entry stays theirs", same(env["SWG_PANEL_TLS_CERT"], _mc)
+      and not [c for c in calls() if "--install-cert" in c], calls())
+w, env = world("w3d")
+shutil.move(w + "/acme/%s_ecc" % IP, w + "/acme/%s" % IP)          # an RSA-era entry: no _ecc dir
+shutil.copyfile(IPC, env["SWG_PANEL_TLS_CERT"]); shutil.copyfile(IPK, env["SWG_PANEL_TLS_KEY"])
+open(CALLS, "w").close()
+r = run(env, "acme_reassert")
+check("[3] …an RSA entry from an older store is not re-pointed with --ecc", not [c for c in calls() if "--install-cert" in c], (calls(), r.stdout))
 
 print("[4] the sub's copy follows the panel's renewals")
 w, env = world("w4")
@@ -314,6 +367,16 @@ sh("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:pr
 shutil.copyfile(_ss, env["SWG_PANEL_TLS_CERT"])                  # the panel fell back to self-signed (a failed issuance)
 run(env, "SUB_DOMAIN=%s; sub_follow_panel" % IP)
 check("[4] …a self-signed panel placeholder never replaces the sub's certificate", same(env["SUB_TLS_DIR"] + "/fullchain.pem", IPC))
+w, env = world("w4d", tls="cloudflare", dom="panel.example.com")
+_wc, _wk = leaf("wild-panel", "DNS:*.example.com", 90)
+shutil.copyfile(_wc, env["SWG_PANEL_TLS_CERT"]); shutil.copyfile(_wk, env["SWG_PANEL_TLS_KEY"])
+_sc, _sk = leaf("sub-entry", "DNS:sub.example.com", 90)
+shutil.copyfile(_sc, env["SUB_TLS_DIR"] + "/fullchain.pem"); shutil.copyfile(_sk, env["SUB_TLS_DIR"] + "/key.pem")
+os.makedirs(w + "/acme/sub.example.com_ecc")
+with open(w + "/acme/sub.example.com_ecc/sub.example.com.conf", "w") as f:
+    f.write("Le_Domain='sub.example.com'\nLe_RealFullChainPath='%s/fullchain.pem'\n" % env["SUB_TLS_DIR"])
+run(env, "SUB_DOMAIN=sub.example.com; sub_follow_panel")
+check("[4] …a sub with its own acme entry installing to its files is left to that entry", same(env["SUB_TLS_DIR"] + "/fullchain.pem", _sc))
 
 print("[5] swg-sub picks up a changed certificate on its own")
 def free_port():
@@ -388,7 +451,8 @@ check("[6] an error naming our domain is failing, whatever the date", "renew fai
 with open(w + "/acme/.port80-held", "w") as f:
     f.write("nginx\n")
 _h = why_at(2 * D)
-check("[6] a failing renewal names who holds port 80 (letsencrypt-ip: no DNS-01 offer)", "port 80 is held by nginx" in _h
+check("[6] a failing renewal names who holds port 80 (letsencrypt-ip: no DNS-01 offer)", "port 80 held by nginx" in _h
+      and "if that is still so" in _h
       and "Cloudflare" not in _h, _h)
 _h2 = why_at(2 * D, tls="letsencrypt")
 check("[6] …a domain certificate is offered Cloudflare DNS-01", "held by nginx" in _h2 and "Cloudflare DNS-01" in _h2, _h2)
@@ -410,6 +474,19 @@ _fn = cut(CM, "retire_carried_acme(){", "\n  done; }\n") + "\n  done; }\n"
 open(CALLS, "w").close()
 r = subprocess.run(["bash", "-c", _fn + '\nretire_carried_acme "%s" "%s"' % (vol, hh)], env=dict(os.environ, FAKE_ACME_CALLS=CALLS),
                    capture_output=True, text=True, timeout=60)
+hh2 = os.path.join(TMP, "hosthome2/.acme.sh")              # the store convert.sh copied, with no acme.sh left in it
+os.makedirs(hh2 + "/%s_ecc" % IP)
+with open(hh2 + "/%s_ecc/%s.conf" % (IP, IP), "w") as f:
+    f.write("Le_Domain='%s'\nLe_RealFullChainPath='/etc/swg-panel/tls/fullchain.pem'\n" % IP)
+hh3 = os.path.join(TMP, "hosthome3/.acme.sh")              # a later home WITH an acme.sh: not the one convert.sh copied
+os.makedirs(hh3 + "/%s_ecc" % IP)
+with open(hh3 + "/%s_ecc/%s.conf" % (IP, IP), "w") as f:
+    f.write("Le_Domain='%s'\nLe_RealFullChainPath='/etc/swg-panel/tls/fullchain.pem'\n" % IP)
+shutil.copyfile(FAKE, hh3 + "/acme.sh"); os.chmod(hh3 + "/acme.sh", 0o755)
+subprocess.run(["bash", "-c", _fn + '\nretire_carried_acme "%s" "%s" "%s"' % (vol, hh2, hh3)], env=dict(os.environ, FAKE_ACME_CALLS=CALLS),
+               capture_output=True, text=True, timeout=60)
+check("[7] the store convert.sh copied is the one retired, with or without an acme.sh in it",
+      not os.path.exists(hh2 + "/%s_ecc" % IP) and os.path.isdir(hh3 + "/%s_ecc" % IP))
 check("[7] the panel's and the sub's entries leave the host store", not os.path.exists(hh + "/%s_ecc" % IP)
       and not os.path.exists(hh + "/sub.example.com_ecc") and ["--home", hh, "--remove", "-d", IP, "--ecc"] in calls(), (r.stdout, calls()))
 check("[7] the user's own entry in the host store stays", os.path.isdir(hh + "/mine.example.org_ecc"))
@@ -425,6 +502,9 @@ _held = cut(ID, 'warn "host port 80 is already in use', "elif $DRYRUN; then")
 _pub = cut(ID, 'cat > "$OVERRIDE" <<\'YAML\'', 'elif [ -f "$OVERRIDE" ]; then')
 check("[8] the installer leaves who holds :80 for the renewal loop", '> "$P80HELD"' in _held, _held[-300:])
 check("[8] …and takes it back when it publishes :80", 'rm -f "$P80HELD"' in _pub, _pub[-200:])
+_hc = cut(ID, "_own80=0", 'warn "host port 80 is already in use')
+check("[8] a re-install does not read the panel's own docker-proxy on :80 as taken", "name=^swg-panel$" in _hc
+      and "':80->80/tcp'" in _hc and '[ "${_own80:-0}" = 0 ]' in _hc, _hc[:400])
 check("[8] the marker sits where the loop reads it (the container's acme dir)", 'P80HELD="$PREFIX$INSTALL_DIR/data/etc/acme/.port80-held"' in ID
       and '"$ACME_CFG/.port80-held"' in EP)
 
