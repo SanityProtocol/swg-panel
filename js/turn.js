@@ -2532,11 +2532,9 @@ export function CsqttCard({ node, c, reorder }) {
   const _opTag = opTag(node + "|" + c.iface);
   const deleting = !!Store.ifaceGone[node + "|" + c.iface];
   const cstopped = !!((nrec.csqtt_cfg || {})[c.iface] || {}).stopped;   // operator-stopped, same as the WDTT card
-  const adopting = (nrec.csqtt_adopting || []).includes(c.iface);   // take-over in flight — as the WDTT card: no save at a server being replaced
   const sw = csqttSwitchState(node, c.iface);
   const tag = deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" title=${T("The node tears it down on its next sync")}/>`
     : converting ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title=${T("The node is converting between bare-metal and docker")}/>`
-    : adopting ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("The node applies the take-over on its next sync")}/>`
     : _opTag ? _opTag
     : sw.switching ? html`<${StatusTag} cls="tg tg-pending" icon="clock" label=${T("tag|switching")} title=${T("Moving to csqtt {v1} on the node's next sync", { v1: sw.want })}/>`
     : sw.failed ? html`<${StatusTag} cls="tg tg-warn" icon="warn" label=${T("tag|switch failed")} title=${T("Switch to csqtt {v1} failed", { v1: sw.want })} msg=${sw.failed.why || ""}/>`
@@ -2546,7 +2544,7 @@ export function CsqttCard({ node, c, reorder }) {
     : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("Installing / starting on the node")}/>`;
   const _opBusy = _op && _op.phase === "busy";
   const cdim = deleting || converting || !active || _opBusy;
-  const canOpen = !_opBusy && !nblocked && !deleting && !adopting;
+  const canOpen = !_opBusy && !nblocked && !deleting;
   return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (cdim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} data-rid=${it ? it.rid : null} onClick=${() => { if (!canOpen) return; openModal(html`<${CsqttManageSheet} node=${node} c=${c}/>`); }}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title=${T("Drag to reorder")} onClick=${e => e.stopPropagation()} ...${reorder.grip(rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       <span class="iftype csqtt">CSQTT</span>

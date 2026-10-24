@@ -877,15 +877,19 @@ export function NodeDetail({ node: rawName }) {
             <div class="ifcard-rows"><div class="ifrow"><span class="l faint">${T("it comes back with the node")}</span></div></div>
           </div>` : html`<a class="ifcard down" key=${"csqtt-cfg:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title=${T("Open the csqtt server — details and settings")}>
           <div class="ifcard-top"><span class="iftype csqtt">CSQTT</span><span class="ifname">${(cc.title || "").trim() || ifn}</span><span class="grow"></span>
-            ${cc.stopped ? html`<span class="tg-off" title=${T("Stopped by you — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
+            ${_cAdopting.has(ifn) ? html`<${StatusTag} cls="tg-busy" icon="clock" label="adopting" title=${T("The node applies the take-over on its next sync")}/>`
+              : cc.stopped ? html`<span class="tg-off" title=${T("Stopped by you — open to Start it")}><${Ic} i="stop"/>${T("tag|stopped")}</span>`
               : html`<${StatusTag} cls="tg tg-pending" icon="clock" label="starting" title=${T("The node brings it up on its next sync")}/>`}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">${T("Listen (local)")}</span><span class="r addr">${ifn + (portOf(cc.listen) ? ":" + portOf(cc.listen) : "")}</span></div>
             <div class="ifrow"><span class="l">${T("Subnet")}</span><span class="r addr">${cc.tun_addr || "—"}</span></div>
             <div class="ifrow"><span class="l faint">${T("waiting for the node to bring it up…")}</span></div>
           </div></a>`);
+        // A take-over in flight is already on screen as the foreign server's own card ("adopting") while the node still
+        // reports it — as the WDTT grid does, skip this one then, so one server is not shown twice, once as "starting"
         const cmcards = Object.entries(nrec.csqtt_cfg || {})
-          .filter(([ifn]) => !csqttIfaces.some(c => c.iface === ifn) && !pending.includes(ifn))
+          .filter(([ifn]) => !csqttIfaces.some(c => c.iface === ifn) && !pending.includes(ifn)
+                             && !(_cAdopting.has(ifn) && (nrec.csqtt_candidates || []).some(c => c && c.iface === ifn)))
           .map(([ifn, cc]) => cmcard(ifn, cc || {}));
         // csqtt-owned interface card — same chrome as the WDTT card (self-contained kind), but raw-TUN: Listen shows
         // the host:port, Subnet shows the tun_addr, no fork tag, and the pencil opens the csqtt edit modal.

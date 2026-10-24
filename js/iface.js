@@ -843,7 +843,7 @@ export function WdttIfaceDetail({ node, iface, w, nrec, missing, kind }) {
   // no identity to restore, nothing to recreate, and nothing to stop or restart. Its only honest actions are
   // reading the reason and removing it.
   const failErr = (nrec.cmd_errors || {})[iface] || "";
-  const never = !!missing && !!failErr && !((nrec.wdtt_vault || {})[iface]);
+  const never = !adopting && !!missing && !!failErr && !((nrec.wdtt_vault || {})[iface]);   // a take-over's failure is not "never created"
   // csqtt derives every client credential from the panel-owned password — there is no server keypair to escrow,
   // so a missing csqtt server is never "restorable", only recreatable from panel state (which self-heals).
   const restorableK = !isCsq && !!((nrec.wdtt_vault || {})[iface]);
