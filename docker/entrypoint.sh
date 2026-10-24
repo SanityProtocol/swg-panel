@@ -21,16 +21,29 @@ panel_log(){   # <letter E/W/I> <text>
 # Defined here so the `sub-cert <domain>` RUNTIME subcommand — swg-netctl-docker calls `entrypoint.sh sub-cert
 # <domain>` when the panel's subscription address changes (a DIFFERENT host the panel cert doesn't cover) — can
 # issue swg-sub's cert WITHOUT running the whole panel bootstrap. The boot path below calls the same issue_sub_cert.
-ACME="/opt/acme.sh/acme.sh"; ACME_CFG="${ACME_CONFIG:-/etc/swg-panel/acme}"
+ACME="${ACME_BIN:-/opt/acme.sh/acme.sh}"; ACME_CFG="${ACME_CONFIG:-/etc/swg-panel/acme}"
 acme(){ "$ACME" --config-home "$ACME_CFG" "$@"; }
 cert_is_selfsigned(){ local i s
   # strip openssl's `issuer=`/`subject=` labels — else the two strings ALWAYS differ and self-signed is never seen.
   i="$(openssl x509 -in "$1" -noout -issuer 2>/dev/null | sed 's/^issuer= *//')"
   s="$(openssl x509 -in "$1" -noout -subject 2>/dev/null | sed 's/^subject= *//')"
   [ -n "$i" ] && [ "$i" = "$s" ]; }
+# An IP address in one spelling (IPv6 as Python prints it), or nothing when $1 is not one.
+ip_canon(){ python3 -c 'import ipaddress, sys
+try: print(ipaddress.ip_address(sys.argv[1]))
+except ValueError: pass' "$1" 2>/dev/null || true; }
 # Does cert $1 cover hostname $2 — an exact SAN/CN, or a single-label *.wildcard (so *.example.com covers
-# sub.example.com but not a.b.example.com)?
-cert_covers_host(){ local host="$2" dns base pre
+# sub.example.com but not a.b.example.com)? An IP address is covered by an `IP Address:` SAN only: a Let's Encrypt IP
+# certificate has no DNS name at all, and reading DNS alone sent an IP panel's sub on the same IP to the Let's Encrypt
+# branch below, whose --install-cert took the panel's own acme entry (S9f; swg-netctl learned the same in 1.8.8).
+cert_covers_host(){ local host="$2" dns base pre ip hip
+  hip="$(ip_canon "$host")"
+  if [ -n "$hip" ]; then
+    for ip in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE 'IP Address:[^,[:space:]]+' | cut -d: -f2-); do
+      [ "$(ip_canon "$ip")" = "$hip" ] && return 0
+    done
+    return 1
+  fi
   for dns in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE 'DNS:[^,[:space:]]+' | cut -d: -f2); do
     [ "$dns" = "$host" ] && return 0
     case "$dns" in \*.*) base="${dns#\*.}"; pre="${host%".$base"}"
@@ -48,11 +61,38 @@ cert_days_left(){
   [ -n "$epoch" ] || return 0
   now="$(date +%s)"; echo $(( (epoch - now) / 86400 ))
 }
-SUB_TLS_DIR="/etc/swg-sub/tls"; SC="$SUB_TLS_DIR/fullchain.pem"; SK="$SUB_TLS_DIR/key.pem"
+# Why a certificate FILE is overdue for renewal, or nothing when it is not (or cannot be read — never a fault). One that
+# lives 10 days or less (a Let's Encrypt IP / shortlived one, ~6.7 days) is overdue past 2/3 of its life, the panel's
+# _SHORT_LIVED_S rule: a fixed "20 days left" read every IP certificate as failing from the day it was issued (S9f).
+# A longer one is overdue at 20 days left (a 90-day certificate renews at 30).
+cert_overdue(){
+  local nb na now life left
+  [ -s "${1:-}" ] || return 0
+  nb="$(date -d "$(openssl x509 -in "$1" -noout -startdate 2>/dev/null | cut -d= -f2)" +%s 2>/dev/null)" || return 0
+  na="$(date -d "$(openssl x509 -in "$1" -noout -enddate 2>/dev/null | cut -d= -f2)" +%s 2>/dev/null)" || return 0
+  [ -n "$nb" ] && [ -n "$na" ] || return 0
+  now="$(date +%s)"; life=$((na - nb)); left=$((na - now))
+  if [ "$life" -gt 0 ] && [ "$life" -le 864000 ]; then
+    [ $((left * 3)) -lt "$life" ] && echo "certificate has $((left / 3600)) hour(s) left of its $(( (life + 43200) / 86400 ))-day life and has not been renewed"
+  elif [ $((left / 86400)) -le 20 ]; then
+    echo "certificate has $((left / 86400)) day(s) left and has not been renewed"
+  fi
+  return 0
+}
+SUB_TLS_DIR="${SUB_TLS_DIR:-/etc/swg-sub/tls}"; SC="$SUB_TLS_DIR/fullchain.pem"; SK="$SUB_TLS_DIR/key.pem"
 sub_selfsigned(){ mkdir -p "$SUB_TLS_DIR"
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$SK" -out "$SC" \
     -subj "/CN=$SUB_DOMAIN" -addext "subjectAltName=DNS:$SUB_DOMAIN" >/dev/null 2>&1
   log "swg-sub: generated self-signed cert (CN=$SUB_DOMAIN)"; }
+# The file an acme entry installs its certificate to ("" when there is no such entry).
+acme_target(){ sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$ACME_CFG/${1}_ecc/${1}.conf" 2>/dev/null | head -1; }
+# Is $1's acme entry the PANEL's — its name, or an entry installing to the panel's file? acme.sh keeps ONE install target
+# per entry, so an --install-cert for the sub on it re-points every later renewal at the sub's directory (no reload), and
+# the panel serves its last certificate until it expires: a letsencrypt-ip panel at about day 6.7 (S9f, seen live).
+acme_entry_is_panels(){
+  case "${TLS:-}" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 1 ;; esac
+  [ "$1" = "${PANEL_DOMAIN:-}" ] && return 0
+  [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ "$(acme_target "$1")" = "$SWG_PANEL_TLS_CERT" ]; }
 # Ensure swg-sub's cert for $SUB_DOMAIN. Rule: if the panel's OWN cert already covers the sub host (same domain, or a
 # SAN/wildcard) reuse it — no second issuance; else issue a SEPARATE cert (own key). Never blocks the caller fatally.
 issue_sub_cert(){ set +e
@@ -64,6 +104,13 @@ issue_sub_cert(){ set +e
   elif [ -s "$SC" ] && { [ "${TLS:-selfsigned}" = selfsigned ] || ! cert_is_selfsigned "$SC"; } \
        && cert_covers_host "$SC" "$SUB_DOMAIN"; then
     log "swg-sub: reusing present cert for $SUB_DOMAIN"
+  elif acme_entry_is_panels "$SUB_DOMAIN"; then
+    # the panel's own entry: read its certificate, never install onto it (the panel's file not usable yet, or not covering)
+    _ed="$ACME_CFG/${SUB_DOMAIN}_ecc"
+    if [ -s "$_ed/fullchain.cer" ] && [ -s "$_ed/${SUB_DOMAIN}.key" ] && head -1 "$_ed/${SUB_DOMAIN}.cer" 2>/dev/null | grep -q 'BEGIN CERTIFICATE'; then
+      cp "$_ed/${SUB_DOMAIN}.key" "$SK"; cp "$_ed/fullchain.cer" "$SC"
+      log "swg-sub: $SUB_DOMAIN is the panel's own certificate entry — copied its certificate for the subscription page"
+    else sub_selfsigned; fi
   else case "${TLS:-selfsigned}" in
     letsencrypt|letsencrypt-ip)
       # The sub never even ATTEMPTED Let's Encrypt: the case below had branches only for cloudflare and cf15, so
@@ -234,6 +281,15 @@ acme_install(){ acme_prune_stale
   --key-file "$SWG_PANEL_TLS_KEY" --fullchain-file "$SWG_PANEL_TLS_CERT" \
   --reloadcmd 'kill -HUP 1' >/dev/null 2>&1 \
   || log "WARNING: acme --install-cert failed — the panel may fall back to no/old cert"; }
+# Re-assert the panel entry's install target on a start that reuses the certificate on disk. Something that ran
+# --install-cert on our entry (an older image's sub step did, S9f) left every renewal going elsewhere, and that start
+# never called acme_install, so nothing put it back. The store is this container's own volume: no other tool's target.
+acme_reassert(){
+  case "${TLS:-}" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 0 ;; esac
+  acme_has_cert || return 0
+  [ "$(acme_target "$PANEL_DOMAIN")" = "$SWG_PANEL_TLS_CERT" ] && return 0
+  log "the acme entry for $PANEL_DOMAIN installs to $(acme_target "$PANEL_DOMAIN" || true), not the panel's certificate — re-pointing it at the panel"
+  acme_install; }
 
 # A present cert is a SELF-SIGNED placeholder when its issuer == subject. A CA mode must NOT reuse one: it means an
 # earlier issuance failed and self-signed (e.g. the credential wasn't there yet), and a validating proxy (Cloudflare
@@ -262,6 +318,7 @@ if [ "${TLS:-selfsigned}" = "none" ]; then
   unset SWG_PANEL_TLS_CERT SWG_PANEL_TLS_KEY
 elif reuse_present_cert; then
   log "using the certificate already present at $SWG_PANEL_TLS_CERT (mounted / previously issued)"
+  acme_reassert
 elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
   mkdir -p "$(dirname "$SWG_PANEL_TLS_CERT")" "$ACME_CFG"
   case "${TLS:-selfsigned}" in
@@ -370,7 +427,7 @@ fi
 # The sub's domain is PANEL-MANAGED (access.sub.url in panel-settings.json), so prefer that over the static install
 # env — otherwise a restart would re-issue for the env default and clobber a cert the UI issued for a different sub
 # host. Env stays the bootstrap for a first boot before any sub address is saved.
-_sub_dom_cfg="$(python3 - /var/lib/swg-panel/panel-settings.json 2>/dev/null <<'PY'
+sub_domain_cfg(){ python3 - "${PANEL_SETTINGS:-/var/lib/swg-panel/panel-settings.json}" 2>/dev/null <<'PY'
 import json,sys
 from urllib.parse import urlparse
 try:
@@ -379,7 +436,8 @@ try:
 except Exception:
     print("")
 PY
-)"
+}
+_sub_dom_cfg="$(sub_domain_cfg)"
 [ -n "$_sub_dom_cfg" ] && SUB_DOMAIN="$_sub_dom_cfg"
 if [ "${TLS:-selfsigned}" != none ] && [ -n "${SUB_DOMAIN:-}" ]; then ( issue_sub_cert ) & fi
 
@@ -402,6 +460,36 @@ fi
 mkdir -p "$STATS_DIR" /var/lib/swg-panel
 [ -f /var/lib/swg-panel/nodes.json ] || { echo '{}' > /var/lib/swg-panel/nodes.json; log "seeded empty nodes.json"; }
 
+# 4a) A subscription page serving the PANEL's certificate follows its renewals. issue_sub_cert copies it once, at start;
+#     the renewal below then reaches only the panel's file, and swg-sub served the old copy until it expired — about day
+#     6.7 of an IP certificate, day 90 of a domain one (S9f). Its copy, or its cert for a host the panel's covers, is
+#     replaced whenever the panel's differs; swg-sub sees the new files on its own (it watches them).
+sub_follow_panel(){ local d
+  [ -s "$SC" ] && [ -s "${SWG_PANEL_TLS_CERT:-/nonexistent}" ] && [ -s "${SWG_PANEL_TLS_KEY:-/nonexistent}" ] || return 0
+  cmp -s "$SWG_PANEL_TLS_CERT" "$SC" && return 0
+  cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && return 0     # a failed issuance's placeholder never replaces the sub's cert
+  d="$(sub_domain_cfg)"; d="${d:-${SUB_DOMAIN:-}}"
+  cmp -s "$SWG_PANEL_TLS_KEY" "$SK" || { [ -n "$d" ] && cert_covers_host "$SWG_PANEL_TLS_CERT" "$d"; } || return 0
+  cp "$SWG_PANEL_TLS_KEY" "$SK.new" && chmod 600 "$SK.new" && cp "$SWG_PANEL_TLS_CERT" "$SC.new" \
+    && mv -f "$SK.new" "$SK" && mv -f "$SC.new" "$SC" \
+    && log "swg-sub: the panel's certificate changed — the subscription page's copy follows it" \
+    || log "WARNING: could not copy the panel's renewed certificate for the subscription page"
+}
+# Why THIS panel's certificate renewal is failing after a `--cron` run whose output is $1 — or nothing when it is not.
+# Two things can be wrong with OUR certificate, and neither needs acme's opinion of anyone else's (see the loop below):
+# the run reported an error naming our own domain, or the certificate is overdue (cert_overdue) and still old. When the
+# installer could not publish :80 (something else held it, .port80-held), the reason says who, and the way out (S9f).
+renew_why(){ local why
+  if printf '%s' "$1" | grep -qiE "error.*(renew|issu).*${PANEL_DOMAIN}"; then
+    why="$(printf '%s' "$1" | grep -iE "error.*${PANEL_DOMAIN}" | tail -1)"
+  else
+    why="$(cert_overdue "$SWG_PANEL_TLS_CERT")"
+  fi
+  [ -n "$why" ] || return 0
+  if [ -s "$ACME_CFG/.port80-held" ] && [ "${TLS:-}" != cloudflare ]; then
+    why="$why — host port 80 is held by $(head -c 64 "$ACME_CFG/.port80-held" | tr -d '\n'), so Let's Encrypt cannot reach this panel: free port 80 and re-run the installer$([ "${TLS:-}" = letsencrypt ] && echo ", or switch to Cloudflare DNS-01" || true)"
+  fi
+  printf '%s\n' "$why"; }
 # 4) Auto-renewal — only the acme-managed modes have something to renew. acme.sh re-issues
 #    a cert once it enters its renewal window and then runs the saved --reloadcmd (kill -HUP 1),
 #    so the panel reloads the fresh cert without a restart. cf15/selfsigned (long-lived) and
@@ -427,16 +515,9 @@ case "${TLS:-selfsigned}" in
     #   · the certificate is inside its renewal window and STILL old — renewal had its chance and did not take.
     ( while :; do
         out="$(acme --cron 2>&1)" || true
-        _bad=no; _why=""
-        if printf '%s' "$out" | grep -qiE "error.*(renew|issu).*${PANEL_DOMAIN}"; then
-          _bad=yes; _why="$(printf '%s' "$out" | grep -iE "error.*${PANEL_DOMAIN}" | tail -1)"
-        else
-          _left="$(cert_days_left "$SWG_PANEL_TLS_CERT")"
-          if [ -n "$_left" ] && [ "$_left" -le 20 ]; then
-            _bad=yes; _why="certificate has ${_left} day(s) left and has not been renewed"
-          fi
-        fi
-        if [ "$_bad" = no ]; then
+        sub_follow_panel || true
+        _why="$(renew_why "$out")"
+        if [ -z "$_why" ]; then
           printf 'ok %s\n' "$(date +%s)" > "$ACME_CFG/.renew-status" 2>/dev/null || true
           panel_log I "renewal check for $PANEL_DOMAIN ok ($(cert_days_left "$SWG_PANEL_TLS_CERT") day(s) left)"
           sleep 43200

@@ -23,6 +23,7 @@ the container, not on the host):
   set-base <panel> <base>          -> persist SWG_PANEL_BASE (PANEL_BASE in .env) for the next recreate
 """
 import contextlib
+import ipaddress
 import json
 import os
 import re
@@ -85,11 +86,21 @@ def _compose(*args):
 
 def _cert_covers_host(cert_path, host):
     """Does the cert at cert_path name `host` — an exact SAN/CN, or a single-label *.wildcard (so *.example.com
-    covers sub.example.com but not a.b.example.com)? Mirrors the entrypoint's cert_covers_host, host-side."""
+    covers sub.example.com but not a.b.example.com)? Mirrors the entrypoint's cert_covers_host, host-side. An IP is
+    covered by an `IP Address` SAN only (canonical form: openssl prints IPv6 unabbreviated) — a Let's Encrypt IP
+    certificate names nothing else, so reading DNS alone sent an IP panel's sub to a separate issuance on the panel's
+    own acme entry (S9f; swg-netctl's _cert_names counts IP SANs since 1.8.8)."""
     try:
         out = subprocess.run(["openssl", "x509", "-in", cert_path, "-noout", "-text"],
                              capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
+        return False
+    with contextlib.suppress(ValueError):
+        hip = ipaddress.ip_address(host.strip("[]"))
+        for ip in re.findall(r"IP Address:([^,\s]+)", out):
+            with contextlib.suppress(ValueError):
+                if ipaddress.ip_address(ip) == hip:
+                    return True
         return False
     for dns in re.findall(r"DNS:([^,\s]+)", out):
         if dns == host:

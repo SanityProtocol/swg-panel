@@ -913,6 +913,35 @@ remove_docker_netctl(){
   netctl_gate_reap                                          # …and the idle gate, unless the bare helper still runs it
   systemctl daemon-reload >/dev/null 2>&1 || true; }
 
+# retire_carried_acme <the container's acme dir> [<host acme home>…] — after a bare→Docker convert's switch. convert.sh copied the host's
+# acme.sh store into the container's volume, so the panel's and the sub's names now renew there; the host's copies of
+# those entries were a second renewer for the same names — installing into the bare /etc/swg-panel/tls and
+# /etc/swg-sub/tls (moved aside by teardown_bare_panel), reloading a unit that is gone, and failing on :80 (the
+# container holds it) at every daily --cron, each pass still asking Let's Encrypt (a user's box, 10-23). Only an entry
+# that installs into OUR bare paths AND has its copy in the container is removed; every other name in the store, acme.sh
+# itself and its cron line stay (S9f, operator 2026-10-24: "Remove our entries").
+retire_carried_acme(){
+  local vol="$1" h conf dir d rp
+  [ -n "$vol" ] && [ -d "$vol" ] || return 0
+  shift
+  [ $# -gt 0 ] || set -- /root/.acme.sh "${HOME:-/root}/.acme.sh"   # convert.sh's own search order
+  for h in "$@"; do
+    [ -x "$h/acme.sh" ] || continue
+    for conf in "$h"/*/*.conf; do
+      [ -f "$conf" ] || continue
+      dir="$(dirname "$conf")"
+      rp="$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$conf" | sed -n 1p)"
+      case "$rp" in /etc/swg-panel/tls/*|/etc/swg-sub/tls/*) ;; *) continue ;; esac
+      d="$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$conf" | sed -n 1p)"
+      [ -n "$d" ] && [ -d "$vol/$(basename "$dir")" ] || continue
+      case "$dir" in *_ecc) "$h/acme.sh" --home "$h" --remove -d "$d" --ecc >/dev/null 2>&1 || true ;;
+                     *)     "$h/acme.sh" --home "$h" --remove -d "$d" >/dev/null 2>&1 || true ;; esac
+      rm -rf "$dir"
+      echo "  the host's acme.sh no longer renews $d — the container does (its copy came over with the convert)"
+    done
+    break
+  done; }
+
 # restages cleanly. Used by the bare→docker host/master convert (install-docker.sh, at the atomic switch).
 teardown_bare_panel(){
   systemctl disable --now swg-panel-server >/dev/null 2>&1 || true

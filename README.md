@@ -556,6 +556,11 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-
   setting changes that. Where torrents get through, the subscription page shows a magnet beside the config's name; tap or
   hover it for the setting to use: TCP only, or µTP-TCP mixed mode *Prefer TCP* (qBittorrent: *Options → Connection* /
   *Advanced*). Where torrents are blocked there is no magnet.
+- **In Docker, the panel keeps port 80 for its certificate.** With a Let's Encrypt certificate (for a domain or the
+  bare IP), the panel's container holds the server's port 80, so it renews on its own with nothing to set up. Another
+  certificate tool on the same server (your own acme.sh or certbot) then can't use port 80: give it hooks that stop the
+  panel for the few seconds it needs, `--pre-hook "docker stop swg-panel" --post-hook "docker start swg-panel"`. If
+  something else already held port 80 when you installed, the panel names it when its renewal fails.
 - **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
 ## Learn more

@@ -1531,6 +1531,9 @@ fi
 # Let's Encrypt HTTP-01 needs host port 80 — publish it via an override ONLY for letsencrypt(-ip), so the
 # other TLS methods (cloudflare/cf15/selfsigned/none) leave :80 free for an existing nginx/apache.
 OVERRIDE="$PREFIX$INSTALL_DIR/docker-compose.override.yml"
+# Who holds :80 when we could not publish it, beside the container's acme state: its renewal loop names it in the
+# failure the panel's TLS row shows, with the way out — the operator would otherwise read only "renewal failed" (S9f).
+P80HELD="$PREFIX$INSTALL_DIR/data/etc/acme/.port80-held"
 if [ "$PROFILE" = node ]; then :   # the override publishes :80 on the PANEL container — not this run's business
 elif [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; then
   # ⚠️ …BUT ONLY IF :80 IS ACTUALLY FREE. Publishing a port something else holds does not fail here — it
@@ -1549,6 +1552,7 @@ elif [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; then
     echo "    The certificate you have keeps serving. Free :80 and re-run, front the panel with that web"
     echo "    server, or switch to a DNS-01 method ($(b cloudflare)) to get renewal back."
     rm -f "$OVERRIDE" 2>/dev/null || true
+    mkdir -p "${P80HELD%/*}" 2>/dev/null && printf '%s\n' "${_p80who:-another program}" > "$P80HELD" 2>/dev/null || true
   elif $DRYRUN; then echo "    [skip] write $INSTALL_DIR/docker-compose.override.yml (publish :80 for HTTP-01)"
   else
     cat > "$OVERRIDE" <<'YAML'
@@ -1560,9 +1564,10 @@ services:
       - "80:80"
 YAML
     ok "$TLS: publishing host port 80 for HTTP-01 (docker-compose.override.yml)"
+    rm -f "$P80HELD" 2>/dev/null || true
   fi
 elif [ -f "$OVERRIDE" ]; then
-  $DRYRUN || rm -f "$OVERRIDE"
+  $DRYRUN || rm -f "$OVERRIDE" "$P80HELD"
   ok "removed docker-compose.override.yml (TLS=$TLS doesn't need host port 80)"
 fi
 
@@ -1747,6 +1752,7 @@ if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   fi
   info "Switching over — stopping the bare-metal services, then starting the container(s)…"
   [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && teardown_bare_panel   # host/master convert: stop+remove the bare panel (and move its state aside)
+  [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && retire_carried_acme "$PREFIX$INSTALL_DIR/data/etc/acme"   # …and the host's copy of its acme entries (S9f)
   # ONLY tear the bare NODE down when its datapath is actually being converted (master/node). A HOST-only
   # convert moves just the panel → docker; the co-located bare node must stay UP + keep serving its peers.
   [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-}
