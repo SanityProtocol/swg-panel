@@ -58,7 +58,8 @@ PLANTS = {
     "--perturb-part-dnat": ('if (not e.get("part") or str(e["subnet"]) in _fell)', 'if (True or str(e["subnet"]) in _fell)'),
     "--perturb-part-full": ('if e.get("part")} - _full), res', 'if e.get("part")}), res'),                                     # review F4
     "--perturb-part-fell": ('    return set(bad)\n', '    return set()\n'),                                                     # review F1
-    "--perturb-part-retry": ("    if _S5X_NFT[\"arr_bad\"] and _S5X_NFT[\"arr_bad\"][0] == key:", "    if False:"),       # review F2
+    "--perturb-part-retry": ("    if _b and _b[0] == key and time.monotonic()", "    if False and time.monotonic()"),          # review F2
+    "--perturb-part-heal": ("and time.monotonic() - _b[2] < S5X_CHECK_EVERY_S:", ":"),                                    # verify F10/F11
     "--perturb-part-first": ('(_S5X_NFT["arr"] is None and not any_socks)', '(False)'),                                         # golden
     "--perturb-part-rule": ("    _fell = _s5x_arr_dns(sorted({", "    _fell = (lambda *a: set())(sorted({"),
     "--perturb-part-settle": ("    if have != sorted(_one(S) for S in want) or len(cur) != len(have):", "    if True:"),
@@ -617,6 +618,16 @@ _c12b = {"changed": 0, "errors": []}
 N._s5x_rules(DX4, [], _c12b)
 check("…and the next pass neither retries the adds nor counts a change (still said) — review F2",
       not [a_ for a_ in _seen12 if a_[:2] == ["ip", "rule"]] and _c12b["changed"] == 0 and _c12b["errors"], (_seen12, _c12b))
+# verify F10/F11: …for ten minutes only — a refusal that was a passing failure is retried, and the rule list read again
+N._S5X_NFT["arr_bad"] = N._S5X_NFT["arr_bad"][:2] + (N._S5X_NFT["arr_bad"][2] - N.S5X_CHECK_EVERY_S - 1,)
+N.run = _ipr
+_c12c = {"changed": 0, "errors": []}
+N._s5x_rules(DX4, [], _c12c)
+check("…but only for 10 minutes: then the list is read again and the adds retried — a passing failure heals — verify F10/F11",
+      sorted(l.split("from ")[1].split()[0] for l in RULES) == ["10.255.0.9", "10.40.0.0/24"] and N._S5X_NFT["arr_bad"] is None
+      and not _c12c["errors"], (RULES, N._S5X_NFT["arr_bad"], _c12c))
+N._EXITS["socks"] = {}
+N._s5x_rules([], [], {"changed": 0, "errors": []})
 N.run = _r4
 # the golden's promise: a node with NO SOCKS exit never reads the rule list — not even on its first pass
 _seen0 = []

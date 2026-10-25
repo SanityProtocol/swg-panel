@@ -7204,11 +7204,13 @@ def _s5x_arr_dns(want, res, any_socks=True):
     say = lambda bad: res["errors"].append("socks5 exit: arrivals' DNS bypass not installed for " + ", ".join(bad[:3])
                                            + " — their DNS uses the proxy's stand-in addresses")
     key = tuple(want)
-    if _S5X_NFT["arr_bad"] and _S5X_NFT["arr_bad"][0] == key:
-        # the kernel refused these adds (no `ipproto`/`dport` below 4.17): said again, never retried on every pass and never
-        # counted as a change until the want moves (review F2)
-        say(_S5X_NFT["arr_bad"][1])
-        return set(_S5X_NFT["arr_bad"][1])
+    _b = _S5X_NFT["arr_bad"]
+    if _b and _b[0] == key and time.monotonic() - _b[2] < S5X_CHECK_EVERY_S:
+        # the kernel refused these adds (no `ipproto`/`dport` below 4.17): said again, not retried on every pass and not
+        # counted as a change (review F2) — but only for 10 minutes: a refusal that was a passing failure is retried then,
+        # and the rules that did go in are read again, so one that was removed meanwhile comes back (verify F10/F11)
+        say(_b[1])
+        return set(_b[1])
     _one = lambda a: a if "/" in a else a + "/32"
     cur = [ln for ln in (run(["ip", "rule", "show"]).stdout or "").splitlines() if ln.startswith("%d:" % S5X_ARR_DNS_PRI)]
     # `ip rule show` prints a /32 bare and the protocol by name: compare by the source alone, normalised both ways
@@ -7228,7 +7230,7 @@ def _s5x_arr_dns(want, res, any_socks=True):
         if bad:
             say(bad)
         res["changed"] += 1
-    _S5X_NFT["arr_bad"] = (key, bad) if bad else None
+    _S5X_NFT["arr_bad"] = (key, bad, time.monotonic()) if bad else None
     _S5X_NFT["arr"] = bool(want)
     return set(bad)
 
