@@ -93,14 +93,17 @@ PLANTS = {
     "--perturb-late": ("    _EXIT_RESOLVED[dev] = (time.time(), (host, port, ips))\n", ""),
     "--perturb-rebuild": ("                _EXIT_REDIAL_AT.pop(dev, None); _EXIT_RESOLVED.pop(dev, None)\n", ""),
     # [9] — Part A
-    "--perturb-adopted-nic": ('        if _dev_is_ether(dev) or _dev_link_state(dev) != "up":', '        if _dev_link_state(dev) != "up":'),
+    "--perturb-adopted-nic": ("        if _dev_is_ether(dev):\n            continue\n", ""),
     "--perturb-adopted-mesh": ('or dev in mine or dev in managed or dev.startswith("swg_"):', 'or dev in mine:'),
     "--perturb-adopted-idle": ("or now - _EXIT_PROBED_AT.get(dev, now - EXIT_PROBE_IDLE_S) >= EXIT_PROBE_IDLE_S))", "or True))"),
     "--perturb-adopted-pop": ("            _EXIT_HEALTH.pop(k, None); _EXIT_PROBED_AT.pop(k, None)", "            pass"),
     "--perturb-reap-pop": ("                    _m.pop(od, None)", "                    pass"),
-    "--perturb-adopted-snap": ("    return [dict(e, no_traffic=_nt) if _nt else e for e in _DEVEXIT[\"list\"]", "    return [e for e in _DEVEXIT[\"list\"]"),
+    "--perturb-adopted-snap": ("        out.append(dict(e, no_traffic=nt) if nt else e)", "        out.append(e)"),
     "--perturb-adopted-batch": ("+ [(d, {}) for d, due in _ad if due])", ")"),
     "--perturb-reach-tls": ("            t.do_handshake()\n            return True", "            return True"),
+    "--perturb-blip": ("            out.append((dev, None))\n            continue", "            continue"),                    # F1
+    "--perturb-nostamp": ('                if (tr or {}).get("ip") or _rch is not None:   # a probe that answered nothing', '                if True:   #'),  # F3
+    "--perturb-snapall": ("        nt = None if d in mine or d in said else _exit_no_traffic(", "        nt = _exit_no_traffic("),  # F5
 }
 # …and the panel's half of [9] (`devexit_live`), planted in the PANEL source
 PANEL_PLANTS = {
@@ -592,6 +595,19 @@ try:
     _rep9 = [e for e in N._devexit_report() if e.get("dev") == "tun9"]
     check("[9] the snapshot's devexit entry says it is dead and why (`no_traffic`) — how the panel learns it",
           _rep9 and _rep9[0].get("state") == "dead" and (_rep9[0].get("no_traffic") or {}).get("why") == BAD["err"], _rep9)
+    # F5: once per device, and never for an imported exit's device (its row carries it)
+    N._DEVEXIT["list"] = [{"dev": "tun9", "subnet": "10.17.0.0/24", "state": "dead"}, {"dev": "tun9", "subnet": "10.18.0.0/24", "state": "dead"},
+                          {"dev": "wgx-imp", "subnet": "10.19.0.0/24", "state": "dead"}]
+    N._EXIT_HEALTH["wgx-imp"] = dict(N._EXIT_HEALTH["tun9"]); _xl = N._EXITS["list"]
+    N._EXITS["list"] = [{"id": "imp", "device": "wgx-imp"}]
+    _rp = N._devexit_report()
+    check("[9] …once per device (the panel reads one), and not for an imported exit's device (its row has it) — F5",
+          [bool(e.get("no_traffic")) for e in _rp] == [True, False, False], _rp)
+    N._EXITS["list"] = _xl; N._EXIT_HEALTH.pop("wgx-imp", None)
+    # F1: the device blips (its service recreated it) for a pass while the routing still names it — the verdict stays
+    _up9.discard("tun9"); pass9(); _up9.add("tun9")
+    check("[9] a dead device that blips down for a pass keeps its verdict: back up, it is still dead (kill-switch holds) — F1",
+          N._devexit_state("tun9") == "dead", N._EXIT_HEALTH.get("tun9"))
     _probed9.clear(); _tr9["v"] = dict(OK)
     _n = 0
     while N._devexit_state("tun9") == "dead" and _n < 20:
@@ -605,6 +621,14 @@ try:
           _probed9 == [], _probed9)
     pass9()
     check("[9] …and again once the minute is up", _probed9 == ["tun9"], _probed9)
+    # F3: a probe that answered nothing does not start the idle minute
+    _tr_save, _rch_save = N._exit_trace, N._exit_reach
+    N._exit_trace = lambda d: (_probed9.append(d), {})[1]; N._exit_reach = lambda d, *a, **k: None
+    N._EXIT_PROBED_AT.pop("tun9", None); _probed9.clear()
+    pass9(); pass9()
+    check("[9] a probe that answered nothing (no trace, reach unaskable) is asked again next pass, not in a minute — F3",
+          _probed9 == ["tun9", "tun9"], _probed9)
+    N._exit_trace, N._exit_reach = _tr_save, _rch_save
     pass9(dx=[])
     check("[9] a device the routing no longer names loses its verdict and its probe clock (T9)",
           "tun9" not in N._EXIT_HEALTH and "tun9" not in N._EXIT_PROBED_AT, (N._EXIT_HEALTH, N._EXIT_PROBED_AT))
