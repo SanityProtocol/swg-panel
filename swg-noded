@@ -15266,13 +15266,29 @@ def _wdtt_host_procs():
     return rows
 
 
-def _wdtt_hostproc_flush():
+def _wdtt_hostproc_flush(force=False):
     """Make the next _wdtt_host_procs re-walk instead of answering from the TTL cache.
 
     The cache is right for the per-5s snapshot and wrong for anything that SIGNALS: a pid read from a walk up to
     45s old may already have been reused, and the difference between stopping a foreign server and killing an
-    unrelated process is exactly that staleness. Bare metal walks live and ignores this."""
+    unrelated process is exactly that staleness. Bare metal walks live and ignores this.
+    `force` also skips the 5 s floor: the read that asks whether a server is gone after we stopped it must not be
+    answered by a walk taken before the stop (a TERM obeyed at once fits inside the floor)."""
     _WDTT_HOSTPROC["at"] = 0.0
+    if force:
+        _WDTT_HOSTPROC["walked"] = 0.0
+
+
+def _foreign_on(lookup):
+    """`lookup()` — a foreign server's pid on a name, or None — fresh enough to decide on (docker): a cached "there" is
+    a safe refusal, re-read once it is 15 s old; a cached "clear" decides a destructive step, so it is read fresh —
+    unless the scan itself is what failed, which a re-walk every sync would only repeat (a privileged container that can
+    block 30 s each time); that refusal waits out the cache's TTL. Bare metal walks live: one call."""
+    hit = lookup()
+    if NODE_KIND == "docker" and (hit is not None or _csqtt_scan_ok()):
+        if _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if hit is not None else 0):
+            hit = lookup()
+    return hit
 
 
 def _wdtt_hostproc_fresh(max_age):
@@ -21535,10 +21551,14 @@ def _wdtt_adopt_seed(inst):
                 time.sleep(0.15)
             else:
                 os.kill(probe["pid"], signal.SIGKILL)
+                for _ in range(10):              # a killed multi-threaded process is torn down over a few ms
+                    if not _pid_alive(probe["pid"]):
+                        break
+                    time.sleep(0.1)
     # Gone, and gone for good? A server something restarts (a shell loop, a supervisor that is not a unit) is back a
     # moment later on the same name and port: deleting "its" interface now pulls the NEW one's out from under it,
     # and installing ours fights it for the port — its clients cut off, ours crash-looping (seen live on swgt).
-    _wdtt_hostproc_flush()
+    _wdtt_hostproc_flush(force=True)
     _back = _wdtt_foreign_pid(iface)
     if _back is not None or not _csqtt_scan_ok():
         if _back is None:
@@ -21793,6 +21813,8 @@ def _wdtt_remove(iface):
     if not _WDTT_NAME_RE.match(iface or ""):   # never rm -rf a path built from an unvalidated name
         return
     # a foreign server holds this name (a take-over that never landed), or the scan cannot say: leave the interface
+    if NODE_KIND == "docker":
+        _wdtt_hostproc_flush()               # it decides an interface delete: not off a walk up to 120 s old
     _theirs = _wdtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()
     if NODE_KIND == "docker":
         _wdtt_docker_stop(iface)                         # SIGTERM → clean interface + firewall teardown
@@ -22119,20 +22141,19 @@ def reconcile_wdtt(want, remove=None):
             if not _wdtt_present(iface):
                 # Never over a server we don't run: ours would fight it for the port and the name. Asked of the process
                 # table, not the interface — a restarted foreign server can be running with its interface already pulled.
-                # docker: a cached "there" is a safe refusal (refreshed every 15 s); a cached "clear" is read fresh.
-                _fw = _wdtt_foreign_pid(iface)
-                if NODE_KIND == "docker" and _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if _fw else 0):
-                    _fw = _wdtt_foreign_pid(iface)
+                _fw = _foreign_on(lambda: _wdtt_foreign_pid(iface))   # docker freshness: see _foreign_on
                 if _fw is not None or not _csqtt_scan_ok():
                     if _fw is None:
                         _e = "the process scan did not complete, so this server is not installed on %s yet" % iface
-                    elif inst.get("adopt_foreign"):
+                    elif (req or {}).get("adopt_foreign"):     # the request: the take-over pass popped it off inst
                         _e = "the server being taken over is still running (pid %d) — stop it, and what restarts it, and the take-over completes" % _fw
                     else:
                         _e = ("another WDTT server, not this panel's, is running on %s (pid %d), so this one is not "
                               "installed over it. Stop that server, or remove this one." % (iface, _fw))
                     # RECORDED, unlike an install error: unrecorded, the next sync reads "no record" and runs the whole
-                    # take-over again — copying, and stopping that server every sync
+                    # take-over again — copying, and stopping that server every sync. Never with the unsealed identity
+                    # of a vault restore in it: that key material is not persisted (as at the end of this loop)
+                    inst.pop("_restore_wg_keys", None)
                     res["errors"].append(iface + ": " + _e); have[iface] = inst; continue
                 err = _wdtt_install(inst)
                 if err:
@@ -23258,6 +23279,8 @@ def _csqtt_remove(iface):
         return
     # A server we don't manage holds this TUN (ours never got it), or the scan can't say: leave the device, as the stale-TUN
     # guard does — a TUN left behind is recoverable and loud, a live server's pulled out from under it is neither
+    if NODE_KIND == "docker":
+        _wdtt_hostproc_flush()               # it decides a TUN delete: not off a walk up to 120 s old
     _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()
     if NODE_KIND == "docker":
         _csqtt_docker_stop(iface)
@@ -23529,10 +23552,13 @@ def _csqtt_parent_of(pid):
     pp, parts = "", []
     if NODE_KIND == "docker":
         out = (host_sh("p=$(sed 's/.*) //' /proc/%d/stat 2>/dev/null | cut -d' ' -f2); [ -n \"$p\" ] && echo \"$p\" && "
-                       "tr '\\0' '\\001' < /proc/$p/cmdline 2>/dev/null; :" % int(pid), timeout=20).stdout or "")   # whole: a byte cut can split a character
-        # \x01 between the arguments, not newlines: an argument with a newline in it stays whole (and so hidden, below)
+                       "base64 -w0 < /proc/$p/cmdline 2>/dev/null | head -c 8192; :" % int(pid), timeout=20).stdout or "")
+        # base64, so nothing in its command line (a byte that is not UTF-8, a newline) can fail the read: decoded here
         pp, _, rest = out.partition("\n")
-        pp, parts = pp.strip(), rest.split("\x01")[:2]
+        rest = rest.strip(); rest = rest[:len(rest) // 4 * 4]
+        with contextlib.suppress(Exception):
+            parts = [x.decode(errors="replace") for x in base64.b64decode(rest).split(b"\0")[:2]]
+        pp = pp.strip()
     else:
         with contextlib.suppress(Exception):
             with open("/proc/%d/stat" % int(pid)) as f:
@@ -23749,8 +23775,8 @@ def _csqtt_stop_foreign(iface, cfgdir):
     _host = (NODE_KIND == "docker")               # the pid lives in the HOST namespace; os.kill here can't see it
 
     def _foreign():
-        """(pid, flags) of the foreign server on this iface RIGHT NOW, or None — never off a cached walk."""
-        _wdtt_hostproc_flush()
+        """(pid, flags) of the foreign server on this iface RIGHT NOW, or None — never off a cached walk, nor the floor's."""
+        _wdtt_hostproc_flush(force=True)
         # By the TUN it holds AND the store it serves: with a 2.5 server deployed next to a 2.1.9 one, the box runs
         # two foreign servers, and the take-over of one must never pick up the other.
         return next(((p, f) for p, f in _csqtt_procs()
@@ -23797,6 +23823,10 @@ def _csqtt_stop_foreign(iface, cfgdir):
                 time.sleep(0.15)
             else:
                 os.kill(pid, signal.SIGKILL)
+                for _ in range(10):              # a killed multi-threaded process is torn down over a few ms
+                    if not _pid_alive(pid):
+                        break
+                    time.sleep(0.1)
     back = _foreign()
     if not (not back and _csqtt_scan_ok()):
         if back and back[0] != pid:
@@ -23992,12 +24022,7 @@ def reconcile_csqtt(want, remove=None):
                 # that name exists here (no device, nothing to pull — and no process walk on an ordinary install), and when
                 # the scan cannot say, not at all: a skipped install is loud and retried, a pulled live TUN is neither.
                 if os.path.exists("/sys/class/net/" + iface):
-                    # docker: a cached "clear" decides a TUN delete, so it is read fresh (the walk's own rule); a cached
-                    # "there" is a safe refusal, refreshed every 15 s so a server the operator stopped stops blocking
-                    # soon — and a clash that lasts costs a privileged container per 15 s, not per sync
-                    _fp = _csqtt_foreign_pid(iface)
-                    if NODE_KIND == "docker" and _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if _fp else 0):
-                        _fp = _csqtt_foreign_pid(iface)
+                    _fp = _foreign_on(lambda: _csqtt_foreign_pid(iface))   # docker freshness: see _foreign_on
                     if _fp or not _csqtt_scan_ok():
                         if not _fp:
                             _e = "the process scan did not complete, so this server is not installed on %s yet" % iface

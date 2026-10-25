@@ -35,7 +35,7 @@ Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
                        rawcfg / noback [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
-                       installover / nobackoff / respawnrec / showargs / spaceargs / nlsplit / nogone / keeplater / noflushlook / noflushguard / staleguard / flushalways / rmtun /
+                       installover / nobackoff / respawnrec / showargs / spaceargs / nlsplit / nogone / keeplater / noflushlook / noflushguard / staleguard / scanloop / flushalways / rmtun /
                        keepfail [7] · keeprec [8]
 """
 import importlib.machinery, importlib.util, json, os, shutil, socket, subprocess, sys, tempfile, time, types
@@ -67,11 +67,12 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
     "nogone": ("[7]", "noded", '            if _waiting and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):', '            if _waiting:'),
     "keeplater": ("[7]", "noded", '''    for _i in [i for i in _CSQTT_ADOPT_LATER if i not in want]:''', '''    for _i in []:'''),
     "noflushlook": ("[7]", "noded", '            if _waiting and NODE_KIND == "docker":\n                _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S)', '            if False:\n                _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S)'),
-    "noflushguard": ("[7]", "noded", '_wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if _fp else 0)', '_wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if _fp else 10**9)'),
-    "staleguard": ("[7]", "noded", '_wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if _fp else 0)', '_wdtt_hostproc_fresh(10**9 if _fp else 0)'),
+    "noflushguard": ("[7]", "noded", '        if _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if hit is not None else 0):', '        if False:'),
+    "staleguard": ("[7]", "noded", '_wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if hit is not None else 0)', '_wdtt_hostproc_fresh(10**9 if hit is not None else 0)'),
+    "scanloop": ("[7]", "noded", '    if NODE_KIND == "docker" and (hit is not None or _csqtt_scan_ok()):', '    if NODE_KIND == "docker":'),
     "flushalways": ("[7]", "noded", '                _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S)\n            if _waiting and (', '                _wdtt_hostproc_fresh(0)\n            if _waiting and ('),
     "spaceargs": ("[7]", "noded", ''' or any(c.isspace() for c in _p1)) else " …"''', ''') else " …"'''),
-    "nlsplit": ("[7]", "noded", '''        pp, parts = pp.strip(), rest.split("\\x01")[:2]''', '''        pp, parts = pp.strip(), rest.replace("\\x01", "\\n").split("\\n")[:2]'''),
+    "nlsplit": ("[7]", "noded", 'base64.b64decode(rest).split(b"\\0")[:2]]', 'base64.b64decode(rest).replace(b"\\0", b"\\n").split(b"\\n")[:2]]'),
     "respawnrec": ("[7]", "noded", '''                        if prev:              # not recorded unless''', '''                        if True:              # not recorded unless'''),
     "keepfail": ("[7]", "noded", '''                    if prev:\n                        have[iface] = inst\n                    continue''', '''                    have[iface] = inst\n                    continue'''),
     "rmtun": ("[7]", "noded",'''    _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
@@ -192,7 +193,7 @@ try:
     def box():
         b = types.SimpleNamespace(alive={101, 202}, kills=[], runs=[])
         N._csqtt_procs = lambda: [p for p in (STOCK, SIDE, OURS) if p[0] in b.alive or p[0] == 303]
-        N._wdtt_hostproc_flush = lambda: None
+        N._wdtt_hostproc_flush = lambda *a, **k: None
         N._csqtt_scan_ok = lambda: True
         N._wdtt_unit_of_pid = lambda pid, host=False: ""
         N._csqtt_container_of = lambda pid: ("", "")
@@ -314,7 +315,7 @@ try:
     # docker: the host walk is cached for minutes — both the look between tries and the guard before an install read fresh
     flushes = []
     N.NODE_KIND = "docker"
-    b = box(); N._wdtt_hostproc_flush = lambda: flushes.append(1); clean(); links.add("csqtt25")
+    b = box(); N._wdtt_hostproc_flush = lambda *a, **k: flushes.append(1); clean(); links.add("csqtt25")
     N._CSQTT_ADOPT_LATER["csqtt25"] = (time.monotonic() + 60, "old")
     N._WDTT_HOSTPROC["at"] = time.time() - 60
     rec({"csqtt25": dict(ADOPT)})
@@ -334,6 +335,11 @@ try:
     b.alive.clear(); flushes.clear()
     rec({"csqtt25": dict(INST)})
     check("…while a cached \"clear\" is read fresh before the install, which deletes the TUN by name", flushes, flushes)
+    N._csqtt_scan_ok = lambda: False; flushes.clear()
+    rec({"csqtt25": dict(INST)})
+    check("…but a scan that could not complete is not re-walked every sync (a privileged container, up to 30 s each)",
+          not flushes and not installs, (flushes, installs))
+    N._csqtt_scan_ok = lambda: True
     N.NODE_KIND = "baremetal"; b = box(); clean(); links.add("csqtt25")
     N._CSQTT_ADOPT_LATER["csqtt25"] = (time.monotonic() + 60, "old")
     rec({"csqtt26": dict(INST)})
@@ -410,6 +416,25 @@ try:
     pr.kill()
     check("…nor an argument with a newline in it, on bare metal and on docker alike (its first line can be a bare password)",
           got_bm == got_dk == "pid %d `sh …`" % pr.pid, (got_bm, got_dk))
+    wd4 = os.path.join(os.fsencode(TMP), b"run\xffbyte"); os.makedirs(wd4)      # a byte that is not UTF-8 in its command line
+    sc4 = os.path.join(wd4, b"loop"); open(sc4, "w").write("sleep 30\n")
+    pr = subprocess.Popen([b"sh", sc4], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    kid = []
+    for _ in range(40):
+        kid = subprocess.run(["pgrep", "-P", str(pr.pid)], capture_output=True, text=True).stdout.split()
+        if kid:
+            break
+        _REAL_SLEEP(0.05)
+    _kind, _hsh = N2.NODE_KIND, N2.host_sh
+    N2.host_sh = lambda cmd, *a, **k: subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+    N2.NODE_KIND = "docker"
+    got_dk = N2._csqtt_parent_of(int(kid[0])) if kid else ""
+    N2.NODE_KIND, N2.host_sh = _kind, _hsh
+    for k in kid:
+        _REAL_KILL(int(k), 9)
+    pr.kill()
+    check("…and on docker a byte that is not UTF-8 in its command line no longer loses the restarter's name",
+          got_dk.startswith("pid %d `sh " % pr.pid), got_dk)
 
     sh = []
     b = box(); N.host_sh = lambda cmd, *a, **k: (sh.append(cmd), R())[1]

@@ -26,7 +26,7 @@ Podman made it worse: `libpod-<id>` cgroups did not read as a container at all, 
 Hermetic: swg-noded is imported, every process call, signal and /proc read is stubbed. No root, no docker.
 Run: python3 tests/foreign_container_stop_selftest.py      (0 = pass)
      --perturb=<name>  restores one part of the old code and expects RED: path | failsafe | wdtt | podman | cache |
-                       wback | winstall | wrecord | wremove
+                       wback | winstall | wrecord | wremove | wkeys | wwording | wfloor
      --perturb         all of them at once ("PERTURB OK" exit 0 when something went red, exit 1 when nothing did)
 """
 import importlib.machinery, importlib.util, os, sys, tempfile, types
@@ -57,6 +57,16 @@ PERTURBATIONS = {
                 '''                    res["errors"].append(iface + ": " + _e); continue'''),
     # WDTT: remove deletes the interface a foreign server holds
     "wremove": ('''    _theirs = _wdtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
+    # WDTT: the unsealed identity of a vault restore is recorded with an install refusal
+    "wkeys": ('''                    inst.pop("_restore_wg_keys", None)
+                    res["errors"].append(iface + ": " + _e); have[iface] = inst; continue''',
+              '''                    res["errors"].append(iface + ": " + _e); have[iface] = inst; continue'''),
+    # WDTT: the take-over pass's wording reads the record, which the pass popped adopt_foreign off
+    "wwording": ('''                    elif (req or {}).get("adopt_foreign"):''', '''                    elif inst.get("adopt_foreign"):'''),
+    # WDTT: the check after the stop may be answered by the walk from before it (the 5 s floor)
+    "wfloor": ('''    _wdtt_hostproc_flush(force=True)
+    _back = _wdtt_foreign_pid(iface)''', '''    _wdtt_hostproc_flush()
+    _back = _wdtt_foreign_pid(iface)'''),
     # a miss is cached for the life of the process again
     "cache": ('''    if not _CTR_CLI["v"]:''', '''    if _CTR_CLI["v"] is None:'''),
 }
@@ -156,7 +166,7 @@ class _Txt:
 # ── csqtt: _csqtt_stop_foreign ────────────────────────────────────────────────────────────────────────────────────
 def csqtt_box(**kw):
     b = Box(**kw).install()
-    N._wdtt_hostproc_flush = lambda: None
+    N._wdtt_hostproc_flush = lambda *a, **k: None
     N._csqtt_scan_ok = lambda: True
     N._wdtt_unit_of_pid = lambda pid, host=False: ""
     N._csqtt_procs = lambda: [(4557, {"iface": "csqtf0", "config-dir": "/cfg"})] if b.alive else []
@@ -212,7 +222,7 @@ def wdtt_run(**kw):
     N._wdtt_is_server = lambda fl: bool(fl.get("_server"))
     N._wdtt_iface_of = lambda fl: fl.get("iface") or "wdtt0"
     N._wdtt_unit_of_pid = lambda pid, host=False: ""
-    N._wdtt_hostproc_flush = lambda: None
+    N._wdtt_hostproc_flush = lambda *a, **k: None
     inst = {"iface": "wdtt7", "fork": "amurcanov"}
     return b, N._wdtt_adopt_seed(inst)
 
@@ -284,6 +294,35 @@ check("[7] WDTT: removing ours while a foreign server holds the name leaves its 
       bool(shs7) and "ip link del" not in shs7[-1], shs7)
 shs7.clear(); N._wdtt_remove("wdtt9")
 check("[7] WDTT: …and with none, the interface goes as before", bool(shs7) and "ip link del wdtt9" in shs7[-1], shs7)
+# a vault restore refused for the same reason never writes the unsealed identity to the record
+N._wdtt_unseal_identity = lambda sealed: {"password": "pw", "wg_keys": "UNSEALED-PRIVATE-KEY"}
+saved7.clear(); installs7.clear()
+N.reconcile_wdtt({"wdtt8": {"listen": "0.0.0.0:56080", "wg_port": 56081, "wg_addr": "10.98.0.1/24", "password": "p",
+                            "sealed_identity": {"ct": "x"}}})
+check("[7] WDTT: a vault restore refused by the guard keeps the unsealed identity out of the record on disk",
+      bool(saved7) and "UNSEALED-PRIVATE-KEY" not in repr(saved7[-1]) and not installs7, saved7[-1:])
+# the take-over pass: the seed ran (and popped adopt_foreign off the record) and the server is back before the install
+_real_seed = N._wdtt_adopt_seed
+N._wdtt_adopt_seed = lambda inst: ""
+r7 =N.reconcile_wdtt({"wdtt8": {"listen": "0.0.0.0:56080", "wg_port": 56081, "wg_addr": "10.98.0.1/24", "password": "p",
+                                 "adopt_foreign": True}})
+check("[7] WDTT: on the take-over pass the refusal speaks of the take-over, never \"remove this one\"",
+      any("being taken over" in e for e in r7["errors"]) and not any("remove this one" in e for e in r7["errors"]), r7)
+# docker: the check after the stop reads past the 5 s floor; the guard's freshness is _foreign_on's
+forced = []
+N.NODE_KIND = "docker"
+N._wdtt_hostproc_flush = lambda force=False: forced.append(force)
+N._wdtt_flags_host = lambda pid: dict(fl7)
+N.host_sh = lambda cmd, *a, **k: R(0)
+procs7["rows"] = [(5150, {"iface": "wdtt7", "config-dir": "/root/fx", "_server": True})]
+def gone(pid, sig):
+    procs7["rows"] = []
+N.os.kill = gone
+N._wdtt_adopt_seed = _real_seed
+N._wdtt_adopt_seed({"iface": "wdtt7", "fork": "amurcanov"})
+check("[7] WDTT docker: the read after the stop skips the floor (a walk from before the stop must not answer it)",
+      True in forced, forced)
+N.NODE_KIND = "baremetal"
 
 # ── a docker node stops it on the host─────────────────────────────────────────────────────────────────────────────
 b = Box(kind="docker").install()
