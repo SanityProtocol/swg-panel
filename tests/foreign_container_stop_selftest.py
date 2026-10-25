@@ -17,10 +17,16 @@ Podman made it worse: `libpod-<id>` cgroups did not read as a container at all, 
       working one returns "" without a signal
   [5] a DOCKER node still stops it on the host (host_sh "docker stop …"), and a failure there is reported, not swallowed
   [6] _ctr_cli() does not cache a miss: a runtime installed after the node started is found on the next call
+  [7] WDTT, no container: a server something restarts (a shell loop) is back right after TERM/KILL — the take-over is
+      refused naming what restarts it and its interface is NOT deleted (that is the restarted server's); one that stays
+      down is a stop; the install never starts ours on a name a foreign WDTT server holds (and records the refusal, so the
+      next sync does not run the take-over — and the stop — again); remove leaves a foreign server's interface alone.
+      Seen live on swgt: the restarted server ran with its interface pulled every sync, ours crash-looped on its port
 
 Hermetic: swg-noded is imported, every process call, signal and /proc read is stubbed. No root, no docker.
 Run: python3 tests/foreign_container_stop_selftest.py      (0 = pass)
-     --perturb=<name>  restores one part of the old code and expects RED: path | failsafe | wdtt | podman | cache
+     --perturb=<name>  restores one part of the old code and expects RED: path | failsafe | wdtt | podman | cache |
+                       wback | winstall | wrecord | wremove
      --perturb         all of them at once ("PERTURB OK" exit 0 when something went red, exit 1 when nothing did)
 """
 import importlib.machinery, importlib.util, os, sys, tempfile, types
@@ -40,6 +46,17 @@ PERTURBATIONS = {
                 ") — nothing was taken over; adopt again once it is down")''', ""),
     # podman cgroups are not containers again
     "podman": ('''m = re.search(r"(docker|libpod)[-/]([0-9a-f]{12,64})", txt)''', '''m = re.search(r"(docker)[-/]([0-9a-f]{12,64})", txt)'''),
+    # WDTT: a stop is a stop without asking whether it stayed down
+    "wback": ('''    _back = _wdtt_foreign_pid(iface)
+    if _back is not None or not _csqtt_scan_ok():''', '''    _back = None
+    if False:'''),
+    # WDTT: ours is installed over a foreign server on its name
+    "winstall": ('''                if _fw is not None or not _csqtt_scan_ok():''', '''                if False:'''),
+    # WDTT: the install refusal is not recorded, so the next sync runs the take-over again
+    "wrecord": ('''                    res["errors"].append(iface + ": " + _e); have[iface] = inst; continue''',
+                '''                    res["errors"].append(iface + ": " + _e); continue'''),
+    # WDTT: remove deletes the interface a foreign server holds
+    "wremove": ('''    _theirs = _wdtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
     # a miss is cached for the life of the process again
     "cache": ('''    if not _CTR_CLI["v"]:''', '''    if _CTR_CLI["v"] is None:'''),
 }
@@ -207,7 +224,68 @@ b, err = wdtt_run()
 check("[4] WDTT: a working stop → '' with no signal, via the resolved CLI",
       err == "" and not b.kills and ["/run/current-system/sw/bin/docker", "stop", CID] in b.runs, (err, b.kills, b.runs))
 
-# ── a docker node stops it on the host ─────────────────────────────────────────────────────────────────────────────
+# ── [7] WDTT with no container: a restarter, the install guard, remove ─────────────────────────────────────────────
+b = Box(restart_policy=False).install()
+N._csqtt_container_of = lambda pid: ("", "")
+procs7 = {"rows": [(5150, {"iface": "wdtt7", "config-dir": "/root/fx", "_server": True})]}
+N._wdtt_procs = lambda: list(procs7["rows"])
+N._csqtt_scan_ok = lambda: True
+N._csqtt_parent_of = lambda pid: "pid 77 `/bin/bash /root/loop.sh`"
+def respawn(pid, sig):                                   # a shell loop: the server is back at once, as a new process
+    b.kills.append((pid, sig)); procs7["rows"] = [(5151, {"iface": "wdtt7", "config-dir": "/root/fx", "_server": True})]
+N.os.kill = respawn
+N._pid_alive = lambda pid: pid == 5150 and not b.kills
+root7 = tempfile.mkdtemp(prefix="ctrstop-wdtt7-")
+src7 = os.path.join(root7, "foreign"); os.makedirs(src7)
+with open(os.path.join(src7, "wg-keys.dat"), "w") as f:
+    f.write("\n".join(["QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWY="] * 4) + "\n")
+N.WDTT_ROOT = os.path.join(root7, "ours")
+fl7 = {"iface": "wdtt7", "password": "ownerpw", "listen": "0.0.0.0:56070", "wg-port": "56071", "_server": True}
+N.wdtt_foreign_probe = lambda iface: {"pid": 5150, "config_dir": src7, "has_identity": True}
+N._wdtt_cmdline_flags = lambda pid: dict(fl7)
+N._wdtt_is_server = lambda fl: bool(fl.get("_server"))
+N._wdtt_iface_of = lambda fl: fl.get("iface") or "wdtt0"
+b.runs.clear()
+err = N._wdtt_adopt_seed({"iface": "wdtt7", "fork": "amurcanov"})
+check("[7] WDTT: a server back right after the stop (a shell loop) → refused, naming the new pid and what restarts it",
+      "came back right after it was stopped (pid 5151)" in (err or "") and "/root/loop.sh" in (err or "")
+      and "nothing was taken over" in (err or ""), err)
+check("[7] WDTT: …and the interface is NOT deleted — it is the restarted server's now",
+      ["ip", "link", "delete", "dev", "wdtt7"] not in b.runs, b.runs)
+procs7["rows"] = [(5150, {"iface": "wdtt7", "config-dir": "/root/fx", "_server": True})]
+b.kills.clear(); b.runs.clear()
+def stays_down(pid, sig):
+    b.kills.append((pid, sig)); procs7["rows"] = []
+N.os.kill = stays_down
+err = N._wdtt_adopt_seed({"iface": "wdtt7", "fork": "amurcanov"})
+check("[7] WDTT: a server that stays down is a stop: '' and its interface dropped",
+      err == "" and ["ip", "link", "delete", "dev", "wdtt7"] in b.runs, (err, b.runs))
+# the install guard, through the real reconcile
+procs7["rows"] = [(5151, {"iface": "wdtt8", "config-dir": "/root/fx", "_server": True}),
+                  (6000, {"iface": "wdtt9", "config-dir": N.WDTT_ROOT + "/wdtt9", "_server": True})]   # 6000: ours (a unit)
+saved7, installs7 = [], []
+N._wdtt_load = lambda: {}
+N._wdtt_save = lambda h: (saved7.append(dict(h)), True)[1]
+N._wdtt_present = lambda iface: False
+N._wdtt_install = lambda inst: (installs7.append(inst["iface"]), "")[1]
+N._wdtt_adopted_users = lambda d: {}
+r7 = N.reconcile_wdtt({"wdtt8": {"listen": "0.0.0.0:56080", "wg_port": 56081, "wg_addr": "10.98.0.1/24", "password": "p"}})
+check("[7] WDTT: ours is never installed on a name a foreign WDTT server holds, and the error says why",
+      not installs7 and any("not installed over it" in e for e in r7["errors"]), (installs7, r7))
+check("[7] WDTT: …the refusal is recorded (unrecorded, the next sync would run the take-over and its stop again)",
+      bool(saved7) and "wdtt8" in saved7[-1], saved7[-1:])
+r7 = N.reconcile_wdtt({"wdtt9": {"listen": "0.0.0.0:56090", "wg_port": 56091, "wg_addr": "10.97.0.1/24", "password": "p"}})
+check("[7] WDTT: a server of ours on its name (config-dir under WDTT_ROOT) is no foreign one: installed",
+      installs7 == ["wdtt9"], (installs7, r7))
+shs7 = []
+N.host_sh = lambda cmd, *a, **k: (shs7.append(cmd), R())[1]
+N._wdtt_remove("wdtt8")
+check("[7] WDTT: removing ours while a foreign server holds the name leaves its interface",
+      bool(shs7) and "ip link del" not in shs7[-1], shs7)
+shs7.clear(); N._wdtt_remove("wdtt9")
+check("[7] WDTT: …and with none, the interface goes as before", bool(shs7) and "ip link del wdtt9" in shs7[-1], shs7)
+
+# ── a docker node stops it on the host─────────────────────────────────────────────────────────────────────────────
 b = Box(kind="docker").install()
 okd, whyd = N._ctr_stop_foreign(CID, "docker")
 check("[5] docker node: `docker stop` runs on the HOST through host_sh", okd and b.shs == ["docker stop " + CID], (okd, whyd, b.shs))

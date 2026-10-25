@@ -15034,6 +15034,20 @@ def _wdtt_foreign_proc(iface):
     return None, {}
 
 
+def _wdtt_foreign_pid(iface):
+    """The pid of a WDTT server this node does NOT run that holds `iface`, else None — not ours by supervision (docker
+    children) nor by config-dir (a bare-metal unit serves from WDTT_ROOT, which _wdtt_foreign_proc cannot tell apart).
+    What the take-over asks after its stop, and what install and remove ask before they touch that name."""
+    ours = set()
+    with contextlib.suppress(Exception):
+        ours = {p.pid for p in _WDTT_PROCS.values() if p is not None}
+    for pid, flags in _wdtt_procs():
+        if (pid not in ours and _wdtt_iface_of(flags) == iface
+                and not (flags.get("config-dir") or "").startswith(WDTT_ROOT + "/")):
+            return pid
+    return None
+
+
 def _wdtt_flags_from_argv(parts):
     """{flag: value} from an argv list (`-flag value` pairs) + argv[0]. Shared by the local /proc reader and the
     docker host-namespace walk, so both understand a cmdline identically."""
@@ -21521,6 +21535,17 @@ def _wdtt_adopt_seed(inst):
                 time.sleep(0.15)
             else:
                 os.kill(probe["pid"], signal.SIGKILL)
+    # Gone, and gone for good? A server something restarts (a shell loop, a supervisor that is not a unit) is back a
+    # moment later on the same name and port: deleting "its" interface now pulls the NEW one's out from under it,
+    # and installing ours fights it for the port — its clients cut off, ours crash-looping (seen live on swgt).
+    _wdtt_hostproc_flush()
+    _back = _wdtt_foreign_pid(iface)
+    if _back is not None or not _csqtt_scan_ok():
+        if _back is None:
+            return "couldn't confirm the existing WDTT server stopped (the process scan did not complete) — nothing was taken over"
+        if _back != int(probe["pid"]):
+            return "couldn't stop the existing WDTT server: it " + _csqtt_came_back(_back) + " — nothing was taken over"
+        return "couldn't stop the existing WDTT server (it is still running after TERM and KILL) — nothing was taken over"
     with contextlib.suppress(Exception):           # the interface may linger after the process dies
         run(["ip", "link", "delete", "dev", iface])
     if _host_pid:                                  # a bridge-mode node does not share the host netns
@@ -21767,15 +21792,18 @@ def _wdtt_del_iptables_comment(table, chain, tag):
 def _wdtt_remove(iface):
     if not _WDTT_NAME_RE.match(iface or ""):   # never rm -rf a path built from an unvalidated name
         return
+    # a foreign server holds this name (a take-over that never landed), or the scan cannot say: leave the interface
+    _theirs = _wdtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()
     if NODE_KIND == "docker":
         _wdtt_docker_stop(iface)                         # SIGTERM → clean interface + firewall teardown
-        with contextlib.suppress(Exception): run(["ip", "link", "del", iface])
+        if not _theirs:
+            with contextlib.suppress(Exception): run(["ip", "link", "del", iface])
         with contextlib.suppress(Exception): shutil.rmtree(_wdtt_dir(iface))
     else:
         svc = _wdtt_svc(iface)
         host_sh(sc_disable_now(svc) + " >/dev/null 2>&1; "
                 "rm -f " + shlex.quote(_wdtt_unit_path(iface)) + "; systemctl daemon-reload; "
-                "ip link del " + shlex.quote(iface) + " 2>/dev/null; "
+                + ("" if _theirs else "ip link del " + shlex.quote(iface) + " 2>/dev/null; ") +
                 "rm -rf " + shlex.quote(_wdtt_dir(iface)))
     # We just changed exactly what these caches describe, so serving the pre-teardown view back is not a saving,
     # it is a wrong answer: iface_candidates() reads the host proc walk, so a deleted server kept being reported
@@ -22089,6 +22117,23 @@ def reconcile_wdtt(want, remove=None):
                 pw = _gen_wdtt_password()
             inst["password"] = pw; inst.pop("await_restore", None)
             if not _wdtt_present(iface):
+                # Never over a server we don't run: ours would fight it for the port and the name. Asked of the process
+                # table, not the interface — a restarted foreign server can be running with its interface already pulled.
+                # docker: a cached "there" is a safe refusal (refreshed every 15 s); a cached "clear" is read fresh.
+                _fw = _wdtt_foreign_pid(iface)
+                if NODE_KIND == "docker" and _wdtt_hostproc_fresh(CSQTT_ADOPT_LOOK_S if _fw else 0):
+                    _fw = _wdtt_foreign_pid(iface)
+                if _fw is not None or not _csqtt_scan_ok():
+                    if _fw is None:
+                        _e = "the process scan did not complete, so this server is not installed on %s yet" % iface
+                    elif inst.get("adopt_foreign"):
+                        _e = "the server being taken over is still running (pid %d) — stop it, and what restarts it, and the take-over completes" % _fw
+                    else:
+                        _e = ("another WDTT server, not this panel's, is running on %s (pid %d), so this one is not "
+                              "installed over it. Stop that server, or remove this one." % (iface, _fw))
+                    # RECORDED, unlike an install error: unrecorded, the next sync reads "no record" and runs the whole
+                    # take-over again — copying, and stopping that server every sync
+                    res["errors"].append(iface + ": " + _e); have[iface] = inst; continue
                 err = _wdtt_install(inst)
                 if err:
                     res["errors"].append(iface + ": " + err); continue
