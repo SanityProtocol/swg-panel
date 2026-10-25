@@ -10755,6 +10755,9 @@ def _exit_adopted(devexit, mine, managed=()):
         # its service recreated (or a flag that flipped) for a pass is no evidence its proxy came back, and dropping a dead
         # verdict there would route traffic the kill-switch is holding back into it (review F1)
         if _dev_link_state(dev) != "up":
+            st = _EXIT_HEALTH.get(dev)
+            if st:          # …but its windows restart: the time it spent down was not watched, so a single probe after it must
+                st.update(fail_since=None, fails=0, ok_since=None)   # not flip the verdict either way (verify F8)
             out.append((dev, None))
             continue
         st = _EXIT_HEALTH.get(dev)

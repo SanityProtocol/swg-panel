@@ -102,6 +102,7 @@ PLANTS = {
     "--perturb-adopted-batch": ("+ [(d, {}) for d, due in _ad if due])", ")"),
     "--perturb-reach-tls": ("            t.do_handshake()\n            return True", "            return True"),
     "--perturb-blip": ("            out.append((dev, None))\n            continue", "            continue"),                    # F1
+    "--perturb-window": ("                st.update(fail_since=None, fails=0, ok_since=None)", "                pass"),         # verify F8
     "--perturb-nostamp": ('                if (tr or {}).get("ip") or _rch is not None:   # a probe that answered nothing', '                if True:   #'),  # F3
     "--perturb-snapall": ("        nt = None if d in mine or d in said else _exit_no_traffic(", "        nt = _exit_no_traffic("),  # F5
 }
@@ -608,6 +609,16 @@ try:
     _up9.discard("tun9"); pass9(); _up9.add("tun9")
     check("[9] a dead device that blips down for a pass keeps its verdict: back up, it is still dead (kill-switch holds) — F1",
           N._devexit_state("tun9") == "dead", N._EXIT_HEALTH.get("tun9"))
+    # verify F8: …and its windows restart, so one probe after the blip cannot flip it: a dead one that had begun carrying
+    # (ok_since set long ago) needs EXIT_ALIVE_AFTER_S again, not one good probe
+    if "tun9" in N._EXIT_HEALTH:                        # (gone already when F1's plant is in: the check below then fails)
+        N._EXIT_HEALTH["tun9"]["ok_since"] = _clk[0] - 600
+    _up9.discard("tun9"); pass9(); _up9.add("tun9")
+    _tr9["v"] = dict(OK); pass9(); _tr9["v"] = dict(BAD)
+    check("[9] …and its windows restart across the blip: one good probe after it does not bring a dead device back — F8",
+          N._devexit_state("tun9") == "dead" and (N._EXIT_HEALTH.get("tun9") or {}).get("ok_since") is not None
+          and _clk[0] - N._EXIT_HEALTH["tun9"]["ok_since"] < N.EXIT_ALIVE_AFTER_S, N._EXIT_HEALTH.get("tun9"))
+    _up9.discard("tun9"); pass9(); _up9.add("tun9")          # (a blip again: the recovery below is timed from scratch)
     _probed9.clear(); _tr9["v"] = dict(OK)
     _n = 0
     while N._devexit_state("tun9") == "dead" and _n < 20:
