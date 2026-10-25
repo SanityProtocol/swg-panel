@@ -3526,6 +3526,8 @@ export function exitHealth(x, node) {
   // A node older than dial-in exits refuses one as a profile with no endpoint; a 1.8.11 node reports the port on every row.
   if (l.error && exitIsDialin(ex) && !l.listen_port && (!ex.cfg_sig || l.cfg_sig === ex.cfg_sig)) return { state: "unsupported", tone: "warn", icon: "warn", dot: "unknown",
     why: T("This node needs the 1.8.11 update for dial-in exits.") };
+  // A SOCKS exit whose tunnel program is still being fetched: progress, not a fault (review F13)
+  if (l.setup && !l.error) return { state: "creating", tone: "busy", icon: "refresh", dot: "unknown", why: T(l.setup) };
   if (l.error) return { state: "failed", tone: "bad", dot: "bad",
     // An error with no "and then what" reads as stuck — the node reports when it will try again, so say it.
     // ⚠️ THROUGH T(), like every other sentence the SPA shows. The node's own words arrived verbatim, so a
@@ -3544,7 +3546,8 @@ export function exitHealth(x, node) {
   // names the real obstacle — timed out, connection refused, network unreachable — which no sentence the
   // panel can compose from `up`/`handshake` ever could. Reported separately from `l.error` on purpose: that
   // one means the exit could not be built, this one means it was built and carried nothing.
-  const probe = String((l.trace || {}).err || "").trim();
+  // …and while the node routes around it, the reason it gave for that (a SOCKS exit's is the proxy's own words — review F14)
+  const probe = String(((l.no_traffic || {}).why) || (l.trace || {}).err || "").trim();
   const said = t => probe ? t + " " + T("The node reports: {v1}", { v1: probe }) : t;
   if (!l.up) return { state: "down", tone: "warn", dot: "down",
                       why: said(T("The node reports this device is not up.")) };

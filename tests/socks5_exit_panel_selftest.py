@@ -27,9 +27,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 PLANTS = {
     "--perturb-http": ('        if m.group(1).lower() not in ("socks5", "socks5h"):', '        if m.group(1).lower() not in ("socks5", "socks5h", "http"):'),  # [1]
-    "--perturb-v6": ('    if hp.startswith("["):\n        return None, "an IPv6', '    if False:\n        return None, "an IPv6'),          # [1]
-    "--perturb-inherit": ('        sk["pass"] = kept.get("pass") or "" if sk["user"] and sk["user"] == kept.get("user") else ""',
-                          '        sk["pass"] = kept.get("pass") or ""'),                                                    # [2]
+    "--perturb-v6": ('    if "::" in t or t.startswith("[") or "@[" in t:', '    if "::" in t:'),                             # [1]
     "--perturb-salt": ('    "pass": hashlib.sha256((str(sk.get("salt") or "") + "\\0" + str(sk.get("pass") or "")).encode()).hexdigest()[:16]}',
                        '    "pass": hashlib.sha256(str(sk.get("pass") or "").encode()).hexdigest()[:16]}'),                  # [3]
     "--perturb-sig": ('        mat["socks"] = _socks_sig_part(rec["socks"])', '        pass'),                                # [3]
@@ -40,12 +38,21 @@ PLANTS = {
                         '**({"socks": e["socks"]} if isinstance(e.get("socks"), dict) else {}))'),                         # [5]
     "--perturb-salt-wire": ('**({"socks": {k: x["socks"].get(k) for k in ("host", "port", "user", "pass")}}',
                             '**({"socks": dict(x["socks"])}'),                                                          # [5]
-    "--perturb-mask": ('    ("exits.*.socks.pass",          "exit_socks_pass"),', ''),                                       # [5]
     "--perturb-kind": ('            if _was_pv and (_was_pv == "socks5") != (_pv == "socks5"):', '            if False:'),     # [6]
     "--perturb-mirror": ('            if _turn_sha256_file(dest) == want:\n                return dest\n            os.remove(dest)',
                          '            return dest'),                                                                       # [7]
-    "--perturb-testpass": ('            rec["socks"] = {}\n            if now - rec["done_at"] > EXIT_TEST_KEEP:',
-                           '            if now - rec["done_at"] > EXIT_TEST_KEEP:'),                                          # [8]
+    # the max review's fix round (runs/s10-p3-socks)
+    "--perturb-host": ('        same = (sk["host"], int(sk["port"]), sk["user"]) == (kept.get("host"), int(kept.get("port") or 0), kept.get("user"))',
+                       '        same = sk["user"] == kept.get("user")'),                                              # [2] F10
+    "--perturb-silent": ('        elif kept.get("pass") and sk["user"] and pw == EXIT_PASS_KEEP:\n            return None, "the proxy\'s address or user changed — type its password again"\n',
+                         ''),                                                                                       # [2] F2
+    "--perturb-pct": ('    if url:                    # percent-escapes are a URL\'s', '    if True:                   # percent-escapes are a URL\'s'),  # [1] F20
+    "--perturb-order": ('    if not url and len(parts) >= 4 and _hostish(parts[0]) and _isport(parts[1]):', '    if False:'),        # [1] F21
+    "--perturb-kinds-shape": ('    if isinstance(_k, list) and kind in _k:', '    if kind in (_k or []):'),                     # [4] F6
+    "--perturb-unknown": ('    if kind != "socks5":\n        return None\n', ''),                                              # [4] F28
+    "--perturb-fp": ('    ("exits.*.socks.pass",      "a SOCKS5 exit\'s password: write-only, and too short for an unsalted identity digest"),\n', ''),  # [5] F26
+    "--perturb-expire": ('        rec["socks"] = {}                             # its password goes with it, whoever asks first (review F27)\n', ''),  # [8] F27
+    "--perturb-lock": ("    with _HEV_MIRROR_LOCK:                            # one fetch at a time", "    if True:  #"),              # [7] F5
     "--perturb-busy": ('            if cur["result"] is None:\n                return 409, {"ok": False, "error": "a test is already running on this node", "code": "busy"}',
                        '            if False:\n                return 409, {"ok": False, "error": "a test is already running on this node", "code": "busy"}'),  # [8]
 }
@@ -84,10 +91,17 @@ OK = {"socks5://alice:s%3Acret@proxy.example:1080": ("proxy.example", 1080, "ali
 for t, want in OK.items():
     sk, err = P.parse_socks_text(t)
     check("accepted: %s" % t, not err and (sk["host"], sk["port"], sk["user"], sk["pass"]) == want, (sk, err))
+for t, want in {"gw.example.com:1080:user:Summer%2024": ("gw.example.com", 1080, "user", "Summer%2024"),
+                "gw.example.com:1080:user:pa:ss@x": ("gw.example.com", 1080, "user", "pa:ss@x"),
+                "myuser:48213:proxy.example.com:1080": ("proxy.example.com", 1080, "myuser", "48213")}.items():
+    sk, err = P.parse_socks_text(t)
+    check("a dashboard form, taken as shown (no %%-decoding outside a URL, ':' and '@' in the password, user:pass:host:port) — F20/F21: %s" % t,
+          not err and (sk["host"], sk["port"], sk["user"], sk["pass"]) == want, (sk, err))
 for t in ("http://proxy.example:8080", "https://u:p@proxy.example:443", "socks4://proxy.example:1080"):
     sk, err = P.parse_socks_text(t)
     check("refused with the SOCKS5-only sentence: %s" % t, sk is None and "SOCKS5 only" in err, err)
-for t in ("[2001:db8::1]:1080", "2001:db8::1:1080", "socks5://[2001:db8::2]:1080", "u:p@[2001:db8::3]:1080"):
+for t in ("[2001:db8::1]:1080", "2001:db8::1:1080", "socks5://[2001:db8::2]:1080", "u:p@[2001:db8::3]:1080",
+          "[2001:db8:0:0:0:0:0:1]:1080", "u:p@[2001:db8:1:2:3:4:5:6]:1080"):
     sk, err = P.parse_socks_text(t)
     check("an IPv6 literal is refused (exits are IPv4): %s" % t, sk is None and "IPv6" in err, err)
 for t in ("proxy.example", "proxy.example:0", "proxy.example:70000", "a b:1080", ":pw@host.example:1080"):
@@ -101,7 +115,12 @@ check("nothing pasted, nothing typed: the stored proxy and password", R_("", Non
 check("a typed password replaces it — with the address untouched too", R_("", "new") == "new")
 check("re-pasting the same login without a password keeps the stored one", R_("alice@proxy.example:1080", P.EXIT_PASS_KEEP) == "old")
 check("a password in the paste wins over the field", R_("alice:pasted@proxy.example:1080", "typed") == "pasted")
-check("⚠️ a DIFFERENT user never inherits the stored password", R_("mallory@proxy.example:1080", P.EXIT_PASS_KEEP) == "")
+check("⚠️ a DIFFERENT user never inherits the stored password — and \"keep it\" is refused, not silently dropped (F2)",
+      P.socks_resolve("mallory@proxy.example:1080", P.EXIT_PASS_KEEP, KEPT)[0] is None
+      and "type its password again" in P.socks_resolve("mallory@proxy.example:1080", P.EXIT_PASS_KEEP, KEPT)[1])
+check("⚠️ the stored password never goes to ANOTHER HOST that shares the user name (a Test would send it there) — F10",
+      P.socks_resolve("alice@attacker.example:1080", P.EXIT_PASS_KEEP, KEPT)[0] is None
+      and (P.socks_resolve("alice@attacker.example:1080", None, KEPT)[0] or {}).get("pass") == "")
 check("a password without a user is refused", P.socks_resolve("proxy.example:1080", "x", {})[0] is None)
 
 # ── a real panel process ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -218,6 +237,20 @@ try:
     check("a node that lists socks5 is sent it, with the proxy and its password (over TLS, as a profile's key)",
           (w.get("socks") or {}).get("pass") == "hunter3" and w.get("device") == "s5x-5a5a5a5a", w)
 
+    try:
+        _f6 = P.exit_kind_refusal({"exit_kinds": 1}, "socks5") is not None
+    except Exception:
+        _f6 = False                                  # a crash is the defect itself
+    check("a node reporting `exit_kinds` that is not a list is refused, never a crash — F6",
+          _f6 and P._SNAP_SHAPE.get("exit_kinds") == (list, str))
+    plant("nold", [dict(x3, id="6b6b6b6b", device="s5x-6b6b6b6b"),
+                   {"id": "7c7c7c7c", "producer": "imported", "provider": "vless9", "device": "wgx-7c7c7c7c", "label": "", "enabled": True,
+                    "killswitch": False, "cfg_sig": "x"}])
+    rep = sync("nold")
+    check("an UNKNOWN kind (a newer panel's) is still sent — the node refuses it and keeps its record; withheld, it would be reaped — F28",
+          any(e.get("provider") == "vless9" for e in rep.get("exits") or []) and not any(e.get("provider") == "socks5" for e in rep.get("exits") or []),
+          rep.get("exits"))
+
     # ── [5] T7 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
     print("\n[5] the password reaches the node and nobody else")
     check("the sync reply never carries the salt", "salt" not in (w.get("socks") or {}), w.get("socks"))
@@ -227,8 +260,11 @@ try:
           and x3["socks"]["salt"] not in json.dumps(_whole), sx.get("socks"))
     check("…only that one is kept (`has_pass`)", sx.get("socks") == {"host": "proxy.example", "port": 1080, "user": "alice",
                                                                     "has_pass": True}, sx.get("socks"))
-    _m = json.dumps(P._fp_mask({"exits": [x3]}))
-    check("the fingerprint masks the password and the salt", "hunter3" not in _m and x3["socks"]["salt"] not in _m, _m[:300])
+    _kept, _ = P._fp_prune({"exits": [x3]}, P._FP_EXCLUDE_PATS)
+    _m = json.dumps(P._fp_mask(_kept))
+    _h = hashlib.sha256(b"exit_socks_pass\0hunter3").hexdigest()[:16]
+    check("the fingerprint carries neither the password nor any digest of it (an unsalted one falls to a word list) — F26",
+          "hunter3" not in _m and _h not in _m and x3["socks"]["salt"] not in _m and '"host": "proxy.example"' in _m, _m[:300])
 
     # ── [6] D-c ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
     print("\n[6] a SOCKS exit is not a tunnel edited")
@@ -283,6 +319,20 @@ _CURL["v"] = BAD
 check("⚠️ a file in the store that is not the pin (put there, or changed) is deleted, never served",
       P.hev_mirror_file("amd64") == "" and not os.path.exists(d))
 check("an arch with no build has nothing", P.hev_mirror_file("riscv64") == "")
+# F5: nodes asking at once on a cold store — one download, every one of them served
+import threading as _th
+with __import__("contextlib").suppress(OSError):
+    os.remove(d)
+_curls = []
+def _slow(argv, **k):
+    _curls.append(1); time.sleep(0.5); return _curl(argv, **k)
+_CURL["v"] = GOOD
+P.subprocess.run = _slow
+_got = []
+_ts = [_th.Thread(target=lambda: _got.append(P.hev_mirror_file("amd64"))) for _ in range(3)]
+[t.start() for t in _ts]; [t.join(10) for t in _ts]
+check("three nodes fetching at once on a cold mirror: one download, all three served — F5",
+      len(_curls) == 1 and len(_got) == 3 and all(g and open(g, "rb").read() == GOOD for g in _got), (_curls, _got))
 P.subprocess.run = _real_run
 
 print("\n[8b] a test's password does not outlive the test (in this process)")
@@ -292,6 +342,9 @@ P.exit_test_reply("nx", now=1001.0)
 check("a pending test holds the password it was armed with", P._EXIT_TESTS["nx"]["socks"].get("pass") == "pw-x")
 check("…and drops it the moment the test expires unanswered", P.exit_test_reply("nx", now=1000.0 + P.EXIT_TEST_TTL + 1) is None
       and P._EXIT_TESTS["nx"]["socks"] == {}, P._EXIT_TESTS["nx"])
+P.exit_test_request("ny", "", {"host": "h", "port": 1, "user": "u", "pass": "pw-y"}, {"exit_kinds": ["socks5"]}, 1, 30, now=2000.0)
+P.exit_test_status("ny", now=2000.0 + P.EXIT_TEST_TTL + 1)
+check("…whoever notices the expiry first — a status read too, with the node gone dark — F27", P._EXIT_TESTS["ny"]["socks"] == {}, P._EXIT_TESTS["ny"])
 shutil.rmtree(TMP, ignore_errors=True)
 
 print()

@@ -10285,6 +10285,10 @@ def _fp_is_unknown(v):
 #
 # EXCLUDE = not part of the mirror at all. Each entry needs a REASON, not just a name.
 _FP_EXCLUDE = (
+    # ⚠️ A SOCKS5 exit's password is NOT a fingerprint secret: those are identities, an unsalted digest a short password
+    # falls to offline (review F26). Not compared at all — it travels with the record — nor is its signature's salt.
+    ("exits.*.socks.pass",      "a SOCKS5 exit's password: write-only, and too short for an unsalted identity digest"),
+    ("exits.*.socks.salt",      "…and the salt of its config-signature digest"),
     ("token_hash",              "the lockout itself — rotation is how a rebuild takes over (§1.2)"),
     ("token_sha",               "same, the lookup index for it"),
     ("rebuild",                 "in-flight ack: the rebuild adapter's own state — the captured turn set "
@@ -10376,8 +10380,6 @@ _FP_SECRET_PATHS = (
     # not descend a list, so the row would have matched nothing until the walk above learned to.
     # (A WARP exit's key is never here at all — the node generates and keeps it, decision 8.)
     ("exits.*.profile.private_key", "exit_profile_key"),
-    ("exits.*.socks.pass",          "exit_socks_pass"),   # a SOCKS5 exit's password (T7) — and its signature's salt
-    ("exits.*.socks.salt",          "exit_socks_salt"),
 )
 _FP_EXCLUDE_PATS = tuple(p for p, _ in _FP_EXCLUDE)
 _FP_CONSUMED_PATS = tuple(p for p, _ in _FP_CONSUMED)
@@ -18514,7 +18516,7 @@ _SNAP_STATE = ("interfaces", "wdtt", "csqtt")
 _SNAP_SHAPE = {
     **dict.fromkeys(("container_ifaces", "csqtt_candidates", "devexit", "exit_candidates", "exits", "iface_candidates",
                      "node_ip_ifaces", "turn_proxies", "wdtt_dormant"), (list, dict)),
-    **dict.fromkeys(("ether_ifaces", "ifaces_awaiting_key", "node_ifaces", "node_ips"), (list, str)),
+    **dict.fromkeys(("ether_ifaces", "exit_kinds", "ifaces_awaiting_key", "node_ifaces", "node_ips"), (list, str)),
     **dict.fromkeys(("iface_drops", "mesh_health"), (dict, dict)),
     "udp_listen": (list, int),                           # S9e: walked by _host_listen inside reconcile_mesh (review F4)
     **dict.fromkeys(("iface_key_sealed", "ip_forward", "relay", "rp_filter", "wdtt_key_sealed"), (dict, None)),
@@ -19223,7 +19225,7 @@ def exit_cfg_sig(rec):
 EXIT_PROVIDERS = ("warp", "profile", "socks5")
 
 # ── THE SOCKS5 EXIT (docs/SOCKS5-EXIT-PLAN.md §6) ───────────────────────────────────────────────────────────────────────────
-# The pinned hev-socks5-tunnel the node runs a SOCKS exit on — a TWIN of swg-noded's HEV_* (tests/hev_pin_selftest.py). The
+# The pinned hev-socks5-tunnel the node runs a SOCKS exit on — a TWIN of swg-noded's HEV_* (tests/socks5_exit_node_selftest.py [1]). The
 # mirror below serves exactly these bytes and nothing else: never "the pin follows the file" (§12.2 item 11).
 HEV_TAG = "2.18.0"
 HEV_OWNER = "heiher/hev-socks5-tunnel"
@@ -19247,27 +19249,35 @@ def parse_socks_text(text):
     if not t:
         return None, "paste the proxy's address"
     m = re.match(r"([A-Za-z][A-Za-z0-9+.-]*)://", t)
+    url = bool(m)
     if m:
         if m.group(1).lower() not in ("socks5", "socks5h"):
             return None, _SOCKS_NOT
         t = t[m.end():].rstrip("/")
     if any(c.isspace() for c in t):
         return None, "the proxy address has a space in it"
+    if "::" in t or t.startswith("[") or "@[" in t:
+        return None, "an IPv6 proxy address cannot be used — exits are IPv4"
     user = pw = ""
-    if "@" in t:
+    def _hostish(h):
+        with contextlib.suppress(ValueError):
+            return ipaddress.ip_address(h).version == 4
+        return "." in h and bool(_SOCKS_HOST_RE.fullmatch(h))
+    _isport = lambda x: bool(re.fullmatch(r"[0-9]{1,5}", x or "")) and 1 <= int(x) <= 65535
+    parts = t.split(":")
+    # ⚠️ THE DASHBOARD FORMS FIRST, BY THEIR SHAPE (review F21): host:port:user:pass — the password may hold ':' or '@' — and
+    # user:pass:host:port, the other order providers print; only then user:pass@host:port (the last '@' ends the login)
+    if not url and len(parts) >= 4 and _hostish(parts[0]) and _isport(parts[1]):
+        hp, user, pw = parts[0] + ":" + parts[1], parts[2], ":".join(parts[3:])
+    elif not url and len(parts) == 4 and "@" not in t and _hostish(parts[2]) and _isport(parts[3]) and not _hostish(parts[0]):
+        hp, user, pw = parts[2] + ":" + parts[3], parts[0], parts[1]
+    elif "@" in t:
         cred, _, hp = t.rpartition("@")
         user, _, pw = cred.partition(":")
+    elif len(parts) == 2:
+        hp = t
     else:
-        parts = t.split(":")
-        if len(parts) == 4:                                  # host:port:user:pass
-            hp, user, pw = parts[0] + ":" + parts[1], parts[2], parts[3]
-        elif len(parts) == 2:
-            hp = t
-        else:
-            return None, ("an IPv6 proxy address cannot be used — exits are IPv4" if t.count(":") > 3 or "[" in t
-                          else "the proxy address must be host:port")
-    if hp.startswith("["):
-        return None, "an IPv6 proxy address cannot be used — exits are IPv4"
+        return None, "the proxy address must be host:port, host:port:user:password or user:password@host:port"
     host, _, port = hp.rpartition(":")
     if not re.fullmatch(r"[0-9]{1,5}", port or "") or not 1 <= int(port) <= 65535:
         return None, "the proxy's port must be a number from 1 to 65535"
@@ -19278,7 +19288,11 @@ def parse_socks_text(text):
     except ValueError:
         if not _SOCKS_HOST_RE.fullmatch(host):
             return None, "the proxy's host is not an address or a name"
-    user, pw = urllib.parse.unquote(user), urllib.parse.unquote(pw)
+    if url:                    # percent-escapes are a URL's (review F20): a dashboard's plain password keeps its '%' as typed
+        try:
+            user, pw = urllib.parse.unquote(user, errors="strict"), urllib.parse.unquote(pw, errors="strict")
+        except UnicodeDecodeError:
+            return None, "the proxy login has a %-escape that is not text — write it without one"
     if len(user) > 255 or len(pw) > 255:
         return None, "the proxy login is longer than SOCKS5 allows (255 characters)"
     if any(ord(c) < 32 for c in user + pw):
@@ -19308,7 +19322,17 @@ def socks_resolve(text, pw, kept):
     if new and not pasted:
         sk["pass"] = new
     elif t and not pasted:
-        sk["pass"] = kept.get("pass") or "" if sk["user"] and sk["user"] == kept.get("user") else ""
+        # ⚠️ THE STORED PASSWORD STAYS WITH THE PROXY IT WAS GIVEN FOR (review F10): the same host, port AND user — never one
+        # that only shares the user name, or a Test (or a save) naming another host would hand it to that host in RFC 1929
+        # cleartext. And a "keep it" that cannot be honoured is refused, never turned into "no password" (F2): editing only
+        # the user name of a residential gateway would otherwise save an exit that can no longer log in
+        same = (sk["host"], int(sk["port"]), sk["user"]) == (kept.get("host"), int(kept.get("port") or 0), kept.get("user"))
+        if kept.get("pass") and sk["user"] and same:
+            sk["pass"] = kept["pass"]
+        elif kept.get("pass") and sk["user"] and pw == EXIT_PASS_KEEP:
+            return None, "the proxy's address or user changed — type its password again"
+        else:
+            sk["pass"] = ""
     if sk["pass"] and not sk["user"]:
         return None, "the proxy has a password but no user name"
     if any(ord(ch) < 32 for ch in sk["pass"]):
@@ -19320,9 +19344,12 @@ def exit_kind_refusal(snap, kind, name="this node"):
     """Why this node must not be sent an exit of `kind` — a perr — or None (s9a F17). Capability off the wire, not a
     version: a node that can make a kind lists it in `exit_kinds`. One that does not — a node older than this release —
     is never sent one, because an older node REGISTERED A WARP ACCOUNT for any kind that was not `profile`."""
-    if kind in ("warp", "profile"):
+    # only a kind THIS panel makes that an older node could misread — an unknown one (a newer panel's, kept as stored) is the
+    # node's to refuse (s9a F18), never withheld here: withheld, the node would reap its record (review F28)
+    if kind != "socks5":
         return None
-    if kind in ((snap or {}).get("exit_kinds") or []):
+    _k = (snap or {}).get("exit_kinds")
+    if isinstance(_k, list) and kind in _k:           # a list — anything else in a snapshot is remote input (review F6)
         return None
     return perr("{v1}: this node cannot run a SOCKS5 exit yet — update the node to 1.8.11", v1=name)
 
@@ -19344,7 +19371,7 @@ def socks_public(sk):
 
 # The Test button (§6.8) — the Networks probe's plumbing: one test per node, in memory only, and the password the request
 # carries never stored by it. `_EXIT_TESTS[nid]` = {id, node, exit_id, socks, at, sent_at, result, done_at}.
-EXIT_TEST_TTL = 45
+EXIT_TEST_TTL = 90        # picked up within a sync, ≈ 25 s on the node at worst, answered on the next one (review F18)
 EXIT_TEST_KEEP = 600
 _EXIT_TESTS = {}
 _EXIT_TESTS_LOCK = threading.Lock()
@@ -19355,6 +19382,7 @@ _EXIT_TEST_WHY = ("unreachable", "refused", "timeout", "not_socks5", "auth_requi
 def _exit_test_expire(rec, now):
     if rec["result"] is None and now - rec["at"] > EXIT_TEST_TTL:
         rec["result"], rec["done_at"] = {"why": "expired", "collected": bool(rec["sent_at"])}, now
+        rec["socks"] = {}                             # its password goes with it, whoever asks first (review F27)
 
 
 def exit_test_view(rec, now):
@@ -19393,8 +19421,7 @@ def exit_test_reply(nid, now=None):
         if rec is None:
             return None
         _exit_test_expire(rec, now)
-        if rec["result"] is not None:
-            rec["socks"] = {}
+        if rec["result"] is not None:             # (its password went when it was answered or expired)
             if now - rec["done_at"] > EXIT_TEST_KEEP:
                 _EXIT_TESTS.pop(nid, None)
             return None
@@ -19435,12 +19462,20 @@ def exit_test_status(nid, rid=None, now=None):
         return exit_test_view(rec, now)
 
 
+_HEV_MIRROR_LOCK = threading.Lock()
+
+
 def hev_mirror_file(arch):
     """The panel's copy of the pinned hev for `arch` — fetched once from GitHub, KEPT only if its sha256 is the pinned one —
     or "" when there is none. A file in the store that does not hash to the pin is deleted, never served."""
     want = HEV_SHA256.get(arch)
     if not want:
         return ""
+    with _HEV_MIRROR_LOCK:                            # one fetch at a time: nodes asking at once wait for it (review F5)
+        return _hev_mirror_file(arch, want)
+
+
+def _hev_mirror_file(arch, want):
     dest = os.path.join(TURN_BINS_DIR, _turn_safe(HEV_OWNER), _turn_safe(HEV_TAG), HEV_ASSET[arch])
     with contextlib.suppress(OSError):
         if os.path.getsize(dest) > 0:
@@ -19451,7 +19486,7 @@ def hev_mirror_file(arch):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
     except OSError:
         return ""
-    tmp = dest + ".dl." + str(os.getpid())
+    tmp = dest + ".dl." + secrets.token_hex(4)
     try:
         r = subprocess.run(["curl", "-4", "-fsSL", "--connect-timeout", "15", "--max-time", "180", "--retry", "2",
                             "--retry-delay", "2", "https://github.com/%s/releases/download/%s/%s" % (HEV_OWNER, HEV_TAG,

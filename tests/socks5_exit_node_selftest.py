@@ -52,7 +52,7 @@ PLANTS = {
     "--perturb-udpcheck": ("            if len(d) > 12 and d[3] == 1 and d[10:12] == qid.to_bytes(2, \"big\"):",
                            "            if len(d) > 12 and d[3] == 1:"),                                                 # [4]
     "--perturb-t10": ("    oifname \"%s\" ip daddr != %s meta l4proto udp reject", "    oifname \"%s\" %.0smeta l4proto udp reject"),  # [5]
-    "--perturb-t15": ('    _dns_dnat(whole, res, [p for p, _i in (nets or ())], S5X_DNS_TAG', '    _dns_dnat(whole, res, [], S5X_DNS_TAG'),  # [5]
+    "--perturb-t15": ('_dns_dnat(whole, res, [p for p, _i in (nets or ())], S5X_DNS_TAG', '_dns_dnat(whole, res, [], S5X_DNS_TAG'),  # [5]
     "--perturb-dead": ("and e.get(\"subnet\") and _devexit_state(e[\"dev\"]) == \"up\"})", "and e.get(\"subnet\")})"),  # [5]
     "--perturb-unmark": ('                  and e.get("scope") == "rule" and str(e.get("table") or "").isdigit()})',
                          '                  and False})'),                                                                  # [5]
@@ -60,10 +60,30 @@ PLANTS = {
                       '                    if False:'),                                                                # [6]
     "--perturb-hs": ('"handshake": (_exit_handshake(rec, dev) if _live and prov != "socks5" else None)',
                      '"handshake": (_exit_handshake(rec, dev) if _live else None)'),                                     # [7]
-    "--perturb-cadence": ('if dev not in _sx or _sx[dev][1] or _sx[dev][0] == "now"]', ']'),                            # [7]
+    "--perturb-cadence": ("if dev not in _sx or _sx[dev]]", "]"),                                                    # [7]
     "--perturb-why": ('                    _hl["why"] = S5X_WHY.get(_c["why"], _c["why"])', '                    pass'),       # [7]
     "--perturb-t14": ('"flannel", "s5x")', '"flannel")'),                                                              # [8]
     "--perturb-idle": ('    if whole or _S5X_NFT["dns"] is not False:', '    if True:'),                                       # [5]
+    # the max review's fix round (F-numbers of runs/s10-p3-socks)
+    "--perturb-udpfirst": ('        out["udp"] = _s5x_udp(host, port, user, pw, timeout, udp_wait, _dns)\n    except Exception:\n        out["udp"] = False\n',
+                           '        pass\n    except Exception:\n        pass\n'),                                       # [4] F12
+    "--perturb-tries": ("        for k in range(3):", "        for k in range(1):"),                                       # [4] F17
+    "--perturb-firstno": ("s[\"udp_ok\"], s[\"pending\"] = u, (False if u is False else None)", "s[\"udp_ok\"], s[\"pending\"] = u, None"),  # [4] F17
+    "--perturb-stalecheck": ("    if not got or (sig is not None and got[1] != sig):", "    if not got:"),                    # [4] F22
+    "--perturb-bare": ("    subnets = [_one(str(S)) for S in subnets]\n", "    subnets = [str(S) for S in subnets]\n"),   # [5] F30
+    "--perturb-retry": ('        _S5X_NFT["dns"] = bool(whole) or _had', '        _S5X_NFT["dns"] = bool(whole)'),           # [5] F11
+    "--perturb-heal": ('        if not (rej or unm) or run(["nft", "list", "table", "inet", S5X_NFT_TABLE]).returncode == 0:\n            return',
+                       '        return'),                                                                                # [5] F3
+    "--perturb-nonft": (" or _nft_absent(r) or r.returncode == 127,", " or _nft_absent(r),"),                         # [5] F25
+    "--perturb-once": ('                if _downed and rec.get("started"):', '                if False:'),                       # [6] F36
+    "--perturb-sync": ("    threading.Thread(target=go, daemon=True).start()\n\n\ndef _s5x_take", "    go()\n\n\ndef _s5x_take"),  # [7] F15
+    "--perturb-byip": ('{"endpoint": rec.get("endpoint"), "mapdns": S5X_DNS})', '{"endpoint": rec.get("endpoint"), "mapdns": None})'),  # [7] F9
+    "--perturb-twice": ("    if dev in _S5X_INFLIGHT or not sk:\n        return\n", "    if not sk:\n        return\n"),   # [7] F23
+    "--perturb-answered": ('    return bool((tr or {}).get("ip") or (tr or {}).get("err") or reach is not None)',
+                           '    return bool((tr or {}).get("ip") or reach is not None)'),                                   # [7] F24
+    "--perturb-s5xblip": ('                        if _EXIT_HEALTH.get(dev):\n                            _EXIT_HEALTH[dev]["ok_since"] = None\n',
+                          '                        _EXIT_HEALTH.pop(dev, None)\n'),                                     # [7] F8
+    "--perturb-setup": ('                            rec["setup"], err = err, ""', '                            pass'),          # [7] F13
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
 FAILS = []
@@ -273,7 +293,7 @@ def dns_srv():
             return
         dns.sendto(d[:2] + b"\x81\x80" + d[4:], a)                 # an answer: the same id
 threading.Thread(target=dns_srv, daemon=True).start()
-MODEL = {"auth": None, "rep": 0, "udp": True, "junk": False, "stray": False}
+MODEL = {"auth": None, "rep": 0, "udp": True, "junk": False, "stray": False, "drop_first": False}
 def rx(c, n):
     b = b""
     while len(b) < n:
@@ -322,6 +342,8 @@ def socks_conn(c):
             u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(("127.0.0.1", 0)); u.settimeout(5)
             c.sendall(b"\x05\x00\x00\x01" + socket.inet_aton("0.0.0.0") + struct.pack(">H", u.getsockname()[1]))
             d, fr = u.recvfrom(4096)
+            if MODEL["drop_first"]:                     # a lost datagram: the first query never reaches the resolver
+                d, fr = u.recvfrom(4096)
             out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); out.settimeout(3)
             out.sendto(d[10:], ("127.0.0.1", DNS_PORT)); a, _ = out.recvfrom(4096)
             if MODEL["stray"]:                          # a datagram that is not the answer to our query
@@ -361,7 +383,13 @@ check("the right one passes", CK(user="u", pw="p")["why"] == "", CK(user="u", pw
 MODEL.update(auth=None, rep=2)
 check("SOCKS reply 2 (not allowed by ruleset): not_allowed — the allow-list sentence", CK()["why"] == "not_allowed")
 MODEL["rep"] = 5
-check("any other refusal of the CONNECT: connect_failed", CK()["why"] == "connect_failed")
+r = CK()
+check("any other refusal of the CONNECT: connect_failed", r["why"] == "connect_failed")
+check("…and its UDP relay is still judged (it answered: carried) — F12", r["udp"] is True, r)
+MODEL.update(rep=0, drop_first=True)
+r = CK()
+check("one lost datagram is not \"no UDP\": the query is sent again — F17", r["udp"] is True, r)
+MODEL["drop_first"] = False
 MODEL.update(rep=0, junk=True)
 check("something that is not SOCKS5: not_socks5", CK()["why"] == "not_socks5")
 MODEL["junk"] = False
@@ -370,9 +398,9 @@ check("a closed port: refused", CK(port=_dp)["why"] == "refused")
 # hysteresis
 res = {"changed": 0, "errors": []}
 N._S5X.clear()
-def take(u, at=None):
-    N._S5X_CHECKS["s5x-h"] = (at or time.time(), {"login": True, "egress_ip": "1", "loc": "", "udp": u, "rtt_ms": 1, "why": ""})
-    return N._s5x_take("s5x-h", res)
+def take(u, at=None, sig="s1", cur="s1"):
+    N._S5X_CHECKS["s5x-h"] = (at or time.time(), sig, {"login": True, "egress_ip": "1", "loc": "", "udp": u, "rtt_ms": 1, "why": ""})
+    return N._s5x_take("s5x-h", res, sig=cur)
 s = take(True)
 check("the first result sets the UDP flag", s["udp_ok"] is True and s["pending"] is None, s)
 s = take(False)
@@ -383,6 +411,12 @@ check("…and a second in a row does", s["udp_ok"] is False and s["pending"] is 
 s = take(True); s = take(False)
 check("a result that agrees again clears the pending one", s["udp_ok"] is False and s["pending"] is None, s)
 check("…and the next check is the usual ten minutes away", s["next"] - time.time() > N.S5X_CHECK_EVERY_S - 5)
+s = take(True, sig="old", cur="new")
+check("an answer about a config since replaced is not taken for the new one — F22", s["udp_ok"] is False and s["pending"] is None, s)
+N._S5X.clear()
+s = take(False)
+check("a FIRST \"no\" sets the flag but is asked again in a minute, not ten — F17",
+      s["udp_ok"] is False and s["next"] - time.time() <= N.S5X_RECHECK_S + 1, (s, s["next"] - time.time()))
 
 # ── [5] the rule families ───────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[5] DNS to mapdns, UDP refused, rule DNS unmarked")
@@ -433,9 +467,10 @@ check("…in an nft table of its own, so no iptables accept can sit above the re
       "table inet swg_s5x" in txt and "hook forward priority filter - 1" in txt, txt)
 check("…its chains named nothing nft reads as a keyword (`fwd` is one — measured: the ruleset did not load)",
       "chain udp_refuse {" in txt and "chain dns_unmark {" in txt and "chain fwd " not in txt and "chain pre " not in txt, txt)
-n0, nat0 = len(NFT), list(NAT)
+_writes = lambda: [x for x in NFT if x[0][:2] == ["nft", "-f"]]
+n0, nat0 = len(_writes()), list(NAT)
 N._s5x_rules(DX, NETS, {"changed": 0, "errors": []})
-check("a second pass with nothing changed writes nothing", len(NFT) == n0 and NAT == nat0, (len(NFT), NAT))
+check("a second pass with nothing changed writes nothing", len(_writes()) == n0 and NAT == nat0, (len(_writes()), NAT))
 N._EXIT_HEALTH["s5x-aa"] = {"dead": True, "fail_since": 0, "fails": 9, "ok_since": None, "since": 0, "why": "x"}
 N._s5x_rules(DX, NETS, {"changed": 0, "errors": []})
 dnat = [l for l in NAT if "swg-s5x-dns " in l + " " and "DNAT" in l]
@@ -446,6 +481,44 @@ N._EXITS["socks"] = {}
 N._s5x_rules([], NETS, {"changed": 0, "errors": []})
 check("no SOCKS exit: its DNATs and its nft table are gone", not [l for l in NAT if "swg-s5x" in l]
       and NFT[-1][0][:4] == ["nft", "delete", "table", "inet"], (NAT, NFT[-1]))
+# F30: a hop-2 record's BARE address is settled, not rewritten every pass
+N._EXITS["socks"] = {"s5x-aa": True}; N._S5X_NFT.update(sig=None, dns=None); NAT[:] = []
+N._s5x_rules([{"subnet": "10.255.0.3", "dev": "s5x-aa", "table": 7005}], [], {"changed": 0, "errors": []})
+_nat1 = list(NAT); _c30 = {"changed": 0, "errors": []}
+N._s5x_rules([{"subnet": "10.255.0.3", "dev": "s5x-aa", "table": 7005}], [], _c30)
+check("a bare (hop-2) subnet: DNAT'd once, then left alone — no rewrite every pass — F30",
+      any("10.255.0.3/32" in l for l in _nat1) and _c30["changed"] == 0 and NAT == _nat1, (_nat1, NAT, _c30))
+# F11: a removal that did not take is retried on the next pass
+_stuck = {"on": True}
+_r11 = N.run
+N.run = lambda argv, **k: (R() if (_stuck["on"] and argv[:4] == ["iptables", "-t", "nat", "-D"]) else _r11(argv, **k))
+N._EXITS["socks"] = {}
+N._s5x_rules([], [], {"changed": 0, "errors": []})
+check("a removal that failed is retried: the next pass reads again — F11", N._S5X_NFT["dns"] is True and any("swg-s5x" in l for l in NAT),
+      (N._S5X_NFT["dns"], NAT))
+_stuck["on"] = False
+N._s5x_rules([], [], {"changed": 0, "errors": []}); N._s5x_rules([], [], {"changed": 0, "errors": []})
+check("…and once it took, the reads stop", N._S5X_NFT["dns"] is False and not any("swg-s5x" in l for l in NAT), (N._S5X_NFT, NAT))
+N.run = _r11
+# F3: a table flushed from outside is written again
+_tbl = {"there": True}
+_r3 = N.run
+N.run = lambda argv, **k: (R(rc=0 if _tbl["there"] else 1) if argv[:3] == ["nft", "list", "table"] else _r3(argv, **k))
+N._EXITS["socks"] = {"s5x-aa": False}; N._S5X_NFT.update(sig=None, dns=None)
+N._s5x_rules([{"subnet": "10.17.0.0/24", "dev": "s5x-aa", "table": 7001}], [], {"changed": 0, "errors": []})
+n3 = len(_writes()); _tbl["there"] = False
+N._s5x_rules([{"subnet": "10.17.0.0/24", "dev": "s5x-aa", "table": 7001}], [], {"changed": 0, "errors": []})
+check("the nft table flushed by something else (nftables.service, firewalld) is written again the next pass — F3",
+      len(_writes()) == n3 + 1 and "udp_refuse" in _writes()[-1][1], (n3, len(_writes())))
+N.run = _r3
+# F25: no nft binary, no SOCKS exit: nothing said
+_r25 = N.run
+N.run = lambda argv, **k: (R(rc=127, err="No such file or directory: 'nft'") if argv[0] == "nft" else _r25(argv, **k))
+N._EXITS["socks"] = {}; N._S5X_NFT.update(sig=None, dns=None)
+_c25 = {"changed": 0, "errors": []}
+N._s5x_rules([], [], _c25)
+check("a node without nft and without a SOCKS exit reports no error — F25", _c25["errors"] == [] and N._S5X_NFT["sig"] == ((), ()), _c25)
+N.run = _r25
 _seen = []
 _r0 = N.run
 N.run = lambda argv, **k: (_seen.append(argv), _r0(argv, **k))[1]
@@ -478,52 +551,89 @@ row = next((x for x in N._EXITS["list"] if x["id"] == "cafebabe"), {})
 check("the old kind's device comes down", downs == ["wgx-cafebabe"], downs)
 check("…the row says the node does not know the kind", "does not know" in str(row.get("error")), row)
 check("…and the record stays for a node that does", os.path.exists(os.path.join(N.EXIT_DIR, "cafebabe.json")))
+downs.clear()
+json.dump({"provider": "socks5", "device": "s5x-cafebabe", "started": "x hev-2.18.0"}, open(os.path.join(N.EXIT_DIR, "cafebabe.json"), "w"))
+N._dev_link_state = lambda d: "absent"
+N.reconcile_exits([{"id": "cafebabe", "device": "s5x-cafebabe", "provider": "vless9"}], res)
+N.reconcile_exits([{"id": "cafebabe", "device": "s5x-cafebabe", "provider": "vless9"}], res)
+check("a SOCKS record under an unknown kind is stopped ONCE, not every pass — F36", downs == ["s5x-cafebabe"], downs)
 
 # ── [7] the exit in the pass ────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[7] a SOCKS exit in reconcile_exits")
 os.unlink(os.path.join(N.EXIT_DIR, "cafebabe.json"))
-_hs, _probed = [], []
+_hs, _probed, _checks = [], [], []
 N._exit_handshake = lambda rec, dev: (_hs.append(dev), 0)[1]
 N.hev_binary = lambda: ("/bin/hev", "")
 N._s5x_ensure_unit = lambda *a: ""
-N._dev_link_state = lambda d: "up"
+_link7 = {"v": "up"}
+N._dev_link_state = lambda d: _link7["v"]
 BADTR = {"err": "TimeoutError: timed out"}
+_reach7 = {"v": False}
 def probe_all(devs):
     out = {}
     for d, rec in devs:
-        _probed.append((d, rec.get("check")))
-        if rec.get("socks") and rec.get("check"):
-            N._S5X_CHECKS[d] = (time.time(), {"login": False, "egress_ip": "", "loc": "", "udp": None, "rtt_ms": None,
-                                              "why": "auth_failed"})
-        out[d] = (dict(BADTR), False, None)
+        _probed.append((d, rec.get("mapdns")))
+        out[d] = (dict(BADTR), _reach7["v"], None)
     return out
 N._exit_probe_all = probe_all
+def _ck7(*a, **k):
+    _checks.append(a[:3]); time.sleep(1.0)
+    return {"login": False, "egress_ip": "", "loc": "", "udp": None, "rtt_ms": None, "why": "auth_failed"}
+N._socks_check = _ck7
 N.EXIT_DEAD_AFTER_S, N.EXIT_DEAD_MIN_PROBES = 0, 2
-N._EXIT_HEALTH.clear(); N._EXIT_PROBED_AT.clear(); N._S5X.clear()
+N._EXIT_HEALTH.clear(); N._EXIT_PROBED_AT.clear(); N._S5X.clear(); N._S5X_CHECKS.clear(); N._S5X_INFLIGHT.clear()
 WANT = [{"id": "5a5a5a5a", "device": "s5x-5a5a5a5a", "provider": "socks5", "cfg_sig": "c0ffee000001",
          "socks": {"host": "198.51.100.5", "port": 1080, "user": "u", "pass": "secret"}}]
+DEV7 = "s5x-5a5a5a5a"
 res = {"changed": 0, "errors": []}
-N.reconcile_exits(WANT, res)
+t0 = time.monotonic(); N.reconcile_exits(WANT, res); dt = time.monotonic() - t0
 row = next((x for x in N._EXITS["list"] if x["id"] == "5a5a5a5a"), {})
-check("the row reports the proxy's UDP flag and its last check — never the password",
-      "udp_ok" in row and (row.get("check") or {}).get("why") == "auth_failed" and "secret" not in json.dumps(row), row)
+check("bring-up dispatches the proxy check in a thread of its own: the pass does not wait for it (%.2f s) — F15" % dt,
+      dt < 0.8 and DEV7 in N._S5X_INFLIGHT, dt)
+check("…its trace asks hev's mapdns, so hev CONNECTs BY NAME as its clients do — F9", _probed[:1] == [(DEV7, N.S5X_DNS)], _probed)
+check("the row reports the proxy's UDP flag — never the password", "udp_ok" in row and "secret" not in json.dumps(row), row)
 check("…no WireGuard handshake is asked for a TUN (no `wg show` fork per pass)", _hs == [] and row.get("handshake") is None, _hs)
 check("…the proxy is the endpoint pinged (Latency)", row.get("endpoint") == "198.51.100.5:1080", row.get("endpoint"))
-check("…its bring-up ran the proxy check in the probe", _probed[:1] == [("s5x-5a5a5a5a", "now")], _probed)
 N.reconcile_exits(WANT, res)
-st = N._EXIT_HEALTH.get("s5x-5a5a5a5a") or {}
+check("while one check runs, no second one is started — F23", len(_checks) == 1, _checks)
+for _ in range(30):
+    if DEV7 not in N._S5X_INFLIGHT:
+        break
+    time.sleep(0.1)
+N.reconcile_exits(WANT, res)
+row = next((x for x in N._EXITS["list"] if x["id"] == "5a5a5a5a"), {})
+st = N._EXIT_HEALTH.get(DEV7) or {}
+check("its answer is taken on a later pass and shown on the row", (row.get("check") or {}).get("why") == "auth_failed", row.get("check"))
 check("dead: the verdict carries the proxy's own reason, not a bare timeout", st.get("dead") and "login" in st.get("why", ""), st)
 check("the yml it runs is 0600 and holds the password (and nothing else does)",
       oct(os.stat(os.path.join(N.EXIT_DIR, "s5x-5a5a5a5a.yml")).st_mode & 0o777) == "0o600"
       and "secret" not in open(os.path.join(N.EXIT_DIR, "5a5a5a5a.json")).read())
-# healthy now: probed at most every minute
+# F8: hev restarts (its TUN gone a pass): the dead verdict stays, only the recovery is proven again
+_link7["v"] = "absent"; N.reconcile_exits(WANT, res); _link7["v"] = "up"
+check("hev restarting (its TUN gone a pass) keeps the dead verdict: no route back into a dead proxy — F8",
+      (N._EXIT_HEALTH.get(DEV7) or {}).get("dead") is True, N._EXIT_HEALTH.get(DEV7))
+# F24: a probe that cannot bind (reach None) but whose trace failed with a reason waits its minute, not every pass
+N._EXIT_HEALTH.clear(); N._EXIT_PROBED_AT.clear(); _reach7["v"] = None; _probed.clear()
+N._S5X[DEV7].update(next=time.time() + 600, check={"why": "", "at": 1})
+N.reconcile_exits(WANT, res); N.reconcile_exits(WANT, res)
+check("a probe that cannot bind is a standing condition: probed once a minute, not every pass — F24", len(_probed) == 1, _probed)
+_reach7["v"] = False
+# healthy: probed at most every minute
 _probed.clear()
 BADTR.clear(); BADTR.update(ip="203.0.113.9")
 N._EXIT_HEALTH.clear(); N._EXIT_PROBED_AT.clear()
-N._S5X["s5x-5a5a5a5a"].update(next=time.time() + 600, check={"why": "", "at": 1})
 N.reconcile_exits(WANT, res)
 N.reconcile_exits(WANT, res)
 check("carrying, it is probed once a minute, not every pass (T3: a metered proxy)", len(_probed) == 1, _probed)
+# F13: the binary still being fetched is progress, not a fault
+N.hev_binary = lambda: ("", "fetching the SOCKS5 tunnel program…")
+_link7["v"] = "absent"
+res13 = {"changed": 0, "errors": []}
+N.reconcile_exits([dict(WANT[0], cfg_sig="c0ffee000002")], res13)
+row = next((x for x in N._EXITS["list"] if x["id"] == "5a5a5a5a"), {})
+check("the tunnel program being fetched reads as setup, never as an error (the row is busy, not red) — F13",
+      row.get("setup") and not row.get("error") and not any("fetching" in e for e in res13["errors"]), (row, res13))
+_link7["v"] = "up"
 
 # ── [8] T14 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[8] the TUN is not an operator's device")

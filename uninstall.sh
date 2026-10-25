@@ -1299,9 +1299,9 @@ rm_smartdns_redirect(){ local l n=0
     [ -n "$l" ] || continue
     run sh -c "iptables -t nat $(printf '%s' "$l" | sed 's/^-A /-D /')" && n=$((n+1))
   done <<EOS
-$(iptables -t nat -S PREROUTING 2>/dev/null | grep -E -- "$(_ipt_comment_re swg-smartdns)|$(_ipt_comment_re swg-smartdns-net)")
+$(iptables -t nat -S PREROUTING 2>/dev/null | grep -E -- "$(_ipt_comment_re swg-smartdns)|$(_ipt_comment_re swg-smartdns-net)|$(_ipt_comment_re swg-s5x-dns)|$(_ipt_comment_re swg-s5x-dns-net)")
 EOS
-  [ "$n" -gt 0 ] && ! $DRYRUN && info "  removed Force-DNS's redirect to the node's own resolver ($n rule(s)) — an interface kept here resolves through its clients' own DNS server again"
+  [ "$n" -gt 0 ] && ! $DRYRUN && info "  removed the DNS redirects to the node's own resolvers — Force DNS's and a SOCKS5 exit's ($n rule(s)) — an interface kept here resolves through its clients' own DNS server again"
   return 0; }
 
 # Remove the node's DATAPATH objects — the filtering / routing / NAT state swg-noded creates at runtime and that

@@ -23,6 +23,12 @@ const PLANTS = {
                       '  const socks = [];'],
   "--perturb-why": ["screen-settings.js", '  auth_failed: T("The proxy refused the login — check the user and password."),', ''],
   "--perturb-udp": ["screen-settings.js", '  if (r.udp === true) out.push(["ok",', '  if (false) out.push(["ok",'],
+  // the max review's fix round (runs/s10-p3-socks)
+  "--perturb-roundtrip": ["screen-settings.js", '  return s.user && /[:@%]/.test(s.user) ?', '  return false ?'],                     // F42
+  "--perturb-pubip": ["screen-settings.js", '{ v1: nodePublicIp(node) || T("this node\'s public address") }', '{ v1: ((node || {}).ips || [])[0] || T("this node\'s public address") }'],  // F31
+  "--perturb-setup": ["routing.js", '  if (l.setup && !l.error) return', '  if (false) return'],                                         // F13
+  "--perturb-reason": ["routing.js", '  const probe = String(((l.no_traffic || {}).why) || (l.trace || {}).err || "").trim();',
+                       '  const probe = String((l.trace || {}).err || "").trim();'],                                                // F14
 };
 // [4]'s plants rewrite the SOURCE the section reads (the save paths are closures in a rendered sheet: read, not run)
 const SRC_PLANTS = {
@@ -30,6 +36,7 @@ const SRC_PLANTS = {
   "--perturb-keep": ['socks_pass: sPass || (((ex || {}).socks || {}).has_pass ? Store.exitPassKeep : "")', "socks_pass: sPass"],
   "--perturb-nfields": ['...(x.socks ? { socks: x.socks, socks_text: "", socks_pass: "" } : {})', "...{}"],
   "--perturb-testsend": ['socks_pass: sPass || (st.has_pass ? Store.exitPassKeep : "")', "socks_pass: sPass"],
+  "--perturb-poll404": ['else if (ok && r && r.code === "not_found") {', 'else if (false) {'],                                      // F19
   "--perturb-add": ['if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);',
                     'if (p2.provider === "profile") return openEdit(rec, true);'],
 };
@@ -86,6 +93,18 @@ check("no UDP: says calls and games won't work, and that QUIC falls back", nu.so
 check("a failed check: one bad line with its reason", S.socksSays({ why: "auth_failed" }, NODE).length === 1
       && S.socksSays({ why: "auth_failed" }, NODE)[0][0] === "bad");
 
+console.log("\n[3b] the fix round");
+const RT = { socks: { host: "gw.example.com", port: 1080, user: "cust:zone@a%b", has_pass: true } };
+check("a login with ':' '@' '%' is written as a URL, percent-encoded, so it reads back as the same user — F42",
+      S.socksText(RT) === "socks5://" + encodeURIComponent("cust:zone@a%b") + "@gw.example.com:1080", S.socksText(RT));
+const PRIV = { ...NODE, ips: ["10.0.0.5", "172.20.1.2", "100.64.3.4", "192.168.1.9", "198.51.100.77"] };
+check("\"not allowed\" names the node's PUBLIC address, never a private one NAT hides — F31",
+      S.socksWhy("not_allowed", PRIV).includes("198.51.100.77") && !S.socksWhy("not_allowed", PRIV).includes("10.0.0.5"));
+const setupH = R.exitHealth(sx({}, { up: false, device: "s5x-5a5a5a5a", setup: "fetching the SOCKS5 tunnel program…" }), NODE);
+check("the tunnel program being fetched reads busy (`creating`), not a red failure — F13", setupH.state === "creating" && setupH.tone === "busy", setupH);
+const why14 = R.exitHealth(sx({}, { no_traffic: { since: 1, why: "the proxy refused the login — check the user and password" }, trace: { err: "TimeoutError" } }), NODE).why;
+check("a stalled SOCKS exit shows the proxy's own reason, not the trace's timeout — F14", /refused the login/.test(why14), why14);
+
 console.log("\n[4] the save paths");
 let SET = fs.readFileSync(path.join(ROOT, "js", "screen-settings.js"), "utf8");
 if (SRC_PLANTS[MODE]) {
@@ -99,6 +118,8 @@ check("every list save carries the SOCKS record with an empty paste and password
       /\.\.\.\(x\.socks \? \{ socks: x\.socks, socks_text: "", socks_pass: "" \} : \{\}\)/.test(SET));
 check("the Test sends the same two fields the save does", SET.includes("socks_text: sTxt.trim(),")
       && SET.includes('socks_pass: sPass || (st.has_pass ? Store.exitPassKeep : "")'));
+check("a Test the panel no longer has stops the poll and says so (no button stuck on \"Testing…\") — F19",
+      SET.includes('else if (ok && r && r.code === "not_found") {') && SET.includes('setTmsg(T("The panel no longer has that test — run it again."))'));
 check("the add button opens the sheet (nothing is stored before the paste)", SET.includes('if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);'));
 
 done(MODE, MODE || "");

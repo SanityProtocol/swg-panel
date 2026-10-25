@@ -4481,8 +4481,16 @@ function DialinGenSheet({ node, onCreate, onPaste }) {
    "save and look at the row": checking a new password on an exit people already depend on. */
 
 /** The address a stored SOCKS exit shows in its paste field — never its password (the panel does not have it to show). */
-const socksText = ex => { const s = (ex || {}).socks || {};
-  return s.host ? (s.user ? s.user + "@" : "") + (/:/.test(s.host) ? "[" + s.host + "]" : s.host) + ":" + s.port : ""; };
+export const socksText = ex => { const s = (ex || {}).socks || {};
+  if (!s.host) return "";
+  // a login that holds ':' '@' or '%' is written as a URL, percent-encoded — the one form the panel decodes — so it reads back
+  // as the same user (review F42)
+  return s.user && /[:@%]/.test(s.user) ? "socks5://" + encodeURIComponent(s.user) + "@" + s.host + ":" + s.port
+    : (s.user ? s.user + "@" : "") + s.host + ":" + s.port; };
+/** The address a proxy sees this node dial from, as far as the panel knows: its first PUBLIC IPv4 (a private one is what NAT
+ *  hides — telling the operator to allow-list it would never work, review F31), else none. */
+export const nodePublicIp = node => ((node || {}).ips || []).find(ip => /^\d+\.\d+\.\d+\.\d+$/.test(ip)
+  && !/^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip)) || "";
 
 /** What a proxy check found, in words — the node's codes (`_socks_check`), one sentence each. */
 export const socksWhy = (code, node) => ({
@@ -4493,7 +4501,7 @@ export const socksWhy = (code, node) => ({
   auth_required: T("The proxy wants a login, and none is set."),
   auth_failed: T("The proxy refused the login — check the user and password."),
   not_allowed: T("The proxy refused this node's address. Some providers make you allow-list the server's IP: {v1}.",
-                 { v1: ((node || {}).ips || [])[0] || T("this node's public address") }),
+                 { v1: nodePublicIp(node) || T("this node's public address") }),
   connect_failed: T("The proxy logged us in but couldn't reach the internet."),
   expired: T("The node didn't answer the test in time — is it online?"),
 })[code] || "";
@@ -4520,10 +4528,13 @@ function SocksExitFields({ node, ex, isNew, sTxt, setSTxt, sPass, setSPass, dirt
     if (!pending) return;
     let ok = true, n = 0;
     const h = setInterval(async () => {
-      if (++n > 40) { clearInterval(h); return; }
+      if (++n > 70) { clearInterval(h); setTest(null); setTmsg(T("The node didn't answer the test in time — is it online?")); return; }
       try {
         const r = await api.exitTest({ node: node.id, id: test.id });
         if (ok && r && r.ok) setTest(r.data);
+        else if (ok && r && r.code === "not_found") {   // the panel restarted, or dropped it: say so, never spin (review F19)
+          clearInterval(h); setTest(null); setTmsg(T("The panel no longer has that test — run it again."));
+        }
       } catch (e) { /* the next tick asks again */ }
     }, 1500);
     return () => { ok = false; clearInterval(h); };
