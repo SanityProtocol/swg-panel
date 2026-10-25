@@ -23811,9 +23811,17 @@ def _csqtt_stop_foreign(iface, cfgdir):
             return True, ""
         return False, why or ("container %s was stopped but the server is still running" % cid[:12])
     if _host:
-        # TERM, wait up to ~4.5s, then KILL — the same escalation as the local branch, run host-side in one hop.
-        host_sh("kill -TERM %d 2>/dev/null; i=0; while [ $i -lt 30 ] && kill -0 %d 2>/dev/null; do sleep 0.15; "
-                "i=$((i+1)); done; kill -0 %d 2>/dev/null && kill -KILL %d 2>/dev/null; :" % (pid, pid, pid, pid))
+        # TERM, wait up to ~4.5s, then KILL — the same escalation as the local branch, run host-side in one hop. The pid
+        # comes from a walk that can be seconds old (the cache's floor), and a crash-looping server's number can by now
+        # belong to something else — which we would signal as root. So each signal goes only to a process whose command
+        # line still names this server's store, checked in the same hop, right before it.
+        _mark = shlex.quote((_f.get("config-dir") or "").strip() or ("--tun-addr " + (_f.get("tun-addr") or "")).strip())
+        _r = host_sh("c=/proc/%d/cmdline; tr '\\0' ' ' < $c 2>/dev/null | grep -qF -- %s || exit 3; "
+                     "kill -TERM %d 2>/dev/null; i=0; while [ $i -lt 30 ] && kill -0 %d 2>/dev/null; do sleep 0.15; "
+                     "i=$((i+1)); done; kill -0 %d 2>/dev/null && tr '\\0' ' ' < $c 2>/dev/null | grep -qF -- %s "
+                     "&& kill -KILL %d 2>/dev/null; :" % (pid, _mark, pid, pid, pid, _mark, pid))
+        if getattr(_r, "returncode", 0) == 3:
+            return False, "its process changed before it could be stopped (pid %d is no longer that server) — tried again" % pid
     else:
         with contextlib.suppress(Exception):
             os.kill(pid, signal.SIGTERM)
