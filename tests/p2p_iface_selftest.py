@@ -20,6 +20,10 @@
   [7] each route entry's table is installed by reconcile_cascade (`default dev`, `fwmark T`), a down device withheld, a bad
       or repeated entry skipped
   [8] the report says mode "iface"
+  [9] on the real kernel (throwaway namespaces, `sudo -n`; said SKIPPED without): a client in a Direct group sends a DHT
+      query and then a new high-port flow — both leave by the WAN; the same client in a route group whose device is not
+      the WAN — both dropped (the signature in sig, the flagged flow in gflag), never out the WAN; a client outside every
+      group — both leave, never flagged (not checked)
 
 Run: python3 tests/p2p_iface_selftest.py        (0 = pass)
      --perturb    plant each defect in turn → every one must go RED (exit 0 when all are caught)
@@ -40,18 +44,19 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "golden-legacy":  ('    if routes or grp:                                         # our own restore', '    if routes or grp or mode == "legacy":                     # our own restore'),
     "rule-stale":     ('    ok = on and len(cur) == len(wants) and', '    ok = on and len(cur) >= 1 and'),
     "mode-never":     ('        return "iface" if any(p2p.get(k) for k in ("entries", "direct", "block")) else "legacy"', '        return "legacy"'),
-    "bad-entry-open": ('        elif isinstance(e, dict):\n            strict.extend(v4(e.get("subnets")))', '        elif isinstance(e, dict):\n            pass'),
-    "table-reuse":    ('        if ok and int(ok["table"]) not in taken:', '        if ok:'),
+    "bad-entry-open": ('    for e in bad:\n        strict.extend(v4(e.get("subnets")))', '    for e in bad:\n        pass'),
+    "table-reuse":    ('        if u and int(u["table"]) not in taken:', '        if u:'),
     "block-ignored":  ('    strict.extend(v4(p2p.get("block")))\n', ''),
     "strict-routed":  ('        subs = sorted({n for n in v4(lst) if n not in seen})', '        subs = sorted(set(v4(lst)))'),
     "no-automerge":   ('  set checked { typeof ip saddr; flags interval; auto-merge; elements', '  set checked { typeof ip saddr; flags interval; elements'),
-    "guard-all":      ('        L.append("    ip saddr != @grouped return")\n', ''),
+    "guard-all":      ('        L.append("    ip saddr @flag jump gflag")', '        L.append("    jump gflag")'),
+    "gflag-skip":     ('        L.append("    ip saddr @flag jump gflag")\n', ''),
+    "sig-ungrouped":  ('            L.append("    ip saddr @grouped meta l4proto { tcp, udp } jump sig")', '            L.append("    meta l4proto { tcp, udp } jump sig")'),
     "sig-local":      ('l4, m, goif(g)))', 'l4, m, goif(g).replace("oifname", "fib saddr type local oifname") or "fib saddr type local "))'),
     "group-oif":      ('    goif = lambda g: "oifname != { %s } "', '    goif = lambda g: "" and "oifname != { %s } "'),
     "rule-ordered":   ('all(any(("fwmark %#x lookup %s" % w) in ln for ln in cur) for w in wants)', 'all(("fwmark %#x lookup %s" % w) in ln for ln, w in zip(cur, wants))'),
     "route-first":    ('                if not _P2P["route"] or (not _up and _P2P["route"] == "up"):', '                if not _P2P["route"]:'),
-    "recon-borrowed": ('    if _pi.get("action") == "iface" and isinstance(_pi.get("entries"), list):', '    if False:'),
-    "recon-reuse":    ('            if _ie and int(_ie["table"]) not in _pt:', '            if _ie:'),
+    "recon-borrowed": ('    if _pi.get("action") == "iface":                          # …and each', '    if False:                          # …and each'),
 }
 
 
@@ -172,15 +177,17 @@ def run_checks(src):
     t = m._p2p_nft("iface", st, [], [], True, groups=g)
     cls = t.split("chain cls {", 1)[1].split("\n  }", 1)[0].splitlines()
     gu = [l for l in t.split("chain guard {", 1)[1].split("\n  }", 1)[0].splitlines() if l.strip()] if "chain guard {" in t else []
+    gf = [l for l in t.split("chain gflag {", 1)[1].split("\n  }", 1)[0].splitlines() if l.strip()] if "chain gflag {" in t else []
     sig = [l for l in t.split("chain sig {", 1)[1].split("\n  }", 1)[0].splitlines() if l.strip()] if "chain sig {" in t else []
     ok("    ip saddr != @checked return" in cls and "    ip saddr != @strict return" not in cls
        and "flags interval; auto-merge; elements = { " in t.split("set checked {", 1)[1].split("\n", 1)[0], "[4] legacy's scope, widened to @checked (auto-merge)")
     ok(all(any(("ip saddr @g_%s" % x["name"]) in l and l.endswith("meta mark set %#x ct mark set %#x" % (x["mark"], x["mark"])) for l in cls)
            for x in g) and "ip saddr @g_d meta l4proto udp meta mark set %#x" % BIT in t, "[4] each group carries its own mark (cls + hit)")
-    ok([l.strip() for l in gu[1:5]] == ['oifname "lo" return', "ct direction reply return", "meta nfproto ipv6 return", "ip saddr != @grouped return"],
-       "[4] guard: v6 and every non-group source leave before any lookup but @grouped (%s)" % gu[1:5])
-    ok(any("ip saddr @g_d ip saddr @flag" in l and 'oifname != { "eth0" }' in l and l.endswith("drop") for l in gu)
-       and any("ip saddr @g_r7005 ip saddr @flag" in l and 'oifname != { "swg_q" }' in l for l in gu), "[4] each group judged against its own devices")
+    ok([l.strip() for l in gu[1:]] == ['oifname "lo" return', "ct direction reply return", "meta nfproto ipv6 return", "ip saddr @flag jump gflag",
+                                         "ct original packets > 4 return", "ip saddr @grouped meta l4proto { tcp, udp } jump sig"],
+       "[4] guard: one set lookup per established v4 packet (@flag); @grouped only on packets 1-4; no held check (cls has it) (%s)" % gu[1:])
+    ok(len(gf) == len(g) and any(l.strip().startswith("ip saddr @g_d meta l4proto") and 'oifname != { "eth0" }' in l and l.endswith("drop") for l in gf)
+       and any(l.strip().startswith("ip saddr @g_r7005 meta l4proto") and 'oifname != { "swg_q" }' in l for l in gf), "[4] each group judged against its own devices (%s)" % gf)
     ok(sig and all("fib saddr type != local jump gdrop" in l for l in sig) and all("fib saddr type local" not in l for l in sig)
        and len(sig) == len(m._P2P_SIGS) * len(g), "[4] the node's own processes are not checked; one sig line per signature and group")
     t0 = m._p2p_nft("iface", st, [], [], True, groups=[])
@@ -248,7 +255,65 @@ def run_checks(src):
     with __import__("contextlib").suppress(Exception):
         st8 = m.smart_status()
     ok(((st8 or {}).get("p2p") or {}).get("mode") == "iface", "[8] the report says mode iface (%s)" % ((st8 or {}).get("p2p")))
+
+    # [9]
+    if _sp.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and shutil.which("unshare"):
+        m9 = base.load(src)
+        G9 = lambda name, sub, mark, oif, T: [{"name": name, "subnets": [sub], "mark": mark, "oif": oif, "table": T}]
+        for name, groups, want in (("a Direct group", G9("d", "10.9.0.0/24", BIT, ["eth0"], None), (2, 0, 1)),
+                                   ("a route group via another device", G9("r7003", "10.9.0.0/24", 7003 | BIT, ["wgx0"], 7003), (0, 2, 1)),
+                                   ("outside every group", G9("d", "10.62.0.0/24", BIT, ["eth0"], None), (2, 0, 0))):
+            got = _wire_iface(m9._p2p_nft("iface", ["10.67.0.0/24"], [], [], True, groups=groups, logged=False))
+            if got is None:
+                print("  SKIPPED [9] real-kernel %s — the throwaway namespace could not be set up here" % name)
+                continue
+            ok(got == want, "[9] on the real kernel, the client in %s: (left by the WAN, dropped, flagged) = %s, want %s" % (name, got, want))
+    else:
+        print("  SKIPPED [9] real-kernel datapath — no `sudo -n` here")
     return fails
+
+
+WIRE_IF = base.WIRE.split("nft add element")[0] + r'''
+nft -f - <<'EOF'
+table inet obs {
+  counter left {}
+  chain p {
+    type filter hook postrouting priority 100; policy accept;
+    oifname "eth0" ip saddr 10.9.0.2 counter name left
+  }
+}
+EOF
+nsenter -t "$CPID" -n python3 -c '
+import os, socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.9.0.2", 50001))
+s.sendto(b"d1:ad2:id20:" + os.urandom(20) + b"9:info_hash20:" + os.urandom(20) + b"e1:q9:get_peers1:t2:aa1:y1:qe", ("198.51.100.7", 6881))
+time.sleep(0.2)
+s.sendto(b"\x00" * 40, ("198.51.100.8", 40000))
+'
+sleep 0.3
+echo "LEFT $(nft list counter inet obs left | grep -o 'packets [0-9]*' | grep -o '[0-9]*')"
+echo "DROPPED $(nft list counter inet swg_p2p dropped | grep -o 'packets [0-9]*' | grep -o '[0-9]*')"
+echo "FLAG $(nft list set inet swg_p2p flag | grep -c '10\.9\.0\.2')"
+kill $CPID 2>/dev/null
+'''
+
+
+def _wire_iface(table):
+    """(left by the WAN, dropped, flagged) for the client 10.9.0.2's DHT query + one flagged flow, or None (not set up)."""
+    import subprocess as sp
+    with tempfile.NamedTemporaryFile("w", suffix=".nft", delete=False) as f:
+        f.write(table)
+    try:
+        r = sp.run(["sudo", "-n", "unshare", "-n", "bash", "-s", f.name], input=WIRE_IF, capture_output=True, text=True, timeout=60)
+    except Exception:
+        return None
+    finally:
+        os.unlink(f.name)
+    out = {ln.split(" ", 1)[0]: ln.split(" ", 1)[1].strip() for ln in (r.stdout or "").splitlines() if " " in ln}
+    try:
+        return int(out["LEFT"]), int(out["DROPPED"]), int(out["FLAG"])
+    except (KeyError, ValueError):
+        return None
 
 
 def fresh(src, ih=True):
