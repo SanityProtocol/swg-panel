@@ -50,7 +50,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "strict-routed":  ('            if any(net.overlaps(o) for o in nets):', '            if False:'),
     "v6-empty":       ('        if mode == "iface" and not strict and not groups:', '        if False:'),
     "strict-nomerge": ('(" auto-merge;" if mode == "iface" else "", ", ".join(strict))', '("", ", ".join(strict))'),
-    "no-p2pi":        ('            "p2pi": 1}', '            "_p2pi": 1}'),
+    "no-p2pi":        ('            "p2pi": 1,', '            "_p2pi": 1,'),
     "no-automerge":   ('  set checked { typeof ip saddr; flags interval; auto-merge; elements', '  set checked { typeof ip saddr; flags interval; elements'),
     "guard-all":      ('        L.append("    ip saddr @flag jump gflag")', '        L.append("    jump gflag")'),
     "held-local":     ('        L.append("    " + held[0])\n        L.append("    ct original packets > 4 return")', '        L.append("    ct original packets > 4 return")'),

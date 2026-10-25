@@ -8334,9 +8334,9 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
             L.append("    counter name dropped drop")
             L.append("  }")
     if grp:
-        # iface: only a group's own sources are judged here, each against its own devices. ONE set lookup per established
-        # v4 packet (@flag; measured 2026-10-25: a group source paid 6 with a rule per group, direct pays 2) — a flagged
-        # source's groups are read in gflag, and @grouped only on packets 1-4; a TCP packet also reads @held4 (below).
+        # iface: only a group's own sources are judged here, each against its own devices. An established v4 packet reads
+        # @flag, a TCP one @held4 too — direct's two (measured 2026-10-25: a group source paid 6 with a rule per group);
+        # a flagged source's groups are read in gflag, and @grouped only on packets 1-4.
         L.append("  chain gflag {")                         # the device first: a routed flow leaving by its own pays no set
         for g in grp:                                         # lookup here (S11 review F18)
             L.append("    %sip saddr @g_%s %s fib saddr type != local counter name dropped drop" % (goif(g), g["name"], _P2P_SHAPE))
