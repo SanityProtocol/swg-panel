@@ -252,7 +252,8 @@ ESC["_x_n1"] = ESC["_x_n1"].split("").reverse().join("");                // anot
 check("a bucket key this vault cannot open reads sealed", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_SEALED_OLD);
 ESC["_x_n1"] = wrap;
 const sec0 = BLOBS.aabbccdd.sec;
-BLOBS.aabbccdd.sec = sec0.slice(0, 30) + (sec0[30] === "A" ? "B" : "A") + sec0.slice(31);   // one ciphertext byte off
+const secBad = sec0.slice(0, 30) + (sec0[30] === "A" ? "B" : "A") + sec0.slice(31);   // one ciphertext byte off
+BLOBS.aabbccdd.sec = secBad;
 check("a blob the bucket key does not open (GCM refuses it) reads sealed", await C.exitRouterKey("n1", "aabbccdd") === C.CONF_SEALED_OLD);
 // …and a PEER's stored config the same way: sealed, not "No stored config — re-issue", the one advice that destroys it (s9c F25)
 // the users map as the panel serves it — the check above left a stub that throws, and the 4 s cache hid that only while fast
@@ -267,7 +268,8 @@ const bopen = await C.blobConfig(bpeer, "n1", "wg0");
 check("a peer's stored config the bucket key does not open reads sealed; one it opens is built", bsealed === C.CONF_SEALED_OLD
       && typeof bopen === "string" && bopen.includes("PrivateKey = " + rk.priv), [String(bsealed), typeof bopen]);
 // …and on a panel still migrating, the plaintext copy of a sealed one is still read (backlog C review F2)
-api.subBlobGet = async () => ({ ok: true, data: { sec: BLOBS.aabbccdd.sec.slice(0, 30) + (BLOBS.aabbccdd.sec[30] === "A" ? "B" : "A") + BLOBS.aabbccdd.sec.slice(31), user_id: C.exitBucket("n1") } });
+// the tampered blob itself: flipping char 30 again undid the tamper whenever sec0 had a "B" there (1 run in 64)
+api.subBlobGet = async () => ({ ok: true, data: { sec: secBad, user_id: C.exitBucket("n1") } });
 Store.recon.peers = [{ ...bpeer, pubkey: "PKSEALED" }];
 Store.configsPlaintext = 1;
 const PLAIN = "[Interface]\nPrivateKey = " + rk.priv + "\nAddress = 10.9.0.2/32\n\n[Peer]\nPublicKey = " + K2 + "\nEndpoint = 203.0.113.7:51820\nAllowedIPs = 0.0.0.0/0\n";

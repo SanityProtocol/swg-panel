@@ -32,7 +32,7 @@ PLANTS = [
      "[1] swg-netctl-docker: an IP certificate covers its own IP"),
     ("ENTRY", '  elif acme_entry_is_panels "$SUB_DOMAIN"; then', '  elif false; then',
      "[2] the panel's file not there yet: the sub still never installs onto the panel's entry"),
-    ("ENTRY", '  cmp -s "$SWG_PANEL_TLS_KEY" "$e/${PANEL_DOMAIN}.key" || return 0\n  [ "$(acme_target "$PANEL_DOMAIN")" = "$SWG_PANEL_TLS_CERT" ] && return 0',
+    ("ENTRY", '  [ "$(acme_target "$PANEL_DOMAIN")" = "$SC" ] || cmp -s "$SWG_PANEL_TLS_KEY" "$e/${PANEL_DOMAIN}.key" || return 0\n  [ "$(acme_target "$PANEL_DOMAIN")" = "$SWG_PANEL_TLS_CERT" ] && return 0',
      '  return 0',
      "[3] a hijacked entry is re-pointed at the panel's certificate"),
     ("ENTRY", '  log "using the certificate already present at $SWG_PANEL_TLS_CERT (mounted / previously issued)"\n  acme_reassert\n',
@@ -42,18 +42,24 @@ PLANTS = [
      "[4] a renewed panel certificate reaches the sub's copy"),
     ("ENTRY", '  cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && return 0     # a failed issuance\'s placeholder never replaces the sub\'s cert\n', '',
      "[4] …a self-signed panel placeholder never replaces the sub's certificate"),
-    ("ENTRY", '  cmp -s "$SWG_PANEL_TLS_KEY" "$e/${PANEL_DOMAIN}.key" || return 0\n', '',
+    ("ENTRY", '  [ "$(acme_target "$PANEL_DOMAIN")" = "$SC" ] || cmp -s "$SWG_PANEL_TLS_KEY" "$e/${PANEL_DOMAIN}.key" || return 0\n', '',
      "[3] …a certificate the operator mounted over the entry stays theirs"),
     ("ENTRY", '  case "${TLS:-}" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 0 ;; esac\n  acme_has_cert || return 0\n',
      '  acme_has_cert || return 0\n',
      "[3] …only in an acme mode (selfsigned: nothing is re-pointed)"),
-    ("ENTRY", '    [ -f "$d" ] && [ "$(sed -n', '    false && [ "$(sed -n',
+    ("ENTRY", '    [ -f "$f" ] && [ "$(sed -n', '    false && [ "$(sed -n',
      "[4] …a sub with its own acme entry installing to its files is left to that entry"),
     ("ENTRY", '  [ -n "$(ip_canon "$SUB_DOMAIN")" ] && san="IP:$(ip_canon "$SUB_DOMAIN")"', '  :',
      "[2] a self-signed sub on an IP writes an IP SAN, and is reused on the next start"),
-    ("ENTRY", '    for dns in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE \'DNS:[^,[:space:]]+\' | cut -d: -f2); do\n      [ "$dns" = "$host" ] && return 0\n    done\n    return 1',
+    ("ENTRY", '    for dns in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE \'DNS:[^,[:space:]]+\' | cut -d: -f2-); do\n      [ "$dns" = "$host" ] || [ "$dns" = "$hip" ] && return 0\n    done\n    return 1',
      '    return 1',
      "[1] …an IP spelled as a DNS SAN (an earlier image's self-signed sub cert) still covers it"),
+    ("ENTRY", 'cut -d: -f2-); do\n      [ "$dns" = "$host" ] || [ "$dns" = "$hip" ] && return 0', 'cut -d: -f2); do\n      [ "$dns" = "$host" ] && return 0',
+     "[1] …an IPv6 spelled as a DNS SAN covers it, bracketed or not"),
+    ("ENTRY", '  [ "$(acme_target "$PANEL_DOMAIN")" = "$SC" ] || cmp -s', '  cmp -s',
+     "[3] …an entry the hijack left on the sub's files is re-pointed after its key rolled"),
+    ("ENTRY", '      && { [ -z "$d" ] || [ "$(sed -n "s/^Le_Domain=', '      && { true || [ "$(sed -n "s/^Le_Domain=',
+     "[4] …a stale entry for a host the sub had before does not stop the copy"),
     ("ENTRY", 'print(ipaddress.ip_address(sys.argv[1].strip("[]")))', 'print(ipaddress.ip_address(sys.argv[1]))',
      "[1] …a bracketed IPv6 host, as swg-netctl-docker reads it"),
     ("NCD", '                    shutil.copyfile(src, dst + ".new"); os.chmod(dst + ".new", mode); os.replace(dst + ".new", dst)',
@@ -281,6 +287,9 @@ check("[1] swg-netctl-docker: an IP certificate covers its own IP", NCD._cert_co
 _dnsip, _ = leaf("dns-ip", "DNS:" + IP, 3650)
 check("[1] …an IP spelled as a DNS SAN (an earlier image's self-signed sub cert) still covers it", covers(_dnsip, IP))
 check("[1] …a bracketed IPv6 host, as swg-netctl-docker reads it", covers(IP6CRT, "[" + IP6 + "]"))
+_dnsip6, _ = leaf("dns-ip6", "DNS:" + IP6, 3650)
+check("[1] …an IPv6 spelled as a DNS SAN covers it, bracketed or not", covers(_dnsip6, IP6) and covers(_dnsip6, "[" + IP6 + "]")
+      and not covers(_dnsip6, "2001:db8::8"))
 _nsrc = open(PATHS["NCD"], encoding="utf-8").read()
 _ic = _nsrc[_nsrc.index('if verb == "issue-cert":'):][:3000]
 check("[1] swg-netctl-docker copies the panel's pair into sub-tls by rename, key first", 'os.replace(dst + ".new", dst)' in _ic
@@ -318,6 +327,17 @@ check("[3] a hijacked entry is re-pointed at the panel's certificate", conf_val(
       and conf_val(w, IP, "Le_ReloadCmd") == "kill -HUP 1", (conf_val(w, IP, "Le_RealFullChainPath"), r.stdout[-300:]))
 _reuse = cut(EP, "elif reuse_present_cert; then", "\nelif ")
 check("[3] …on a start that reuses the certificate on disk", "acme_reassert" in _reuse, _reuse)
+w, env = world("w3e")
+run(env, "acme_install")
+_rk = leaf("ip-rolled", "IP:" + IP, 7)                          # a forced re-issue rolled the entry's key, onto the sub's files
+shutil.copyfile(_rk[0], w + "/acme/%s_ecc/fullchain.cer" % IP); shutil.copyfile(_rk[1], w + "/acme/%s_ecc/%s.key" % (IP, IP))
+with open(w + "/acme/%s_ecc/%s.conf" % (IP, IP), "w") as f:
+    f.write("Le_Domain='%s'\nLe_RealFullChainPath='%s/fullchain.pem'\nLe_RealKeyPath='%s/key.pem'\nLe_ReloadCmd='true'\n"
+            % (IP, env["SUB_TLS_DIR"], env["SUB_TLS_DIR"]))
+r = run(env, "acme_reassert")
+check("[3] …an entry the hijack left on the sub's files is re-pointed after its key rolled",
+      conf_val(w, IP, "Le_RealFullChainPath") == env["SWG_PANEL_TLS_CERT"] and same(env["SWG_PANEL_TLS_KEY"], _rk[1]),
+      (conf_val(w, IP, "Le_RealFullChainPath"), r.stdout[-300:]))
 w, env = world("w3b", tls="selfsigned")
 run(env, "acme_install")
 with open(w + "/acme/%s_ecc/%s.conf" % (IP, IP), "w") as f:
@@ -377,6 +397,15 @@ with open(w + "/acme/sub.example.com_ecc/sub.example.com.conf", "w") as f:
     f.write("Le_Domain='sub.example.com'\nLe_RealFullChainPath='%s/fullchain.pem'\n" % env["SUB_TLS_DIR"])
 run(env, "SUB_DOMAIN=sub.example.com; sub_follow_panel")
 check("[4] …a sub with its own acme entry installing to its files is left to that entry", same(env["SUB_TLS_DIR"] + "/fullchain.pem", _sc))
+w, env = world("w4e")
+run(env, 'SUB_DOMAIN=%s; acme_install; issue_sub_cert' % IP)
+os.makedirs(w + "/acme/old.example.com_ecc")                     # the renewer of a sub domain the panel had before
+with open(w + "/acme/old.example.com_ecc/old.example.com.conf", "w") as f:
+    f.write("Le_Domain='old.example.com'\nLe_RealFullChainPath='%s/fullchain.pem'\n" % env["SUB_TLS_DIR"])
+shutil.copyfile(IPC2, env["SWG_PANEL_TLS_CERT"])
+r = run(env, "SUB_DOMAIN=%s; sub_follow_panel" % IP)
+check("[4] …a stale entry for a host the sub had before does not stop the copy", same(env["SUB_TLS_DIR"] + "/fullchain.pem", IPC2),
+      r.stdout[-300:])
 
 print("[5] swg-sub picks up a changed certificate on its own")
 def free_port():

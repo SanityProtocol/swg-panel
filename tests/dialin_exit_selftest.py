@@ -76,6 +76,7 @@ Run: python3 tests/dialin_exit_selftest.py      (0 = pass)
      --perturb-meshref    a typed port in the system mesh band is accepted                 → RED [7b]
      --perturb-s4fit      a drawn S4 is not fitted to a typed MTU                          → RED [7b]
      --perturb-s156       a drawn S beside a typed one may land on S2 = S1 + 56 (refused)   → RED [7b]
+     --perturb-s156cap    the redraw is not bounded: a generator stuck on S1 + 56 spins     → RED [7b]
      --perturb-asciiport  a typed port is read with str.isdigit() ("²" → a 500)            → RED [7b]
      --perturb-s3min      a 3.1 S under 12 is not refused (awg3_full re-draws it silently) → RED [7b]
      --perturb-fwref      a changed port outside a declared firewall is accepted           → RED [7b]
@@ -151,7 +152,8 @@ PLANTS = {
     "s3tpl": ("p", '        if proto == "awg3":      # a 2.0 template', '        if False:      # a 2.0 template'),
     "meshband": ("p", "            _no = used | set(ctx.get(\"listen\") or ()) | set(ctx.get(\"mesh_band\") or ())",
                  "            _no = used | set(ctx.get(\"listen\") or ())"),
-    "s156": ("p", '        while all(str(awg.get(k, "")).isdigit() for k in ("S1", "S2"))', '        while False and all(str(awg.get(k, "")).isdigit() for k in ("S1", "S2"))'),
+    "s156": ("p", '        while _rd < 64 and all(str(awg.get(k, "")).isdigit() for k in ("S1", "S2"))', '        while False and all(str(awg.get(k, "")).isdigit() for k in ("S1", "S2"))'),
+    "s156cap": ("p", '        while _rd < 64 and all(', '        while all('),
     "s4fit": ("p", '        if "S4" in awg and "S4" not in _uv and not mesh_s4_fits(awg["S4"], mtu):', '        if False:'),
     "meshref": ("p", "        if port in _mb:\n", "        if False:\n"),
     "asciiport": ("p", '            if not re.fullmatch(r"[0-9]{1,5}", _tp)', '            if not _tp.isdigit()'),
@@ -706,6 +708,20 @@ for _pr in ("awg3", "awg2"):
         P.gen_awg_params = _gap(S1=40, S2=96)
         (c, e), _ = gen(_pr, typed={"awg": {"S1": "40", "S2": "96"}})
         check("…%s: both typed as S2 = S1 + 56 → still refused (the operator's own pair)" % _pr, c is None and "S1 + 56" in str(e), e)
+        # a generator that always lands there (a stub; the real one misses with p ≈ 0.99 a draw): bounded, then refused
+        _nd = [0]
+        def _stuck():
+            _nd[0] += 1
+            if _nd[0] > 200:
+                raise RuntimeError("the S1/S2 redraw is not bounded")
+            return {**_gap0(), "S1": 40, "S2": 96}
+        P.gen_awg_params = _stuck
+        try:
+            (c, e), _ = gen(_pr, typed={"awg": {"S1": "40"}})
+        except RuntimeError as x:
+            c, e = None, x
+        check("…%s: a generator stuck on S2 = S1 + 56 → at most 64 draws, then refused (not a spin under the API lock)" % _pr,
+              c is None and "S1 + 56" in str(e) and _nd[0] <= 66, (e, _nd[0]))
     finally:
         P.gen_awg_params = _gap0
 (c, e), _ = gen("wg", typed={"awg": {"Jc": "9"}})
