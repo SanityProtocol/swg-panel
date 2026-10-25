@@ -167,7 +167,7 @@ def csqtt_box(**kw):
     N._wdtt_hostproc_flush = lambda *a, **k: None
     N._csqtt_scan_ok = lambda: True
     N._wdtt_unit_of_pid = lambda pid, host=False: ""
-    N._csqtt_procs = lambda: [(4557, {"iface": "csqtf0", "config-dir": "/cfg"})] if b.alive else []
+    N._csqtt_procs = lambda: [(4557, {"iface": "csqtf0", "config-dir": "/cfg", "tun-addr": "10.66.80.1/24"})] if b.alive else []
     return b
 
 b = csqtt_box()

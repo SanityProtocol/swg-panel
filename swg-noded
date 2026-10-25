@@ -15179,28 +15179,29 @@ def _proc_container(pid):
 
 
 def _wdtt_flags_host(pid):
-    """Flags for ONE pid in the HOST's pid namespace (docker) — the same base64 hand-off as _wdtt_host_procs,
-    but never cached: this backs the re-verify taken immediately before we signal, where a stale answer is the
-    difference between stopping the foreign server and killing whatever inherited its pid."""
-    out = {}
-    with contextlib.suppress(Exception):
-        b64 = (host_sh("base64 -w0 < /proc/%d/cmdline 2>/dev/null" % int(pid), timeout=20).stdout or "").strip()
-        if b64:
-            parts = [x.decode("utf-8", "replace") for x in base64.b64decode(b64).split(b"\x00") if x]
-            if parts:
-                out = _wdtt_flags_from_argv(parts)
-    return out
+    """Flags for ONE pid in the HOST's pid namespace (docker), never cached: this backs the re-verify taken immediately
+    before we signal, where a stale answer is the difference between stopping the foreign server and killing whatever
+    inherited its pid. The flags half of _host_proc_ident — one reader for both kinds."""
+    return _host_proc_ident(pid)[0]
+
+
+# `st <pid>` prints a HOST pid's start time, shell builtins only: field 22 of /proc/<pid>/stat, counted after the name (which
+# may hold spaces). One copy: the start time _host_proc_ident reads and the one the stop checks before each signal must
+# be the same parse, or the two disagree and nothing is ever signalled.
+_HOST_STARTTIME_SH = "st(){ read -r l < /proc/$1/stat 2>/dev/null || return 1; r=${l##*') '}; set -- $r; echo \"${20}\"; }; "
 
 
 def _host_proc_ident(pid):
     """(flags, start time) of ONE pid in the HOST's pid namespace, read in one hop — never cached. What a signal is checked
     against: the flags say it is the server meant (by the same parser the walk uses), the start time pins THAT process — a
-    number reused by another has another start time. ({}, "") when it is gone or unreadable. Shell builtins only, past
-    base64 (the start time is field 22 of /proc/<pid>/stat, counted after the name, which may hold spaces)."""
+    number reused by another has another start time. ({}, "") when it is gone or unreadable (a helper that failed is
+    logged by host_sh: the command itself always exits 0). Docker only — a bare-metal node reads its own /proc."""
     flags, st = {}, ""
+    if NODE_KIND != "docker":
+        return flags, st
     with contextlib.suppress(Exception):
-        out = (host_sh("c=/proc/%d; base64 -w0 < $c/cmdline 2>/dev/null; echo; read -r l < $c/stat 2>/dev/null && "
-                       "{ r=${l##*') '}; set -- $r; echo \"${20}\"; }; :" % int(pid), timeout=20, probe=True).stdout or "")
+        out = (host_sh(_HOST_STARTTIME_SH + "base64 -w0 < /proc/%d/cmdline 2>/dev/null; echo; st %d; :" % (int(pid), int(pid)),
+                       timeout=20).stdout or "")
         b64, _, rest = out.partition("\n")
         parts = [x.decode("utf-8", "replace") for x in base64.b64decode(b64.strip()).split(b"\x00") if x] if b64.strip() else []
         if parts:
@@ -23658,7 +23659,7 @@ def _csqtt_procs():
     if NODE_KIND == "docker":
         for pid, parts in _wdtt_host_procs():
             fl = _wdtt_flags_from_argv(parts) if isinstance(parts, list) else (parts or {})
-            if (fl.get("tun-addr") or "").strip() or "csqtt" in (fl.get("_exe") or "").lower():
+            if _csqtt_is_server(fl):
                 out.append((pid, fl))
         return out
     with contextlib.suppress(Exception):
@@ -23671,9 +23672,15 @@ def _csqtt_procs():
                 if not parts:
                     continue
                 fl = _wdtt_flags_from_argv(parts)
-                if (fl.get("tun-addr") or "").strip() or "csqtt" in (fl.get("_exe") or "").lower():
+                if _csqtt_is_server(fl):
                     out.append((int(ent), fl))
     return out
+
+
+def _csqtt_is_server(fl):
+    """Do these argv flags belong to a csqtt server? -tun-addr (a WDTT server uses -wg-addr and never -tun-addr) or a csqtt
+    path in argv[0]."""
+    return bool((fl.get("tun-addr") or "").strip() or "csqtt" in (fl.get("_exe") or "").lower())
 
 
 def csqtt_candidates():
@@ -23800,8 +23807,9 @@ def _csqtt_stop_foreign(iface, cfgdir):
         """Is a process with these flags THE server being taken over? By the TUN it holds AND the store it serves: with a
         2.5 server deployed next to a 2.1.9 one, the box runs two foreign servers, and the take-over of one must never
         pick up the other. Exact, by the same parser: a store path is compared whole, never as a substring
-        (/etc/csqtt is not /etc/csqtt25)."""
-        return (_csqtt_iface_of(f) == iface
+        (/etc/csqtt is not /etc/csqtt25). And a csqtt server at all: the re-read before a signal sees whatever holds that
+        number now, and with no store to compare (cfgdir "") any process without --iface would read as csqtt1's."""
+        return (_csqtt_is_server(f) and _csqtt_iface_of(f) == iface
                 and (not cfgdir or os.path.normpath((f.get("config-dir") or "").strip() or "/") == os.path.normpath(cfgdir))
                 and not (f.get("config-dir") or "").startswith(CSQTT_ROOT + "/"))
 
@@ -23839,11 +23847,13 @@ def _csqtt_stop_foreign(iface, cfgdir):
         # process with that start time, checked in the hop that sends it: a number reused even mid-wait has another.
         # Whatever this finds (gone, reused, stopped), the read after the stop below is the answer.
         _fl, _st = _host_proc_ident(pid)
+        _unread = not _st                     # not even read: whatever the walk shows next, nothing was signalled
         if _st and _it(_fl):
-            host_sh("s(){ read -r l < /proc/%d/stat 2>/dev/null || return 1; r=${l##*') '}; set -- $r; [ \"${20}\" = %s ]; }; "
+            host_sh(_HOST_STARTTIME_SH + "s(){ [ \"$(st %d)\" = %s ]; }; "
                     "s || exit 0; kill -TERM %d 2>/dev/null; i=0; while [ $i -lt 30 ] && s; do sleep 0.15; i=$((i+1)); done; "
-                    "s && kill -KILL %d 2>/dev/null; :" % (pid, shlex.quote(_st), pid, pid), probe=True)
+                    "s && kill -KILL %d 2>/dev/null; :" % (pid, shlex.quote(_st), pid, pid))
     else:
+        _unread = False
         with contextlib.suppress(Exception):
             os.kill(pid, signal.SIGTERM)
             for _ in range(30):
@@ -23862,6 +23872,8 @@ def _csqtt_stop_foreign(iface, cfgdir):
             # Another process on the same TUN and store, a moment after this one died: something restarts it. Say what,
             # so the operator can stop that — stopping the server again only cuts its clients off again.
             return False, "it " + _csqtt_came_back(back[0])
+        if back and _unread:
+            return False, "the host could not be read to confirm pid %d is still that server before stopping it — tried again" % pid
         return False, "it is still running after TERM and KILL"   # never drop a TUN we cannot prove is unused
     _drop_tun()
     return True, ""

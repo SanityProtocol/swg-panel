@@ -35,7 +35,7 @@ csqtt1 read it as already gone and the guard pulled its live TUN.
 Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
                        rawcfg / noback / forcefirst / csfloor / pidreuse /
-                       stcheck [3] ·
+                       stcheck / nodisc / unread [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
                        installover / nobackoff / respawnrec / showargs / spaceargs / nlsplit / nogone / keeplater / noflushlook / noflushguard / staleguard / scanloop / flushalways / rmtun /
                        keepfail [7] · keeprec [8]
@@ -51,9 +51,9 @@ SERVER = os.environ.get("SWG_PANEL") or os.path.join(ROOT, "swg-panel-server")
 PLANTS = {   # name: (sections, file, anchor, replacement)
     "noline": (("[1]", "[5]"), "noded", '''                    "version": ver or "", "line": _csqtt_line_of_version(ver),''', ""),
     "bareiface": (("[3]", "[4]"), "noded", '''    return (fl.get("iface") or "").strip() or CSQTT_DEFAULT_IFACE''', '''    return (fl.get("iface") or "").strip()'''),
-    "nocfg": ("[3]", "noded", '''                     and (not cfgdir or os.path.normpath((f.get("config-dir") or "").strip() or "/") == os.path.normpath(cfgdir))\n''', ""),
-    "rawcfg": ("[3]", "noded", '''                     and (not cfgdir or os.path.normpath((f.get("config-dir") or "").strip() or "/") == os.path.normpath(cfgdir))''',
-               '''                     and (not cfgdir or (f.get("config-dir") or "").strip() == cfgdir)'''),
+    "nocfg": ("[3]", "noded", '''                and (not cfgdir or os.path.normpath((f.get("config-dir") or "").strip() or "/") == os.path.normpath(cfgdir))\n''', ""),
+    "rawcfg": ("[3]", "noded", '''                and (not cfgdir or os.path.normpath((f.get("config-dir") or "").strip() or "/") == os.path.normpath(cfgdir))''',
+               '''                and (not cfgdir or (f.get("config-dir") or "").strip() == cfgdir)'''),
     "nocache": ("[2]", "noded", '''    _CSQTT_EXEVER[pid] = (now, ver)\n    return ver''', '''    if ver:\n        _CSQTT_EXEVER[pid] = (now, ver)\n    return ver'''),
     "failttl": ("[2]", "noded", '''(_CSQTT_EXEVER_TTL if hit[1] is not None else _CSQTT_EXEVER_FAIL_TTL)''', '''_CSQTT_EXEVER_TTL'''),
     "nolabel21": ("[2]", "noded", '''    if not m:\n        return ""\n    mm = ''', '''    if not m:\n        return CSQTT_DEFAULT_LINE\n    mm = '''),
@@ -67,6 +67,8 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
     "noback": ("[3]", "noded", '''        if back and back[0] != pid:''', '''        if False:'''),
     "pidreuse": ("[3]", "noded", '        if _st and _it(_fl):', '        if _st:'),
     "stcheck": ("[3]", "noded", '"s || exit 0; kill -TERM %d', '"true || exit 0; kill -TERM %d'),
+    "nodisc": ("[3]", "noded", '        return (_csqtt_is_server(f) and _csqtt_iface_of(f) == iface', '        return (_csqtt_iface_of(f) == iface'),
+    "unread": ("[3]", "noded", '        if back and _unread:', '        if False:'),
     "forcefirst": ("[3]", "noded", '        _wdtt_hostproc_flush(force=after_stop)', '        _wdtt_hostproc_flush(force=True)'),
     "csfloor": ("[3]", "noded", '    back = _foreign(after_stop=True)', '    back = _foreign()'),
     "showargs": ("[7]", "noded", '''        shown += " " + _p1 if not (_p1.startswith("-") or "=" in _p1 or any(c.isspace() for c in _p1)) else " …"''', '''        shown = " ".join(parts)'''),
@@ -242,20 +244,29 @@ try:
         _REAL_SLEEP(0.3)
         def docker_box(stale_rows):
             bb = box()
+            bb.host = []
             N.NODE_KIND = "docker"
-            N.host_sh = lambda cmd, *a, **k: subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+            def _hsh(cmd, *a, **k):
+                bb.host.append((cmd, k))
+                # only the reads and signals of /proc run, by a real shell; anything else (the TUN delete after a stop)
+                # is recorded — the gate must never touch the interfaces of the machine it runs on
+                return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True) if "/proc/" in cmd else R()
+            N.host_sh = _hsh
             w = {"rows": list(stale_rows)}
             def _flush(force=False):
                 if force:
-                    w["rows"] = [(pr.pid, real_flags(pr)) for pr in kids if pr.poll() is None]
+                    w["rows"] = [(pr.pid, f) for pr in kids if pr.poll() is None for f in [real_flags(pr)] if N._csqtt_is_server(f)]
             N._wdtt_hostproc_flush = _flush
             N._csqtt_procs = lambda: list(w["rows"])
             return bb
-        docker_box([(srv.pid, real_flags(srv))])
+        _bb = docker_box([(srv.pid, real_flags(srv))]); bb_hosts = lambda: _bb.host
         ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25")
         _REAL_SLEEP(0.2)
         check("docker: the pid that is still the server is stopped host-side, and the stop reads as done",
               ok and srv.poll() is not None, (ok, why, srv.poll()))
+        check("…its TUN dropped host-side (recorded, never run here), and no host read or signal hidden as a probe",
+              any("ip link delete dev csqtt25" in c for c, _ in bb_hosts()) and not any(k.get("probe") for _, k in bb_hosts()),
+              bb_hosts())
         # a stale walk names the stock server's store for a pid that is now a sibling 2.5 server on /etc/csqtt25
         docker_box([(sib.pid, {**real_flags(sib), "iface": "csqtt1", "config-dir": "/etc/csqtt"})])
         ok, why = N._csqtt_stop_foreign("csqtt1", "/etc/csqtt")
@@ -277,6 +288,24 @@ try:
         _REAL_SLEEP(0.2)
         check("…a server that ignores TERM is KILLed after the wait, still checked as the same process",
               ok and deaf.poll() is not None, (ok, why, deaf.poll()))
+        # a stale walk lists a stock server (no --iface, so csqtt1; no store known to compare) for a number that now
+        # belongs to a process that is no csqtt server at all
+        other = child("--listen", "0.0.0.0:8080"); kids.append(other)
+        _REAL_SLEEP(0.3)
+        docker_box([(other.pid, {**real_flags(other), "tun-addr": "10.66.67.1/24"})])
+        ok, why = N._csqtt_stop_foreign("csqtt1", "")
+        _REAL_SLEEP(0.2)
+        check("…with no store to compare, a number now held by a process that is no csqtt server is never signalled",
+              other.poll() is None, (ok, why, other.poll()))
+        held = child("--iface", "csqtt28", "--config-dir", "/etc/csqtt28", "--tun-addr", "10.66.72.1/24"); kids.append(held)
+        _REAL_SLEEP(0.3)
+        docker_box([(held.pid, real_flags(held))])
+        N._host_proc_ident = lambda pid: ({}, "")                       # the host read failed (a helper error)
+        ok, why = N._csqtt_stop_foreign("csqtt28", "/etc/csqtt28")
+        N._host_proc_ident = _ident
+        check("…a server the host read could not confirm gets no signal, and the reason says so — not \"still running after TERM and KILL\"",
+              held.poll() is None and not ok and "host could not be read to confirm" in why and "TERM and KILL" not in why,
+              (ok, why, held.poll()))
     finally:
         for pr in kids:
             with __import__("contextlib").suppress(Exception):
