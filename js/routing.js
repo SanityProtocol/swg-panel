@@ -20,7 +20,7 @@ import { rulesToRows, rowsToRules, badgeIdentity, rowHasBadge, newGid,
          customTargets, customCaps, listBuckets, TIER2_CAP, listTier2, tier2Count, canonWho, rowLints, badgeCovers,
          portsClean, portsOf, portsReach, rowCovers } from "./rulerows.js";
 import { esc, seen } from "./util.js";
-import { isSelfContainedName, nodeStale, kindOf, awgGen } from "./model.js";
+import { isSelfContainedName, nodeStale, nodeStatusOf, kindOf, awgGen } from "./model.js";
 import { meshHealth, deviceLabel } from "./views.js";
 import { UserPicker } from "./peer-actions.js";
 import { Store, api, bus, useStore } from "./store.js";
@@ -1030,8 +1030,7 @@ let _mech_hint = null;
 // Mechanisms the node does not build yet. They stay in the catalog and in any stored block[] (nothing is rewritten), but no
 // screen offers them: a switch that blocks nothing is worse than no switch — and blocking WebRTC would break calls (Meet).
 const MECH_UNBUILT = new Set(["cryptomining", "webrtc"]);
-export const MECH_HINT = () => (_mech_hint || (_mech_hint = {
-  torrents:     T("Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. Counts only when the server's own Torrents / P2P setting is “Each interface decides”: by default the server blocks it on every way out."),
+export const MECH_HINT = () => (_mech_hint || (_mech_hint = {   // Torrents / P2P is a choice of its own (`IfaceP2p`), not a chip
   smtp:         T("Drop outbound mail on TCP :25 — stops spam being relayed through this exit."),
   portscan:     T("Rate-limit outbound port-scans, brute-force and SYN-floods leaving this interface."),
   cryptomining: T("Drop known cryptomining / Stratum-pool traffic."),
@@ -1152,13 +1151,104 @@ export function defaultBlockFor(node) {
 // category enabled on this node that can enforce in its mode. block[] can hold more — a category since switched off for
 // this node keeps its id so switching it back restores it — and those enforce nothing (the panel skips them too), so
 // counting them in "N active" claimed protection that was not there. Before the catalog loads: the plain length.
-export function blockActiveN(node, value) {
+// …and the interface's own torrent route or Direct (`p2p`) is one more, only where it counts: under "Each interface decides".
+export function blockActiveN(node, value, p2p) {
   const bc = Store.blockCatalog; const ids = value || [];
-  if (!bc) return ids.length;
-  const mode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";
-  return ids.filter(id => { const c = (bc.categories || {})[id];
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const own = p2p && p2p.action && nrec.p2p_eff === "iface" ? 1 : 0;
+  if (!bc) return ids.length + own;
+  const mode = nrec.routing_mode || "kernel";
+  return own + ids.filter(id => { const c = (bc.categories || {})[id];
     return c && c.enabled !== false && (c.kind === "mechanism" ? !MECH_UNBUILT.has(id)
       : ((c.enabled_nodes || []).includes(node) && blockCatLive(mode, bc.providers, c))); }).length;
+}
+
+// ── Torrents / P2P — the choice, its route rows and their hints: ONE builder for the node-wide picker (Settings ▸ node ▸
+// Filters & abuse) and each interface's own (`IfaceP2p`), docs/IFACE-P2P-PICK-PLAN.md §5. A value names its target —
+// "dev:<exit id>" (one of this node's exits) or "exit:<node id>" (another node over the mesh) — and the stored record is
+// {action:"dev", exit_id} / {action:"exit", node}, the routing rule's shape.
+export const p2pVal = p => !p || !p.action ? "" : p.action === "dev" ? "dev:" + p.exit_id : p.action === "exit" ? "exit:" + p.node : p.action;
+export const p2pRec = val => val.startsWith("dev:") ? { action: "dev", exit_id: val.slice(4) }
+  : val.startsWith("exit:") ? { action: "exit", node: val.slice(5) } : { action: val };
+const p2pNodeName = id => ((Store.nodes || []).find(n => n.id === id) || {}).name || id;
+export const p2pTarget = (p, exits, node) => {
+  if (p.action === "exit") return p2pNodeName(p.node);
+  if (p.action !== "dev") return "";
+  const x = (exits || []).find(e => String(e.id) === String(p.exit_id));
+  // the exits' own namer — but an exit no longer in the list is named by its id: `exitLabel` of a bare id reads "Custom"
+  return x ? exitLabel(x, node) : String(p.exit_id || "");
+};
+export const P2P_SHORT = () => ({ block: T("blocked"), direct: T("this server's address only"), iface: T("per interface") });
+export const p2pLabel = (p, exits, node) => !p || !p.action ? "" : (p.action === "dev" || p.action === "exit")
+  ? T("via {v1}", { v1: p2pTarget(p, exits, node) }) : (P2P_SHORT()[p.action] || "");
+// The route rows. The exits are the ROUTING PICKERS' OWN LIST (`exitOptionGroups`): a switched-off exit and a WARP account that is
+// not ready are refused with their own reason, health is read from the stored record (a draft carries none), and every exit is
+// named as it is everywhere else. A copy of that list had missed the not-ready case (code review, 2026-10-03). Choosing a row
+// that cannot carry anything says why instead (`refuse`) — only for what is structurally impossible: a node with no mesh link.
+// A node that is not reporting is a passing state judged in this browser, so it is a warning on the chosen target
+// (`p2pTargetHints`), never a refusal.
+export function p2pTargetOpts(node, exits) {
+  const linked = new Set((node.mesh_peers || []).filter(m => m && m.iface).map(m => m.peer));
+  const viaNode = (Store.nodes || []).filter(n => n.id !== node.id).map(n => ({ value: "exit:" + n.id,
+    label: T("Route through node {v1}", { v1: n.name }),
+    ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : {}) }));
+  return [...exitOptionGroups({ ...node, exits }, { prefix: "dev:", stored: node.exits || [] })
+      .map(g => ({ ...g, items: g.items.map(it => ({ ...it, label: T("Route through {v1}", { v1: it.label }) })) })),
+    ...(viaNode.length ? [{ group: T("Through another node"), items: viaNode }] : [])];
+}
+// What the chosen target says beside it. A node that drops P2P other nodes send it — Block, or a route of its own (it routes only
+// its own clients' P2P) — and one not reporting: `nodeStatusOf`, recon's verdict where this browser has judged the node, the
+// SERVER'S where it has not, so a node that has never reported ("dangling") warns too. And (Q-B, operator 2026-10-21: a hint,
+// never a refusal) a SOCKS5 exit that carries no UDP: DHT and µTP cannot pass it. Its `udp_ok` is read from the STORED record's
+// live state; null — not proven yet — reads as no UDP, as the node runs it (SOCKS5 D-d). Any other exit kind says nothing.
+export function p2pTargetHints(rec, node) {
+  const out = [];
+  const tgt = rec && rec.action === "exit" ? (Store.nodes || []).find(n => n.id === rec.node) : null;
+  const tgtDrops = tgt && ["block", "exit", "dev"].includes(tgt.p2p_eff);
+  const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";
+  if (tgtStale) out.push(html`<div class="hint warnish">${T("{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.", { v1: tgt.name })}</div>`);
+  if (tgtDrops) out.push(html`<div class="hint warnish">${T("{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.", { v1: tgt.name })}</div>`);
+  const x = rec && rec.action === "dev" ? ((node || {}).exits || []).find(e => String(e.id) === String(rec.exit_id)) : null;
+  if (x && exitProv(x) === "socks5" && (x.live || {}).udp_ok !== true)
+    out.push(html`<div class="hint warnish">${T("This exit carries TCP only — DHT and µTP can't pass it, so torrents find fewer peers and download slower.")}</div>`);
+  return out;
+}
+
+// An interface's (WDTT's, csqtt's) own Torrents / P2P — what `block[]` can say (Block: "torrents" in it) and what it cannot
+// (`p2p`: Direct, or a route). The rows follow the SERVER'S policy: its own choice counts only under "Each interface decides";
+// under any other the allow/route rows are refused, naming where to change it — a save of one interface never switches the
+// whole node (§5, reversed in review: under Block that would stop judging mesh arrivals and the node's own programs). Block
+// counts everywhere, as it always has.
+export function ifaceP2pModel(nrec, block, p2p) {
+  const pol = nrec.p2p_eff || "block";
+  const iface = pol === "iface";
+  const cur = (block || []).includes("torrents") ? "block" : p2pVal(p2p);
+  const elsewhere = T("Counts only when {v1}'s Torrents / P2P setting is “Each interface decides” — Settings ▸ Network ▸ Filters & abuse.", { v1: nrec.name || nrec.id });
+  const deny = it => iface ? it : { ...it, refuse: elsewhere, className: "dim" };
+  const opts = [{ value: "block", label: T("Block") },
+    { value: "", label: iface ? T("Allow — not checked") : T("As the server — {v1}", { v1: p2pLabel(nrec.p2p || { action: pol }, nrec.exits, nrec) }) },
+    deny({ value: "direct", label: T("Allow, only out this server's own address") }),
+    ...p2pTargetOpts(nrec, nrec.exits || []).map(g => ({ ...g, items: g.items.map(deny) }))];
+  const rec = p2p && p2p.action ? p2p : null;
+  const hint = cur === "block" ? T("Torrent traffic from this interface is dropped, whichever way it leaves.")
+    : !rec ? (iface ? T("Torrent traffic from this interface is not checked — it follows the interface's own routing.")
+                    : T("This interface follows the server's Torrents / P2P setting."))
+    : rec.action === "direct" ? T("Torrent traffic from this interface may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.")
+    : T("Torrent traffic from this interface may leave only through {v1}. If that way is down, it is blocked — never sent out another way.", { v1: p2pTarget(rec, nrec.exits, nrec) });
+  // a pick → [block[], p2p]: Block is "torrents" in block[] and no p2p; every other row takes "torrents" out
+  const pick = a => { const rest = (block || []).filter(id => id !== "torrents");
+    return [a === "block" ? [...rest, "torrents"] : rest, a === "block" || a === "" ? null : p2pRec(a)]; };
+  return { iface, cur, opts, rec, hint, warn: rec && !iface ? elsewhere : "", pick };
+}
+function IfaceP2p({ node, block, p2p, onPick }) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || { id: node };
+  const M = ifaceP2pModel(nrec, block, p2p);
+  return html`<div class="field blk-p2p"><label>${T("Torrents / P2P")}</label>
+    <${Dropdown} value=${M.cur} onChange=${a => onPick(...M.pick(a))} options=${M.opts}/>
+    <div class="hint">${M.hint}</div>
+    ${M.warn ? html`<div class="hint warnish">${M.warn}</div>` : null}
+    ${M.rec && M.iface ? p2pTargetHints(M.rec, nrec) : null}
+  </div>`;
 }
 
 // The Never-block list under an interface's content filters — where an operator looks when a site is blocked. Names are taken
@@ -1178,7 +1268,7 @@ function nbLine(node, mode) {
 // THIS node plus the built-in traffic/abuse mechanisms; a chip toggles the category id in the interface's block[], and
 // the node drops matching traffic on its next sync. Domain (content) categories are inert on an IP-only (kernel) node
 // — shown greyed with a reason, the choice kept for when the mode changes.
-export function BlockTraffic({ node, value, onChange }) {
+export function BlockTraffic({ node, value, onChange, p2p, onP2p }) {
   useStore(); useEffect(() => { loadBlockCatalog(); }, []);
   const bc = Store.blockCatalog;
   const mode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";
@@ -1189,7 +1279,7 @@ export function BlockTraffic({ node, value, onChange }) {
   const list = [...new Set([...(bc.cat_order || []), ...Object.keys(cats)])].map(id => cats[id]).filter(c => c && c.enabled !== false);
   const availOn = c => (c.enabled_nodes || []).includes(node);
   const content = list.filter(c => (c.kind === "content" || c.kind === "ip") && availOn(c));
-  const mech = list.filter(c => c.kind === "mechanism" && !MECH_UNBUILT.has(c.id));
+  const mech = list.filter(c => c.kind === "mechanism" && !MECH_UNBUILT.has(c.id) && !(onP2p && c.id === "torrents"));   // its own row below
   const chip = c => { const dis = blockCatDisabled(mode, bc.providers, c);
     const dead = !dis && !blockCatLive(mode, bc.providers, c);   // enforceable in this mode, but none of its lists is switched on / present
     return html`<button type="button" key=${c.id} disabled=${dis}
@@ -1206,6 +1296,8 @@ export function BlockTraffic({ node, value, onChange }) {
         : html`<div class="hint blk-empty">${noFilterCats(() => { closeAllModals(); goSettings("routing"); })}</div>`}
       ${content.length ? nbLine(node, mode) : null}</div>
     <div class="blk-grp"><div class="blk-gtitle">${T("Traffic & abuse")} <span class="faint" style="text-transform:none;letter-spacing:0">${T("— built-in")}</span></div>
+      ${onP2p ? html`<${IfaceP2p} node=${node} block=${value} p2p=${p2p}
+        onPick=${(b, p) => { onChange(b); onP2p(p); }}/>` : null}
       <div class="blk-chips">${mech.map(mchip)}</div></div>
   </div>`;
 }
@@ -3321,7 +3413,10 @@ export const egressInit = m => {
     exitId: m.exit_id || "", rows, catchAll,
     // The interface's {far node: address} map (§4.2). Read and written whole, beside the rows rather than
     // inside them — see `_apply_exit_ips` on the panel for why that is where it lives.
-    exitIps: { ...(m.routing_exit_ips || {}) } };
+    exitIps: { ...(m.routing_exit_ips || {}) },
+    // Its own Torrents / P2P (Direct or a route; Block is "torrents" in block[]). Carried here so every save sends it back — a
+    // WDTT/csqtt restart re-posts `egressBody(egressInit(cfg))`, which without it would clear the choice (IFACE-P2P-PICK §2.4).
+    p2p: m.p2p && m.p2p.action ? { ...m.p2p } : null };
 };
 
 // WHY SAVE IS BLOCKED, or null. One call, consulted by all four Save buttons — and it is deliberately ONE
@@ -3919,11 +4014,12 @@ export function ifTrafficBadge(mode, egNode, node, exitId) {
 // serialise an egress selection into the API body shape (shared by the interface and WDTT save paths)
 // `routing_v: 2` tells the panel this tab knows per-person rules: a save WITHOUT it over a stored one is refused (D7), because an
 // older tab's rowsToRules drops `who` and would re-save the rule without its people. 3: …and ports on a rule (B.2), the same way.
-export const egressBody = eg => eg.mode === "smart"
+export const egressBody = eg => ({ ...(eg.mode === "smart"
   // `egress_ip` rides along: the node source-NATs by it in every mode, and it is what a Direct rule leaves as (Rule settings).
   ? { egress_mode: "smart", routing: rowsToRules(eg.rows, eg.catchAll), routing_exit_ips: eg.exitIps || {}, routing_v: 3, egress_ip: eg.ip || "" }
   // An exit carries an ID and nothing else — not a NIC and not a node. Sending the others alongside would
   // be harmless today (the server's ladder pops them) and a trap tomorrow, since a stale `wan_iface` riding
   // along is how a mode ends up meaning two things.
   : eg.mode === "exit" ? { egress_mode: "exit", exit_id: eg.exitId || "" }
-  : { egress_mode: eg.mode === "auto" ? "direct" : eg.mode, egress_node: eg.node || "", egress_ip: eg.ip || "", wan_iface: eg.nic || "" };
+  : { egress_mode: eg.mode === "auto" ? "direct" : eg.mode, egress_node: eg.node || "", egress_ip: eg.ip || "", wan_iface: eg.nic || "" }),
+  p2p: eg.p2p || null });   // the torrent choice, in every mode (null: none)

@@ -5040,8 +5040,6 @@ export const STR = {
   "healthy": "работает",
   "down — host routing degraded": "не работает — домены страдают",
   "OFF — routing stays fresh, no remembered IPs": "ВЫКЛ — маршруты свежие, адреса не запоминаются",
-  "Drop BitTorrent / P2P from this interface, on any port — recognised by its protocol and its connection pattern. Counts only when the server's own Torrents / P2P setting is “Each interface decides”: by default the server blocks it on every way out.":
-    "Резать BitTorrent и P2P с этого интерфейса на любом порту — их узнают по протоколу и по характеру соединений. Действует, только если в настройке сервера «Торренты / P2P» выбрано «Решает каждый интерфейс»: по умолчанию сервер закрывает их на всех выходах.",
   // the node-wide torrent policy (Settings ▸ node ▸ Network ▸ Filters & abuse)
   "Torrents / P2P": "Торренты / P2P",
   "Torrents / P2P: {v1}": "Торренты / P2P: {v1}",
@@ -5057,8 +5055,8 @@ export const STR = {
     "Торрент-трафик отбрасывается на всех выходах сервера: с его интерфейсов и от других нод, выходящих через него. Торрент-программа на самом сервере блокируется, только когда её хендшейки не зашифрованы, — зашифрованная проходит. Сайты и видеозвонки не затрагиваются.",
   "Torrent traffic may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.":
     "Торрент-трафик может выходить только через собственный адрес сервера — никогда через выход или другую ноду. Остальной трафик идёт своим маршрутом.",
-  "Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked.":
-    "Блокируют только интерфейсы, где включено «Торренты / P2P». Трафик других нод, выходящий через этот сервер, и программы на нём не проверяются.",
+  "Each interface's own Torrents / P2P choice applies — block, allow, or route. Traffic other nodes send out through this server, and programs running on it, are not checked.":
+    "Действует выбор «Торренты / P2P» на каждом интерфейсе — блокировать, разрешить или направить. Трафик других нод, выходящий через этот сервер, и программы на нём не проверяются.",
   "This server can't read packet contents (its kernel or nft is too old), so torrents are recognised by their connection pattern only.":
     "Этот сервер не умеет читать содержимое пакетов (слишком старое ядро или nft), поэтому торренты узнаются только по характеру соединений.",
   // P3 — routing torrent traffic through an exit or another node
@@ -5072,8 +5070,8 @@ export const STR = {
   "Through another node": "Через другую ноду",
   "There is no mesh link to {v1}.": "До {v1} нет меш-связи.",
   "{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.": "{v1} сейчас не выходит на связь — торрент-трафик, отправленный туда, не выйдет, пока связь не вернётся.",
-  "Chosen automatically: this is the default. An interface's own Torrents / P2P switch counts only when you pick “Each interface decides”.":
-    "Выбрано автоматически: это значение по умолчанию. Переключатель «Торренты / P2P» на интерфейсе действует, только если выбрать «Решает каждый интерфейс».",
+  "Chosen automatically: this is the default. An interface's own Torrents / P2P choice counts only when you pick “Each interface decides”.":
+    "Выбрано автоматически: это значение по умолчанию. Выбор «Торренты / P2P» на интерфейсе действует, только если выбрать «Решает каждый интерфейс».",
   "the torrent route's way out is down — torrent traffic is blocked until it is back":
     "путь для торрентов сейчас не работает — пока он не восстановится, торрент-трафик блокируется",
   "Torrent route removed": "Маршрут для торрентов снят",
@@ -5083,6 +5081,26 @@ export const STR = {
   "torrents can only be routed to another node of this fleet": "торренты можно направить только на другую ноду этого флота",
   "torrents can only be routed through one of this node's exits": "торренты можно направить только через один из выходов этой ноды",
   "torrent policy must be one of: {v1}": "политика торрентов — одно из: {v1}",
+  // each interface's own Torrents / P2P (IFACE-P2P-PICK, 1.8.11 S11)
+  "Allow — not checked": "Разрешить — не проверять",
+  "As the server — {v1}": "Как на сервере — {v1}",
+  "Counts only when {v1}'s Torrents / P2P setting is “Each interface decides” — Settings ▸ Network ▸ Filters & abuse.":
+    "Действует, только если в настройке «Торренты / P2P» у {v1} выбрано «Решает каждый интерфейс» — Настройки ▸ Сеть ▸ Фильтры и ограничения.",
+  "Torrent traffic from this interface is dropped, whichever way it leaves.": "Торрент-трафик с этого интерфейса отбрасывается, каким бы путём он ни уходил.",
+  "Torrent traffic from this interface is not checked — it follows the interface's own routing.":
+    "Торрент-трафик с этого интерфейса не проверяется — он идёт по маршрутизации самого интерфейса.",
+  "This interface follows the server's Torrents / P2P setting.": "Этот интерфейс следует настройке сервера «Торренты / P2P».",
+  "Torrent traffic from this interface may leave only by this server's own address — never through an exit or another node. Everything else keeps its route.":
+    "Торрент-трафик с этого интерфейса может выходить только через собственный адрес сервера — никогда через выход или другую ноду. Остальной трафик идёт своим маршрутом.",
+  "Torrent traffic from this interface may leave only through {v1}. If that way is down, it is blocked — never sent out another way.":
+    "Торрент-трафик с этого интерфейса может выходить только через {v1}. Если этот путь не работает, он блокируется — другим путём он не уходит.",
+  "This exit carries TCP only — DHT and µTP can't pass it, so torrents find fewer peers and download slower.":
+    "Этот выход пропускает только TCP — DHT и µTP через него не проходят, поэтому торренты находят меньше пиров и качают медленнее.",
+  "the torrent choice must be direct, exit or dev": "выбор для торрентов — direct, exit или dev",
+  "per-interface torrent choices need a node update — until then those interfaces' torrents are not checked":
+    "для выбора торрентов на интерфейсах нужно обновить ноду — пока торренты на этих интерфейсах не проверяются",
+  "torrents on {v1} have no way out (the route is unavailable) — blocked until it is":
+    "у торрентов на {v1} нет пути наружу (маршрут недоступен) — пока он не появится, они блокируются",
   "the torrent policy needs a node update — until then torrents are blocked only on interfaces that have Torrents / P2P switched on":
     "для политики торрентов нужно обновить ноду — пока торренты блокируются только на интерфейсах, где включено «Торренты / P2P»",
   // the node could not load its torrent rules ({v1}: nft's own first error line, left in English)

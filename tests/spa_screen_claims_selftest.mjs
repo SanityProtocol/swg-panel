@@ -172,7 +172,7 @@ check("[2] Block everywhere promises only what was measured — web browsing and
       && / Сайты и видеозвонки не затрагиваются\.$/.test(H.block || "") && !/игры/.test(H.block || ""), H.block);
 check("[2] …and the card shows that hint for a route", SET.includes("${routed ? P2P_HINT().routed(p2pTarget(curRec, exits, node)) : P2P_HINT()[cur]}"), "");
 check("[2] \"Each interface decides\" keeps what was true: programs on the server are not checked",
-      /programs running on it, are not checked/.test(SET) && H.iface === T("Only interfaces with Torrents / P2P switched on block it. Traffic other nodes send out through this server, and programs running on it, are not checked."));
+      /programs running on it, are not checked/.test(SET) && H.iface === T("Each interface's own Torrents / P2P choice applies — block, allow, or route. Traffic other nodes send out through this server, and programs running on it, are not checked."));   // S11: a choice, not a switch
 const claims = Object.entries(JS).flatMap(([f, s]) => [...s.matchAll(/T\("([^"]*programs running on it[^"]*)"/g)].map(m => [f, m[1]]))
   .filter(([, k]) => !/are not checked/.test(k));
 check("[2] no other sentence on any screen says programs running on the server are dropped or blocked", !claims.length, claims);

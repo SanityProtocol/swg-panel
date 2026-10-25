@@ -157,7 +157,7 @@ def _fn(src, name):
     return src[i:j if j > 0 else len(src)]
 
 
-_ladder = _fn(psrc, "_apply_egress_mode") + _fn(psrc, "_apply_exit_ips")
+_ladder = _fn(psrc, "_apply_egress_mode") + _fn(psrc, "_apply_exit_ips") + _fn(psrc, "_apply_iface_p2p")   # …and the torrent choice (S11)
 _written = set(re.findall(r'rec\["([a-z][a-z0-9_]*)"\]\s*=', _ladder)) | set(re.findall(r'rec\.pop\("([a-z][a-z0-9_]*)"', _ladder))
 # ⚠️ THE TYPED LIST IS A FLOOR, AND THE DERIVATION ONLY ADDS TO IT. Replacing the floor WITH the derivation
 # is what the first version of this did, and it silently dropped `egress_ip` — which the ladder does not

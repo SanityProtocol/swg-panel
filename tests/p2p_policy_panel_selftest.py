@@ -53,6 +53,8 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PANEL = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 SRC = open(PANEL, encoding="utf-8").read()
 SPA = os.path.join(ROOT, "js", "screen-settings.js")
+ROUTING = os.path.join(ROOT, "js", "routing.js")   # the torrent picker's rows and hints live there since S11 (shared with interfaces)
+read_spa = lambda: open(SPA, encoding="utf-8").read() + "\n" + open(ROUTING, encoding="utf-8").read()
 
 PLANTS = {
     # the default before 2026-10-08: computed from the records, iface as soon as one lacked torrents
@@ -96,12 +98,12 @@ PLANTS = {
     "nr2-silent":    ('    elif _p2pn and _p2pn.get("state") == "error":', '    elif False:'),
     "nr2-no-detail": ('''                           "load, torrents are not blocked or routed as set", v1=_pd) if _pd else''',
                       '''                           "load, torrents are not blocked or routed as set", v1=_pd) if False else'''),
-    "spa-own-list":  ('        ...exitOptionGroups({ ...node, exits }, { prefix: "dev:", stored: node.exits || [] })',
-                      '        ...exits.filter(x => x && x.id).map(x => ({ value: "dev:" + x.id, label: x.label || x.id }))'),
-    "spa-stale-refuse": ('        ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : {}) }));',
-                         '        ...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : nodeStale(n.id) ? { refuse: "x" } : {}) }));'),
-    "spa-inline-stale": ('      const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";',
-                         '      const tgtSt = tgt ? (((Store.recon || {}).nodeStatus) || {})[tgt.id] : undefined;\n      const tgtStale = !tgtDrops && !!tgtSt && tgtSt !== "live";'),
+    "spa-own-list":  ('[...exitOptionGroups({ ...node, exits }, { prefix: "dev:", stored: node.exits || [] })',
+                      '[...exits.filter(x => x && x.id).map(x => ({ value: "dev:" + x.id, label: x.label || x.id }))'),
+    "spa-stale-refuse": ('...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : {}) }));',
+                         '...(!linked.has(n.id) ? { refuse: T("There is no mesh link to {v1}.", { v1: n.name }), className: "dim" } : nodeStale(n.id) ? { refuse: "x" } : {}) }));'),
+    "spa-inline-stale": ('const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";',
+                         'const tgtSt = tgt ? (((Store.recon || {}).nodeStatus) || {})[tgt.id] : undefined;\n  const tgtStale = !tgtDrops && !!tgtSt && tgtSt !== "live";'),
     "spa-custom-name": ('  return x ? exitLabel(x, node) : String(p.exit_id || "");', '  return exitLabel(x || { id: p.exit_id }, node);'),
     # q189 SPA-2: the draft's torrent route is no longer re-based with the exits
     "spa-p2p-rebase": ("      const p2p = eq(cur.p2p, o.p2p) ? fresh.p2p\n", "      const p2p = cur.p2p; ({}).x = eq(cur.p2p, o.p2p) ? fresh.p2p\n"),
@@ -161,7 +163,7 @@ def run_checks(src, spa=None):
             depth += ch == "("; depth -= ch == ")"
             if depth == 0 and j:
                 break
-        return eval(s[:j + 1], {"p2p_policy": P.p2p_policy, "node": node, "my_plan": plan})
+        return eval(s[:j + 1], {"p2p_policy": P.p2p_policy, "p2p_iface_wire": P.p2p_iface_wire, "node": node, "my_plan": plan})
     if i0 > 0:
         for node, want in (({}, {"action": "block"}), ({"p2p": {"action": "direct"}}, {"action": "direct"}),
                            ({"p2p": {"action": "iface"}}, None), ({"ifaces": {"wg1": {}}}, {"action": "block"})):
@@ -323,7 +325,7 @@ def run_checks(src, spa=None):
     ok(not tor({}, {"state": "ok", "mode": "block"}) and not tor({}, {"state": "degraded", "mode": "block"}),
        "[16] state ok / degraded → nothing said")
     # [10] the draft keeps the route's target
-    spa = spa if spa is not None else open(SPA, encoding="utf-8").read()
+    spa = spa if spa is not None else read_spa()
     nf = spa[spa.find("const nFields = n =>"):]
     nf = nf[:nf.find("});")]
     line = nf[nf.find("p2p:"):]
@@ -360,7 +362,7 @@ def run_checks(src, spa=None):
 def main():
     if "--perturb" in sys.argv:
         missed = []
-        spa = open(SPA, encoding="utf-8").read()
+        spa = read_spa()
         for name, (old, new) in PLANTS.items():
             if name.startswith("spa-"):
                 if old not in spa:

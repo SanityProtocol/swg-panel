@@ -1491,9 +1491,9 @@ export function LoadIfaceSheet({ node, pre, ghost, back }) {
         unvouched=${/* the build a create installs, as the catalog vouches for it (§11.2 F4) */ isWdtt ? !(_wdttForks.find(f => f.id === fork) || {}).reach_vouched
           : isCsqtt ? !(_csqttForks.find(f => f.id === cfork) || {}).reach_vouched : false}/>
       <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
-        summary=${blockActiveN(node, blk) ? T("{v1} active", { v1: blockActiveN(node, blk) }) : html`<span class="faint">${T("val|none")}</span>`}
+        summary=${blockActiveN(node, blk, eg.p2p) ? T("{v1} active", { v1: blockActiveN(node, blk, eg.p2p) }) : html`<span class="faint">${T("val|none")}</span>`}
         open=${disc.filters} onToggle=${() => tog("filters")}>
-        <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
+        <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk} p2p=${eg.p2p} onP2p=${p => setEg(e => ({ ...e, p2p: p }))}/>
       <//>
       ${/* ⚠️ TWO NAMED SECTIONS, ONE ACCORDION. The tunnel settings are named after the PROTOCOL rather
             than left as a nameless run of fields, because the NAT source card now sits beside them and two
@@ -2150,9 +2150,9 @@ export function EditIfaceSheet({ node, iface }) {
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
-      summary=${blockActiveN(node, blk) ? T("{v1} active", { v1: blockActiveN(node, blk) }) : html`<span class="faint">${T("val|none")}</span>`}
+      summary=${blockActiveN(node, blk, eg.p2p) ? T("{v1} active", { v1: blockActiveN(node, blk, eg.p2p) }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
-      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
+      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk} p2p=${eg.p2p} onP2p=${p => setEg(e => ({ ...e, p2p: p }))}/>
     <//>
     <${Disclosure} title=${T("Advanced settings")} summary=${T("MTU · keepalive · DNS") + (isAwg ? awgTail + " · " + MIMIC_TAIL[mimicOf(mimEff)]() : "") + (natPinApplies(eg) ? natTail : "")}
       open=${disc.advanced} onToggle=${() => tog("advanced")}>

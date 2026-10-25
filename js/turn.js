@@ -2360,9 +2360,9 @@ export function EditWdttSheet({ node, iface }) {
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)} unvouchedRaw=${(nrec.reach_unvouched_raw || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
-      summary=${blockActiveN(node, blk) ? T("{v1} active", { v1: blockActiveN(node, blk) }) : html`<span class="faint">${T("val|none")}</span>`}
+      summary=${blockActiveN(node, blk, eg.p2p) ? T("{v1} active", { v1: blockActiveN(node, blk, eg.p2p) }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
-      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
+      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk} p2p=${eg.p2p} onP2p=${p => setEg(e => ({ ...e, p2p: p }))}/>
     <//>
     ${/* ⚠️ THESE SHEETS HAD NO "Advanced settings" AT ALL, and `wan_iface` is a real per-instance field for
           them — the node runs the same `_egress_des` ladder for a WDTT/csqtt subnet as for an interface.
@@ -2858,9 +2858,9 @@ export function EditCsqttSheet({ node, iface, pick }) {
     <//>` : null}
     <${ReachField} node=${node} iface=${iface} value=${reach} onChange=${setReach} unvouched=${(nrec.reach_unvouched || []).includes(iface)}/>
     <${Disclosure} title=${T("Filters & abuse")} sumCls="on"
-      summary=${blockActiveN(node, blk) ? T("{v1} active", { v1: blockActiveN(node, blk) }) : html`<span class="faint">${T("val|none")}</span>`}
+      summary=${blockActiveN(node, blk, eg.p2p) ? T("{v1} active", { v1: blockActiveN(node, blk, eg.p2p) }) : html`<span class="faint">${T("val|none")}</span>`}
       open=${disc.filters} onToggle=${() => tog("filters")}>
-      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>
+      <${BlockTraffic} node=${node} value=${blk} onChange=${setBlk} p2p=${eg.p2p} onP2p=${p => setEg(e => ({ ...e, p2p: p }))}/>
     <//>
     ${is25 ? html`<${Disclosure} title=${T("App routing")} open=${disc.approuting} onToggle=${() => tog("approuting")}
       summary=${ax.length ? html`${arSummary(ar)}<span class="faint"> + ${plural(ax.length, "exception")}</span>` : arSummary(ar)}>
