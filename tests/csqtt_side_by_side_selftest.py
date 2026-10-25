@@ -65,10 +65,10 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
     "installover": ("[7]", "noded", '''                    if _fp or not _csqtt_scan_ok():''', '''                    if False:'''),
     "nobackoff": ("[7]", "noded", '            if _waiting and (_csqtt_foreign_pid', '            if False and (_csqtt_foreign_pid'),
     "noback": ("[3]", "noded", '''        if back and back[0] != pid:''', '''        if False:'''),
-    "pidreuse": ("[3]", "noded", '        if _st and _it(_fl):', '        if _st:'),
+    "pidreuse": ("[3]", "noded", '        _sent = bool(_st and _it(_fl))', '        _sent = bool(_st)'),
     "stcheck": ("[3]", "noded", '"s || exit 0; kill -TERM %d', '"true || exit 0; kill -TERM %d'),
     "nodisc": ("[3]", "noded", '        return (_csqtt_is_server(f) and _csqtt_iface_of(f) == iface', '        return (_csqtt_iface_of(f) == iface'),
-    "unread": ("[3]", "noded", '        if back and _unread:', '        if False:'),
+    "unread": ("[3]", "noded", '        if not _sent:  ', '        if False:  '),
     "forcefirst": ("[3]", "noded", '        _wdtt_hostproc_flush(force=after_stop)', '        _wdtt_hostproc_flush(force=True)'),
     "csfloor": ("[3]", "noded", '    back = _foreign(after_stop=True)', '    back = _foreign()'),
     "showargs": ("[7]", "noded", '''        shown += " " + _p1 if not (_p1.startswith("-") or "=" in _p1 or any(c.isspace() for c in _p1)) else " …"''', '''        shown = " ".join(parts)'''),
@@ -235,7 +235,7 @@ try:
         return subprocess.Popen([sys.executable, "-c", code] + list(argv))
     def real_flags(pr):
         return N._wdtt_flags_from_argv([x.decode() for x in open("/proc/%d/cmdline" % pr.pid, "rb").read().split(b"\0") if x])
-    _kind3, _hsh3 = N.NODE_KIND, N.host_sh
+    _kind3, _hsh3, _ident = N.NODE_KIND, N.host_sh, N._host_proc_ident
     kids = []
     try:
         srv = child("--iface", "csqtt25", "--config-dir", "/etc/csqtt25", "--tun-addr", "10.66.68.1/24"); kids.append(srv)
@@ -276,7 +276,6 @@ try:
         live = child("--iface", "csqtt27", "--config-dir", "/etc/csqtt27", "--tun-addr", "10.66.71.1/24"); kids.append(live)
         _REAL_SLEEP(0.3)
         docker_box([(live.pid, real_flags(live))])
-        _ident = N._host_proc_ident
         N._host_proc_ident = lambda pid: (_ident(pid)[0], "1")         # its number, read again, now started at another time
         ok, why = N._csqtt_stop_foreign("csqtt27", "/etc/csqtt27")
         N._host_proc_ident = _ident
@@ -306,11 +305,31 @@ try:
         check("…a server the host read could not confirm gets no signal, and the reason says so — not \"still running after TERM and KILL\"",
               held.poll() is None and not ok and "host could not be read to confirm" in why and "TERM and KILL" not in why,
               (ok, why, held.poll()))
+        # the helper down for the whole pass: the read before AND the walk after fail
+        docker_box([(held.pid, real_flags(held))])
+        _rows = {"r": [(held.pid, real_flags(held))]}
+        N._wdtt_hostproc_flush = lambda force=False: _rows.update(r=[]) if force else None
+        N._csqtt_procs = lambda: list(_rows["r"])
+        N._csqtt_scan_ok = lambda: bool(_rows["r"])
+        N._host_proc_ident = lambda pid: ({}, "")
+        ok, why = N._csqtt_stop_foreign("csqtt28", "/etc/csqtt28")
+        N._host_proc_ident = _ident
+        check("…nor when the walk after it failed too (the helper down for the whole pass)",
+              held.poll() is None and not ok and "host could not be read to confirm" in why and "TERM and KILL" not in why,
+              (ok, why, held.poll()))
+        # its start time read, its command line not: unconfirmed, so unsignalled — and said so
+        docker_box([(held.pid, real_flags(held))])
+        N._host_proc_ident = lambda pid: ({}, _ident(pid)[1])
+        ok, why = N._csqtt_stop_foreign("csqtt28", "/etc/csqtt28")
+        N._host_proc_ident = _ident
+        check("…nor when only its command line could not be read (its start time could)",
+              held.poll() is None and not ok and "host could not be read to confirm" in why and "TERM and KILL" not in why,
+              (ok, why, held.poll()))
     finally:
         for pr in kids:
             with __import__("contextlib").suppress(Exception):
                 pr.kill()
-        N.NODE_KIND, N.host_sh = _kind3, _hsh3
+        N.NODE_KIND, N.host_sh, N._host_proc_ident = _kind3, _hsh3, _ident
     b = box(); fl3 = []
     N._wdtt_hostproc_flush = lambda force=False: fl3.append(force)
     ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25")

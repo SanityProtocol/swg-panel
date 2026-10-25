@@ -23847,13 +23847,13 @@ def _csqtt_stop_foreign(iface, cfgdir):
         # process with that start time, checked in the hop that sends it: a number reused even mid-wait has another.
         # Whatever this finds (gone, reused, stopped), the read after the stop below is the answer.
         _fl, _st = _host_proc_ident(pid)
-        _unread = not _st                     # not even read: whatever the walk shows next, nothing was signalled
-        if _st and _it(_fl):
+        _sent = bool(_st and _it(_fl))        # unconfirmed (a read that failed, half or whole): nothing is signalled
+        if _sent:
             host_sh(_HOST_STARTTIME_SH + "s(){ [ \"$(st %d)\" = %s ]; }; "
                     "s || exit 0; kill -TERM %d 2>/dev/null; i=0; while [ $i -lt 30 ] && s; do sleep 0.15; i=$((i+1)); done; "
                     "s && kill -KILL %d 2>/dev/null; :" % (pid, shlex.quote(_st), pid, pid))
     else:
-        _unread = False
+        _sent = True
         with contextlib.suppress(Exception):
             os.kill(pid, signal.SIGTERM)
             for _ in range(30):
@@ -23872,7 +23872,7 @@ def _csqtt_stop_foreign(iface, cfgdir):
             # Another process on the same TUN and store, a moment after this one died: something restarts it. Say what,
             # so the operator can stop that — stopping the server again only cuts its clients off again.
             return False, "it " + _csqtt_came_back(back[0])
-        if back and _unread:
+        if not _sent:                         # whether the walk after it saw the server or could not run either
             return False, "the host could not be read to confirm pid %d is still that server before stopping it — tried again" % pid
         return False, "it is still running after TERM and KILL"   # never drop a TUN we cannot prove is unused
     _drop_tun()
