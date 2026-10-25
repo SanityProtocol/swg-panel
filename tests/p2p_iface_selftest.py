@@ -53,6 +53,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "no-p2pi":        ('            "p2pi": 1}', '            "_p2pi": 1}'),
     "no-automerge":   ('  set checked { typeof ip saddr; flags interval; auto-merge; elements', '  set checked { typeof ip saddr; flags interval; elements'),
     "guard-all":      ('        L.append("    ip saddr @flag jump gflag")', '        L.append("    jump gflag")'),
+    "held-local":     ('        L.append("    " + held[0])\n        L.append("    ct original packets > 4 return")', '        L.append("    ct original packets > 4 return")'),
     "gflag-skip":     ('        L.append("    ip saddr @flag jump gflag")\n', ''),
     "sig-ungrouped":  ('            L.append("    ip saddr @grouped meta l4proto { tcp, udp } jump sig")', '            L.append("    meta l4proto { tcp, udp } jump sig")'),
     "sig-local":      ('                L.append("    meta l4proto %s %s jump gsig" % (l4, m))', '                L.append("    meta l4proto %s %s fib saddr type != local jump gsig" % (l4, m))'),
@@ -201,8 +202,10 @@ def run_checks(src):
        and not any("@g_" in l for l in cls), "[4] cls reads @flag before any group (one jump to gmark per block, no @g_ lookup in cls)")
     ok(cls[2:4] == ["    meta nfproto ipv6 return", "    ip saddr != @checked return"], "[4] cls: the scope first — an unchecked or v6 packet pays one lookup (%s)" % cls[2:4])
     ok([l.strip() for l in gu[1:]] == ['oifname "lo" return', "ct direction reply return", "meta nfproto ipv6 return", "ip saddr @flag jump gflag",
+                                         "ip saddr . ip daddr . tcp sport . tcp dport @held4 counter name held drop",
                                          "ct original packets > 4 return", "ip saddr @grouped meta l4proto { tcp, udp } jump sig"],
-       "[4] guard: one set lookup per established v4 packet (@flag); @grouped only on packets 1-4; no held check (cls has it) (%s)" % gu[1:])
+       "[4] guard: @flag for every established v4 packet, @held4 for TCP (a local re-dial gdrop dropped stays dropped past packet 4, "
+       "verify F44); @grouped only on packets 1-4 (%s)" % gu[1:])
     ok(len(gf) == len(g) and any(l.strip().startswith('oifname != { "eth0" } ip saddr @g_d meta l4proto') and l.endswith("drop") for l in gf)
        and any(l.strip().startswith('oifname != { "swg_q" } ip saddr @g_r7005 meta l4proto') for l in gf),
        "[4] each group judged against its own devices, the device first (%s)" % gf)

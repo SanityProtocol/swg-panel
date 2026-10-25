@@ -8336,9 +8336,7 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
     if grp:
         # iface: only a group's own sources are judged here, each against its own devices. ONE set lookup per established
         # v4 packet (@flag; measured 2026-10-25: a group source paid 6 with a rule per group, direct pays 2) — a flagged
-        # source's groups are read in gflag, and @grouped only on packets 1-4. No held check: under iface only forwarded
-        # traffic is judged, and cls drops a held flow's every packet before it gets here. The node's own processes are not
-        # checked (`fib saddr type local`, asked only on a flagged or signature packet).
+        # source's groups are read in gflag, and @grouped only on packets 1-4; a TCP packet also reads @held4 (below).
         L.append("  chain gflag {")                         # the device first: a routed flow leaving by its own pays no set
         for g in grp:                                         # lookup here (S11 review F18)
             L.append("    %sip saddr @g_%s %s fib saddr type != local counter name dropped drop" % (goif(g), g["name"], _P2P_SHAPE))
@@ -8349,6 +8347,9 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
         L.append("    ct direction reply return")
         L.append("    meta nfproto ipv6 return")
         L.append("    ip saddr @flag jump gflag")
+        # ⚠️ THE HELD CHECK, for LOCAL senders (S11 verify F44): the relay's re-dial is judged here (sig), never in cls, so a
+        # handshake gdrop dropped came back as packet 5 and passed the packet gate below. TCP only (one lookup), as direct.
+        L.append("    " + held[0])
         L.append("    ct original packets > 4 return")
         if ih:
             L.append("    ip saddr @grouped meta l4proto { tcp, udp } jump sig")
@@ -13840,8 +13841,8 @@ def smart_status():
             "arr": 1,                             # runs `smart.arrivals` — the default list for traffic cascaded in (ROUTING-PEERS-MESH-PLAN §4.3)
             "caps_keep": 1,                       # keeps its caps for the categories a sync names in `cat_caps_keep` (_cat_caps_take)
             "allow": 1,                           # applies `smart.allow`, the Never-block list's names (_never_block_adjust)
-            "ports": 1,                           # renders an entry's `ports` (B.4) — the panel withholds port rules until it says so
-            "p2pi": 1}                            # runs smart.p2p {action: iface} — each interface's own torrent choice (IFACE-P2P-PICK)
+            "p2pi": 1,                            # runs smart.p2p {action: iface} — each interface's own torrent choice (IFACE-P2P-PICK)
+            "ports": 1}                           # renders an entry's `ports` (B.4) — the panel withholds port rules until it says so
     if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only) | error (its table
         _r = _P2P.get("route") or ""                            # was refused, `detail` says why), the mode in force, and under route
         if _r == "up" and _devexit_state(_P2P.get("route_dev") or "") != "up":   # whether its way out is up — the last pass's answer,
