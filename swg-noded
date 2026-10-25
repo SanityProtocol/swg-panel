@@ -10755,9 +10755,6 @@ def _exit_adopted(devexit, mine, managed=()):
         # its service recreated (or a flag that flipped) for a pass is no evidence its proxy came back, and dropping a dead
         # verdict there would route traffic the kill-switch is holding back into it (review F1)
         if _dev_link_state(dev) != "up":
-            st = _EXIT_HEALTH.get(dev)
-            if st:          # …but its windows restart: the time it spent down was not watched, so a single probe after it must
-                st.update(fail_since=None, fails=0, ok_since=None)   # not flip the verdict either way (verify F8)
             out.append((dev, None))
             continue
         st = _EXIT_HEALTH.get(dev)
@@ -11094,7 +11091,15 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             _hl = _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
             out[_s] = _exit_row(xid, dev, prov, rec, err, _blob_err, True, tr, _hl, _png)
         for dev, due in _ad:
-            if due:
+            if due is None:
+                # named but not up: its verdict is kept (F1), and its failure evidence keeps counting — a device that is not up
+                # carries nothing — but a RECOVERY is proven again from the moment it is back, never across the time it was
+                # gone (verify F8: one good probe after a blip brought a dead device back), and it is probed that moment
+                st = _EXIT_HEALTH.get(dev)
+                if st:
+                    st["ok_since"] = None
+                _EXIT_PROBED_AT.pop(dev, None)
+            elif due:
                 tr, _rch, _png = _pr.get(dev) or ({}, None, None)
                 _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
                 if (tr or {}).get("ip") or _rch is not None:   # a probe that answered nothing is no reason to wait a minute (F3)

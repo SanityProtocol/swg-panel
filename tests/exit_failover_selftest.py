@@ -102,7 +102,9 @@ PLANTS = {
     "--perturb-adopted-batch": ("+ [(d, {}) for d, due in _ad if due])", ")"),
     "--perturb-reach-tls": ("            t.do_handshake()\n            return True", "            return True"),
     "--perturb-blip": ("            out.append((dev, None))\n            continue", "            continue"),                    # F1
-    "--perturb-window": ("                st.update(fail_since=None, fails=0, ok_since=None)", "                pass"),         # verify F8
+    "--perturb-window": ('                    st["ok_since"] = None\n', "                    pass\n"),                                                   # verify F8
+    "--perturb-blipclock": ("                _EXIT_PROBED_AT.pop(dev, None)\n            elif due:", "            elif due:"),     # F8 card F1
+    "--perturb-blipfails": ('                    st["ok_since"] = None\n', '                    st.update(ok_since=None, fail_since=None, fails=0)\n'),  # F8 card F2
     "--perturb-nostamp": ('                if (tr or {}).get("ip") or _rch is not None:   # a probe that answered nothing', '                if True:   #'),  # F3
     "--perturb-snapall": ("        nt = None if d in mine or d in said else _exit_no_traffic(", "        nt = _exit_no_traffic("),  # F5
 }
@@ -619,6 +621,27 @@ try:
           N._devexit_state("tun9") == "dead" and (N._EXIT_HEALTH.get("tun9") or {}).get("ok_since") is not None
           and _clk[0] - N._EXIT_HEALTH["tun9"]["ok_since"] < N.EXIT_ALIVE_AFTER_S, N._EXIT_HEALTH.get("tun9"))
     _up9.discard("tun9"); pass9(); _up9.add("tun9")          # (a blip again: the recovery below is timed from scratch)
+    # F8 card F1/F2: a FAILING (not yet dead) device that blips keeps its failure count and is probed again the moment it is back
+    _saved9 = dict(N._EXIT_HEALTH["tun9"]) if "tun9" in N._EXIT_HEALTH else None
+    N._EXIT_HEALTH["tun9"] = {"dead": False, "fail_since": _clk[0] - 25, "fails": 2, "ok_since": None, "since": 0, "why": ""}
+    N._EXIT_PROBED_AT["tun9"] = _clk[0]
+    _up9.discard("tun9"); pass9(); _up9.add("tun9"); _probed9.clear()
+    pass9()
+    check("[9] a failing device that blips is probed again the moment it is back — F8 card F1", _probed9 == ["tun9"], _probed9)
+    check("[9] …and its failures kept counting across the blip, so it is judged dead (a flapping TUN cannot dodge the judge) — F8 card F2",
+          N._devexit_state("tun9") == "dead", N._EXIT_HEALTH.get("tun9"))
+    # …and so is a HEALTHY one: a TUN its service recreated is checked at once, not when its idle minute runs out
+    N._EXIT_HEALTH["tun9"] = {"dead": False, "fail_since": None, "fails": 0, "ok_since": _clk[0] - 100, "since": 0, "why": ""}
+    N._EXIT_PROBED_AT["tun9"] = _clk[0]
+    _tr9["v"] = dict(OK)
+    _up9.discard("tun9"); pass9(); _up9.add("tun9"); _probed9.clear()
+    pass9()
+    check("[9] a healthy device that blips is probed the moment it is back, not when its idle minute ends — F8 card F1",
+          _probed9 == ["tun9"], _probed9)
+    _tr9["v"] = dict(BAD)
+    if _saved9 is not None:
+        N._EXIT_HEALTH["tun9"] = _saved9
+    _up9.discard("tun9"); pass9(); _up9.add("tun9")
     _probed9.clear(); _tr9["v"] = dict(OK)
     _n = 0
     while N._devexit_state("tun9") == "dead" and _n < 20:
