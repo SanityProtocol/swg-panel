@@ -662,7 +662,8 @@ rm_log_ns(){   # <namespace> <unit or unit prefix>...
 _swg_left(){ local f
   if $DRYRUN; then [ "${#DID_KEEP[@]}" -gt 0 ]; return; fi   # a dry run removed nothing: judged by its answers
   for f in "$SD"/swg-panel-server.service "$SD"/swg-noded.service "$SD"/swg-sub.service "$SD"/swg-netctl*.service \
-           "$SD"/swg-update.service "$SD"/swg-relay@.service "$SD"/vk-turn-proxy-*.service "$SD"/swg-wdtt-*.service "$SD"/swg-csqtt-*.service; do
+           "$SD"/swg-update.service "$SD"/swg-relay@.service "$SD"/vk-turn-proxy-*.service "$SD"/swg-wdtt-*.service "$SD"/swg-csqtt-*.service \
+           /run/systemd/transient/swg-s5x-*.service; do
     [ -e "$f" ] && return 0; done
   docker_running swg-panel || docker_running swg-node; }
 # ⚠️ AN /etc/swg-panel HOLDING ONLY THE RELAY'S DIR, OR NOTHING, IS NO DATA. swg-noded makes /etc/swg-panel/relay on a node
@@ -722,6 +723,11 @@ rm_node(){
   rmrf $SD/"swg-relay@.service" $SD/swg-relay.slice /etc/swg-panel/relay
   rmrf /run/swg-relay-*.sock   # its status sockets: outside the unit's RuntimeDirectory, unlinked only at a relay's next start
   if [ -e $SD/swg-noded.service ]; then run systemctl disable --now swg-noded; fi
+  # The SOCKS5 exits' tunnels (hev-socks5-tunnel, swg-noded's own transient units in swg-exit.slice — SOCKS5-EXIT-PLAN
+  # §6.4): after swg-noded, which would make them again. Their binary and configs go with /var/lib/swg-noded below; the
+  # slice's CPU cap was --runtime and dies with it. (A Docker node's hev is a child of its container.)
+  run sh -c 'for u in $(systemctl list-units --all --plain --no-legend "swg-s5x-*.service" 2>/dev/null | awk "{print \$1}"); do systemctl stop "$u" >/dev/null 2>&1; systemctl reset-failed "$u" >/dev/null 2>&1; done; true'
+  run systemctl stop swg-exit.slice 2>/dev/null || true
   docker_running swg-node || rm_smartdns_redirect   # its dnsmasq just went with it — see rm_smartdns_redirect
   run systemctl unmask dnsmasq 2>/dev/null || true   # install masked the distro dnsmasq (node ran its own); restore it
   rmrf $SD/swg-noded.service; _node_dropins_away; run systemctl daemon-reload

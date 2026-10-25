@@ -95,7 +95,7 @@ PLANTS = {
     # [9] — Part A
     "--perturb-adopted-nic": ("        if _dev_is_ether(dev):\n            continue\n", ""),
     "--perturb-adopted-mesh": ('or dev in mine or dev in managed or dev.startswith("swg_"):', 'or dev in mine:'),
-    "--perturb-adopted-idle": ("or now - _EXIT_PROBED_AT.get(dev, now - EXIT_PROBE_IDLE_S) >= EXIT_PROBE_IDLE_S))", "or True))"),
+    "--perturb-adopted-idle": ("or now - _EXIT_PROBED_AT.get(dev, now - EXIT_PROBE_IDLE_S) >= EXIT_PROBE_IDLE_S)", "or True)"),
     "--perturb-adopted-pop": ("            _EXIT_HEALTH.pop(k, None); _EXIT_PROBED_AT.pop(k, None)", "            pass"),
     "--perturb-reap-pop": ("                    _m.pop(od, None)", "                    pass"),
     "--perturb-adopted-snap": ("        out.append(dict(e, no_traffic=nt) if nt else e)", "        out.append(e)"),

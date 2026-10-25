@@ -3441,6 +3441,9 @@ export const cardGateway = (node, name) => String((((node || {}).ether_gws) || {
 /** An imported exit's KIND, by name — every test of it compares to a name, never "not profile ⇒ WARP" (docs/SOCKS5-EXIT-PLAN.md
  *  T6): a kind this panel does not know is neither, and a later kind is added by name. Empty is a legacy WARP account. */
 export const exitProv = x => String((x || {}).provider || "warp");
+/** The kinds this panel can make, by name — a TWIN of the panel's EXIT_PROVIDERS and swg-noded's EXIT_KINDS
+ *  (tests/cross_language_twins_selftest.py, s9a F28). */
+export const EXIT_KINDS = ["warp", "profile", "socks5"];
 /** A DIAL-IN exit (docs/LISTEN-EXIT-PLAN.md §2): a pasted SERVER config — a ListenPort, no Endpoint — which the upstream (a
  *  router behind NAT) dials. Derived from the stored profile, as the panel and the node derive it; nothing else marks it. */
 export const exitIsDialin = x => exitProv(x) === "profile" && !!((x || {}).profile || {}).listen_port
@@ -3463,6 +3466,10 @@ export function exitHealth(x, node) {
   const why = String(ex.why_not || "").trim();
   // The panel's own refusal outranks anything the node says: a device we will never lower cannot be
   // "waiting", and telling the operator to wait for something that is never coming is the worse lie.
+  // A SOCKS5 exit on a node older than the kind (s9a F17): the panel does not send it there — an older node would register a
+  // WARP account for it — so the row says what to do, as a dial-in exit on an older node does.
+  if (why === "kind_unsupported") return { state: "unsupported", tone: "warn", icon: "warn", dot: "unknown",
+    why: T("This node needs the 1.8.11 update for SOCKS5 exits.") };
   if (why) return { state: "refused", tone: "bad", dot: "bad", why: T("Refused: {v1}", { v1: why }) };
   // ⚠️ A NODE OLDER THAN THE FEATURE ITSELF, which no test below can catch because it has nothing to read.
   // Such a node reports no exits at all, so `l` is empty for ever — and the tests then resolved to PROGRESS:
@@ -3758,7 +3765,8 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   const imp = exits.filter(x => (x.producer || "adopted") === "imported");
   const warp = imp.filter(x => exitProv(x) === "warp").map(x => mk(x, exitLabel(x, node)));
   const prof = imp.filter(x => exitProv(x) === "profile").map(x => mk(x, exitLabel(x, node)));
-  const other = imp.filter(x => !["warp", "profile"].includes(exitProv(x))).map(x => mk(x, exitLabel(x, node)));
+  const socks = imp.filter(x => exitProv(x) === "socks5").map(x => mk(x, exitLabel(x, node)));
+  const other = imp.filter(x => !EXIT_KINDS.includes(exitProv(x))).map(x => mk(x, exitLabel(x, node)));
   const ext = exits.filter(x => (x.producer || "adopted") !== "imported")
     .map(x => mk({ ...x, _ext: true }, exitLabel(x, node)));
   // ⚠️ AND EVERY DEVICE THE NODE ALREADY HAS. An exit record is the panel's bookkeeping, not the world:
@@ -3801,6 +3809,7 @@ export function exitOptionGroups(node, { prefix = "", onToggle = null, custom = 
   return [
     ...(warp.length ? [{ group: T("Exit via WARP"), items: warp }] : []),
     ...(prof.length ? [{ group: T("Exit via a custom config"), items: prof }] : []),
+    ...(socks.length ? [{ group: T("Exit via a SOCKS5 proxy"), items: socks }] : []),
     ...(other.length ? [{ group: T("Other exits"), items: other }] : []),
     // "an external interface" stopped being true the moment a NIC could be one — the node's own card is
     // not external to it. The group is what traffic LEAVES BY, whichever kind of device that is.
@@ -3819,6 +3828,7 @@ export const exitIsPlus = ex => !!(String((ex || {}).licence || "").trim()
  *    imported · warp            WARP exit          (a registered Cloudflare account)
  *    imported · warp · licence  WARP+ exit         (paid — the whole point of the row is knowing which)
  *    imported · profile         Custom exit        (a WireGuard profile the operator pasted)
+ *    imported · socks5          SOCKS5 exit        (a proxy the node runs a tunnel to)
  *    adopted  · node reports it Discovered         (a device already on the box)
  *    adopted  · it does not     Custom             (a name the operator typed ahead of the device)
  *
@@ -3829,7 +3839,8 @@ export function exitTypeLabel(ex, node) {
   const x = ex || {};
   if ((x.producer || "adopted") === "imported")
     return exitProv(x) === "profile" ? (exitIsDialin(x) ? T("Dial-in exit") : T("Custom exit"))
-      : exitProv(x) === "warp" ? (exitIsPlus(x) ? T("WARP+ exit") : T("WARP exit")) : exitProv(x);
+      : exitProv(x) === "warp" ? (exitIsPlus(x) ? T("WARP+ exit") : T("WARP exit"))
+      : exitProv(x) === "socks5" ? T("SOCKS5 exit") : exitProv(x);
   // ⚠️ A NETWORK CARD SAYS SO, and this is the whole of decision B1 in one line. `Direct — source from
   // eth2` (a NAT pin) and an eth2 EXIT (a route) can now both be on screen at once, and they do completely
   // different things. Naming each by WHAT IT CHANGES is what keeps them apart: this half is the route, so

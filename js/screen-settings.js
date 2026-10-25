@@ -2295,7 +2295,10 @@ export function PanelSettingsScreen() {
       // profile that is missing its key and re-submit it as a replacement. Empty box = keep what is stored.
       ...(x.producer === "imported" ? { provider: x.provider || "warp", licence: x.licence || "",
                                         dial_src: x.dial_src || "",
-                                        profile: x.profile || null, profile_text: "" } : {}) })) });
+                                        profile: x.profile || null, profile_text: "",
+                                        // a SOCKS exit's address as the browser has it (no password — T7); the paste box and
+                                        // the password field are empty = keep what is stored, as `profile_text` is
+                                        ...(x.socks ? { socks: x.socks, socks_text: "", socks_pass: "" } : {}) } : {}) })) });
   // (no mesh_awg: a link's AWG params are set on the link's own sheet, not per node — plan §8 round 13)
   const [nodeEdits, setNodeEdits] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [orig, setOrig] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
@@ -4171,7 +4174,7 @@ const exitInsideAddr = (ex, live) => String(((live || (ex || {}).live || {}).add
 // A dial-in exit with no title is named by its port, so two untitled ones never read alike in a sheet or a note.
 const exitDefaultTitle = ex => exitProv(ex) === "profile" ? ((ex || {}).dialin || exitIsDialin(ex)
     ? (exitIsDialin(ex) ? T("Dial-in exit :{v1}", { v1: ex.profile.listen_port }) : T("Dial-in exit")) : T("Custom exit"))
-  : exitProv(ex) === "warp" ? T("WARP exit") : exitProv(ex);
+  : exitProv(ex) === "warp" ? T("WARP exit") : exitProv(ex) === "socks5" ? T("SOCKS5 exit") : exitProv(ex);
 
 /** The badge for an imported exit: [class, label]. A WARP account with a licence on it is WARP+ — the
  *  operator paid for it and the whole point of the row is knowing which ones did. Taken from the LICENCE
@@ -4197,6 +4200,7 @@ const exitBadgeOf = (ex, live) => exitProv(ex) === "profile"
   ? ((live || {}).awg && awgDict3(((ex || {}).profile || {}).awg)
       ? ["exawg exawg3", T("val|Custom"), T("AmneziaWG 3.1")]   // i18n-keys: the first of each pair is a CSS class
       : [(live || {}).awg ? "exawg" : "exwg", T("val|Custom")])
+  : exitProv(ex) === "socks5" ? ["exsocks", T("val|SOCKS5")]   // i18n-keys: the first is a CSS class — a userspace path, the relay's violet
   : exitProv(ex) !== "warp" ? ["exwg", exitProv(ex)]
   : (String((ex || {}).licence || "").trim() || /plus/.test(((live || {}).account_type) || ""))
     ? ["warp plus", badgeLabel(T("val|WARP+"))]   // i18n-keys: the first half of each pair is a CSS class, not display text
@@ -4470,6 +4474,102 @@ function DialinGenSheet({ node, onCreate, onPaste }) {
   <//>`;
 }
 
+/* ── A SOCKS5 EXIT (docs/SOCKS5-EXIT-PLAN.md §6.9) ──────────────────────────────────────────────────────────────────────────
+   One paste field for the proxy, the forms proxy dashboards actually show, and a password field that is write-only: the
+   panel never sends a stored password back, so an existing exit shows it as "unchanged" and keeps it unless one is typed.
+   Test runs the same check the node runs at bring-up — FROM THE NODE, before or without a save — which is what it adds over
+   "save and look at the row": checking a new password on an exit people already depend on. */
+
+/** The address a stored SOCKS exit shows in its paste field — never its password (the panel does not have it to show). */
+const socksText = ex => { const s = (ex || {}).socks || {};
+  return s.host ? (s.user ? s.user + "@" : "") + (/:/.test(s.host) ? "[" + s.host + "]" : s.host) + ":" + s.port : ""; };
+
+/** What a proxy check found, in words — the node's codes (`_socks_check`), one sentence each. */
+export const socksWhy = (code, node) => ({
+  unreachable: T("The proxy can't be reached from this node."),
+  refused: T("The proxy refused the connection — is the port right?"),
+  timeout: T("The proxy didn't answer in time."),
+  not_socks5: T("That address doesn't speak SOCKS5."),
+  auth_required: T("The proxy wants a login, and none is set."),
+  auth_failed: T("The proxy refused the login — check the user and password."),
+  not_allowed: T("The proxy refused this node's address. Some providers make you allow-list the server's IP: {v1}.",
+                 { v1: ((node || {}).ips || [])[0] || T("this node's public address") }),
+  connect_failed: T("The proxy logged us in but couldn't reach the internet."),
+  expired: T("The node didn't answer the test in time — is it online?"),
+})[code] || "";
+
+/** One proxy check, as lines: [tone, text]. Shared by the Test result and the stored exit's last check. */
+export const socksSays = (r, node) => {
+  if (!r) return [];
+  if (r.why) return [["bad", socksWhy(r.why, node) || r.why]];
+  const out = [["ok", r.egress_ip
+    ? (r.loc ? T("Logged in. Sites see {v1} ({v2}).", { v1: r.egress_ip, v2: r.loc }) : T("Logged in. Sites see {v1}.", { v1: r.egress_ip }))
+    : T("Logged in.")]];
+  if (r.udp === true) out.push(["ok", T("UDP is carried — calls and games work through this exit.")]);
+  else if (r.udp === false) out.push(["warn", T("UDP is not carried — calls and games won't work through this exit. Other traffic is fine: QUIC falls back to TCP at once.")]);
+  return out;
+};
+
+function SocksExitFields({ node, ex, isNew, sTxt, setSTxt, sPass, setSPass, dirtyRef }) {
+  const st = (ex && ex.socks) || {};
+  const live = (((node.exits || []).find(x => String(x.id) === String(ex.id)) || {}).live) || {};
+  const [test, setTest] = useState(null);
+  const [tmsg, setTmsg] = useState("");
+  const pending = !!test && test.state === "pending";
+  useEffect(() => {                              // the answer rides a sync or two; the panel gives up on it at 45 s
+    if (!pending) return;
+    let ok = true, n = 0;
+    const h = setInterval(async () => {
+      if (++n > 40) { clearInterval(h); return; }
+      try {
+        const r = await api.exitTest({ node: node.id, id: test.id });
+        if (ok && r && r.ok) setTest(r.data);
+      } catch (e) { /* the next tick asks again */ }
+    }, 1500);
+    return () => { ok = false; clearInterval(h); };
+  }, [pending, test && test.id]);
+  const run = async () => {
+    setTmsg(""); setTest(null);
+    try {
+      const r = await api.exitTest({ node: node.id, exit_id: isNew ? "" : ex.id, socks_text: sTxt.trim(),
+                                     socks_pass: sPass || (st.has_pass ? Store.exitPassKeep : "") });
+      if (r && r.ok) return setTest(r.data);
+      setTmsg(r && r.code === "busy" ? T("A test is already running on this node — try again in a moment.")
+            : r && r.code === "offline" ? T("This node isn't reporting, so it can't run the test.")
+            : srvText(r) || T("Couldn't start the test."));
+    } catch (e) { setTmsg(T("Couldn't start the test.")); }
+  };
+  const says = test && !pending ? socksSays(test.result, node) : [];
+  const last = !test && !isNew ? socksSays(live.check, node) : [];
+  return html`<div class="s5x">
+    <div class="field"><label>${T("Proxy address")}</label>
+      <input class="mono" value=${sTxt} spellcheck="false" autocomplete="off" data-enter="self"
+        placeholder=${T("host:port:user:password")}
+        onInput=${e => { dirtyRef.current = true; setSTxt(e.target.value); }}
+        onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); if (!pending && (sTxt.trim() || !isNew)) run(); } }}/>
+      <div class="hint">${T("Paste it the way your provider shows it: host:port, host:port:user:password, user:password@host:port, or socks5://user:password@host:port. SOCKS5 only — an HTTP proxy address is refused.")}</div></div>
+    <div class="row2">
+      <div class="field"><label>${T("Password")}</label>
+        <input type="password" value=${sPass} autocomplete="new-password"
+          placeholder=${st.has_pass ? T("unchanged") : T("none — or in the address above")}
+          onInput=${e => { dirtyRef.current = true; setSPass(e.target.value); }}/></div>
+      <div class="field s5x-test"><label> </label>
+        <button class="btn btn-ghost" disabled=${pending || (!sTxt.trim() && isNew)} onClick=${run}>
+          ${pending ? T("Testing from the node…") : T("Test")}</button></div>
+    </div>
+    ${tmsg ? html`<div class="s5x-says"><div class="bad">${tmsg}</div></div>` : null}
+    ${says.length || last.length ? html`<div class="s5x-says">
+      ${!says.length ? html`<div class="faint">${T("Last check by the node:")}</div>` : null}
+      ${(says.length ? says : last).map(([tone, t]) => html`<div class=${tone}>${t}</div>`)}</div>` : null}
+    <ul class="hint s5x-notes">
+      <li>${T("Names are looked up by the proxy, not here: clients on this exit get stand-in addresses (198.19.x.x) that the proxy turns back into the name — so sites see a location that matches the exit. An app that keeps a stand-in address longer than a second can fail to connect once, after the exit restarts.")}</li>
+      <li>${T("A DNS server set for an interface that leaves by this exit is not used — the proxy resolves.")}</li>
+      <li>${T("A residential proxy may change its exit IP between checks — that is the provider, not a fault.")}</li>
+      ${node.kind === "docker" ? html`<li>${T("This is a Docker node: the SOCKS5 tunnel has no CPU cap of its own — the container's limit is its cap.")}</li>` : null}
+    </ul>
+  </div>`;
+}
+
 function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }) {
   const [v, setV] = useState(() => ({ ...ex, profile_text: "" }));
   const [txt, setTxt] = useState(() => profileText(ex));
@@ -4479,7 +4579,10 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const dirtyRef = useRef(false);
-  const isProf = exitProv(v) === "profile", isWarp = exitProv(v) === "warp";
+  const isProf = exitProv(v) === "profile", isWarp = exitProv(v) === "warp", isSocks = exitProv(v) === "socks5";
+  const [sTxt, setSTxt] = useState(() => socksText(ex));
+  const [sTxt0] = useState(() => socksText(ex));
+  const [sPass, setSPass] = useState("");
   // a dial-in exit — a new one (the draft says so) or a stored one (its profile does) — dials nothing: no "Connect from"
   const isDialin = !!v.dialin || exitIsDialin(ex);
   const set = patch => { dirtyRef.current = true; setV(x => ({ ...x, ...patch })); };
@@ -4500,6 +4603,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
   // The three things this sheet can edit, plus the config box. A NEW exit is always dirty: there is nothing
   // to compare against and the operator has to be able to press Save.
   const dirty = isNew || txt !== txt0 || Object.values(dinBlank).some(Boolean)   // a "-" cleared changes no line yet (F12)
+    || (isSocks && (sTxt !== sTxt0 || !!sPass))
     || ["label", "dial_src", "licence"].some(k => String(v[k] ?? "") !== String(ex[k] ?? ""));
   const save = async () => {
     setBusy(true); setMsg("");
@@ -4508,6 +4612,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
     // A NEW profile has nothing stored to fall back on, so an empty box is refused here rather than
     // stored as an imported exit with no profile — which the node cannot bring up.
     if (isProf && isNew && !txt.trim()) { setBusy(false); return setMsg(T("Paste the profile before saving.")); }
+    if (isSocks && isNew && !sTxt.trim()) { setBusy(false); return setMsg(T("Paste the proxy's address before saving.")); }
     // a dial-in exit's cleared cells are drawn now, a cleared MTU is 1280 and a cleared port is the one it has (S9e)
     let out = txt;
     if (isDialin && !isNew) {
@@ -4517,7 +4622,10 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
       if (confIfLine(out, "ListenPort") === null && dinPort0) out = confIfSet(out, "ListenPort", dinPort0);
     }
     const body = { ...v, ...(isProf && out !== profileText(ex) ? { profile_text: out } : { profile_text: "" }),
-                   ...(isDialin ? { dial_src: "" } : {}) };
+                   ...(isDialin || isSocks ? { dial_src: "" } : {}),
+                   // the proxy: the paste only when it changed, the password only when one was typed (else "keep")
+                   ...(isSocks ? { socks_text: sTxt !== sTxt0 ? sTxt.trim() : "",
+                                   socks_pass: sPass || (((ex || {}).socks || {}).has_pass ? Store.exitPassKeep : "") } : {}) };
     const ok = await onSave(body);
     setBusy(false);
     if (ok !== true) return setMsg(typeof ok === "string" ? ok : T("Couldn't save"));
@@ -4559,7 +4667,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
         <div class="field dinmtu"><label>${T("MTU")}</label>
           <input inputmode="numeric" value=${confIfLine(txt, "MTU") ?? ""} placeholder="1280"
             onInput=${e => dinLine("MTU", e.target.value)}/></div>` : null}
-      ${isDialin ? null : html`<div class="field"><label>${T("Connect from")}</label>
+      ${isDialin || isSocks ? null : html`<div class="field"><label>${T("Connect from")}</label>
         <${NodeIpPick} ips=${node.ips || []} value=${v.dial_src || ""} onChange=${ip => set({ dial_src: ip })} auto=${T("val|Auto")}/></div>`}
     </div>
     ${isDialin && !isNew ? html`<${DialinParams} edit proto=${dinProto} onAwg=${dinAwgSet} mtu=${confIfLine(txt, "MTU") || ""}
@@ -4576,6 +4684,8 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
           ${isDialin && node.kind === "docker" && node.net_mode === "bridge"
             ? html`<div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>${Trich("This docker node uses `bridge` networking — publish the exit's UDP port in the node's `docker-compose.yml` ({ports}) and `up -d`, or the router can't reach it.", { ports: ((q => 'ports: "' + q + ":" + q + '/udp"')((/^\s*ListenPort\s*=\s*(\d+)/mi.exec(txt) || [])[1] || (ex.profile || {}).listen_port || "PORT")) })}</span></div>`
             : null}</div>`
+      : isSocks ? html`<${SocksExitFields} node=${node} ex=${ex} isNew=${isNew} sTxt=${sTxt} setSTxt=${setSTxt}
+          sPass=${sPass} setSPass=${setSPass} dirtyRef=${dirtyRef}/>`
       : !isWarp ? html`<p class="hint">${T("This panel does not know this kind of exit. It is kept as it is; you can switch it off or remove it.")}</p>`
       : html`<div class="field"><label>${T("WARP+ licence key")}</label>
           <input value=${v.licence || ""} spellcheck="false" autocomplete="off"
@@ -4726,7 +4836,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     // unhealthy. So the sheet opens on an UNSAVED record and the save is what appends it. A WARP account
     // is the opposite — there is nothing to type, so it is written straight away and starts registering.
     if (p2.dialin) return openDialin(rec);
-    if (p2.provider === "profile") return openEdit(rec, true);
+    if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);
     write([...exits, rec]);
   };
   const del = ex => openConfirm({
@@ -4735,6 +4845,8 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
       ? T("{v1} is removed from this node and its tunnel comes down. The profile and its key are deleted from the panel — you would have to paste it again.", { v1: ex.label || ex.device })
       : exitProv(ex) === "warp"
       ? T("{v1} is removed from this node and its tunnel comes down. The Cloudflare account is deleted with it: re-adding one registers a NEW account with a different exit IP.", { v1: ex.label || ex.device })
+      : exitProv(ex) === "socks5"
+      ? T("{v1} is removed from this node and its tunnel to the proxy comes down. The proxy's address and password are deleted from the panel.", { v1: ex.label || ex.device })
       : T("{v1} is removed from this node and its tunnel comes down.", { v1: ex.label || ex.device }),
     onConfirm: () => write(exits.filter(x => String(x.id) !== String(ex.id))),
   });
@@ -4755,7 +4867,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
           config. Said here, where the operator decides, rather than nowhere. */""}
     ${/* The node's name is in the section header two lines up, and where devices live is a fact about a
           different screen. What is left is the one thing the screen has to say. */""}
-    <p class="hint" style="margin:0 0 14px">${T("Cloudflare WARP accounts, WireGuard profiles from anywhere else, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.")}</p>
+    <p class="hint" style="margin:0 0 14px">${T("Cloudflare WARP accounts, WireGuard profiles from anywhere else, SOCKS5 proxies, and dial-in exits — an upstream such as a router behind NAT that connects to this node. Websites see the exit rather than this node.")}</p>
     ${exits.length ? html`<div class="exgrid g8">
       <div class="exg-r"><div class="exg-h">${T("Title")}</div>
       <div class="exg-h">${T("Device")}</div>
@@ -4778,8 +4890,12 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
             ${dot(ex)}<span class="mono exg-dev">${ex.device || "—"}</span></div>
           <div class="exg-c clk" onClick=${() => openEdit(ex)}>
             ${(() => { const [bc, bl, bk] = exitBadge(ex, l); return html`<span class=${"exg-t " + bc} title=${bk || ""}>${bl}</span>`; })()}</div>
-          <div class="exg-c clk mono" onClick=${() => openEdit(ex)}>
-            ${(l.trace || {}).ip || html`<span class="faint">—</span>`}</div>
+          <div class="exg-c clk mono" onClick=${() => openEdit(ex)}
+            title=${exitProv(ex) === "socks5" ? (l.udp_ok === true ? T("UDP is carried — calls and games work through this exit.")
+              : l.udp_ok === false ? T("UDP is not carried — calls and games won't work through this exit. Other traffic is fine: QUIC falls back to TCP at once.")
+              : T("UDP: not checked yet")) : ""}>
+            ${(l.trace || {}).ip || html`<span class="faint">—</span>`}${exitProv(ex) === "socks5" && (l.trace || {}).loc
+              ? html` <span class="faint">${l.trace.loc}</span>` : null}</div>
           ${/* ⚠️ THE HOP TO THE EXIT'S OWN SERVER, not a request made through it. This first showed the time
                 of a full HTTPS request to cloudflare.com via the tunnel, which for a Moscow exit one hop
                 away read 179 ms — because ~169 ms of that is what a TLS handshake to Cloudflare costs from
@@ -4829,7 +4945,7 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
     </div>`
       : null}
     ${exits.length ? null
-      : html`<p class="hint" style="margin:0 0 12px">${T("No exits on this node yet. Register a free Cloudflare account, paste a WireGuard profile from somewhere else, or add a dial-in exit for an upstream that connects to this node.")}</p>`}
+      : html`<p class="hint" style="margin:0 0 12px">${T("No exits on this node yet. Register a free Cloudflare account, paste a WireGuard profile from somewhere else, add a SOCKS5 proxy, or add a dial-in exit for an upstream that connects to this node.")}</p>`}
     ${/* TWO WAYS TO GET ONE, offered as two actions rather than one button and a provider dropdown: the
           choice is what the operator is actually deciding, and "Register" has to be one click for the path
           that needs no input at all. wgcf is never named — it is plumbing. */""}
@@ -4840,6 +4956,8 @@ export function NodeExitsForm({ node, vals, set, onBlock, goSection, escrowOn, s
         <${Ic} i="plus"/> ${T("Paste a custom config")}</button>
       <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "profile", profile_text: "", dialin: true })}>
         <${Ic} i="plus"/> ${T("Add a dial-in exit")}</button>
+      <button class="btn btn-ghost btn-mini" onClick=${() => add({ producer: "imported", provider: "socks5", socks_text: "", socks_pass: "" })}>
+        <${Ic} i="plus"/> ${T("Add a SOCKS5 proxy")}</button>
     </div>
   </div>`;
 }

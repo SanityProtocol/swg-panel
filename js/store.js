@@ -196,6 +196,7 @@ export const api = {
   userNetworks(b) { return this.post("/api/users/networks", b); },   // {user_id} — what that user's devices can reach; on demand, never per poll
   peerNetworkProbe(b) { return this.post("/api/peers/networks/probe", b); },   // {peer_id, node, addr, port?} arms one reachability test from that node · {peer_id, id} reads it · {peer_id} lists this peer's
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
+  exitTest(b) { return this.post("/api/exit/test", b); },   // {node, exit_id?, socks_text, socks_pass} tests a SOCKS5 proxy from that node · {node, id} reads it
   peerUpdateTarget(b) { return this.post("/api/peers/update-target", b); },
   peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },
   peerSetRole(b) { return this.post("/api/peers/set-role", b); },   // role: "primary" | "backup" | "" (clear)
@@ -318,6 +319,7 @@ export const Store = {
     // two ends can never disagree about the exact string — it is what says "keep the key you already hold".
     this.exitKeyKeep = d.exit_key_keep || "";
     this.exitPskKeep = d.exit_psk_keep || "";   // the same sentinel trick for the peer's preshared key
+    this.exitPassKeep = d.exit_pass_keep || "";   // …and for a SOCKS5 exit's password, which the browser never sees
     this.storeConfigs = this.storeMode !== "off";
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};

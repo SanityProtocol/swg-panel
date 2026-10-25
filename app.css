@@ -2701,6 +2701,15 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 .exg-t.exwg{background:color-mix(in srgb,var(--online) 15%,transparent);color:var(--online)}
 .exg-t.exawg{background:color-mix(in srgb,var(--brand) 16%,transparent);color:var(--brand)}
 .exg-t.exawg3{background:color-mix(in srgb,var(--awg3) 15%,transparent);color:var(--awg3)}   /* an AmneziaWG 3.1 profile exit — the 3.1 interface colour */
+.exg-t.exsocks{background:color-mix(in srgb,var(--relay) 15%,transparent);color:var(--relay)}   /* a SOCKS5 exit — a userspace path, the relay's violet */
+/* the SOCKS5 exit sheet: the Test button sits on the password's line, its answer as plain toned lines below */
+.s5x .s5x-test{align-self:end}
+.s5x .s5x-test .btn{width:100%}
+.s5x-says{margin:2px 0 12px;display:grid;gap:4px;font-size:13px}
+.s5x-says .ok{color:var(--online)}
+.s5x-says .warn{color:var(--pending)}
+.s5x-says .bad{color:var(--fault)}
+.s5x-notes{margin:4px 0 0;padding-left:18px;display:grid;gap:4px}
 /* Not a type — a state, and the only one that means "this row is not real yet". Amber, because it is the
    colour the rest of the panel uses for "not settled". */
 .exg-t.unsaved{background:color-mix(in srgb,var(--fault) 16%,transparent);color:var(--fault)}

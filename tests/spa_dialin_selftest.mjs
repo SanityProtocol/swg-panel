@@ -160,14 +160,14 @@ const dout = routeFns.exitHealth({ ...OUT, live: { device: "wgx-aabbccdd", up: t
 check("a dial-out exit with no handshake keeps its own advice", dout.state === "nohandshake", dout);
 
 console.log("\n[3] every exit kind by name");
-const odd = { id: "11223344", producer: "imported", provider: "socks5", device: "wgx-11223344", enabled: true };
+const odd = { id: "11223344", producer: "imported", provider: "nope5", device: "wgx-11223344", enabled: true };
 const groups = routeFns.exitOptionGroups({ exits: [odd, { ...DIN }] }, {});
 const flat = groups.flatMap(g => (g.items || []).map(i => [g.group, String(i.label || "")]));
-check("an unknown kind is in no WARP group", !flat.some(([g, l]) => /WARP/.test(g) && /11223344|socks5/.test(l)), flat);
-check("…but in a group of its own, so a stored choice of it still shows", flat.some(([g, l]) => g === "Other exits" && /socks5/.test(l)), flat);
+check("an unknown kind is in no WARP group", !flat.some(([g, l]) => /WARP/.test(g) && /11223344|nope5/.test(l)), flat);
+check("…but in a group of its own, so a stored choice of it still shows", flat.some(([g, l]) => g === "Other exits" && /nope5/.test(l)), flat);
 check("a dial-in exit is offered as a custom config", flat.some(([g]) => /custom config/.test(g)), flat);
 check("…named a dial-in exit", routeFns.exitTypeLabel(DIN) === "Dial-in exit", routeFns.exitTypeLabel(DIN));
-check("an unknown kind is labelled by its own name, never WARP", routeFns.exitTypeLabel(odd) === "socks5", routeFns.exitTypeLabel(odd));
+check("an unknown kind is labelled by its own name, never WARP", routeFns.exitTypeLabel(odd) === "nope5", routeFns.exitTypeLabel(odd));
 const MD = await import(pathToFileURL(path.join(ROOT, "js", "model.js")).href);
 Store.nodes = [{ id: "n9", name: "n9", exits: [DIN] }];
 Store.stats = { ...(Store.stats || {}), n9: { interfaces: {} } };

@@ -2088,7 +2088,8 @@ def _turn_loop_forget(svc):
     _TURN_RUN["at"] = 0.0
 
 
-_NODE_ADDR_SKIP = ("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")   # tunnels + bridges, not cards
+# `s5x`: a SOCKS5 exit's own TUN (T14) — never an operator's device in a picker, and its 198.18.0.1 never one of this node's IPs
+_NODE_ADDR_SKIP = ("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel", "s5x")   # tunnels + bridges, not cards
 
 
 def _node_addrs():
@@ -2657,9 +2658,11 @@ def _devexit_sig(cascade):
     # device exits, which is every node today.
     # `_devexit_state`: a tunnel judged dead (or recovered) is a routing change with the device untouched, so it
     # must move this signature the same pass — otherwise the fail-over waits for the 60 s safety sweep.
+    # …and a SOCKS exit's UDP flag: the reject and the DNS unmark follow it, and it is this node's own fact, never in the
+    # reply — without it a flip would wait for the 60 s sweep (§12.2 item 6)
     return sorted((str((e or {}).get("dev") or ""), _devexit_state(str((e or {}).get("dev") or "")),
                    _dev_gateway(str((e or {}).get("dev") or "")))
-                  for e in ((cascade or {}).get("devexit") or []))
+                  for e in ((cascade or {}).get("devexit") or [])) + sorted((_EXITS.get("socks") or {}).items())
 
 
 def _dev_is_ether(dev):
@@ -7104,9 +7107,79 @@ def _smart_dns_redirect(subnets, res, nets=()):
     — a RETURN below a DNAT exempts nothing — so RETURNs are inserted at the top, DNATs appended at the bottom, and a
     RETURN found below one of our DNATs is deleted (by position) and re-inserted in the same pass.
     ⚠️ A client whose DNS server is inside a carried network skips Force DNS for every lookup; the panel says so (F5)."""
-    want = {(S, proto) for S in subnets for proto in ("udp", "tcp")}
+    if subnets and not _route_localnet_ok():
+        # Re-assert every cycle it's found off — a container/host restart resets the sysctl while our DNAT rules
+        # persist, silently blackholing client DNS. Idempotent where already on; a no-op where /proc/sys is
+        # read-only (containers) — smart_status() then reports route_localnet=false so the failure is visible.
+        run(["sysctl", "-q", "-w", "net.ipv4.conf.all.route_localnet=1"])
+    prefixes = _dns_dnat(subnets, res, nets, SMARTDNS_TAG, SMARTDNS_NET_TAG, "127.0.0.1:" + str(SMART_DNS_PORT), ("udp", "tcp"))
+    # F4 — the node's own word, and only while something is exempt (D1: a node carrying no network reports nothing new).
+    if subnets and prefixes:
+        _SMART_MODE["dns_redirect"] = {"subnets": sorted(subnets), "exempt": prefixes}
+    else:
+        _SMART_MODE.pop("dns_redirect", None)
+
+
+S5X_DNS_TAG, S5X_DNS_NET_TAG = "swg-s5x-dns", "swg-s5x-dns-net"
+S5X_NFT_TABLE = "swg_s5x"
+_S5X_NFT = {"sig": None, "dns": None}       # the nft want last written; whether any DNS DNAT was (None: not yet asked)
+
+
+def _s5x_rules(devexit, nets, res):
+    """A SOCKS5 exit's three rule families (docs/SOCKS5-EXIT-PLAN.md §6.6), from the routing pass's entries:
+    · WHOLE-INTERFACE DNS goes to hev's mapdns (198.18.0.2), which answers with a fake IP and CONNECTs by name — the proxy
+      resolves, never the proxy's UDP — while the device is up: a dead one's traffic goes direct or is held, and DNS sent at
+      a TUN that is not carrying would fail with it. A resolver inside a network this node carries is asked as before (T15).
+    · while the proxy does not carry UDP (`udp_ok` not true), other UDP into the device is REFUSED AT ONCE, so QUIC falls
+      back to TCP instead of waiting out a timeout — except to 198.18.0.2 itself, the DNS just redirected there (T10);
+    · …and DNS a RULE marks for the device is unmarked, so it goes direct as every rule-scoped exit's DNS does (T13: mapdns
+      is wrong there — its fake IPs match no category).
+    ⚠️ The refusal is an nft chain of its own (`inet swg_s5x`), not an iptables FORWARD rule: every FORWARD rule here is
+    inserted at the top, so a client interface's accept added later would sit above it and take the UDP first. A REJECT in
+    its own base chain is final whatever order the accepts are in. One `nft -f` when the want changes, none otherwise."""
+    socks = _EXITS.get("socks") or {}
+    whole = sorted({e["subnet"] for e in devexit if e.get("dev") in socks and (e.get("scope") or "iface") != "rule"
+                    and e.get("subnet") and _devexit_state(e["dev"]) == "up"})
+    # ⚠️ A NODE WITH NO SOCKS EXIT PAYS NOTHING: the nat read is skipped once this process has seen none installed (the first
+    # pass still asks, so a leftover from before a restart is swept)
+    if whole or _S5X_NFT["dns"] is not False:
+        _dns_dnat(whole, res, [p for p, _i in (nets or ())], S5X_DNS_TAG, S5X_DNS_NET_TAG, S5X_DNS + ":53", ("udp",))
+        _S5X_NFT["dns"] = bool(whole)
+    rej = sorted(d for d, ok in socks.items() if not ok and _WANIF_RE.match(str(d or "")))
+    unm = sorted({int(e["table"]) for e in devexit if e.get("dev") in socks and not socks[e["dev"]]
+                  and e.get("scope") == "rule" and str(e.get("table") or "").isdigit()})
+    sig = (tuple(rej), tuple(unm))
+    if sig == _S5X_NFT["sig"]:
+        return
+    if not rej and not unm:
+        r = run(["nft", "delete", "table", "inet", S5X_NFT_TABLE])
+        ok, gone = r.returncode == 0 or _nft_absent(r), r.returncode == 0
+    else:
+        L = ["table inet %s {}" % S5X_NFT_TABLE, "delete table inet %s" % S5X_NFT_TABLE, "table inet %s {" % S5X_NFT_TABLE,
+             "  chain udp_refuse { type filter hook forward priority filter - 1; policy accept;"]   # (`fwd` is an nft keyword)
+        L += ['    oifname "%s" ip daddr != %s meta l4proto udp reject with icmpx type port-unreachable' % (d, S5X_DNS)
+              for d in rej]
+        # mangle + 6: after swg_smart's marks (mangle) and swg_p2p's re-mark (mangle + 5), before the relay divert (+10)
+        L += ["  }", "  chain dns_unmark { type filter hook prerouting priority mangle + 6; policy accept;"]
+        L += ["    meta mark %#x udp dport 53 meta mark set 0x0" % t for t in unm]
+        L += ["  }", "}"]
+        r = run(["nft", "-f", "-"], input_text="\n".join(L) + "\n")
+        ok = gone = r.returncode == 0
+    if ok:
+        _S5X_NFT["sig"] = sig
+        res["changed"] += 1 if gone else 0          # a table that was never there is no change
+    else:
+        res["errors"].append("socks5 exit rules: " + ((r.stderr or "").strip() or "nft failed")[:160])
+
+
+def _dns_dnat(subnets, res, nets, tag_dnat, tag_net, to, protos):
+    """DNAT :53 (`protos`) from each subnet to `to`, with the carried-network RETURNs above (NETWORKS §17) — one helper for
+    Force DNS (`swg-smartdns`) and a whole-interface SOCKS5 exit's mapdns (`swg-s5x-dns`, T15: a LAN resolver behind a
+    network this node routes is asked, not handed a fake IP for a name only it knows). Each family reads and writes its own
+    two tags only. → the exempted prefixes."""
+    want = {(S, proto) for S in subnets for proto in protos}
     prefixes = sorted({_net_prefix(x) for x in (nets or ()) if _net_prefix(x)}) if subnets else []
-    want_x = {(S, P, proto) for S in subnets for P in prefixes for proto in ("udp", "tcp")}
+    want_x = {(S, P, proto) for S in subnets for P in prefixes for proto in protos}
     out = getattr(run(["iptables", "-t", "nat", "-S", "PREROUTING"]), "stdout", "") or ""
     live, live_x, x_lines, order_bad, dnat_seen = set(), set(), [], False, False
     _one = lambda a: a if "/" in a else a + "/32"
@@ -7118,26 +7191,21 @@ def _smart_dns_redirect(subnets, res, nets=()):
             continue
         # ⚠️ THE TAG IS MATCHED EXACTLY, and by target: `swg-smartdns-net` contains `swg-smartdns`, and the substring test
         # this used to be would have read every exemption as a stale DNAT and deleted it each pass.
-        if tag == SMARTDNS_TAG and "-j DNAT" in ln:
+        if tag == tag_dnat and "-j DNAT" in ln:
             live.add((_one(ms.group(1)), mp.group(1))); dnat_seen = True
-        elif tag == SMARTDNS_NET_TAG and "-j RETURN" in ln:
+        elif tag == tag_net and "-j RETURN" in ln:
             md = re.search(r"-d (\S+)", ln)
             if md:
                 live_x.add((_one(ms.group(1)), _net_prefix(md.group(1)) or _one(md.group(1)), mp.group(1)))
                 x_lines.append(ln)
                 order_bad = order_bad or dnat_seen
-    if want and not _route_localnet_ok():
-        # Re-assert every cycle it's found off — a container/host restart resets the sysctl while our DNAT rules
-        # persist, silently blackholing client DNS. Idempotent where already on; a no-op where /proc/sys is
-        # read-only (containers) — smart_status() then reports route_localnet=false so the failure is visible.
-        run(["sysctl", "-q", "-w", "net.ipv4.conf.all.route_localnet=1"])
 
     def rule(S, proto):
-        return ["-s", S, "-p", proto, "--dport", "53", "-m", "comment", "--comment", SMARTDNS_TAG,
-                "-j", "DNAT", "--to-destination", "127.0.0.1:" + str(SMART_DNS_PORT)]
+        return ["-s", S, "-p", proto, "--dport", "53", "-m", "comment", "--comment", tag_dnat,
+                "-j", "DNAT", "--to-destination", to]
 
     def xrule(S, P, proto):
-        return ["-s", S, "-d", P, "-p", proto, "--dport", "53", "-m", "comment", "--comment", SMARTDNS_NET_TAG, "-j", "RETURN"]
+        return ["-s", S, "-d", P, "-p", proto, "--dport", "53", "-m", "comment", "--comment", tag_net, "-j", "RETURN"]
     if order_bad:                                              # a RETURN below a DNAT exempts nothing → take them all out
         for ln in x_lines:
             if _ipt_del_listed(["-t", "nat"], "PREROUTING", ln):
@@ -7151,11 +7219,7 @@ def _smart_dns_redirect(subnets, res, nets=()):
         run(["iptables", "-t", "nat", "-A", "PREROUTING"] + rule(S, proto)); res["changed"] += 1
     for (S, proto) in sorted(live - want):
         run(["iptables", "-t", "nat", "-D", "PREROUTING"] + rule(S, proto)); res["changed"] += 1
-    # F4 — the node's own word, and only while something is exempt (D1: a node carrying no network reports nothing new).
-    if subnets and prefixes:
-        _SMART_MODE["dns_redirect"] = {"subnets": sorted(subnets), "exempt": prefixes}
-    else:
-        _SMART_MODE.pop("dns_redirect", None)
+    return prefixes
 
 
 def _pattern_buckets(smart):
@@ -8780,6 +8844,8 @@ def _supervised_logs():
     for root in (WDTT_ROOT, CSQTT_ROOT):
         with contextlib.suppress(OSError):
             out += [os.path.join(root, name, "server.log") for name in os.listdir(root)]
+    with contextlib.suppress(OSError):                # …and each SOCKS5 exit's hev
+        out += [os.path.join(EXIT_DIR, n) for n in os.listdir(EXIT_DIR) if n.startswith("s5x-") and n.endswith(".log")]
     return out
 
 
@@ -10139,7 +10205,11 @@ def _exit_down(dev, rec):
 
     So: ask the KERNEL what the device is (`_link_kind`, which is the datapath's own answer rather than
     whichever CLI deigns to answer), tear down with that, and if it still will not go, delete the link
-    outright. `ip link del` works on both kinds and is the floor under every disagreement here."""
+    outright. `ip link del` works on both kinds and is the floor under every disagreement here.
+    A SOCKS5 exit is a process, not a wg device: its unit (or child) is stopped and the device goes with it."""
+    if (rec or {}).get("provider") == "socks5":
+        _s5x_down(str(rec.get("id") or dev[len("s5x-"):]), dev)
+        return True
     kind = _link_kind(dev)
     tool = "awg-quick" if kind == "awg" else "wg-quick" if kind == "wg" else _exit_tool(rec)
     conf = os.path.join(EXIT_DIR, dev + ".conf")
@@ -10188,6 +10258,553 @@ def _dialin_cut(entries, exit_, troutes, net_tables):
             if not any(n.version == h.version and n.subnet_of(h) for h in nets):
                 out.append((T, p))
     return out
+
+
+# ── THE SOCKS5 EXIT (docs/SOCKS5-EXIT-PLAN.md §6) ──────────────────────────────────────────────────────────────────────────
+# The panel hands us a proxy {host, port, user, pass}; we run hev-socks5-tunnel, which presents it as a TUN `s5x-<id>`, and
+# from there it is an ordinary point-to-point device exit — routed, SNATted, clamped and judged like any other (P2's judge,
+# at the adopted cadence). The kinds this node knows, BY NAME (T6) — reported as `exit_kinds`, so a panel never sends a
+# kind a node would misread (s9a F17). Twins: the panel's EXIT_PROVIDERS, js/routing.js EXIT_KINDS
+# (tests/cross_language_twins_selftest.py).
+EXIT_KINDS = ("warp", "profile", "socks5")
+# The pinned upstream release (P0, release plan S8: sha256 matched on the laptop and on the guest). Bumping it is a node
+# release: a node whose binary is not this one fetches this one and restarts its exits on it (the tag is in the unit's
+# signature). The panel's mirror serves only bytes with exactly these hashes (`HEV_SHA256` there — a twin).
+HEV_TAG = "2.18.0"
+HEV_OWNER = "heiher/hev-socks5-tunnel"
+HEV_SHA256 = {"amd64": "1903b23869cbd12b7b57045ca161c0f90314d9c4ef2835e7a9e4a3179bf7d925",
+              "arm64": "e44a6965cd718d98829f344e9f300a5664d12020557127b7469bee7c8f3098b0"}
+HEV_ASSET = {"amd64": "hev-socks5-tunnel-linux-x86_64", "arm64": "hev-socks5-tunnel-linux-arm64"}
+# ONE address plan for every SOCKS exit (§6.3): packets are steered into a TUN by source or mark, never by destination, so
+# the same addresses on two TUNs never meet. 198.18.0.0/15 is RFC 2544's benchmark range, never routed on the internet.
+S5X_ADDR, S5X_DNS, S5X_NET, S5X_MASK = "198.18.0.1", "198.18.0.2", "198.19.0.0", "255.255.0.0"
+# ⚠️ cache-size MUST be below the mapdns network's address count: hev 2.18.0 exits 254 WITHOUT A LOG LINE at 65536 on a /16
+# (P0) — the most a /16 allows, so a cached fake IP is remapped as late as possible (T11).
+S5X_CACHE = 65535
+S5X_MTU = 1500                    # P0: 8500 gained nothing and cost +85 % hev CPU on upload
+S5X_SLICE = "swg-exit.slice"      # one slice caps every exit together; hev is one thread, so a fixed % fits any vCPU count
+S5X_QUOTA_PCT = 50                # P0: 1.4 Gbit/s down at 50 % of a laptop core (operator, 2026-10-22)
+S5X_CHECK_EVERY_S = 600           # the proxy check (login, egress, UDP) re-run while all is well (T12)…
+S5X_RECHECK_S = 60                # …and this soon after one that disagreed with the last (a UDP change needs two in a row)
+_HEV = {"thread": None, "err": "", "next": 0.0, "fails": 0, "ok": None}
+_S5X = {}                         # device -> {"udp_ok", "pending", "next", "check"} — the proxy's last word, see _s5x_take
+_S5X_CHECKS = {}                  # device -> (time, result): a check a probe thread ran, parked for the calling thread
+_S5X_PROCS = {}                   # exit id -> {"proc", "sig", "deaths", "next", "at"} (docker: the hev children)
+_S5X_SEEN = set()                 # exit ids whose unit was read once since this daemon started (§12.2 item 5)
+_S5X_RUN = {"quota": False, "swept": False, "sysd": None}
+
+
+def _hev_path():
+    return os.path.join(STATE_DIR, "hev", HEV_TAG, "hev-socks5-tunnel")
+
+
+def _hev_ok(path, want):
+    """Is the file at `path` the pinned binary? Hashed once per (inode, size, mtime) — not 400 KB every pass."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    stamp = (path, st.st_ino, st.st_size, st.st_mtime_ns)
+    if _HEV["ok"] == stamp:
+        return True
+    if os.access(path, os.X_OK) and _turn_sha_ok(path, want):
+        _HEV["ok"] = stamp
+        return True
+    return False
+
+
+def _hev_fetch(arch, dest):
+    """Put the pinned hev at `dest`: the panel's mirror first (a node that cannot reach GitHub), then GitHub, then the
+    SWG_TURN_MIRROR prefixes. ⚠️ THE PIN IS ENFORCED ON EVERY SOURCE, fail-closed — which is what makes any mirror safe
+    (the amneziawg-go argument): bytes that do not hash to HEV_SHA256 are deleted, never made executable. → "" or why."""
+    want = HEV_SHA256[arch]
+    if _turn_panel_fetch(HEV_OWNER, HEV_TAG, arch, dest, want):
+        return ""
+    base = "https://github.com/%s/releases/download/%s/%s" % (HEV_OWNER, HEV_TAG, HEV_ASSET[arch])
+    urls = [base] + [m.rstrip("/") + "/" + base for m in (os.environ.get("SWG_TURN_MIRROR") or "").split()]
+    err, tmp = "download failed", dest + ".dl"
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+    for url in urls:
+        r = run(["curl", "-4", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
+                 "--retry-delay", "3", "--retry-all-errors", url, "-o", tmp], timeout=320)
+        if getattr(r, "returncode", 1) == 0:
+            if _turn_sha_ok(tmp, want):
+                try:
+                    os.chmod(tmp, 0o755)
+                    os.replace(tmp, dest)
+                    return ""
+                except OSError as e:
+                    err = ("could not put it in place: " + str(e))[:160]
+            else:
+                err = "checksum mismatch — refusing to run an unverified binary (want %s…)" % want[:12]
+        else:
+            err = (getattr(r, "stderr", "") or "download failed").strip()[:160]
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+    return err
+
+
+def hev_binary():
+    """(path, "") — the pinned hev-socks5-tunnel, ready — or ("", why). A missing or wrong binary is fetched in a
+    BACKGROUND thread, never in the pass: a download can take minutes, and the loop that posts this node's snapshot must
+    not wait for it. A failed fetch backs off 1 min → ×2 → 1 h, as WARP registration does."""
+    arch = _turn_arch()
+    if arch not in HEV_SHA256:
+        return "", "no hev build for %s — SOCKS5 exits run on amd64 and arm64 only" % (os.uname().machine or arch)
+    p = _hev_path()
+    if _hev_ok(p, HEV_SHA256[arch]):
+        return p, ""
+    t = _HEV["thread"]
+    if (t is None or not t.is_alive()) and time.time() >= _HEV["next"]:
+        def go():
+            e = _hev_fetch(arch, p)
+            _HEV["err"] = e
+            _HEV["fails"] = (_HEV["fails"] + 1) if e else 0
+            _HEV["next"] = time.time() + min(3600, 60 * 2 ** (_HEV["fails"] - 1)) if e else 0.0
+            if e:
+                log(LOG_WARNING, "SOCKS5 exits: hev %s could not be fetched: %s", HEV_TAG, e)
+        _HEV["thread"] = threading.Thread(target=go, daemon=True)
+        _HEV["thread"].start()
+    return "", (("hev %s: %s" % (HEV_TAG, _HEV["err"])) if _HEV["err"] and not (t and t.is_alive())
+                else "fetching the SOCKS5 tunnel program…")      # fixed words: the panel translates them
+
+
+def _yq(s):
+    """A YAML single-quoted scalar: the operator's text (a host, a login) can hold anything YAML would read as syntax."""
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+def _s5x_yml(dev, sk):
+    """hev's config for one exit — §6.3's, as P0 ran it, plus the login. ⚠️ `udp: 'udp'` ALWAYS (T2: hev's default is its own
+    UDP-in-TCP, which only hev's server speaks) and mapdns ALWAYS (§6.3: it is inert until DNS is sent to it, so a UDP flip
+    touches iptables only and never restarts hev)."""
+    cred = ("  username: %s\n  password: %s\n" % (_yq(sk["user"]), _yq(sk["pass"]))) if sk.get("user") else ""
+    return ("tunnel:\n  name: %s\n  mtu: %d\n  ipv4: %s\n"
+            "socks5:\n  address: %s\n  port: %d\n  udp: 'udp'\n%s"
+            "mapdns:\n  address: %s\n  port: 53\n  network: %s\n  netmask: %s\n  cache-size: %d\n"
+            "misc:\n  log-file: stderr\n  log-level: warn\n  limit-nofile: 65535\n  connect-timeout: 10000\n"
+            % (dev, S5X_MTU, S5X_ADDR, _yq(sk["host"]), int(sk["port"]), cred, S5X_DNS, S5X_NET, S5X_MASK, S5X_CACHE))
+
+
+def _s5x_socks(d):
+    """The panel's `socks` for this exit, re-checked here (a node's own floor), or None."""
+    sk = (d or {}).get("socks") if isinstance((d or {}).get("socks"), dict) else {}
+    host, user, pw = (str(sk.get(k) or "") for k in ("host", "user", "pass"))
+    try:
+        port = int(sk.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    if not host or len(host) > 253 or any(c.isspace() or ord(c) < 32 for c in host) or not 0 < port <= 65535 \
+            or len(user) > 255 or len(pw) > 255 or any(ord(c) < 32 for c in user + pw):
+        return None
+    return {"host": host, "port": port, "user": user, "pass": pw}
+
+
+def _s5x_unit(xid):
+    return "swg-s5x-" + xid
+
+
+def _s5x_sysd():
+    """systemd's version, read once: the restart back-off properties exist from 254 (the `_restart_dropins` rule)."""
+    if _S5X_RUN["sysd"] is None:
+        m = re.match(r"systemd (\d+)", getattr(run(["systemctl", "--version"], timeout=10), "stdout", "") or "")
+        _S5X_RUN["sysd"] = int(m.group(1)) if m else 0
+    return _S5X_RUN["sysd"]
+
+
+def _s5x_argv(xid, sig, binp, yml):
+    """§6.4's transient unit. Transient, not a unit file: it outlives a noded restart (clients keep flowing), vanishes on
+    reboot (the next pass makes it again), leaves nothing in /etc and works unchanged on NixOS. The password is only in
+    the 0600 yml — never on a command line; the Description carries the signature, not a secret."""
+    back = (["-p", "RestartSec=3", "-p", "RestartSteps=8", "-p", "RestartMaxDelaySec=300"] if _s5x_sysd() >= 254
+            else ["-p", "RestartSec=30"])                 # an older systemd refuses the back-off properties outright
+    return (["systemd-run", "--quiet", "--unit=" + _s5x_unit(xid), "--slice=" + S5X_SLICE,
+             "--description=swg exit %s %s" % (xid, sig), "-p", "Restart=on-failure"] + back
+            + ["-p", "Nice=10", "-p", "NoNewPrivileges=yes", "-p", "AmbientCapabilities=CAP_NET_ADMIN",
+               "-p", "CapabilityBoundingSet=CAP_NET_ADMIN", "-p", "DeviceAllow=/dev/net/tun rw",
+               "-p", "ProtectSystem=strict", "-p", "ProtectHome=yes", "-p", "PrivateTmp=yes",
+               "-p", "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK",
+               "-p", "SystemCallFilter=@system-service", "-p", "SystemCallErrorNumber=EPERM", binp, yml])
+
+
+def _s5x_show(xid):
+    r = run(["systemctl", "show", "-p", "LoadState,ActiveState,SubState,Description", _s5x_unit(xid)], timeout=15)
+    return dict(l.split("=", 1) for l in (getattr(r, "stdout", "") or "").splitlines() if "=" in l)
+
+
+def _s5x_ensure_unit(xid, sig, binp, yml, state, started):
+    """Bare metal / NixOS: the transient unit runs THIS config. → "" or why. Read from systemd only when the device is not
+    up, the config changed, or on the first pass after this daemon started (§12.2 item 5): a settled exit costs no fork.
+    ⚠️ A unit that is starting or waiting out its restart back-off is LEFT to it — making it again every pass would undo
+    the back-off that stops a config which can never start from restarting every 3 s (§6.4)."""
+    if state == "up" and started == sig and xid in _S5X_SEEN:
+        return ""
+    _S5X_SEEN.add(xid)
+    u = _s5x_show(xid)
+    live = u.get("LoadState") == "loaded" and u.get("ActiveState") in ("active", "activating", "reloading")
+    if live and u.get("Description", "").split()[3:] == sig.split():
+        if state == "up":
+            return ""
+        return ("" if u.get("SubState") != "auto-restart" else
+                "the SOCKS5 tunnel keeps exiting — systemd restarts it with a back-off (journalctl -u %s)" % _s5x_unit(xid))
+    if live:                                              # another config, or a stale unit of this id: replaced whole
+        run(["systemctl", "stop", _s5x_unit(xid)], timeout=30)
+    run(["systemctl", "reset-failed", _s5x_unit(xid)], timeout=15)
+    r = run(_s5x_argv(xid, sig, binp, yml), timeout=30)
+    if getattr(r, "returncode", 1) != 0:
+        return ("could not start the SOCKS5 tunnel: " + (getattr(r, "stderr", "") or "systemd-run failed").strip())[:160]
+    if not _S5X_RUN["quota"]:                            # the cap lives on the slice (the relay's argument): one per boot
+        _S5X_RUN["quota"] = getattr(run(["systemctl", "set-property", "--runtime", S5X_SLICE,
+                                         "CPUQuota=%d%%" % S5X_QUOTA_PCT], timeout=15), "returncode", 1) == 0
+    return ""
+
+
+def _s5x_pidfile(dev):
+    return os.path.join(EXIT_DIR, dev + ".pid")
+
+
+def _s5x_child(dev, yml):
+    """docker: (pid, sig) of the hev child running `yml`, or (0, ""). By the pidfile, held to its command line — a number
+    the kernel gave to something else after a restart is not ours."""
+    with contextlib.suppress(Exception):
+        with open(_s5x_pidfile(dev)) as f:
+            pid, _, sig = f.read().strip().partition(" ")
+        with open("/proc/%d/cmdline" % int(pid), "rb") as f:
+            if yml.encode() in f.read().split(b"\0"):
+                return int(pid), sig
+    return 0, ""
+
+
+def _s5x_ensure_child(xid, dev, sig, binp, yml):
+    """docker: hev as a supervised child of this daemon (the WDTT/csqtt shape). A container has NET_ADMIN and /dev/net/tun;
+    there is no per-exit CPU cap (that needs docker.sock, which is optional) — the container's own limit is the cap, and the
+    exit card says so. A child that dies is relaunched after a back-off, 3 s → ×2 → 300 s. → "" or why."""
+    p = _S5X_PROCS.setdefault(xid, {"proc": None, "deaths": 0, "next": 0.0, "at": 0.0})
+    pid, have = _s5x_child(dev, yml)
+    if pid and have == sig:
+        if p["deaths"] and time.time() - p["at"] > 60:
+            p["deaths"] = 0                                   # it has stayed up: the next death starts the back-off again
+        return ""
+    if pid:
+        _s5x_kill(pid)
+    elif p["proc"] is not None or p["at"]:                    # one we started has died
+        with contextlib.suppress(Exception):
+            p["proc"] and p["proc"].poll()
+        p["proc"], p["at"] = None, 0.0
+        p["deaths"] += 1
+        p["next"] = time.time() + min(300, 3 * 2 ** (p["deaths"] - 1))
+    if time.time() < p["next"]:
+        return "the SOCKS5 tunnel exited — starting it again in %ds (%s)" % (int(p["next"] - time.time()) + 1, dev + ".log")
+    lp = os.path.join(EXIT_DIR, dev + ".log")
+    _rotate_serverlog(lp, _log_docker_caps(_LOG_BUDGET["mb"]) // 2 or SERVERLOG_MAX)
+    try:
+        lf = open(lp, "ab", buffering=0)
+        pr = subprocess.Popen([binp, yml], stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, close_fds=True,
+                              preexec_fn=lambda: os.nice(10))
+    except Exception as e:
+        return ("could not start the SOCKS5 tunnel: " + str(e))[:160]
+    p.update(proc=pr, at=time.time())
+    with contextlib.suppress(Exception):
+        _replace_if_changed(_s5x_pidfile(dev), "%d %s" % (pr.pid, sig), 0o600)
+    return ""
+
+
+def _s5x_kill(pid):
+    """SIGTERM, then SIGKILL only if it is still there (a pid from a pidfile is not our child: once it exits the number
+    can be anyone's)."""
+    with contextlib.suppress(Exception):
+        os.kill(pid, signal.SIGTERM)
+    for _ in range(20):
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.1)
+    with contextlib.suppress(Exception):
+        os.kill(pid, signal.SIGKILL)
+
+
+def _s5x_down(xid, dev):
+    """Stop a SOCKS exit: the unit (or the child), the device with it, its yml and pidfile, and every verdict about it —
+    a name used again later starts from scratch (T9)."""
+    if NODE_KIND == "docker":
+        pid, _ = _s5x_child(dev, os.path.join(EXIT_DIR, dev + ".yml"))
+        if pid:
+            _s5x_kill(pid)
+        p = _S5X_PROCS.pop(xid, None)
+        with contextlib.suppress(Exception):
+            p and p["proc"] and p["proc"].wait(timeout=2)
+    else:
+        run(["systemctl", "stop", _s5x_unit(xid)], timeout=30)
+        run(["systemctl", "reset-failed", _s5x_unit(xid)], timeout=15)
+    _S5X_SEEN.discard(xid)
+    if _dev_link_state(dev) != "absent":
+        run(["ip", "link", "del", dev])
+    for p2 in (os.path.join(EXIT_DIR, dev + ".yml"), _s5x_pidfile(dev)):
+        with contextlib.suppress(OSError):
+            os.unlink(p2)
+    for m in (_EXIT_HEALTH, _EXIT_PROBED_AT, _S5X, _S5X_CHECKS):
+        m.pop(dev, None)
+
+
+def _s5x_sweep(want):
+    """Once per daemon start: a SOCKS unit (or child) for an exit no longer wanted, whose record is gone too — so the reap
+    never saw it — is stopped. Without its record nothing else would ever name it."""
+    if _S5X_RUN["swept"]:
+        return
+    _S5X_RUN["swept"] = True
+    if NODE_KIND == "docker":
+        with contextlib.suppress(OSError):
+            for fn in os.listdir(EXIT_DIR):
+                if fn.startswith("s5x-") and fn.endswith(".pid") and fn[4:-4] not in want:
+                    _s5x_down(fn[4:-4], fn[:-4])
+        return
+    r = run(["systemctl", "list-units", "--all", "--plain", "--no-legend", "swg-s5x-*"], timeout=15)
+    for ln in (getattr(r, "stdout", "") or "").splitlines():
+        u = (ln.split() or [""])[0]
+        xid = u[len("swg-s5x-"):-len(".service")] if u.startswith("swg-s5x-") and u.endswith(".service") else ""
+        if re.fullmatch(r"[0-9a-f]{8}", xid) and xid not in want:
+            _s5x_down(xid, "s5x-" + xid)
+
+
+# ── the proxy check (§6.6): one function, three callers ──────────────────────────────────────────────────────────────────
+S5X_WHY = {
+    "unreachable": "the proxy cannot be reached from this node",
+    "refused": "the proxy refused the connection — is the port right?",
+    "timeout": "the proxy did not answer in time",
+    "not_socks5": "that address does not speak SOCKS5",
+    "auth_required": "the proxy wants a login, and none is set",
+    "auth_failed": "the proxy refused the login — check the user and password",
+    "not_allowed": "the proxy refused this node's address — some providers make you allow-list the server's IP",
+    "connect_failed": "the proxy could not reach the internet for us",
+}
+
+
+def _s5x_recv(s, n):
+    b = b""
+    while len(b) < n:
+        c = s.recv(n - len(b))
+        if not c:
+            raise ConnectionError("closed")
+        b += c
+    return b
+
+
+def _s5x_open(host, port, user, pw, timeout):
+    """A TCP connection to the proxy past its greeting and login — (socket, "") or (None, why code)."""
+    try:
+        s = socket.create_connection((host, int(port)), timeout=timeout)
+    except socket.timeout:
+        return None, "timeout"
+    except ConnectionRefusedError:
+        return None, "refused"
+    except OSError:
+        return None, "unreachable"
+    try:
+        s.settimeout(timeout)
+        s.sendall(b"\x05\x02\x00\x02" if user else b"\x05\x01\x00")
+        ver, meth = _s5x_recv(s, 2)
+        if ver != 5:
+            raise ValueError("not_socks5")
+        if meth == 0xFF:
+            raise ValueError("auth_failed" if user else "auth_required")
+        if meth == 2:
+            if not user:
+                raise ValueError("auth_required")
+            u, p = user.encode(), pw.encode()
+            s.sendall(b"\x01" + bytes([len(u)]) + u + bytes([len(p)]) + p)
+            if _s5x_recv(s, 2)[1] != 0:
+                raise ValueError("auth_failed")
+        elif meth != 0:
+            raise ValueError("not_socks5")
+        return s, ""
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            s.close()
+        return None, (str(e) if str(e) in S5X_WHY else "timeout" if isinstance(e, socket.timeout) else "not_socks5")
+
+
+def _s5x_cmd(s, cmd, atyp_addr, port):
+    """Send a SOCKS5 request and read its reply → (rep code, bound (host, port))."""
+    s.sendall(b"\x05" + bytes([cmd, 0]) + atyp_addr + int(port).to_bytes(2, "big"))
+    ver, rep, _r, atyp = _s5x_recv(s, 4)
+    if ver != 5:
+        raise ValueError("not_socks5")
+    if atyp == 1:
+        a = socket.inet_ntoa(_s5x_recv(s, 4))
+    elif atyp == 3:
+        a = _s5x_recv(s, _s5x_recv(s, 1)[0]).decode("ascii", "replace")
+    elif atyp == 4:
+        a = socket.inet_ntop(socket.AF_INET6, _s5x_recv(s, 16))
+    else:
+        raise ValueError("not_socks5")
+    return rep, (a, int.from_bytes(_s5x_recv(s, 2), "big"))
+
+
+def _socks_check(host, port, user="", pw="", timeout=5.0, udp_wait=3.0, _trace=("www.cloudflare.com", 443),
+                 _dns=("1.1.1.1", 53)):
+    """Ask the proxy what hev will ask it, from a node-local socket — the very path hev's own connections take (§2):
+    greeting, login, CONNECT www.cloudflare.com:443 BY NAME and a TLS GET of /cdn-cgi/trace through it (the egress IP and
+    country), then UDP ASSOCIATE and one DNS query to 1.1.1.1 through the relay it names (an answer in 3 s = UDP carried).
+    → {login, egress_ip, loc, udp, rtt_ms, why}: `why` a code of S5X_WHY ("" when it all worked); `udp` True / False, or
+    None when the check stopped before it got there. Seconds of wall clock: callers run it in a thread."""
+    out = {"login": False, "egress_ip": "", "loc": "", "udp": None, "rtt_ms": None, "why": ""}
+    t0 = time.monotonic()
+    s, why = _s5x_open(host, port, user, pw, timeout)
+    if not s:
+        out["why"] = why
+        return out
+    out["login"] = True
+    try:
+        name = _trace[0].encode()
+        rep, _b = _s5x_cmd(s, 1, b"\x03" + bytes([len(name)]) + name, _trace[1])
+        if rep != 0:
+            out["why"] = "not_allowed" if rep == 2 else "connect_failed"
+            return out
+        t = _exit_tls().wrap_socket(s, server_hostname=_trace[0])
+        s = t
+        t.sendall(b"GET /cdn-cgi/trace HTTP/1.1\r\nHost: %s\r\nUser-Agent: swg-noded\r\nConnection: close\r\n\r\n" % name)
+        body = b""
+        while len(body) < 65536:
+            c = t.recv(4096)
+            if not c:
+                break
+            body += c
+        kv = dict(l.split("=", 1) for l in body.decode("utf-8", "replace").splitlines() if "=" in l)
+        out.update(egress_ip=kv.get("ip", "")[:45], loc=kv.get("loc", "")[:8],
+                   rtt_ms=int((time.monotonic() - t0) * 1000))
+        if not out["egress_ip"]:
+            out["why"] = "connect_failed"
+    except Exception as e:
+        out["why"] = str(e) if str(e) in S5X_WHY else "connect_failed"
+        return out
+    finally:
+        with contextlib.suppress(Exception):
+            s.close()
+    out["udp"] = _s5x_udp(host, port, user, pw, timeout, udp_wait, _dns)
+    return out
+
+
+def _s5x_udp(host, port, user, pw, timeout, wait, dns):
+    """UDP ASSOCIATE + one DNS query through the relay → True (answered), False (refused or silent). The control
+    connection stays open for the whole exchange: RFC 1928 ends the association when it closes."""
+    c, why = _s5x_open(host, port, user, pw, timeout)
+    if not c:
+        return False
+    u = None
+    try:
+        rep, (ba, bp) = _s5x_cmd(c, 3, b"\x01\x00\x00\x00\x00", 0)
+        if rep != 0 or not bp:
+            return False
+        if ba in ("0.0.0.0", "::"):
+            ba = c.getpeername()[0]                    # "the address you dialled" — the common answer
+        u = socket.socket(socket.AF_INET6 if ":" in ba else socket.AF_INET, socket.SOCK_DGRAM)
+        u.settimeout(wait)
+        qid = secrets.randbelow(0xFFFF)
+        q = qid.to_bytes(2, "big") + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + \
+            b"".join(bytes([len(p)]) + p.encode() for p in "www.cloudflare.com".split(".")) + b"\x00\x00\x01\x00\x01"
+        u.sendto(b"\x00\x00\x00\x01" + socket.inet_aton(dns[0]) + int(dns[1]).to_bytes(2, "big") + q, (ba, bp))
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            u.settimeout(max(0.05, end - time.monotonic()))
+            d, _f = u.recvfrom(4096)
+            if len(d) > 12 and d[3] == 1 and d[10:12] == qid.to_bytes(2, "big"):
+                return True                            # RSV RSV FRAG=0 ATYP=1 + 4 + 2, then our query's answer
+        return False
+    except Exception:
+        return False
+    finally:
+        for x in (u, c):
+            with contextlib.suppress(Exception):
+                x and x.close()
+
+
+def _s5x_take(dev, res, now=None):
+    """Apply a check a probe thread parked (`_S5X_CHECKS`) to this device's record, in the calling thread. UDP's flag:
+    the FIRST result sets it; a CHANGE needs two results in a row that agree (§6.6), so a lost datagram cannot flap it, and
+    a result that disagreed brings the next check forward to S5X_RECHECK_S. `None` (unchecked) reads as no UDP."""
+    got = _S5X_CHECKS.pop(dev, None)
+    s = _S5X.setdefault(dev, {"udp_ok": None, "pending": None, "next": 0.0, "check": None})
+    if not got:
+        return s
+    now = time.time() if now is None else now
+    at, r = got
+    s["check"] = dict(r, at=int(at))
+    u = r.get("udp")
+    if u is not None:
+        if s["udp_ok"] is None:
+            s["udp_ok"], s["pending"] = u, None
+        elif u == s["udp_ok"]:
+            s["pending"] = None
+        elif s["pending"] == u:
+            s["udp_ok"], s["pending"] = u, None
+            log(LOG_INFO, "exit device %s: the proxy %s UDP now", dev, "carries" if u else "no longer carries")
+        else:
+            s["pending"] = u
+    s["next"] = now + (S5X_RECHECK_S if s["pending"] is not None else S5X_CHECK_EVERY_S)
+    if r.get("why"):
+        res["errors"].append("exit device %s: %s" % (dev, S5X_WHY.get(r["why"], r["why"])))
+    return s
+
+
+def _s5x_check_due(dev):
+    """When the probe thread runs `_socks_check` for this device: "now" (bring-up, or S5X_CHECK_EVERY_S since the last),
+    "fail" (only if this pass's trace fails while the judge had no failure yet — so a dead exit says WHY: a changed
+    password, an expired plan, a revoked allow-list), or ""."""
+    s = _S5X.get(dev)
+    if not s or s.get("check") is None or time.time() >= s.get("next", 0):
+        return "now"
+    st = _EXIT_HEALTH.get(dev)
+    return "fail" if not st or (not st["dead"] and st["fails"] == 0) else ""
+
+
+# ── the Test button (§6.8): the net_probe plumbing, with `_socks_check` as its only logic ──────────────────────────────────
+_EXIT_TEST = {"id": "", "result": None, "at": 0.0}
+_EXIT_TEST_LOCK = threading.Lock()
+EXIT_TEST_KEEP_S = 600
+
+
+def exit_test_take(req):
+    """Once per valid reply: a proxy test the panel asks for runs ONCE in a thread (≈ 15 s at most) and its answer rides a
+    later snapshot. The login travels in the request and is never written down here. No request: forget the answer."""
+    rid = req.get("id") if isinstance(req, dict) else ""
+    rid = rid if isinstance(rid, str) else ""
+    with _EXIT_TEST_LOCK:
+        if not rid:
+            if _EXIT_TEST["id"]:
+                _EXIT_TEST.update(id="", result=None, at=0.0)
+            return
+        if rid == _EXIT_TEST["id"]:
+            if _EXIT_TEST["result"] is not None and time.time() - _EXIT_TEST["at"] > EXIT_TEST_KEEP_S:
+                _EXIT_TEST["result"] = None
+            return
+        if not _PROBE_ID_RE.match(rid):
+            return
+        _EXIT_TEST.update(id=rid, result=None, at=time.time())
+    sk = _s5x_socks({"socks": req})
+    def go():
+        try:
+            r = _socks_check(sk["host"], sk["port"], sk["user"], sk["pass"], timeout=4.0) if sk else \
+                {"login": False, "egress_ip": "", "loc": "", "udp": None, "rtt_ms": None, "why": "unreachable"}
+        except Exception:
+            r = {"login": False, "egress_ip": "", "loc": "", "udp": None, "rtt_ms": None, "why": "timeout"}
+        with _EXIT_TEST_LOCK:
+            if _EXIT_TEST["id"] == rid:
+                _EXIT_TEST.update(result=dict(r, id=rid, at=int(time.time())), at=time.time())
+    threading.Thread(target=go, daemon=True).start()
+
+
+def exit_test_status():
+    """The snapshot's `exit_test`: an answer waiting for the panel, or None — and then no key at all."""
+    with _EXIT_TEST_LOCK:
+        return dict(_EXIT_TEST["result"]) if _EXIT_TEST["result"] is not None else None
+
+
+def _s5x_view(dev):
+    """What a SOCKS exit's row says about its proxy: `udp_ok` (true / false / null) and the last check, never a secret."""
+    s = _S5X.get(dev) or {}
+    c = s.get("check")
+    return {"udp_ok": s.get("udp_ok"),
+            "check": ({k: c.get(k) for k in ("login", "egress_ip", "loc", "udp", "rtt_ms", "why", "at")} if c else None)}
 
 
 def _exit_conf_text(rec):
@@ -10659,7 +11276,13 @@ def _exit_probe_all(devs):
         rch = None if (tr or {}).get("ip") else _exit_reach(dev)
         res[dev] = (tr, rch, None)               # the verdict's evidence is in: a ping that overruns the bound loses only itself
         res[dev] = (tr, rch, _exit_ping(rec.get("endpoint")))
-        if not (tr or {}).get("ip") and rch is not True:
+        sk = rec.get("socks")
+        if sk:
+            # a SOCKS exit's proxy check (§6.6, §12.2 item 7): here, under the bound — never inline in the pass. Parked for
+            # the calling thread, so one that outlives the bound is still taken, the next pass.
+            if rec.get("check") == "now" or (rec.get("check") == "fail" and not (tr or {}).get("ip") and rch is not True):
+                _S5X_CHECKS[dev] = (time.time(), _socks_check(sk["host"], sk["port"], sk["user"], sk["pass"]))
+        elif not (tr or {}).get("ip") and rch is not True:
             _exit_resolve(dev, rec)              # nothing crossed: where does its endpoint's NAME point now? (the caller acts)
     ths = [threading.Thread(target=one, args=(d, r), daemon=True) for d, r in devs]
     if ths:
@@ -10757,10 +11380,17 @@ def _exit_adopted(devexit, mine, managed=()):
         if _dev_link_state(dev) != "up":
             out.append((dev, None))
             continue
-        st = _EXIT_HEALTH.get(dev)
-        out.append((dev, st is None or st["dead"] or st["fails"] > 0
-                    or now - _EXIT_PROBED_AT.get(dev, now - EXIT_PROBE_IDLE_S) >= EXIT_PROBE_IDLE_S))
+        out.append((dev, _exit_probe_due(dev, now)))
     return out
+
+
+def _exit_probe_due(dev, now=None):
+    """Probe this ADOPTED or SOCKS device this pass? Carrying, at most every EXIT_PROBE_IDLE_S; failing, dead or not judged
+    yet, every pass — so a failover is not slowed past the first minute, and a recovery is timed on the pass clock."""
+    now = time.monotonic() if now is None else now
+    st = _EXIT_HEALTH.get(dev)
+    return (st is None or st["dead"] or st["fails"] > 0
+            or now - _EXIT_PROBED_AT.get(dev, now - EXIT_PROBE_IDLE_S) >= EXIT_PROBE_IDLE_S)
 
 
 def _devexit_report():
@@ -10835,13 +11465,16 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                     # …and whether the far side ever agreed. `up` alone said yes for a tunnel carrying
                     # nothing; see _exit_handshake. Reported unconditionally so the panel can tell "never"
                     # (0) from "a while ago" from "this node is too old to say" (absent).
-                    "handshake": (_exit_handshake(rec, dev) if _live else None),
+                    # (a SOCKS exit is a TUN with no peer to handshake with: never asked — and never forks for it, §12.2 item 5)
+                    "handshake": (_exit_handshake(rec, dev) if _live and prov != "socks5" else None),
                     # How far away the exit's own server is — the hop the tunnel rides on. See _exit_ping
                     # for why this, and not the through-tunnel request time beside it in `trace`.
                     "ping_ms": (ping if _live else None),
                     # The obfuscation this device was actually built with, so the panel can say WHICH kind
                     # of tunnel it is looking at rather than inferring from a profile it no longer holds.
-                    "awg": bool(_exit_awg(rec))}
+                    "awg": bool(_exit_awg(rec)),
+                    # a SOCKS exit's proxy: does it carry UDP, and what the last check said (login, egress, why)
+                    **(_s5x_view(dev) if prov == "socks5" else {})}
     with contextlib.suppress(Exception):
         os.makedirs(EXIT_DIR, mode=0o700, exist_ok=True)
 
@@ -10877,7 +11510,13 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             # egress IP than the one they turned off. Down, kept, and never created in the first place if it was
             # switched off before it ever came up: we do not register an account for something nobody enabled.
             if d.get("down"):
-                if rec.get("priv") and _dev_link_state(dev) != "absent":
+                if rec.get("provider") == "socks5" and rec.get("started"):
+                    _exit_down(dev, dict(rec, id=xid))          # hev stopped, even mid-back-off with no device
+                    rec["started"] = ""
+                    with contextlib.suppress(Exception):
+                        _replace_if_changed(sp, json.dumps(rec), 0o600)
+                    res["changed"] += 1
+                elif rec.get("priv") and _dev_link_state(dev) != "absent":
                     _exit_down(dev, rec)
                     res["changed"] += 1
                 out.append({"id": xid, "device": dev, "provider": prov, "up": False, "paused": True,
@@ -10888,11 +11527,68 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             # so a kind this node does not know — a newer panel's — would have REGISTERED A CLOUDFLARE ACCOUNT for it and
             # come up as a WARP exit the operator never asked for. Refused, and said on the row, instead —
             # after the pause above, so a paused one reads paused (and a device an older build made for it comes down).
-            if prov not in ("warp", "profile"):
+            if prov not in EXIT_KINDS:
                 res["errors"].append("exit %s: unknown kind %s" % (xid, prov[:20]))
+                # …and a device this node made for this id under a kind it DID know comes down (s9a F18): left up, the
+                # routing that names the id would keep carrying the old tunnel the operator has replaced. The record is
+                # kept — a node that knows the kind takes it from there.
+                for _od in sorted({dev, str(rec.get("device") or "")} - {""}):
+                    if rec.get("provider") in EXIT_KINDS and (_dev_link_state(_od) != "absent" or rec.get("started")):
+                        _exit_down(_od, dict(rec, id=xid))
+                        res["changed"] += 1
                 out.append({"id": xid, "device": dev, "provider": prov, "up": False,
                             "error": "this node does not know this kind of exit — update the node"})
                 continue
+            if prov == "socks5" or rec.get("provider") == "socks5":
+                # A SOCKS5 exit (§6): hev-socks5-tunnel presents the proxy as the TUN `dev`. The panel never turns one kind
+                # into the other on an id (it refuses the edit), so a record of the other kind is a leftover: taken down.
+                if (rec.get("provider") or "socks5") != prov:
+                    _exit_down(str(rec.get("device") or dev), dict(rec, id=xid))
+                    rec = {}
+                    res["changed"] += 1
+                if prov != "socks5":
+                    with contextlib.suppress(OSError):
+                        os.unlink(sp)
+                else:
+                    _sk = _s5x_socks(d)
+                    _sig = "%s hev-%s" % (str(d.get("cfg_sig") or "-"), HEV_TAG)
+                    rec = {"provider": "socks5", "device": dev, "started": rec.get("started", ""),
+                           "endpoint": ("[%s]:%d" if ":" in _sk["host"] else "%s:%d") % (_sk["host"], _sk["port"]) if _sk else ""}
+                    err, _state = "", _dev_link_state(dev)
+                    if not _sk:
+                        err = "the proxy address is incomplete"
+                    else:
+                        binp, err = hev_binary()
+                        if not binp and _state == "up":
+                            err = ""                         # a pin bump being fetched: the running one carries on meanwhile
+                        if binp:
+                            _yml = os.path.join(EXIT_DIR, dev + ".yml")
+                            try:
+                                _replace_if_changed(_yml, _s5x_yml(dev, _sk), 0o600)
+                            except OSError as e:
+                                err = ("could not write the tunnel config: " + str(e))[:160]
+                            if not err:
+                                err = (_s5x_ensure_child(xid, dev, _sig, binp, _yml) if NODE_KIND == "docker"
+                                       else _s5x_ensure_unit(xid, _sig, binp, _yml, _state, rec["started"]))
+                            if not err:
+                                if rec["started"] != _sig:
+                                    _EXIT_HEALTH.pop(dev, None); _EXIT_PROBED_AT.pop(dev, None)   # a new config: judged afresh
+                                    _S5X.pop(dev, None)                          # …and its proxy checked afresh at bring-up
+                                    res["changed"] += 1
+                                rec["started"] = _sig
+                                _state = _dev_link_state(dev)
+                    with contextlib.suppress(Exception):
+                        _replace_if_changed(sp, json.dumps(rec), 0o600)
+                    if err:
+                        res["errors"].append("exit %s: %s" % (xid, err))
+                    if _state == "up":
+                        rec = dict(rec, socks=_sk)                  # for the probe thread's check only — never written
+                        _slots.append((len(out), xid, dev, prov, rec, err, ""))
+                        out.append(None)
+                    else:
+                        _EXIT_HEALTH.pop(dev, None)
+                        out.append(_exit_row(xid, dev, prov, rec, err, "", False, {}, None, None))
+                    continue
             # 1) key material. `warp` registers once and keeps the account; `profile` is handed to us whole.
             if prov == "profile":
                 pr = d.get("profile") or {}
@@ -11080,15 +11776,34 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
         # no record — so no ping, no lookup, no redial (they need an endpoint) — each at its own cadence.
         _mine = {str((d or {}).get("device") or "") for d in want.values() if isinstance(d, dict)}
         _ad = _exit_adopted(devexit, _mine, managed)
-        _pr = _exit_probe_all([(dev, rec) for _s, _x, dev, _p, rec, _e, _b in _slots] + [(d, {}) for d, due in _ad if due])
-        if _slots:                                     # the handshakes below come from the pass's dump (B3): one taken before
-            _pass_forget("all-dump:", keep_failed=True)   # these probes would miss a first handshake they made (_exit_handshake)
+        # a SOCKS exit is probed at the adopted cadence (T3: its trace crosses a metered proxy), and whenever its check is due
+        _sx = {dev: (_s5x_check_due(dev), _exit_probe_due(dev)) for _s, _x, dev, _p, _r, _e, _b in _slots if _p == "socks5"}
+        _pr = _exit_probe_all([(dev, rec if dev not in _sx else {"endpoint": rec.get("endpoint"), "socks": rec.get("socks"),
+                                                                  "check": _sx[dev][0]})
+                               for _s, _x, dev, _p, rec, _e, _b in _slots if dev not in _sx or _sx[dev][1] or _sx[dev][0] == "now"]
+                              + [(d, {}) for d, due in _ad if due])
+        if any(_p != "socks5" for _s, _x, _d, _p, _r, _e, _b in _slots):   # the handshakes below come from the pass's dump (B3):
+            _pass_forget("all-dump:", keep_failed=True)   # one taken before these probes would miss a first handshake they made
         for _s, xid, dev, prov, rec, err, _blob_err in _slots:
-            tr, _rch, _png = _pr.get(dev) or ({}, None, None)
-            _got = _EXIT_RESOLVED.pop(dev, None)       # a lookup's answer, from this pass's probe or a late one
-            if _got and not (tr or {}).get("ip") and _rch is not True and time.time() - _got[0] < 2 * EXIT_REDIAL_EVERY_S:
-                _exit_redial(dev, rec, _got[1])
-            _hl = _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
+            if prov != "socks5":
+                tr, _rch, _png = _pr.get(dev) or ({}, None, None)
+                _got = _EXIT_RESOLVED.pop(dev, None)   # a lookup's answer, from this pass's probe or a late one
+                if _got and not (tr or {}).get("ip") and _rch is not True and time.time() - _got[0] < 2 * EXIT_REDIAL_EVERY_S:
+                    _exit_redial(dev, rec, _got[1])
+                _hl = _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
+            else:
+                _sv = _s5x_take(dev, res)
+                if dev in _pr:
+                    tr, _rch, _png = _pr[dev]
+                    _hl = _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
+                    if (tr or {}).get("ip") or _rch is not None:   # as for an adopted device: an unanswered probe waits no minute
+                        _EXIT_PROBED_AT[dev] = time.monotonic()
+                    _sv.update(trace=tr, ping=_png)
+                else:                                  # not due: the last probe's word stands
+                    tr, _png, _hl = _sv.get("trace") or {}, _sv.get("ping"), _EXIT_HEALTH.get(dev)
+                _c = _sv.get("check") or {}
+                if _hl and _hl["dead"] and _c.get("why") and _c.get("at", 0) >= (_hl.get("fail_since") or 0) - 1:
+                    _hl["why"] = S5X_WHY.get(_c["why"], _c["why"])   # the proxy's own reason, not a bare timeout
             out[_s] = _exit_row(xid, dev, prov, rec, err, _blob_err, True, tr, _hl, _png)
         for dev, due in _ad:
             if due is None:
@@ -11143,8 +11858,8 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                 with open(os.path.join(EXIT_DIR, fn)) as f:
                     old = json.load(f)
             od = str(old.get("device") or "")
-            if od and _dev_link_state(od) != "absent":
-                _exit_down(od, old)
+            if od and (_dev_link_state(od) != "absent" or old.get("provider") == "socks5"):
+                _exit_down(od, dict(old, id=_stem))   # a SOCKS unit mid-back-off has no device, and is stopped all the same
             if od and od not in _held:                # T9: its verdict and lookup history go with it (a name reused later
                 for _m in (_EXIT_HEALTH, _EXIT_REDIAL_AT, _EXIT_RESOLVED, _EXIT_PROBED_AT):   # starts from scratch)
                     _m.pop(od, None)
@@ -11154,7 +11869,13 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                         os.unlink(p2)
             log(LOG_INFO, "exit %s: removed (device %s)", _stem, od or "-")
             res["changed"] += 1
+    with contextlib.suppress(Exception):
+        _s5x_sweep(want)                          # once per start: a SOCKS unit whose record is gone too
     _EXITS["list"] = out
+    # the SOCKS devices and whether their proxy carries UDP — the rule families' input (reconcile_cascade) and part of
+    # `_devexit_sig`, so a UDP flip re-runs the routing pass the same sync (§12.2 item 6)
+    _EXITS["socks"] = {x["device"]: x.get("udp_ok") is True for x in out
+                       if isinstance(x, dict) and x.get("provider") == "socks5" and not x.get("paused")}
 
 
 def _cascade_local_routes(node_cfg, _proc="/proc/net/route"):
@@ -11520,6 +12241,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
                 res["changed"] += 1
     # IPTABLES (SNAT / FORWARD accept / MSS clamp) — always reconciled by tag (cheap, no-churn).
     _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res, default_egress_ip, devexit=devexit)
+    _s5x_rules(devexit, nets, res)        # a SOCKS5 exit's DNS redirect, UDP refusal and rule-DNS unmark (§6.6)
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
     smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e + arr_e})
     _smart_subs = {e["subnet"] for e in smart_e}                # smart interfaces (by subnet) → IPv6 fail-closed drop
@@ -17463,6 +18185,9 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     _probe = net_probe_status()
     if _probe:                                        # a reachability test's answer, waiting for the panel — absent otherwise (D1)
         snap["net_probe"] = _probe
+    _xt = exit_test_status()
+    if _xt:                                           # a SOCKS5 proxy test's answer, waiting for the panel — absent otherwise
+        snap["exit_test"] = _xt
     snap["iface_candidates"] = iface_candidates(node_cfg)
     # …and the devices this box DIALS OUT on, which that call classified on its way past. Read straight
     # after it, never before: the list is rebuilt by that call, so reading it earlier reports the previous
@@ -17470,6 +18195,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     snap["exit_candidates"] = list(_EXIT_CAND["list"])
     snap["devexit"] = _devexit_report()               # decision 2: per-exit device state → the node's Issues tag
     snap["exits"] = list(_EXITS["list"])              # imported exits: what we registered/wrote, their health — never a private key
+    snap["exit_kinds"] = list(EXIT_KINDS)             # the kinds this node can make, by name: the panel sends no other (s9a F17)
     # Interfaces in ANOTHER container's netns (AmneziaWG's server is the case). A SEPARATE key, never
     # merged into the candidates above: those are offers to adopt, and this one cannot be adopted in
     # place — see _container_ifaces. Reported so the panel can say what is running instead of nothing.
@@ -25139,6 +25865,8 @@ def main():
                 # NETWORKS P4 — a reachability test, only while the panel asks for one: judged AFTER the routing pass,
                 # against what this node carries now; the probe runs in a thread and its answer rides the next snapshot.
                 net_probe_take(node_cfg, reply.get("net_probe"), reply["desired"], online_max)
+                with contextlib.suppress(Exception):
+                    exit_test_take(reply.get("exit_test"))  # a SOCKS5 proxy the operator is testing (§6.8)
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name — INCLUDING
                 # keypair restore/rebaseline (ik): a failed Restore (e.g. awg-quick up failed) is reported so the
                 # panel can show "restore failed" + the reason instead of hanging on "restoring".

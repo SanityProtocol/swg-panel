@@ -19,6 +19,7 @@ the direction to the other half had rotted, which is how a twin stops being main
 
 Run: python3 tests/cross_language_twins_selftest.py      (0 = pass)
      --perturb           nudges pairs [1] and [2] out of step and expects RED.
+     --perturb-kinds     drops `socks5` from the SPA's EXIT_KINDS and expects RED in [4] alone.
      --perturb-awg <n>   drops one key from AmneziaWG key list <n> (0-5, see [3]; 6 = swg-sub's 3.x tail) and expects RED
                          in [3] alone. Without <n>, each of the seven in turn (a bare flag died on an IndexError, which a
                          sweep of every --perturb* reads as a perturbation that never ran).
@@ -28,6 +29,7 @@ import ast, os, re, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 PERTURB = "--perturb" in sys.argv
+PERTURB_KINDS = "--perturb-kinds" in sys.argv
 _AWG_ARG = sys.argv[sys.argv.index("--perturb-awg") + 1:][:1] if "--perturb-awg" in sys.argv else None
 if _AWG_ARG is not None and not (_AWG_ARG and _AWG_ARG[0].isdigit()):
     import subprocess
@@ -137,7 +139,20 @@ check("…and js/iface.js derives its 2.0 set from AWG_ORDER instead of holding 
                      src("js/iface.js"), re.M))
       and not re.search(r"^(export )?const AWG_KEYS\s*=", src("js/screen-settings.js"), re.M))
 
+print("\n[4] the exit kinds — the panel makes, the node runs, the SPA offers the same ones, by name (s9a F28)")
+_pk = ast.literal_eval(one("swg-panel-server", r"^EXIT_PROVIDERS = (\(.*\))$", "EXIT_PROVIDERS"))
+_nk = ast.literal_eval(one("swg-noded", r"^EXIT_KINDS = (\(.*\))$", "EXIT_KINDS"))
+_sk = ast.literal_eval(one("js/routing.js", r"^export const EXIT_KINDS = (\[.*\]);$", "EXIT_KINDS"))
+if PERTURB_KINDS:
+    _sk = [k for k in _sk if k != "socks5"]
+check("panel EXIT_PROVIDERS == noded EXIT_KINDS == SPA EXIT_KINDS", list(_pk) == list(_nk) == list(_sk), (_pk, _nk, _sk))
+
 print()
+if PERTURB_KINDS:
+    _red = [f for f in FAILS if "EXIT_KINDS" in f]
+    print("PERTURB OK — %s went red" % _red if _red and len(_red) == len(FAILS)
+          else "PERTURB FAILED — the SPA's kinds lost socks5 and [4] stayed green (or something else went red: %s)" % FAILS)
+    sys.exit(0 if _red and len(_red) == len(FAILS) else 1)
 if PERTURB_AWG is not None:
     _red = [f for f in FAILS if "AWG" in f or "==" in f]
     print("PERTURB OK — %s went red" % _red if _red and len(_red) == len(FAILS)

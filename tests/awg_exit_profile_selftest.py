@@ -171,7 +171,7 @@ check("a device whose kind no longer matches the profile is rebuilt",
       '_have_kind not in ("", _want_kind)' in nsrc)
 
 print("\n[4] health stops meaning 'the interface exists'")
-check("the node reports a handshake age", '"handshake": (_exit_handshake(rec, dev) if _live else None)' in nsrc)
+check("the node reports a handshake age", '"handshake": (_exit_handshake(rec, dev) if _live and prov != "socks5" else None)' in nsrc)
 # Asked by what the device IS, with the other tool as a fallback. Keyed off the RECORD it returned nothing
 # the moment record and device disagreed — exactly the case worth reporting — and `None` reads as "cannot
 # say", so the panel fell through to `ok` and the broken exit went GREEN again with no IP and no latency.

@@ -318,11 +318,11 @@ res, rows, d = harness([dict(DX, profile=dict(PR, endpoint="203.0.113.9:51820", 
 row = rows.get("aabbccdd") or {}
 check("a dial-out row carries no listen_port and reports its own endpoint",
       "listen_port" not in row and row.get("endpoint") == "203.0.113.9:51820", row)
-res, rows, d = harness([dict(DX, provider="socks5", profile=None)])
+res, rows, d = harness([dict(DX, provider="nope5", profile=None)])
 row = rows.get("aabbccdd") or {}
 check("an unknown kind is refused on the row", row.get("up") is False and "does not know" in str(row.get("error")), row)
 check("…and no WARP account is registered for it", CALLS["warp"] == 0, CALLS["warp"])
-res, rows, d = harness([dict(DX, provider="socks5", profile=None, down=True)])
+res, rows, d = harness([dict(DX, provider="nope5", profile=None, down=True)])
 row = rows.get("aabbccdd") or {}
 check("…a paused one reads paused, not failed", row.get("paused") is True and not row.get("error"), row)
 res, rows, d = harness([dict(DX, provider="", profile=None)])
@@ -489,9 +489,9 @@ check("the node's port table names the dial-in exit", "dial-in exit" in str(P._n
       P._node_ports(deps, nodes, NID))
 check("…an interface create on its port is refused", bool(P._port_conflict(deps, nodes, NID, 51820)))
 check("…and a mesh link never takes it", 51820 in P._used_ports(nodes, deps["node_snaps"], NID))
-c, e = save([{"id": "aabbccdd", "producer": "imported", "provider": "socks5"}])
+c, e = save([{"id": "aabbccdd", "producer": "imported", "provider": "nope5"}])
 check("an unknown kind is refused, not coerced to WARP", c is None and "does not know" in str((e or {}).get("error")), (c, e))
-odd = {"id": "aabbccdd", "producer": "imported", "provider": "socks5", "device": "wgx-aabbccdd", "label": "x", "socks": {"h": 1}}
+odd = {"id": "aabbccdd", "producer": "imported", "provider": "nope5", "device": "wgx-aabbccdd", "label": "x", "socks": {"h": 1}}
 c, e = save([dict(odd)], stored=[dict(odd)])
 check("…but one already stored is kept (the list stays savable)", e is None and c and {k: c[0].get(k) for k in odd} == odd, (c, e))
 c, e = save([dict(odd, enabled=False, label="y")], stored=[dict(odd)])
