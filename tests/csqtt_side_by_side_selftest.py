@@ -33,7 +33,7 @@ csqtt1 read it as already gone and the guard pulled its live TUN.
 
 Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
-                       rawcfg / noback [3] ·
+                       rawcfg / noback / forcefirst / csfloor [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
                        installover / nobackoff / respawnrec / showargs / spaceargs / nlsplit / nogone / keeplater / noflushlook / noflushguard / staleguard / scanloop / flushalways / rmtun /
                        keepfail [7] · keeprec [8]
@@ -63,6 +63,8 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
     "installover": ("[7]", "noded", '''                    if _fp or not _csqtt_scan_ok():''', '''                    if False:'''),
     "nobackoff": ("[7]", "noded", '            if _waiting and (_csqtt_foreign_pid', '            if False and (_csqtt_foreign_pid'),
     "noback": ("[3]", "noded", '''        if back and back[0] != pid:''', '''        if False:'''),
+    "forcefirst": ("[3]", "noded", '        _wdtt_hostproc_flush(force=after_stop)', '        _wdtt_hostproc_flush(force=True)'),
+    "csfloor": ("[3]", "noded", '    back = _foreign(after_stop=True)', '    back = _foreign()'),
     "showargs": ("[7]", "noded", '''        shown += " " + _p1 if not (_p1.startswith("-") or "=" in _p1 or any(c.isspace() for c in _p1)) else " …"''', '''        shown = " ".join(parts)'''),
     "nogone": ("[7]", "noded", '            if _waiting and (_csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()):', '            if _waiting:'),
     "keeplater": ("[7]", "noded", '''    for _i in [i for i in _CSQTT_ADOPT_LATER if i not in want]:''', '''    for _i in []:'''),
@@ -219,6 +221,11 @@ try:
     b = box()
     ok, why = N._csqtt_stop_foreign("csqtt1", "/etc/other")
     check("a stop for a store this server does not serve signals nothing", not b.kills, (ok, why, b.kills))
+    b = box(); fl3 = []
+    N._wdtt_hostproc_flush = lambda force=False: fl3.append(force)
+    ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25")
+    check("the read before the stop keeps the walk floor (no extra privileged walk per try); the read after it skips it",
+          ok and fl3[:1] == [False] and fl3[-1] is True, (ok, fl3))
     b = box()
     SIDE2 = (204, SIDE[1])                       # what a supervisor starts the moment 202 dies: same TUN, same store
     N._csqtt_procs = lambda: [p for p in (STOCK, SIDE, OURS) if p[0] in b.alive or p[0] == 303] + ([SIDE2] if 202 in b.kills else [])

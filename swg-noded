@@ -21813,8 +21813,7 @@ def _wdtt_remove(iface):
     if not _WDTT_NAME_RE.match(iface or ""):   # never rm -rf a path built from an unvalidated name
         return
     # a foreign server holds this name (a take-over that never landed), or the scan cannot say: leave the interface
-    if NODE_KIND == "docker":
-        _wdtt_hostproc_flush()               # it decides an interface delete: not off a walk up to 120 s old
+    _wdtt_hostproc_flush()                   # it decides an interface delete: not off a walk up to 120 s old (docker)
     _theirs = _wdtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()
     if NODE_KIND == "docker":
         _wdtt_docker_stop(iface)                         # SIGTERM → clean interface + firewall teardown
@@ -23279,8 +23278,7 @@ def _csqtt_remove(iface):
         return
     # A server we don't manage holds this TUN (ours never got it), or the scan can't say: leave the device, as the stale-TUN
     # guard does — a TUN left behind is recoverable and loud, a live server's pulled out from under it is neither
-    if NODE_KIND == "docker":
-        _wdtt_hostproc_flush()               # it decides a TUN delete: not off a walk up to 120 s old
+    _wdtt_hostproc_flush()                   # it decides a TUN delete: not off a walk up to 120 s old (docker)
     _theirs = _csqtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()
     if NODE_KIND == "docker":
         _csqtt_docker_stop(iface)
@@ -23774,9 +23772,11 @@ def _csqtt_stop_foreign(iface, cfgdir):
     is cached for 45s."""
     _host = (NODE_KIND == "docker")               # the pid lives in the HOST namespace; os.kill here can't see it
 
-    def _foreign():
-        """(pid, flags) of the foreign server on this iface RIGHT NOW, or None — never off a cached walk, nor the floor's."""
-        _wdtt_hostproc_flush(force=True)
+    def _foreign(after_stop=False):
+        """(pid, flags) of the foreign server on this iface RIGHT NOW, or None — never off a cached walk; after a stop not
+        off the floor's either (a walk from before the stop would still show it). Before the stop the floor's recent walk
+        is fresh enough, and saves a privileged container per try."""
+        _wdtt_hostproc_flush(force=after_stop)
         # By the TUN it holds AND the store it serves: with a 2.5 server deployed next to a 2.1.9 one, the box runs
         # two foreign servers, and the take-over of one must never pick up the other.
         return next(((p, f) for p, f in _csqtt_procs()
@@ -23804,7 +23804,7 @@ def _csqtt_stop_foreign(iface, cfgdir):
         # Expect it to take the full StopTimeout then SIGKILL: an unpatched csqtt registers a SIGTERM handler
         # and never consumes it (see forks/csqtt/README.md), so SIGTERM is neither handled nor fatal.
         ok, why = _ctr_stop_foreign(cid, runtime)
-        if not _foreign() and _csqtt_scan_ok():
+        if not _foreign(after_stop=True) and _csqtt_scan_ok():
             # Gone, and we know it. Do NOT fall through to the signals: that pid is free now and may already
             # belong to something else — the very staleness this function re-reads the table to avoid.
             _drop_tun()
@@ -23827,7 +23827,7 @@ def _csqtt_stop_foreign(iface, cfgdir):
                     if not _pid_alive(pid):
                         break
                     time.sleep(0.1)
-    back = _foreign()
+    back = _foreign(after_stop=True)
     if not (not back and _csqtt_scan_ok()):
         if back and back[0] != pid:
             # Another process on the same TUN and store, a moment after this one died: something restarts it. Say what,

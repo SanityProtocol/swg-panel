@@ -58,15 +58,13 @@ PERTURBATIONS = {
     # WDTT: remove deletes the interface a foreign server holds
     "wremove": ('''    _theirs = _wdtt_foreign_pid(iface) is not None or not _csqtt_scan_ok()''', '''    _theirs = False'''),
     # WDTT: the unsealed identity of a vault restore is recorded with an install refusal
-    "wkeys": ('''                    inst.pop("_restore_wg_keys", None)
-                    res["errors"].append(iface + ": " + _e); have[iface] = inst; continue''',
-              '''                    res["errors"].append(iface + ": " + _e); have[iface] = inst; continue'''),
+    "wkeys": ('''                    # of a vault restore in it: that key material is not persisted (as at the end of this loop)
+                    inst.pop("_restore_wg_keys", None)''',
+              '''                    # of a vault restore in it: that key material is not persisted (as at the end of this loop)'''),
     # WDTT: the take-over pass's wording reads the record, which the pass popped adopt_foreign off
     "wwording": ('''                    elif (req or {}).get("adopt_foreign"):''', '''                    elif inst.get("adopt_foreign"):'''),
     # WDTT: the check after the stop may be answered by the walk from before it (the 5 s floor)
-    "wfloor": ('''    _wdtt_hostproc_flush(force=True)
-    _back = _wdtt_foreign_pid(iface)''', '''    _wdtt_hostproc_flush()
-    _back = _wdtt_foreign_pid(iface)'''),
+    "wfloor": ('''    _wdtt_hostproc_flush(force=True)''', '''    _wdtt_hostproc_flush()'''),
     # a miss is cached for the life of the process again
     "cache": ('''    if not _CTR_CLI["v"]:''', '''    if _CTR_CLI["v"] is None:'''),
 }
@@ -308,20 +306,30 @@ r7 =N.reconcile_wdtt({"wdtt8": {"listen": "0.0.0.0:56080", "wg_port": 56081, "wg
                                  "adopt_foreign": True}})
 check("[7] WDTT: on the take-over pass the refusal speaks of the take-over, never \"remove this one\"",
       any("being taken over" in e for e in r7["errors"]) and not any("remove this one" in e for e in r7["errors"]), r7)
-# docker: the check after the stop reads past the 5 s floor; the guard's freshness is _foreign_on's
-forced = []
+# docker: the check after the stop reads past the 5 s floor. Modelled as the cache is: the walk the code reads is the
+# CACHED one, refreshed only by a flush that skips the floor (force) — a plain flush inside the floor still answers with
+# the walk from before the stop. The stop itself runs on the HOST (the local read of a host pid finds nothing).
 N.NODE_KIND = "docker"
-N._wdtt_hostproc_flush = lambda force=False: forced.append(force)
+w = {"live": [(5150, {"iface": "wdtt7", "config-dir": "/root/fx", "_server": True})]}
+w["cached"] = list(w["live"])
+forced = []
+def _flush(force=False):
+    forced.append(force)
+    if force:
+        w["cached"] = list(w["live"])
+N._wdtt_hostproc_flush = _flush
+N._wdtt_procs = lambda: list(w["cached"])
+N._wdtt_cmdline_flags = lambda pid: {}                   # a host pid: nothing in this container's /proc
 N._wdtt_flags_host = lambda pid: dict(fl7)
-N.host_sh = lambda cmd, *a, **k: R(0)
-procs7["rows"] = [(5150, {"iface": "wdtt7", "config-dir": "/root/fx", "_server": True})]
-def gone(pid, sig):
-    procs7["rows"] = []
-N.os.kill = gone
+def _hsh(cmd, *a, **k):
+    if "kill -TERM" in cmd:
+        w["live"] = []                                    # it obeys the TERM at once — inside the floor
+    return R(0)
+N.host_sh = _hsh
 N._wdtt_adopt_seed = _real_seed
-N._wdtt_adopt_seed({"iface": "wdtt7", "fork": "amurcanov"})
-check("[7] WDTT docker: the read after the stop skips the floor (a walk from before the stop must not answer it)",
-      True in forced, forced)
+err = N._wdtt_adopt_seed({"iface": "wdtt7", "fork": "amurcanov"})
+check("[7] WDTT docker: a server stopped inside the floor reads as stopped — the read after the stop skips the floor",
+      err == "" and True in forced, (err, forced))
 N.NODE_KIND = "baremetal"
 
 # ── a docker node stops it on the host─────────────────────────────────────────────────────────────────────────────
