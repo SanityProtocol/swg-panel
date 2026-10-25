@@ -34,7 +34,8 @@ csqtt1 read it as already gone and the guard pulled its live TUN.
 
 Run: python3 tests/csqtt_side_by_side_selftest.py      (0 = pass)
      --perturb <name>  plants one regression and expects RED:  noline [1] [5] · bareiface [3] [4] · nocfg [3] ·
-                       rawcfg / noback / forcefirst / csfloor / pidreuse [3] ·
+                       rawcfg / noback / forcefirst / csfloor / pidreuse /
+                       stcheck [3] ·
                        nocache / failttl / nolabel21 / strictre / mid21 [2] · adopt21 [5] · nocheck [6] ·
                        installover / nobackoff / respawnrec / showargs / spaceargs / nlsplit / nogone / keeplater / noflushlook / noflushguard / staleguard / scanloop / flushalways / rmtun /
                        keepfail [7] · keeprec [8]
@@ -64,7 +65,8 @@ PLANTS = {   # name: (sections, file, anchor, replacement)
     "installover": ("[7]", "noded", '''                    if _fp or not _csqtt_scan_ok():''', '''                    if False:'''),
     "nobackoff": ("[7]", "noded", '            if _waiting and (_csqtt_foreign_pid', '            if False and (_csqtt_foreign_pid'),
     "noback": ("[3]", "noded", '''        if back and back[0] != pid:''', '''        if False:'''),
-    "pidreuse": ("[3]", "noded", 'grep -qF -- %s || exit 3; ', 'grep -qF -- %s || true; '),
+    "pidreuse": ("[3]", "noded", '        if _st and _it(_fl):', '        if _st:'),
+    "stcheck": ("[3]", "noded", '"s || exit 0; kill -TERM %d', '"true || exit 0; kill -TERM %d'),
     "forcefirst": ("[3]", "noded", '        _wdtt_hostproc_flush(force=after_stop)', '        _wdtt_hostproc_flush(force=True)'),
     "csfloor": ("[3]", "noded", '    back = _foreign(after_stop=True)', '    back = _foreign()'),
     "showargs": ("[7]", "noded", '''        shown += " " + _p1 if not (_p1.startswith("-") or "=" in _p1 or any(c.isspace() for c in _p1)) else " …"''', '''        shown = " ".join(parts)'''),
@@ -223,26 +225,63 @@ try:
     b = box()
     ok, why = N._csqtt_stop_foreign("csqtt1", "/etc/other")
     check("a stop for a store this server does not serve signals nothing", not b.kills, (ok, why, b.kills))
-    # docker: the host-side kill re-checks, in the same hop, that the pid is still this server (a walk can be seconds
-    # old, and a crash-looping server's number reused) — real processes, the host command run by a real shell
+    # docker: the host-side stop reads the pid again (flags + start time, one hop), holds it to the rule that found it, and
+    # signals only that process — real processes (python, whose command line survives any /bin/sh), the host command run
+    # by a real shell. The walk is modelled as the cache is: stale until a forced flush, then what the processes really are
+    def child(*argv, ignore_term=False):
+        code = "import signal,time\n" + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "") + "time.sleep(60)"
+        return subprocess.Popen([sys.executable, "-c", code] + list(argv))
+    def real_flags(pr):
+        return N._wdtt_flags_from_argv([x.decode() for x in open("/proc/%d/cmdline" % pr.pid, "rb").read().split(b"\0") if x])
     _kind3, _hsh3 = N.NODE_KIND, N.host_sh
-    srv = subprocess.Popen(["sh", "-c", "sleep 30", "csqtt-server", "--config-dir", "/etc/csqtt25"])
-    other = subprocess.Popen(["sh", "-c", "sleep 30", "an-unrelated-program"])
-    _REAL_SLEEP(0.2)
-    b = box()
-    N.NODE_KIND = "docker"
-    N.host_sh = lambda cmd, *a, **k: subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
-    N._csqtt_procs = lambda: [(srv.pid, SIDE[1])] if srv.poll() is None else []
-    ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25")
-    _REAL_SLEEP(0.2)
-    check("docker: a pid that is still the server (its command line names the store) is stopped host-side",
-          ok and srv.poll() is not None, (ok, why, srv.poll()))
-    N._csqtt_procs = lambda: [(other.pid, SIDE[1])]                 # the walk says 202's store; the pid is now another program
-    ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25")
-    check("…a pid now reused by an unrelated program is never signalled, and the take-over says why",
-          not ok and other.poll() is None and "no longer that server" in why, (ok, why, other.poll()))
-    other.kill(); srv.kill()
-    N.NODE_KIND, N.host_sh = _kind3, _hsh3
+    kids = []
+    try:
+        srv = child("--iface", "csqtt25", "--config-dir", "/etc/csqtt25", "--tun-addr", "10.66.68.1/24"); kids.append(srv)
+        sib = child("--iface", "csqtt25b", "--config-dir", "/etc/csqtt25", "--tun-addr", "10.66.69.1/24"); kids.append(sib)
+        deaf = child("--iface", "csqtt26", "--config-dir", "/etc/csqtt26", "--tun-addr", "10.66.70.1/24", ignore_term=True); kids.append(deaf)
+        _REAL_SLEEP(0.3)
+        def docker_box(stale_rows):
+            bb = box()
+            N.NODE_KIND = "docker"
+            N.host_sh = lambda cmd, *a, **k: subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+            w = {"rows": list(stale_rows)}
+            def _flush(force=False):
+                if force:
+                    w["rows"] = [(pr.pid, real_flags(pr)) for pr in kids if pr.poll() is None]
+            N._wdtt_hostproc_flush = _flush
+            N._csqtt_procs = lambda: list(w["rows"])
+            return bb
+        docker_box([(srv.pid, real_flags(srv))])
+        ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25")
+        _REAL_SLEEP(0.2)
+        check("docker: the pid that is still the server is stopped host-side, and the stop reads as done",
+              ok and srv.poll() is not None, (ok, why, srv.poll()))
+        # a stale walk names the stock server's store for a pid that is now a sibling 2.5 server on /etc/csqtt25
+        docker_box([(sib.pid, {**real_flags(sib), "iface": "csqtt1", "config-dir": "/etc/csqtt"})])
+        ok, why = N._csqtt_stop_foreign("csqtt1", "/etc/csqtt")
+        check("…a pid that is now another server (/etc/csqtt25 is not /etc/csqtt — compared whole) is never signalled",
+              sib.poll() is None, (ok, why, sib.poll()))
+        check("…and the take-over reads the server it wanted as gone (the fresh read), not as \"still running\"", ok, (ok, why))
+        live = child("--iface", "csqtt27", "--config-dir", "/etc/csqtt27", "--tun-addr", "10.66.71.1/24"); kids.append(live)
+        _REAL_SLEEP(0.3)
+        docker_box([(live.pid, real_flags(live))])
+        _ident = N._host_proc_ident
+        N._host_proc_ident = lambda pid: (_ident(pid)[0], "1")         # its number, read again, now started at another time
+        ok, why = N._csqtt_stop_foreign("csqtt27", "/etc/csqtt27")
+        N._host_proc_ident = _ident
+        _REAL_SLEEP(0.2)
+        check("…a process whose start time is not the one read (the number reused in between) gets no signal at all",
+              live.poll() is None, (ok, why, live.poll()))
+        docker_box([(deaf.pid, real_flags(deaf))])
+        ok, why = N._csqtt_stop_foreign("csqtt26", "/etc/csqtt26")
+        _REAL_SLEEP(0.2)
+        check("…a server that ignores TERM is KILLed after the wait, still checked as the same process",
+              ok and deaf.poll() is not None, (ok, why, deaf.poll()))
+    finally:
+        for pr in kids:
+            with __import__("contextlib").suppress(Exception):
+                pr.kill()
+        N.NODE_KIND, N.host_sh = _kind3, _hsh3
     b = box(); fl3 = []
     N._wdtt_hostproc_flush = lambda force=False: fl3.append(force)
     ok, why = N._csqtt_stop_foreign("csqtt25", "/etc/csqtt25")
