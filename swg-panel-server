@@ -19164,6 +19164,20 @@ def parse_wg_profile(text):
     return prof, ""
 
 
+def devexit_live(snap):
+    """{device: {state[, no_traffic]}} — what the node says about each exit DEVICE its routing names (`snap.devexit`), for an
+    ADOPTED exit's `live` on /api/state: an adopted device has no row in `snap.exits` (the node did not create it), and its
+    dead-tunnel verdict (SOCKS5-EXIT-PLAN §5.4) is carried per devexit entry. State and verdict are the device's, so the
+    first entry stands for all of a device's subnets. A device the routing does not name is absent: nothing is judged."""
+    out = {}
+    for e in (snap or {}).get("devexit") or []:
+        d = str((e or {}).get("dev") or "") if isinstance(e, dict) else ""
+        if d and d not in out:
+            out[d] = dict({"state": str(e.get("state") or "")},
+                          **({"no_traffic": e["no_traffic"]} if isinstance(e.get("no_traffic"), dict) else {}))
+    return out
+
+
 def exit_cfg_sig(rec):
     """A digest of ONLY what an imported exit hands the node — the answer to "has the node applied what I
     just saved?", which nothing else on the wire could give.
@@ -24316,6 +24330,7 @@ def api(method, path, qs, body, deps):
             # EXIT device must also not be this node's own ingress — a managed interface, a WDTT/csqtt server's
             # device, or a qWDTT RAW second TUN. Bound to this node once (§11.1 tier 3).
             _xlive = {str((x or {}).get("id")): x for x in (snap.get("exits") or []) if isinstance(x, dict)}
+            _dxlive = devexit_live(snap)          # …and about the adopted ones, by device (their health, §5.4)
             # ⚠️ …AND WHETHER THIS NODE HAS EVER HEARD OF EXITS AT ALL, which is not the same question as
             # "what does it say about them". A node whose software predates the whole feature reports no
             # `exits` key, so `_xlive` is empty and always will be — and every state below then read as
@@ -24584,8 +24599,10 @@ def api(method, path, qs, body, deps):
                         "exits": [dict({k: v for k, v in e.items() if k != "profile"},
                                        why_not=_exr2(e),
                                        # what the NODE says about the exit it created: up, address, health.
-                                       # Keyed by id, because a device name is not an identity.
-                                       live=(_xlive.get(str(e.get("id"))) or {}),
+                                       # Keyed by id, because a device name is not an identity. An ADOPTED exit was not
+                                       # created by the node, so it reads the device's state and verdict instead.
+                                       live=((_xlive.get(str(e.get("id"))) or {}) if e.get("producer") == "imported"
+                                             else (_dxlive.get(str(e.get("device") or "")) or {})),
                                        **({"profile": {k2: v2 for k2, v2 in (e.get("profile") or {}).items()
                                                        if k2 != "private_key"}} if e.get("profile") else {}))
                                   for e in (c.get("exits") or []) if isinstance(e, dict)],

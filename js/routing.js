@@ -3446,6 +3446,16 @@ export const exitProv = x => String((x || {}).provider || "warp");
 export const exitIsDialin = x => exitProv(x) === "profile" && !!((x || {}).profile || {}).listen_port
   && !((x || {}).profile || {}).endpoint;
 
+/** Where the traffic of an exit the NODE is routing around goes meanwhile, by its kill-switch — and the plain stalled
+ *  sentence — shared by the imported and the adopted arm, so both say it in one set of words (and one set of RU keys). */
+const exitFellSay = ex => ex.killswitch
+  ? T("Meanwhile the kill-switch is holding everything that uses this exit.")
+  : T("Meanwhile everything that uses this exit goes out through this node's own IP.");
+const exitStalledSay = ex => ex.killswitch
+  ? T("This exit has stopped carrying traffic, so the kill-switch is holding everything that uses it. It resumes by itself once the exit works again.")
+  : T("This exit has stopped carrying traffic, so everything that uses it is going out through this node's own IP. It moves back by itself once the exit works again.");
+const exitRecoveringSay = () => T("Traffic crosses it again — the node routes back through it within a minute.");
+
 export function exitHealth(x, node) {
   const ex = x || {};
   const l = ex.live || {};
@@ -3473,6 +3483,16 @@ export function exitHealth(x, node) {
                         why: T("This node hasn't reported a device by this name.") };
     if (cand.up === false) return { state: "down", tone: "warn", dot: "down",
                                     why: T("The node reports this device is not up.") };
+    // ⚠️ UP AND CARRYING NOTHING, as the node judged it (SOCKS5-EXIT-PLAN §5): a TUN the operator runs — their own
+    // tun2socks or sing-box — stays up when the proxy behind it dies, and the node has already routed around it by this
+    // exit's kill-switch. `live` here is the device's report (state + verdict), not a created exit's row. Absent on a node
+    // too old to judge adopted devices, which reads exactly as before.
+    const nt = l.no_traffic;
+    const fresh = !nodeStale((node || {}).id);       // a stale node's last `back_in` is not believed (as for an imported exit)
+    if (nt && Number.isFinite(nt.back_in) && fresh)
+      return { state: "recovering", tone: "busy", icon: "refresh", dot: "down", why: exitRecoveringSay() + " " + exitFellSay(ex) };
+    if (nt) return { state: "stalled", tone: "warn", icon: "warn", dot: "down", why: exitStalledSay(ex)
+      + (String(nt.why || "").trim() ? " " + T("The node reports: {v1}", { v1: String(nt.why).trim() }) : "") };
     return { state: "ok", tone: "", dot: "up", why: T("Up on the node.") };
   }
   // ⚠️ A REPORT ABOUT THE CONFIG YOU JUST REPLACED IS NOT A REPORT ABOUT THIS ONE, and every test below
@@ -3529,9 +3549,7 @@ export function exitHealth(x, node) {
   // Only a handshake KNOWN to be fresh is "connected" (an unreadable one, null, is not); only a pass whose trace crossed
   // nothing blames NAT (a router that just came back carries while the judge waits out its hysteresis); and what the
   // failover did with the traffic is said too, by this exit's kill-switch, as the plain `stalled` row says it.
-  const _fell = l.no_traffic ? " " + (ex.killswitch
-    ? T("Meanwhile the kill-switch is holding everything that uses this exit.")
-    : T("Meanwhile everything that uses this exit goes out through this node's own IP.")) : "";
+  const _fell = l.no_traffic ? " " + exitFellSay(ex) : "";
   if (exitIsDialin(ex) && !(l.handshake > 0 && l.handshake <= 180)) return { state: "waiting", tone: "warn", icon: "warn", dot: "down",
     why: T("Waiting for the router to connect. Check the router is on, its config imported, and UDP {v1} open on this node.",
            { v1: (ex.profile || {}).listen_port }) + _fell };
@@ -3540,7 +3558,7 @@ export function exitHealth(x, node) {
   // Progress, not a fault (`busy`, as `configuring`); no countdown — a figure from the last report cannot age with the poll —
   // and a stale node's word is not taken for it.
   if (l.no_traffic && Number.isFinite(l.no_traffic.back_in) && !nodeStale((node || {}).id)) return { state: "recovering", tone: "busy", icon: "refresh", dot: "down",
-    why: T("Traffic crosses it again — the node routes back through it within a minute.") + _fell };
+    why: exitRecoveringSay() + _fell };
   // A stale node's last `back_in` is not believed (above), but it did say the tunnel carried again: that is no router with
   // NAT missing — the row takes the plain stalled reading below rather than send the operator to the router (s9d F9)
   if (exitIsDialin(ex) && l.no_traffic && !Number.isFinite(l.no_traffic.back_in) && !(l.trace || {}).ip) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
@@ -3550,9 +3568,7 @@ export function exitHealth(x, node) {
   // the traffic, which depends on this exit's own kill-switch. Absent on a node too old to judge: it falls
   // through to the tests below exactly as before.
   if (l.no_traffic) return { state: "stalled", tone: "warn", icon: "warn", dot: "down",
-    why: said(ex.killswitch
-      ? T("This exit has stopped carrying traffic, so the kill-switch is holding everything that uses it. It resumes by itself once the exit works again.")
-      : T("This exit has stopped carrying traffic, so everything that uses it is going out through this node's own IP. It moves back by itself once the exit works again.")) };
+    why: said(exitStalledSay(ex)) };
   // ⚠️ UP IS NOT WORKING. This returned "ok" the moment the device existed, whatever was at the other end —
   // so a pasted AmneziaWG profile brought up as plain WireGuard was drawn GREEN while carrying nothing: the
   // interface was up, and up was the whole question. A handshake is the first fact that is only true if the

@@ -2567,6 +2567,10 @@ EXIT_ALIVE_AFTER_S = 60          # and carrying traffic again for this long befo
 EXIT_REACH_TARGETS = (("8.8.8.8", 443), ("9.9.9.9", 443))
 EXIT_REACH_TIMEOUT_S = 3
 EXIT_PROBE_BOUND_S = 40         # a pass waits this long at most for all exit probes together (one device's worst case)
+# An ADOPTED device (a TUN the operator runs — their own tun2socks, sing-box) that is carrying is probed at most this
+# often: its trace may cross a metered proxy, and 6–7 KB every 5 s is ~100 MB a day per exit (SOCKS5-EXIT-PLAN T3).
+# Failing, dead, or not judged yet, it is probed every pass, so a failover is not slowed past this first minute.
+EXIT_PROBE_IDLE_S = 60
 EXIT_REDIAL_EVERY_S = 30        # a tunnel carrying nothing re-resolves its endpoint's NAME at most this often (_exit_redial)
 
 
@@ -10530,9 +10534,28 @@ def _exit_trace(dev):
 _EXIT_HEALTH = {}    # exit DEVICE -> {"dead", "fail_since", "fails", "ok_since", "since", "why"} — see _exit_judge
 
 
+_EXIT_REACH_TLS = {}    # the reach probe's no-verify TLS context, built once — see _exit_reach
+
+
+def _exit_reach_tls():
+    """The context `_exit_reach` completes its handshakes with: no verification (the targets are IP literals and only an
+    answer from the far end is asked for), so no CA bundle is read — built once all the same, never per probe (B8)."""
+    c = _EXIT_REACH_TLS.get("ctx")
+    if c is None:
+        c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        c.check_hostname, c.verify_mode = False, ssl.CERT_NONE
+        _EXIT_REACH_TLS["ctx"] = c
+    return c
+
+
 def _exit_reach(dev, targets=EXIT_REACH_TARGETS, timeout=EXIT_REACH_TIMEOUT_S):
-    """Does ANY of `targets` accept a TCP connection made THROUGH `dev`? True / False, or None when the probe
+    """Does ANY of `targets` answer a TLS handshake made THROUGH `dev`? True / False, or None when the probe
     could not be made at all.
+
+    ⚠️ A CONNECT ALONE IS NOT AN ANSWER (SOCKS5-EXIT-PLAN T1). A userspace stack behind a TUN — hev-socks5-tunnel,
+    sing-box, tun2socks — accepts every TCP connection itself before it asks its proxy, so a connect "succeeds" through
+    a dead proxy (measured on hev 2.18.0: connect ok in 0 ms, the TLS handshake reset in 1 ms or timed out at 10 s).
+    Only bytes from the far end prove the path: the handshake has to complete.
 
     The second opinion `_exit_judge` asks for when the trace fails. The trace is one HTTPS request to one
     company's host by name, so it also fails when the node's resolver is down or when only that host is — and
@@ -10549,7 +10572,21 @@ def _exit_reach(dev, targets=EXIT_REACH_TARGETS, timeout=EXIT_REACH_TIMEOUT_S):
     other way on 6.17, unprivileged: the bind is allowed, and `lo` answers False after one timeout — which is
     the right answer, nothing reaches the internet through it."""
     import errno
-    socks, pending, asked = [], [], False
+    socks, pending, asked = [], {}, False     # pending: socket -> "c" connecting | "r" / "w" what its handshake waits for
+    def _hs(t):
+        try:
+            t.do_handshake()
+            return True
+        except ssl.SSLWantReadError:
+            return "r"
+        except ssl.SSLWantWriteError:
+            return "w"
+        except (ssl.SSLError, OSError):
+            return False                          # closed, reset, or not TLS: this target did not answer
+    def _tls(s):
+        t = _exit_reach_tls().wrap_socket(s, do_handshake_on_connect=False)
+        socks.append(t)
+        return t, _hs(t)
     try:
         for host, port in targets:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -10564,9 +10601,13 @@ def _exit_reach(dev, targets=EXIT_REACH_TARGETS, timeout=EXIT_REACH_TIMEOUT_S):
             rc = s.connect_ex((host, port))
             asked = True
             if rc == 0:
-                return True
-            if rc in (errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY):
-                pending.append(s)
+                t, st = _tls(s)
+                if st is True:
+                    return True
+                if st:
+                    pending[t] = st
+            elif rc in (errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY):
+                pending[s] = "c"
             # anything else (ENETUNREACH, ENODEV …) is the tunnel answering "no" — a real failure, not an unknown
         if not asked:
             return None
@@ -10575,11 +10616,20 @@ def _exit_reach(dev, targets=EXIT_REACH_TARGETS, timeout=EXIT_REACH_TIMEOUT_S):
             left = end - time.monotonic()
             if left <= 0:
                 break
-            _, w, _ = select.select([], pending, [], left)
-            for s in w:
-                pending.remove(s)
-                if s.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0:
+            r, w, _ = select.select([s for s, v in pending.items() if v == "r"],
+                                    [s for s, v in pending.items() if v != "r"], [], left)
+            for s in set(r) | set(w):
+                st = pending.pop(s)
+                if st == "c":
+                    if s.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) != 0:
+                        continue
+                    s, st = _tls(s)
+                else:
+                    st = _hs(s)
+                if st is True:
                     return True
+                if st:
+                    pending[s] = st
         return False
     except OSError:
         return None if not asked else False
@@ -10614,6 +10664,7 @@ def _exit_probe_all(devs):
     if ths:
         with contextlib.suppress(Exception):     # (re)built here, on the caller's thread: the probes only read it — and one
             _exit_tls()                          # that cannot be built is each probe's own error, reported as before
+            _exit_reach_tls()
     for t in ths:
         t.start()
     end = time.monotonic() + EXIT_PROBE_BOUND_S
@@ -10663,18 +10714,70 @@ def _exit_judge(dev, tr, now=None, reach=None):
     return st
 
 
+def _exit_no_traffic(st, now=None):
+    """What the report says about a device the node is routing around: {since, why[, back_in]} while its verdict is
+    dead, None otherwise — one shape for an imported exit's row and an adopted device's `devexit` entry.
+    `back_in`: carrying again, the seconds left before traffic moves back (EXIT_ALIVE_AFTER_S) — so the row says it is
+    recovering instead of still blaming the tunnel for that minute."""
+    if not st or not st.get("dead"):
+        return None
+    now = time.time() if now is None else now
+    return dict({"since": int(st["since"]), "why": st["why"]},
+                **({"back_in": max(0, int(EXIT_ALIVE_AFTER_S - (now - st["ok_since"])))}
+                   if st.get("ok_since") is not None else {}))
+
+
+_EXIT_PROBED_AT = {}    # adopted device -> time.monotonic() of its last probe — see _exit_adopted
+
+
+def _exit_adopted(devexit, mine, managed=()):
+    """[(dev, due)] — the ADOPTED exit devices this pass judges (SOCKS5-EXIT-PLAN §5.1): a device something else runs, which
+    the routing names (`cascade.devexit`) and which is neither an exit this node creates (`mine`, paused ones included) nor
+    one of its own interfaces. `due`: probe it this pass (EXIT_PROBE_IDLE_S).
+
+    ⚠️ NOT A NETWORK CARD (T5): a probe pinned to a NIC whose gateway lives only in the exit's table ARPs for the
+    internet and fails on a healthy uplink — a NIC never enters _EXIT_HEALTH, so its routing cannot be fed a verdict.
+    ⚠️ NOT A MESH LINK, nor any interface the node manages (`managed`): the onward hop names the leg to the next node as a
+    devexit device, and that leg has its own health (the mesh probe) — a Cloudflare trace through it is not the question,
+    and a verdict on it would withhold the hop. Only an UP device is judged: a down or absent one already fails over by
+    its link state."""
+    now, out, seen = time.monotonic(), [], set()
+    for e in devexit or []:
+        dev = str((e or {}).get("dev") or "") if isinstance(e, dict) else ""
+        if not dev or dev in seen or dev in mine or dev in managed or dev.startswith("swg_"):
+            continue
+        seen.add(dev)
+        if _dev_is_ether(dev) or _dev_link_state(dev) != "up":
+            continue
+        st = _EXIT_HEALTH.get(dev)
+        out.append((dev, st is None or st["dead"] or st["fails"] > 0
+                    or now - _EXIT_PROBED_AT.get(dev, now - EXIT_PROBE_IDLE_S) >= EXIT_PROBE_IDLE_S))
+    return out
+
+
+def _devexit_report():
+    """`snap["devexit"]`: the routing pass's device entries, and while the node routes around a device, why and since when
+    (`no_traffic`, read now so `back_in` is current) — present only then, so a healthy node reports what it always did. It is
+    how an ADOPTED device's verdict reaches the panel (§5.4): it has no row in `snap["exits"]`."""
+    return [dict(e, no_traffic=_nt) if _nt else e for e in _DEVEXIT["list"]
+            for _nt in (_exit_no_traffic(_EXIT_HEALTH.get(str(e.get("dev") or ""))),)]
+
+
 def _devexit_state(dev):
     """"up" | "down" | "absent" | "dead" — `_dev_link_state`, plus the one answer the device cannot give about
     itself: UP, but the tunnel behind it carries nothing. Every reader that decides whether an exit device may
     carry traffic asks THIS, so the routing, its drift signature and the node's report cannot disagree about it.
-    Only an imported exit is ever judged; an adopted device has no entry and reads exactly as it did."""
+    Judged: an imported exit's device, and an adopted point-to-point device the routing names (`_exit_adopted`);
+    a network card never has a verdict and reads exactly its link state."""
     s = _dev_link_state(dev)
     return "dead" if s == "up" and (_EXIT_HEALTH.get(str(dev or "")) or {}).get("dead") else s
 
 
-def reconcile_exits(desired, res):
+def reconcile_exits(desired, res, devexit=None, managed=()):
     """Materialise the exits the panel says this node should CREATE (`imported`), and reap the ones it no
-    longer lists. Declarative, like every other reconciler here: the panel states what should exist, the
+    longer lists. `devexit` (the reply's `cascade.devexit`) and `managed` (this node's own interfaces) name the ADOPTED
+    devices judged in the same probe batch (`_exit_adopted`, SOCKS5-EXIT-PLAN §5).
+    Declarative, like every other reconciler here: the panel states what should exist, the
     node converges, and a node that misses a pass self-heals on the next one.
 
     Boot persistence comes from this loop rather than from a `wg-quick@` unit: if the device is gone, the
@@ -10697,12 +10800,7 @@ def reconcile_exits(desired, res):
         return {"id": xid, "device": dev, "provider": prov, "up": _live,
                     # Present only while the node is routing around this tunnel, so its presence alone is the
                     # fact the panel shows; an older node never sends it and the row reads as it always did.
-                    # `back_in`: carrying again, the seconds left before traffic moves back (EXIT_ALIVE_AFTER_S) — so the
-                    # row says it is recovering instead of still blaming the tunnel for that minute
-                    "no_traffic": (dict({"since": int(_hl["since"]), "why": _hl["why"]},
-                                        **({"back_in": max(0, int(EXIT_ALIVE_AFTER_S - (time.time() - _hl["ok_since"])))}
-                                           if _hl.get("ok_since") is not None else {}))
-                                   if _hl and _hl["dead"] else None),
+                    "no_traffic": _exit_no_traffic(_hl),
                     "address": rec.get("address", ""), "public_key": rec.get("pub", ""),
                     "peer_key": rec.get("peer_key", ""),
                     # a dial-in exit has no endpoint of its own: report where the router dialled FROM (its NAT address,
@@ -10962,7 +11060,11 @@ def reconcile_exits(desired, res):
         # 4b) health (§7.2) for every live device — which is also what triggers a tunnel's first handshake, since
         # WireGuard is lazy and a tunnel nothing has ever sent through has never handshaken. Probed together
         # (_exit_probe_all), judged here in this thread, in order: _EXIT_HEALTH is only ever touched by this loop.
-        _pr = _exit_probe_all([(dev, rec) for _s, _x, dev, _p, rec, _e, _b in _slots])
+        # …and the ADOPTED devices in the SAME batch (§12.2 item 3: a second batch would double a pass's worst case), with
+        # no record — so no ping, no lookup, no redial (they need an endpoint) — each at its own cadence.
+        _mine = {str((d or {}).get("device") or "") for d in want.values() if isinstance(d, dict)}
+        _ad = _exit_adopted(devexit, _mine, managed)
+        _pr = _exit_probe_all([(dev, rec) for _s, _x, dev, _p, rec, _e, _b in _slots] + [(d, {}) for d, due in _ad if due])
         if _slots:                                     # the handshakes below come from the pass's dump (B3): one taken before
             _pass_forget("all-dump:", keep_failed=True)   # these probes would miss a first handshake they made (_exit_handshake)
         for _s, xid, dev, prov, rec, err, _blob_err in _slots:
@@ -10972,6 +11074,16 @@ def reconcile_exits(desired, res):
                 _exit_redial(dev, rec, _got[1])
             _hl = _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
             out[_s] = _exit_row(xid, dev, prov, rec, err, _blob_err, True, tr, _hl, _png)
+        for dev, due in _ad:
+            if due:
+                tr, _rch, _png = _pr.get(dev) or ({}, None, None)
+                _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
+                _EXIT_PROBED_AT[dev] = time.monotonic()
+        # T9 — A VERDICT DOES NOT OUTLIVE ITS DEVICE: one no exit and no adopted device holds now (no longer listed, not
+        # up, a NIC) is dropped, so a name used again later is judged from scratch instead of inheriting a "dead".
+        _held = _mine | {d for d, _ in _ad}
+        for k in [k for k in _EXIT_HEALTH if k not in _held] + [k for k in _EXIT_PROBED_AT if k not in _held]:
+            _EXIT_HEALTH.pop(k, None); _EXIT_PROBED_AT.pop(k, None)
 
     # …and stamp EVERY report with the config revision it describes. Done here, in one place, rather than
     # at each `out.append` above: this loop has five exits from it (paused, escrow refused, registration
@@ -11008,6 +11120,9 @@ def reconcile_exits(desired, res):
             od = str(old.get("device") or "")
             if od and _dev_link_state(od) != "absent":
                 _exit_down(od, old)
+            if od and od not in _held:                # T9: its verdict and lookup history go with it (a name reused later
+                for _m in (_EXIT_HEALTH, _EXIT_REDIAL_AT, _EXIT_RESOLVED, _EXIT_PROBED_AT):   # starts from scratch)
+                    _m.pop(od, None)
             for p2 in (os.path.join(EXIT_DIR, fn), os.path.join(EXIT_DIR, od + ".conf") if od else ""):
                 if p2:
                     with contextlib.suppress(Exception):
@@ -17328,7 +17443,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     # after it, never before: the list is rebuilt by that call, so reading it earlier reports the previous
     # sync's devices — which is the stale-by-one-cycle bug this ordering exists to prevent.
     snap["exit_candidates"] = list(_EXIT_CAND["list"])
-    snap["devexit"] = list(_DEVEXIT["list"])          # decision 2: per-exit device state → the node's Issues tag
+    snap["devexit"] = _devexit_report()               # decision 2: per-exit device state → the node's Issues tag
     snap["exits"] = list(_EXITS["list"])              # imported exits: what we registered/wrote, their health — never a private key
     # Interfaces in ANOTHER container's netns (AmneziaWG's server is the case). A SEPARATE key, never
     # merged into the candidates above: those are offers to adopt, and this one cannot be adopted in
@@ -24907,7 +25022,8 @@ def main():
                 # names it is lowered, instead of one sync later.
                 xr = {"changed": 0, "errors": []}
                 with contextlib.suppress(Exception):
-                    reconcile_exits(reply.get("exits"), xr)
+                    reconcile_exits(reply.get("exits"), xr, devexit=(reply.get("cascade") or {}).get("devexit"),
+                                    managed=set(node_cfg.get("interfaces") or {}))   # …and the adopted devices' verdicts
                 with contextlib.suppress(Exception):
                     write_inventory(node_cfg)      # what this box carries + how it runs it (see NODE_INVENTORY)
                 # A network this node will not carry never reaches the ACL (see net_filter_desired), and a RESTRICTED one
