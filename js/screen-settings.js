@@ -4519,13 +4519,21 @@ export const socksSays = (r, node) => {
   return out;
 };
 
+/** Password managers read a text field followed by a password field as a login form and offer to fill or invent an
+ *  "email" for the first one (the title). These fields are no login: each manager's own opt-out, on every field of it. */
+const NOT_A_LOGIN = { autocomplete: "off", "data-1p-ignore": "", "data-lpignore": "true", "data-bwignore": "",
+                      "data-protonpass-ignore": "", "data-form-type": "other" };
+/** The notes' open/closed state, kept outside the sheet so a poll's re-render does not close them (the SPA's view pattern). */
+const S5X_VIEW = { notes: false };
+
 function SocksExitFields({ node, ex, isNew, sTxt, setSTxt, sPass, setSPass, dirtyRef }) {
   const st = (ex && ex.socks) || {};
   const live = (((node.exits || []).find(x => String(x.id) === String(ex.id)) || {}).live) || {};
   const [test, setTest] = useState(null);
   const [tmsg, setTmsg] = useState("");
+  const [, bump] = useState(0);
   const pending = !!test && test.state === "pending";
-  useEffect(() => {                              // the answer rides a sync or two; the panel gives up on it at 45 s
+  useEffect(() => {                              // the answer rides a sync or two; the panel gives up on it at 90 s
     if (!pending) return;
     let ok = true, n = 0;
     const h = setInterval(async () => {
@@ -4551,34 +4559,43 @@ function SocksExitFields({ node, ex, isNew, sTxt, setSTxt, sPass, setSPass, dirt
             : srvText(r) || T("Couldn't start the test."));
     } catch (e) { setTmsg(T("Couldn't start the test.")); }
   };
+  const canTest = !pending && (sTxt.trim() || !isNew);
+  const key = e => { if (e.key === "Enter") { e.preventDefault(); if (canTest) run(); } };
+  // The answer in the Networks test's own marks (`.netprobe`): a dot and a sentence per line — green for what works, the
+  // test's failure tone for what does not, grey for a caveat (no UDP) — so it reads like every other test run from a node.
   const says = test && !pending ? socksSays(test.result, node) : [];
   const last = !test && !isNew ? socksSays(live.check, node) : [];
+  const line = ([tone, t]) => { const d = tone === "ok" ? "on" : tone === "warn" ? "note" : "blocked";
+    return html`<div class=${"netgw t-" + d}><span class=${"condot " + d}></span><span>${t}</span></div>`; };
   return html`<div class="s5x">
     <div class="field"><label>${T("Proxy address")}</label>
-      <input class="mono" value=${sTxt} spellcheck="false" autocomplete="off" data-enter="self"
+      <input class="mono" value=${sTxt} spellcheck="false" data-enter="self" ...${NOT_A_LOGIN}
         placeholder=${T("host:port:user:password")}
-        onInput=${e => { dirtyRef.current = true; setSTxt(e.target.value); }}
-        onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); if (!pending && (sTxt.trim() || !isNew)) run(); } }}/>
-      <div class="hint">${T("Paste it the way your provider shows it: host:port, host:port:user:password, user:password@host:port, or socks5://user:password@host:port. SOCKS5 only — an HTTP proxy address is refused.")}</div></div>
-    <div class="row2">
-      <div class="field"><label>${T("Password")}</label>
-        <input type="password" value=${sPass} autocomplete="new-password"
-          placeholder=${st.has_pass ? T("unchanged") : T("none — or in the address above")}
-          onInput=${e => { dirtyRef.current = true; setSPass(e.target.value); }}/></div>
-      <div class="field s5x-test"><label> </label>
-        <button class="btn btn-ghost" disabled=${pending || (!sTxt.trim() && isNew)} onClick=${run}>
-          ${pending ? T("Testing from the node…") : T("Test")}</button></div>
+        onInput=${e => { dirtyRef.current = true; setSTxt(e.target.value); }} onKeyDown=${key}/>
+      <div class="hint">${T("As your provider shows it: host:port:user:password, user:password@host:port or socks5://user:password@host:port. SOCKS5 only.")}</div></div>
+    <div class="field"><label>${T("Password")}</label>
+      <div class="s5x-row">
+        <input type="password" value=${sPass} autocomplete="new-password" data-1p-ignore="" data-lpignore="true" data-bwignore=""
+          data-protonpass-ignore="" data-form-type="other" data-enter="self" onKeyDown=${key}
+          placeholder=${st.has_pass ? T("unchanged") : T("none, or in the address above")}
+          onInput=${e => { dirtyRef.current = true; setSPass(e.target.value); }}/>
+        <button type="button" class="btn btn-ghost s5x-go" disabled=${!canTest} onClick=${run}>
+          <${Ic} i="refresh"/> ${pending ? T("testing…") : T("Test from the node")}</button>
+      </div></div>
+    <div class="netprobe s5x-test">
+      ${pending ? html`<div class="netgw"><span class="condot"></span><span>${T("Waiting for {node} to ask the proxy and report back — a few seconds.", { node: node.name })}</span></div>` : null}
+      ${tmsg ? line(["bad", tmsg]) : null}
+      ${says.map(line)}
+      ${!says.length && last.length ? html`<div class="netprobe-h">${T("Last check by the node:")}</div>` : null}
+      ${!says.length ? last.map(line) : null}
     </div>
-    ${tmsg ? html`<div class="s5x-says"><div class="bad">${tmsg}</div></div>` : null}
-    ${says.length || last.length ? html`<div class="s5x-says">
-      ${!says.length ? html`<div class="faint">${T("Last check by the node:")}</div>` : null}
-      ${(says.length ? says : last).map(([tone, t]) => html`<div class=${tone}>${t}</div>`)}</div>` : null}
-    <ul class="hint s5x-notes">
-      <li>${T("Names are looked up by the proxy, not here: clients on this exit get stand-in addresses (198.19.x.x) that the proxy turns back into the name — so sites see a location that matches the exit. An app that keeps a stand-in address longer than a second can fail to connect once, after the exit restarts.")}</li>
-      <li>${T("A DNS server set for an interface that leaves by this exit is not used — the proxy resolves.")}</li>
-      <li>${T("A residential proxy may change its exit IP between checks — that is the provider, not a fault.")}</li>
-      ${node.kind === "docker" ? html`<li>${T("This is a Docker node: the SOCKS5 tunnel has no CPU cap of its own — the container's limit is its cap.")}</li>` : null}
-    </ul>
+    <${Disclosure} title=${T("How names and UDP work through this exit")} open=${S5X_VIEW.notes}
+      onToggle=${() => { S5X_VIEW.notes = !S5X_VIEW.notes; bump(x => x + 1); }}>
+      <p class="hint">${T("Names are looked up by the proxy, not here: clients on this exit get stand-in addresses (198.19.x.x) that the proxy turns back into the name — so sites see a location that matches the exit. An app that keeps a stand-in address longer than a second can fail to connect once, after the exit restarts.")}</p>
+      <p class="hint">${T("A DNS server set for an interface that leaves by this exit is not used — the proxy resolves.")}</p>
+      <p class="hint">${T("A residential proxy may change its exit IP between checks — that is the provider, not a fault.")}</p>
+      ${node.kind === "docker" ? html`<p class="hint">${T("This is a Docker node: the SOCKS5 tunnel has no CPU cap of its own — the container's limit is its cap.")}</p>` : null}
+    <//>
   </div>`;
 }
 
@@ -4671,7 +4688,7 @@ function ExitEditSheet({ node, ex, isNew, escrowOn, goSection, onSave, onClose }
     ${isDialin ? html`<p class="hint" style="margin:0 0 12px">${T("For an upstream that can't be reached — a router behind NAT: it connects to this node.")}</p>` : null}
     <div class=${isDialin ? (isNew ? "" : "row2 dinrow") : "row2"}>
       <div class="field"><label>${T("Title")}</label>
-        <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40"
+        <input value=${v.label || ""} placeholder=${exitDefaultTitle(v)} maxlength="40" ...${NOT_A_LOGIN}
           onInput=${e => set({ label: e.target.value })}/></div>
       ${isDialin && !isNew ? html`<div class="field dinport"><label>${T("Port")}</label>
         <input inputmode="numeric" value=${confIfLine(txt, "ListenPort") ?? ""} placeholder=${dinPort0}

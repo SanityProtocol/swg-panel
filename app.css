@@ -2637,7 +2637,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 .exed-hx{flex:1;min-width:0;display:flex;align-items:center;gap:11px;margin:0 14px 0 16px}
 .sheet-head .exed-hx .exg-t{flex:none}
 .exed-dev{font-size:12.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.exed-used{font-size:11.5px;color:var(--faint);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.exed-used{font-size:11.5px;color:var(--faint);display:inline-flex;align-items:center;gap:5px;white-space:nowrap;min-width:0;overflow:hidden}
+.exed-used>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:520px){.exed-hx{margin:0 10px}.exed-hx .exed-dev{display:none}}   /* a phone: the badge and who uses it, never under the ✕ */
 /* Headers never wrap and never truncate — a column head that reads "КТО ИСПОЛЬЗУ" names nothing. They are
    part of what sizes the track (max-content above), so the track grows to fit the word instead. */
 .exg-h{font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);
@@ -2702,14 +2704,15 @@ button.tf-updbtn:hover{background:color-mix(in srgb,var(--amber) 15%,transparent
 .exg-t.exawg{background:color-mix(in srgb,var(--brand) 16%,transparent);color:var(--brand)}
 .exg-t.exawg3{background:color-mix(in srgb,var(--awg3) 15%,transparent);color:var(--awg3)}   /* an AmneziaWG 3.1 profile exit — the 3.1 interface colour */
 .exg-t.exsocks{background:color-mix(in srgb,var(--relay) 15%,transparent);color:var(--relay)}   /* a SOCKS5 exit — a userspace path, the relay's violet */
-/* the SOCKS5 exit sheet: the Test button sits on the password's line, its answer as plain toned lines below */
-.s5x .s5x-test{align-self:end}
-.s5x .s5x-test .btn{width:100%}
-.s5x-says{margin:2px 0 12px;display:grid;gap:4px;font-size:13px}
-.s5x-says .ok{color:var(--online)}
-.s5x-says .warn{color:var(--pending)}
-.s5x-says .bad{color:var(--fault)}
-.s5x-notes{margin:4px 0 0;padding-left:18px;display:grid;gap:4px}
+/* the SOCKS5 exit sheet: the password and the Test share a row (the Networks test's shape), its answer in `.netprobe` lines */
+.s5x-row{display:flex;gap:8px;align-items:stretch}
+.s5x-row input{flex:1;min-width:0}
+.s5x-row .s5x-go{flex:none;white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+.s5x .s5x-test{margin:-4px 0 12px}
+.s5x .s5x-test:empty{display:none}
+.s5x .netgw.t-note{color:var(--ink-2)}
+.s5x .disc-body .hint{font-size:12.5px;line-height:1.5;color:var(--dim);margin:0 0 8px}
+@media (max-width:520px){.s5x-row{flex-wrap:wrap}.s5x-row .s5x-go{flex:1 1 100%;justify-content:center}}
 /* Not a type — a state, and the only one that means "this row is not real yet". Amber, because it is the
    colour the rest of the panel uses for "not settled". */
 .exg-t.unsaved{background:color-mix(in srgb,var(--fault) 16%,transparent);color:var(--fault)}

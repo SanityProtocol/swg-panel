@@ -39,6 +39,11 @@ const SRC_PLANTS = {
   "--perturb-poll404": ['else if (ok && r && r.code === "not_found") {', 'else if (false) {'],                                      // F19
   "--perturb-add": ['if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);',
                     'if (p2.provider === "profile") return openEdit(rec, true);'],
+  // [5] the sheet as the operator sees it (operator's GUI review, 2026-10-25)
+  "--perturb-pmtitle": ['maxlength="40" ...${NOT_A_LOGIN}', 'maxlength="40"'],
+  "--perturb-pmlist": ['"data-1p-ignore": "", "data-lpignore": "true", "data-bwignore": "",', '"data-1p-ignore": "",'],
+  "--perturb-testrow": ['<div class="s5x-row">', '<div class="row2">'],
+  "--perturb-tone": ['tone === "warn" ? "note" : "blocked"', '"blocked"'],
 };
 const MODE = [...Object.keys(PLANTS), ...Object.keys(SRC_PLANTS)].find(k => process.argv.includes(k));
 const load = async f => {
@@ -121,5 +126,20 @@ check("the Test sends the same two fields the save does", SET.includes("socks_te
 check("a Test the panel no longer has stops the poll and says so (no button stuck on \"Testing…\") — F19",
       SET.includes('else if (ok && r && r.code === "not_found") {') && SET.includes('setTmsg(T("The panel no longer has that test — run it again."))'));
 check("the add button opens the sheet (nothing is stored before the paste)", SET.includes('if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);'));
+
+console.log("\n[5] the sheet as the operator sees it");
+const pm = (SET.match(/const NOT_A_LOGIN = \{([^}]*)\}/) || [, ""])[1];
+check("password managers are told this is no login form, in each one's own words (1Password, LastPass, Bitwarden, Dashlane)",
+      ['"data-1p-ignore"', '"data-lpignore"', '"data-bwignore"', '"data-form-type": "other"', 'autocomplete: "off"'].every(k => pm.includes(k)), pm);
+check("…on the exit's title (where one offered to invent an \"email\") and on the proxy address",
+      SET.includes('maxlength="40" ...${NOT_A_LOGIN}') && SET.includes('<input class="mono" value=${sTxt} spellcheck="false" data-enter="self" ...${NOT_A_LOGIN}'));
+check("…and the password is never filled from the browser's vault", /type="password" value=\$\{sPass\} autocomplete="new-password" data-1p-ignore=""/.test(SET));
+check("the Test is a button on the password's row, never a field-shaped box in a column of its own",
+      SET.includes('<div class="s5x-row">') && /<div class="s5x-row">[\s\S]{0,500}<button type="button" class="btn btn-ghost s5x-go"/.test(SET)
+      && !SET.includes('<div class="field s5x-test"><label> </label>'));
+check("its answer is the Networks test's lines (`.netgw` + a dot); no UDP is a grey caveat, not a failure",
+      SET.includes('return html`<div class=${"netgw t-" + d}><span class=${"condot " + d}></span>') && SET.includes('tone === "ok" ? "on" : tone === "warn" ? "note" : "blocked"'));
+check("the notes fold away under one line, not a bullet list under the form",
+      SET.includes('<${Disclosure} title=${T("How names and UDP work through this exit")} open=${S5X_VIEW.notes}') && !SET.includes('<ul class="hint s5x-notes">'));
 
 done(MODE, MODE || "");
