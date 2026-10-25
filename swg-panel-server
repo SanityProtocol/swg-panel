@@ -19319,11 +19319,17 @@ def parse_socks_text(text):
         reads.add((parts[2] + ":" + parts[3], parts[0], parts[1]))
     if len(reads) > 1:
         # ⚠️ ONE TIE IS BROKEN, the dashboards' own (verify F70): `p.webshare.io:80:abcd:1234` reads as host:port:user:pass
-        # with a dotted host, or as user:pass:host:port with the single label `abcd` for a host. When exactly ONE reading's
-        # host is an address or a dotted name (or `localhost`) and the other is a bare label, the label is the user. ONLY
-        # between those two four-part readings, where a wrong pick sends no password as a login (each one's login is the
-        # other's host:port) — never against a user:pass@host reading, whose password a wrong pick would send elsewhere.
-        _real = [r for r in reads if "." in r[0].rpartition(":")[0] or r[0].rpartition(":")[0].lower() == "localhost"]
+        # with a provider's name for a host, or as user:pass:host:port with the single label `abcd` for one. When exactly ONE
+        # reading's host is an IPv4 address or a name of 3+ labels (or `localhost`), the other reading's host is the user.
+        # A name of TWO labels does not count: `john.doe` is as often a user as `webshare.io` is a host, and
+        # `xray:1080:john.doe:8080` (a container name for a host) would have dialled john.doe (review F3) — refused instead.
+        # ONLY between those two four-part readings, where a wrong pick sends no password as a login (each one's login is
+        # the other's host:port) — never against a user:pass@host reading, whose password a wrong pick would send elsewhere.
+        def _named(h):
+            with contextlib.suppress(ValueError):
+                return ipaddress.ip_address(h).version == 4
+            return h.lower() == "localhost" or h.count(".") >= 2
+        _real = [r for r in reads if _named(r[0].rpartition(":")[0])]
         if len(parts) == 4 and not _at and len(_real) == 1:
             reads = set(_real)
     if len(reads) > 1:

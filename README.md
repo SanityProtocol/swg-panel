@@ -417,6 +417,13 @@ sudo rm -f /etc/systemd/system/*.service.d/swg-ns.conf && sudo systemctl daemon-
 sudo systemctl try-restart 'swg-*.service'        # back to the system journal (a reboot moves them too)
 sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null     # the torrent guard
 ```
+From 1.8.11, a server that ran a **SOCKS5 exit** keeps its tunnel and its DNS rules too — the older version can't see
+them, so they stay until a reboot (the tunnel and the table) or until you remove them:
+```bash
+sudo systemctl stop 'swg-s5x-*'; sudo nft delete table inet swg_s5x 2>/dev/null
+while sudo ip rule del pref 6870 2>/dev/null; do :; done                                # traffic cascaded in: its DNS
+sudo iptables -t nat -S PREROUTING | grep -- '--comment "\?swg-s5x-dns' | sed 's/^-A/-D/' | xargs -rL1 sudo iptables -t nat
+```
 A **Docker** server keeps the guard too (the same `nft` / `ip rule` line), and one started on an image older than 1.8.7
 keeps two more firewall tables that version can't manage, which go on refusing connections the panel has since allowed.
 Remove them on that server (a reboot clears them too):

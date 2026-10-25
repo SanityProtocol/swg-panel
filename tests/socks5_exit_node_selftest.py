@@ -53,10 +53,14 @@ PLANTS = {
                            "            if len(d) > 12 and d[3] == 1:"),                                                 # [4]
     "--perturb-t10": ("    oifname \"%s\" ip daddr != %s meta l4proto udp reject", "    oifname \"%s\" %.0smeta l4proto udp reject"),  # [5]
     "--perturb-t15": ('_dns_dnat(whole, res, [p for p, _i in (nets or ())], S5X_DNS_TAG', '_dns_dnat(whole, res, [], S5X_DNS_TAG'),  # [5]
-    "--perturb-dead": ("and not e.get(\"part\") and _devexit_state(e[\"dev\"]) == \"up\"})", "and not e.get(\"part\")})"),  # [5]
+    "--perturb-dead": ("                    and _devexit_state(e[\"dev\"]) == \"up\"})", "                    })"),  # [5]
     # [5] s10-p3 F4 — a partial arrival
-    "--perturb-part-dnat": ('and e.get("subnet") and not e.get("part") and _devexit_state', 'and e.get("subnet") and _devexit_state'),
-    "--perturb-part-rule": ("    _s5x_arr_dns(sorted({", "    (lambda *a: None)(sorted({"),
+    "--perturb-part-dnat": ('if (not e.get("part") or str(e["subnet"]) in _fell)', 'if (True or str(e["subnet"]) in _fell)'),
+    "--perturb-part-full": ('if e.get("part")} - _full), res', 'if e.get("part")}), res'),                                     # review F4
+    "--perturb-part-fell": ('    return set(bad)\n', '    return set()\n'),                                                     # review F1
+    "--perturb-part-retry": ("    if _S5X_NFT[\"arr_bad\"] and _S5X_NFT[\"arr_bad\"][0] == key:", "    if False:"),       # review F2
+    "--perturb-part-first": ('(_S5X_NFT["arr"] is None and not any_socks)', '(False)'),                                         # golden
+    "--perturb-part-rule": ("    _fell = _s5x_arr_dns(sorted({", "    _fell = (lambda *a: set())(sorted({"),
     "--perturb-part-settle": ("    if have != sorted(_one(S) for S in want) or len(cur) != len(have):", "    if True:"),
     "--perturb-unmark": ('                  and e.get("scope") == "rule" and str(e.get("table") or "").isdigit()})',
                          '                  and False})'),                                                                  # [5]
@@ -588,9 +592,38 @@ _rules0, _c4 = list(RULES), {"changed": 0, "errors": []}
 N._s5x_rules(DX4, [], _c4)
 check("…and a second pass with nothing changed rewrites none of it (a /32 read back bare)", RULES == _rules0 and _c4["changed"] == 0,
       (RULES, _c4))
+# review F4: a subnet that ALSO arrives whole on this device never gets the bypass, even with the device down (its kill-switch)
+N._EXIT_HEALTH["s5x-aa"] = {"dead": True, "fail_since": 0, "fails": 9, "ok_since": None, "since": 0, "why": "x"}
+N._s5x_rules(DX4 + [{"subnet": "10.40.0.0/24", "dev": "s5x-aa", "table": 7001}], [], {"changed": 0, "errors": []})
+check("a subnet that also arrives whole gets no bypass — not even while the device is dead (its kill-switch holds it) — review F4",
+      sorted(l.split("from ")[1].split()[0] for l in RULES) == ["10.255.0.9"], RULES)
+N._EXIT_HEALTH.clear()
 N._EXITS["socks"] = {}
 N._s5x_rules([], [], {"changed": 0, "errors": []})
 check("…gone with the exit", RULES == [], RULES)
+# review F1/F2: a kernel that refuses `ipproto`/`dport` — the subnet keeps mapdns, said, and not retried every pass
+_r12 = N.run
+N.run = lambda argv, **k: (R(rc=2, err="Error: argument \"ipproto\" is wrong") if argv[:3] == ["ip", "rule", "add"] else _ipr(argv, **k))
+N._EXITS["socks"] = {"s5x-aa": True}; N._S5X_NFT.update(sig=None, dns=None, arr=None, arr_bad=None); NAT[:] = []
+_c12 = {"changed": 0, "errors": []}
+N._s5x_rules(DX4, [], _c12)
+dnat = [l for l in NAT if "swg-s5x-dns " in l + " " and "DNAT" in l]
+check("a bypass the kernel refuses: that subnet keeps mapdns (its DNS answered, as before this existed), and it is said — review F1",
+      sorted(l.split("-s ")[1].split()[0] for l in dnat) == ["10.17.0.0/24", "10.255.0.9/32", "10.40.0.0/24"]
+      and any("not installed" in e for e in _c12["errors"]), (NAT, _c12))
+_seen12 = []
+N.run = lambda argv, **k: (_seen12.append(argv), R(rc=2) if argv[:3] == ["ip", "rule", "add"] else _ipr(argv, **k))[1]
+_c12b = {"changed": 0, "errors": []}
+N._s5x_rules(DX4, [], _c12b)
+check("…and the next pass neither retries the adds nor counts a change (still said) — review F2",
+      not [a_ for a_ in _seen12 if a_[:2] == ["ip", "rule"]] and _c12b["changed"] == 0 and _c12b["errors"], (_seen12, _c12b))
+N.run = _r4
+# the golden's promise: a node with NO SOCKS exit never reads the rule list — not even on its first pass
+_seen0 = []
+N.run = lambda argv, **k: (_seen0.append(argv), R())[1]
+N._EXITS["socks"] = {}; N._S5X_NFT.update(arr=None, arr_bad=None)
+N._s5x_arr_dns([], {"changed": 0, "errors": []}, False)
+check("⚠️ no SOCKS exit: the bypass costs no fork even on a process's first pass (p2p_iface's byte-identical golden)", _seen0 == [], _seen0)
 N.run = _r4
 
 # ── [6] F18 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────

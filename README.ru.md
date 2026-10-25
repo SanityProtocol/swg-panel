@@ -440,6 +440,13 @@ sudo rm -f /etc/systemd/system/*.service.d/swg-ns.conf && sudo systemctl daemon-
 sudo systemctl try-restart 'swg-*.service'        # обратно в системный журнал (перезагрузка тоже их переносит)
 sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null     # защита от торрентов
 ```
+С 1.8.11 на сервере, где был **выход SOCKS5**, остаются ещё его туннель и правила DNS — старая версия их не видит,
+поэтому они остаются до перезагрузки (туннель и таблица) или пока вы их не уберёте:
+```bash
+sudo systemctl stop 'swg-s5x-*'; sudo nft delete table inet swg_s5x 2>/dev/null
+while sudo ip rule del pref 6870 2>/dev/null; do :; done                                # DNS трафика с других нод
+sudo iptables -t nat -S PREROUTING | grep -- '--comment "\?swg-s5x-dns' | sed 's/^-A/-D/' | xargs -rL1 sudo iptables -t nat
+```
 **Docker**-сервер тоже сохраняет защиту (та же строка `nft` / `ip rule`), а запущенный на образе старше 1.8.7 — ещё две
 таблицы файрвола, которыми та версия управлять не умеет; они продолжают отклонять соединения, которые панель с тех пор
 разрешила. Удалите их на этом сервере (перезагрузка тоже их убирает):

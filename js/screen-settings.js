@@ -4575,8 +4575,7 @@ function SocksExitFields({ node, ex, isNew, sTxt, setSTxt, sPass, setSPass, dirt
       <div class="hint">${T("As your provider shows it: host:port:user:password, user:password@host:port or socks5://user:password@host:port. SOCKS5 only.")}</div></div>
     <div class="field"><label>${T("Password")}</label>
       <div class="s5x-row">
-        <input type="password" value=${sPass} autocomplete="new-password" data-1p-ignore="" data-lpignore="true" data-bwignore=""
-          data-protonpass-ignore="" data-form-type="other" data-enter="self" onKeyDown=${key}
+        <input type="password" value=${sPass} ...${NOT_A_LOGIN} autocomplete="new-password" data-enter="self" onKeyDown=${key}
           placeholder=${st.has_pass ? T("unchanged") : T("none, or in the address above")}
           onInput=${e => { dirtyRef.current = true; setSPass(e.target.value); }}/>
         <button type="button" class="btn btn-ghost s5x-go" disabled=${!canTest} onClick=${run}>

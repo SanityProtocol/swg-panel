@@ -40,6 +40,7 @@ const SRC_PLANTS = {
   "--perturb-add": ['if (p2.provider === "profile" || p2.provider === "socks5") return openEdit(rec, true);',
                     'if (p2.provider === "profile") return openEdit(rec, true);'],
   // [5] the sheet as the operator sees it (operator's GUI review, 2026-10-25)
+  "--perturb-pmpass": ['value=${sPass} ...${NOT_A_LOGIN} autocomplete="new-password"', 'value=${sPass} autocomplete="new-password"'],
   "--perturb-pmtitle": ['maxlength="40" ...${NOT_A_LOGIN}', 'maxlength="40"'],
   "--perturb-pmlist": ['"data-1p-ignore": "", "data-lpignore": "true", "data-bwignore": "",', '"data-1p-ignore": "",'],
   "--perturb-testrow": ['<div class="s5x-row">', '<div class="row2">'],
@@ -133,7 +134,8 @@ check("password managers are told this is no login form, in each one's own words
       ['"data-1p-ignore"', '"data-lpignore"', '"data-bwignore"', '"data-form-type": "other"', 'autocomplete: "off"'].every(k => pm.includes(k)), pm);
 check("…on the exit's title (where one offered to invent an \"email\") and on the proxy address",
       SET.includes('maxlength="40" ...${NOT_A_LOGIN}') && SET.includes('<input class="mono" value=${sTxt} spellcheck="false" data-enter="self" ...${NOT_A_LOGIN}'));
-check("…and the password is never filled from the browser's vault", /type="password" value=\$\{sPass\} autocomplete="new-password" data-1p-ignore=""/.test(SET));
+check("…and the password is never filled from the browser's vault — the same list, not a copy of it (review F7)",
+      SET.includes('<input type="password" value=${sPass} ...${NOT_A_LOGIN} autocomplete="new-password"'));
 check("the Test is a button on the password's row, never a field-shaped box in a column of its own",
       SET.includes('<div class="s5x-row">') && /<div class="s5x-row">[\s\S]{0,500}<button type="button" class="btn btn-ghost s5x-go"/.test(SET)
       && !SET.includes('<div class="field s5x-test"><label> </label>'));

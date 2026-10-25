@@ -7122,8 +7122,9 @@ def _smart_dns_redirect(subnets, res, nets=()):
 
 S5X_DNS_TAG, S5X_DNS_NET_TAG = "swg-s5x-dns", "swg-s5x-dns-net"
 S5X_NFT_TABLE = "swg_s5x"
-_S5X_NFT = {"sig": None, "dns": None, "arr": None}   # the nft want last written; whether any DNS DNAT was (None: not yet
-                                                     # asked); the partial arrivals' DNS bypass last written (None: not yet)
+_S5X_NFT = {"sig": None, "dns": None, "arr": None, "arr_bad": None}   # the nft want last written; whether any DNS DNAT
+                                    # was (None: not yet asked); whether the partial arrivals' DNS bypass was (None: not yet
+                                    # asked); (want, the subnets whose bypass the kernel refused) — not retried until it changes
 S5X_ARR_DNS_PRI = 6870      # a partial arrival's DNS bypass — below the band (its `from S lookup T` is at pref T) and
                             # outside every other fixed rule here (P2P 6880, the upstream band 6890–6989, the relay 6990)
 
@@ -7145,10 +7146,13 @@ def _s5x_rules(devexit, nets, res):
     inserted at the top, so a client interface's accept added later would sit above it and take the UDP first. A REJECT in
     its own base chain is final whatever order the accepts are in. One `nft -f` when the want changes, none otherwise."""
     socks = _EXITS.get("socks") or {}
-    whole = sorted({e["subnet"] for e in devexit if e.get("dev") in socks and (e.get("scope") or "iface") != "rule"
-                    and e.get("subnet") and not e.get("part") and _devexit_state(e["dev"]) == "up"})
-    _s5x_arr_dns(sorted({str(e["subnet"]) for e in devexit if e.get("dev") in socks and e.get("part")
-                         and (e.get("scope") or "iface") != "rule" and e.get("subnet")} - set(whole)), res)
+    _ifc = [e for e in devexit if e.get("dev") in socks and (e.get("scope") or "iface") != "rule" and e.get("subnet")]
+    # a subnet that also arrives WHOLE never gets the bypass, whatever the device's state: its kill-switch holds it (review F4)
+    _full = {str(e["subnet"]) for e in _ifc if not e.get("part")}
+    # …and a partial one whose bypass could not be installed keeps mapdns, as before this existed (review F1)
+    _fell = _s5x_arr_dns(sorted({str(e["subnet"]) for e in _ifc if e.get("part")} - _full), res, bool(socks))
+    whole = sorted({e["subnet"] for e in _ifc if (not e.get("part") or str(e["subnet"]) in _fell)
+                    and _devexit_state(e["dev"]) == "up"})
     # ⚠️ A NODE WITH NO SOCKS EXIT PAYS NOTHING: the nat read is skipped once this process has seen none installed (the first
     # pass still asks, so a leftover from before a restart is swept)
     if whole or _S5X_NFT["dns"] is not False:
@@ -7186,13 +7190,25 @@ def _s5x_rules(devexit, nets, res):
         res["errors"].append("socks5 exit rules: " + ((r.stderr or "").strip() or "nft failed")[:160])
 
 
-def _s5x_arr_dns(want, res):
+def _s5x_arr_dns(want, res, any_socks=True):
     """The partial arrivals' DNS bypass: `from S ipproto udp dport 53 lookup main` at S5X_ARR_DNS_PRI, one per subnet, absent
     otherwise — read from the full listing and rewritten del-until-absent only when it differs (`_p2p_rule`'s shape). Not
     held by the exit's state or kill-switch: a rule-scoped exit's DNS goes direct whatever they say (T13), and this is the
-    same traffic reaching the node another way. A node that never had one asks nothing (no subprocess per pass)."""
-    if not want and _S5X_NFT["arr"] is False:
-        return
+    same traffic reaching the node another way. → the subnets whose bypass is NOT installed (the caller keeps mapdns there).
+    ⚠️ A NODE WITH NO SOCKS EXIT NEVER ASKS — not even on its first pass (p2p_iface's golden: a fleet without the feature runs
+    exactly the commands it ran before). A rule left from before a restart on a node that no longer has one stays until the
+    uninstall's sweep; it only sends that subnet's DNS out the node's own address."""
+    if not want and (_S5X_NFT["arr"] is False or (_S5X_NFT["arr"] is None and not any_socks)):
+        _S5X_NFT["arr"] = False
+        return set()
+    say = lambda bad: res["errors"].append("socks5 exit: arrivals' DNS bypass not installed for " + ", ".join(bad[:3])
+                                           + " — their DNS uses the proxy's stand-in addresses")
+    key = tuple(want)
+    if _S5X_NFT["arr_bad"] and _S5X_NFT["arr_bad"][0] == key:
+        # the kernel refused these adds (no `ipproto`/`dport` below 4.17): said again, never retried on every pass and never
+        # counted as a change until the want moves (review F2)
+        say(_S5X_NFT["arr_bad"][1])
+        return set(_S5X_NFT["arr_bad"][1])
     _one = lambda a: a if "/" in a else a + "/32"
     cur = [ln for ln in (run(["ip", "rule", "show"]).stdout or "").splitlines() if ln.startswith("%d:" % S5X_ARR_DNS_PRI)]
     # `ip rule show` prints a /32 bare and the protocol by name: compare by the source alone, normalised both ways
@@ -7202,16 +7218,19 @@ def _s5x_arr_dns(want, res):
         if m and "dport 53" in ln:
             have.append(_one(m.group(1)))
     have.sort()
+    bad = []
     if have != sorted(_one(S) for S in want) or len(cur) != len(have):
         for _ in range(8 + len(cur)):
             if run(["ip", "rule", "del", "pref", str(S5X_ARR_DNS_PRI)]).returncode != 0:
                 break
         bad = [S for S in want if run(["ip", "rule", "add", "from", S, "ipproto", "udp", "dport", "53", "lookup", "main",
                                        "priority", str(S5X_ARR_DNS_PRI)]).returncode != 0]
-        if bad:      # an iproute2 or kernel without `ipproto`/`dport` (< 4.17): said, and the DNS rides the exit as before
-            res["errors"].append("socks5 exit: arrivals' DNS bypass not installed for " + ", ".join(bad[:3]))
+        if bad:
+            say(bad)
         res["changed"] += 1
+    _S5X_NFT["arr_bad"] = (key, bad) if bad else None
     _S5X_NFT["arr"] = bool(want)
+    return set(bad)
 
 
 def _dns_dnat(subnets, res, nets, tag_dnat, tag_net, to, protos):
@@ -12059,7 +12078,10 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
                 # verdict reached while it was gone needs EXIT_ALIVE_AFTER_S of carrying after it is back (a probe that
                 # merely answers once does not bring it back: verify F8). A failing device is due every pass, so it is
                 # probed the moment it is back, without its idle minute being reset here.
-                _exit_judge(dev, {"err": "the device is not up"}, reach=lambda _d: False)
+                # …once it has been judged at all: a device named before it is first created is not "dead" yet, and is
+                # used the moment it carries (review F5)
+                if dev in _EXIT_HEALTH:
+                    _exit_judge(dev, {"err": "the device is not up"}, reach=lambda _d: False)
             elif due:
                 tr, _rch, _png = _pr.get(dev) or ({}, None, None)
                 _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)

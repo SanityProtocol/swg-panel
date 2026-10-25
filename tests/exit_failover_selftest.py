@@ -102,10 +102,12 @@ PLANTS = {
     "--perturb-adopted-batch": ("+ [(d, {}) for d, due in _ad if due])", ")"),
     "--perturb-reach-tls": ("            t.do_handshake()\n            return True", "            return True"),
     "--perturb-blip": ("            out.append((dev, None))\n            continue", "            continue"),                    # F1
-    "--perturb-window": ('                _exit_judge(dev, {"err": "the device is not up"}, reach=lambda _d: False)\n', "                pass\n"),   # verify F8
+    "--perturb-window": ('                    _exit_judge(dev, {"err": "the device is not up"}, reach=lambda _d: False)\n', "                    pass\n"),   # verify F8
+    "--perturb-unseen": ("                if dev in _EXIT_HEALTH:\n                    _exit_judge(dev, {\"err\": \"the device is not up\"}",
+                         "                if True:\n                    _exit_judge(dev, {\"err\": \"the device is not up\"}"),   # review F5
     # s10-p2-f8 F5/F6: a pass on which the device is not up counts as a failure — the old way only aged the window
-    "--perturb-blipfails": ('                _exit_judge(dev, {"err": "the device is not up"}, reach=lambda _d: False)\n',
-                            '                _EXIT_HEALTH.get(dev, {}).update(ok_since=None)\n'),
+    "--perturb-blipfails": ('                    _exit_judge(dev, {"err": "the device is not up"}, reach=lambda _d: False)\n',
+                            '                    _EXIT_HEALTH.get(dev, {}).update(ok_since=None)\n'),
     "--perturb-nostamp": ('                if dev in _pr and _exit_probe_answered(tr, _rch):   # an unanswered', '                if True:   #'),  # F3
     "--perturb-snapall": ("        nt = None if d in mine or d in said else _exit_no_traffic(", "        nt = _exit_no_traffic("),  # F5
 }
@@ -641,13 +643,20 @@ try:
           _probed9 == ["tun9"], _probed9)
     # s10-p2-f8 F5/F6: a device that STAYS down is judged by its downtime alone — it carries nothing, so "30 s over 3+ passes"
     # holds of it too — and no probe is spent on a device that is not there
+    # review F5: …but only once it has been judged at all — a TUN named before it is first created is not "dead" when it appears
     N._EXIT_HEALTH.pop("tun9", None); N._EXIT_PROBED_AT.pop("tun9", None)
+    _up9.discard("tun9"); _probed9.clear()
+    for _i in range(7):                      # +0 … +30 s, never up yet
+        pass9()
+    check("[9] a device not yet created is not judged by its absence: no verdict, no probe — review F5",
+          "tun9" not in N._EXIT_HEALTH and _probed9 == [], (N._EXIT_HEALTH.get("tun9"), _probed9))
+    _up9.add("tun9"); _tr9["v"] = dict(OK); pass9()                                   # seen once, carrying
     _up9.discard("tun9"); _probed9.clear()
     for _i in range(7):                      # +0 … +30 s down
         pass9()
     _st9 = dict(N._EXIT_HEALTH.get("tun9") or {})
     _up9.add("tun9")
-    check("[9] a device down for 30 s over 3+ passes is judged dead with no probe at all, and says why — F5/F6",
+    check("[9] a device seen before and down for 30 s over 3+ passes is judged dead with no probe at all, and says why — F5/F6",
           _st9.get("dead") is True and _st9.get("why") == "the device is not up" and _probed9 == [], (_st9, _probed9))
     _tr9["v"] = dict(BAD)
     if _saved9 is not None:

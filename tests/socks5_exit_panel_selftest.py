@@ -50,6 +50,7 @@ PLANTS = {
     "--perturb-guess": ('    if len(reads) > 1:\n        return None, "this proxy address can be read more than one way',
                         '    if False:\n        return None, "this proxy address can be read more than one way'),       # [1] verify F61–F63
     "--perturb-tiebreak": ("        if len(parts) == 4 and not _at and len(_real) == 1:", "        if False:"),               # [1] verify F70
+    "--perturb-tiebreak-dots": ('            return h.lower() == "localhost" or h.count(".") >= 2', '            return h.lower() == "localhost" or "." in h'),  # review F3
     "--perturb-tiebreak-at": ("        if len(parts) == 4 and not _at and len(_real) == 1:", "        if len(_real) == 1:"),  # [1] verify F70
     "--perturb-negcache": ("            _HEV_MIRROR_FAIL[arch] = time.time()", "            pass"),                              # [7] verify F48
     "--perturb-kinds-shape": ('    if isinstance(_k, list) and kind in _k:', '    if kind in (_k or []):'),                     # [4] F6
@@ -105,12 +106,15 @@ for t, want in {"gw.example.com:1080:user:Summer%2024": ("gw.example.com", 1080,
     check("a dashboard form, taken as shown (no %%-decoding outside a URL, ':' and '@' in the password, user:pass:host:port) — F20/F21: %s" % t,
           not err and (sk["host"], sk["port"], sk["user"], sk["pass"]) == want, (sk, err))
 for t, want in {"p.webshare.io:80:abcd:1234": ("p.webshare.io", 80, "abcd", "1234"),
-                "myuser:48213:proxy.example.com:1080": ("proxy.example.com", 1080, "myuser", "48213")}.items():
+                "myuser:48213:proxy.example.com:1080": ("proxy.example.com", 1080, "myuser", "48213"),
+                "john.smith:9999:1.2.3.4:1080": ("1.2.3.4", 1080, "john.smith", "9999"),     # an address beats two labels
+                "localhost:1080:user.name:1234": ("localhost", 1080, "user.name", "1234")}.items():
     sk, err = P.parse_socks_text(t)
     check("a four-part paste whose one reading has a bare label for a host takes the other — the label is the user (verify F70): %s" % t,
           not err and (sk["host"], sk["port"], sk["user"], sk["pass"]) == want, (sk, err))
-for t in ("1.2.3.4:1080:me@mail.com:1234", "gw.example.com:1080:user:secret@x:12", "john.smith:9999:1.2.3.4:1080",
-          "my.user:123:x@gw.example.com:1080", "localhost:1080:user.name:1234", "proxy:1080:svc:8080"):
+for t in ("1.2.3.4:1080:me@mail.com:1234", "gw.example.com:1080:user:secret@x:12",
+          "my.user:123:x@gw.example.com:1080", "proxy:1080:svc:8080", "1.2.3.4:1080:5.6.7.8:9000",
+          "xray:1080:john.doe:8080", "webshare.io:80:abcd:1234"):                                   # review F3: two labels decide nothing
     sk, err = P.parse_socks_text(t)
     check("⚠️ a paste that reads as two different proxies is refused, never guessed (a guess sends the login elsewhere) — verify F53 F61–F63: %s" % t,
           sk is None and "more than one way" in err, (sk, err))
