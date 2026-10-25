@@ -438,7 +438,7 @@ AmneziaWG. 1.8.7 восстанавливает правильный тип, н�
 ```bash
 sudo rm -f /etc/systemd/system/*.service.d/swg-ns.conf && sudo systemctl daemon-reload
 sudo systemctl try-restart 'swg-*.service'        # обратно в системный журнал (перезагрузка тоже их переносит)
-sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null     # защита от торрентов
+sudo nft delete table inet swg_p2p; while sudo ip rule del pref 6880 2>/dev/null; do :; done   # защита от торрентов (по правилу на маршрут)
 ```
 С 1.8.11 на сервере, где был **выход SOCKS5**, остаются ещё его туннель и правила DNS — старая версия их не видит,
 поэтому они остаются до перезагрузки (туннель и таблица) или пока вы их не уберёте:

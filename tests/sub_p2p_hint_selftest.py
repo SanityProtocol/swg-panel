@@ -20,6 +20,7 @@ Hermetic. Run: python3 tests/sub_p2p_hint_selftest.py            (0 = pass)
      --perturb-record   torrents_allowed reads every deployment's record from the interfaces → RED on [2] and [3]
      --perturb-report   the node's own report is ignored (a Route run as Block reads as allowed) → RED on [2]
      --perturb-farnode  a Route to a node is allowed whatever that node runs → RED on [2]
+     --perturb-own      an interface's own torrent choice is not read under per-interface (S11) → RED on [2]
 """
 import ast, hashlib, importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -31,7 +32,8 @@ P_POLICY = "--perturb" in sys.argv
 P_RECORD = "--perturb-record" in sys.argv
 P_REPORT = "--perturb-report" in sys.argv
 P_FAR = "--perturb-farnode" in sys.argv
-PERTURB = P_POLICY or P_RECORD or P_REPORT or P_FAR
+P_OWN = "--perturb-own" in sys.argv
+PERTURB = P_POLICY or P_RECORD or P_REPORT or P_FAR or P_OWN
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -61,10 +63,12 @@ if P_POLICY:
 if P_RECORD:
     plant('cfg.get(_P2P_RECS.get(t.get("type") or "", "ifaces"))', 'cfg.get("ifaces")', "the record a deployment lands on")
 if P_REPORT:
-    plant('rep.get("mode") == "block" or rep.get("route") == "down"', 'False', "the node's own report")
+    plant('rep.get("mode") == "block" or (rep.get("route") == "down" and pol in ("exit", "dev"))', 'False', "the node's own report")
 if P_FAR:
     plant('        return _p2p_runs(nodes, describe, (cfg.get("p2p") or {}).get("node"), arrivals=True)', '        return True',
           "the far node of a Route")
+if P_OWN:
+    plant('    _rp = rec.get("p2p") if pol == "iface" and isinstance(rec.get("p2p"), dict) else {}', '    _rp = {}', "the record's own choice")
 SUB_PATH = SUB
 if PERTURB:
     fd, SUB_PATH = tempfile.mkstemp(prefix="swg-sub-perturbed-")
@@ -127,6 +131,19 @@ TF = [(T("wgf"), None), (T("wgd"), None)]
 check("F2: per-interface, an interface forwarded whole to a node under Block: no; the direct one beside it: yes",
       allowed(FWD, {}, tgs=TF) == [T("wgd")], allowed(FWD, {}, tgs=TF))
 check("F2: …forwarded to a node under Direct: both", allowed(FWD, FAR, tgs=TF) == [T("wgf"), T("wgd")], allowed(FWD, FAR, tgs=TF))
+# S11 (review F4): under per-interface, the record's own choice decides; one interface's route down is not the node's
+IF = lambda **r: {"p2p": {"action": "iface"}, "links": {"n2": {"iface": "swg_b"}},
+                  "exits": [{"id": "e1", "enabled": True}, {"id": "e2", "enabled": False}], "ifaces": {"wgr": r}}
+TR = [(T("wgr"), None)]
+for name, rec, far, want in (("its own route to a node letting arrivals out", {"p2p": {"action": "exit", "node": "n2"}}, FAR, True),
+                             ("its own route to a node under Block", {"p2p": {"action": "exit", "node": "n2"}}, {}, False),
+                             ("its own route to a node it has no link to", {"p2p": {"action": "exit", "node": "n3"}}, FAR, False),
+                             ("its own route through an exit that is on", {"p2p": {"action": "dev", "exit_id": "e1"}}, {}, True),
+                             ("its own route through an exit switched off", {"p2p": {"action": "dev", "exit_id": "e2"}}, {}, False),
+                             ("Direct, though forwarded whole to a node under Block", {"p2p": {"action": "direct"}, "egress_mode": "forward", "egress_node": "n2"}, {}, True)):
+    check("S11: per-interface, %s → %s" % (name, "allowed" if want else "not"), bool(allowed(IF(**rec), far, tgs=TR)) == want)
+check("S11: per-interface, one interface's route down (the node reports route down) is not the node's — a Direct one is allowed",
+      bool(allowed(IF(p2p={"action": "direct"}), FAR, d1={"mode": "iface", "route": "down"}, tgs=TR)))
 JUNK = [None, [], "x", {"p2p": {"action": "direct"}, "ifaces": []}, {"p2p": {"action": "direct"}, "ifaces": {"wg0": "x"}},
         {"p2p": {"action": "direct"}, "ifaces": {"wg0": {"block": "torrents"}}}, {"p2p": {"action": "direct"}, "wdtt": None}]
 errs = []

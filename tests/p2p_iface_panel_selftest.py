@@ -20,6 +20,7 @@
       block / direct / route unchanged
   [8] BYTE-IDENTICAL without per-interface choices — an iface fleet with chips only, and every other policy: no `_p2pi` /
       `_p2p_dead` in the plan, the wire as before
+  [10] demand mesh links the pair a record's "Route through node" needs, and the offline-node line names it (node-wide too)
   [9] THE CARD — sent choices while the node reports no mode iface → "need a node update"; mode iface → nothing; a route
       group down → the existing "way out is down" line under iface too
 
@@ -45,17 +46,19 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "iface-before-block": ('        _perr = _apply_iface_p2p(ov, body, nodes, nid)   # after block AND the ladder: "torrents" in block[] wins\n'
                            '        if _perr:\n            return 400, {"ok": False, "error": _perr, "code": "bad_request"}\n        _rv = reach_level_set(ov, body)',
                            '        _rv = reach_level_set(ov, body)'),
-    "create-unwired": ('        _perr = _apply_iface_p2p(ov, body, nodes, nid)   # the torrent choice, after block (it wins) — as the edit does\n',
-                       '        _perr = None\n'),
+    "create-unwired": ('        _perr = _apply_iface_p2p(ov, {k: v for k, v in body.items() if k != "p2p" or v is not None}, nodes, nid)',
+                       '        _perr = None'),
+    "create-null-pops": ('_apply_iface_p2p(ov, {k: v for k, v in body.items() if k != "p2p" or v is not None}, nodes, nid)',
+                         '_apply_iface_p2p(ov, body, nodes, nid)'),
     "unpublished":    ('        ifc["p2p"] = ov.get("p2p") or None ', '        ifc["_p2p"] = ov.get("p2p") or None '),
     "wdtt-unpub":     ('"stopped", "block", "p2p", "egress_mode", "egress_node",', '"stopped", "block", "egress_mode", "egress_node",'),
     "prune-records":  ('        for _k in ("ifaces", "wdtt", "csqtt"):\n            for _rn, _r in', '        for _k in ():\n            for _rn, _r in'),
-    "prune-own-node": ('(_p.get("node") not in nodes or _p.get("node") == _nid))', '(_p.get("node") not in nodes))'),
+    "prune-dormant":  ('                    if _live:\n', '                    if True:\n'),
     "prune-open":     ('                    _r["block"] = [b for b in (_r.get("block") or []) if b != "torrents"] + ["torrents"]\n', ''),
     "raw-own-way":    ('_own.append((_wn + " (raw)", _RS)); _ownr.append(_wov)', '_own.append((_wn + " (raw)", _RS)); _ownr.append({})'),
     "plan-block-too": ('                if not isinstance(_rp, dict) or "torrents" in ((_r or {}).get("block") or []):',
                        '                if not isinstance(_rp, dict):'),
-    "plan-no-clash":  ('                            and not _clashes(nid, n_, S, _Q, "rule")):', '                            ):'),
+    "plan-no-clash":  ('                    if all(_ld) and not _clashes(nid, n_, S, _Q, "rule"):', '                    if all(_ld):'),
     "dead-open":      ('                    slot(nid).setdefault("_p2pi", {}).setdefault("block", []).append(S)\n                    slot(nid).setdefault("_p2p_dead", []).append(n_)',
                        '                    slot(nid).setdefault("_p2p_dead", []).append(n_)'),
     "dead-unnamed":   ('                    slot(nid).setdefault("_p2p_dead", []).append(n_)\n                else:', '                    pass\n                else:'),
@@ -65,7 +68,13 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "card-always":    ('    if _p2pa == "iface" and p2p_iface is not None and _srp is not None', '    if _p2pa == "iface" and _srp is not None'),
     "card-down-old":  ('    elif _p2pa in ("exit", "dev", "iface") and _p2pn and _p2pn.get("route") == "down":',
                        '    elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("route") == "down":'),
-    "card-dead":      ('    if _p2pa == "iface" and p2p_iface:\n', '    if False:\n'),
+    "card-dead":      ('    elif _p2pa == "iface" and p2p_iface and not (_p2pn and _p2pn.get("state") == "error"):', '    elif False:'),
+    "card-dead-anyway": ('    elif _p2pa == "iface" and p2p_iface and not (_p2pn and _p2pn.get("state") == "error"):', '    if _p2pa == "iface" and p2p_iface:'),
+    "card-by-mode":   ('and _srp is not None and not _srp.get("p2pi"):', 'and _srp is not None and (not _p2pn or _p2pn.get("mode") != "iface"):'),
+    "mesh-unneeded":  ('            if _pif and _rp.get("action") == "exit" and "torrents" not in (ov.get("block") or []):', '            if False:'),
+    "mesh-dormant":   ('            if _pif and _rp.get("action") == "exit" and "torrents" not in (ov.get("block") or []):',
+                       '            if _rp.get("action") == "exit" and "torrents" not in (ov.get("block") or []):'),
+    "offline-blind":  ('        if _rp.get("action") == "exit" and p2p_policy(n) == "iface" and "torrents" not in (ov.get("block") or []):', '        if False:'),
 }
 
 
@@ -147,6 +156,9 @@ def run_checks(src):
     ok(c == 200 and rec(name="wg8").get("p2p") == {"action": "direct"}, "[1] create stores it (%s %s)" % (c, r))
     c, r = door("/api/iface/create", {"node": "n1", "iface": "wg6", "protocol": "wg", "subnet": "10.32.0.0/24", "p2p": {"action": "exit", "node": "n1"}})
     ok(c == 400, "[1] create refuses a bad target (%s)" % c)
+    fl = json.load(open(np_)); fl["n1"]["ifaces"]["wg5"] = {"p2p": {"action": "exit", "node": "n2"}}; json.dump(fl, open(np_, "w"))
+    c, r = door("/api/iface/create", {"node": "n1", "iface": "wg5", "protocol": "wg", "subnet": "10.33.0.0/24", "p2p": None})
+    ok(rec(name="wg5").get("p2p") == {"action": "exit", "node": "n2"}, "[1] a create over a stored record (a ghost Recreate) with p2p null keeps the stored choice (%s %s)" % (c, rec(name="wg5")))
     c, r = door("/api/wdtt/set", {"node": "n1", "iface": "wdtt1", "p2p": {"action": "exit", "node": "n2"}})
     ok(c == 200 and rec(kind="wdtt", name="wdtt1").get("p2p") == {"action": "exit", "node": "n2"}, "[1] WDTT stores it (%s %s)" % (c, r))
     c, r = door("/api/csqtt/set", {"node": "n1", "iface": "cq1", "p2p": {"action": "direct"}})
@@ -200,6 +212,16 @@ def run_checks(src):
     ok(fl["n1"]["ifaces"]["wg7"].get("p2p") == {"action": "exit", "node": "n2"} and fl["n2"]["ifaces"]["wg0"].get("p2p"),
        "[4] a live target is kept")
     ok(sorted(n for _, n in ch) == ["node-n · wdtt1", "node-n · wg0", "node-n · wg9"], "[4] each named <node> · <record> (%s)" % ch)
+    fl = fleet(n1={"wg0": {"p2p": {"action": "exit", "node": "nX"}, "block": ["smtp"]}}, pol1="direct")
+    ch = P.prune_p2p_refs(fl)
+    ok("p2p" not in fl["n1"]["ifaces"]["wg0"] and fl["n1"]["ifaces"]["wg0"]["block"] == ["smtp"] and not ch,
+       "[4] a DORMANT choice (the node on Direct) is dropped, never turned into Block, nothing said (%s %s)" % (fl["n1"]["ifaces"]["wg0"], ch))
+    fl = fleet(n1={"wg0": {"p2p": {"action": "exit", "node": ["x"]}}})
+    try:
+        P.prune_p2p_refs(fl); _r4 = fl["n1"]["ifaces"]["wg0"]
+    except Exception as e:
+        _r4 = repr(e)
+    ok(isinstance(_r4, dict) and "p2p" not in _r4, "[4] a malformed target (a list for a node id) is pruned, never a crash (%s)" % (_r4,))
     json.dump(fleet(n1={"wg7": {"p2p": {"action": "exit", "node": "n2"}}}), open(np_, "w"))
     with contextlib.suppress(Exception):
         P.node_remove(deps, "n2")
@@ -245,8 +267,12 @@ def run_checks(src):
            "[6] %s → the block list, named (%s %s)" % (name, p6, (pl6.get(who) or {}).get("_p2p_dead")))
     K6 = "torrents on {v1} have no way out (the route is unavailable) — blocked until it is"
     i6 = [(i.get("error_key"), (i.get("error_vars") or {}).get("v1")) for i in
-          P._node_issues({"p2p": {"action": "iface"}}, {"smartroute": {"p2p": {"state": "ok", "mode": "iface"}}}, p2p_iface=["wg0", "wdtt1"])]
+          P._node_issues({"p2p": {"action": "iface"}}, {"smartroute": {"p2pi": 1, "p2p": {"state": "ok", "mode": "iface"}}}, p2p_iface=["wg0", "wdtt1"])]
     ok((K6, "wg0, wdtt1") in i6, "[6] the card names them (%s)" % i6)
+    i6b = [i.get("error_key") for i in P._node_issues({"p2p": {"action": "iface"}}, {"smartroute": {"p2p": {"state": "ok", "mode": "legacy"}}}, p2p_iface=["wg0"])]
+    ok(K6 not in i6b, "[6] …not on a node that does not run the choices (it lets them out unchecked; it is told to update) (%s)" % i6b)
+    i6c = [i.get("error_key") for i in P._node_issues({"p2p": {"action": "iface"}}, {"smartroute": {"p2pi": 1, "p2p": {"state": "error", "mode": "iface"}}}, p2p_iface=["wg0"])]
+    ok(K6 not in i6c, "[6] …nor where its rules failed to load (not in force) (%s)" % i6c)
 
     # [7] the wire
     i0 = src.find('"p2p": ({"action": _p2pa}')
@@ -277,15 +303,27 @@ def run_checks(src):
     p8b = P.cascade_plan(F8b, {"n1": SN, "n2": SP})
     ok(not (p8b.get("n1") or {}).get("_p2pi") and (p8b.get("n1") or {}).get("_p2p"), "[8] a node-wide route ignores the stored choices")
 
+    # [10] the links and the offline line know a record's route through a node (S11 review F2, F10)
+    F10 = fleet(n1={"wg0": {"p2p": {"action": "exit", "node": "n2"}}}, links=False)
+    need = P.mesh_need(F10, deps)
+    ok(any(set(x) == {"n1", "n2"} for x in need), "[10] demand mesh links the pair a record's 'Route through node' needs (%s)" % need)
+    ok(not any(set(x) == {"n1", "n2"} for x in P.mesh_need(fleet(n1={"wg0": {"p2p": {"action": "exit", "node": "n2"}}}, links=False, pol1="block"), deps)),
+       "[10] …not for a dormant one (the node not on iface)")
+    ok(P._exit_nodes(F10["n1"]) == {"n2"} and P._exit_nodes(fleet(pol1=None)["n1"] | {"p2p": {"action": "exit", "node": "n2"}}) == {"n2"},
+       "[10] the offline-node line knows a record's torrent route through a node, and the node-wide one")
+    ok(P._exit_nodes(fleet(n1={"wg0": {"p2p": {"action": "exit", "node": "n2"}, "block": ["torrents"]}})["n1"]) == set(), "[10] …not a blocked record's")
+
     # [9] the card
     K9 = "per-interface torrent choices need a node update — until then those interfaces' torrents are not checked"
     keys = lambda c, snap, pi: [i.get("error_key") or i.get("error") for i in P._node_issues(c, snap, p2p_iface=pi)]
     ok(K9 in keys({"p2p": {"action": "iface"}}, {"smartroute": {"p2p": {"state": "ok", "mode": "legacy"}}}, []), "[9] node runs legacy → need an update")
     ok(K9 in keys({"p2p": {"action": "iface"}}, {"smartroute": {}}, []), "[9] node reports no p2p → need an update")
-    ok(K9 not in keys({"p2p": {"action": "iface"}}, {"smartroute": {"p2p": {"state": "ok", "mode": "iface"}}}, []), "[9] mode iface → nothing")
+    ok(K9 not in keys({"p2p": {"action": "iface"}}, {"smartroute": {"p2pi": 1, "p2p": {"state": "ok", "mode": "iface"}}}, []), "[9] a node that runs them → nothing")
+    ok(K9 not in keys({"p2p": {"action": "iface"}}, {"smartroute": {"p2pi": 1, "p2p": {"state": "ok", "mode": "legacy"}}}, []),
+       "[9] …nor before its first sync after the choice (it says p2pi; its mode lags a sync)")
     ok(K9 not in keys({"p2p": {"action": "iface"}}, {"smartroute": {}}, None), "[9] nothing sent → nothing")
     ok(K9 not in keys({"p2p": {"action": "iface"}}, {}, []), "[9] no smart status reported yet → nothing")
-    ok(any("way out is down" in (k or "") for k in keys({"p2p": {"action": "iface"}}, {"smartroute": {"p2p": {"state": "ok", "mode": "iface", "route": "down"}}}, [])),
+    ok(any("way out is down" in (k or "") for k in keys({"p2p": {"action": "iface"}}, {"smartroute": {"p2pi": 1, "p2p": {"state": "ok", "mode": "iface", "route": "down"}}}, [])),
        "[9] a route group down → the way-out line under iface too")
     return fails
 

@@ -415,7 +415,7 @@ says. A reboot ends the guard; once the older version runs, this ends both now:
 ```bash
 sudo rm -f /etc/systemd/system/*.service.d/swg-ns.conf && sudo systemctl daemon-reload
 sudo systemctl try-restart 'swg-*.service'        # back to the system journal (a reboot moves them too)
-sudo nft delete table inet swg_p2p; sudo ip rule del pref 6880 2>/dev/null     # the torrent guard
+sudo nft delete table inet swg_p2p; while sudo ip rule del pref 6880 2>/dev/null; do :; done   # the torrent guard (a rule per route)
 ```
 From 1.8.11, a server that ran a **SOCKS5 exit** keeps its tunnel and its DNS rules too — the older version can't see
 them, so they stay until a reboot (the tunnel and the table) or until you remove them:

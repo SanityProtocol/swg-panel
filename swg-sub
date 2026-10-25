@@ -656,7 +656,8 @@ def _p2p_runs(nodes, describe, nid, arrivals=False):
         return False
     pol = p2p_policy(cfg)
     rep = (describe.get(nid) or {}).get("p2p") or {}
-    if pol == "block" or rep.get("mode") == "block" or rep.get("route") == "down":
+    # `route` down is the NODE-WIDE route's (exit/dev); under iface it is one interface's, judged per record below (S11 F4)
+    if pol == "block" or rep.get("mode") == "block" or (rep.get("route") == "down" and pol in ("exit", "dev")):
         return False
     return pol in ("direct", "iface") if arrivals else True
 
@@ -665,7 +666,8 @@ def torrents_allowed(nodes, describe, t):
     """Whether torrents may leave by deployment `t` — the nodes' own rule, strictest wins (P2P-POLICY §2.2): the record `t`
     lands on (its interface, WDTT or csqtt server) does not block "torrents", its node lets P2P out, and where the policy hands
     it to ANOTHER node — a Route to a node, or a per-interface policy on an interface forwarded whole to one — that node lets
-    arrivals' P2P out too. One hop, as the policy routes: a smart interface's catch-all is cascade_plan's to resolve, not this
+    arrivals' P2P out too; under per-interface, the record's own choice decides first (a route through a node needs a link
+    and that node's arrivals let out, a route through an exit needs it there and on, Direct is the node's own WAN). One hop, as the policy routes: a smart interface's catch-all is cascade_plan's to resolve, not this
     page's (a known limit). A "torrents" category switched off in Settings still reads as blocked here (Settings is not this
     process's to read), so the hint can be missing where torrents run."""
     nid = t.get("node")
@@ -681,6 +683,15 @@ def torrents_allowed(nodes, describe, t):
     pol = p2p_policy(cfg)
     if pol == "exit":                                  # every client subnet's P2P goes to that node
         return _p2p_runs(nodes, describe, (cfg.get("p2p") or {}).get("node"), arrivals=True)
+    _rp = rec.get("p2p") if pol == "iface" and isinstance(rec.get("p2p"), dict) else {}
+    if _rp.get("action") == "exit":                    # its own route through a node (IFACE-P2P-PICK): a link there, and that
+        _q = _rp.get("node")                           # node lets arrivals' P2P out
+        return isinstance(cfg.get("links"), dict) and _q in cfg["links"] and _p2p_runs(nodes, describe, _q, arrivals=True)
+    if _rp.get("action") == "dev":                     # …through one of this node's exits, there and switched on
+        return any(isinstance(x, dict) and str(x.get("id")) == str(_rp.get("exit_id")) and x.get("enabled") is not False
+                   for x in (cfg.get("exits") if isinstance(cfg.get("exits"), list) else ()))
+    if _rp.get("action") == "direct":                  # out this node's own address, whatever the interface's egress
+        return True
     if pol == "iface" and rec.get("egress_mode") == "forward":   # follows the interface: forwarded whole to that node
         return _p2p_runs(nodes, describe, rec.get("egress_node"), arrivals=True)
     return True

@@ -29,13 +29,14 @@ const PLANTS = {
   "--perturb-init": ["routing.js", "    p2p: m.p2p && m.p2p.action ? { ...m.p2p } : null };", "    p2p: null };"],
   "--perturb-body": ["routing.js", "  p2p: eg.p2p || null });", "  });"],
   "--perturb-count-anywhere": ["routing.js", "  const own = p2p && p2p.action && nrec.p2p_eff === \"iface\" ? 1 : 0;", "  const own = p2p && p2p.action ? 1 : 0;"],
+  "--perturb-draft-exit": ["routing.js", "(byId((node || {}).exits) || byId(draft))", "(byId((node || {}).exits))"],
   "--perturb-noside-warn": ["routing.js", "  return { iface, cur, opts, rec, hint, warn: rec && !iface ? elsewhere : \"\", pick };", "  return { iface, cur, opts, rec, hint, warn: \"\", pick };"],
 };
 const SRC_PLANTS = {
   "--perturb-caller": ["turn.js", "<${BlockTraffic} node=${node} value=${blk} onChange=${setBlk} p2p=${eg.p2p} onP2p=${p => setEg(e => ({ ...e, p2p: p }))}/>",
                        "<${BlockTraffic} node=${node} value=${blk} onChange=${setBlk}/>"],
   "--perturb-chip": ["routing.js", " && !(onP2p && c.id === \"torrents\"));", ");"],
-  "--perturb-settings-hints": ["screen-settings.js", "            ${p2pTargetHints(curRec, node)}", ""],
+  "--perturb-settings-hints": ["screen-settings.js", "            ${p2pTargetHints(curRec, node, exits)}", ""],
 };
 const MODE = [...Object.keys(PLANTS), ...Object.keys(SRC_PLANTS)].find(k => process.argv.includes(k));
 const load = async f => {
@@ -108,7 +109,9 @@ check("Q-B: …udp_ok null (not proven yet) → the hint too", said({ action: "d
 check("Q-B: …udp_ok true → none", !said({ action: "dev", exit_id: "7c7c7c7c" }));
 check("Q-B: a WARP exit, a node, Direct → none", !said({ action: "dev", exit_id: "aaaa0001" }) && !said({ action: "exit", node: "n2" }) && !said({ action: "direct" }));
 const ss = src("screen-settings.js");
-check("Q-B: the Settings picker shows the same hints (one builder)", ss.includes("${p2pTargetHints(curRec, node)}"));
+check("Q-B: the Settings picker shows the same hints (one builder)", ss.includes("${p2pTargetHints(curRec, node, exits)}"));
+check("Q-B: a SOCKS5 exit added in this same edit (in the draft only, never checked) → the hint (review F37)",
+      R.p2pTargetHints({ action: "dev", exit_id: "8d8d8d8d" }, N1, [sx("8d8d8d8d")]).some(v => JSON.stringify(v).includes(TCP)));
 check("…a node that drops what others send it is warned about", R.p2pTargetHints({ action: "exit", node: "n3" }, N1).length === 1);
 
 console.log("\n[4] the draft");

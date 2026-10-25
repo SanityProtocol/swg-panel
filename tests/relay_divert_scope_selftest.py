@@ -21,6 +21,7 @@ Run: python3 tests/relay_divert_scope_selftest.py (0 = pass)
      --perturb-mark     a whole-interface leg looks the route up WITH the mark  → RED
      --perturb-links    the links are the `swg_` prefix again                   → RED
      --perturb-shadow   the parameter is reassigned inside reconcile_relay      → RED
+     --perturb-p2p      a whole-interface leg takes a torrent-marked attempt again (S11 review F1) → RED
 """
 import importlib.machinery, importlib.util, ipaddress, os, re, sys, tempfile
 
@@ -40,6 +41,7 @@ PLANTS = {
               '''        _RELAY_LINKS["links"] = tuple(sorted(n for n in ifs if n.startswith("swg_")))'''),
     "counter": (CNT, '''        L.append('    ip saddr %s %smeta l4proto tcp tcp flags syn / fin,syn,rst,ack counter comment "%s"'
                  % (S, _m, _relay_syn_tag(e["iid"])))'''),
+    "p2p": ('        if not e.get("mark"):\n            _m = "meta mark & %#x == 0 " % P2P_BIT\n', ""),
     "mark": (ATT, '''        _att = 'tcp flags syn / fin,syn,rst,ack fib daddr . mark oifname { %s } ' % ", ".join('"%s"' % d for d in links)'''),
 }
 if MODE == "shadow":
@@ -81,6 +83,10 @@ def matches(rule, pkt):
             if ipaddress.ip_address(pkt["src"]) not in ipaddress.ip_network(toks[i + 2]):
                 return False
             i += 3
+        elif t == "meta" and toks[i + 1] == "mark" and toks[i + 2] == "&":   # meta mark & M == V
+            if pkt["mark"] & int(toks[i + 3], 0) != int(toks[i + 5], 0):
+                return False
+            i += 6
         elif t == "meta" and toks[i + 1] == "mark" and toks[i + 2] != "set":
             if pkt["mark"] != int(toks[i + 2], 0):
                 return False
@@ -143,6 +149,10 @@ CASES = [
     ("⚠️ a SYN carrying ANOTHER product's mark still judged by its own route",
      pkt("10.141.0.10", ["syn"], "swg_93c2fdf8", route_mark="eth0", mark=0x1), True),
     ("a SYN from outside the subnet", pkt("10.142.0.50", ["syn"], "swg_93c2fdf8"), False),
+    # S11 review F1: swg_p2p marked it to leave by the WAN (Direct) or a chosen exit (T|P2P_BIT) — the relay would re-dial
+    # it from the gateway and send it down the leg
+    ("⚠️ a torrent SYN swg_p2p marked Direct", pkt("10.141.0.10", ["syn"], "swg_93c2fdf8", mark=0x40000000), False),
+    ("⚠️ a torrent SYN swg_p2p marked for a route (T|P2P_BIT)", pkt("10.141.0.10", ["syn"], "swg_93c2fdf8", mark=0x40001b5b), False),
 ]
 for name, p, want in CASES:
     check("%s → %s" % (name, "taken" if want else "left alone"), matches(T, p) == want, T)

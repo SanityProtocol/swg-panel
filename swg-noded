@@ -8130,14 +8130,14 @@ def _p2p_rule(want, res):
     cur = [ln for ln in (run(["ip", "rule", "show"]).stdout or "").splitlines() if ln.startswith("%d:" % P2P_RULE_PRI)]
     ok = on and len(cur) == len(wants) and all(any(("fwmark %#x lookup %s" % w) in ln for ln in cur) for w in wants)
     if on and not ok:
-        for _ in range(8 + len(wants)):
+        for _ in range(64):                                   # every rule there, however many groups there were (review F35)
             if run(["ip", "rule", "del", "pref", str(P2P_RULE_PRI)]).returncode != 0:
                 break
         for w in wants:
             run(["ip", "rule", "add", "fwmark", "%#x" % w[0], "lookup", str(w[1]), "priority", str(P2P_RULE_PRI)])
         res["changed"] += 1
     elif not on and cur:
-        for _ in range(8):
+        for _ in range(64):                                   # every group's rule (iface installs one per group)
             if run(["ip", "rule", "del", "pref", str(P2P_RULE_PRI)]).returncode != 0:
                 break
         res["changed"] += 1
@@ -8187,7 +8187,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
     if nofan:                                                 # mesh link addresses: an onward-NAT arrival wears one, and flagging
         L.append("  set nofan { typeof ip saddr; flags interval; elements = { %s } }" % ", ".join(nofan))   # it would cut everyone behind that hop
     if strict:
-        L.append("  set strict { typeof ip saddr; flags interval; elements = { %s } }" % ", ".join(strict))
+        L.append("  set strict { typeof ip saddr; flags interval;%s elements = { %s } }"
+                 % (" auto-merge;" if mode == "iface" else "", ", ".join(strict)))
     if mode == "route" and rt.get("routable"):
         L.append("  set routable { typeof ip saddr; flags interval; elements = { %s } }" % ", ".join(rt["routable"]))
     if mode == "iface":                                       # auto-merge: two records' overlapping prefixes are one scope, not a refused table
@@ -8257,8 +8258,15 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
         L.append("    counter name dropped drop")
         L.append("  }")
 
+    if grp:
+        L.append("  chain gmark {")
+        L += ["    ip saddr @g_%s %s" % (g["name"], gmk(g)) for g in grp]
+        L.append("  }")
     L.append("  chain cls {")
     L.append("    type filter hook prerouting priority mangle + 5; policy accept;")
+    if mode == "iface":                                       # the scope FIRST: held flows and marks exist only for checked
+        L.append("    meta nfproto ipv6 return")              # sources, so an unchecked or v6 packet pays this one lookup and
+        L.append("    ip saddr != @checked return")           # nothing else (S11 review F17)
     if routes or grp:                                         # our own restore: kernel/forcedns modes have none, and the smart
         L.append("    ct direction original ct mark & %#x == %#x meta mark set ct mark" % (P2P_BIT, P2P_BIT))   # chain may re-mark per packet
     L.append("    ct direction reply return")
@@ -8269,15 +8277,12 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
     if mode == "legacy":
         L.append("    meta nfproto ipv6 return")
         L.append("    ip saddr != @strict return")
-    elif mode == "iface":                                     # legacy's scope, widened to the groups
-        L.append("    meta nfproto ipv6 return")
-        L.append("    ip saddr != @checked return")
     for who in whos:                                          # a flagged user's high-port flows, new AND established
         L.append("    %sip saddr @flag %s %s%s" % (who, _P2P_SHAPE, lo, "jump fdrop" if fdrop else "counter name dropped drop"))
     if routes:
         L.append("    ct state new ip saddr @flag %s %s%s" % (_P2P_SHAPE, lo, mark))
-    for g in grp:
-        L.append("    ct state new ip saddr @g_%s ip saddr @flag %s %s%s" % (g["name"], _P2P_SHAPE, lo, gmk(g)))
+    if grp:                                                   # @flag first, then the groups in gmark (S11 review F19)
+        L.append("    ct state new ip saddr @flag %s %sjump gmark" % (_P2P_SHAPE, lo))
     L.append("    ct original packets > 4 return")
     L.append("    fib daddr type local return")               # from here on only packets 1-4 of a flow
     if ih:
@@ -8301,8 +8306,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
         L.append("    ct state new %sip saddr @flag %s counter name dropped drop" % (who, _P2P_SHAPE))
     if routes:
         L.append("    ct state new ip saddr @flag %s %s" % (_P2P_SHAPE, mark))
-    for g in grp:
-        L.append("    ct state new ip saddr @g_%s ip saddr @flag %s %s" % (g["name"], _P2P_SHAPE, gmk(g)))
+    if grp:
+        L.append("    ct state new ip saddr @flag %s jump gmark" % _P2P_SHAPE)
     L.append("  }")
 
     if allp:
@@ -8334,9 +8339,9 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
         # source's groups are read in gflag, and @grouped only on packets 1-4. No held check: under iface only forwarded
         # traffic is judged, and cls drops a held flow's every packet before it gets here. The node's own processes are not
         # checked (`fib saddr type local`, asked only on a flagged or signature packet).
-        L.append("  chain gflag {")
-        for g in grp:
-            L.append("    ip saddr @g_%s %s %sfib saddr type != local counter name dropped drop" % (g["name"], _P2P_SHAPE, goif(g)))
+        L.append("  chain gflag {")                         # the device first: a routed flow leaving by its own pays no set
+        for g in grp:                                         # lookup here (S11 review F18)
+            L.append("    %sip saddr @g_%s %s fib saddr type != local counter name dropped drop" % (goif(g), g["name"], _P2P_SHAPE))
         L.append("  }")
         L.append("  chain guard {")
         L.append("    type filter hook postrouting priority srcnat - 10; policy accept;")
@@ -8349,10 +8354,16 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
             L.append("    ip saddr @grouped meta l4proto { tcp, udp } jump sig")
         L.append("  }")
         if ih:
+            # The signature first, then the groups (gsig): packets 1-4 of an ordinary flow pay no group lookup (S11 review
+            # F16). LOCAL senders are judged here: the mesh relay re-dials a whole-interface leg's TCP from the gateway,
+            # an address in the group's own subnet (S11 review F1) — nothing else on the node sends from one.
             L.append("  chain sig {")
             for c, l4, m in _P2P_SIGS:                        # forwarded hits were counted in cls
-                for g in grp:
-                    L.append("    ip saddr @g_%s meta l4proto %s %s %sfib saddr type != local jump gdrop" % (g["name"], l4, m, goif(g)))
+                L.append("    meta l4proto %s %s jump gsig" % (l4, m))
+            L.append("  }")
+            L.append("  chain gsig {")
+            for g in grp:
+                L.append("    %sip saddr @g_%s jump gdrop" % (goif(g), g["name"]))
             L.append("  }")
             L.append("  chain gdrop {")
             L.append("    " + hold[0])
@@ -8405,9 +8416,18 @@ def _p2p_groups(p2p, strict):
         strict.extend(v4(e.get("subnets")))
     strict.extend(v4(p2p.get("block")))
     strict[:] = sorted(set(strict))
-    seen, groups = set(strict), []
+    # Groups never overlap one another (S11 review F3/F5): a subnet that overlaps one an earlier group took is strict — two
+    # groups' marks and devices for one source drop it everywhere, and nested prefixes in one set refuse the table. Overlap
+    # with strict is fine: cls drops strict first (strictest wins), and strict renders with auto-merge under iface.
+    seen, nets, groups = set(strict), [], []
     def take(name, lst, mark, oif, table):
-        subs = sorted({n for n in v4(lst) if n not in seen})
+        subs = []
+        for n in sorted(set(v4(lst)) - seen):
+            net = ipaddress.ip_network(n)
+            if any(net.overlaps(o) for o in nets):
+                strict.append(n)
+            else:
+                subs.append(n); nets.append(net)
         seen.update(subs)
         if subs:
             groups.append({"name": name, "subnets": subs, "mark": mark, "oif": oif, "table": table})
@@ -8415,6 +8435,7 @@ def _p2p_groups(p2p, strict):
     for e in ents:
         T = int(e["table"])
         take("r%d" % T, e.get("subnets"), T | P2P_BIT, [e["via_iface"]], T)
+    strict[:] = sorted(set(strict))
     return groups
 
 
@@ -8447,6 +8468,8 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
                         routable.append(str(n))
             route = {"mark": T | P2P_BIT, "routable": sorted(set(routable))}
         groups = _p2p_groups(p2p, strict) if mode == "iface" else []   # adds to `strict` what fails closed
+        if mode == "iface" and not strict and not groups:     # nothing v4 left to judge (a v6-only wire): legacy's nothing, not
+            mode = _P2P["mode"] = "legacy"                    # an empty set nft refuses as a syntax error (S11 review F7)
         if mode == "iface":
             _p2p_rule([(g["mark"], g["table"] or "main") for g in groups], res)
         else:
@@ -8469,16 +8492,14 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
         # said: reported as route "down" so the node's card names it. Read after the band was reconciled above, and judged
         # by a line that IS a way out — `default dev …` / `default via …` — never by the word: a kill-switch exit's table
         # always holds `prohibit default metric …`, which a substring test read as "up" (code review, 2026-10-03).
-        if ent:
-            _rt = run(["ip", "route", "show", "table", str(ent["table"])]).stdout or ""
-            _P2P["route"] = "up" if any(ln.split()[:1] == ["default"] for ln in _rt.splitlines()) else "down"
-            _P2P["route_dev"] = ent["via_iface"]
-        for g in groups:                                      # iface: the first route group with no way out is the one said
-            if g["table"]:
-                _rt = run(["ip", "route", "show", "table", str(g["table"])]).stdout or ""
-                _up = any(ln.split()[:1] == ["default"] for ln in _rt.splitlines())
-                if not _P2P["route"] or (not _up and _P2P["route"] == "up"):
-                    _P2P.update(route="up" if _up else "down", route_dev=g["oif"][0])
+        def _way_out(T):
+            _rt = run(["ip", "route", "show", "table", str(T)]).stdout or ""
+            return any(ln.split()[:1] == ["default"] for ln in _rt.splitlines())
+        for T, dev in ([(ent["table"], ent["via_iface"])] if ent else []) + [(g["table"], g["oif"][0]) for g in groups if g["table"]]:
+            _up = _way_out(T)                                 # iface: the first route group with no way out is the one said
+            _P2P.update(route="up" if _up else "down", route_dev=dev)
+            if not _up:
+                break
         logged = log_level() >= LOG_INFO and not _P2P["nolog"]
         text = _p2p_nft(mode, strict, oif, _p2p_link_nets(node_cfg), ih, route, logged=logged, groups=groups)
         sig = hashlib.sha256(text.encode()).hexdigest()
@@ -13819,7 +13840,8 @@ def smart_status():
             "arr": 1,                             # runs `smart.arrivals` — the default list for traffic cascaded in (ROUTING-PEERS-MESH-PLAN §4.3)
             "caps_keep": 1,                       # keeps its caps for the categories a sync names in `cat_caps_keep` (_cat_caps_take)
             "allow": 1,                           # applies `smart.allow`, the Never-block list's names (_never_block_adjust)
-            "ports": 1}                           # renders an entry's `ports` (B.4) — the panel withholds port rules until it says so
+            "ports": 1,                           # renders an entry's `ports` (B.4) — the panel withholds port rules until it says so
+            "p2pi": 1}                            # runs smart.p2p {action: iface} — each interface's own torrent choice (IFACE-P2P-PICK)
     if _P2P["on"]:                                              # P2P policy: ok | degraded (no @ih → fan-out only) | error (its table
         _r = _P2P.get("route") or ""                            # was refused, `detail` says why), the mode in force, and under route
         if _r == "up" and _devexit_state(_P2P.get("route_dev") or "") != "up":   # whether its way out is up — the last pass's answer,
@@ -14424,6 +14446,12 @@ def _relay_nft(entries, guard_ports=(), links=()):
         # already set by the time this chain runs (mangle for it, mangle+10 for us). Matching the source
         # alone there would divert traffic that was routed somewhere else entirely.
         _m = ("meta mark 0x%x " % e["mark"]) if e.get("mark") else ""
+        # ⚠️ …AND A WHOLE-INTERFACE LEG NEVER TAKES A TORRENT-MARKED ATTEMPT (S11 review F1). swg_p2p's cls (-145) has marked
+        # it to leave by the WAN or a chosen exit (P2P_BIT); taken here, the relay re-dialled it from the gateway and it left
+        # by the leg — the operator's per-interface Direct / Route, and the node-wide one, silently bypassed for TCP. A smart
+        # leg's exact mark already excludes it (a P2P mark is T|P2P_BIT). One compare, no lookup.
+        if not e.get("mark"):
+            _m = "meta mark & %#x == 0 " % P2P_BIT
         # ⚠️ ONLY A CONNECTION ATTEMPT THAT LEAVES BY A MESH LEG IS DIVERTED — both halves measured on swgt, 2026-09-16.
         # `tproxy` hands ANY packet whose established-socket lookup misses to the listener, SYN or not, and the rule used
         # to name only the source. Three things followed, none of them visible from the client that caused them:

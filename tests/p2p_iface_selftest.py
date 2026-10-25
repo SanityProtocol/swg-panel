@@ -47,15 +47,18 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "bad-entry-open": ('    for e in bad:\n        strict.extend(v4(e.get("subnets")))', '    for e in bad:\n        pass'),
     "table-reuse":    ('        if u and int(u["table"]) not in taken:', '        if u:'),
     "block-ignored":  ('    strict.extend(v4(p2p.get("block")))\n', ''),
-    "strict-routed":  ('        subs = sorted({n for n in v4(lst) if n not in seen})', '        subs = sorted(set(v4(lst)))'),
+    "strict-routed":  ('            if any(net.overlaps(o) for o in nets):', '            if False:'),
+    "v6-empty":       ('        if mode == "iface" and not strict and not groups:', '        if False:'),
+    "strict-nomerge": ('(" auto-merge;" if mode == "iface" else "", ", ".join(strict))', '("", ", ".join(strict))'),
+    "no-p2pi":        ('            "p2pi": 1}', '            "_p2pi": 1}'),
     "no-automerge":   ('  set checked { typeof ip saddr; flags interval; auto-merge; elements', '  set checked { typeof ip saddr; flags interval; elements'),
     "guard-all":      ('        L.append("    ip saddr @flag jump gflag")', '        L.append("    jump gflag")'),
     "gflag-skip":     ('        L.append("    ip saddr @flag jump gflag")\n', ''),
     "sig-ungrouped":  ('            L.append("    ip saddr @grouped meta l4proto { tcp, udp } jump sig")', '            L.append("    meta l4proto { tcp, udp } jump sig")'),
-    "sig-local":      ('l4, m, goif(g)))', 'l4, m, goif(g).replace("oifname", "fib saddr type local oifname") or "fib saddr type local "))'),
+    "sig-local":      ('                L.append("    meta l4proto %s %s jump gsig" % (l4, m))', '                L.append("    meta l4proto %s %s fib saddr type != local jump gsig" % (l4, m))'),
     "group-oif":      ('    goif = lambda g: "oifname != { %s } "', '    goif = lambda g: "" and "oifname != { %s } "'),
     "rule-ordered":   ('all(any(("fwmark %#x lookup %s" % w) in ln for ln in cur) for w in wants)', 'all(("fwmark %#x lookup %s" % w) in ln for ln, w in zip(cur, wants))'),
-    "route-first":    ('                if not _P2P["route"] or (not _up and _P2P["route"] == "up"):', '                if not _P2P["route"]:'),
+    "route-first":    ('            if not _up:\n                break', '            pass'),
     "recon-borrowed": ('    if _pi.get("action") == "iface":                          # …and each', '    if False:                          # …and each'),
 }
 
@@ -173,6 +176,16 @@ def run_checks(src):
     ok(G.get("d", {}).get("oif") == ["eth0"] and G["d"]["mark"] == BIT and G["d"]["table"] is None
        and G.get("r7005", {}).get("oif") == ["swg_q"] and G["r7005"]["mark"] == 7005 | BIT, "[3] marks and devices per group")
 
+    st3 = ["10.80.0.0/24"]
+    g3 = m._p2p_groups({"direct": ["10.8.0.0/16", "10.8.1.0/24", "10.80.0.0/16"], "entries": [E(7006, "wgx0", "10.8.2.0/24", "10.90.0.0/24")]}, st3)
+    ok([x["subnets"] for x in g3] == [["10.8.0.0/16", "10.80.0.0/16"], ["10.90.0.0/24"]] and st3 == ["10.8.1.0/24", "10.8.2.0/24", "10.80.0.0/24"],
+       "[3] a subnet overlapping one an earlier group took is strict, in its own group or another; overlap with strict is kept (%s %s)" % (g3, st3))
+    ok("set strict { typeof ip saddr; flags interval; auto-merge; elements" in m._p2p_nft("iface", st3, [], [], True, groups=g3),
+       "[3] …and strict renders with auto-merge under iface (nested Block prefixes)")
+    m7, b7 = fresh(src)
+    m7._ensure_p2p({"action": "iface", "direct": ["fd00:8::/64"]}, {}, {}, {"changed": 0, "errors": []})
+    ok("swg_p2p" not in b7.tables and m7._P2P["mode"] == "legacy", "[3] a v6-only iface wire leaves nothing to judge: legacy, no table (an empty set is a syntax error)")
+
     # [4]
     t = m._p2p_nft("iface", st, [], [], True, groups=g)
     cls = t.split("chain cls {", 1)[1].split("\n  }", 1)[0].splitlines()
@@ -181,15 +194,22 @@ def run_checks(src):
     sig = [l for l in t.split("chain sig {", 1)[1].split("\n  }", 1)[0].splitlines() if l.strip()] if "chain sig {" in t else []
     ok("    ip saddr != @checked return" in cls and "    ip saddr != @strict return" not in cls
        and "flags interval; auto-merge; elements = { " in t.split("set checked {", 1)[1].split("\n", 1)[0], "[4] legacy's scope, widened to @checked (auto-merge)")
-    ok(all(any(("ip saddr @g_%s" % x["name"]) in l and l.endswith("meta mark set %#x ct mark set %#x" % (x["mark"], x["mark"])) for l in cls)
-           for x in g) and "ip saddr @g_d meta l4proto udp meta mark set %#x" % BIT in t, "[4] each group carries its own mark (cls + hit)")
+    gm = [l.strip() for l in t.split("chain gmark {", 1)[1].split("\n  }", 1)[0].splitlines() if l.strip()] if "chain gmark {" in t else []
+    ok(gm == ["ip saddr @g_%s meta mark set %#x ct mark set %#x" % (x["name"], x["mark"], x["mark"]) for x in g]
+       and "ip saddr @g_d meta l4proto udp meta mark set %#x" % BIT in t, "[4] each group carries its own mark (gmark + hit) (%s)" % gm)
+    ok([l.strip()[:len("ct state new ip saddr @flag")] for l in cls if "jump gmark" in l] == ["ct state new ip saddr @flag"] * 2
+       and not any("@g_" in l for l in cls), "[4] cls reads @flag before any group (one jump to gmark per block, no @g_ lookup in cls)")
+    ok(cls[2:4] == ["    meta nfproto ipv6 return", "    ip saddr != @checked return"], "[4] cls: the scope first — an unchecked or v6 packet pays one lookup (%s)" % cls[2:4])
     ok([l.strip() for l in gu[1:]] == ['oifname "lo" return', "ct direction reply return", "meta nfproto ipv6 return", "ip saddr @flag jump gflag",
                                          "ct original packets > 4 return", "ip saddr @grouped meta l4proto { tcp, udp } jump sig"],
        "[4] guard: one set lookup per established v4 packet (@flag); @grouped only on packets 1-4; no held check (cls has it) (%s)" % gu[1:])
-    ok(len(gf) == len(g) and any(l.strip().startswith("ip saddr @g_d meta l4proto") and 'oifname != { "eth0" }' in l and l.endswith("drop") for l in gf)
-       and any(l.strip().startswith("ip saddr @g_r7005 meta l4proto") and 'oifname != { "swg_q" }' in l for l in gf), "[4] each group judged against its own devices (%s)" % gf)
-    ok(sig and all("fib saddr type != local jump gdrop" in l for l in sig) and all("fib saddr type local" not in l for l in sig)
-       and len(sig) == len(m._P2P_SIGS) * len(g), "[4] the node's own processes are not checked; one sig line per signature and group")
+    ok(len(gf) == len(g) and any(l.strip().startswith('oifname != { "eth0" } ip saddr @g_d meta l4proto') and l.endswith("drop") for l in gf)
+       and any(l.strip().startswith('oifname != { "swg_q" } ip saddr @g_r7005 meta l4proto') for l in gf),
+       "[4] each group judged against its own devices, the device first (%s)" % gf)
+    gs = [l.strip() for l in t.split("chain gsig {", 1)[1].split("\n  }", 1)[0].splitlines() if l.strip()] if "chain gsig {" in t else []
+    ok(len(sig) == len(m._P2P_SIGS) and all(l.strip().endswith("jump gsig") and "@g_" not in l and "fib" not in l for l in sig)
+       and gs == ['oifname != { "eth0" } ip saddr @g_d jump gdrop', 'oifname != { "swg_q" } ip saddr @g_r7005 jump gdrop'],
+       "[4] sig: the signature first, then the groups (gsig); local senders judged too — the relay re-dials from the gateway (%s %s)" % (sig, gs))
     t0 = m._p2p_nft("iface", st, [], [], True, groups=[])
     ok("chain guard" not in t0 and "ip saddr != @checked return" in t0, "[4] only block / strict → no guard (legacy's shape)")
     import shutil, subprocess as _sp
@@ -220,9 +240,16 @@ def run_checks(src):
     m._ensure_p2p(W2, {}, {}, {"changed": 0, "errors": []})
     ok(sorted(b.rules) == [w for w in want if "lookup 7003" not in w], "[5] a group gone takes its rule with it (%s)" % b.rules)
     m._ensure_p2p(W, {}, {}, {"changed": 0, "errors": []})
+    m._ensure_p2p({"action": "iface", "direct": ["10.69.0.0/24"], "entries": [E(7010 + i, "wgx0", "10.%d.0.0/24" % (100 + i)) for i in range(12)]},
+                  {}, {}, {"changed": 0, "errors": []})
+    n13 = len([r for r in b.rules if r.startswith("6880:")])
     m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
-    ok(not any(r.startswith("6880:\tfrom all fwmark %#x" % (7003 | BIT)) for r in b.rules) and len([r for r in b.rules if r.startswith("6880:")]) == 0,
-       "[5] leaving iface removes every group's rule (%s)" % b.rules)
+    ok(n13 == 13 and len([r for r in b.rules if r.startswith("6880:")]) == 0,
+       "[5] leaving iface removes every group's rule, thirteen of them too (%d, then %s)" % (n13, b.rules))
+    m._ensure_p2p({"action": "iface", "direct": ["10.69.0.0/24"], "entries": [E(7010 + i, "wgx0", "10.%d.0.0/24" % (100 + i)) for i in range(12)]},
+                  {}, {}, {"changed": 0, "errors": []})
+    m._ensure_p2p({"action": "iface", "direct": ["10.69.0.0/24"]}, {}, {}, {"changed": 0, "errors": []})
+    ok(len([r for r in b.rules if r.startswith("6880:")]) == 1, "[5] thirteen groups down to one: the twelve gone rules go in one pass (review F35) (%s)" % b.rules)
 
     # [6]
     m, b = fresh(src)
@@ -232,6 +259,10 @@ def run_checks(src):
     b.tables_rt["7003"] = "default dev wgx0 scope link\n"
     m._ensure_p2p(W, {}, {}, {"changed": 0, "errors": []})
     ok(m._P2P["route"] == "up", "[6] all up → up")
+    b.tables_rt["7005"] = ""; b.cmds[:] = []
+    m._ensure_p2p(W, {}, {}, {"changed": 0, "errors": []})
+    ok(m._P2P["route_dev"] == "swg_q" and sum(1 for a, _ in b.cmds if a[:4] == ["ip", "route", "show", "table"]) == 1,
+       "[6] the first group down ends the probe (one `ip route show table`)")
     m._ensure_p2p({"action": "iface", "direct": ["10.69.0.0/24"]}, {}, {}, {"changed": 0, "errors": []})
     ok(m._P2P["route"] == "" and m._P2P["mode"] == "iface", "[6] no route group → no route state")
 
@@ -255,19 +286,23 @@ def run_checks(src):
     with __import__("contextlib").suppress(Exception):
         st8 = m.smart_status()
     ok(((st8 or {}).get("p2p") or {}).get("mode") == "iface", "[8] the report says mode iface (%s)" % ((st8 or {}).get("p2p")))
+    ok((st8 or {}).get("p2pi") == 1, "[8] …and every report says p2pi (the panel asks it, not the mode, whether choices run)")
 
     # [9]
     if _sp.run(["sudo", "-n", "true"], capture_output=True).returncode == 0 and shutil.which("unshare"):
         m9 = base.load(src)
         G9 = lambda name, sub, mark, oif, T: [{"name": name, "subnets": [sub], "mark": mark, "oif": oif, "table": T}]
-        for name, groups, want in (("a Direct group", G9("d", "10.9.0.0/24", BIT, ["eth0"], None), (2, 0, 1)),
-                                   ("a route group via another device", G9("r7003", "10.9.0.0/24", 7003 | BIT, ["wgx0"], 7003), (0, 2, 1)),
-                                   ("outside every group", G9("d", "10.62.0.0/24", BIT, ["eth0"], None), (2, 0, 0))):
+        # (left by the WAN, dropped, flagged, the gateway's own DHT left by the WAN): the client sends a DHT query to 6881, a
+        # new high-port flow, a DHT query to port 999 (outside the P2P shape: only sig → gdrop can stop it); then the router
+        # itself sends one from the gateway 10.9.0.1, as the mesh relay re-dials a whole-interface leg's connection
+        for name, groups, want in (("a Direct group", G9("d", "10.9.0.0/24", BIT, ["eth0"], None), (3, 0, 1, 1)),
+                                   ("a route group via another device", G9("r7003", "10.9.0.0/24", 7003 | BIT, ["wgx0"], 7003), (0, 4, 1, 0)),
+                                   ("outside every group", G9("d", "10.62.0.0/24", BIT, ["eth0"], None), (3, 0, 0, 1))):
             got = _wire_iface(m9._p2p_nft("iface", ["10.67.0.0/24"], [], [], True, groups=groups, logged=False))
             if got is None:
                 print("  SKIPPED [9] real-kernel %s — the throwaway namespace could not be set up here" % name)
                 continue
-            ok(got == want, "[9] on the real kernel, the client in %s: (left by the WAN, dropped, flagged) = %s, want %s" % (name, got, want))
+            ok(got == want, "[9] on the real kernel, the client in %s: (left by the WAN, dropped, flagged, the gateway's left) = %s, want %s" % (name, got, want))
     else:
         print("  SKIPPED [9] real-kernel datapath — no `sudo -n` here")
     return fails
@@ -277,9 +312,11 @@ WIRE_IF = base.WIRE.split("nft add element")[0] + r'''
 nft -f - <<'EOF'
 table inet obs {
   counter left {}
+  counter leftgw {}
   chain p {
     type filter hook postrouting priority 100; policy accept;
     oifname "eth0" ip saddr 10.9.0.2 counter name left
+    oifname "eth0" ip saddr 10.9.0.1 counter name leftgw
   }
 }
 EOF
@@ -289,11 +326,18 @@ s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.9.0.2", 50001)
 s.sendto(b"d1:ad2:id20:" + os.urandom(20) + b"9:info_hash20:" + os.urandom(20) + b"e1:q9:get_peers1:t2:aa1:y1:qe", ("198.51.100.7", 6881))
 time.sleep(0.2)
 s.sendto(b"\x00" * 40, ("198.51.100.8", 40000))
+s.sendto(b"d1:ad2:id20:" + os.urandom(20) + b"9:info_hash20:" + os.urandom(20) + b"e1:q9:get_peers1:t2:bb1:y1:qe", ("198.51.100.9", 999))
+'
+python3 -c '
+import os, socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.9.0.1", 50002))
+s.sendto(b"d1:ad2:id20:" + os.urandom(20) + b"9:info_hash20:" + os.urandom(20) + b"e1:q9:get_peers1:t2:cc1:y1:qe", ("198.51.100.10", 6881))
 '
 sleep 0.3
 echo "LEFT $(nft list counter inet obs left | grep -o 'packets [0-9]*' | grep -o '[0-9]*')"
 echo "DROPPED $(nft list counter inet swg_p2p dropped | grep -o 'packets [0-9]*' | grep -o '[0-9]*')"
 echo "FLAG $(nft list set inet swg_p2p flag | grep -c '10\.9\.0\.2')"
+echo "LEFTGW $(nft list counter inet obs leftgw | grep -o 'packets [0-9]*' | grep -o '[0-9]*')"
 kill $CPID 2>/dev/null
 '''
 
@@ -311,7 +355,7 @@ def _wire_iface(table):
         os.unlink(f.name)
     out = {ln.split(" ", 1)[0]: ln.split(" ", 1)[1].strip() for ln in (r.stdout or "").splitlines() if " " in ln}
     try:
-        return int(out["LEFT"]), int(out["DROPPED"]), int(out["FLAG"])
+        return int(out["LEFT"]), int(out["DROPPED"]), int(out["FLAG"]), int(out["LEFTGW"])
     except (KeyError, ValueError):
         return None
 

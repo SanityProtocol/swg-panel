@@ -9836,9 +9836,11 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
     # Each interface's own choice (IFACE-P2P-PICK §4.4): a node that does not run it reads `iface` as unknown and checks
     # only the Block interfaces — asked of the node (it reports mode iface while it runs them), as above.
     # `p2p_iface`: the interfaces whose route could not be lowered, when this node is sent choices at all (None: it is not).
-    if _p2pa == "iface" and p2p_iface is not None and _srp is not None and (not _p2pn or _p2pn.get("mode") != "iface"):
+    # ASKED of the node: a noded that runs them says `p2pi` in every report — its mode lags a first choice by a sync, so
+    # reading the mode told a current node to update (S11 review F15).
+    if _p2pa == "iface" and p2p_iface is not None and _srp is not None and not _srp.get("p2pi"):
         issues.append(perr("per-interface torrent choices need a node update — until then those interfaces' torrents are not checked"))
-    if _p2pa == "iface" and p2p_iface:
+    elif _p2pa == "iface" and p2p_iface and not (_p2pn and _p2pn.get("state") == "error"):   # blocked only where they run (F8)
         issues.append(perr("torrents on {v1} have no way out (the route is unavailable) — blocked until it is", v1=", ".join(p2p_iface)))
     # Rules (the default list's, an interface's, a forward) whose exit NODE is offline: that traffic is dropped — never leaked
     # — and was said nowhere. On the operator's msk-main Google, GitHub and Discord were cut ~9.6 days unnoticed (q189
@@ -14500,8 +14502,12 @@ def mesh_need(nodes, deps):
             continue
         recs = [ov for ov in (n.get("ifaces") or {}).values() if isinstance(ov, dict) and not ov.get("system")]
         recs += [v for k in ("wdtt", "csqtt") for v in (n.get(k) or {}).values() if isinstance(v, dict)]
+        _pif = p2p_policy(n) == "iface"
         for ov in recs:
             mode = ov.get("egress_mode")
+            _rp = ov.get("p2p") if isinstance(ov.get("p2p"), dict) else {}
+            if _pif and _rp.get("action") == "exit" and "torrents" not in (ov.get("block") or []):
+                want(nid, str(_rp.get("node") or ""))   # its own "Route through node Q" (IFACE-P2P-PICK; S11 review F2)
             if mode == "forward":                    # `egress_node` exists only in forward mode
                 want(nid, str(ov.get("egress_node") or ""))
             elif mode == "smart":                    # `routing` is kept, inert, outside smart mode
@@ -14985,7 +14991,8 @@ BLOCK_CAT_ORDER = list(BLOCK_CATEGORIES.keys()) + list(MECH_CATEGORIES.keys())
 #   block   dropped everywhere — THE DEFAULT     direct  only out this node's own address (its main default route)
 #   iface   each interface's "Torrents / P2P" switch decides (the per-interface mechanism, as before this policy)
 #   exit    out through the mesh to another node ({"node": nid})   dev   out through one of this node's exits ({"exit_id"})
-# The node is sent block|direct, or route + the lowered entry (cascade_plan's `_p2p`); iface is sent as no policy at all.
+# The node is sent block|direct, or route + the lowered entry (cascade_plan's `_p2p`); iface is sent as no policy at all
+# until a record makes its own choice, then as {action: iface, entries?, direct?, block?} (p2p_iface_wire, IFACE-P2P-PICK).
 P2P_ACTIONS = ("block", "direct", "iface", "exit", "dev")
 
 
@@ -18829,7 +18836,8 @@ def ports_clean(proto, raw):
 
 def _exit_nodes(n):
     """Every node this node's configuration sends traffic out through: its default list's and its interfaces' (and WDTT /
-    csqtt instances') exit rules, and a forward's egress node — the ways cascade_plan reaches a peer (see mesh_need)."""
+    csqtt instances') exit rules, a forward's egress node, and a torrent route through a node — the ways cascade_plan reaches
+    a peer (see mesh_need)."""
     out = set()
     if isinstance(n.get("default_routing"), list):
         out |= {str(r.get("node") or "") for r in n["default_routing"] if isinstance(r, dict) and rule_on(r) and r.get("action") == "exit"}
@@ -18840,6 +18848,11 @@ def _exit_nodes(n):
             out.add(str(ov.get("egress_node") or ""))
         elif ov.get("egress_mode") == "smart":
             out |= {str(r.get("node") or "") for r in (ov.get("routing") or []) if isinstance(r, dict) and rule_on(r) and r.get("action") == "exit"}
+        _rp = ov.get("p2p") if isinstance(ov.get("p2p"), dict) else {}
+        if _rp.get("action") == "exit" and p2p_policy(n) == "iface" and "torrents" not in (ov.get("block") or []):
+            out.add(str(_rp.get("node") or ""))      # …its own torrent route through a node (S11 review F10)
+    if isinstance(n.get("p2p"), dict) and n["p2p"].get("action") == "exit":
+        out.add(str(n["p2p"].get("node") or ""))     # …and the node's torrent policy's
     out.discard("")
     return out
 
@@ -20176,16 +20189,22 @@ def prune_p2p_refs(nodes):
             changed.append((_nid, _n.get("name", _nid)))
     # …and an interface's own choice (IFACE-P2P-PICK §2.3): its target node gone or now its own node (an interface carried
     # onto it), or its exit not among its node's exits. Becomes Block the same way: "torrents" in block[], the route popped.
+    # A choice kept DORMANT (the node is not on "Each interface decides", where it counts for nothing) is only dropped: turned
+    # into Block it would start dropping torrents the node's own policy lets out (S11 review F6). One target check, the
+    # save's (`_p2p_target`, review F21).
     for _nid, _n in (nodes or {}).items():
-        _xs = {str((e or {}).get("id")) for e in ((_n or {}).get("exits") or [])}
+        if not isinstance(_n, dict):
+            continue
+        _live = p2p_policy(_n) == "iface"
         for _k in ("ifaces", "wdtt", "csqtt"):
-            for _rn, _r in (((_n or {}).get(_k) or {}) if isinstance((_n or {}).get(_k), dict) else {}).items():
-                _p = (_r or {}).get("p2p") if isinstance(_r, dict) else None
-                if isinstance(_p, dict) and ((_p.get("action") == "exit" and (_p.get("node") not in nodes or _p.get("node") == _nid))
-                                             or (_p.get("action") == "dev" and str(_p.get("exit_id")) not in _xs)):
+            for _rn, _r in ((_n.get(_k) or {}) if isinstance(_n.get(_k), dict) else {}).items():
+                _p = _r.get("p2p") if isinstance(_r, dict) else None
+                if isinstance(_p, dict) and _p.get("action") in ("exit", "dev") and _p2p_target(
+                        {k: str(v) for k, v in _p.items() if k in ("action", "node", "exit_id")}, nodes, _nid)[1]:
                     _r.pop("p2p", None)
-                    _r["block"] = [b for b in (_r.get("block") or []) if b != "torrents"] + ["torrents"]
-                    changed.append((_nid, "%s · %s" % (_n.get("name", _nid), _rn)))
+                    if _live:
+                        _r["block"] = [b for b in (_r.get("block") or []) if b != "torrents"] + ["torrents"]
+                        changed.append((_nid, "%s · %s" % (_n.get("name", _nid), _rn)))
     return changed
 
 
@@ -21355,7 +21374,8 @@ def cascade_plan(nodes, snaps, custom_lists=None):
 
     # 1) collect forward + smart items; per-node target order (UNION) → stable table ids shared by both modes
     fwd_items, smart_items, devexit_items = [], [], []
-    p2p_items = []                                            # (nid, kind, target key, dev_n, dev_p, base_p, subnets, ks, egress_ip, gw)
+    p2p_items = []                                            # (nid, kind, target key, dev_n, dev_p, base_p, subnets, ks, egress_ip, gw);
+                                                              # kind exit|dev node-wide, iexit|idev per record (subnets as (name, S))
     exit_ips_of = {}                                      # (node, subnet) → {far node: address} — see the smart branch
 
     def _rule_cat(nid, r):
@@ -21694,9 +21714,9 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                         _g = _pig.setdefault(_rx[1], ["idev", _rx[0], None, None, _rx[2], _rx[3], _rx[4], []])
                 elif _pa == "exit":
                     _Q = _rp.get("node")
-                    if (_Q in nodes and _Q != nid and all(_link_devs(nodes, nid, _Q))
-                            and not _clashes(nid, n_, S, _Q, "rule")):
-                        _g = _pig.setdefault(_Q, ["iexit", *_link_devs(nodes, nid, _Q), False, "", "", []])
+                    _ld = _link_devs(nodes, nid, _Q) if _Q in nodes and _Q != nid else (None,)
+                    if all(_ld) and not _clashes(nid, n_, S, _Q, "rule"):
+                        _g = _pig.setdefault(_Q, ["iexit", *_ld, False, "", "", []])
                 if _g is None:
                     slot(nid).setdefault("_p2pi", {}).setdefault("block", []).append(S)
                     slot(nid).setdefault("_p2p_dead", []).append(n_)
@@ -30102,7 +30122,9 @@ def api(method, path, qs, body, deps):
         _blk = _validate_block(body.get("block"), deps.get("panel_settings"))   # active block-category ids (default-on set applied by the UI at create; validated here)
         if _blk:
             ov["block"] = _blk
-        _perr = _apply_iface_p2p(ov, body, nodes, nid)   # the torrent choice, after block (it wins) — as the edit does
+        # the torrent choice, after block (it wins) — as the edit does; a create's `p2p: null` is "nothing chosen", so a ghost
+        # Recreate (whose `ov` is the stored record) keeps the stored choice (S11 review F11)
+        _perr = _apply_iface_p2p(ov, {k: v for k, v in body.items() if k != "p2p" or v is not None}, nodes, nid)
         if _perr:
             return 400, {"ok": False, "error": _perr, "code": "bad_request"}
         reach_level_set(ov, body)                    # the create sheet sends the level it preselected (§10.6); validated above

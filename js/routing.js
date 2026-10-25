@@ -1178,7 +1178,7 @@ export const p2pTarget = (p, exits, node) => {
   // the exits' own namer — but an exit no longer in the list is named by its id: `exitLabel` of a bare id reads "Custom"
   return x ? exitLabel(x, node) : String(p.exit_id || "");
 };
-export const P2P_SHORT = () => ({ block: T("blocked"), direct: T("this server's address only"), iface: T("per interface") });
+const P2P_SHORT = () => ({ block: T("blocked"), direct: T("this server's address only"), iface: T("per interface") });
 export const p2pLabel = (p, exits, node) => !p || !p.action ? "" : (p.action === "dev" || p.action === "exit")
   ? T("via {v1}", { v1: p2pTarget(p, exits, node) }) : (P2P_SHORT()[p.action] || "");
 // The route rows. The exits are the ROUTING PICKERS' OWN LIST (`exitOptionGroups`): a switched-off exit and a WARP account that is
@@ -1201,14 +1201,15 @@ export function p2pTargetOpts(node, exits) {
 // SERVER'S where it has not, so a node that has never reported ("dangling") warns too. And (Q-B, operator 2026-10-21: a hint,
 // never a refusal) a SOCKS5 exit that carries no UDP: DHT and µTP cannot pass it. Its `udp_ok` is read from the STORED record's
 // live state; null — not proven yet — reads as no UDP, as the node runs it (SOCKS5 D-d). Any other exit kind says nothing.
-export function p2pTargetHints(rec, node) {
+export function p2pTargetHints(rec, node, draft = null) {
   const out = [];
   const tgt = rec && rec.action === "exit" ? (Store.nodes || []).find(n => n.id === rec.node) : null;
   const tgtDrops = tgt && ["block", "exit", "dev"].includes(tgt.p2p_eff);
   const tgtStale = !tgtDrops && !!tgt && nodeStatusOf(tgt) !== "online";
   if (tgtStale) out.push(html`<div class="hint warnish">${T("{v1} is not reporting right now — torrent traffic sent there will not get out until it is back.", { v1: tgt.name })}</div>`);
   if (tgtDrops) out.push(html`<div class="hint warnish">${T("{v1} blocks torrent traffic that other nodes send it, so nothing routed there will get out. Set {v1} to allow it, or to let each interface decide.", { v1: tgt.name })}</div>`);
-  const x = rec && rec.action === "dev" ? ((node || {}).exits || []).find(e => String(e.id) === String(rec.exit_id)) : null;
+  const byId = l => (l || []).find(e => e && String(e.id) === String(rec.exit_id));   // stored first (its live udp_ok), else the
+  const x = rec && rec.action === "dev" ? (byId((node || {}).exits) || byId(draft)) : null;   // draft's: one added in this edit (F37)
   if (x && exitProv(x) === "socks5" && (x.live || {}).udp_ok !== true)
     out.push(html`<div class="hint warnish">${T("This exit carries TCP only — DHT and µTP can't pass it, so torrents find fewer peers and download slower.")}</div>`);
   return out;
