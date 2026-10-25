@@ -53,7 +53,11 @@ PLANTS = {
                            "            if len(d) > 12 and d[3] == 1:"),                                                 # [4]
     "--perturb-t10": ("    oifname \"%s\" ip daddr != %s meta l4proto udp reject", "    oifname \"%s\" %.0smeta l4proto udp reject"),  # [5]
     "--perturb-t15": ('_dns_dnat(whole, res, [p for p, _i in (nets or ())], S5X_DNS_TAG', '_dns_dnat(whole, res, [], S5X_DNS_TAG'),  # [5]
-    "--perturb-dead": ("and e.get(\"subnet\") and _devexit_state(e[\"dev\"]) == \"up\"})", "and e.get(\"subnet\")})"),  # [5]
+    "--perturb-dead": ("and not e.get(\"part\") and _devexit_state(e[\"dev\"]) == \"up\"})", "and not e.get(\"part\")})"),  # [5]
+    # [5] s10-p3 F4 — a partial arrival
+    "--perturb-part-dnat": ('and e.get("subnet") and not e.get("part") and _devexit_state', 'and e.get("subnet") and _devexit_state'),
+    "--perturb-part-rule": ("    _s5x_arr_dns(sorted({", "    (lambda *a: None)(sorted({"),
+    "--perturb-part-settle": ("    if have != sorted(_one(S) for S in want) or len(cur) != len(have):", "    if True:"),
     "--perturb-unmark": ('                  and e.get("scope") == "rule" and str(e.get("table") or "").isdigit()})',
                          '                  and False})'),                                                                  # [5]
     "--perturb-f18": ('                    if rec.get("provider") in EXIT_KINDS and (_dev_link_state(_od) != "absent" or rec.get("started")):',
@@ -551,6 +555,43 @@ check("Force DNS through the shared helper: udp + tcp to dnsmasq, its own RETURN
       sorted(l.split("-p ")[1].split()[0] for l in NAT if "swg-smartdns " in l + " ") == ["tcp", "udp"]
       and all(("127.0.0.1:%d" % N.SMART_DNS_PORT) in l for l in NAT if "swg-smartdns " in l + " ")
       and NAT[0].count("swg-smartdns-net") == 1, NAT)
+
+# s10-p3 F4: a PARTIAL arrival (another node's smart rule sends this one some destinations; the SOCKS exit is its default) —
+# no stand-in addresses for it, and its DNS out the main table by one ip rule above the band
+RULES = []
+_r4 = N.run
+def _ipr(argv, **k):
+    if argv[:3] == ["ip", "rule", "show"]:
+        return R("\n".join(["0:\tfrom all lookup local"] + RULES + ["32766:\tfrom all lookup main"]))
+    if argv[:4] == ["ip", "rule", "del", "pref"]:
+        for i, l in enumerate(RULES):
+            if l.startswith(argv[4] + ":"):
+                RULES.pop(i); return R()
+        return R(rc=2)
+    if argv[:3] == ["ip", "rule", "add"]:            # as iproute2 prints it: a /32 bare, the protocol by name
+        S = argv[4][:-3] if argv[4].endswith("/32") else argv[4]
+        RULES.append("%s:\tfrom %s ipproto udp dport 53 lookup main" % (argv[-1], S)); return R()
+    return _r4(argv, **k)
+N.run = _ipr
+N._EXITS["socks"] = {"s5x-aa": False}; N._S5X_NFT.update(sig=None, dns=None, arr=None); NAT[:] = []
+DX4 = [{"subnet": "10.17.0.0/24", "dev": "s5x-aa", "table": 7001},
+       {"subnet": "10.40.0.0/24", "dev": "s5x-aa", "table": 7001, "part": True},
+       {"subnet": "10.255.0.9", "dev": "s5x-aa", "table": 7001, "part": True}]
+N._s5x_rules(DX4, [], {"changed": 0, "errors": []})
+dnat = [l for l in NAT if "swg-s5x-dns " in l + " " and "DNAT" in l]
+check("a partial arrival's DNS gets no stand-in addresses: only the node's own interface goes to mapdns — s10-p3 F4",
+      sorted(l.split("-s ")[1].split()[0] for l in dnat) == ["10.17.0.0/24"], NAT)
+check("…its UDP 53 leaves by the main table, above the band: `from S ipproto udp dport 53 lookup main` at 6870, a bare hop-2 address too",
+      sorted(l.split("from ")[1].split()[0] for l in RULES) == ["10.255.0.9", "10.40.0.0/24"]
+      and all(l.startswith("6870:") and "ipproto udp dport 53 lookup main" in l for l in RULES), RULES)
+_rules0, _c4 = list(RULES), {"changed": 0, "errors": []}
+N._s5x_rules(DX4, [], _c4)
+check("…and a second pass with nothing changed rewrites none of it (a /32 read back bare)", RULES == _rules0 and _c4["changed"] == 0,
+      (RULES, _c4))
+N._EXITS["socks"] = {}
+N._s5x_rules([], [], {"changed": 0, "errors": []})
+check("…gone with the exit", RULES == [], RULES)
+N.run = _r4
 
 # ── [6] F18 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[6] an unknown kind takes the device it replaced down (s9a F18)")

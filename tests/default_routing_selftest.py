@@ -40,6 +40,8 @@ Run: python3 tests/default_routing_selftest.py   (0 = pass)
      n  a list node with no plan slot gets no "whom it affects" (review #8)
      m  an interface pinned to an unusable exit falls back past the list to the node's own address (review #3)
      p  `default_exit` is read from the list's first catch-all even when it is switched off (the plan routes by the next)
+     q  a SOCKS5 default is not told which arrivals are partial (s10-p3 F4: their DNS would get hev's stand-in addresses)
+     r  a whole-interface cascade is flagged partial too (its DNS would lose the stand-ins that match where it leaves)
 """
 import importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -99,6 +101,8 @@ PLANTS = {
           '''    ca = next((r for r in rec["default_routing"] if isinstance(r, dict) and r.get("category") == "all"'''),
     "k": ('''        subs = sorted(S for S in _via if S not in _pinned and S not in _dup''',
           '''        subs = sorted(S for S in _via if S not in _dup'''),
+    "q": ('''                if not whole and str(_pdev).startswith("s5x-"):''', '''                if False:'''),
+    "r": ('''        arrival_default(P, S, X, W, whole=True)''', '''        arrival_default(P, S, X, W)'''),
 }
 TMP = tempfile.mkdtemp(prefix="default-routing-")
 path = PANEL
@@ -422,12 +426,25 @@ _iss4 = P._node_issues(_rec, dict(SP, devexit=[{"dev": "swg_n", "subnet": "10.8.
 check("a mesh leg reported absent is never announced as a broken exit (T31)", not any("swg_n" in i["error"] for i in _iss4),
       [i["error"] for i in _iss4])
 
+# s10-p3 F4 — a SOCKS5 exit as P's plain default: the smart arrival (n1 wg0, some destinations) is flagged `part`, the
+# whole-interface cascade (n1 wg9) is not, and a default that is not SOCKS flags nothing (byte-identical everywhere else)
+S1 = {"id": "cccc0003", "label": "S", "device": "s5x-cccc0003", "enabled": True, "producer": "imported", "provider": "socks5",
+      "killswitch": False, "socks": {"host": "gw.example.com", "port": 1080, "user": "", "pass": "", "salt": "00"}}
+_n12 = fleet(p_default=S1["id"]); _n12["n2"]["exits"].append(dict(S1))
+_d12 = {d["subnet"]: d for d in dx(P.cascade_plan(_n12, {"n1": SN, "n2": dict(OLD)}), "iface") if d["dev"] == S1["device"]}
+check("a SOCKS5 default: a smart arrival's entry says it is PARTIAL — its DNS is left to the origin's choice (s10-p3 F4)",
+      (_d12.get("10.8.0.0/24") or {}).get("part") is True, _d12)
+check("…and a whole-interface cascade's is not: every packet comes to P, so the proxy's stand-in addresses are right for it",
+      "10.28.0.0/24" in _d12 and "part" not in _d12["10.28.0.0/24"], _d12)
+_d12b = [d for d in dx(P.cascade_plan(fleet(p_default=X1["id"]), {"n1": SN, "n2": dict(OLD)})) if "part" in d]
+check("…and a default that is not SOCKS is told nothing new (every other plan byte-identical)", _d12b == [], _d12b)
+
 if PLANT:
     want = {"a": "keeps NO `from S`", "b": "does not run arrivals is sent none", "c": "Auto interface is lowered",
             "d": "silence falls through", "e": "D5 — a SMART arrival", "f": "DERIVED from the catch-all",
             "g": "every arrival subnet gets", "h": "Auto interface is lowered", "i": "never the `local`-only",
             "j": "silence falls through", "k": "SMART default: the pinned", "l": "review #2", "m": "review #3", "n": "review #8", "o": "plain default for this node's own",
-            "p": "first catch-all that is ON"}[PLANT]
+            "p": "first catch-all that is ON", "q": "says it is PARTIAL", "r": "whole-interface cascade's is not"}[PLANT]
     hit = [f for f in FAILS if want in f]
     print("\nPLANT %s: %s" % (PLANT, "CAUGHT — " + " · ".join(hit) if hit else "NOT CAUGHT (the check passed with the defect in)"))
     sys.exit(0 if hit else 1)

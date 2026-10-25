@@ -19308,14 +19308,24 @@ def parse_socks_text(text):
     # ⚠️ NEVER A GUESS (verify F61–F63): every form the paste fits is read, and when two of them name different proxies the
     # paste is refused — a wrong guess sends the login, in RFC 1929 cleartext, to whatever host it picked. The URL form, with
     # its percent-escapes, is the one that cannot be read two ways.
-    reads = set()
+    reads, _at = set(), False
     if not url and "@" in t and _hp(t.rpartition("@")[2]):
+        _at = True
         _c, _, _h = t.rpartition("@")
         reads.add((_h,) + tuple(_c.partition(":")[::2]))
     if not url and len(parts) >= 4 and _host(parts[0]) and _isport(parts[1]):
         reads.add((parts[0] + ":" + parts[1], parts[2], ":".join(parts[3:])))
     if not url and len(parts) == 4 and _hp(parts[2] + ":" + parts[3]):
         reads.add((parts[2] + ":" + parts[3], parts[0], parts[1]))
+    if len(reads) > 1:
+        # ⚠️ ONE TIE IS BROKEN, the dashboards' own (verify F70): `p.webshare.io:80:abcd:1234` reads as host:port:user:pass
+        # with a dotted host, or as user:pass:host:port with the single label `abcd` for a host. When exactly ONE reading's
+        # host is an address or a dotted name (or `localhost`) and the other is a bare label, the label is the user. ONLY
+        # between those two four-part readings, where a wrong pick sends no password as a login (each one's login is the
+        # other's host:port) — never against a user:pass@host reading, whose password a wrong pick would send elsewhere.
+        _real = [r for r in reads if "." in r[0].rpartition(":")[0] or r[0].rpartition(":")[0].lower() == "localhost"]
+        if len(parts) == 4 and not _at and len(_real) == 1:
+            reads = set(_real)
     if len(reads) > 1:
         return None, "this proxy address can be read more than one way — paste it as socks5://user:password@host:port"
     if url:
@@ -21740,7 +21750,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
             seen.add(k)
             sp_["devexit"].append(ent)
 
-    def arrival_default(P, S, X, W, hop2=False):
+    def arrival_default(P, S, X, W, hop2=False, whole=False):
         # DECISION 4's OTHER HALF — the one the plan warned is easy to miss. Traffic cascaded in from
         # another node leaves by THIS node's default exit, on the same terms as its own interfaces: only
         # when the forwarding interface named neither a source IP nor a WAN NIC. An operator who pinned
@@ -21770,6 +21780,14 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                 _pdev, _pkey, _pks, _peg, _pgw = _pr
                 _pe = {"subnet": S, "dev": _pdev, "table": _pt, "killswitch": _pks, "egress_ip": _peg,
                        "gw": _pgw}
+                # ⚠️ A SOCKS5 DEFAULT GETS TOLD WHICH ARRIVALS ARE PARTIAL (s10-p3 F4). A whole-interface cascade sends P
+                # every packet, so its DNS may take hev's stand-in addresses: the connection to one comes to P too. A smart
+                # arrival, a P2P route or an onward hop sends only some destinations, and the origin routes a 198.19.x.x
+                # stand-in by ITS rules — not to P. `part` makes P leave that subnet's DNS alone: it goes to the server the
+                # origin chose (its Force DNS, or the client's own) out P's own address, as a rule-scoped exit's DNS does.
+                # Only on a SOCKS device, so every other entry — and every fleet without one — stays byte-identical.
+                if not whole and str(_pdev).startswith("s5x-"):
+                    _pe["part"] = True
                 _dx_add(slot(P), _pe)
 
     # 2a) Phase-2 forward entries
@@ -21791,7 +21809,7 @@ def cascade_plan(nodes, snaps, custom_lists=None):
         sn["allowed"][dev_n] = "0.0.0.0/0"
         add_exit(P, S, dev_p, T, X, W, base_p)
         slot(P).setdefault("_from", {}).setdefault(S, nid)      # whose subnet this is — the "whom it affects" line (§7.3)
-        arrival_default(P, S, X, W)
+        arrival_default(P, S, X, W, whole=True)
 
     # 2a-bis) P2 device exits — a forward whose far end is a LOCAL device.
     # ⚠️ NO add_exit() and NO `allowed` entry, and neither is an oversight: both exist to prepare the PEER

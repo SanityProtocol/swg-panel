@@ -1368,7 +1368,8 @@ rm_node_netobjects(){
     # the 7000 band, flushed above), so only the rule goes — never `table 6890`. Band spelled out: this file does not
     # read swg-noded; derived there as BASE − (MAX − BASE) − 11, so a change to the table band moves it. …And 6880, the torrent
     # policy's rule (P2P_RULE_PRI: `fwmark 0x40000000 lookup main` under Direct) — a rule only, too (1.8.9 qualification NR-6).
-    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6880 || ($1>=6890 && $1<=6989)'); do
+    # …And 6870, a SOCKS5 exit's partial arrivals' DNS bypass (S5X_ARR_DNS_PRI: `from S ipproto udp dport 53 lookup main`).
+    for n in $(ip rule show 2>/dev/null | sed -n 's/^\([0-9]\+\):.*/\1/p' | awk '$1==6870 || $1==6880 || ($1>=6890 && $1<=6989)'); do
       run ip rule del pref "$n"
     done
   fi

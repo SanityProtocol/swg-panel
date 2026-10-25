@@ -7122,7 +7122,10 @@ def _smart_dns_redirect(subnets, res, nets=()):
 
 S5X_DNS_TAG, S5X_DNS_NET_TAG = "swg-s5x-dns", "swg-s5x-dns-net"
 S5X_NFT_TABLE = "swg_s5x"
-_S5X_NFT = {"sig": None, "dns": None}       # the nft want last written; whether any DNS DNAT was (None: not yet asked)
+_S5X_NFT = {"sig": None, "dns": None, "arr": None}   # the nft want last written; whether any DNS DNAT was (None: not yet
+                                                     # asked); the partial arrivals' DNS bypass last written (None: not yet)
+S5X_ARR_DNS_PRI = 6870      # a partial arrival's DNS bypass — below the band (its `from S lookup T` is at pref T) and
+                            # outside every other fixed rule here (P2P 6880, the upstream band 6890–6989, the relay 6990)
 
 
 def _s5x_rules(devexit, nets, res):
@@ -7133,13 +7136,19 @@ def _s5x_rules(devexit, nets, res):
     · while the proxy does not carry UDP (`udp_ok` not true), other UDP into the device is REFUSED AT ONCE, so QUIC falls
       back to TCP instead of waiting out a timeout — except to 198.18.0.2 itself, the DNS just redirected there (T10);
     · …and DNS a RULE marks for the device is unmarked, so it goes direct as every rule-scoped exit's DNS does (T13: mapdns
-      is wrong there — its fake IPs match no category).
+      is wrong there — its fake IPs match no category);
+    · a PARTIAL ARRIVAL (`part`: another node's smart rule, P2P route or onward hop sends some destinations here, and this
+      exit is the node's default) is neither: its DNS gets no stand-in — the origin would route a 198.19.x.x by its own
+      rules, not here — and no ride through hev (refused without UDP): `from S ipproto udp dport 53 lookup main` above the
+      band sends it to the server the origin chose, out this node's address (s10-p3 F4; `_s5x_arr_dns`).
     ⚠️ The refusal is an nft chain of its own (`inet swg_s5x`), not an iptables FORWARD rule: every FORWARD rule here is
     inserted at the top, so a client interface's accept added later would sit above it and take the UDP first. A REJECT in
     its own base chain is final whatever order the accepts are in. One `nft -f` when the want changes, none otherwise."""
     socks = _EXITS.get("socks") or {}
     whole = sorted({e["subnet"] for e in devexit if e.get("dev") in socks and (e.get("scope") or "iface") != "rule"
-                    and e.get("subnet") and _devexit_state(e["dev"]) == "up"})
+                    and e.get("subnet") and not e.get("part") and _devexit_state(e["dev"]) == "up"})
+    _s5x_arr_dns(sorted({str(e["subnet"]) for e in devexit if e.get("dev") in socks and e.get("part")
+                         and (e.get("scope") or "iface") != "rule" and e.get("subnet")} - set(whole)), res)
     # ⚠️ A NODE WITH NO SOCKS EXIT PAYS NOTHING: the nat read is skipped once this process has seen none installed (the first
     # pass still asks, so a leftover from before a restart is swept)
     if whole or _S5X_NFT["dns"] is not False:
@@ -7175,6 +7184,34 @@ def _s5x_rules(devexit, nets, res):
         res["changed"] += 1 if gone else 0          # a table that was never there is no change
     else:
         res["errors"].append("socks5 exit rules: " + ((r.stderr or "").strip() or "nft failed")[:160])
+
+
+def _s5x_arr_dns(want, res):
+    """The partial arrivals' DNS bypass: `from S ipproto udp dport 53 lookup main` at S5X_ARR_DNS_PRI, one per subnet, absent
+    otherwise — read from the full listing and rewritten del-until-absent only when it differs (`_p2p_rule`'s shape). Not
+    held by the exit's state or kill-switch: a rule-scoped exit's DNS goes direct whatever they say (T13), and this is the
+    same traffic reaching the node another way. A node that never had one asks nothing (no subprocess per pass)."""
+    if not want and _S5X_NFT["arr"] is False:
+        return
+    _one = lambda a: a if "/" in a else a + "/32"
+    cur = [ln for ln in (run(["ip", "rule", "show"]).stdout or "").splitlines() if ln.startswith("%d:" % S5X_ARR_DNS_PRI)]
+    # `ip rule show` prints a /32 bare and the protocol by name: compare by the source alone, normalised both ways
+    have = []
+    for ln in cur:
+        m = re.search(r"from (\S+)", ln)
+        if m and "dport 53" in ln:
+            have.append(_one(m.group(1)))
+    have.sort()
+    if have != sorted(_one(S) for S in want) or len(cur) != len(have):
+        for _ in range(8 + len(cur)):
+            if run(["ip", "rule", "del", "pref", str(S5X_ARR_DNS_PRI)]).returncode != 0:
+                break
+        bad = [S for S in want if run(["ip", "rule", "add", "from", S, "ipproto", "udp", "dport", "53", "lookup", "main",
+                                       "priority", str(S5X_ARR_DNS_PRI)]).returncode != 0]
+        if bad:      # an iproute2 or kernel without `ipproto`/`dport` (< 4.17): said, and the DNS rides the exit as before
+            res["errors"].append("socks5 exit: arrivals' DNS bypass not installed for " + ", ".join(bad[:3]))
+        res["changed"] += 1
+    _S5X_NFT["arr"] = bool(want)
 
 
 def _dns_dnat(subnets, res, nets, tag_dnat, tag_net, to, protos):
@@ -12017,13 +12054,12 @@ def reconcile_exits(desired, res, devexit=None, managed=()):
             out[_s] = _exit_row(xid, dev, prov, rec, err, _blob_err, True, tr, _hl, _png)
         for dev, due in _ad:
             if due is None:
-                # named but not up: its verdict is kept (F1), and its failure evidence keeps counting — a device that is not up
-                # carries nothing — but a RECOVERY is proven again from the moment it is back, never across the time it was
-                # gone (verify F8: one good probe after a blip brought a dead device back), and it is probed that moment
-                st = _EXIT_HEALTH.get(dev)
-                if st:
-                    st["ok_since"] = None
-                _EXIT_PROBED_AT.pop(dev, None)
+                # named but not up: a pass on which it carries nothing, COUNTED like a failing probe (s10-p2-f8 F5/F6) — so
+                # "carried nothing for 30 s over ≥ 3 passes" is true of downtime too, a TUN that flaps is judged dead, and a
+                # verdict reached while it was gone needs EXIT_ALIVE_AFTER_S of carrying after it is back (a probe that
+                # merely answers once does not bring it back: verify F8). A failing device is due every pass, so it is
+                # probed the moment it is back, without its idle minute being reset here.
+                _exit_judge(dev, {"err": "the device is not up"}, reach=lambda _d: False)
             elif due:
                 tr, _rch, _png = _pr.get(dev) or ({}, None, None)
                 _exit_judge(dev, tr, reach=lambda _d, _r=_rch: _r)
