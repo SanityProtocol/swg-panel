@@ -166,8 +166,8 @@ PLANTS = {
     "udplisten": ("p", '            _no = used | set(ctx.get("listen") or ())', '            _no = used | set()'),
     "typedlisten": ("p", "        if _tp:                  # typed:", "        if _tp and not (_tp.isdigit() and int(_tp) in ctx.get(\"listen\", ())):                  # typed:"),
     "listenall": ("n", '                    if len(f_) > 3 and f_[3] == "07":', '                    if len(f_) > 3:'),
-    "tcpdns": ("n", "            _a = socket.getaddrinfo(s2.host, s2.port, socket.AF_INET, socket.SOCK_STREAM)[0][4]\n            _t = time.monotonic()\n",
-               "            _t = time.monotonic()\n            _a = socket.getaddrinfo(s2.host, s2.port, socket.AF_INET, socket.SOCK_STREAM)[0][4]\n"),
+    "tcpdns": ("n", "            _a = ((_mapdns_a(dev, mapdns, s2.host), s2.port) if mapdns\n                  else socket.getaddrinfo(s2.host, s2.port, socket.AF_INET, socket.SOCK_STREAM)[0][4])\n            _t = time.monotonic()\n",
+               "            _t = time.monotonic()\n            _a = ((_mapdns_a(dev, mapdns, s2.host), s2.port) if mapdns\n                  else socket.getaddrinfo(s2.host, s2.port, socket.AF_INET, socket.SOCK_STREAM)[0][4])\n"),
     "tcpms": ("n", '"tcp_ms": getattr(c, "tcp_ms", None)}', '"tcp_ms": None}'),
     "meshinv": ("p", '    return set(_node_ports({"node_snaps": snaps or {}}, nodes, nid)) | {WDTT_RAW_PORT} | _host_listen((snaps or {}).get(nid))',
                 '    return ({int((b.get("meta") or {}).get("listen_port")) for b in (((snaps or {}).get(nid) or {}).get("interfaces") or {}).values()'

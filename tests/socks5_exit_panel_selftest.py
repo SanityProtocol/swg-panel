@@ -27,7 +27,7 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 SERVER = os.environ.get("SWG_PANEL_SERVER") or os.path.join(ROOT, "swg-panel-server")
 PLANTS = {
     "--perturb-http": ('        if m.group(1).lower() not in ("socks5", "socks5h"):', '        if m.group(1).lower() not in ("socks5", "socks5h", "http"):'),  # [1]
-    "--perturb-v6": ('    if "::" in t or t.startswith("[") or "@[" in t:', '    if "::" in t:'),                             # [1]
+    "--perturb-v6": ('    if "[" in hp or hp.count(":") > 1:', '    if False:'),                                         # [1]
     "--perturb-salt": ('    "pass": hashlib.sha256((str(sk.get("salt") or "") + "\\0" + str(sk.get("pass") or "")).encode()).hexdigest()[:16]}',
                        '    "pass": hashlib.sha256(str(sk.get("pass") or "").encode()).hexdigest()[:16]}'),                  # [3]
     "--perturb-sig": ('        mat["socks"] = _socks_sig_part(rec["socks"])', '        pass'),                                # [3]
@@ -47,10 +47,13 @@ PLANTS = {
     "--perturb-silent": ('        elif kept.get("pass") and sk["user"] and pw == EXIT_PASS_KEEP:\n            return None, "the proxy\'s address or user changed — type its password again"\n',
                          ''),                                                                                       # [2] F2
     "--perturb-pct": ('    if url:                    # percent-escapes are a URL\'s', '    if True:                   # percent-escapes are a URL\'s'),  # [1] F20
-    "--perturb-order": ('    if not url and len(parts) >= 4 and _hostish(parts[0]) and _isport(parts[1]):', '    if False:'),        # [1] F21
+    "--perturb-order": ("    elif len(parts) >= 4 and _host(parts[0]) and _isport(parts[1]) \\", "    elif False and len(parts) >= 4 \\"),  # [1] F21
+    "--perturb-atfirst": ('    if url or ("@" in t and _hp(t.rpartition("@")[2])):', '    if url:'),                                   # [1] verify F53
+    "--perturb-negcache": ("            _HEV_MIRROR_FAIL[arch] = time.time()", "            pass"),                              # [7] verify F48
     "--perturb-kinds-shape": ('    if isinstance(_k, list) and kind in _k:', '    if kind in (_k or []):'),                     # [4] F6
     "--perturb-unknown": ('    if kind != "socks5":\n        return None\n', ''),                                              # [4] F28
-    "--perturb-fp": ('    ("exits.*.socks.pass",      "a SOCKS5 exit\'s password: write-only, and too short for an unsalted identity digest"),\n', ''),  # [5] F26
+    "--perturb-fp": ('                    v = str(o.get("salt") or "") + "\\0" + v       # salted by its own record', '                    pass  #'),  # [5] F26
+    "--perturb-transfer": ("_FP_EXCLUDE = (\n", "_FP_EXCLUDE = (\n    (\"exits.*.socks.pass\", \"x\"),\n"),  # [5] F46
     "--perturb-expire": ('        rec["socks"] = {}                             # its password goes with it, whoever asks first (review F27)\n', ''),  # [8] F27
     "--perturb-lock": ("    with _HEV_MIRROR_LOCK:                            # one fetch at a time", "    if True:  #"),              # [7] F5
     "--perturb-busy": ('            if cur["result"] is None:\n                return 409, {"ok": False, "error": "a test is already running on this node", "code": "busy"}',
@@ -93,7 +96,10 @@ for t, want in OK.items():
     check("accepted: %s" % t, not err and (sk["host"], sk["port"], sk["user"], sk["pass"]) == want, (sk, err))
 for t, want in {"gw.example.com:1080:user:Summer%2024": ("gw.example.com", 1080, "user", "Summer%2024"),
                 "gw.example.com:1080:user:pa:ss@x": ("gw.example.com", 1080, "user", "pa:ss@x"),
-                "myuser:48213:proxy.example.com:1080": ("proxy.example.com", 1080, "myuser", "48213")}.items():
+                "myuser:48213:proxy.example.com:1080": ("proxy.example.com", 1080, "myuser", "48213"),
+                "my.user:123:x@gw.example.com:1080": ("gw.example.com", 1080, "my.user", "123:x"),        # verify F53
+                "gw.example.com:1080:user:ab::cd": ("gw.example.com", 1080, "user", "ab::cd"),           # verify F51
+                "proxy:1080:user:pass": ("proxy", 1080, "user", "pass")}.items():                         # verify F52
     sk, err = P.parse_socks_text(t)
     check("a dashboard form, taken as shown (no %%-decoding outside a URL, ':' and '@' in the password, user:pass:host:port) — F20/F21: %s" % t,
           not err and (sk["host"], sk["port"], sk["user"], sk["pass"]) == want, (sk, err))
@@ -265,6 +271,10 @@ try:
     _h = hashlib.sha256(b"exit_socks_pass\0hunter3").hexdigest()[:16]
     check("the fingerprint carries neither the password nor any digest of it (an unsalted one falls to a word list) — F26",
           "hunter3" not in _m and _h not in _m and x3["socks"]["salt"] not in _m and '"host": "proxy.example"' in _m, _m[:300])
+    _tc, _tb = P.transfer_strip({"id": "n11", "exits": [x3]})
+    check("⚠️ a transfer moves the proxy's password and salt with the record — the exit keeps working on panel B — F46",
+          ((_tc.get("exits") or [{}])[0].get("socks") or {}).get("pass") == "hunter3"
+          and ((_tc.get("exits") or [{}])[0].get("socks") or {}).get("salt") == x3["socks"]["salt"], _tc.get("exits"))
 
     # ── [6] D-c ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
     print("\n[6] a SOCKS exit is not a tunnel edited")
@@ -294,6 +304,8 @@ try:
     TEST_ANSWER.clear()
     rep = sync("n11")
     check("…on every later sync too", "exit_test" not in rep)
+except Exception as _e:                               # a section that raises is a red check, never a silent stop
+    check("the panel sections ran to their end", False, repr(_e)[:200])
 finally:
     proc.terminate()
     with __import__("contextlib").suppress(Exception):
@@ -310,12 +322,15 @@ def _curl(argv, **k):
     return subprocess.CompletedProcess(argv, 0, "", "")
 _CURL = {"v": BAD}
 P.subprocess.run = _curl
+P._HEV_MIRROR_FAIL.clear()
 check("a download that is not the pin is never kept", P.hev_mirror_file("amd64") == "")
 _CURL["v"] = GOOD
+P._HEV_MIRROR_FAIL.clear()
 d = P.hev_mirror_file("amd64")
 check("the pinned one is", d and open(d, "rb").read() == GOOD, d)
 open(d, "wb").write(BAD)
 _CURL["v"] = BAD
+P._HEV_MIRROR_FAIL.clear()
 check("⚠️ a file in the store that is not the pin (put there, or changed) is deleted, never served",
       P.hev_mirror_file("amd64") == "" and not os.path.exists(d))
 check("an arch with no build has nothing", P.hev_mirror_file("riscv64") == "")
@@ -328,11 +343,19 @@ def _slow(argv, **k):
     _curls.append(1); time.sleep(0.5); return _curl(argv, **k)
 _CURL["v"] = GOOD
 P.subprocess.run = _slow
+P._HEV_MIRROR_FAIL.clear()
 _got = []
 _ts = [_th.Thread(target=lambda: _got.append(P.hev_mirror_file("amd64"))) for _ in range(3)]
 [t.start() for t in _ts]; [t.join(10) for t in _ts]
 check("three nodes fetching at once on a cold mirror: one download, all three served — F5",
       len(_curls) == 1 and len(_got) == 3 and all(g and open(g, "rb").read() == GOOD for g in _got), (_curls, _got))
+# verify F48: a panel that cannot reach GitHub does not run a failing fetch for every node in the queue
+with __import__("contextlib").suppress(OSError):
+    os.remove(_got[0])
+_curls.clear(); _CURL["v"] = BAD; P._HEV_MIRROR_FAIL.clear()
+P.hev_mirror_file("amd64"); P.hev_mirror_file("amd64"); P.hev_mirror_file("amd64")
+check("after a failed fetch the mirror answers at once for ten minutes (no ~200 s fetch per queued node) — verify F48",
+      len(_curls) == 1, _curls)
 P.subprocess.run = _real_run
 
 print("\n[8b] a test's password does not outlive the test (in this process)")

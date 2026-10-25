@@ -105,7 +105,7 @@ PLANTS = {
     "--perturb-window": ('                    st["ok_since"] = None\n', "                    pass\n"),                                                   # verify F8
     "--perturb-blipclock": ("                _EXIT_PROBED_AT.pop(dev, None)\n            elif due:", "            elif due:"),     # F8 card F1
     "--perturb-blipfails": ('                    st["ok_since"] = None\n', '                    st.update(ok_since=None, fail_since=None, fails=0)\n'),  # F8 card F2
-    "--perturb-nostamp": ('                if (tr or {}).get("ip") or _rch is not None:   # a probe that answered nothing', '                if True:   #'),  # F3
+    "--perturb-nostamp": ('                if dev in _pr and _exit_probe_answered(tr, _rch):   # an unanswered', '                if True:   #'),  # F3
     "--perturb-snapall": ("        nt = None if d in mine or d in said else _exit_no_traffic(", "        nt = _exit_no_traffic("),  # F5
 }
 # …and the panel's half of [9] (`devexit_live`), planted in the PANEL source

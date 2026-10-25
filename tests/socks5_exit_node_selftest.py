@@ -86,6 +86,8 @@ PLANTS = {
     "--perturb-setup": ('                            rec["setup"], err = err, ""', '                            pass'),          # [7] F13
 }
 MODE = next((a for a in sys.argv[1:] if a in PLANTS), None)
+if "--perturb-sete" in sys.argv:                     # verify F47's plant: lib/common.sh's `|| true` dropped (in the test's copy)
+    os.environ["S5X_PLANT_SETE"] = "1"
 FAILS = []
 
 
@@ -261,6 +263,18 @@ N.NODE_KIND = "baremetal"
 time.sleep(0.2)
 check("…and teardown stops it and removes its yml and pidfile", not N._pid_alive(pid5)
       and not os.path.exists(yml) and not os.path.exists(N._s5x_pidfile("s5x-11223344")))
+
+# verify F47: the bare→Docker convert's hev stop runs under `set -euo pipefail` (install-docker.sh) — a stopped transient unit
+# is unloaded, so its `reset-failed` fails, and that must not abort the convert half-way
+_lc = open(os.path.join(ROOT, "lib", "common.sh"), encoding="utf-8").read()
+_lb = _lc[_lc.index("lc_teardown_baremetal(){"):]
+_loop = _lb[_lb.index("  local u; for u in"):_lb.index("  systemctl stop swg-exit.slice")]
+if os.environ.get("S5X_PLANT_SETE"):
+    _loop = _loop.replace(" || true", "")
+_sh = ("set -euo pipefail\nsystemctl(){ case \"$1\" in list-units) echo 'swg-s5x-aabbccdd.service loaded active running x';; "
+       "reset-failed) return 1;; *) return 0;; esac; }\nf(){\n" + _loop + "\n}\nf\necho REACHED\n")
+_o = subprocess.run(["bash", "-c", _sh], capture_output=True, text=True)
+check("the convert's hev stop survives `set -e` when a unit is already unloaded — verify F47", "REACHED" in _o.stdout, (_o.stdout, _o.stderr))
 
 # ── [4] the proxy check ─────────────────────────────────────────────────────────────────────────────────────────────────────
 print("\n[4] the proxy check, against a SOCKS5 server in this test")
@@ -642,6 +656,9 @@ check("the node reports the kinds it can make, socks5 among them", "socks5" in N
       and 'snap["exit_kinds"] = list(EXIT_KINDS)' in open(NODED, encoding="utf-8").read())
 
 print()
+if os.environ.get("S5X_PLANT_SETE"):
+    print(("perturbed (--perturb-sete): CAUGHT (%d red)" % len(FAILS)) if FAILS else "perturbed (--perturb-sete): NOTHING FAILED")
+    sys.exit(0 if FAILS else 1)
 if MODE:
     print(("perturbed (%s): CAUGHT (%d red)" % (MODE, len(FAILS))) if FAILS
           else "perturbed (%s): NOTHING FAILED — this gate does not test what it claims" % MODE)

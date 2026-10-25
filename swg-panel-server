@@ -10285,10 +10285,6 @@ def _fp_is_unknown(v):
 #
 # EXCLUDE = not part of the mirror at all. Each entry needs a REASON, not just a name.
 _FP_EXCLUDE = (
-    # ⚠️ A SOCKS5 exit's password is NOT a fingerprint secret: those are identities, an unsalted digest a short password
-    # falls to offline (review F26). Not compared at all — it travels with the record — nor is its signature's salt.
-    ("exits.*.socks.pass",      "a SOCKS5 exit's password: write-only, and too short for an unsalted identity digest"),
-    ("exits.*.socks.salt",      "…and the salt of its config-signature digest"),
     ("token_hash",              "the lockout itself — rotation is how a rebuild takes over (§1.2)"),
     ("token_sha",               "same, the lookup index for it"),
     ("rebuild",                 "in-flight ack: the rebuild adapter's own state — the captured turn set "
@@ -10380,6 +10376,11 @@ _FP_SECRET_PATHS = (
     # not descend a list, so the row would have matched nothing until the walk above learned to.
     # (A WARP exit's key is never here at all — the node generates and keeps it, decision 8.)
     ("exits.*.profile.private_key", "exit_profile_key"),
+    # A SOCKS5 exit's password: its identity is digested WITH the record's own salt (_fp_mask) — a short password under an
+    # unsalted digest falls to a word list (review F26) — and the salt is masked beside it. Both travel in a transfer (the
+    # record is moved whole, verify F46); panel A and B, holding the same record, derive the same digest.
+    ("exits.*.socks.pass",          "exit_socks_pass"),
+    ("exits.*.socks.salt",          "exit_socks_salt"),
 )
 _FP_EXCLUDE_PATS = tuple(p for p, _ in _FP_EXCLUDE)
 _FP_CONSUMED_PATS = tuple(p for p, _ in _FP_CONSUMED)
@@ -10460,6 +10461,8 @@ def _fp_mask(obj, path=()):
             for k, v in o.items():
                 p = path + (k,)
                 kind = next((kd for pat, kd in _FP_SECRET_PATHS if _fp_pat_match(p, pat)), None)
+                if kind == "exit_socks_pass" and isinstance(v, str) and v:
+                    v = str(o.get("salt") or "") + "\0" + v       # salted by its own record (F26) — never recoverable offline
                 out[k] = ("secret:" + _fp_secret(kind, v if isinstance(v, str) else _fp_canon(v).decode())
                           ) if kind else walk(v, p)
             return out
@@ -19256,28 +19259,37 @@ def parse_socks_text(text):
         t = t[m.end():].rstrip("/")
     if any(c.isspace() for c in t):
         return None, "the proxy address has a space in it"
-    if "::" in t or t.startswith("[") or "@[" in t:
-        return None, "an IPv6 proxy address cannot be used — exits are IPv4"
     user = pw = ""
-    def _hostish(h):
+    def _host(h):                                      # an IPv4 address or a DNS name, a single label included (F52)
         with contextlib.suppress(ValueError):
             return ipaddress.ip_address(h).version == 4
-        return "." in h and bool(_SOCKS_HOST_RE.fullmatch(h))
+        return bool(_SOCKS_HOST_RE.fullmatch(h))
+    def _dotted(h):
+        with contextlib.suppress(ValueError):
+            return ipaddress.ip_address(h).version == 4
+        return "." in h
     _isport = lambda x: bool(re.fullmatch(r"[0-9]{1,5}", x or "")) and 1 <= int(x) <= 65535
+    _hp = lambda x: x.count(":") == 1 and _host(x.partition(":")[0]) and _isport(x.partition(":")[2])
     parts = t.split(":")
-    # ⚠️ THE DASHBOARD FORMS FIRST, BY THEIR SHAPE (review F21): host:port:user:pass — the password may hold ':' or '@' — and
-    # user:pass:host:port, the other order providers print; only then user:pass@host:port (the last '@' ends the login)
-    if not url and len(parts) >= 4 and _hostish(parts[0]) and _isport(parts[1]):
-        hp, user, pw = parts[0] + ":" + parts[1], parts[2], ":".join(parts[3:])
-    elif not url and len(parts) == 4 and "@" not in t and _hostish(parts[2]) and _isport(parts[3]) and not _hostish(parts[0]):
-        hp, user, pw = parts[2] + ":" + parts[3], parts[0], parts[1]
-    elif "@" in t:
+    # ⚠️ BY SHAPE, MOST SPECIFIC FIRST. user:pass@host:port when what follows the last '@' IS a host:port (verify F53: a dotted
+    # user read as a host sent the login elsewhere); then the dashboards' host:port:user:pass — the password may hold ':' or '@'
+    # (F21, F51) — or user:pass:host:port, the other order they print, chosen when only its host is a dotted name or address
+    if url or ("@" in t and _hp(t.rpartition("@")[2])):
         cred, _, hp = t.rpartition("@")
         user, _, pw = cred.partition(":")
+    elif len(parts) >= 4 and _host(parts[0]) and _isport(parts[1]) \
+            and not (len(parts) == 4 and _hp(parts[2] + ":" + parts[3]) and _dotted(parts[2]) and not _dotted(parts[0])):
+        hp, user, pw = parts[0] + ":" + parts[1], parts[2], ":".join(parts[3:])
+    elif len(parts) == 4 and _hp(parts[2] + ":" + parts[3]):
+        hp, user, pw = parts[2] + ":" + parts[3], parts[0], parts[1]
     elif len(parts) == 2:
         hp = t
+    elif "::" in t or "[" in t:
+        return None, "an IPv6 proxy address cannot be used — exits are IPv4"
     else:
         return None, "the proxy address must be host:port, host:port:user:password or user:password@host:port"
+    if "[" in hp or hp.count(":") > 1:
+        return None, "an IPv6 proxy address cannot be used — exits are IPv4"
     host, _, port = hp.rpartition(":")
     if not re.fullmatch(r"[0-9]{1,5}", port or "") or not 1 <= int(port) <= 65535:
         return None, "the proxy's port must be a number from 1 to 65535"
@@ -19463,6 +19475,8 @@ def exit_test_status(nid, rid=None, now=None):
 
 
 _HEV_MIRROR_LOCK = threading.Lock()
+_HEV_MIRROR_FAIL = {}                                  # arch -> when its fetch last failed: not asked again for HEV_MIRROR_RETRY_S
+HEV_MIRROR_RETRY_S = 600
 
 
 def hev_mirror_file(arch):
@@ -19471,8 +19485,17 @@ def hev_mirror_file(arch):
     want = HEV_SHA256.get(arch)
     if not want:
         return ""
+    # a panel that cannot reach GitHub answers at once for ten minutes after a failed fetch — the queue behind the lock would
+    # otherwise run one ~200 s failing fetch per waiting node (verify F48); the node goes to GitHub itself meanwhile
+    if time.time() - _HEV_MIRROR_FAIL.get(arch, 0) < HEV_MIRROR_RETRY_S:
+        return ""
     with _HEV_MIRROR_LOCK:                            # one fetch at a time: nodes asking at once wait for it (review F5)
-        return _hev_mirror_file(arch, want)
+        if time.time() - _HEV_MIRROR_FAIL.get(arch, 0) < HEV_MIRROR_RETRY_S:
+            return ""
+        got = _hev_mirror_file(arch, want)
+        if not got:
+            _HEV_MIRROR_FAIL[arch] = time.time()
+        return got
 
 
 def _hev_mirror_file(arch, want):
