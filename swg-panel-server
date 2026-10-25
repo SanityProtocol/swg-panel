@@ -19264,24 +19264,30 @@ def parse_socks_text(text):
         with contextlib.suppress(ValueError):
             return ipaddress.ip_address(h).version == 4
         return bool(_SOCKS_HOST_RE.fullmatch(h))
-    def _dotted(h):
-        with contextlib.suppress(ValueError):
-            return ipaddress.ip_address(h).version == 4
-        return "." in h
     _isport = lambda x: bool(re.fullmatch(r"[0-9]{1,5}", x or "")) and 1 <= int(x) <= 65535
     _hp = lambda x: x.count(":") == 1 and _host(x.partition(":")[0]) and _isport(x.partition(":")[2])
     parts = t.split(":")
     # ⚠️ BY SHAPE, MOST SPECIFIC FIRST. user:pass@host:port when what follows the last '@' IS a host:port (verify F53: a dotted
     # user read as a host sent the login elsewhere); then the dashboards' host:port:user:pass — the password may hold ':' or '@'
     # (F21, F51) — or user:pass:host:port, the other order they print, chosen when only its host is a dotted name or address
-    if url or ("@" in t and _hp(t.rpartition("@")[2])):
-        cred, _, hp = t.rpartition("@")
+    # ⚠️ NEVER A GUESS (verify F61–F63): every form the paste fits is read, and when two of them name different proxies the
+    # paste is refused — a wrong guess sends the login, in RFC 1929 cleartext, to whatever host it picked. The URL form, with
+    # its percent-escapes, is the one that cannot be read two ways.
+    reads = set()
+    if not url and "@" in t and _hp(t.rpartition("@")[2]):
+        _c, _, _h = t.rpartition("@")
+        reads.add((_h,) + tuple(_c.partition(":")[::2]))
+    if not url and len(parts) >= 4 and _host(parts[0]) and _isport(parts[1]):
+        reads.add((parts[0] + ":" + parts[1], parts[2], ":".join(parts[3:])))
+    if not url and len(parts) == 4 and _hp(parts[2] + ":" + parts[3]):
+        reads.add((parts[2] + ":" + parts[3], parts[0], parts[1]))
+    if len(reads) > 1:
+        return None, "this proxy address can be read more than one way — paste it as socks5://user:password@host:port"
+    if url:
+        cred, _, hp = t.rpartition("@") if "@" in t else ("", "", t)
         user, _, pw = cred.partition(":")
-    elif len(parts) >= 4 and _host(parts[0]) and _isport(parts[1]) \
-            and not (len(parts) == 4 and _hp(parts[2] + ":" + parts[3]) and _dotted(parts[2]) and not _dotted(parts[0])):
-        hp, user, pw = parts[0] + ":" + parts[1], parts[2], ":".join(parts[3:])
-    elif len(parts) == 4 and _hp(parts[2] + ":" + parts[3]):
-        hp, user, pw = parts[2] + ":" + parts[3], parts[0], parts[1]
+    elif reads:
+        hp, user, pw = next(iter(reads))
     elif len(parts) == 2:
         hp = t
     elif "::" in t or "[" in t:

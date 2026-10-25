@@ -3270,6 +3270,7 @@ export const STR = {
   "the proxy address has a space in it": "в адресе прокси есть пробел",
   "an IPv6 proxy address cannot be used — exits are IPv4": "адрес прокси IPv6 использовать нельзя — выходы работают по IPv4",
   "the proxy address must be host:port, host:port:user:password or user:password@host:port": "адрес прокси должен быть вида хост:порт, хост:порт:пользователь:пароль или пользователь:пароль@хост:порт",
+  "this proxy address can be read more than one way — paste it as socks5://user:password@host:port": "этот адрес прокси читается не единственным образом — вставьте его как socks5://пользователь:пароль@хост:порт",
   "the proxy's address or user changed — type its password again": "адрес или пользователь прокси изменились — введите его пароль ещё раз",
   "the proxy login has a %-escape that is not text — write it without one": "в логине прокси есть %-экранирование, которое не является текстом, — напишите его без экранирования",
   "the proxy's port must be a number from 1 to 65535": "порт прокси должен быть числом от 1 до 65535",

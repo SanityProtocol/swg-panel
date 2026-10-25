@@ -47,8 +47,7 @@ PLANTS = {
     "--perturb-silent": ('        elif kept.get("pass") and sk["user"] and pw == EXIT_PASS_KEEP:\n            return None, "the proxy\'s address or user changed — type its password again"\n',
                          ''),                                                                                       # [2] F2
     "--perturb-pct": ('    if url:                    # percent-escapes are a URL\'s', '    if True:                   # percent-escapes are a URL\'s'),  # [1] F20
-    "--perturb-order": ("    elif len(parts) >= 4 and _host(parts[0]) and _isport(parts[1]) \\", "    elif False and len(parts) >= 4 \\"),  # [1] F21
-    "--perturb-atfirst": ('    if url or ("@" in t and _hp(t.rpartition("@")[2])):', '    if url:'),                                   # [1] verify F53
+    "--perturb-guess": ("    if len(reads) > 1:", "    if False:"),                                                     # [1] verify F61–F63
     "--perturb-negcache": ("            _HEV_MIRROR_FAIL[arch] = time.time()", "            pass"),                              # [7] verify F48
     "--perturb-kinds-shape": ('    if isinstance(_k, list) and kind in _k:', '    if kind in (_k or []):'),                     # [4] F6
     "--perturb-unknown": ('    if kind != "socks5":\n        return None\n', ''),                                              # [4] F28
@@ -96,13 +95,17 @@ for t, want in OK.items():
     check("accepted: %s" % t, not err and (sk["host"], sk["port"], sk["user"], sk["pass"]) == want, (sk, err))
 for t, want in {"gw.example.com:1080:user:Summer%2024": ("gw.example.com", 1080, "user", "Summer%2024"),
                 "gw.example.com:1080:user:pa:ss@x": ("gw.example.com", 1080, "user", "pa:ss@x"),
-                "myuser:48213:proxy.example.com:1080": ("proxy.example.com", 1080, "myuser", "48213"),
-                "my.user:123:x@gw.example.com:1080": ("gw.example.com", 1080, "my.user", "123:x"),        # verify F53
+                "myuser:pw:proxy.example.com:1080": ("proxy.example.com", 1080, "myuser", "pw"),
                 "gw.example.com:1080:user:ab::cd": ("gw.example.com", 1080, "user", "ab::cd"),           # verify F51
                 "proxy:1080:user:pass": ("proxy", 1080, "user", "pass")}.items():                         # verify F52
     sk, err = P.parse_socks_text(t)
     check("a dashboard form, taken as shown (no %%-decoding outside a URL, ':' and '@' in the password, user:pass:host:port) — F20/F21: %s" % t,
           not err and (sk["host"], sk["port"], sk["user"], sk["pass"]) == want, (sk, err))
+for t in ("1.2.3.4:1080:me@mail.com:1234", "gw.example.com:1080:user:secret@x:12", "john.smith:9999:1.2.3.4:1080",
+          "my.user:123:x@gw.example.com:1080", "myuser:48213:proxy.example.com:1080"):
+    sk, err = P.parse_socks_text(t)
+    check("⚠️ a paste that reads as two different proxies is refused, never guessed (a guess sends the login elsewhere) — verify F53 F61–F63: %s" % t,
+          sk is None and "more than one way" in err, (sk, err))
 for t in ("http://proxy.example:8080", "https://u:p@proxy.example:443", "socks4://proxy.example:1080"):
     sk, err = P.parse_socks_text(t)
     check("refused with the SOCKS5-only sentence: %s" % t, sk is None and "SOCKS5 only" in err, err)
