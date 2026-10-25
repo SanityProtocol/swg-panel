@@ -107,6 +107,15 @@ subscription and no one else sitting in the middle of your traffic.
   kept encrypted with your client configs (when the panel keeps encrypted configs) so the exit's row shows it again, or
   shown once otherwise; or paste a server config you already have. The server's users reach the internet through a dial-in
   exit, never the network behind it: the router's LAN and its private addresses stay out of reach.
+- **Leave through a SOCKS5 proxy.** A residential or mobile proxy, or an xray / 3x-ui SOCKS inbound, is an exit too:
+  **Settings → WARP & exits → Add a SOCKS5 proxy**, paste it the way the provider shows it (`host:port:user:password`,
+  `user:password@host:port` or `socks5://…`), **Test** it from the server before saving, and pick it like any other exit —
+  for a whole interface, a routing rule or the server's default. The server runs a pinned tunnel program for it; names are
+  resolved by the proxy, so sites see a location that matches the exit, and when the proxy carries no UDP, calls and games
+  are refused at once (QUIC falls back to TCP) rather than left to time out. The password is never shown again.
+  Every exit is watched: one that stays up but carries nothing — WARP, a profile, a SOCKS5 proxy, or a TUN you run yourself
+  (your own tun2socks or sing-box) — has its traffic moved to the server's own address, or held when its kill-switch is on,
+  until it works again.
 - **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
 
 <details>
