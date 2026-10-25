@@ -82,7 +82,7 @@ PLANTS = {
     "spa-action-only": ('    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action, ...(n.p2p.node ? { node: n.p2p.node } : {}),\n                                   ...(n.p2p.exit_id ? { exit_id: n.p2p.exit_id } : {}) } : null,',
                         '    p2p: n.p2p && n.p2p.action ? { action: n.p2p.action } : null,'),
     "no-prune-event":("    _report_p2p_pruned(deps, _p2p_pruned)\n", ""),
-    "no-route-down": ('    elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("route") == "down":', "    elif False:"),
+    "no-route-down": ('    elif _p2pa in ("exit", "dev", "iface") and _p2pn and _p2pn.get("route") == "down":', "    elif False:"),
     # q189 FP-1: cascade_plan's arrivals check reads a malformed report again
     "fp1-arr":       ('        return isinstance(_sr, dict) and bool(_sr.get("arr"))',
                       '        return bool((_sr or {}).get("arr"))'),
