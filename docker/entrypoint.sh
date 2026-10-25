@@ -45,7 +45,7 @@ cert_covers_host(){ local host="$2" dns base pre ip hip
     # …or a DNS SAN spelling the address: the self-signed sub certificate an earlier image wrote (review F1) — refused
     # there, it was minted again on every start, a new key each time. All of it: an IPv6 one has colons of its own
     for dns in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE 'DNS:[^,[:space:]]+' | cut -d: -f2-); do
-      [ "$dns" = "$host" ] || [ "$dns" = "$hip" ] && return 0
+      [ "$dns" = "$host" ] || [ "$(ip_canon "$dns")" = "$hip" ] && return 0
     done
     return 1
   fi
@@ -295,10 +295,8 @@ acme_reassert(){ local e="$ACME_CFG/${PANEL_DOMAIN}_ecc"
   case "${TLS:-}" in letsencrypt|letsencrypt-ip|cloudflare) ;; *) return 0 ;; esac
   acme_has_cert || return 0
   # only when the panel serves the key of the _ecc entry acme_install installs: a certificate the operator mounted over
-  # it stays theirs (review F6), and an RSA entry from an older store, with no _ecc key, is not re-pointed (review F2).
-  # An entry installing to the sub's files is what the hijack left, and is ours whatever key it renewed with since
-  # (a forced re-issue rolls it: verify F15) — in an acme mode its renewals overwrite a mounted pair anyway.
-  [ "$(acme_target "$PANEL_DOMAIN")" = "$SC" ] || cmp -s "$SWG_PANEL_TLS_KEY" "$e/${PANEL_DOMAIN}.key" || return 0
+  # it stays theirs (review F6), and an RSA entry from an older store, with no _ecc key, is not re-pointed (review F2)
+  cmp -s "$SWG_PANEL_TLS_KEY" "$e/${PANEL_DOMAIN}.key" || return 0
   [ "$(acme_target "$PANEL_DOMAIN")" = "$SWG_PANEL_TLS_CERT" ] && return 0
   log "the acme entry for $PANEL_DOMAIN installs to $(acme_target "$PANEL_DOMAIN" || true), not the panel's certificate — re-pointing it at the panel"
   acme_install; }
@@ -476,15 +474,16 @@ mkdir -p "$STATS_DIR" /var/lib/swg-panel
 #     the renewal below then reaches only the panel's file, and swg-sub served the old copy until it expired — about day
 #     6.7 of an IP certificate, day 90 of a domain one (S9f). Its copy, or its cert for a host the panel's covers, is
 #     replaced whenever the panel's differs; swg-sub sees the new files on its own (it watches them).
-sub_follow_panel(){ local d f
+sub_follow_panel(){ local d f dl
   [ -s "$SC" ] && [ -s "${SWG_PANEL_TLS_CERT:-/nonexistent}" ] && [ -s "${SWG_PANEL_TLS_KEY:-/nonexistent}" ] || return 0
   cmp -s "$SWG_PANEL_TLS_CERT" "$SC" && return 0
   cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && return 0     # a failed issuance's placeholder never replaces the sub's cert
-  d="$(sub_domain_cfg)"; d="${d:-${SUB_DOMAIN:-}}"
+  d="$(sub_domain_cfg)"; d="${d:-${SUB_DOMAIN:-}}"; dl="$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')"
   for f in "$ACME_CFG"/*/*.conf; do                         # the sub has a renewer of its own: its entry installs here
     [ -f "$f" ] && [ "$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$f" | sed -n 1p)" = "$SC" ] \
-      && { [ -z "$d" ] || [ "$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$f" | sed -n 1p)" = "$d" ]; } && return 0
-  done      # (review F3: the two overwrote each other on alternate renewals) — for the sub's host now, not one it had (F13)
+      && { [ -z "$d" ] || [ "$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$f" | sed -n 1p | tr '[:upper:]' '[:lower:]')" = "$dl" ]; } \
+      && return 0
+  done      # (review F3: the two overwrote each other on alternate renewals) — for the sub's host now, not one it had
   cmp -s "$SWG_PANEL_TLS_KEY" "$SK" || { [ -n "$d" ] && cert_covers_host "$SWG_PANEL_TLS_CERT" "$d"; } || return 0
   cp "$SWG_PANEL_TLS_KEY" "$SK.new" && chmod 600 "$SK.new" && cp "$SWG_PANEL_TLS_CERT" "$SC.new" \
     && mv -f "$SK.new" "$SK" && mv -f "$SC.new" "$SC" \
