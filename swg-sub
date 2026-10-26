@@ -684,6 +684,8 @@ def torrents_allowed(nodes, describe, t):
     if pol == "exit":                                  # every client subnet's P2P goes to that node
         return _p2p_runs(nodes, describe, (cfg.get("p2p") or {}).get("node"), arrivals=True)
     _rp = rec.get("p2p") if pol == "iface" and isinstance(rec.get("p2p"), dict) else {}
+    if _rp.get("action") in ("exit", "dev") and ((describe.get(nid) or {}).get("p2p") or {}).get("route") == "down":
+        return False                                   # a route group is down and the node names no group: fail closed (pick F2)
     if _rp.get("action") == "exit":                    # its own route through a node (IFACE-P2P-PICK): a link there, and that
         _q = _rp.get("node")                           # node lets arrivals' P2P out
         return isinstance(cfg.get("links"), dict) and _q in cfg["links"] and _p2p_runs(nodes, describe, _q, arrivals=True)

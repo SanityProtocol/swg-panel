@@ -47,7 +47,11 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "bad-entry-open": ('    for e in bad:\n        strict.extend(v4(e.get("subnets")))', '    for e in bad:\n        pass'),
     "table-reuse":    ('        if u and int(u["table"]) not in taken:', '        if u:'),
     "block-ignored":  ('    strict.extend(v4(p2p.get("block")))\n', ''),
-    "strict-routed":  ('            if any(net.overlaps(o) for o in nets):', '            if False:'),
+    "strict-routed":  ('            if any(ipaddress.ip_network(n).overlaps(o) for o in nets):', '            if False:'),
+    "nested-strict":  ('                subs.append(n)\n        nets.extend(ipaddress.ip_network(n) for n in subs)', '                subs.append(n); nets.append(ipaddress.ip_network(n))'),
+    "local-uncounted": ('                L.append("    meta l4proto %s %s fib saddr type local counter name %s" % (l4, m, c))   # are counted here (pick F6)\n', ''),
+    "rule-bound":     ('        for _ in range(len(cur) + 1):                         # every group\'s rule (iface installs one per group)',
+                       '        for _ in range(64):                         # every group\'s rule (iface installs one per group)'),
     "v6-empty":       ('        if mode == "iface" and not strict and not groups:', '        if False:'),
     "strict-nomerge": ('(" auto-merge;" if mode == "iface" else "", ", ".join(strict))', '("", ", ".join(strict))'),
     "no-p2pi":        ('            "p2pi": 1,', '            "_p2pi": 1,'),
@@ -179,8 +183,11 @@ def run_checks(src):
 
     st3 = ["10.80.0.0/24"]
     g3 = m._p2p_groups({"direct": ["10.8.0.0/16", "10.8.1.0/24", "10.80.0.0/16"], "entries": [E(7006, "wgx0", "10.8.2.0/24", "10.90.0.0/24")]}, st3)
-    ok([x["subnets"] for x in g3] == [["10.8.0.0/16", "10.80.0.0/16"], ["10.90.0.0/24"]] and st3 == ["10.8.1.0/24", "10.8.2.0/24", "10.80.0.0/24"],
-       "[3] a subnet overlapping one an earlier group took is strict, in its own group or another; overlap with strict is kept (%s %s)" % (g3, st3))
+    ok([x["subnets"] for x in g3] == [["10.8.0.0/16", "10.8.1.0/24", "10.80.0.0/16"], ["10.90.0.0/24"]] and st3 == ["10.8.2.0/24", "10.80.0.0/24"],
+       "[3] a subnet overlapping one an EARLIER group took is strict; nested prefixes in one group share it; overlap with strict "
+       "is kept (%s %s)" % (g3, st3))
+    ok("set g_d { typeof ip saddr; flags interval; auto-merge; elements" in m._p2p_nft("iface", st3, [], [], True, groups=g3),
+       "[3] …and a group's set auto-merges its nested prefixes (s11-pick F4)")
     ok("set strict { typeof ip saddr; flags interval; auto-merge; elements" in m._p2p_nft("iface", st3, [], [], True, groups=g3),
        "[3] …and strict renders with auto-merge under iface (nested Block prefixes)")
     m7, b7 = fresh(src)
@@ -196,8 +203,10 @@ def run_checks(src):
     ok("    ip saddr != @checked return" in cls and "    ip saddr != @strict return" not in cls
        and "flags interval; auto-merge; elements = { " in t.split("set checked {", 1)[1].split("\n", 1)[0], "[4] legacy's scope, widened to @checked (auto-merge)")
     gm = [l.strip() for l in t.split("chain gmark {", 1)[1].split("\n  }", 1)[0].splitlines() if l.strip()] if "chain gmark {" in t else []
+    hitc = [l.strip() for l in t.split("chain hit {", 1)[1].split("\n  }", 1)[0].splitlines() if l.strip()]
     ok(gm == ["ip saddr @g_%s meta mark set %#x ct mark set %#x" % (x["name"], x["mark"], x["mark"]) for x in g]
-       and "ip saddr @g_d meta l4proto udp meta mark set %#x" % BIT in t, "[4] each group carries its own mark (gmark + hit) (%s)" % gm)
+       and hitc[-1] == "meta l4proto udp jump gmark" and not any("@g_" in l for l in hitc),
+       "[4] each group carries its own mark, in ONE place: gmark, which hit and cls jump to (s11-pick F10) (%s %s)" % (gm, hitc[-1:]))
     ok([l.strip()[:len("ct state new ip saddr @flag")] for l in cls if "jump gmark" in l] == ["ct state new ip saddr @flag"] * 2
        and not any("@g_" in l for l in cls), "[4] cls reads @flag before any group (one jump to gmark per block, no @g_ lookup in cls)")
     ok(cls[2:4] == ["    meta nfproto ipv6 return", "    ip saddr != @checked return"], "[4] cls: the scope first — an unchecked or v6 packet pays one lookup (%s)" % cls[2:4])
@@ -210,9 +219,11 @@ def run_checks(src):
        and any(l.strip().startswith('oifname != { "swg_q" } ip saddr @g_r7005 meta l4proto') for l in gf),
        "[4] each group judged against its own devices, the device first (%s)" % gf)
     gs = [l.strip() for l in t.split("chain gsig {", 1)[1].split("\n  }", 1)[0].splitlines() if l.strip()] if "chain gsig {" in t else []
-    ok(len(sig) == len(m._P2P_SIGS) and all(l.strip().endswith("jump gsig") and "@g_" not in l and "fib" not in l for l in sig)
+    ok(sig == [y for c, l4, mm in m._P2P_SIGS for y in ("    meta l4proto %s %s fib saddr type local counter name %s" % (l4, mm, c),
+                                                         "    meta l4proto %s %s jump gsig" % (l4, mm))]
        and gs == ['oifname != { "eth0" } ip saddr @g_d jump gdrop', 'oifname != { "swg_q" } ip saddr @g_r7005 jump gdrop'],
-       "[4] sig: the signature first, then the groups (gsig); local senders judged too — the relay re-dials from the gateway (%s %s)" % (sig, gs))
+       "[4] sig: the signature first, then the groups (gsig); local senders judged too — the relay re-dials from the gateway — and "
+       "counted in the signature's counter, as forwarded hits are in cls (s11-pick F6) (%s %s)" % (sig, gs))
     t0 = m._p2p_nft("iface", st, [], [], True, groups=[])
     ok("chain guard" not in t0 and "ip saddr != @checked return" in t0, "[4] only block / strict → no guard (legacy's shape)")
     import shutil, subprocess as _sp
@@ -253,6 +264,20 @@ def run_checks(src):
                   {}, {}, {"changed": 0, "errors": []})
     m._ensure_p2p({"action": "iface", "direct": ["10.69.0.0/24"]}, {}, {}, {"changed": 0, "errors": []})
     ok(len([r for r in b.rules if r.startswith("6880:")]) == 1, "[5] thirteen groups down to one: the twelve gone rules go in one pass (review F35) (%s)" % b.rules)
+    b.rules += ["6880:\tfrom all fwmark 0x1 lookup 9"] * 70        # stale duplicates beyond any fixed bound
+    _run0 = b.run
+    def _one_del(args, input_text=None, timeout=20):              # the real `ip rule del pref N` deletes ONE rule per call
+        a = list(args)
+        if a[:3] == ["ip", "rule", "del"]:
+            i = next((i for i, r in enumerate(b.rules) if r.startswith(a[-1] + ":")), None)
+            if i is not None:
+                b.rules.pop(i)
+            return types.SimpleNamespace(returncode=0 if i is not None else 2, stdout="", stderr="")
+        return _run0(args, input_text, timeout)
+    m.run = _one_del
+    m._P2P["rule"] = True
+    m._ensure_p2p({"action": "block"}, {}, {}, {"changed": 0, "errors": []})
+    ok(not [r for r in b.rules if r.startswith("6880:")], "[5] …and 71 rules there go too: the bound is what is there (s11-pick F7)")
 
     # [6]
     m, b = fresh(src)

@@ -9840,7 +9840,8 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
     # reading the mode told a current node to update (S11 review F15).
     if _p2pa == "iface" and p2p_iface is not None and _srp is not None and not _srp.get("p2pi"):
         issues.append(perr("per-interface torrent choices need a node update — until then those interfaces' torrents are not checked"))
-    elif _p2pa == "iface" and p2p_iface and not (_p2pn and _p2pn.get("state") == "error"):   # blocked only where they run (F8)
+    elif (_p2pa == "iface" and p2p_iface and _srp is not None and _srp.get("p2pi")          # blocked only where they run (F8,
+          and not (_p2pn and _p2pn.get("state") == "error")):                                 # pick F5: a node never heard from too)
         issues.append(perr("torrents on {v1} have no way out (the route is unavailable) — blocked until it is", v1=", ".join(p2p_iface)))
     # Rules (the default list's, an interface's, a forward) whose exit NODE is offline: that traffic is dropped — never leaked
     # — and was said nowhere. On the operator's msk-main Google, GitHub and Discord were cut ~9.6 days unnoticed (q189
@@ -20189,9 +20190,10 @@ def prune_p2p_refs(nodes):
             changed.append((_nid, _n.get("name", _nid)))
     # …and an interface's own choice (IFACE-P2P-PICK §2.3): its target node gone or now its own node (an interface carried
     # onto it), or its exit not among its node's exits. Becomes Block the same way: "torrents" in block[], the route popped.
-    # A choice kept DORMANT (the node is not on "Each interface decides", where it counts for nothing) is only dropped: turned
-    # into Block it would start dropping torrents the node's own policy lets out (S11 review F6). One target check, the
-    # save's (`_p2p_target`, review F21).
+    # A choice kept DORMANT (the node is not on "Each interface decides", where it counts for nothing) is left as it is: turned
+    # into Block it would start dropping torrents the node's own policy lets out (S11 review F6), and dropped it would come
+    # back as "not checked" once the node goes to iface (s11-pick F3) — kept, cascade_plan blocks it then and names it. One
+    # target check, the save's (`_p2p_target`, review F21).
     for _nid, _n in (nodes or {}).items():
         if not isinstance(_n, dict):
             continue
@@ -20199,12 +20201,11 @@ def prune_p2p_refs(nodes):
         for _k in ("ifaces", "wdtt", "csqtt"):
             for _rn, _r in ((_n.get(_k) or {}) if isinstance(_n.get(_k), dict) else {}).items():
                 _p = _r.get("p2p") if isinstance(_r, dict) else None
-                if isinstance(_p, dict) and _p.get("action") in ("exit", "dev") and _p2p_target(
+                if _live and isinstance(_p, dict) and _p.get("action") in ("exit", "dev") and _p2p_target(
                         {k: str(v) for k, v in _p.items() if k in ("action", "node", "exit_id")}, nodes, _nid)[1]:
                     _r.pop("p2p", None)
-                    if _live:
-                        _r["block"] = [b for b in (_r.get("block") or []) if b != "torrents"] + ["torrents"]
-                        changed.append((_nid, "%s · %s" % (_n.get("name", _nid), _rn)))
+                    _r["block"] = [b for b in (_r.get("block") or []) if b != "torrents"] + ["torrents"]
+                    changed.append((_nid, "%s · %s" % (_n.get("name", _nid), _rn)))
     return changed
 
 

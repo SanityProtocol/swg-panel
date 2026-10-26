@@ -53,7 +53,7 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "unpublished":    ('        ifc["p2p"] = ov.get("p2p") or None ', '        ifc["_p2p"] = ov.get("p2p") or None '),
     "wdtt-unpub":     ('"stopped", "block", "p2p", "egress_mode", "egress_node",', '"stopped", "block", "egress_mode", "egress_node",'),
     "prune-records":  ('        for _k in ("ifaces", "wdtt", "csqtt"):\n            for _rn, _r in', '        for _k in ():\n            for _rn, _r in'),
-    "prune-dormant":  ('                    if _live:\n', '                    if True:\n'),
+    "prune-dormant":  ('                if _live and isinstance(_p, dict) and _p.get("action") in ("exit", "dev")', '                if isinstance(_p, dict) and _p.get("action") in ("exit", "dev")'),
     "prune-open":     ('                    _r["block"] = [b for b in (_r.get("block") or []) if b != "torrents"] + ["torrents"]\n', ''),
     "raw-own-way":    ('_own.append((_wn + " (raw)", _RS)); _ownr.append(_wov)', '_own.append((_wn + " (raw)", _RS)); _ownr.append({})'),
     "plan-block-too": ('                if not isinstance(_rp, dict) or "torrents" in ((_r or {}).get("block") or []):',
@@ -68,8 +68,9 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "card-always":    ('    if _p2pa == "iface" and p2p_iface is not None and _srp is not None', '    if _p2pa == "iface" and _srp is not None'),
     "card-down-old":  ('    elif _p2pa in ("exit", "dev", "iface") and _p2pn and _p2pn.get("route") == "down":',
                        '    elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("route") == "down":'),
-    "card-dead":      ('    elif _p2pa == "iface" and p2p_iface and not (_p2pn and _p2pn.get("state") == "error"):', '    elif False:'),
-    "card-dead-anyway": ('    elif _p2pa == "iface" and p2p_iface and not (_p2pn and _p2pn.get("state") == "error"):', '    if _p2pa == "iface" and p2p_iface:'),
+    "card-dead":      ('    elif (_p2pa == "iface" and p2p_iface and _srp is not None and _srp.get("p2pi")', '    elif (False'),
+    "card-dead-anyway": ('    elif (_p2pa == "iface" and p2p_iface and _srp is not None and _srp.get("p2pi")', '    if (_p2pa == "iface" and p2p_iface'),
+    "card-dead-unheard": ('and p2p_iface and _srp is not None and _srp.get("p2pi")', 'and p2p_iface and (_srp is None or _srp.get("p2pi"))'),
     "card-by-mode":   ('and _srp is not None and not _srp.get("p2pi"):', 'and _srp is not None and (not _p2pn or _p2pn.get("mode") != "iface"):'),
     "mesh-unneeded":  ('            if _pif and _rp.get("action") == "exit" and "torrents" not in (ov.get("block") or []):', '            if False:'),
     "mesh-dormant":   ('            if _pif and _rp.get("action") == "exit" and "torrents" not in (ov.get("block") or []):',
@@ -214,8 +215,9 @@ def run_checks(src):
     ok(sorted(n for _, n in ch) == ["node-n · wdtt1", "node-n · wg0", "node-n · wg9"], "[4] each named <node> · <record> (%s)" % ch)
     fl = fleet(n1={"wg0": {"p2p": {"action": "exit", "node": "nX"}, "block": ["smtp"]}}, pol1="direct")
     ch = P.prune_p2p_refs(fl)
-    ok("p2p" not in fl["n1"]["ifaces"]["wg0"] and fl["n1"]["ifaces"]["wg0"]["block"] == ["smtp"] and not ch,
-       "[4] a DORMANT choice (the node on Direct) is dropped, never turned into Block, nothing said (%s %s)" % (fl["n1"]["ifaces"]["wg0"], ch))
+    ok(fl["n1"]["ifaces"]["wg0"].get("p2p") == {"action": "exit", "node": "nX"} and fl["n1"]["ifaces"]["wg0"]["block"] == ["smtp"] and not ch,
+       "[4] a DORMANT choice (the node on Direct) is kept as it is — never Block, never dropped (it would come back as 'not "
+       "checked' once the node goes to iface; s11-pick F3) (%s %s)" % (fl["n1"]["ifaces"]["wg0"], ch))
     fl = fleet(n1={"wg0": {"p2p": {"action": "exit", "node": ["x"]}}})
     try:
         P.prune_p2p_refs(fl); _r4 = fl["n1"]["ifaces"]["wg0"]
@@ -271,6 +273,8 @@ def run_checks(src):
     ok((K6, "wg0, wdtt1") in i6, "[6] the card names them (%s)" % i6)
     i6b = [i.get("error_key") for i in P._node_issues({"p2p": {"action": "iface"}}, {"smartroute": {"p2p": {"state": "ok", "mode": "legacy"}}}, p2p_iface=["wg0"])]
     ok(K6 not in i6b, "[6] …not on a node that does not run the choices (it lets them out unchecked; it is told to update) (%s)" % i6b)
+    i6d = [i.get("error_key") for i in P._node_issues({"p2p": {"action": "iface"}}, {}, p2p_iface=["wg0"])]
+    ok(K6 not in i6d, "[6] …nor on a node never heard from (s11-pick F5) (%s)" % i6d)
     i6c = [i.get("error_key") for i in P._node_issues({"p2p": {"action": "iface"}}, {"smartroute": {"p2pi": 1, "p2p": {"state": "error", "mode": "iface"}}}, p2p_iface=["wg0"])]
     ok(K6 not in i6c, "[6] …nor where its rules failed to load (not in force) (%s)" % i6c)
 

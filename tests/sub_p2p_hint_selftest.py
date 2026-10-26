@@ -21,6 +21,7 @@ Hermetic. Run: python3 tests/sub_p2p_hint_selftest.py            (0 = pass)
      --perturb-report   the node's own report is ignored (a Route run as Block reads as allowed) → RED on [2]
      --perturb-farnode  a Route to a node is allowed whatever that node runs → RED on [2]
      --perturb-own      an interface's own torrent choice is not read under per-interface (S11) → RED on [2]
+     --perturb-routedown a routed interface is allowed while the node reports a route down (s11-pick F2) → RED on [2]
 """
 import ast, hashlib, importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -33,7 +34,8 @@ P_RECORD = "--perturb-record" in sys.argv
 P_REPORT = "--perturb-report" in sys.argv
 P_FAR = "--perturb-farnode" in sys.argv
 P_OWN = "--perturb-own" in sys.argv
-PERTURB = P_POLICY or P_RECORD or P_REPORT or P_FAR or P_OWN
+P_RDOWN = "--perturb-routedown" in sys.argv
+PERTURB = P_POLICY or P_RECORD or P_REPORT or P_FAR or P_OWN or P_RDOWN
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -69,6 +71,9 @@ if P_FAR:
           "the far node of a Route")
 if P_OWN:
     plant('    _rp = rec.get("p2p") if pol == "iface" and isinstance(rec.get("p2p"), dict) else {}', '    _rp = {}', "the record's own choice")
+if P_RDOWN:
+    plant('    if _rp.get("action") in ("exit", "dev") and ((describe.get(nid) or {}).get("p2p") or {}).get("route") == "down":',
+          '    if False:', "a routed interface while a route is down")
 SUB_PATH = SUB
 if PERTURB:
     fd, SUB_PATH = tempfile.mkstemp(prefix="swg-sub-perturbed-")
@@ -144,6 +149,9 @@ for name, rec, far, want in (("its own route to a node letting arrivals out", {"
     check("S11: per-interface, %s → %s" % (name, "allowed" if want else "not"), bool(allowed(IF(**rec), far, tgs=TR)) == want)
 check("S11: per-interface, one interface's route down (the node reports route down) is not the node's — a Direct one is allowed",
       bool(allowed(IF(p2p={"action": "direct"}), FAR, d1={"mode": "iface", "route": "down"}, tgs=TR)))
+check("S11 (pick F2): …but a ROUTED one is not (the node names no group; fail closed)",
+      not allowed(IF(p2p={"action": "dev", "exit_id": "e1"}), FAR, d1={"mode": "iface", "route": "down"}, tgs=TR)
+      and not allowed(IF(p2p={"action": "exit", "node": "n2"}), FAR, d1={"mode": "iface", "route": "down"}, tgs=TR))
 JUNK = [None, [], "x", {"p2p": {"action": "direct"}, "ifaces": []}, {"p2p": {"action": "direct"}, "ifaces": {"wg0": "x"}},
         {"p2p": {"action": "direct"}, "ifaces": {"wg0": {"block": "torrents"}}}, {"p2p": {"action": "direct"}, "wdtt": None}]
 errs = []

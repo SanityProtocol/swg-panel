@@ -8045,6 +8045,7 @@ def _retire_swgp(res):
 #                     iface   each interface's own choice (docs/IFACE-P2P-PICK-PLAN.md): smart.p2p.entries = [{table, via_iface,
 #                             gw?, subnets}] (routed), .direct = [subnets] (the WAN), .block = [subnets] (dropped, like a strict
 #                             subnet); every other subnet, other nodes' arrivals and the node's own processes are not checked
+#                             (the relay's re-dial from a group's gateway is: it carries a client's flow)
 #                     absent  today's semantics: only the interfaces whose "torrents" mechanism is on are blocked
 P2P_NFT_TABLE = "swg_p2p"
 P2P_BIT = 0x40000000          # unused elsewhere: the band is 7000-7099 and SNI marks keep 0x999x in their low 16 bits
@@ -8130,14 +8131,14 @@ def _p2p_rule(want, res):
     cur = [ln for ln in (run(["ip", "rule", "show"]).stdout or "").splitlines() if ln.startswith("%d:" % P2P_RULE_PRI)]
     ok = on and len(cur) == len(wants) and all(any(("fwmark %#x lookup %s" % w) in ln for ln in cur) for w in wants)
     if on and not ok:
-        for _ in range(64):                                   # every rule there, however many groups there were (review F35)
+        for _ in range(len(cur) + 1):                         # every rule there, however many groups there were (F35, pick F7)
             if run(["ip", "rule", "del", "pref", str(P2P_RULE_PRI)]).returncode != 0:
                 break
         for w in wants:
             run(["ip", "rule", "add", "fwmark", "%#x" % w[0], "lookup", str(w[1]), "priority", str(P2P_RULE_PRI)])
         res["changed"] += 1
     elif not on and cur:
-        for _ in range(64):                                   # every group's rule (iface installs one per group)
+        for _ in range(len(cur) + 1):                         # every group's rule (iface installs one per group)
             if run(["ip", "rule", "del", "pref", str(P2P_RULE_PRI)]).returncode != 0:
                 break
         res["changed"] += 1
@@ -8158,7 +8159,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
     (another node's arrivals among them — so P2P never goes back into the mesh) is blocked here like a strict subnet.
     `iface` = legacy's scope (`@checked` = strict ∪ every group) plus `groups` = [{"name", "subnets", "mark", "oif"}]: each
     group's P2P is routed by its mark (the WAN's P2P_BIT for direct, T|P2P_BIT for a route) and may leave only by its
-    devices; strict subnets are dropped as in legacy. Other subnets, arrivals and the node's own processes are not checked.
+    devices; strict subnets are dropped as in legacy. Other subnets and arrivals are not checked, nor are the node's own
+    processes — except a sender from a group's own subnet (the mesh relay's re-dial from the gateway), judged by signature.
     `logged`: the hit lines go to the kernel log at Info and Debug; below Info the table is rendered with no `log`
     statement at all (docs/LOGS-PLAN.md §1) — those lines carry users' addresses, and Off means nothing is kept.
 
@@ -8195,7 +8197,7 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
         L.append("  set checked { typeof ip saddr; flags interval; auto-merge; elements = { %s } }"
                  % ", ".join(list(strict) + [n for g in grp for n in g["subnets"]]))
         for g in grp:
-            L.append("  set g_%s { typeof ip saddr; flags interval; elements = { %s } }" % (g["name"], ", ".join(g["subnets"])))
+            L.append("  set g_%s { typeof ip saddr; flags interval; auto-merge; elements = { %s } }" % (g["name"], ", ".join(g["subnets"])))
         if grp:
             L.append("  set grouped { typeof ip saddr; flags interval; auto-merge; elements = { %s } }"
                      % ", ".join(n for g in grp for n in g["subnets"]))
@@ -8242,8 +8244,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
         L.append("    %scounter name dropped drop" % who)
     if routes:                                                # UDP is caught at packet 1, so THIS flow is routed. TCP is caught
         L.append("    meta l4proto udp %s" % mark)            # at packet 3, already routed: the guard judges its device
-    for g in grp:
-        L.append("    ip saddr @g_%s meta l4proto udp %s" % (g["name"], gmk(g)))
+    if grp:                                                   # the groups' marks live in gmark (one mapping, s11-pick F10)
+        L.append("    meta l4proto udp jump gmark")
     L.append("  }")
     # fdrop: where a flagged source is BLOCKED, cls drops its high-port packets before they reach the signatures, so its
     # running client never refreshed the flag and the 10 minutes lapsed under Block too. The drop jumps here instead:
@@ -8359,7 +8361,8 @@ def _p2p_nft(mode, strict, oif, nofan, ih, route=None, logged=True, groups=()):
             # F16). LOCAL senders are judged here: the mesh relay re-dials a whole-interface leg's TCP from the gateway,
             # an address in the group's own subnet (S11 review F1) — nothing else on the node sends from one.
             L.append("  chain sig {")
-            for c, l4, m in _P2P_SIGS:                        # forwarded hits were counted in cls
+            for c, l4, m in _P2P_SIGS:                        # forwarded hits were counted in cls; the relay's re-dials
+                L.append("    meta l4proto %s %s fib saddr type local counter name %s" % (l4, m, c))   # are counted here (pick F6)
                 L.append("    meta l4proto %s %s jump gsig" % (l4, m))
             L.append("  }")
             L.append("  chain gsig {")
@@ -8403,7 +8406,7 @@ def _p2p_iface_entries(p2p):
 def _p2p_groups(p2p, strict):
     """iface: the panel's {entries, direct, block} → groups [{name, subnets, mark, oif, table}], v4 only. Fails CLOSED and
     strictest wins: `block`, and every entry that is not a usable route (`_p2p_entry`) or reuses a table an earlier one
-    took, join `strict` (in place); a group never holds a strict subnet, nor one an earlier group holds."""
+    took, join `strict` (in place); a group may overlap strict (cls drops strict first), never another group."""
     def v4(lst):
         out = []
         for x in (lst if isinstance(lst, list) else []):
@@ -8417,18 +8420,18 @@ def _p2p_groups(p2p, strict):
         strict.extend(v4(e.get("subnets")))
     strict.extend(v4(p2p.get("block")))
     strict[:] = sorted(set(strict))
-    # Groups never overlap one another (S11 review F3/F5): a subnet that overlaps one an earlier group took is strict — two
-    # groups' marks and devices for one source drop it everywhere, and nested prefixes in one set refuse the table. Overlap
-    # with strict is fine: cls drops strict first (strictest wins), and strict renders with auto-merge under iface.
+    # Groups never overlap one another (S11 review F3/F5): a subnet that overlaps one an EARLIER group took is strict — two
+    # groups' marks and devices for one source drop it everywhere. Nested prefixes inside one group share it (its set
+    # auto-merges; s11-pick F4). Overlap with strict is fine: cls drops strict first (strictest wins), strict auto-merges.
     seen, nets, groups = set(strict), [], []
     def take(name, lst, mark, oif, table):
         subs = []
         for n in sorted(set(v4(lst)) - seen):
-            net = ipaddress.ip_network(n)
-            if any(net.overlaps(o) for o in nets):
+            if any(ipaddress.ip_network(n).overlaps(o) for o in nets):
                 strict.append(n)
             else:
-                subs.append(n); nets.append(net)
+                subs.append(n)
+        nets.extend(ipaddress.ip_network(n) for n in subs)
         seen.update(subs)
         if subs:
             groups.append({"name": name, "subnets": subs, "mark": mark, "oif": oif, "table": table})
