@@ -8624,7 +8624,7 @@ def _p2pfwd_nft(rows, wan):
         "  map in { type ipv4_addr . inet_service : ipv4_addr; elements = { %s } }" % ", ".join("%s . %d : %s" % (a, p, ip) for ip, p, a in rows),
         "  map out { type ipv4_addr . inet_service : ipv4_addr . inet_service; elements = { %s } }"
         % ", ".join("%s . %d : %s . %d" % (ip, p, a, p) for ip, p, a in rows),
-        "  set fwds { type ipv4_addr; elements = { %s } }" % ", ".join(sorted({ip for ip, _, _ in rows})),
+        "  set fwds { typeof ip saddr; elements = { %s } }" % ", ".join(sorted({ip for ip, _, _ in rows})),
         "  chain pre {", "    type nat hook prerouting priority dstnat - 5; policy accept;",
         "    iifname { %s } meta l4proto { tcp, udp } dnat to ip daddr . th dport map @in" % devs, "  }",
         "  chain rep {", "    type filter hook prerouting priority mangle + 6; policy accept;",
