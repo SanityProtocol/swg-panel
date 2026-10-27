@@ -157,7 +157,7 @@ if FLAGS["--perturb-d123"]:
 if FLAGS["--perturb-orphan"]:
     plant('_fork_orphans(){ local d k; for d in', '_fork_orphans(){ return 0; local d k; for d in')
 if FLAGS["--perturb-6880"]:
-    plant("awk '$1==6880 || ($1>=6890 && $1<=6989)'", "awk '$1>=6890 && $1<=6989'")
+    plant("awk '$1==6870 || $1==6880 || ($1>=6890 && $1<=6989)'", "awk '$1==6870 || ($1>=6890 && $1<=6989)'")
 if FLAGS["--perturb-turnconf"]:
     plant(" /etc/sysctl.d/99-swg-turn.conf   # + swg-noded's", "   # + swg-noded's")
 if FLAGS["--perturb-dial"]:

@@ -45,7 +45,7 @@ def plant(src, a, b):
     return src.replace(a, b)
 
 if PERTURB:
-    U = plant(U, "awk '$1==6880 || ($1>=6890 && $1<=6989)'", "awk '$1>=1 && $1<=0'")                    # [1]
+    U = plant(U, "awk '$1==6870 || $1==6880 || ($1>=6890 && $1<=6989)'", "awk '$1>=1 && $1<=0'")                    # [1]
     U = plant(U, " /var/www/acme /usr/local/bin/swg-passwd\n", " /var/www/acme\n")    # [2] (3016459 moved its comment up)
     H = plant(H, '      grep -qsx "${PORT}/tcp" "$ETC_DIR/ufw-added" || echo "${PORT}/tcp" >> "$ETC_DIR/ufw-added"\n',
               '      :\n')                                                                                # [3]
