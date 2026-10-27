@@ -23,6 +23,7 @@ Hermetic. Run: python3 tests/sub_p2p_hint_selftest.py            (0 = pass)
      --perturb-own      an interface's own torrent choice is not read under per-interface (S11) → RED on [2]
      --perturb-routedown a routed interface is allowed while the node reports a route down (s11-pick F2) → RED on [2]
      --perturb-alldown  a named device down blocks every routed interface (backlog F48) → RED on [2]
+     --perturb-nodev-open a route with no device to leave by is allowed while a route is down (review F11) → RED on [2]
 """
 import ast, hashlib, importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -37,7 +38,7 @@ P_FAR = "--perturb-farnode" in sys.argv
 P_OWN = "--perturb-own" in sys.argv
 P_RDOWN = "--perturb-routedown" in sys.argv
 P_ALLDOWN = "--perturb-alldown" in sys.argv
-PERTURB = P_POLICY or P_RECORD or P_REPORT or P_FAR or P_OWN or P_RDOWN or P_ALLDOWN
+PERTURB = P_POLICY or P_RECORD or P_REPORT or P_FAR or P_OWN or P_RDOWN or P_ALLDOWN or "--perturb-nodev-open" in sys.argv
 
 FAILS = []
 def check(name, cond, detail=""):
@@ -76,8 +77,11 @@ if P_OWN:
 if P_RDOWN:
     plant('    if _rp.get("action") in ("exit", "dev") and _rep.get("route") == "down":',
           '    if False:', "a routed interface while a route is down")
+if "--perturb-nodev-open" in sys.argv:
+    plant('        if not isinstance(_rep.get("down"), list) or not _dv or _dv in _rep["down"]:   # is no way out either (review F11)',
+          '        if not isinstance(_rep.get("down"), list) or _dv in _rep["down"]:', "a route with no device")
 if P_ALLDOWN:
-    plant('        if not isinstance(_rep.get("down"), list) or _p2p_route_dev(cfg, _rp) in _rep["down"]:   # (no device: refused below)',
+    plant('        if not isinstance(_rep.get("down"), list) or not _dv or _dv in _rep["down"]:   # is no way out either (review F11)',
           '        if True:', "the routed interface's own device")
 SUB_PATH = SUB
 if PERTURB:
@@ -175,6 +179,9 @@ check("F48 (review F1): a route through a disabled exit — no device to leave b
 IF4 = dict(IF2, exits=[{"id": "e1", "enabled": True, "device": " wgx-e1 "}])
 check("F48 (review F1): a device stored with stray spaces is the node's name for it (resolve_exit strips)",
       T("wgx") not in allowed(IF4, FAR, d1={"mode": "iface", "route": "down", "down": ["wgx-e1"]}, tgs=T2))
+IF5 = dict(IF2, exits=[{"id": "e1", "enabled": True, "device": ""}])
+check("F48 (review F11): an enabled exit with a blank device — no way out — is not allowed while a route is down",
+      T("wgx") not in allowed(IF5, FAR, d1={"mode": "iface", "route": "down", "down": ["swg_b"]}, tgs=T2))
 check("F48: a node that names no device → neither (fail closed, as before)",
       allowed(IF2, FAR, d1={"mode": "iface", "route": "down"}, tgs=T2) == [])
 JUNK = [None, [], "x", {"p2p": {"action": "direct"}, "ifaces": []}, {"p2p": {"action": "direct"}, "ifaces": {"wg0": "x"}},

@@ -70,6 +70,8 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
                       '                     and _r.get("p2p")) if _dn else []'),
     "route-dev-link": ('        return str(lk.get("iface") or "").strip() if isinstance(lk, dict) else ""\n    return ""\n\n\ndef p2p_policy',
                        '        return ""\n    return ""\n\n\ndef p2p_policy'),
+    "card-down-fallback": ('        elif _dn is None:                                     # a node that names no device: the line as before. One that names',
+                           '        else:                                     # a node that names no device: the line as before. One that names'),
     "card-down-blocked": ('                     if isinstance(_r, dict) and rn not in (p2p_iface or ()) and "torrents" not in (_r.get("block") or [])',
                           '                     if isinstance(_r, dict)'),
     "route-dev-disabled": ('        return str(x.get("device") or "").strip() if x and x.get("enabled") is not False else ""\n    if a == "exit":\n        lk = ((node or {}).get("links") or {}).get(p2p.get("node"))\n        return str(lk.get("iface") or "").strip() if isinstance(lk, dict) else ""\n    return ""\n\n\ndef p2p_policy',
@@ -301,6 +303,8 @@ def run_checks(src):
     _i = [(i.get("error_key"), (i.get("error_vars") or {}).get("v1")) for i in
           P._node_issues(C6, {"smartroute": {"p2pi": 1, "p2p": {"state": "ok", "mode": "iface", "route": "down", "down": ["swg_p"]}}}, p2p_iface=["wg7"])]
     ok((KD, "wdtt1") in _i, "[6b] (review F3) …nor one already named dead (%s)" % _i)
+    _i9 = [k for k, _ in card6({"route": "down", "down": ["wgx-unused"]})]
+    ok(KD not in _i9 and KG not in _i9, "[6b] (review F9) devices named down that no running interface leaves by → no route line — never the node-wide one, false under per-interface (%s)" % _i9)
     _c = dict(C6, exits=[dict(X1, enabled=False)])
     ok(P.p2p_route_dev(_c, {"action": "dev", "exit_id": X1["id"]}) == "" and P.p2p_route_dev(dict(C6, exits=[dict(X1, device=" wgx0 ")]), {"action": "dev", "exit_id": X1["id"]}) == "wgx0",
        "[6b] (review F1/F4) a disabled exit has no device; a name is stripped — resolve_exit's reading")

@@ -701,7 +701,8 @@ def torrents_allowed(nodes, describe, t):
     if _rp.get("action") in ("exit", "dev") and _rep.get("route") == "down":
         # the node names the devices down (`down`): only an interface whose own route leaves by one is not allowed (S11
         # backlog F48); a node that names none — fail closed (pick F2)
-        if not isinstance(_rep.get("down"), list) or _p2p_route_dev(cfg, _rp) in _rep["down"]:   # (no device: refused below)
+        _dv = _p2p_route_dev(cfg, _rp)                 # no device to leave by — a disabled exit, a blank device, no link —
+        if not isinstance(_rep.get("down"), list) or not _dv or _dv in _rep["down"]:   # is no way out either (review F11)
             return False
     if _rp.get("action") == "exit":                    # its own route through a node (IFACE-P2P-PICK): a link there, and that
         _q = _rp.get("node")                           # node lets arrivals' P2P out

@@ -9905,8 +9905,12 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
         _dr = sorted(rn for _k in ("ifaces", "wdtt", "csqtt") for rn, _r in ((c.get(_k) or {}).items() if isinstance(c.get(_k), dict) else ())
                      if isinstance(_r, dict) and rn not in (p2p_iface or ()) and "torrents" not in (_r.get("block") or [])
                      and p2p_route_dev(c, _r.get("p2p")) in (_dn or ())) if _dn else []
-        issues.append(perr("torrents on {v1}: their route's way out is down — blocked until it is back", v1=", ".join(_dr)) if _dr
-                      else perr("the torrent route's way out is down — torrent traffic is blocked until it is back"))
+        if _dr:
+            issues.append(perr("torrents on {v1}: their route's way out is down — blocked until it is back", v1=", ".join(_dr)))
+        elif _dn is None:                                     # a node that names no device: the line as before. One that names
+            issues.append(perr("the torrent route's way out is down — torrent traffic is blocked until it is back"))   # devices no
+        # running interface leaves by (all on Block, or already named dead) says nothing: under per-interface the node-wide
+        # line would be false (review F9)
     # Each interface's own choice (IFACE-P2P-PICK §4.4): a node that does not run it reads `iface` as unknown and checks
     # only the Block interfaces — asked of the node (it reports mode iface while it runs them), as above.
     # `p2p_iface`: the interfaces whose route could not be lowered, when this node is sent choices at all (None: it is not).
