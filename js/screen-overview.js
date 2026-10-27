@@ -1185,7 +1185,7 @@ export const joinNodes = (nodes, sep) => nodes.flatMap((n, i) => i ? [sep, n] : 
 // Popover portal (.deppop.onlpop shell — fixed-position, escapes the card, JS hover with a grace period). rows =
 // [{user, peers:[], count}]. ≤15 rows show as-is; 16–50 scroll the list; >50 paginate 50/page (Next → top, Prev → bottom).
 export const WHO_PER_PAGE = 50, WHO_VISIBLE = 15;
-export function WhoBubble({ rows, color }) {
+export function WhoBubble({ rows, color, foot }) {
   // Flatten user→peers into ONE row per peer ("user · peer  ·  when"), newest first — reads at a glance, no nesting.
   const flat = [];
   for (const g of rows) for (const q of (g.peers || [])) flat.push({ user: g.user, name: q.name, ago: q.ago, dur: q.dur });
@@ -1214,6 +1214,7 @@ export function WhoBubble({ rows, color }) {
         <button class="prot-who-pgb" disabled=${p >= pages - 1} onClick=${() => go(1)}>${T("Next")}</button>
       </span>
     </div>` : null}
+    ${foot ? html`<div class="prot-who-foot">${foot}</div>` : null}
   </div>`;
 }
 export function CatsBubble({ cats, color, counts }) {
@@ -1271,7 +1272,9 @@ export function Protection({ range, bs }) {
       // Prefer per-category counts (SNI mode, what's actually catching traffic); fall back to composition (what's loaded).
       bcats: bcats.length ? bcats : null, cats: (cov.cats && cov.cats.length) ? cov.cats : null });
   }
-  tiles.push({ k: T("Torrents caught"), v: kmb(torrents), n: torrents, sub: torrents ? T("connections · {v1}", { v1: rw }) : T("none {v1}", { v1: rw }), spark: (d && d.series) || null, color: "var(--dangling)", who: who.torrent });
+  tiles.push({ k: T("Torrents caught"), v: kmb(torrents), n: torrents, sub: torrents ? T("connections · {v1}", { v1: rw }) : T("none {v1}", { v1: rw }), spark: (d && d.series) || null, color: "var(--dangling)", who: who.torrent,
+    // where the operator finds a router cut by one device's torrent (S11b) — the fix, said beside the offender
+    foot: T("Several devices behind one router? Mark that device as a router — its other traffic is never cut.") });
   tiles.push({ k: T("Scanners flagged"), v: kmb(scan), n: scan, sub: scan ? plural(scan, "source") + " · " + rw : T("none flagged"), color: "var(--partial)", who: who.scan });
   // The free port rules, shown only where they are switched on. Deliberately its own tile rather than folded
   // into "Blocked": that one counts content filtering, this one counts SMTP / QUIC / the torrent port-hint, and
@@ -1316,7 +1319,7 @@ export function Protection({ range, bs }) {
           // portal (fixed-position, escapes the card, hover with a grace period so moving into the bubble never drops
           // it). Plain tiles render as a div.
           const pop = w
-            ? html`<${WhoBubble} rows=${w} color=${t.color}/>`
+            ? html`<${WhoBubble} rows=${w} color=${t.color} foot=${t.foot}/>`
             : (t.bcats ? html`<${CatsBubble} cats=${t.bcats} color=${t.color} counts/>`
               : (t.cats ? html`<${CatsBubble} cats=${t.cats} color=${t.color}/>` : null));
           return pop

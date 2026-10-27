@@ -84,7 +84,9 @@ subscription and no one else sitting in the middle of your traffic.
   which user is behind the torrents and port-scans it flags. One wrong entry in a public list? Put the site or address on
   the fleet-wide **Never block** list (Settings → Geo data providers → Blocking) instead of switching the list off: no block
   list blocks it anywhere, and your routing rules still route it. Addresses leave the address lists on every server; site
-  names leave the site lists on Force-DNS and Hybrid SNI, once the server is updated.
+  names leave the site lists on Force-DNS and Hybrid SNI, once the server is updated. A device that is a router — several
+  devices behind one address — can be marked as one in its settings: one device's torrent then no longer cuts the
+  others' VPNs, calls and games, while torrent connections are still blocked one by one.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
   apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
 - **WDTT servers.** A whole VPN server that hides inside a VK-video-call-shaped stream. Where a

@@ -4075,11 +4075,12 @@ def peer_set(roster, pid, fields, now):
     # routes: the networks this device fronts (NETWORKS-PLAN §6) — preserved for the same reason as the rest.
     # share: who may reach them (§15) — and dropping it would silently OPEN them, so `share_clean` never stores a falsy one.
     # private: the owner keeps this device (and the networks behind it) to themselves, whatever the interface says.
+    # shared: a router — several devices behind this one address; the torrent guard never flags it (S11b).
     # ⚠️ PRESERVED HERE OR IT IS LOST. This rebuild is a whitelist, so a field it does not name is dropped by the next
     # unrelated save — an update-target or a rekey would silently un-private a device, which is the direction that opens
     # something. `if v` also means an explicit False clears the key, which is how it is unset.
     for k in ("disabled", "disabled_at", "unblock_at", "expiry", "wdtt_password", "csqtt_password", "vk_hash", "sub_hide",
-              "routes", "share", "private"):
+              "routes", "share", "private", "shared"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
@@ -8995,6 +8996,24 @@ def desired_for_node(roster, node_id, snap=None):
                 "name": name,
             })
     return out
+
+
+def p2p_shared_for_node(roster, node_id):
+    """The /32s on this node of the peers marked as a router (`shared`, S11b): the node puts them in its never-flag set, so
+    one device's torrent no longer cuts every other device's high ports behind that router. wg/awg targets only — a
+    keyless one is not a router. Sorted, so the reply's bytes are stable; [] when nobody is marked (the key is then left
+    out of the reply)."""
+    out = set()
+    for p in (roster.get("peers") or {}).values():
+        if not isinstance(p, dict) or not p.get("shared"):
+            continue
+        for t in p.get("targets") or []:
+            if isinstance(t, dict) and t.get("node") == node_id and not _is_self_contained_target(t):
+                with contextlib.suppress(ValueError):
+                    a = ipaddress.ip_address((t.get("ip") or "").split("/")[0])
+                    if a.version == 4:
+                        out.add("%s/32" % a)
+    return sorted(out)
 
 
 def cut_off_for_node(roster, node_id, snap):
@@ -28580,6 +28599,8 @@ def api(method, path, qs, body, deps):
             # ⚠️ Stored ONLY as a departure from the default, the way `lan_share` is: a peer nobody marked carries no key,
             # so every existing roster keeps its exact meaning and an older panel reading this file sees what it saw.
             changed["private"] = True if body.get("private") is True else None
+        if "shared" in body:                    # a router: several devices behind one address — never flagged (S11b), as private
+            changed["shared"] = True if body.get("shared") is True else None
         if "overrides" in body:                 # per-peer non-secret DNS/MTU/AllowedIPs/keepalive (the roster copy)
             changed["overrides"] = body.get("overrides") or {}
         if "sub_hide" in body:                  # which config sources this peer publishes to its subscription
@@ -28626,6 +28647,9 @@ def api(method, path, qs, body, deps):
                       "Assigned peer" if changed["user_id"] else "Unassigned peer", peer_label(roster, p2))
         elif ("overrides" in changed or "expiry" in changed or "routes" in changed or "share" in changed) and "title" not in changed:
             ev_append(roster_path, "peer", pid, "Edited peer config", peer_label(roster, p2))
+        if "shared" in changed and bool(changed["shared"]) != bool(p.get("shared")):   # the torrent guard's reach changed
+            ev_append(roster_path, "peer", pid, "Marked as a router" if changed["shared"] else "Router mark removed",
+                      peer_label(roster, p2))
         if "routes" in changed or "share" in changed:   # what the operator has just done, before they walk away (§4.5)
             return 200, {"ok": True, "data": p2, "networks": network_report(roster, pid, deps.get("node_snaps") or {})}
         return 200, {"ok": True, "data": p2}
@@ -35253,6 +35277,9 @@ class Handler(BaseHTTPRequestHandler):
                                                   else {"action": "route", "entry": (my_plan or {}).get("_p2p")} if _p2pa in ("exit", "dev")
                                                   # iface: each interface's own choice, lowered — None while no record has one
                                                   else p2p_iface_wire((my_plan or {}).get("_p2pi"))),
+                                          # router peers here (S11b): never flagged by the torrent guard — only when there are some,
+                                          # so a fleet that marks nobody gets the reply it always got
+                                          **({"p2p_shared": _shr} if (_shr := p2p_shared_for_node(roster, nid)) else {}),
                                           "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
                                           "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
                                           "routing_reset_learned": int(node.get("routing_reset_learned") or 0)},   # 'Reset learned IPs' counter → node clears only its learned-IP sets

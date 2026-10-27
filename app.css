@@ -487,6 +487,7 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 html[lang=en] .prot-cat-nm{text-transform:capitalize}
 .prot-cat-n{font-size:11px;font-weight:700}
 .prot-who-pg{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px;padding-top:8px;border-top:1px solid var(--line)}
+.prot-who-foot{margin-top:9px;padding-top:8px;border-top:1px solid var(--line);font-size:11.5px;line-height:1.45;color:var(--dim)}   /* the fix beside the offenders (S11b) */
 .prot-who-pglbl{font-family:var(--mono);font-size:10px;color:var(--faint);white-space:nowrap}
 .prot-who-pgbtns{display:flex;gap:6px;flex:none}
 .prot-who-pgb{appearance:none;font:inherit;font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 11px;border-radius:7px;
@@ -3877,7 +3878,7 @@ a.tg:hover{filter:brightness(1.25)}
 .peergrid .srvcell .srvtags .tg-gw{margin-left:0}
 .peergrid td.c-name>span.namewrap{display:inline-flex;align-items:center;gap:5px;max-width:100%;min-width:0;overflow:visible;vertical-align:bottom}
 .peergrid td.c-name>span.namewrap>b,.peergrid td.c-name>span.namewrap>span.faint{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.peergrid td.c-name>span.namewrap>.tg-gw,.peergrid td.c-name>span.namewrap>.tg-priv{flex:none;margin-left:0}
+.peergrid td.c-name>span.namewrap>.tg-gw,.peergrid td.c-name>span.namewrap>.tg-priv,.peergrid td.c-name>span.namewrap>.tg-router{flex:none;margin-left:0}
 /* On a phone the access pill takes the row and each option keeps its words on one line; the pill wraps between options */
 @media (max-width:640px){.dpsw.netsw-share{display:flex;flex-wrap:wrap;width:100%;border-radius:18px}
   .dpsw.netsw-share button{flex:1 1 auto;white-space:nowrap}}

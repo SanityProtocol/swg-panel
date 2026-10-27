@@ -8389,6 +8389,23 @@ def _p2p_link_nets(node_cfg):
     return sorted(out)
 
 
+def _p2p_nofan(node_cfg, shared=()):
+    """@nofan: the mesh links' subnets, plus the /32s of the peers the operator marked as a router here (`p2p_shared`,
+    S11b) — a router is several devices behind one address, so a flag on it cut every other device's high ports (a NAT
+    router's OpenVPN, a user's report). Its torrent packets are still judged one by one. A /32 a link subnet already holds
+    is left out: the set has no auto-merge, and an overlap would refuse the whole table. None marked → the links alone,
+    the text as before."""
+    nets = _p2p_link_nets(node_cfg)
+    have = [ipaddress.ip_network(n) for n in nets]
+    out = set(nets)
+    for a in shared if isinstance(shared, list) else []:
+        with contextlib.suppress(Exception):
+            n = ipaddress.ip_network(str(a), strict=False)
+            if n.version == 4 and n.prefixlen == 32 and not any(n.subnet_of(h) for h in have):
+                out.add(str(n))
+    return sorted(out)
+
+
 def _p2p_iface_entries(p2p):
     """iface: the route entries the node runs — each a usable route (`_p2p_entry`) on a table no earlier entry took — and the
     rest, which fail closed. ONE reader for the renderer (`_p2p_groups`) and the tables (`reconcile_cascade`)."""
@@ -8443,7 +8460,7 @@ def _p2p_groups(p2p, strict):
     return groups
 
 
-def _ensure_p2p(p2p, mech, node_cfg, res):
+def _ensure_p2p(p2p, mech, node_cfg, res, shared=()):
     """Reconcile the P2P policy (see the block comment above). Signature-gated like _ensure_mech_block, and the gate asks
     the property that matters — the table is there AND still drops — not only our own memo (the flushed-in-place lesson,
     _ensure_mech_block). Never raises; never touches another table; nothing wanted → only ours is deleted."""
@@ -8505,7 +8522,8 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
             if not _up:
                 break
         logged = log_level() >= LOG_INFO and not _P2P["nolog"]
-        text = _p2p_nft(mode, strict, oif, _p2p_link_nets(node_cfg), ih, route, logged=logged, groups=groups)
+        nofan = _p2p_nofan(node_cfg, shared)
+        text = _p2p_nft(mode, strict, oif, nofan, ih, route, logged=logged, groups=groups)
         sig = hashlib.sha256(text.encode()).hexdigest()
         cur = ""
         with contextlib.suppress(OSError):
@@ -8526,7 +8544,7 @@ def _ensure_p2p(p2p, mech, node_cfg, res):
             # nft's log expression, or without a log backend for both IPv4 and IPv6 (nft_log, nf_log_syslog — a minimal kernel,
             # a container host that never loaded them), refuses that rule and with it the WHOLE table, every drop included. The
             # guard matters more than its lines: the same table again without them, and none for the rest of this process.
-            r0, text = r, _p2p_nft(mode, strict, oif, _p2p_link_nets(node_cfg), ih, route, logged=False, groups=groups)
+            r0, text = r, _p2p_nft(mode, strict, oif, nofan, ih, route, logged=False, groups=groups)
             r = run(["nft", "-f", "-"], input_text=text)
             if r.returncode == 0:
                 _P2P["nolog"] = True
@@ -12739,7 +12757,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         _doh_observe |= set(_subs)
     _ensure_doh_block(sorted(_doh_observe - _doh_strict), sorted(_doh_strict), res)
     _ensure_mech_block(_mech, res, scan_allow=(smart or {}).get("scan_allow") or [])   # FREE traffic/abuse L4/rate drops (smtp/quic/portscan) + scan-sweep guard (never-flag allowlist)
-    _ensure_p2p((smart or {}).get("p2p"), _mech, node_cfg, res)   # P2P policy: node-wide, every egress (P2P-POLICY-PLAN P1)
+    _ensure_p2p((smart or {}).get("p2p"), _mech, node_cfg, res,   # P2P policy: node-wide, every egress (P2P-POLICY-PLAN P1)
+                shared=(smart or {}).get("p2p_shared") or [])   # router peers here: never flagged (S11b)
     return res
 
 

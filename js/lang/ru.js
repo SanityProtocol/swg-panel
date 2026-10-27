@@ -2074,6 +2074,13 @@ export const STR = {
   "The networks behind it stay with this user's own devices.":
     "Сети за ним останутся доступны только устройствам этого пользователя.",
   "tag|private": "личное",
+  "tag|router": "роутер",
+  "Router — several devices share this address": "Роутер — за этим адресом несколько устройств",
+  "Torrents are still blocked connection by connection, but one device's torrent no longer cuts the other devices' VPNs, calls and games. The cost: an encrypted torrent behind it with DHT off gets through.": "Торренты по-прежнему блокируются соединение за соединением, но торрент одного устройства больше не обрывает VPN, звонки и игры остальных. Цена: зашифрованный торрент за ним с выключенным DHT проходит.",
+  "Several devices share this address — the torrent guard never cuts it as a whole": "За этим адресом несколько устройств — защита от торрентов не отрезает его целиком",
+  "Several devices behind one router? Mark that device as a router — its other traffic is never cut.": "Несколько устройств за одним роутером? Отметьте это устройство как роутер — остальной его трафик не будет обрываться.",
+  "Marked as a router": "Отмечен как роутер",
+  "Router mark removed": "Отметка роутера снята",
   "Only this user's own devices reach it and the networks behind it — not the people they share a group with, and not everyone on the node, whatever the interface allows.":
     "Доступ только с других устройств этого же пользователя — ни участникам его групп, ни всем на ноде, что бы ни разрешал интерфейс.",
   "Shared with": "Кому открыты",

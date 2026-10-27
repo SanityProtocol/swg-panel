@@ -13,7 +13,7 @@ import { esc, tkey, V, BASE, seen, panelNowS, configErrors, orderedTargets, isPr
 import { Store, api, bus, useStore } from "./store.js";
 import { NODE_COLOR_DEFAULT, NODE_CREATE_DEFAULT, toThemed } from "./theme.js";
 import { go } from "./router.js";
-import { targetType, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
+import { targetType, routerCapable, iTypeOf, kindOf, nodeStale, wdttOn, suggestIface, suggestSubnet, suggestPort,
          portHolder, portErrMsg, subnetFleetConflict, subnetServerAddr, cidrNet, ghostIface,
          turnProxiesFor, tgtXfer, tgtSeenAge, kindLabel, platformLabel, peerUncategorised } from "./model.js";
 import { turnFork, turnColor, turnForkList, forkLabel } from "./turn-catalog.js";
@@ -795,6 +795,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   const setOptsFor = (k, v) => setTopts(m => ({ ...m, [k]: v }));
   const [userId, setUserId] = useState(peer.user_id || "");   // staged owner (applied on Save for an unassigned peer)
   const [priv, setPriv] = useState(peer.private === true);
+  const [router, setRouter] = useState(peer.shared === true);   // several devices behind this address (S11b)
   const [expDate, setExpDate] = useState(expiryInputVal(peer.ownExpiry || 0));   // this peer's OWN expiry (blank = inherit the subscription's)
   const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
   const [orig, setOrig] = useState(null);          // the loaded config values — Save stays off until one differs
@@ -836,6 +837,7 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
   // values (and, for a user change, walks the operator into a confirm for a no-op).
   const _dirty = (title.trim() !== (peer.title || "").trim())
     || (priv !== (peer.private === true))          // ⚠️ or Save stays disabled: this sheet computes dirty from its OWN
+    || (router !== (peer.shared === true))
     || ((userId || "") !== (peer.user_id || ""))   //    fields, it does not watch input events
     || (expDate !== expiryInputVal(peer.ownExpiry || 0))
     || (live.targets || []).some(ipChangedFor)
@@ -858,6 +860,9 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
       }
       if (priv !== (peer.private === true)) {
         const r = await api.peerUpdate({ peer_id: peer.id, private: priv }); if (!r.ok) fails++;
+      }
+      if (router !== (peer.shared === true)) {
+        const r = await api.peerUpdate({ peer_id: peer.id, shared: router }); if (!r.ok) fails++;
       }
       // persist the roster copy of the non-secret overrides (custom DNS/MTU/AllowedIPs/keepalive), so a
       // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully. Written
@@ -1054,6 +1059,12 @@ export function EditPeerSheet({ peer, focus, done, flash, child }) {
             : o.nets.mode === "shared" ? T("The networks behind it open to {who}.",
                 { who: namedFew([...o.nets.users.map(u => u.name), ...o.nets.groups.map(g => g.name)]) })
             : T("The networks behind it stay with this user's own devices.")].filter(Boolean).join(" ")}</span></div>`)(privateOffOpens(live || peer)) : null}</div>
+    ${/* S11b: a router is several devices behind one address — a torrent flag on it cut every other device's high ports
+          (a user's report: a NAT router's OpenVPN). Only where it can mean something: a wg/awg deployment; a keyless one
+          is not a router. The hint says the cost in the same breath as the gain. */""}
+    ${router || routerCapable(live) ? html`<div class="field">
+      <label class="toggle-row"><${Switch} on=${router} onChange=${v => setRouter(v)}/><span>${T("Router — several devices share this address")}</span></label>
+      <div class="hint">${T("Torrents are still blocked connection by connection, but one device's torrent no longer cuts the other devices' VPNs, calls and games. The cost: an encrypted torrent behind it with DHT off gets through.")}</div></div>` : null}
     <div class="field"><label>${T("label|Deployments")}</label>
       <div class="targetpick">${targetsOrdered.map(t => {
         const k = tkey(t.node, t.iface);
