@@ -9037,6 +9037,7 @@ def p2p_arrivals(node, plan):
 
 
 _P2P_ROUTERS = {}   # node id → ((roster_mark, its arrivals), its list): recomputed only when either moves
+_P2P_ANY_ROUTER = [None]   # (roster_mark, is any peer marked) — so a fleet that marks nobody builds no arrivals
 
 
 def p2p_routers_cached(mark, roster, node_id, arrivals=()):
@@ -9044,11 +9045,11 @@ def p2p_routers_cached(mark, roster, node_id, arrivals=()):
     arrivals changed. `arrivals` may be a function: called only when some peer is marked (s11b F19 — a fleet that marks
     nobody pays one roster pass per save, nothing per sync)."""
     if callable(arrivals):
-        anyr = _P2P_ROUTERS.get("") if mark is not None else None
+        anyr = _P2P_ANY_ROUTER[0] if mark is not None else None
         if not (anyr and anyr[0] == mark):
             anyr = (mark, any(isinstance(p, dict) and p.get("router") for p in (roster.get("peers") or {}).values()))
             if mark is not None:
-                _P2P_ROUTERS[""] = anyr
+                _P2P_ANY_ROUTER[0] = anyr
         if not anyr[1]:
             return []
         arrivals = arrivals()
@@ -9900,8 +9901,10 @@ def _node_issues(c, snap, ivk_pub="", capped=(), unplaced=None, reach=None, clas
         # under iface the node names the devices down (`down`): the interfaces whose own route leaves by one are said —
         # one group down is not every routed interface (S11 backlog F48); a node that names none, the line as before
         _dn = _p2pn.get("down") if _p2pa == "iface" and isinstance(_p2pn.get("down"), list) else None
+        # only records that RUN that route: not one on Block (strictest wins), not one already named dead (p2p_iface)
         _dr = sorted(rn for _k in ("ifaces", "wdtt", "csqtt") for rn, _r in ((c.get(_k) or {}).items() if isinstance(c.get(_k), dict) else ())
-                     if isinstance(_r, dict) and p2p_route_dev(c, _r.get("p2p")) in (_dn or ())) if _dn else []
+                     if isinstance(_r, dict) and rn not in (p2p_iface or ()) and "torrents" not in (_r.get("block") or [])
+                     and p2p_route_dev(c, _r.get("p2p")) in (_dn or ())) if _dn else []
         issues.append(perr("torrents on {v1}: their route's way out is down — blocked until it is back", v1=", ".join(_dr)) if _dr
                       else perr("the torrent route's way out is down — torrent traffic is blocked until it is back"))
     # Each interface's own choice (IFACE-P2P-PICK §4.4): a node that does not run it reads `iface` as unknown and checks
@@ -15105,14 +15108,14 @@ def p2p_portok_wire(ps, node):
 
 def p2p_route_dev(node, p2p):
     """The device a record's own torrent route leaves by — what the node's iface groups route out of and name in their
-    report's `down` (S11 backlog F48): an exit's device, or the mesh link to the node it routes through. "" when it has none."""
+    report's `down` (S11 backlog F48): an exit's device, or the mesh link to the node it routes through. "" when it has none (a disabled exit's too)."""
     a = (p2p or {}).get("action") if isinstance(p2p, dict) else None
-    if a == "dev":
-        return next((str(x.get("device") or "") for x in ((node or {}).get("exits") or []) if isinstance(x, dict)
-                     and str(x.get("id")) == str(p2p.get("exit_id"))), "")
+    if a == "dev":                                            # resolve_exit's reading: a disabled exit routes nothing, a name stripped
+        x = next((x for x in ((node or {}).get("exits") or []) if isinstance(x, dict) and str(x.get("id")) == str(p2p.get("exit_id"))), None)
+        return str(x.get("device") or "").strip() if x and x.get("enabled") is not False else ""
     if a == "exit":
         lk = ((node or {}).get("links") or {}).get(p2p.get("node"))
-        return str(lk.get("iface") or "") if isinstance(lk, dict) else ""
+        return str(lk.get("iface") or "").strip() if isinstance(lk, dict) else ""
     return ""
 
 

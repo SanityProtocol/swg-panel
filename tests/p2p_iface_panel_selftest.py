@@ -66,10 +66,14 @@ PLANTS = {   # name: (old text, planted text) — each re-introduces a defect th
     "wire-dups":      ('    out = {k: (sorted(set(pi[k])) if k != "entries"', '    out = {k: (list(pi[k]) if k != "entries"'),
     "card-silent":    ('        issues.append(perr("per-interface torrent choices need a node update', '        (lambda *a: 0)(perr("per-interface torrent choices need a node update'),
     "card-always":    ('    if _p2pa == "iface" and p2p_iface is not None and _srp is not None', '    if _p2pa == "iface" and _srp is not None'),
-    "card-down-all": ('                     if isinstance(_r, dict) and p2p_route_dev(c, _r.get("p2p")) in (_dn or ())) if _dn else []',
-                      '                     if isinstance(_r, dict) and _r.get("p2p")) if _dn else []'),
-    "route-dev-link": ('        return str(lk.get("iface") or "") if isinstance(lk, dict) else ""\n    return ""\n\n\ndef p2p_policy',
+    "card-down-all": ('                     and p2p_route_dev(c, _r.get("p2p")) in (_dn or ())) if _dn else []',
+                      '                     and _r.get("p2p")) if _dn else []'),
+    "route-dev-link": ('        return str(lk.get("iface") or "").strip() if isinstance(lk, dict) else ""\n    return ""\n\n\ndef p2p_policy',
                        '        return ""\n    return ""\n\n\ndef p2p_policy'),
+    "card-down-blocked": ('                     if isinstance(_r, dict) and rn not in (p2p_iface or ()) and "torrents" not in (_r.get("block") or [])',
+                          '                     if isinstance(_r, dict)'),
+    "route-dev-disabled": ('        return str(x.get("device") or "").strip() if x and x.get("enabled") is not False else ""\n    if a == "exit":\n        lk = ((node or {}).get("links") or {}).get(p2p.get("node"))\n        return str(lk.get("iface") or "").strip() if isinstance(lk, dict) else ""\n    return ""\n\n\ndef p2p_policy',
+                           '        return str(x.get("device") or "").strip() if x else ""\n    if a == "exit":\n        lk = ((node or {}).get("links") or {}).get(p2p.get("node"))\n        return str(lk.get("iface") or "").strip() if isinstance(lk, dict) else ""\n    return ""\n\n\ndef p2p_policy'),
     "card-down-old":  ('    elif _p2pa in ("exit", "dev", "iface") and _p2pn and _p2pn.get("route") == "down":',
                        '    elif _p2pa in ("exit", "dev") and _p2pn and _p2pn.get("route") == "down":'),
     "card-dead":      ('    elif (_p2pa == "iface" and p2p_iface and _srp is not None and _srp.get("p2pi")', '    elif (False'),
@@ -292,6 +296,14 @@ def run_checks(src):
     ok((KD, "wg9") in card6({"route": "down", "down": ["wgx0"]}), "[6b] the exit's device down → only the interface routed through it (%s)" % card6({"route": "down", "down": ["wgx0"]}))
     ok((KD, "wdtt1, wg7") in card6({"route": "down", "down": ["swg_p"]}), "[6b] the link to the node down → the interfaces (and WDTT) routed through it (%s)" % card6({"route": "down", "down": ["swg_p"]}))
     ok((KG, None) in card6({"route": "down"}), "[6b] a node that names no device → the line as before (%s)" % card6({"route": "down"}))
+    C6["ifaces"]["wg5"] = {"p2p": {"action": "exit", "node": "n2"}, "block": ["torrents"]}
+    ok((KD, "wdtt1, wg7") in card6({"route": "down", "down": ["swg_p"]}), "[6b] (review F3) an interface on Block (strictest wins) is not named (%s)" % card6({"route": "down", "down": ["swg_p"]}))
+    _i = [(i.get("error_key"), (i.get("error_vars") or {}).get("v1")) for i in
+          P._node_issues(C6, {"smartroute": {"p2pi": 1, "p2p": {"state": "ok", "mode": "iface", "route": "down", "down": ["swg_p"]}}}, p2p_iface=["wg7"])]
+    ok((KD, "wdtt1") in _i, "[6b] (review F3) …nor one already named dead (%s)" % _i)
+    _c = dict(C6, exits=[dict(X1, enabled=False)])
+    ok(P.p2p_route_dev(_c, {"action": "dev", "exit_id": X1["id"]}) == "" and P.p2p_route_dev(dict(C6, exits=[dict(X1, device=" wgx0 ")]), {"action": "dev", "exit_id": X1["id"]}) == "wgx0",
+       "[6b] (review F1/F4) a disabled exit has no device; a name is stripped — resolve_exit's reading")
     ok(P.p2p_route_dev(C6, {"action": "dev", "exit_id": X1["id"]}) == "wgx0" and P.p2p_route_dev(C6, {"action": "exit", "node": "n2"}) == "swg_p"
        and P.p2p_route_dev(C6, {"action": "direct"}) == "" and P.p2p_route_dev(C6, {"action": "exit", "node": "gone"}) == "",
        "[6b] a record's route device: the exit's, or the mesh link's; none for direct or a node not linked")

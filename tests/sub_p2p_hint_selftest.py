@@ -77,7 +77,7 @@ if P_RDOWN:
     plant('    if _rp.get("action") in ("exit", "dev") and _rep.get("route") == "down":',
           '    if False:', "a routed interface while a route is down")
 if P_ALLDOWN:
-    plant('        if not isinstance(_rep.get("down"), list) or _p2p_route_dev(cfg, _rp) in _rep["down"]:',
+    plant('        if not isinstance(_rep.get("down"), list) or _p2p_route_dev(cfg, _rp) in _rep["down"]:   # (no device: refused below)',
           '        if True:', "the routed interface's own device")
 SUB_PATH = SUB
 if PERTURB:
@@ -169,6 +169,12 @@ check("F48: the exit's device down → the interface routed through it is not al
 check("F48: the link to the node down → the other way round",
       allowed(IF2, FAR, d1={"mode": "iface", "route": "down", "down": ["swg_b"]}, tgs=T2) == [T("wgx")],
       allowed(IF2, FAR, d1={"mode": "iface", "route": "down", "down": ["swg_b"]}, tgs=T2))
+IF3 = dict(IF2, exits=[{"id": "e1", "enabled": False, "device": "wgx-e1"}])
+check("F48 (review F1): a route through a disabled exit — no device to leave by — is not allowed, whatever device is down",
+      T("wgx") not in allowed(IF3, FAR, d1={"mode": "iface", "route": "down", "down": ["swg_b"]}, tgs=T2))
+IF4 = dict(IF2, exits=[{"id": "e1", "enabled": True, "device": " wgx-e1 "}])
+check("F48 (review F1): a device stored with stray spaces is the node's name for it (resolve_exit strips)",
+      T("wgx") not in allowed(IF4, FAR, d1={"mode": "iface", "route": "down", "down": ["wgx-e1"]}, tgs=T2))
 check("F48: a node that names no device → neither (fail closed, as before)",
       allowed(IF2, FAR, d1={"mode": "iface", "route": "down"}, tgs=T2) == [])
 JUNK = [None, [], "x", {"p2p": {"action": "direct"}, "ifaces": []}, {"p2p": {"action": "direct"}, "ifaces": {"wg0": "x"}},

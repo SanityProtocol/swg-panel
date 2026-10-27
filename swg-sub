@@ -664,14 +664,14 @@ def _p2p_runs(nodes, describe, nid, arrivals=False):
 
 def _p2p_route_dev(node, p2p):
     """The device a record's own torrent route leaves by — the panel's `p2p_route_dev`, twinned (the node names these in
-    its report's `down`): an exit's device, or the mesh link to the node it routes through. "" when it has none."""
+    its report's `down`): an exit's device, or the mesh link to the node it routes through. "" when it has none (a disabled exit's too)."""
     a = (p2p or {}).get("action") if isinstance(p2p, dict) else None
-    if a == "dev":
-        return next((str(x.get("device") or "") for x in ((node or {}).get("exits") or []) if isinstance(x, dict)
-                     and str(x.get("id")) == str(p2p.get("exit_id"))), "")
+    if a == "dev":                                            # resolve_exit's reading: a disabled exit routes nothing, a name stripped
+        x = next((x for x in ((node or {}).get("exits") or []) if isinstance(x, dict) and str(x.get("id")) == str(p2p.get("exit_id"))), None)
+        return str(x.get("device") or "").strip() if x and x.get("enabled") is not False else ""
     if a == "exit":
         lk = ((node or {}).get("links") or {}).get(p2p.get("node"))
-        return str(lk.get("iface") or "") if isinstance(lk, dict) else ""
+        return str(lk.get("iface") or "").strip() if isinstance(lk, dict) else ""
     return ""
 
 
@@ -701,7 +701,7 @@ def torrents_allowed(nodes, describe, t):
     if _rp.get("action") in ("exit", "dev") and _rep.get("route") == "down":
         # the node names the devices down (`down`): only an interface whose own route leaves by one is not allowed (S11
         # backlog F48); a node that names none — fail closed (pick F2)
-        if not isinstance(_rep.get("down"), list) or _p2p_route_dev(cfg, _rp) in _rep["down"]:
+        if not isinstance(_rep.get("down"), list) or _p2p_route_dev(cfg, _rp) in _rep["down"]:   # (no device: refused below)
             return False
     if _rp.get("action") == "exit":                    # its own route through a node (IFACE-P2P-PICK): a link there, and that
         _q = _rp.get("node")                           # node lets arrivals' P2P out
